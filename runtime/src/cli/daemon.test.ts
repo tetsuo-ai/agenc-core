@@ -322,6 +322,7 @@ describe("daemon: process identity parsing", () => {
 describe("daemon: runServiceInstallCommand", () => {
   afterEach(() => {
     vi.clearAllMocks();
+    delete process.env.AGENC_DAEMON_ENTRY;
   });
 
   it("includes --yolo in generated systemd units when requested", async () => {
@@ -343,6 +344,24 @@ describe("daemon: runServiceInstallCommand", () => {
       command: "service.install",
       platform: "systemd",
       template: "[Unit]",
+    });
+  });
+
+  it("uses AGENC_DAEMON_ENTRY when generating service templates", async () => {
+    process.env.AGENC_DAEMON_ENTRY = "/opt/agenc/current/node_modules/@tetsuo-ai/runtime/dist/bin/daemon.js";
+    const { context } = createContextCapture();
+    const generateSystemdUnitMock = vi.mocked(generateSystemdUnit);
+    generateSystemdUnitMock.mockReturnValue("[Unit]");
+
+    const code = await runServiceInstallCommand(context, {
+      configPath: "/tmp/config.json",
+      yolo: false,
+    });
+
+    expect(code).toBe(0);
+    expect(generateSystemdUnitMock).toHaveBeenCalledWith({
+      execStart:
+        "node /opt/agenc/current/node_modules/@tetsuo-ai/runtime/dist/bin/daemon.js --config /tmp/config.json --foreground",
     });
   });
 });

@@ -107,7 +107,14 @@ function deriveProjectWatchClientKey(launchCwd: string): string {
   return `agenc-${baseName}-${digest}`;
 }
 
-function resolveConsoleEntryPath(): string | null {
+export function resolveConsoleEntryPath(): string | null {
+  const envOverride = process.env.AGENC_WATCH_ENTRY;
+  if (typeof envOverride === "string" && envOverride.trim().length > 0) {
+    const resolvedOverride = resolve(envOverride);
+    if (existsSync(resolvedOverride)) {
+      return resolvedOverride;
+    }
+  }
   const candidates = [
     resolve(dirname(__filename), "..", "bin", "agenc-watch.js"),
     resolve(process.cwd(), "runtime", "dist", "bin", "agenc-watch.js"),

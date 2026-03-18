@@ -40,6 +40,10 @@ describe("wizard: generateDefaultConfig", () => {
     expect(config.agent.name).toBe("agenc-agent");
     expect(config.connection.rpcUrl).toBe("https://api.devnet.solana.com");
     expect(config.logging?.level).toBe("info");
+    expect(config.replay?.store?.type).toBe("sqlite");
+    expect(config.replay?.store?.sqlitePath).toContain(".agenc");
+    expect(config.cli?.strictMode).toBe(false);
+    expect(config.cli?.outputFormat).toBe("json");
   });
 
   it("applies overrides", () => {
@@ -104,10 +108,38 @@ describe("wizard: runConfigInitCommand", () => {
     ) as GatewayConfig;
     expect(written.gateway.port).toBe(3100);
     expect(written.agent.name).toBe("agenc-agent");
+    expect(written.replay?.store?.type).toBe("sqlite");
+    expect(written.cli?.outputFormat).toBe("json");
 
     const payload = outputs[0] as Record<string, unknown>;
     expect(payload.command).toBe("config.init");
     expect(payload.configCreated).toBe(true);
+  });
+
+  it("persists managed CLI overrides into the generated gateway config", async () => {
+    const { context } = createContextCapture();
+    const opts: WizardOptions = {
+      ...baseOptions(),
+      configPath,
+      force: false,
+      managedOverrides: {
+        rpcUrl: "https://rpc.override",
+        storeType: "memory",
+        strictMode: true,
+        idempotencyWindow: 321,
+      },
+    };
+
+    const code = await runConfigInitCommand(context, opts);
+    expect(code).toBe(0);
+
+    const written = JSON.parse(
+      readFileSync(configPath, "utf8"),
+    ) as GatewayConfig;
+    expect(written.connection.rpcUrl).toBe("https://rpc.override");
+    expect(written.replay?.store?.type).toBe("memory");
+    expect(written.cli?.strictMode).toBe(true);
+    expect(written.cli?.idempotencyWindow).toBe(321);
   });
 
   it("skips existing config without --force", async () => {

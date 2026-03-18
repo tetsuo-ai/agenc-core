@@ -11,7 +11,10 @@ Target canonical paths:
 
 - config: `~/.agenc/config.json`
 - PID: `~/.agenc/daemon.pid`
+- replay SQLite store: `~/.agenc/replay-events.sqlite`
 - logs/state/plugin/connector data: `~/.agenc/`
+- wrapper-managed runtime releases: `~/.agenc/runtime/releases/...`
+- wrapper-managed active runtime pointer: `~/.agenc/runtime/current`
 
 Compatibility rule:
 
@@ -20,6 +23,28 @@ Compatibility rule:
 - both `agenc` and direct `agenc-runtime` execution must resolve the canonical
   config path by default after convergence
 
+Config path precedence after convergence:
+
+1. `--config`
+2. `AGENC_CONFIG`
+3. `AGENC_RUNTIME_CONFIG` for legacy-compatible CLI consumers only
+4. `~/.agenc/config.json`
+
+Field precedence after a config file is selected:
+
+1. CLI flags
+2. `AGENC_RUNTIME_*` environment overrides
+3. config file values
+4. built-in defaults
+
+Lifecycle rule:
+
+- daemon-backed commands (`start`, `restart`, `config init|validate|show`,
+  operator console attach) accept canonical gateway config only
+- `AGENC_RUNTIME_CONFIG` does **not** change daemon/config command targets
+- legacy config compatibility remains for replay/plugin/skill/bootstrap-style CLI
+  consumers and explicit import flows only
+
 ## Command migration table
 
 | Current surface | Current behavior | Public product disposition | Notes |
@@ -27,6 +52,7 @@ Compatibility rule:
 | `agenc` | opens operator console by default | `KEEP` | remains the default interactive operator/TUI surface |
 | `agenc console` | explicit operator console | `KEEP` | keep as explicit alias for default interactive mode |
 | `agenc <runtime-command>` | pass-through to runtime CLI | `KEEP` in transition | wrapper continues forwarding while public contract is stabilized |
+| `agenc runtime where|install|update|uninstall` | wrapper-owned runtime management | `KEEP` | explicit public install/update/remove namespace for the packaged runtime |
 | `agenc-runtime onboard` | write local runtime config | `WRAP` | public surface becomes `agenc onboard`; runtime alias remains for compatibility |
 | `agenc-runtime health` | health checks | `WRAP` | public surface becomes `agenc health` |
 | `agenc-runtime doctor` | diagnostics/remediation | `WRAP` | public surface becomes `agenc doctor` |
@@ -55,6 +81,7 @@ Compatibility rule:
 Migration expectations:
 
 - first run detects legacy `.agenc-runtime.json` and offers import/migration
+- `onboard` always writes canonical gateway config, not legacy flat config
 - imported files are backed up before mutation
 - direct `agenc-runtime` uses the canonical config by default after migration
 
@@ -65,6 +92,20 @@ Migration expectations:
 | operator console / TUI | primary mature operator surface |
 | `web/` | chosen daemon-backed dashboard surface |
 | `demo-app/` | move out of product path into demo/example track |
+
+## Runtime handoff rule
+
+The wrapper package owns public installation and version switching.
+
+The runtime package owns product behavior once execution is handed off.
+
+That split means:
+
+- wrapper-managed service/templates/console handoff must resolve runtime entry
+  paths through `~/.agenc/runtime/current`
+- public install/update/remove flows live under `agenc runtime ...`
+- direct `agenc-runtime` remains a compatibility alias, not a second install
+  authority
 
 ## Marketplace language rule
 

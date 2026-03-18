@@ -1,7 +1,9 @@
 import { EventEmitter } from "node:events";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   runOperatorConsole,
+  resolveConsoleEntryPath,
   type OperatorConsoleDeps,
 } from "./operator-console.js";
 import type { DaemonIdentityMatch } from "./daemon.js";
@@ -11,6 +13,8 @@ class FakeChildProcess extends EventEmitter {
     this.emit("exit", code, signal);
   }
 }
+
+const TEST_FILE_PATH = fileURLToPath(import.meta.url);
 
 function createDeps(
   overrides: Partial<OperatorConsoleDeps> = {},
@@ -49,6 +53,13 @@ function createDeps(
 describe("operator console launcher", () => {
   afterEach(() => {
     vi.clearAllMocks();
+    delete process.env.AGENC_WATCH_ENTRY;
+  });
+
+  it("prefers AGENC_WATCH_ENTRY when it points at a real file", () => {
+    process.env.AGENC_WATCH_ENTRY = TEST_FILE_PATH;
+
+    expect(resolveConsoleEntryPath()).toBe(TEST_FILE_PATH);
   });
 
   it("starts the daemon when needed and launches the watch console", async () => {

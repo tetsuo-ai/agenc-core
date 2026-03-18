@@ -1,10 +1,21 @@
 # @tetsuo-ai/runtime
 
-Private kernel package for AgenC.
+Implementation runtime package for AgenC.
 
-`@tetsuo-ai/runtime` is the current operator/runtime baseline for `agenc-core`. It remains in this repository for kernel contributors and for the existing transitional compatibility window, but it is not a supported public builder target.
+`@tetsuo-ai/runtime` is the current operator/runtime implementation baseline in
+`agenc-core`. It powers the public `agenc` install surface, but it is not
+itself the supported end-user install identity and it is not a supported public
+builder target.
 
-Canonical private-kernel distribution policy lives in [docs/PRIVATE_KERNEL_DISTRIBUTION.md](../docs/PRIVATE_KERNEL_DISTRIBUTION.md). Canonical runtime-side deprecation and support-window policy lives in [docs/PRIVATE_KERNEL_SUPPORT_POLICY.md](../docs/PRIVATE_KERNEL_SUPPORT_POLICY.md).
+The public operator install contract is:
+
+- npm package: `agenc`
+- runtime artifact channel: GitHub Releases on `tetsuo-ai/agenc-core`
+- canonical local state: `~/.agenc/`
+
+See [docs/architecture/product-contract.md](../docs/architecture/product-contract.md),
+[docs/architecture/guides/public-runtime-release-channel.md](../docs/architecture/guides/public-runtime-release-channel.md),
+and [docs/architecture/guides/runtime-install-matrix.md](../docs/architecture/guides/runtime-install-matrix.md).
 
 External builders should use:
 

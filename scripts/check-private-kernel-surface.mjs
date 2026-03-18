@@ -54,13 +54,14 @@ for (const relPath of [
 
 const requiredDocPatterns = {
   'README.md': [
+    /^Canonical public implementation repository for the AgenC framework product\.$/mu,
     /### Public Builder Entry Points/u,
     /@tetsuo-ai\/sdk/u,
     /@tetsuo-ai\/protocol/u,
     /@tetsuo-ai\/plugin-kit/u,
     /@tetsuo-ai\/runtime.*Private kernel package.*not a supported public builder API/u,
     /@tetsuo-ai\/mcp.*Private kernel MCP package.*not a public extension target/u,
-    /Private kernel package policy/u,
+    /Internal package\/service policy/u,
     /PRIVATE_KERNEL_DISTRIBUTION\.md/u,
   ],
   'docs/RUNTIME_API.md': [
@@ -73,9 +74,10 @@ const requiredDocPatterns = {
     /## @tetsuo-ai\/mcp v0\.1\.0[\s\S]*Classification: Transitional private-kernel artifact; not a supported public extension target[\s\S]*Distribution policy: `docs\/PRIVATE_KERNEL_DISTRIBUTION\.md`/u,
   ],
   'runtime/README.md': [
-    /^Private kernel package for AgenC\.$/mu,
-    /not a supported public builder target/u,
-    /PRIVATE_KERNEL_DISTRIBUTION\.md/u,
+    /^Implementation runtime package for AgenC\.$/mu,
+    /public[\s\S]*builder target/u,
+    /public-runtime-release-channel\.md/u,
+    /runtime-install-matrix\.md/u,
   ],
   'mcp/README.md': [
     /^Private kernel MCP server for AgenC\./mu,

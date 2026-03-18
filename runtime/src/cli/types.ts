@@ -1,5 +1,6 @@
 import type { PluginPrecedence, PluginSlot } from "../skills/catalog.js";
 import type { OperatorRole } from "../policy/incident-roles.js";
+import type { CliConfigPathSource } from "./config-contract.js";
 
 export type CliOutputFormat = "json" | "jsonl" | "table";
 
@@ -181,6 +182,12 @@ export interface OnboardOptions extends BaseCliOptions {
   force?: boolean;
   /** Config file path override for onboard output. */
   configPath?: string;
+  /** Source used to resolve configPath precedence. */
+  configPathSource?: CliConfigPathSource;
+  /** Optional legacy import source discovered before writing canonical config. */
+  legacyImportConfigPath?: string;
+  /** Explicit CLI/env managed-field overrides. */
+  managedOverrides?: Partial<CliFileConfig>;
 }
 
 export interface HealthOptions extends BaseCliOptions {
@@ -190,6 +197,8 @@ export interface HealthOptions extends BaseCliOptions {
   deep?: boolean;
   /** Config file path override for health output. */
   configPath?: string;
+  /** Source used to resolve configPath precedence. */
+  configPathSource?: CliConfigPathSource;
 }
 
 export interface DoctorOptions extends BaseCliOptions {
@@ -199,6 +208,8 @@ export interface DoctorOptions extends BaseCliOptions {
   fix?: boolean;
   /** Config file path override for doctor output. */
   configPath?: string;
+  /** Source used to resolve configPath precedence. */
+  configPathSource?: CliConfigPathSource;
 }
 
 export interface SecurityOptions extends BaseCliOptions {
@@ -237,6 +248,8 @@ export interface WizardOptions extends BaseCliOptions {
   nonInteractive?: boolean;
   force?: boolean;
   configPath?: string;
+  /** Explicit CLI/env managed-field overrides to persist into generated config. */
+  managedOverrides?: Partial<CliFileConfig>;
 }
 
 export interface InitOptions extends BaseCliOptions {

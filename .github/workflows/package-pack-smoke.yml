@@ -10,8 +10,12 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - 'README.md'
+      - 'packages/agenc/**'
       - 'docs/RUNTIME_API.md'
       - 'scripts/pack-smoke.mjs'
+      - 'scripts/build-public-runtime-artifacts.mjs'
+      - 'scripts/prepare-public-agenc-package.mjs'
+      - 'scripts/public-agenc-install-smoke.mjs'
       - 'scripts/check-private-kernel-surface.mjs'
       - 'test-fixtures/plugin-kit-channel-adapter/**'
       - 'contracts/desktop-tool-contracts/**'
@@ -31,8 +35,12 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - 'README.md'
+      - 'packages/agenc/**'
       - 'docs/RUNTIME_API.md'
       - 'scripts/pack-smoke.mjs'
+      - 'scripts/build-public-runtime-artifacts.mjs'
+      - 'scripts/prepare-public-agenc-package.mjs'
+      - 'scripts/public-agenc-install-smoke.mjs'
       - 'scripts/check-private-kernel-surface.mjs'
       - 'test-fixtures/plugin-kit-channel-adapter/**'
       - 'contracts/desktop-tool-contracts/**'
@@ -70,3 +78,6 @@ jobs:
 
       - name: Run package pack smoke test
         run: npm run pack:smoke:skip-build
+
+      - name: Run public agenc install smoke test
+        run: npm run smoke:public-agenc-install -- --skip-build

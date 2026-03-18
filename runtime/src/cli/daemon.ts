@@ -43,6 +43,12 @@ const DEFAULT_DAEMON_LOG_FILE = "daemon.log";
 const PROCESS_SCAN_TIMEOUT_MS = 5_000;
 
 function getDaemonEntryPath(): string {
+  if (
+    typeof process.env.AGENC_DAEMON_ENTRY === "string" &&
+    process.env.AGENC_DAEMON_ENTRY.trim().length > 0
+  ) {
+    return resolve(process.env.AGENC_DAEMON_ENTRY);
+  }
   // Requires tsup's __filename shim when built as ESM (see tsup.config).
   // Running source directly with tsx/ts-node also provides __filename.
   return resolve(dirname(__filename), "..", "bin", "daemon.js");

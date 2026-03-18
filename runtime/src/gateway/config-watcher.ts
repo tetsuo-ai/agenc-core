@@ -71,6 +71,11 @@ const VALID_LOG_LEVELS: ReadonlySet<string> = new Set([
   "warn",
   "error",
 ]);
+const VALID_CLI_OUTPUT_FORMATS: ReadonlySet<string> = new Set([
+  "json",
+  "jsonl",
+  "table",
+]);
 const VALID_LLM_PROVIDERS: ReadonlySet<string> = new Set([
   "grok",
   "ollama",
@@ -112,6 +117,10 @@ const VALID_MEMORY_BACKENDS: ReadonlySet<string> = new Set([
   "memory",
   "sqlite",
   "redis",
+]);
+const VALID_REPLAY_STORE_TYPES: ReadonlySet<string> = new Set([
+  "memory",
+  "sqlite",
 ]);
 const VALID_CIRCUIT_BREAKER_MODES: ReadonlySet<string> = new Set([
   "pause_discovery",
@@ -311,6 +320,152 @@ function validateConnectionSection(connection: unknown, errors: string[]): void 
     connection.rpcUrl.trim().length === 0
   ) {
     errors.push("connection.rpcUrl must be a non-empty string");
+  }
+  if (
+    connection.programId !== undefined &&
+    (typeof connection.programId !== "string" ||
+      connection.programId.trim().length === 0)
+  ) {
+    errors.push("connection.programId must be a non-empty string");
+  }
+}
+
+function validateCliSection(cli: unknown, errors: string[]): void {
+  if (cli === undefined) return;
+  if (!isRecord(cli)) {
+    errors.push("cli must be an object");
+    return;
+  }
+  if (cli.strictMode !== undefined && typeof cli.strictMode !== "boolean") {
+    errors.push("cli.strictMode must be a boolean");
+  }
+  if (cli.idempotencyWindow !== undefined) {
+    requireIntRange(
+      cli.idempotencyWindow,
+      "cli.idempotencyWindow",
+      1,
+      86_400,
+      errors,
+    );
+  }
+  if (cli.outputFormat !== undefined) {
+    requireOneOf(
+      cli.outputFormat,
+      "cli.outputFormat",
+      VALID_CLI_OUTPUT_FORMATS,
+      errors,
+    );
+  }
+}
+
+function validateReplaySection(replay: unknown, errors: string[]): void {
+  if (replay === undefined) return;
+  if (!isRecord(replay)) {
+    errors.push("replay must be an object");
+    return;
+  }
+  if (replay.enabled !== undefined && typeof replay.enabled !== "boolean") {
+    errors.push("replay.enabled must be a boolean");
+  }
+  if (replay.store !== undefined) {
+    if (!isRecord(replay.store)) {
+      errors.push("replay.store must be an object");
+    } else {
+      if (replay.store.type !== undefined) {
+        requireOneOf(
+          replay.store.type,
+          "replay.store.type",
+          VALID_REPLAY_STORE_TYPES,
+          errors,
+        );
+      }
+      if (
+        replay.store.sqlitePath !== undefined &&
+        (typeof replay.store.sqlitePath !== "string" ||
+          replay.store.sqlitePath.trim().length === 0)
+      ) {
+        errors.push("replay.store.sqlitePath must be a non-empty string");
+      }
+    }
+  }
+  if (replay.tracing !== undefined) {
+    if (!isRecord(replay.tracing)) {
+      errors.push("replay.tracing must be an object");
+    } else {
+      if (
+        replay.tracing.traceId !== undefined &&
+        (typeof replay.tracing.traceId !== "string" ||
+          replay.tracing.traceId.trim().length === 0)
+      ) {
+        errors.push("replay.tracing.traceId must be a non-empty string");
+      }
+      if (
+        replay.tracing.sampleRate !== undefined &&
+        (typeof replay.tracing.sampleRate !== "number" ||
+          !Number.isFinite(replay.tracing.sampleRate) ||
+          replay.tracing.sampleRate < 0 ||
+          replay.tracing.sampleRate > 1)
+      ) {
+        errors.push("replay.tracing.sampleRate must be a number between 0 and 1");
+      }
+      if (
+        replay.tracing.emitOtel !== undefined &&
+        typeof replay.tracing.emitOtel !== "boolean"
+      ) {
+        errors.push("replay.tracing.emitOtel must be a boolean");
+      }
+    }
+  }
+  if (
+    replay.traceId !== undefined &&
+    (typeof replay.traceId !== "string" || replay.traceId.trim().length === 0)
+  ) {
+    errors.push("replay.traceId must be a non-empty string");
+  }
+  if (
+    replay.projectionSeed !== undefined &&
+    (typeof replay.projectionSeed !== "number" ||
+      !Number.isFinite(replay.projectionSeed))
+  ) {
+    errors.push("replay.projectionSeed must be a finite number");
+  }
+  if (
+    replay.strictProjection !== undefined &&
+    typeof replay.strictProjection !== "boolean"
+  ) {
+    errors.push("replay.strictProjection must be a boolean");
+  }
+  if (replay.backfill !== undefined) {
+    if (!isRecord(replay.backfill)) {
+      errors.push("replay.backfill must be an object");
+    } else {
+      if (replay.backfill.toSlot !== undefined) {
+        requireIntRange(
+          replay.backfill.toSlot,
+          "replay.backfill.toSlot",
+          0,
+          Number.MAX_SAFE_INTEGER,
+          errors,
+        );
+      }
+      if (replay.backfill.pageSize !== undefined) {
+        requireIntRange(
+          replay.backfill.pageSize,
+          "replay.backfill.pageSize",
+          1,
+          10_000,
+          errors,
+        );
+      }
+    }
+  }
+  if (replay.traceLevel !== undefined) {
+    requireOneOf(
+      replay.traceLevel,
+      "replay.traceLevel",
+      VALID_LOG_LEVELS,
+      errors,
+    );
   }
 }
 
@@ -2272,6 +2427,8 @@ export function validateGatewayConfig(obj: unknown): ValidationResult {
   validateGatewaySection(obj.gateway, errors);
   validateAgentSection(obj.agent, errors);
   validateConnectionSection(obj.connection, errors);
+  validateCliSection(obj.cli, errors);
+  validateReplaySection(obj.replay, errors);
 
   // logging (optional — requires process restart to change level)
   if (obj.logging !== undefined) {

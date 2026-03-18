@@ -72,6 +72,15 @@ agenc
 agenc ui
 ```
 
+Phase 2 public wrapper support is intentionally narrow:
+
+- platform: `linux`
+- arch: `x64`
+- Node: `>=18.0.0`
+
+That tuple is the only one the public release/install contract should claim
+until release CI validates more.
+
 ## Public package composition
 
 The public `agenc` package is a wrapper/launcher package.
@@ -82,9 +91,13 @@ V1 public package composition:
 
 - `agenc-core` CI builds monolithic public runtime distributions from the
   existing runtime bins
-- signed public runtime artifacts are published on the public release channel
+- signed public runtime artifacts are published on GitHub Releases for
+  `tetsuo-ai/agenc-core`
 - the public `agenc` wrapper installs/updates/launches those runtime artifacts
 - no end-user install path requires private-registry credentials
+
+See [guides/public-runtime-release-channel.md](guides/public-runtime-release-channel.md)
+for the explicit release-channel and trust model.
 
 ## Canonical local state
 
@@ -93,6 +106,8 @@ Canonical operator layout:
 - config: `~/.agenc/config.json`
 - PID: `~/.agenc/daemon.pid`
 - logs/cache/plugin/connector state: `~/.agenc/`
+- installed public runtime releases: `~/.agenc/runtime/releases/...`
+- active runtime pointer: `~/.agenc/runtime/current`
 
 Legacy `.agenc-runtime.json` is compatibility input only. It must not remain a
 competing default.
@@ -130,7 +145,6 @@ V1 does **not** require:
 - voice/phone connector
 - desktop packaging
 - full marketplace UX polish
-- fully public source visibility on day one
 
 ## Tracked implementation
 

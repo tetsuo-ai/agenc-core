@@ -4,13 +4,16 @@
  * @module
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { validateIdl } from "../idl.js";
-import { validateConfigStrict } from "../types/config-migration.js";
+import {
+  getCanonicalDefaultConfigPath,
+  loadCliConfigContract,
+} from "./config-contract.js";
 import { DEFAULT_SQLITE_REPLAY_PATH } from "./replay.js";
 import type {
   CliRuntimeContext,
@@ -34,21 +37,6 @@ export interface HealthReport {
   checks: HealthCheckResult[];
   timestamp: string; // ISO-8601
   exitCode: 0 | 1 | 2;
-}
-
-const DEFAULT_CONFIG_PATH = ".agenc-runtime.json";
-
-function resolveConfigPath(configPath: string | undefined): string {
-  if (typeof configPath === "string" && configPath.length > 0) {
-    return path.resolve(process.cwd(), configPath);
-  }
-
-  const envPath = process.env.AGENC_RUNTIME_CONFIG;
-  if (typeof envPath === "string" && envPath.length > 0) {
-    return path.resolve(process.cwd(), envPath);
-  }
-
-  return path.resolve(process.cwd(), DEFAULT_CONFIG_PATH);
 }
 
 export function aggregateHealthReport(
@@ -337,8 +325,11 @@ export function checkProgramAvailability(
 export function checkConfigValidity(
   configPath: string | undefined,
   checks: HealthCheckResult[],
+  configPathSource: HealthOptions["configPathSource"] = "canonical",
 ): void {
-  const resolvedPath = resolveConfigPath(configPath);
+  const resolvedPath = path.resolve(
+    configPath ?? getCanonicalDefaultConfigPath(),
+  );
   if (!existsSync(resolvedPath)) {
     checks.push({
       id: "config.exists",
@@ -351,40 +342,7 @@ export function checkConfigValidity(
   }
 
   try {
-    const raw = readFileSync(resolvedPath, "utf8");
-    const parsed = JSON.parse(raw) as unknown;
-    if (
-      typeof parsed !== "object" ||
-      parsed === null ||
-      Array.isArray(parsed)
-    ) {
-      checks.push({
-        id: "config.valid",
-        category: "config",
-        status: "fail",
-        message: `Config file at ${resolvedPath} must be a JSON object`,
-        remediation:
-          "Fix the config file or regenerate via agenc-runtime onboard",
-      });
-      return;
-    }
-
-    const validation = validateConfigStrict(
-      parsed as Record<string, unknown>,
-      false,
-    );
-    if (!validation.valid) {
-      checks.push({
-        id: "config.valid",
-        category: "config",
-        status: "fail",
-        message: `Config validation failed: ${validation.errors.map((e) => e.message).join("; ")}`,
-        remediation:
-          "Fix the config file or regenerate via agenc-runtime onboard",
-      });
-      return;
-    }
-
+    loadCliConfigContract(resolvedPath, { configPathSource });
     checks.push({
       id: "config.valid",
       category: "config",
@@ -406,7 +364,13 @@ export function checkConfigValidity(
 export async function runAllHealthChecks(
   options: Pick<
     HealthOptions,
-    "rpcUrl" | "programId" | "storeType" | "sqlitePath" | "deep" | "configPath"
+    | "rpcUrl"
+    | "programId"
+    | "storeType"
+    | "sqlitePath"
+    | "deep"
+    | "configPath"
+    | "configPathSource"
   >,
   checks: HealthCheckResult[],
 ): Promise<void> {
@@ -417,7 +381,7 @@ export async function runAllHealthChecks(
   );
   await checkWalletAvailability(checks);
   checkProgramAvailability(options.programId, checks);
-  checkConfigValidity(options.configPath, checks);
+  checkConfigValidity(options.configPath, checks, options.configPathSource);
 
   if (options.deep) {
     if (rpcReachable) {
@@ -470,6 +434,7 @@ export async function runHealthCommand(
       sqlitePath: options.sqlitePath,
       deep: options.deep,
       configPath: options.configPath,
+      configPathSource: options.configPathSource,
     },
     checks,
   );
@@ -499,6 +464,7 @@ export async function runDoctorCommand(
       sqlitePath: options.sqlitePath,
       deep: options.deep,
       configPath: options.configPath,
+      configPathSource: options.configPathSource,
     },
     checks,
   );

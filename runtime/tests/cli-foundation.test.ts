@@ -14,15 +14,20 @@ interface CliCapture {
 }
 
 function withCwd<T>(next: string, callback: () => Promise<T>): Promise<T> {
-  const previous = process.cwd();
-  process.chdir(next);
+  const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(next);
   return callback().finally(() => {
-    process.chdir(previous);
+    cwdSpy.mockRestore();
   });
 }
 
-function writeJsonConfig(directory: string, body: Record<string, unknown>) {
+function writeLegacyJsonConfig(directory: string, body: Record<string, unknown>) {
   const path = join(directory, '.agenc-runtime.json');
+  writeFileSync(path, JSON.stringify(body), 'utf8');
+  return path;
+}
+
+function writeGatewayConfig(directory: string, body: Record<string, unknown>) {
+  const path = join(directory, 'config.json');
   writeFileSync(path, JSON.stringify(body), 'utf8');
   return path;
 }
@@ -93,16 +98,24 @@ describe('runtime cli foundation', () => {
     vi.restoreAllMocks();
   });
 
-  const stubReplayBackfill = (): void => {
+  const stubReplayBackfill = () => {
     const store = cliReplay.createReplayStore({ storeType: 'memory' });
-    vi.spyOn(cliReplay, 'createReplayStore').mockReturnValue(store);
-    vi.spyOn(cliReplay, 'createOnChainReplayBackfillFetcher').mockReturnValue({
+    const createReplayStoreSpy = vi
+      .spyOn(cliReplay, 'createReplayStore')
+      .mockReturnValue(store);
+    const createFetcherSpy = vi
+      .spyOn(cliReplay, 'createOnChainReplayBackfillFetcher')
+      .mockReturnValue({
       fetchPage: async () => ({
         events: [],
         nextCursor: null,
         done: true,
       }),
     });
+    return {
+      createReplayStoreSpy,
+      createFetcherSpy,
+    };
   };
 
   it('parses short and long options in a deterministic record', () => {
@@ -202,56 +215,83 @@ describe('runtime cli foundation', () => {
   it('loads cli defaults from config file', async () => {
     const workspace = createTempWorkspace();
     stubReplayBackfill();
-    writeJsonConfig(workspace, {
-      rpcUrl: 'https://config.rpc',
-      storeType: 'memory',
-      strictMode: true,
-      idempotencyWindow: 123,
+    const configPath = writeGatewayConfig(workspace, {
+      gateway: { port: 3100 },
+      agent: { name: 'cli-test-agent' },
+      connection: { rpcUrl: 'https://config.rpc' },
+      replay: { store: { type: 'memory' } },
+      cli: {
+        strictMode: true,
+        idempotencyWindow: 123,
+        outputFormat: 'json',
+      },
     });
+    const restore = cleanupEnv(['AGENC_CONFIG', 'AGENC_RUNTIME_CONFIG']);
+    process.env.AGENC_CONFIG = configPath;
 
-    const result = await withCwd(workspace, () => runCliCapture([
-      'replay',
-      'backfill',
-      '--to-slot',
-      '123',
-      '--rpc',
-      'https://config.rpc',
-    ]));
+    try {
+      const result = await withCwd(workspace, () => runCliCapture([
+        'replay',
+        'backfill',
+        '--to-slot',
+        '123',
+        '--rpc',
+        'https://config.rpc',
+      ]));
 
-    const parsed = JSON.parse(result.stdout.trim()) as {
-      status: string;
-      command: string;
-      strictMode: boolean;
-      storeType: 'memory' | 'sqlite';
-    };
+      const parsed = JSON.parse(result.stdout.trim()) as {
+        status: string;
+        command: string;
+        strictMode: boolean;
+        storeType: 'memory' | 'sqlite';
+      };
 
-    expect(result.code).toBe(0);
-    expect(parsed.status).toBe('ok');
-    expect(parsed.command).toBe('replay.backfill');
-    expect(parsed.strictMode).toBe(true);
-    expect(parsed.storeType).toBe('memory');
-
-    rmSync(workspace, { recursive: true, force: true });
+      expect(result.code).toBe(0);
+      expect(parsed.status).toBe('ok');
+      expect(parsed.command).toBe('replay.backfill');
+      expect(parsed.strictMode).toBe(true);
+      expect(parsed.storeType).toBe('memory');
+    } finally {
+      restore();
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   it('resolves env and CLI precedence for runtime options', async () => {
     const workspace = createTempWorkspace();
-    writeJsonConfig(workspace, {
-      storeType: 'memory',
+    const configPath = writeGatewayConfig(workspace, {
+      gateway: { port: 3100 },
+      agent: { name: 'cli-test-agent' },
+      connection: { rpcUrl: 'https://file.rpc' },
+      replay: { store: { type: 'memory', sqlitePath: '/tmp/from-file.sqlite' }, traceId: 'file-trace' },
+      cli: {
+        strictMode: true,
+        idempotencyWindow: 111,
+        outputFormat: 'json',
+      },
     });
 
     const restore = cleanupEnv([
+      'AGENC_CONFIG',
+      'AGENC_RUNTIME_CONFIG',
       'AGENC_RUNTIME_STORE_TYPE',
       'AGENC_RUNTIME_RPC_URL',
+      'AGENC_RUNTIME_PROGRAM_ID',
+      'AGENC_RUNTIME_SQLITE_PATH',
+      'AGENC_RUNTIME_TRACE_ID',
       'AGENC_RUNTIME_STRICT_MODE',
       'AGENC_RUNTIME_IDEMPOTENCY_WINDOW',
     ]);
+    process.env.AGENC_CONFIG = configPath;
     process.env.AGENC_RUNTIME_STORE_TYPE = 'sqlite';
+    process.env.AGENC_RUNTIME_RPC_URL = 'https://env.rpc';
+    process.env.AGENC_RUNTIME_PROGRAM_ID = 'ENV111111111111111111111111111111111111111';
+    process.env.AGENC_RUNTIME_SQLITE_PATH = '/tmp/from-env.sqlite';
+    process.env.AGENC_RUNTIME_TRACE_ID = 'env-trace';
     process.env.AGENC_RUNTIME_STRICT_MODE = 'false';
     process.env.AGENC_RUNTIME_IDEMPOTENCY_WINDOW = '321';
-    delete process.env.AGENC_RUNTIME_RPC_URL;
 
-    stubReplayBackfill();
+    const replayStubs = stubReplayBackfill();
 
     try {
       const result = await withCwd(workspace, () => runCliCapture([
@@ -270,10 +310,88 @@ describe('runtime cli foundation', () => {
         command: string;
         strictMode: boolean;
         storeType: 'memory' | 'sqlite';
+        traceId: string;
+        idempotencyWindow: number;
       };
 
       expect(result.code).toBe(0);
       expect(parsed.strictMode).toBe(false);
+      expect(parsed.storeType).toBe('memory');
+      expect(parsed.traceId).toBe('env-trace');
+      expect(parsed.idempotencyWindow).toBe(321);
+      expect(replayStubs.createFetcherSpy).toHaveBeenCalledWith({
+        rpcUrl: 'https://cli.rpc',
+        programId: 'ENV111111111111111111111111111111111111111',
+      });
+      expect(replayStubs.createReplayStoreSpy).toHaveBeenCalledWith({
+        storeType: 'memory',
+        sqlitePath: '/tmp/from-env.sqlite',
+      });
+    } finally {
+      restore();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects legacy flat config when selected through AGENC_CONFIG', async () => {
+    const workspace = createTempWorkspace();
+    const configPath = writeLegacyJsonConfig(workspace, {
+      rpcUrl: 'https://legacy.rpc',
+      storeType: 'memory',
+    });
+    const restore = cleanupEnv(['AGENC_CONFIG', 'AGENC_RUNTIME_CONFIG']);
+    process.env.AGENC_CONFIG = configPath;
+
+    try {
+      const result = await withCwd(workspace, () =>
+        runCliCapture(['replay', 'backfill', '--to-slot', '12']),
+      );
+
+      const payload = JSON.parse(result.stderr.trim()) as {
+        status: string;
+        code: string;
+        message: string;
+      };
+
+      expect(result.code).toBe(2);
+      expect(payload.code).toBe('CONFIG_PARSE_ERROR');
+      expect(payload.message).toMatch(/canonical gateway config/i);
+    } finally {
+      restore();
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts legacy flat config through AGENC_RUNTIME_CONFIG compatibility input', async () => {
+    const workspace = createTempWorkspace();
+    const configPath = writeLegacyJsonConfig(workspace, {
+      rpcUrl: 'https://legacy.rpc',
+      storeType: 'memory',
+      strictMode: true,
+    });
+    const restore = cleanupEnv(['AGENC_CONFIG', 'AGENC_RUNTIME_CONFIG']);
+    process.env.AGENC_RUNTIME_CONFIG = configPath;
+    stubReplayBackfill();
+
+    try {
+      const result = await withCwd(workspace, () =>
+        runCliCapture([
+          'replay',
+          'backfill',
+          '--to-slot',
+          '12',
+          '--rpc',
+          'https://legacy.rpc',
+        ]),
+      );
+
+      const parsed = JSON.parse(result.stdout.trim()) as {
+        strictMode: boolean;
+        storeType: 'memory' | 'sqlite';
+      };
+
+      expect(result.code).toBe(0);
+      expect(parsed.strictMode).toBe(true);
       expect(parsed.storeType).toBe('memory');
     } finally {
       restore();
@@ -283,17 +401,22 @@ describe('runtime cli foundation', () => {
 
   it('returns a structured error when config file cannot be parsed', async () => {
     const workspace = createTempWorkspace();
-    const path = join(workspace, '.agenc-runtime.json');
+    const path = join(workspace, 'config.json');
     writeFileSync(path, '{invalid-json', 'utf8');
+    const restore = cleanupEnv(['AGENC_CONFIG', 'AGENC_RUNTIME_CONFIG']);
+    process.env.AGENC_CONFIG = path;
 
-    const result = await withCwd(workspace, () => runCliCapture(['replay', 'backfill', '--to-slot', '12']));
+    try {
+      const result = await withCwd(workspace, () => runCliCapture(['replay', 'backfill', '--to-slot', '12']));
 
-    const payload = JSON.parse(result.stderr.trim()) as { status: string; code: string; message: string };
+      const payload = JSON.parse(result.stderr.trim()) as { status: string; code: string; message: string };
 
-    expect(result.code).toBe(2);
-    expect(payload.status).toBe('error');
-    expect(payload.code).toBe('CONFIG_PARSE_ERROR');
-
-    rmSync(workspace, { recursive: true, force: true });
+      expect(result.code).toBe(2);
+      expect(payload.status).toBe('error');
+      expect(payload.code).toBe('CONFIG_PARSE_ERROR');
+    } finally {
+      restore();
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 });

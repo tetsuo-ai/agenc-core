@@ -7,8 +7,8 @@
  * @module
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import {
   getDefaultConfigPath,
@@ -20,7 +20,14 @@ import {
   getDefaultWorkspacePath,
 } from "../gateway/workspace-files.js";
 import type { GatewayConfig } from "../gateway/types.js";
+import {
+  applyManagedGatewayPatch,
+  buildManagedGatewayPatch,
+  writeJsonAtomically,
+} from "./config-contract.js";
+import { DEFAULT_SQLITE_REPLAY_PATH } from "./replay.js";
 import type {
+  CliFileConfig,
   CliRuntimeContext,
   CliStatusCode,
   WizardOptions,
@@ -58,6 +65,17 @@ export function generateDefaultConfig(
     logging: {
       level: "info",
     },
+    replay: {
+      store: {
+        type: "sqlite",
+        sqlitePath: DEFAULT_SQLITE_REPLAY_PATH,
+      },
+    },
+    cli: {
+      strictMode: false,
+      idempotencyWindow: 900,
+      outputFormat: "json",
+    },
   };
 
   if (!overrides) return base;
@@ -67,13 +85,82 @@ export function generateDefaultConfig(
     agent: { ...base.agent, ...overrides.agent },
     connection: { ...base.connection, ...overrides.connection },
     logging: { ...base.logging, ...overrides.logging },
+    replay:
+      overrides.replay || base.replay
+        ? {
+            ...(base.replay ?? {}),
+            ...(overrides.replay ?? {}),
+            store:
+              overrides.replay?.store || base.replay?.store
+                ? {
+                    ...(base.replay?.store ?? {}),
+                    ...(overrides.replay?.store ?? {}),
+                  }
+                : undefined,
+            tracing:
+              overrides.replay?.tracing || base.replay?.tracing
+                ? {
+                    ...(base.replay?.tracing ?? {}),
+                    ...(overrides.replay?.tracing ?? {}),
+                  }
+                : undefined,
+            backfill:
+              overrides.replay?.backfill || base.replay?.backfill
+                ? {
+                    ...(base.replay?.backfill ?? {}),
+                    ...(overrides.replay?.backfill ?? {}),
+                  }
+                : undefined,
+          }
+        : undefined,
+    cli:
+      overrides.cli || base.cli
+        ? {
+            ...(base.cli ?? {}),
+            ...(overrides.cli ?? {}),
+          }
+        : undefined,
   };
 
   if (overrides.llm) result.llm = overrides.llm;
   if (overrides.memory) result.memory = overrides.memory;
   if (overrides.channels) result.channels = overrides.channels;
+  if (overrides.plugins) result.plugins = overrides.plugins;
+  if (overrides.policy) result.policy = overrides.policy;
+  if (overrides.auth) result.auth = overrides.auth;
+  if (overrides.workspace) result.workspace = overrides.workspace;
+  if (overrides.desktop) result.desktop = overrides.desktop;
+  if (overrides.approvals) result.approvals = overrides.approvals;
+  if (overrides.marketplace) result.marketplace = overrides.marketplace;
+  if (overrides.social) result.social = overrides.social;
+  if (overrides.autonomy) result.autonomy = overrides.autonomy;
 
   return result;
+}
+
+function buildWizardManagedCliConfig(
+  options: WizardOptions,
+): Partial<CliFileConfig> {
+  const storeType = options.managedOverrides?.storeType ?? options.storeType;
+  const sqlitePath =
+    storeType === "sqlite"
+      ? (options.managedOverrides?.sqlitePath ??
+        options.sqlitePath ??
+        DEFAULT_SQLITE_REPLAY_PATH)
+      : undefined;
+
+  return {
+    rpcUrl: options.managedOverrides?.rpcUrl ?? options.rpcUrl,
+    programId: options.managedOverrides?.programId ?? options.programId,
+    storeType,
+    ...(sqlitePath ? { sqlitePath } : {}),
+    traceId: options.managedOverrides?.traceId ?? options.traceId,
+    strictMode: options.managedOverrides?.strictMode ?? options.strictMode,
+    idempotencyWindow:
+      options.managedOverrides?.idempotencyWindow ?? options.idempotencyWindow,
+    outputFormat: options.managedOverrides?.outputFormat,
+    logLevel: options.managedOverrides?.logLevel,
+  };
 }
 
 // ============================================================================
@@ -98,7 +185,10 @@ export async function runConfigInitCommand(
     return 0;
   }
 
-  const config = generateDefaultConfig();
+  const config = applyManagedGatewayPatch(
+    generateDefaultConfig(),
+    buildManagedGatewayPatch(buildWizardManagedCliConfig(options)),
+  );
 
   const validation = validateGatewayConfig(config);
   if (!validation.valid) {
@@ -112,8 +202,7 @@ export async function runConfigInitCommand(
 
   // Write config
   try {
-    mkdirSync(dirname(configPath), { recursive: true });
-    writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+    writeJsonAtomically(configPath, config);
   } catch (err) {
     context.error({
       status: "error",

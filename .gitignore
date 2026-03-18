@@ -21,6 +21,8 @@ build/
 bin/
 !runtime/src/bin/
 !runtime/src/bin/*.ts
+!packages/agenc/bin/
+!packages/agenc/bin/*.js
 obj/
 
 # IDEs

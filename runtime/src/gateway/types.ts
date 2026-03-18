@@ -268,8 +268,46 @@ export interface GatewayAgentConfig {
 
 export interface GatewayConnectionConfig {
   rpcUrl: string;
+  programId?: string;
   keypairPath?: string;
   endpoints?: string[];
+}
+
+export type GatewayCliOutputFormat = "json" | "jsonl" | "table";
+
+export interface GatewayCliConfig {
+  strictMode?: boolean;
+  idempotencyWindow?: number;
+  outputFormat?: GatewayCliOutputFormat;
+}
+
+export type GatewayReplayStoreType = "memory" | "sqlite";
+
+export interface GatewayReplayStoreConfig {
+  type?: GatewayReplayStoreType;
+  sqlitePath?: string;
+}
+
+export interface GatewayReplayBackfillConfig {
+  toSlot?: number;
+  pageSize?: number;
+}
+
+export interface GatewayReplayTracingConfig {
+  traceId?: string;
+  sampleRate?: number;
+  emitOtel?: boolean;
+}
+
+export interface GatewayReplayConfig {
+  enabled?: boolean;
+  store?: GatewayReplayStoreConfig;
+  tracing?: GatewayReplayTracingConfig;
+  projectionSeed?: number;
+  strictProjection?: boolean;
+  backfill?: GatewayReplayBackfillConfig;
+  traceLevel?: GatewayLoggingConfig["level"];
+  traceId?: string;
 }
 
 export interface GatewayLoggingConfig {
@@ -620,6 +658,8 @@ export interface GatewayConfig {
   gateway: GatewayBindConfig;
   agent: GatewayAgentConfig;
   connection: GatewayConnectionConfig;
+  cli?: GatewayCliConfig;
+  replay?: GatewayReplayConfig;
   workspace?: GatewayWorkspaceConfig;
   llm?: GatewayLLMConfig;
   memory?: GatewayMemoryConfig;

@@ -19,14 +19,18 @@ describe("health cli commands", () => {
   beforeEach(() => {
     workspace = mkdtempSync(join(tmpdir(), "agenc-health-"));
     keypairPath = join(workspace, "id.json");
-    configPath = join(workspace, ".agenc-runtime.json");
+    configPath = join(workspace, "config.json");
     writeFileSync(keypairPath, "[]", "utf8");
     writeConfig(configPath, {
-      rpcUrl: "http://rpc.example",
-      storeType: "memory",
-      outputFormat: "json",
-      strictMode: false,
-      idempotencyWindow: 900,
+      gateway: { port: 3100 },
+      agent: { name: "health-agent" },
+      connection: { rpcUrl: "http://rpc.example" },
+      replay: { store: { type: "memory" } },
+      cli: {
+        outputFormat: "json",
+        strictMode: false,
+        idempotencyWindow: 900,
+      },
     });
     process.env.SOLANA_KEYPAIR_PATH = keypairPath;
   });
@@ -52,6 +56,7 @@ describe("health cli commands", () => {
       traceId: undefined,
       idempotencyWindow: 900,
       configPath,
+      configPathSource: "explicit",
       nonInteractive: true,
       deep: false,
     };
@@ -82,6 +87,7 @@ describe("health cli commands", () => {
       traceId: undefined,
       idempotencyWindow: 900,
       configPath,
+      configPathSource: "explicit",
       nonInteractive: true,
       deep: false,
     };
@@ -113,6 +119,7 @@ describe("health cli commands", () => {
       traceId: undefined,
       idempotencyWindow: 900,
       configPath,
+      configPathSource: "explicit",
       nonInteractive: true,
       deep: false,
     };
@@ -143,6 +150,7 @@ describe("health cli commands", () => {
       traceId: undefined,
       idempotencyWindow: 900,
       configPath,
+      configPathSource: "explicit",
       nonInteractive: true,
       deep: true,
     };
@@ -172,6 +180,7 @@ describe("health cli commands", () => {
       traceId: undefined,
       idempotencyWindow: 900,
       configPath,
+      configPathSource: "explicit",
       nonInteractive: true,
       deep: false,
       fix: false,
@@ -203,6 +212,7 @@ describe("health cli commands", () => {
       traceId: undefined,
       idempotencyWindow: 900,
       configPath,
+      configPathSource: "explicit",
       nonInteractive: true,
       deep: false,
       fix: false,
@@ -232,6 +242,7 @@ describe("health cli commands", () => {
       traceId: undefined,
       idempotencyWindow: 900,
       configPath,
+      configPathSource: "explicit",
       nonInteractive: true,
       deep: false,
       fix: true,

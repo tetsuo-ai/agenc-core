@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { inspect } from "node:util";
@@ -37,7 +37,6 @@ import {
   RegistryVerifyOptions,
   RegistryImportOpenclawOptions,
 } from "./types.js";
-import { validateConfigStrict } from "../types/config-migration.js";
 import { runSecurityCommand } from "./security.js";
 import {
   runSkillListCommand,
@@ -74,8 +73,13 @@ import {
 import { runInitCommand } from "./init.js";
 import { runSessionsListCommand, runSessionsKillCommand } from "./sessions.js";
 import { runLogsCommand } from "./logs.js";
-import { getDefaultConfigPath } from "../gateway/config-watcher.js";
 import { getDefaultPidPath } from "../gateway/daemon.js";
+import {
+  discoverLegacyImportConfigPath,
+  getCanonicalDefaultConfigPath,
+  loadCliConfigContract,
+  resolveCliConfigPath,
+} from "./config-contract.js";
 import type {
   DaemonStartOptions,
   DaemonStopOptions,
@@ -207,7 +211,6 @@ const DEFAULT_IDEMPOTENCY_WINDOW = 900;
 const DEFAULT_OUTPUT_FORMAT: CliOutputFormat = "json";
 const DEFAULT_STORE_TYPE: "memory" | "sqlite" = "sqlite";
 const DEFAULT_LOG_LEVEL: CliLogLevel = "warn";
-const DEFAULT_CONFIG_PATH = ".agenc-runtime.json";
 
 const GLOBAL_OPTIONS = new Set([
   "help",
@@ -597,7 +600,7 @@ function buildHelp(): string {
     "      --sqlite-path <path>                  SQLite DB path (sqlite store)",
     "      --idempotency-window <seconds>        Default: 900",
     "      --log-level silent|error|warn|info|debug",
-    "      --config <path>                       Config file path (default: .agenc-runtime.json)",
+    "      --config <path>                       Config file path (default: ~/.agenc/config.json)",
     "",
     "onboard options:",
     "      --non-interactive                     Skip interactive prompts (CI-friendly)",
@@ -847,33 +850,6 @@ function normalizeCommandFlag(value: unknown): boolean {
   return false;
 }
 
-function parseCliConfig(value: Record<string, unknown>): CliFileConfig {
-  const storeType = normalizeStoreType(value.storeType ?? value.store_type);
-  const logLevel = normalizeLogLevel(
-    value.logLevel ?? value.log_level ?? value.verbose,
-  );
-  const outputFormat = normalizeOutputFormat(
-    value.outputFormat ?? value.output_format,
-  );
-  return {
-    rpcUrl: parseOptionalString(value.rpcUrl ?? value.rpc_url),
-    programId: parseOptionalString(value.programId ?? value.program_id),
-    storeType,
-    sqlitePath: parseOptionalString(value.sqlitePath ?? value.sqlite_path),
-    traceId: parseOptionalString(value.traceId ?? value.trace_id),
-    strictMode: normalizeBool(value.strictMode ?? value.strict_mode, false),
-    idempotencyWindow:
-      parseIntValue(value.idempotencyWindow ?? value.idempotency_window) ??
-      DEFAULT_IDEMPOTENCY_WINDOW,
-    outputFormat,
-    logLevel,
-  };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function readEnvironmentConfig(): CliFileConfig {
   return {
     rpcUrl: parseOptionalString(process.env.AGENC_RUNTIME_RPC_URL),
@@ -902,36 +878,62 @@ function readEnvironmentConfig(): CliFileConfig {
   };
 }
 
-function resolveConfigPath(rawFlags: ParsedArgv["flags"]): string {
-  const explicit = parseOptionalString(rawFlags.config);
-  const envPath = parseOptionalString(process.env.AGENC_RUNTIME_CONFIG);
-  return resolve(process.cwd(), explicit ?? envPath ?? DEFAULT_CONFIG_PATH);
+function readManagedOverrideConfig(rawFlags: ParsedArgv["flags"]): CliFileConfig {
+  const envConfig = readEnvironmentConfig();
+  return {
+    rpcUrl: parseOptionalString(rawFlags.rpc) ?? envConfig.rpcUrl,
+    programId: parseOptionalString(rawFlags["program-id"]) ?? envConfig.programId,
+    storeType:
+      rawFlags["store-type"] === undefined
+        ? envConfig.storeType
+        : normalizeStoreType(rawFlags["store-type"]),
+    sqlitePath:
+      parseOptionalString(rawFlags["sqlite-path"]) ?? envConfig.sqlitePath,
+    traceId: parseOptionalString(rawFlags["trace-id"]) ?? envConfig.traceId,
+    strictMode:
+      rawFlags["strict-mode"] === undefined
+        ? envConfig.strictMode
+        : normalizeBool(rawFlags["strict-mode"]),
+    idempotencyWindow:
+      parseIntValue(rawFlags["idempotency-window"]) ??
+      envConfig.idempotencyWindow,
+    outputFormat:
+      rawFlags.output === undefined && rawFlags["output-format"] === undefined
+        ? envConfig.outputFormat
+        : normalizeOutputFormat(
+            rawFlags.output ?? rawFlags["output-format"],
+          ),
+    logLevel:
+      rawFlags["log-level"] === undefined
+        ? envConfig.logLevel
+        : normalizeLogLevel(rawFlags["log-level"]),
+  };
 }
 
-function loadFileConfig(
-  configPath: string,
+function resolveLegacyCompatibleConfigSelection(
+  rawFlags: ParsedArgv["flags"],
+) {
+  return resolveCliConfigPath({
+    explicitConfigPath: parseOptionalString(rawFlags.config),
+    env: process.env,
+    cwd: process.cwd(),
+  });
+}
+
+function resolveGatewayConfigPath(rawFlags: ParsedArgv["flags"]): string {
+  const explicit = parseOptionalString(rawFlags.config);
+  const envPath = parseOptionalString(process.env.AGENC_CONFIG);
+  return resolve(process.cwd(), explicit ?? envPath ?? getCanonicalDefaultConfigPath());
+}
+
+function loadFileConfigFromSelection(
+  selection: ReturnType<typeof resolveLegacyCompatibleConfigSelection>,
   strictModeEnabled = false,
 ): CliFileConfig {
-  if (!existsSync(configPath)) {
-    return {};
-  }
-
-  const raw = readFileSync(configPath, "utf8");
-  const parsed = JSON.parse(raw) as unknown;
-
-  if (!isRecord(parsed)) {
-    return {};
-  }
-
-  const validation = validateConfigStrict(parsed, strictModeEnabled);
-  if (!validation.valid) {
-    throw createCliError(
-      `Config validation failed: ${validation.errors.map((e) => e.message).join("; ")}`,
-      ERROR_CODES.CONFIG_PARSE_ERROR,
-    );
-  }
-
-  return parseCliConfig(validation.migratedConfig);
+  return loadCliConfigContract(selection.configPath, {
+    strictModeEnabled,
+    configPathSource: selection.configPathSource,
+  }).fileConfig;
 }
 
 function normalizeOptionAliases(name: string): string {
@@ -1016,24 +1018,24 @@ function normalizeGlobalFlags(
     ),
     role: parseOperatorRole(flags.role),
     rpcUrl: parseOptionalString(
-      flags.rpc ?? fileConfig.rpcUrl ?? envConfig.rpcUrl,
+      flags.rpc ?? envConfig.rpcUrl ?? fileConfig.rpcUrl,
     ),
     programId: parseOptionalString(
-      flags["program-id"] ?? fileConfig.programId ?? envConfig.programId,
+      flags["program-id"] ?? envConfig.programId ?? fileConfig.programId,
     ),
     storeType: normalizeStoreType(
       flags["store-type"] ?? envConfig.storeType ?? fileConfig.storeType,
     ),
     sqlitePath: parseOptionalString(
-      flags["sqlite-path"] ?? fileConfig.sqlitePath ?? envConfig.sqlitePath,
+      flags["sqlite-path"] ?? envConfig.sqlitePath ?? fileConfig.sqlitePath,
     ),
     traceId: parseOptionalString(
-      flags["trace-id"] ?? fileConfig.traceId ?? envConfig.traceId,
+      flags["trace-id"] ?? envConfig.traceId ?? fileConfig.traceId,
     ),
     idempotencyWindow:
       parseIntValue(flags["idempotency-window"]) ??
-      fileConfig.idempotencyWindow ??
       envConfig.idempotencyWindow ??
+      fileConfig.idempotencyWindow ??
       DEFAULT_IDEMPOTENCY_WINDOW,
     help: normalizeCommandFlag(flags.h) || normalizeCommandFlag(flags.help),
     logLevel: normalizeLogLevel(
@@ -1529,13 +1531,13 @@ interface PluginParseReport {
 }
 
 function normalizeAndValidate(parsed: ParsedArgv): CliParseReport {
-  const configPath = resolveConfigPath(parsed.flags);
+  const configSelection = resolveLegacyCompatibleConfigSelection(parsed.flags);
   let fileConfig: CliFileConfig;
   try {
-    fileConfig = loadFileConfig(configPath);
+    fileConfig = loadFileConfigFromSelection(configSelection);
   } catch (error) {
     throw createCliError(
-      `failed to parse config file ${configPath}: ${error instanceof Error ? error.message : String(error)}`,
+      `failed to parse config file ${configSelection.configPath}: ${error instanceof Error ? error.message : String(error)}`,
       ERROR_CODES.CONFIG_PARSE_ERROR,
     );
   }
@@ -1639,13 +1641,13 @@ function normalizeAndValidate(parsed: ParsedArgv): CliParseReport {
 function normalizeAndValidatePluginCommand(
   parsed: ParsedArgv,
 ): PluginParseReport {
-  const configPath = resolveConfigPath(parsed.flags);
+  const configSelection = resolveLegacyCompatibleConfigSelection(parsed.flags);
   let fileConfig: CliFileConfig;
   try {
-    fileConfig = loadFileConfig(configPath);
+    fileConfig = loadFileConfigFromSelection(configSelection);
   } catch (error) {
     throw createCliError(
-      `failed to parse config file ${configPath}: ${error instanceof Error ? error.message : String(error)}`,
+      `failed to parse config file ${configSelection.configPath}: ${error instanceof Error ? error.message : String(error)}`,
       ERROR_CODES.CONFIG_PARSE_ERROR,
     );
   }
@@ -1758,13 +1760,13 @@ interface SkillParseReport {
 function normalizeAndValidateSkillCommand(
   parsed: ParsedArgv,
 ): SkillParseReport {
-  const configPath = resolveConfigPath(parsed.flags);
+  const configSelection = resolveLegacyCompatibleConfigSelection(parsed.flags);
   let fileConfig: CliFileConfig;
   try {
-    fileConfig = loadFileConfig(configPath);
+    fileConfig = loadFileConfigFromSelection(configSelection);
   } catch (error) {
     throw createCliError(
-      `failed to parse config file ${configPath}: ${error instanceof Error ? error.message : String(error)}`,
+      `failed to parse config file ${configSelection.configPath}: ${error instanceof Error ? error.message : String(error)}`,
       ERROR_CODES.CONFIG_PARSE_ERROR,
     );
   }
@@ -1965,9 +1967,11 @@ function normalizeAndValidateSkillCommand(
 
 type RoutedStatus = CliStatusCode | null;
 
-function loadLenientFileConfig(configPath: string): CliFileConfig {
+function loadLenientFileConfig(
+  selection: ReturnType<typeof resolveLegacyCompatibleConfigSelection>,
+): CliFileConfig {
   try {
-    return loadFileConfig(configPath);
+    return loadFileConfigFromSelection(selection);
   } catch {
     return {};
   }
@@ -1975,13 +1979,17 @@ function loadLenientFileConfig(configPath: string): CliFileConfig {
 
 function resolveLenientGlobalFlags(parsed: ParsedArgv): {
   configPath: string;
+  configPathSource: ReturnType<
+    typeof resolveLegacyCompatibleConfigSelection
+  >["configPathSource"];
   global: ReturnType<typeof normalizeGlobalFlags>;
 } {
-  const configPath = resolveConfigPath(parsed.flags);
-  const fileConfig = loadLenientFileConfig(configPath);
+  const configSelection = resolveLegacyCompatibleConfigSelection(parsed.flags);
+  const fileConfig = loadLenientFileConfig(configSelection);
   const envConfig = readEnvironmentConfig();
   return {
-    configPath,
+    configPath: configSelection.configPath,
+    configPathSource: configSelection.configPathSource,
     global: normalizeGlobalFlags(parsed.flags, fileConfig, envConfig),
   };
 }
@@ -2001,10 +2009,21 @@ async function dispatchBootstrapCommands(
 
       validateUnknownStandaloneOptions(parsed.flags, ONBOARD_COMMAND_OPTIONS);
 
-      const { configPath, global } = resolveLenientGlobalFlags(parsed);
+      const configPath = resolveGatewayConfigPath(parsed.flags);
+      const { global } = resolveLenientGlobalFlags(parsed);
       const onboardOpts: OnboardOptions = {
         ...global,
         configPath,
+        configPathSource: parseOptionalString(parsed.flags.config)
+          ? "explicit"
+          : parseOptionalString(process.env.AGENC_CONFIG)
+            ? "env:AGENC_CONFIG"
+            : "canonical",
+        legacyImportConfigPath:
+          parseOptionalString(process.env.AGENC_RUNTIME_CONFIG) ??
+          discoverLegacyImportConfigPath() ??
+          undefined,
+        managedOverrides: readManagedOverrideConfig(parsed.flags),
         nonInteractive: normalizeBool(parsed.flags["non-interactive"], false),
         force: normalizeBool(parsed.flags.force, false),
       };
@@ -2029,8 +2048,7 @@ async function dispatchBootstrapCommands(
         ...global,
         force: normalizeCommandFlag(parsed.flags.force),
         path: parseOptionalString(parsed.flags.path),
-        configPath:
-          parseOptionalString(parsed.flags.config) ?? getDefaultConfigPath(),
+        configPath: resolveGatewayConfigPath(parsed.flags),
         pidPath:
           parseOptionalString(parsed.flags["pid-path"]) ?? getDefaultPidPath(),
         controlPlanePort: parseIntValue(parsed.flags.port),
@@ -2052,10 +2070,12 @@ async function dispatchBootstrapCommands(
 
       validateUnknownStandaloneOptions(parsed.flags, HEALTH_COMMAND_OPTIONS);
 
-      const { configPath, global } = resolveLenientGlobalFlags(parsed);
+      const { configPath, configPathSource, global } =
+        resolveLenientGlobalFlags(parsed);
       const healthOpts: HealthOptions = {
         ...global,
         configPath,
+        configPathSource,
         nonInteractive: normalizeBool(parsed.flags["non-interactive"], false),
         deep: normalizeBool(parsed.flags.deep, false),
       };
@@ -2096,10 +2116,12 @@ async function dispatchBootstrapCommands(
 
       validateUnknownStandaloneOptions(parsed.flags, DOCTOR_COMMAND_OPTIONS);
 
-      const { configPath, global } = resolveLenientGlobalFlags(parsed);
+      const { configPath, configPathSource, global } =
+        resolveLenientGlobalFlags(parsed);
       const doctorOpts: DoctorOptions = {
         ...global,
         configPath,
+        configPathSource,
         nonInteractive: normalizeBool(parsed.flags["non-interactive"], false),
         deep: normalizeBool(parsed.flags.deep, false),
         fix: normalizeBool(parsed.flags.fix, false),
@@ -2121,10 +2143,7 @@ async function dispatchDaemonCommands(
   if (parsed.positional[0] === "start") {
     try {
       validateUnknownStandaloneOptions(parsed.flags, START_COMMAND_OPTIONS);
-      const configPath =
-        parseOptionalString(parsed.flags.config) ??
-        process.env.AGENC_CONFIG ??
-        getDefaultConfigPath();
+      const configPath = resolveGatewayConfigPath(parsed.flags);
       const pidPath =
         parseOptionalString(parsed.flags["pid-path"]) ?? getDefaultPidPath();
       const startOpts: DaemonStartOptions = {
@@ -2158,10 +2177,7 @@ async function dispatchDaemonCommands(
   if (parsed.positional[0] === "restart") {
     try {
       validateUnknownStandaloneOptions(parsed.flags, RESTART_COMMAND_OPTIONS);
-      const configPath =
-        parseOptionalString(parsed.flags.config) ??
-        process.env.AGENC_CONFIG ??
-        getDefaultConfigPath();
+      const configPath = resolveGatewayConfigPath(parsed.flags);
       const pidPath =
         parseOptionalString(parsed.flags["pid-path"]) ?? getDefaultPidPath();
       const startOpts: DaemonStartOptions = {
@@ -2233,17 +2249,15 @@ async function dispatchConfigCommands(
       );
     }
 
-    const configPath =
-      parseOptionalString(parsed.flags.config) ??
-      process.env.AGENC_CONFIG ??
-      getDefaultConfigPath();
-    const { global } = resolveLenientGlobalFlags(parsed);
+    const configPath = resolveGatewayConfigPath(parsed.flags);
+    const global = normalizeGlobalFlags(parsed.flags, {}, readEnvironmentConfig());
 
     if (subcommand === "init") {
       validateUnknownStandaloneOptions(parsed.flags, CONFIG_INIT_OPTIONS);
       const wizardOpts: WizardOptions = {
         ...global,
         configPath,
+        managedOverrides: readManagedOverrideConfig(parsed.flags),
         nonInteractive: normalizeBool(parsed.flags["non-interactive"], false),
         force: normalizeBool(parsed.flags.force, false),
       };
