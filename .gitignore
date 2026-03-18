@@ -1,0 +1,115 @@
+﻿# Rust
+target/
+**/*.rs.bk
+*.pdb
+
+# Anchor
+.anchor
+test-ledger/
+.DS_Store
+agenc_program_key
+nul
+ter
+
+# C build artifacts
+*.o
+*.a
+*.so
+*.exe
+*.out
+build/
+bin/
+!runtime/src/bin/
+!runtime/src/bin/*.ts
+obj/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Keys (CRITICAL - never commit private keys)
+*.json
+!.mcp.json
+!Anchor.toml
+!package.json
+!tsconfig.json
+!runtime/idl/*.json
+!runtime/src/replay/alert-schema-lockfile.json
+!runtime/benchmarks/v1/delegation-manifest.json
+!docs/api-baseline/*.json
+!docs/security/fender-medium-baseline.json
+!docs/security/fender-full-baseline.json
+!mcp/security-stack.mcp.json
+!scripts/idl/*.json
+!tests/fixtures/*.json
+!containers/desktop/seccomp.json
+!config/private-kernel-distribution.json
+!config/private-kernel-distribution.example.json
+!config/private-kernel-distribution.local.json
+id.json
+deploy/
+keys/
+
+# Testing
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+
+# Build artifacts (all packages)
+**/dist/
+!patches/**/dist/
+
+# Logs
+logs/
+
+# Local/generated root artifacts
+.codebase-index-cache.pkl
+*.pkl
+/ansi_girl.png
+
+# Stray root media (never commit at root)
+/image
+/image.jpg
+/img2
+/ansi2png.py
+
+# Stray C/binary artifacts in runtime
+runtime/snake*
+runtime/src/main.c
+runtime/src/ncurses.*
+runtime/CMakeLists.txt
+runtime/Makefile
+runtime/tests/test_*[^.]*
+runtime/tests/*.c
+runtime/tests/*.h
+runtime/TODO-*.md
+
+
+# Codex (local AI assistant config)
+.codex/
+CODEX.md
+codex.md
+
+# Cursor IDE
+.cursor/
+.cursorrules
+cursor.md
+CURSOR.md
+
+# Local tool artifacts
+.surfpool/
+.tmp/
+
+# Claude Code (local AI assistant config)
+.claude/
+CLAUDE.md
+claude.md
+AGENTS.md
+agents.md
