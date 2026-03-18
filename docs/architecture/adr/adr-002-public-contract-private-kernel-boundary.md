@@ -40,9 +40,14 @@ Private repos are limited to:
 
 ### Kernel Baseline
 
-The current `AgenC` repo is the frozen baseline for the future private `agenc-core`.
+Gate 11 used the original `AgenC` repo as the bootstrap baseline while the
+final topology was established. The implemented end state is:
 
-The kernel is kept together first. It is **not** exploded into many repos at the start of Gate 11.
+- `AgenC` remains the public umbrella repo
+- `agenc-core` is the canonical private engine repo
+
+The kernel stays together. It is **not** exploded into many repos as part of
+this boundary decision.
 
 Kernel ownership includes:
 
@@ -146,20 +151,22 @@ Explicitly out of scope:
 
 - runtime-side packages require a managed deprecation path rather than an instant visibility flip
 - `plugin-kit` must be built as a real product surface before runtime visibility is tightened
-- some docs and package metadata needed transitional handling during Gate 11; that public/private docs posture is now implemented and future cleanup belongs to Gate 12 convergence work
+- some docs and package metadata needed transitional handling during Gate 11 before the final Gate 12 convergence cutover
 - private prover extraction is phased: the first `agenc-prover` bootstrap moves only the `admin bootstrap slice`, while the verifier-localnet and benchmark proof-harness remains in `agenc-core` as a private operator/integration harness
 - Authority rule: the first `agenc-prover` bootstrap moves only the `admin bootstrap slice`; the proof-harness/localnet slice is intentionally retained in `agenc-core` and is not a pending shared released contract
 
 Implementation note:
 
-- As of `2026-03-17`, the repo manifests and public-entrypoint docs have been tightened to reflect this boundary: runtime-side packages are marked `private`, public docs route builders to SDK/protocol/plugin-kit, and CI now enforces that posture.
+- As of `2026-03-18`, the repo topology is fully converged to this boundary: `AgenC` is the public umbrella repo, `agenc-core` is the private engine owner, runtime-side packages are marked `private`, public docs route builders to SDK/protocol/plugin-kit, and CI enforces that posture.
 - The canonical private distribution and registry policy now lives in [PRIVATE_KERNEL_DISTRIBUTION.md](../../PRIVATE_KERNEL_DISTRIBUTION.md), and the canonical runtime-side deprecation/support-window policy now lives in [PRIVATE_KERNEL_SUPPORT_POLICY.md](../../PRIVATE_KERNEL_SUPPORT_POLICY.md). The repo also carries a checked-in staging contract in `config/private-kernel-distribution.json` plus `scripts/private-kernel-distribution.mjs` so internal publication can be validated from tarball-derived staged artifacts instead of source manifests.
 
-## Required Follow-On Work
+## Implementation Status
 
-1. Finish `agenc-protocol` consumer cutover so the public trust surface is actually authoritative.
-2. Build `agenc-plugin-kit` with a versioned host compatibility matrix and certification harness.
-3. Keep the verifier-localnet and benchmark proof-harness in `agenc-core` unless a future program explicitly creates a new shared released contract from scratch.
-4. Move private packages to a dedicated internal distribution path with validated auth for developers, CI, containers, and deployment.
-5. Add deprecation notices, support-window policy, and migration docs for already-public runtime-side packages.
-6. Rewrite public docs so builders are directed to SDK, protocol, and plugin-kit only.
+This ADR is implemented by the current topology:
+
+1. `agenc-protocol` is the canonical public trust-surface repo.
+2. `agenc-plugin-kit` is the canonical public extension ABI repo with a versioned host compatibility contract.
+3. `tools/proof-harness` remains in `agenc-core` as a private operator and integration harness unless a later ADR creates a new shared released contract.
+4. Private packages publish through the dedicated internal distribution path backed by Cloudsmith `agenc/private-kernel`.
+5. Runtime-side packages carry explicit support-window and migration policy in [PRIVATE_KERNEL_SUPPORT_POLICY.md](../../PRIVATE_KERNEL_SUPPORT_POLICY.md).
+6. Public docs route builders to SDK, protocol, and plugin-kit rather than runtime-side package identities.

@@ -16,10 +16,6 @@ This repository is the canonical owner of the private kernel:
 - `tools/localnet-social/`
 - `tools/proof-harness/`
 
-During the umbrella cutover, these surfaces may still exist as transitional
-mirrors in `tetsuo-ai/AgenC`, but `agenc-core` is the canonical owner once they
-have been bootstrapped and validated here.
-
 ### Public Builder Entry Points
 
 External builders should target:
