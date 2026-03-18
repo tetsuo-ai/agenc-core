@@ -27,6 +27,10 @@ import {
   type AgencCoordination,
 } from "./protocol-artifacts.ts";
 import {
+  resolveProtocolProgramBinaryPath,
+  resolveProtocolWorkspaceRoot,
+} from "./protocol-workspace.ts";
+import {
   BPF_LOADER_UPGRADEABLE_ID,
   resolveBs58Codec,
   seedLiteSVMClock,
@@ -54,17 +58,18 @@ export interface LiteSVMContext {
 export function createLiteSVMContext(opts?: {
   splTokens?: boolean;
 }): LiteSVMContext {
-  syncAgencProgramBinary(process.cwd());
+  const protocolWorkspaceRoot = resolveProtocolWorkspaceRoot();
+  syncAgencProgramBinary(protocolWorkspaceRoot);
 
   // Load the workspace, then ensure the compiled program binary is available at
   // the IDL-declared address so the client, PDA derivations, and on-chain
   // execution all target the same program id.
-  const svm = fromWorkspace(".");
+  const svm = fromWorkspace(protocolWorkspaceRoot);
   const idl = loadProtocolIdl() as {
     address: string;
   };
   const canonicalProgramId = new PublicKey(idl.address);
-  const soPath = path.resolve(process.cwd(), "target", "deploy", "agenc_coordination.so");
+  const soPath = resolveProtocolProgramBinaryPath();
   if (!svm.getAccount(canonicalProgramId) && fs.existsSync(soPath)) {
     svm.addProgramFromFile(canonicalProgramId, soPath);
   }

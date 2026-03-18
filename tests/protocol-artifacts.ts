@@ -1,17 +1,8 @@
 import { readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { AGENC_COORDINATION_IDL } from "@tetsuo-ai/protocol";
+import { resolveProtocolTargetIdlPath } from "./protocol-workspace.ts";
 
 export type { AgencCoordination } from "@tetsuo-ai/protocol";
-
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const LOCAL_TARGET_IDL_PATH = path.resolve(
-  REPO_ROOT,
-  "target",
-  "idl",
-  "agenc_coordination.json",
-);
 
 /**
  * Returns the canonical published protocol IDL by default.
@@ -31,13 +22,15 @@ export function loadProtocolIdl(options?: {
     return AGENC_COORDINATION_IDL;
   }
 
+  const localTargetIdlPath = resolveProtocolTargetIdlPath();
+
   try {
     return JSON.parse(
-      readFileSync(LOCAL_TARGET_IDL_PATH, "utf8"),
+      readFileSync(localTargetIdlPath, "utf8"),
     ) as typeof AGENC_COORDINATION_IDL;
   } catch (error) {
     throw new Error(
-      `AGENC_USE_LOCAL_PROTOCOL_TARGET=1 was set, but ${LOCAL_TARGET_IDL_PATH} is unavailable: ${
+      `AGENC_USE_LOCAL_PROTOCOL_TARGET=1 was set, but ${localTargetIdlPath} is unavailable: ${
         error instanceof Error ? error.message : String(error)
       }`,
     );

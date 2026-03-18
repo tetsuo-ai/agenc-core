@@ -113,3 +113,6 @@ CLAUDE.md
 claude.md
 AGENTS.md
 agents.md
+
+# Playwright outputs
+**/test-results/

@@ -17,11 +17,14 @@ import {
   SendTransactionError,
 } from '@solana/web3.js';
 import * as bs58Module from 'bs58';
-import { fileURLToPath } from 'node:url';
 import type { AgencCoordination } from '@tetsuo-ai/protocol';
 import { extendLiteSVMConnectionProxy } from '../../tests/litesvm-connection-proxy.ts';
 import { syncAgencProgramBinary } from '../../tests/litesvm-program-artifact.ts';
 import { loadProtocolIdl } from '../../tests/protocol-artifacts.ts';
+import {
+  resolveProtocolProgramBinaryPath,
+  resolveProtocolWorkspaceRoot,
+} from '../../tests/protocol-workspace.ts';
 import {
   BPF_LOADER_UPGRADEABLE_ID,
   resolveBs58Codec,
@@ -110,12 +113,10 @@ export function createRuntimeTestContext(): RuntimeTestContext {
   // Fix anchor-litesvm's sendWithErr bs58 crash that masks real errors
   patchSendAndConfirm();
 
-  syncAgencProgramBinary(
-    fileURLToPath(new URL('../..', import.meta.url))
-  );
+  const protocolWorkspaceRoot = resolveProtocolWorkspaceRoot();
+  syncAgencProgramBinary(protocolWorkspaceRoot);
 
-  // CWD is runtime/, Anchor.toml is in parent directory
-  const svm = fromWorkspace('..');
+  const svm = fromWorkspace(protocolWorkspaceRoot);
 
   // Set initial clock to a realistic timestamp
   seedLiteSVMClock(svm);
@@ -136,9 +137,7 @@ export function createRuntimeTestContext(): RuntimeTestContext {
   const idl = loadProtocolIdl();
   const canonicalProgramId = new PublicKey(idl.address);
   if (!svm.getAccount(canonicalProgramId)) {
-    const programBinaryPath = fileURLToPath(
-      new URL('../../target/deploy/agenc_coordination.so', import.meta.url)
-    );
+    const programBinaryPath = resolveProtocolProgramBinaryPath();
     svm.addProgramFromFile(canonicalProgramId, programBinaryPath);
   }
   const program = new Program<AgencCoordination>(idl as any, provider);

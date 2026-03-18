@@ -9,8 +9,16 @@ This repository is the canonical owner of the private kernel:
 - `docs-mcp/`
 - `contracts/desktop-tool-contracts/`
 - `containers/desktop/server/`
+- `web/`
+- `mobile/`
+- `demo-app/`
+- runtime-dependent internal examples
 - `tools/localnet-social/`
 - `tools/proof-harness/`
+
+During the umbrella cutover, these surfaces may still exist as transitional
+mirrors in `tetsuo-ai/AgenC`, but `agenc-core` is the canonical owner once they
+have been bootstrapped and validated here.
 
 ### Public Builder Entry Points
 
@@ -42,6 +50,10 @@ npm run build
 npm run typecheck
 npm run test
 npm run test:cross-repo-integration
+npm run build:product-surfaces
+npm run typecheck:product-surfaces
+npm run test:product-surfaces
+npm run typecheck:runtime-examples
 npm run check:private-kernel-surface
 npm run check:private-kernel-distribution
 npm run pack:smoke:skip-build
@@ -51,6 +63,14 @@ npm run pack:smoke:skip-build
 cross-repo contract tests are retained as `npm run test:cross-repo-integration`
 because they depend on a protocol workspace fixture rather than the standalone
 core package graph alone.
+
+Private product surfaces and runtime-dependent examples now have explicit
+non-default validation entrypoints so they can be brought into `agenc-core`
+without silently widening the kernel package build closure in one step.
+
+The internal runtime-dependent examples are validated via TypeScript-only
+workspace contracts rather than by executing their `tsx` entrypoints, because
+those entrypoints are designed to perform real network/runtime flows.
 
 ## Topology
 
