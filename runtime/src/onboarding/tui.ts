@@ -156,46 +156,35 @@ function humanizeBoolean(value: boolean): string {
 
 function resolveFrameInnerWidth(columns?: number): number {
   const safeColumns = columns ?? 100;
-  return Math.min(88, Math.max(10, safeColumns - 2));
+  return Math.min(88, Math.max(24, safeColumns));
 }
 
 export function buildFrameText(params: FrameRenderParams): string {
-  const innerWidth = resolveFrameInnerWidth(params.columns);
-  const bodyWidth = innerWidth - 4;
-  const header = centerText("AgenC Onboard", bodyWidth);
+  const lineWidth = resolveFrameInnerWidth(params.columns);
+  const header = centerText("AgenC Onboard", lineWidth);
   const progress = centerText(
     buildProgressBar(params.step, params.totalSteps),
-    bodyWidth,
+    lineWidth,
   );
   const subtitleLines = params.subtitle
-    ? wrapText(params.subtitle, bodyWidth)
+    ? wrapText(params.subtitle, lineWidth)
     : [];
-  const bodyLines = params.body.flatMap((line) => wrapText(line, bodyWidth));
-  const footerLine = params.footer ? padRight(params.footer, bodyWidth) : "";
+  const bodyLines = params.body.flatMap((line) => wrapText(line, lineWidth));
+  const footerLine = params.footer
+    ? padRight(params.footer, lineWidth)
+    : padRight("Enter continue  Esc back  Ctrl+C cancel", lineWidth);
+  const tone = params.statusTone ? COLOR[params.statusTone] : COLOR.ink;
   const lines = [
-    `${COLOR.border}+${"-".repeat(innerWidth - 2)}+${COLOR.reset}`,
-    `${COLOR.border}|${COLOR.reset}${COLOR.magenta}${COLOR.bold}${header}${COLOR.reset}${COLOR.border}|${COLOR.reset}`,
-    `${COLOR.border}|${COLOR.reset}${COLOR.fog}${progress}${COLOR.reset}${COLOR.border}|${COLOR.reset}`,
-    `${COLOR.border}|${" ".repeat(innerWidth - 2)}|${COLOR.reset}`,
-    ...subtitleLines.map(
-      (line) =>
-        `${COLOR.border}|${COLOR.reset}${COLOR.softInk}${padRight(line, bodyWidth)}${COLOR.reset}${COLOR.border}|${COLOR.reset}`,
-    ),
-    ...(subtitleLines.length > 0
-      ? [`${COLOR.border}|${" ".repeat(innerWidth - 2)}|${COLOR.reset}`]
-      : []),
-    `${COLOR.border}|${COLOR.reset}${COLOR.ink}${COLOR.bold}${padRight(params.title, bodyWidth)}${COLOR.reset}${COLOR.border}|${COLOR.reset}`,
-    `${COLOR.border}|${" ".repeat(innerWidth - 2)}|${COLOR.reset}`,
-    ...bodyLines.map((line) => {
-      const tone = params.statusTone ? COLOR[params.statusTone] : COLOR.ink;
-      return `${COLOR.border}|${COLOR.reset}${tone}${padRight(line, bodyWidth)}${COLOR.reset}${COLOR.border}|${COLOR.reset}`;
-    }),
-    `${COLOR.border}|${" ".repeat(innerWidth - 2)}|${COLOR.reset}`,
-    `${COLOR.border}|${COLOR.reset}${COLOR.fog}${padRight(
-      footerLine || "Enter continue  Esc back  Ctrl+C cancel",
-      bodyWidth,
-    )}${COLOR.reset}${COLOR.border}|${COLOR.reset}`,
-    `${COLOR.border}+${"-".repeat(innerWidth - 2)}+${COLOR.reset}`,
+    `${COLOR.magenta}${COLOR.bold}${header}${COLOR.reset}`,
+    `${COLOR.fog}${progress}${COLOR.reset}`,
+    "",
+    ...subtitleLines.map((line) => `${COLOR.softInk}${padRight(line, lineWidth)}${COLOR.reset}`),
+    ...(subtitleLines.length > 0 ? [""] : []),
+    `${COLOR.ink}${COLOR.bold}${padRight(params.title, lineWidth)}${COLOR.reset}`,
+    "",
+    ...bodyLines.map((line) => `${tone}${padRight(line, lineWidth)}${COLOR.reset}`),
+    "",
+    `${COLOR.fog}${footerLine}${COLOR.reset}`,
   ];
 
   return lines.join("\n");

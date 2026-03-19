@@ -62,7 +62,10 @@ describe("interactive onboarding gating", () => {
 
     expect(visibleLines.length).toBeGreaterThan(4);
     expect(visibleLines.every((line) => line.length <= 60)).toBe(true);
-    expect(visibleLines[0]).toMatch(/^\+-+\+$/u);
-    expect(visibleLines.at(-1)).toMatch(/^\+-+\+$/u);
+    expect(visibleLines.some((line) => line.includes("+---"))).toBe(false);
+    expect(visibleLines.some((line) => line.includes("|"))).toBe(false);
+    expect(visibleLines[0].trim()).toBe("AgenC Onboard");
+    expect(visibleLines[1].trim()).toBe("[#-----------------] 1/17");
+    expect(visibleLines.at(-1)?.trim()).toBe("Enter begin  Ctrl+C cancel");
   });
 });
