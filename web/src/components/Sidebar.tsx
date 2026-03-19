@@ -1,5 +1,6 @@
 import type { ViewId, ConnectionState } from '../types';
 import { ConnectionStatus } from './ConnectionStatus';
+import { assetUrl } from '../utils/assets';
 
 interface SidebarProps {
   currentView: ViewId;
@@ -46,8 +47,8 @@ export function Sidebar({
     <div className="w-20 h-full bg-tetsuo-50 border-r border-tetsuo-200 flex flex-col items-center py-4">
       {/* Brand Logo */}
       <div className="w-10 h-10 rounded-xl flex items-center justify-center mb-6">
-        <img src="/assets/agenc-logo.svg" alt="AgenC" className="w-8 h-8 dark:hidden" />
-        <img src="/assets/agenc-logo-white.svg" alt="AgenC" className="w-8 h-8 hidden dark:block" />
+        <img src={assetUrl('assets/agenc-logo.svg')} alt="AgenC" className="w-8 h-8 dark:hidden" />
+        <img src={assetUrl('assets/agenc-logo-white.svg')} alt="AgenC" className="w-8 h-8 hidden dark:block" />
       </div>
 
       {/* Nav Icons */}
@@ -206,4 +207,3 @@ function DesktopIcon() {
     </svg>
   );
 }
-

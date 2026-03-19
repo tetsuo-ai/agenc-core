@@ -33,9 +33,11 @@ The public runtime artifact channel is:
 Release flow:
 
 1. `agenc-core` CI builds the runtime artifact for the supported tuple.
-2. CI signs the manifest for that artifact.
-3. CI attaches the artifact to the corresponding GitHub Release.
-4. CI embeds the signed manifest, signature, public key, and trust policy into
+2. CI builds the dashboard bundle with base `/ui/` and syncs it into
+   `runtime/dist/dashboard/`.
+3. CI signs the manifest for that artifact.
+4. CI attaches the artifact to the corresponding GitHub Release.
+5. CI embeds the signed manifest, signature, public key, and trust policy into
    the published `agenc` wrapper package.
 
 Phase 2 keeps local smoke/rehearsal on `file://` manifests, but the production
@@ -69,8 +71,18 @@ It also maintains:
 - install metadata: `~/.agenc/runtime/install-state.json`
 
 The wrapper always launches the runtime through the stable `current` pointer so
-service templates, TUI handoff, and compatibility bins do not bind to a stale
-versioned path.
+service templates, TUI handoff, dashboard serving, and compatibility bins do
+not bind to a stale versioned path.
+
+Runtime packaging requirement:
+
+- each public runtime artifact must include the dashboard assets at
+  `runtime/dist/dashboard/`
+- `agenc ui` must work against that bundled dashboard without a separate web
+  checkout or build step on the user machine
+- the base runtime artifact must include the first-party Telegram connector
+  lifecycle surface so `agenc connector add telegram` does not require a second
+  package install after `npm install -g agenc`
 
 Release-gate requirement:
 

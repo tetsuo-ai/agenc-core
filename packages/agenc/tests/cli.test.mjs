@@ -82,6 +82,29 @@ test("runAgencWrapper forwards product commands to the installed agenc bin", asy
   ]);
 });
 
+test("runAgencWrapper help includes the dashboard entrypoint", async () => {
+  const stdout = createWritableCapture();
+
+  const code = await runAgencWrapper(
+    {
+      argv: ["--help"],
+      stdout: stdout.stream,
+      stderr: stdout.stream,
+    },
+    {
+      describeRuntimeInstall: async () => null,
+      ensureRuntimeInstalled: async () => null,
+      uninstallRuntime: async () => null,
+      spawnInstalledRuntimeBin: async () => {
+        throw new Error("should not be called");
+      },
+    },
+  );
+
+  assert.equal(code, 0);
+  assert.match(stdout.read(), /agenc ui/u);
+});
+
 test("runAgencWrapper uses force install semantics for runtime update", async () => {
   const calls = [];
   const code = await runAgencWrapper(

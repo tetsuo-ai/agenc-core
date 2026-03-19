@@ -18,6 +18,7 @@ function buildAgencHelp() {
     "",
     "Examples:",
     "  agenc onboard",
+    "  agenc ui",
     "  agenc start",
     "  agenc status",
     "  agenc logs",

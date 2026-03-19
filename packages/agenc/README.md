@@ -9,6 +9,7 @@ npm install -g agenc
 agenc onboard
 agenc start
 agenc
+agenc ui
 ```
 
 It does not expose the runtime source tree directly. Instead, it installs and
@@ -33,6 +34,41 @@ Production release channel:
 
 After the matching runtime artifact is installed, `agenc` can continue to run
 offline against the local install.
+
+`agenc` exposes two primary local operator surfaces against the same daemon:
+
+- `agenc` attaches the terminal operator console
+- `agenc ui` opens or prints the local dashboard URL on `/ui/`
+
+For automation or remote shells, use:
+
+```bash
+agenc ui --no-open
+```
+
+## First-party connector lifecycle
+
+The first V1 connector is Telegram. It is managed through the same daemon as the
+CLI and dashboard; there is no separate connector service to start.
+
+```bash
+agenc connector list
+agenc connector status telegram
+agenc connector add telegram --bot-token-env TELEGRAM_BOT_TOKEN
+agenc connector remove telegram
+```
+
+For non-interactive shells or secret managers, you can pipe the bot token on
+stdin instead:
+
+```bash
+printf '%s' "$TELEGRAM_BOT_TOKEN" | agenc connector add telegram --bot-token-stdin
+```
+
+Connector health and pending-restart state are exposed through both:
+
+- `agenc connector status telegram`
+- `agenc ui` on the dashboard status view
 
 ## Wrapper-local runtime management
 

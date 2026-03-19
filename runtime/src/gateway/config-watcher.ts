@@ -220,6 +220,90 @@ function validatePluginsSection(plugins: unknown, errors: string[]): void {
   }
 }
 
+function validateTelegramChannelConfig(
+  value: Record<string, unknown>,
+  path: string,
+  errors: string[],
+): void {
+  const enabled = value.enabled !== false;
+  if (enabled) {
+    if (
+      typeof value.botToken !== "string" ||
+      value.botToken.trim().length === 0
+    ) {
+      errors.push(`${path}.botToken must be a non-empty string when telegram is enabled`);
+    }
+  }
+
+  if (value.allowedUsers !== undefined) {
+    if (!Array.isArray(value.allowedUsers)) {
+      errors.push(`${path}.allowedUsers must be an array of Telegram user IDs`);
+    } else {
+      value.allowedUsers.forEach((entry, index) => {
+        if (!Number.isInteger(entry) || Number(entry) <= 0) {
+          errors.push(
+            `${path}.allowedUsers[${index}] must be a positive integer Telegram user ID`,
+          );
+        }
+      });
+    }
+  }
+
+  if (value.pollingIntervalMs !== undefined) {
+    requireIntRange(
+      value.pollingIntervalMs,
+      `${path}.pollingIntervalMs`,
+      1,
+      Number.MAX_SAFE_INTEGER,
+      errors,
+    );
+  }
+  if (value.maxAttachmentBytes !== undefined) {
+    requireIntRange(
+      value.maxAttachmentBytes,
+      `${path}.maxAttachmentBytes`,
+      1,
+      Number.MAX_SAFE_INTEGER,
+      errors,
+    );
+  }
+  if (value.rateLimitPerChat !== undefined) {
+    requireIntRange(
+      value.rateLimitPerChat,
+      `${path}.rateLimitPerChat`,
+      1,
+      Number.MAX_SAFE_INTEGER,
+      errors,
+    );
+  }
+
+  if (value.webhook !== undefined) {
+    if (!isRecord(value.webhook)) {
+      errors.push(`${path}.webhook must be an object when provided`);
+    } else {
+      if (
+        typeof value.webhook.url !== "string" ||
+        value.webhook.url.trim().length === 0
+      ) {
+        errors.push(`${path}.webhook.url must be a non-empty string`);
+      }
+      if (
+        value.webhook.path !== undefined &&
+        value.webhook.path !== "/update"
+      ) {
+        errors.push(`${path}.webhook.path must be omitted or exactly "/update"`);
+      }
+      if (
+        value.webhook.secretToken !== undefined &&
+        (typeof value.webhook.secretToken !== "string" ||
+          value.webhook.secretToken.trim().length === 0)
+      ) {
+        errors.push(`${path}.webhook.secretToken must be a non-empty string when provided`);
+      }
+    }
+  }
+}
+
 function validateChannelsSection(channels: unknown, errors: string[]): void {
   if (channels === undefined) return;
   if (!isRecord(channels)) {
@@ -269,6 +353,11 @@ function validateChannelsSection(channels: unknown, errors: string[]): void {
       ) {
         errors.push(`${path}.config must be an object when provided`);
       }
+      continue;
+    }
+
+    if (channelName === "telegram") {
+      validateTelegramChannelConfig(rawValue, path, errors);
     }
   }
 }

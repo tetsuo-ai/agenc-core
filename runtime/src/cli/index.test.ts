@@ -4,9 +4,27 @@ import { describe, expect, it, vi } from "vitest";
 const { runInitCommand } = vi.hoisted(() => ({
   runInitCommand: vi.fn(async () => 0),
 }));
+const {
+  runConnectorListCommand,
+  runConnectorStatusCommand,
+  runConnectorAddTelegramCommand,
+  runConnectorRemoveCommand,
+} = vi.hoisted(() => ({
+  runConnectorListCommand: vi.fn(async () => 0),
+  runConnectorStatusCommand: vi.fn(async () => 0),
+  runConnectorAddTelegramCommand: vi.fn(async () => 0),
+  runConnectorRemoveCommand: vi.fn(async () => 0),
+}));
 
 vi.mock("./init.js", () => ({
   runInitCommand,
+}));
+
+vi.mock("./connectors.js", () => ({
+  runConnectorListCommand,
+  runConnectorStatusCommand,
+  runConnectorAddTelegramCommand,
+  runConnectorRemoveCommand,
 }));
 
 import { runCli } from "./index.js";
@@ -78,6 +96,44 @@ describe("runtime root CLI", () => {
         pidPath: "/tmp/agenc.pid",
         controlPlanePort: 3222,
         configPath: "/tmp/agenc-config.json",
+      }),
+    );
+  });
+
+  it("routes connector lifecycle flags through the root CLI command surface", async () => {
+    const stdout = captureStream();
+    const stderr = captureStream();
+
+    const code = await runCli({
+      argv: [
+        "connector",
+        "add",
+        "telegram",
+        "--config",
+        "/tmp/agenc-config.json",
+        "--pid-path",
+        "/tmp/agenc.pid",
+        "--bot-token-env",
+        "TELEGRAM_BOT_TOKEN",
+        "--restart",
+        "false",
+        "--allowed-users",
+        "123,456",
+      ],
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+    });
+
+    expect(code).toBe(0);
+    expect(stderr.data()).toBe("");
+    expect(runConnectorAddTelegramCommand).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        configPath: "/tmp/agenc-config.json",
+        pidPath: "/tmp/agenc.pid",
+        botTokenEnv: "TELEGRAM_BOT_TOKEN",
+        restart: false,
+        allowedUsers: [123, 456],
       }),
     );
   });

@@ -31,6 +31,7 @@ import {
 } from "./errors.js";
 import { verifyToken } from "./jwt.js";
 import { WebhookRouteRegistry, type WebhookRoute } from "./webhooks.js";
+import { resolveDashboardHttpResponse } from "./dashboard-assets.js";
 import {
   ConfigWatcher,
   diffGatewayConfig,
@@ -215,6 +216,13 @@ export class Gateway {
       state: snapshot.state ?? baseSnapshot.state,
       uptimeMs: snapshot.uptimeMs ?? baseSnapshot.uptimeMs,
       channels: [...(snapshot.channels ?? baseSnapshot.channels)],
+      ...(snapshot.channelStatuses
+        ? {
+            channelStatuses: snapshot.channelStatuses.map((entry) => ({
+              ...entry,
+            })),
+          }
+        : {}),
       activeSessions: snapshot.activeSessions ?? baseSnapshot.activeSessions,
       controlPlanePort:
         snapshot.controlPlanePort ?? baseSnapshot.controlPlanePort,
@@ -367,6 +375,18 @@ export class Gateway {
       request.url ?? "/",
       `http://${request.headers.host ?? "127.0.0.1"}`,
     );
+    const dashboardResponse = await resolveDashboardHttpResponse(
+      requestUrl.pathname,
+    );
+    if (dashboardResponse) {
+      this.sendHttpResponse(
+        response,
+        dashboardResponse.status,
+        dashboardResponse.body,
+        dashboardResponse.headers,
+      );
+      return;
+    }
     const match = this.webhookRoutes.match(method, requestUrl.pathname);
     if (!match) {
       response.statusCode = 404;

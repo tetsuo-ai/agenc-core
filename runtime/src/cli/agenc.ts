@@ -5,6 +5,7 @@ import {
   type OperatorConsoleDeps,
   type OperatorConsoleOptions,
 } from "./operator-console.js";
+import { runUiCommand, resolveOpenPreference, type UiCommandDeps } from "./ui.js";
 import type { CliStatusCode } from "./types.js";
 
 export interface AgencRunOptions {
@@ -21,11 +22,16 @@ interface AgencDeps {
     options?: OperatorConsoleOptions,
     deps?: OperatorConsoleDeps,
   ) => Promise<CliStatusCode>;
+  readonly runUiCommand: (
+    options?: Parameters<typeof runUiCommand>[0],
+    deps?: UiCommandDeps,
+  ) => Promise<CliStatusCode>;
 }
 
 const DEFAULT_DEPS: AgencDeps = {
   runCli,
   runOperatorConsole,
+  runUiCommand,
 };
 
 function buildHelp(): string {
@@ -49,6 +55,8 @@ function buildHelp(): string {
     "  agenc",
     "  agenc --config ~/.agenc/config.json",
     "  agenc console --yolo",
+    "  agenc ui",
+    "  agenc ui --no-open",
     "  agenc init",
     "  agenc status",
     "  agenc start --foreground",
@@ -100,6 +108,24 @@ function buildOperatorConsoleOptions(
   };
 }
 
+function buildUiOptions(
+  argv: AgencRunOptions["argv"],
+  options: AgencRunOptions,
+): Parameters<typeof runUiCommand>[0] {
+  const parsed = parseArgv(argv ?? []);
+  return {
+    configPath: parseOptionalString(parsed.flags.config),
+    pidPath: parseOptionalString(parsed.flags["pid-path"]),
+    logLevel: parseOptionalString(parsed.flags["log-level"]),
+    yolo: parseOptionalBool(parsed.flags.yolo),
+    open: resolveOpenPreference(parsed.flags),
+    cwd: options.cwd,
+    env: options.env,
+    stdout: options.stdout,
+    stderr: options.stderr,
+  };
+}
+
 function writeLine(stream: Writable, value: string): void {
   stream.write(`${value}\n`);
 }
@@ -115,7 +141,12 @@ export async function runAgencCli(
   const command = parsed.positional[0];
   const helpRequested = parsed.flags.help === true || parsed.flags.h === true;
 
-  if (command === undefined || command === "console" || command === "help") {
+  if (
+    command === undefined ||
+    command === "console" ||
+    command === "ui" ||
+    command === "help"
+  ) {
     if (helpRequested || command === "help") {
       writeLine(stdout, buildHelp());
       return 0;
@@ -124,6 +155,15 @@ export async function runAgencCli(
     if (command === "console" && parsed.positional.length > 1) {
       writeLine(stderr, "agenc console does not accept positional arguments");
       return 2;
+    }
+
+    if (command === "ui" && parsed.positional.length > 1) {
+      writeLine(stderr, "agenc ui does not accept positional arguments");
+      return 2;
+    }
+
+    if (command === "ui") {
+      return deps.runUiCommand(buildUiOptions(argv, options));
     }
 
     return deps.runOperatorConsole(buildOperatorConsoleOptions(argv, options));

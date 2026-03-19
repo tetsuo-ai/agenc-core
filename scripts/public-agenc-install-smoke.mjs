@@ -6,6 +6,7 @@ import { generateKeyPairSync } from "node:crypto";
 import {
   copyFile,
   lstat,
+  mkdir,
   mkdtemp,
   readFile,
   readlink,
@@ -80,6 +81,33 @@ function buildRuntimeArtifacts(repoRootPath, artifactDir, runtimeVersion, privat
   );
 }
 
+async function writeCanonicalConfig(homeDir) {
+  const operatorHome = path.join(homeDir, ".agenc");
+  const configPath = path.join(operatorHome, "config.json");
+  await mkdir(operatorHome, { recursive: true });
+  await writeFile(
+    configPath,
+    `${JSON.stringify(
+      {
+        gateway: {
+          port: 4310,
+          bind: "127.0.0.1",
+        },
+        agent: {
+          name: "public-install-smoke",
+        },
+        connection: {
+          rpcUrl: "http://127.0.0.1:8899",
+        },
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+  return configPath;
+}
+
 async function packPreparedWrapper(repoRootPath, artifactDir, tempRoot, label) {
   run(
     "node",
@@ -134,6 +162,18 @@ async function main() {
     if (!options.skipBuild) {
       process.stdout.write("[public-install-smoke] building runtime\n");
       run("npm", ["run", "build", "--workspace=@tetsuo-ai/runtime"], repoRoot);
+      process.stdout.write("[public-install-smoke] building dashboard\n");
+      run(
+        "npm",
+        ["run", "build", "--workspace=@tetsuo-ai/web"],
+        repoRoot,
+        {
+          ...process.env,
+          AGENC_DASHBOARD_BASE: "/ui/",
+        },
+      );
+      process.stdout.write("[public-install-smoke] syncing dashboard assets\n");
+      run("node", ["scripts/sync-dashboard-assets.mjs"], repoRoot);
     }
 
     const privateKeyPath = await createSigningKeyFile(tempRoot);
@@ -157,6 +197,7 @@ async function main() {
 
     process.stdout.write("[public-install-smoke] installing wrapper globally into temp prefix\n");
     installWrapperTarball(repoRoot, prefixDir, homeDir, wrapperTarballV1);
+    await writeCanonicalConfig(homeDir);
 
     const binDir = path.join(prefixDir, "bin");
     const agencBin = path.join(binDir, "agenc");
@@ -191,6 +232,25 @@ async function main() {
     assert.equal(statusPayload.status, "ok");
     assert.equal(statusPayload.command, "status");
     assert.equal(statusPayload.running, false);
+
+    const dashboardUrl = run(
+      agencBin,
+      ["ui", "--no-open"],
+      repoRoot,
+      execEnv,
+    ).trim();
+    assert.match(dashboardUrl, /^http:\/\/127\.0\.0\.1:\d+\/ui\/$/u);
+    const dashboardResponse = await fetch(dashboardUrl);
+    assert.equal(dashboardResponse.status, 200);
+    assert.match(await dashboardResponse.text(), /dashboard|<html/i);
+
+    const runningStatusPayload = runJson(agencBin, ["status"], repoRoot, execEnv);
+    assert.equal(runningStatusPayload.status, "ok");
+    assert.equal(runningStatusPayload.command, "status");
+    assert.equal(runningStatusPayload.running, true);
+    run(agencBin, ["stop"], repoRoot, execEnv);
+    const stoppedStatusPayload = runJson(agencBin, ["status"], repoRoot, execEnv);
+    assert.equal(stoppedStatusPayload.running, false);
 
     const installStatePath = path.join(homeDir, ".agenc", "runtime", "install-state.json");
     const installStateV1 = JSON.parse(await readFile(installStatePath, "utf8"));

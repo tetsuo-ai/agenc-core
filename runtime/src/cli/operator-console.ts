@@ -27,7 +27,7 @@ export interface OperatorConsoleOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-interface GatewayPidInfo {
+export interface GatewayPidInfo {
   readonly pid: number;
   readonly port: number;
   readonly configPath: string;
@@ -74,6 +74,16 @@ export interface OperatorConsoleDeps {
   readonly env: NodeJS.ProcessEnv;
   readonly createLogger: typeof createLogger;
 }
+
+export type DaemonEnsureDeps = Pick<
+  OperatorConsoleDeps,
+  | "loadGatewayConfig"
+  | "readPidFile"
+  | "isProcessAlive"
+  | "runStartCommand"
+  | "findDaemonProcessesByIdentity"
+  | "createLogger"
+>;
 
 const DEFAULT_DEPS: OperatorConsoleDeps = {
   defaultConfigPath: getDefaultConfigPath,
@@ -162,10 +172,10 @@ function createSilentContext(logger: CliLogger): {
   };
 }
 
-async function ensureDaemon(
+export async function ensureDaemon(
   options: Required<Pick<OperatorConsoleOptions, "configPath" | "pidPath">> &
     Pick<OperatorConsoleOptions, "logLevel" | "yolo">,
-  deps: OperatorConsoleDeps,
+  deps: DaemonEnsureDeps,
 ): Promise<GatewayPidInfo> {
   const configPath = resolve(options.configPath);
   const pidPath = resolve(options.pidPath);

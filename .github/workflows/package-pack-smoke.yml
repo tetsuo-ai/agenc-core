@@ -16,6 +16,7 @@ on:
       - 'scripts/build-public-runtime-artifacts.mjs'
       - 'scripts/prepare-public-agenc-package.mjs'
       - 'scripts/public-agenc-install-smoke.mjs'
+      - 'scripts/sync-dashboard-assets.mjs'
       - 'scripts/check-private-kernel-surface.mjs'
       - 'test-fixtures/plugin-kit-channel-adapter/**'
       - 'contracts/desktop-tool-contracts/**'
@@ -25,6 +26,7 @@ on:
       - 'mcp/README.md'
       - 'docs-mcp/**'
       - 'docs-mcp/README.md'
+      - 'web/**'
       - 'docs/PLUGIN_KIT.md'
       - 'docs/VERSION_DOCS_MAP.md'
   push:
@@ -41,6 +43,7 @@ on:
       - 'scripts/build-public-runtime-artifacts.mjs'
       - 'scripts/prepare-public-agenc-package.mjs'
       - 'scripts/public-agenc-install-smoke.mjs'
+      - 'scripts/sync-dashboard-assets.mjs'
       - 'scripts/check-private-kernel-surface.mjs'
       - 'test-fixtures/plugin-kit-channel-adapter/**'
       - 'contracts/desktop-tool-contracts/**'
@@ -50,6 +53,7 @@ on:
       - 'mcp/README.md'
       - 'docs-mcp/**'
       - 'docs-mcp/README.md'
+      - 'web/**'
       - 'docs/PLUGIN_KIT.md'
       - 'docs/VERSION_DOCS_MAP.md'
 
@@ -72,6 +76,12 @@ jobs:
 
       - name: Build private-kernel packages
         run: npm run build:private-kernel
+
+      - name: Build dashboard surface
+        run: AGENC_DASHBOARD_BASE=/ui/ npm run build --workspace=@tetsuo-ai/web
+
+      - name: Sync dashboard assets
+        run: npm run sync:dashboard-assets
 
       - name: Check private-kernel surface
         run: npm run check:private-kernel-surface
@@ -100,6 +110,25 @@ jobs:
 
       - name: Build private-kernel packages
         run: npm run build:private-kernel
+
+      - name: Setup Node for dashboard build
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Refresh dependencies for dashboard build
+        run: npm install --no-fund
+
+      - name: Build dashboard surface
+        run: AGENC_DASHBOARD_BASE=/ui/ npm run build --workspace=@tetsuo-ai/web
+
+      - name: Sync dashboard assets
+        run: npm run sync:dashboard-assets
+
+      - name: Restore minimum-supported Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
 
       - name: Run minimum-supported Node public agenc install smoke test
         run: npm run smoke:public-agenc-install -- --skip-build

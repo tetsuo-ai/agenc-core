@@ -88,7 +88,12 @@ export type {
   BackgroundRunOperatorErrorPayload,
   BackgroundRunOperatorSummary,
 } from "./gateway/background-run-operator.js";
-export type { GatewayBackgroundRunStatus } from "./gateway/types.js";
+export type {
+  GatewayBackgroundRunStatus,
+  GatewayChannelStatus,
+  GatewayChannelHealth,
+  GatewayChannelMode,
+} from "./gateway/types.js";
 export type {
   ObservabilityArtifactResponse,
   ObservabilityEventRecord,

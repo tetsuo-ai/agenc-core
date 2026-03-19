@@ -79,4 +79,33 @@ describe('AgentStatusView', () => {
     expect(screen.getByText('[OPERATOR READY]')).toBeTruthy();
     expect(screen.getByText('READY')).toBeTruthy();
   });
+
+  it('shows connector restart state from channelStatuses', () => {
+    render(
+      <AgentStatusView
+        status={makeStatus({
+          channels: [],
+          channelStatuses: [
+            {
+              name: 'telegram',
+              configured: true,
+              enabled: true,
+              active: false,
+              health: 'unknown',
+              mode: 'polling',
+              pendingRestart: true,
+              summary: 'Config changed on disk; restart the daemon to apply connector changes.',
+            },
+          ],
+        })}
+        onRefresh={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('telegram')).toBeTruthy();
+    expect(screen.getByText('[RESTART]')).toBeTruthy();
+    expect(
+      screen.getByText('Config changed on disk; restart the daemon to apply connector changes.'),
+    ).toBeTruthy();
+  });
 });

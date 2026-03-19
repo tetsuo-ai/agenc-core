@@ -1,4 +1,4 @@
-import type { GatewayStatus } from '../../types';
+import type { GatewayChannelStatus, GatewayStatus } from '../../types';
 import { StatCard } from './StatCard';
 
 interface AgentStatusViewProps {
@@ -73,6 +73,19 @@ function formatStateTag(state: string): string {
 
 export function AgentStatusView({ status, onRefresh }: AgentStatusViewProps) {
   const titleLabel = 'AGENT STATUS';
+  const channelStatuses = status?.channelStatuses ?? [];
+  const renderedChannels: readonly GatewayChannelStatus[] = channelStatuses.length > 0
+    ? channelStatuses
+    : status
+      ? status.channels.map((channel) => ({
+          name: channel,
+          configured: true,
+          enabled: true,
+          active: true,
+          health: 'healthy' as const,
+          pendingRestart: false,
+        }))
+      : [];
 
   if (!status) {
     return (
@@ -151,7 +164,7 @@ export function AgentStatusView({ status, onRefresh }: AgentStatusViewProps) {
                   <span>{status.agentName ?? 'agenc-agent'}</span>
                 </div>
                 <div className="mt-2 text-xs text-bbs-gray leading-relaxed">
-                  control plane :{status.controlPlanePort} &nbsp;•&nbsp; {status.activeSessions} active session(s) &nbsp;•&nbsp; {status.channels.length} channel(s)
+                  control plane :{status.controlPlanePort} &nbsp;•&nbsp; {status.activeSessions} active session(s) &nbsp;•&nbsp; {renderedChannels.length} connector(s)
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
@@ -169,7 +182,7 @@ export function AgentStatusView({ status, onRefresh }: AgentStatusViewProps) {
                 </div>
                 <div>
                   <div className="text-bbs-gray uppercase tracking-[0.14em]">Channels</div>
-                  <div className="mt-1 text-bbs-lightgray">{status.channels.length}</div>
+                  <div className="mt-1 text-bbs-lightgray">{renderedChannels.length}</div>
                 </div>
               </div>
             </div>
@@ -231,19 +244,44 @@ export function AgentStatusView({ status, onRefresh }: AgentStatusViewProps) {
                 {status.channels.length > 0 ? `[${status.channels.length} ONLINE]` : '[NONE]'}
               </div>
             </div>
-            {status.channels.length === 0 ? (
+            {renderedChannels.length === 0 ? (
               <div className="px-4 py-6 text-xs text-bbs-gray">no channels connected</div>
             ) : (
               <div className="divide-y divide-bbs-border/60">
-                {status.channels.map((channel, index) => (
+                {renderedChannels.map((channel, index) => (
                   <div
-                    key={channel}
+                    key={channel.name}
                     className="flex items-center gap-3 px-4 py-3 text-xs animate-list-item"
                     style={{ animationDelay: `${index * 50}ms` }}
                   >
-                    <span className="text-bbs-green">&gt;</span>
-                    <span className="text-bbs-lightgray break-all">{channel}</span>
-                    <span className="ml-auto text-bbs-green">[ONLINE]</span>
+                    <span className={channel.active ? 'text-bbs-green' : channel.pendingRestart ? 'text-bbs-yellow' : 'text-bbs-gray'}>&gt;</span>
+                    <div className="min-w-0">
+                      <div className="text-bbs-lightgray break-all">{channel.name}</div>
+                      {channel.summary ? (
+                        <div className="mt-1 text-[11px] text-bbs-gray break-all">{channel.summary}</div>
+                      ) : null}
+                    </div>
+                    <span className={`ml-auto ${
+                      channel.active
+                        ? channel.health === 'unhealthy'
+                          ? 'text-bbs-red'
+                          : 'text-bbs-green'
+                        : channel.pendingRestart
+                          ? 'text-bbs-yellow'
+                          : channel.enabled
+                            ? 'text-bbs-gray'
+                            : 'text-bbs-gray'
+                    }`}>
+                      {channel.active
+                        ? channel.health === 'unhealthy'
+                          ? '[UNHEALTHY]'
+                          : '[ONLINE]'
+                        : channel.pendingRestart
+                          ? '[RESTART]'
+                          : channel.enabled
+                            ? '[CONFIGURED]'
+                            : '[DISABLED]'}
+                    </span>
                   </div>
                 ))}
               </div>

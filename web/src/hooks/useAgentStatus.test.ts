@@ -26,6 +26,18 @@ describe('useAgentStatus', () => {
           state: 'running',
           uptimeMs: 1000,
           channels: ['chat'],
+          channelStatuses: [
+            {
+              name: 'telegram',
+              configured: true,
+              enabled: true,
+              active: false,
+              health: 'unknown',
+              mode: 'polling',
+              pendingRestart: true,
+              summary: 'Config changed on disk; restart the daemon to apply connector changes.',
+            },
+          ],
           activeSessions: 2,
           controlPlanePort: 4000,
           agentName: 'alpha',
@@ -64,6 +76,8 @@ describe('useAgentStatus', () => {
 
     expect(result.current.status?.state).toBe('running');
     expect(result.current.status?.agentName).toBe('alpha');
+    expect(result.current.status?.channelStatuses?.[0]?.name).toBe('telegram');
+    expect(result.current.status?.channelStatuses?.[0]?.pendingRestart).toBe(true);
     expect(result.current.status?.backgroundRuns?.multiAgentEnabled).toBe(true);
     expect(result.current.status?.backgroundRuns?.activeTotal).toBe(1);
   });

@@ -19,6 +19,7 @@ function captureStream(): { stream: Writable; data: () => string } {
 describe("agenc launcher CLI", () => {
   it("launches the operator console by default", async () => {
     const runOperatorConsole = vi.fn().mockResolvedValue(0);
+    const runUiCommand = vi.fn().mockResolvedValue(0);
     const runCli = vi.fn().mockResolvedValue(1);
 
     const code = await runAgencCli(
@@ -27,6 +28,7 @@ describe("agenc launcher CLI", () => {
       },
       {
         runOperatorConsole,
+        runUiCommand,
         runCli,
       },
     );
@@ -41,10 +43,12 @@ describe("agenc launcher CLI", () => {
       env: undefined,
     });
     expect(runCli).not.toHaveBeenCalled();
+    expect(runUiCommand).not.toHaveBeenCalled();
   });
 
   it("passes console flags through to the operator console launcher", async () => {
     const runOperatorConsole = vi.fn().mockResolvedValue(0);
+    const runUiCommand = vi.fn().mockResolvedValue(0);
     const runCli = vi.fn().mockResolvedValue(1);
 
     await runAgencCli(
@@ -65,6 +69,7 @@ describe("agenc launcher CLI", () => {
       },
       {
         runOperatorConsole,
+        runUiCommand,
         runCli,
       },
     );
@@ -80,10 +85,50 @@ describe("agenc launcher CLI", () => {
       },
     });
     expect(runCli).not.toHaveBeenCalled();
+    expect(runUiCommand).not.toHaveBeenCalled();
+  });
+
+  it("routes agenc ui to the dashboard launcher with no-open support", async () => {
+    const runOperatorConsole = vi.fn().mockResolvedValue(0);
+    const runUiCommand = vi.fn().mockResolvedValue(0);
+    const runCli = vi.fn().mockResolvedValue(1);
+    const stdout = captureStream();
+    const stderr = captureStream();
+
+    const code = await runAgencCli(
+      {
+        argv: ["ui", "--config", "/tmp/agenc.json", "--no-open"],
+        stdout: stdout.stream,
+        stderr: stderr.stream,
+        cwd: "/workspace/demo",
+        env: { DEMO: "1" },
+      },
+      {
+        runOperatorConsole,
+        runUiCommand,
+        runCli,
+      },
+    );
+
+    expect(code).toBe(0);
+    expect(runUiCommand).toHaveBeenCalledWith({
+      configPath: "/tmp/agenc.json",
+      pidPath: undefined,
+      logLevel: undefined,
+      yolo: undefined,
+      open: false,
+      cwd: "/workspace/demo",
+      env: { DEMO: "1" },
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+    });
+    expect(runOperatorConsole).not.toHaveBeenCalled();
+    expect(runCli).not.toHaveBeenCalled();
   });
 
   it("forwards explicit runtime subcommands to agenc-runtime", async () => {
     const runOperatorConsole = vi.fn().mockResolvedValue(0);
+    const runUiCommand = vi.fn().mockResolvedValue(0);
     const runCli = vi.fn().mockResolvedValue(0);
     const stdout = captureStream();
     const stderr = captureStream();
@@ -96,6 +141,7 @@ describe("agenc launcher CLI", () => {
       },
       {
         runOperatorConsole,
+        runUiCommand,
         runCli,
       },
     );
@@ -107,10 +153,12 @@ describe("agenc launcher CLI", () => {
       stderr: stderr.stream,
     });
     expect(runOperatorConsole).not.toHaveBeenCalled();
+    expect(runUiCommand).not.toHaveBeenCalled();
   });
 
   it("shows launcher help without touching the daemon path", async () => {
     const runOperatorConsole = vi.fn().mockResolvedValue(0);
+    const runUiCommand = vi.fn().mockResolvedValue(0);
     const runCli = vi.fn().mockResolvedValue(0);
     const stdout = captureStream();
 
@@ -121,20 +169,24 @@ describe("agenc launcher CLI", () => {
       },
       {
         runOperatorConsole,
+        runUiCommand,
         runCli,
       },
     );
 
     expect(code).toBe(0);
     expect(stdout.data()).toContain("agenc [console]");
+    expect(stdout.data()).toContain("agenc ui");
     expect(stdout.data()).toContain("agenc init");
     expect(stdout.data()).toContain("agenc status");
     expect(runOperatorConsole).not.toHaveBeenCalled();
+    expect(runUiCommand).not.toHaveBeenCalled();
     expect(runCli).not.toHaveBeenCalled();
   });
 
   it("rejects unexpected console positional arguments", async () => {
     const runOperatorConsole = vi.fn().mockResolvedValue(0);
+    const runUiCommand = vi.fn().mockResolvedValue(0);
     const runCli = vi.fn().mockResolvedValue(0);
     const stderr = captureStream();
 
@@ -145,6 +197,7 @@ describe("agenc launcher CLI", () => {
       },
       {
         runOperatorConsole,
+        runUiCommand,
         runCli,
       },
     );
@@ -154,6 +207,32 @@ describe("agenc launcher CLI", () => {
       "agenc console does not accept positional arguments",
     );
     expect(runOperatorConsole).not.toHaveBeenCalled();
+    expect(runUiCommand).not.toHaveBeenCalled();
+    expect(runCli).not.toHaveBeenCalled();
+  });
+
+  it("rejects unexpected agenc ui positional arguments", async () => {
+    const runOperatorConsole = vi.fn().mockResolvedValue(0);
+    const runUiCommand = vi.fn().mockResolvedValue(0);
+    const runCli = vi.fn().mockResolvedValue(0);
+    const stderr = captureStream();
+
+    const code = await runAgencCli(
+      {
+        argv: ["ui", "extra"],
+        stderr: stderr.stream,
+      },
+      {
+        runOperatorConsole,
+        runUiCommand,
+        runCli,
+      },
+    );
+
+    expect(code).toBe(2);
+    expect(stderr.data()).toContain("agenc ui does not accept positional arguments");
+    expect(runOperatorConsole).not.toHaveBeenCalled();
+    expect(runUiCommand).not.toHaveBeenCalled();
     expect(runCli).not.toHaveBeenCalled();
   });
 });

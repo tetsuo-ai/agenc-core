@@ -2,6 +2,7 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash, createPublicKey, generateKeyPairSync, sign } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -59,9 +60,10 @@ function parseArgs(argv) {
   return options;
 }
 
-function run(command, args, cwd) {
+function run(command, args, cwd, env = process.env) {
   return execFileSync(command, args, {
     cwd,
+    env,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -147,9 +149,32 @@ async function main() {
     );
   }
 
+  const dashboardIndexPath = path.join(
+    runtimeDir,
+    "dist",
+    "dashboard",
+    "index.html",
+  );
+
   if (!options.skipBuild) {
     process.stdout.write("[public-runtime] building @tetsuo-ai/runtime\n");
     run("npm", ["run", "build", "--workspace=@tetsuo-ai/runtime"], repoRoot);
+    process.stdout.write("[public-runtime] building @tetsuo-ai/web\n");
+    run(
+      "npm",
+      ["run", "build", "--workspace=@tetsuo-ai/web"],
+      repoRoot,
+      {
+        ...process.env,
+        AGENC_DASHBOARD_BASE: "/ui/",
+      },
+    );
+    process.stdout.write("[public-runtime] syncing dashboard assets into runtime/dist/dashboard\n");
+    run("node", ["scripts/sync-dashboard-assets.mjs"], repoRoot);
+  } else if (!existsSync(dashboardIndexPath)) {
+    throw new Error(
+      `dashboard bundle missing at ${dashboardIndexPath}; build @tetsuo-ai/web and sync dashboard assets before using --skip-build`,
+    );
   }
 
   await mkdir(options.outDir, { recursive: true });

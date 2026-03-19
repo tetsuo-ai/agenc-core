@@ -22,6 +22,7 @@ import { basename, delimiter, dirname, join, resolve as resolvePath } from "node
 import { homedir } from "node:os";
 // spawn import moved to ./daemon-command-registry.ts
 import { Gateway } from "./gateway.js";
+import { buildGatewayChannelStatus } from "./channel-status.js";
 import { loadGatewayConfig } from "./config-watcher.js";
 import { GatewayLifecycleError, GatewayStateError } from "./errors.js";
 import { toErrorMessage } from "../utils/async.js";
@@ -30,6 +31,8 @@ import type {
   GatewayLLMConfig,
   GatewayMCPServerConfig,
   GatewayBackgroundRunStatus,
+  GatewayChannelConfig,
+  GatewayChannelStatus,
   GatewayStatus,
   ConfigDiff,
   GatewayLoggingConfig,
@@ -1006,6 +1009,8 @@ export class DaemonManager {
     | ((msg: GatewayMessage) => Promise<void>)
     | null = null;
   private readonly _externalChannels: ExternalChannelRegistry = new Map();
+  private _targetChannelConfigs: Record<string, GatewayChannelConfig> = {};
+  private readonly _pendingConnectorRestarts = new Set<string>();
   private _proactiveCommunicator: ProactiveCommunicator | null = null;
   private _heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private _heartbeatScheduler:
@@ -1484,6 +1489,8 @@ export class DaemonManager {
 
     // Shallow-copy so we don't mutate the loaded config object
     const gatewayConfig = { ...loadedConfig };
+    this._targetChannelConfigs = this.cloneChannelConfigs(gatewayConfig.channels);
+    this._pendingConnectorRestarts.clear();
     if (gatewayConfig.logging?.level) {
       this.logger.setLevel?.(gatewayConfig.logging.level);
     }
@@ -2305,8 +2312,55 @@ export class DaemonManager {
   private buildGatewayStatusSnapshot(baseStatus: GatewayStatus): GatewayStatus {
     return {
       ...baseStatus,
+      channelStatuses: this.buildGatewayChannelStatuses(baseStatus.channels),
       backgroundRuns: this.buildBackgroundRunStatusSummary(),
     };
+  }
+
+  private cloneChannelConfigs(
+    channels: GatewayConfig["channels"],
+  ): Record<string, GatewayChannelConfig> {
+    return channels
+      ? (JSON.parse(JSON.stringify(channels)) as Record<string, GatewayChannelConfig>)
+      : {};
+  }
+
+  private buildGatewayChannelStatuses(
+    activeChannels: readonly string[],
+  ): GatewayChannelStatus[] {
+    const liveChannels = this.gateway?.config.channels ?? {};
+    const activeExternalNames = new Set(activeChannels);
+    const names = new Set<string>([
+      ...Object.keys(this._targetChannelConfigs),
+      ...Object.keys(liveChannels),
+      ...this._externalChannels.keys(),
+      ...this._pendingConnectorRestarts,
+    ]);
+
+    return [...names]
+      .sort((left, right) => left.localeCompare(right))
+      .map((name) => {
+        const targetConfig = this._targetChannelConfigs[name];
+        const liveConfig = liveChannels[name];
+        const plugin = this._externalChannels.get(name);
+        const active = activeExternalNames.has(name);
+        const health: GatewayChannelStatus["health"] = !active || !plugin
+          ? "unknown"
+          : plugin.isHealthy()
+            ? "healthy"
+            : "unhealthy";
+        const pendingRestart =
+          this._pendingConnectorRestarts.has(name) &&
+          this.gateway !== null;
+        return buildGatewayChannelStatus(name, {
+          targetConfig,
+          liveConfig,
+          active,
+          health,
+          pendingRestart,
+          gatewayRunning: this.gateway !== null,
+        }) satisfies GatewayChannelStatus;
+      });
   }
 
   private buildBackgroundRunOperatorAvailability():
@@ -5971,6 +6025,8 @@ export class DaemonManager {
       this._foregroundSessionLocks.clear();
       this._hostWorkspacePath = null;
       this._hostWorkspacePathPinned = false;
+      this._targetChannelConfigs = {};
+      this._pendingConnectorRestarts.clear();
       if (this.gateway !== null) {
         await this.gateway.stop();
         this.gateway = null;
@@ -6100,6 +6156,23 @@ export class DaemonManager {
       const newConfig = await loadGatewayConfig(this.configPath);
       if (this.gateway !== null) {
         const diff = this.gateway.reloadConfig(newConfig);
+        this._targetChannelConfigs = this.cloneChannelConfigs(newConfig.channels);
+        if (diff.unsafe.some((entry) => entry.startsWith("channels."))) {
+          for (const entry of diff.unsafe) {
+            if (!entry.startsWith("channels.")) continue;
+            const [, channelName] = entry.split(".", 3);
+            if (channelName) {
+              this._pendingConnectorRestarts.add(channelName);
+            }
+          }
+        }
+        for (const channelName of [...this._pendingConnectorRestarts]) {
+          const liveConfig = this.gateway.config.channels?.[channelName];
+          const targetConfig = newConfig.channels?.[channelName];
+          if (JSON.stringify(liveConfig ?? null) === JSON.stringify(targetConfig ?? null)) {
+            this._pendingConnectorRestarts.delete(channelName);
+          }
+        }
         this.logger.info("Config reloaded", {
           safe: diff.safe,
           unsafe: diff.unsafe,

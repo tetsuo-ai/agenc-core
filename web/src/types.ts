@@ -14,6 +14,7 @@ import type {
   BackgroundRunOperatorErrorPayload,
   BackgroundRunOperatorSummary,
   GatewayBackgroundRunStatus,
+  GatewayChannelStatus,
   ObservabilityArtifactResponse,
   ObservabilityEventRecord,
   ObservabilityLogResponse,
@@ -22,6 +23,7 @@ import type {
   ObservabilityTraceStatus,
   ObservabilityTraceSummary,
 } from '@tetsuo-ai/runtime/browser';
+export type { GatewayChannelStatus } from '@tetsuo-ai/runtime/browser';
 
 // ============================================================================
 // Connection State
@@ -135,6 +137,7 @@ export interface GatewayStatus {
   state: string;
   uptimeMs: number;
   channels: string[];
+  channelStatuses?: GatewayChannelStatus[];
   activeSessions: number;
   controlPlanePort: number;
   agentName?: string;

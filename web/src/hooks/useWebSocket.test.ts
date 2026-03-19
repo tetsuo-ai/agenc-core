@@ -6,6 +6,7 @@ const CONNECTING = 0;
 const OPEN = 1;
 
 interface WsMockInstance {
+  url: string;
   readyState: number;
   sent: string[];
   onopen: ((ev?: Event) => void) | null;
@@ -24,6 +25,7 @@ class WsMock {
   static CONNECTING = CONNECTING;
   static OPEN = OPEN;
 
+  url: string;
   readyState: number = CONNECTING;
   sent: string[] = [];
   onopen: ((ev?: Event) => void) | null = null;
@@ -37,7 +39,8 @@ class WsMock {
     }
   });
 
-  constructor() {
+  constructor(url: string) {
+    this.url = url;
     instances.push(this);
   }
 
@@ -66,8 +69,36 @@ class WsMock {
 }
 
 describe('useWebSocket', () => {
+  it('derives a same-origin websocket URL when no query or env override exists', () => {
+    vi.useFakeTimers();
+    instances.length = 0;
+    (globalThis as unknown as { WebSocket: typeof WsMock }).WebSocket = WsMock as never;
+    window.history.replaceState({}, '', '/ui/');
+
+    renderHook(() => useWebSocket());
+
+    expect(instances).toHaveLength(1);
+    const expectedProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    expect(instances[0].url).toBe(`${expectedProtocol}//${window.location.host}`);
+    vi.useRealTimers();
+  });
+
+  it('prefers the explicit ws query parameter over same-origin derivation', () => {
+    vi.useFakeTimers();
+    instances.length = 0;
+    (globalThis as unknown as { WebSocket: typeof WsMock }).WebSocket = WsMock as never;
+    window.history.replaceState({}, '', '/ui/?ws=ws%3A%2F%2F127.0.0.1%3A3600');
+
+    renderHook(() => useWebSocket());
+
+    expect(instances).toHaveLength(1);
+    expect(instances[0].url).toBe('ws://127.0.0.1:3600');
+    vi.useRealTimers();
+  });
+
   it('queues sends until connected then flushes', async () => {
     vi.useFakeTimers();
+    instances.length = 0;
     (globalThis as unknown as { WebSocket: typeof WsMock }).WebSocket = WsMock as never;
 
     const onMessage = vi.fn();

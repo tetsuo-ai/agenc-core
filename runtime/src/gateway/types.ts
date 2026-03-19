@@ -694,10 +694,25 @@ export type GatewayState = "stopped" | "starting" | "running" | "stopping";
 // Gateway Status Snapshot
 // ============================================================================
 
+export type GatewayChannelHealth = "healthy" | "unhealthy" | "unknown";
+export type GatewayChannelMode = "polling" | "webhook";
+
+export interface GatewayChannelStatus {
+  readonly name: string;
+  readonly configured: boolean;
+  readonly enabled: boolean;
+  readonly active: boolean;
+  readonly health: GatewayChannelHealth;
+  readonly mode?: GatewayChannelMode;
+  readonly pendingRestart: boolean;
+  readonly summary?: string;
+}
+
 export interface GatewayStatus {
   readonly state: GatewayState;
   readonly uptimeMs: number;
   readonly channels: string[];
+  readonly channelStatuses?: readonly GatewayChannelStatus[];
   readonly activeSessions: number;
   readonly controlPlanePort: number;
   readonly backgroundRuns?: GatewayBackgroundRunStatus;

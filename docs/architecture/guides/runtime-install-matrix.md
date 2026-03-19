@@ -123,12 +123,41 @@ Current contract:
 - platform-specific connector failures must remain explicit feature gaps, not
   silent install corruption
 
+## Telegram connector support
+
+The first supported built-in connector in the public framework contract is
+Telegram.
+
+Current lifecycle contract:
+
+- `agenc connector list`
+- `agenc connector status telegram`
+- `agenc connector add telegram --bot-token-env <ENV_NAME>`
+- `agenc connector add telegram --bot-token-stdin`
+- `agenc connector remove telegram`
+
+Current behavior:
+
+- Telegram runs inside the same daemon/gateway as the CLI, TUI, and dashboard
+- polling is the default mode when no webhook config is provided
+- webhook mode requires an explicit `channels.telegram.webhook.url`
+- connector health and pending-restart state are exposed through the shared
+  gateway status payload and rendered in both CLI and dashboard clients
+- no extra npm package or post-install connector bundle step is required for
+  the first-party Telegram connector
+
 ## Product-install implication
 
 This matrix is the baseline for the public `agenc` install path:
 
 - one daemon/gateway authority
 - CLI + TUI + dashboard all attach to that same daemon
+- dashboard HTTP path: `/ui/`
+- `agenc ui` always hands the operator a loopback URL, even when the daemon
+  binds `0.0.0.0`
+- V1 dashboard auth contract:
+  - no `auth.secret`, or
+  - `auth.secret` with `auth.localBypass=true`
 - canonical local state under `~/.agenc/`
 - wrapper-managed runtime installs use the stable `~/.agenc/runtime/current`
   pointer

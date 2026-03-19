@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChatMessage, TokenUsage, VoiceState, VoiceMode } from '../../types';
 
 import type { ChatSessionInfo } from '../../hooks/useChat';
+import { assetUrl } from '../../utils/assets';
 import { MessageList } from './MessageList';
 import { ChatInput } from './ChatInput';
 import { VoiceOverlay } from './VoiceOverlay';
@@ -183,7 +184,7 @@ export function ChatView({
         {/* BBS splash */}
         <div className="flex flex-col items-center gap-6 px-6 animate-welcome-in">
           <img
-            src="/assets/ansi_girl.png"
+            src={assetUrl('assets/ansi_girl.png')}
             alt="AgenC"
             className="max-w-[300px] w-full h-auto pixelated"
             style={{ imageRendering: 'auto' }}

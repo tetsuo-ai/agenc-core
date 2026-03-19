@@ -42,6 +42,7 @@ function manualChunks(id: string): string | undefined {
 
 export default defineConfig({
   plugins: [react()],
+  base: process.env.AGENC_DASHBOARD_BASE ?? '/',
   server: {
     port: 5173,
   },

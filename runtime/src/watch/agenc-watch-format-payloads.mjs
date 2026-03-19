@@ -68,6 +68,9 @@ export function formatStatusPayload(payload) {
   const heapUsedMB = Number(payload.memoryUsage?.heapUsedMB);
   const rssMB = Number(payload.memoryUsage?.rssMB);
   const backgroundRuns = payload.backgroundRuns;
+  const connectorStatuses = Array.isArray(payload.channelStatuses)
+    ? payload.channelStatuses
+    : [];
   return [
     `state: ${payload.state ?? "unknown"}`,
     `uptime: ${formatCompactNumber(payload.uptimeMs) ?? payload.uptimeMs ?? "n/a"} ms`,
@@ -79,6 +82,15 @@ export function formatStatusPayload(payload) {
     `llm: ${payload.llmProvider && payload.llmModel ? `${payload.llmProvider}:${payload.llmModel}` : "n/a"}`,
     `agent: ${payload.agentName ?? "n/a"}`,
     `channels: ${Array.isArray(payload.channels) ? payload.channels.join(", ") : "n/a"}`,
+    `connectors: ${connectorStatuses.length > 0
+      ? connectorStatuses
+          .map((entry) => {
+            const mode = typeof entry.mode === "string" ? `/${entry.mode}` : "";
+            const pending = entry.pendingRestart ? ",restart" : "";
+            return `${entry.name}:${entry.active ? entry.health : entry.enabled ? "configured" : "disabled"}${mode}${pending}`;
+          })
+          .join(", ")
+      : "n/a"}`,
     `durable runs: ${!backgroundRuns
       ? "pending"
       : backgroundRuns.enabled
@@ -127,6 +139,17 @@ export function statusFeedFingerprint(payload) {
       typeof payload.backgroundRuns?.disabledCode === "string"
         ? payload.backgroundRuns.disabledCode
         : null,
+    channelStatuses: Array.isArray(payload.channelStatuses)
+      ? payload.channelStatuses.map((entry) => ({
+          name: typeof entry?.name === "string" ? entry.name : null,
+          configured: entry?.configured === true,
+          enabled: entry?.enabled === true,
+          active: entry?.active === true,
+          health: typeof entry?.health === "string" ? entry.health : null,
+          mode: typeof entry?.mode === "string" ? entry.mode : null,
+          pendingRestart: entry?.pendingRestart === true,
+        }))
+      : null,
   });
 }
 

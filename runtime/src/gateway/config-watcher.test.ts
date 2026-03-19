@@ -271,7 +271,7 @@ describe("validateGatewayConfig plugin host policy", () => {
     const config = makeConfig();
     config.channels = {
       telegram: {
-        token: "secret-token",
+        botToken: "secret-token",
       },
     };
 
@@ -314,6 +314,63 @@ describe("validateGatewayConfig plugin host policy", () => {
     );
     expect(result.errors).toContain(
       "channels.custom.config must be an object when provided",
+    );
+  });
+});
+
+describe("validateGatewayConfig telegram connector lifecycle", () => {
+  it("accepts a polling-first telegram connector config", () => {
+    const result = validateGatewayConfig({
+      ...makeConfig(),
+      channels: {
+        telegram: {
+          enabled: true,
+          botToken: "bot-token",
+          allowedUsers: [1234, 5678],
+          pollingIntervalMs: 1500,
+          maxAttachmentBytes: 1024,
+          rateLimitPerChat: 2,
+        },
+      },
+    });
+
+    expect(result.valid).toBe(true);
+  });
+
+  it("rejects enabled telegram config without a bot token", () => {
+    const result = validateGatewayConfig({
+      ...makeConfig(),
+      channels: {
+        telegram: {
+          enabled: true,
+        },
+      },
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain(
+      "channels.telegram.botToken must be a non-empty string when telegram is enabled",
+    );
+  });
+
+  it("rejects invalid telegram webhook path values", () => {
+    const result = validateGatewayConfig({
+      ...makeConfig(),
+      channels: {
+        telegram: {
+          enabled: true,
+          botToken: "bot-token",
+          webhook: {
+            url: "https://example.com",
+            path: "/custom",
+          },
+        },
+      },
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain(
+      'channels.telegram.webhook.path must be omitted or exactly "/update"',
     );
   });
 });

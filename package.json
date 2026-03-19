@@ -45,6 +45,7 @@
     "pack:smoke": "npm run build && node scripts/pack-smoke.mjs",
     "pack:smoke:skip-build": "node scripts/pack-smoke.mjs",
     "build:public-runtime-artifacts": "node scripts/build-public-runtime-artifacts.mjs",
+    "sync:dashboard-assets": "node scripts/sync-dashboard-assets.mjs",
     "prepare:public-agenc-package": "node scripts/prepare-public-agenc-package.mjs",
     "smoke:public-agenc-install": "node scripts/public-agenc-install-smoke.mjs",
     "test:private-registry-scripts": "node --test scripts/private-registry-service.test.mjs scripts/bootstrap-private-registry-user.test.mjs scripts/private-kernel-distribution.test.mjs scripts/private-registry-rehearsal.test.mjs",

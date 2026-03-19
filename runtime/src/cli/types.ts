@@ -77,6 +77,42 @@ export interface PluginReloadOptions extends BaseCliOptions {
   manifestPath?: string;
 }
 
+export type ConnectorName = "telegram";
+
+export interface ConnectorListOptions extends BaseCliOptions {
+  configPath: string;
+  pidPath: string;
+  controlPlanePort?: number;
+}
+
+export interface ConnectorStatusOptions extends BaseCliOptions {
+  configPath: string;
+  pidPath: string;
+  controlPlanePort?: number;
+  connectorName?: ConnectorName;
+}
+
+export interface ConnectorAddTelegramOptions extends BaseCliOptions {
+  configPath: string;
+  pidPath: string;
+  controlPlanePort?: number;
+  restart: boolean;
+  botTokenEnv?: string;
+  botTokenStdin?: boolean;
+  allowedUsers?: readonly number[];
+  pollingIntervalMs?: number;
+  maxAttachmentBytes?: number;
+  rateLimitPerChat?: number;
+}
+
+export interface ConnectorRemoveOptions extends BaseCliOptions {
+  configPath: string;
+  pidPath: string;
+  controlPlanePort?: number;
+  connectorName: ConnectorName;
+  restart: boolean;
+}
+
 export interface SkillListOptions extends BaseCliOptions {}
 export interface SkillInfoOptions extends BaseCliOptions {
   skillName: string;

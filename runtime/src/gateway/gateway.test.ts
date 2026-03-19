@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { Gateway } from "./gateway.js";
 
@@ -103,6 +103,17 @@ function makeChannel(name: string, healthy = true): ChannelHandle {
   };
 }
 
+const dashboardTempRoots: string[] = [];
+
+async function createDashboardFixture(): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "agenc-gateway-dashboard-"));
+  dashboardTempRoots.push(root);
+  await mkdir(join(root, "assets"), { recursive: true });
+  await writeFile(join(root, "index.html"), "<!doctype html><html><body>dashboard</body></html>");
+  await writeFile(join(root, "assets", "app.js"), "console.log('dashboard');");
+  return root;
+}
+
 describe("Gateway", () => {
   let gateway: Gateway;
 
@@ -129,6 +140,12 @@ describe("Gateway", () => {
   });
 
   afterEach(async () => {
+    delete process.env.AGENC_DASHBOARD_DIST;
+    await Promise.all(
+      dashboardTempRoots.splice(0).map((root) =>
+        rm(root, { recursive: true, force: true }),
+      ),
+    );
     if (gateway.state === "running") {
       await gateway.stop();
     }
@@ -206,6 +223,18 @@ describe("Gateway", () => {
     it("allows a status provider to augment control-plane snapshots", async () => {
       gateway.setStatusProvider((baseStatus) => ({
         ...baseStatus,
+        channelStatuses: [
+          {
+            name: "telegram",
+            configured: true,
+            enabled: true,
+            active: false,
+            health: "unknown",
+            pendingRestart: true,
+            summary:
+              "Config changed on disk; restart the daemon to apply connector changes.",
+          },
+        ],
         backgroundRuns: {
           enabled: true,
           operatorAvailable: true,
@@ -239,12 +268,37 @@ describe("Gateway", () => {
       await gateway.start();
 
       const status = gateway.getStatus();
+      expect(status.channelStatuses).toEqual([
+        expect.objectContaining({
+          name: "telegram",
+          pendingRestart: true,
+        }),
+      ]);
       expect(status.backgroundRuns?.enabled).toBe(true);
       expect(status.backgroundRuns?.operatorAvailable).toBe(true);
     });
   });
 
   describe("webhook routes", () => {
+    it("serves dashboard assets on the gateway port", async () => {
+      const dashboardRoot = await createDashboardFixture();
+      process.env.AGENC_DASHBOARD_DIST = dashboardRoot;
+      await gateway.start();
+
+      const actualPort = getActualPort(gateway);
+      const dashboardResponse = await fetch(
+        `http://127.0.0.1:${actualPort}/ui/`,
+      );
+      const assetResponse = await fetch(
+        `http://127.0.0.1:${actualPort}/ui/assets/app.js`,
+      );
+
+      expect(dashboardResponse.status).toBe(200);
+      await expect(dashboardResponse.text()).resolves.toContain("dashboard");
+      expect(assetResponse.status).toBe(200);
+      await expect(assetResponse.text()).resolves.toContain("console.log");
+    });
+
     it("serves registered HTTP webhook routes on the gateway port", async () => {
       await gateway.start();
       gateway.registerWebhookRoute({

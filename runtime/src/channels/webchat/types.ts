@@ -520,6 +520,7 @@ export interface StatusUpdateResponse {
     state: string;
     uptimeMs: number;
     channels: string[];
+    channelStatuses?: GatewayStatus["channelStatuses"];
     activeSessions: number;
     controlPlanePort: number;
     agentName?: string;

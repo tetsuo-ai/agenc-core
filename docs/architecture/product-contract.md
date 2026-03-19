@@ -38,6 +38,13 @@ Primary responsibilities:
 - connector and plugin management
 - eventual task/bid interaction
 
+V1 connector contract:
+
+- `agenc connector list`
+- `agenc connector status telegram`
+- `agenc connector add telegram`
+- `agenc connector remove telegram`
+
 ### TUI / operator console
 
 Primary responsibilities:
@@ -54,6 +61,7 @@ Primary responsibilities:
 - runs and observability
 - approvals and configuration
 - agent summary/control
+- connector health and restart visibility
 - task and marketplace dashboards
 
 The web dashboard is a daemon client, not a separate runtime.
@@ -67,10 +75,13 @@ V1 install flow:
 ```bash
 npm install -g agenc
 agenc onboard
-agenc start
 agenc
 agenc ui
 ```
+
+`agenc` and `agenc ui` both target the same local daemon. `agenc ui` is not a
+second runtime; it is a loopback dashboard surface mounted at `/ui/` on the
+daemon HTTP port.
 
 Phase 2 public wrapper support is intentionally narrow:
 
@@ -145,7 +156,14 @@ V1 means:
 - start/stop/status/logs
 - TUI attach
 - one daemon-backed web dashboard via `agenc ui`
+- `agenc ui --no-open` support for SSH/automation/manual browser handoff
 - one first-party connector: Telegram
+- Telegram connector lifecycle through the same daemon:
+  - list
+  - status
+  - add/configure
+  - remove
+- shared connector state/health visible in both CLI and dashboard
 
 V1 does **not** require:
 

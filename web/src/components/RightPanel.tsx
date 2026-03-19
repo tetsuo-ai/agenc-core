@@ -6,6 +6,7 @@ import type { AgentInfo } from '../types';
 import { LLM_PROVIDERS } from '../constants/llm';
 import { openExternalUrl } from '../utils/external';
 import { getSecretInputValue, resolveSecretPatchValue } from '../utils/secretInput';
+import { assetUrl } from '../utils/assets';
 
 type Tab = 'main' | 'settings' | 'payment';
 const TABS: Tab[] = ['main', 'settings', 'payment'];
@@ -100,11 +101,11 @@ export function RightPanel({ settings, wallet, chatSessions, activeSessionId, on
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-12 h-12 rounded-full bg-accent-bg flex items-center justify-center overflow-hidden">
-              <img src="/assets/agenc-logo.svg" alt="AgenC" className="w-7 h-7 dark:hidden" />
-              <img src="/assets/agenc-logo-white.svg" alt="AgenC" className="w-7 h-7 hidden dark:block" />
+              <img src={assetUrl('assets/agenc-logo.svg')} alt="AgenC" className="w-7 h-7 dark:hidden" />
+              <img src={assetUrl('assets/agenc-logo-white.svg')} alt="AgenC" className="w-7 h-7 hidden dark:block" />
             </div>
             <div>
-              <img src="/assets/agenc-wordmark.svg" alt="AgenC" className="h-4 dark:invert opacity-90" />
+              <img src={assetUrl('assets/agenc-wordmark.svg')} alt="AgenC" className="h-4 dark:invert opacity-90" />
               <div className="text-xs text-tetsuo-400 flex items-center gap-1.5 mt-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
                 Online

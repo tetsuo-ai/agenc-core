@@ -24,6 +24,10 @@ import {
   HealthOptions,
   DoctorOptions,
   SecurityOptions,
+  ConnectorAddTelegramOptions,
+  ConnectorListOptions,
+  ConnectorRemoveOptions,
+  ConnectorStatusOptions,
   SkillCommandOptions,
   SkillInfoOptions,
   SkillCreateOptions,
@@ -73,6 +77,12 @@ import {
 import { runInitCommand } from "./init.js";
 import { runSessionsListCommand, runSessionsKillCommand } from "./sessions.js";
 import { runLogsCommand } from "./logs.js";
+import {
+  runConnectorAddTelegramCommand,
+  runConnectorListCommand,
+  runConnectorRemoveCommand,
+  runConnectorStatusCommand,
+} from "./connectors.js";
 import { getDefaultPidPath } from "../gateway/daemon.js";
 import {
   discoverLegacyImportConfigPath,
@@ -196,6 +206,7 @@ interface PluginCommandDescriptor {
 
 type ReplayCommand = "backfill" | "compare" | "incident";
 type PluginCommand = "list" | "install" | "disable" | "enable" | "reload";
+type ConnectorCommand = "list" | "status" | "add" | "remove";
 
 type CliCommandOptions =
   | ReplayBackfillOptions
@@ -268,6 +279,20 @@ const RESTART_COMMAND_OPTIONS = new Set([
 const STATUS_COMMAND_OPTIONS = new Set(["pid-path", "port"]);
 const SERVICE_COMMAND_OPTIONS = new Set(["macos", "yolo"]);
 const JOBS_COMMAND_OPTIONS = new Set<string>([]);
+const CONNECTOR_LIST_OPTIONS = new Set(["pid-path", "port"]);
+const CONNECTOR_STATUS_OPTIONS = new Set(["pid-path", "port"]);
+const CONNECTOR_ADD_OPTIONS = new Set([
+  "pid-path",
+  "port",
+  "restart",
+  "bot-token-env",
+  "bot-token-stdin",
+  "allowed-users",
+  "polling-interval-ms",
+  "max-attachment-bytes",
+  "rate-limit-per-chat",
+]);
+const CONNECTOR_REMOVE_OPTIONS = new Set(["pid-path", "port", "restart"]);
 
 const CONFIG_INIT_OPTIONS = new Set(["non-interactive", "force"]);
 const INIT_COMMAND_OPTIONS = new Set(["force", "path", "pid-path", "port"]);
@@ -485,6 +510,8 @@ const ERROR_CODES = {
   UNKNOWN_REPLAY_COMMAND: "UNKNOWN_REPLAY_COMMAND",
   MISSING_PLUGIN_COMMAND: "MISSING_PLUGIN_COMMAND",
   UNKNOWN_PLUGIN_COMMAND: "UNKNOWN_PLUGIN_COMMAND",
+  MISSING_CONNECTOR_COMMAND: "MISSING_CONNECTOR_COMMAND",
+  UNKNOWN_CONNECTOR_COMMAND: "UNKNOWN_CONNECTOR_COMMAND",
   INVALID_OPTION: "INVALID_OPTION",
   INVALID_VALUE: "INVALID_VALUE",
   MISSING_REQUIRED_OPTION: "MISSING_REQUIRED_OPTION",
@@ -520,6 +547,7 @@ function buildHelp(): string {
     "restart [--help] [options]",
     "status [--help] [options]",
     "service install [--help] [options]",
+    "connector <list|status|add|remove> [--help] [options]",
     "sessions <list|kill> [--help] [options]",
     "logs [--help] [options]",
     "replay [--help] <command> [options]",
@@ -552,6 +580,13 @@ function buildHelp(): string {
     "",
     "Log commands:",
     "  logs                       Show daemon log viewing instructions",
+    "",
+    "Connector commands:",
+    "  connector list                            List supported connector lifecycle status",
+    "  connector status [telegram]               Show connector status details",
+    "  connector add telegram --bot-token-env TELEGRAM_BOT_TOKEN",
+    "                                          Configure the Telegram connector",
+    "  connector remove telegram                 Remove the Telegram connector",
     "",
     "Replay subcommands:",
     "  backfill   Backfill replay timeline from on-chain history",
@@ -670,6 +705,17 @@ function buildHelp(): string {
     "      --session <id>                            Filter by session ID",
     "      --lines <n>                               Number of recent log lines (used in journalctl hint)",
     "",
+    "connector options:",
+    "      --pid-path <path>                         Custom PID file path",
+    "      --port <port>                             Override control plane port",
+    "      --restart true|false                      Restart matching daemon after config mutation (default: true)",
+    "      --bot-token-env <ENV_NAME>                Read Telegram bot token from an environment variable",
+    "      --bot-token-stdin                         Read Telegram bot token from stdin",
+    "      --allowed-users <id1,id2>                 Restrict Telegram access to specific user IDs",
+    "      --polling-interval-ms <n>                 Telegram polling interval in ms",
+    "      --max-attachment-bytes <n>                Max inbound Telegram attachment size",
+    "      --rate-limit-per-chat <n>                 Outbound Telegram messages per second per chat",
+    "",
     "plugin options:",
     "      --manifest <path>                     Plugin manifest path (install/reload)",
     "      --precedence workspace|user|builtin  Plugin installation precedence",
@@ -691,6 +737,11 @@ function buildHelp(): string {
     "  agenc-runtime sessions list",
     "  agenc-runtime sessions kill client_1",
     "  agenc-runtime logs",
+    "  agenc-runtime connector list",
+    "  agenc-runtime connector status telegram",
+    "  agenc-runtime connector add telegram --bot-token-env TELEGRAM_BOT_TOKEN",
+    "  printf '%s' \"$TELEGRAM_BOT_TOKEN\" | agenc-runtime connector add telegram --bot-token-stdin --restart=false",
+    "  agenc-runtime connector remove telegram",
     "  agenc-runtime onboard --force",
     "  agenc-runtime health --deep",
     "  agenc-runtime doctor --deep --fix",
@@ -818,6 +869,52 @@ function parseIntValue(value: unknown): number | undefined {
 
 function parseOptionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function parsePositiveInt(value: unknown, flagName: string): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim().length > 0
+        ? Number.parseInt(value.trim(), 10)
+        : Number.NaN;
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw createCliError(
+      `${flagName} must be a positive integer`,
+      ERROR_CODES.INVALID_VALUE,
+    );
+  }
+  return parsed;
+}
+
+function parseAllowedUsers(value: unknown): readonly number[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw createCliError(
+      "--allowed-users must be a comma-separated list of Telegram user IDs",
+      ERROR_CODES.INVALID_VALUE,
+    );
+  }
+  const values = value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .map((entry) => {
+      const parsed = Number.parseInt(entry, 10);
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw createCliError(
+          "--allowed-users must contain only positive integer Telegram user IDs",
+          ERROR_CODES.INVALID_VALUE,
+        );
+      }
+      return parsed;
+    });
+  return values.length > 0 ? values : undefined;
 }
 
 function normalizeOutputFormat(value: unknown): CliOutputFormat {
@@ -1063,6 +1160,15 @@ function validatePluginCommand(name: string): name is PluginCommand {
   );
 }
 
+function validateConnectorCommand(name: string): name is ConnectorCommand {
+  return (
+    name === "list" ||
+    name === "status" ||
+    name === "add" ||
+    name === "remove"
+  );
+}
+
 function parseOperatorRole(value: unknown): OperatorRole | undefined {
   const raw = parseOptionalString(value);
   if (raw === undefined) {
@@ -1109,6 +1215,16 @@ function parsePluginSlot(value: unknown): PluginSlot {
   }
   throw createCliError(
     "--slot must be one of: memory, llm, proof, telemetry, custom",
+    ERROR_CODES.INVALID_VALUE,
+  );
+}
+
+function parseConnectorName(value: unknown): "telegram" {
+  if (value === "telegram") {
+    return value;
+  }
+  throw createCliError(
+    "connector name must be: telegram",
     ERROR_CODES.INVALID_VALUE,
   );
 }
@@ -2364,6 +2480,115 @@ async function dispatchSessionCommands(
   return null;
 }
 
+async function dispatchConnectorCommands(
+  parsed: ParsedArgv,
+  context: CliRuntimeContext,
+): Promise<RoutedStatus> {
+  if (parsed.positional[0] !== "connector") {
+    return null;
+  }
+
+  try {
+    const subcommand = parsed.positional[1] as string | undefined;
+    if (!subcommand) {
+      throw createCliError(
+        "missing connector subcommand (list | status | add | remove)",
+        ERROR_CODES.MISSING_CONNECTOR_COMMAND,
+      );
+    }
+    if (!validateConnectorCommand(subcommand)) {
+      throw createCliError(
+        `unknown connector subcommand: ${subcommand}`,
+        ERROR_CODES.UNKNOWN_CONNECTOR_COMMAND,
+      );
+    }
+
+    const configPath = resolveGatewayConfigPath(parsed.flags);
+    const pidPath =
+      parseOptionalString(parsed.flags["pid-path"]) ?? getDefaultPidPath();
+    const controlPlanePort = parseIntValue(parsed.flags.port);
+    const global = normalizeGlobalFlags(parsed.flags, {}, readEnvironmentConfig());
+
+    if (subcommand === "list") {
+      validateUnknownStandaloneOptions(parsed.flags, CONNECTOR_LIST_OPTIONS);
+      const listOptions: ConnectorListOptions = {
+        ...global,
+        configPath,
+        pidPath,
+        controlPlanePort,
+      };
+      return await runConnectorListCommand(context, listOptions);
+    }
+
+    if (subcommand === "status") {
+      validateUnknownStandaloneOptions(parsed.flags, CONNECTOR_STATUS_OPTIONS);
+      const connectorNameRaw = parsed.positional[2] as string | undefined;
+      const statusOptions: ConnectorStatusOptions = {
+        ...global,
+        configPath,
+        pidPath,
+        controlPlanePort,
+        ...(connectorNameRaw
+          ? { connectorName: parseConnectorName(connectorNameRaw) }
+          : {}),
+      };
+      return await runConnectorStatusCommand(context, statusOptions);
+    }
+
+    if (subcommand === "add") {
+      validateUnknownStandaloneOptions(parsed.flags, CONNECTOR_ADD_OPTIONS);
+      const connectorNameRaw = parsed.positional[2] as string | undefined;
+      const connectorName = parseConnectorName(connectorNameRaw);
+      if (connectorName !== "telegram") {
+        throw createCliError(
+          "connector add currently supports only telegram",
+          ERROR_CODES.INVALID_VALUE,
+        );
+      }
+      const addOptions: ConnectorAddTelegramOptions = {
+        ...global,
+        configPath,
+        pidPath,
+        controlPlanePort,
+        restart: normalizeBool(parsed.flags.restart, true),
+        botTokenEnv: parseOptionalString(parsed.flags["bot-token-env"]),
+        botTokenStdin: normalizeBool(parsed.flags["bot-token-stdin"], false),
+        allowedUsers: parseAllowedUsers(parsed.flags["allowed-users"]),
+        pollingIntervalMs: parsePositiveInt(
+          parsed.flags["polling-interval-ms"],
+          "--polling-interval-ms",
+        ),
+        maxAttachmentBytes: parsePositiveInt(
+          parsed.flags["max-attachment-bytes"],
+          "--max-attachment-bytes",
+        ),
+        rateLimitPerChat: parsePositiveInt(
+          parsed.flags["rate-limit-per-chat"],
+          "--rate-limit-per-chat",
+        ),
+      };
+      return await runConnectorAddTelegramCommand(context, addOptions);
+    }
+
+    validateUnknownStandaloneOptions(parsed.flags, CONNECTOR_REMOVE_OPTIONS);
+    const connectorName = parseConnectorName(parsed.positional[2]);
+    const removeOptions: ConnectorRemoveOptions = {
+      ...global,
+      configPath,
+      pidPath,
+      controlPlanePort,
+      connectorName,
+      restart: normalizeBool(parsed.flags.restart, true),
+    };
+    return await runConnectorRemoveCommand(context, removeOptions);
+  } catch (error) {
+    return reportCliError(context, error, [
+      ERROR_CODES.MISSING_CONNECTOR_COMMAND,
+      ERROR_CODES.UNKNOWN_CONNECTOR_COMMAND,
+    ]);
+  }
+}
+
 async function dispatchJobsCommands(
   parsed: ParsedArgv,
   context: CliRuntimeContext,
@@ -2668,6 +2893,7 @@ export async function runCli(
     (await dispatchBootstrapCommands(parsed, context)) ??
     (await dispatchDaemonCommands(parsed, context)) ??
     (await dispatchConfigCommands(parsed, context)) ??
+    (await dispatchConnectorCommands(parsed, context)) ??
     (await dispatchSessionCommands(parsed, context)) ??
     (await dispatchJobsCommands(parsed, context)) ??
     (await dispatchSkillCommands(parsed, stdout, stderr, context));

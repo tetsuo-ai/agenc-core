@@ -20,11 +20,18 @@ function getDefaultWsUrl(): string {
     if (queryWsUrl) return queryWsUrl;
   }
 
-  return (import.meta as { env?: Record<string, string | undefined> })?.env?.VITE_WEBCHAT_WS_URL
-    ?? 'ws://127.0.0.1:3100';
-}
+  const envWsUrl = (import.meta as { env?: Record<string, string | undefined> })?.env?.VITE_WEBCHAT_WS_URL;
+  if (envWsUrl) {
+    return envWsUrl;
+  }
 
-const DEFAULT_URL = getDefaultWsUrl();
+  if (typeof window !== 'undefined' && window.location?.host) {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.host}`;
+  }
+
+  return 'ws://127.0.0.1:3100';
+}
 
 interface UseWebSocketOptions {
   url?: string;
@@ -39,7 +46,7 @@ export interface UseWebSocketReturn {
 }
 
 export function useWebSocket(options?: UseWebSocketOptions): UseWebSocketReturn {
-  const url = options?.url ?? DEFAULT_URL;
+  const url = options?.url ?? getDefaultWsUrl();
   const onMessageRef = useRef(options?.onMessage);
   onMessageRef.current = options?.onMessage;
   const tokenRef = useRef(options?.token);
