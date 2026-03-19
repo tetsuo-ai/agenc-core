@@ -61,6 +61,10 @@ import {
   runImportOpenclawCommand,
 } from "./registry-cli.js";
 import { runOnboardCommand } from "./onboard.js";
+import {
+  runInteractiveOnboarding,
+  shouldUseInteractiveOnboarding,
+} from "../onboarding/tui.js";
 import { runDoctorCommand, runHealthCommand } from "./health.js";
 import {
   runStartCommand,
@@ -2113,6 +2117,7 @@ function resolveLenientGlobalFlags(parsed: ParsedArgv): {
 async function dispatchBootstrapCommands(
   parsed: ParsedArgv,
   context: CliRuntimeContext,
+  stdout: NodeJS.WritableStream = process.stdout,
 ): Promise<RoutedStatus> {
   if (parsed.positional[0] === "onboard") {
     try {
@@ -2143,6 +2148,18 @@ async function dispatchBootstrapCommands(
         nonInteractive: normalizeBool(parsed.flags["non-interactive"], false),
         force: normalizeBool(parsed.flags.force, false),
       };
+
+      if (
+        shouldUseInteractiveOnboarding(parsed.flags, {
+          stdin: process.stdin,
+          stdout,
+        })
+      ) {
+        return await runInteractiveOnboarding(onboardOpts, {
+          stdin: process.stdin,
+          stdout,
+        });
+      }
 
       return await runOnboardCommand(context, onboardOpts);
     } catch (error) {
@@ -2890,7 +2907,7 @@ export async function runCli(
   }
 
   const routed =
-    (await dispatchBootstrapCommands(parsed, context)) ??
+    (await dispatchBootstrapCommands(parsed, context, stdout)) ??
     (await dispatchDaemonCommands(parsed, context)) ??
     (await dispatchConfigCommands(parsed, context)) ??
     (await dispatchConnectorCommands(parsed, context)) ??

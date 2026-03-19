@@ -1,9 +1,28 @@
 import { Writable } from "node:stream";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const { runInitCommand } = vi.hoisted(() => ({
   runInitCommand: vi.fn(async () => 0),
 }));
+const { runOnboardCommand } = vi.hoisted(() => ({
+  runOnboardCommand: vi.fn(async () => 0),
+}));
+const { runInteractiveOnboarding, shouldUseInteractiveOnboarding } =
+  vi.hoisted(() => ({
+    runInteractiveOnboarding: vi.fn(async () => 0),
+    shouldUseInteractiveOnboarding: vi.fn(
+      (
+        flags: Record<string, string | number | boolean>,
+        deps: { stdin?: { isTTY?: boolean }; stdout?: { isTTY?: boolean } },
+      ) =>
+        deps.stdin?.isTTY === true &&
+        deps.stdout?.isTTY === true &&
+        flags["non-interactive"] !== true &&
+        flags.output !== "json" &&
+        flags["output-format"] !== "json" &&
+        flags["output-format"] !== "jsonl",
+    ),
+  }));
 const {
   runConnectorListCommand,
   runConnectorStatusCommand,
@@ -20,6 +39,15 @@ vi.mock("./init.js", () => ({
   runInitCommand,
 }));
 
+vi.mock("./onboard.js", () => ({
+  runOnboardCommand,
+}));
+
+vi.mock("../onboarding/tui.js", () => ({
+  runInteractiveOnboarding,
+  shouldUseInteractiveOnboarding,
+}));
+
 vi.mock("./connectors.js", () => ({
   runConnectorListCommand,
   runConnectorStatusCommand,
@@ -28,6 +56,8 @@ vi.mock("./connectors.js", () => ({
 }));
 
 import { runCli } from "./index.js";
+
+const stdinTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 
 function captureStream(): { stream: Writable; data: () => string } {
   let data = "";
@@ -43,7 +73,23 @@ function captureStream(): { stream: Writable; data: () => string } {
   };
 }
 
+function setStdinTTY(value: boolean): void {
+  Object.defineProperty(process.stdin, "isTTY", {
+    configurable: true,
+    value,
+  });
+}
+
 describe("runtime root CLI", () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+    if (stdinTtyDescriptor) {
+      Object.defineProperty(process.stdin, "isTTY", stdinTtyDescriptor);
+      return;
+    }
+    delete (process.stdin as { isTTY?: boolean }).isTTY;
+  });
+
   it("includes init in root help output", async () => {
     const stdout = captureStream();
     const stderr = captureStream();
@@ -136,5 +182,58 @@ describe("runtime root CLI", () => {
         allowedUsers: [123, 456],
       }),
     );
+  });
+
+  it("routes onboard through the interactive TUI for tty sessions", async () => {
+    setStdinTTY(true);
+    const stdout = captureStream();
+    const stderr = captureStream();
+    (stdout.stream as Writable & { isTTY?: boolean }).isTTY = true;
+
+    const code = await runCli({
+      argv: ["onboard", "--config", "/tmp/agenc-config.json"],
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+    });
+
+    expect(code).toBe(0);
+    expect(runInteractiveOnboarding).toHaveBeenCalledWith(
+      expect.objectContaining({
+        configPath: "/tmp/agenc-config.json",
+      }),
+      expect.objectContaining({
+        stdin: process.stdin,
+        stdout: stdout.stream,
+      }),
+    );
+    expect(runOnboardCommand).not.toHaveBeenCalled();
+  });
+
+  it("keeps onboard on the structured path for json output", async () => {
+    setStdinTTY(true);
+    const stdout = captureStream();
+    const stderr = captureStream();
+    (stdout.stream as Writable & { isTTY?: boolean }).isTTY = true;
+
+    const code = await runCli({
+      argv: [
+        "onboard",
+        "--config",
+        "/tmp/agenc-config.json",
+        "--output",
+        "json",
+      ],
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+    });
+
+    expect(code).toBe(0);
+    expect(runOnboardCommand).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        configPath: "/tmp/agenc-config.json",
+      }),
+    );
+    expect(runInteractiveOnboarding).not.toHaveBeenCalled();
   });
 });

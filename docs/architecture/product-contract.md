@@ -87,6 +87,11 @@ agenc ui
 second runtime; it is a loopback dashboard surface mounted at `/ui/` on the
 daemon HTTP port.
 
+`agenc onboard` is the canonical first-run experience. In V1 it is an
+interactive terminal onboarding flow that validates xAI access, collects the
+core agent identity/soul posture, writes `~/.agenc/config.json`, and generates
+the curated workspace markdown profile under `~/.agenc/workspace/`.
+
 Phase 2 public wrapper support is intentionally narrow:
 
 - platform: `linux`

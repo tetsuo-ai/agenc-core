@@ -12,6 +12,14 @@ agenc
 agenc ui
 ```
 
+`agenc onboard` is the canonical first-run path. It opens an interactive
+terminal onboarding flow that:
+
+- validates an xAI API key
+- lets the operator shape the agent name, mission, role, soul, and tool posture
+- writes the canonical config at `~/.agenc/config.json`
+- generates the curated workspace markdown profile under `~/.agenc/workspace/`
+
 It does not expose the runtime source tree directly. Instead, it installs and
 launches the matching AgenC runtime artifact for the current supported
 platform.

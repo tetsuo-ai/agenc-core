@@ -237,6 +237,7 @@ async function checkStoreIntegrity(
 
 export async function checkWalletAvailability(
   checks: HealthCheckResult[],
+  configuredKeyPath?: string,
 ): Promise<boolean> {
   const defaultKeyPath = path.join(
     os.homedir(),
@@ -246,7 +247,9 @@ export async function checkWalletAvailability(
   );
   const envKeyPath = process.env.SOLANA_KEYPAIR_PATH;
   const keyPath =
-    typeof envKeyPath === "string" && envKeyPath.length > 0
+    typeof configuredKeyPath === "string" && configuredKeyPath.trim().length > 0
+      ? configuredKeyPath.trim()
+      : typeof envKeyPath === "string" && envKeyPath.length > 0
       ? envKeyPath
       : defaultKeyPath;
 
@@ -361,6 +364,26 @@ export function checkConfigValidity(
   }
 }
 
+function resolveConfiguredWalletPath(options: {
+  configPath?: string;
+  configPathSource?: HealthOptions["configPathSource"];
+}): string | undefined {
+  const resolvedPath = path.resolve(
+    options.configPath ?? getCanonicalDefaultConfigPath(),
+  );
+  if (!existsSync(resolvedPath)) {
+    return undefined;
+  }
+
+  try {
+    return loadCliConfigContract(resolvedPath, {
+      configPathSource: options.configPathSource ?? "canonical",
+    }).gatewayConfig?.connection?.keypairPath;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function runAllHealthChecks(
   options: Pick<
     HealthOptions,
@@ -379,7 +402,10 @@ export async function runAllHealthChecks(
     { storeType: options.storeType, sqlitePath: options.sqlitePath },
     checks,
   );
-  await checkWalletAvailability(checks);
+  await checkWalletAvailability(
+    checks,
+    resolveConfiguredWalletPath(options),
+  );
   checkProgramAvailability(options.programId, checks);
   checkConfigValidity(options.configPath, checks, options.configPathSource);
 

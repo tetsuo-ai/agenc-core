@@ -9,9 +9,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Connection } from "@solana/web3.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildOnboardingProfile } from "../onboarding/profile.js";
 import * as gatewayDaemon from "../gateway/daemon.js";
 import type { OnboardOptions } from "./types.js";
-import { runOnboardCommand } from "./onboard.js";
+import { executeOnboardCommand, runOnboardCommand } from "./onboard.js";
 import { createContextCapture } from "./test-utils.js";
 
 describe("onboard cli command", () => {
@@ -273,5 +274,77 @@ describe("onboard cli command", () => {
 
     const written = JSON.parse(readFileSync(configPath, "utf8")) as any;
     expect(written.connection.rpcUrl).toBe("http://old.example");
+  });
+
+  it("writes curated workspace files and uses the configured wallet path for health", async () => {
+    vi.spyOn(Connection.prototype, "getSlot").mockResolvedValue(123);
+    const workspacePath = join(workspace, "agent-workspace");
+    const configuredWalletPath = join(workspace, "configured-id.json");
+    writeFileSync(configuredWalletPath, "[]", "utf8");
+    process.env.SOLANA_KEYPAIR_PATH = join(workspace, "missing-wallet.json");
+
+    const profile = buildOnboardingProfile({
+      apiKey: "xai-test-key",
+      model: "grok-4-1-fast-reasoning",
+      agentName: "Operator",
+      mission: "Run a clean first-run profile.",
+      role: "Operator",
+      alwaysDoRules: ["Keep outputs factual."],
+      soulTraits: ["direct", "disciplined"],
+      tone: "Direct and calm",
+      verbosity: "balanced",
+      autonomy: "balanced",
+      toolPosture: "balanced",
+      memorySeeds: ["This is a local operator workspace."],
+      desktopAutomationEnabled: false,
+      walletPath: configuredWalletPath,
+      rpcUrl: "http://rpc.example",
+      marketplaceEnabled: true,
+      socialEnabled: false,
+    });
+    const finalConfig = structuredClone(profile.config);
+    finalConfig.workspace = {
+      ...(finalConfig.workspace ?? {}),
+      hostPath: workspacePath,
+    };
+
+    const options: OnboardOptions = {
+      help: false,
+      outputFormat: "json",
+      strictMode: false,
+      rpcUrl: "http://rpc.example",
+      programId: undefined,
+      storeType: "sqlite",
+      sqlitePath: undefined,
+      traceId: undefined,
+      idempotencyWindow: 900,
+      configPath,
+      configPathSource: "explicit",
+      nonInteractive: true,
+      force: false,
+    };
+
+    const result = await executeOnboardCommand(options, {
+      finalConfig,
+      workspace: {
+        workspacePath,
+        files: profile.workspaceFiles,
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.walletDetected).toBe(true);
+    expect(result.workspacePath).toBe(workspacePath);
+    expect(result.workspaceFilesCreated).toContain("AGENT.md");
+    expect(readFileSync(join(workspacePath, "SOUL.md"), "utf8")).toContain(
+      "# Soul",
+    );
+    expect(
+      JSON.parse(readFileSync(configPath, "utf8")) as {
+        workspace?: { hostPath?: string };
+      },
+    ).toMatchObject({
+      workspace: { hostPath: workspacePath },
+    });
   });
 });

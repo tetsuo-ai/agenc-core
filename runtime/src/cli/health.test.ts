@@ -164,6 +164,54 @@ describe("health cli commands", () => {
     expect(ids.has("store.integrity")).toBe(true);
   });
 
+  it("health prefers the configured keypair path over a missing environment override", async () => {
+    vi.spyOn(Connection.prototype, "getSlot").mockResolvedValue(123);
+    const configuredKeypairPath = join(workspace, "configured-id.json");
+    writeFileSync(configuredKeypairPath, "[]", "utf8");
+    writeConfig(configPath, {
+      gateway: { port: 3100 },
+      agent: { name: "health-agent" },
+      connection: {
+        rpcUrl: "http://rpc.example",
+        keypairPath: configuredKeypairPath,
+      },
+      replay: { store: { type: "memory" } },
+      cli: {
+        outputFormat: "json",
+        strictMode: false,
+        idempotencyWindow: 900,
+      },
+    });
+    process.env.SOLANA_KEYPAIR_PATH = join(workspace, "missing-id.json");
+
+    const { context, outputs } = createContextCapture();
+    const options: HealthOptions = {
+      help: false,
+      outputFormat: "json",
+      strictMode: false,
+      rpcUrl: "http://rpc.example",
+      programId: undefined,
+      storeType: "memory",
+      sqlitePath: undefined,
+      traceId: undefined,
+      idempotencyWindow: 900,
+      configPath,
+      configPathSource: "explicit",
+      nonInteractive: true,
+      deep: false,
+    };
+
+    const code = await runHealthCommand(context, options);
+    expect(code).toBe(0);
+
+    const payload = outputs[0] as any;
+    const wallet = payload.report.checks.find(
+      (c: any) => c.id === "wallet.exists",
+    );
+    expect(wallet.status).toBe("pass");
+    expect(wallet.message).toContain(configuredKeypairPath);
+  });
+
   it("doctor: warnings only returns exit code 1", async () => {
     vi.spyOn(Connection.prototype, "getSlot").mockResolvedValue(123);
     process.env.SOLANA_KEYPAIR_PATH = join(workspace, "missing-id.json");

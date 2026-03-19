@@ -18,12 +18,15 @@ import {
   type LoadedCliConfigContract,
 } from "./config-contract.js";
 import { findDaemonProcessesByIdentity } from "./daemon.js";
+import { getDefaultWorkspacePath } from "../gateway/workspace-files.js";
 import type {
   CliFileConfig,
   CliRuntimeContext,
   OnboardOptions,
 } from "./types.js";
 import { validateGatewayConfig } from "../gateway/config-watcher.js";
+import type { GatewayConfig } from "../gateway/types.js";
+import { writeOnboardingWorkspaceFiles } from "../onboarding/workspace.js";
 import {
   type HealthCheckResult,
   checkConfigValidity,
@@ -38,10 +41,28 @@ export interface OnboardResult {
   configGenerated: boolean;
   backupPath?: string;
   importedLegacyConfigPath?: string | null;
+  workspacePath?: string;
+  workspaceFilesCreated?: string[];
+  workspaceFilesOverwritten?: string[];
+  workspaceFilesPreserved?: string[];
+  workspaceBackupPaths?: string[];
   walletDetected: boolean;
   rpcReachable: boolean;
   checks: HealthCheckResult[];
   exitCode: 0 | 1 | 2;
+}
+
+export interface PreparedOnboardWorkspace {
+  readonly workspacePath?: string;
+  readonly files: Record<string, string>;
+  readonly overwrite?: boolean;
+  readonly backupExisting?: boolean;
+}
+
+export interface PreparedOnboardRun {
+  readonly finalConfig: GatewayConfig;
+  readonly importedLegacyConfigPath?: string | null;
+  readonly workspace?: PreparedOnboardWorkspace;
 }
 
 function computeExitCode(checks: HealthCheckResult[]): 0 | 1 | 2 {
@@ -163,6 +184,19 @@ export async function runOnboardCommand(
   context: CliRuntimeContext,
   options: OnboardOptions,
 ): Promise<0 | 1 | 2> {
+  const result = await executeOnboardCommand(options);
+  context.output({
+    status: "ok",
+    command: "onboard",
+    result,
+  });
+  return result.exitCode;
+}
+
+export async function executeOnboardCommand(
+  options: OnboardOptions,
+  prepared?: PreparedOnboardRun,
+): Promise<OnboardResult> {
   const checks: HealthCheckResult[] = [];
 
   const configPath = path.resolve(
@@ -191,9 +225,11 @@ export async function runOnboardCommand(
   }
 
   const managedConfig = buildOnboardManagedConfig(options);
-  let importedLegacyConfigPath: string | null = null;
+  let importedLegacyConfigPath: string | null =
+    prepared?.importedLegacyConfigPath ?? null;
   let importedFileConfig: CliFileConfig = {};
   if (
+    !prepared &&
     options.legacyImportConfigPath &&
     path.resolve(options.legacyImportConfigPath) !== configPath
   ) {
@@ -225,10 +261,12 @@ export async function runOnboardCommand(
     baseConfig,
     buildManagedGatewayPatch(importedFileConfig),
   );
-  const finalConfig = applyManagedGatewayPatch(
-    importedConfig,
-    buildManagedGatewayPatch(managedConfig),
-  );
+  const finalConfig = prepared?.finalConfig
+    ? structuredClone(prepared.finalConfig)
+    : applyManagedGatewayPatch(
+        importedConfig,
+        buildManagedGatewayPatch(managedConfig),
+      );
   const validation = validateGatewayConfig(finalConfig);
   if (!validation.valid) {
     checks.push({
@@ -287,6 +325,11 @@ export async function runOnboardCommand(
     }
   }
 
+  let workspacePath: string | undefined;
+  let workspaceFilesCreated: string[] | undefined;
+  let workspaceFilesOverwritten: string[] | undefined;
+  let workspaceFilesPreserved: string[] | undefined;
+  let workspaceBackupPaths: string[] | undefined;
   const effectiveFileConfig = configGenerated
     ? loadCliConfigContract(configPath, {
         configPathSource: options.configPathSource ?? "canonical",
@@ -295,7 +338,64 @@ export async function runOnboardCommand(
       ? mergeCliFileConfig(importedFileConfig, managedConfig)
       : existingContract.fileConfig;
 
-  const walletDetected = await checkWalletAvailability(checks);
+  if (configGenerated && prepared?.workspace) {
+    workspacePath = path.resolve(
+      prepared.workspace.workspacePath ?? getDefaultWorkspacePath(),
+    );
+    try {
+      const writeResult = await writeOnboardingWorkspaceFiles(
+        workspacePath,
+        prepared.workspace.files,
+        {
+          overwrite: prepared.workspace.overwrite ?? false,
+          backupExisting: prepared.workspace.backupExisting ?? false,
+        },
+      );
+      workspaceFilesCreated = [...writeResult.created];
+      workspaceFilesOverwritten = [...writeResult.overwritten];
+      workspaceFilesPreserved = [...writeResult.preserved];
+      workspaceBackupPaths = [...writeResult.backupPaths];
+
+      checks.push({
+        id: "workspace.generated",
+        category: "config",
+        status: "pass",
+        message:
+          `Workspace updated at ${workspacePath}` +
+          ` (created ${writeResult.created.length}, overwritten ${writeResult.overwritten.length}, preserved ${writeResult.preserved.length})`,
+      });
+
+      if (writeResult.backupPaths.length > 0) {
+        checks.push({
+          id: "workspace.backup",
+          category: "config",
+          status: "pass",
+          message: `Backed up ${writeResult.backupPaths.length} workspace file(s) before overwrite`,
+        });
+      }
+    } catch (error) {
+      checks.push({
+        id: "workspace.generated",
+        category: "config",
+        status: "fail",
+        message: `Failed to write workspace files to ${workspacePath}: ${error instanceof Error ? error.message : String(error)}`,
+        remediation: "Check filesystem permissions or rerun onboarding with a writable workspace path",
+      });
+    }
+  }
+
+  const effectiveGatewayConfig = configGenerated
+    ? (loadCliConfigContract(configPath, {
+        configPathSource: options.configPathSource ?? "canonical",
+      }).gatewayConfig ?? finalConfig)
+    : existingContract.shape === "canonical-gateway" && existingContract.gatewayConfig
+      ? existingContract.gatewayConfig
+      : finalConfig;
+
+  const walletDetected = await checkWalletAvailability(
+    checks,
+    effectiveGatewayConfig.connection.keypairPath,
+  );
   const rpcUrl = effectiveFileConfig.rpcUrl;
   const rpcReachable = await checkRpcReachability(rpcUrl, checks);
 
@@ -312,17 +412,16 @@ export async function runOnboardCommand(
     configGenerated,
     ...(backupPath ? { backupPath } : {}),
     importedLegacyConfigPath,
+    ...(workspacePath ? { workspacePath } : {}),
+    ...(workspaceFilesCreated ? { workspaceFilesCreated } : {}),
+    ...(workspaceFilesOverwritten ? { workspaceFilesOverwritten } : {}),
+    ...(workspaceFilesPreserved ? { workspaceFilesPreserved } : {}),
+    ...(workspaceBackupPaths ? { workspaceBackupPaths } : {}),
     walletDetected,
     rpcReachable,
     checks,
     exitCode,
   };
 
-  context.output({
-    status: "ok",
-    command: "onboard",
-    result,
-  });
-
-  return exitCode;
+  return result;
 }
