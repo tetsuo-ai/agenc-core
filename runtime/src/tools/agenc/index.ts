@@ -17,6 +17,19 @@ import {
   createGetAgentTool,
   createGetProtocolConfigTool,
 } from "./tools.js";
+import {
+  createClaimTaskTool,
+  createCompleteTaskTool,
+  createRegisterSkillTool,
+  createPurchaseSkillTool,
+  createRateSkillTool,
+  createCreateProposalTool,
+  createVoteProposalTool,
+  createInitiateDisputeTool,
+  createResolveDisputeTool,
+  createStakeReputationTool,
+  createDelegateReputationTool,
+} from "./mutation-tools.js";
 
 // Re-export serialized types
 export type {
@@ -35,6 +48,19 @@ export {
   createGetAgentTool,
   createGetProtocolConfigTool,
 } from "./tools.js";
+export {
+  createClaimTaskTool,
+  createCompleteTaskTool,
+  createRegisterSkillTool,
+  createPurchaseSkillTool,
+  createRateSkillTool,
+  createCreateProposalTool,
+  createVoteProposalTool,
+  createInitiateDisputeTool,
+  createResolveDisputeTool,
+  createStakeReputationTool,
+  createDelegateReputationTool,
+} from "./mutation-tools.js";
 
 /**
  * Create all built-in AgenC protocol tools.
@@ -86,6 +112,17 @@ export function createAgencTools(context: ToolContext): Tool[] {
     createGetTokenBalanceTool(program, context.logger),
     createRegisterAgentTool(program, context.logger),
     createCreateTaskTool(program, context.logger),
+    createClaimTaskTool(program, context.logger),
+    createCompleteTaskTool(program, context.logger),
+    createRegisterSkillTool(program, context.logger),
+    createPurchaseSkillTool(program, context.logger),
+    createRateSkillTool(program, context.logger),
+    createCreateProposalTool(program, context.logger),
+    createVoteProposalTool(program, context.logger),
+    createInitiateDisputeTool(program, context.logger),
+    createResolveDisputeTool(program, context.logger),
+    createStakeReputationTool(program, context.logger),
+    createDelegateReputationTool(program, context.logger),
     createGetAgentTool(program, context.logger),
     createGetProtocolConfigTool(program, context.logger),
   ];

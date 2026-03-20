@@ -200,15 +200,26 @@ describe('createAgencTools', () => {
       logger: silentLogger,
     });
 
-    expect(tools).toHaveLength(7);
+    expect(tools).toHaveLength(18);
     expect(tools.map((t) => t.name).sort()).toEqual([
+      'agenc.claimTask',
+      'agenc.completeTask',
+      'agenc.createProposal',
       'agenc.createTask',
+      'agenc.delegateReputation',
       'agenc.getAgent',
       'agenc.getProtocolConfig',
       'agenc.getTask',
       'agenc.getTokenBalance',
+      'agenc.initiateDispute',
       'agenc.listTasks',
+      'agenc.purchaseSkill',
+      'agenc.rateSkill',
       'agenc.registerAgent',
+      'agenc.registerSkill',
+      'agenc.resolveDispute',
+      'agenc.stakeReputation',
+      'agenc.voteProposal',
     ]);
   });
 });

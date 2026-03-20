@@ -186,6 +186,15 @@ describe('ApprovalEngine', () => {
       expect(engine.requiresApproval('agenc.registerAgent', {})).not.toBeNull();
     });
 
+    it('always requires approval for agenc.purchaseSkill', () => {
+      expect(engine.requiresApproval('agenc.purchaseSkill', { skillPda: 'skill-1' })).not.toBeNull();
+    });
+
+    it('matches agenc.stakeReputation with amount > 0.1 SOL (lamports)', () => {
+      expect(engine.requiresApproval('agenc.stakeReputation', { amount: '100000001' })).not.toBeNull();
+      expect(engine.requiresApproval('agenc.stakeReputation', { amount: '100000000' })).toBeNull();
+    });
+
     it('checks argPatterns condition', () => {
       const eng = new ApprovalEngine({
         rules: [
@@ -809,8 +818,8 @@ describe('ApprovalEngine', () => {
   // ============================================================================
 
   describe('DEFAULT_APPROVAL_RULES', () => {
-    it('has 6 baseline high-risk rules', () => {
-      expect(DEFAULT_APPROVAL_RULES).toHaveLength(6);
+    it('has 8 baseline high-risk rules', () => {
+      expect(DEFAULT_APPROVAL_RULES).toHaveLength(8);
     });
 
     it('covers system.delete and system.evaluateJs', () => {
@@ -821,12 +830,14 @@ describe('ApprovalEngine', () => {
       expect(tools).not.toContain('desktop.bash');
     });
 
-    it('covers wallet.sign, wallet.transfer, agenc.createTask, agenc.registerAgent', () => {
+    it('covers wallet.sign, wallet.transfer, and economic agenc mutations', () => {
       const tools = DEFAULT_APPROVAL_RULES.map((r) => r.tool);
       expect(tools).toContain('wallet.sign');
       expect(tools).toContain('wallet.transfer');
       expect(tools).toContain('agenc.createTask');
       expect(tools).toContain('agenc.registerAgent');
+      expect(tools).toContain('agenc.purchaseSkill');
+      expect(tools).toContain('agenc.stakeReputation');
     });
 
     it('wallet.transfer has minAmount 0.1', () => {
@@ -837,6 +848,11 @@ describe('ApprovalEngine', () => {
     it('agenc.createTask has minAmount 1 SOL in lamports', () => {
       const rule = DEFAULT_APPROVAL_RULES.find((r) => r.tool === 'agenc.createTask');
       expect(rule!.conditions!.minAmount).toBe(1_000_000_000);
+    });
+
+    it('agenc.stakeReputation has minAmount 0.1 SOL in lamports', () => {
+      const rule = DEFAULT_APPROVAL_RULES.find((r) => r.tool === 'agenc.stakeReputation');
+      expect(rule!.conditions!.minAmount).toBe(100_000_000);
     });
 
     it('does not include desktop automation tools by default', () => {
@@ -859,10 +875,10 @@ describe('ApprovalEngine', () => {
 
   describe('buildDefaultApprovalRules', () => {
     it('keeps desktop automation opt-in', () => {
-      expect(buildDefaultApprovalRules()).toHaveLength(6);
+      expect(buildDefaultApprovalRules()).toHaveLength(8);
       expect(
         buildDefaultApprovalRules({ gateDesktopAutomation: true }),
-      ).toHaveLength(10);
+      ).toHaveLength(12);
     });
   });
 });

@@ -283,6 +283,15 @@ export const DEFAULT_APPROVAL_RULES: readonly ApprovalRule[] = [
     tool: 'agenc.registerAgent',
     description: 'Agent registration with staked SOL',
   },
+  {
+    tool: 'agenc.purchaseSkill',
+    description: 'Marketplace skill purchase',
+  },
+  {
+    tool: 'agenc.stakeReputation',
+    conditions: { minAmount: 100_000_000 },
+    description: 'Reputation stake exceeding 0.1 SOL',
+  },
 ];
 
 export const DEFAULT_DESKTOP_APPROVAL_RULES: readonly ApprovalRule[] = [

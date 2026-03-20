@@ -1,0 +1,339 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { PublicKey } from '@solana/web3.js';
+import type { ToolResult } from '../types.js';
+import { silentLogger } from '../../utils/logger.js';
+import { ProposalType } from '../../governance/types.js';
+import { GovernanceOperations } from '../../governance/operations.js';
+import { DisputeOperations } from '../../dispute/operations.js';
+import { ReputationEconomyOperations } from '../../reputation/economy.js';
+import { TaskOperations } from '../../task/operations.js';
+import {
+  createClaimTaskTool,
+  createCompleteTaskTool,
+  createRegisterSkillTool,
+  createPurchaseSkillTool,
+  createCreateProposalTool,
+  createResolveDisputeTool,
+  createStakeReputationTool,
+  createDelegateReputationTool,
+} from './mutation-tools.js';
+
+const SIGNER = PublicKey.unique();
+const AGENT_PDA = PublicKey.unique();
+const TASK_PDA = PublicKey.unique();
+const DISPUTE_PDA = PublicKey.unique();
+const SKILL_PDA = PublicKey.unique();
+const DEFENDANT_AGENT_PDA = PublicKey.unique();
+const DEFENDANT_WALLET = PublicKey.unique();
+const CREATOR_WALLET = PublicKey.unique();
+const PROPOSAL_PDA = PublicKey.unique();
+const DELEGATION_PDA = PublicKey.unique();
+const TREASURY = PublicKey.unique();
+const STAKE_PDA = PublicKey.unique();
+
+function parseJson(result: ToolResult) {
+  return JSON.parse(result.content) as Record<string, unknown>;
+}
+
+function makeRawAgent(authority: PublicKey) {
+  return {
+    agentId: new Uint8Array(32).fill(7),
+    authority,
+    capabilities: { toString: () => '1' },
+    status: { active: {} },
+    registeredAt: { toNumber: () => 1700000000 },
+    lastActive: { toNumber: () => 1700000100 },
+    endpoint: 'agent://test',
+    metadataUri: '',
+    tasksCompleted: { toString: () => '5' },
+    totalEarned: { toString: () => '5000000000' },
+    reputation: 8000,
+    activeTasks: 1,
+    stake: { toString: () => '1000000000' },
+    lastTaskCreated: { toNumber: () => 0 },
+    lastDisputeInitiated: { toNumber: () => 0 },
+    taskCount24H: 0,
+    disputeCount24H: 0,
+    rateLimitWindowStart: { toNumber: () => 0 },
+    activeDisputeVotes: 0,
+    lastVoteTimestamp: { toNumber: () => 0 },
+    lastStateUpdate: { toNumber: () => 0 },
+    disputesAsDefendant: 0,
+    bump: 254,
+  };
+}
+
+function createRpcChain(signature: string) {
+  return {
+    accountsPartial: vi.fn().mockReturnThis(),
+    rpc: vi.fn(async () => signature),
+  };
+}
+
+function createMockProgram(options: { signer?: PublicKey | null } = {}) {
+  const signer = 'signer' in options ? options.signer ?? null : SIGNER;
+  const registerSkillChain = createRpcChain('register-skill-sig');
+  const purchaseSkillChain = createRpcChain('purchase-skill-sig');
+  const treasuryAccount = Buffer.alloc(72);
+  TREASURY.toBuffer().copy(treasuryAccount, 40);
+
+  const program = {
+    programId: PublicKey.unique(),
+    provider: {
+      publicKey: signer,
+      connection: {
+        getProgramAccounts: vi.fn(async () => []),
+        getAccountInfo: vi.fn(async () => ({ data: treasuryAccount })),
+      },
+    },
+    account: {
+      agentRegistration: {
+        fetch: vi.fn(async (pda: PublicKey) => {
+          if (pda.equals(AGENT_PDA)) return makeRawAgent(SIGNER);
+          if (pda.equals(DEFENDANT_AGENT_PDA)) return makeRawAgent(DEFENDANT_WALLET);
+          throw new Error(`Unknown agent: ${pda.toBase58()}`);
+        }),
+      },
+      skillRegistration: {
+        fetch: vi.fn(async (pda: PublicKey) => {
+          if (pda.equals(SKILL_PDA)) {
+            return {
+              author: DEFENDANT_AGENT_PDA,
+              price: { toString: () => '42' },
+              priceMint: null,
+            };
+          }
+          throw new Error(`Unknown skill: ${pda.toBase58()}`);
+        }),
+      },
+    },
+    methods: {
+      registerSkill: vi.fn().mockReturnValue(registerSkillChain),
+      purchaseSkill: vi.fn().mockReturnValue(purchaseSkillChain),
+    },
+    _registerSkillChain: registerSkillChain,
+    _purchaseSkillChain: purchaseSkillChain,
+  };
+
+  return program;
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe('agenc mutation tools', () => {
+  it('agenc.claimTask returns a signer error when the program context is read-only', async () => {
+    const program = createMockProgram({ signer: null });
+    const tool = createClaimTaskTool(program as never, silentLogger);
+
+    const result = await tool.execute({ taskPda: TASK_PDA.toBase58() });
+
+    expect(result.isError).toBe(true);
+    expect(parseJson(result)).toEqual({
+      error: 'This action requires a signer-backed program context',
+    });
+  });
+
+  it('agenc.completeTask validates proofHash length', async () => {
+    const program = createMockProgram();
+    const tool = createCompleteTaskTool(program as never, silentLogger);
+
+    const result = await tool.execute({
+      taskPda: TASK_PDA.toBase58(),
+      proofHash: 'abcd',
+    });
+
+    expect(result.isError).toBe(true);
+    expect(String(parseJson(result).error)).toContain('proofHash');
+  });
+
+  it('agenc.registerSkill returns the derived skill payload on success', async () => {
+    const program = createMockProgram();
+    const tool = createRegisterSkillTool(program as never, silentLogger);
+
+    const result = await tool.execute({
+      authorAgentPda: AGENT_PDA.toBase58(),
+      skillId: '11'.repeat(32),
+      name: 'Routing Expert',
+      contentHash: 'ab'.repeat(32),
+      price: '42',
+      tags: ['solana', 'routing'],
+    });
+
+    const parsed = parseJson(result);
+
+    expect(result.isError).toBeUndefined();
+    expect(parsed.authorAgentPda).toBe(AGENT_PDA.toBase58());
+    expect(parsed.price).toBe('42');
+    expect(parsed.transactionSignature).toBe('register-skill-sig');
+    expect(program.methods.registerSkill).toHaveBeenCalledTimes(1);
+    expect(program._registerSkillChain.accountsPartial).toHaveBeenCalledTimes(1);
+  });
+
+  it('agenc.createProposal maps proposalType strings and returns a success payload', async () => {
+    const program = createMockProgram();
+    const createProposalSpy = vi
+      .spyOn(GovernanceOperations.prototype, 'createProposal')
+      .mockResolvedValue({
+        proposalPda: PROPOSAL_PDA,
+        transactionSignature: 'proposal-sig',
+      });
+    const tool = createCreateProposalTool(program as never, silentLogger);
+
+    const result = await tool.execute({
+      proposerAgentPda: AGENT_PDA.toBase58(),
+      proposalType: 'fee_change',
+      title: 'Raise fee',
+      description: 'Proposal body',
+    });
+
+    const parsed = parseJson(result);
+
+    expect(result.isError).toBeUndefined();
+    expect(parsed.proposalPda).toBe(PROPOSAL_PDA.toBase58());
+    expect(parsed.proposalType).toBe('fee_change');
+    expect(parsed.transactionSignature).toBe('proposal-sig');
+    expect(createProposalSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        proposalType: ProposalType.FeeChange,
+        votingPeriod: 86_400,
+      }),
+    );
+  });
+
+  it('agenc.purchaseSkill returns the purchase payload on success', async () => {
+    const program = createMockProgram();
+    const tool = createPurchaseSkillTool(program as never, silentLogger);
+
+    const result = await tool.execute({
+      skillPda: SKILL_PDA.toBase58(),
+      buyerAgentPda: AGENT_PDA.toBase58(),
+      expectedPrice: '42',
+    });
+
+    const parsed = parseJson(result);
+
+    expect(result.isError).toBeUndefined();
+    expect(parsed.skillPda).toBe(SKILL_PDA.toBase58());
+    expect(parsed.buyerAgentPda).toBe(AGENT_PDA.toBase58());
+    expect(parsed.pricePaid).toBe('42');
+    expect(parsed.priceMint).toBeNull();
+    expect(parsed.transactionSignature).toBe('purchase-skill-sig');
+    expect(program.methods.purchaseSkill).toHaveBeenCalledTimes(1);
+    expect(program._purchaseSkillChain.accountsPartial).toHaveBeenCalledTimes(1);
+  });
+
+  it('agenc.resolveDispute returns transaction details when the dispute resolves', async () => {
+    const program = createMockProgram();
+    vi.spyOn(DisputeOperations.prototype, 'fetchDispute').mockResolvedValue({
+      task: TASK_PDA,
+      defendant: DEFENDANT_AGENT_PDA,
+    } as never);
+    const resolveSpy = vi
+      .spyOn(DisputeOperations.prototype, 'resolveDispute')
+      .mockResolvedValue({
+        disputePda: DISPUTE_PDA,
+        transactionSignature: 'resolve-sig',
+      });
+    vi.spyOn(TaskOperations.prototype, 'fetchTask').mockResolvedValue({
+      creator: CREATOR_WALLET,
+    } as never);
+
+    const tool = createResolveDisputeTool(program as never, silentLogger);
+    const votePda = PublicKey.unique();
+    const arbiterAgentPda = PublicKey.unique();
+    const result = await tool.execute({
+      disputePda: DISPUTE_PDA.toBase58(),
+      arbiterVotes: [
+        {
+          votePda: votePda.toBase58(),
+          arbiterAgentPda: arbiterAgentPda.toBase58(),
+        },
+      ],
+    });
+
+    const parsed = parseJson(result);
+
+    expect(result.isError).toBeUndefined();
+    expect(parsed.disputePda).toBe(DISPUTE_PDA.toBase58());
+    expect(parsed.taskPda).toBe(TASK_PDA.toBase58());
+    expect(parsed.creator).toBe(CREATOR_WALLET.toBase58());
+    expect(parsed.defendant).toBe(DEFENDANT_AGENT_PDA.toBase58());
+    expect(parsed.transactionSignature).toBe('resolve-sig');
+    expect(resolveSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskPda: TASK_PDA,
+        creatorPubkey: CREATOR_WALLET,
+        workerAgentPda: DEFENDANT_AGENT_PDA,
+        workerAuthority: DEFENDANT_WALLET,
+        arbiterVotes: [
+          {
+            votePda,
+            arbiterAgentPda,
+          },
+        ],
+      }),
+    );
+  });
+
+  it('agenc.delegateReputation resolves delegatee ids and returns a success payload', async () => {
+    const program = createMockProgram();
+    const delegateSpy = vi
+      .spyOn(ReputationEconomyOperations.prototype, 'delegateReputation')
+      .mockResolvedValue({
+        delegationPda: DELEGATION_PDA,
+        transactionSignature: 'delegate-sig',
+      });
+    const tool = createDelegateReputationTool(program as never, silentLogger);
+
+    const result = await tool.execute({
+      delegatorAgentPda: AGENT_PDA.toBase58(),
+      delegateeAgentId: '22'.repeat(32),
+      amount: 500,
+      expiresAt: 1234,
+    });
+
+    const parsed = parseJson(result);
+
+    expect(result.isError).toBeUndefined();
+    expect(parsed.delegationPda).toBe(DELEGATION_PDA.toBase58());
+    expect(parsed.delegatorAgentPda).toBe(AGENT_PDA.toBase58());
+    expect(parsed.amount).toBe(500);
+    expect(parsed.expiresAt).toBe(1234);
+    expect(parsed.transactionSignature).toBe('delegate-sig');
+    expect(delegateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amount: 500,
+        expiresAt: 1234,
+      }),
+    );
+  });
+
+  it('agenc.stakeReputation returns the stake payload on success', async () => {
+    const program = createMockProgram();
+    const stakeSpy = vi
+      .spyOn(ReputationEconomyOperations.prototype, 'stakeReputation')
+      .mockResolvedValue({
+        stakePda: STAKE_PDA,
+        transactionSignature: 'stake-sig',
+      });
+    const tool = createStakeReputationTool(program as never, silentLogger);
+
+    const result = await tool.execute({
+      stakerAgentPda: AGENT_PDA.toBase58(),
+      amount: '100000000',
+    });
+
+    const parsed = parseJson(result);
+
+    expect(result.isError).toBeUndefined();
+    expect(parsed.stakePda).toBe(STAKE_PDA.toBase58());
+    expect(parsed.agentPda).toBe(AGENT_PDA.toBase58());
+    expect(parsed.amount).toBe('100000000');
+    expect(parsed.transactionSignature).toBe('stake-sig');
+    expect(stakeSpy).toHaveBeenCalledWith({
+      amount: 100000000n,
+    });
+  });
+});
