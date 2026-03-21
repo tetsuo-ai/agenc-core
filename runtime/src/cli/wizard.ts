@@ -128,8 +128,11 @@ export function generateDefaultConfig(
   if (overrides.plugins) result.plugins = overrides.plugins;
   if (overrides.policy) result.policy = overrides.policy;
   if (overrides.auth) result.auth = overrides.auth;
+  if (overrides.voice) result.voice = overrides.voice;
+  if (overrides.telemetry) result.telemetry = overrides.telemetry;
   if (overrides.workspace) result.workspace = overrides.workspace;
   if (overrides.desktop) result.desktop = overrides.desktop;
+  if (overrides.mcp) result.mcp = overrides.mcp;
   if (overrides.approvals) result.approvals = overrides.approvals;
   if (overrides.marketplace) result.marketplace = overrides.marketplace;
   if (overrides.social) result.social = overrides.social;
