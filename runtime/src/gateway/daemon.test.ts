@@ -199,6 +199,7 @@ describe("DaemonManager host workspace prompt and memory resolution", () => {
         gateway: { port: 9000 },
         agent: { name: "host-test" },
         connection: { rpcUrl: "http://localhost:8899" },
+        memory: { embeddingProvider: "ollama" },
         workspace: { hostPath },
       };
       const { memoryRetriever } = await (dm as any).createWebChatMemoryRetrievers({
