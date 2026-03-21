@@ -44,6 +44,7 @@
     "private-registry:rehearse": "node scripts/private-registry-rehearsal.mjs --expect-public-scope-publish-denied",
     "pack:smoke": "npm run build && node scripts/pack-smoke.mjs",
     "pack:smoke:skip-build": "node scripts/pack-smoke.mjs",
+    "smoke:marketplace:devnet": "tsx scripts/marketplace-devnet-smoke.ts",
     "build:public-runtime-artifacts": "node scripts/build-public-runtime-artifacts.mjs",
     "sync:dashboard-assets": "node scripts/sync-dashboard-assets.mjs",
     "prepare:public-agenc-package": "node scripts/prepare-public-agenc-package.mjs",
