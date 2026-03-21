@@ -342,6 +342,32 @@ When `GrokProviderConfig.webSearch=true`, the runtime can route provider-native 
 | `cache.ttlMs` | `number` | No | `300_000` |
 | `cache.maxEntries` | `number` | No | `100` |
 
+## Gateway Config
+
+The `gateway` block controls the WebSocket control plane. All fields except `port` are optional.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `gateway.port` | `number` | `3100` | WebSocket control plane port |
+| `gateway.bind` | `string` | `"127.0.0.1"` | Bind address. Set to `"0.0.0.0"` for Docker or remote access. Requires `auth.secret` when non-loopback. |
+
+> **Security note:** When `gateway.bind` is set to a non-loopback address, `auth.secret` is required or startup will fail with a `GatewayValidationError`.
+
+### Docker / remote access example
+```json
+{
+  "gateway": {
+    "port": 3100,
+    "bind": "0.0.0.0"
+  },
+  "auth": {
+    "secret": "your-secret-here"
+  }
+}
+```
+
+> **Common mistake:** Setting `gateway.host` has no effect — the correct field is `gateway.bind`. The `host` field is not part of `GatewayBindConfig` and is silently ignored.
+
 ## Runtime Pipeline Config Profiles
 
 These profiles target the gateway runtime pipeline (`ChatExecutor` + provider adapters). Copy into `~/.agenc/config.json` and adjust secrets/ports/RPC URLs.
