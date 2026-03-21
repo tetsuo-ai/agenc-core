@@ -708,6 +708,30 @@ export function createRegisterAgentTool(
         }
 
         const protocolPda = findProtocolPda(program.programId);
+        let protocolConfig: ProtocolConfig;
+        try {
+          const rawProtocolConfig = await program.account.protocolConfig.fetch(protocolPda);
+          protocolConfig = parseProtocolConfig(rawProtocolConfig);
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          return errorResult(`Failed to fetch protocol config: ${msg}`);
+        }
+
+        let stakeAmount = protocolConfig.minAgentStake;
+        if (args.stakeAmount !== undefined) {
+          const [parsedStakeAmount, stakeAmountErr] = parseBigIntInput(args.stakeAmount, 'stakeAmount');
+          if (stakeAmountErr || parsedStakeAmount === null) {
+            return stakeAmountErr ?? errorResult('Invalid stakeAmount');
+          }
+          stakeAmount = parsedStakeAmount;
+        }
+        const stakeAmountRangeErr = validateU64(stakeAmount, 'stakeAmount');
+        if (stakeAmountRangeErr) return stakeAmountRangeErr;
+        if (stakeAmount < protocolConfig.minAgentStake) {
+          return errorResult(
+            `stakeAmount must be at least protocol minAgentStake (${protocolConfig.minAgentStake.toString()})`,
+          );
+        }
 
         const [agentId, agentIdErr] = parseAgentId(args.agentId);
         if (agentIdErr || !agentId) {
@@ -715,20 +739,18 @@ export function createRegisterAgentTool(
         }
         const agentPda = findAgentPda(agentId, program.programId);
 
-        // Devnet registerAgent has 4 args (no stakeAmount); canonical IDL types
-        // expect 5, so we use `as any` to bypass the arity check.
-        const txSignature = await (program.methods as any)
+        const txSignature = await program.methods
           .registerAgent(
             Array.from(agentId),
             new BN(capabilities.toString()),
             endpoint,
             metadataUri,
+            new BN(stakeAmount.toString()),
           )
           .accountsPartial({
             agent: agentPda,
             protocolConfig: protocolPda,
             authority,
-            systemProgram: SystemProgram.programId,
           })
           .rpc();
 
@@ -739,6 +761,7 @@ export function createRegisterAgentTool(
             capabilities: capabilities.toString(),
             endpoint,
             metadataUri,
+            stakeAmount: stakeAmount.toString(),
             transactionSignature: txSignature,
           }),
         };

@@ -429,7 +429,15 @@ describe('agenc.registerAgent', () => {
     expect(result.isError).toBeUndefined();
     expect(parsed.transactionSignature).toBe('mock-register-agent-sig');
     expect(parsed.agentPda).toBeTypeOf('string');
+    expect(parsed.stakeAmount).toBe('1000000000');
     expect(mockProgram.methods.registerAgent).toHaveBeenCalledOnce();
+    expect(mockProgram.methods.registerAgent).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.anything(),
+      'https://agenc.local',
+      null,
+      expect.anything(),
+    );
   });
 
   it('rejects zero capabilities', async () => {
@@ -443,17 +451,31 @@ describe('agenc.registerAgent', () => {
     expect(JSON.parse(result.content).error).toContain('capabilities must be greater than zero');
   });
 
-  it('proceeds to RPC even when protocol config is uninitialized (on-chain validation)', async () => {
+  it('rejects stakeAmount below protocol minimum', async () => {
     const mockProgram = createMockProgram();
     (mockProgram.provider.connection.getProgramAccounts as any).mockResolvedValueOnce([]);
     const tool = createRegisterAgentTool(mockProgram as never, silentLogger);
 
+    const result = await tool.execute({
+      capabilities: '1',
+      endpoint: 'https://agenc.local',
+      stakeAmount: '1',
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content).error).toContain('stakeAmount must be at least protocol minAgentStake');
+  });
+
+  it('returns an error when protocol config cannot be loaded', async () => {
+    const mockProgram = createMockProgram();
+    (mockProgram.provider.connection.getProgramAccounts as any).mockResolvedValueOnce([]);
+    mockProgram.account.protocolConfig.fetch.mockRejectedValueOnce(new Error('missing protocol config'));
+    const tool = createRegisterAgentTool(mockProgram as never, silentLogger);
+
     const result = await tool.execute({ capabilities: '1', endpoint: 'https://agenc.local' });
 
-    // registerAgent no longer pre-validates protocol config; the on-chain program
-    // handles that check. With a successful mock RPC, it returns success.
-    expect(result.isError).toBeUndefined();
-    expect(JSON.parse(result.content).transactionSignature).toBe('mock-register-agent-sig');
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content).error).toContain('Failed to fetch protocol config');
   });
 });
 

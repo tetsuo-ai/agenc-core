@@ -1,5 +1,8 @@
 import { Writable } from "node:stream";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { runInitCommand } = vi.hoisted(() => ({
   runInitCommand: vi.fn(async () => 0),
@@ -48,6 +51,9 @@ const {
 const { runMarketTuiCommand } = vi.hoisted(() => ({
   runMarketTuiCommand: vi.fn(async () => 0),
 }));
+const { runAgentRegisterCommand } = vi.hoisted(() => ({
+  runAgentRegisterCommand: vi.fn(async () => 0),
+}));
 
 vi.mock("./init.js", () => ({
   runInitCommand,
@@ -92,9 +98,32 @@ vi.mock("./marketplace-tui.js", async () => {
   };
 });
 
+vi.mock("./agent-cli.js", async () => {
+  const actual = await vi.importActual<typeof import("./agent-cli.js")>(
+    "./agent-cli.js",
+  );
+  return {
+    ...actual,
+    runAgentRegisterCommand,
+  };
+});
+
 import { runCli } from "./index.js";
 
 const stdinTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+const TEST_ENV_KEYS = [
+  "AGENC_CONFIG",
+  "AGENC_RUNTIME_CONFIG",
+  "AGENC_RUNTIME_STORE_TYPE",
+  "AGENC_RUNTIME_RPC_URL",
+  "AGENC_RUNTIME_PROGRAM_ID",
+  "AGENC_RUNTIME_SQLITE_PATH",
+  "AGENC_RUNTIME_TRACE_ID",
+  "AGENC_RUNTIME_STRICT_MODE",
+  "AGENC_RUNTIME_IDEMPOTENCY_WINDOW",
+  "AGENC_RUNTIME_OUTPUT",
+  "AGENC_RUNTIME_LOG_LEVEL",
+];
 
 function captureStream(): { stream: Writable; data: () => string } {
   let data = "";
@@ -117,9 +146,62 @@ function setStdinTTY(value: boolean): void {
   });
 }
 
+function createTempWorkspace(): string {
+  const directory = mkdtempSync(join(tmpdir(), "agenc-root-cli-"));
+  mkdirSync(directory, { recursive: true });
+  return directory;
+}
+
+function writeGatewayConfig(directory: string): string {
+  const configPath = join(directory, "config.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      gateway: { port: 3100 },
+      agent: { name: "cli-root-test-agent" },
+      connection: { rpcUrl: "https://api.devnet.solana.com" },
+      replay: { store: { type: "memory" } },
+    }),
+    "utf8",
+  );
+  return configPath;
+}
+
 describe("runtime root CLI", () => {
+  let workspace = "";
+  let restoreEnv: (() => void) | undefined;
+
+  beforeEach(() => {
+    workspace = createTempWorkspace();
+    const configPath = writeGatewayConfig(workspace);
+    const previous = new Map<string, string | undefined>();
+
+    for (const key of TEST_ENV_KEYS) {
+      previous.set(key, process.env[key]);
+      process.env[key] = "";
+    }
+
+    process.env.AGENC_CONFIG = configPath;
+    restoreEnv = () => {
+      for (const key of TEST_ENV_KEYS) {
+        const value = previous.get(key);
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+    };
+  });
+
   afterEach(() => {
     vi.clearAllMocks();
+    restoreEnv?.();
+    restoreEnv = undefined;
+    if (workspace) {
+      rmSync(workspace, { recursive: true, force: true });
+      workspace = "";
+    }
     if (stdinTtyDescriptor) {
       Object.defineProperty(process.stdin, "isTTY", stdinTtyDescriptor);
       return;
@@ -140,6 +222,7 @@ describe("runtime root CLI", () => {
     expect(code).toBe(0);
     expect(stderr.data()).toBe("");
     expect(stdout.data()).toContain("init [--help] [options]");
+    expect(stdout.data()).toContain("agent [--help] <command> [options]");
     expect(stdout.data()).toContain("market [--help] <domain> <command> [options]");
     expect(stdout.data()).toContain("market tui");
     expect(stdout.data()).toContain(
@@ -181,6 +264,44 @@ describe("runtime root CLI", () => {
         pidPath: "/tmp/agenc.pid",
         controlPlanePort: 3222,
         configPath: "/tmp/agenc-config.json",
+      }),
+    );
+  });
+
+  it("routes agent registration through the root CLI command surface", async () => {
+    const stdout = captureStream();
+    const stderr = captureStream();
+
+    const code = await runCli({
+      argv: [
+        "agent",
+        "register",
+        "--rpc",
+        "https://api.devnet.solana.com",
+        "--capabilities",
+        "3",
+        "--endpoint",
+        "https://agent.example.com",
+        "--metadata-uri",
+        "https://agent.example.com/meta.json",
+        "--agent-id",
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      ],
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+    });
+
+    expect(code).toBe(0);
+    expect(stderr.data()).toBe("");
+    expect(runAgentRegisterCommand).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        rpcUrl: "https://api.devnet.solana.com",
+        capabilities: "3",
+        endpoint: "https://agent.example.com",
+        metadataUri: "https://agent.example.com/meta.json",
+        agentId:
+          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       }),
     );
   });

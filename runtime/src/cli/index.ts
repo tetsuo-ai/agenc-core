@@ -109,6 +109,10 @@ import {
 } from "./marketplace-cli.js";
 import type { MarketTuiOptions } from "./marketplace-tui.js";
 import { runMarketTuiCommand } from "./marketplace-tui.js";
+import {
+  runAgentRegisterCommand,
+  type AgentRegisterOptions,
+} from "./agent-cli.js";
 import { runOnboardCommand } from "./onboard.js";
 import {
   runInteractiveOnboarding,
@@ -556,6 +560,16 @@ function validateSkillCommand(name: string): name is SkillCommand {
   );
 }
 
+type AgentCommand = "register";
+
+const AGENT_COMMAND_OPTIONS: Record<AgentCommand, Set<string>> = {
+  register: new Set(["capabilities", "endpoint", "metadata-uri", "agent-id"]),
+};
+
+function validateAgentCommand(name: string): name is AgentCommand {
+  return name === "register";
+}
+
 type MarketCommand =
   | "tasks.list"
   | "tasks.create"
@@ -803,6 +817,8 @@ const ERROR_CODES = {
   MISSING_TARGET: "MISSING_TARGET",
   MISSING_SKILL_COMMAND: "MISSING_SKILL_COMMAND",
   UNKNOWN_SKILL_COMMAND: "UNKNOWN_SKILL_COMMAND",
+  MISSING_AGENT_COMMAND: "MISSING_AGENT_COMMAND",
+  UNKNOWN_AGENT_COMMAND: "UNKNOWN_AGENT_COMMAND",
   MISSING_MARKET_COMMAND: "MISSING_MARKET_COMMAND",
   UNKNOWN_MARKET_COMMAND: "UNKNOWN_MARKET_COMMAND",
   MISSING_SESSION_ID: "MISSING_SESSION_ID",
@@ -839,6 +855,7 @@ function buildHelp(): string {
     "replay [--help] <command> [options]",
     "plugin [--help] <command> [options]",
     "jobs [--help] <command> [options]",
+    "agent [--help] <command> [options]",
     "market [--help] <domain> <command> [options]",
     "market tui",
     "skill [--help] <command> [options]",
@@ -886,6 +903,10 @@ function buildHelp(): string {
     "  run <jobName>                      Trigger a scheduled job immediately",
     "  enable <jobName>                   Enable a scheduled job",
     "  disable <jobName>                  Disable a scheduled job",
+    "",
+    "Agent subcommands:",
+    "  register [--capabilities mask] [--endpoint url]",
+    "                                    Register the signer wallet as an on-chain agent",
     "",
     "Market subcommands:",
     "  tasks list [--status open,in_progress]       List marketplace tasks",
@@ -3519,6 +3540,93 @@ async function dispatchJobsCommands(
   }
 }
 
+async function dispatchAgentCommands(
+  parsed: ParsedArgv,
+  stdout: NodeJS.WritableStream,
+  stderr: NodeJS.WritableStream,
+  context: CliRuntimeContext,
+): Promise<RoutedStatus> {
+  if (parsed.positional[0] !== "agent") {
+    return null;
+  }
+
+  try {
+    const configSelection = resolveLegacyCompatibleConfigSelection(parsed.flags);
+    let fileConfig: CliFileConfig;
+    try {
+      fileConfig = loadFileConfigFromSelection(configSelection);
+    } catch (error) {
+      throw createCliError(
+        `failed to parse config file ${configSelection.configPath}: ${error instanceof Error ? error.message : String(error)}`,
+        ERROR_CODES.CONFIG_PARSE_ERROR,
+      );
+    }
+
+    const envConfig = readEnvironmentConfig();
+    const agentCommand = parsed.positional[1] as string | undefined;
+
+    if (!agentCommand) {
+      throw createCliError(
+        "missing agent subcommand",
+        ERROR_CODES.MISSING_AGENT_COMMAND,
+      );
+    }
+
+    if (!validateAgentCommand(agentCommand)) {
+      throw createCliError(
+        `unknown agent command: ${agentCommand}`,
+        ERROR_CODES.UNKNOWN_AGENT_COMMAND,
+      );
+    }
+
+    validateUnknownStandaloneOptions(
+      parsed.flags,
+      AGENT_COMMAND_OPTIONS[agentCommand],
+    );
+
+    const global = normalizeGlobalFlags(parsed.flags, fileConfig, envConfig);
+    const agentContext = createContext(
+      stdout,
+      stderr,
+      global.outputFormat,
+      global.logLevel,
+    );
+
+    if (global.help) {
+      agentContext.output(buildHelp());
+      return 0;
+    }
+
+    const base: BaseCliOptions = {
+      help: global.help,
+      outputFormat: global.outputFormat,
+      strictMode: global.strictMode,
+      role: global.role,
+      rpcUrl: global.rpcUrl,
+      programId: global.programId,
+      storeType: global.storeType,
+      sqlitePath: global.sqlitePath,
+      traceId: global.traceId,
+      idempotencyWindow: global.idempotencyWindow,
+    };
+
+    const options: AgentRegisterOptions = {
+      ...base,
+      capabilities: parseOptionalScalarFlag(parsed.flags.capabilities),
+      endpoint: parseOptionalStringFlag(parsed.flags.endpoint),
+      metadataUri: parseOptionalStringFlag(parsed.flags["metadata-uri"]),
+      agentId: parseOptionalStringFlag(parsed.flags["agent-id"]),
+    };
+
+    return await runAgentRegisterCommand(agentContext, options);
+  } catch (error) {
+    return reportCliError(context, error, [
+      ERROR_CODES.MISSING_AGENT_COMMAND,
+      ERROR_CODES.UNKNOWN_AGENT_COMMAND,
+    ]);
+  }
+}
+
 async function dispatchSkillCommands(
   parsed: ParsedArgv,
   stdout: NodeJS.WritableStream,
@@ -3796,6 +3904,7 @@ export async function runCli(
     (await dispatchConnectorCommands(parsed, context)) ??
     (await dispatchSessionCommands(parsed, context)) ??
     (await dispatchJobsCommands(parsed, context)) ??
+    (await dispatchAgentCommands(parsed, stdout, stderr, context)) ??
     (await dispatchMarketCommands(parsed, stdout, stderr, context)) ??
     (await dispatchSkillCommands(parsed, stdout, stderr, context));
 
