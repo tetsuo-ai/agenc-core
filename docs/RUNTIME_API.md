@@ -353,7 +353,36 @@ The `gateway` block controls the WebSocket control plane. All fields except `por
 
 > **Security note:** When `gateway.bind` is set to a non-loopback address, `auth.secret` is required or startup will fail with a `GatewayValidationError`.
 
-### Docker / remote access example
+### Docker scenarios
+
+#### Scenario 1 — Docker with browser UI (macOS / no `--network host`)
+
+```json
+{
+  "gateway": {
+    "port": 3100,
+    "bind": "0.0.0.0"
+  }
+}
+```
+
+> **`auth.secret` cannot be used with Docker port mapping on macOS** (or any
+> platform where `--network host` is unavailable). When a browser connects to
+> `localhost:3100` on the host, Docker translates it through the bridge network
+> and the daemon sees the connection arriving from the Docker bridge gateway IP
+> (e.g. `192.168.97.1`), not `127.0.0.1`. The `isLocal` check in the gateway
+> only accepts `127.0.0.1`, `::1`, and `::ffff:127.0.0.1`, so `localBypass`
+> never fires for browser connections via port mapping. The dashboard HTML is
+> also served as plain static files with no JWT token injected, so the web UI
+> has no way to authenticate against `auth.secret` at all. Omit `auth.secret`
+> entirely when you need the browser-based web UI to work over Docker port
+> mapping. Note that `gateway.bind: "0.0.0.0"` normally requires `auth.secret`
+> or startup will fail — see the validation note above. If you need both
+> `bind: "0.0.0.0"` and no `auth.secret`, use a firewall or Docker network
+> policy to restrict access instead.
+
+#### Scenario 2 — Docker CLI only (`docker exec` sessions, no browser UI)
+
 ```json
 {
   "gateway": {
@@ -367,14 +396,14 @@ The `gateway` block controls the WebSocket control plane. All fields except `por
 }
 ```
 
-> **`auth.localBypass` is required when `auth.secret` is set and you are running
-> `agenc watch` or `agenc ui` locally.** When `auth.secret` is configured, the
-> gateway does not auto-authenticate loopback connections — every WebSocket client
-> must present a signed JWT before sending any control-plane message. Local tools
-> (`agenc watch`, `agenc ui`) do not perform JWT auth; they rely on the loopback
-> bypass instead. Without `localBypass: true`, all dotted control-plane messages
-> (including chat, status, and TRACE tab `observability.*` queries) are rejected
-> with `Authentication required`.
+> **`localBypass: true` only authenticates connections whose `remoteAddress` is
+> exactly `127.0.0.1`, `::1`, or `::ffff:127.0.0.1`.** This covers CLI tools
+> run inside the container via `docker exec` (e.g. `agenc watch`, `agenc status`)
+> because those connect to `ws://127.0.0.1:3100` directly. It does **not** cover
+> browser connections routed through Docker port mapping — those arrive from the
+> bridge IP and remain unauthenticated. Use this scenario when you need
+> `auth.secret` for webhook or API security and are willing to forgo the
+> browser-based web UI.
 
 > **Common mistake:** Setting `gateway.host` has no effect — the correct field is `gateway.bind`. The `host` field is not part of `GatewayBindConfig` and is silently ignored.
 
