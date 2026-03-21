@@ -171,6 +171,18 @@ export interface VoteDisputeParams {
 /**
  * Parameters for resolving a dispute.
  */
+export interface DisputeAcceptedBidSettlement {
+  /** Bid book PDA */
+  bidBook: PublicKey;
+  /** Accepted bid PDA */
+  acceptedBid: PublicKey;
+  /** Bidder market state PDA */
+  bidderMarketState: PublicKey;
+}
+
+/**
+ * Parameters for resolving a dispute.
+ */
 export interface ResolveDisputeParams {
   /** Dispute account PDA */
   disputePda: PublicKey;
@@ -188,6 +200,8 @@ export interface ResolveDisputeParams {
   arbiterVotes: Array<{ votePda: PublicKey; arbiterAgentPda: PublicKey }>;
   /** Optional: extra worker pairs for collaborative tasks */
   extraWorkers?: Array<{ claimPda: PublicKey; workerPda: PublicKey }>;
+  /** Optional: accepted-bid settlement suffix for BidExclusive tasks */
+  acceptedBidSettlement?: DisputeAcceptedBidSettlement;
 }
 
 /**
@@ -210,6 +224,8 @@ export interface ExpireDisputeParams {
   arbiterVotes: Array<{ votePda: PublicKey; arbiterAgentPda: PublicKey }>;
   /** Optional: extra worker pairs for collaborative tasks */
   extraWorkers?: Array<{ claimPda: PublicKey; workerPda: PublicKey }>;
+  /** Optional: accepted-bid settlement suffix for BidExclusive tasks */
+  acceptedBidSettlement?: DisputeAcceptedBidSettlement;
 }
 
 /**

@@ -46,7 +46,14 @@ function createMockTaskAccount(
     maxWorkers: number;
     currentClaims: number;
     status: { open: {} };
-    taskType: number;
+    taskType:
+      | number
+      | {
+          exclusive?: {};
+          collaborative?: {};
+          competitive?: {};
+          bidExclusive?: {};
+        };
     rewardMint: PublicKey | null;
   }> = {},
 ) {
@@ -265,6 +272,21 @@ describe("TaskScanner", () => {
 
       expect(tasks).toHaveLength(1);
       expect(tasks[0].taskType).toBe(2);
+    });
+
+    it("parses bidExclusive task type from Anchor enum objects", async () => {
+      const freshTaskPda = Keypair.generate().publicKey;
+      mockProgram._addTask(
+        freshTaskPda,
+        createMockTaskAccount({
+          taskType: { bidExclusive: {} },
+        }),
+      );
+
+      const tasks = await scanner.scan();
+
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0].taskType).toBe(3);
     });
   });
 

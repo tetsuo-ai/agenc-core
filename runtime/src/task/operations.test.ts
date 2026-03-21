@@ -116,6 +116,7 @@ function createParsedTask(overrides: Partial<OnChainTask> = {}): OnChainTask {
     completions: 0,
     requiredCompletions: 1,
     bump: 255,
+    rewardMint: null,
     ...overrides,
   };
 }
@@ -147,11 +148,13 @@ function createMockProgram() {
 
   const completeTaskBuilder = {
     accountsPartial: vi.fn().mockReturnThis(),
+    remainingAccounts: vi.fn().mockReturnThis(),
     rpc: completeTaskRpc,
   };
 
   const completeTaskPrivateBuilder = {
     accountsPartial: vi.fn().mockReturnThis(),
+    remainingAccounts: vi.fn().mockReturnThis(),
     rpc: completeTaskPrivateRpc,
   };
   const completeTaskPrivateMethod = vi
@@ -665,6 +668,35 @@ describe("TaskOperations", () => {
       expect(result.success).toBe(true);
     });
 
+    it("appends parent and accepted-bid settlement accounts when provided", async () => {
+      const taskPda = Keypair.generate().publicKey;
+      const task = createParsedTask();
+      const proofHash = new Uint8Array(32).fill(0xab);
+      const parentTaskPda = Keypair.generate().publicKey;
+      const bidBook = Keypair.generate().publicKey;
+      const acceptedBid = Keypair.generate().publicKey;
+      const bidderMarketState = Keypair.generate().publicKey;
+      const bidderAuthority = Keypair.generate().publicKey;
+
+      await ops.completeTask(taskPda, task, proofHash, null, {
+        parentTaskPda,
+        acceptedBidSettlement: {
+          bidBook,
+          acceptedBid,
+          bidderMarketState,
+        },
+        bidderAuthority,
+      });
+
+      expect(mocks.completeTaskBuilder.remainingAccounts).toHaveBeenCalledWith([
+        { pubkey: parentTaskPda, isSigner: false, isWritable: false },
+        { pubkey: bidBook, isSigner: false, isWritable: true },
+        { pubkey: acceptedBid, isSigner: false, isWritable: true },
+        { pubkey: bidderMarketState, isSigner: false, isWritable: true },
+        { pubkey: bidderAuthority, isSigner: false, isWritable: true },
+      ]);
+    });
+
     it("throws TaskSubmissionError on failure", async () => {
       const taskPda = Keypair.generate().publicKey;
       const task = createParsedTask();
@@ -734,6 +766,48 @@ describe("TaskOperations", () => {
       expect(accounts.router).toBeInstanceOf(PublicKey);
       expect(accounts.verifierEntry).toBeInstanceOf(PublicKey);
       expect((accounts.creator as PublicKey).equals(task.creator)).toBe(true);
+    });
+
+    it("appends accepted-bid settlement accounts with explicit bidder authority", async () => {
+      const taskPda = Keypair.generate().publicKey;
+      const task = createParsedTask();
+      const sealBytes = new Uint8Array(RISC0_SEAL_BORSH_LEN).fill(0x01);
+      sealBytes.set(TRUSTED_RISC0_SELECTOR, 0);
+      const journal = new Uint8Array(RISC0_JOURNAL_LEN).fill(0x02);
+      const imageId = new Uint8Array(RISC0_IMAGE_ID_LEN).fill(0x03);
+      const bindingSeed = new Uint8Array(HASH_SIZE).fill(0x04);
+      const nullifierSeed = new Uint8Array(HASH_SIZE).fill(0x05);
+      const bidBook = Keypair.generate().publicKey;
+      const acceptedBid = Keypair.generate().publicKey;
+      const bidderMarketState = Keypair.generate().publicKey;
+      const bidderAuthority = Keypair.generate().publicKey;
+
+      await ops.completeTaskPrivate(
+        taskPda,
+        task,
+        sealBytes,
+        journal,
+        imageId,
+        bindingSeed,
+        nullifierSeed,
+        {
+          acceptedBidSettlement: {
+            bidBook,
+            acceptedBid,
+            bidderMarketState,
+          },
+          bidderAuthority,
+        },
+      );
+
+      expect(
+        mocks.completeTaskPrivateBuilder.remainingAccounts,
+      ).toHaveBeenCalledWith([
+        { pubkey: bidBook, isSigner: false, isWritable: true },
+        { pubkey: acceptedBid, isSigner: false, isWritable: true },
+        { pubkey: bidderMarketState, isSigner: false, isWritable: true },
+        { pubkey: bidderAuthority, isSigner: false, isWritable: true },
+      ]);
     });
 
     it("throws TaskSubmissionError on failure", async () => {
