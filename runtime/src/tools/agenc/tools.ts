@@ -16,7 +16,7 @@
  */
 
 import { PublicKey, SystemProgram } from '@solana/web3.js';
-import anchor, { type Program } from '@coral-xyz/anchor';
+import { BN, type Program } from '@coral-xyz/anchor';
 import { getAssociatedTokenAddressSync } from '@tetsuo-ai/sdk';
 import type { AgencCoordination } from '../../types/agenc_coordination.js';
 import type { Tool, ToolResult } from '../types.js';
@@ -720,7 +720,7 @@ export function createRegisterAgentTool(
         const txSignature = await (program.methods as any)
           .registerAgent(
             Array.from(agentId),
-            new anchor.BN(capabilities.toString()),
+            new BN(capabilities.toString()),
             endpoint,
             metadataUri,
           )
@@ -871,34 +871,52 @@ export function createCreateTaskTool(
         );
         if (deadlineErr) return deadlineErr;
 
-        // Devnet program doesn't support constraintHash, minReputation, or
-        // non-SOL rewardMints.  We still validate rewardMint so the LLM gets a
-        // clear error instead of a confusing on-chain failure.
+        // The public CLI surface still restricts creation to public tasks with
+        // default reputation gating. We pass null/default values for the extra
+        // canonical fields unless the caller opts into a known public reward mint.
         const [rewardMint, rewardMintErr] = parseKnownRewardMint(args.rewardMint);
         if (rewardMintErr) return rewardMintErr;
+        const [creatorAgentPda, creatorAgentErr] = await resolveCreatorAgentPda(
+          program,
+          creator,
+          args.creatorAgentPda,
+        );
+        if (creatorAgentErr || !creatorAgentPda) {
+          return (
+            creatorAgentErr ?? errorResult("Unable to resolve creatorAgentPda")
+          );
+        }
 
         const taskPda = findTaskPda(creator, taskId, program.programId);
         const escrowPda = findEscrowPda(taskPda, program.programId);
         const protocolPda = findProtocolPda(program.programId);
 
-        // Devnet createTask has 7 args (no constraintHash, minReputation,
-        // rewardMint); canonical IDL types expect 10, so we use `as any`.
         const txSignature = await (program.methods as any)
           .createTask(
             toAnchorBytes(taskId),
-            new anchor.BN(requiredCapabilities.toString()),
+            new BN(requiredCapabilities.toString()),
             toAnchorBytes(descBytes),
-            new anchor.BN(reward.toString()),
+            new BN(reward.toString()),
             maxWorkers,
-            new anchor.BN(deadline),
+            new BN(deadline),
             taskType,
+            null,
+            0,
+            rewardMint,
           )
           .accountsPartial({
             task: taskPda,
             escrow: escrowPda,
             protocolConfig: protocolPda,
+            creatorAgent: creatorAgentPda,
+            authority: creator,
             creator,
             systemProgram: SystemProgram.programId,
+            rewardMint,
+            creatorTokenAccount: null,
+            tokenEscrowAta: null,
+            tokenProgram: null,
+            associatedTokenProgram: null,
           })
           .rpc();
 
@@ -914,6 +932,7 @@ export function createCreateTaskTool(
             taskPda: taskPda.toBase58(),
             escrowPda: escrowPda.toBase58(),
             taskId: bytesToHex(taskId),
+            creatorAgentPda: creatorAgentPda.toBase58(),
             rewardMint: rewardMint?.toBase58() ?? null,
             rewardSymbol: getRewardSymbol(rewardMint),
             transactionSignature: txSignature,

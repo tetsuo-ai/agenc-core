@@ -6,7 +6,7 @@
 import { PublicKey, SystemProgram, type Keypair } from "@solana/web3.js";
 import { sign, createPrivateKey } from "node:crypto";
 import { randomBytes } from "node:crypto";
-import anchor, { type Program } from "@coral-xyz/anchor";
+import { BN, type Program } from "@coral-xyz/anchor";
 import type { AgencCoordination } from "../types/agenc_coordination.js";
 import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";
@@ -99,7 +99,7 @@ export class ReputationEconomyOperations {
 
     try {
       const signature = await (this.program.methods as any)
-        .stakeReputation(new anchor.BN(params.amount.toString()))
+        .stakeReputation(new BN(params.amount.toString()))
         .accountsPartial({
           authority: this.program.provider.publicKey,
           agent: this.agentPda,
@@ -132,7 +132,7 @@ export class ReputationEconomyOperations {
 
     try {
       const signature = await (this.program.methods as any)
-        .withdrawReputationStake(new anchor.BN(params.amount.toString()))
+        .withdrawReputationStake(new BN(params.amount.toString()))
         .accountsPartial({
           authority: this.program.provider.publicKey,
           agent: this.agentPda,
@@ -196,7 +196,7 @@ export class ReputationEconomyOperations {
     try {
       const expiresAt = params.expiresAt ?? 0;
       const signature = await (this.program.methods as any)
-        .delegateReputation(params.amount, new anchor.BN(expiresAt))
+        .delegateReputation(params.amount, new BN(expiresAt))
         .accountsPartial({
           authority: this.program.provider.publicKey,
           delegatorAgent: this.agentPda,

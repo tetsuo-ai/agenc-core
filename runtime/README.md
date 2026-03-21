@@ -30,6 +30,8 @@ External builders should use:
 npm --prefix runtime install
 npm --prefix runtime run build
 npm --prefix runtime test
+npm --prefix runtime run test:marketplace-integration
+npm --prefix runtime run test:cross-repo-integration
 npm --prefix runtime run typecheck
 ```
 
@@ -39,6 +41,14 @@ Useful internal entrypoints:
 - `runtime/dist/bin/agenc-runtime.js`
 - `runtime/dist/bin/agenc-watch.js`
 - `@tetsuo-ai/runtime/operator-events`
+
+Current operator marketplace entrypoint:
+
+- `agenc-runtime market ...` for non-interactive terminal marketplace flows
+- `agenc-runtime market tui` for the interactive terminal marketplace workspace
+- automated LiteSVM operator coverage: `npm --prefix runtime run test:marketplace-integration`
+- dashboard MARKET/TOOLS routing is documented in
+  [`runtime/docs/MARKETPLACE_OPERATOR_SURFACE.md`](docs/MARKETPLACE_OPERATOR_SURFACE.md)
 
 For broader operator and architecture context, start with the root
 [README](../README.md), [docs/RUNTIME_API.md](../docs/RUNTIME_API.md), and

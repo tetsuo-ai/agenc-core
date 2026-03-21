@@ -7,7 +7,9 @@ const FILTERS = [
   { label: 'all', value: '' },
   { label: 'open', value: 'open' },
   { label: 'in_progress', value: 'in_progress' },
+  { label: 'pending_validation', value: 'pending_validation' },
   { label: 'completed', value: 'completed' },
+  { label: 'disputed', value: 'disputed' },
   { label: 'cancelled', value: 'cancelled' },
 ] as const;
 
@@ -15,10 +17,21 @@ interface TasksViewProps {
   tasks: TaskInfo[];
   onRefresh: () => void;
   onCreate: (params: Record<string, unknown>) => void;
+  onClaim: (taskId: string) => void;
+  onComplete: (taskId: string, resultData?: string) => void;
+  onDispute: (taskId: string, evidence: string, resolutionType?: string) => void;
   onCancel: (taskId: string) => void;
 }
 
-export function TasksView({ tasks, onRefresh, onCreate, onCancel }: TasksViewProps) {
+export function TasksView({
+  tasks,
+  onRefresh,
+  onCreate,
+  onClaim,
+  onComplete,
+  onDispute,
+  onCancel,
+}: TasksViewProps) {
   const [filter, setFilter] = useState('');
 
   useEffect(() => {
@@ -26,9 +39,8 @@ export function TasksView({ tasks, onRefresh, onCreate, onCancel }: TasksViewPro
   }, [onRefresh]);
 
   const filtered = useMemo(() => {
-    const reversed = [...tasks].reverse();
-    if (!filter) return reversed;
-    return reversed.filter((task) => task.status.toLowerCase() === filter);
+    if (!filter) return tasks;
+    return tasks.filter((task) => task.status.toLowerCase() === filter);
   }, [tasks, filter]);
 
   const counts = useMemo(() => {
@@ -118,7 +130,13 @@ export function TasksView({ tasks, onRefresh, onCreate, onCancel }: TasksViewPro
                 className="animate-list-item"
                 style={{ animationDelay: `${(index + 1) * 45}ms` }}
               >
-                <TaskCard task={task} onCancel={onCancel} />
+                <TaskCard
+                  task={task}
+                  onClaim={onClaim}
+                  onComplete={onComplete}
+                  onDispute={onDispute}
+                  onCancel={onCancel}
+                />
               </div>
             ))
           )}

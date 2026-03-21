@@ -6,17 +6,17 @@ interface BBSMenuBarProps {
   onViewChange: (view: ViewId) => void;
 }
 
-const MENU_ITEMS: { key: string; label: string; view: ViewId }[] = [
-  { key: '1', label: 'CHAT', view: 'chat' },
-  { key: '2', label: 'DASH', view: 'status' },
-  { key: '3', label: 'RUNS', view: 'runs' },
-  { key: '4', label: 'TRACE', view: 'observability' },
-  { key: '5', label: 'TOOLS', view: 'skills' },
-  { key: '6', label: 'TASKS', view: 'tasks' },
-  { key: '7', label: 'MEMORY', view: 'memory' },
-  { key: '8', label: 'DESKTOP', view: 'desktop' },
-  { key: '9', label: 'FEED', view: 'activity' },
-  { key: '0', label: 'SETTINGS', view: 'settings' },
+const MENU_ITEMS: Array<{ key: string; label: string; title: string; view: ViewId }> = [
+  { key: '1', label: 'CHAT', title: 'Chat', view: 'chat' },
+  { key: '2', label: 'DASH', title: 'Status', view: 'status' },
+  { key: '3', label: 'RUNS', title: 'Runs', view: 'runs' },
+  { key: '4', label: 'TRACE', title: 'Observability', view: 'observability' },
+  { key: '5', label: 'MARKET', title: 'Marketplace', view: 'marketplace' },
+  { key: '6', label: 'TOOLS', title: 'Tools', view: 'tools' },
+  { key: '7', label: 'MEMORY', title: 'Memory', view: 'memory' },
+  { key: '8', label: 'DESKTOP', title: 'Desktop', view: 'desktop' },
+  { key: '9', label: 'FEED', title: 'Activity', view: 'activity' },
+  { key: '0', label: 'SETTINGS', title: 'Settings', view: 'settings' },
 ];
 
 export function BBSMenuBar({ currentView, onViewChange }: BBSMenuBarProps) {
@@ -44,7 +44,7 @@ export function BBSMenuBar({ currentView, onViewChange }: BBSMenuBarProps) {
             <button
               key={item.view}
               onClick={() => onViewChange(item.view)}
-              title={item.label === 'DASH' ? 'Status' : item.label === 'TOOLS' ? 'Skills' : item.label === 'FEED' ? 'Activity' : item.label === 'TRACE' ? 'Observability' : item.label === 'CHAT' ? 'Chat' : item.label === 'RUNS' ? 'Runs' : item.label === 'DESKTOP' ? 'Desktop' : item.label === 'TASKS' ? 'Tasks' : item.label === 'MEMORY' ? 'Memory' : item.label}
+              title={item.title}
               className={`flex items-center gap-1 px-3 py-1 text-xs transition-colors whitespace-nowrap ${
                 isActive
                   ? 'text-bbs-white'

@@ -8,6 +8,7 @@ This is the repo-level developer-documentation entrypoint for `agenc-core`.
 - [./CODEBASE_MAP.md](./CODEBASE_MAP.md) - full repo map across workspaces, tools, tests, scripts, and docs
 - [./COMMANDS_AND_VALIDATION.md](./COMMANDS_AND_VALIDATION.md) - local validation and release-sensitive commands
 - [../runtime/docs/MODULE_MAP.md](../runtime/docs/MODULE_MAP.md) - runtime module navigation guide
+- [../runtime/docs/MARKETPLACE_OPERATOR_SURFACE.md](../runtime/docs/MARKETPLACE_OPERATOR_SURFACE.md) - MARKET/TOOLS split and `agenc-runtime market` / `agenc-runtime market tui` routing
 - [./architecture/README.md](./architecture/README.md) - architecture-focused reading path
 
 ## Primary Package Docs
@@ -40,5 +41,6 @@ This is the repo-level developer-documentation entrypoint for `agenc-core`.
 
 - I need the repo layout: [CODEBASE_MAP.md](./CODEBASE_MAP.md)
 - I need runtime module ownership: [../runtime/docs/MODULE_MAP.md](../runtime/docs/MODULE_MAP.md)
+- I need the MARKET/TOOLS split or terminal marketplace commands: [../runtime/docs/MARKETPLACE_OPERATOR_SURFACE.md](../runtime/docs/MARKETPLACE_OPERATOR_SURFACE.md)
 - I need build or CI commands: [COMMANDS_AND_VALIDATION.md](./COMMANDS_AND_VALIDATION.md)
 - I need architecture context: [architecture/README.md](./architecture/README.md)

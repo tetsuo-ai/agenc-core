@@ -149,6 +149,8 @@ describe('runtime cli foundation', () => {
 
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('agenc-runtime [--help] [--config <path>]');
+    expect(result.stdout).toContain('market [--help] <domain> <command> [options]');
+    expect(result.stdout).toContain('market tui');
     expect(result.stdout).toContain('Replay subcommands:');
     expect(result.stdout).toContain('backfill');
   });

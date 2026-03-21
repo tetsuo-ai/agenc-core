@@ -64,7 +64,7 @@ export interface WebChatDeps {
       rssMB: number;
     };
   };
-  /** Optional skill listing for skills.list handler. */
+  /** Optional tool listing for tools.list handler. */
   skills?: ReadonlyArray<{
     name: string;
     description: string;
@@ -261,6 +261,20 @@ export interface SkillsToggleRequest {
   id?: string;
 }
 
+export interface ToolsListRequest {
+  type: "tools.list";
+  id?: string;
+}
+
+export interface ToolsToggleRequest {
+  type: "tools.toggle";
+  payload: {
+    skillName: string;
+    enabled: boolean;
+  };
+  id?: string;
+}
+
 export interface TasksListRequest {
   type: "tasks.list";
   payload?: { filter?: { status?: string } };
@@ -273,9 +287,129 @@ export interface TasksCreateRequest {
   id?: string;
 }
 
+export interface TasksClaimRequest {
+  type: "tasks.claim";
+  payload: { taskId: string };
+  id?: string;
+}
+
+export interface TasksCompleteRequest {
+  type: "tasks.complete";
+  payload: {
+    taskId: string;
+    resultData?: string;
+  };
+  id?: string;
+}
+
+export interface TasksDisputeRequest {
+  type: "tasks.dispute";
+  payload: {
+    taskId: string;
+    evidence: string;
+    resolutionType?: string;
+  };
+  id?: string;
+}
+
 export interface TasksCancelRequest {
   type: "tasks.cancel";
   payload: { taskId: string };
+  id?: string;
+}
+
+export interface MarketSkillsListRequest {
+  type: "market.skills.list";
+  payload?: {
+    query?: string;
+    activeOnly?: boolean;
+  };
+  id?: string;
+}
+
+export interface MarketSkillsDetailRequest {
+  type: "market.skills.detail";
+  payload: { skillPda: string };
+  id?: string;
+}
+
+export interface MarketSkillsPurchaseRequest {
+  type: "market.skills.purchase";
+  payload: {
+    skillPda: string;
+    skillId: string;
+  };
+  id?: string;
+}
+
+export interface MarketSkillsRateRequest {
+  type: "market.skills.rate";
+  payload: {
+    skillPda: string;
+    rating: number;
+    review?: string;
+  };
+  id?: string;
+}
+
+export interface MarketGovernanceListRequest {
+  type: "market.governance.list";
+  payload?: {
+    status?: string;
+  };
+  id?: string;
+}
+
+export interface MarketGovernanceDetailRequest {
+  type: "market.governance.detail";
+  payload: { proposalPda: string };
+  id?: string;
+}
+
+export interface MarketGovernanceVoteRequest {
+  type: "market.governance.vote";
+  payload: {
+    proposalPda: string;
+    approve: boolean;
+  };
+  id?: string;
+}
+
+export interface MarketDisputesListRequest {
+  type: "market.disputes.list";
+  payload?: {
+    status?: string;
+  };
+  id?: string;
+}
+
+export interface MarketDisputesDetailRequest {
+  type: "market.disputes.detail";
+  payload: { disputePda: string };
+  id?: string;
+}
+
+export interface MarketReputationSummaryRequest {
+  type: "market.reputation.summary";
+  id?: string;
+}
+
+export interface MarketReputationStakeRequest {
+  type: "market.reputation.stake";
+  payload: {
+    amount: string;
+  };
+  id?: string;
+}
+
+export interface MarketReputationDelegateRequest {
+  type: "market.reputation.delegate";
+  payload: {
+    amount: number;
+    delegateeAgentPda?: string;
+    delegateeAgentId?: string;
+    expiresAt?: number;
+  };
   id?: string;
 }
 
@@ -545,6 +679,16 @@ export interface SkillsListResponse {
   id?: string;
 }
 
+export interface ToolsListResponse {
+  type: "tools.list";
+  payload: Array<{
+    name: string;
+    description: string;
+    enabled: boolean;
+  }>;
+  id?: string;
+}
+
 export interface TasksListResponse {
   type: "tasks.list";
   payload: Array<{
@@ -553,7 +697,180 @@ export interface TasksListResponse {
     reward?: string;
     creator?: string;
     worker?: string;
+    description?: string;
   }>;
+  id?: string;
+}
+
+export interface MarketSkillsListResponse {
+  type: "market.skills.list";
+  payload: Array<{
+    skillPda: string;
+    skillId: string;
+    author: string;
+    name: string;
+    tags: string[];
+    priceLamports: string;
+    priceSol?: string;
+    priceMint?: string | null;
+    rating: number;
+    ratingCount: number;
+    downloads: number;
+    version: number;
+    isActive: boolean;
+    createdAt: number;
+    updatedAt: number;
+  }>;
+  id?: string;
+}
+
+export interface MarketSkillsDetailResponse {
+  type: "market.skills.detail";
+  payload: {
+    skillPda: string;
+    skillId: string;
+    author: string;
+    name: string;
+    tags: string[];
+    contentHash: string;
+    priceLamports: string;
+    priceSol?: string;
+    priceMint?: string | null;
+    rating: number;
+    ratingCount: number;
+    downloads: number;
+    version: number;
+    isActive: boolean;
+    createdAt: number;
+    updatedAt: number;
+    purchased?: boolean;
+  };
+  id?: string;
+}
+
+export interface MarketGovernanceListResponse {
+  type: "market.governance.list";
+  payload: Array<{
+    proposalPda: string;
+    proposer: string;
+    proposalType: string;
+    status: string;
+    titleHash: string;
+    descriptionHash: string;
+    payloadPreview?: string;
+    votesFor: string;
+    votesAgainst: string;
+    totalVoters: number;
+    quorum: string;
+    createdAt: number;
+    votingDeadline: number;
+    executionAfter: number;
+  }>;
+  id?: string;
+}
+
+export interface MarketGovernanceDetailResponse {
+  type: "market.governance.detail";
+  payload: {
+    proposalPda: string;
+    proposer: string;
+    proposalType: string;
+    status: string;
+    titleHash: string;
+    descriptionHash: string;
+    payloadPreview?: string;
+    votesFor: string;
+    votesAgainst: string;
+    totalVoters: number;
+    quorum: string;
+    createdAt: number;
+    votingDeadline: number;
+    executionAfter: number;
+    votes: Array<{
+      voter: string;
+      approved: boolean;
+      votedAt: number;
+      voteWeight: string;
+    }>;
+  };
+  id?: string;
+}
+
+export interface MarketDisputesListResponse {
+  type: "market.disputes.list";
+  payload: Array<{
+    disputePda: string;
+    taskPda: string;
+    initiator: string;
+    defendant: string;
+    status: string;
+    resolutionType: string;
+    evidenceHash: string;
+    votesFor: string;
+    votesAgainst: string;
+    totalVoters: number;
+    createdAt: number;
+    votingDeadline: number;
+    expiresAt: number;
+    resolvedAt: number;
+    rewardMint?: string | null;
+  }>;
+  id?: string;
+}
+
+export interface MarketDisputesDetailResponse {
+  type: "market.disputes.detail";
+  payload: {
+    disputePda: string;
+    taskPda: string;
+    initiator: string;
+    defendant: string;
+    status: string;
+    resolutionType: string;
+    evidenceHash: string;
+    votesFor: string;
+    votesAgainst: string;
+    totalVoters: number;
+    createdAt: number;
+    votingDeadline: number;
+    expiresAt: number;
+    resolvedAt: number;
+    slashApplied: boolean;
+    initiatorSlashApplied: boolean;
+    workerStakeAtDispute: string;
+    initiatedByCreator: boolean;
+    rewardMint?: string | null;
+  };
+  id?: string;
+}
+
+export interface MarketReputationSummaryResponse {
+  type: "market.reputation.summary";
+  payload: {
+    registered: boolean;
+    authority: string;
+    agentPda?: string;
+    baseReputation?: number;
+    effectiveReputation?: number;
+    tasksCompleted?: string;
+    totalEarned?: string;
+    totalEarnedSol?: string;
+    stakedAmount?: string;
+    stakedAmountSol?: string;
+    lockedUntil?: number;
+    inboundDelegations?: Array<{
+      delegator: string;
+      amount: number;
+      expiresAt: number;
+      createdAt: number;
+    }>;
+    outboundDelegations?: Array<{
+      delegatee: string;
+      amount: number;
+      expiresAt: number;
+      createdAt: number;
+    }>;
+  };
   id?: string;
 }
 

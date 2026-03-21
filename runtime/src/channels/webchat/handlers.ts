@@ -21,17 +21,46 @@ import type {
   BackgroundRunOperatorErrorPayload,
 } from '../../gateway/background-run-operator.js';
 import type { ObservabilitySummary } from '../../observability/types.js';
-import { createProgram } from '../../idl.js';
-import { OnChainTaskStatus, taskStatusToString } from '../../task/types.js';
-import { findTaskPda, findEscrowPda } from '../../task/pda.js';
-import { findProtocolPda } from '../../agent/pda.js';
-import { lamportsToSol, toAnchorBytes } from '../../utils/encoding.js';
+import { createProgram, createReadOnlyProgram } from '../../idl.js';
+import {
+  buildMarketplaceReputationSummaryForAgent,
+  buildMarketplaceUnregisteredSummary,
+  serializeMarketplaceDisputeSummary,
+  serializeMarketplaceProposalDetail,
+  serializeMarketplaceProposalSummary,
+  serializeMarketplaceSkill,
+  serializeMarketplaceTaskEntry,
+} from '../../marketplace/serialization.js';
+import { TaskOperations } from '../../task/operations.js';
+import { findEscrowPda } from '../../task/pda.js';
+import { lamportsToSol } from '../../utils/encoding.js';
 import { loadKeypairFromFile, getDefaultKeypairPath } from '../../types/wallet.js';
 import { IDL } from '../../idl.js';
-import { AgentStatus, agentStatusToString } from '../../agent/types.js';
+import {
+  AgentStatus,
+  agentStatusToString,
+} from '../../agent/types.js';
 import { getCapabilityNames } from '../../agent/capabilities.js';
-import anchor, { AnchorProvider } from '@coral-xyz/anchor';
+import { silentLogger } from '../../utils/logger.js';
+import { GovernanceOperations } from '../../governance/operations.js';
+import { DisputeOperations } from '../../dispute/operations.js';
+import { OnChainSkillRegistryClient } from '../../skills/registry/client.js';
+import { SkillPurchaseManager } from '../../skills/registry/payment.js';
+import { createCreateTaskTool } from '../../tools/agenc/tools.js';
+import {
+  createClaimTaskTool,
+  createCompleteTaskTool,
+  createDelegateReputationTool,
+  createInitiateDisputeTool,
+  createRateSkillTool,
+  createStakeReputationTool,
+  createVoteProposalTool,
+} from '../../tools/agenc/mutation-tools.js';
+import { AnchorProvider } from '@coral-xyz/anchor';
 import { PublicKey, SystemProgram } from '@solana/web3.js';
+import { createHash } from 'node:crypto';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 export type SendFn = (response: ControlResponse) => void;
 export interface HandlerRequestContext {
@@ -115,6 +144,109 @@ function createWalletProvider(
   return new AnchorProvider(connection, wallet, { commitment: 'confirmed' });
 }
 
+async function createProgramContext(deps: WebChatDeps): Promise<{
+  keypair: import('@solana/web3.js').Keypair;
+  provider: AnchorProvider;
+  program: ReturnType<typeof createProgram>;
+}> {
+  if (!deps.connection) {
+    throw new Error(SOLANA_NOT_CONFIGURED);
+  }
+
+  const keypairPath = deps.gateway.config.connection?.keypairPath ?? getDefaultKeypairPath();
+  const keypair = await loadKeypairFromFile(keypairPath);
+  const provider = createWalletProvider(deps.connection, keypair);
+  return {
+    keypair,
+    provider,
+    program: createProgram(provider),
+  };
+}
+
+function createReadOnlyProgramContext(deps: WebChatDeps): ReturnType<typeof createReadOnlyProgram> {
+  if (!deps.connection) {
+    throw new Error(SOLANA_NOT_CONFIGURED);
+  }
+  return createReadOnlyProgram(deps.connection);
+}
+
+async function resolveSignerAgent(program: ReturnType<typeof createProgram>): Promise<{
+  agentPda: PublicKey;
+  agentId: Uint8Array;
+  authority: PublicKey;
+}> {
+  const authority = program.provider.publicKey;
+  if (!authority) {
+    throw new Error('Signer-backed program context required');
+  }
+
+  const bs58 = await import('bs58');
+  const matches = await program.provider.connection.getProgramAccounts(program.programId, {
+    filters: [
+      { memcmp: { offset: 0, bytes: bs58.default.encode(AGENT_ACCT_DISCRIMINATOR) } },
+      { memcmp: { offset: 40, bytes: authority.toBase58() } },
+    ],
+  });
+
+  if (matches.length === 0) {
+    throw new Error('No agent registration found for signer wallet');
+  }
+  if (matches.length > 1) {
+    throw new Error('Multiple agent registrations found for signer wallet');
+  }
+
+  const agentData = matches[0].account.data as Buffer;
+  if (agentData.length < 72) {
+    throw new Error('Signer agent registration account is truncated');
+  }
+
+  return {
+    agentPda: matches[0].pubkey,
+    agentId: new Uint8Array(agentData.subarray(8, 40)),
+    authority,
+  };
+}
+
+function mapTaskSummary(entry: Awaited<ReturnType<TaskOperations['fetchAllTasks']>>[number]) {
+  const task = serializeMarketplaceTaskEntry(entry);
+  return {
+    id: task.taskPda,
+    status: task.status,
+    reward: lamportsToSol(BigInt(task.rewardLamports)),
+    creator: task.creator,
+    description: task.description,
+    worker: task.currentWorkers > 0 ? `${task.currentWorkers} worker(s)` : undefined,
+  };
+}
+
+function mapSkillSummary(
+  entry: { publicKey: PublicKey; account: Record<string, unknown> },
+) {
+  return serializeMarketplaceSkill(entry);
+}
+
+function mapProposalSummary(
+  entry: Awaited<ReturnType<GovernanceOperations['fetchAllProposals']>>[number],
+) {
+  return serializeMarketplaceProposalSummary(entry);
+}
+
+function mapDisputeSummary(
+  entry: Awaited<ReturnType<DisputeOperations['fetchAllDisputes']>>[number],
+) {
+  return serializeMarketplaceDisputeSummary(entry);
+}
+
+function parseToolError(result: { content: string; isError?: boolean }): string {
+  if (!result.isError) return 'Unknown tool failure';
+  try {
+    const parsed = JSON.parse(result.content) as { error?: string };
+    return parsed.error ?? result.content;
+  } catch {
+    return result.content;
+  }
+}
+
 function emptyObservabilitySummary(windowMs: number): ObservabilitySummary {
   return {
     windowMs,
@@ -186,27 +318,28 @@ export function handleStatusGet(
 }
 
 // ============================================================================
-// Skills handlers
+// Tool registry handlers
 // ============================================================================
 
-export function handleSkillsList(
+function sendToolList(
   deps: WebChatDeps,
-  _payload: Record<string, unknown> | undefined,
   id: string | undefined,
   send: SendFn,
+  responseType: 'skills.list' | 'tools.list',
 ): void {
   send({
-    type: 'skills.list',
+    type: responseType,
     payload: deps.skills ?? [],
     id,
   });
 }
 
-export function handleSkillsToggle(
+function toggleTool(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
   send: SendFn,
+  responseType: 'skills.list' | 'tools.list',
 ): void {
   const skillName = payload?.skillName;
   if (!skillName || typeof skillName !== 'string') {
@@ -219,16 +352,553 @@ export function handleSkillsToggle(
     return;
   }
   if (!deps.skillToggle) {
-    send({ type: 'error', error: 'Skill toggle not available', id });
+    send({ type: 'error', error: 'Tool toggle not available', id });
     return;
   }
   deps.skillToggle(skillName, enabled);
-  // Re-send updated skill list
-  send({
-    type: 'skills.list',
-    payload: deps.skills ?? [],
-    id,
+  sendToolList(deps, id, send, responseType);
+}
+
+export function handleSkillsList(
+  deps: WebChatDeps,
+  _payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): void {
+  sendToolList(deps, id, send, 'skills.list');
+}
+
+export function handleSkillsToggle(
+  deps: WebChatDeps,
+  payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): void {
+  toggleTool(deps, payload, id, send, 'skills.list');
+}
+
+export function handleToolsList(
+  deps: WebChatDeps,
+  _payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): void {
+  sendToolList(deps, id, send, 'tools.list');
+}
+
+export function handleToolsToggle(
+  deps: WebChatDeps,
+  payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): void {
+  toggleTool(deps, payload, id, send, 'tools.list');
+}
+
+// ============================================================================
+// Marketplace handlers
+// ============================================================================
+
+export async function handleMarketSkillsList(
+  deps: WebChatDeps,
+  payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): Promise<void> {
+  if (!deps.connection) {
+    send({ type: 'error', error: SOLANA_NOT_CONFIGURED, id });
+    return;
+  }
+
+  await safeAsync(send, id, 'error', 'Failed to list marketplace skills', async () => {
+    const program = createReadOnlyProgramContext(deps);
+    const query =
+      typeof payload?.query === 'string' ? payload.query.trim().toLowerCase() : '';
+    const activeOnly = payload?.activeOnly !== false;
+
+    const accounts = await (program.account as any).skillRegistration.all();
+    const items = (accounts
+      .map((entry: { publicKey: PublicKey; account: Record<string, unknown> }) =>
+        mapSkillSummary(entry),
+      )
+      .filter((entry: ReturnType<typeof mapSkillSummary>) => !activeOnly || entry.isActive)
+      .filter((entry: ReturnType<typeof mapSkillSummary>) => {
+        if (!query) return true;
+        return (
+          entry.name.toLowerCase().includes(query) ||
+          entry.author.toLowerCase().includes(query) ||
+          entry.tags.some((tag: string) => tag.toLowerCase().includes(query))
+        );
+      })
+      .sort(
+        (left: ReturnType<typeof mapSkillSummary>, right: ReturnType<typeof mapSkillSummary>) =>
+          right.rating - left.rating ||
+          right.downloads - left.downloads ||
+          left.name.localeCompare(right.name),
+      )) as ReturnType<typeof mapSkillSummary>[];
+
+    send({ type: 'market.skills.list', payload: items, id });
   });
+}
+
+export async function handleMarketSkillsDetail(
+  deps: WebChatDeps,
+  payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): Promise<void> {
+  const skillPda = payload?.skillPda;
+  if (!skillPda || typeof skillPda !== 'string') {
+    send({ type: 'error', error: 'Missing skillPda in payload', id });
+    return;
+  }
+  if (!deps.connection) {
+    send({ type: 'error', error: SOLANA_NOT_CONFIGURED, id });
+    return;
+  }
+
+  await safeAsync(send, id, 'error', 'Failed to inspect marketplace skill', async () => {
+    const connection = deps.connection!;
+    const program = createReadOnlyProgramContext(deps);
+    const publicKey = new PublicKey(skillPda);
+    const account = await (program.account as any).skillRegistration.fetchNullable(publicKey);
+    if (!account) {
+      send({ type: 'error', error: `Skill not found: ${skillPda}`, id });
+      return;
+    }
+
+    const detail = mapSkillSummary({
+      publicKey,
+      account: account as Record<string, unknown>,
+    });
+
+    try {
+      const { program: signerProgram } = await createProgramContext(deps);
+      const signerAgent = await resolveSignerAgent(signerProgram);
+      const registryClient = new OnChainSkillRegistryClient({
+        connection,
+        logger: silentLogger,
+      });
+      const purchaseManager = new SkillPurchaseManager({
+        program: signerProgram,
+        agentId: signerAgent.agentId,
+        registryClient,
+        logger: silentLogger,
+      });
+      send({
+        type: 'market.skills.detail',
+        payload: {
+          ...detail,
+          purchased: await purchaseManager.isPurchased(publicKey),
+        },
+        id,
+      });
+      return;
+    } catch {
+      // Fall through and return the skill without signer-specific purchase state.
+    }
+
+    send({ type: 'market.skills.detail', payload: detail, id });
+  });
+}
+
+export async function handleMarketSkillsPurchase(
+  deps: WebChatDeps,
+  payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): Promise<void> {
+  const skillPda = payload?.skillPda;
+  const skillId = payload?.skillId;
+  if (!skillPda || typeof skillPda !== 'string') {
+    send({ type: 'error', error: 'Missing skillPda in payload', id });
+    return;
+  }
+  if (!skillId || typeof skillId !== 'string') {
+    send({ type: 'error', error: 'Missing skillId in payload', id });
+    return;
+  }
+  if (!deps.connection) {
+    send({ type: 'error', error: SOLANA_NOT_CONFIGURED, id });
+    return;
+  }
+
+  try {
+    const connection = deps.connection!;
+    const { program } = await createProgramContext(deps);
+    const signerAgent = await resolveSignerAgent(program);
+    const registryClient = new OnChainSkillRegistryClient({
+      connection,
+      logger: silentLogger,
+    });
+    const purchaseManager = new SkillPurchaseManager({
+      program,
+      agentId: signerAgent.agentId,
+      registryClient,
+      logger: silentLogger,
+    });
+    const result = await purchaseManager.purchase(
+      new PublicKey(skillPda),
+      skillId,
+      join(homedir(), '.agenc', 'skills', `${skillId}.md`),
+    );
+    send({
+      type: 'market.skills.purchased',
+      payload: {
+        skillPda,
+        skillId,
+        paid: result.paid,
+        pricePaid: result.pricePaid.toString(),
+        protocolFee: result.protocolFee.toString(),
+        transactionSignature: result.transactionSignature,
+        contentPath: result.contentPath,
+      },
+      id,
+    });
+    deps.broadcastEvent?.('market.skill.purchased', {
+      skillPda,
+      skillId,
+      paid: result.paid,
+    });
+  } catch (err) {
+    send({ type: 'error', error: `Failed to purchase skill: ${(err as Error).message}`, id });
+  }
+}
+
+export async function handleMarketSkillsRate(
+  deps: WebChatDeps,
+  payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): Promise<void> {
+  const skillPda = payload?.skillPda;
+  const rating = payload?.rating;
+  if (!skillPda || typeof skillPda !== 'string') {
+    send({ type: 'error', error: 'Missing skillPda in payload', id });
+    return;
+  }
+  if (typeof rating !== 'number' || !Number.isInteger(rating)) {
+    send({ type: 'error', error: 'Missing rating in payload', id });
+    return;
+  }
+  if (!deps.connection) {
+    send({ type: 'error', error: SOLANA_NOT_CONFIGURED, id });
+    return;
+  }
+
+  try {
+    const { program } = await createProgramContext(deps);
+    const tool = createRateSkillTool(program, silentLogger);
+    const result = await tool.execute({
+      skillPda,
+      rating,
+      ...(typeof payload?.review === 'string' ? { review: payload.review } : {}),
+    });
+    if (result.isError) {
+      send({ type: 'error', error: `Failed to rate skill: ${parseToolError(result)}`, id });
+      return;
+    }
+    send({ type: 'market.skills.rated', payload: { skillPda, rating }, id });
+    deps.broadcastEvent?.('market.skill.rated', { skillPda, rating });
+  } catch (err) {
+    send({ type: 'error', error: `Failed to rate skill: ${(err as Error).message}`, id });
+  }
+}
+
+export async function handleMarketGovernanceList(
+  deps: WebChatDeps,
+  payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): Promise<void> {
+  if (!deps.connection) {
+    send({ type: 'error', error: SOLANA_NOT_CONFIGURED, id });
+    return;
+  }
+
+  await safeAsync(send, id, 'error', 'Failed to list governance proposals', async () => {
+    const program = createReadOnlyProgramContext(deps);
+    const ops = new GovernanceOperations({
+      program,
+      agentId: new Uint8Array(32),
+      logger: silentLogger,
+    });
+    const statusFilter =
+      typeof payload?.status === 'string' ? payload.status.trim().toLowerCase() : '';
+    const proposals = (await ops.fetchAllProposals())
+      .map(mapProposalSummary)
+      .filter((proposal) => !statusFilter || proposal.status === statusFilter)
+      .sort((left, right) => right.createdAt - left.createdAt);
+
+    send({ type: 'market.governance.list', payload: proposals, id });
+  });
+}
+
+export async function handleMarketGovernanceDetail(
+  deps: WebChatDeps,
+  payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): Promise<void> {
+  const proposalPda = payload?.proposalPda;
+  if (!proposalPda || typeof proposalPda !== 'string') {
+    send({ type: 'error', error: 'Missing proposalPda in payload', id });
+    return;
+  }
+  if (!deps.connection) {
+    send({ type: 'error', error: SOLANA_NOT_CONFIGURED, id });
+    return;
+  }
+
+  await safeAsync(send, id, 'error', 'Failed to inspect governance proposal', async () => {
+    const program = createReadOnlyProgramContext(deps);
+    const ops = new GovernanceOperations({
+      program,
+      agentId: new Uint8Array(32),
+      logger: silentLogger,
+    });
+    const proposal = await ops.getProposal(new PublicKey(proposalPda));
+    if (!proposal) {
+      send({ type: 'error', error: `Proposal not found: ${proposalPda}`, id });
+      return;
+    }
+    send({
+      type: 'market.governance.detail',
+      payload: serializeMarketplaceProposalDetail(
+        proposal.proposalPda,
+        proposal,
+      ),
+      id,
+    });
+  });
+}
+
+export async function handleMarketGovernanceVote(
+  deps: WebChatDeps,
+  payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): Promise<void> {
+  const proposalPda = payload?.proposalPda;
+  const approve = payload?.approve;
+  if (!proposalPda || typeof proposalPda !== 'string') {
+    send({ type: 'error', error: 'Missing proposalPda in payload', id });
+    return;
+  }
+  if (typeof approve !== 'boolean') {
+    send({ type: 'error', error: 'Missing approve boolean in payload', id });
+    return;
+  }
+  if (!deps.connection) {
+    send({ type: 'error', error: SOLANA_NOT_CONFIGURED, id });
+    return;
+  }
+
+  try {
+    const { program } = await createProgramContext(deps);
+    const tool = createVoteProposalTool(program, silentLogger);
+    const result = await tool.execute({ proposalPda, approve });
+    if (result.isError) {
+      send({ type: 'error', error: `Failed to vote on proposal: ${parseToolError(result)}`, id });
+      return;
+    }
+    send({ type: 'market.governance.voted', payload: { proposalPda, approve }, id });
+    deps.broadcastEvent?.('market.governance.voted', { proposalPda, approve });
+  } catch (err) {
+    send({ type: 'error', error: `Failed to vote on proposal: ${(err as Error).message}`, id });
+  }
+}
+
+export async function handleMarketDisputesList(
+  deps: WebChatDeps,
+  payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): Promise<void> {
+  if (!deps.connection) {
+    send({ type: 'error', error: SOLANA_NOT_CONFIGURED, id });
+    return;
+  }
+
+  await safeAsync(send, id, 'error', 'Failed to list disputes', async () => {
+    const program = createReadOnlyProgramContext(deps);
+    const ops = new DisputeOperations({
+      program,
+      agentId: new Uint8Array(32),
+      logger: silentLogger,
+    });
+    const statusFilter =
+      typeof payload?.status === 'string' ? payload.status.trim().toLowerCase() : '';
+    const disputes = (await ops.fetchAllDisputes())
+      .map(mapDisputeSummary)
+      .filter((entry) => !statusFilter || entry.status === statusFilter)
+      .sort((left, right) => right.createdAt - left.createdAt);
+
+    send({ type: 'market.disputes.list', payload: disputes, id });
+  });
+}
+
+export async function handleMarketDisputesDetail(
+  deps: WebChatDeps,
+  payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): Promise<void> {
+  const disputePda = payload?.disputePda;
+  if (!disputePda || typeof disputePda !== 'string') {
+    send({ type: 'error', error: 'Missing disputePda in payload', id });
+    return;
+  }
+  if (!deps.connection) {
+    send({ type: 'error', error: SOLANA_NOT_CONFIGURED, id });
+    return;
+  }
+
+  await safeAsync(send, id, 'error', 'Failed to inspect dispute', async () => {
+    const program = createReadOnlyProgramContext(deps);
+    const ops = new DisputeOperations({
+      program,
+      agentId: new Uint8Array(32),
+      logger: silentLogger,
+    });
+    const dispute = await ops.fetchDispute(new PublicKey(disputePda));
+    if (!dispute) {
+      send({ type: 'error', error: `Dispute not found: ${disputePda}`, id });
+      return;
+    }
+    send({
+      type: 'market.disputes.detail',
+      payload: serializeMarketplaceDisputeSummary({
+        dispute,
+        disputePda: new PublicKey(disputePda),
+      }),
+      id,
+    });
+  });
+}
+
+export async function handleMarketReputationSummary(
+  deps: WebChatDeps,
+  _payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): Promise<void> {
+  if (!deps.connection) {
+    send({ type: 'error', error: SOLANA_NOT_CONFIGURED, id });
+    return;
+  }
+
+  await safeAsync(send, id, 'error', 'Failed to load reputation summary', async () => {
+    const { program } = await createProgramContext(deps);
+    const authority = program.provider.publicKey?.toBase58() ?? '';
+
+    let signerAgent: Awaited<ReturnType<typeof resolveSignerAgent>> | null = null;
+    try {
+      signerAgent = await resolveSignerAgent(program);
+    } catch {
+      send({
+        type: 'market.reputation.summary',
+        payload: buildMarketplaceUnregisteredSummary({ authority }),
+        id,
+      });
+      return;
+    }
+
+    const summary = await buildMarketplaceReputationSummaryForAgent(
+      program,
+      signerAgent.agentPda,
+      signerAgent.agentId,
+    );
+    if (!summary) {
+      send({
+        type: 'market.reputation.summary',
+        payload: buildMarketplaceUnregisteredSummary({ authority }),
+        id,
+      });
+      return;
+    }
+    const { agentId: _agentId, ...payload } = summary;
+
+    send({
+      type: 'market.reputation.summary',
+      payload,
+      id,
+    });
+  });
+}
+
+export async function handleMarketReputationStake(
+  deps: WebChatDeps,
+  payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): Promise<void> {
+  const amount = payload?.amount;
+  if (!amount || typeof amount !== 'string') {
+    send({ type: 'error', error: 'Missing amount in payload', id });
+    return;
+  }
+  if (!deps.connection) {
+    send({ type: 'error', error: SOLANA_NOT_CONFIGURED, id });
+    return;
+  }
+
+  try {
+    const { program } = await createProgramContext(deps);
+    const tool = createStakeReputationTool(program, silentLogger);
+    const result = await tool.execute({ amount });
+    if (result.isError) {
+      send({ type: 'error', error: `Failed to stake reputation: ${parseToolError(result)}`, id });
+      return;
+    }
+    send({ type: 'market.reputation.staked', payload: { amount }, id });
+    deps.broadcastEvent?.('market.reputation.staked', { amount });
+  } catch (err) {
+    send({ type: 'error', error: `Failed to stake reputation: ${(err as Error).message}`, id });
+  }
+}
+
+export async function handleMarketReputationDelegate(
+  deps: WebChatDeps,
+  payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): Promise<void> {
+  if (!deps.connection) {
+    send({ type: 'error', error: SOLANA_NOT_CONFIGURED, id });
+    return;
+  }
+
+  try {
+    const { program } = await createProgramContext(deps);
+    const tool = createDelegateReputationTool(program, silentLogger);
+    const args: Record<string, unknown> = {};
+    if (typeof payload?.amount === 'number') args.amount = payload.amount;
+    if (typeof payload?.delegateeAgentPda === 'string') args.delegateeAgentPda = payload.delegateeAgentPda;
+    if (typeof payload?.delegateeAgentId === 'string') args.delegateeAgentId = payload.delegateeAgentId;
+    if (typeof payload?.expiresAt === 'number') args.expiresAt = payload.expiresAt;
+    const result = await tool.execute(args);
+    if (result.isError) {
+      send({ type: 'error', error: `Failed to delegate reputation: ${parseToolError(result)}`, id });
+      return;
+    }
+    send({
+      type: 'market.reputation.delegated',
+      payload: {
+        amount: args.amount,
+        delegateeAgentPda: args.delegateeAgentPda,
+        delegateeAgentId: args.delegateeAgentId,
+      },
+      id,
+    });
+    deps.broadcastEvent?.('market.reputation.delegated', {
+      amount: args.amount,
+      delegateeAgentPda: args.delegateeAgentPda,
+      delegateeAgentId: args.delegateeAgentId,
+    });
+  } catch (err) {
+    send({ type: 'error', error: `Failed to delegate reputation: ${(err as Error).message}`, id });
+  }
 }
 
 // ============================================================================
@@ -241,63 +911,18 @@ export function handleSkillsToggle(
  *       + 64 (description) + 8 (reward_amount)
  *       + 1 (max_workers) + 1 (current_workers) + 1 (status)
  */
-const TASK_DISCRIMINATOR = Buffer.from([79, 34, 229, 55, 88, 90, 55, 84]);
-const TASK_CREATOR_OFFSET = 40;
-const TASK_DESCRIPTION_OFFSET = 80;
-const TASK_REWARD_OFFSET = 144;
-const TASK_CURRENT_WORKERS_OFFSET = 153;
-const TASK_STATUS_OFFSET = 154;
-
-/** Parse a raw Task account buffer into the fields we need. */
-function parseRawTaskAccount(data: Buffer): {
-  status: OnChainTaskStatus;
-  reward: bigint;
-  creator: PublicKey;
-  currentWorkers: number;
-  description: string;
-} {
-  const statusByte = data[TASK_STATUS_OFFSET];
-  const currentWorkers = data[TASK_CURRENT_WORKERS_OFFSET];
-  const creator = new PublicKey(data.subarray(TASK_CREATOR_OFFSET, TASK_CREATOR_OFFSET + 32));
-  // reward_amount is u64 little-endian at offset 144
-  const rewardSlice = data.subarray(TASK_REWARD_OFFSET, TASK_REWARD_OFFSET + 8);
-  const reward = rewardSlice.readBigUInt64LE(0);
-  // description is 64 bytes at offset 80, trim trailing nulls
-  const descBuf = data.subarray(TASK_DESCRIPTION_OFFSET, TASK_DESCRIPTION_OFFSET + 64);
-  const nullIdx = descBuf.indexOf(0);
-  const description = new TextDecoder().decode(descBuf.subarray(0, nullIdx === -1 ? 64 : nullIdx));
-  return { status: statusByte as OnChainTaskStatus, reward, creator, currentWorkers, description };
-}
-
-/** Helper: send a refreshed task list to the client using raw getProgramAccounts. */
+/** Helper: send a refreshed task list to the client using typed task operations. */
 async function sendTaskList(deps: WebChatDeps, id: string | undefined, send: SendFn): Promise<void> {
-  const connection = deps.connection!;
-  const bs58 = await import('bs58');
-  const programId = new PublicKey(IDL.address!);
-
-  // Fetch Open and InProgress tasks in parallel using raw getProgramAccounts
-  const makeFilter = (statusByte: number) => [
-    { memcmp: { offset: 0, bytes: bs58.default.encode(TASK_DISCRIMINATOR) } },
-    { memcmp: { offset: TASK_STATUS_OFFSET, bytes: bs58.default.encode(Buffer.from([statusByte])) } },
-  ];
-
-  const [openAccounts, inProgressAccounts] = await Promise.all([
-    connection.getProgramAccounts(programId, { filters: makeFilter(OnChainTaskStatus.Open) }),
-    connection.getProgramAccounts(programId, { filters: makeFilter(OnChainTaskStatus.InProgress) }),
-  ]);
-
-  const allAccounts = [...openAccounts, ...inProgressAccounts];
-  const payload = allAccounts.map((acc) => {
-    const task = parseRawTaskAccount(acc.account.data as Buffer);
-    return {
-      id: acc.pubkey.toBase58(),
-      status: taskStatusToString(task.status),
-      reward: lamportsToSol(task.reward),
-      creator: task.creator.toBase58(),
-      description: task.description,
-      worker: task.currentWorkers > 0 ? `${task.currentWorkers} worker(s)` : undefined,
-    };
+  const { program } = await createProgramContext(deps);
+  const ops = new TaskOperations({
+    program,
+    agentId: new Uint8Array(32),
+    logger: silentLogger,
   });
+  const allTasks = await ops.fetchAllTasks();
+  const payload = allTasks
+    .sort((left, right) => right.task.createdAt - left.task.createdAt)
+    .map(mapTaskSummary);
   send({ type: 'tasks.list', payload, id });
 }
 
@@ -330,62 +955,35 @@ export async function handleTasksCreate(
     return;
   }
 
-  const keypairPath = deps.gateway.config.connection?.keypairPath ?? getDefaultKeypairPath();
   try {
-    const keypair = await loadKeypairFromFile(keypairPath);
-    const provider = createWalletProvider(deps.connection, keypair);
-    const program = createProgram(provider);
-    const creator = keypair.publicKey;
-
     const descStr = typeof (params as Record<string, unknown>).description === 'string'
       ? (params as Record<string, unknown>).description as string
       : 'Task from WebUI';
     const rewardInput = typeof (params as Record<string, unknown>).reward === 'number'
       ? (params as Record<string, unknown>).reward as number
       : 0;
-    // Treat reward as SOL (UI label) and convert to lamports.
     const rewardLamports = BigInt(Math.max(Math.round(rewardInput * 1_000_000_000), 10_000_000));
-
-    // Generate random 32-byte task ID
-    const taskId = new Uint8Array(32);
-    crypto.getRandomValues(taskId);
-
-    // Pad description to 64 bytes
-    const descBytes = new Uint8Array(64);
-    const encoded = new TextEncoder().encode(descStr.slice(0, 64));
-    descBytes.set(encoded);
-
-    // Derive PDAs
-    const taskPda = findTaskPda(creator, taskId, program.programId);
-    const escrowPda = findEscrowPda(taskPda, program.programId);
-    const protocolPda = findProtocolPda(program.programId);
-
-    const deadline = Math.floor(Date.now() / 1000) + 3600; // 1 hour from now
-
-    // Devnet program: 7 args (no constraintHash, minReputation, rewardMint);
-    // canonical IDL types expect 10, so we use `as any` to bypass arity check.
-    await (program.methods as any)
-      .createTask(
-        toAnchorBytes(taskId),
-        new anchor.BN('1'),                        // requiredCapabilities
-        toAnchorBytes(descBytes),
-        new anchor.BN(rewardLamports.toString()),   // reward
-        1,                                          // maxWorkers
-        new anchor.BN(deadline),                    // deadline
-        0,                                          // taskType: exclusive
-      )
-      .accountsPartial({
-        task: taskPda,
-        escrow: escrowPda,
-        protocolConfig: protocolPda,
-        creator,
-        systemProgram: SystemProgram.programId,
-      })
-      .rpc();
+    const { program } = await createProgramContext(deps);
+    const tool = createCreateTaskTool(program, silentLogger);
+    const result = await tool.execute({
+      description: descStr,
+      reward: rewardLamports.toString(),
+      requiredCapabilities: '1',
+    });
+    if (result.isError) {
+      send({ type: 'error', error: `Failed to create task: ${parseToolError(result)}`, id });
+      return;
+    }
+    let createdTaskPda: string | undefined;
+    try {
+      createdTaskPda = (JSON.parse(result.content) as { taskPda?: string }).taskPda;
+    } catch {
+      createdTaskPda = undefined;
+    }
 
     // Auto-refresh task list after creation
     await sendTaskList(deps, id, send);
-    deps.broadcastEvent?.('task.created', { taskPda: taskPda.toBase58(), description: descStr });
+    deps.broadcastEvent?.('task.created', { taskPda: createdTaskPda, description: descStr });
   } catch (err) {
     send({ type: 'error', error: `Failed to create task: ${(err as Error).message}`, id });
   }
@@ -407,13 +1005,9 @@ export async function handleTasksCancel(
     return;
   }
 
-  const keypairPath = deps.gateway.config.connection?.keypairPath ?? getDefaultKeypairPath();
   try {
-    const keypair = await loadKeypairFromFile(keypairPath);
-    const provider = createWalletProvider(deps.connection, keypair);
-    const program = createProgram(provider);
+    const { keypair, program } = await createProgramContext(deps);
     const taskPda = new PublicKey(taskId);
-
     const escrowPda = findEscrowPda(taskPda, program.programId);
 
     // Devnet cancel_task: only 4 accounts (task, escrow, creator, system_program)
@@ -432,6 +1026,120 @@ export async function handleTasksCancel(
     deps.broadcastEvent?.('task.cancelled', { taskPda: taskId });
   } catch (err) {
     send({ type: 'error', error: `Failed to cancel task: ${(err as Error).message}`, id });
+  }
+}
+
+export async function handleTasksClaim(
+  deps: WebChatDeps,
+  payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): Promise<void> {
+  const taskId = payload?.taskId;
+  if (!taskId || typeof taskId !== 'string') {
+    send({ type: 'error', error: 'Missing taskId in payload', id });
+    return;
+  }
+  if (!deps.connection) {
+    send({ type: 'error', error: SOLANA_NOT_CONFIGURED, id });
+    return;
+  }
+
+  try {
+    const { program } = await createProgramContext(deps);
+    const tool = createClaimTaskTool(program, silentLogger);
+    const result = await tool.execute({ taskPda: taskId });
+    if (result.isError) {
+      send({ type: 'error', error: `Failed to claim task: ${parseToolError(result)}`, id });
+      return;
+    }
+
+    await sendTaskList(deps, id, send);
+    deps.broadcastEvent?.('task.claimed', { taskPda: taskId });
+  } catch (err) {
+    send({ type: 'error', error: `Failed to claim task: ${(err as Error).message}`, id });
+  }
+}
+
+export async function handleTasksComplete(
+  deps: WebChatDeps,
+  payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): Promise<void> {
+  const taskId = payload?.taskId;
+  if (!taskId || typeof taskId !== 'string') {
+    send({ type: 'error', error: 'Missing taskId in payload', id });
+    return;
+  }
+  const resultData = typeof payload?.resultData === 'string' && payload.resultData.trim().length > 0
+    ? payload.resultData.trim()
+    : 'Task completed via dashboard';
+  if (!deps.connection) {
+    send({ type: 'error', error: SOLANA_NOT_CONFIGURED, id });
+    return;
+  }
+
+  try {
+    const { program } = await createProgramContext(deps);
+    const proofHash = createHash('sha256').update(resultData).digest('hex');
+    const tool = createCompleteTaskTool(program, silentLogger);
+    const result = await tool.execute({
+      taskPda: taskId,
+      proofHash,
+      resultData,
+    });
+    if (result.isError) {
+      send({ type: 'error', error: `Failed to complete task: ${parseToolError(result)}`, id });
+      return;
+    }
+
+    await sendTaskList(deps, id, send);
+    deps.broadcastEvent?.('task.completed', { taskPda: taskId });
+  } catch (err) {
+    send({ type: 'error', error: `Failed to complete task: ${(err as Error).message}`, id });
+  }
+}
+
+export async function handleTasksDispute(
+  deps: WebChatDeps,
+  payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): Promise<void> {
+  const taskId = payload?.taskId;
+  if (!taskId || typeof taskId !== 'string') {
+    send({ type: 'error', error: 'Missing taskId in payload', id });
+    return;
+  }
+  const evidence = typeof payload?.evidence === 'string' ? payload.evidence.trim() : '';
+  if (!evidence) {
+    send({ type: 'error', error: 'Missing evidence in payload', id });
+    return;
+  }
+  const resolutionType = typeof payload?.resolutionType === 'string' ? payload.resolutionType : 'refund';
+  if (!deps.connection) {
+    send({ type: 'error', error: SOLANA_NOT_CONFIGURED, id });
+    return;
+  }
+
+  try {
+    const { program } = await createProgramContext(deps);
+    const tool = createInitiateDisputeTool(program, silentLogger);
+    const result = await tool.execute({
+      taskPda: taskId,
+      evidence,
+      resolutionType,
+    });
+    if (result.isError) {
+      send({ type: 'error', error: `Failed to open dispute: ${parseToolError(result)}`, id });
+      return;
+    }
+
+    await sendTaskList(deps, id, send);
+    deps.broadcastEvent?.('task.disputed', { taskPda: taskId, resolutionType });
+  } catch (err) {
+    send({ type: 'error', error: `Failed to open dispute: ${(err as Error).message}`, id });
   }
 }
 
@@ -1370,8 +2078,25 @@ export const HANDLER_MAP: Readonly<Record<string, HandlerFn>> = {
   'status.get': handleStatusGet,
   'skills.list': handleSkillsList,
   'skills.toggle': handleSkillsToggle,
+  'tools.list': handleToolsList,
+  'tools.toggle': handleToolsToggle,
+  'market.skills.list': handleMarketSkillsList,
+  'market.skills.detail': handleMarketSkillsDetail,
+  'market.skills.purchase': handleMarketSkillsPurchase,
+  'market.skills.rate': handleMarketSkillsRate,
+  'market.governance.list': handleMarketGovernanceList,
+  'market.governance.detail': handleMarketGovernanceDetail,
+  'market.governance.vote': handleMarketGovernanceVote,
+  'market.disputes.list': handleMarketDisputesList,
+  'market.disputes.detail': handleMarketDisputesDetail,
+  'market.reputation.summary': handleMarketReputationSummary,
+  'market.reputation.stake': handleMarketReputationStake,
+  'market.reputation.delegate': handleMarketReputationDelegate,
   'tasks.list': handleTasksList,
   'tasks.create': handleTasksCreate,
+  'tasks.claim': handleTasksClaim,
+  'tasks.complete': handleTasksComplete,
+  'tasks.dispute': handleTasksDispute,
   'tasks.cancel': handleTasksCancel,
   'memory.search': handleMemorySearch,
   'memory.sessions': handleMemorySessions,

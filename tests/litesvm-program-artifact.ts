@@ -8,16 +8,28 @@ export function syncAgencProgramBinary(workspaceRoot: string): void {
     "deploy",
     "agenc_coordination.so",
   );
-  const programBinaryPath = path.join(
-    workspaceRoot,
-    "programs",
-    "agenc-coordination",
-    "target",
-    "deploy",
-    "agenc_coordination.so",
+  const sourceCandidates = [
+    path.join(
+      workspaceRoot,
+      "programs",
+      "agenc-coordination",
+      "target",
+      "deploy",
+      "agenc_coordination.so",
+    ),
+    path.resolve(
+      workspaceRoot,
+      "..",
+      "target",
+      "deploy",
+      "agenc_coordination.so",
+    ),
+  ];
+  const programBinaryPath = sourceCandidates.find((candidate) =>
+    fs.existsSync(candidate),
   );
 
-  if (!fs.existsSync(programBinaryPath)) {
+  if (!programBinaryPath) {
     return;
   }
 

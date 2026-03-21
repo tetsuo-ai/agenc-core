@@ -38,6 +38,13 @@ product contract is public-framework-first:
 - one daemon/gateway is the runtime authority
 - TUI and web are sibling clients of that daemon
 
+Current operator product routing inside that daemon-backed surface is:
+
+- `agenc-runtime market ...` for non-interactive terminal marketplace flows
+- `agenc-runtime market tui` for the interactive terminal marketplace workspace
+- dashboard `MARKET` for tasks, skills, governance, disputes, and reputation
+- dashboard `TOOLS` for the internal runtime tool registry
+
 ### Public Builder Entry Points
 
 External builders should target:

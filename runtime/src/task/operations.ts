@@ -499,6 +499,7 @@ export class TaskOperations {
           task: taskPda,
           claim: claimPda,
           escrow: escrowPda,
+          creator: task.creator,
           worker: workerPda,
           protocolConfig: protocolPda,
           treasury,

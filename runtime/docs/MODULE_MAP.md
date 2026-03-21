@@ -17,7 +17,7 @@ This file is the navigation guide for `runtime/src/`.
 ### Operator and entry surfaces
 
 - `bin/` - CLI entrypoints
-- `cli/` - CLI implementation
+- `cli/` - CLI implementation, including `marketplace-cli.ts` for `agenc-runtime market ...` and `marketplace-tui.ts` for `agenc-runtime market tui`
 - `onboarding/` - operator bootstrap flow
 - `desktop/` - desktop-side runtime support
 - `watch/` - live watch and monitoring surfaces
@@ -36,7 +36,7 @@ This file is the navigation guide for `runtime/src/`.
 ### Connectivity and integration
 
 - `connection/` - RPC/program connection wiring
-- `channels/` - channel integrations
+- `channels/` - channel integrations, including dashboard `tools.*` and `market.*` transport handlers
 - `bridges/` - cross-surface bridges
 - `mcp-client/` - runtime-side MCP client integrations
 
@@ -70,5 +70,5 @@ This file is the navigation guide for `runtime/src/`.
 
 - [../../docs/CODEBASE_MAP.md](../../docs/CODEBASE_MAP.md) for repo-wide navigation
 - [../../docs/RUNTIME_API.md](../../docs/RUNTIME_API.md) for runtime API details
+- [./MARKETPLACE_OPERATOR_SURFACE.md](./MARKETPLACE_OPERATOR_SURFACE.md) for the MARKET/TOOLS split and terminal marketplace commands
 - [../../docs/architecture/runtime-layers.md](../../docs/architecture/runtime-layers.md) for dependency layering
-

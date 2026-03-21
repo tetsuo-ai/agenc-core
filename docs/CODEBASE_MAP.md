@@ -33,13 +33,13 @@ agenc-core/
 
 ### Private kernel packages
 
-- `runtime/` - runtime authority, CLI bins, operator events, proof/task/watch/gateway logic
+- `runtime/` - runtime authority, CLI bins, operator events, proof/task/watch/gateway logic, and the `agenc-runtime market ...` / `agenc-runtime market tui` operator surfaces
 - `mcp/` - runtime-side MCP server and tool surfaces
 - `docs-mcp/` - MCP server that indexes docs and contract artifacts
 
 ### Product clients and servers
 
-- `web/` - operator dashboard
+- `web/` - operator dashboard with separate `MARKET` and `TOOLS` workspaces
 - `mobile/` - mobile client
 - `demo-app/` - demo UI
 - `containers/desktop/server/` - desktop control server
@@ -72,7 +72,7 @@ docs as well.
 
 ## Runtime Hotspots
 
-The runtime package is the largest surface. Start with [../runtime/docs/MODULE_MAP.md](../runtime/docs/MODULE_MAP.md) for full navigation.
+The runtime package is the largest surface. Start with [../runtime/docs/MODULE_MAP.md](../runtime/docs/MODULE_MAP.md) for full navigation, then use [../runtime/docs/MARKETPLACE_OPERATOR_SURFACE.md](../runtime/docs/MARKETPLACE_OPERATOR_SURFACE.md) for the MARKET/TOOLS and terminal operator routing.
 
 Dense runtime areas from the current codebase:
 

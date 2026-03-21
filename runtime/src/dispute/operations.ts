@@ -314,11 +314,15 @@ export class DisputeOperations {
       params.disputeId,
       this.program.programId,
     );
-    const { address: claimPda } = deriveClaimPda(
+    const { address: derivedClaimPda } = deriveClaimPda(
       params.taskPda,
       this.agentPda,
       this.program.programId,
     );
+    const initiatorClaimPda =
+      params.initiatorClaimPda === undefined
+        ? derivedClaimPda
+        : params.initiatorClaimPda;
 
     this.logger.info(
       `Initiating dispute for task ${params.taskPda.toBase58()}`,
@@ -343,7 +347,7 @@ export class DisputeOperations {
           task: params.taskPda,
           agent: this.agentPda,
           protocolConfig: this.protocolPda,
-          initiatorClaim: claimPda,
+          initiatorClaim: initiatorClaimPda ?? null,
           workerAgent: params.workerAgentPda ?? null,
           workerClaim: params.workerClaimPda ?? null,
           authority: this.program.provider.publicKey,
@@ -390,6 +394,7 @@ export class DisputeOperations {
    */
   async voteOnDispute(params: VoteDisputeParams): Promise<VoteResult> {
     const start = Date.now();
+    const dispute = await this.fetchDispute(params.disputePda);
     const { address: votePda } = deriveVotePda(
       params.disputePda,
       this.agentPda,
@@ -412,6 +417,7 @@ export class DisputeOperations {
           dispute: params.disputePda,
           task: params.taskPda,
           workerClaim: params.workerClaimPda ?? null,
+          defendantAgent: dispute?.defendant ?? null,
           vote: votePda,
           authorityVote: authVotePda,
           arbiter: this.agentPda,

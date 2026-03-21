@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { SkillInfo } from '../../types';
-import { SkillCard } from './SkillCard';
+import type { ToolInfo } from '../../types';
+import { SkillCard } from '../skills/SkillCard';
 
-interface SkillsViewProps {
-  skills: SkillInfo[];
+interface ToolsViewProps {
+  tools: ToolInfo[];
   onRefresh: () => void;
   onToggle: (name: string, enabled: boolean) => void;
 }
@@ -11,7 +11,7 @@ interface SkillsViewProps {
 const INPUT_CLASS =
   'w-full border border-bbs-border bg-bbs-surface px-3 py-2 text-sm text-bbs-lightgray placeholder:text-bbs-gray outline-none focus:border-bbs-purple-dim';
 
-export function SkillsView({ skills, onRefresh, onToggle }: SkillsViewProps) {
+export function ToolsView({ tools, onRefresh, onToggle }: ToolsViewProps) {
   const [filter, setFilter] = useState('');
 
   useEffect(() => {
@@ -19,19 +19,19 @@ export function SkillsView({ skills, onRefresh, onToggle }: SkillsViewProps) {
   }, [onRefresh]);
 
   const filtered = useMemo(() => {
-    if (!filter) return skills;
+    if (!filter) return tools;
     const normalized = filter.toLowerCase();
-    return skills.filter(
-      (skill) =>
-        skill.name.toLowerCase().includes(normalized) ||
-        skill.description.toLowerCase().includes(normalized),
+    return tools.filter(
+      (tool) =>
+        tool.name.toLowerCase().includes(normalized) ||
+        tool.description.toLowerCase().includes(normalized),
     );
-  }, [filter, skills]);
+  }, [filter, tools]);
 
-  const enabledCount = skills.filter((skill) => skill.enabled).length;
+  const enabledCount = tools.filter((tool) => tool.enabled).length;
 
   return (
-    <div className="flex h-full flex-col bg-bbs-black text-bbs-lightgray font-mono animate-chat-enter">
+    <div className="flex h-full flex-col bg-bbs-black font-mono text-bbs-lightgray animate-chat-enter">
       <header className="shrink-0 border-b border-bbs-border bg-bbs-surface px-4 py-3 md:px-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
@@ -39,10 +39,10 @@ export function SkillsView({ skills, onRefresh, onToggle }: SkillsViewProps) {
               <span className="shrink-0 text-xs text-bbs-purple">TOOLS&gt;</span>
               <div className="min-w-0">
                 <h2 className="text-xs font-bold uppercase tracking-[0.18em] text-bbs-white">
-                  Tool Registry
+                  Runtime Tool Registry
                 </h2>
                 <p className="mt-1 text-xs text-bbs-gray">
-                  loaded tools available to the runtime operator
+                  internal operator tools loaded into the current runtime
                 </p>
               </div>
             </div>
@@ -50,7 +50,7 @@ export function SkillsView({ skills, onRefresh, onToggle }: SkillsViewProps) {
 
           <div className="flex items-center gap-2 shrink-0">
             <span className="text-[10px] uppercase tracking-[0.14em] text-bbs-gray">
-              [{enabledCount}/{skills.length} enabled]
+              [{enabledCount}/{tools.length} enabled]
             </span>
             <button
               type="button"
@@ -74,7 +74,7 @@ export function SkillsView({ skills, onRefresh, onToggle }: SkillsViewProps) {
               value={filter}
               onChange={(event) => setFilter(event.target.value)}
               placeholder="search by tool name or description"
-              className={`${INPUT_CLASS} max-w-2xl flex-1 min-w-[16rem]`}
+              className={`${INPUT_CLASS} max-w-2xl min-w-[16rem] flex-1`}
             />
             <span className="text-xs text-bbs-gray">[{filtered.length} results]</span>
           </div>
@@ -85,12 +85,12 @@ export function SkillsView({ skills, onRefresh, onToggle }: SkillsViewProps) {
         <div className="mx-auto max-w-3xl space-y-2">
           {filtered.length === 0 ? (
             <div className="border border-dashed border-bbs-border px-4 py-8 text-center text-sm text-bbs-gray">
-              {skills.length === 0 ? 'no tools registered' : 'no tools match the current search'}
+              {tools.length === 0 ? 'no tools registered' : 'no tools match the current search'}
             </div>
           ) : (
-            filtered.map((skill, index) => (
-              <div key={skill.name} className="animate-list-item" style={{ animationDelay: `${index * 35}ms` }}>
-                <SkillCard skill={skill} onToggle={onToggle} />
+            filtered.map((tool, index) => (
+              <div key={tool.name} className="animate-list-item" style={{ animationDelay: `${index * 35}ms` }}>
+                <SkillCard skill={tool} onToggle={onToggle} />
               </div>
             ))
           )}

@@ -148,11 +148,13 @@ export interface GatewayStatus {
 // Skills
 // ============================================================================
 
-export interface SkillInfo {
+export interface ToolInfo {
   name: string;
   description: string;
   enabled: boolean;
 }
+
+export type SkillInfo = ToolInfo;
 
 // ============================================================================
 // Tasks
@@ -166,6 +168,108 @@ export interface TaskInfo {
   worker?: string;
   description?: string;
 }
+
+// ============================================================================
+// Marketplace
+// ============================================================================
+
+export interface MarketplaceSkillInfo {
+  skillPda: string;
+  skillId: string;
+  author: string;
+  name: string;
+  tags: string[];
+  priceLamports: string;
+  priceSol?: string;
+  priceMint?: string | null;
+  rating: number;
+  ratingCount: number;
+  downloads: number;
+  version: number;
+  isActive: boolean;
+  createdAt: number;
+  updatedAt: number;
+  contentHash?: string;
+  purchased?: boolean;
+}
+
+export interface GovernanceVoteInfo {
+  voter: string;
+  approved: boolean;
+  votedAt: number;
+  voteWeight: string;
+}
+
+export interface GovernanceProposalInfo {
+  proposalPda: string;
+  proposer: string;
+  proposalType: string;
+  status: string;
+  titleHash: string;
+  descriptionHash: string;
+  payloadPreview?: string;
+  votesFor: string;
+  votesAgainst: string;
+  totalVoters: number;
+  quorum: string;
+  createdAt: number;
+  votingDeadline: number;
+  executionAfter: number;
+  votes?: GovernanceVoteInfo[];
+}
+
+export interface DisputeInfo {
+  disputePda: string;
+  taskPda: string;
+  initiator: string;
+  defendant: string;
+  status: string;
+  resolutionType: string;
+  evidenceHash: string;
+  votesFor: string;
+  votesAgainst: string;
+  totalVoters: number;
+  createdAt: number;
+  votingDeadline: number;
+  expiresAt: number;
+  resolvedAt: number;
+  slashApplied?: boolean;
+  initiatorSlashApplied?: boolean;
+  workerStakeAtDispute?: string;
+  initiatedByCreator?: boolean;
+  rewardMint?: string | null;
+}
+
+export interface ReputationDelegationInfo {
+  delegator?: string;
+  delegatee?: string;
+  amount: number;
+  expiresAt: number;
+  createdAt: number;
+}
+
+export interface ReputationSummaryInfo {
+  registered: boolean;
+  authority: string;
+  agentPda?: string;
+  baseReputation?: number;
+  effectiveReputation?: number;
+  tasksCompleted?: string;
+  totalEarned?: string;
+  totalEarnedSol?: string;
+  stakedAmount?: string;
+  stakedAmountSol?: string;
+  lockedUntil?: number;
+  inboundDelegations?: ReputationDelegationInfo[];
+  outboundDelegations?: ReputationDelegationInfo[];
+}
+
+export type MarketplaceTabId =
+  | 'tasks'
+  | 'skills'
+  | 'governance'
+  | 'disputes'
+  | 'reputation';
 
 // ============================================================================
 // Memory
@@ -314,6 +418,8 @@ export type VoiceMode = 'vad' | 'push-to-talk';
 export type ViewId =
   | 'chat'
   | 'status'
+  | 'marketplace'
+  | 'tools'
   | 'runs'
   | 'observability'
   | 'skills'

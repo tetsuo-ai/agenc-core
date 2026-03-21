@@ -15,6 +15,8 @@ import {
   SystemProgram,
   LAMPORTS_PER_SOL,
   SendTransactionError,
+  Transaction,
+  VersionedTransaction,
 } from '@solana/web3.js';
 import * as bs58Module from 'bs58';
 import type { AgencCoordination } from '@tetsuo-ai/protocol';
@@ -97,9 +99,45 @@ function patchSendAndConfirm(): void {
 
 export interface RuntimeTestContext {
   svm: LiteSVM;
+  provider: anchor.AnchorProvider;
   program: Program<AgencCoordination>;
   connection: any; // LiteSVM's proxied Connection
   payer: Keypair;
+}
+
+function createProviderForWallet(
+  svm: LiteSVM,
+  payer: Keypair,
+): anchor.AnchorProvider {
+  patchSendAndConfirm();
+
+  const wallet = new anchor.Wallet(payer);
+  const provider = new LiteSVMProvider(
+    svm,
+    wallet,
+  ) as unknown as anchor.AnchorProvider;
+
+  extendLiteSVMConnectionProxy(svm, (provider as any).connection, wallet, bs58);
+  return provider;
+}
+
+export function createRuntimeSignerContext(
+  svm: LiteSVM,
+  payer: Keypair,
+): RuntimeTestContext {
+  const provider = createProviderForWallet(svm, payer);
+
+  const idl = loadProtocolIdl();
+  const canonicalProgramId = new PublicKey(idl.address);
+  if (!svm.getAccount(canonicalProgramId)) {
+    const programBinaryPath = resolveProtocolProgramBinaryPath();
+    svm.addProgramFromFile(canonicalProgramId, programBinaryPath);
+  }
+
+  const program = new Program<AgencCoordination>(idl as any, provider);
+  const connection = (provider as any).connection;
+
+  return { svm, provider, program, connection, payer };
 }
 
 /**
@@ -110,9 +148,6 @@ export interface RuntimeTestContext {
  * needed for AgentManager/AgentRuntime tests.
  */
 export function createRuntimeTestContext(): RuntimeTestContext {
-  // Fix anchor-litesvm's sendWithErr bs58 crash that masks real errors
-  patchSendAndConfirm();
-
   const protocolWorkspaceRoot = resolveProtocolWorkspaceRoot();
   syncAgencProgramBinary(protocolWorkspaceRoot);
 
@@ -124,33 +159,15 @@ export function createRuntimeTestContext(): RuntimeTestContext {
   // Create and fund the payer
   const payer = Keypair.generate();
   svm.airdrop(payer.publicKey, BigInt(1000 * LAMPORTS_PER_SOL));
-
-  // Create Anchor-compatible provider
-  const wallet = new anchor.Wallet(payer);
-  const provider = new LiteSVMProvider(svm, wallet) as unknown as anchor.AnchorProvider;
-
-  // Extend the connection proxy with methods needed by Anchor + AgentManager
-  extendLiteSVMConnectionProxy(svm, (provider as any).connection, wallet, bs58);
-
-  // Use canonical workspace instruction shapes and ensure the corresponding
-  // program binary is loaded at the IDL-declared address.
-  const idl = loadProtocolIdl();
-  const canonicalProgramId = new PublicKey(idl.address);
-  if (!svm.getAccount(canonicalProgramId)) {
-    const programBinaryPath = resolveProtocolProgramBinaryPath();
-    svm.addProgramFromFile(canonicalProgramId, programBinaryPath);
-  }
-  const program = new Program<AgencCoordination>(idl as any, provider);
+  const ctx = createRuntimeSignerContext(svm, payer);
 
   // Inject BPF Loader Upgradeable ProgramData PDA
-  setupProgramDataAccount(svm, program.programId, payer.publicKey);
+  setupProgramDataAccount(svm, ctx.program.programId, payer.publicKey);
 
   // Set global provider for Anchor
-  anchor.setProvider(provider);
+  anchor.setProvider(ctx.provider);
 
-  const connection = (provider as any).connection;
-
-  return { svm, program, connection, payer };
+  return ctx;
 }
 
 /**
@@ -305,4 +322,6 @@ export function advanceClock(svm: LiteSVM, seconds: number): void {
   clock.unixTimestamp = newTimestamp;
   clock.slot = newSlot;
   svm.setClock(clock);
+  // Ensure subsequent transactions get a fresh blockhash after time travel.
+  svm.expireBlockhash();
 }

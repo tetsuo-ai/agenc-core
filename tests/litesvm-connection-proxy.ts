@@ -11,6 +11,87 @@ export interface LiteSVMConnectionProxyOptions {
   allowConstructorNameFallback?: boolean;
 }
 
+const KNOWN_PROGRAM_ACCOUNTS = Symbol("known-program-accounts");
+
+function getKnownProgramAccounts(connection: any): Map<string, PublicKey> {
+  if (!connection[KNOWN_PROGRAM_ACCOUNTS]) {
+    connection[KNOWN_PROGRAM_ACCOUNTS] = new Map<string, PublicKey>();
+  }
+  return connection[KNOWN_PROGRAM_ACCOUNTS] as Map<string, PublicKey>;
+}
+
+function normalizePublicKey(value: unknown): PublicKey {
+  return value instanceof PublicKey ? value : new PublicKey(value as Uint8Array);
+}
+
+function matchesMemcmpFilter(
+  data: Buffer,
+  filter: { memcmp: { offset: number; bytes: string } },
+  bs58: Bs58Codec,
+): boolean {
+  const expected = Buffer.from(bs58.decode(filter.memcmp.bytes));
+  const actual = data.subarray(
+    filter.memcmp.offset,
+    filter.memcmp.offset + expected.length,
+  );
+  return actual.equals(expected);
+}
+
+function matchesFilters(
+  data: Buffer,
+  filters: unknown[] | undefined,
+  bs58: Bs58Codec,
+): boolean {
+  if (!filters || filters.length === 0) return true;
+
+  for (const filter of filters) {
+    if (
+      filter &&
+      typeof filter === "object" &&
+      "dataSize" in (filter as Record<string, unknown>)
+    ) {
+      if (data.length !== (filter as { dataSize: number }).dataSize) {
+        return false;
+      }
+      continue;
+    }
+    if (
+      filter &&
+      typeof filter === "object" &&
+      "memcmp" in (filter as Record<string, unknown>)
+    ) {
+      if (
+        !matchesMemcmpFilter(
+          data,
+          filter as { memcmp: { offset: number; bytes: string } },
+          bs58,
+        )
+      ) {
+        return false;
+      }
+      continue;
+    }
+  }
+
+  return true;
+}
+
+export function registerLiteSVMProgramAccount(
+  connection: any,
+  pubkey: PublicKey,
+): void {
+  getKnownProgramAccounts(connection).set(pubkey.toBase58(), pubkey);
+}
+
+export function registerLiteSVMProgramAccounts(
+  connection: any,
+  pubkeys: readonly PublicKey[],
+): void {
+  for (const pubkey of pubkeys) {
+    registerLiteSVMProgramAccount(connection, pubkey);
+  }
+}
+
 function isFailedTransactionMetadata(
   value: unknown,
   options: LiteSVMConnectionProxyOptions,
@@ -74,6 +155,40 @@ export function extendLiteSVMConnectionProxy(
     blockhash: svm.latestBlockhash(),
     lastValidBlockHeight: 0,
   });
+
+  connection.getProgramAccounts = async (
+    programId: PublicKey,
+    config?: { filters?: unknown[] },
+  ) => {
+    const targetProgramId = normalizePublicKey(programId);
+    const filters = config?.filters;
+    const matches: Array<{
+      pubkey: PublicKey;
+      account: Record<string, unknown>;
+    }> = [];
+
+    for (const pubkey of getKnownProgramAccounts(connection).values()) {
+      const account = svm.getAccount(pubkey);
+      if (!account) continue;
+
+      const owner = normalizePublicKey(account.owner);
+      if (!owner.equals(targetProgramId)) continue;
+
+      const data = Buffer.from(account.data);
+      if (!matchesFilters(data, filters, bs58)) continue;
+
+      matches.push({
+        pubkey,
+        account: {
+          ...account,
+          owner,
+          data,
+        },
+      });
+    }
+
+    return matches;
+  };
 
   connection.sendTransaction = async (
     transaction: Transaction | VersionedTransaction,

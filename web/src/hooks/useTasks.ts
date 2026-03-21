@@ -9,6 +9,9 @@ export interface UseTasksReturn {
   tasks: TaskInfo[];
   refresh: () => void;
   create: (params: Record<string, unknown>) => void;
+  claim: (taskId: string) => void;
+  complete: (taskId: string, resultData?: string) => void;
+  dispute: (taskId: string, evidence: string, resolutionType?: string) => void;
   cancel: (taskId: string) => void;
 }
 
@@ -23,6 +26,18 @@ export function useTasks({ send }: UseTasksOptions): UseTasksReturn {
     send({ type: 'tasks.create', payload: { params } });
   }, [send]);
 
+  const claim = useCallback((taskId: string) => {
+    send({ type: 'tasks.claim', payload: { taskId } });
+  }, [send]);
+
+  const complete = useCallback((taskId: string, resultData?: string) => {
+    send({ type: 'tasks.complete', payload: { taskId, ...(resultData ? { resultData } : {}) } });
+  }, [send]);
+
+  const dispute = useCallback((taskId: string, evidence: string, resolutionType = 'refund') => {
+    send({ type: 'tasks.dispute', payload: { taskId, evidence, resolutionType } });
+  }, [send]);
+
   const cancel = useCallback((taskId: string) => {
     send({ type: 'tasks.cancel', payload: { taskId } });
   }, [send]);
@@ -33,5 +48,5 @@ export function useTasks({ send }: UseTasksOptions): UseTasksReturn {
     }
   }, []);
 
-  return { tasks, refresh, create, cancel, handleMessage } as UseTasksReturn & { handleMessage: (msg: WSMessage) => void };
+  return { tasks, refresh, create, claim, complete, dispute, cancel, handleMessage } as UseTasksReturn & { handleMessage: (msg: WSMessage) => void };
 }

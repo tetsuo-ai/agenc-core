@@ -60,6 +60,55 @@ import {
   runRegistryVerifyCommand,
   runImportOpenclawCommand,
 } from "./registry-cli.js";
+import type {
+  MarketCommandOptions,
+  MarketTaskCancelOptions,
+  MarketTaskCreateOptions,
+  MarketDisputeDetailOptions,
+  MarketDisputeResolveOptions,
+  MarketDisputesListOptions,
+  MarketGovernanceDetailOptions,
+  MarketGovernanceListOptions,
+  MarketGovernanceVoteOptions,
+  MarketReputationDelegateOptions,
+  MarketReputationStakeOptions,
+  MarketReputationSummaryOptions,
+  MarketSkillDetailOptions,
+  MarketSkillPurchaseOptions,
+  MarketSkillRateOptions,
+  MarketSkillsListOptions,
+  MarketTaskClaimOptions,
+  MarketTaskCompleteOptions,
+  MarketTaskDetailOptions,
+  MarketTaskDisputeOptions,
+  MarketTasksListOptions,
+} from "./marketplace-cli.js";
+import {
+  runMarketTaskCancelCommand,
+  runMarketTaskCreateCommand,
+  parseArbiterVotes,
+  parseExtraWorkers,
+  runMarketDisputeDetailCommand,
+  runMarketDisputeResolveCommand,
+  runMarketDisputesListCommand,
+  runMarketGovernanceDetailCommand,
+  runMarketGovernanceListCommand,
+  runMarketGovernanceVoteCommand,
+  runMarketReputationDelegateCommand,
+  runMarketReputationStakeCommand,
+  runMarketReputationSummaryCommand,
+  runMarketSkillDetailCommand,
+  runMarketSkillPurchaseCommand,
+  runMarketSkillRateCommand,
+  runMarketSkillsListCommand,
+  runMarketTaskClaimCommand,
+  runMarketTaskCompleteCommand,
+  runMarketTaskDetailCommand,
+  runMarketTaskDisputeCommand,
+  runMarketTasksListCommand,
+} from "./marketplace-cli.js";
+import type { MarketTuiOptions } from "./marketplace-tui.js";
+import { runMarketTuiCommand } from "./marketplace-tui.js";
 import { runOnboardCommand } from "./onboard.js";
 import {
   runInteractiveOnboarding,
@@ -507,6 +556,237 @@ function validateSkillCommand(name: string): name is SkillCommand {
   );
 }
 
+type MarketCommand =
+  | "tasks.list"
+  | "tasks.create"
+  | "tasks.detail"
+  | "tasks.cancel"
+  | "tasks.claim"
+  | "tasks.complete"
+  | "tasks.dispute"
+  | "skills.list"
+  | "skills.detail"
+  | "skills.purchase"
+  | "skills.rate"
+  | "governance.list"
+  | "governance.detail"
+  | "governance.vote"
+  | "disputes.list"
+  | "disputes.detail"
+  | "disputes.resolve"
+  | "reputation.summary"
+  | "reputation.stake"
+  | "reputation.delegate"
+  | "tui";
+
+const MARKET_COMMAND_OPTIONS: Record<MarketCommand, Set<string>> = {
+  "tasks.list": new Set(["status"]),
+  "tasks.create": new Set([
+    "description",
+    "reward",
+    "required-capabilities",
+    "max-workers",
+    "deadline",
+    "task-type",
+    "creator-agent-pda",
+  ]),
+  "tasks.detail": new Set(),
+  "tasks.cancel": new Set(),
+  "tasks.claim": new Set(["worker-agent-pda"]),
+  "tasks.complete": new Set(["proof-hash", "result-data", "worker-agent-pda"]),
+  "tasks.dispute": new Set([
+    "evidence",
+    "resolution-type",
+    "worker-agent-pda",
+    "worker-claim-pda",
+    "initiator-agent-pda",
+  ]),
+  "skills.list": new Set(["query", "tags", "limit"]),
+  "skills.detail": new Set(),
+  "skills.purchase": new Set(["expected-price", "buyer-agent-pda"]),
+  "skills.rate": new Set(["review", "rater-agent-pda"]),
+  "governance.list": new Set(),
+  "governance.detail": new Set(),
+  "governance.vote": new Set(["voter-agent-pda"]),
+  "disputes.list": new Set(["status"]),
+  "disputes.detail": new Set(),
+  "disputes.resolve": new Set(["arbiter-votes", "extra-workers"]),
+  "reputation.summary": new Set(),
+  "reputation.stake": new Set(["staker-agent-pda"]),
+  "reputation.delegate": new Set([
+    "delegatee-agent-pda",
+    "delegatee-agent-id",
+    "expires-at",
+    "delegator-agent-pda",
+  ]),
+  tui: new Set(),
+};
+
+interface MarketCommandDescriptor {
+  name: string;
+  description: string;
+  commandOptions: Set<string>;
+  run: (
+    context: CliRuntimeContext,
+    options: MarketCommandOptions,
+  ) => Promise<CliStatusCode>;
+}
+
+const MARKET_COMMANDS: Record<MarketCommand, MarketCommandDescriptor> = {
+  "tasks.list": {
+    name: "tasks.list",
+    description: "List marketplace tasks",
+    commandOptions: MARKET_COMMAND_OPTIONS["tasks.list"],
+    run: runMarketTasksListCommand as MarketCommandDescriptor["run"],
+  },
+  "tasks.create": {
+    name: "tasks.create",
+    description: "Create a marketplace task",
+    commandOptions: MARKET_COMMAND_OPTIONS["tasks.create"],
+    run: runMarketTaskCreateCommand as MarketCommandDescriptor["run"],
+  },
+  "tasks.detail": {
+    name: "tasks.detail",
+    description: "Inspect a marketplace task",
+    commandOptions: MARKET_COMMAND_OPTIONS["tasks.detail"],
+    run: runMarketTaskDetailCommand as MarketCommandDescriptor["run"],
+  },
+  "tasks.cancel": {
+    name: "tasks.cancel",
+    description: "Cancel an open marketplace task",
+    commandOptions: MARKET_COMMAND_OPTIONS["tasks.cancel"],
+    run: runMarketTaskCancelCommand as MarketCommandDescriptor["run"],
+  },
+  "tasks.claim": {
+    name: "tasks.claim",
+    description: "Claim a marketplace task",
+    commandOptions: MARKET_COMMAND_OPTIONS["tasks.claim"],
+    run: runMarketTaskClaimCommand as MarketCommandDescriptor["run"],
+  },
+  "tasks.complete": {
+    name: "tasks.complete",
+    description: "Complete a marketplace task",
+    commandOptions: MARKET_COMMAND_OPTIONS["tasks.complete"],
+    run: runMarketTaskCompleteCommand as MarketCommandDescriptor["run"],
+  },
+  "tasks.dispute": {
+    name: "tasks.dispute",
+    description: "Open a dispute against a marketplace task",
+    commandOptions: MARKET_COMMAND_OPTIONS["tasks.dispute"],
+    run: runMarketTaskDisputeCommand as MarketCommandDescriptor["run"],
+  },
+  "skills.list": {
+    name: "skills.list",
+    description: "List marketplace skill registrations",
+    commandOptions: MARKET_COMMAND_OPTIONS["skills.list"],
+    run: runMarketSkillsListCommand as MarketCommandDescriptor["run"],
+  },
+  "skills.detail": {
+    name: "skills.detail",
+    description: "Inspect a marketplace skill",
+    commandOptions: MARKET_COMMAND_OPTIONS["skills.detail"],
+    run: runMarketSkillDetailCommand as MarketCommandDescriptor["run"],
+  },
+  "skills.purchase": {
+    name: "skills.purchase",
+    description: "Purchase a marketplace skill",
+    commandOptions: MARKET_COMMAND_OPTIONS["skills.purchase"],
+    run: runMarketSkillPurchaseCommand as MarketCommandDescriptor["run"],
+  },
+  "skills.rate": {
+    name: "skills.rate",
+    description: "Rate a marketplace skill",
+    commandOptions: MARKET_COMMAND_OPTIONS["skills.rate"],
+    run: runMarketSkillRateCommand as MarketCommandDescriptor["run"],
+  },
+  "governance.list": {
+    name: "governance.list",
+    description: "List governance proposals",
+    commandOptions: MARKET_COMMAND_OPTIONS["governance.list"],
+    run: runMarketGovernanceListCommand as MarketCommandDescriptor["run"],
+  },
+  "governance.detail": {
+    name: "governance.detail",
+    description: "Inspect a governance proposal",
+    commandOptions: MARKET_COMMAND_OPTIONS["governance.detail"],
+    run: runMarketGovernanceDetailCommand as MarketCommandDescriptor["run"],
+  },
+  "governance.vote": {
+    name: "governance.vote",
+    description: "Vote on a governance proposal",
+    commandOptions: MARKET_COMMAND_OPTIONS["governance.vote"],
+    run: runMarketGovernanceVoteCommand as MarketCommandDescriptor["run"],
+  },
+  "disputes.list": {
+    name: "disputes.list",
+    description: "List disputes",
+    commandOptions: MARKET_COMMAND_OPTIONS["disputes.list"],
+    run: runMarketDisputesListCommand as MarketCommandDescriptor["run"],
+  },
+  "disputes.detail": {
+    name: "disputes.detail",
+    description: "Inspect a dispute",
+    commandOptions: MARKET_COMMAND_OPTIONS["disputes.detail"],
+    run: runMarketDisputeDetailCommand as MarketCommandDescriptor["run"],
+  },
+  "disputes.resolve": {
+    name: "disputes.resolve",
+    description: "Resolve a dispute with explicit arbiter votes",
+    commandOptions: MARKET_COMMAND_OPTIONS["disputes.resolve"],
+    run: runMarketDisputeResolveCommand as MarketCommandDescriptor["run"],
+  },
+  "reputation.summary": {
+    name: "reputation.summary",
+    description: "Inspect marketplace reputation state",
+    commandOptions: MARKET_COMMAND_OPTIONS["reputation.summary"],
+    run: runMarketReputationSummaryCommand as MarketCommandDescriptor["run"],
+  },
+  "reputation.stake": {
+    name: "reputation.stake",
+    description: "Stake SOL on reputation",
+    commandOptions: MARKET_COMMAND_OPTIONS["reputation.stake"],
+    run: runMarketReputationStakeCommand as MarketCommandDescriptor["run"],
+  },
+  "reputation.delegate": {
+    name: "reputation.delegate",
+    description: "Delegate reputation to another agent",
+    commandOptions: MARKET_COMMAND_OPTIONS["reputation.delegate"],
+    run: runMarketReputationDelegateCommand as MarketCommandDescriptor["run"],
+  },
+  tui: {
+    name: "tui",
+    description: "Launch the interactive marketplace terminal workspace",
+    commandOptions: MARKET_COMMAND_OPTIONS.tui,
+    run: runMarketTuiCommand as MarketCommandDescriptor["run"],
+  },
+};
+
+function validateMarketCommand(name: string): name is MarketCommand {
+  return (
+    name === "tasks.list" ||
+    name === "tasks.create" ||
+    name === "tasks.detail" ||
+    name === "tasks.cancel" ||
+    name === "tasks.claim" ||
+    name === "tasks.complete" ||
+    name === "tasks.dispute" ||
+    name === "skills.list" ||
+    name === "skills.detail" ||
+    name === "skills.purchase" ||
+    name === "skills.rate" ||
+    name === "governance.list" ||
+    name === "governance.detail" ||
+    name === "governance.vote" ||
+    name === "disputes.list" ||
+    name === "disputes.detail" ||
+    name === "disputes.resolve" ||
+    name === "reputation.summary" ||
+    name === "reputation.stake" ||
+    name === "reputation.delegate" ||
+    name === "tui"
+  );
+}
+
 const ERROR_CODES = {
   MISSING_ROOT_COMMAND: "MISSING_ROOT_COMMAND",
   UNKNOWN_COMMAND: "UNKNOWN_COMMAND",
@@ -523,6 +803,8 @@ const ERROR_CODES = {
   MISSING_TARGET: "MISSING_TARGET",
   MISSING_SKILL_COMMAND: "MISSING_SKILL_COMMAND",
   UNKNOWN_SKILL_COMMAND: "UNKNOWN_SKILL_COMMAND",
+  MISSING_MARKET_COMMAND: "MISSING_MARKET_COMMAND",
+  UNKNOWN_MARKET_COMMAND: "UNKNOWN_MARKET_COMMAND",
   MISSING_SESSION_ID: "MISSING_SESSION_ID",
   MISSING_CONFIG_COMMAND: "MISSING_CONFIG_COMMAND",
   UNKNOWN_CONFIG_COMMAND: "UNKNOWN_CONFIG_COMMAND",
@@ -557,6 +839,8 @@ function buildHelp(): string {
     "replay [--help] <command> [options]",
     "plugin [--help] <command> [options]",
     "jobs [--help] <command> [options]",
+    "market [--help] <domain> <command> [options]",
+    "market tui",
     "skill [--help] <command> [options]",
     "",
     "Bootstrap commands:",
@@ -602,6 +886,32 @@ function buildHelp(): string {
     "  run <jobName>                      Trigger a scheduled job immediately",
     "  enable <jobName>                   Enable a scheduled job",
     "  disable <jobName>                  Disable a scheduled job",
+    "",
+    "Market subcommands:",
+    "  tasks list [--status open,in_progress]       List marketplace tasks",
+    "  tasks create --description txt --reward lamports",
+    "                                              Create a public marketplace task",
+    "  tasks detail <taskPda>                       Inspect a task",
+    "  tasks cancel <taskPda>                       Cancel an open task",
+    "  tasks claim <taskPda>                        Claim a task",
+    "  tasks complete <taskPda> [--result-data txt] Complete a task (auto-hashes proof when omitted)",
+    "  tasks dispute <taskPda> --evidence txt       Open a dispute for a task",
+    "  skills list [--query text] [--tags t1,t2]    List marketplace skills",
+    "  skills detail <skillPda>                     Inspect a skill registration",
+    "  skills purchase <skillPda>                   Purchase and install a marketplace skill",
+    '  skills rate <skillPda> <1-5> [--review "text"] Rate a marketplace skill',
+    "  governance list                              List governance proposals",
+    "  governance detail <proposalPda>              Inspect a governance proposal",
+    "  governance vote <proposalPda> <yes|no>       Vote on a governance proposal",
+    "  disputes list [--status active,resolved]     List disputes",
+    "  disputes detail <disputePda>                 Inspect a dispute",
+    "  disputes resolve <disputePda> --arbiter-votes votePda:arbiterPda[,..]",
+    "                                              Resolve a dispute with explicit vote accounts",
+    "  reputation summary [agentPda]                Inspect reputation state",
+    "  reputation stake <lamports>                  Stake SOL on reputation",
+    "  reputation delegate <amount> --delegatee-agent-pda <pda>",
+    "                                              Delegate reputation to another agent",
+    "  tui                                          Launch the interactive terminal marketplace workspace",
     "",
     "Skill subcommands:",
     "  list                               List all discovered skills",
@@ -725,6 +1035,37 @@ function buildHelp(): string {
     "      --precedence workspace|user|builtin  Plugin installation precedence",
     "      --slot memory|llm|proof|telemetry|custom Plugin slot claim",
     "",
+    "market options:",
+    "      --status <s1,s2>                      Status filter for tasks/disputes list",
+    "      --description <text>                  Task description for market tasks create",
+    "      --reward <lamports>                   Task reward for market tasks create",
+    "      --required-capabilities <u64>         Required capability bitmask for task creation (default: 1)",
+    "      --max-workers <n>                     Max workers for task creation",
+    "      --deadline <unix>                     Task deadline for task creation",
+    "      --task-type <0|1|2>                   Task type for task creation",
+    "      --creator-agent-pda <pda>             Explicit creator agent PDA for task creation",
+    "      --query <text>                        Text filter for skills list",
+    "      --tags <t1,t2>                        Tag filter for skills list",
+    "      --limit <n>                           Limit skills list results",
+    "      --proof-hash <hex>                    Explicit 32-byte proof hash for task completion",
+    "      --result-data <text>                  Task completion result data",
+    "      --evidence <text>                     Dispute evidence text",
+    "      --resolution-type refund|complete|split  Desired dispute outcome",
+    "      --expected-price <lamports>           Purchase price guard for skills",
+    "      --arbiter-votes <votePda:arbiterPda,...> Required resolve pairs",
+    "      --extra-workers <claimPda:workerPda,...> Optional collaborative worker pairs",
+    "      --delegatee-agent-pda <pda>           Target agent PDA for reputation delegation",
+    "      --delegatee-agent-id <hex>            Target agent id for reputation delegation",
+    "      --expires-at <unix>                   Optional reputation delegation expiry",
+    "      --worker-agent-pda <pda>              Explicit worker agent for task actions",
+    "      --worker-claim-pda <pda>              Explicit worker claim PDA for disputes",
+    "      --initiator-agent-pda <pda>           Explicit initiator agent PDA for disputes",
+    "      --buyer-agent-pda <pda>               Explicit buyer agent PDA for skill purchase",
+    "      --rater-agent-pda <pda>               Explicit rater agent PDA for skill rating",
+    "      --voter-agent-pda <pda>               Explicit voter agent PDA for governance",
+    "      --staker-agent-pda <pda>              Explicit staker agent PDA for reputation stake",
+    "      --delegator-agent-pda <pda>           Explicit delegator agent PDA for reputation delegation",
+    "",
     "Examples:",
     "  agenc-runtime start --config ~/.agenc/config.json",
     "  agenc-runtime start --foreground --config ~/.agenc/config.json",
@@ -758,6 +1099,19 @@ function buildHelp(): string {
     "  agenc-runtime plugin install --manifest ./plugin.json --precedence workspace --slot llm",
     "  agenc-runtime plugin disable memory.plugin",
     "  agenc-runtime plugin list",
+    "  agenc-runtime market tasks list --status open,in_progress",
+    "  agenc-runtime market tasks create --description 'public task' --reward 50000000",
+    "  agenc-runtime market tasks claim <taskPda>",
+    "  agenc-runtime market tasks cancel <taskPda>",
+    "  agenc-runtime market tasks complete <taskPda> --result-data 'completed via cli'",
+    "  agenc-runtime market tasks dispute <taskPda> --evidence 'worker failed validation' --resolution-type refund",
+    "  agenc-runtime market tui",
+    "  agenc-runtime market skills list --query swap --tags defi",
+    "  agenc-runtime market skills purchase <skillPda>",
+    "  agenc-runtime market governance vote <proposalPda> yes",
+    "  agenc-runtime market disputes resolve <disputePda> --arbiter-votes vote1:arbiter1,vote2:arbiter2",
+    "  agenc-runtime market reputation summary",
+    "  agenc-runtime market reputation delegate 250 --delegatee-agent-pda <agentPda> --expires-at 1760000000",
     "  agenc-runtime skill list",
     "  agenc-runtime skill info my-skill",
     "  agenc-runtime skill validate",
@@ -1877,6 +2231,25 @@ interface SkillParseReport {
   outputFormat: CliOutputFormat;
 }
 
+interface MarketParseReport {
+  command: "market";
+  marketCommand: MarketCommand;
+  global: {
+    help: boolean;
+    strictMode: boolean;
+    outputFormat: CliOutputFormat;
+    role?: OperatorRole;
+    rpcUrl?: string;
+    programId?: string;
+    storeType: "memory" | "sqlite";
+    sqlitePath?: string;
+    traceId?: string;
+    idempotencyWindow: number;
+  };
+  options: MarketCommandOptions | MarketTuiOptions;
+  outputFormat: CliOutputFormat;
+}
+
 function normalizeAndValidateSkillCommand(
   parsed: ParsedArgv,
 ): SkillParseReport {
@@ -2068,6 +2441,477 @@ function normalizeAndValidateSkillCommand(
   return {
     command: "skill",
     skillCommand,
+    global: {
+      help: base.help,
+      strictMode: base.strictMode,
+      outputFormat: base.outputFormat,
+      role: base.role,
+      rpcUrl: base.rpcUrl,
+      programId: base.programId,
+      storeType: base.storeType,
+      sqlitePath: base.sqlitePath,
+      traceId: base.traceId,
+      idempotencyWindow: base.idempotencyWindow,
+    },
+    options,
+    outputFormat: base.outputFormat,
+  };
+}
+
+function parseStringListFlag(
+  raw: string | number | boolean | undefined,
+): string[] | undefined {
+  if (typeof raw !== "string") return undefined;
+  return raw
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function parseOptionalStringFlag(
+  raw: string | number | boolean | undefined,
+): string | undefined {
+  return typeof raw === "string" ? raw : undefined;
+}
+
+function parseOptionalScalarFlag(
+  raw: string | number | boolean | undefined,
+): string | undefined {
+  if (typeof raw === "string") return raw;
+  if (typeof raw === "number") return String(raw);
+  return undefined;
+}
+
+function parseOptionalNumberFlag(
+  raw: string | number | boolean | undefined,
+): number | undefined {
+  if (typeof raw === "number") return raw;
+  if (typeof raw === "string") {
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function parseVoteChoice(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "yes" || normalized === "true" || normalized === "approve") {
+    return true;
+  }
+  if (normalized === "no" || normalized === "false" || normalized === "reject") {
+    return false;
+  }
+  throw createCliError(
+    "market governance vote expects yes|no",
+    ERROR_CODES.INVALID_VALUE,
+  );
+}
+
+function normalizeAndValidateMarketCommand(
+  parsed: ParsedArgv,
+): MarketParseReport {
+  const configSelection = resolveLegacyCompatibleConfigSelection(parsed.flags);
+  let fileConfig: CliFileConfig;
+  try {
+    fileConfig = loadFileConfigFromSelection(configSelection);
+  } catch (error) {
+    throw createCliError(
+      `failed to parse config file ${configSelection.configPath}: ${error instanceof Error ? error.message : String(error)}`,
+      ERROR_CODES.CONFIG_PARSE_ERROR,
+    );
+  }
+
+  const envConfig = readEnvironmentConfig();
+  const domain = parsed.positional[1] as string | undefined;
+  const action = parsed.positional[2] as string | undefined;
+  if (!domain) {
+    throw createCliError(
+      "missing market subcommand (for example: market tasks list or market tui)",
+      ERROR_CODES.MISSING_MARKET_COMMAND,
+    );
+  }
+
+  const global = normalizeGlobalFlags(parsed.flags, fileConfig, envConfig);
+  const base: BaseCliOptions = {
+    help: global.help,
+    outputFormat: global.outputFormat,
+    strictMode: global.strictMode,
+    role: global.role,
+    rpcUrl: global.rpcUrl,
+    programId: global.programId,
+    storeType: global.storeType,
+    sqlitePath: global.sqlitePath,
+    traceId: global.traceId,
+    idempotencyWindow: global.idempotencyWindow,
+  };
+
+  if (domain === "tui") {
+    const explicitOutputRequested =
+      parseOptionalStringFlag(parsed.flags.output) !== undefined ||
+      parseOptionalStringFlag(parsed.flags["output-format"]) !== undefined;
+    const interactiveOutputFormat = explicitOutputRequested
+      ? base.outputFormat
+      : "table";
+    if (action) {
+      throw createCliError(
+        "market tui does not accept a subcommand",
+        ERROR_CODES.INVALID_VALUE,
+      );
+    }
+    validateUnknownStandaloneOptions(parsed.flags, MARKET_COMMAND_OPTIONS.tui);
+    return {
+      command: "market",
+      marketCommand: "tui",
+      global: {
+        help: base.help,
+        strictMode: base.strictMode,
+        outputFormat: interactiveOutputFormat,
+        role: base.role,
+        rpcUrl: base.rpcUrl,
+        programId: base.programId,
+        storeType: base.storeType,
+        sqlitePath: base.sqlitePath,
+        traceId: base.traceId,
+        idempotencyWindow: base.idempotencyWindow,
+      },
+      options: {
+        ...base,
+        outputFormat: interactiveOutputFormat,
+      } as MarketTuiOptions,
+      outputFormat: interactiveOutputFormat,
+    };
+  }
+
+  if (!action) {
+    throw createCliError(
+      "missing market subcommand (for example: market tasks list)",
+      ERROR_CODES.MISSING_MARKET_COMMAND,
+    );
+  }
+
+  const marketCommand = `${domain}.${action}`;
+  if (!validateMarketCommand(marketCommand) || marketCommand === "tui") {
+    throw createCliError(
+      `unknown market command: ${marketCommand}`,
+      ERROR_CODES.UNKNOWN_MARKET_COMMAND,
+    );
+  }
+
+  validateUnknownStandaloneOptions(
+    parsed.flags,
+    MARKET_COMMAND_OPTIONS[marketCommand],
+  );
+
+  let options: MarketCommandOptions;
+  switch (marketCommand) {
+    case "tasks.list":
+      options = {
+        ...base,
+        statuses: parseStringListFlag(parsed.flags.status),
+      } as MarketTasksListOptions;
+      break;
+    case "tasks.create": {
+      const description = parseOptionalStringFlag(parsed.flags.description);
+      const reward = parseOptionalScalarFlag(parsed.flags.reward);
+      if (!description) {
+        throw createCliError(
+          "market tasks create requires --description <text>",
+          ERROR_CODES.MISSING_REQUIRED_OPTION,
+        );
+      }
+      if (!reward) {
+        throw createCliError(
+          "market tasks create requires --reward <lamports>",
+          ERROR_CODES.MISSING_REQUIRED_OPTION,
+        );
+      }
+      options = {
+        ...base,
+        description,
+        reward,
+        requiredCapabilities:
+          parseOptionalScalarFlag(parsed.flags["required-capabilities"]) ?? "1",
+        maxWorkers: parseOptionalNumberFlag(parsed.flags["max-workers"]),
+        deadline: parseOptionalNumberFlag(parsed.flags.deadline),
+        taskType: parseOptionalNumberFlag(parsed.flags["task-type"]),
+        creatorAgentPda: parseOptionalStringFlag(parsed.flags["creator-agent-pda"]),
+      } as MarketTaskCreateOptions;
+      break;
+    }
+    case "tasks.detail": {
+      const taskPda = parsed.positional[3];
+      if (!taskPda) {
+        throw createCliError(
+          "market tasks detail requires <taskPda>",
+          ERROR_CODES.MISSING_TARGET,
+        );
+      }
+      options = { ...base, taskPda } as MarketTaskDetailOptions;
+      break;
+    }
+    case "tasks.cancel": {
+      const taskPda = parsed.positional[3];
+      if (!taskPda) {
+        throw createCliError(
+          "market tasks cancel requires <taskPda>",
+          ERROR_CODES.MISSING_TARGET,
+        );
+      }
+      options = { ...base, taskPda } as MarketTaskCancelOptions;
+      break;
+    }
+    case "tasks.claim": {
+      const taskPda = parsed.positional[3];
+      if (!taskPda) {
+        throw createCliError(
+          "market tasks claim requires <taskPda>",
+          ERROR_CODES.MISSING_TARGET,
+        );
+      }
+      options = {
+        ...base,
+        taskPda,
+        workerAgentPda: parseOptionalStringFlag(parsed.flags["worker-agent-pda"]),
+      } as MarketTaskClaimOptions;
+      break;
+    }
+    case "tasks.complete": {
+      const taskPda = parsed.positional[3];
+      if (!taskPda) {
+        throw createCliError(
+          "market tasks complete requires <taskPda>",
+          ERROR_CODES.MISSING_TARGET,
+        );
+      }
+      options = {
+        ...base,
+        taskPda,
+        proofHash: parseOptionalStringFlag(parsed.flags["proof-hash"]),
+        resultData: parseOptionalStringFlag(parsed.flags["result-data"]),
+        workerAgentPda: parseOptionalStringFlag(parsed.flags["worker-agent-pda"]),
+      } as MarketTaskCompleteOptions;
+      break;
+    }
+    case "tasks.dispute": {
+      const taskPda = parsed.positional[3];
+      const evidence = parseOptionalStringFlag(parsed.flags.evidence);
+      if (!taskPda) {
+        throw createCliError(
+          "market tasks dispute requires <taskPda>",
+          ERROR_CODES.MISSING_TARGET,
+        );
+      }
+      if (!evidence) {
+        throw createCliError(
+          "market tasks dispute requires --evidence <text>",
+          ERROR_CODES.MISSING_REQUIRED_OPTION,
+        );
+      }
+      options = {
+        ...base,
+        taskPda,
+        evidence,
+        resolutionType: parseOptionalStringFlag(parsed.flags["resolution-type"]),
+        workerAgentPda: parseOptionalStringFlag(parsed.flags["worker-agent-pda"]),
+        workerClaimPda: parseOptionalStringFlag(parsed.flags["worker-claim-pda"]),
+        initiatorAgentPda: parseOptionalStringFlag(parsed.flags["initiator-agent-pda"]),
+      } as MarketTaskDisputeOptions;
+      break;
+    }
+    case "skills.list":
+      options = {
+        ...base,
+        query:
+          parsed.positional[3] ??
+          parseOptionalStringFlag(parsed.flags.query),
+        tags: parseStringListFlag(parsed.flags.tags),
+        limit: parseOptionalNumberFlag(parsed.flags.limit),
+      } as MarketSkillsListOptions;
+      break;
+    case "skills.detail": {
+      const skillPda = parsed.positional[3];
+      if (!skillPda) {
+        throw createCliError(
+          "market skills detail requires <skillPda>",
+          ERROR_CODES.MISSING_TARGET,
+        );
+      }
+      options = { ...base, skillPda } as MarketSkillDetailOptions;
+      break;
+    }
+    case "skills.purchase": {
+      const skillPda = parsed.positional[3];
+      if (!skillPda) {
+        throw createCliError(
+          "market skills purchase requires <skillPda>",
+          ERROR_CODES.MISSING_TARGET,
+        );
+      }
+      options = {
+        ...base,
+        skillPda,
+        expectedPrice: parseOptionalStringFlag(parsed.flags["expected-price"]),
+        buyerAgentPda: parseOptionalStringFlag(parsed.flags["buyer-agent-pda"]),
+      } as MarketSkillPurchaseOptions;
+      break;
+    }
+    case "skills.rate": {
+      const skillPda = parsed.positional[3];
+      const ratingRaw = parsed.positional[4];
+      if (!skillPda || !ratingRaw) {
+        throw createCliError(
+          "market skills rate requires <skillPda> <rating>",
+          ERROR_CODES.MISSING_TARGET,
+        );
+      }
+      const rating = Number.parseInt(ratingRaw, 10);
+      if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+        throw createCliError(
+          "rating must be an integer between 1 and 5",
+          ERROR_CODES.INVALID_VALUE,
+        );
+      }
+      options = {
+        ...base,
+        skillPda,
+        rating,
+        review: parseOptionalStringFlag(parsed.flags.review),
+        raterAgentPda: parseOptionalStringFlag(parsed.flags["rater-agent-pda"]),
+      } as MarketSkillRateOptions;
+      break;
+    }
+    case "governance.list":
+      options = { ...base } as MarketGovernanceListOptions;
+      break;
+    case "governance.detail": {
+      const proposalPda = parsed.positional[3];
+      if (!proposalPda) {
+        throw createCliError(
+          "market governance detail requires <proposalPda>",
+          ERROR_CODES.MISSING_TARGET,
+        );
+      }
+      options = { ...base, proposalPda } as MarketGovernanceDetailOptions;
+      break;
+    }
+    case "governance.vote": {
+      const proposalPda = parsed.positional[3];
+      const choice = parsed.positional[4];
+      if (!proposalPda || !choice) {
+        throw createCliError(
+          "market governance vote requires <proposalPda> <yes|no>",
+          ERROR_CODES.MISSING_TARGET,
+        );
+      }
+      options = {
+        ...base,
+        proposalPda,
+        approve: parseVoteChoice(choice),
+        voterAgentPda: parseOptionalStringFlag(parsed.flags["voter-agent-pda"]),
+      } as MarketGovernanceVoteOptions;
+      break;
+    }
+    case "disputes.list":
+      options = {
+        ...base,
+        statuses: parseStringListFlag(parsed.flags.status),
+      } as MarketDisputesListOptions;
+      break;
+    case "disputes.detail": {
+      const disputePda = parsed.positional[3];
+      if (!disputePda) {
+        throw createCliError(
+          "market disputes detail requires <disputePda>",
+          ERROR_CODES.MISSING_TARGET,
+        );
+      }
+      options = { ...base, disputePda } as MarketDisputeDetailOptions;
+      break;
+    }
+    case "disputes.resolve": {
+      const disputePda = parsed.positional[3];
+      const arbiterVotesRaw = parseOptionalStringFlag(parsed.flags["arbiter-votes"]);
+      if (!disputePda) {
+        throw createCliError(
+          "market disputes resolve requires <disputePda>",
+          ERROR_CODES.MISSING_TARGET,
+        );
+      }
+      if (!arbiterVotesRaw) {
+        throw createCliError(
+          "market disputes resolve requires --arbiter-votes votePda:arbiterPda[,..]",
+          ERROR_CODES.MISSING_REQUIRED_OPTION,
+        );
+      }
+      options = {
+        ...base,
+        disputePda,
+        arbiterVotes: parseArbiterVotes(arbiterVotesRaw),
+        extraWorkers: parseOptionalStringFlag(parsed.flags["extra-workers"])
+          ? parseExtraWorkers(String(parsed.flags["extra-workers"]))
+          : undefined,
+      } as MarketDisputeResolveOptions;
+      break;
+    }
+    case "reputation.summary":
+      options = {
+        ...base,
+        agentPda: parsed.positional[3],
+      } as MarketReputationSummaryOptions;
+      break;
+    case "reputation.stake": {
+      const amount = parsed.positional[3];
+      if (!amount) {
+        throw createCliError(
+          "market reputation stake requires <lamports>",
+          ERROR_CODES.MISSING_TARGET,
+        );
+      }
+      options = {
+        ...base,
+        amount,
+        stakerAgentPda: parseOptionalStringFlag(parsed.flags["staker-agent-pda"]),
+      } as MarketReputationStakeOptions;
+      break;
+    }
+    case "reputation.delegate": {
+      const amountRaw = parsed.positional[3];
+      if (!amountRaw) {
+        throw createCliError(
+          "market reputation delegate requires <amount>",
+          ERROR_CODES.MISSING_TARGET,
+        );
+      }
+      const amount = Number.parseInt(amountRaw, 10);
+      if (!Number.isInteger(amount) || amount <= 0) {
+        throw createCliError(
+          "delegation amount must be a positive integer",
+          ERROR_CODES.INVALID_VALUE,
+        );
+      }
+      const delegateeAgentPda = parseOptionalStringFlag(parsed.flags["delegatee-agent-pda"]);
+      const delegateeAgentId = parseOptionalStringFlag(parsed.flags["delegatee-agent-id"]);
+      if (!delegateeAgentPda && !delegateeAgentId) {
+        throw createCliError(
+          "market reputation delegate requires --delegatee-agent-pda or --delegatee-agent-id",
+          ERROR_CODES.MISSING_REQUIRED_OPTION,
+        );
+      }
+      options = {
+        ...base,
+        amount,
+        delegateeAgentPda,
+        delegateeAgentId,
+        expiresAt: parseOptionalNumberFlag(parsed.flags["expires-at"]),
+        delegatorAgentPda: parseOptionalStringFlag(parsed.flags["delegator-agent-pda"]),
+      } as MarketReputationDelegateOptions;
+      break;
+    }
+  }
+
+  return {
+    command: "market",
+    marketCommand,
     global: {
       help: base.help,
       strictMode: base.strictMode,
@@ -2714,6 +3558,45 @@ async function dispatchSkillCommands(
   }
 }
 
+async function dispatchMarketCommands(
+  parsed: ParsedArgv,
+  stdout: NodeJS.WritableStream,
+  stderr: NodeJS.WritableStream,
+  context: CliRuntimeContext,
+): Promise<RoutedStatus> {
+  if (parsed.positional[0] !== "market") {
+    return null;
+  }
+
+  let marketReport: MarketParseReport;
+  try {
+    marketReport = normalizeAndValidateMarketCommand(parsed);
+  } catch (error) {
+    context.error(buildErrorPayload(error));
+    return 2;
+  }
+
+  const marketContext = createContext(
+    stdout,
+    stderr,
+    marketReport.outputFormat,
+    normalizeLogLevel(parsed.flags["log-level"]),
+  );
+
+  if (marketReport.global.help) {
+    marketContext.output(buildHelp());
+    return 0;
+  }
+
+  const marketDescriptor = MARKET_COMMANDS[marketReport.marketCommand];
+  try {
+    return await marketDescriptor.run(marketContext, marketReport.options);
+  } catch (error) {
+    marketContext.error(buildErrorPayload(error));
+    return 1;
+  }
+}
+
 function resolveIncidentCommandCategory(
   command: ReplayCommand,
 ): IncidentCommandCategory {
@@ -2913,6 +3796,7 @@ export async function runCli(
     (await dispatchConnectorCommands(parsed, context)) ??
     (await dispatchSessionCommands(parsed, context)) ??
     (await dispatchJobsCommands(parsed, context)) ??
+    (await dispatchMarketCommands(parsed, stdout, stderr, context)) ??
     (await dispatchSkillCommands(parsed, stdout, stderr, context));
 
   if (routed !== null) {

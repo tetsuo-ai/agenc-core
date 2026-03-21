@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import anchor, { type Program } from '@coral-xyz/anchor';
+import { BN, type Program } from '@coral-xyz/anchor';
 import { PublicKey, SystemProgram } from '@solana/web3.js';
 import {
   getAssociatedTokenAddressSync,
@@ -676,7 +676,7 @@ export function createRegisterSkillTool(
             Array.from(skillId),
             Array.from(name),
             Array.from(contentHash),
-            new anchor.BN(price.toString()),
+            new BN(price.toString()),
             priceMint,
             Array.from(tags),
           )
@@ -776,7 +776,7 @@ export function createPurchaseSkillTool(
         );
 
         const transactionSignature = await (program.methods as any)
-          .purchaseSkill(new anchor.BN(price.toString()))
+          .purchaseSkill(new BN(price.toString()))
           .accountsPartial({
             skill: skillPda,
             purchaseRecord: purchaseRecordPda,
@@ -1168,6 +1168,10 @@ export function createInitiateDisputeTool(
         });
         const task = await taskOps.fetchTask(taskPda);
         if (!task) return errorResult(`Task not found: ${taskPda.toBase58()}`);
+        const initiatedByCreator = task.creator.equals(signerAgent.authority);
+        const initiatorClaimPda = initiatedByCreator
+          ? null
+          : findClaimPda(taskPda, signerAgent.agentPda, program.programId);
 
         const derivedWorkerClaimPda =
           workerClaimPda ?? (workerAgentPda ? findClaimPda(taskPda, workerAgentPda, program.programId) : undefined);
@@ -1184,6 +1188,7 @@ export function createInitiateDisputeTool(
           evidenceHash,
           resolutionType,
           evidence: args.evidence,
+          initiatorClaimPda,
           workerAgentPda: workerAgentPda ?? undefined,
           workerClaimPda: derivedWorkerClaimPda,
           defendantWorkers,

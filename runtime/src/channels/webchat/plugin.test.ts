@@ -1491,13 +1491,28 @@ describe("WebChatChannel", () => {
   // --------------------------------------------------------------------------
 
   describe("subsystem handlers", () => {
-    it("should handle skills.list", () => {
+    it("should handle tools.list", () => {
+      const send = vi.fn<(response: ControlResponse) => void>();
+
+      channel.handleMessage(
+        "client_1",
+        "tools.list",
+        msg("tools.list", undefined, "req-5"),
+        send,
+      );
+
+      expect(send).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "tools.list", payload: [] }),
+      );
+    });
+
+    it("should keep the legacy skills.list alias working", () => {
       const send = vi.fn<(response: ControlResponse) => void>();
 
       channel.handleMessage(
         "client_1",
         "skills.list",
-        msg("skills.list", undefined, "req-5"),
+        msg("skills.list", undefined, "req-legacy-skills"),
         send,
       );
 
@@ -1520,6 +1535,58 @@ describe("WebChatChannel", () => {
         expect.objectContaining({
           type: "error",
           error: expect.stringContaining("Solana connection"),
+        }),
+      );
+    });
+
+    it("should handle task mutations with informative errors when no Solana connection", () => {
+      const send = vi.fn<(response: ControlResponse) => void>();
+
+      channel.handleMessage(
+        "client_1",
+        "tasks.claim",
+        msg("tasks.claim", { taskId: "task-1" }, "req-claim"),
+        send,
+      );
+      channel.handleMessage(
+        "client_1",
+        "tasks.complete",
+        msg("tasks.complete", { taskId: "task-1", resultData: "done" }, "req-complete"),
+        send,
+      );
+      channel.handleMessage(
+        "client_1",
+        "tasks.dispute",
+        msg(
+          "tasks.dispute",
+          { taskId: "task-1", evidence: "missing payout", resolutionType: "refund" },
+          "req-dispute",
+        ),
+        send,
+      );
+
+      expect(send).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          type: "error",
+          error: expect.stringContaining("Solana connection"),
+          id: "req-claim",
+        }),
+      );
+      expect(send).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          type: "error",
+          error: expect.stringContaining("Solana connection"),
+          id: "req-complete",
+        }),
+      );
+      expect(send).toHaveBeenNthCalledWith(
+        3,
+        expect.objectContaining({
+          type: "error",
+          error: expect.stringContaining("Solana connection"),
+          id: "req-dispute",
         }),
       );
     });
@@ -1919,6 +1986,68 @@ describe("WebChatChannel", () => {
             active: true,
             filters: ["tasks.", "desktop.*"],
           },
+        }),
+      );
+    });
+
+    it("should handle marketplace reads with informative errors when no Solana connection", () => {
+      const send = vi.fn<(response: ControlResponse) => void>();
+
+      channel.handleMessage(
+        "client_1",
+        "market.skills.list",
+        msg("market.skills.list", undefined, "req-market-skills"),
+        send,
+      );
+      channel.handleMessage(
+        "client_1",
+        "market.governance.list",
+        msg("market.governance.list", undefined, "req-market-governance"),
+        send,
+      );
+      channel.handleMessage(
+        "client_1",
+        "market.disputes.list",
+        msg("market.disputes.list", undefined, "req-market-disputes"),
+        send,
+      );
+      channel.handleMessage(
+        "client_1",
+        "market.reputation.summary",
+        msg("market.reputation.summary", undefined, "req-market-reputation"),
+        send,
+      );
+
+      expect(send).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          type: "error",
+          error: expect.stringContaining("Solana connection"),
+          id: "req-market-skills",
+        }),
+      );
+      expect(send).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          type: "error",
+          error: expect.stringContaining("Solana connection"),
+          id: "req-market-governance",
+        }),
+      );
+      expect(send).toHaveBeenNthCalledWith(
+        3,
+        expect.objectContaining({
+          type: "error",
+          error: expect.stringContaining("Solana connection"),
+          id: "req-market-disputes",
+        }),
+      );
+      expect(send).toHaveBeenNthCalledWith(
+        4,
+        expect.objectContaining({
+          type: "error",
+          error: expect.stringContaining("Solana connection"),
+          id: "req-market-reputation",
         }),
       );
     });

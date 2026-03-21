@@ -518,13 +518,13 @@ describe("GovernanceOperations extended methods", () => {
       });
       expect(result.transactionSignature).toBe("mock-signature");
       expect(result.governanceConfigPda).toBeInstanceOf(PublicKey);
-      expect(mockProgram.methods.initializeGovernance).toHaveBeenCalledWith(
-        259200,
-        86400,
-        1000,
-        5000,
-        1_000_000_000n,
-      );
+      const [votingPeriod, executionDelay, quorumBps, approvalThresholdBps, minProposalStake] =
+        mockProgram.methods.initializeGovernance.mock.calls[0] ?? [];
+      expect(votingPeriod.toString()).toBe("259200");
+      expect(executionDelay.toString()).toBe("86400");
+      expect(quorumBps).toBe(1000);
+      expect(approvalThresholdBps).toBe(5000);
+      expect(minProposalStake.toString()).toBe("1000000000");
     });
   });
 

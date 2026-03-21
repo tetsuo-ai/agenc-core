@@ -12,8 +12,12 @@ import { useTheme } from './hooks/useTheme';
 import { useChat } from './hooks/useChat';
 import { useVoice } from './hooks/useVoice';
 import { useAgentStatus } from './hooks/useAgentStatus';
-import { useSkills } from './hooks/useSkills';
+import { useTools } from './hooks/useTools';
 import { useTasks } from './hooks/useTasks';
+import { useMarketSkills } from './hooks/useMarketSkills';
+import { useGovernance } from './hooks/useGovernance';
+import { useDisputes } from './hooks/useDisputes';
+import { useReputation } from './hooks/useReputation';
 import { useMemory } from './hooks/useMemory';
 import { useApprovals } from './hooks/useApprovals';
 import { useSettings } from './hooks/useSettings';
@@ -31,8 +35,8 @@ import { ApprovalBanner } from './components/approvals/ApprovalBanner';
 import { ApprovalDialog } from './components/approvals/ApprovalDialog';
 import { ChatView } from './components/chat/ChatView';
 import { AgentStatusView } from './components/dashboard/AgentStatusView';
-import { SkillsView } from './components/skills/SkillsView';
-import { TasksView } from './components/tasks/TasksView';
+import { ToolsView } from './components/tools/ToolsView';
+import { MarketplaceView } from './components/marketplace/MarketplaceView';
 import { MemoryView } from './components/memory/MemoryView';
 import { ActivityFeedView } from './components/activity/ActivityFeedView';
 import { ObservabilityView } from './components/observability/ObservabilityView';
@@ -116,8 +120,12 @@ export default function App() {
   }, [chat]);
   const voice = useVoice({ send, onDelegationResult: handleDelegationResult });
   const agentStatus = useAgentStatus({ send, connected }) as WithHandler<ReturnType<typeof useAgentStatus>>;
-  const skills = useSkills({ send }) as WithHandler<ReturnType<typeof useSkills>>;
+  const tools = useTools({ send });
   const tasks = useTasks({ send }) as WithHandler<ReturnType<typeof useTasks>>;
+  const marketSkills = useMarketSkills({ send });
+  const governance = useGovernance({ send });
+  const disputes = useDisputes({ send });
+  const reputation = useReputation({ send });
   const memory = useMemory({ send }) as WithHandler<ReturnType<typeof useMemory>>;
   const approvals = useApprovals({ send }) as WithHandler<ReturnType<typeof useApprovals>>;
   const gatewaySettings = useSettings({ send, connected });
@@ -181,8 +189,12 @@ export default function App() {
     chat.handleMessage(msg);
     voice.handleMessage(msg);
     agentStatus.handleMessage(msg);
-    skills.handleMessage(msg);
+    tools.handleMessage(msg);
     tasks.handleMessage(msg);
+    marketSkills.handleMessage(msg);
+    governance.handleMessage(msg);
+    disputes.handleMessage(msg);
+    reputation.handleMessage(msg);
     memory.handleMessage(msg);
     approvals.handleMessage(msg);
     gatewaySettings.handleMessage(msg);
@@ -326,19 +338,41 @@ export default function App() {
               onRefresh={observability.refresh}
             />
           )}
-          {currentView === 'skills' && (
-            <SkillsView
-              skills={skills.skills}
-              onRefresh={skills.refresh}
-              onToggle={skills.toggle}
+          {(currentView === 'tools' || currentView === 'skills') && (
+            <ToolsView
+              tools={tools.tools}
+              onRefresh={tools.refresh}
+              onToggle={tools.toggle}
             />
           )}
-          {currentView === 'tasks' && (
-            <TasksView
+          {(currentView === 'marketplace' || currentView === 'tasks') && (
+            <MarketplaceView
               tasks={tasks.tasks}
-              onRefresh={tasks.refresh}
-              onCreate={tasks.create}
-              onCancel={tasks.cancel}
+              onTaskRefresh={tasks.refresh}
+              onTaskCreate={tasks.create}
+              onTaskClaim={tasks.claim}
+              onTaskComplete={tasks.complete}
+              onTaskDispute={tasks.dispute}
+              onTaskCancel={tasks.cancel}
+              skills={marketSkills.skills}
+              selectedSkill={marketSkills.selectedSkill}
+              onSkillsRefresh={marketSkills.refresh}
+              onSkillInspect={marketSkills.inspect}
+              onSkillPurchase={marketSkills.purchase}
+              onSkillRate={marketSkills.rate}
+              proposals={governance.proposals}
+              selectedProposal={governance.selectedProposal}
+              onGovernanceRefresh={governance.refresh}
+              onProposalInspect={governance.inspect}
+              onProposalVote={governance.vote}
+              disputes={disputes.disputes}
+              selectedDispute={disputes.selectedDispute}
+              onDisputesRefresh={disputes.refresh}
+              onDisputeInspect={disputes.inspect}
+              reputation={reputation.summary}
+              onReputationRefresh={reputation.refresh}
+              onStake={reputation.stake}
+              onDelegate={reputation.delegate}
             />
           )}
           {currentView === 'memory' && (

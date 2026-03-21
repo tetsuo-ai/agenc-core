@@ -144,6 +144,8 @@ export interface InitiateDisputeParams {
   resolutionType: number;
   /** Evidence string (max 256 chars) — instruction arg */
   evidence: string;
+  /** Optional explicit initiator claim PDA. Pass null when the creator initiates. */
+  initiatorClaimPda?: PublicKey | null;
   /** Optional: worker agent PDA (when creator initiates) */
   workerAgentPda?: PublicKey;
   /** Optional: worker claim PDA (when creator initiates) */
