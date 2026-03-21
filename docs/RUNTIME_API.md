@@ -361,10 +361,20 @@ The `gateway` block controls the WebSocket control plane. All fields except `por
     "bind": "0.0.0.0"
   },
   "auth": {
-    "secret": "your-secret-here"
+    "secret": "your-secret-here",
+    "localBypass": true
   }
 }
 ```
+
+> **`auth.localBypass` is required when `auth.secret` is set and you are running
+> `agenc watch` or `agenc ui` locally.** When `auth.secret` is configured, the
+> gateway does not auto-authenticate loopback connections — every WebSocket client
+> must present a signed JWT before sending any control-plane message. Local tools
+> (`agenc watch`, `agenc ui`) do not perform JWT auth; they rely on the loopback
+> bypass instead. Without `localBypass: true`, all dotted control-plane messages
+> (including chat, status, and TRACE tab `observability.*` queries) are rejected
+> with `Authentication required`.
 
 > **Common mistake:** Setting `gateway.host` has no effect — the correct field is `gateway.bind`. The `host` field is not part of `GatewayBindConfig` and is silently ignored.
 
