@@ -19,7 +19,13 @@ import {
   REPUTATION_MAX,
 } from '../../reputation/types.js';
 import { TaskOperations } from '../../task/operations.js';
-import { findClaimPda } from '../../task/pda.js';
+import { TaskType } from '../../events/types.js';
+import {
+  findBidBookPda,
+  findBidPda,
+  findBidderMarketStatePda,
+  findClaimPda,
+} from '../../task/pda.js';
 import type { Logger } from '../../utils/logger.js';
 import { bytesToHex, generateAgentId, hexToBytes } from '../../utils/encoding.js';
 import type { Tool, ToolResult } from '../types.js';
@@ -361,6 +367,18 @@ async function fetchProtocolTreasury(
   }
 }
 
+function deriveAcceptedBidSettlementAccounts(
+  taskPda: PublicKey,
+  bidderAgentPda: PublicKey,
+  programId: PublicKey,
+) {
+  return {
+    bidBook: findBidBookPda(taskPda, programId),
+    acceptedBid: findBidPda(taskPda, bidderAgentPda, programId),
+    bidderMarketState: findBidderMarketStatePda(bidderAgentPda, programId),
+  };
+}
+
 function deriveSkillPda(
   authorAgentPda: PublicKey,
   skillId: Uint8Array,
@@ -579,7 +597,25 @@ export function createCompleteTaskTool(
         const task = await ops.fetchTask(taskPda);
         if (!task) return errorResult(`Task not found: ${taskPda.toBase58()}`);
 
-        const result = await ops.completeTask(taskPda, task, proofHash, resultData);
+        const completionOptions =
+          task.taskType === TaskType.BidExclusive
+            ? {
+                acceptedBidSettlement: deriveAcceptedBidSettlementAccounts(
+                  taskPda,
+                  signerAgent.agentPda,
+                  program.programId,
+                ),
+                bidderAuthority: signerAgent.authority,
+              }
+            : undefined;
+
+        const result = await ops.completeTask(
+          taskPda,
+          task,
+          proofHash,
+          resultData,
+          completionOptions,
+        );
         return {
           content: safeStringify({
             success: result.success,
@@ -1291,6 +1327,15 @@ export function createResolveDisputeTool(
           return workerAuthorityErr ?? errorResult('Unable to resolve defendant worker authority');
         }
 
+        const acceptedBidSettlement =
+          task.taskType === TaskType.BidExclusive
+            ? deriveAcceptedBidSettlementAccounts(
+                dispute.task,
+                dispute.defendant,
+                program.programId,
+              )
+            : undefined;
+
         const result = await ops.resolveDispute({
           disputePda,
           taskPda: dispute.task,
@@ -1300,6 +1345,7 @@ export function createResolveDisputeTool(
           workerAuthority,
           arbiterVotes,
           extraWorkers,
+          acceptedBidSettlement,
         });
 
         return {

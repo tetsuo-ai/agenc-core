@@ -33,7 +33,7 @@ import {
 import { parseAgentState, agentStatusToString } from '../../agent/types.js';
 import { getCapabilityNames } from '../../agent/capabilities.js';
 import { parseProtocolConfig } from '../../types/protocol.js';
-// buildCreateTaskTokenAccounts omitted — devnet only supports SOL escrow
+import { buildCreateTaskTokenAccounts } from '../../utils/token.js';
 import {
   lamportsToSol,
   bytesToHex,
@@ -913,6 +913,11 @@ export function createCreateTaskTool(
         const taskPda = findTaskPda(creator, taskId, program.programId);
         const escrowPda = findEscrowPda(taskPda, program.programId);
         const protocolPda = findProtocolPda(program.programId);
+        const tokenAccounts = buildCreateTaskTokenAccounts(
+          rewardMint,
+          escrowPda,
+          creator,
+        );
 
         const txSignature = await (program.methods as any)
           .createTask(
@@ -935,11 +940,7 @@ export function createCreateTaskTool(
             authority: creator,
             creator,
             systemProgram: SystemProgram.programId,
-            rewardMint,
-            creatorTokenAccount: null,
-            tokenEscrowAta: null,
-            tokenProgram: null,
-            associatedTokenProgram: null,
+            ...tokenAccounts,
           })
           .rpc();
 

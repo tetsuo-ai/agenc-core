@@ -2,11 +2,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PublicKey } from '@solana/web3.js';
 import type { ToolResult } from '../types.js';
 import { silentLogger } from '../../utils/logger.js';
+import { TaskType } from '../../events/types.js';
 import { ProposalType } from '../../governance/types.js';
 import { GovernanceOperations } from '../../governance/operations.js';
 import { DisputeOperations } from '../../dispute/operations.js';
 import { ReputationEconomyOperations } from '../../reputation/economy.js';
 import { TaskOperations } from '../../task/operations.js';
+import {
+  findBidBookPda,
+  findBidPda,
+  findBidderMarketStatePda,
+} from '../../task/pda.js';
 import {
   createClaimTaskTool,
   createCompleteTaskTool,
@@ -148,6 +154,47 @@ describe('agenc mutation tools', () => {
     expect(String(parseJson(result).error)).toContain('proofHash');
   });
 
+  it('agenc.completeTask derives accepted-bid settlement accounts for bid-exclusive tasks', async () => {
+    const program = createMockProgram();
+    vi.spyOn(TaskOperations.prototype, 'fetchTask').mockResolvedValue({
+      creator: CREATOR_WALLET,
+      taskType: TaskType.BidExclusive,
+    } as never);
+    const completeSpy = vi
+      .spyOn(TaskOperations.prototype, 'completeTask')
+      .mockResolvedValue({
+        success: true,
+        taskId: new Uint8Array(32).fill(3),
+        isPrivate: false,
+        transactionSignature: 'complete-sig',
+      });
+
+    const tool = createCompleteTaskTool(program as never, silentLogger);
+    const result = await tool.execute({
+      taskPda: TASK_PDA.toBase58(),
+      proofHash: 'ab'.repeat(32),
+      workerAgentPda: AGENT_PDA.toBase58(),
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(completeSpy).toHaveBeenCalledWith(
+      TASK_PDA,
+      expect.objectContaining({
+        taskType: TaskType.BidExclusive,
+      }),
+      expect.any(Uint8Array),
+      null,
+      {
+        acceptedBidSettlement: {
+          bidBook: findBidBookPda(TASK_PDA, program.programId),
+          acceptedBid: findBidPda(TASK_PDA, AGENT_PDA, program.programId),
+          bidderMarketState: findBidderMarketStatePda(AGENT_PDA, program.programId),
+        },
+        bidderAuthority: SIGNER,
+      },
+    );
+  });
+
   it('agenc.registerSkill returns the derived skill payload on success', async () => {
     const program = createMockProgram();
     const tool = createRegisterSkillTool(program as never, silentLogger);
@@ -273,6 +320,53 @@ describe('agenc mutation tools', () => {
             arbiterAgentPda,
           },
         ],
+      }),
+    );
+  });
+
+  it('agenc.resolveDispute derives accepted-bid settlement accounts for bid-exclusive disputes', async () => {
+    const program = createMockProgram();
+    vi.spyOn(DisputeOperations.prototype, 'fetchDispute').mockResolvedValue({
+      task: TASK_PDA,
+      defendant: DEFENDANT_AGENT_PDA,
+    } as never);
+    vi.spyOn(TaskOperations.prototype, 'fetchTask').mockResolvedValue({
+      creator: CREATOR_WALLET,
+      taskType: TaskType.BidExclusive,
+    } as never);
+    const resolveSpy = vi
+      .spyOn(DisputeOperations.prototype, 'resolveDispute')
+      .mockResolvedValue({
+        disputePda: DISPUTE_PDA,
+        transactionSignature: 'resolve-bid-sig',
+      });
+
+    const tool = createResolveDisputeTool(program as never, silentLogger);
+    const votePda = PublicKey.unique();
+    const arbiterAgentPda = PublicKey.unique();
+    const result = await tool.execute({
+      disputePda: DISPUTE_PDA.toBase58(),
+      arbiterVotes: [
+        {
+          votePda: votePda.toBase58(),
+          arbiterAgentPda: arbiterAgentPda.toBase58(),
+        },
+      ],
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(resolveSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskPda: TASK_PDA,
+        workerAgentPda: DEFENDANT_AGENT_PDA,
+        acceptedBidSettlement: {
+          bidBook: findBidBookPda(TASK_PDA, program.programId),
+          acceptedBid: findBidPda(TASK_PDA, DEFENDANT_AGENT_PDA, program.programId),
+          bidderMarketState: findBidderMarketStatePda(
+            DEFENDANT_AGENT_PDA,
+            program.programId,
+          ),
+        },
       }),
     );
   });

@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PublicKey } from '@solana/web3.js';
+import {
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  getAssociatedTokenAddressSync,
+  TOKEN_PROGRAM_ID,
+} from '@tetsuo-ai/sdk';
 import { createAgencTools } from './index.js';
 import {
   createListTasksTool,
@@ -530,6 +535,34 @@ describe('agenc.createTask', () => {
 
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content).error).toContain('Unsupported rewardMint');
+  });
+
+  it('wires SPL reward accounts for known reward mints', async () => {
+    const mockProgram = createMockProgram();
+    const tool = createCreateTaskTool(mockProgram as never, silentLogger);
+
+    const result = await tool.execute({
+      description: 'usdc task',
+      reward: '1000000',
+      requiredCapabilities: '1',
+      rewardMint: USDC_MINT.toBase58(),
+    });
+    const parsed = JSON.parse(result.content);
+    const accounts = mockProgram._createTaskMethodChain.accountsPartial.mock.calls[0][0];
+
+    expect(result.isError).toBeUndefined();
+    expect(parsed.rewardMint).toBe(USDC_MINT.toBase58());
+    expect(accounts.rewardMint.equals(USDC_MINT)).toBe(true);
+    expect(accounts.creatorTokenAccount.equals(getAssociatedTokenAddressSync(USDC_MINT, SIGNER))).toBe(
+      true,
+    );
+    expect(
+      accounts.tokenEscrowAta.equals(
+        getAssociatedTokenAddressSync(USDC_MINT, accounts.escrow, true),
+      ),
+    ).toBe(true);
+    expect(accounts.tokenProgram.equals(TOKEN_PROGRAM_ID)).toBe(true);
+    expect(accounts.associatedTokenProgram.equals(ASSOCIATED_TOKEN_PROGRAM_ID)).toBe(true);
   });
 
   it('proceeds to RPC without pre-checking protocol config (on-chain validation)', async () => {

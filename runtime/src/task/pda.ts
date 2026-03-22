@@ -156,3 +156,100 @@ export function findEscrowPda(
 ): PublicKey {
   return deriveEscrowPda(taskPda, programId).address;
 }
+
+/**
+ * Derives the bid book PDA and bump seed.
+ * Seeds: ["bid_book", task_pda]
+ *
+ * @param taskPda - Task account PDA
+ * @param programId - Program ID (defaults to PROGRAM_ID)
+ * @returns PDA address and bump seed
+ */
+export function deriveBidBookPda(
+  taskPda: PublicKey,
+  programId: PublicKey = PROGRAM_ID,
+): PdaWithBump {
+  return derivePda([Buffer.from("bid_book"), taskPda.toBuffer()], programId);
+}
+
+/**
+ * Finds the bid book PDA address (without bump).
+ *
+ * @param taskPda - Task account PDA
+ * @param programId - Program ID (defaults to PROGRAM_ID)
+ * @returns PDA address
+ */
+export function findBidBookPda(
+  taskPda: PublicKey,
+  programId: PublicKey = PROGRAM_ID,
+): PublicKey {
+  return deriveBidBookPda(taskPda, programId).address;
+}
+
+/**
+ * Derives the bid PDA and bump seed.
+ * Seeds: ["bid", task_pda, bidder_agent_pda]
+ *
+ * @param taskPda - Task account PDA
+ * @param bidderAgentPda - Bidder agent PDA
+ * @param programId - Program ID (defaults to PROGRAM_ID)
+ * @returns PDA address and bump seed
+ */
+export function deriveBidPda(
+  taskPda: PublicKey,
+  bidderAgentPda: PublicKey,
+  programId: PublicKey = PROGRAM_ID,
+): PdaWithBump {
+  return derivePda(
+    [Buffer.from("bid"), taskPda.toBuffer(), bidderAgentPda.toBuffer()],
+    programId,
+  );
+}
+
+/**
+ * Finds the bid PDA address (without bump).
+ *
+ * @param taskPda - Task account PDA
+ * @param bidderAgentPda - Bidder agent PDA
+ * @param programId - Program ID (defaults to PROGRAM_ID)
+ * @returns PDA address
+ */
+export function findBidPda(
+  taskPda: PublicKey,
+  bidderAgentPda: PublicKey,
+  programId: PublicKey = PROGRAM_ID,
+): PublicKey {
+  return deriveBidPda(taskPda, bidderAgentPda, programId).address;
+}
+
+/**
+ * Derives the bidder marketplace state PDA and bump seed.
+ * Seeds: ["bidder_market", bidder_agent_pda]
+ *
+ * @param bidderAgentPda - Bidder agent PDA
+ * @param programId - Program ID (defaults to PROGRAM_ID)
+ * @returns PDA address and bump seed
+ */
+export function deriveBidderMarketStatePda(
+  bidderAgentPda: PublicKey,
+  programId: PublicKey = PROGRAM_ID,
+): PdaWithBump {
+  return derivePda(
+    [Buffer.from("bidder_market"), bidderAgentPda.toBuffer()],
+    programId,
+  );
+}
+
+/**
+ * Finds the bidder marketplace state PDA address (without bump).
+ *
+ * @param bidderAgentPda - Bidder agent PDA
+ * @param programId - Program ID (defaults to PROGRAM_ID)
+ * @returns PDA address
+ */
+export function findBidderMarketStatePda(
+  bidderAgentPda: PublicKey,
+  programId: PublicKey = PROGRAM_ID,
+): PublicKey {
+  return deriveBidderMarketStatePda(bidderAgentPda, programId).address;
+}
