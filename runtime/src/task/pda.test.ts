@@ -8,6 +8,12 @@ import {
   findClaimPda,
   deriveEscrowPda,
   findEscrowPda,
+  deriveBidBookPda,
+  findBidBookPda,
+  deriveBidPda,
+  findBidPda,
+  deriveBidderMarketStatePda,
+  findBidderMarketStatePda,
   TASK_ID_LENGTH,
   type PdaWithBump,
 } from "./pda.js";
@@ -229,6 +235,83 @@ describe("Task PDA derivation helpers", () => {
     });
   });
 
+  describe("deriveBidBookPda", () => {
+    it("derives deterministic PDA from taskPda", () => {
+      const taskPda = Keypair.generate().publicKey;
+
+      const result1 = deriveBidBookPda(taskPda);
+      const result2 = deriveBidBookPda(taskPda);
+
+      expect(result1.address.equals(result2.address)).toBe(true);
+      expect(result1.bump).toBe(result2.bump);
+    });
+
+    it("uses correct seeds", () => {
+      const taskPda = Keypair.generate().publicKey;
+
+      const result = deriveBidBookPda(taskPda);
+      const [expected, expectedBump] = PublicKey.findProgramAddressSync(
+        [Buffer.from("bid_book"), taskPda.toBuffer()],
+        PROGRAM_ID,
+      );
+
+      expect(result.address.equals(expected)).toBe(true);
+      expect(result.bump).toBe(expectedBump);
+    });
+  });
+
+  describe("deriveBidPda", () => {
+    it("derives deterministic PDA from taskPda + bidderAgentPda", () => {
+      const taskPda = Keypair.generate().publicKey;
+      const bidderAgentPda = Keypair.generate().publicKey;
+
+      const result1 = deriveBidPda(taskPda, bidderAgentPda);
+      const result2 = deriveBidPda(taskPda, bidderAgentPda);
+
+      expect(result1.address.equals(result2.address)).toBe(true);
+      expect(result1.bump).toBe(result2.bump);
+    });
+
+    it("uses correct seeds", () => {
+      const taskPda = Keypair.generate().publicKey;
+      const bidderAgentPda = Keypair.generate().publicKey;
+
+      const result = deriveBidPda(taskPda, bidderAgentPda);
+      const [expected, expectedBump] = PublicKey.findProgramAddressSync(
+        [Buffer.from("bid"), taskPda.toBuffer(), bidderAgentPda.toBuffer()],
+        PROGRAM_ID,
+      );
+
+      expect(result.address.equals(expected)).toBe(true);
+      expect(result.bump).toBe(expectedBump);
+    });
+  });
+
+  describe("deriveBidderMarketStatePda", () => {
+    it("derives deterministic PDA from bidderAgentPda", () => {
+      const bidderAgentPda = Keypair.generate().publicKey;
+
+      const result1 = deriveBidderMarketStatePda(bidderAgentPda);
+      const result2 = deriveBidderMarketStatePda(bidderAgentPda);
+
+      expect(result1.address.equals(result2.address)).toBe(true);
+      expect(result1.bump).toBe(result2.bump);
+    });
+
+    it("uses correct seeds", () => {
+      const bidderAgentPda = Keypair.generate().publicKey;
+
+      const result = deriveBidderMarketStatePda(bidderAgentPda);
+      const [expected, expectedBump] = PublicKey.findProgramAddressSync(
+        [Buffer.from("bidder_market"), bidderAgentPda.toBuffer()],
+        PROGRAM_ID,
+      );
+
+      expect(result.address.equals(expected)).toBe(true);
+      expect(result.bump).toBe(expectedBump);
+    });
+  });
+
   describe("findTaskPda", () => {
     it("returns address only (no bump)", () => {
       const creator = Keypair.generate().publicKey;
@@ -309,6 +392,40 @@ describe("Task PDA derivation helpers", () => {
 
       const address = findEscrowPda(taskPda);
       const { address: derivedAddress } = deriveEscrowPda(taskPda);
+
+      expect(address.equals(derivedAddress)).toBe(true);
+    });
+  });
+
+  describe("findBidBookPda", () => {
+    it("matches deriveBidBookPda().address", () => {
+      const taskPda = Keypair.generate().publicKey;
+
+      const address = findBidBookPda(taskPda);
+      const { address: derivedAddress } = deriveBidBookPda(taskPda);
+
+      expect(address.equals(derivedAddress)).toBe(true);
+    });
+  });
+
+  describe("findBidPda", () => {
+    it("matches deriveBidPda().address", () => {
+      const taskPda = Keypair.generate().publicKey;
+      const bidderAgentPda = Keypair.generate().publicKey;
+
+      const address = findBidPda(taskPda, bidderAgentPda);
+      const { address: derivedAddress } = deriveBidPda(taskPda, bidderAgentPda);
+
+      expect(address.equals(derivedAddress)).toBe(true);
+    });
+  });
+
+  describe("findBidderMarketStatePda", () => {
+    it("matches deriveBidderMarketStatePda().address", () => {
+      const bidderAgentPda = Keypair.generate().publicKey;
+
+      const address = findBidderMarketStatePda(bidderAgentPda);
+      const { address: derivedAddress } = deriveBidderMarketStatePda(bidderAgentPda);
 
       expect(address.equals(derivedAddress)).toBe(true);
     });
