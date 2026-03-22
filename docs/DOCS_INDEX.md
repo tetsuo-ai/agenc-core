@@ -43,4 +43,5 @@ This is the repo-level developer-documentation entrypoint for `agenc-core`.
 - I need runtime module ownership: [../runtime/docs/MODULE_MAP.md](../runtime/docs/MODULE_MAP.md)
 - I need the MARKET/TOOLS split or terminal marketplace commands: [../runtime/docs/MARKETPLACE_OPERATOR_SURFACE.md](../runtime/docs/MARKETPLACE_OPERATOR_SURFACE.md)
 - I need build or CI commands: [COMMANDS_AND_VALIDATION.md](./COMMANDS_AND_VALIDATION.md)
+- I need the Codex Solana security stack and gate order: [security/CODEX_SOLANA_SECURITY_CHECKLIST.md](./security/CODEX_SOLANA_SECURITY_CHECKLIST.md)
 - I need architecture context: [architecture/README.md](./architecture/README.md)

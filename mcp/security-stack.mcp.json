@@ -20,8 +20,8 @@
       "timeout": 30000
     },
     "solana-fender": {
-      "command": "anchor-mcp",
-      "args": ["--mcp"],
+      "command": "node",
+      "args": ["scripts/anchor-mcp-stdio-bridge.mjs", "anchor-mcp", "--mcp"],
       "timeout": 30000
     }
   }

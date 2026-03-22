@@ -5,6 +5,8 @@ import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -92,7 +94,21 @@ function looksLikeTrivyConfig(serverConfig) {
 
 function looksLikeAnchorMcpConfig(serverConfig) {
   if (!serverConfig || typeof serverConfig !== "object") return false;
-  return typeof serverConfig.command === "string" && serverConfig.command.endsWith("anchor-mcp");
+  if (
+    typeof serverConfig.command === "string" &&
+    serverConfig.command.endsWith("anchor-mcp")
+  ) {
+    return true;
+  }
+  return (
+    serverConfig.command === "node" &&
+    Array.isArray(serverConfig.args) &&
+    serverConfig.args.some(
+      (arg) =>
+        typeof arg === "string" &&
+        arg.includes("anchor-mcp-stdio-bridge.mjs"),
+    )
+  );
 }
 
 function buildProbe(serverName, serverConfig) {
@@ -155,6 +171,74 @@ function runProbe(command, args) {
   });
 }
 
+async function runMcpHandshakeProbe(serverName, serverConfig) {
+  const transport = new StdioClientTransport({
+    command: serverConfig.command,
+    args: Array.isArray(serverConfig.args) ? serverConfig.args : [],
+    env: {
+      ...process.env,
+      ...(serverConfig.env ?? {}),
+    },
+  });
+  const client = new Client(
+    {
+      name: "security-mcp-healthcheck",
+      version: "0.1.0",
+    },
+    {
+      capabilities: {},
+    },
+  );
+
+  const timeoutMs =
+    typeof serverConfig.timeout === "number" ? serverConfig.timeout : DEFAULT_TIMEOUT_MS;
+
+  let timer;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`MCP handshake timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  try {
+    const tools = await Promise.race([
+      (async () => {
+        await client.connect(transport);
+        return await client.listTools();
+      })(),
+      timeoutPromise,
+    ]);
+
+    const toolNames = Array.isArray(tools?.tools)
+      ? tools.tools.map((tool) => tool.name).join(", ")
+      : "";
+
+    return {
+      ok: true,
+      stderr: "",
+      stdout: toolNames,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      stderr: toErrorMessage(error),
+      stdout: "",
+    };
+  } finally {
+    clearTimeout(timer);
+    try {
+      await Promise.race([
+        client.close(),
+        new Promise((resolve) => {
+          setTimeout(resolve, 1_000);
+        }),
+      ]);
+    } catch {
+      // ignore close errors after failed transport setup
+    }
+  }
+}
+
 async function loadConfig(configPath) {
   const raw = await fs.readFile(configPath, "utf8");
   const parsed = JSON.parse(raw);
@@ -186,6 +270,21 @@ async function main() {
     }
 
     process.stdout.write(`[${serverName}] ${probe.note} ... `);
+    if (looksLikeAnchorMcpConfig(serverConfig)) {
+      const result = await runMcpHandshakeProbe(serverName, serverConfig);
+      if (result.ok) {
+        console.log("OK");
+        if (verbose && result.stdout) {
+          console.log(`  stdout: ${result.stdout}`);
+        }
+        continue;
+      }
+
+      failures += 1;
+      console.log(`FAIL (${result.stderr || "MCP handshake failed"})`);
+      continue;
+    }
+
     const result = runProbe(probe.command, probe.args);
 
     const stdout = trimOutput(result.stdout);

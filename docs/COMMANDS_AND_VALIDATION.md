@@ -62,6 +62,26 @@ agenc-runtime market disputes list --rpc <url>
 agenc-runtime market reputation summary --rpc <url>
 ```
 
+## Solana Security Sweep
+
+For Codex-assisted Solana work, especially non-ZK marketplace changes, use the
+repo-local checklist in `docs/security/CODEX_SOLANA_SECURITY_CHECKLIST.md`.
+
+The minimum security stack is:
+
+- official `solana-mcp` for documentation and API lookups
+- `solana-fender` for Solana-specific static analysis
+- `mcp/security-stack.mcp.json` for Semgrep, Trivy, GitGuardian, and Fender probes
+
+Useful commands:
+
+```bash
+node scripts/check-security-mcp-stack.mjs --config mcp/security-stack.mcp.json --verbose
+node scripts/solana-fender-mcp.mjs check-program programs/agenc-coordination
+node scripts/gitguardian-mcp-scan.mjs --profile mcp/security-stack.mcp.json --scope . --output .tmp/security-mcp-sweep/gitguardian-mcp.json --fail-on-error
+npm run smoke:marketplace:devnet
+```
+
 ## Private Registry And Distribution
 
 Useful distribution and registry commands include:

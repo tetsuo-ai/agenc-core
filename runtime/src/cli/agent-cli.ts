@@ -56,13 +56,17 @@ export async function runAgentRegisterCommand(
       process.env.SOLANA_KEYPAIR_PATH ?? getDefaultKeypairPath();
     const keypair = await loadKeypairFromFile(keypairPath);
     const wallet = keypairToWallet(keypair);
+    const toolLogger = {
+      ...context.logger,
+      setLevel: () => {},
+    };
     const tool = createAgencTools({
       connection: new Connection(options.rpcUrl, "confirmed"),
       wallet,
       programId: options.programId
         ? new PublicKey(options.programId)
         : undefined,
-      logger: context.logger,
+      logger: toolLogger,
     }).find((candidate) => candidate.name === "agenc.registerAgent");
 
     if (!tool) {

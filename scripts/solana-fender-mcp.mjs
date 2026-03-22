@@ -5,7 +5,11 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 import { normalizeMcpContent } from "./lib/mcp-content-normalize.mjs";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 function defaultAnchorWalletPath() {
   const home = process.env.HOME;
@@ -28,8 +32,12 @@ function resolveFenderCommand() {
 
 const DEFAULT_SERVER_CONFIG = {
   name: "solana-fender",
-  command: resolveFenderCommand(),
-  args: ["--mcp"],
+  command: "node",
+  args: [
+    path.resolve(__dirname, "anchor-mcp-stdio-bridge.mjs"),
+    resolveFenderCommand(),
+    "--mcp",
+  ],
   env: {
     ANCHOR_PROVIDER_URL:
       process.env.ANCHOR_PROVIDER_URL ?? "https://api.devnet.solana.com",
@@ -49,6 +57,14 @@ function withTimeout(promise, timeoutMs, label) {
   return Promise.race([promise, timeoutPromise]).finally(() => {
     clearTimeout(timer);
   });
+}
+
+async function closeClient(client, timeoutMs) {
+  try {
+    await withTimeout(client.close(), timeoutMs, "MCP close");
+  } catch {
+    // anchor-mcp does not shut down cleanly on stdio close; ignore close timeout
+  }
 }
 
 async function createClient(config) {
@@ -155,7 +171,7 @@ async function main() {
     usage();
     process.exit(2);
   } finally {
-    await client.close();
+    await closeClient(client, 1_000);
   }
 }
 

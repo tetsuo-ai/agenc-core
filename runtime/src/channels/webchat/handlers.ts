@@ -913,7 +913,7 @@ export async function handleMarketReputationDelegate(
  */
 /** Helper: send a refreshed task list to the client using typed task operations. */
 async function sendTaskList(deps: WebChatDeps, id: string | undefined, send: SendFn): Promise<void> {
-  const { program } = await createProgramContext(deps);
+  const program = createReadOnlyProgramContext(deps);
   const ops = new TaskOperations({
     program,
     agentId: new Uint8Array(32),

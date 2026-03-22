@@ -61,6 +61,37 @@ The skill writes a structured report to:
 
 `.claude/notes/security-mcp-sweep-YYYY-MM-DD.md`
 
+## Codex Solana Setup
+
+Use two separate MCP roles in Codex:
+
+- `solana-mcp` for read-only Solana and Anchor knowledge
+- `solana-fender` for local Solana-specific static analysis
+
+Recommended Codex config:
+
+```toml
+[mcp_servers.solana-fender]
+command = "/home/tetsuo/.cargo/bin/anchor-mcp"
+args = ["--mcp"]
+
+[mcp_servers.solana-fender.env]
+ANCHOR_PROVIDER_URL = "https://api.devnet.solana.com"
+ANCHOR_WALLET = "/home/tetsuo/.config/solana/devnet-wallets/devnet-wallet-20260321-143652.json"
+
+[mcp_servers.solana-mcp]
+url = "https://mcp.solana.com/mcp"
+```
+
+Rules that matter:
+
+- Keep Codex on a devnet or localnet wallet.
+- Do not give Codex a mainnet hot wallet.
+- Treat `solana-mcp` as a documentation MCP, not as an execution surface.
+
+For the repo-local gate order, use
+[`docs/security/CODEX_SOLANA_SECURITY_CHECKLIST.md`](./CODEX_SOLANA_SECURITY_CHECKLIST.md).
+
 ## GitGuardian MCP Scan (No `ggshield` dependency)
 
 Use the direct MCP scanner wrapper (adaptive batch split + retry/backoff):
