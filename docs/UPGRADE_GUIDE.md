@@ -83,7 +83,7 @@ solana config set --url devnet
 
 # Deploy (upgrade existing program)
 anchor upgrade target/deploy/agenc_coordination.so \
-  --program-id 5j9ZbT3mnPX5QjWVMrDaWFuaGf8ddji6LW1HVJw6kUE7 \
+  --program-id 6UcJzbTEemBz3aY5wK5qKHGMD7bdRsmR4smND29gB2ab \
   --provider.cluster devnet
 ```
 
@@ -123,11 +123,11 @@ yarn run smoke-test --cluster devnet
 
 ```bash
 # IMPORTANT: Ensure upgrade authority is multisig
-solana program show 5j9ZbT3mnPX5QjWVMrDaWFuaGf8ddji6LW1HVJw6kUE7
+solana program show 6UcJzbTEemBz3aY5wK5qKHGMD7bdRsmR4smND29gB2ab
 
 # Deploy with multisig approval
 anchor upgrade target/deploy/agenc_coordination.so \
-  --program-id 5j9ZbT3mnPX5QjWVMrDaWFuaGf8ddji6LW1HVJw6kUE7 \
+  --program-id 6UcJzbTEemBz3aY5wK5qKHGMD7bdRsmR4smND29gB2ab \
   --provider.cluster mainnet
 ```
 
@@ -214,12 +214,12 @@ If bugs are discovered after migration:
 ```bash
 # Option A: Deploy hotfix
 anchor upgrade target/deploy/agenc_coordination_hotfix.so \
-  --program-id 5j9ZbT3mnPX5QjWVMrDaWFuaGf8ddji6LW1HVJw6kUE7
+  --program-id 6UcJzbTEemBz3aY5wK5qKHGMD7bdRsmR4smND29gB2ab
 
 # Option B: Roll back program binary
 # Deploy the previous version binary
 anchor upgrade target/deploy/agenc_coordination_v1.so \
-  --program-id 5j9ZbT3mnPX5QjWVMrDaWFuaGf8ddji6LW1HVJw6kUE7
+  --program-id 6UcJzbTEemBz3aY5wK5qKHGMD7bdRsmR4smND29gB2ab
 ```
 
 **Important**: Rolling back the binary does NOT roll back account state. The old program must handle the new account format.
@@ -267,7 +267,7 @@ The upgrade authority should be a multisig. Example using Squads Protocol:
 
 ```bash
 # Transfer upgrade authority to multisig
-solana program set-upgrade-authority 5j9ZbT3mnPX5QjWVMrDaWFuaGf8ddji6LW1HVJw6kUE7 \
+solana program set-upgrade-authority 6UcJzbTEemBz3aY5wK5qKHGMD7bdRsmR4smND29gB2ab \
   --new-upgrade-authority <SQUADS_MULTISIG_ADDRESS>
 ```
 

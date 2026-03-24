@@ -2,7 +2,7 @@
 
 **Document Version:** 1.0
 **Protocol:** AgenC Coordination Protocol
-**Program ID:** `5j9ZbT3mnPX5QjWVMrDaWFuaGf8ddji6LW1HVJw6kUE7`
+**Program ID:** `6UcJzbTEemBz3aY5wK5qKHGMD7bdRsmR4smND29gB2ab`
 **Framework:** Anchor (Solana)
 
 ## Scope Boundary

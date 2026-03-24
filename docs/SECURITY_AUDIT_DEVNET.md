@@ -21,7 +21,7 @@ declared on-chain scope; informational notes are listed where applicable.
 - Program: `programs/agenc-coordination`
 - Cluster: Solana Devnet
 - Commit: `c53771ddbb4097f45c08fe339a924bb348c33aab`
-- Program ID: `5j9ZbT3mnPX5QjWVMrDaWFuaGf8ddji6LW1HVJw6kUE7`
+- Program ID: `6UcJzbTEemBz3aY5wK5qKHGMD7bdRsmR4smND29gB2ab`
 - Anchor Version: `0.32.1`
 
 ### Explicitly Out of Scope

@@ -4,7 +4,7 @@
 
 \## Program ID
 
-5j9ZbT3mnPX5QjWVMrDaWFuaGf8ddji6LW1HVJw6kUE7
+6UcJzbTEemBz3aY5wK5qKHGMD7bdRsmR4smND29gB2ab
 
 text## Upgrade Authority Strategy
 
@@ -34,7 +34,7 @@ text## Upgrade Authority Strategy
 
 1\. `anchor build`
 
-2\. `anchor deploy --provider.cluster devnet --program-id 5j9ZbT3mnPX5QjWVMrDaWFuaGf8ddji6LW1HVJw6kUE7`
+2\. `anchor deploy --provider.cluster devnet --program-id 6UcJzbTEemBz3aY5wK5qKHGMD7bdRsmR4smND29gB2ab`
 
 3\. Set upgrade authority if needed: `solana program set-upgrade-authority ...`
 
@@ -54,17 +54,17 @@ text## Upgrade Authority Strategy
 
 6\. Set multisig upgrade authority:
 
-solana program set-upgrade-authority 5j9ZbT3mnPX5QjWVMrDaWFuaGf8ddji6LW1HVJw6kUE7 --new-upgrade-authority <multisig-pubkey>
+solana program set-upgrade-authority 6UcJzbTEemBz3aY5wK5qKHGMD7bdRsmR4smND29gB2ab --new-upgrade-authority <multisig-pubkey>
 
 text7. (Optional) Revoke authority for immutability:
 
-solana program set-upgrade-authority 5j9ZbT3mnPX5QjWVMrDaWFuaGf8ddji6LW1HVJw6kUE7 --final
+solana program set-upgrade-authority 6UcJzbTEemBz3aY5wK5qKHGMD7bdRsmR4smND29gB2ab --final
 
 
 
 \## Verification Steps
 
-1\. `solana program show 5j9ZbT3mnPX5QjWVMrDaWFuaGf8ddji6LW1HVJw6kUE7` → confirm owner and upgrade authority
+1\. `solana program show 6UcJzbTEemBz3aY5wK5qKHGMD7bdRsmR4smND29gB2ab` → confirm owner and upgrade authority
 
 2\. Run integration tests on cluster: `anchor test --skip-local-validator`
 
