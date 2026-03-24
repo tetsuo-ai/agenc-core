@@ -50,6 +50,10 @@ export enum TaskValidationMode {
   Auto = 0,
   /** Submit work for creator review before settlement */
   CreatorReview = 1,
+  /** Require multiple validator approvals before settlement */
+  ValidatorQuorum = 2,
+  /** Require an external attestor wallet to approve settlement */
+  ExternalAttestation = 3,
 }
 
 /**
@@ -890,6 +894,8 @@ export interface TaskValidationConfigResult {
   taskId: Uint8Array;
   /** Validation config PDA address */
   taskValidationConfigPda: PublicKey;
+  /** Task attestor config PDA address */
+  taskAttestorConfigPda?: PublicKey;
   /** Transaction signature if submitted */
   transactionSignature?: TransactionSignature;
   /** Error message if configuration failed */
@@ -906,6 +912,8 @@ export interface TaskSubmissionResult {
   taskId: Uint8Array;
   /** Submission PDA address */
   taskSubmissionPda: PublicKey;
+  /** Validation vote PDA address for validator/attestor review flows */
+  taskValidationVotePda?: PublicKey;
   /** Transaction signature if submitted */
   transactionSignature?: TransactionSignature;
   /** Error message if the action failed */

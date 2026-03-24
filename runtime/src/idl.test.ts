@@ -51,6 +51,8 @@ describe('IDL exports', () => {
     expect(instructionNames).toContain('submit_task_result');
     expect(instructionNames).toContain('accept_task_result');
     expect(instructionNames).toContain('reject_task_result');
+    expect(instructionNames).toContain('auto_accept_task_result');
+    expect(instructionNames).toContain('validate_task_result');
     expect(instructionNames).toContain('register_agent');
   });
 
@@ -66,6 +68,8 @@ describe('IDL exports', () => {
     expect(accountNames).toContain('ProtocolConfig');
     expect(accountNames).toContain('TaskValidationConfig');
     expect(accountNames).toContain('TaskSubmission');
+    expect(accountNames).toContain('TaskAttestorConfig');
+    expect(accountNames).toContain('TaskValidationVote');
   });
 
   it('has types array', () => {
@@ -79,6 +83,8 @@ describe('IDL exports', () => {
     expect(typeNames).toContain('SubmissionStatus');
     expect(typeNames).toContain('TaskValidationConfig');
     expect(typeNames).toContain('TaskSubmission');
+    expect(typeNames).toContain('TaskAttestorConfig');
+    expect(typeNames).toContain('TaskValidationVote');
   });
 
   it('has events array', () => {
@@ -154,6 +160,8 @@ describe('createProgram', () => {
     expect(typeof methods.submitTaskResult).toBe('function');
     expect(typeof methods.acceptTaskResult).toBe('function');
     expect(typeof methods.rejectTaskResult).toBe('function');
+    expect(typeof methods.autoAcceptTaskResult).toBe('function');
+    expect(typeof methods.validateTaskResult).toBe('function');
   });
 });
 

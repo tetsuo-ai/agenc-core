@@ -172,6 +172,8 @@ function createMockProgram() {
   const submitTaskResultRpc = vi.fn().mockResolvedValue("submit-sig");
   const acceptTaskResultRpc = vi.fn().mockResolvedValue("accept-sig");
   const rejectTaskResultRpc = vi.fn().mockResolvedValue("reject-sig");
+  const autoAcceptTaskResultRpc = vi.fn().mockResolvedValue("auto-accept-sig");
+  const validateTaskResultRpc = vi.fn().mockResolvedValue("validate-sig");
 
   const claimTaskBuilder = {
     accountsPartial: vi.fn().mockReturnThis(),
@@ -206,6 +208,16 @@ function createMockProgram() {
     accountsPartial: vi.fn().mockReturnThis(),
     rpc: rejectTaskResultRpc,
   };
+  const autoAcceptTaskResultBuilder = {
+    accountsPartial: vi.fn().mockReturnThis(),
+    remainingAccounts: vi.fn().mockReturnThis(),
+    rpc: autoAcceptTaskResultRpc,
+  };
+  const validateTaskResultBuilder = {
+    accountsPartial: vi.fn().mockReturnThis(),
+    remainingAccounts: vi.fn().mockReturnThis(),
+    rpc: validateTaskResultRpc,
+  };
   const completeTaskPrivateMethod = vi
     .fn()
     .mockReturnValue(completeTaskPrivateBuilder);
@@ -221,6 +233,12 @@ function createMockProgram() {
   const rejectTaskResultMethod = vi
     .fn()
     .mockReturnValue(rejectTaskResultBuilder);
+  const autoAcceptTaskResultMethod = vi
+    .fn()
+    .mockReturnValue(autoAcceptTaskResultBuilder);
+  const validateTaskResultMethod = vi
+    .fn()
+    .mockReturnValue(validateTaskResultBuilder);
 
   const program = {
     programId: PROGRAM_ID,
@@ -239,6 +257,8 @@ function createMockProgram() {
       submitTaskResult: submitTaskResultMethod,
       acceptTaskResult: acceptTaskResultMethod,
       rejectTaskResult: rejectTaskResultMethod,
+      autoAcceptTaskResult: autoAcceptTaskResultMethod,
+      validateTaskResult: validateTaskResultMethod,
     },
   };
 
@@ -258,11 +278,15 @@ function createMockProgram() {
       submitTaskResultRpc,
       acceptTaskResultRpc,
       rejectTaskResultRpc,
+      autoAcceptTaskResultRpc,
+      validateTaskResultRpc,
       completeTaskPrivateMethod,
       configureTaskValidationMethod,
       submitTaskResultMethod,
       acceptTaskResultMethod,
       rejectTaskResultMethod,
+      autoAcceptTaskResultMethod,
+      validateTaskResultMethod,
       claimTaskBuilder,
       completeTaskBuilder,
       completeTaskPrivateBuilder,
@@ -270,6 +294,8 @@ function createMockProgram() {
       submitTaskResultBuilder,
       acceptTaskResultBuilder,
       rejectTaskResultBuilder,
+      autoAcceptTaskResultBuilder,
+      validateTaskResultBuilder,
     },
   };
 }
@@ -934,12 +960,15 @@ describe("TaskOperations", () => {
     it("configures task validation with creator review mode", async () => {
       const taskPda = Keypair.generate().publicKey;
       const task = createParsedTask();
+      const attestor = Keypair.generate().publicKey;
 
       const result = await ops.configureTaskValidation(
         taskPda,
         task,
         TaskValidationMode.CreatorReview,
         900,
+        2,
+        attestor,
       );
 
       expect(result.success).toBe(true);
@@ -951,15 +980,21 @@ describe("TaskOperations", () => {
       expect(
         mocks.configureTaskValidationMethod.mock.calls[0][1].toString(),
       ).toBe("900");
+      expect(mocks.configureTaskValidationMethod.mock.calls[0][2]).toBe(2);
+      expect(mocks.configureTaskValidationMethod.mock.calls[0][3]).toBe(
+        attestor,
+      );
       expect(
         mocks.configureTaskValidationBuilder.accountsPartial,
       ).toHaveBeenCalledWith(
         expect.objectContaining({
           task: taskPda,
+          taskAttestorConfig: expect.any(PublicKey),
           creator: mockProgram.provider.publicKey,
           systemProgram: SystemProgram.programId,
         }),
       );
+      expect(result.taskAttestorConfigPda).toBeInstanceOf(PublicKey);
     });
 
     it("submits a task result for creator review", async () => {
@@ -1018,8 +1053,8 @@ describe("TaskOperations", () => {
         expect.objectContaining({
           task: taskPda,
           worker: workerPda,
+          creator: mockProgram.provider.publicKey,
           workerAuthority,
-          reviewer: mockProgram.provider.publicKey,
         }),
       );
       expect(
@@ -1036,7 +1071,12 @@ describe("TaskOperations", () => {
       const taskPda = Keypair.generate().publicKey;
       const task = createParsedTask();
       const workerPda = Keypair.generate().publicKey;
+      const workerAuthority = Keypair.generate().publicKey;
       const rejectionHash = new Uint8Array(32).fill(0xee);
+
+      mocks.agentRegistrationFetch.mockResolvedValue(
+        createMockRawAgentRegistration(workerAuthority),
+      );
 
       const result = await ops.rejectTaskResult(
         taskPda,
@@ -1047,11 +1087,97 @@ describe("TaskOperations", () => {
 
       expect(result.success).toBe(true);
       expect(result.transactionSignature).toBe("reject-sig");
+      expect(mocks.agentRegistrationFetch).toHaveBeenCalledWith(workerPda);
       expect(mocks.rejectTaskResultMethod).toHaveBeenCalledTimes(1);
       expect(mocks.rejectTaskResultBuilder.accountsPartial).toHaveBeenCalledWith(
         expect.objectContaining({
           task: taskPda,
           creator: mockProgram.provider.publicKey,
+          worker: workerPda,
+          workerAuthority,
+        }),
+      );
+    });
+
+    it("auto-accepts a timed-out reviewed task result", async () => {
+      const taskPda = Keypair.generate().publicKey;
+      const task = createParsedTask();
+      const workerPda = Keypair.generate().publicKey;
+      const workerAuthority = Keypair.generate().publicKey;
+      const bidBook = Keypair.generate().publicKey;
+      const acceptedBid = Keypair.generate().publicKey;
+      const bidderMarketState = Keypair.generate().publicKey;
+
+      mocks.agentRegistrationFetch.mockResolvedValue(
+        createMockRawAgentRegistration(workerAuthority),
+      );
+
+      const result = await ops.autoAcceptTaskResult(taskPda, task, workerPda, {
+        acceptedBidSettlement: {
+          bidBook,
+          acceptedBid,
+          bidderMarketState,
+        },
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.transactionSignature).toBe("auto-accept-sig");
+      expect(mocks.autoAcceptTaskResultMethod).toHaveBeenCalledTimes(1);
+      expect(
+        mocks.autoAcceptTaskResultBuilder.accountsPartial,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          task: taskPda,
+          worker: workerPda,
+          creator: task.creator,
+          authority: mockProgram.provider.publicKey,
+          workerAuthority,
+        }),
+      );
+      expect(
+        mocks.autoAcceptTaskResultBuilder.remainingAccounts,
+      ).toHaveBeenCalledWith([
+        { pubkey: bidBook, isSigner: false, isWritable: true },
+        { pubkey: acceptedBid, isSigner: false, isWritable: true },
+        { pubkey: bidderMarketState, isSigner: false, isWritable: true },
+        { pubkey: workerAuthority, isSigner: false, isWritable: true },
+      ]);
+    });
+
+    it("records a validator vote for a reviewed task result", async () => {
+      const taskPda = Keypair.generate().publicKey;
+      const task = createParsedTask();
+      const workerPda = Keypair.generate().publicKey;
+      const workerAuthority = Keypair.generate().publicKey;
+      const validatorAgentPda = Keypair.generate().publicKey;
+
+      mocks.agentRegistrationFetch.mockResolvedValue(
+        createMockRawAgentRegistration(workerAuthority),
+      );
+
+      const result = await ops.validateTaskResult(
+        taskPda,
+        task,
+        workerPda,
+        true,
+        validatorAgentPda,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.transactionSignature).toBe("validate-sig");
+      expect(result.taskValidationVotePda).toBeInstanceOf(PublicKey);
+      expect(mocks.validateTaskResultMethod).toHaveBeenCalledTimes(1);
+      expect(mocks.validateTaskResultMethod).toHaveBeenCalledWith(true);
+      expect(mocks.validateTaskResultBuilder.accountsPartial).toHaveBeenCalledWith(
+        expect.objectContaining({
+          task: taskPda,
+          worker: workerPda,
+          creator: task.creator,
+          reviewer: mockProgram.provider.publicKey,
+          validatorAgent: validatorAgentPda,
+          taskAttestorConfig: null,
+          taskValidationVote: expect.any(PublicKey),
+          workerAuthority,
         }),
       );
     });

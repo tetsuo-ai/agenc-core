@@ -24,8 +24,8 @@ export type { AgencCoordination };
 type NamedIdlEntry = { name: string };
 
 // The published protocol package can lag behind the runtime's supported V2 flow.
-// Merge these entries in locally so Program.methods exposes the creator-review
-// instructions without requiring a package release first.
+// Merge these entries in locally so Program.methods exposes the task validation
+// instructions and accounts without requiring a package release first.
 const TASK_VALIDATION_V2_INSTRUCTIONS = [
   {
     name: "configure_task_validation",
@@ -57,6 +57,19 @@ const TASK_VALIDATION_V2_INSTRUCTIONS = [
         },
       },
       {
+        name: "task_attestor_config",
+        writable: true,
+        pda: {
+          seeds: [
+            {
+              kind: "const",
+              value: [116, 97, 115, 107, 95, 97, 116, 116, 101, 115, 116, 111, 114],
+            },
+            { kind: "account", path: "task" },
+          ],
+        },
+      },
+      {
         name: "protocol_config",
         pda: {
           seeds: [{ kind: "const", value: [112, 114, 111, 116, 111, 99, 111, 108] }],
@@ -71,11 +84,13 @@ const TASK_VALIDATION_V2_INSTRUCTIONS = [
     args: [
       { name: "mode", type: "u8" },
       { name: "review_window_secs", type: "i64" },
+      { name: "validator_quorum", type: "u8" },
+      { name: "attestor", type: { option: "pubkey" } },
     ],
   },
   {
     name: "submit_task_result",
-    docs: ["Submit a result for creator review before final settlement."],
+    docs: ["Submit a result for manual validation before final settlement."],
     discriminator: [39, 108, 74, 4, 66, 125, 157, 7],
     accounts: [
       {
@@ -199,6 +214,192 @@ const TASK_VALIDATION_V2_INSTRUCTIONS = [
       },
       {
         name: "task_validation_config",
+        writable: true,
+        pda: {
+          seeds: [
+            {
+              kind: "const",
+              value: [116, 97, 115, 107, 95, 118, 97, 108, 105, 100, 97, 116, 105, 111, 110],
+            },
+            { kind: "account", path: "task" },
+          ],
+        },
+      },
+      {
+        name: "task_submission",
+        writable: true,
+        pda: {
+          seeds: [
+            {
+              kind: "const",
+              value: [116, 97, 115, 107, 95, 115, 117, 98, 109, 105, 115, 115, 105, 111, 110],
+            },
+            { kind: "account", path: "claim" },
+          ],
+        },
+      },
+      {
+        name: "worker",
+        writable: true,
+        pda: {
+          seeds: [
+            { kind: "const", value: [97, 103, 101, 110, 116] },
+            {
+              kind: "account",
+              path: "worker.agent_id",
+              account: "AgentRegistration",
+            },
+          ],
+        },
+      },
+      {
+        name: "protocol_config",
+        writable: true,
+        pda: {
+          seeds: [{ kind: "const", value: [112, 114, 111, 116, 111, 99, 111, 108] }],
+        },
+      },
+      { name: "treasury", writable: true },
+      { name: "creator", writable: true, signer: true },
+      { name: "worker_authority", writable: true },
+      { name: "token_escrow_ata", writable: true, optional: true },
+      { name: "worker_token_account", writable: true, optional: true },
+      { name: "treasury_token_account", writable: true, optional: true },
+      { name: "reward_mint", optional: true },
+      {
+        name: "token_program",
+        optional: true,
+        address: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      },
+      {
+        name: "system_program",
+        address: "11111111111111111111111111111111",
+      },
+    ],
+    args: [],
+  },
+  {
+    name: "reject_task_result",
+    docs: [
+      "Reject a creator-reviewed submission and return the task to active work.",
+    ],
+    discriminator: [144, 7, 58, 232, 157, 167, 85, 214],
+    accounts: [
+      {
+        name: "task",
+        writable: true,
+        pda: {
+          seeds: [
+            { kind: "const", value: [116, 97, 115, 107] },
+            { kind: "account", path: "task.creator", account: "Task" },
+            { kind: "account", path: "task.task_id", account: "Task" },
+          ],
+        },
+      },
+      {
+        name: "claim",
+        writable: true,
+        pda: {
+          seeds: [
+            { kind: "const", value: [99, 108, 97, 105, 109] },
+            { kind: "account", path: "task" },
+            { kind: "account", path: "claim.worker", account: "TaskClaim" },
+          ],
+        },
+      },
+      {
+        name: "task_validation_config",
+        writable: true,
+        pda: {
+          seeds: [
+            {
+              kind: "const",
+              value: [116, 97, 115, 107, 95, 118, 97, 108, 105, 100, 97, 116, 105, 111, 110],
+            },
+            { kind: "account", path: "task" },
+          ],
+        },
+      },
+      {
+        name: "task_submission",
+        writable: true,
+        pda: {
+          seeds: [
+            {
+              kind: "const",
+              value: [116, 97, 115, 107, 95, 115, 117, 98, 109, 105, 115, 115, 105, 111, 110],
+            },
+            { kind: "account", path: "claim" },
+          ],
+        },
+      },
+      {
+        name: "worker",
+        writable: true,
+        pda: {
+          seeds: [
+            { kind: "const", value: [97, 103, 101, 110, 116] },
+            {
+              kind: "account",
+              path: "worker.agent_id",
+              account: "AgentRegistration",
+            },
+          ],
+        },
+      },
+      {
+        name: "protocol_config",
+        pda: {
+          seeds: [{ kind: "const", value: [112, 114, 111, 116, 111, 99, 111, 108] }],
+        },
+      },
+      { name: "creator", writable: true, signer: true },
+      { name: "worker_authority", writable: true },
+    ],
+    args: [{ name: "rejection_hash", type: { array: ["u8", 32] } }],
+  },
+  {
+    name: "auto_accept_task_result",
+    docs: [
+      "Permissionlessly auto-accept a creator-reviewed submission after timeout.",
+    ],
+    discriminator: [217, 200, 76, 0, 144, 80, 23, 241],
+    accounts: [
+      {
+        name: "task",
+        writable: true,
+        pda: {
+          seeds: [
+            { kind: "const", value: [116, 97, 115, 107] },
+            { kind: "account", path: "task.creator", account: "Task" },
+            { kind: "account", path: "task.task_id", account: "Task" },
+          ],
+        },
+      },
+      {
+        name: "claim",
+        writable: true,
+        pda: {
+          seeds: [
+            { kind: "const", value: [99, 108, 97, 105, 109] },
+            { kind: "account", path: "task" },
+            { kind: "account", path: "worker" },
+          ],
+        },
+      },
+      {
+        name: "escrow",
+        writable: true,
+        pda: {
+          seeds: [
+            { kind: "const", value: [101, 115, 99, 114, 111, 119] },
+            { kind: "account", path: "task" },
+          ],
+        },
+      },
+      {
+        name: "task_validation_config",
+        writable: true,
         pda: {
           seeds: [
             {
@@ -246,11 +447,7 @@ const TASK_VALIDATION_V2_INSTRUCTIONS = [
       { name: "treasury", writable: true },
       { name: "creator", writable: true },
       { name: "worker_authority", writable: true },
-      { name: "reviewer", writable: true, signer: true },
-      {
-        name: "system_program",
-        address: "11111111111111111111111111111111",
-      },
+      { name: "authority", writable: true, signer: true },
       { name: "token_escrow_ata", writable: true, optional: true },
       { name: "worker_token_account", writable: true, optional: true },
       { name: "treasury_token_account", writable: true, optional: true },
@@ -260,15 +457,19 @@ const TASK_VALIDATION_V2_INSTRUCTIONS = [
         optional: true,
         address: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
       },
+      {
+        name: "system_program",
+        address: "11111111111111111111111111111111",
+      },
     ],
     args: [],
   },
   {
-    name: "reject_task_result",
+    name: "validate_task_result",
     docs: [
-      "Reject a creator-reviewed submission and return the task to active work.",
+      "Record a validator quorum vote or external attestation for a submission.",
     ],
-    discriminator: [144, 7, 58, 232, 157, 167, 85, 214],
+    discriminator: [141, 192, 86, 228, 233, 168, 41, 224],
     accounts: [
       {
         name: "task",
@@ -288,17 +489,41 @@ const TASK_VALIDATION_V2_INSTRUCTIONS = [
           seeds: [
             { kind: "const", value: [99, 108, 97, 105, 109] },
             { kind: "account", path: "task" },
-            { kind: "account", path: "claim.worker", account: "TaskClaim" },
+            { kind: "account", path: "worker" },
+          ],
+        },
+      },
+      {
+        name: "escrow",
+        writable: true,
+        pda: {
+          seeds: [
+            { kind: "const", value: [101, 115, 99, 114, 111, 119] },
+            { kind: "account", path: "task" },
           ],
         },
       },
       {
         name: "task_validation_config",
+        writable: true,
         pda: {
           seeds: [
             {
               kind: "const",
               value: [116, 97, 115, 107, 95, 118, 97, 108, 105, 100, 97, 116, 105, 111, 110],
+            },
+            { kind: "account", path: "task" },
+          ],
+        },
+      },
+      {
+        name: "task_attestor_config",
+        optional: true,
+        pda: {
+          seeds: [
+            {
+              kind: "const",
+              value: [116, 97, 115, 107, 95, 97, 116, 116, 101, 115, 116, 111, 114],
             },
             { kind: "account", path: "task" },
           ],
@@ -318,14 +543,69 @@ const TASK_VALIDATION_V2_INSTRUCTIONS = [
         },
       },
       {
+        name: "task_validation_vote",
+        writable: true,
+        pda: {
+          seeds: [
+            {
+              kind: "const",
+              value: [
+                116, 97, 115, 107, 95, 118, 97, 108, 105, 100, 97, 116, 105, 111, 110, 95, 118,
+                111, 116, 101,
+              ],
+            },
+            { kind: "account", path: "task_submission" },
+            { kind: "account", path: "reviewer" },
+          ],
+        },
+      },
+      {
+        name: "worker",
+        writable: true,
+        pda: {
+          seeds: [
+            { kind: "const", value: [97, 103, 101, 110, 116] },
+            {
+              kind: "account",
+              path: "worker.agent_id",
+              account: "AgentRegistration",
+            },
+          ],
+        },
+      },
+      {
         name: "protocol_config",
+        writable: true,
         pda: {
           seeds: [{ kind: "const", value: [112, 114, 111, 116, 111, 99, 111, 108] }],
         },
       },
-      { name: "creator", writable: true, signer: true },
+      {
+        name: "validator_agent",
+        docs: [
+          "Optional validator agent for validator-quorum mode, validated in handler.",
+        ],
+        optional: true,
+      },
+      { name: "treasury", writable: true },
+      { name: "creator", writable: true },
+      { name: "worker_authority", writable: true },
+      { name: "reviewer", writable: true, signer: true },
+      { name: "token_escrow_ata", writable: true, optional: true },
+      { name: "worker_token_account", writable: true, optional: true },
+      { name: "treasury_token_account", writable: true, optional: true },
+      { name: "reward_mint", optional: true },
+      {
+        name: "token_program",
+        optional: true,
+        address: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      },
+      {
+        name: "system_program",
+        address: "11111111111111111111111111111111",
+      },
     ],
-    args: [{ name: "rejection_hash", type: { array: ["u8", 32] } }],
+    args: [{ name: "approved", type: "bool" }],
   },
 ] as const;
 
@@ -337,6 +617,14 @@ const TASK_VALIDATION_V2_ACCOUNTS = [
   {
     name: "TaskSubmission",
     discriminator: [111, 64, 190, 132, 148, 33, 215, 63],
+  },
+  {
+    name: "TaskAttestorConfig",
+    discriminator: [103, 130, 20, 87, 207, 120, 111, 34],
+  },
+  {
+    name: "TaskValidationVote",
+    discriminator: [48, 129, 51, 174, 154, 5, 68, 65],
   },
 ] as const;
 
@@ -382,7 +670,7 @@ const TASK_VALIDATION_V2_TYPES = [
   {
     name: "TaskSubmission",
     docs: [
-      "Claim-level submission state for creator-review validation.",
+      "Claim-level submission state for manual validation.",
       'PDA seeds: ["task_submission", claim]',
     ],
     type: {
@@ -446,17 +734,103 @@ const TASK_VALIDATION_V2_TYPES = [
     },
   },
   {
+    name: "TaskAttestorConfig",
+    docs: [
+      "Task-level external attestor configuration.",
+      'PDA seeds: ["task_attestor", task]',
+    ],
+    type: {
+      kind: "struct",
+      fields: [
+        { name: "task", docs: ["Task this config belongs to."], type: "pubkey" },
+        {
+          name: "creator",
+          docs: ["Task creator / reviewer authority."],
+          type: "pubkey",
+        },
+        {
+          name: "attestor",
+          docs: ["Wallet allowed to attest the outcome."],
+          type: "pubkey",
+        },
+        { name: "created_at", docs: ["Creation timestamp."], type: "i64" },
+        { name: "updated_at", docs: ["Last update timestamp."], type: "i64" },
+        { name: "bump", docs: ["PDA bump."], type: "u8" },
+        {
+          name: "_reserved",
+          docs: ["Reserved for future attestor metadata."],
+          type: { array: ["u8", 7] },
+        },
+      ],
+    },
+  },
+  {
+    name: "TaskValidationVote",
+    docs: [
+      "Reviewer vote or attestation recorded for a task submission round.",
+      'PDA seeds: ["task_validation_vote", task_submission, reviewer]',
+    ],
+    type: {
+      kind: "struct",
+      fields: [
+        {
+          name: "submission",
+          docs: ["Submission being validated."],
+          type: "pubkey",
+        },
+        {
+          name: "reviewer",
+          docs: ["Reviewer wallet that cast the vote / attestation."],
+          type: "pubkey",
+        },
+        {
+          name: "reviewer_agent",
+          docs: [
+            "Reviewer agent used for validator-quorum mode (default pubkey for attestors).",
+          ],
+          type: "pubkey",
+        },
+        {
+          name: "submission_round",
+          docs: ["Submission round the vote applies to."],
+          type: "u16",
+        },
+        {
+          name: "approved",
+          docs: ["Whether the reviewer approved the result."],
+          type: "bool",
+        },
+        {
+          name: "voted_at",
+          docs: ["Timestamp of the vote / attestation."],
+          type: "i64",
+        },
+        { name: "bump", docs: ["PDA bump."], type: "u8" },
+        {
+          name: "_reserved",
+          docs: ["Reserved for future metadata."],
+          type: { array: ["u8", 5] },
+        },
+      ],
+    },
+  },
+  {
     name: "ValidationMode",
     docs: ["Validation mode configured for a task."],
     repr: { kind: "rust" },
     type: {
       kind: "enum",
-      variants: [{ name: "Auto" }, { name: "CreatorReview" }],
+      variants: [
+        { name: "Auto" },
+        { name: "CreatorReview" },
+        { name: "ValidatorQuorum" },
+        { name: "ExternalAttestation" },
+      ],
     },
   },
   {
     name: "SubmissionStatus",
-    docs: ["Task submission lifecycle for creator-review validation."],
+    docs: ["Task submission lifecycle for manual validation."],
     repr: { kind: "rust" },
     type: {
       kind: "enum",

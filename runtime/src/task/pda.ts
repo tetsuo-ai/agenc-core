@@ -14,6 +14,20 @@ import type { PdaWithBump } from "../utils/pda.js";
 /** Length of task_id field (bytes) */
 export const TASK_ID_LENGTH = 32;
 
+type OptionalSeedRecord = Partial<Record<string, Buffer>>;
+
+// The runtime can be upgraded ahead of the published SDK package. Fall back to
+// the raw seed bytes locally until the matching SDK release is available.
+const optionalSeeds = SEEDS as OptionalSeedRecord;
+const TASK_VALIDATION_SEED =
+  optionalSeeds.TASK_VALIDATION ?? Buffer.from("task_validation");
+const TASK_ATTESTOR_SEED =
+  optionalSeeds.TASK_ATTESTOR ?? Buffer.from("task_attestor");
+const TASK_SUBMISSION_SEED =
+  optionalSeeds.TASK_SUBMISSION ?? Buffer.from("task_submission");
+const TASK_VALIDATION_VOTE_SEED =
+  optionalSeeds.TASK_VALIDATION_VOTE ?? Buffer.from("task_validation_vote");
+
 /**
  * Derives the task PDA and bump seed.
  * Seeds: ["task", creator, task_id]
@@ -155,6 +169,137 @@ export function findEscrowPda(
   programId: PublicKey = PROGRAM_ID,
 ): PublicKey {
   return deriveEscrowPda(taskPda, programId).address;
+}
+
+/**
+ * Derives the task validation config PDA and bump seed.
+ * Seeds: ["task_validation", task_pda]
+ *
+ * @param taskPda - Task account PDA
+ * @param programId - Program ID (defaults to PROGRAM_ID)
+ * @returns PDA address and bump seed
+ */
+export function deriveTaskValidationConfigPda(
+  taskPda: PublicKey,
+  programId: PublicKey = PROGRAM_ID,
+): PdaWithBump {
+  return derivePda([TASK_VALIDATION_SEED, taskPda.toBuffer()], programId);
+}
+
+/**
+ * Finds the task validation config PDA address (without bump).
+ *
+ * @param taskPda - Task account PDA
+ * @param programId - Program ID (defaults to PROGRAM_ID)
+ * @returns PDA address
+ */
+export function findTaskValidationConfigPda(
+  taskPda: PublicKey,
+  programId: PublicKey = PROGRAM_ID,
+): PublicKey {
+  return deriveTaskValidationConfigPda(taskPda, programId).address;
+}
+
+/**
+ * Derives the task attestor config PDA and bump seed.
+ * Seeds: ["task_attestor", task_pda]
+ *
+ * @param taskPda - Task account PDA
+ * @param programId - Program ID (defaults to PROGRAM_ID)
+ * @returns PDA address and bump seed
+ */
+export function deriveTaskAttestorConfigPda(
+  taskPda: PublicKey,
+  programId: PublicKey = PROGRAM_ID,
+): PdaWithBump {
+  return derivePda([TASK_ATTESTOR_SEED, taskPda.toBuffer()], programId);
+}
+
+/**
+ * Finds the task attestor config PDA address (without bump).
+ *
+ * @param taskPda - Task account PDA
+ * @param programId - Program ID (defaults to PROGRAM_ID)
+ * @returns PDA address
+ */
+export function findTaskAttestorConfigPda(
+  taskPda: PublicKey,
+  programId: PublicKey = PROGRAM_ID,
+): PublicKey {
+  return deriveTaskAttestorConfigPda(taskPda, programId).address;
+}
+
+/**
+ * Derives the task submission PDA and bump seed.
+ * Seeds: ["task_submission", claim_pda]
+ *
+ * @param claimPda - Task claim PDA
+ * @param programId - Program ID (defaults to PROGRAM_ID)
+ * @returns PDA address and bump seed
+ */
+export function deriveTaskSubmissionPda(
+  claimPda: PublicKey,
+  programId: PublicKey = PROGRAM_ID,
+): PdaWithBump {
+  return derivePda([TASK_SUBMISSION_SEED, claimPda.toBuffer()], programId);
+}
+
+/**
+ * Finds the task submission PDA address (without bump).
+ *
+ * @param claimPda - Task claim PDA
+ * @param programId - Program ID (defaults to PROGRAM_ID)
+ * @returns PDA address
+ */
+export function findTaskSubmissionPda(
+  claimPda: PublicKey,
+  programId: PublicKey = PROGRAM_ID,
+): PublicKey {
+  return deriveTaskSubmissionPda(claimPda, programId).address;
+}
+
+/**
+ * Derives the task validation vote PDA and bump seed.
+ * Seeds: ["task_validation_vote", task_submission_pda, reviewer]
+ *
+ * @param taskSubmissionPda - Task submission PDA
+ * @param reviewer - Reviewer wallet public key
+ * @param programId - Program ID (defaults to PROGRAM_ID)
+ * @returns PDA address and bump seed
+ */
+export function deriveTaskValidationVotePda(
+  taskSubmissionPda: PublicKey,
+  reviewer: PublicKey,
+  programId: PublicKey = PROGRAM_ID,
+): PdaWithBump {
+  return derivePda(
+    [
+      TASK_VALIDATION_VOTE_SEED,
+      taskSubmissionPda.toBuffer(),
+      reviewer.toBuffer(),
+    ],
+    programId,
+  );
+}
+
+/**
+ * Finds the task validation vote PDA address (without bump).
+ *
+ * @param taskSubmissionPda - Task submission PDA
+ * @param reviewer - Reviewer wallet public key
+ * @param programId - Program ID (defaults to PROGRAM_ID)
+ * @returns PDA address
+ */
+export function findTaskValidationVotePda(
+  taskSubmissionPda: PublicKey,
+  reviewer: PublicKey,
+  programId: PublicKey = PROGRAM_ID,
+): PublicKey {
+  return deriveTaskValidationVotePda(
+    taskSubmissionPda,
+    reviewer,
+    programId,
+  ).address;
 }
 
 /**
