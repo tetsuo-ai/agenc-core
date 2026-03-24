@@ -41,6 +41,36 @@ export enum OnChainTaskStatus {
   Disputed = 5,
 }
 
+/**
+ * Validation mode configured for a task.
+ * Matches the on-chain ValidationMode enum.
+ */
+export enum TaskValidationMode {
+  /** Complete the task immediately on submission */
+  Auto = 0,
+  /** Submit work for creator review before settlement */
+  CreatorReview = 1,
+}
+
+/**
+ * Submission status for Task Validation V2.
+ * Matches the on-chain SubmissionStatus enum.
+ */
+export enum TaskSubmissionStatus {
+  Idle = 0,
+  Submitted = 1,
+  Accepted = 2,
+  Rejected = 3,
+}
+
+/**
+ * Sentinel value stored in `constraintHash` for public tasks that require
+ * creator review instead of immediate settlement.
+ */
+export const MANUAL_VALIDATION_SENTINEL = new Uint8Array(
+  Buffer.from("agenc-manual-validation-v2-seed!"),
+);
+
 // ============================================================================
 // On-Chain Interfaces (parsed, developer-friendly types)
 // ============================================================================
@@ -59,7 +89,10 @@ export interface OnChainTask {
   requiredCapabilities: bigint;
   /** Task description or instruction hash (64 bytes) */
   description: Uint8Array;
-  /** Constraint hash for private task verification (32 bytes, all zeros = public) */
+  /**
+   * Constraint hash for private task verification.
+   * All zeros = public task, manual-validation sentinel = public creator-review task.
+   */
   constraintHash: Uint8Array;
   /** Reward amount in lamports (u64 as bigint) */
   rewardAmount: bigint;
@@ -516,6 +549,26 @@ export function parseOnChainTaskClaim(data: unknown): OnChainTaskClaim {
  * ```
  */
 export function isPrivateTask(task: OnChainTask): boolean {
+  return hasConstraintHash(task) && !isManualValidationTask(task);
+}
+
+/**
+ * Checks if a task is configured for Task Validation V2 creator review.
+ *
+ * @param task - Parsed on-chain task
+ * @returns True if the task uses the manual validation sentinel
+ */
+export function isManualValidationTask(task: OnChainTask): boolean {
+  if (task.constraintHash.length !== MANUAL_VALIDATION_SENTINEL.length) {
+    return false;
+  }
+
+  return task.constraintHash.every(
+    (byte, index) => byte === MANUAL_VALIDATION_SENTINEL[index],
+  );
+}
+
+function hasConstraintHash(task: OnChainTask): boolean {
   return task.constraintHash.some((byte) => byte !== 0);
 }
 
@@ -824,6 +877,38 @@ export interface CompleteResult {
   /** Transaction signature if submitted */
   transactionSignature?: TransactionSignature;
   /** Error message if completion failed */
+  error?: string;
+}
+
+/**
+ * Result of configuring Task Validation V2 for a task.
+ */
+export interface TaskValidationConfigResult {
+  /** Whether the configuration succeeded */
+  success: boolean;
+  /** Task identifier (32 bytes) */
+  taskId: Uint8Array;
+  /** Validation config PDA address */
+  taskValidationConfigPda: PublicKey;
+  /** Transaction signature if submitted */
+  transactionSignature?: TransactionSignature;
+  /** Error message if configuration failed */
+  error?: string;
+}
+
+/**
+ * Result of submitting or reviewing a Task Validation V2 submission.
+ */
+export interface TaskSubmissionResult {
+  /** Whether the submission action succeeded */
+  success: boolean;
+  /** Task identifier (32 bytes) */
+  taskId: Uint8Array;
+  /** Submission PDA address */
+  taskSubmissionPda: PublicKey;
+  /** Transaction signature if submitted */
+  transactionSignature?: TransactionSignature;
+  /** Error message if the action failed */
   error?: string;
 }
 

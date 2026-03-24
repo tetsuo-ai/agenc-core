@@ -2,7 +2,9 @@ import { describe, it, expect } from "vitest";
 import { Keypair } from "@solana/web3.js";
 import { TaskType } from "../events/types.js";
 import {
+  MANUAL_VALIDATION_SENTINEL,
   OnChainTaskStatus,
+  isManualValidationTask,
   parseTaskStatus,
   parseTaskType,
   parseOnChainTask,
@@ -369,6 +371,32 @@ describe("isPrivateTask", () => {
     const task = createParsedTask({ constraintHash: new Uint8Array(32) });
 
     expect(isPrivateTask(task)).toBe(false);
+  });
+
+  it("returns false for manual validation sentinel tasks", () => {
+    const task = createParsedTask({
+      constraintHash: new Uint8Array(MANUAL_VALIDATION_SENTINEL),
+    });
+
+    expect(isPrivateTask(task)).toBe(false);
+  });
+});
+
+describe("isManualValidationTask", () => {
+  it("returns true for the manual validation sentinel", () => {
+    const task = createParsedTask({
+      constraintHash: new Uint8Array(MANUAL_VALIDATION_SENTINEL),
+    });
+
+    expect(isManualValidationTask(task)).toBe(true);
+  });
+
+  it("returns false for other non-zero constraint hashes", () => {
+    const constraintHash = new Uint8Array(32);
+    constraintHash[0] = 9;
+    const task = createParsedTask({ constraintHash });
+
+    expect(isManualValidationTask(task)).toBe(false);
   });
 });
 

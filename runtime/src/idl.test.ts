@@ -47,6 +47,10 @@ describe('IDL exports', () => {
     expect(instructionNames).toContain('create_task');
     expect(instructionNames).toContain('claim_task');
     expect(instructionNames).toContain('complete_task');
+    expect(instructionNames).toContain('configure_task_validation');
+    expect(instructionNames).toContain('submit_task_result');
+    expect(instructionNames).toContain('accept_task_result');
+    expect(instructionNames).toContain('reject_task_result');
     expect(instructionNames).toContain('register_agent');
   });
 
@@ -60,11 +64,21 @@ describe('IDL exports', () => {
     expect(accountNames).toContain('AgentRegistration');
     expect(accountNames).toContain('Task');
     expect(accountNames).toContain('ProtocolConfig');
+    expect(accountNames).toContain('TaskValidationConfig');
+    expect(accountNames).toContain('TaskSubmission');
   });
 
   it('has types array', () => {
     expect(Array.isArray(IDL.types)).toBe(true);
     expect(IDL.types.length).toBeGreaterThan(0);
+  });
+
+  it('has task validation V2 type definitions', () => {
+    const typeNames = IDL.types.map((typeDef) => typeDef.name);
+    expect(typeNames).toContain('ValidationMode');
+    expect(typeNames).toContain('SubmissionStatus');
+    expect(typeNames).toContain('TaskValidationConfig');
+    expect(typeNames).toContain('TaskSubmission');
   });
 
   it('has events array', () => {
@@ -131,6 +145,15 @@ describe('createProgram', () => {
     const program = createProgram(provider);
     // Verify methods namespace is accessible
     expect(program.methods).toBeDefined();
+  });
+
+  it('exposes task validation V2 methods through Program.methods', () => {
+    const program = createProgram(provider);
+    const methods = program.methods as Record<string, unknown>;
+    expect(typeof methods.configureTaskValidation).toBe('function');
+    expect(typeof methods.submitTaskResult).toBe('function');
+    expect(typeof methods.acceptTaskResult).toBe('function');
+    expect(typeof methods.rejectTaskResult).toBe('function');
   });
 });
 

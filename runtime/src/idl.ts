@@ -21,6 +21,491 @@ import { PROGRAM_ID } from "@tetsuo-ai/sdk";
 /** Re-export the IDL type for Program<T> generics */
 export type { AgencCoordination };
 
+type NamedIdlEntry = { name: string };
+
+// The published protocol package can lag behind the runtime's supported V2 flow.
+// Merge these entries in locally so Program.methods exposes the creator-review
+// instructions without requiring a package release first.
+const TASK_VALIDATION_V2_INSTRUCTIONS = [
+  {
+    name: "configure_task_validation",
+    docs: ["Enable Task Validation V2 creator review for an open task."],
+    discriminator: [11, 79, 19, 188, 13, 32, 244, 90],
+    accounts: [
+      {
+        name: "task",
+        writable: true,
+        pda: {
+          seeds: [
+            { kind: "const", value: [116, 97, 115, 107] },
+            { kind: "account", path: "task.creator", account: "Task" },
+            { kind: "account", path: "task.task_id", account: "Task" },
+          ],
+        },
+      },
+      {
+        name: "task_validation_config",
+        writable: true,
+        pda: {
+          seeds: [
+            {
+              kind: "const",
+              value: [116, 97, 115, 107, 95, 118, 97, 108, 105, 100, 97, 116, 105, 111, 110],
+            },
+            { kind: "account", path: "task" },
+          ],
+        },
+      },
+      {
+        name: "protocol_config",
+        pda: {
+          seeds: [{ kind: "const", value: [112, 114, 111, 116, 111, 99, 111, 108] }],
+        },
+      },
+      { name: "creator", writable: true, signer: true },
+      {
+        name: "system_program",
+        address: "11111111111111111111111111111111",
+      },
+    ],
+    args: [
+      { name: "mode", type: "u8" },
+      { name: "review_window_secs", type: "i64" },
+    ],
+  },
+  {
+    name: "submit_task_result",
+    docs: ["Submit a result for creator review before final settlement."],
+    discriminator: [39, 108, 74, 4, 66, 125, 157, 7],
+    accounts: [
+      {
+        name: "task",
+        writable: true,
+        pda: {
+          seeds: [
+            { kind: "const", value: [116, 97, 115, 107] },
+            { kind: "account", path: "task.creator", account: "Task" },
+            { kind: "account", path: "task.task_id", account: "Task" },
+          ],
+        },
+      },
+      {
+        name: "claim",
+        writable: true,
+        pda: {
+          seeds: [
+            { kind: "const", value: [99, 108, 97, 105, 109] },
+            { kind: "account", path: "task" },
+            { kind: "account", path: "worker" },
+          ],
+        },
+      },
+      {
+        name: "task_validation_config",
+        pda: {
+          seeds: [
+            {
+              kind: "const",
+              value: [116, 97, 115, 107, 95, 118, 97, 108, 105, 100, 97, 116, 105, 111, 110],
+            },
+            { kind: "account", path: "task" },
+          ],
+        },
+      },
+      {
+        name: "task_submission",
+        writable: true,
+        pda: {
+          seeds: [
+            {
+              kind: "const",
+              value: [116, 97, 115, 107, 95, 115, 117, 98, 109, 105, 115, 115, 105, 111, 110],
+            },
+            { kind: "account", path: "claim" },
+          ],
+        },
+      },
+      {
+        name: "protocol_config",
+        pda: {
+          seeds: [{ kind: "const", value: [112, 114, 111, 116, 111, 99, 111, 108] }],
+        },
+      },
+      {
+        name: "worker",
+        pda: {
+          seeds: [
+            { kind: "const", value: [97, 103, 101, 110, 116] },
+            {
+              kind: "account",
+              path: "worker.agent_id",
+              account: "AgentRegistration",
+            },
+          ],
+        },
+      },
+      {
+        name: "authority",
+        writable: true,
+        signer: true,
+        relations: ["worker"],
+      },
+      {
+        name: "system_program",
+        address: "11111111111111111111111111111111",
+      },
+    ],
+    args: [
+      { name: "proof_hash", type: { array: ["u8", 32] } },
+      { name: "result_data", type: { option: { array: ["u8", 64] } } },
+    ],
+  },
+  {
+    name: "accept_task_result",
+    docs: ["Accept a creator-reviewed submission and settle rewards."],
+    discriminator: [89, 230, 51, 25, 0, 219, 5, 137],
+    accounts: [
+      {
+        name: "task",
+        writable: true,
+        pda: {
+          seeds: [
+            { kind: "const", value: [116, 97, 115, 107] },
+            { kind: "account", path: "task.creator", account: "Task" },
+            { kind: "account", path: "task.task_id", account: "Task" },
+          ],
+        },
+      },
+      {
+        name: "claim",
+        writable: true,
+        pda: {
+          seeds: [
+            { kind: "const", value: [99, 108, 97, 105, 109] },
+            { kind: "account", path: "task" },
+            { kind: "account", path: "worker" },
+          ],
+        },
+      },
+      {
+        name: "escrow",
+        writable: true,
+        pda: {
+          seeds: [
+            { kind: "const", value: [101, 115, 99, 114, 111, 119] },
+            { kind: "account", path: "task" },
+          ],
+        },
+      },
+      {
+        name: "task_validation_config",
+        pda: {
+          seeds: [
+            {
+              kind: "const",
+              value: [116, 97, 115, 107, 95, 118, 97, 108, 105, 100, 97, 116, 105, 111, 110],
+            },
+            { kind: "account", path: "task" },
+          ],
+        },
+      },
+      {
+        name: "task_submission",
+        writable: true,
+        pda: {
+          seeds: [
+            {
+              kind: "const",
+              value: [116, 97, 115, 107, 95, 115, 117, 98, 109, 105, 115, 115, 105, 111, 110],
+            },
+            { kind: "account", path: "claim" },
+          ],
+        },
+      },
+      {
+        name: "worker",
+        writable: true,
+        pda: {
+          seeds: [
+            { kind: "const", value: [97, 103, 101, 110, 116] },
+            {
+              kind: "account",
+              path: "worker.agent_id",
+              account: "AgentRegistration",
+            },
+          ],
+        },
+      },
+      {
+        name: "protocol_config",
+        writable: true,
+        pda: {
+          seeds: [{ kind: "const", value: [112, 114, 111, 116, 111, 99, 111, 108] }],
+        },
+      },
+      { name: "treasury", writable: true },
+      { name: "creator", writable: true },
+      { name: "worker_authority", writable: true },
+      { name: "reviewer", writable: true, signer: true },
+      {
+        name: "system_program",
+        address: "11111111111111111111111111111111",
+      },
+      { name: "token_escrow_ata", writable: true, optional: true },
+      { name: "worker_token_account", writable: true, optional: true },
+      { name: "treasury_token_account", writable: true, optional: true },
+      { name: "reward_mint", optional: true },
+      {
+        name: "token_program",
+        optional: true,
+        address: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      },
+    ],
+    args: [],
+  },
+  {
+    name: "reject_task_result",
+    docs: [
+      "Reject a creator-reviewed submission and return the task to active work.",
+    ],
+    discriminator: [144, 7, 58, 232, 157, 167, 85, 214],
+    accounts: [
+      {
+        name: "task",
+        writable: true,
+        pda: {
+          seeds: [
+            { kind: "const", value: [116, 97, 115, 107] },
+            { kind: "account", path: "task.creator", account: "Task" },
+            { kind: "account", path: "task.task_id", account: "Task" },
+          ],
+        },
+      },
+      {
+        name: "claim",
+        writable: true,
+        pda: {
+          seeds: [
+            { kind: "const", value: [99, 108, 97, 105, 109] },
+            { kind: "account", path: "task" },
+            { kind: "account", path: "claim.worker", account: "TaskClaim" },
+          ],
+        },
+      },
+      {
+        name: "task_validation_config",
+        pda: {
+          seeds: [
+            {
+              kind: "const",
+              value: [116, 97, 115, 107, 95, 118, 97, 108, 105, 100, 97, 116, 105, 111, 110],
+            },
+            { kind: "account", path: "task" },
+          ],
+        },
+      },
+      {
+        name: "task_submission",
+        writable: true,
+        pda: {
+          seeds: [
+            {
+              kind: "const",
+              value: [116, 97, 115, 107, 95, 115, 117, 98, 109, 105, 115, 115, 105, 111, 110],
+            },
+            { kind: "account", path: "claim" },
+          ],
+        },
+      },
+      {
+        name: "protocol_config",
+        pda: {
+          seeds: [{ kind: "const", value: [112, 114, 111, 116, 111, 99, 111, 108] }],
+        },
+      },
+      { name: "creator", writable: true, signer: true },
+    ],
+    args: [{ name: "rejection_hash", type: { array: ["u8", 32] } }],
+  },
+] as const;
+
+const TASK_VALIDATION_V2_ACCOUNTS = [
+  {
+    name: "TaskValidationConfig",
+    discriminator: [101, 204, 19, 0, 210, 2, 191, 0],
+  },
+  {
+    name: "TaskSubmission",
+    discriminator: [111, 64, 190, 132, 148, 33, 215, 63],
+  },
+] as const;
+
+const TASK_VALIDATION_V2_TYPES = [
+  {
+    name: "TaskValidationConfig",
+    docs: [
+      "Task-level validation configuration.",
+      'PDA seeds: ["task_validation", task]',
+    ],
+    type: {
+      kind: "struct",
+      fields: [
+        { name: "task", docs: ["Task this config belongs to."], type: "pubkey" },
+        {
+          name: "creator",
+          docs: ["Task creator / reviewer authority."],
+          type: "pubkey",
+        },
+        {
+          name: "mode",
+          docs: ["Active validation mode."],
+          type: { defined: { name: "ValidationMode" } },
+        },
+        {
+          name: "review_window_secs",
+          docs: [
+            "Review window in seconds before the submission may be escalated off-path.",
+          ],
+          type: "i64",
+        },
+        { name: "created_at", docs: ["Creation timestamp."], type: "i64" },
+        { name: "updated_at", docs: ["Last update timestamp."], type: "i64" },
+        { name: "bump", docs: ["PDA bump."], type: "u8" },
+        {
+          name: "_reserved",
+          docs: ["Reserved for future validation variants."],
+          type: { array: ["u8", 7] },
+        },
+      ],
+    },
+  },
+  {
+    name: "TaskSubmission",
+    docs: [
+      "Claim-level submission state for creator-review validation.",
+      'PDA seeds: ["task_submission", claim]',
+    ],
+    type: {
+      kind: "struct",
+      fields: [
+        { name: "task", docs: ["Task being submitted."], type: "pubkey" },
+        { name: "claim", docs: ["Claim tied to this submission."], type: "pubkey" },
+        { name: "worker", docs: ["Worker that submitted the result."], type: "pubkey" },
+        {
+          name: "status",
+          docs: ["Current submission status."],
+          type: { defined: { name: "SubmissionStatus" } },
+        },
+        {
+          name: "proof_hash",
+          docs: ["Latest proof hash supplied by the worker."],
+          type: { array: ["u8", 32] },
+        },
+        {
+          name: "result_data",
+          docs: ["Latest result payload supplied by the worker."],
+          type: { array: ["u8", 64] },
+        },
+        {
+          name: "submission_count",
+          docs: ["Number of times this claim has been submitted for review."],
+          type: "u16",
+        },
+        {
+          name: "submitted_at",
+          docs: ["Timestamp of latest submission."],
+          type: "i64",
+        },
+        {
+          name: "review_deadline_at",
+          docs: ["Timestamp after which the review window has elapsed."],
+          type: "i64",
+        },
+        {
+          name: "accepted_at",
+          docs: ["Acceptance timestamp (0 when unresolved)."],
+          type: "i64",
+        },
+        {
+          name: "rejected_at",
+          docs: ["Rejection timestamp (0 when unresolved)."],
+          type: "i64",
+        },
+        {
+          name: "rejection_hash",
+          docs: ["Optional rejection reason hash."],
+          type: { array: ["u8", 32] },
+        },
+        { name: "bump", docs: ["PDA bump."], type: "u8" },
+        {
+          name: "_reserved",
+          docs: ["Reserved for future attestation metadata."],
+          type: { array: ["u8", 5] },
+        },
+      ],
+    },
+  },
+  {
+    name: "ValidationMode",
+    docs: ["Validation mode configured for a task."],
+    repr: { kind: "rust" },
+    type: {
+      kind: "enum",
+      variants: [{ name: "Auto" }, { name: "CreatorReview" }],
+    },
+  },
+  {
+    name: "SubmissionStatus",
+    docs: ["Task submission lifecycle for creator-review validation."],
+    repr: { kind: "rust" },
+    type: {
+      kind: "enum",
+      variants: [
+        { name: "Idle" },
+        { name: "Submitted" },
+        { name: "Accepted" },
+        { name: "Rejected" },
+      ],
+    },
+  },
+] as const;
+
+function mergeIdlEntries<T extends NamedIdlEntry>(
+  existing: readonly T[] | undefined,
+  extras: readonly T[],
+): T[] {
+  const merged = new Map<string, T>();
+
+  for (const entry of existing ?? []) {
+    merged.set(entry.name, entry);
+  }
+  for (const entry of extras) {
+    if (!merged.has(entry.name)) {
+      merged.set(entry.name, entry);
+    }
+  }
+
+  return Array.from(merged.values());
+}
+
+function augmentIdl(baseIdl: Idl): Idl {
+  return {
+    ...baseIdl,
+    instructions: mergeIdlEntries(
+      baseIdl.instructions as NamedIdlEntry[] | undefined,
+      TASK_VALIDATION_V2_INSTRUCTIONS as unknown as NamedIdlEntry[],
+    ) as Idl["instructions"],
+    accounts: mergeIdlEntries(
+      baseIdl.accounts as NamedIdlEntry[] | undefined,
+      TASK_VALIDATION_V2_ACCOUNTS as unknown as NamedIdlEntry[],
+    ) as Idl["accounts"],
+    types: mergeIdlEntries(
+      baseIdl.types as NamedIdlEntry[] | undefined,
+      TASK_VALIDATION_V2_TYPES as unknown as NamedIdlEntry[],
+    ) as Idl["types"],
+  };
+}
+
 /**
  * The AgenC Coordination program IDL.
  *
@@ -28,7 +513,7 @@ export type { AgencCoordination };
  * JSON structure. Use `Program<AgencCoordination>` for type-safe method access.
  */
 export const IDL: Idl = {
-  ...(AGENC_COORDINATION_IDL as Idl),
+  ...augmentIdl(AGENC_COORDINATION_IDL as Idl),
   address: PROGRAM_ID.toBase58(),
 };
 

@@ -6,7 +6,12 @@ import {
   TASK_STATUS_OFFSET,
   type TaskOpsConfig,
 } from "./operations.js";
-import { OnChainTaskStatus, type OnChainTask } from "./types.js";
+import {
+  MANUAL_VALIDATION_SENTINEL,
+  OnChainTaskStatus,
+  TaskValidationMode,
+  type OnChainTask,
+} from "./types.js";
 import { TaskType } from "../events/types.js";
 import {
   TaskNotClaimableError,
@@ -121,12 +126,32 @@ function createParsedTask(overrides: Partial<OnChainTask> = {}): OnChainTask {
   };
 }
 
+function createMockRawAgentRegistration(authority: PublicKey) {
+  return {
+    agentId: Array.from(createAgentId(77)),
+    authority,
+    capabilities: { toString: () => "3" },
+    status: { active: {} },
+    endpoint: "http://localhost:3000",
+    metadataUri: "https://example.com/agent.json",
+    registeredAt: { toNumber: () => 1700000000 },
+    lastActive: { toNumber: () => 1700000100 },
+    tasksCompleted: { toString: () => "10" },
+    totalEarned: { toString: () => "5000000" },
+    reputation: 9000,
+    activeTasks: 1,
+    stake: { toString: () => "1000000" },
+    bump: 200,
+  };
+}
+
 /**
  * Creates a mock Anchor program for testing.
  */
 function createMockProgram() {
+  const providerPublicKey = Keypair.generate().publicKey;
   const mockProvider = {
-    publicKey: Keypair.generate().publicKey,
+    publicKey: providerPublicKey,
   };
 
   const taskFetch = vi.fn();
@@ -136,10 +161,17 @@ function createMockProgram() {
   const protocolConfigFetch = vi.fn().mockResolvedValue({
     treasury: Keypair.generate().publicKey,
   });
+  const agentRegistrationFetch = vi
+    .fn()
+    .mockResolvedValue(createMockRawAgentRegistration(providerPublicKey));
 
   const claimTaskRpc = vi.fn().mockResolvedValue("claim-sig");
   const completeTaskRpc = vi.fn().mockResolvedValue("complete-sig");
   const completeTaskPrivateRpc = vi.fn().mockResolvedValue("private-sig");
+  const configureTaskValidationRpc = vi.fn().mockResolvedValue("configure-sig");
+  const submitTaskResultRpc = vi.fn().mockResolvedValue("submit-sig");
+  const acceptTaskResultRpc = vi.fn().mockResolvedValue("accept-sig");
+  const rejectTaskResultRpc = vi.fn().mockResolvedValue("reject-sig");
 
   const claimTaskBuilder = {
     accountsPartial: vi.fn().mockReturnThis(),
@@ -157,9 +189,38 @@ function createMockProgram() {
     remainingAccounts: vi.fn().mockReturnThis(),
     rpc: completeTaskPrivateRpc,
   };
+  const configureTaskValidationBuilder = {
+    accountsPartial: vi.fn().mockReturnThis(),
+    rpc: configureTaskValidationRpc,
+  };
+  const submitTaskResultBuilder = {
+    accountsPartial: vi.fn().mockReturnThis(),
+    rpc: submitTaskResultRpc,
+  };
+  const acceptTaskResultBuilder = {
+    accountsPartial: vi.fn().mockReturnThis(),
+    remainingAccounts: vi.fn().mockReturnThis(),
+    rpc: acceptTaskResultRpc,
+  };
+  const rejectTaskResultBuilder = {
+    accountsPartial: vi.fn().mockReturnThis(),
+    rpc: rejectTaskResultRpc,
+  };
   const completeTaskPrivateMethod = vi
     .fn()
     .mockReturnValue(completeTaskPrivateBuilder);
+  const configureTaskValidationMethod = vi
+    .fn()
+    .mockReturnValue(configureTaskValidationBuilder);
+  const submitTaskResultMethod = vi
+    .fn()
+    .mockReturnValue(submitTaskResultBuilder);
+  const acceptTaskResultMethod = vi
+    .fn()
+    .mockReturnValue(acceptTaskResultBuilder);
+  const rejectTaskResultMethod = vi
+    .fn()
+    .mockReturnValue(rejectTaskResultBuilder);
 
   const program = {
     programId: PROGRAM_ID,
@@ -168,11 +229,16 @@ function createMockProgram() {
       task: { fetch: taskFetch, all: taskAll },
       taskClaim: { fetch: taskClaimFetch, all: taskClaimAll },
       protocolConfig: { fetch: protocolConfigFetch },
+      agentRegistration: { fetch: agentRegistrationFetch },
     },
     methods: {
       claimTask: vi.fn().mockReturnValue(claimTaskBuilder),
       completeTask: vi.fn().mockReturnValue(completeTaskBuilder),
       completeTaskPrivate: completeTaskPrivateMethod,
+      configureTaskValidation: configureTaskValidationMethod,
+      submitTaskResult: submitTaskResultMethod,
+      acceptTaskResult: acceptTaskResultMethod,
+      rejectTaskResult: rejectTaskResultMethod,
     },
   };
 
@@ -184,13 +250,26 @@ function createMockProgram() {
       taskClaimFetch,
       taskClaimAll,
       protocolConfigFetch,
+      agentRegistrationFetch,
       claimTaskRpc,
       completeTaskRpc,
       completeTaskPrivateRpc,
+      configureTaskValidationRpc,
+      submitTaskResultRpc,
+      acceptTaskResultRpc,
+      rejectTaskResultRpc,
       completeTaskPrivateMethod,
+      configureTaskValidationMethod,
+      submitTaskResultMethod,
+      acceptTaskResultMethod,
+      rejectTaskResultMethod,
       claimTaskBuilder,
       completeTaskBuilder,
       completeTaskPrivateBuilder,
+      configureTaskValidationBuilder,
+      submitTaskResultBuilder,
+      acceptTaskResultBuilder,
+      rejectTaskResultBuilder,
     },
   };
 }
@@ -668,6 +747,21 @@ describe("TaskOperations", () => {
       expect(result.success).toBe(true);
     });
 
+    it("routes manual validation tasks to submitTaskResult", async () => {
+      const taskPda = Keypair.generate().publicKey;
+      const task = createParsedTask({
+        constraintHash: new Uint8Array(MANUAL_VALIDATION_SENTINEL),
+      });
+      const proofHash = new Uint8Array(32).fill(0xab);
+
+      const result = await ops.completeTask(taskPda, task, proofHash, null);
+
+      expect(result.success).toBe(true);
+      expect(result.transactionSignature).toBe("submit-sig");
+      expect(mocks.submitTaskResultMethod).toHaveBeenCalledTimes(1);
+      expect(mocks.completeTaskBuilder.accountsPartial).not.toHaveBeenCalled();
+    });
+
     it("appends parent and accepted-bid settlement accounts when provided", async () => {
       const taskPda = Keypair.generate().publicKey;
       const task = createParsedTask();
@@ -833,6 +927,133 @@ describe("TaskOperations", () => {
           new Uint8Array(HASH_SIZE).fill(0x05),
         ),
       ).rejects.toThrow(TaskSubmissionError);
+    });
+  });
+
+  describe("Task Validation V2", () => {
+    it("configures task validation with creator review mode", async () => {
+      const taskPda = Keypair.generate().publicKey;
+      const task = createParsedTask();
+
+      const result = await ops.configureTaskValidation(
+        taskPda,
+        task,
+        TaskValidationMode.CreatorReview,
+        900,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.transactionSignature).toBe("configure-sig");
+      expect(mocks.configureTaskValidationMethod).toHaveBeenCalledTimes(1);
+      expect(mocks.configureTaskValidationMethod.mock.calls[0][0]).toBe(
+        TaskValidationMode.CreatorReview,
+      );
+      expect(
+        mocks.configureTaskValidationMethod.mock.calls[0][1].toString(),
+      ).toBe("900");
+      expect(
+        mocks.configureTaskValidationBuilder.accountsPartial,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          task: taskPda,
+          creator: mockProgram.provider.publicKey,
+          systemProgram: SystemProgram.programId,
+        }),
+      );
+    });
+
+    it("submits a task result for creator review", async () => {
+      const taskPda = Keypair.generate().publicKey;
+      const task = createParsedTask();
+      const proofHash = new Uint8Array(32).fill(0xab);
+      const resultData = new Uint8Array(64).fill(0xcd);
+
+      const result = await ops.submitTaskResult(
+        taskPda,
+        task,
+        proofHash,
+        resultData,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.transactionSignature).toBe("submit-sig");
+      expect(mocks.submitTaskResultMethod).toHaveBeenCalledTimes(1);
+      expect(
+        mocks.submitTaskResultBuilder.accountsPartial,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          task: taskPda,
+          authority: mockProgram.provider.publicKey,
+          systemProgram: SystemProgram.programId,
+        }),
+      );
+    });
+
+    it("accepts a reviewed task result using the worker authority wallet", async () => {
+      const taskPda = Keypair.generate().publicKey;
+      const task = createParsedTask();
+      const workerPda = Keypair.generate().publicKey;
+      const workerAuthority = Keypair.generate().publicKey;
+      const bidBook = Keypair.generate().publicKey;
+      const acceptedBid = Keypair.generate().publicKey;
+      const bidderMarketState = Keypair.generate().publicKey;
+
+      mocks.agentRegistrationFetch.mockResolvedValue(
+        createMockRawAgentRegistration(workerAuthority),
+      );
+
+      const result = await ops.acceptTaskResult(taskPda, task, workerPda, {
+        acceptedBidSettlement: {
+          bidBook,
+          acceptedBid,
+          bidderMarketState,
+        },
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.transactionSignature).toBe("accept-sig");
+      expect(mocks.agentRegistrationFetch).toHaveBeenCalledWith(workerPda);
+      expect(mocks.acceptTaskResultMethod).toHaveBeenCalledTimes(1);
+      expect(mocks.acceptTaskResultBuilder.accountsPartial).toHaveBeenCalledWith(
+        expect.objectContaining({
+          task: taskPda,
+          worker: workerPda,
+          workerAuthority,
+          reviewer: mockProgram.provider.publicKey,
+        }),
+      );
+      expect(
+        mocks.acceptTaskResultBuilder.remainingAccounts,
+      ).toHaveBeenCalledWith([
+        { pubkey: bidBook, isSigner: false, isWritable: true },
+        { pubkey: acceptedBid, isSigner: false, isWritable: true },
+        { pubkey: bidderMarketState, isSigner: false, isWritable: true },
+        { pubkey: workerAuthority, isSigner: false, isWritable: true },
+      ]);
+    });
+
+    it("rejects a reviewed task result", async () => {
+      const taskPda = Keypair.generate().publicKey;
+      const task = createParsedTask();
+      const workerPda = Keypair.generate().publicKey;
+      const rejectionHash = new Uint8Array(32).fill(0xee);
+
+      const result = await ops.rejectTaskResult(
+        taskPda,
+        task,
+        workerPda,
+        rejectionHash,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.transactionSignature).toBe("reject-sig");
+      expect(mocks.rejectTaskResultMethod).toHaveBeenCalledTimes(1);
+      expect(mocks.rejectTaskResultBuilder.accountsPartial).toHaveBeenCalledWith(
+        expect.objectContaining({
+          task: taskPda,
+          creator: mockProgram.provider.publicKey,
+        }),
+      );
     });
   });
 

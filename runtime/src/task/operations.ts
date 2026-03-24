@@ -29,15 +29,20 @@ import type {
   OnChainTaskClaim,
   ClaimResult,
   CompleteResult,
+  TaskSubmissionResult,
   TaskCompletionOptions,
+  TaskValidationConfigResult,
+  TaskValidationMode,
 } from "./types.js";
 import {
+  isManualValidationTask,
   parseOnChainTask,
   parseOnChainTaskClaim,
   OnChainTaskStatus,
 } from "./types.js";
 import { deriveTaskPda, deriveClaimPda, deriveEscrowPda } from "./pda.js";
 import { deriveAgentPda, findProtocolPda } from "../agent/pda.js";
+import { parseAgentState } from "../agent/types.js";
 import { fetchTreasury } from "../utils/treasury.js";
 import { buildCompleteTaskTokenAccounts } from "../utils/token.js";
 import {
@@ -69,12 +74,34 @@ const BINDING_SPEND_SEED = Buffer.from("binding_spend");
 const NULLIFIER_SPEND_SEED = Buffer.from("nullifier_spend");
 const ROUTER_SEED = Buffer.from("router");
 const VERIFIER_SEED = Buffer.from("verifier");
+const TASK_VALIDATION_SEED = Buffer.from("task_validation");
+const TASK_SUBMISSION_SEED = Buffer.from("task_submission");
 const TRUSTED_RISC0_ROUTER_PROGRAM_ID = new PublicKey(
   "E9ZiqfCdr6gGeB2UhBbkWnFP9vGnRYQwqnDsS1LM3NJZ",
 );
 const TRUSTED_RISC0_VERIFIER_PROGRAM_ID = new PublicKey(
   "3ZrAHZKjk24AKgXFekpYeG7v3Rz7NucLXTB3zxGGTjsc",
 );
+
+function deriveTaskValidationConfigPda(
+  taskPda: PublicKey,
+  programId: PublicKey,
+): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [TASK_VALIDATION_SEED, taskPda.toBuffer()],
+    programId,
+  )[0];
+}
+
+function deriveTaskSubmissionPda(
+  claimPda: PublicKey,
+  programId: PublicKey,
+): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [TASK_SUBMISSION_SEED, claimPda.toBuffer()],
+    programId,
+  )[0];
+}
 
 // ============================================================================
 // Configuration
@@ -450,6 +477,351 @@ export class TaskOperations {
   }
 
   /**
+   * Configure Task Validation V2 for an existing task.
+   *
+   * @param taskPda - Task account PDA
+   * @param task - The on-chain task data
+   * @param mode - Validation mode matching the on-chain enum
+   * @param reviewWindowSecs - Review window in seconds
+   * @returns Configuration result with signature and validation config PDA
+   */
+  async configureTaskValidation(
+    taskPda: PublicKey,
+    task: OnChainTask,
+    mode: TaskValidationMode | number,
+    reviewWindowSecs: number | bigint,
+  ): Promise<TaskValidationConfigResult> {
+    const creator = this.program.provider.publicKey;
+    if (!creator) {
+      throw new ValidationError(
+        "Program provider does not have a public key for task validation",
+      );
+    }
+
+    const taskValidationConfigPda = deriveTaskValidationConfigPda(
+      taskPda,
+      this.program.programId,
+    );
+    const protocolPda = findProtocolPda(this.program.programId);
+
+    const methods = this.program.methods as unknown as {
+      configureTaskValidation: (
+        validationMode: number,
+        reviewWindow: BN,
+      ) => {
+        accountsPartial: (accounts: Record<string, unknown>) => {
+          rpc: () => Promise<string>;
+        };
+      };
+    };
+
+    this.logger.info(`Configuring validation for task ${taskPda.toBase58()}`);
+
+    try {
+      const signature = await methods
+        .configureTaskValidation(Number(mode), new BN(reviewWindowSecs.toString()))
+        .accountsPartial({
+          task: taskPda,
+          taskValidationConfig: taskValidationConfigPda,
+          protocolConfig: protocolPda,
+          creator,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      return {
+        success: true,
+        taskId: task.taskId,
+        taskValidationConfigPda,
+        transactionSignature: signature,
+      };
+    } catch (err) {
+      this.logger.error(
+        `Failed to configure validation for ${taskPda.toBase58()}: ${err}`,
+      );
+      throw new TaskSubmissionError(
+        taskPda,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
+  /**
+   * Submit a result for Task Validation V2 creator review.
+   *
+   * @param taskPda - Task account PDA
+   * @param task - The on-chain task data
+   * @param proofHash - Worker-submitted proof hash
+   * @param resultData - Optional worker-submitted result payload
+   * @returns Submission result with signature and submission PDA
+   */
+  async submitTaskResult(
+    taskPda: PublicKey,
+    task: OnChainTask,
+    proofHash: Uint8Array,
+    resultData: Uint8Array | null,
+  ): Promise<TaskSubmissionResult> {
+    validateByteLength(proofHash, 32, "proofHash");
+    validateNonZeroBytes(proofHash, "proofHash");
+    if (resultData !== null) {
+      validateByteLength(resultData, 64, "resultData");
+    }
+
+    const authority = this.program.provider.publicKey;
+    if (!authority) {
+      throw new ValidationError(
+        "Program provider does not have a public key for task submission",
+      );
+    }
+
+    const workerPda = this.getAgentPda();
+    const { address: claimPda } = deriveClaimPda(
+      taskPda,
+      workerPda,
+      this.program.programId,
+    );
+    const taskValidationConfigPda = deriveTaskValidationConfigPda(
+      taskPda,
+      this.program.programId,
+    );
+    const taskSubmissionPda = deriveTaskSubmissionPda(
+      claimPda,
+      this.program.programId,
+    );
+    const protocolPda = findProtocolPda(this.program.programId);
+
+    const methods = this.program.methods as unknown as {
+      submitTaskResult: (
+        proofHashBytes: number[],
+        resultBytes: number[] | null,
+      ) => {
+        accountsPartial: (accounts: Record<string, unknown>) => {
+          rpc: () => Promise<string>;
+        };
+      };
+    };
+
+    this.logger.info(`Submitting task result ${taskPda.toBase58()} for review`);
+
+    try {
+      const signature = await methods
+        .submitTaskResult(
+          toAnchorBytes(proofHash),
+          resultData ? toAnchorBytes(resultData) : null,
+        )
+        .accountsPartial({
+          task: taskPda,
+          claim: claimPda,
+          taskValidationConfig: taskValidationConfigPda,
+          taskSubmission: taskSubmissionPda,
+          protocolConfig: protocolPda,
+          worker: workerPda,
+          authority,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      return {
+        success: true,
+        taskId: task.taskId,
+        taskSubmissionPda,
+        transactionSignature: signature,
+      };
+    } catch (err) {
+      this.logger.error(
+        `Failed to submit task result ${taskPda.toBase58()}: ${err}`,
+      );
+      throw new TaskSubmissionError(
+        taskPda,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
+  /**
+   * Accept a pending Task Validation V2 submission and settle the reward.
+   *
+   * @param taskPda - Task account PDA
+   * @param task - The on-chain task data
+   * @param workerPda - Worker agent PDA that owns the submission
+   * @param options - Optional dependent-task and marketplace settlement accounts
+   * @returns Completion result with signature
+   */
+  async acceptTaskResult(
+    taskPda: PublicKey,
+    task: OnChainTask,
+    workerPda: PublicKey,
+    options?: TaskCompletionOptions,
+  ): Promise<CompleteResult> {
+    const reviewer = this.program.provider.publicKey;
+    if (!reviewer) {
+      throw new ValidationError(
+        "Program provider does not have a public key for task review",
+      );
+    }
+
+    const { address: claimPda } = deriveClaimPda(
+      taskPda,
+      workerPda,
+      this.program.programId,
+    );
+    const { address: escrowPda } = deriveEscrowPda(
+      taskPda,
+      this.program.programId,
+    );
+    const taskValidationConfigPda = deriveTaskValidationConfigPda(
+      taskPda,
+      this.program.programId,
+    );
+    const taskSubmissionPda = deriveTaskSubmissionPda(
+      claimPda,
+      this.program.programId,
+    );
+    const protocolPda = findProtocolPda(this.program.programId);
+    const treasury = await this.getProtocolTreasury();
+    const workerAuthority = await this.getWorkerAuthority(workerPda);
+    const tokenAccounts = buildCompleteTaskTokenAccounts(
+      task.rewardMint,
+      escrowPda,
+      workerAuthority,
+      treasury,
+    );
+    const remainingAccounts = this.buildTaskCompletionRemainingAccounts(
+      options,
+      workerAuthority,
+    );
+
+    const methods = this.program.methods as unknown as {
+      acceptTaskResult: () => {
+        accountsPartial: (accounts: Record<string, unknown>) => {
+          remainingAccounts: (accounts: AccountMeta[]) => { rpc: () => Promise<string> };
+          rpc: () => Promise<string>;
+        };
+      };
+    };
+
+    this.logger.info(`Accepting task result ${taskPda.toBase58()}`);
+
+    try {
+      const builder = methods.acceptTaskResult().accountsPartial({
+        task: taskPda,
+        claim: claimPda,
+        escrow: escrowPda,
+        taskValidationConfig: taskValidationConfigPda,
+        taskSubmission: taskSubmissionPda,
+        worker: workerPda,
+        protocolConfig: protocolPda,
+        treasury,
+        creator: task.creator,
+        workerAuthority,
+        reviewer,
+        systemProgram: SystemProgram.programId,
+        ...tokenAccounts,
+      });
+
+      if (remainingAccounts.length > 0) {
+        builder.remainingAccounts(remainingAccounts);
+      }
+
+      const signature = await builder.rpc();
+
+      return {
+        success: true,
+        taskId: task.taskId,
+        isPrivate: false,
+        transactionSignature: signature,
+      };
+    } catch (err) {
+      this.logger.error(
+        `Failed to accept task result ${taskPda.toBase58()}: ${err}`,
+      );
+      throw new TaskSubmissionError(
+        taskPda,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
+  /**
+   * Reject a pending Task Validation V2 submission.
+   *
+   * @param taskPda - Task account PDA
+   * @param task - The on-chain task data
+   * @param workerPda - Worker agent PDA that owns the submission
+   * @param rejectionHash - Evidence or rejection reason hash
+   * @returns Submission result with signature and submission PDA
+   */
+  async rejectTaskResult(
+    taskPda: PublicKey,
+    task: OnChainTask,
+    workerPda: PublicKey,
+    rejectionHash: Uint8Array,
+  ): Promise<TaskSubmissionResult> {
+    validateByteLength(rejectionHash, 32, "rejectionHash");
+
+    const creator = this.program.provider.publicKey;
+    if (!creator) {
+      throw new ValidationError(
+        "Program provider does not have a public key for task rejection",
+      );
+    }
+
+    const { address: claimPda } = deriveClaimPda(
+      taskPda,
+      workerPda,
+      this.program.programId,
+    );
+    const taskValidationConfigPda = deriveTaskValidationConfigPda(
+      taskPda,
+      this.program.programId,
+    );
+    const taskSubmissionPda = deriveTaskSubmissionPda(
+      claimPda,
+      this.program.programId,
+    );
+    const protocolPda = findProtocolPda(this.program.programId);
+
+    const methods = this.program.methods as unknown as {
+      rejectTaskResult: (rejectionHashBytes: number[]) => {
+        accountsPartial: (accounts: Record<string, unknown>) => {
+          rpc: () => Promise<string>;
+        };
+      };
+    };
+
+    this.logger.info(`Rejecting task result ${taskPda.toBase58()}`);
+
+    try {
+      const signature = await methods
+        .rejectTaskResult(toAnchorBytes(rejectionHash))
+        .accountsPartial({
+          task: taskPda,
+          claim: claimPda,
+          taskValidationConfig: taskValidationConfigPda,
+          taskSubmission: taskSubmissionPda,
+          protocolConfig: protocolPda,
+          creator,
+        })
+        .rpc();
+
+      return {
+        success: true,
+        taskId: task.taskId,
+        taskSubmissionPda,
+        transactionSignature: signature,
+      };
+    } catch (err) {
+      this.logger.error(
+        `Failed to reject task result ${taskPda.toBase58()}: ${err}`,
+      );
+      throw new TaskSubmissionError(
+        taskPda,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
+  /**
    * Complete a task with a public proof.
    *
    * @param taskPda - Task account PDA
@@ -471,6 +843,24 @@ export class TaskOperations {
       validateByteLength(resultData, 64, "resultData");
     }
 
+    if (isManualValidationTask(task)) {
+      this.logger.info(
+        `Task ${taskPda.toBase58()} requires creator review; routing to submitTaskResult`,
+      );
+      const submission = await this.submitTaskResult(
+        taskPda,
+        task,
+        proofHash,
+        resultData,
+      );
+      return {
+        success: submission.success,
+        taskId: submission.taskId,
+        isPrivate: false,
+        transactionSignature: submission.transactionSignature,
+      };
+    }
+
     const workerPda = this.getAgentPda();
     const { address: claimPda } = deriveClaimPda(
       taskPda,
@@ -489,7 +879,10 @@ export class TaskOperations {
       this.program.provider.publicKey!,
       treasury,
     );
-    const remainingAccounts = this.buildTaskCompletionRemainingAccounts(options);
+    const remainingAccounts = this.buildTaskCompletionRemainingAccounts(
+      options,
+      this.program.provider.publicKey ?? undefined,
+    );
 
     this.logger.info(`Completing task ${taskPda.toBase58()}`);
 
@@ -612,7 +1005,10 @@ export class TaskOperations {
       this.program.provider.publicKey!,
       treasury,
     );
-    const remainingAccounts = this.buildTaskCompletionRemainingAccounts(options);
+    const remainingAccounts = this.buildTaskCompletionRemainingAccounts(
+      options,
+      this.program.provider.publicKey ?? undefined,
+    );
 
     this.logger.info(`Completing task privately ${taskPda.toBase58()}`);
 
@@ -722,10 +1118,31 @@ export class TaskOperations {
   }
 
   /**
+   * Resolve the worker authority wallet from an agent registration PDA.
+   */
+  private async getWorkerAuthority(workerPda: PublicKey): Promise<PublicKey> {
+    const agentAccount = this.program.account as unknown as {
+      agentRegistration?: {
+        fetch?: (address: PublicKey) => Promise<unknown>;
+      };
+    };
+
+    if (!agentAccount.agentRegistration?.fetch) {
+      throw new ValidationError(
+        "Program account namespace is missing agentRegistration.fetch",
+      );
+    }
+
+    const rawAgent = await agentAccount.agentRegistration.fetch(workerPda);
+    return parseAgentState(rawAgent).authority;
+  }
+
+  /**
    * Build remaining accounts for dependent-task and Marketplace V2 settlement.
    */
   private buildTaskCompletionRemainingAccounts(
     options?: TaskCompletionOptions,
+    defaultBidderAuthority?: PublicKey,
   ): AccountMeta[] {
     const accounts: AccountMeta[] = [];
     if (!options) return accounts;
@@ -740,7 +1157,9 @@ export class TaskOperations {
 
     if (options.acceptedBidSettlement) {
       const bidderAuthority =
-        options.bidderAuthority ?? this.program.provider.publicKey;
+        options.bidderAuthority ??
+        defaultBidderAuthority ??
+        this.program.provider.publicKey;
       if (!bidderAuthority) {
         throw new ValidationError(
           "bidderAuthority is required when acceptedBidSettlement is provided",
