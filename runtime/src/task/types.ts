@@ -69,7 +69,7 @@ export enum TaskSubmissionStatus {
 
 /**
  * Sentinel value stored in `constraintHash` for public tasks that require
- * creator review instead of immediate settlement.
+ * manual validation instead of immediate settlement.
  */
 export const MANUAL_VALIDATION_SENTINEL = new Uint8Array(
   Buffer.from("agenc-manual-validation-v2-seed!"),
@@ -95,7 +95,7 @@ export interface OnChainTask {
   description: Uint8Array;
   /**
    * Constraint hash for private task verification.
-   * All zeros = public task, manual-validation sentinel = public creator-review task.
+   * All zeros = public task, manual-validation sentinel = reviewed public task.
    */
   constraintHash: Uint8Array;
   /** Reward amount in lamports (u64 as bigint) */
@@ -557,7 +557,7 @@ export function isPrivateTask(task: OnChainTask): boolean {
 }
 
 /**
- * Checks if a task is configured for Task Validation V2 creator review.
+ * Checks if a task is configured for Task Validation V2 manual validation.
  *
  * @param task - Parsed on-chain task
  * @returns True if the task uses the manual validation sentinel

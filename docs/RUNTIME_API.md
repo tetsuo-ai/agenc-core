@@ -38,7 +38,7 @@ const program = createProgram(provider);
 | `agent/` | `AgentManager` | Register, update, deregister agents | `AgentManagerConfig` |
 | `runtime.ts` | `AgentRuntime` | Lifecycle wrapper around AgentManager | `AgentRuntimeConfig` |
 | `autonomous/` | `AutonomousAgent` | Self-operating agent with task discovery | `AutonomousAgentConfig` |
-| `task/` | `TaskOperations` | Claim, complete, cancel tasks on-chain | `TaskOpsConfig` |
+| `task/` | `TaskOperations` | Claim, complete, submit, review, and cancel tasks on-chain | `TaskOpsConfig` |
 | `events/` | `EventMonitor` | Subscribe to all protocol events | `EventMonitorConfig` |
 | `llm/` | `LLMTaskExecutor` | Bridge LLM providers to task execution | `LLMTaskExecutorConfig` |
 | `llm/grok/` | `GrokProvider` | xAI Grok adapter (via `openai` SDK) | `GrokProviderConfig` |
@@ -53,6 +53,19 @@ const program = createProgram(provider);
 | `skills/` | `SkillRegistry` | Skill registration and lifecycle | `SkillRegistryConfig` |
 
 ## Common Patterns
+
+### Task Validation V2
+
+`TaskOperations` now covers both immediate public completion and reviewed public completion.
+
+- `configureTaskValidation()` enables creator review, validator quorum, or external attestation for an open public task
+- `submitTaskResult()` records a reviewed submission without settling escrow immediately
+- `acceptTaskResult()`, `rejectTaskResult()`, and `autoAcceptTaskResult()` resolve creator-review tasks
+- `validateTaskResult()` records validator-quorum votes and external attestations
+- `completeTask()` auto-routes manual-validation tasks into `submitTaskResult()` so runtime callers do not need to branch manually for that common path
+- `completeTaskPrivate()` remains the dedicated zk-backed private completion path
+
+Use [./architecture/flows/task-lifecycle.md](./architecture/flows/task-lifecycle.md) for the status transitions and sequence diagrams behind these helpers.
 
 ### Agent Lifecycle
 
