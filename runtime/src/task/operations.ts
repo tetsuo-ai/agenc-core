@@ -548,7 +548,7 @@ export class TaskOperations {
   }
 
   /**
-   * Submit a result for Task Validation V2 creator review.
+   * Submit a result for Task Validation V2 manual validation.
    *
    * @param taskPda - Task account PDA
    * @param task - The on-chain task data
@@ -1073,7 +1073,7 @@ export class TaskOperations {
 
     if (isManualValidationTask(task)) {
       this.logger.info(
-        `Task ${taskPda.toBase58()} requires creator review; routing to submitTaskResult`,
+        `Task ${taskPda.toBase58()} requires manual validation; routing to submitTaskResult`,
       );
       const submission = await this.submitTaskResult(
         taskPda,

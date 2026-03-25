@@ -1,81 +1,120 @@
 # Task Lifecycle Flow
 
-Tasks in AgenC progress through a well-defined lifecycle from creation to completion or cancellation. The task creator deposits an escrow (SOL or SPL tokens) when creating the task. Workers can claim open tasks matching their capabilities, execute them, and submit proofs (public or private) to receive rewards. At each transition, events are emitted for off-chain monitoring. The task escrow is managed on-chain via a PDA, ensuring trustless reward distribution.
+Tasks in AgenC now have three completion paths:
 
-## Happy Path Sequence
+- immediate public settlement
+- reviewed public settlement through Task Validation V2
+- private zk-backed settlement
+
+The creator still funds escrow at task creation time, workers still claim tasks the same way, and off-chain monitoring still follows emitted events. What changes is the way a worker result is resolved after execution.
+
+## Standard Public Completion
 
 ```mermaid
 sequenceDiagram
     participant Creator
-    participant SDK
+    participant Runtime
     participant Program
     participant Escrow
     participant Worker
     participant EventMonitor
 
-    Creator->>SDK: createTask(params)
-    SDK->>Program: create_task
+    Creator->>Runtime: createTask(params)
+    Runtime->>Program: create_task
     Program->>Escrow: Initialize escrow PDA
-    Program->>Escrow: Transfer reward (SOL/SPL)
-    Program->>EventMonitor: Emit TaskCreated event
-    Program-->>SDK: Task PDA created
+    Program->>Escrow: Transfer reward
+    Program->>EventMonitor: Emit TaskCreated
+    Program-->>Runtime: Task PDA created
 
-    Worker->>SDK: claimTask(taskPda)
-    SDK->>Program: claim_task
-    Program->>Program: Validate capabilities
-    Program->>Program: Check claim limits
-    Program->>EventMonitor: Emit TaskClaimed event
-    Program-->>SDK: Claim PDA created
+    Worker->>Runtime: claimTask(taskPda)
+    Runtime->>Program: claim_task
+    Program->>EventMonitor: Emit TaskClaimed
+    Program-->>Runtime: Claim PDA created
 
     Worker->>Worker: Execute task locally
-    Worker->>SDK: completeTask(proof)
-    SDK->>Program: complete_task
-    Program->>Program: Verify proof
+    Worker->>Runtime: completeTask(...)
+    Runtime->>Program: complete_task
     Program->>Escrow: Transfer reward to worker
-    Program->>Program: Update reputation
-    Program->>EventMonitor: Emit TaskCompleted event
-    Program-->>SDK: Task marked completed
+    Program->>Program: Update reputation and counts
+    Program->>EventMonitor: Emit TaskCompleted
+    Program-->>Runtime: Task marked completed
 ```
 
-## Alternate Paths
+## Reviewed Public Completion
 
-### Private Completion
+```mermaid
+sequenceDiagram
+    participant Creator
+    participant Runtime
+    participant Program
+    participant Worker
+    participant Reviewer
+    participant EventMonitor
+
+    Creator->>Runtime: configureTaskValidation(taskPda, mode)
+    Runtime->>Program: configure_task_validation
+    Program->>EventMonitor: Emit TaskValidationConfigured
+
+    Worker->>Runtime: claimTask(taskPda)
+    Runtime->>Program: claim_task
+    Program->>EventMonitor: Emit TaskClaimed
+
+    Worker->>Worker: Execute task locally
+    Worker->>Runtime: completeTask(...)
+    Runtime->>Runtime: Detect manual-validation task
+    Runtime->>Program: submit_task_result
+    Program->>Program: Create or update TaskSubmission PDA
+    Program->>EventMonitor: Emit TaskResultSubmitted
+    Program-->>Runtime: Task enters PendingValidation
+
+    Reviewer->>Runtime: accept / reject / validate
+    Runtime->>Program: accept_task_result / reject_task_result / validate_task_result
+    Program->>EventMonitor: Emit acceptance, rejection, or vote events
+    Program-->>Runtime: Task settles or reopens
+```
+
+Notes:
+
+- creator-review tasks can also use `auto_accept_task_result` after the review window elapses
+- rejected submissions release the worker claim slot and may reopen the task
+- validator-quorum and external-attestation modes resolve through `validate_task_result`
+
+## Private Completion
 
 ```mermaid
 sequenceDiagram
     participant Worker
-    participant SDK
+    participant Runtime
     participant ProofEngine
     participant Program
     participant Verifier
 
     Worker->>ProofEngine: Generate ZK proof
-    ProofEngine->>ProofEngine: RISC Zero zkVM guest execution
-    ProofEngine-->>Worker: Groth16 proof (256 bytes)
-    Worker->>SDK: completeTaskPrivate(proof)
-    SDK->>Program: complete_task_private
+    ProofEngine->>ProofEngine: Execute zkVM guest
+    ProofEngine-->>Worker: Proof payload
+    Worker->>Runtime: completeTaskPrivate(...)
+    Runtime->>Program: complete_task_private
     Program->>Verifier: CPI verify_proof
     Verifier-->>Program: Proof valid
     Program->>Program: Create nullifier PDA
     Program->>Program: Transfer reward
-    Program-->>SDK: Private completion success
+    Program-->>Runtime: Private completion success
 ```
 
-### Cancellation
+## Cancellation
 
 ```mermaid
 sequenceDiagram
     participant Creator
-    participant SDK
+    participant Runtime
     participant Program
     participant Escrow
 
-    Creator->>SDK: cancelTask(taskPda)
-    SDK->>Program: cancel_task
-    Program->>Program: Check no completions
-    Program->>Escrow: Refund to creator
-    Program->>Program: Update status to Cancelled
-    Program-->>SDK: Task cancelled
+    Creator->>Runtime: cancelTask(taskPda)
+    Runtime->>Program: cancel_task
+    Program->>Program: Check cancellation preconditions
+    Program->>Escrow: Refund creator
+    Program-->>Runtime: Task cancelled
 ```
 
 ## Task State Machine
@@ -85,15 +124,26 @@ stateDiagram-v2
     [*] --> Open: create_task
     Open --> InProgress: claim_task
     Open --> Cancelled: cancel_task
-    InProgress --> PendingValidation: complete_task (competitive)
-    InProgress --> Completed: complete_task (exclusive)
+
+    InProgress --> Completed: complete_task
     InProgress --> Completed: complete_task_private
-    InProgress --> Cancelled: cancel_task (no claims)
+    InProgress --> PendingValidation: submit_task_result
     InProgress --> Disputed: initiate_dispute
-    PendingValidation --> Completed: validation success
+
+    PendingValidation --> PendingValidation: submit_task_result (resubmit)
+    PendingValidation --> Completed: accept_task_result
+    PendingValidation --> Completed: auto_accept_task_result
+    PendingValidation --> Completed: validate_task_result (approval quorum)
+    PendingValidation --> InProgress: reject_task_result (other claims remain)
+    PendingValidation --> Open: reject_task_result (no active claims remain)
+    PendingValidation --> InProgress: validate_task_result (rejection quorum, other claims remain)
+    PendingValidation --> Open: validate_task_result (rejection quorum, no active claims remain)
+    PendingValidation --> Disputed: initiate_dispute
+
     Completed --> Disputed: initiate_dispute
-    Disputed --> Completed: resolve_dispute (approve)
+    Disputed --> Completed: resolve_dispute (approve / complete)
     Disputed --> Cancelled: resolve_dispute (refund)
+
     Completed --> [*]
     Cancelled --> [*]
 ```
@@ -102,28 +152,25 @@ stateDiagram-v2
 
 | Error Code | Condition | Recovery |
 |------------|-----------|----------|
-| `TaskNotOpen` | Attempting to claim non-open task | Check task status before claiming |
-| `TaskFullyClaimed` | Max workers reached | Wait for claims to expire or task completion |
-| `TaskExpired` | Deadline passed | Cannot recover; task must be cancelled |
-| `CompetitiveTaskAlreadyWon` | Trying to complete already-completed competitive task | Check completions count before submission |
-| `InsufficientFunds` | Creator balance < reward + fees | Fund account before task creation |
-| `CapabilityMismatch` | Worker lacks required capabilities | Only claim tasks matching agent capabilities |
-| `InvalidProofData` | Proof hash mismatch or invalid format | Regenerate proof with correct inputs |
+| `TaskNotOpen` | Attempting to claim a non-open task | Fetch task state before claiming |
+| `TaskExpired` | Deadline passed before submission or completion | Cancel or dispute according to task state |
+| `TaskValidationConfigRequired` | Manual-validation instruction used on a non-reviewed task | Configure validation first or use normal completion |
+| `TaskNotPendingValidation` | Review instruction called before submission | Submit a result first |
+| `SubmissionAlreadyPending` | Worker tries to submit while the previous round is still under review | Resolve or reject the active round first |
+| `ReviewWindowNotElapsed` | Auto-accept attempted too early | Wait until `review_deadline_at` |
+| `ClaimExpired` | Worker submits after claim expiry | Reclaim the task or reopen it through rejection / expiry |
+| `InvalidProofData` | Public or private payload is malformed | Regenerate the proof or payload |
 
 ## Code References
 
 | Component | File Path | Key Functions |
 |-----------|-----------|---------------|
-| Task Creation | `programs/agenc-coordination/src/instructions/create_task.rs` | `handler()`, `init_task_fields()` |
-| Task Claiming | `programs/agenc-coordination/src/instructions/claim_task.rs` | `handler()`, rate limit checks |
-| Public Completion | `programs/agenc-coordination/src/instructions/complete_task.rs` | `handler()`, reward distribution |
-| Private Completion | `programs/agenc-coordination/src/instructions/complete_task_private.rs` | `handler()`, ZK verification |
-| Cancellation | `programs/agenc-coordination/src/instructions/cancel_task.rs` | `handler()`, refund logic |
-| SDK Task Ops | `@tetsuo-ai/sdk` (`tetsuo-ai/agenc-sdk`) | `createTask()`, `claimTask()`, `completeTask()` |
-| Runtime Task Ops | `runtime/src/task/operations.ts` | `TaskOperations` class, query helpers |
-
-## Related Issues
-
-- #1053: Gateway infrastructure for task submission and monitoring
-- #1104: Reputation integration with task completion metrics
-- #1076: Execution sandboxing for secure task execution
+| Task Creation | `programs/agenc-coordination/src/instructions/create_task.rs` | `handler()`, task initialization |
+| Task Claiming | `programs/agenc-coordination/src/instructions/claim_task.rs` | `handler()`, capability and rate-limit checks |
+| Validation Config | `programs/agenc-coordination/src/instructions/configure_task_validation.rs` | `handler()` |
+| Submission | `programs/agenc-coordination/src/instructions/submit_task_result.rs` | `handler()` |
+| Creator Review | `programs/agenc-coordination/src/instructions/accept_task_result.rs`, `reject_task_result.rs`, `auto_accept_task_result.rs` | settlement and rejection paths |
+| Validator / Attestor Review | `programs/agenc-coordination/src/instructions/validate_task_result.rs` | quorum and attestation flow |
+| Private Completion | `programs/agenc-coordination/src/instructions/complete_task_private.rs` | `handler()`, zk verification |
+| Runtime Task Ops | `runtime/src/task/operations.ts` | `TaskOperations`, manual-review auto-routing |
+| SDK Task Ops | `agenc-sdk/src/tasks.ts` | explicit completion and review helpers |

@@ -24,6 +24,18 @@ External builders should use:
 - `@tetsuo-ai/protocol` for released protocol artifacts
 - `@tetsuo-ai/plugin-kit` for approved plugin and adapter development
 
+## Task Validation V2
+
+The runtime understands the reviewed public-task flow introduced in protocol Task Validation V2.
+
+- `TaskOperations.completeTask()` still completes ordinary public tasks directly
+- when a task is configured for manual validation, `completeTask()` routes to `submitTaskResult()` instead of sending `complete_task`
+- creators, validators, or attestors then use the explicit review helpers:
+  `acceptTaskResult()`, `rejectTaskResult()`, `autoAcceptTaskResult()`, or `validateTaskResult()`
+- private tasks remain on `completeTaskPrivate()`
+
+Use [../docs/RUNTIME_API.md](../docs/RUNTIME_API.md) for the runtime-side API contract and [../docs/architecture/flows/task-lifecycle.md](../docs/architecture/flows/task-lifecycle.md) for the lifecycle diagrams.
+
 ## Internal Development
 
 ```bash
