@@ -45,6 +45,10 @@ export default defineConfig({
       'child_process',
       'worker_threads',
       'node:*',
+      // Runtime exposes SQLite-backed features behind lazy loading. Keep the
+      // native binding external so MCP can bundle against @tetsuo-ai/runtime
+      // without requiring better-sqlite3 to install on every build host.
+      'better-sqlite3',
       // Keep browser automation internals external to avoid bundling optional
       // playwright-core/chromium-bidi dependency trees into MCP.
       'playwright',
