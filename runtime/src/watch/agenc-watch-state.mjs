@@ -160,6 +160,8 @@ export function createWatchState({
     composerHistory: [],
     composerHistoryIndex: -1,
     composerHistoryDraft: "",
+    composerPastedRanges: [],
+    composerPasteSequence: 0,
     transcriptScrollOffset: 0,
     transcriptFollowMode: true,
     detailScrollOffset: 0,

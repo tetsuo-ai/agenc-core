@@ -7,8 +7,11 @@ import {
   buildComposerRenderLine,
   getActiveFileTagQuery,
   getComposerFileTagSuggestions,
+  deleteComposerBackward,
+  deleteComposerForward,
   insertComposerText,
   isSlashComposerInput,
+  moveComposerCursorByCharacter,
   moveComposerCursorByWord,
   navigateComposerHistory,
   recordComposerHistory,
@@ -24,6 +27,8 @@ function makeState(input = "", cursor = input.length) {
     composerHistory: [],
     composerHistoryIndex: -1,
     composerHistoryDraft: "",
+    composerPastedRanges: [],
+    composerPasteSequence: 0,
   };
 }
 
@@ -103,6 +108,47 @@ test("buildComposerRenderLine keeps the cursor inside the visible window", () =>
   assert.equal(rendered.cursorRow, 1);
 });
 
+test("buildComposerRenderLine collapses pasted ranges into placeholder summaries", () => {
+  const state = makeState("before ");
+  insertComposerText(state, "alpha\nbeta\nafter", { markPasted: true });
+
+  const rendered = buildComposerRenderLine({
+    input: state.composerInput,
+    cursor: state.composerCursor,
+    prompt: "> ",
+    width: 40,
+    visibleLength: (value) => value.length,
+    pastedRanges: state.composerPastedRanges,
+  });
+
+  assert.equal(rendered.line, "> before [Pasted text #1 +2 lines]");
+  assert.equal(rendered.cursorColumn, 35);
+  assert.equal(rendered.cursorRow, 0);
+});
+
+test("cursor movement and deletion treat pasted placeholders as atomic blocks", () => {
+  const backwardState = makeState("before ");
+  insertComposerText(backwardState, "alpha\nbeta", { markPasted: true });
+
+  moveComposerCursorByCharacter(backwardState, -1);
+  assert.equal(backwardState.composerCursor, 7);
+
+  moveComposerCursorByCharacter(backwardState, 1);
+  assert.equal(backwardState.composerCursor, "before alpha\nbeta".length);
+
+  assert.equal(deleteComposerBackward(backwardState), true);
+  assert.equal(backwardState.composerInput, "before ");
+  assert.deepEqual(backwardState.composerPastedRanges, []);
+
+  const forwardState = makeState("before ");
+  insertComposerText(forwardState, "alpha\nbeta", { markPasted: true });
+  forwardState.composerCursor = 7;
+
+  assert.equal(deleteComposerForward(forwardState), true);
+  assert.equal(forwardState.composerInput, "before ");
+  assert.deepEqual(forwardState.composerPastedRanges, []);
+});
+
 test("recordComposerHistory and navigateComposerHistory preserve the draft input", () => {
   const state = makeState("draft");
   recordComposerHistory(state, "first");
@@ -144,4 +190,5 @@ test("insertComposerText, setComposerInputValue, moveComposerCursorByWord, and r
   resetComposerState(state);
   assert.equal(state.composerInput, "");
   assert.equal(state.composerCursor, 0);
+  assert.deepEqual(state.composerPastedRanges, []);
 });

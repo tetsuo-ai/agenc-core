@@ -3,11 +3,147 @@ import { matchModelNames } from "./agenc-watch-helpers.mjs";
 
 const TOKEN_BOUNDARY_RE = /[\s([<{,;"']/;
 const TOKEN_TERMINATOR_RE = /[\s)\]}>,;"']/;
+const LINE_BREAK_RE = /\r\n|\n|\r/g;
 
 function clampCursor(input, cursor) {
   const value = String(input ?? "");
   const normalizedCursor = Number.isFinite(Number(cursor)) ? Number(cursor) : value.length;
   return Math.max(0, Math.min(value.length, normalizedCursor));
+}
+
+function normalizeComposerPastedRanges(state, inputLength = currentComposerInput(state).length) {
+  const ranges = Array.isArray(state?.composerPastedRanges)
+    ? state.composerPastedRanges
+        .filter((range) =>
+          range &&
+          Number.isInteger(range.start) &&
+          Number.isInteger(range.end) &&
+          typeof range.summary === "string" &&
+          range.summary.length > 0 &&
+          range.start >= 0 &&
+          range.end > range.start &&
+          range.end <= inputLength,
+        )
+        .sort((left, right) => left.start - right.start)
+    : [];
+  state.composerPastedRanges = ranges;
+  return ranges;
+}
+
+function clearComposerPastedRanges(state, { resetSequence = false } = {}) {
+  state.composerPastedRanges = [];
+  if (resetSequence) {
+    state.composerPasteSequence = 0;
+  }
+}
+
+function findComposerPastedRangeAtCursor(
+  ranges,
+  cursor,
+  { includeStart = false, includeEnd = false } = {},
+) {
+  return (
+    ranges.find((range) => {
+      const startsBeforeCursor = includeStart
+        ? cursor >= range.start
+        : cursor > range.start;
+      const endsAfterCursor = includeEnd
+        ? cursor <= range.end
+        : cursor < range.end;
+      return startsBeforeCursor && endsAfterCursor;
+    }) ?? null
+  );
+}
+
+function deleteComposerRange(
+  state,
+  start,
+  end,
+  { nextCursor = start } = {},
+) {
+  const input = currentComposerInput(state);
+  const clampedStart = clampCursor(input, start);
+  const clampedEnd = clampCursor(input, end);
+  if (clampedEnd <= clampedStart) {
+    return false;
+  }
+
+  const nextValue = input.slice(0, clampedStart) + input.slice(clampedEnd);
+  const deletedLength = clampedEnd - clampedStart;
+  const nextRanges = [];
+  for (const range of normalizeComposerPastedRanges(state, input.length)) {
+    if (range.end <= clampedStart) {
+      nextRanges.push(range);
+      continue;
+    }
+    if (range.start >= clampedEnd) {
+      nextRanges.push({
+        ...range,
+        start: range.start - deletedLength,
+        end: range.end - deletedLength,
+      });
+    }
+  }
+
+  state.composerInput = nextValue;
+  state.composerCursor = clampCursor(nextValue, nextCursor);
+  state.composerHistoryIndex = -1;
+  state.composerPastedRanges = nextRanges;
+  return true;
+}
+
+function countTextLines(value) {
+  if (!value) return 1;
+  return String(value).split(LINE_BREAK_RE).length;
+}
+
+function createComposerPasteSummary(pasteId, text) {
+  const lineCount = countTextLines(text);
+  if (lineCount > 1) {
+    return `[Pasted text #${pasteId} +${lineCount - 1} lines]`;
+  }
+  return `[Pasted text #${pasteId}]`;
+}
+
+function mapComposerDisplayValue({ input, cursor, pastedRanges }) {
+  const value = String(input ?? "");
+  const clampedCursor = clampCursor(value, cursor);
+  const ranges = Array.isArray(pastedRanges)
+    ? pastedRanges
+    : [];
+  if (ranges.length === 0) {
+    return {
+      displayInput: value,
+      displayCursor: clampedCursor,
+    };
+  }
+
+  let displayInput = "";
+  let rawIndex = 0;
+  let displayCursor = null;
+
+  for (const range of ranges) {
+    const prefix = value.slice(rawIndex, range.start);
+    displayInput += prefix;
+    if (displayCursor === null && clampedCursor <= range.start) {
+      displayCursor = displayInput.length - (range.start - clampedCursor);
+    }
+    displayInput += range.summary;
+    if (displayCursor === null && clampedCursor <= range.end) {
+      displayCursor = displayInput.length;
+    }
+    rawIndex = range.end;
+  }
+
+  displayInput += value.slice(rawIndex);
+  if (displayCursor === null) {
+    displayCursor = displayInput.length - (value.length - clampedCursor);
+  }
+
+  return {
+    displayInput,
+    displayCursor,
+  };
 }
 
 function sliceActiveToken(input, cursor) {
@@ -81,30 +217,95 @@ export function resetComposerState(state) {
   state.composerCursor = 0;
   state.composerHistoryIndex = -1;
   state.composerHistoryDraft = "";
+  clearComposerPastedRanges(state, { resetSequence: true });
 }
 
 export function setComposerInputValue(state, nextValue) {
   state.composerInput = String(nextValue ?? "");
   state.composerCursor = clampCursor(state.composerInput, state.composerCursor);
+  clearComposerPastedRanges(state);
 }
 
-export function insertComposerText(state, text) {
+export function insertComposerText(state, text, { markPasted = false } = {}) {
   if (!text) {
     return;
   }
   const value = currentComposerInput(state);
   const cursor = clampCursor(value, state.composerCursor);
-  state.composerInput =
+  const nextValue =
     value.slice(0, cursor) +
     text +
     value.slice(cursor);
+  const nextRanges = [];
+  for (const range of normalizeComposerPastedRanges(state, value.length)) {
+    if (cursor <= range.start) {
+      nextRanges.push({
+        ...range,
+        start: range.start + text.length,
+        end: range.end + text.length,
+      });
+      continue;
+    }
+    if (cursor >= range.end) {
+      nextRanges.push(range);
+      continue;
+    }
+  }
+  state.composerInput =
+    nextValue;
   state.composerCursor = cursor + text.length;
+  if (markPasted) {
+    const pasteId = Number.isInteger(state.composerPasteSequence)
+      ? state.composerPasteSequence + 1
+      : 1;
+    state.composerPasteSequence = pasteId;
+    nextRanges.push({
+      id: pasteId,
+      start: cursor,
+      end: cursor + text.length,
+      summary: createComposerPasteSummary(pasteId, text),
+    });
+    nextRanges.sort((left, right) => left.start - right.start);
+  }
+  state.composerPastedRanges = nextRanges;
+}
+
+export function moveComposerCursorByCharacter(state, direction) {
+  const input = currentComposerInput(state);
+  const cursor = clampCursor(input, state.composerCursor);
+  const ranges = normalizeComposerPastedRanges(state, input.length);
+  if (direction < 0) {
+    if (cursor === 0) {
+      return;
+    }
+    const activeRange = findComposerPastedRangeAtCursor(ranges, cursor, {
+      includeEnd: true,
+    });
+    state.composerCursor = activeRange ? activeRange.start : cursor - 1;
+    return;
+  }
+
+  if (cursor >= input.length) {
+    return;
+  }
+  const activeRange = findComposerPastedRangeAtCursor(ranges, cursor, {
+    includeStart: true,
+  });
+  state.composerCursor = activeRange ? activeRange.end : cursor + 1;
 }
 
 export function moveComposerCursorByWord(state, direction) {
   const input = currentComposerInput(state);
   const cursor = clampCursor(input, state.composerCursor);
+  const ranges = normalizeComposerPastedRanges(state, input.length);
   if (direction < 0) {
+    const activeRange = findComposerPastedRangeAtCursor(ranges, cursor, {
+      includeEnd: true,
+    });
+    if (activeRange) {
+      state.composerCursor = activeRange.start;
+      return;
+    }
     let next = cursor;
     while (next > 0 && /\s/.test(input[next - 1])) {
       next -= 1;
@@ -113,6 +314,14 @@ export function moveComposerCursorByWord(state, direction) {
       next -= 1;
     }
     state.composerCursor = next;
+    return;
+  }
+
+  const activeRange = findComposerPastedRangeAtCursor(ranges, cursor, {
+    includeStart: true,
+  });
+  if (activeRange) {
+    state.composerCursor = activeRange.end;
     return;
   }
 
@@ -134,6 +343,47 @@ export function deleteComposerToLineEnd(state) {
   }
   state.composerInput = input.slice(0, cursor);
   state.composerHistoryIndex = -1;
+  clearComposerPastedRanges(state);
+}
+
+export function deleteComposerBackward(state) {
+  const input = currentComposerInput(state);
+  const cursor = clampCursor(input, state.composerCursor);
+  if (cursor === 0) {
+    return false;
+  }
+  const ranges = normalizeComposerPastedRanges(state, input.length);
+  const activeRange = findComposerPastedRangeAtCursor(ranges, cursor, {
+    includeEnd: true,
+  });
+  if (activeRange) {
+    return deleteComposerRange(state, activeRange.start, activeRange.end, {
+      nextCursor: activeRange.start,
+    });
+  }
+  return deleteComposerRange(state, cursor - 1, cursor, {
+    nextCursor: cursor - 1,
+  });
+}
+
+export function deleteComposerForward(state) {
+  const input = currentComposerInput(state);
+  const cursor = clampCursor(input, state.composerCursor);
+  if (cursor >= input.length) {
+    return false;
+  }
+  const ranges = normalizeComposerPastedRanges(state, input.length);
+  const activeRange = findComposerPastedRangeAtCursor(ranges, cursor, {
+    includeStart: true,
+  });
+  if (activeRange) {
+    return deleteComposerRange(state, activeRange.start, activeRange.end, {
+      nextCursor: activeRange.start,
+    });
+  }
+  return deleteComposerRange(state, cursor, cursor + 1, {
+    nextCursor: cursor,
+  });
 }
 
 export function navigateComposerHistory(state, direction) {
@@ -201,6 +451,7 @@ export function autocompleteSlashComposerInput(state, matchCommands) {
     const completed = `${leadingWhitespace}${commandToken} ${matches[0]}`;
     state.composerInput = completed;
     state.composerCursor = completed.length;
+    clearComposerPastedRanges(state);
     return true;
   }
 
@@ -211,17 +462,32 @@ export function autocompleteSlashComposerInput(state, matchCommands) {
   const completed = completeSlashToken(input, matches[0].name);
   state.composerInput = completed.input;
   state.composerCursor = completed.cursor;
+  clearComposerPastedRanges(state);
   return true;
 }
 
-export function buildComposerRenderLine({ input, cursor, prompt, width, visibleLength }) {
-  const value = String(input ?? "");
+export function buildComposerRenderLine({
+  input,
+  cursor,
+  prompt,
+  width,
+  visibleLength,
+  pastedRanges = [],
+}) {
+  const {
+    displayInput: value,
+    displayCursor,
+  } = mapComposerDisplayValue({
+    input,
+    cursor,
+    pastedRanges,
+  });
   const promptText = String(prompt ?? "");
   const promptWidth =
     typeof visibleLength === "function" ? visibleLength(promptText) : promptText.length;
   const lineWidth = Math.max(1, Number(width));
   const firstLineAvailable = Math.max(1, lineWidth - promptWidth);
-  const clampedCursor = clampCursor(value, cursor);
+  const clampedCursor = clampCursor(value, displayCursor);
 
   // Short input — single line (common fast path)
   if (value.length <= firstLineAvailable) {
@@ -304,5 +570,6 @@ export function autocompleteComposerFileTag(state, fileIndex, { limit = 8 } = {}
   state.composerInput = completed.input;
   state.composerCursor = completed.cursor;
   state.composerHistoryIndex = -1;
+  clearComposerPastedRanges(state);
   return true;
 }

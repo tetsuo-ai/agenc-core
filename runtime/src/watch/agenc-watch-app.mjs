@@ -59,11 +59,14 @@ import {
   autocompleteSlashComposerInput,
   buildComposerRenderLine,
   currentComposerInput,
+  deleteComposerBackward,
+  deleteComposerForward,
   deleteComposerToLineEnd,
   getActiveFileTagQuery,
   getComposerFileTagSuggestions,
   insertComposerText,
   isSlashComposerInput,
+  moveComposerCursorByCharacter,
   moveComposerCursorByWord,
   navigateComposerHistory,
   recordComposerHistory as rememberComposerHistory,
@@ -659,12 +662,24 @@ function resetComposer() {
   resetComposerState(watchState);
 }
 
-function insertComposerTextValue(text) {
-  insertComposerText(watchState, text);
+function insertComposerTextValue(text, options) {
+  insertComposerText(watchState, text, options);
 }
 
 function moveComposerCursor(direction) {
   moveComposerCursorByWord(watchState, direction);
+}
+
+function moveComposerCursorHorizontally(direction) {
+  moveComposerCursorByCharacter(watchState, direction);
+}
+
+function deleteComposerCharacterBackward() {
+  return deleteComposerBackward(watchState);
+}
+
+function deleteComposerCharacterForward() {
+  return deleteComposerForward(watchState);
 }
 
 function deleteComposerTail() {
@@ -689,6 +704,7 @@ function composerRenderLine(width) {
     prompt: promptLabel(),
     width,
     visibleLength,
+    pastedRanges: watchState.composerPastedRanges,
   });
 }
 
@@ -1273,8 +1289,11 @@ watchInputController = createWatchInputController({
   copyCurrentView,
   clearLiveTranscriptView,
   deleteComposerTail,
+  deleteComposerBackward: deleteComposerCharacterBackward,
+  deleteComposerForward: deleteComposerCharacterForward,
   autocompleteComposerInput,
   navigateComposer,
+  moveComposerCursorByCharacter: moveComposerCursorHorizontally,
   moveComposerCursorByWord: moveComposerCursor,
   insertComposerTextValue,
   dismissIntro,

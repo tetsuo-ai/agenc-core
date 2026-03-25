@@ -1,15 +1,15 @@
 export function buildAltScreenEnterSequence({ enableMouseTracking = true } = {}) {
   if (!enableMouseTracking) {
-    return "\x1b[?1049h\x1b[?25h";
+    return "\x1b[?1049h\x1b[?2004h\x1b[?25h";
   }
-  return "\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1007h\x1b[?25h";
+  return "\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1007h\x1b[?2004h\x1b[?25h";
 }
 
 export function buildAltScreenLeaveSequence({ enableMouseTracking = true } = {}) {
   if (!enableMouseTracking) {
-    return "\x1b[?25h\x1b[?1049l";
+    return "\x1b[?25h\x1b[?2004l\x1b[?1049l";
   }
-  return "\x1b[?25h\x1b[?1007l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1049l";
+  return "\x1b[?25h\x1b[?2004l\x1b[?1007l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1049l";
 }
 
 export function supportsTerminalHyperlinks({

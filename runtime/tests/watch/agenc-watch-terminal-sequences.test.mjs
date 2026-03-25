@@ -11,7 +11,9 @@ import {
 
 test("terminal sequences enable and disable alternate scroll alongside mouse tracking", () => {
   assert.match(buildAltScreenEnterSequence(), /\?1007h/);
+  assert.match(buildAltScreenEnterSequence(), /\?2004h/);
   assert.match(buildAltScreenLeaveSequence(), /\?1007l/);
+  assert.match(buildAltScreenLeaveSequence(), /\?2004l/);
 });
 
 test("parseMouseWheelSequence parses sgr wheel events", () => {

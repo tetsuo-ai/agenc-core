@@ -23,8 +23,11 @@ export function createWatchInputController(dependencies = {}) {
     copyCurrentView,
     clearLiveTranscriptView,
     deleteComposerTail,
+    deleteComposerBackward,
+    deleteComposerForward,
     autocompleteComposerInput,
     navigateComposer,
+    moveComposerCursorByCharacter,
     moveComposerCursorByWord,
     insertComposerTextValue,
     dismissIntro,
@@ -47,8 +50,11 @@ export function createWatchInputController(dependencies = {}) {
   assertFunction("copyCurrentView", copyCurrentView);
   assertFunction("clearLiveTranscriptView", clearLiveTranscriptView);
   assertFunction("deleteComposerTail", deleteComposerTail);
+  assertFunction("deleteComposerBackward", deleteComposerBackward);
+  assertFunction("deleteComposerForward", deleteComposerForward);
   assertFunction("autocompleteComposerInput", autocompleteComposerInput);
   assertFunction("navigateComposer", navigateComposer);
+  assertFunction("moveComposerCursorByCharacter", moveComposerCursorByCharacter);
   assertFunction("moveComposerCursorByWord", moveComposerCursorByWord);
   assertFunction("insertComposerTextValue", insertComposerTextValue);
   assertFunction("dismissIntro", dismissIntro);
@@ -59,6 +65,71 @@ export function createWatchInputController(dependencies = {}) {
   }
   assertFunction("setTransientStatus", setTransientStatus);
   assertFunction("scheduleRender", scheduleRender);
+  const BRACKETED_PASTE_START = "\x1b[200~";
+  const BRACKETED_PASTE_END = "\x1b[201~";
+  const PASTE_SUMMARY_CHAR_THRESHOLD = 120;
+  let pendingBracketedPaste = null;
+
+  function normalizePastedText(text) {
+    return String(text ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  }
+
+  function shouldSummarizePastedText(text) {
+    const normalized = normalizePastedText(text);
+    if (!normalized) {
+      return false;
+    }
+    const lineCount = normalized.split("\n").length;
+    return lineCount > 1 || normalized.length >= PASTE_SUMMARY_CHAR_THRESHOLD;
+  }
+
+  function insertPastedText(text) {
+    const normalized = normalizePastedText(text);
+    if (!normalized) {
+      return false;
+    }
+    if (!watchState.introDismissed) {
+      dismissIntro();
+    }
+    insertComposerTextValue(normalized, {
+      markPasted: shouldSummarizePastedText(normalized),
+    });
+    watchState.composerHistoryIndex = -1;
+    return true;
+  }
+
+  function consumeBracketedPaste(input, index) {
+    const source = String(input ?? "");
+    if (
+      pendingBracketedPaste === null &&
+      !source.startsWith(BRACKETED_PASTE_START, index)
+    ) {
+      return null;
+    }
+
+    let scanIndex = index;
+    if (pendingBracketedPaste === null) {
+      pendingBracketedPaste = "";
+      scanIndex += BRACKETED_PASTE_START.length;
+    }
+
+    const endIndex = source.indexOf(BRACKETED_PASTE_END, scanIndex);
+    if (endIndex === -1) {
+      pendingBracketedPaste += source.slice(scanIndex);
+      return {
+        nextIndex: source.length,
+        didMutate: false,
+      };
+    }
+
+    pendingBracketedPaste += source.slice(scanIndex, endIndex);
+    const didMutate = insertPastedText(pendingBracketedPaste);
+    pendingBracketedPaste = null;
+    return {
+      nextIndex: endIndex + BRACKETED_PASTE_END.length,
+      didMutate,
+    };
+  }
 
   function submitComposerInput() {
     const value = watchState.composerInput.trim();
@@ -84,21 +155,12 @@ export function createWatchInputController(dependencies = {}) {
       { seq: "\x1b[5~", run: () => scrollCurrentViewBy(12) },
       { seq: "\x1b[6~", run: () => scrollCurrentViewBy(-12) },
       { seq: "\x1b[3~", run: () => {
-        if (watchState.composerCursor < watchState.composerInput.length) {
-          watchState.composerInput =
-            watchState.composerInput.slice(0, watchState.composerCursor) +
-            watchState.composerInput.slice(watchState.composerCursor + 1);
-          watchState.composerHistoryIndex = -1;
-        }
+        deleteComposerForward();
       } },
       { seq: "\x1b[A", run: () => navigateComposer(-1) },
       { seq: "\x1b[B", run: () => navigateComposer(1) },
-      { seq: "\x1b[D", run: () => {
-        watchState.composerCursor = Math.max(0, watchState.composerCursor - 1);
-      } },
-      { seq: "\x1b[C", run: () => {
-        watchState.composerCursor = Math.min(watchState.composerInput.length, watchState.composerCursor + 1);
-      } },
+      { seq: "\x1b[D", run: () => moveComposerCursorByCharacter(-1) },
+      { seq: "\x1b[C", run: () => moveComposerCursorByCharacter(1) },
       { seq: "\x1b[H", run: () => {
         watchState.composerCursor = 0;
       } },
@@ -146,6 +208,13 @@ export function createWatchInputController(dependencies = {}) {
         }
         didMutate = true;
         index += mouseWheel.length;
+        continue;
+      }
+
+      const bracketedPaste = consumeBracketedPaste(input, index);
+      if (bracketedPaste) {
+        didMutate = didMutate || bracketedPaste.didMutate;
+        index = bracketedPaste.nextIndex;
         continue;
       }
 
@@ -212,13 +281,7 @@ export function createWatchInputController(dependencies = {}) {
         continue;
       }
       if (char === "\x7f" || char === "\b") {
-        if (watchState.composerCursor > 0) {
-          watchState.composerInput =
-            watchState.composerInput.slice(0, watchState.composerCursor - 1) +
-            watchState.composerInput.slice(watchState.composerCursor);
-          watchState.composerCursor -= 1;
-          watchState.composerHistoryIndex = -1;
-        }
+        deleteComposerBackward();
         didMutate = true;
         index += 1;
         continue;

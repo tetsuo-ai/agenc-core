@@ -2,6 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { createWatchInputController } from "../../src/watch/agenc-watch-input.mjs";
+import {
+  deleteComposerBackward as deleteComposerBackwardState,
+  deleteComposerForward as deleteComposerForwardState,
+  deleteComposerToLineEnd as deleteComposerToLineEndState,
+  insertComposerText,
+  moveComposerCursorByCharacter as moveComposerCursorByCharacterState,
+} from "../../src/watch/agenc-watch-composer.mjs";
 
 function createInputHarness(overrides = {}) {
   const watchState = {
@@ -11,6 +18,8 @@ function createInputHarness(overrides = {}) {
     expandedEventId: null,
     detailScrollOffset: 0,
     introDismissed: false,
+    composerPastedRanges: [],
+    composerPasteSequence: 0,
   };
   const calls = [];
   const controller = createWatchInputController({
@@ -40,13 +49,26 @@ function createInputHarness(overrides = {}) {
       calls.push({ type: "clear" });
     },
     deleteComposerTail() {
+      deleteComposerToLineEndState(watchState);
       calls.push({ type: "deleteTail" });
+    },
+    deleteComposerBackward() {
+      deleteComposerBackwardState(watchState);
+      calls.push({ type: "deleteBackward" });
+    },
+    deleteComposerForward() {
+      deleteComposerForwardState(watchState);
+      calls.push({ type: "deleteForward" });
     },
     autocompleteComposerInput() {
       calls.push({ type: "autocomplete" });
     },
     navigateComposer(direction) {
       calls.push({ type: "navigate", direction });
+    },
+    moveComposerCursorByCharacter(direction) {
+      moveComposerCursorByCharacterState(watchState, direction);
+      calls.push({ type: "moveCharacter", direction });
     },
     moveComposerCursorByWord(direction) {
       calls.push({ type: "moveWord", direction });
@@ -58,13 +80,9 @@ function createInputHarness(overrides = {}) {
       watchState.introDismissed = true;
       calls.push({ type: "dismissIntro" });
     },
-    insertComposerTextValue(char) {
-      watchState.composerInput =
-        watchState.composerInput.slice(0, watchState.composerCursor) +
-        char +
-        watchState.composerInput.slice(watchState.composerCursor);
-      watchState.composerCursor += char.length;
-      calls.push({ type: "insert", char });
+    insertComposerTextValue(char, options = {}) {
+      insertComposerText(watchState, char, options);
+      calls.push({ type: "insert", char, options });
     },
     resetComposer() {
       watchState.composerInput = "";
@@ -166,4 +184,43 @@ test("input controller ignores diff shortcuts outside diff detail mode", () => {
 
   assert.equal(calls.some((entry) => entry.type === "jumpDiffHunk"), false);
   assert.equal(watchState.composerInput, "hello");
+});
+
+test("input controller inserts bracketed paste text without auto-submitting it", () => {
+  const { controller, watchState, calls } = createInputHarness();
+
+  controller.handleTerminalInput("\x1b[200~alpha\r\nbeta\x1b[201~");
+
+  assert.equal(watchState.composerInput, "alpha\nbeta");
+  assert.equal(
+    calls.some((entry) => entry.type === "submit"),
+    false,
+  );
+  assert.ok(
+    calls.some((entry) => entry.type === "insert" && entry.options?.markPasted === true),
+  );
+});
+
+test("input controller backspace deletes an entire pasted placeholder block", () => {
+  const { controller, watchState } = createInputHarness();
+
+  controller.handleTerminalInput("\x1b[200~alpha\r\nbeta\x1b[201~");
+  controller.handleTerminalInput("\x7f");
+
+  assert.equal(watchState.composerInput, "");
+  assert.equal(watchState.composerCursor, 0);
+  assert.deepEqual(watchState.composerPastedRanges, []);
+});
+
+test("input controller delete removes an entire pasted placeholder block from its start", () => {
+  const { controller, watchState } = createInputHarness();
+
+  controller.handleTerminalInput("x");
+  controller.handleTerminalInput("\x1b[200~alpha\r\nbeta\x1b[201~");
+  controller.handleTerminalInput("\x1b[D");
+  controller.handleTerminalEscapeSequence("\x1b[3~", 0);
+
+  assert.equal(watchState.composerInput, "x");
+  assert.equal(watchState.composerCursor, 1);
+  assert.deepEqual(watchState.composerPastedRanges, []);
 });
