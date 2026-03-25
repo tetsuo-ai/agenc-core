@@ -1,11 +1,11 @@
-export function buildAltScreenEnterSequence({ enableMouseTracking = true } = {}) {
+export function buildAltScreenEnterSequence({ enableMouseTracking = false } = {}) {
   if (!enableMouseTracking) {
     return "\x1b[?1049h\x1b[?2004h\x1b[?25h";
   }
   return "\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1007h\x1b[?2004h\x1b[?25h";
 }
 
-export function buildAltScreenLeaveSequence({ enableMouseTracking = true } = {}) {
+export function buildAltScreenLeaveSequence({ enableMouseTracking = false } = {}) {
   if (!enableMouseTracking) {
     return "\x1b[?25h\x1b[?2004l\x1b[?1049l";
   }

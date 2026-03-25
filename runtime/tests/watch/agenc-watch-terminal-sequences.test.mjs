@@ -9,10 +9,23 @@ import {
   supportsTerminalHyperlinks,
 } from "../../src/watch/agenc-watch-terminal-sequences.mjs";
 
-test("terminal sequences enable and disable alternate scroll alongside mouse tracking", () => {
-  assert.match(buildAltScreenEnterSequence(), /\?1007h/);
+test("terminal sequences leave mouse tracking disabled by default", () => {
+  assert.doesNotMatch(buildAltScreenEnterSequence(), /\?1000h/);
+  assert.doesNotMatch(buildAltScreenEnterSequence(), /\?1002h/);
+  assert.doesNotMatch(buildAltScreenEnterSequence(), /\?1006h/);
+  assert.doesNotMatch(buildAltScreenEnterSequence(), /\?1007h/);
   assert.match(buildAltScreenEnterSequence(), /\?2004h/);
-  assert.match(buildAltScreenLeaveSequence(), /\?1007l/);
+  assert.doesNotMatch(buildAltScreenLeaveSequence(), /\?1000l/);
+  assert.doesNotMatch(buildAltScreenLeaveSequence(), /\?1002l/);
+  assert.doesNotMatch(buildAltScreenLeaveSequence(), /\?1006l/);
+  assert.doesNotMatch(buildAltScreenLeaveSequence(), /\?1007l/);
+  assert.match(buildAltScreenLeaveSequence(), /\?2004l/);
+});
+
+test("terminal sequences opt into alternate scroll and mouse tracking explicitly", () => {
+  assert.match(buildAltScreenEnterSequence({ enableMouseTracking: true }), /\?1007h/);
+  assert.match(buildAltScreenEnterSequence(), /\?2004h/);
+  assert.match(buildAltScreenLeaveSequence({ enableMouseTracking: true }), /\?1007l/);
   assert.match(buildAltScreenLeaveSequence(), /\?2004l/);
 });
 

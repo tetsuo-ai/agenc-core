@@ -264,7 +264,9 @@ const startupSplashMinMs = 1_500;
 const maxEvents = 140;
 const maxInlineChars = 220;
 const maxStoredBodyChars = 96_000;
-const enableMouseTracking = process.env.AGENC_WATCH_ENABLE_MOUSE !== "0";
+const enableMouseTracking = /^(1|true|yes|on)$/i.test(
+  String(process.env.AGENC_WATCH_ENABLE_MOUSE ?? ""),
+);
 const maxFeedPreviewLines = 3;
 const maxPreviewSourceLines = 160;
 const LIVE_EVENT_FILTERS = Object.freeze([
