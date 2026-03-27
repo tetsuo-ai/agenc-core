@@ -71,6 +71,10 @@ const VALID_LOG_LEVELS: ReadonlySet<string> = new Set([
   "warn",
   "error",
 ]);
+const VALID_LLM_USAGE_LOG_LEVELS: ReadonlySet<string> = new Set([
+  "debug",
+  "info",
+]);
 const VALID_CLI_OUTPUT_FORMATS: ReadonlySet<string> = new Set([
   "json",
   "jsonl",
@@ -2555,7 +2559,7 @@ export function validateGatewayConfig(obj: unknown): ValidationResult {
             requireOneOf(
               obj.logging.llmUsage.level,
               "logging.llmUsage.level",
-              ["debug", "info"] as const,
+              VALID_LLM_USAGE_LOG_LEVELS,
               errors,
             );
           }
