@@ -56,6 +56,7 @@ import {
   createTurnTraceId,
 } from "./daemon-trace.js";
 import type { ResolvedTraceLoggingConfig } from "./daemon-trace.js";
+import { resolveLlmUsageLoggingConfig } from "../llm/usage-logging.js";
 import { WebChatChannel } from "../channels/webchat/plugin.js";
 import { WorkspaceManager } from "./workspace.js";
 import {
@@ -1483,6 +1484,7 @@ export class DaemonManager {
           requiredCapabilities,
           contextProvider,
         ),
+      llmUsageLogging: resolveLlmUsageLoggingConfig(config.logging?.llmUsage),
       traceExecution: traceConfig.enabled,
       traceProviderPayloads:
         traceConfig.enabled && traceConfig.includeProviderPayloads,
@@ -2018,6 +2020,8 @@ export class DaemonManager {
 
     this._chatExecutor = createChatExecutor({
       providers,
+      logger: this.logger,
+      llmUsageLogging: resolveLlmUsageLoggingConfig(config.logging?.llmUsage),
       toolHandler: baseToolHandler,
       allowedTools: this.getAdvertisedToolNames(),
       skillInjector,
@@ -3480,6 +3484,10 @@ export class DaemonManager {
       this._llmProviders = providers;
       this._chatExecutor = createChatExecutor({
         providers,
+        logger: this.logger,
+        llmUsageLogging: resolveLlmUsageLoggingConfig(
+          newConfig.logging?.llmUsage,
+        ),
         toolHandler: this._baseToolHandler!,
         allowedTools: this.getAdvertisedToolNames(),
         skillInjector,

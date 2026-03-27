@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { ChatExecutor } from "../llm/chat-executor.js";
 import type { ChatExecutorResult } from "../llm/chat-executor.js";
+import type { LLMProvider } from "../llm/types.js";
 import type { MemoryBackend } from "../memory/types.js";
 import type { Logger } from "../utils/logger.js";
+import { resolveLlmUsageLoggingConfig } from "../llm/usage-logging.js";
 import { executeTextChannelTurn } from "./daemon-text-channel-turn.js";
 import {
   SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY,
@@ -69,6 +72,27 @@ function createResult(
     compacted: false,
     stopReason: "completed",
     ...overrides,
+  };
+}
+
+function createProvider(): LLMProvider {
+  return {
+    name: "grok",
+    chat: vi.fn(async () => ({
+      content: "reply",
+      toolCalls: [],
+      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+      model: "grok-test",
+      finishReason: "stop",
+    })),
+    chatStream: vi.fn(async () => ({
+      content: "reply",
+      toolCalls: [],
+      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+      model: "grok-test",
+      finishReason: "stop",
+    })),
+    healthCheck: vi.fn(async () => true),
   };
 }
 
@@ -233,5 +257,67 @@ describe("executeTextChannelTurn", () => {
 
     expect(sessionMgr.appendMessage).not.toHaveBeenCalled();
     expect(memoryBackend.addEntry).not.toHaveBeenCalled();
+  });
+
+  it("emits llm.call_usage logs for text turns when lightweight usage logging is enabled", async () => {
+    const logger = createLoggerStub();
+    const memoryBackend = createMemoryBackendStub();
+    const session = createSession();
+    const sessionMgr = {
+      appendMessage: vi.fn(),
+    } as any;
+    const chatExecutor = new ChatExecutor({
+      providers: [createProvider()],
+      logger,
+      llmUsageLogging: resolveLlmUsageLoggingConfig({
+        enabled: true,
+      }),
+    });
+
+    await executeTextChannelTurn({
+      logger,
+      channelName: "telegram",
+      msg: {
+        sessionId: "session:test",
+        senderId: "user-1",
+        channel: "telegram",
+        content: "hello",
+      },
+      session,
+      sessionMgr,
+      systemPrompt: "system prompt",
+      chatExecutor,
+      toolHandler: vi.fn() as any,
+      defaultMaxToolRounds: 3,
+      traceConfig: {
+        enabled: false,
+        includeHistory: true,
+        includeSystemPrompt: true,
+        includeToolArgs: true,
+        includeToolResults: true,
+        includeProviderPayloads: false,
+        maxChars: 20_000,
+      },
+      turnTraceId: "trace-usage-text",
+      memoryBackend,
+      buildToolRoutingDecision: () => undefined,
+      recordToolRoutingOutcome: vi.fn(),
+    });
+
+    expect(logger.info).toHaveBeenCalledWith(
+      "llm.call_usage",
+      expect.objectContaining({
+        event: "llm.call_usage",
+        sessionId: "session:test",
+        traceId: "trace-usage-text",
+        provider: "grok",
+        phase: "initial",
+      }),
+    );
+    const payload = (logger.info as ReturnType<typeof vi.fn>).mock.calls.find(
+      ([message]) => message === "llm.call_usage",
+    )?.[1];
+    expect(JSON.stringify(payload)).not.toContain("system prompt");
+    expect(JSON.stringify(payload)).not.toContain("reply");
   });
 });

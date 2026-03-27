@@ -69,6 +69,11 @@ import type {
   DelegationBanditSelection,
   DelegationTrajectorySink,
 } from "./delegation-learning.js";
+import type { Logger } from "../utils/logger.js";
+import type {
+  ChatRuntimeIdentifiers,
+  ResolvedLlmUsageLoggingConfig,
+} from "./usage-logging.js";
 import { deriveDelegationContextClusterId } from "./delegation-learning.js";
 import { RuntimeError, RuntimeErrorCodes } from "../types/errors.js";
 
@@ -165,6 +170,8 @@ export interface ChatExecuteParams {
   readonly runtimeContext?: {
     /** Authoritative workspace root for planning/execution when known. */
     readonly workspaceRoot?: string;
+    /** Stable runtime identifiers safe for lightweight observability. */
+    readonly identifiers?: ChatRuntimeIdentifiers;
   };
   /** Per-call tool handler — overrides the constructor handler for this call. */
   readonly toolHandler?: ToolHandler;
@@ -393,6 +400,10 @@ export interface ToolFailureCircuitBreakerConfig {
 export interface ChatExecutorConfig {
   /** Ordered providers — first is primary, rest are fallbacks. */
   readonly providers: readonly LLMProvider[];
+  /** Optional runtime logger for operational events. */
+  readonly logger?: Logger;
+  /** Optional per-call LLM usage logging policy. */
+  readonly llmUsageLogging?: ResolvedLlmUsageLoggingConfig;
   readonly toolHandler?: ToolHandler;
   readonly maxToolRounds?: number;
   readonly onStreamChunk?: StreamProgressCallback;
@@ -766,6 +777,7 @@ export interface ExecutionContext {
   readonly systemPrompt: string;
   readonly sessionId: string;
   readonly runtimeWorkspaceRoot?: string;
+  readonly runtimeIdentifiers?: ChatRuntimeIdentifiers;
   readonly signal?: AbortSignal;
   readonly activeToolHandler?: ToolHandler;
   readonly activeStreamCallback?: StreamProgressCallback;
@@ -902,6 +914,7 @@ export function buildDefaultExecutionContext(
     systemPrompt: params.systemPrompt,
     sessionId: params.sessionId,
     runtimeWorkspaceRoot: params.runtimeContext?.workspaceRoot,
+    runtimeIdentifiers: params.runtimeContext?.identifiers,
     signal: params.signal,
     activeToolHandler: params.toolHandler,
     activeStreamCallback: params.streamCallback,

@@ -731,6 +731,11 @@ export class VoiceBridge {
         history,
         systemPrompt: this.config.systemPrompt,
         sessionId,
+        runtimeContext: {
+          identifiers: {
+            traceId,
+          },
+        },
         toolHandler: delegationToolHandler,
         // No onStreamChunk — streaming LLM text to the voice overlay floods
         // it with hundreds of words the user can't read. Tool cards in the

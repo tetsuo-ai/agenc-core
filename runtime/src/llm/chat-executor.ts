@@ -145,6 +145,14 @@ import {
 import { ToolFailureCircuitBreaker } from "./tool-failure-circuit-breaker.js";
 import { compactHistoryIntoArtifactContext } from "./context-compaction.js";
 import { selectRelevantArtifactRefs } from "./context-pruning.js";
+import {
+  buildLlmCallUsageLogPayload,
+  emitLlmCallUsageLog,
+  resolveLlmUsageLoggingConfig,
+  shouldEmitLlmUsageLog,
+  type ResolvedLlmUsageLoggingConfig,
+} from "./usage-logging.js";
+import type { Logger } from "../utils/logger.js";
 
 function shouldUseSessionStatefulContinuationForPhase(
   phase: ChatCallUsageRecord["phase"],
@@ -342,6 +350,8 @@ export type {
  */
 export class ChatExecutor {
   private readonly providers: readonly LLMProvider[];
+  private readonly logger?: Logger;
+  private readonly llmUsageLogging: ResolvedLlmUsageLoggingConfig;
   private readonly toolHandler?: ToolHandler;
   private readonly maxToolRounds: number;
   private readonly onStreamChunk?: StreamProgressCallback;
@@ -393,6 +403,9 @@ export class ChatExecutor {
       throw new Error("ChatExecutor requires at least one provider");
     }
     this.providers = config.providers;
+    this.logger = config.logger;
+    this.llmUsageLogging = config.llmUsageLogging ??
+      resolveLlmUsageLoggingConfig();
     this.toolHandler = config.toolHandler;
     this.maxToolRounds = normalizeRuntimeLimit(
       config.maxToolRounds,
@@ -1754,18 +1767,19 @@ export class ChatExecutor {
       this.economicsPolicy,
       ctx.economicsState,
     );
-    ctx.callUsage.push(
-      this.createCallUsageRecord({
-        callIndex: ++ctx.callIndex,
-        phase: input.phase,
-        providerName: next.providerName,
-        response: next.response,
-        durationMs: next.durationMs,
-        beforeBudget: next.beforeBudget,
-        afterBudget: next.afterBudget,
-        budgetDiagnostics: next.budgetDiagnostics,
-      }),
-    );
+    this.appendCallUsageRecord(ctx, {
+      callIndex: ++ctx.callIndex,
+      phase: input.phase,
+      providerName: next.providerName,
+      response: next.response,
+      durationMs: next.durationMs,
+      beforeBudget: next.beforeBudget,
+      afterBudget: next.afterBudget,
+      budgetDiagnostics: next.budgetDiagnostics,
+      usedFallback: next.usedFallback,
+      rerouted: routingDecision.route.rerouted || next.usedFallback,
+      downgraded: routingDecision.route.downgraded,
+    });
     return next.response;
   }
 
@@ -2220,18 +2234,19 @@ export class ChatExecutor {
         this.economicsPolicy,
         ctx.economicsState,
       );
-      ctx.callUsage.push(
-        this.createCallUsageRecord({
-          callIndex: ++ctx.callIndex,
-          phase: "evaluator",
-          providerName: evalResult.providerName,
-          response: evalResult.response,
-          durationMs: evalResult.durationMs,
-          beforeBudget: evalResult.beforeBudget,
-          afterBudget: evalResult.afterBudget,
-          budgetDiagnostics: evalResult.budgetDiagnostics,
-        }),
-      );
+      this.appendCallUsageRecord(ctx, {
+        callIndex: ++ctx.callIndex,
+        phase: "evaluator",
+        providerName: evalResult.providerName,
+        response: evalResult.response,
+        durationMs: evalResult.durationMs,
+        beforeBudget: evalResult.beforeBudget,
+        afterBudget: evalResult.afterBudget,
+        budgetDiagnostics: evalResult.budgetDiagnostics,
+        usedFallback: evalResult.usedFallback,
+        rerouted: evalResult.rerouted,
+        downgraded: evalResult.downgraded,
+      });
 
       if (evalResult.score >= minScore || retryCount === maxRetries) {
         ctx.evaluation = {
@@ -2326,18 +2341,19 @@ export class ChatExecutor {
         this.economicsPolicy,
         ctx.economicsState,
       );
-      ctx.callUsage.push(
-        this.createCallUsageRecord({
-          callIndex: ++ctx.callIndex,
-          phase: "evaluator_retry",
-          providerName: retry.providerName,
-          response: retry.response,
-          durationMs: retry.durationMs,
-          beforeBudget: retry.beforeBudget,
-          afterBudget: retry.afterBudget,
-          budgetDiagnostics: retry.budgetDiagnostics,
-        }),
-      );
+      this.appendCallUsageRecord(ctx, {
+        callIndex: ++ctx.callIndex,
+        phase: "evaluator_retry",
+        providerName: retry.providerName,
+        response: retry.response,
+        durationMs: retry.durationMs,
+        beforeBudget: retry.beforeBudget,
+        afterBudget: retry.afterBudget,
+        budgetDiagnostics: retry.budgetDiagnostics,
+        usedFallback: retry.usedFallback,
+        rerouted: retryRoutingDecision.route.rerouted || retry.usedFallback,
+        downgraded: retryRoutingDecision.route.downgraded,
+      });
       ctx.providerName = retry.providerName;
       ctx.responseModel = retry.response.model;
       if (retry.usedFallback) ctx.usedFallback = true;
@@ -2640,6 +2656,73 @@ export class ChatExecutor {
       statefulDiagnostics: input.response.stateful,
       compactionDiagnostics: input.response.compaction,
     };
+  }
+
+  private appendCallUsageRecord(
+    ctx: ExecutionContext,
+    input: {
+      callIndex: number;
+      phase: ChatCallUsageRecord["phase"];
+      providerName: string;
+      response: LLMResponse;
+      beforeBudget: ChatPromptShape;
+      afterBudget: ChatPromptShape;
+      budgetDiagnostics?: PromptBudgetDiagnostics;
+      durationMs: number;
+      usedFallback: boolean;
+      rerouted: boolean;
+      downgraded: boolean;
+    },
+  ): void {
+    const record = this.createCallUsageRecord({
+      callIndex: input.callIndex,
+      phase: input.phase,
+      providerName: input.providerName,
+      response: input.response,
+      beforeBudget: input.beforeBudget,
+      afterBudget: input.afterBudget,
+      budgetDiagnostics: input.budgetDiagnostics,
+      durationMs: input.durationMs,
+    });
+    ctx.callUsage.push(record);
+    this.maybeLogCallUsageRecord(ctx, record, {
+      usedFallback: input.usedFallback,
+      rerouted: input.rerouted,
+      downgraded: input.downgraded,
+    });
+  }
+
+  private maybeLogCallUsageRecord(
+    ctx: ExecutionContext,
+    record: ChatCallUsageRecord,
+    input: {
+      usedFallback: boolean;
+      rerouted: boolean;
+      downgraded: boolean;
+    },
+  ): void {
+    if (!this.logger || !this.llmUsageLogging.enabled) {
+      return;
+    }
+    const sampleKey =
+      ctx.runtimeIdentifiers?.traceId ??
+      `${ctx.trajectoryTraceId}:${record.callIndex}`;
+    if (!shouldEmitLlmUsageLog(this.llmUsageLogging, sampleKey)) {
+      return;
+    }
+    emitLlmCallUsageLog({
+      logger: this.logger,
+      config: this.llmUsageLogging,
+      payload: buildLlmCallUsageLogPayload({
+        sessionId: ctx.sessionId,
+        identifiers: ctx.runtimeIdentifiers,
+        record,
+        usedFallback: input.usedFallback,
+        rerouted: input.rerouted,
+        downgraded: input.downgraded,
+        config: this.llmUsageLogging,
+      }),
+    });
   }
 
   // --------------------------------------------------------------------------

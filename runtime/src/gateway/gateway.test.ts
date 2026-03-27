@@ -1101,6 +1101,28 @@ describe("config loading", () => {
     expect(result.errors).toEqual([]);
   });
 
+  it("validateGatewayConfig accepts logging.llmUsage settings", () => {
+    const result = validateGatewayConfig(
+      makeConfig({
+        logging: {
+          level: "debug",
+          llmUsage: {
+            enabled: true,
+            level: "info",
+            includeIdentifiers: true,
+            includeCallContext: true,
+            includePromptShape: false,
+            includeBudgetDiagnostics: false,
+            sampleRate: 0.5,
+          },
+        },
+      }),
+    );
+
+    expect(result.valid).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
   it("validateGatewayConfig rejects invalid logging.trace fields", () => {
     const result = validateGatewayConfig(
       makeConfig({
@@ -1128,6 +1150,34 @@ describe("config loading", () => {
     );
     expect(result.errors).toContain(
       "logging.trace.fanout.enabled must be a boolean",
+    );
+  });
+
+  it("validateGatewayConfig rejects invalid logging.llmUsage fields", () => {
+    const result = validateGatewayConfig(
+      makeConfig({
+        logging: {
+          level: "debug",
+          llmUsage: {
+            enabled: "yes" as unknown as boolean,
+            level: "warn" as unknown as "info",
+            includePromptShape: "yes" as unknown as boolean,
+            sampleRate: 2,
+          },
+        },
+      }),
+    );
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("logging.llmUsage.enabled must be a boolean");
+    expect(result.errors).toContain(
+      "logging.llmUsage.level must be one of: debug, info",
+    );
+    expect(result.errors).toContain(
+      "logging.llmUsage.includePromptShape must be a boolean",
+    );
+    expect(result.errors).toContain(
+      "logging.llmUsage.sampleRate must be a number between 0 and 1",
     );
   });
 
@@ -1628,6 +1678,22 @@ describe("config loading", () => {
     expect(diff.safe).toContain("logging.level");
     expect(diff.safe).toContain("logging.trace.enabled");
     expect(diff.unsafe).toContain("gateway.port");
+  });
+
+  it("diffGatewayConfig treats logging.llmUsage fields as safe", () => {
+    const oldConfig = makeConfig();
+    const newConfig = makeConfig({
+      logging: {
+        llmUsage: {
+          enabled: true,
+        },
+      },
+    });
+
+    const diff = diffGatewayConfig(oldConfig, newConfig);
+
+    expect(diff.safe).toContain("logging.llmUsage.enabled");
+    expect(diff.unsafe).toEqual(expect.not.arrayContaining(["logging.llmUsage.enabled"]));
   });
 
   it("diffGatewayConfig treats channels and plugin trust policy as restart-only", () => {

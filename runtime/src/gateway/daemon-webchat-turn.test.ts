@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { ChatExecutor } from "../llm/chat-executor.js";
 import type { ChatExecutorResult } from "../llm/chat-executor.js";
+import type { LLMProvider } from "../llm/types.js";
 import type { MemoryBackend } from "../memory/types.js";
 import type { Logger } from "../utils/logger.js";
+import { resolveLlmUsageLoggingConfig } from "../llm/usage-logging.js";
 import { hydrateWebSessionRuntimeState } from "./daemon-session-state.js";
 import { executeWebChatConversationTurn } from "./daemon-webchat-turn.js";
 import {
@@ -84,6 +87,27 @@ function createResult(
     stopReason: "completed",
     completionState: "completed",
     ...overrides,
+  };
+}
+
+function createProvider(): LLMProvider {
+  return {
+    name: "grok",
+    chat: vi.fn(async () => ({
+      content: "reply",
+      toolCalls: [],
+      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+      model: "grok-test",
+      finishReason: "stop",
+    })),
+    chatStream: vi.fn(async () => ({
+      content: "reply",
+      toolCalls: [],
+      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+      model: "grok-test",
+      finishReason: "stop",
+    })),
+    healthCheck: vi.fn(async () => true),
   };
 }
 
@@ -770,6 +794,9 @@ You have broad access to this machine via the system.bash tool.`,
       expect.objectContaining({
         runtimeContext: {
           workspaceRoot: "/home/tetsuo/git/stream-test/agenc-shell",
+          identifiers: {
+            traceId: "trace-2",
+          },
         },
         message: expect.objectContaining({
           metadata: expect.objectContaining({
@@ -778,5 +805,88 @@ You have broad access to this machine via the system.bash tool.`,
         }),
       }),
     );
+  });
+
+  it("emits llm.call_usage logs for webchat turns when lightweight usage logging is enabled", async () => {
+    const logger = createLoggerStub();
+    const memoryBackend = createMemoryBackendStub();
+    const session = createSession();
+    const sessionMgr = {
+      getOrCreate: vi.fn(() => session),
+      appendMessage: vi.fn(),
+      compact: vi.fn(async () => undefined),
+    } as any;
+    const webChat = {
+      createAbortController: vi.fn(() => new AbortController()),
+      clearAbortController: vi.fn(),
+      send: vi.fn(async () => undefined),
+      pushToSession: vi.fn(),
+      broadcastEvent: vi.fn(),
+    } as any;
+    const hooks = {
+      dispatch: vi.fn(async () => ({ completed: true, payload: {} })),
+    } as any;
+    const signals = {
+      signalThinking: vi.fn(),
+      signalIdle: vi.fn(),
+    };
+    const chatExecutor = new ChatExecutor({
+      providers: [createProvider()],
+      logger,
+      llmUsageLogging: resolveLlmUsageLoggingConfig({
+        enabled: true,
+      }),
+    });
+
+    await executeWebChatConversationTurn({
+      logger,
+      msg: {
+        sessionId: "session:test",
+        senderId: "operator-1",
+        channel: "webchat",
+        content: "hello",
+      },
+      webChat,
+      chatExecutor,
+      sessionMgr,
+      getSystemPrompt: () => "system prompt",
+      sessionToolHandler: vi.fn() as any,
+      sessionStreamCallback: vi.fn(),
+      signals,
+      hooks,
+      memoryBackend,
+      sessionTokenBudget: 16_000,
+      defaultMaxToolRounds: 3,
+      contextWindowTokens: 64_000,
+      traceConfig: {
+        enabled: false,
+        includeHistory: true,
+        includeSystemPrompt: true,
+        includeToolArgs: true,
+        includeToolResults: true,
+        includeProviderPayloads: false,
+        maxChars: 20_000,
+      },
+      turnTraceId: "trace-usage-webchat",
+      buildToolRoutingDecision: () => undefined,
+      recordToolRoutingOutcome: vi.fn(),
+      getSessionTokenUsage: () => 0,
+    });
+
+    expect(logger.info).toHaveBeenCalledWith(
+      "llm.call_usage",
+      expect.objectContaining({
+        event: "llm.call_usage",
+        sessionId: "session:test",
+        traceId: "trace-usage-webchat",
+        provider: "grok",
+        phase: "initial",
+      }),
+    );
+    const payload = (logger.info as ReturnType<typeof vi.fn>).mock.calls.find(
+      ([message]) => message === "llm.call_usage",
+    )?.[1];
+    expect(JSON.stringify(payload)).not.toContain("system prompt");
+    expect(JSON.stringify(payload)).not.toContain("reply");
   });
 });

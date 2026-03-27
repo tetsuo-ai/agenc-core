@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { ChatExecutor } from "../llm/chat-executor.js";
+import { resolveLlmUsageLoggingConfig } from "../llm/usage-logging.js";
 import {
   VoiceBridge,
   createVoiceDelegationTool,
@@ -140,6 +142,11 @@ describe("VoiceBridge delegation", () => {
       expect.objectContaining({
         sessionId: "session-1",
         systemPrompt: "You are a helpful assistant.",
+        runtimeContext: {
+          identifiers: {
+            traceId: expect.stringMatching(/^session-1:voice:/),
+          },
+        },
       }),
     );
     expect(send).toHaveBeenCalledWith(
@@ -240,6 +247,85 @@ describe("VoiceBridge delegation", () => {
         }),
       }),
     );
+  });
+
+  it("emits llm.call_usage logs for delegated voice turns when lightweight usage logging is enabled", async () => {
+    const logger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+      setLevel: vi.fn(),
+    };
+    const send = vi.fn();
+    const chatExecutor = new ChatExecutor({
+      providers: [
+        {
+          name: "grok",
+          chat: vi.fn(async () => ({
+            content: "voice delegation reply",
+            toolCalls: [],
+            usage: { promptTokens: 9, completionTokens: 4, totalTokens: 13 },
+            model: "grok-voice-test",
+            finishReason: "stop",
+          })),
+          chatStream: vi.fn(async () => ({
+            content: "voice delegation reply",
+            toolCalls: [],
+            usage: { promptTokens: 9, completionTokens: 4, totalTokens: 13 },
+            model: "grok-voice-test",
+            finishReason: "stop",
+          })),
+          healthCheck: vi.fn(async () => true),
+        },
+      ],
+      logger: logger as any,
+      llmUsageLogging: resolveLlmUsageLoggingConfig({
+        enabled: true,
+      }),
+    });
+    const bridge = new VoiceBridge({
+      apiKey: "voice-key",
+      toolHandler: vi.fn(async () => ""),
+      systemPrompt: "You are a helpful assistant.",
+      getChatExecutor: () => chatExecutor,
+      logger: logger as any,
+    });
+
+    (bridge as any).sessions.set("client-1", {
+      client: { cancelResponse: vi.fn(), clearAudio: vi.fn() } as any,
+      send,
+      toolHandler: vi.fn(async () => ""),
+      sessionId: "session-1",
+      managedSessionId: "session-1",
+      delegationAbort: null,
+      currentTraceId: null,
+      currentTurnDelegated: false,
+    });
+
+    await (bridge as any).handleDelegation(
+      "client-1",
+      "session-1",
+      JSON.stringify({ task: "Inspect the workspace" }),
+      send,
+    );
+
+    expect(logger.info).toHaveBeenCalledWith(
+      "llm.call_usage",
+      expect.objectContaining({
+        event: "llm.call_usage",
+        sessionId: "session-1",
+        traceId: expect.stringMatching(/^session-1:voice:/),
+        provider: "grok",
+        phase: "initial",
+      }),
+    );
+    const payload = (logger.info as ReturnType<typeof vi.fn>).mock.calls.find(
+      ([message]) => message === "llm.call_usage",
+    )?.[1];
+    expect(JSON.stringify(payload)).not.toContain("You are a helpful assistant.");
+    expect(JSON.stringify(payload)).not.toContain("Inspect the workspace");
+    expect(JSON.stringify(payload)).not.toContain("voice delegation reply");
   });
 
   it("uses one trace for voice inbound, delegated tool calls, and the final response", async () => {

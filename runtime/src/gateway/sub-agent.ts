@@ -40,6 +40,7 @@ import {
   createProviderTraceEventLogger,
   logStructuredTraceEvent,
 } from "../llm/provider-trace-logger.js";
+import type { ResolvedLlmUsageLoggingConfig } from "../llm/usage-logging.js";
 import { resolveMaxToolRoundsForToolNames } from "./tool-round-budget.js";
 import {
   isRuntimeLimitExceeded,
@@ -213,6 +214,7 @@ export interface SubAgentManagerConfig {
     | undefined;
   readonly resolveDefaultMaxToolRounds?: () => number | undefined;
   readonly logger?: Logger;
+  readonly llmUsageLogging?: ResolvedLlmUsageLoggingConfig;
   readonly traceExecution?: boolean;
   readonly traceProviderPayloads?: boolean;
   readonly promptBudget?: PromptBudgetConfig;
@@ -678,6 +680,8 @@ export class SubAgentManager {
       });
       const executor = new ChatExecutor({
         providers: [selectedProvider],
+        logger: this.logger,
+        llmUsageLogging: this.config.llmUsageLogging,
         toolHandler,
         allowedTools: handle.config.tools
           ? [...handle.config.tools]
@@ -781,6 +785,12 @@ export class SubAgentManager {
           history: handle.history,
           systemPrompt,
           sessionId: handle.sessionId,
+          runtimeContext: {
+            identifiers: {
+              traceId: subAgentTraceId,
+              parentSessionId: handle.parentSessionId,
+            },
+          },
           ...(typeof effectiveToolBudgetPerRequest === "number"
             ? { toolBudgetPerRequest: effectiveToolBudgetPerRequest }
             : {}),

@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { ChatExecutor } from "../llm/chat-executor.js";
 import type { ChatExecutorResult } from "../llm/chat-executor.js";
 import type { LLMProvider, ToolHandler } from "../llm/types.js";
+import { resolveLlmUsageLoggingConfig } from "../llm/usage-logging.js";
 import { InMemoryBackend } from "../memory/in-memory/backend.js";
 import { SqliteBackend } from "../memory/sqlite/backend.js";
 import { PolicyEngine } from "../policy/engine.js";
@@ -68,6 +70,30 @@ function makeCallUsageRecord(overrides: Record<string, unknown> = {}) {
       estimatedChars: 20,
       systemPromptChars: 10,
     },
+    ...overrides,
+  };
+}
+
+function makeActorProvider(
+  overrides: Partial<LLMProvider> = {},
+): LLMProvider {
+  return {
+    name: "grok",
+    chat: vi.fn(async () => ({
+      content: "background reply",
+      toolCalls: [],
+      usage: { promptTokens: 7, completionTokens: 3, totalTokens: 10 },
+      model: "grok-test",
+      finishReason: "stop",
+    })),
+    chatStream: vi.fn(async () => ({
+      content: "background reply",
+      toolCalls: [],
+      usage: { promptTokens: 7, completionTokens: 3, totalTokens: 10 },
+      model: "grok-test",
+      finishReason: "stop",
+    })),
+    healthCheck: vi.fn(async () => true),
     ...overrides,
   };
 }
@@ -533,6 +559,73 @@ describe("background-run-supervisor", () => {
       "session-natural-language-server",
       "HTTP server is running in the background.",
     );
+  });
+
+  it("emits llm.call_usage logs for background actor cycles when enabled", async () => {
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      setLevel: vi.fn(),
+    } as any;
+    const publishUpdate = vi.fn(async () => undefined);
+    const chatExecutor = new ChatExecutor({
+      providers: [makeActorProvider()],
+      logger,
+      llmUsageLogging: resolveLlmUsageLoggingConfig({
+        enabled: true,
+      }),
+    });
+    const supervisor = new BackgroundRunSupervisor({
+      logger,
+      chatExecutor,
+      supervisorLlm: {
+        name: "supervisor",
+        chat: vi.fn(async () => ({
+          content:
+            '{"state":"working","userUpdate":"Background run is progressing.","internalSummary":"verified running","nextCheckMs":4000,"shouldNotifyUser":true}',
+          toolCalls: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "supervisor-model",
+          finishReason: "stop",
+        })),
+        chatStream: vi.fn(),
+        healthCheck: vi.fn(async () => true),
+      },
+      getSystemPrompt: () => "base system prompt",
+      runStore: createRunStore(),
+      createToolHandler: (): ToolHandler => vi.fn(async () => "ok"),
+      publishUpdate,
+    });
+
+    await supervisor.startRun({
+      sessionId: "session-background-usage",
+      objective: "Keep checking this workspace until I stop you.",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    await eventually(() => {
+      expect(logger.info).toHaveBeenCalledWith(
+        "llm.call_usage",
+        expect.objectContaining({
+          event: "llm.call_usage",
+          sessionId: "session-background-usage",
+          runId: expect.stringMatching(/^bg-/),
+          traceId: expect.stringMatching(
+            /^background:session-background-usage:bg-.*:1:actor$/,
+          ),
+          provider: "grok",
+          phase: "initial",
+        }),
+      );
+    });
+
+    const payload = (logger.info as ReturnType<typeof vi.fn>).mock.calls.find(
+      ([message]) => message === "llm.call_usage",
+    )?.[1];
+    expect(JSON.stringify(payload)).not.toContain("base system prompt");
+    expect(JSON.stringify(payload)).not.toContain("background reply");
   });
 
   it("starts a run, executes a cycle, and keeps it working", async () => {

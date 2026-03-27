@@ -21,9 +21,11 @@ import type {
   DelegationBanditPolicyTuner,
   DelegationTrajectorySink,
 } from "../llm/delegation-learning.js";
+import type { ResolvedLlmUsageLoggingConfig } from "../llm/usage-logging.js";
 import type { HostToolingProfile } from "./host-tooling.js";
 import type { ResolvedSubAgentRuntimeConfig } from "./subagent-infrastructure.js";
 import type { GatewayLLMConfig } from "./types.js";
+import type { Logger } from "../utils/logger.js";
 
 // ---------------------------------------------------------------------------
 // Factory input
@@ -32,6 +34,10 @@ import type { GatewayLLMConfig } from "./types.js";
 export interface CreateChatExecutorParams {
   /** LLM providers (if empty, returns null). */
   providers: LLMProvider[];
+  /** Runtime logger for executor-owned operational events. */
+  logger?: Logger;
+  /** Resolved lightweight per-call LLM usage logging policy. */
+  llmUsageLogging?: ResolvedLlmUsageLoggingConfig;
   /** Base tool handler from ToolRegistry. */
   toolHandler: ToolHandler;
   /** Tool names advertised to the model. */
@@ -106,6 +112,8 @@ export function createChatExecutor(
 
   return new ChatExecutor({
     providers: params.providers,
+    logger: params.logger,
+    llmUsageLogging: params.llmUsageLogging,
     toolHandler: params.toolHandler,
     allowedTools: params.allowedTools,
     skillInjector: params.skillInjector,

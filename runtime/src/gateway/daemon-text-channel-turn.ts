@@ -171,6 +171,11 @@ export async function executeTextChannelTurn(
     history: session.history,
     systemPrompt: effectiveSystemPrompt,
     sessionId: msg.sessionId,
+    runtimeContext: {
+      identifiers: {
+        traceId: turnTraceId,
+      },
+    },
     toolHandler,
     maxToolRounds: effectiveMaxToolRounds,
     ...(sessionStateful ? { stateful: sessionStateful } : {}),

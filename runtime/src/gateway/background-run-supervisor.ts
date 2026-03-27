@@ -3223,6 +3223,7 @@ export class BackgroundRunSupervisor {
     heartbeatMs?: number;
   }> {
     const { run, sessionId, cycleToolHandler, actorPrompt, actorSystemPrompt } = params;
+    const actorTraceId = `background:${sessionId}:${run.id}:${run.cycleCount}:actor`;
     let actorResult: ChatExecutorResult | undefined;
     let decision: BackgroundRunDecision;
     let heartbeatMs: number | undefined;
@@ -3233,7 +3234,7 @@ export class BackgroundRunSupervisor {
           onProviderTraceEvent: createProviderTraceEventLogger({
             logger: this.logger,
             traceLabel: "background_run.provider",
-            traceId: `background:${sessionId}:${run.id}:${run.cycleCount}:actor`,
+            traceId: actorTraceId,
             sessionId,
             staticFields: {
               runId: run.id,
@@ -3244,7 +3245,7 @@ export class BackgroundRunSupervisor {
           onExecutionTraceEvent: createExecutionTraceEventLogger({
             logger: this.logger,
             traceLabel: "background_run.executor",
-            traceId: `background:${sessionId}:${run.id}:${run.cycleCount}:actor`,
+            traceId: actorTraceId,
             sessionId,
             staticFields: {
               runId: run.id,
@@ -3283,6 +3284,12 @@ export class BackgroundRunSupervisor {
           history: run.internalHistory,
           systemPrompt: actorSystemPrompt,
           sessionId,
+          runtimeContext: {
+            identifiers: {
+              traceId: actorTraceId,
+              runId: run.id,
+            },
+          },
           requestTimeoutMs: BACKGROUND_RUN_ACTOR_REQUEST_TIMEOUT_MS,
           stateful: run.carryForward?.providerContinuation
             ? {

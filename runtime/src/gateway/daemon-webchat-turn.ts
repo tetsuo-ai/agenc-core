@@ -294,9 +294,14 @@ export async function executeWebChatConversationTurn(
       systemPrompt: effectiveSystemPrompt,
       sessionId: msg.sessionId,
       runtimeContext:
-        typeof runtimeWorkspaceRoot === "string"
-          ? { workspaceRoot: runtimeWorkspaceRoot }
-          : undefined,
+        {
+          ...(typeof runtimeWorkspaceRoot === "string"
+            ? { workspaceRoot: runtimeWorkspaceRoot }
+            : {}),
+          identifiers: {
+            traceId: turnTraceId,
+          },
+        },
       toolHandler: sessionToolHandler,
       onStreamChunk: sessionStreamCallback,
       signal: abortController.signal,

@@ -21,6 +21,7 @@ import type {
 import type { Tool, ToolResult } from "../tools/types.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { RuntimeErrorCodes } from "../types/errors.js";
+import { resolveLlmUsageLoggingConfig } from "../llm/usage-logging.js";
 
 // ============================================================================
 // Helpers
@@ -309,6 +310,38 @@ describe("SubAgentManager", () => {
       } finally {
         executeSpy.mockRestore();
       }
+    });
+
+    it("emits llm.call_usage logs for sub-agent executions when enabled", async () => {
+      const logger = {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        setLevel: vi.fn(),
+      } as any;
+      const manager = new SubAgentManager(
+        makeManagerConfig({
+          logger,
+          llmUsageLogging: resolveLlmUsageLoggingConfig({
+            enabled: true,
+          }),
+        }),
+      );
+
+      await manager.spawn({ parentSessionId: "parent-1", task: "log usage" });
+      await settle();
+
+      expect(logger.info).toHaveBeenCalledWith(
+        "llm.call_usage",
+        expect.objectContaining({
+          event: "llm.call_usage",
+          sessionId: expect.stringContaining("subagent:"),
+          parentSessionId: "parent-1",
+          provider: "mock-llm",
+          phase: "initial",
+        }),
+      );
     });
 
     it("forwards prompt budgeting and compaction controls to child executors", async () => {

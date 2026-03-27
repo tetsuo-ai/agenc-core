@@ -10,6 +10,7 @@
 import type { GatewayAuthConfig } from "./remote-types.js";
 import type { BackgroundRunOperatorAvailabilityCode } from "./background-run-operator.js";
 import type { DesktopSandboxConfig } from "../desktop/types.js";
+import type { LlmUsageLoggingConfig } from "../llm/usage-logging.js";
 import type { SocialPeerDirectoryEntry } from "../social/types.js";
 
 // ============================================================================
@@ -314,6 +315,7 @@ export interface GatewayReplayConfig {
 
 export interface GatewayLoggingConfig {
   level?: "debug" | "info" | "warn" | "error";
+  llmUsage?: LlmUsageLoggingConfig;
   trace?: {
     /** Enable verbose per-turn chat/tool tracing in daemon logs. */
     enabled?: boolean;

@@ -19,6 +19,8 @@ import {
 } from "./errors.js";
 import { inferExplicitFileWriteTarget } from "./chat-executor-planner-execution.js";
 import type { ArtifactCompactionState } from "../memory/artifact-store.js";
+import type { Logger } from "../utils/logger.js";
+import { resolveLlmUsageLoggingConfig } from "./usage-logging.js";
 
 // ============================================================================
 // Test helpers
@@ -78,6 +80,16 @@ function createParams(
     systemPrompt: "You are a helpful assistant.",
     sessionId: "session-1",
     ...overrides,
+  };
+}
+
+function createLoggerStub(): Logger {
+  return {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    setLevel: vi.fn(),
   };
 }
 
@@ -18597,6 +18609,241 @@ describe("ChatExecutor", () => {
       expect(result.statefulSummary).toBeDefined();
       expect(result.statefulSummary?.fallbackReasons.store_disabled).toBe(1);
       expect(result.statefulSummary?.attemptedCalls).toBe(0);
+    });
+  });
+
+  describe("llm usage logging", () => {
+    it("emits one structured usage log for an initial call with bounded metadata", async () => {
+      const logger = createLoggerStub();
+      const provider = createMockProvider();
+      const executor = new ChatExecutor({
+        providers: [provider],
+        logger,
+        llmUsageLogging: resolveLlmUsageLoggingConfig({
+          enabled: true,
+          includePromptShape: true,
+          includeBudgetDiagnostics: true,
+        }),
+      });
+
+      await executor.execute(
+        createParams({
+          runtimeContext: {
+            identifiers: {
+              traceId: "trace-1",
+              runId: "run-1",
+              taskId: "task-1",
+              parentSessionId: "parent-1",
+            },
+          },
+        }),
+      );
+
+      expect(logger.info).toHaveBeenCalledTimes(1);
+      expect(logger.info).toHaveBeenCalledWith(
+        "llm.call_usage",
+        expect.objectContaining({
+          event: "llm.call_usage",
+          sessionId: "session-1",
+          traceId: "trace-1",
+          runId: "run-1",
+          taskId: "task-1",
+          parentSessionId: "parent-1",
+          callIndex: 1,
+          phase: "initial",
+          provider: "primary",
+          model: "mock-model",
+          usageAvailable: true,
+          promptTokens: 10,
+          completionTokens: 5,
+          totalTokens: 15,
+          durationMs: expect.any(Number),
+          finishReason: "stop",
+          usedFallback: false,
+          rerouted: false,
+          downgraded: false,
+          promptShape: expect.any(Object),
+          budgetDiagnostics: expect.any(Object),
+        }),
+      );
+
+      const payload = (logger.info as ReturnType<typeof vi.fn>).mock.calls[0][1];
+      const serialized = JSON.stringify(payload);
+      expect(payload).not.toHaveProperty("prompt");
+      expect(payload).not.toHaveProperty("response");
+      expect(payload).not.toHaveProperty("messages");
+      expect(payload).not.toHaveProperty("toolArgs");
+      expect(payload).not.toHaveProperty("toolResults");
+      expect(payload).not.toHaveProperty("providerPayload");
+      expect(serialized).not.toContain("You are a helpful assistant.");
+      expect(serialized).not.toContain("hello");
+      expect(serialized).not.toContain("mock response");
+      expect(serialized).not.toContain("toolCalls");
+    });
+
+    it("does not emit when disabled or sampled out", async () => {
+      const logger = createLoggerStub();
+      const disabledExecutor = new ChatExecutor({
+        providers: [createMockProvider()],
+        logger,
+      });
+
+      await disabledExecutor.execute(createParams());
+
+      expect(logger.info).not.toHaveBeenCalled();
+      expect(logger.debug).not.toHaveBeenCalled();
+
+      const sampledExecutor = new ChatExecutor({
+        providers: [createMockProvider()],
+        logger,
+        llmUsageLogging: resolveLlmUsageLoggingConfig({
+          enabled: true,
+          sampleRate: 0,
+        }),
+      });
+
+      await sampledExecutor.execute(createParams());
+
+      expect(logger.info).not.toHaveBeenCalled();
+      expect(logger.debug).not.toHaveBeenCalled();
+    });
+
+    it("respects debug level and optional field gates", async () => {
+      const logger = createLoggerStub();
+      const executor = new ChatExecutor({
+        providers: [createMockProvider()],
+        logger,
+        llmUsageLogging: resolveLlmUsageLoggingConfig({
+          enabled: true,
+          level: "debug",
+          includeIdentifiers: false,
+          includeCallContext: false,
+          includePromptShape: false,
+          includeBudgetDiagnostics: false,
+        }),
+      });
+
+      await executor.execute(
+        createParams({
+          runtimeContext: {
+            identifiers: {
+              traceId: "trace-2",
+            },
+          },
+        }),
+      );
+
+      expect(logger.debug).toHaveBeenCalledTimes(1);
+      const payload = (logger.debug as ReturnType<typeof vi.fn>).mock.calls[0][1];
+      expect(payload).toMatchObject({
+        event: "llm.call_usage",
+        provider: "primary",
+        usageAvailable: true,
+      });
+      expect(payload).not.toHaveProperty("sessionId");
+      expect(payload).not.toHaveProperty("traceId");
+      expect(payload).not.toHaveProperty("callIndex");
+      expect(payload).not.toHaveProperty("phase");
+      expect(payload).not.toHaveProperty("usedFallback");
+      expect(payload).not.toHaveProperty("promptShape");
+      expect(payload).not.toHaveProperty("budgetDiagnostics");
+    });
+
+    it("marks fallback and missing usage consistently", async () => {
+      const logger = createLoggerStub();
+      const primary = createMockProvider("primary", {
+        chat: vi.fn(async () => {
+          throw new LLMServerError("primary", 500, "primary failed");
+        }),
+      });
+      const secondary = createMockProvider("secondary", {
+        chat: vi.fn().mockResolvedValue(
+          mockResponse({
+            usage: {
+              promptTokens: 0,
+              completionTokens: 0,
+              totalTokens: 0,
+            },
+          }),
+        ),
+      });
+      const executor = new ChatExecutor({
+        providers: [primary, secondary],
+        logger,
+        llmUsageLogging: resolveLlmUsageLoggingConfig({
+          enabled: true,
+        }),
+      });
+
+      await executor.execute(createParams());
+
+      expect(logger.info).toHaveBeenCalledTimes(1);
+      expect(logger.info).toHaveBeenCalledWith(
+        "llm.call_usage",
+        expect.objectContaining({
+          provider: "secondary",
+          usageAvailable: false,
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+          usedFallback: true,
+          rerouted: true,
+          downgraded: false,
+        }),
+      );
+    });
+
+    it("emits evaluator and evaluator_retry phases in call order", async () => {
+      const logger = createLoggerStub();
+      const provider = createMockProvider("primary", {
+        chat: vi.fn()
+          .mockResolvedValueOnce(
+            mockResponse({ content: "initial draft" }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: JSON.stringify({
+                score: 0.2,
+                feedback: "Needs more detail",
+              }),
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({ content: "revised draft" }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: JSON.stringify({
+                score: 1,
+                feedback: "Looks good",
+              }),
+            }),
+          ),
+      });
+      const executor = new ChatExecutor({
+        providers: [provider],
+        logger,
+        llmUsageLogging: resolveLlmUsageLoggingConfig({
+          enabled: true,
+        }),
+        evaluator: {
+          minScore: 0.7,
+          maxRetries: 1,
+        },
+      });
+
+      await executor.execute(createParams());
+
+      const payloads = (logger.info as ReturnType<typeof vi.fn>).mock.calls.map(
+        ([, payload]) => payload as { phase?: string; callIndex?: number },
+      );
+      expect(payloads.map((payload) => payload.phase)).toEqual([
+        "initial",
+        "evaluator",
+        "evaluator_retry",
+        "evaluator",
+      ]);
+      expect(payloads.map((payload) => payload.callIndex)).toEqual([1, 2, 3, 4]);
     });
   });
 });
