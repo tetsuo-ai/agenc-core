@@ -4,6 +4,7 @@ import {
   assessPlannerDecision,
   buildPipelineFailureRepairRefinementHint,
   buildPlannerMessages,
+  buildPlannerStructuredOutputRequest,
   buildPlannerSynthesisFallbackContent,
   buildPlannerVerificationRequirementsFailureMessage,
   buildPlannerVerificationRequirementsRefinementHint,
@@ -23,6 +24,17 @@ import {
 } from "./chat-executor-planner.js";
 
 describe("chat-executor-planner explicit orchestration requirements", () => {
+  it("builds a strict documented planner json_schema request", () => {
+    expect(buildPlannerStructuredOutputRequest()).toEqual({
+      enabled: true,
+      schema: expect.objectContaining({
+        type: "json_schema",
+        name: "agenc_planner_plan",
+        strict: true,
+      }),
+    });
+  });
+
   it("includes non-interactive validation guidance in planner messages", () => {
     const messages = buildPlannerMessages(
       "Create a TypeScript package and run tests before finishing.",

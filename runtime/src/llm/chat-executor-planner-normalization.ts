@@ -7,22 +7,33 @@
  * @module
  */
 
-import type { LLMToolCall } from "./types.js";
+import type {
+  LLMStructuredOutputResult,
+  LLMToolCall,
+} from "./types.js";
 import type { PlannerParseResult } from "./chat-executor-types.js";
 import {
   parsePlannerPlan,
   salvagePlannerToolCallsAsPlan,
   type ExplicitSubagentOrchestrationRequirements,
 } from "./chat-executor-planner.js";
+import { extractStructuredOutputObject } from "./structured-output.js";
 
 export function normalizePlannerResponse(params: {
   readonly content: string;
   readonly toolCalls: readonly LLMToolCall[];
+  readonly structuredOutput?: LLMStructuredOutputResult;
   readonly repairRequirements?: ExplicitSubagentOrchestrationRequirements;
   readonly plannerWorkspaceRoot?: string;
 }): PlannerParseResult {
+  const structuredPayload = params.structuredOutput
+    ? extractStructuredOutputObject({
+      content: params.content,
+      structuredOutput: params.structuredOutput,
+    })
+    : undefined;
   const parsed = parsePlannerPlan(
-    params.content,
+    structuredPayload ?? params.content,
     params.repairRequirements,
     { plannerWorkspaceRoot: params.plannerWorkspaceRoot },
   );

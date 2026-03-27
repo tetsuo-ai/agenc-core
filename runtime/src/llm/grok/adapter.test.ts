@@ -33,7 +33,6 @@ import { GrokProvider } from "./adapter.js";
 const DOCUMENTED_XAI_RESPONSES_FIELDS = new Set([
   "include",
   "input",
-  "instructions",
   "logprobs",
   "max_output_tokens",
   "max_turns",
@@ -1123,6 +1122,134 @@ describe("GrokProvider", () => {
     expect(params.max_turns).toBe(4);
     expect(params.reasoning).toEqual({ effort: "high" });
     expect(params.include).toEqual(["reasoning.encrypted_content"]);
+  });
+
+  it("sends documented xAI text.format requests and parses structured output payloads", async () => {
+    mockCreate.mockResolvedValueOnce(
+      makeCompletion({
+        output_text:
+          '{"overall":"pass","confidence":0.93,"unresolved":[],"steps":[{"name":"delegate_logs","verdict":"pass","confidence":0.93,"retryable":false,"issues":[],"summary":"grounded"}]}',
+        output: [
+          {
+            type: "message",
+            content: [
+              {
+                type: "output_text",
+                text:
+                  '{"overall":"pass","confidence":0.93,"unresolved":[],"steps":[{"name":"delegate_logs","verdict":"pass","confidence":0.93,"retryable":false,"issues":[],"summary":"grounded"}]}',
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    const provider = new GrokProvider({ apiKey: "test-key" });
+    const response = await provider.chat(
+      [{ role: "user", content: "verify the delegated output" }],
+      {
+        structuredOutput: {
+          enabled: true,
+          schema: {
+            type: "json_schema",
+            name: "agenc_subagent_verifier_decision",
+            schema: {
+              type: "object",
+              properties: {
+                overall: { type: "string" },
+              },
+              required: ["overall"],
+            },
+          },
+        },
+      },
+    );
+
+    const params = mockCreate.mock.calls[0][0];
+    expect(params.text).toEqual({
+      format: {
+        type: "json_schema",
+        name: "agenc_subagent_verifier_decision",
+        schema: {
+          type: "object",
+          properties: {
+            overall: { type: "string" },
+          },
+          required: ["overall"],
+        },
+        strict: true,
+      },
+    });
+    expect(response.structuredOutput).toEqual({
+      type: "json_schema",
+      name: "agenc_subagent_verifier_decision",
+      rawText:
+        '{"overall":"pass","confidence":0.93,"unresolved":[],"steps":[{"name":"delegate_logs","verdict":"pass","confidence":0.93,"retryable":false,"issues":[],"summary":"grounded"}]}',
+      parsed: {
+        overall: "pass",
+        confidence: 0.93,
+        unresolved: [],
+        steps: [
+          {
+            name: "delegate_logs",
+            verdict: "pass",
+            confidence: 0.93,
+            retryable: false,
+            issues: [],
+            summary: "grounded",
+          },
+        ],
+      },
+    });
+    expect(response.requestMetrics).toMatchObject({
+      structuredOutputEnabled: true,
+      structuredOutputName: "agenc_subagent_verifier_decision",
+      structuredOutputStrict: true,
+    });
+  });
+
+  it("fails closed when structured outputs are combined with tools on non-Grok-4 models", async () => {
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+      model: "grok-code-fast-1",
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "system.bash",
+            description: "run command",
+            parameters: {
+              type: "object",
+              properties: { command: { type: "string" } },
+            },
+          },
+        },
+      ],
+    });
+
+    await expect(
+      provider.chat(
+        [{ role: "user", content: "inspect the repo and summarize findings" }],
+        {
+          structuredOutput: {
+            enabled: true,
+            schema: {
+              type: "json_schema",
+              name: "repo_summary",
+              schema: {
+                type: "object",
+                properties: {
+                  summary: { type: "string" },
+                },
+                required: ["summary"],
+              },
+            },
+          },
+        },
+      ),
+    ).rejects.toThrow(
+      /Structured outputs with tools are only documented for the Grok 4 family/i,
+    );
   });
 
   it("disables parallel tool calls by default when tools are present", async () => {

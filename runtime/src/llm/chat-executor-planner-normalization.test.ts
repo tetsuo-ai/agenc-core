@@ -68,6 +68,38 @@ describe("chat-executor-planner-normalization", () => {
     ]);
   });
 
+  it("prefers provider structured output payloads over raw text parsing", () => {
+    const result = normalizePlannerResponse({
+      content: "",
+      structuredOutput: {
+        type: "json_schema",
+        name: "agenc_planner_plan",
+        rawText: "",
+        parsed: {
+          reason: "structured_json",
+          steps: [
+            {
+              name: "delegate",
+              step_type: "subagent_task",
+              objective: "Investigate issue",
+              input_contract: "Return findings",
+              acceptance_criteria: ["Return one finding"],
+              required_tool_capabilities: ["desktop.bash"],
+              context_requirements: ["repo_context"],
+              max_budget_hint: "2m",
+              can_run_parallel: false,
+            },
+          ],
+        },
+      },
+      toolCalls: [],
+    });
+
+    expect(result.plan?.reason).toBe("structured_json");
+    expect(result.plan?.steps).toHaveLength(1);
+    expect(result.diagnostics).toEqual([]);
+  });
+
   it("surfaces salvage failures instead of inventing planner steps", () => {
     const result = normalizePlannerResponse({
       content: "",

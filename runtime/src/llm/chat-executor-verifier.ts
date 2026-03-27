@@ -23,6 +23,7 @@ import type {
   LLMProviderEvidence,
   LLMProviderNativeServerToolCall,
   LLMProviderServerSideToolUsageEntry,
+  LLMStructuredOutputRequest,
 } from "./types.js";
 import type { ImplementationCompletionContract } from "../workflow/completion-contract.js";
 import type {
@@ -471,11 +472,64 @@ export function buildSubagentVerifierMessages(
   ];
 }
 
+export function buildSubagentVerifierStructuredOutputRequest(): LLMStructuredOutputRequest {
+  return {
+    enabled: true,
+    schema: {
+      type: "json_schema",
+      name: "agenc_subagent_verifier_decision",
+      strict: true,
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          overall: {
+            enum: ["pass", "retry", "fail"],
+          },
+          confidence: { type: "number" },
+          unresolved: {
+            type: "array",
+            items: { type: "string" },
+          },
+          steps: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                name: { type: "string" },
+                verdict: { enum: ["pass", "retry", "fail"] },
+                confidence: { type: "number" },
+                retryable: { type: "boolean" },
+                issues: {
+                  type: "array",
+                  items: { type: "string" },
+                },
+                summary: { type: "string" },
+              },
+              required: [
+                "name",
+                "verdict",
+                "confidence",
+                "retryable",
+                "issues",
+                "summary",
+              ],
+            },
+          },
+        },
+        required: ["overall", "confidence", "unresolved", "steps"],
+      },
+    },
+  };
+}
+
 export function parseSubagentVerifierDecision(
-  content: string,
+  content: string | Record<string, unknown>,
   verifierWorkItems: readonly PlannerVerifierWorkItem[],
 ): SubagentVerifierDecision | undefined {
-  const parsed = parseJsonObjectFromText(content);
+  const parsed =
+    typeof content === "string" ? parseJsonObjectFromText(content) : content;
   if (!parsed) return undefined;
   const overallRaw = parsed.overall;
   if (

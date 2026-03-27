@@ -4,7 +4,11 @@
  * @module
  */
 
-import type { LLMMessage, LLMToolCall } from "./types.js";
+import type {
+  LLMMessage,
+  LLMStructuredOutputRequest,
+  LLMToolCall,
+} from "./types.js";
 import type {
   PromptBudgetSection,
 } from "./prompt-budget.js";
@@ -814,6 +818,166 @@ export function buildPlannerMessages(
   });
 
   return messages;
+}
+
+export function buildPlannerStructuredOutputRequest(): LLMStructuredOutputRequest {
+  return {
+    enabled: true,
+    schema: {
+      type: "json_schema",
+      name: "agenc_planner_plan",
+      strict: true,
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          reason: { type: "string" },
+          confidence: { type: "number" },
+          requiresSynthesis: { type: "boolean" },
+          steps: {
+            type: "array",
+            items: {
+              anyOf: [
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    name: { type: "string" },
+                    step_type: { enum: ["deterministic_tool"] },
+                    depends_on: { type: "array", items: { type: "string" } },
+                    tool: { type: "string" },
+                    args: { type: "object", additionalProperties: true },
+                    onError: { enum: ["abort", "retry", "skip"] },
+                    maxRetries: { type: "integer" },
+                  },
+                  required: ["name", "step_type", "tool", "args"],
+                },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    name: { type: "string" },
+                    step_type: { enum: ["subagent_task"] },
+                    depends_on: { type: "array", items: { type: "string" } },
+                    objective: { type: "string" },
+                    input_contract: { type: "string" },
+                    acceptance_criteria: {
+                      type: "array",
+                      items: { type: "string" },
+                    },
+                    required_tool_capabilities: {
+                      type: "array",
+                      items: { type: "string" },
+                    },
+                    context_requirements: {
+                      type: "array",
+                      items: { type: "string" },
+                    },
+                    execution_context: {
+                      type: "object",
+                      additionalProperties: false,
+                      properties: {
+                        workspaceRoot: { type: "string" },
+                        allowedReadRoots: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                        allowedWriteRoots: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                        allowedTools: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                        requiredSourceArtifacts: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                        inputArtifacts: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                        targetArtifacts: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                        effectClass: {
+                          enum: [
+                            "read_only",
+                            "filesystem_write",
+                            "filesystem_scaffold",
+                            "shell",
+                            "mixed",
+                          ],
+                        },
+                        verificationMode: {
+                          enum: [
+                            "none",
+                            "grounded_read",
+                            "mutation_required",
+                            "deterministic_followup",
+                          ],
+                        },
+                        stepKind: {
+                          enum: [
+                            "delegated_research",
+                            "delegated_review",
+                            "delegated_write",
+                            "delegated_scaffold",
+                            "delegated_validation",
+                          ],
+                        },
+                        fallbackPolicy: {
+                          enum: [
+                            "continue_without_delegation",
+                            "fail_request",
+                          ],
+                        },
+                        resumePolicy: {
+                          enum: ["stateless_retry", "checkpoint_resume"],
+                        },
+                        approvalProfile: {
+                          enum: ["inherit", "read_only", "filesystem_write", "shell"],
+                        },
+                      },
+                    },
+                    max_budget_hint: { type: "string" },
+                    can_run_parallel: { type: "boolean" },
+                  },
+                  required: [
+                    "name",
+                    "step_type",
+                    "objective",
+                    "input_contract",
+                    "acceptance_criteria",
+                    "required_tool_capabilities",
+                    "max_budget_hint",
+                  ],
+                  anyOf: [
+                    { required: ["execution_context"] },
+                    { required: ["context_requirements"] },
+                  ],
+                },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    name: { type: "string" },
+                    step_type: { enum: ["synthesis"] },
+                    depends_on: { type: "array", items: { type: "string" } },
+                    objective: { type: "string" },
+                  },
+                  required: ["name", "step_type"],
+                },
+              ],
+            },
+          },
+        },
+        required: ["steps"],
+      },
+    },
+  };
 }
 
 export interface ExplicitSubagentOrchestrationRequirementStep {
@@ -1781,7 +1945,7 @@ function normalizePlannerShellModeToken(token: string): string {
 }
 
 export function parsePlannerPlan(
-  content: string,
+  content: string | Record<string, unknown>,
   repairRequirements?: ExplicitSubagentOrchestrationRequirements,
   options: {
     readonly plannerWorkspaceRoot?: string;
@@ -1789,7 +1953,8 @@ export function parsePlannerPlan(
 ): PlannerParseResult {
   void options;
   const diagnostics: PlannerDiagnostic[] = [];
-  const parsed = parseJsonObjectFromText(content);
+  const parsed =
+    typeof content === "string" ? parseJsonObjectFromText(content) : content;
   if (!parsed) {
     diagnostics.push(
       createPlannerDiagnostic(

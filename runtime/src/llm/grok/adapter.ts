@@ -38,6 +38,10 @@ import {
   getProviderNativeToolDefinitions,
   type ProviderNativeToolDefinition,
 } from "../provider-native-search.js";
+import {
+  parseStructuredOutputText,
+  supportsXaiStructuredOutputsWithTools,
+} from "../structured-output.js";
 import { withTimeout } from "../timeout.js";
 import { validateToolTurnSequence } from "../tool-turn-validator.js";
 import type { GrokProviderConfig } from "./types.js";
@@ -69,7 +73,6 @@ const MAX_TOOL_SCHEMA_CHARS_FOLLOWUP = 20_000;
 const DOCUMENTED_XAI_RESPONSES_FIELDS = new Set([
   "include",
   "input",
-  "instructions",
   "logprobs",
   "max_output_tokens",
   "max_turns",
@@ -428,6 +431,15 @@ function collectParamDiagnostics(
   } catch {
     toolSchemaChars = -1;
   }
+  const structuredFormat =
+    params.text &&
+    typeof params.text === "object" &&
+    !Array.isArray(params.text) &&
+    (params.text as Record<string, unknown>).format &&
+    typeof (params.text as Record<string, unknown>).format === "object" &&
+    !Array.isArray((params.text as Record<string, unknown>).format)
+      ? ((params.text as Record<string, unknown>).format as Record<string, unknown>)
+      : undefined;
 
   return {
     messageCount: effectiveMessages.length,
@@ -449,6 +461,15 @@ function collectParamDiagnostics(
     toolSuppressionReason: selection?.toolSuppressionReason,
     toolChoice: summarizeTraceToolChoice(params.tool_choice),
     toolSchemaChars,
+    structuredOutputEnabled: structuredFormat !== undefined,
+    structuredOutputName:
+      typeof structuredFormat?.name === "string"
+        ? structuredFormat.name
+        : undefined,
+    structuredOutputStrict:
+      typeof structuredFormat?.strict === "boolean"
+        ? structuredFormat.strict
+        : undefined,
     serializedChars,
     previousResponseId:
       typeof params.previous_response_id === "string"
@@ -907,6 +928,7 @@ export class GrokProvider implements LLMProvider {
           activePlan.requestMetrics,
           activePlan.statefulDiagnostics,
           activePlan.compactionDiagnostics,
+          options?.structuredOutput,
         );
         this.emitToolCallNormalizationIssues(
           parsed.normalizationIssues,
@@ -1241,6 +1263,14 @@ export class GrokProvider implements LLMProvider {
         stateful: statefulDiagnostics,
         compaction: compactionDiagnostics,
         providerEvidence,
+        structuredOutput:
+          options?.structuredOutput?.enabled === false ||
+            !options?.structuredOutput?.schema
+            ? undefined
+            : parseStructuredOutputText(
+              content,
+              options.structuredOutput.schema.name,
+            ),
         encryptedReasoning,
         finishReason,
         ...(responseError ? { error: responseError } : {}),
@@ -1283,6 +1313,14 @@ export class GrokProvider implements LLMProvider {
           stateful: statefulDiagnostics,
           compaction: compactionDiagnostics,
           providerEvidence,
+          structuredOutput:
+            options?.structuredOutput?.enabled === false ||
+              !options?.structuredOutput?.schema
+              ? undefined
+              : parseStructuredOutputText(
+                content,
+                options.structuredOutput.schema.name,
+              ),
           finishReason: "error",
           error: mappedError,
           partial: true,
@@ -1746,27 +1784,14 @@ export class GrokProvider implements LLMProvider {
     if (includeEncryptedReasoning) {
       params.include = ["reasoning.encrypted_content"];
     }
-    const structuredOutputSchema = options?.structuredOutput?.schema;
-    if (
-      options?.structuredOutput?.enabled !== false &&
-      structuredOutputSchema
-    ) {
-      params.text = {
-        format: {
-          type: structuredOutputSchema.type,
-          name: structuredOutputSchema.name,
-          schema: structuredOutputSchema.schema,
-          strict:
-            structuredOutputSchema.strict ??
-            this.config.structuredOutputs?.strict ??
-            true,
-        },
-      };
-    }
     const selectedTools = {
       ...(options?.toolSelection ??
         this.resolveResponseTools(options?.allowedToolNames)),
     };
+    const structuredOutputSchema = options?.structuredOutput?.schema;
+    const structuredOutputEnabled =
+      options?.structuredOutput?.enabled !== false &&
+      structuredOutputSchema !== undefined;
     // Enable tools unless the vision model is known to not support them.
     if (selectedTools.tools.length > 0) {
       const hasToolResults = messages.some((m) => m.role === "tool");
@@ -1789,6 +1814,30 @@ export class GrokProvider implements LLMProvider {
       } else if (hasToolResults) {
         selectedTools.toolSuppressionReason = "followup_tool_schema_limit";
       }
+    }
+    if (structuredOutputEnabled && structuredOutputSchema) {
+      if (
+        selectedTools.toolsAttached &&
+        !supportsXaiStructuredOutputsWithTools(
+          typeof params.model === "string" ? params.model : this.config.model,
+        )
+      ) {
+        throw new LLMProviderError(
+          this.name,
+          `Structured outputs with tools are only documented for the Grok 4 family; refusing request for model "${String(params.model ?? this.config.model)}"`,
+        );
+      }
+      params.text = {
+        format: {
+          type: structuredOutputSchema.type,
+          name: structuredOutputSchema.name,
+          schema: structuredOutputSchema.schema,
+          strict:
+            structuredOutputSchema.strict ??
+            this.config.structuredOutputs?.strict ??
+            true,
+        },
+      };
     }
     return {
       params: sanitizeToDocumentedXaiResponsesParams(params),
@@ -2067,6 +2116,7 @@ export class GrokProvider implements LLMProvider {
     requestMetrics?: LLMRequestMetrics,
     statefulDiagnostics?: LLMStatefulDiagnostics,
     compactionDiagnostics?: LLMCompactionDiagnostics,
+    structuredOutputRequest?: LLMChatOptions["structuredOutput"],
   ): LLMResponse & {
     normalizationIssues?: readonly ToolCallNormalizationIssue[];
   } {
@@ -2094,6 +2144,10 @@ export class GrokProvider implements LLMProvider {
       stateful,
       compaction,
       providerEvidence: this.extractProviderEvidence(response),
+      structuredOutput: this.extractStructuredOutputResult(
+        response,
+        structuredOutputRequest,
+      ),
       encryptedReasoning: this.extractEncryptedReasoningDiagnostics(response),
       finishReason,
       ...(normalizationIssues.length > 0 ? { normalizationIssues } : {}),
@@ -2124,6 +2178,18 @@ export class GrokProvider implements LLMProvider {
       }
     }
     return chunks.join("");
+  }
+
+  private extractStructuredOutputResult(
+    response: Record<string, unknown>,
+    structuredOutputRequest?: LLMChatOptions["structuredOutput"],
+  ): LLMResponse["structuredOutput"] {
+    const schema = structuredOutputRequest?.schema;
+    if (structuredOutputRequest?.enabled === false || !schema) {
+      return undefined;
+    }
+    const rawText = this.extractOutputText(response);
+    return parseStructuredOutputText(rawText, schema.name);
   }
 
   private parseUsage(response: Record<string, unknown>): LLMUsage {

@@ -14,6 +14,7 @@ import type {
   LLMProviderEvidence,
   LLMMessage,
   LLMStatefulResumeAnchor,
+  LLMStructuredOutputRequest,
   LLMToolChoice,
   LLMResponse,
   LLMUsage,
@@ -1627,6 +1628,7 @@ export class ChatExecutor {
       routedToolNames?: readonly string[];
       persistRoutedToolNames?: boolean;
       toolChoice?: LLMToolChoice;
+      structuredOutput?: LLMStructuredOutputRequest;
       preparationDiagnostics?: Record<string, unknown>;
       allowRecallBudgetBypass?: boolean;
       budgetReason: string;
@@ -1667,6 +1669,11 @@ export class ChatExecutor {
       ? [...input.callSections, "system_runtime" as const]
       : input.callSections;
     const routingDecision = this.resolveRoutingDecision(ctx, input.phase);
+    const structuredOutput =
+      input.structuredOutput &&
+      this.supportsStructuredOutputsForProviders(routingDecision.route.providers)
+        ? input.structuredOutput
+        : undefined;
     if (
       this.economicsPolicy.mode === "enforce" &&
       routingDecision.pressure.hardExceeded
@@ -1701,6 +1708,7 @@ export class ChatExecutor {
             : typeof input.toolChoice === "string"
             ? input.toolChoice
             : input.toolChoice.name,
+        structuredOutputSchemaName: structuredOutput?.schema?.name,
         messageCount: effectiveCallMessages.length,
         groundingMessageAdded: Boolean(groundingMessage),
         activeRouteMisses: ctx.routedToolMisses,
@@ -1744,6 +1752,9 @@ export class ChatExecutor {
             : {}),
           ...(input.toolChoice !== undefined
             ? { toolChoice: input.toolChoice }
+            : {}),
+          ...(structuredOutput !== undefined
+            ? { structuredOutput }
             : {}),
           ...(ctx.trace
             ? {
@@ -1802,6 +1813,13 @@ export class ChatExecutor {
       }),
     );
     return next.response;
+  }
+
+  private supportsStructuredOutputsForProviders(
+    providers: readonly LLMProvider[],
+  ): boolean {
+    return providers.length > 0 &&
+      providers.every((provider) => provider.name === "grok");
   }
 
   private async runPipelineWithTimeout(

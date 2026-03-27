@@ -7,7 +7,9 @@ import type { PlannerSubAgentTaskStepIntent } from "./chat-executor-types.js";
 import {
   buildPlannerWorkflowAdmission,
   buildPlannerVerifierAdmission,
+  buildSubagentVerifierStructuredOutputRequest,
   evaluatePlannerDeterministicChecks,
+  parseSubagentVerifierDecision,
 } from "./chat-executor-verifier.js";
 
 function createStep(
@@ -291,5 +293,58 @@ describe("buildPlannerWorkflowAdmission", () => {
     expect(admission.taskClassification).toBe("docs_research_plan_only");
     expect(admission.requiresMandatoryImplementationVerification).toBe(false);
     expect(admission.completionContract?.taskClass).toBe("review_required");
+  });
+});
+
+describe("structured verifier outputs", () => {
+  it("builds a strict documented json_schema request", () => {
+    expect(buildSubagentVerifierStructuredOutputRequest()).toEqual({
+      enabled: true,
+      schema: expect.objectContaining({
+        type: "json_schema",
+        name: "agenc_subagent_verifier_decision",
+        strict: true,
+      }),
+    });
+  });
+
+  it("parses structured verifier payload objects directly", () => {
+    const step = createStep();
+    const { verifierWorkItems } = buildPlannerVerifierAdmission({
+      subagentSteps: [step],
+      deterministicSteps: [],
+    });
+
+    const decision = parseSubagentVerifierDecision(
+      {
+        overall: "pass",
+        confidence: 0.91,
+        unresolved: [],
+        steps: [
+          {
+            name: step.name,
+            verdict: "pass",
+            confidence: 0.91,
+            retryable: false,
+            issues: [],
+            summary: "grounded and complete",
+          },
+        ],
+      },
+      verifierWorkItems,
+    );
+
+    expect(decision).toMatchObject({
+      overall: "pass",
+      confidence: 0.91,
+      unresolvedItems: [],
+      steps: [
+        expect.objectContaining({
+          name: step.name,
+          verdict: "pass",
+          retryable: false,
+        }),
+      ],
+    });
   });
 });

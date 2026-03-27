@@ -118,6 +118,9 @@ export interface LLMRequestMetrics {
   toolSuppressionReason?: string;
   toolChoice?: string;
   toolSchemaChars: number;
+  structuredOutputEnabled?: boolean;
+  structuredOutputName?: string;
+  structuredOutputStrict?: boolean;
   serializedChars: number;
   previousResponseId?: string;
   statefulInputMode?: "full_replay" | "incremental_delta";

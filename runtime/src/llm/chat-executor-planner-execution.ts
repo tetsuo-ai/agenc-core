@@ -24,6 +24,7 @@ import {
   mapPlannerStepsToPipelineSteps,
   validateSalvagedPlannerToolPlan,
   buildPlannerMessages,
+  buildPlannerStructuredOutputRequest,
   buildPlannerExecutionContext,
   buildPlannerVerificationRequirementsFailureMessage,
   buildPlannerVerificationRequirementsRefinementHint,
@@ -145,6 +146,7 @@ export interface PlannerExecutionCallbacks {
       routedToolNames?: readonly string[];
       persistRoutedToolNames?: boolean;
       toolChoice?: import("./types.js").LLMToolChoice;
+      structuredOutput?: import("./types.js").LLMStructuredOutputRequest;
       preparationDiagnostics?: Record<string, unknown>;
       allowRecallBudgetBypass?: boolean;
       budgetReason: string;
@@ -516,6 +518,7 @@ export async function executePlannerPath(
       ...(explicitPlannerToolNames
         ? { routedToolNames: explicitPlannerToolNames }
         : {}),
+      structuredOutput: buildPlannerStructuredOutputRequest(),
       budgetReason:
         "Planner pass blocked by max model recalls per request budget",
     });
@@ -532,6 +535,7 @@ export async function executePlannerPath(
     const plannerParse = normalizePlannerResponse({
       content: plannerResponse.content,
       toolCalls: plannerResponse.toolCalls,
+      structuredOutput: plannerResponse.structuredOutput,
       repairRequirements: explicitOrchestrationRequirements,
       plannerWorkspaceRoot,
     });

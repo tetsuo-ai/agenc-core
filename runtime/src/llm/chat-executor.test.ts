@@ -11643,7 +11643,7 @@ describe("ChatExecutor", () => {
 
     it("runs bounded verifier rounds for child outputs and retries low-confidence delegation once", async () => {
       const events: Array<Record<string, unknown>> = [];
-      const provider = createMockProvider("primary", {
+      const provider = createMockProvider("grok", {
         chat: vi
           .fn()
           .mockResolvedValueOnce(
@@ -11855,14 +11855,26 @@ describe("ChatExecutor", () => {
       });
       expect(result.content).toContain("[source:delegate_a]");
       expect(result.stopReason).toBe("completed");
+      const plannerOptions = (provider.chat as ReturnType<typeof vi.fn>).mock
+        .calls[0]?.[1] as LLMChatOptions | undefined;
       const verifierOptions = (provider.chat as ReturnType<typeof vi.fn>).mock
         .calls[1]?.[1] as LLMChatOptions | undefined;
       const retryVerifierOptions = (provider.chat as ReturnType<typeof vi.fn>).mock
         .calls[2]?.[1] as LLMChatOptions | undefined;
       const synthesisOptions = (provider.chat as ReturnType<typeof vi.fn>).mock
         .calls[3]?.[1] as LLMChatOptions | undefined;
+      expect(plannerOptions?.structuredOutput?.schema?.name).toBe(
+        "agenc_planner_plan",
+      );
       expect(verifierOptions?.toolChoice).toBe("none");
       expect(retryVerifierOptions?.toolChoice).toBe("none");
+      expect(verifierOptions?.structuredOutput?.schema?.name).toBe(
+        "agenc_subagent_verifier_decision",
+      );
+      expect(retryVerifierOptions?.structuredOutput?.schema?.name).toBe(
+        "agenc_subagent_verifier_decision",
+      );
+      expect(synthesisOptions?.structuredOutput).toBeUndefined();
       expect(verifierOptions?.stateful).toBeUndefined();
       expect(retryVerifierOptions?.stateful).toBeUndefined();
       expect(synthesisOptions?.stateful).toBeUndefined();

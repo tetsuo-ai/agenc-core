@@ -25,15 +25,17 @@ import type {
 import { pipelineResultToToolCalls } from "./chat-executor-planner.js";
 import {
   buildSubagentVerifierMessages,
+  buildSubagentVerifierStructuredOutputRequest,
   buildMandatoryPlannerVerificationFailureDecision,
   evaluatePlannerDeterministicChecks,
   mergeSubagentVerifierDecisions,
   parseSubagentVerifierDecision,
 } from "./chat-executor-verifier.js";
 import { hasRuntimeLimit } from "./runtime-limit-policy.js";
+import { extractStructuredOutputObject } from "./structured-output.js";
 
 interface CallModelForPhaseResult
-  extends Pick<LLMResponse, "content" | "finishReason" | "toolCalls"> {}
+  extends Pick<LLMResponse, "content" | "finishReason" | "toolCalls" | "structuredOutput"> {}
 
 export async function runSubagentVerifierRound(params: {
   readonly systemPrompt: string;
@@ -60,6 +62,7 @@ export async function runSubagentVerifierRound(params: {
     statefulResumeAnchor?: LLMStatefulResumeAnchor;
     statefulHistoryCompacted?: boolean;
     toolChoice?: "none";
+    structuredOutput?: import("./types.js").LLMStructuredOutputRequest;
     budgetReason: string;
   }) => Promise<CallModelForPhaseResult | undefined>;
 }): Promise<SubagentVerifierDecision> {
@@ -92,6 +95,7 @@ export async function runSubagentVerifierRound(params: {
     statefulResumeAnchor: params.stateful?.resumeAnchor,
     statefulHistoryCompacted: params.stateful?.historyCompacted,
     toolChoice: "none",
+    structuredOutput: buildSubagentVerifierStructuredOutputRequest(),
     budgetReason:
       "Planner verifier blocked by max model recalls per request budget",
   });
@@ -105,7 +109,10 @@ export async function runSubagentVerifierRound(params: {
     return deterministic;
   }
   const modelDecision = parseSubagentVerifierDecision(
-    verifierResponse.content,
+    extractStructuredOutputObject({
+      content: verifierResponse.content,
+      structuredOutput: verifierResponse.structuredOutput,
+    }) ?? verifierResponse.content,
     params.verifierWorkItems,
   );
   if (!modelDecision) {
