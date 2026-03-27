@@ -215,6 +215,24 @@ function validatePluginsSection(plugins: unknown, errors: string[]): void {
   }
 }
 
+function requireUnlimitedOrIntRange(
+  value: unknown,
+  path: string,
+  min: number,
+  max: number,
+  errors: string[],
+): void {
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    (value !== 0 && (value < min || value > max))
+  ) {
+    errors.push(
+      `${path} must be 0 or an integer between ${min} and ${max}`,
+    );
+  }
+}
+
 function validateTelegramChannelConfig(
   value: Record<string, unknown>,
   path: string,
@@ -2150,7 +2168,7 @@ function validateLlmSubagentsSection(
     );
   }
   if (subagentsValue.maxConcurrent !== undefined) {
-    requireIntRange(
+    requireUnlimitedOrIntRange(
       subagentsValue.maxConcurrent,
       "llm.subagents.maxConcurrent",
       1,
@@ -2159,7 +2177,7 @@ function validateLlmSubagentsSection(
     );
   }
   if (subagentsValue.maxDepth !== undefined) {
-    requireIntRange(
+    requireUnlimitedOrIntRange(
       subagentsValue.maxDepth,
       "llm.subagents.maxDepth",
       1,
@@ -2168,7 +2186,7 @@ function validateLlmSubagentsSection(
     );
   }
   if (subagentsValue.maxFanoutPerTurn !== undefined) {
-    requireIntRange(
+    requireUnlimitedOrIntRange(
       subagentsValue.maxFanoutPerTurn,
       "llm.subagents.maxFanoutPerTurn",
       1,
@@ -2177,7 +2195,7 @@ function validateLlmSubagentsSection(
     );
   }
   if (subagentsValue.maxTotalSubagentsPerRequest !== undefined) {
-    requireIntRange(
+    requireUnlimitedOrIntRange(
       subagentsValue.maxTotalSubagentsPerRequest,
       "llm.subagents.maxTotalSubagentsPerRequest",
       1,
@@ -2186,7 +2204,7 @@ function validateLlmSubagentsSection(
     );
   }
   if (subagentsValue.maxCumulativeToolCallsPerRequestTree !== undefined) {
-    requireIntRange(
+    requireUnlimitedOrIntRange(
       subagentsValue.maxCumulativeToolCallsPerRequestTree,
       "llm.subagents.maxCumulativeToolCallsPerRequestTree",
       1,
@@ -2204,7 +2222,7 @@ function validateLlmSubagentsSection(
     );
   }
   if (subagentsValue.defaultTimeoutMs !== undefined) {
-    requireIntRange(
+    requireUnlimitedOrIntRange(
       subagentsValue.defaultTimeoutMs,
       "llm.subagents.defaultTimeoutMs",
       1_000,
@@ -2309,6 +2327,8 @@ function validateLlmSubagentsSection(
     subagentsValue.maxTotalSubagentsPerRequest !== undefined &&
     typeof subagentsValue.maxFanoutPerTurn === "number" &&
     typeof subagentsValue.maxTotalSubagentsPerRequest === "number" &&
+    subagentsValue.maxFanoutPerTurn > 0 &&
+    subagentsValue.maxTotalSubagentsPerRequest > 0 &&
     subagentsValue.maxFanoutPerTurn > subagentsValue.maxTotalSubagentsPerRequest
   ) {
     errors.push(
@@ -2338,7 +2358,13 @@ function validateLlmSection(llm: unknown, errors: string[]): void {
   }
 
   if (llm.timeoutMs !== undefined) {
-    requireIntRange(llm.timeoutMs, "llm.timeoutMs", 1_000, 3_600_000, errors);
+    requireUnlimitedOrIntRange(
+      llm.timeoutMs,
+      "llm.timeoutMs",
+      1_000,
+      3_600_000,
+      errors,
+    );
   }
   if (llm.requestTimeoutMs !== undefined) {
     const requestTimeoutMs = llm.requestTimeoutMs;
@@ -2356,7 +2382,7 @@ function validateLlmSection(llm: unknown, errors: string[]): void {
     }
   }
   if (llm.toolCallTimeoutMs !== undefined) {
-    requireIntRange(
+    requireUnlimitedOrIntRange(
       llm.toolCallTimeoutMs,
       "llm.toolCallTimeoutMs",
       1_000,
@@ -2369,10 +2395,16 @@ function validateLlmSection(llm: unknown, errors: string[]): void {
   validateLlmRetryPolicySection(llm.retryPolicy, errors);
 
   if (llm.maxTokens !== undefined) {
-    requireIntRange(llm.maxTokens, "llm.maxTokens", 1, 262_144, errors);
+    requireUnlimitedOrIntRange(
+      llm.maxTokens,
+      "llm.maxTokens",
+      1,
+      262_144,
+      errors,
+    );
   }
   if (llm.contextWindowTokens !== undefined) {
-    requireIntRange(
+    requireUnlimitedOrIntRange(
       llm.contextWindowTokens,
       "llm.contextWindowTokens",
       2_048,
@@ -2411,13 +2443,19 @@ function validateLlmSection(llm: unknown, errors: string[]): void {
     requireIntRange(llm.maxRuntimeHints, "llm.maxRuntimeHints", 0, 32, errors);
   }
   if (llm.maxToolRounds !== undefined) {
-    requireIntRange(llm.maxToolRounds, "llm.maxToolRounds", 1, 2_048, errors);
+    requireUnlimitedOrIntRange(
+      llm.maxToolRounds,
+      "llm.maxToolRounds",
+      1,
+      2_048,
+      errors,
+    );
   }
   if (llm.plannerEnabled !== undefined && typeof llm.plannerEnabled !== "boolean") {
     errors.push("llm.plannerEnabled must be a boolean");
   }
   if (llm.plannerMaxTokens !== undefined) {
-    requireIntRange(
+    requireUnlimitedOrIntRange(
       llm.plannerMaxTokens,
       "llm.plannerMaxTokens",
       16,
@@ -2426,7 +2464,7 @@ function validateLlmSection(llm: unknown, errors: string[]): void {
     );
   }
   if (llm.toolBudgetPerRequest !== undefined) {
-    requireIntRange(
+    requireUnlimitedOrIntRange(
       llm.toolBudgetPerRequest,
       "llm.toolBudgetPerRequest",
       1,
@@ -2444,13 +2482,20 @@ function validateLlmSection(llm: unknown, errors: string[]): void {
     );
   }
   if (llm.maxFailureBudgetPerRequest !== undefined) {
-    requireIntRange(
+    requireUnlimitedOrIntRange(
       llm.maxFailureBudgetPerRequest,
       "llm.maxFailureBudgetPerRequest",
       1,
       256,
       errors,
     );
+  }
+  if (
+    llm.economicsMode !== undefined &&
+    llm.economicsMode !== "report_only" &&
+    llm.economicsMode !== "enforce"
+  ) {
+    errors.push('llm.economicsMode must be "report_only" or "enforce"');
   }
   if (llm.parallelToolCalls !== undefined && typeof llm.parallelToolCalls !== "boolean") {
     errors.push("llm.parallelToolCalls must be a boolean");

@@ -126,6 +126,10 @@ import {
   InMemoryDelegationTrajectorySink,
 } from "../llm/delegation-learning.js";
 import { DEFAULT_TOOL_CALL_TIMEOUT_MS } from "../llm/chat-executor-constants.js";
+import {
+  hasRuntimeLimit,
+  normalizeRuntimeLimit,
+} from "../llm/runtime-limit-policy.js";
 import { ToolRegistry } from "../tools/registry.js";
 import {
   SystemRemoteJobManager,
@@ -623,9 +627,9 @@ export function resolveBashToolTimeoutConfig(
   timeoutMs: number;
   maxTimeoutMs: number;
 } {
-  const chatToolTimeoutMs = Math.max(
-    1,
-    Math.floor(config.llm?.toolCallTimeoutMs ?? DEFAULT_TOOL_CALL_TIMEOUT_MS),
+  const chatToolTimeoutMs = normalizeRuntimeLimit(
+    config.llm?.toolCallTimeoutMs,
+    DEFAULT_TOOL_CALL_TIMEOUT_MS,
   );
   const baseTimeoutMs = config.desktop?.enabled
     ? 300_000
@@ -635,8 +639,12 @@ export function resolveBashToolTimeoutConfig(
     : baseTimeoutMs;
 
   return {
-    timeoutMs: Math.min(baseTimeoutMs, chatToolTimeoutMs),
-    maxTimeoutMs: Math.min(baseMaxTimeoutMs, chatToolTimeoutMs),
+    timeoutMs: hasRuntimeLimit(chatToolTimeoutMs)
+      ? Math.min(baseTimeoutMs, chatToolTimeoutMs)
+      : baseTimeoutMs,
+    maxTimeoutMs: hasRuntimeLimit(chatToolTimeoutMs)
+      ? Math.min(baseMaxTimeoutMs, chatToolTimeoutMs)
+      : baseMaxTimeoutMs,
   };
 }
 
@@ -869,7 +877,7 @@ export type { EvalScriptResult };
  */
 function getDefaultMaxToolRounds(config: GatewayConfig): number {
   void config;
-  return 2_048;
+  return 0;
 }
 
 /** Result of loadWallet() — either a keypair + wallet adapter or null. */
@@ -1261,7 +1269,7 @@ export class DaemonManager {
       requestTimeoutMs: this._primaryLlmConfig?.requestTimeoutMs,
       childTimeoutMs: this._subAgentRuntimeConfig?.defaultTimeoutMs,
       maxFanoutPerTurn: this._subAgentRuntimeConfig?.maxFanoutPerTurn,
-      mode: "enforce",
+      mode: this._primaryLlmConfig?.economicsMode ?? "enforce",
     });
     const routingPolicy = buildModelRoutingPolicy({
       providers: this._llmProviders,
@@ -1465,6 +1473,7 @@ export class DaemonManager {
       maxDepth: resolved.maxDepth,
       promptBudget: subAgentPromptBudget,
       sessionTokenBudget: subAgentSessionTokenBudget,
+      economicsMode: config.llm?.economicsMode ?? "enforce",
       onCompaction: this.handleCompaction,
       resolveExecutionBudget: async ({ selectedProvider }) =>
         this.resolveProviderExecutionBudget(selectedProvider),

@@ -36,6 +36,10 @@ import { TOOL_DEFINITIONS as DESKTOP_TOOL_DEFINITIONS } from "@tetsuo-ai/desktop
 import type { GatewayLLMConfig } from "./types.js";
 import { toErrorMessage } from "../utils/async.js";
 import type { Logger } from "../utils/logger.js";
+import {
+  hasRuntimeLimit,
+  normalizeRuntimeLimit,
+} from "../llm/runtime-limit-policy.js";
 
 // ============================================================================
 // Types
@@ -174,6 +178,16 @@ export function resolveSubAgentRuntimeConfig(
     Math.max(0, subagents?.spawnDecisionThreshold ?? 0.2),
   );
   const policyLearning = subagents?.policyLearning;
+  const normalizeCappedLimit = (
+    value: number | undefined,
+    fallback: number,
+    hardCap: number,
+  ): number => {
+    const normalized = normalizeRuntimeLimit(value, fallback);
+    return hasRuntimeLimit(normalized)
+      ? Math.min(hardCap, normalized)
+      : 0;
+  };
   const policyLearningArms =
     Array.isArray(policyLearning?.arms) && policyLearning.arms.length > 0
       ? policyLearning.arms
@@ -197,37 +211,41 @@ export function resolveSubAgentRuntimeConfig(
     unsafeBenchmarkMode,
     mode: subagents?.mode ?? "manager_tools",
     delegationAggressiveness,
-    maxConcurrent: Math.min(
+    maxConcurrent: normalizeCappedLimit(
+      subagents?.maxConcurrent,
+      MAX_CONCURRENT_SUB_AGENTS,
       SUBAGENT_CONFIG_HARD_CAPS.maxConcurrent,
-      Math.max(1, subagents?.maxConcurrent ?? MAX_CONCURRENT_SUB_AGENTS),
     ),
-    maxDepth: Math.min(
+    maxDepth: normalizeCappedLimit(
+      subagents?.maxDepth,
+      4,
       SUBAGENT_CONFIG_HARD_CAPS.maxDepth,
-      Math.max(1, subagents?.maxDepth ?? 4),
     ),
-    maxFanoutPerTurn: Math.min(
+    maxFanoutPerTurn: normalizeCappedLimit(
+      subagents?.maxFanoutPerTurn,
+      8,
       SUBAGENT_CONFIG_HARD_CAPS.maxFanoutPerTurn,
-      Math.max(1, subagents?.maxFanoutPerTurn ?? 8),
     ),
-    maxTotalSubagentsPerRequest: Math.min(
+    maxTotalSubagentsPerRequest: normalizeCappedLimit(
+      subagents?.maxTotalSubagentsPerRequest,
+      32,
       SUBAGENT_CONFIG_HARD_CAPS.maxTotalSubagentsPerRequest,
-      Math.max(1, subagents?.maxTotalSubagentsPerRequest ?? 32),
     ),
-    maxCumulativeToolCallsPerRequestTree: Math.min(
+    maxCumulativeToolCallsPerRequestTree: normalizeCappedLimit(
+      subagents?.maxCumulativeToolCallsPerRequestTree,
+      256,
       SUBAGENT_CONFIG_HARD_CAPS.maxCumulativeToolCallsPerRequestTree,
-      Math.max(1, subagents?.maxCumulativeToolCallsPerRequestTree ?? 256),
     ),
-    maxCumulativeTokensPerRequestTree: Math.min(
+    maxCumulativeTokensPerRequestTree: normalizeCappedLimit(
+      subagents?.maxCumulativeTokensPerRequestTree,
+      0,
       SUBAGENT_CONFIG_HARD_CAPS.maxCumulativeTokensPerRequestTree,
-      Math.max(0, subagents?.maxCumulativeTokensPerRequestTree ?? 0),
     ),
     maxCumulativeTokensPerRequestTreeExplicitlyConfigured,
-    defaultTimeoutMs: Math.min(
+    defaultTimeoutMs: normalizeCappedLimit(
+      subagents?.defaultTimeoutMs,
+      DEFAULT_SUB_AGENT_TIMEOUT_MS,
       SUBAGENT_CONFIG_HARD_CAPS.defaultTimeoutMs,
-      Math.max(
-        1_000,
-        subagents?.defaultTimeoutMs ?? DEFAULT_SUB_AGENT_TIMEOUT_MS,
-      ),
     ),
     baseSpawnDecisionThreshold,
     spawnDecisionThreshold: applyDelegationAggressiveness(

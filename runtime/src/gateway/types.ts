@@ -25,9 +25,9 @@ export interface GatewayLLMConfig {
   webSearch?: boolean;
   /** Routing preference for provider-native web search. */
   searchMode?: "auto" | "on" | "off";
-  /** Maximum output tokens per completion (provider request parameter). */
+  /** Maximum output tokens per completion (provider request parameter). 0 or undefined = provider default/unset. */
   maxTokens?: number;
-  /** Model context window in tokens for adaptive prompt budgeting. */
+  /** Model context window in tokens for adaptive prompt budgeting. 0 or undefined = infer from provider/model metadata. */
   contextWindowTokens?: number;
   /** Hard cap (chars) applied after adaptive prompt budget calculation. */
   promptHardMaxChars?: number;
@@ -37,11 +37,11 @@ export interface GatewayLLMConfig {
   promptCharPerToken?: number;
   /** Upper bound for additive runtime hint system messages per execution. */
   maxRuntimeHints?: number;
-  /** Request timeout in milliseconds for provider calls (default: provider-specific). */
+  /** Request timeout in milliseconds for provider calls. 0 = unlimited, undefined = provider default. */
   timeoutMs?: number;
   /** End-to-end timeout in milliseconds for one chat request execution. 0 or undefined = unlimited. */
   requestTimeoutMs?: number;
-  /** Timeout in milliseconds for a single tool execution call. */
+  /** Timeout in milliseconds for a single tool execution call. 0 or undefined = unlimited. */
   toolCallTimeoutMs?: number;
   /** Optional overrides for LLM failure-class retry policy matrix. */
   retryPolicy?: Partial<Record<
@@ -72,18 +72,20 @@ export interface GatewayLLMConfig {
   };
   /** Maximum token budget per session. 0 or undefined = unlimited. */
   sessionTokenBudget?: number;
-  /** Maximum tool call rounds per message. Default: 5. */
+  /** Maximum tool call rounds per message. 0 or undefined = unlimited. */
   maxToolRounds?: number;
   /** Enable planner/executor split for high-complexity turns. */
   plannerEnabled?: boolean;
-  /** Maximum output tokens for the planner pass. */
+  /** Maximum output tokens for the planner pass. 0 or undefined = unlimited. */
   plannerMaxTokens?: number;
-  /** Maximum tool calls allowed in one request execution. */
+  /** Maximum tool calls allowed in one request execution. 0 or undefined = unlimited. */
   toolBudgetPerRequest?: number;
   /** Maximum model recalls after the initial call per request. 0 or undefined = unlimited. */
   maxModelRecallsPerRequest?: number;
-  /** Maximum failed tool calls allowed per request before aborting. */
+  /** Maximum failed tool calls allowed per request before aborting. 0 or undefined = unlimited. */
   maxFailureBudgetPerRequest?: number;
+  /** Runtime economics ceiling behavior for planner/executor/verifier/child runs. */
+  economicsMode?: "report_only" | "enforce";
   /** Allow model-emitted parallel tool calls. Default: false (serialized). */
   parallelToolCalls?: boolean;
   /** Optional xAI Responses API stateful continuation controls. */
@@ -162,19 +164,19 @@ export interface GatewaySubagentConfig {
   mode?: GatewaySubagentMode;
   /** Global delegation aggressiveness profile exposed to users/operators. */
   delegationAggressiveness?: GatewaySubagentDelegationAggressiveness;
-  /** Maximum concurrent sub-agents across one request/session execution. */
+  /** Maximum concurrent sub-agents across one request/session execution. 0 or undefined = unlimited. */
   maxConcurrent?: number;
-  /** Maximum delegation recursion depth. */
+  /** Maximum delegation recursion depth. 0 or undefined = unlimited. */
   maxDepth?: number;
-  /** Maximum child tasks spawned from one planner turn. */
+  /** Maximum child tasks spawned from one planner turn. 0 or undefined = unlimited. */
   maxFanoutPerTurn?: number;
-  /** Hard cap on total child agents in one parent request. */
+  /** Hard cap on total child agents in one parent request. 0 or undefined = unlimited. */
   maxTotalSubagentsPerRequest?: number;
-  /** Hard cap on cumulative child tool calls across one request tree. */
+  /** Hard cap on cumulative child tool calls across one request tree. 0 or undefined = unlimited. */
   maxCumulativeToolCallsPerRequestTree?: number;
   /** Hard cap on cumulative child LLM tokens across one request tree. 0 or undefined = unlimited. */
   maxCumulativeTokensPerRequestTree?: number;
-  /** Default timeout for child agent execution in milliseconds. */
+  /** Default timeout for child agent execution in milliseconds. 0 or undefined = unlimited. */
   defaultTimeoutMs?: number;
   /** Utility score threshold (0-1) required before delegation. */
   spawnDecisionThreshold?: number;

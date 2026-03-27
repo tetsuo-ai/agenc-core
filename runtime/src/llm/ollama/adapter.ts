@@ -52,6 +52,9 @@ function resolveRequestTimeoutMs(
   callTimeoutMs: number | undefined,
 ): number | undefined {
   const normalizedProviderTimeoutMs = normalizeTimeoutMs(providerTimeoutMs);
+  if (typeof callTimeoutMs === "number" && Number.isFinite(callTimeoutMs) && callTimeoutMs <= 0) {
+    return undefined;
+  }
   const normalizedCallTimeoutMs = normalizeTimeoutMs(callTimeoutMs);
   if (normalizedProviderTimeoutMs === undefined) {
     return normalizedCallTimeoutMs;
@@ -469,13 +472,19 @@ export class OllamaProvider implements LLMProvider {
         provider: "ollama",
         baseUrl: this.config.host,
         model: this.config.model,
-        maxTokens: this.config.maxTokens,
+        maxTokens:
+          typeof this.config.maxTokens === "number" && this.config.maxTokens > 0
+            ? this.config.maxTokens
+            : undefined,
         contextWindowTokens: this.config.numCtx,
       })
     ) ?? {
       provider: "ollama",
       model: this.config.model,
-      maxOutputTokens: this.config.maxTokens,
+      maxOutputTokens:
+        typeof this.config.maxTokens === "number" && this.config.maxTokens > 0
+          ? this.config.maxTokens
+          : undefined,
     };
   }
 
@@ -505,7 +514,11 @@ export class OllamaProvider implements LLMProvider {
     const modelOptions: Record<string, unknown> = {};
     if (this.config.temperature !== undefined)
       modelOptions.temperature = this.config.temperature;
-    if (this.config.maxTokens !== undefined)
+    if (
+      typeof this.config.maxTokens === "number" &&
+      Number.isFinite(this.config.maxTokens) &&
+      this.config.maxTokens > 0
+    )
       modelOptions.num_predict = this.config.maxTokens;
     if (this.config.numCtx !== undefined) modelOptions.num_ctx = this.config.numCtx;
     if (this.config.numGpu !== undefined) modelOptions.num_gpu = this.config.numGpu;

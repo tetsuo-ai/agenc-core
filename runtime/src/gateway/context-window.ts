@@ -164,6 +164,14 @@ function parseContextTokenValue(value: unknown): number | undefined {
   return undefined;
 }
 
+function normalizeOptionalPositiveInt(value: number | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  const normalized = Math.floor(value);
+  return normalized > 0 ? normalized : undefined;
+}
+
 function isContextCandidatePath(path: string): boolean {
   const normalized = path.toLowerCase();
   if (
@@ -690,7 +698,7 @@ export async function resolveContextWindowProfile(
         model,
         contextWindowTokens: explicit,
         contextWindowSource: "explicit_config",
-        maxOutputTokens: llmConfig.maxTokens,
+        maxOutputTokens: normalizeOptionalPositiveInt(llmConfig.maxTokens),
       };
     }
     const dynamic = await resolveDynamicGrokContextWindowTokens(llmConfig, options);
@@ -700,7 +708,7 @@ export async function resolveContextWindowProfile(
         model,
         contextWindowTokens: dynamic,
         contextWindowSource: "grok_model_catalog",
-        maxOutputTokens: llmConfig.maxTokens,
+        maxOutputTokens: normalizeOptionalPositiveInt(llmConfig.maxTokens),
       };
     }
     return {
@@ -708,7 +716,7 @@ export async function resolveContextWindowProfile(
       model,
       contextWindowTokens: inferGrokContextWindowTokens(model),
       contextWindowSource: "grok_model_heuristic",
-      maxOutputTokens: llmConfig.maxTokens,
+      maxOutputTokens: normalizeOptionalPositiveInt(llmConfig.maxTokens),
     };
   }
 
@@ -720,7 +728,7 @@ export async function resolveContextWindowProfile(
         model,
         contextWindowTokens: explicit,
         contextWindowSource: "ollama_request_num_ctx",
-        maxOutputTokens: llmConfig.maxTokens,
+        maxOutputTokens: normalizeOptionalPositiveInt(llmConfig.maxTokens),
       };
     }
     const dynamic = await resolveDynamicOllamaContextWindow(llmConfig, options);
@@ -730,7 +738,7 @@ export async function resolveContextWindowProfile(
         model,
         contextWindowTokens: dynamic.contextWindowTokens,
         contextWindowSource: dynamic.source,
-        maxOutputTokens: llmConfig.maxTokens,
+        maxOutputTokens: normalizeOptionalPositiveInt(llmConfig.maxTokens),
       };
     }
     return {
@@ -738,7 +746,7 @@ export async function resolveContextWindowProfile(
       model,
       contextWindowTokens: DEFAULT_OLLAMA_CONTEXT_WINDOW_TOKENS,
       contextWindowSource: "ollama_default",
-      maxOutputTokens: llmConfig.maxTokens,
+      maxOutputTokens: normalizeOptionalPositiveInt(llmConfig.maxTokens),
     };
   }
 

@@ -27,8 +27,6 @@ import {
   type BackgroundRunOperatorSummary,
 } from "./background-run-operator.js";
 import {
-  DEFAULT_BACKGROUND_RUN_MAX_IDLE_MS,
-  DEFAULT_BACKGROUND_RUN_MAX_RUNTIME_MS,
   deriveDefaultBackgroundRunMaxCycles,
   type BackgroundRunApprovalState,
   type BackgroundRunArtifactRef,
@@ -49,6 +47,7 @@ import { buildBackgroundRunSignalFromToolResult } from "./background-run-wake-ad
 import {
   parseToolResultObject,
 } from "../llm/chat-executor-tool-utils.js";
+import { normalizeOptionalRuntimeLimit } from "../llm/runtime-limit-policy.js";
 import type {
   ActiveBackgroundRun,
   BackgroundRunDecision,
@@ -116,6 +115,10 @@ export function normalizePositiveInteger(value: unknown): number | undefined {
   }
   const normalized = Math.floor(value);
   return normalized > 0 ? normalized : undefined;
+}
+
+export function normalizeOptionalBudgetLimit(value: unknown): number | undefined {
+  return normalizeOptionalRuntimeLimit(value);
 }
 
 export function normalizeOperatorStringList(
@@ -909,12 +912,12 @@ export function buildInitialBudgetState(
     totalTokens: 0,
     lastCycleTokens: 0,
     managedProcessCount: 0,
-    maxRuntimeMs: DEFAULT_BACKGROUND_RUN_MAX_RUNTIME_MS,
+    maxRuntimeMs: 0,
     maxCycles: deriveDefaultBackgroundRunMaxCycles({
-      maxRuntimeMs: DEFAULT_BACKGROUND_RUN_MAX_RUNTIME_MS,
+      maxRuntimeMs: 0,
       nextCheckMs: contract.nextCheckMs,
     }),
-    maxIdleMs: contract.requiresUserStop ? undefined : DEFAULT_BACKGROUND_RUN_MAX_IDLE_MS,
+    maxIdleMs: contract.requiresUserStop ? undefined : 0,
     nextCheckIntervalMs: contract.nextCheckMs,
     heartbeatIntervalMs: contract.heartbeatMs,
   };

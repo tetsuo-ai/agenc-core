@@ -30,6 +30,7 @@ import {
   mergeSubagentVerifierDecisions,
   parseSubagentVerifierDecision,
 } from "./chat-executor-verifier.js";
+import { hasRuntimeLimit } from "./runtime-limit-policy.js";
 
 interface CallModelForPhaseResult
   extends Pick<LLMResponse, "content" | "finishReason" | "toolCalls"> {}
@@ -237,7 +238,10 @@ export async function executePlannerPipelineWithVerifierLoop(
     const retryable =
       verificationDecision.steps.some((step) => step.retryable);
     const canRetry =
-      verifierRounds < input.verifierConfig.maxRounds &&
+      (
+        !hasRuntimeLimit(input.verifierConfig.maxRounds) ||
+        verifierRounds < input.verifierConfig.maxRounds
+      ) &&
       (
         verificationDecision.overall === "retry" ||
         belowConfidence

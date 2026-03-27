@@ -96,7 +96,7 @@ export function createChatExecutor(
     requestTimeoutMs: llmConfig?.requestTimeoutMs,
     childTimeoutMs: subagentConfig.defaultTimeoutMs,
     maxFanoutPerTurn: subagentConfig.maxFanoutPerTurn,
-    mode: "enforce",
+    mode: llmConfig?.economicsMode ?? "enforce",
   });
   const modelRoutingPolicy = buildModelRoutingPolicy({
     providers: params.providers,

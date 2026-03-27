@@ -2,6 +2,7 @@ import type { WorkflowGraphEdge } from "../workflow/types.js";
 import type { ExecuteWithAgentInput } from "./delegation-tool.js";
 import type { DelegationBudgetSnapshot } from "../llm/run-budget.js";
 import { estimateDelegationStepSpendUnits } from "../llm/model-routing-policy.js";
+import { hasRuntimeLimit } from "../llm/runtime-limit-policy.js";
 import {
   deriveDelegationEconomics,
   type DelegationCandidateStep,
@@ -468,7 +469,10 @@ function isEconomicallyNegative(
   if (
     childMostlyAvailable &&
     !parentPressureHigh &&
-    economics.parallelizableCount <= snapshot.childFanoutSoftCap
+    (
+      !hasRuntimeLimit(snapshot.childFanoutSoftCap) ||
+      economics.parallelizableCount <= snapshot.childFanoutSoftCap
+    )
   ) {
     return {
       negative: false,
@@ -495,7 +499,10 @@ function isEconomicallyNegative(
     snapshot.remainingSpendUnits - estimatedSpendUnits;
   return {
     negative:
-      economics.parallelizableCount > snapshot.childFanoutSoftCap ||
+      (
+        hasRuntimeLimit(snapshot.childFanoutSoftCap) &&
+        economics.parallelizableCount > snapshot.childFanoutSoftCap
+      ) ||
       remainingTokensAfter < snapshot.negativeDelegationMarginTokens ||
       remainingSpendAfter < snapshot.negativeDelegationMarginUnits ||
       parentPressureHigh,

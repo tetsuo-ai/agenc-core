@@ -52,6 +52,7 @@ import {
   MAX_SUBAGENT_VERIFIER_OUTPUT_CHARS,
   RECOVERY_HINT_PREFIX,
 } from "./chat-executor-constants.js";
+import { hasRuntimeLimit } from "./runtime-limit-policy.js";
 import {
   truncateText,
   extractLLMMessageText,
@@ -620,10 +621,7 @@ export function buildPlannerMessages(
       return `[${entry.role}] ${truncateText(raw, 300)}`;
     })
     .join("\n");
-  const maxSteps = Math.min(
-    MAX_PLANNER_STEPS,
-    Math.max(1, Math.floor(plannerMaxTokens / 8)),
-  );
+  const maxSteps = resolvePlannerStepLimit(plannerMaxTokens);
   const canonicalPlannerWorkspaceRoot =
     normalizeWorkspaceRoot(plannerWorkspaceRoot);
   const schemaWorkspaceRoot =
@@ -706,13 +704,20 @@ export function buildPlannerMessages(
         ) +
         "- If you need to reduce delegated fanout, only merge adjacent steps from the same phase family. Never merge research with setup/manifest work, or code implementation with broad validation/browser QA.\n" +
         "- For Node workspace scaffold/setup steps that run before the real install step, objectives and acceptance criteria must stay file-authoring-only. Do not mention install/build/test/typecheck/lint/coverage/runtime success there; put those checks in later steps after install.\n" +
-        "- For deterministic system.bash/desktop.bash steps, do not use nested shell wrappers like `bash -c` or `sh -c`; call the target command directly or use shell mode.\n" +
         "- Do not embed heredocs, multi-line shell scripts, or generated file contents inside deterministic bash steps. Use file mutation tools for file contents instead.\n" +
         "- Verification/build/test commands must be non-interactive and exit on their own. Do not use watch mode or dev servers for validation. Prefer runner-native single-run invocations. For Vitest use `vitest run`/`vitest --run`. For Jest use `CI=1 npm test` or `jest --runInBand`. Only pass extra npm `--` flags when the underlying runner supports them.\n" +
         "- max_budget_hint must use explicit units like `90s`, `2m`, or `1h`; do not use bare numeric hints such as `0.08`.\n" +
         "- synthesis steps describe final merge/synthesis intent and do not call tools.\n" +
-        `Keep output concise and below approximately ${plannerMaxTokens} tokens. ` +
-        `Never emit more than ${maxSteps} steps.`,
+        (
+          hasRuntimeLimit(plannerMaxTokens)
+            ? `Keep output concise and below approximately ${plannerMaxTokens} tokens. `
+            : ""
+        ) +
+        (
+          Number.isFinite(maxSteps)
+            ? `Never emit more than ${maxSteps} steps.`
+            : ""
+        ),
     },
   ];
 
@@ -1810,7 +1815,10 @@ export function parsePlannerPlan(
   const unresolvedDependencies = new Map<string, readonly string[]>();
   const nameAliases = new Map<string, string>();
   const usedStepNames = new Set<string>();
-  const maxSteps = Math.min(MAX_PLANNER_STEPS, parsed.steps.length);
+  const maxSteps = resolvePlannerStepLimit(
+    0,
+    parsed.steps.length,
+  );
 
   for (const [index, rawStep] of parsed.steps.slice(0, maxSteps).entries()) {
     if (
@@ -3063,19 +3071,6 @@ export function validateExplicitDeterministicToolRequirements(
 }
 
 const PLANNER_BASH_TOOL_NAMES = new Set(["system.bash", "desktop.bash"]);
-const PLANNER_SHELL_WRAPPER_COMMANDS = new Set([
-  "bash",
-  "sh",
-  "zsh",
-  "dash",
-  "ksh",
-  "fish",
-  "csh",
-  "tcsh",
-]);
-const PLANNER_SHELL_WRAPPER_FLAG_RE = /^-[A-Za-z]*c[A-Za-z]*$/;
-const PLANNER_INLINE_SHELL_WRAPPER_RE =
-  /^(?:\S+\/)?(?:bash|sh|zsh|dash|ksh|fish|csh|tcsh)\s+-[A-Za-z]*c\b/i;
 const PLANNER_HEREDOC_RE = /<<-?\s*['"]?[A-Za-z0-9_-]+['"]?/;
 const PLANNER_INLINE_FILE_WRITE_RE =
   /\b(?:cat|tee)\b[\s\S]{0,96}(?:>\s*\S|>>\s*\S|<<-?\s*['"]?[A-Za-z0-9_-]+['"]?)|\b(?:echo|printf)\b[\s\S]{0,160}(?:>\s*\S|>>\s*\S)/i;
@@ -3155,30 +3150,6 @@ export function validatePlannerStepContracts(
         );
         continue;
       }
-
-      const commandBase = commandBasename(command);
-      const firstArg = parsedArgs[0]?.trim() ?? "";
-      if (
-        (parsedArgs.length === 0 &&
-          PLANNER_INLINE_SHELL_WRAPPER_RE.test(command.trim())) ||
-        PLANNER_SHELL_WRAPPER_COMMANDS.has(commandBase) &&
-        PLANNER_SHELL_WRAPPER_FLAG_RE.test(firstArg)
-      ) {
-        diagnostics.push(
-          createPlannerDiagnostic(
-            "validation",
-            "planner_bash_nested_shell_forbidden",
-            `Planner bash step "${step.name}" uses forbidden nested shell wrapper invocation`,
-            {
-              stepName: step.name,
-              tool: step.tool,
-              command: commandBase,
-            },
-          ),
-        );
-        continue;
-      }
-
       const directModeShellTokens = collectDirectModeShellControlTokens(parsedArgs);
       if (directModeShellTokens.length > 0) {
         diagnostics.push(
@@ -3469,9 +3440,6 @@ export function buildPlannerStepContractRefinementHint(
 ): string {
   const fragments = diagnostics
     .map((diagnostic) => {
-      if (diagnostic.code === "planner_bash_nested_shell_forbidden") {
-        return "do not use `bash -c` or `sh -c` in deterministic bash steps";
-      }
       if (
         diagnostic.code === "planner_bash_shell_syntax_in_direct_args"
       ) {
@@ -4988,4 +4956,22 @@ export function didSubagentStepFail(result: string): boolean {
   } catch {
     return didToolCallFail(false, result);
   }
+}
+function resolvePlannerStepLimit(
+  plannerMaxTokens: number,
+  requestedStepCount?: number,
+): number {
+  if (!hasRuntimeLimit(plannerMaxTokens) && !hasRuntimeLimit(MAX_PLANNER_STEPS)) {
+    return requestedStepCount ?? Number.POSITIVE_INFINITY;
+  }
+  const tokenDerivedLimit = hasRuntimeLimit(plannerMaxTokens)
+    ? Math.max(1, Math.floor(plannerMaxTokens / 8))
+    : Number.POSITIVE_INFINITY;
+  const hardLimit = hasRuntimeLimit(MAX_PLANNER_STEPS)
+    ? MAX_PLANNER_STEPS
+    : Number.POSITIVE_INFINITY;
+  const resolved = Math.min(tokenDerivedLimit, hardLimit);
+  return requestedStepCount === undefined
+    ? resolved
+    : Math.min(resolved, requestedStepCount);
 }

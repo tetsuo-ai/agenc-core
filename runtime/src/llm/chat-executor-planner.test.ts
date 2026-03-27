@@ -1378,7 +1378,7 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
     );
   });
 
-  it("rejects deterministic bash wrapper steps that use bash -c", () => {
+  it("allows deterministic bash wrapper steps that use bash -c", () => {
     const diagnostics = validatePlannerStepContracts({
       reason: "bad_bash_wrapper",
       requiresSynthesis: false,
@@ -1391,19 +1391,14 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
           tool: "system.bash",
           args: {
             command: "bash",
-            args: ["-c", "mkdir -p grid-router-ts && cat > tsconfig.json <<'EOF'"],
+            args: ["-c", "mkdir -p grid-router-ts && touch tsconfig.json"],
           },
         },
       ],
       edges: [],
     });
 
-    expect(diagnostics).toEqual([
-      expect.objectContaining({
-        category: "validation",
-        code: "planner_bash_nested_shell_forbidden",
-      }),
-    ]);
+    expect(diagnostics).toEqual([]);
   });
 
   it("rejects substantial software plan-doc requests that collapse directly to a single writeFile step", () => {

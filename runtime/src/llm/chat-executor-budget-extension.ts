@@ -7,6 +7,11 @@
 import {
   MAX_ADAPTIVE_TOOL_ROUNDS,
 } from "./chat-executor-constants.js";
+import {
+  hasRuntimeLimit,
+  remainingRuntimeLimit,
+  UNLIMITED_RUNTIME_REMAINING,
+} from "./runtime-limit-policy.js";
 import type {
   ExecutionContext,
 } from "./chat-executor-types.js";
@@ -66,15 +71,23 @@ export function evaluateToolRoundBudgetExtension(
   params: ToolRoundBudgetExtensionParams,
   getRemainingRequestMs: (ctx: ExecutionContext) => number,
 ): ToolRoundBudgetExtensionResult {
-  const remainingToolBudget = Math.max(
-    0,
-    params.ctx.effectiveToolBudget - params.ctx.allToolCalls.length,
-  );
-  const effectiveRoundCeiling = Math.min(
-    MAX_ADAPTIVE_TOOL_ROUNDS,
+  const remainingToolBudget = remainingRuntimeLimit(
+    params.ctx.allToolCalls.length,
     params.ctx.effectiveToolBudget,
   );
-  if (params.currentLimit >= effectiveRoundCeiling) {
+  const effectiveRoundCeiling =
+    hasRuntimeLimit(MAX_ADAPTIVE_TOOL_ROUNDS) &&
+    hasRuntimeLimit(params.ctx.effectiveToolBudget)
+      ? Math.min(MAX_ADAPTIVE_TOOL_ROUNDS, params.ctx.effectiveToolBudget)
+      : hasRuntimeLimit(MAX_ADAPTIVE_TOOL_ROUNDS)
+      ? MAX_ADAPTIVE_TOOL_ROUNDS
+      : hasRuntimeLimit(params.ctx.effectiveToolBudget)
+      ? params.ctx.effectiveToolBudget
+      : 0;
+  if (
+    hasRuntimeLimit(effectiveRoundCeiling) &&
+    params.currentLimit >= effectiveRoundCeiling
+  ) {
     return {
       decision: "ceiling_reached",
       recentProgressRate: 0,
@@ -285,10 +298,13 @@ export function evaluateToolRoundBudgetExtension(
       repairCycleNeedsVerification,
     };
   }
+  const remainingRoundBudget = hasRuntimeLimit(effectiveRoundCeiling)
+    ? effectiveRoundCeiling - params.currentLimit
+    : UNLIMITED_RUNTIME_REMAINING;
   const extensionRounds = Math.min(
     expectedMarginalRounds,
     timeBoundExtension,
-    effectiveRoundCeiling - params.currentLimit,
+    remainingRoundBudget,
     remainingToolBudget,
   );
   if (extensionRounds <= 0) {

@@ -41,6 +41,7 @@ import {
   resolveSessionTokenBudget,
   DEFAULT_GROK_MODEL,
 } from "./llm-provider-manager.js";
+import { hasRuntimeLimit } from "../llm/runtime-limit-policy.js";
 import {
   listKnownGrokModels,
   normalizeGrokModel,
@@ -608,7 +609,7 @@ export function createDaemonCommandRegistry(
         contextWindowTokens,
       );
       const ratio =
-        sessionTokenBudget > 0 ? totalTokens / sessionTokenBudget : 0;
+        hasRuntimeLimit(sessionTokenBudget) ? totalTokens / sessionTokenBudget : 0;
       const percent = Math.min(100, Math.max(0, ratio * 100));
 
       // Build breakdown
@@ -622,13 +623,22 @@ export function createDaemonCommandRegistry(
       const model = normalizeGrokModel(ctx.gateway?.config.llm?.model) ?? "unknown";
       const provider = ctx.gateway?.config.llm?.provider ?? "unknown";
 
-      const overBudget = totalTokens > sessionTokenBudget;
+      const overBudget =
+        hasRuntimeLimit(sessionTokenBudget) && totalTokens > sessionTokenBudget;
       const lines = [
         `Context Window: ${(contextWindowTokens ?? 0).toLocaleString()} tokens (${model} via ${provider})`,
-        `Session Budget: ${sessionTokenBudget.toLocaleString()} tokens`,
+        `Session Budget: ${
+          hasRuntimeLimit(sessionTokenBudget)
+            ? `${sessionTokenBudget.toLocaleString()} tokens`
+            : "unlimited"
+        }`,
         `Used: ${totalTokens.toLocaleString()} tokens (${percent.toFixed(percent >= 10 ? 0 : 1)}%)` +
           (overBudget ? " — COMPACTION PENDING (next message will compact)" : ""),
-        `Free: ${overBudget ? "0" : Math.max(0, sessionTokenBudget - totalTokens).toLocaleString()} tokens`,
+        `Free: ${
+          hasRuntimeLimit(sessionTokenBudget)
+            ? `${overBudget ? "0" : Math.max(0, sessionTokenBudget - totalTokens).toLocaleString()} tokens`
+            : "unlimited"
+        }`,
         "",
         "Breakdown:",
         `  System prompt: ~${systemPromptTokens.toLocaleString()} tokens`,

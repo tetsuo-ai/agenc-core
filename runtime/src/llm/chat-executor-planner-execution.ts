@@ -81,6 +81,9 @@ import type {
   ResolvedSubagentVerifierConfig,
   ChatCallUsageRecord,
 } from "./chat-executor-types.js";
+import {
+  isRuntimeLimitExceeded,
+} from "./runtime-limit-policy.js";
 import type { LLMPipelineStopReason } from "./policy.js";
 import type { LLMResponse } from "./types.js";
 import {
@@ -1221,7 +1224,7 @@ export async function executePlannerPath(
       ctx.plannerSummaryState.routeReason !==
         "planner_explicit_tool_requirements_unmet"
     ) {
-      if (deterministicSteps.length > ctx.effectiveToolBudget) {
+      if (isRuntimeLimitExceeded(deterministicSteps.length, ctx.effectiveToolBudget)) {
         callbacks.setStopReason(
           ctx,
           "budget_exceeded",
@@ -1575,7 +1578,7 @@ export async function executePlannerPath(
         );
       }
 
-      if (ctx.failedToolCalls > ctx.effectiveFailureBudget) {
+      if (isRuntimeLimitExceeded(ctx.failedToolCalls, ctx.effectiveFailureBudget)) {
         callbacks.setStopReason(
           ctx,
           "tool_error",

@@ -39,17 +39,6 @@ const DESKTOP_BIASED_SYSTEM_COMMANDS = new Set([
   "playwright",
   "gdb",
 ]);
-const SHELL_WRAPPER_COMMANDS = new Set([
-  "bash",
-  "sh",
-  "zsh",
-  "dash",
-  "csh",
-  "fish",
-  "ksh",
-  "tcsh",
-]);
-
 function extractDeniedCommand(failureText: string): string | undefined {
   const quotedDouble = failureText.match(/command\s+"([^"]+)"\s+is denied/i);
   if (quotedDouble && quotedDouble[1]?.trim().length) {
@@ -1048,25 +1037,8 @@ export function inferRecoveryHint(
           "If you need pipes, redirection, heredocs, chaining, or other shell syntax on the host, retry with the full shell command in `command` and omit `args`.",
       };
     }
-    if (failureTextLower.includes("nested shell invocation")) {
-      return {
-        key: "system-bash-shell-reinvocation",
-        message:
-          "system.bash already runs commands in a shell. Do NOT wrap with `bash -c` or `sh -c`. " +
-          "Pass the inner command directly as `command` (omit `args` for shell mode). " +
-          'Example: instead of command="bash -c \'curl http://...\'" use command="curl http://...".',
-      };
-    }
     const deniedCommand = extractDeniedCommand(failureText);
     if (deniedCommand) {
-      if (SHELL_WRAPPER_COMMANDS.has(commandBasename(deniedCommand))) {
-        return {
-          key: "system-bash-command-denied-shell-wrapper",
-          message:
-            'system.bash blocks shell wrapper executables like `bash`/`sh`. Do NOT call `bash -c` or `sh -c`. ' +
-            "Call the target executable directly via `command` + `args`.",
-        };
-      }
       if (isNodeInterpreterCommand(deniedCommand)) {
         if (isAgencRuntimeNodeInvocation(call.args)) {
           return {

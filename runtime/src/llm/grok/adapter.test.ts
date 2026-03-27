@@ -78,14 +78,14 @@ describe("GrokProvider", () => {
     });
   });
 
-  it("coerces non-positive timeoutMs to the default request timeout", async () => {
+  it("treats timeoutMs=0 as unlimited instead of restoring the default timeout", async () => {
     mockCreate.mockResolvedValueOnce(makeCompletion());
 
     const provider = new GrokProvider({ apiKey: "test-key", timeoutMs: 0 });
     await provider.chat([{ role: "user", content: "test" }]);
 
     expect(mockOpenAIConstructor).toHaveBeenCalledOnce();
-    expect(mockOpenAIConstructor.mock.calls[0][0].timeout).toBe(60_000);
+    expect(mockOpenAIConstructor.mock.calls[0][0].timeout).toBeUndefined();
   });
 
   it("sends messages in Responses-compatible format", async () => {

@@ -30,6 +30,14 @@ import { resolveGatewayStatefulResponses } from "./llm-stateful-defaults.js";
 export const DEFAULT_GROK_MODEL = "grok-4-1-fast-reasoning";
 export const DEFAULT_GROK_FALLBACK_MODEL = "grok-4-1-fast-non-reasoning";
 
+function normalizeOptionalPositiveInt(value: number | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  const normalized = Math.floor(value);
+  return normalized > 0 ? normalized : undefined;
+}
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -90,7 +98,9 @@ export function buildPromptBudgetConfig(
   return {
     contextWindowTokens:
       contextWindowTokens ?? inferContextWindowTokens(llmConfig),
-    maxOutputTokens: maxOutputTokens ?? llmConfig?.maxTokens,
+    maxOutputTokens:
+      normalizeOptionalPositiveInt(maxOutputTokens) ??
+      normalizeOptionalPositiveInt(llmConfig?.maxTokens),
     hardMaxPromptChars: llmConfig?.promptHardMaxChars,
     safetyMarginTokens: llmConfig?.promptSafetyMarginTokens,
     charPerToken: llmConfig?.promptCharPerToken,
@@ -102,7 +112,7 @@ export function buildPromptBudgetConfig(
 // Session token budget (module-level, re-exported for daemon use)
 // ============================================================================
 
-const DEFAULT_SESSION_TOKEN_BUDGET = 120_000;
+const DEFAULT_SESSION_TOKEN_BUDGET = 0;
 
 export function resolveSessionTokenBudget(
   llmConfig: GatewayLLMConfig | undefined,
@@ -117,11 +127,8 @@ export function resolveSessionTokenBudget(
   const inferredContextWindow =
     contextWindowTokens ?? inferContextWindowTokens(llmConfig);
   if (inferredContextWindow !== undefined) {
-    // Use 60% of the model's context window as the session budget,
-    // leaving room for system prompt, tools, and output tokens.
-    // Floor at 120K for small models, no cap for large ones.
-    const proportionalBudget = Math.floor(inferredContextWindow * 0.6);
-    return Math.max(proportionalBudget, DEFAULT_SESSION_TOKEN_BUDGET);
+    void inferredContextWindow;
+    return DEFAULT_SESSION_TOKEN_BUDGET;
   }
   return DEFAULT_SESSION_TOKEN_BUDGET;
 }
@@ -332,11 +339,13 @@ export async function createSingleLLMProvider(
         apiKey: apiKey ?? "",
         model: normalizedModel,
         baseURL: baseUrl,
-        contextWindowTokens: llmConfig.contextWindowTokens,
+        contextWindowTokens: normalizeOptionalPositiveInt(
+          llmConfig.contextWindowTokens,
+        ),
         webSearch: nativeWebSearchEnabled,
         searchMode,
         timeoutMs,
-        maxTokens,
+        maxTokens: normalizeOptionalPositiveInt(maxTokens),
         parallelToolCalls,
         statefulResponses: resolvedStatefulResponses.config,
         tools,
@@ -348,8 +357,8 @@ export async function createSingleLLMProvider(
         model: model ?? "llama3",
         host: baseUrl,
         timeoutMs,
-        maxTokens,
-        numCtx: llmConfig.contextWindowTokens,
+        maxTokens: normalizeOptionalPositiveInt(maxTokens),
+        numCtx: normalizeOptionalPositiveInt(llmConfig.contextWindowTokens),
         statefulResponses,
         tools,
       });

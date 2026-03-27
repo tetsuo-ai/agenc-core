@@ -587,8 +587,8 @@ describe("background-run-supervisor", () => {
     expect(execute.mock.calls[0]?.[0].systemPrompt).toContain(
       "launch it so the tool call returns immediately",
     );
-    expect(execute.mock.calls[0]?.[0].maxToolRounds).toBe(1);
-    expect(execute.mock.calls[0]?.[0].toolBudgetPerRequest).toBe(4);
+    expect(execute.mock.calls[0]?.[0].maxToolRounds).toBe(0);
+    expect(execute.mock.calls[0]?.[0].toolBudgetPerRequest).toBe(0);
     expect(execute.mock.calls[0]?.[0].maxModelRecallsPerRequest).toBe(0);
     expect(publishUpdate).toHaveBeenNthCalledWith(
       1,
@@ -2323,9 +2323,9 @@ describe("background-run-supervisor", () => {
           ]),
         }),
         budgetState: expect.objectContaining({
-          maxRuntimeMs: 604_800_000,
+          maxRuntimeMs: 0,
           maxCycles: deriveDefaultBackgroundRunMaxCycles({
-            maxRuntimeMs: 604_800_000,
+            maxRuntimeMs: 0,
             nextCheckMs: 4000,
           }),
           nextCheckIntervalMs: 4000,
@@ -2347,9 +2347,9 @@ describe("background-run-supervisor", () => {
       await expect(runStore1.loadRun("session-recover")).resolves.toMatchObject({
         state: "suspended",
         budgetState: expect.objectContaining({
-          maxRuntimeMs: 604_800_000,
+          maxRuntimeMs: 0,
           maxCycles: deriveDefaultBackgroundRunMaxCycles({
-            maxRuntimeMs: 604_800_000,
+            maxRuntimeMs: 0,
             nextCheckMs: 4000,
           }),
         }),
@@ -2434,9 +2434,9 @@ describe("background-run-supervisor", () => {
           ]),
         }),
         budgetState: expect.objectContaining({
-          maxRuntimeMs: 604_800_000,
+          maxRuntimeMs: 0,
           maxCycles: deriveDefaultBackgroundRunMaxCycles({
-            maxRuntimeMs: 604_800_000,
+            maxRuntimeMs: 0,
             nextCheckMs: 4000,
           }),
         }),
@@ -3497,9 +3497,10 @@ describe("background-run-supervisor", () => {
       }),
       budgetState: expect.objectContaining({
         maxCycles: deriveDefaultBackgroundRunMaxCycles({
-          maxRuntimeMs: 604_800_000,
+          maxRuntimeMs: 0,
           nextCheckMs: 4000,
         }),
+        maxRuntimeMs: 0,
         nextCheckIntervalMs: 4000,
       }),
       fenceToken: expect.any(Number),

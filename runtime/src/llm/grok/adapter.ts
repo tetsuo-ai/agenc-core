@@ -90,12 +90,12 @@ function createStreamTimeoutError(providerName: string, timeoutMs: number): Erro
   return err;
 }
 
-function normalizeTimeoutMs(timeoutMs: number | undefined): number {
+function normalizeTimeoutMs(timeoutMs: number | undefined): number | undefined {
   if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs)) {
     return DEFAULT_TIMEOUT_MS;
   }
   if (timeoutMs <= 0) {
-    return DEFAULT_TIMEOUT_MS;
+    return undefined;
   }
   return Math.max(1, Math.floor(timeoutMs));
 }
@@ -103,12 +103,19 @@ function normalizeTimeoutMs(timeoutMs: number | undefined): number {
 function resolveRequestTimeoutMs(
   providerTimeoutMs: number | undefined,
   callTimeoutMs: number | undefined,
-): number {
+): number | undefined {
   const normalizedProviderTimeoutMs = normalizeTimeoutMs(providerTimeoutMs);
   if (typeof callTimeoutMs !== "number" || !Number.isFinite(callTimeoutMs)) {
     return normalizedProviderTimeoutMs;
   }
-  return Math.max(1, Math.min(normalizedProviderTimeoutMs, Math.floor(callTimeoutMs)));
+  if (callTimeoutMs <= 0) {
+    return undefined;
+  }
+  const normalizedCallTimeoutMs = Math.max(1, Math.floor(callTimeoutMs));
+  if (normalizedProviderTimeoutMs === undefined) {
+    return normalizedCallTimeoutMs;
+  }
+  return Math.max(1, Math.min(normalizedProviderTimeoutMs, normalizedCallTimeoutMs));
 }
 
 async function nextStreamChunkWithTimeout<T>(
@@ -589,10 +596,15 @@ export class GrokProvider implements LLMProvider {
       this.config.timeoutMs,
       options?.timeoutMs,
     );
-    const requestDeadlineAt = Date.now() + requestTimeoutMs;
+    const requestDeadlineAt =
+      typeof requestTimeoutMs === "number"
+        ? Date.now() + requestTimeoutMs
+        : Number.POSITIVE_INFINITY;
 
     const run = async (activePlan: ReturnType<GrokProvider["buildRequestPlan"]>) => {
-      const activeRequestTimeoutMs = Math.max(1, requestDeadlineAt - Date.now());
+      const activeRequestTimeoutMs = Number.isFinite(requestDeadlineAt)
+        ? Math.max(1, requestDeadlineAt - Date.now())
+        : undefined;
       emitProviderTraceEvent(options, {
         kind: "request",
         transport: "chat",
@@ -742,12 +754,17 @@ export class GrokProvider implements LLMProvider {
       this.config.timeoutMs,
       options?.timeoutMs,
     );
-    const streamDeadlineAt = Date.now() + streamTimeoutMs;
+    const streamDeadlineAt =
+      typeof streamTimeoutMs === "number"
+        ? Date.now() + streamTimeoutMs
+        : Number.POSITIVE_INFINITY;
 
     try {
       let stream: AsyncIterable<any>;
       while (true) {
-        const requestAttemptTimeoutMs = Math.max(1, streamDeadlineAt - Date.now());
+        const requestAttemptTimeoutMs = Number.isFinite(streamDeadlineAt)
+          ? Math.max(1, streamDeadlineAt - Date.now())
+          : undefined;
         emitProviderTraceEvent(options, {
           kind: "request",
           transport: "chat_stream",
@@ -848,9 +865,14 @@ export class GrokProvider implements LLMProvider {
       streamIterator = stream[Symbol.asyncIterator]();
 
       while (true) {
-        const remainingStreamMs = streamDeadlineAt - Date.now();
-        if (remainingStreamMs <= 0) {
-          throw createStreamTimeoutError(this.name, streamTimeoutMs);
+        const remainingStreamMs = Number.isFinite(streamDeadlineAt)
+          ? Math.max(0, streamDeadlineAt - Date.now())
+          : undefined;
+        if (
+          typeof remainingStreamMs === "number" &&
+          remainingStreamMs <= 0
+        ) {
+          throw createStreamTimeoutError(this.name, streamTimeoutMs ?? 0);
         }
         const iterResult = await nextStreamChunkWithTimeout(
           streamIterator,
@@ -1035,13 +1057,19 @@ export class GrokProvider implements LLMProvider {
         apiKey: this.config.apiKey,
         baseUrl: this.config.baseURL,
         model: this.config.model,
-        maxTokens: this.config.maxTokens,
+        maxTokens:
+          typeof this.config.maxTokens === "number" && this.config.maxTokens > 0
+            ? this.config.maxTokens
+            : undefined,
         contextWindowTokens: this.config.contextWindowTokens,
       })
     ) ?? {
       provider: "grok",
       model: this.config.model,
-      maxOutputTokens: this.config.maxTokens,
+      maxOutputTokens:
+        typeof this.config.maxTokens === "number" && this.config.maxTokens > 0
+          ? this.config.maxTokens
+          : undefined,
     };
   }
 
@@ -1452,7 +1480,11 @@ export class GrokProvider implements LLMProvider {
     }
     if (this.config.temperature !== undefined)
       params.temperature = this.config.temperature;
-    if (this.config.maxTokens !== undefined)
+    if (
+      typeof this.config.maxTokens === "number" &&
+      Number.isFinite(this.config.maxTokens) &&
+      this.config.maxTokens > 0
+    )
       params.max_output_tokens = this.config.maxTokens;
     if (options?.contextManagementCompactThreshold !== undefined) {
       params.context_management = {

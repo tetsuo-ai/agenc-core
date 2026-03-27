@@ -331,11 +331,6 @@ export const DANGEROUS_SHELL_PATTERNS: readonly DangerousShellPattern[] = [
     message: "Raw device writes via dd are blocked",
   },
   {
-    name: "shell_reinvocation",
-    pattern: /\b(?:bash|sh|zsh|dash)\s+-c\b/,
-    message: "Nested shell invocation (bash -c) is blocked — write your command directly",
-  },
-  {
     name: "fork_bomb",
     pattern: /:\(\)\s*\{.*\|.*&\s*\}\s*;?\s*:/,
     message: "Fork bomb patterns are blocked",
@@ -370,8 +365,8 @@ export interface BashExecutionResult {
 
 /**
  * Default deny list of dangerous commands.
- * Blocks shell re-invocation, privilege escalation, destructive ops,
- * reverse shells, download-and-execute, and script interpreters.
+ * Blocks privilege escalation, destructive ops, reverse shells,
+ * download-and-execute, and script interpreters.
  * Merged with any user-provided deny list.
  */
 export const DEFAULT_DENY_LIST: readonly string[] = [
@@ -384,15 +379,6 @@ export const DEFAULT_DENY_LIST: readonly string[] = [
   "halt",
   "poweroff",
   "init",
-  // Shell re-invocation (defeats shell: false security model)
-  "bash",
-  "sh",
-  "zsh",
-  "dash",
-  "csh",
-  "fish",
-  "ksh",
-  "tcsh",
   // Privilege escalation
   "sudo",
   "su",

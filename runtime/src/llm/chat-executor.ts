@@ -97,6 +97,11 @@ import {
   type RuntimeRunClass,
 } from "./run-budget.js";
 import {
+  hasRuntimeLimit,
+  isRuntimeLimitReached,
+  normalizeRuntimeLimit,
+} from "./runtime-limit-policy.js";
+import {
   MAX_EVAL_USER_CHARS,
   MAX_EVAL_RESPONSE_CHARS,
   MAX_CONTEXT_INJECTION_CHARS,
@@ -380,14 +385,7 @@ export class ChatExecutor {
   private readonly sessionTokens = new Map<string, number>();
 
   private static normalizeRequestTimeoutMs(timeoutMs: number | undefined): number {
-    if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs)) {
-      return DEFAULT_REQUEST_TIMEOUT_MS;
-    }
-    const normalized = Math.floor(timeoutMs);
-    if (normalized <= 0) {
-      return 0;
-    }
-    return Math.max(1, normalized);
+    return normalizeRuntimeLimit(timeoutMs, DEFAULT_REQUEST_TIMEOUT_MS);
   }
 
   constructor(config: ChatExecutorConfig) {
@@ -396,7 +394,10 @@ export class ChatExecutor {
     }
     this.providers = config.providers;
     this.toolHandler = config.toolHandler;
-    this.maxToolRounds = config.maxToolRounds ?? MAX_ADAPTIVE_TOOL_ROUNDS;
+    this.maxToolRounds = normalizeRuntimeLimit(
+      config.maxToolRounds,
+      MAX_ADAPTIVE_TOOL_ROUNDS,
+    );
     this.onStreamChunk = config.onStreamChunk;
     this.allowedTools = config.allowedTools
       ? new Set(config.allowedTools)
@@ -423,9 +424,9 @@ export class ChatExecutor {
     this.onCompaction = config.onCompaction;
     this.evaluator = config.evaluator;
     this.plannerEnabled = config.plannerEnabled ?? false;
-    this.plannerMaxTokens = Math.max(
-      32,
-      Math.floor(config.plannerMaxTokens ?? DEFAULT_PLANNER_MAX_TOKENS),
+    this.plannerMaxTokens = normalizeRuntimeLimit(
+      config.plannerMaxTokens,
+      DEFAULT_PLANNER_MAX_TOKENS,
     );
     this.delegationNestingDepth = Math.max(
       0,
@@ -445,25 +446,21 @@ export class ChatExecutor {
     this.delegationBanditTuner = config.delegationLearning?.banditTuner;
     this.delegationDefaultStrategyArmId =
       config.delegationLearning?.defaultStrategyArmId?.trim() || "balanced";
-    this.toolBudgetPerRequest = Math.max(
-      1,
-      Math.floor(config.toolBudgetPerRequest ?? DEFAULT_TOOL_BUDGET_PER_REQUEST),
+    this.toolBudgetPerRequest = normalizeRuntimeLimit(
+      config.toolBudgetPerRequest,
+      DEFAULT_TOOL_BUDGET_PER_REQUEST,
     );
-    this.maxModelRecallsPerRequest = Math.max(
-      0,
-      Math.floor(
-        config.maxModelRecallsPerRequest ?? DEFAULT_MODEL_RECALLS_PER_REQUEST,
-      ),
+    this.maxModelRecallsPerRequest = normalizeRuntimeLimit(
+      config.maxModelRecallsPerRequest,
+      DEFAULT_MODEL_RECALLS_PER_REQUEST,
     );
-    this.maxFailureBudgetPerRequest = Math.max(
-      1,
-      Math.floor(
-        config.maxFailureBudgetPerRequest ?? DEFAULT_FAILURE_BUDGET_PER_REQUEST,
-      ),
+    this.maxFailureBudgetPerRequest = normalizeRuntimeLimit(
+      config.maxFailureBudgetPerRequest,
+      DEFAULT_FAILURE_BUDGET_PER_REQUEST,
     );
-    this.toolCallTimeoutMs = Math.max(
-      1,
-      Math.floor(config.toolCallTimeoutMs ?? DEFAULT_TOOL_CALL_TIMEOUT_MS),
+    this.toolCallTimeoutMs = normalizeRuntimeLimit(
+      config.toolCallTimeoutMs,
+      DEFAULT_TOOL_CALL_TIMEOUT_MS,
     );
     this.requestTimeoutMs = ChatExecutor.normalizeRequestTimeoutMs(
       config.requestTimeoutMs,
@@ -521,7 +518,10 @@ export class ChatExecutor {
           config?.minConfidence ?? DEFAULT_SUBAGENT_VERIFIER_MIN_CONFIDENCE,
         ),
       ),
-      maxRounds: Math.max(1, Math.floor(maxRoundsRaw)),
+      maxRounds: normalizeRuntimeLimit(
+        maxRoundsRaw,
+        DEFAULT_SUBAGENT_VERIFIER_MAX_ROUNDS,
+      ),
     };
   }
 
@@ -1841,17 +1841,23 @@ export class ChatExecutor {
     let { history } = params;
     const effectiveMaxToolRounds =
       typeof params.maxToolRounds === "number" && Number.isFinite(params.maxToolRounds)
-        ? Math.max(1, Math.floor(params.maxToolRounds))
+        ? normalizeRuntimeLimit(params.maxToolRounds, this.maxToolRounds)
         : this.maxToolRounds;
     const effectiveToolBudget =
       typeof params.toolBudgetPerRequest === "number" &&
         Number.isFinite(params.toolBudgetPerRequest)
-        ? Math.max(1, Math.floor(params.toolBudgetPerRequest))
+        ? normalizeRuntimeLimit(
+            params.toolBudgetPerRequest,
+            this.toolBudgetPerRequest,
+          )
         : this.toolBudgetPerRequest;
     const effectiveMaxModelRecalls =
       typeof params.maxModelRecallsPerRequest === "number" &&
         Number.isFinite(params.maxModelRecallsPerRequest)
-        ? Math.max(0, Math.floor(params.maxModelRecallsPerRequest))
+        ? normalizeRuntimeLimit(
+            params.maxModelRecallsPerRequest,
+            this.maxModelRecallsPerRequest,
+          )
         : this.maxModelRecallsPerRequest;
     const messageText = extractMessageText(message);
     const initialRoutedToolNames = params.toolRouting?.routedToolNames
@@ -1896,9 +1902,9 @@ export class ChatExecutor {
     // Pre-check token budget — attempt compaction instead of hard fail
     let compacted = false;
     let compactedArtifactContext = params.stateful?.artifactContext;
-    if (this.sessionTokenBudget !== undefined) {
+    if (hasRuntimeLimit(this.sessionTokenBudget)) {
       const used = this.sessionTokens.get(sessionId) ?? 0;
-      if (used >= this.sessionTokenBudget) {
+      if (isRuntimeLimitReached(used, this.sessionTokenBudget)) {
         try {
           const compactedResult = await this.compactHistory(
             history,
@@ -1914,7 +1920,7 @@ export class ChatExecutor {
           throw new ChatBudgetExceededError(
             sessionId,
             used,
-            this.sessionTokenBudget,
+            this.sessionTokenBudget!,
           );
         }
       }
@@ -2171,9 +2177,9 @@ export class ChatExecutor {
         break;
       }
       // Skip evaluation if token budget would be exceeded.
-      if (this.sessionTokenBudget !== undefined) {
+      if (hasRuntimeLimit(this.sessionTokenBudget)) {
         const used = this.sessionTokens.get(ctx.sessionId) ?? 0;
-        if (used >= this.sessionTokenBudget) break;
+        if (isRuntimeLimitReached(used, this.sessionTokenBudget)) break;
       }
       if (!this.hasModelRecallBudget(ctx)) {
         this.setStopReason(

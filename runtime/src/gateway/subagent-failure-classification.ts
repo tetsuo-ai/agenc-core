@@ -27,6 +27,7 @@ import type { SubagentFailureClass, SubagentRetryRule } from "./subagent-orchest
 import {
   DEFAULT_TOOL_BUDGET_PER_REQUEST,
 } from "../llm/chat-executor-constants.js";
+import { normalizeRuntimeLimit } from "../llm/runtime-limit-policy.js";
 import {
   isConcreteExecutableEnvelopeRoot,
   normalizeWorkspaceRoot,
@@ -48,7 +49,6 @@ const MODEL_AUTHORED_INVALID_ROOT_ATTEMPT_RE =
 /* ------------------------------------------------------------------ */
 
 const DEFAULT_PLANNED_SUBAGENT_TOOL_BUDGET = DEFAULT_TOOL_BUDGET_PER_REQUEST;
-const MAX_PLANNED_SUBAGENT_TOOL_BUDGET = DEFAULT_TOOL_BUDGET_PER_REQUEST;
 const PLANNED_SUBAGENT_TOOL_BUDGET_MS_PER_CALL = 7_500;
 const BUDGET_EXCEEDED_RETRY_TOOL_BUDGET_MULTIPLIER = 1.5;
 
@@ -70,6 +70,12 @@ export function resolveSubagentToolBudgetPerRequest(params: {
   readonly timeoutMs: number;
   readonly priorFailureClass?: SubagentFailureClass;
 }): number {
+  if (DEFAULT_PLANNED_SUBAGENT_TOOL_BUDGET <= 0) {
+    return DEFAULT_PLANNED_SUBAGENT_TOOL_BUDGET;
+  }
+  if (params.timeoutMs <= 0) {
+    return DEFAULT_TOOL_BUDGET_PER_REQUEST;
+  }
   const baseBudget = Math.max(
     DEFAULT_PLANNED_SUBAGENT_TOOL_BUDGET,
     Math.ceil(params.timeoutMs / PLANNED_SUBAGENT_TOOL_BUDGET_MS_PER_CALL),
@@ -80,7 +86,7 @@ export function resolveSubagentToolBudgetPerRequest(params: {
           baseBudget * BUDGET_EXCEEDED_RETRY_TOOL_BUDGET_MULTIPLIER,
         )
       : baseBudget;
-  return Math.min(MAX_PLANNED_SUBAGENT_TOOL_BUDGET, boostedBudget);
+  return normalizeRuntimeLimit(boostedBudget, DEFAULT_TOOL_BUDGET_PER_REQUEST);
 }
 
 /* ------------------------------------------------------------------ */

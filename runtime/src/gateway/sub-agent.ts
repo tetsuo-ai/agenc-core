@@ -17,7 +17,10 @@ import { createGatewayMessage } from "./message.js";
 import { ChatExecutor } from "../llm/chat-executor.js";
 import { buildModelRoutingPolicy } from "../llm/model-routing-policy.js";
 import type { PromptBudgetConfig } from "../llm/prompt-budget.js";
-import { buildRuntimeEconomicsPolicy } from "../llm/run-budget.js";
+import {
+  buildRuntimeEconomicsPolicy,
+  type RuntimeBudgetMode,
+} from "../llm/run-budget.js";
 import type {
   ChatExecutorResult,
   ToolCallRecord,
@@ -38,6 +41,11 @@ import {
   logStructuredTraceEvent,
 } from "../llm/provider-trace-logger.js";
 import { resolveMaxToolRoundsForToolNames } from "./tool-round-budget.js";
+import {
+  isRuntimeLimitExceeded,
+  isRuntimeLimitReached,
+  normalizeRuntimeLimit,
+} from "../llm/runtime-limit-policy.js";
 import type {
   DelegationContractSpec,
   DelegationOutputValidationCode,
@@ -209,6 +217,7 @@ export interface SubAgentManagerConfig {
   readonly traceProviderPayloads?: boolean;
   readonly promptBudget?: PromptBudgetConfig;
   readonly sessionTokenBudget?: number;
+  readonly economicsMode?: RuntimeBudgetMode;
   readonly onCompaction?: (sessionId: string, summary: string) => void;
 }
 
@@ -272,10 +281,13 @@ export class SubAgentManager {
 
   constructor(config: SubAgentManagerConfig) {
     this.config = config;
-    this.maxConcurrent = config.maxConcurrent ?? MAX_CONCURRENT_SUB_AGENTS;
-    this.maxDepth = Math.max(
-      1,
-      Math.floor(config.maxDepth ?? DEFAULT_MAX_SUB_AGENT_DEPTH),
+    this.maxConcurrent = normalizeRuntimeLimit(
+      config.maxConcurrent,
+      MAX_CONCURRENT_SUB_AGENTS,
+    );
+    this.maxDepth = normalizeRuntimeLimit(
+      config.maxDepth,
+      DEFAULT_MAX_SUB_AGENT_DEPTH,
     );
     this.maxRetainedTerminalHandles = Math.max(
       1,
@@ -315,7 +327,7 @@ export class SubAgentManager {
         "task must be non-empty",
       );
     }
-    if (this.activeCount >= this.maxConcurrent) {
+    if (isRuntimeLimitReached(this.activeCount, this.maxConcurrent)) {
       throw new SubAgentSpawnError(
         config.parentSessionId,
         `max concurrent sub-agents reached (${this.maxConcurrent})`,
@@ -326,7 +338,7 @@ export class SubAgentManager {
     const depth = continuationHandle
       ? continuationHandle.depth
       : parentDepth + 1;
-    if (!continuationHandle && depth > this.maxDepth) {
+    if (!continuationHandle && isRuntimeLimitExceeded(depth, this.maxDepth)) {
       throw new SubAgentSpawnError(
         config.parentSessionId,
         `max sub-agent depth reached (${this.maxDepth})`,
@@ -659,7 +671,7 @@ export class SubAgentManager {
         childTimeoutMs: handle.config.timeoutMs,
         childTokenBudget: resolvedSessionTokenBudget,
         maxFanoutPerTurn: 1,
-        mode: "enforce",
+        mode: this.config.economicsMode ?? "enforce",
       });
       const executor = new ChatExecutor({
         providers: [selectedProvider],

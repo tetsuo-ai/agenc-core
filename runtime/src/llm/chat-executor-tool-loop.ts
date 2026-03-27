@@ -34,6 +34,11 @@ import {
   MAX_TOOL_IMAGE_CHARS_BUDGET,
 } from "./chat-executor-constants.js";
 import {
+  hasRuntimeLimit,
+  isRuntimeLimitExceeded,
+  isRuntimeLimitReached,
+} from "./runtime-limit-policy.js";
+import {
   didToolCallFail,
   checkToolCallPermission,
   normalizeToolCallArguments,
@@ -158,7 +163,7 @@ export async function executeSingleToolCall(
   if (callbacks.checkRequestTimeout(ctx, `tool "${toolCall.name}" dispatch`)) {
     return "abort_loop";
   }
-  if (ctx.allToolCalls.length >= ctx.effectiveToolBudget) {
+  if (isRuntimeLimitReached(ctx.allToolCalls.length, ctx.effectiveToolBudget)) {
     callbacks.setStopReason(
       ctx,
       "budget_exceeded",
@@ -352,7 +357,7 @@ export async function executeSingleToolCall(
     },
   });
 
-  if (ctx.failedToolCalls > ctx.effectiveFailureBudget) {
+  if (isRuntimeLimitExceeded(ctx.failedToolCalls, ctx.effectiveFailureBudget)) {
     callbacks.setStopReason(
       ctx,
       "tool_error",
@@ -515,7 +520,10 @@ export async function executeToolCallLoop(
     ctx.response.finishReason === "tool_calls" &&
     ctx.response.toolCalls.length > 0 &&
     ctx.activeToolHandler &&
-    rounds < effectiveMaxToolRounds
+    (
+      !hasRuntimeLimit(effectiveMaxToolRounds) ||
+      rounds < effectiveMaxToolRounds
+    )
   ) {
     if (ctx.signal?.aborted) {
       callbacks.setStopReason(ctx, "cancelled", "Execution cancelled by caller");
@@ -734,7 +742,7 @@ export async function executeToolCallLoop(
 
     if (
       ctx.response.finishReason === "tool_calls" &&
-      rounds >= effectiveMaxToolRounds
+      isRuntimeLimitReached(rounds, effectiveMaxToolRounds)
     ) {
       const extension = callbacks.evaluateToolRoundBudgetExtension({
         ctx,
@@ -815,7 +823,7 @@ export async function executeToolCallLoop(
   } else if (
     ctx.response &&
     ctx.response.finishReason === "tool_calls" &&
-    rounds >= effectiveMaxToolRounds
+    isRuntimeLimitReached(rounds, effectiveMaxToolRounds)
   ) {
     const finalized = await callbacks.finalizeDelegatedTurnAfterToolBudgetExhaustion(
       ctx,

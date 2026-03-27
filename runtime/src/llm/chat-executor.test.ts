@@ -5912,50 +5912,6 @@ describe("ChatExecutor", () => {
       expect(String(injectedHint?.content)).toContain("desktop.bash");
     });
 
-    it("injects a recovery hint when shell wrapper command is denied on system.bash", async () => {
-      const toolHandler = vi
-        .fn()
-        .mockResolvedValue(
-          '{"error":"Command \\"bash\\" is denied. Do not use shell wrappers like \\"bash -c\\"."}',
-        );
-      const provider = createMockProvider("primary", {
-        chat: vi
-          .fn()
-          .mockResolvedValueOnce(
-            mockResponse({
-              content: "",
-              finishReason: "tool_calls",
-              toolCalls: [
-                {
-                  id: "call-1",
-                  name: "system.bash",
-                  arguments: '{"command":"bash","args":["-c","echo hello"]}',
-                },
-              ],
-            }),
-          )
-          .mockResolvedValueOnce(mockResponse({ content: "recovered" })),
-      });
-
-      const executor = new ChatExecutor({
-        providers: [provider],
-        toolHandler,
-        maxToolRounds: 4,
-      });
-      await executor.execute(createParams());
-
-      const secondCallMessages = (provider.chat as ReturnType<typeof vi.fn>)
-        .mock.calls[1][0] as LLMMessage[];
-      const injectedHint = secondCallMessages.find(
-        (msg) =>
-          msg.role === "system" &&
-          typeof msg.content === "string" &&
-          msg.content.includes("Do NOT call `bash -c`"),
-      );
-      expect(injectedHint).toBeDefined();
-      expect(String(injectedHint?.content)).toContain("command` + `args`");
-    });
-
     it("injects a recovery hint when node invocation of agenc-runtime is denied", async () => {
       const toolHandler = vi
         .fn()
