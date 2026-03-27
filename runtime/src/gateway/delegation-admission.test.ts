@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { assessDelegationAdmission } from "./delegation-admission.js";
+import {
+  assessDelegationAdmission,
+  assessDirectDelegationAdmission,
+} from "./delegation-admission.js";
 
 describe("assessDelegationAdmission", () => {
   it("denies shared-primary-artifact plans when multiple mutable child steps target the same file", () => {
@@ -131,5 +134,86 @@ describe("assessDelegationAdmission", () => {
       ["/tmp/project/src/parser.c"],
       ["/tmp/project/docs/AGENC.md"],
     ]);
+  });
+
+  it("rejects parent-safe read-only inspection handoffs even when planner context is larger", () => {
+    const decision = assessDelegationAdmission({
+      messageText:
+        "Repair git if needed, then inspect the workspace state and tell me what is there.",
+      totalSteps: 4,
+      synthesisSteps: 1,
+      steps: [
+        {
+          name: "repair_git_and_check_state",
+          objective:
+            "Repair git repository defect if needed by initializing it, then check current workspace state via listing files, git status, and reading README",
+          inputContract:
+            "Return grounded workspace state with file listing, git status, and README summary",
+          acceptanceCriteria: [
+            "Git repository is initialized if missing",
+            "Workspace root entries are listed",
+            "Current git status is reported",
+            "README content is summarized from grounded evidence",
+          ],
+          requiredToolCapabilities: [
+            "system.bash",
+            "system.readFile",
+            "system.listDir",
+          ],
+          contextRequirements: ["repo_context"],
+          executionContext: {
+            version: "v1",
+            workspaceRoot: "/tmp/project",
+            allowedReadRoots: ["/tmp/project"],
+            allowedWriteRoots: ["/tmp/project"],
+            requiredSourceArtifacts: ["/tmp/project/README.md"],
+            effectClass: "read_only",
+            verificationMode: "grounded_read",
+            stepKind: "delegated_review",
+          },
+          maxBudgetHint: "2m",
+          canRunParallel: false,
+        },
+      ],
+      edges: [],
+      threshold: 0,
+      maxFanoutPerTurn: 4,
+      maxDepth: 4,
+    });
+
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).toBe("single_hop_request");
+    expect(decision.diagnostics).toMatchObject({
+      parentSafeReadOnlyInspection: true,
+    });
+  });
+
+  it("keeps explicit execute_with_agent read-only introspection delegation compatible", () => {
+    const decision = assessDirectDelegationAdmission({
+      input: {
+        objective:
+          "Inspect the local workspace, list files, run git status, and read README before reporting back.",
+        inputContract:
+          "Return a grounded state check for the current repo.",
+        acceptanceCriteria: [
+          "Workspace root entries are listed",
+          "Git status is reported",
+          "README summary is grounded in observed content",
+        ],
+        requiredToolCapabilities: [
+          "system.bash",
+          "system.readFile",
+          "system.listDir",
+        ],
+        timeoutMs: 120_000,
+      },
+      threshold: 0,
+    });
+
+    expect(decision.allowed).toBe(true);
+    expect(decision.reason).toBe("approved");
+    expect(decision.diagnostics).toMatchObject({
+      explicitDelegationCompatibilityOverride: true,
+    });
   });
 });

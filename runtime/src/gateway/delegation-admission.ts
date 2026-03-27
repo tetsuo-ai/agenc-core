@@ -18,6 +18,8 @@ const TEST_TRIAGE_TEXT_RE =
   /\b(?:test|tests|ci|failure|failures|failing|flaky|error|errors|stack\s+trace|logs?)\b/i;
 const BUILD_OR_TEST_OBLIGATION_RE =
   /\b(?:build|compile|typecheck|lint|test|tests|pytest|vitest|cargo test|npm run|pnpm|yarn)\b/i;
+const LOCAL_INSPECTION_TEXT_RE =
+  /\b(?:catalog|check|explore|find|git status|inspect|inventory|list|locate|ls|map|read|readme|review|status|survey|trace|understand)\b/i;
 
 export type DelegationAdmissionShape =
   | "repo_exploration"
@@ -98,6 +100,9 @@ function isSharedContextReadOnlyReview(
   }
   if (!REVIEW_TEXT_RE.test(input.messageText)) return false;
   if (economics.stepAnalyses.some((analysis) => analysis.mutable)) return false;
+  if (economics.stepAnalyses.some((analysis) => analysis.shellObservationOnly)) {
+    return false;
+  }
   const first = economics.stepAnalyses[0];
   if (!first || first.ownedArtifacts.length === 0) return false;
   return economics.stepAnalyses.slice(1).every((analysis) =>
@@ -185,6 +190,39 @@ function isIsolatedSingleStep(
         (context.inputArtifacts?.length ?? 0) > 0
       ),
   );
+}
+
+function isParentSafeReadOnlyInspection(
+  input: DelegationAdmissionInput,
+  economics: DelegationEconomics,
+  _shape: DelegationAdmissionShape | null,
+): boolean {
+  if (input.steps.length !== 1) return false;
+  const analysis = economics.stepAnalyses[0];
+  if (!analysis) return false;
+  if (!analysis.readOnly && !analysis.shellObservationOnly) {
+    return false;
+  }
+  if (analysis.mutable) return false;
+  const executionContext = analysis.step.executionContext;
+  if ((executionContext?.targetArtifacts?.length ?? 0) > 0) {
+    return false;
+  }
+  if (economics.parallelizableCount > 1 || economics.parallelGain >= 0.35) {
+    return false;
+  }
+  const contractText = [
+    input.messageText,
+    analysis.step.objective,
+    analysis.step.inputContract,
+    ...analysis.step.acceptanceCriteria,
+  ]
+    .filter((value) => typeof value === "string" && value.trim().length > 0)
+    .join(" ");
+  if (!LOCAL_INSPECTION_TEXT_RE.test(contractText)) {
+    return false;
+  }
+  return true;
 }
 
 function detectShape(
@@ -615,17 +653,6 @@ export function assessDelegationAdmission(
     });
   }
 
-  if (isSharedContextReadOnlyReview(input, economics)) {
-    return buildDecision({
-      allowed: false,
-      reason: "shared_context_review",
-      shape,
-      economics,
-      stepAdmissions,
-      diagnostics,
-    });
-  }
-
   const sharedArtifactWriterInline = detectSharedArtifactWriterInline(economics);
   if (sharedArtifactWriterInline) {
     return buildDecision({
@@ -642,6 +669,31 @@ export function assessDelegationAdmission(
         sharedArtifactReadOnlySteps:
           sharedArtifactWriterInline.readOnlyStepNames.join(","),
       },
+    });
+  }
+
+  if (isParentSafeReadOnlyInspection(input, economics, shape)) {
+    return buildDecision({
+      allowed: false,
+      reason: "single_hop_request",
+      shape,
+      economics,
+      stepAdmissions,
+      diagnostics: {
+        ...diagnostics,
+        parentSafeReadOnlyInspection: true,
+      },
+    });
+  }
+
+  if (isSharedContextReadOnlyReview(input, economics)) {
+    return buildDecision({
+      allowed: false,
+      reason: "shared_context_review",
+      shape,
+      economics,
+      stepAdmissions,
+      diagnostics,
     });
   }
 

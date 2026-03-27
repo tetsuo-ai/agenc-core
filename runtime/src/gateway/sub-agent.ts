@@ -663,7 +663,10 @@ export class SubAgentManager {
       const effectiveToolBudgetPerRequest =
         typeof handle.config.toolBudgetPerRequest === "number" &&
           Number.isFinite(handle.config.toolBudgetPerRequest)
-          ? Math.max(1, Math.floor(handle.config.toolBudgetPerRequest))
+          ? normalizeRuntimeLimit(
+              handle.config.toolBudgetPerRequest,
+              0,
+            )
           : undefined;
       const economicsPolicy = buildRuntimeEconomicsPolicy({
         sessionTokenBudget: resolvedSessionTokenBudget,

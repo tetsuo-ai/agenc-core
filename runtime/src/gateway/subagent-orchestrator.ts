@@ -1032,6 +1032,7 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
         toolBudgetPerRequest: resolveSubagentToolBudgetPerRequestFn({
           timeoutMs,
           priorFailureClass: lastFailure?.failureClass,
+          step: preparedStep,
         }),
         taskPrompt,
         diagnostics: subagentTask.diagnostics,
