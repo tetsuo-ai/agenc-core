@@ -3,6 +3,7 @@ import { TasksView } from '../tasks/TasksView';
 
 interface TasksPaneProps {
   tasks: TaskInfo[];
+  agentWallet?: string;
   onRefresh: () => void;
   onCreate: (params: Record<string, unknown>) => void;
   onClaim: (taskId: string) => void;
@@ -13,6 +14,7 @@ interface TasksPaneProps {
 
 export function TasksPane({
   tasks,
+  agentWallet,
   onRefresh,
   onCreate,
   onClaim,
@@ -23,6 +25,7 @@ export function TasksPane({
   return (
     <TasksView
       tasks={tasks}
+      agentWallet={agentWallet}
       onRefresh={onRefresh}
       onCreate={onCreate}
       onClaim={onClaim}

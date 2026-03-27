@@ -6,6 +6,7 @@ type ResolutionType = 'refund' | 'complete' | 'split';
 
 interface TaskCardProps {
   task: TaskInfo;
+  agentWallet?: string;
   onClaim: (taskId: string) => void;
   onComplete: (taskId: string, resultData?: string) => void;
   onDispute: (taskId: string, evidence: string, resolutionType?: string) => void;
@@ -27,6 +28,7 @@ function truncateId(value: string) {
 
 export function TaskCard({
   task,
+  agentWallet,
   onClaim,
   onComplete,
   onDispute,
@@ -47,8 +49,8 @@ export function TaskCard({
   const statusKey = task.status.toLowerCase();
   const statusClass = STATUS_STYLES[statusKey] ?? STATUS_STYLES.open;
   const description = task.description?.trim() || 'untitled task';
-  const canClaim = statusKey === 'open';
-  const canCancel = statusKey === 'open';
+  const canClaim  = statusKey === 'open' && task.creator !== agentWallet;
+  const canCancel = statusKey === 'open' && task.creator === agentWallet;
   const canComplete = statusKey === 'in_progress' || statusKey === 'pending_validation';
   const canDispute = statusKey === 'in_progress' || statusKey === 'pending_validation';
 

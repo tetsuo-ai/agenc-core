@@ -23,6 +23,7 @@ const TABS: Array<{ id: MarketplaceTabId; label: string }> = [
 
 export interface MarketplaceViewProps {
   tasks: TaskInfo[];
+  agentWallet?: string;
   onTaskRefresh: () => void;
   onTaskCreate: (params: Record<string, unknown>) => void;
   onTaskClaim: (taskId: string) => void;
@@ -108,6 +109,7 @@ export function MarketplaceView(props: MarketplaceViewProps) {
         {tab === 'tasks' && (
           <TasksPane
             tasks={props.tasks}
+            agentWallet={props.agentWallet}
             onRefresh={props.onTaskRefresh}
             onCreate={props.onTaskCreate}
             onClaim={props.onTaskClaim}

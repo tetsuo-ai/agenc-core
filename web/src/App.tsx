@@ -348,6 +348,7 @@ export default function App() {
           {(currentView === 'marketplace' || currentView === 'tasks') && (
             <MarketplaceView
               tasks={tasks.tasks}
+              agentWallet={walletInfo.wallet?.address}
               onTaskRefresh={tasks.refresh}
               onTaskCreate={tasks.create}
               onTaskClaim={tasks.claim}

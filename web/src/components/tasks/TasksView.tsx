@@ -15,6 +15,7 @@ const FILTERS = [
 
 interface TasksViewProps {
   tasks: TaskInfo[];
+  agentWallet?: string;
   onRefresh: () => void;
   onCreate: (params: Record<string, unknown>) => void;
   onClaim: (taskId: string) => void;
@@ -25,6 +26,7 @@ interface TasksViewProps {
 
 export function TasksView({
   tasks,
+  agentWallet,
   onRefresh,
   onCreate,
   onClaim,
@@ -132,6 +134,7 @@ export function TasksView({
               >
                 <TaskCard
                   task={task}
+                  agentWallet={agentWallet}
                   onClaim={onClaim}
                   onComplete={onComplete}
                   onDispute={onDispute}
