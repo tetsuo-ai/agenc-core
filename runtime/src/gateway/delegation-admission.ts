@@ -91,6 +91,9 @@ function isSharedContextReadOnlyReview(
   input: DelegationAdmissionInput,
   economics: DelegationEconomics,
 ): boolean {
+  if (input.explicitDelegationRequested === true) {
+    return false;
+  }
   if (
     input.steps.length === 0 ||
     input.steps.length > 4 ||
@@ -197,6 +200,9 @@ function isParentSafeReadOnlyInspection(
   economics: DelegationEconomics,
   _shape: DelegationAdmissionShape | null,
 ): boolean {
+  if (input.explicitDelegationRequested === true) {
+    return false;
+  }
   if (input.steps.length !== 1) return false;
   const analysis = economics.stepAnalyses[0];
   if (!analysis) return false;

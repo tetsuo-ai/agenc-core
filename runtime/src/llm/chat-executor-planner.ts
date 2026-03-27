@@ -108,7 +108,7 @@ interface PlannerRequestSignals {
 }
 
 const EXPLICIT_DELEGATION_REQUEST_RE =
-  /\b(?:spawn|use|run|launch|start|delegate(?:\s+to)?|hand\s+off\s+to)\b[\s\S]{0,48}\b(?:sub[\s-]?agents?|child\s+agents?|another\s+agent|execute_with_agent)\b/i;
+  /\b(?:spawn|use|run|launch|start|delegate(?:\s+to)?|hand\s+off\s+to)\b[\s\S]{0,64}\b(?:sub[\s-]?agents?|child\s+agents?|another\s+agent|execute_with_agent|deeper\s+research|research|investigation|investigate|inspection|inspect|triage|analy[sz]e|analysis)\b/i;
 const PLANNER_PATH_PLACEHOLDER_ROOTS = [
   "/workspace",
   "/abs/path",

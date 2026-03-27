@@ -182,4 +182,48 @@ describe("completion-state", () => {
       }),
     ).toBe("completed");
   });
+
+  it("keeps request-level multi-phase work partial when local verification passes but planner milestones remain", () => {
+    expect(
+      resolveWorkflowCompletionState({
+        stopReason: "completed",
+        toolCalls: [
+          {
+            name: "system.writeFile",
+            args: { path: "/workspace/src/main.c" },
+            result: JSON.stringify({ ok: true }),
+            isError: false,
+          },
+          {
+            name: "system.bash",
+            args: { command: "ctest" },
+            result: JSON.stringify({ stdout: "ok", stderr: "", exitCode: 0 }),
+            isError: false,
+          },
+        ],
+        verificationContract: {
+          workspaceRoot: "/workspace",
+          targetArtifacts: ["/workspace/src/main.c"],
+          verificationMode: "mutation_required",
+          requestCompletion: {
+            requiredMilestones: [
+              { id: "phase_1_impl", description: "Implement phase 1" },
+              { id: "phase_2_verify", description: "Verify phase 2" },
+            ],
+          },
+          completionContract: {
+            taskClass: "build_required",
+            placeholdersAllowed: false,
+            partialCompletionAllowed: false,
+            placeholderTaxonomy: "implementation",
+          },
+        },
+        completedRequestMilestoneIds: ["phase_1_impl"],
+        verifier: {
+          performed: true,
+          overall: "pass",
+        },
+      }),
+    ).toBe("partial");
+  });
 });

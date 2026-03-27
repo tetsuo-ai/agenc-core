@@ -629,6 +629,7 @@ export class ChatExecutor {
       toolCalls: ctx.allToolCalls,
       verificationContract: workflowContext.verificationContract,
       completionContract: workflowContext.completionContract,
+      completedRequestMilestoneIds: ctx.completedRequestMilestoneIds,
       updatedAt: Date.now(),
     });
 
@@ -729,6 +730,7 @@ export class ChatExecutor {
       toolCalls: ctx.allToolCalls,
       verificationContract: workflowContext.verificationContract,
       completionContract: workflowContext.completionContract,
+      completedRequestMilestoneIds: ctx.completedRequestMilestoneIds,
       validationCode: ctx.validationCode,
       verifier: {
         performed: ctx.plannerSummaryState.subagentVerification.performed,

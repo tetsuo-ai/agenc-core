@@ -14750,6 +14750,104 @@ describe("ChatExecutor", () => {
       );
     });
 
+    it("does not mark planner-owned multi-phase work completed when request milestones remain", async () => {
+      const provider = createMockProvider("primary");
+      const executor = new ChatExecutor({
+        providers: [provider],
+        toolHandler: vi.fn().mockResolvedValue("unused"),
+        plannerEnabled: true,
+        pipelineExecutor: { execute: vi.fn() } as any,
+      });
+
+      vi.spyOn(executor as any, "executePlannerPath").mockImplementation(
+        async (ctx: any) => {
+          ctx.plannerHandled = true;
+          ctx.stopReason = "completed";
+          ctx.finalContent =
+            "Phase 1 complete & verified. Pipes/redirects not yet supported; next phase remains.";
+          ctx.allToolCalls = [
+            {
+              name: "system.writeFile",
+              args: { path: "/workspace/src/main.c" },
+              result: safeJson({ path: "/workspace/src/main.c", bytesWritten: 64 }),
+              isError: false,
+              durationMs: 2,
+            },
+            {
+              name: "system.bash",
+              args: { command: "ctest", cwd: "/workspace" },
+              result: safeJson({ exitCode: 0, stdout: "ok" }),
+              isError: false,
+              durationMs: 10,
+            },
+          ];
+          ctx.plannerSummaryState.routeReason =
+            "single_owner_plan_artifact_execution";
+          ctx.plannerSummaryState.subagentVerification = {
+            enabled: true,
+            performed: true,
+            rounds: 1,
+            overall: "pass",
+            confidence: 0.97,
+            unresolvedItems: [],
+          };
+          ctx.plannerVerificationContract = {
+            workspaceRoot: "/workspace",
+            requiredSourceArtifacts: ["/workspace/PLAN.md"],
+            targetArtifacts: ["/workspace/src/main.c"],
+            verificationMode: "mutation_required",
+            requestCompletion: {
+              requiredMilestones: [
+                { id: "phase_1_impl", description: "Implement phase 1" },
+                { id: "phase_2_job_control", description: "Implement phase 2" },
+              ],
+            },
+            completionContract: {
+              taskClass: "build_required",
+              placeholdersAllowed: false,
+              partialCompletionAllowed: false,
+              placeholderTaxonomy: "implementation",
+            },
+          };
+          ctx.plannerCompletionContract =
+            ctx.plannerVerificationContract.completionContract;
+          ctx.completedRequestMilestoneIds = ["phase_1_impl"];
+        },
+      );
+
+      const result = await executor.execute(
+        createParams({
+          message: createMessage(
+            "Read all of @PLAN.md and complete every single phase in full.",
+          ),
+          runtimeContext: {
+            workspaceRoot: "/workspace",
+          },
+        }),
+      );
+
+      expect(provider.chat).not.toHaveBeenCalled();
+      expect(result.stopReason).toBe("completed");
+      expect(result.completionState).toBe("partial");
+      expect(result.completionProgress).toMatchObject({
+        completionState: "partial",
+        remainingRequirements: expect.arrayContaining([
+          "build_verification",
+          "request_milestones",
+        ]),
+        satisfiedMilestoneIds: ["phase_1_impl"],
+        remainingMilestones: [
+          {
+            id: "phase_2_job_control",
+            description: "Implement phase 2",
+          },
+        ],
+      });
+      expect(result.content).toContain(
+        "Execution made partial progress but did not finish the requested work.",
+      );
+    });
+
     it("applies live delegation threshold resolver for aggressiveness overrides", async () => {
       const provider = createMockProvider("primary", {
         chat: vi

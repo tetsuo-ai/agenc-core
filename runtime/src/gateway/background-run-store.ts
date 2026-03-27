@@ -1709,7 +1709,8 @@ function coerceRecentSnapshot(
             entry === "workflow_verifier_pass" ||
             entry === "build_verification" ||
             entry === "behavior_verification" ||
-            entry === "review_verification",
+            entry === "review_verification" ||
+            entry === "request_milestones",
         )
       : undefined,
     watchCount:
@@ -1774,7 +1775,8 @@ function coerceCompletionProgress(
         entry === "workflow_verifier_pass" ||
         entry === "build_verification" ||
         entry === "behavior_verification" ||
-        entry === "review_verification",
+        entry === "review_verification" ||
+        entry === "request_milestones",
     );
   const reusableEvidence = raw.reusableEvidence
     .map((entry) => {
@@ -1817,6 +1819,45 @@ function coerceCompletionProgress(
     requiredRequirements: parseRequirementArray(raw.requiredRequirements),
     satisfiedRequirements: parseRequirementArray(raw.satisfiedRequirements),
     remainingRequirements: parseRequirementArray(raw.remainingRequirements),
+    requiredMilestones: Array.isArray(raw.requiredMilestones)
+      ? raw.requiredMilestones
+          .map((entry) => {
+            if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+              return undefined;
+            }
+            const milestone = entry as Record<string, unknown>;
+            return typeof milestone.id === "string" &&
+                typeof milestone.description === "string"
+              ? {
+                id: milestone.id,
+                description: milestone.description,
+              }
+              : undefined;
+          })
+          .filter((entry): entry is NonNullable<typeof entry> => entry !== undefined)
+      : undefined,
+    satisfiedMilestoneIds: Array.isArray(raw.satisfiedMilestoneIds)
+      ? raw.satisfiedMilestoneIds.filter(
+          (entry): entry is string => typeof entry === "string",
+        )
+      : undefined,
+    remainingMilestones: Array.isArray(raw.remainingMilestones)
+      ? raw.remainingMilestones
+          .map((entry) => {
+            if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+              return undefined;
+            }
+            const milestone = entry as Record<string, unknown>;
+            return typeof milestone.id === "string" &&
+                typeof milestone.description === "string"
+              ? {
+                id: milestone.id,
+                description: milestone.description,
+              }
+              : undefined;
+          })
+          .filter((entry): entry is NonNullable<typeof entry> => entry !== undefined)
+      : undefined,
     reusableEvidence,
     updatedAt: raw.updatedAt,
   };

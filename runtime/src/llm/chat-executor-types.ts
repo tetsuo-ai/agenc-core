@@ -838,6 +838,7 @@ export interface ExecutionContext {
   plannedSynthesisSteps: number;
   plannedDependencyDepth: number;
   plannedFanout: number;
+  completedRequestMilestoneIds: readonly string[];
   requiredToolEvidenceCorrectionAttempts: number;
   economicsState: RuntimeEconomicsState;
   delegationBudgetSnapshot?: DelegationBudgetSnapshot;
@@ -1024,6 +1025,7 @@ export function buildDefaultExecutionContext(
     plannedSynthesisSteps: 0,
     plannedDependencyDepth: 0,
     plannedFanout: 0,
+    completedRequestMilestoneIds: [],
     requiredToolEvidenceCorrectionAttempts: 0,
     economicsState,
     delegationBudgetSnapshot: buildDelegationBudgetSnapshot(

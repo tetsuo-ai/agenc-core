@@ -36,7 +36,10 @@ import {
   getAllowedToolNamesForEvidence,
 } from "./chat-executor-routing-state.js";
 import { didToolCallFail } from "./chat-executor-tool-utils.js";
-import { requestRequiresToolGroundedExecution } from "./chat-executor-planner.js";
+import {
+  plannerRequestNeedsPlanArtifactExecution,
+  requestRequiresToolGroundedExecution,
+} from "./chat-executor-planner.js";
 
 type ToolNameCollection = Iterable<string> | readonly string[];
 
@@ -470,6 +473,9 @@ function mergeWorkflowVerificationContext(input: {
 function synthesizeDirectImplementationWorkflowContext(
   ctx: ContractFlowContext,
 ): RuntimeWorkflowContextResolution | undefined {
+  if (plannerRequestNeedsPlanArtifactExecution(ctx.messageText)) {
+    return undefined;
+  }
   const workspaceRoot = normalizeWorkspaceRoot(ctx.runtimeWorkspaceRoot);
   if (!workspaceRoot) {
     return undefined;

@@ -20,6 +20,10 @@ import type {
 } from "./chat-executor-types.js";
 import type { LLMMessage } from "./types.js";
 import type { ImplementationCompletionContract } from "../workflow/completion-contract.js";
+import type {
+  WorkflowRequestCompletionContract,
+  WorkflowRequestMilestone,
+} from "../workflow/request-completion.js";
 import type { WorkflowVerificationContract } from "../workflow/verification-obligations.js";
 import {
   DEFAULT_SUBAGENT_VERIFIER_MIN_CONFIDENCE,
@@ -935,6 +939,18 @@ function buildPlannerWorkflowVerificationContract(params: {
     subagentSteps: params.subagentSteps,
     completionContract: params.completionContract,
   });
+  const requestCompletion =
+    params.verificationContract?.requestCompletion ??
+    (
+      params.completionContract &&
+        params.completionContract.taskClass !== "scaffold_allowed" &&
+        params.completionContract.taskClass !== "review_required"
+      ? buildPlannerRequestCompletionContract({
+        subagentSteps: params.subagentSteps,
+        deterministicSteps: params.deterministicSteps,
+      })
+      : undefined
+    );
   if (
     !workspaceRoot &&
     acceptanceCriteria.length === 0 &&
@@ -943,7 +959,8 @@ function buildPlannerWorkflowVerificationContract(params: {
     targetArtifacts.length === 0 &&
     !verificationMode &&
     !stepKind &&
-    !params.completionContract
+    !params.completionContract &&
+    !requestCompletion
   ) {
     return undefined;
   }
@@ -960,7 +977,42 @@ function buildPlannerWorkflowVerificationContract(params: {
     ...(params.completionContract
       ? { completionContract: params.completionContract }
       : {}),
+    ...(requestCompletion ? { requestCompletion } : {}),
   };
+}
+
+function buildPlannerRequestCompletionContract(params: {
+  readonly subagentSteps: readonly PlannerSubAgentTaskStepIntent[];
+  readonly deterministicSteps: readonly PlannerDeterministicToolStepIntent[];
+}): WorkflowRequestCompletionContract | undefined {
+  const milestones = [
+    ...params.subagentSteps.map<WorkflowRequestMilestone>((step) => ({
+      id: step.name,
+      description: step.objective.trim() || `Complete ${step.name}`,
+    })),
+    ...params.deterministicSteps.map<WorkflowRequestMilestone>((step) => ({
+      id: step.name,
+      description: summarizeDeterministicPlannerStep(step),
+    })),
+  ].filter((milestone) => milestone.id.trim().length > 0);
+  if (milestones.length <= 1) {
+    return undefined;
+  }
+  return {
+    requiredMilestones: milestones,
+  };
+}
+
+function summarizeDeterministicPlannerStep(
+  step: PlannerDeterministicToolStepIntent,
+): string {
+  if (step.tool === "system.bash" || step.tool === "desktop.bash") {
+    const commandText = extractCommandText(step.args).trim();
+    if (commandText.length > 0) {
+      return commandText;
+    }
+  }
+  return `${step.tool} (${step.name})`;
 }
 
 function classifyPlannerWorkflowAdmission(params: {

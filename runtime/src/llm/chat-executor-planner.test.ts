@@ -13,6 +13,7 @@ import {
   extractExplicitDeterministicToolRequirements,
   extractExplicitSubagentOrchestrationRequirements,
   parsePlannerPlan,
+  requestExplicitlyRequestsDelegation,
   salvagePlannerToolCallsAsPlan,
   validatePlannerVerificationRequirements,
   validatePlannerGraph,
@@ -94,6 +95,14 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
     expect(messages[0]?.content).not.toContain(
       '"requiredSourceArtifacts": ["/abs/path/PLAN.md"]',
     );
+  });
+
+  it("treats plain-language delegation research requests as explicit delegation", () => {
+    expect(
+      requestExplicitlyRequestsDelegation(
+        "First run setup checks, then delegate deeper research, then synthesize results.",
+      ),
+    ).toBe(true);
   });
 
   it("extracts explicit request-level verification requirements from verification directives", () => {

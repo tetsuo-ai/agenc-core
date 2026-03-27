@@ -1,6 +1,7 @@
 import { didToolCallFail } from "../llm/chat-executor-tool-utils.js";
 import type { DelegationOutputValidationCode } from "../utils/delegation-validation.js";
 import type { ImplementationCompletionContract } from "./completion-contract.js";
+import { resolveWorkflowRequestCompletionStatus } from "./request-completion.js";
 import { deriveVerificationObligations, type WorkflowVerificationContract } from "./verification-obligations.js";
 
 export type WorkflowCompletionState =
@@ -39,6 +40,7 @@ export function resolveWorkflowCompletionState(input: {
   readonly toolCalls: readonly CompletionStateToolCall[];
   readonly verificationContract?: WorkflowVerificationContract;
   readonly completionContract?: ImplementationCompletionContract;
+  readonly completedRequestMilestoneIds?: readonly string[];
   readonly validationCode?: DelegationOutputValidationCode;
   readonly verifier?: PlannerVerificationSnapshot;
 }): WorkflowCompletionState {
@@ -51,6 +53,10 @@ export function resolveWorkflowCompletionState(input: {
     (toolCall) => !didToolCallFail(toolCall.isError, toolCall.result),
   );
   const hasProgress = successfulToolCalls.length > 0;
+  const requestCompletion = resolveWorkflowRequestCompletionStatus({
+    contract: verificationContract?.requestCompletion,
+    completedMilestoneIds: input.completedRequestMilestoneIds,
+  });
   const requiresExplicitVerification = Boolean(
     obligations &&
       (
@@ -63,6 +69,9 @@ export function resolveWorkflowCompletionState(input: {
     requiresExplicitVerification;
 
   if (input.stopReason === "completed") {
+    if ((requestCompletion?.remainingMilestones.length ?? 0) > 0) {
+      return hasProgress ? "partial" : "blocked";
+    }
     if (
       requiresVerificationBeforeCompletion &&
       (!verifier || verifier.performed !== true || verifier.overall === "skipped")

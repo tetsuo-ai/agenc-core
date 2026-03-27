@@ -134,6 +134,44 @@ describe("chat-executor-contract-flow", () => {
     expect(workflowContext).toEqual({});
   });
 
+  it("does not synthesize direct implementation ownership for explicit PLAN.md phase-execution requests", () => {
+    const workflowContext = resolveRuntimeWorkflowContext({
+      ctx: {
+        messageText:
+          "Read all of @PLAN.md and complete every single phase in full.",
+        allToolCalls: [
+          {
+            name: "system.writeFile",
+            args: {
+              path: "/tmp/project/src/main.c",
+              content: "int main(void) { return 0; }\n",
+            },
+            result: JSON.stringify({
+              path: "/tmp/project/src/main.c",
+              bytesWritten: 30,
+            }),
+            isError: false,
+            durationMs: 2,
+          },
+        ],
+        activeRoutedToolNames: ["system.writeFile"],
+        initialRoutedToolNames: ["system.writeFile"],
+        expandedRoutedToolNames: [],
+        requiredToolEvidence: undefined,
+        providerEvidence: undefined,
+        response: undefined,
+        plannerSummaryState: {
+          routeReason: "plan_artifact_execution_request",
+        },
+        runtimeWorkspaceRoot: "/tmp/project",
+        plannerVerificationContract: undefined,
+        plannerCompletionContract: undefined,
+      } as any,
+    });
+
+    expect(workflowContext).toEqual({});
+  });
+
   it("requires workflow-owned completion for implementation-class turns outside legacy compatibility", () => {
     expect(
       requiresWorkflowOwnedImplementationCompletion({

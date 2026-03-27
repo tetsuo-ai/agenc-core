@@ -1549,6 +1549,9 @@ export async function executePlannerPath(
       }
 
       if (pipelineResult) {
+        ctx.completedRequestMilestoneIds = Object.keys(
+          pipelineResult.context.results,
+        );
         if (pipelineResult.status === "failed") {
           const hintedStopReason = isPipelineStopReasonHint(
             pipelineResult.stopReasonHint,
@@ -1719,10 +1722,7 @@ export async function executePlannerPath(
             );
           }
         } catch (error) {
-          if (
-            pipelineResult.status === "completed" &&
-            stopReasonBeforeSynthesis === "completed"
-          ) {
+          if (pipelineResult.status === "completed") {
             const failureDetail =
               typeof (error as { stopReasonDetail?: unknown })?.stopReasonDetail === "string"
                 ? String((error as { stopReasonDetail: string }).stopReasonDetail)
