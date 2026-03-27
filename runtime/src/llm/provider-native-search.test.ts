@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   getProviderNativeAdvertisedToolNames,
+  getProviderNativeToolRoutingDecisions,
   getProviderNativeToolDefinitions,
   getProviderNativeWebSearchRoutingDecision,
   isResearchLikeText,
@@ -117,6 +118,104 @@ describe("provider-native-search", () => {
     });
 
     expect(decision?.toolName).toBe("web_search");
+  });
+
+  it("routes x_search for X-specific prompts", () => {
+    const decisions = getProviderNativeToolRoutingDecisions({
+      llmConfig: {
+        provider: "grok",
+        model: "grok-4-1-fast-reasoning",
+        xSearch: true,
+      },
+      messageText: "What are people saying about xAI on X right now?",
+      history: [],
+    });
+
+    expect(decisions.map((decision) => decision.toolName)).toEqual(["x_search"]);
+  });
+
+  it("routes file_search for uploaded-collection prompts", () => {
+    const decisions = getProviderNativeToolRoutingDecisions({
+      llmConfig: {
+        provider: "grok",
+        model: "grok-4-1-fast-reasoning",
+        collectionsSearch: {
+          enabled: true,
+          vectorStoreIds: ["collection-123"],
+        },
+      },
+      messageText:
+        "Use the uploaded collection and internal documents to answer the policy question.",
+      history: [],
+    });
+
+    expect(decisions.map((decision) => decision.toolName)).toEqual(["file_search"]);
+  });
+
+  it("routes code_interpreter for calculation and data-analysis prompts", () => {
+    const decisions = getProviderNativeToolRoutingDecisions({
+      llmConfig: {
+        provider: "grok",
+        model: "grok-4-1-fast-reasoning",
+        codeExecution: true,
+      },
+      messageText:
+        "Calculate the regression on this dataset [120000, 135000, 98000, 156000] and show your working.",
+      history: [],
+    });
+
+    expect(decisions.map((decision) => decision.toolName)).toEqual([
+      "code_interpreter",
+    ]);
+  });
+
+  it("routes hybrid collection analysis to file_search plus code_interpreter", () => {
+    const decisions = getProviderNativeToolRoutingDecisions({
+      llmConfig: {
+        provider: "grok",
+        model: "grok-4-1-fast-reasoning",
+        collectionsSearch: {
+          enabled: true,
+          vectorStoreIds: ["collection-123"],
+        },
+        codeExecution: true,
+      },
+      messageText:
+        "Using the uploaded knowledge base, calculate the totals from the internal reports and show your working.",
+      history: [],
+    });
+
+    expect(decisions.map((decision) => decision.toolName)).toEqual([
+      "file_search",
+      "code_interpreter",
+    ]);
+  });
+
+  it("routes remote MCP servers when the prompt matches configured metadata", () => {
+    const decisions = getProviderNativeToolRoutingDecisions({
+      llmConfig: {
+        provider: "grok",
+        model: "grok-4-1-fast-reasoning",
+        remoteMcp: {
+          enabled: true,
+          servers: [
+            {
+              serverUrl: "https://mcp.deepwiki.com/mcp",
+              serverLabel: "deepwiki",
+              serverDescription: "DeepWiki repository and documentation explorer",
+              allowedTools: ["search_docs", "read_repo"],
+            },
+          ],
+        },
+      },
+      messageText:
+        "Use DeepWiki to explore the repository documentation and search docs for the adapter behavior.",
+      history: [],
+    });
+
+    expect(decisions.map((decision) => decision.toolName)).toEqual([
+      "mcp:deepwiki",
+    ]);
   });
 
   it("does not treat implementation mechanics language as research", () => {

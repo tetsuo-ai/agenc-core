@@ -3311,6 +3311,64 @@ describe("DaemonManager", () => {
     expect(genericDecision?.routedToolNames).not.toContain("web_search");
   });
 
+  it("augments tool routing with xAI-native x_search, file_search, code_interpreter, and remote MCP tools", () => {
+    const dm = new DaemonManager({ configPath: "/tmp/config.json" });
+    (dm as any)._toolRouter = new ToolRouter([
+      {
+        type: "function",
+        function: {
+          name: "desktop.bash",
+          description: "run commands",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+    ]);
+
+    (dm as any)._primaryLlmConfig = {
+      provider: "grok",
+      model: "grok-4-1-fast-reasoning",
+      xSearch: true,
+      codeExecution: true,
+      collectionsSearch: {
+        enabled: true,
+        vectorStoreIds: ["collection-123"],
+      },
+      remoteMcp: {
+        enabled: true,
+        servers: [
+          {
+            serverUrl: "https://mcp.deepwiki.com/mcp",
+            serverLabel: "deepwiki",
+            serverDescription: "DeepWiki repository and documentation explorer",
+            allowedTools: ["search_docs"],
+          },
+        ],
+      },
+    };
+
+    const xDecision = (dm as any).buildToolRoutingDecision(
+      "s-x-search",
+      "What are people saying about xAI on X right now?",
+      [],
+    );
+    const fileAndCodeDecision = (dm as any).buildToolRoutingDecision(
+      "s-file-code",
+      "Using the uploaded knowledge base, calculate totals from the internal documents and show your working.",
+      [],
+    );
+    const remoteMcpDecision = (dm as any).buildToolRoutingDecision(
+      "s-remote-mcp",
+      "Use DeepWiki to search docs for the repository adapter behavior.",
+      [],
+    );
+
+    expect(xDecision?.routedToolNames).toContain("x_search");
+    expect(fileAndCodeDecision?.routedToolNames).toEqual(
+      expect.arrayContaining(["file_search", "code_interpreter"]),
+    );
+    expect(remoteMcpDecision?.routedToolNames).toContain("mcp:deepwiki");
+  });
+
   it("registers social tools when enabled", async () => {
     const dm = new DaemonManager({ configPath: "/tmp/config.json" });
     const registry = await (dm as any).createToolRegistry({

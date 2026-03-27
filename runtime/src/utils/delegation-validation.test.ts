@@ -14,7 +14,11 @@ import {
   specRequiresMeaningfulBrowserEvidence,
   validateDelegatedOutputContract,
 } from "./delegation-validation.js";
-import { PROVIDER_NATIVE_WEB_SEARCH_TOOL } from "../llm/provider-native-search.js";
+import {
+  PROVIDER_NATIVE_FILE_SEARCH_TOOL,
+  PROVIDER_NATIVE_WEB_SEARCH_TOOL,
+  PROVIDER_NATIVE_X_SEARCH_TOOL,
+} from "../llm/provider-native-search.js";
 
 describe("delegation-validation", () => {
   it("normalizes prose punctuation off delegation tokens while preserving file-like artifacts", () => {
@@ -3365,6 +3369,38 @@ Project is functional for core/pathfinding; CLI/web assumed usable per authored 
     );
 
     expect(toolChoice).toBe(PROVIDER_NATIVE_WEB_SEARCH_TOOL);
+  });
+
+  it("resolves provider-native x_search as the initial tool choice for X research", () => {
+    const toolChoice = resolveDelegatedInitialToolChoiceToolName(
+      {
+        task: "x_research",
+        objective:
+          "Find what people are saying about xAI on X and cite the key posts",
+      },
+      [
+        PROVIDER_NATIVE_X_SEARCH_TOOL,
+        PROVIDER_NATIVE_WEB_SEARCH_TOOL,
+      ],
+    );
+
+    expect(toolChoice).toBe(PROVIDER_NATIVE_X_SEARCH_TOOL);
+  });
+
+  it("resolves provider-native file_search as the initial tool choice for uploaded collections research", () => {
+    const toolChoice = resolveDelegatedInitialToolChoiceToolName(
+      {
+        task: "knowledge_base_research",
+        objective:
+          "Use the uploaded collection and internal documents to answer the policy question with citations",
+      },
+      [
+        PROVIDER_NATIVE_FILE_SEARCH_TOOL,
+        PROVIDER_NATIVE_WEB_SEARCH_TOOL,
+      ],
+    );
+
+    expect(toolChoice).toBe(PROVIDER_NATIVE_FILE_SEARCH_TOOL);
   });
 
   it("resolves system.browse as the initial tool choice for research when available", () => {

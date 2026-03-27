@@ -102,7 +102,7 @@ import {
 import { resolveToolContractExecutionBlock } from "../llm/chat-executor-contract-guidance.js";
 import {
   getProviderNativeAdvertisedToolNames,
-  getProviderNativeWebSearchRoutingDecision,
+  getProviderNativeToolRoutingDecisions,
 } from "../llm/provider-native-search.js";
 import {
   createLLMProviders as createLLMProvidersStandalone,
@@ -4696,7 +4696,7 @@ export class DaemonManager {
         messageText,
         history,
       });
-      return this.maybeAugmentToolRoutingDecisionWithNativeSearch(
+      return this.maybeAugmentToolRoutingDecisionWithNativeTools(
         decision,
         messageText,
         history,
@@ -4749,41 +4749,43 @@ export class DaemonManager {
     );
   }
 
-  private maybeAugmentToolRoutingDecisionWithNativeSearch(
+  private maybeAugmentToolRoutingDecisionWithNativeTools(
     decision: ToolRoutingDecision,
     messageText: string,
     history: readonly LLMMessage[],
   ): ToolRoutingDecision {
-    const nativeSearch = getProviderNativeWebSearchRoutingDecision({
+    const nativeTools = getProviderNativeToolRoutingDecisions({
       llmConfig: this._primaryLlmConfig,
       messageText,
       history,
     });
-    if (!nativeSearch) return decision;
+    if (nativeTools.length === 0) return decision;
 
-    const routedToolNames = Array.from(
-      new Set([...decision.routedToolNames, nativeSearch.toolName]),
-    );
-    const expandedToolNames = Array.from(
-      new Set([...decision.expandedToolNames, nativeSearch.toolName]),
-    );
-    if (
-      routedToolNames.length === decision.routedToolNames.length &&
-      expandedToolNames.length === decision.expandedToolNames.length
-    ) {
+    const addedRoutedTools = nativeTools
+      .map((tool) => tool.toolName)
+      .filter((toolName) => !decision.routedToolNames.includes(toolName));
+    const addedExpandedTools = nativeTools
+      .map((tool) => tool.toolName)
+      .filter((toolName) => !decision.expandedToolNames.includes(toolName));
+    if (addedRoutedTools.length === 0 && addedExpandedTools.length === 0) {
       return decision;
     }
 
-    const routedAdded =
-      routedToolNames.length > decision.routedToolNames.length
-        ? nativeSearch.schemaChars
-        : 0;
-    const expandedAdded =
-      expandedToolNames.length > decision.expandedToolNames.length
-        ? nativeSearch.schemaChars
-        : 0;
+    const routedToolNames = Array.from(
+      new Set([...decision.routedToolNames, ...addedRoutedTools]),
+    );
+    const expandedToolNames = Array.from(
+      new Set([...decision.expandedToolNames, ...addedExpandedTools]),
+    );
+    const routedAdded = nativeTools
+      .filter((tool) => addedRoutedTools.includes(tool.toolName))
+      .reduce((sum, tool) => sum + tool.schemaChars, 0);
+    const expandedAdded = nativeTools
+      .filter((tool) => addedExpandedTools.includes(tool.toolName))
+      .reduce((sum, tool) => sum + tool.schemaChars, 0);
     const schemaCharsFull =
-      decision.diagnostics.schemaCharsFull + nativeSearch.schemaChars;
+      decision.diagnostics.schemaCharsFull +
+      nativeTools.reduce((sum, tool) => sum + tool.schemaChars, 0);
     const schemaCharsRouted =
       decision.diagnostics.schemaCharsRouted + routedAdded;
     const schemaCharsExpanded =
@@ -4794,7 +4796,9 @@ export class DaemonManager {
       expandedToolNames,
       diagnostics: {
         ...decision.diagnostics,
-        totalToolCount: decision.diagnostics.totalToolCount + 1,
+        totalToolCount:
+          decision.diagnostics.totalToolCount +
+          nativeTools.length,
         routedToolCount: routedToolNames.length,
         expandedToolCount: expandedToolNames.length,
         schemaCharsFull,

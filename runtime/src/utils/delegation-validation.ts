@@ -10,9 +10,13 @@
 import type { LLMProviderEvidence } from "../llm/types.js";
 import type { DelegationExecutionContext } from "./delegation-execution-context.js";
 import {
+  PROVIDER_NATIVE_FILE_SEARCH_TOOL,
+  PROVIDER_NATIVE_RESEARCH_TOOL_NAMES,
   PROVIDER_NATIVE_WEB_SEARCH_TOOL,
-  isResearchLikeText,
+  PROVIDER_NATIVE_X_SEARCH_TOOL,
   isProviderNativeToolName,
+  isResearchLikeText,
+  selectPreferredProviderNativeResearchToolName,
 } from "../llm/provider-native-search.js";
 import {
   extractExactOutputExpectation,
@@ -332,8 +336,8 @@ const LOCAL_FILE_INSPECTION_TOOL_NAMES = new Set([
   "mcp.neovim.vim_buffer_save",
   "mcp.neovim.vim_search_replace",
 ]);
-const PREFERRED_PROVIDER_NATIVE_RESEARCH_TOOL_NAMES = new Set([
-  PROVIDER_NATIVE_WEB_SEARCH_TOOL,
+const PREFERRED_PROVIDER_NATIVE_RESEARCH_TOOL_NAMES: ReadonlySet<string> = new Set([
+  ...PROVIDER_NATIVE_RESEARCH_TOOL_NAMES,
 ]);
 const PREFERRED_IMPLEMENTATION_EDITOR_TOOL_NAMES = new Set([
   "desktop.text_editor",
@@ -409,7 +413,7 @@ function isGenericFilesystemCapabilityName(capability: string): boolean {
 function looksLikeExplicitDelegatedToolName(toolName: string): boolean {
   const normalized = toolName.trim().toLowerCase();
   return normalized === "execute_with_agent" ||
-    normalized === PROVIDER_NATIVE_WEB_SEARCH_TOOL ||
+    isProviderNativeToolName(normalized) ||
     normalized.includes(".") ||
     normalized.startsWith("browser") ||
     normalized.startsWith("playwright") ||
@@ -1940,6 +1944,8 @@ export function resolveDelegatedChildToolScope(params: {
     (requireBrowser || (taskIntent === "research" && !localFileInspectionTask))
   ) {
     addSemanticFallback(PROVIDER_NATIVE_WEB_SEARCH_TOOL);
+    addSemanticFallback(PROVIDER_NATIVE_X_SEARCH_TOOL);
+    addSemanticFallback(PROVIDER_NATIVE_FILE_SEARCH_TOOL);
     addSemanticFallback("system.browse");
     addSemanticFallback("system.browserSessionStart");
     addSemanticFallback("system.browserAction");
@@ -2109,9 +2115,14 @@ export function resolveDelegatedInitialToolChoiceToolName(
   }
 
   if (taskIntent === "research" || taskIntent === "validation" || requireBrowser) {
-    const preferredProviderResearchTool = normalizedTools.find((toolName) =>
-      PREFERRED_PROVIDER_NATIVE_RESEARCH_TOOL_NAMES.has(toolName)
-    );
+    const preferredProviderResearchTool = selectPreferredProviderNativeResearchToolName({
+      messageText: [spec.task, spec.objective, ...(spec.acceptanceCriteria ?? [])]
+        .filter((value): value is string => typeof value === "string" && value.length > 0)
+        .join("\n"),
+      allowedToolNames: normalizedTools.filter((toolName) =>
+        PREFERRED_PROVIDER_NATIVE_RESEARCH_TOOL_NAMES.has(toolName)
+      ),
+    });
     if (taskIntent === "research" && preferredProviderResearchTool) {
       return preferredProviderResearchTool;
     }
@@ -2408,8 +2419,21 @@ export function resolveDelegatedCorrectionToolChoiceToolNames(
     };
 
     if (taskIntent === "research") {
+      const preferredProviderResearchTool = selectPreferredProviderNativeResearchToolName({
+        messageText: [spec.task, spec.objective, ...(spec.acceptanceCriteria ?? [])]
+          .filter((value): value is string => typeof value === "string" && value.length > 0)
+          .join("\n"),
+        allowedToolNames: normalizedTools.filter((toolName) =>
+          PREFERRED_PROVIDER_NATIVE_RESEARCH_TOOL_NAMES.has(toolName)
+        ),
+      });
+      if (preferredProviderResearchTool) {
+        pushFirstAvailable([preferredProviderResearchTool]);
+      }
       pushFirstAvailable([
         PROVIDER_NATIVE_WEB_SEARCH_TOOL,
+        PROVIDER_NATIVE_X_SEARCH_TOOL,
+        PROVIDER_NATIVE_FILE_SEARCH_TOOL,
         ...INITIAL_RESEARCH_TOOL_NAMES,
         ...PREFERRED_RESEARCH_BROWSER_TOOL_NAMES,
       ]);
