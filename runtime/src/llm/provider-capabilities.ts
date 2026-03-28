@@ -26,6 +26,9 @@ export interface ResolvedLLMStatefulResponsesConfig {
 export const UNSUPPORTED_STATEFUL_CAPABILITIES: LLMProviderCapabilities["stateful"] = {
   assistantPhase: false,
   previousResponseId: false,
+  encryptedReasoning: false,
+  storedResponseRetrieval: false,
+  storedResponseDeletion: false,
   opaqueCompaction: false,
   deterministicFallback: true,
 };

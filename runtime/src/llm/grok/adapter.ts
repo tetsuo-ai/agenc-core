@@ -24,6 +24,8 @@ import type {
   LLMProviderNativeServerToolCall,
   LLMProviderServerSideToolUsageEntry,
   LLMTool,
+  LLMStoredResponse,
+  LLMStoredResponseDeleteResult,
   StreamProgressCallback,
   ToolCallValidationFailure,
 } from "../types.js";
@@ -1342,12 +1344,64 @@ export class GrokProvider implements LLMProvider {
     }
   }
 
+  async retrieveStoredResponse(responseId: string): Promise<LLMStoredResponse> {
+    const trimmedResponseId = responseId.trim();
+    if (trimmedResponseId.length === 0) {
+      throw new LLMProviderError(
+        this.name,
+        "Stored response retrieval requires a non-empty response ID.",
+        400,
+      );
+    }
+    try {
+      const client = await this.ensureClient();
+      const response = await (client as any).responses.retrieve(trimmedResponseId);
+      return this.toStoredResponse(response);
+    } catch (error) {
+      throw mapLLMError(this.name, error, this.config.timeoutMs ?? 0);
+    }
+  }
+
+  async deleteStoredResponse(
+    responseId: string,
+  ): Promise<LLMStoredResponseDeleteResult> {
+    const trimmedResponseId = responseId.trim();
+    if (trimmedResponseId.length === 0) {
+      throw new LLMProviderError(
+        this.name,
+        "Stored response deletion requires a non-empty response ID.",
+        400,
+      );
+    }
+    try {
+      const client = await this.ensureClient();
+      const response = await (client as any).responses.delete(trimmedResponseId);
+      return {
+        id:
+          typeof response?.id === "string" && response.id.trim().length > 0
+            ? response.id.trim()
+            : trimmedResponseId,
+        provider: this.name,
+        deleted: response?.deleted === true,
+        raw:
+          response && typeof response === "object" && !Array.isArray(response)
+            ? cloneProviderTracePayload(response as Record<string, unknown>)
+            : undefined,
+      };
+    } catch (error) {
+      throw mapLLMError(this.name, error, this.config.timeoutMs ?? 0);
+    }
+  }
+
   getCapabilities() {
     return {
       provider: this.name,
       stateful: {
         assistantPhase: false,
         previousResponseId: true,
+        encryptedReasoning: true,
+        storedResponseRetrieval: true,
+        storedResponseDeletion: true,
         opaqueCompaction: false,
         deterministicFallback: true,
       },
@@ -2148,10 +2202,60 @@ export class GrokProvider implements LLMProvider {
         response,
         structuredOutputRequest,
       ),
-      encryptedReasoning: this.extractEncryptedReasoningDiagnostics(response),
+      encryptedReasoning: this.extractEncryptedReasoningDiagnostics(response, {
+        requested: this.config.includeEncryptedReasoning,
+      }),
       finishReason,
       ...(normalizationIssues.length > 0 ? { normalizationIssues } : {}),
       ...(parsedError ? { error: parsedError } : {}),
+    };
+  }
+
+  private toStoredResponse(response: Record<string, unknown>): LLMStoredResponse {
+    const parsed = this.parseResponse(response);
+    const encryptedReasoning = this.extractEncryptedReasoningDiagnostics(response, {
+      requested: undefined,
+    });
+    const responseId =
+      typeof response.id === "string" && response.id.trim().length > 0
+        ? response.id.trim()
+        : undefined;
+    if (!responseId) {
+      throw new LLMProviderError(
+        this.name,
+        "Stored response payload did not include an id.",
+        502,
+      );
+    }
+    const rawOutput = Array.isArray(response.output)
+      ? response.output
+          .filter((item): item is Record<string, unknown> =>
+            Boolean(item) && typeof item === "object" && !Array.isArray(item)
+          )
+          .map((item) => cloneProviderTracePayload(item))
+          .filter((item): item is Record<string, unknown> => item !== undefined)
+      : undefined;
+    return {
+      id: responseId,
+      provider: this.name,
+      ...(typeof response.model === "string" && response.model.trim().length > 0
+        ? { model: response.model.trim() }
+        : {}),
+      ...(typeof response.status === "string" && response.status.trim().length > 0
+        ? { status: response.status.trim() }
+        : {}),
+      content: parsed.content,
+      toolCalls: parsed.toolCalls,
+      ...(parsed.usage.totalTokens > 0 ||
+        parsed.usage.promptTokens > 0 ||
+        parsed.usage.completionTokens > 0
+        ? { usage: parsed.usage }
+        : {}),
+      ...(parsed.providerEvidence ? { providerEvidence: parsed.providerEvidence } : {}),
+      ...(parsed.structuredOutput ? { structuredOutput: parsed.structuredOutput } : {}),
+      ...(encryptedReasoning ? { encryptedReasoning } : {}),
+      ...(rawOutput ? { output: rawOutput } : {}),
+      raw: cloneProviderTracePayload(response),
     };
   }
 
@@ -2223,6 +2327,9 @@ export class GrokProvider implements LLMProvider {
 
   private extractEncryptedReasoningDiagnostics(
     response: Record<string, unknown>,
+    options?: {
+      requested?: boolean;
+    },
   ): LLMResponse["encryptedReasoning"] {
     const output = Array.isArray(response.output)
       ? (response.output as Array<Record<string, unknown>>)
@@ -2233,7 +2340,9 @@ export class GrokProvider implements LLMProvider {
         typeof item.encrypted_content === "string" &&
         item.encrypted_content.length > 0,
     );
-    const requested = this.config.includeEncryptedReasoning === true;
+    const requested =
+      options?.requested ??
+      (available ? true : this.config.includeEncryptedReasoning === true);
     if (!requested && !available) {
       return undefined;
     }

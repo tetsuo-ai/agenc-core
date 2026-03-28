@@ -12,13 +12,19 @@ import { sanitizeToolCallArgumentsForReplay } from "../chat-executor-tool-utils.
 
 // Mock the openai module
 const mockCreate = vi.fn();
+const mockRetrieve = vi.fn();
+const mockDelete = vi.fn();
 const mockModelsListFn = vi.fn();
 const mockOpenAIConstructor = vi.fn();
 
 vi.mock("openai", () => {
   return {
     default: class MockOpenAI {
-      responses = { create: mockCreate };
+      responses = {
+        create: mockCreate,
+        retrieve: mockRetrieve,
+        delete: mockDelete,
+      };
       models = { list: mockModelsListFn };
       constructor(opts: any) {
         mockOpenAIConstructor(opts);
@@ -107,7 +113,73 @@ describe("GrokProvider", () => {
       stateful: {
         assistantPhase: false,
         previousResponseId: true,
+        encryptedReasoning: true,
+        storedResponseRetrieval: true,
+        storedResponseDeletion: true,
         opaqueCompaction: false,
+      },
+    });
+  });
+
+  it("retrieves a stored xAI response using the documented Responses API method", async () => {
+    mockRetrieve.mockResolvedValueOnce({
+      id: "resp_saved_1",
+      model: "grok-4.20-reasoning",
+      status: "completed",
+      output_text: "Saved answer",
+      output: [
+        {
+          type: "reasoning",
+          encrypted_content: "ciphertext",
+        },
+        {
+          type: "message",
+          content: [{ type: "output_text", text: "Saved answer" }],
+        },
+      ],
+      usage: { input_tokens: 12, output_tokens: 4, total_tokens: 16 },
+      server_side_tool_usage: {
+        SERVER_SIDE_TOOL_WEB_SEARCH: 1,
+      },
+    });
+
+    const provider = new GrokProvider({ apiKey: "test-key" });
+    const response = await provider.retrieveStoredResponse?.("resp_saved_1");
+
+    expect(mockRetrieve).toHaveBeenCalledWith("resp_saved_1");
+    expect(response).toMatchObject({
+      id: "resp_saved_1",
+      provider: "grok",
+      model: "grok-4.20-reasoning",
+      status: "completed",
+      content: "Saved answer",
+      encryptedReasoning: {
+        requested: true,
+        available: true,
+      },
+    });
+    expect(
+      response?.providerEvidence?.serverSideToolUsage?.[0]?.category,
+    ).toBe("SERVER_SIDE_TOOL_WEB_SEARCH");
+  });
+
+  it("deletes a stored xAI response using the documented Responses API method", async () => {
+    mockDelete.mockResolvedValueOnce({
+      id: "resp_saved_1",
+      deleted: true,
+    });
+
+    const provider = new GrokProvider({ apiKey: "test-key" });
+    const result = await provider.deleteStoredResponse?.("resp_saved_1");
+
+    expect(mockDelete).toHaveBeenCalledWith("resp_saved_1");
+    expect(result).toEqual({
+      id: "resp_saved_1",
+      provider: "grok",
+      deleted: true,
+      raw: {
+        id: "resp_saved_1",
+        deleted: true,
       },
     });
   });

@@ -290,6 +290,12 @@ export interface LLMProviderStatefulCapabilities {
   readonly assistantPhase: boolean;
   /** Provider supports `previous_response_id` / equivalent continuation. */
   readonly previousResponseId: boolean;
+  /** Provider supports requesting encrypted reasoning content via include. */
+  readonly encryptedReasoning: boolean;
+  /** Provider supports fetching stored responses by ID. */
+  readonly storedResponseRetrieval: boolean;
+  /** Provider supports deleting stored responses by ID. */
+  readonly storedResponseDeletion: boolean;
   /** Provider supports opaque provider-managed compaction state. */
   readonly opaqueCompaction: boolean;
   /** Runtime can safely fall back to stateless replay for unsupported features. */
@@ -610,6 +616,44 @@ export interface LLMProviderEvidence {
   readonly serverSideToolUsage?: readonly LLMProviderServerSideToolUsageEntry[];
 }
 
+export interface LLMStoredResponse {
+  /** Provider-emitted response identifier. */
+  readonly id: string;
+  /** Provider name backing the stored response. */
+  readonly provider: string;
+  /** Provider-emitted model identifier when available. */
+  readonly model?: string;
+  /** Provider-emitted lifecycle status when available. */
+  readonly status?: string;
+  /** Parsed assistant text content derived from the stored response output. */
+  readonly content: string;
+  /** Parsed client-side function calls preserved in the stored response. */
+  readonly toolCalls: readonly LLMToolCall[];
+  /** Provider usage block when available. */
+  readonly usage?: LLMUsage;
+  /** Provider-side tool/citation evidence derived from stored output. */
+  readonly providerEvidence?: LLMProviderEvidence;
+  /** Structured output parsing result when present in the stored response. */
+  readonly structuredOutput?: LLMStructuredOutputResult;
+  /** Encrypted reasoning request/availability diagnostics for the stored response. */
+  readonly encryptedReasoning?: LLMEncryptedReasoningDiagnostics;
+  /** Raw provider output array, cloned for debugging/replay inspection. */
+  readonly output?: readonly Record<string, unknown>[];
+  /** Sanitized raw provider response object for debugging/replay inspection. */
+  readonly raw?: Record<string, unknown>;
+}
+
+export interface LLMStoredResponseDeleteResult {
+  /** Deleted response identifier. */
+  readonly id: string;
+  /** Provider name backing the deletion request. */
+  readonly provider: string;
+  /** Whether the provider confirmed the response was deleted. */
+  readonly deleted: boolean;
+  /** Sanitized raw provider delete response for debugging/auditing. */
+  readonly raw?: Record<string, unknown>;
+}
+
 /**
  * Response from an LLM provider
  */
@@ -679,6 +723,12 @@ export interface LLMProvider {
   resetSessionState?(sessionId: string): void;
   /** Optional lifecycle hook to clear all provider-managed session state. */
   clearSessionState?(): void;
+  /** Optional debug/replay hook for fetching a stored provider response by ID. */
+  retrieveStoredResponse?(responseId: string): Promise<LLMStoredResponse>;
+  /** Optional debug/replay hook for deleting a stored provider response by ID. */
+  deleteStoredResponse?(
+    responseId: string,
+  ): Promise<LLMStoredResponseDeleteResult>;
 }
 
 /**

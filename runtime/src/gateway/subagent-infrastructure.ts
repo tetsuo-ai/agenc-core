@@ -360,6 +360,9 @@ export function createDelegatingSubAgentLLMProvider(
         stateful: {
           assistantPhase: false,
           previousResponseId: false,
+          encryptedReasoning: false,
+          storedResponseRetrieval: false,
+          storedResponseDeletion: false,
           opaqueCompaction: false,
           deterministicFallback: true,
         },
@@ -375,6 +378,20 @@ export function createDelegatingSubAgentLLMProvider(
     },
     clearSessionState() {
       resolve().clearSessionState?.();
+    },
+    retrieveStoredResponse(responseId) {
+      const provider = resolve();
+      if (!provider.retrieveStoredResponse) {
+        throw new Error("Active provider does not support stored response retrieval");
+      }
+      return provider.retrieveStoredResponse(responseId);
+    },
+    deleteStoredResponse(responseId) {
+      const provider = resolve();
+      if (!provider.deleteStoredResponse) {
+        throw new Error("Active provider does not support stored response deletion");
+      }
+      return provider.deleteStoredResponse(responseId);
     },
   };
 }
