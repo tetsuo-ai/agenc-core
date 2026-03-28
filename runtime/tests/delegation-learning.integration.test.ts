@@ -1,3 +1,5 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { ChatExecutor } from "../src/llm/chat-executor.js";
 import type { LLMProvider, LLMResponse, LLMMessage } from "../src/llm/types.js";
@@ -41,6 +43,14 @@ function createMessage(content: string) {
     scope: "dm" as const,
   };
 }
+
+const RUNTIME_ROOT = fileURLToPath(new URL("..", import.meta.url));
+const DELEGATION_LEARNING_SOURCE = path.join(
+  RUNTIME_ROOT,
+  "src",
+  "llm",
+  "delegation-learning.ts",
+);
 
 class FastSubAgentManager {
   private seq = 0;
@@ -287,14 +297,10 @@ describe("delegation learning integration", () => {
           contextRequirements: ["runtime_sources"],
           executionContext: {
             version: "v1",
-            workspaceRoot: "/home/tetsuo/git/AgenC/agenc-core/runtime",
-            allowedReadRoots: ["/home/tetsuo/git/AgenC/agenc-core/runtime"],
-            requiredSourceArtifacts: [
-              "/home/tetsuo/git/AgenC/agenc-core/runtime/src/llm/delegation-learning.ts",
-            ],
-            inputArtifacts: [
-              "/home/tetsuo/git/AgenC/agenc-core/runtime/src/llm/delegation-learning.ts",
-            ],
+            workspaceRoot: RUNTIME_ROOT,
+            allowedReadRoots: [RUNTIME_ROOT],
+            requiredSourceArtifacts: [DELEGATION_LEARNING_SOURCE],
+            inputArtifacts: [DELEGATION_LEARNING_SOURCE],
             effectClass: "read_only",
             verificationMode: "grounded_read",
             stepKind: "delegated_research",

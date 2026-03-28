@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "traceId": "delegated-split-workspace-root",
+  "seed": 1,
+  "createdAtMs": 1700000000000,
+  "events": [
+    {
+      "seq": 1,
+      "type": "discovered",
+      "taskPda": "task-delegated-split-workspace-root",
+      "timestampMs": 1700000000001,
+      "payload": {
+        "step": "planner_discovered"
+      }
+    },
+    {
+      "seq": 2,
+      "type": "claimed",
+      "taskPda": "task-delegated-split-workspace-root",
+      "timestampMs": 1700000000002,
+      "payload": {
+        "step": "delegated_child_claimed"
+      }
+    },
+    {
+      "seq": 3,
+      "type": "executed",
+      "taskPda": "task-delegated-split-workspace-root",
+      "timestampMs": 1700000000003,
+      "payload": {
+        "step": "read_plan_attempted"
+      }
+    },
+    {
+      "seq": 4,
+      "type": "policy_violation",
+      "taskPda": "task-delegated-split-workspace-root",
+      "timestampMs": 1700000000004,
+      "payload": {
+        "code": "required_readFile_not_performed"
+      }
+    },
+    {
+      "seq": 5,
+      "type": "verifier_verdict",
+      "taskPda": "task-delegated-split-workspace-root",
+      "timestampMs": 1700000000005,
+      "payload": {
+        "verdict": "fail",
+        "attempt": 1
+      }
+    },
+    {
+      "seq": 6,
+      "type": "failed",
+      "taskPda": "task-delegated-split-workspace-root",
+      "timestampMs": 1700000000006,
+      "payload": {
+        "reason": "workspace_root_mismatch"
+      }
+    }
+  ]
+}

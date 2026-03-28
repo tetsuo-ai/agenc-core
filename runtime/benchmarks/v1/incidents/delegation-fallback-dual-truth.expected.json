@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "delegation_fallback_dual_truth",
+  "title": "Delegation fallback reports completion while carrying failure semantics",
+  "sourceTraceId": "delegation-fallback-dual-truth",
+  "sourceArtifacts": [
+    "/workspace/runtime/src/llm/chat-executor.ts",
+    "/workspace/runtime/src/workflow/completion-state.ts"
+  ],
+  "expectedReplay": {
+    "taskPda": "task-delegation-fallback-dual-truth",
+    "finalStatus": "failed",
+    "replayErrors": 0,
+    "replayWarnings": 0,
+    "policyViolations": 0,
+    "verifierVerdicts": 1
+  },
+  "baselineMetrics": {
+    "turns": 1,
+    "toolCalls": 2,
+    "fallbackCount": 1,
+    "spuriousSubagentCount": 1,
+    "approvalCount": 0,
+    "restartRecoverySuccess": false
+  }
+}

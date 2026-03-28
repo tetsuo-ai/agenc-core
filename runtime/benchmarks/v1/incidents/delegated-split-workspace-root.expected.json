@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "delegated_split_workspace_root",
+  "title": "Delegated child persists /workspace while tool layer reads host root",
+  "sourceTraceId": "delegated-split-workspace-root",
+  "sourceArtifacts": [
+    "/workspace/PLAN.md",
+    "/home/tetsuo/git/AgenC/agenc-core/PLAN.md",
+    "/workspace/runtime/src/gateway/subagent-orchestrator.ts",
+    "/workspace/runtime/src/gateway/delegated-scope-preflight.ts",
+    "/workspace/runtime/src/workflow/delegated-filesystem-scope.ts"
+  ],
+  "expectedReplay": {
+    "taskPda": "task-delegated-split-workspace-root",
+    "finalStatus": "failed",
+    "replayErrors": 0,
+    "replayWarnings": 0,
+    "policyViolations": 1,
+    "verifierVerdicts": 1
+  },
+  "baselineMetrics": {
+    "turns": 1,
+    "toolCalls": 5,
+    "fallbackCount": 3,
+    "spuriousSubagentCount": 3,
+    "approvalCount": 0,
+    "restartRecoverySuccess": false
+  }
+}

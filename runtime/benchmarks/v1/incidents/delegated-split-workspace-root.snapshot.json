@@ -1,0 +1,29 @@
+{
+  "plan": {
+    "requiresSynthesis": true,
+    "subagentSteps": 3,
+    "sharedArtifact": "/workspace/PLAN.md"
+  },
+  "childContract": {
+    "workspaceRoot": "/workspace",
+    "requiredSourceArtifacts": [
+      "/workspace/PLAN.md"
+    ],
+    "targetArtifacts": [
+      "/workspace/PLAN.md"
+    ]
+  },
+  "runtimeMismatch": {
+    "requestedReadPath": "/workspace/PLAN.md",
+    "translatedReadPath": "/home/tetsuo/git/AgenC/agenc-core/PLAN.md",
+    "error": "Delegated read path \"/home/tetsuo/git/AgenC/agenc-core/PLAN.md\" is outside the execution envelope roots"
+  },
+  "verifier": {
+    "overall": "fail",
+    "pipelineStatus": "completed",
+    "unresolvedItems": [
+      "contract_violation:required_readFile_not_performed",
+      "path_inconsistency:workspace_vs_home_tetsuo"
+    ]
+  }
+}

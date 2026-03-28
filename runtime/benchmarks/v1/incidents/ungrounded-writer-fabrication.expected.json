@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "ungrounded_writer_fabrication",
+  "title": "Writer fabricated current repo structure without grounded reads",
+  "sourceTraceId": "ungrounded-writer-fabrication",
+  "sourceArtifacts": [
+    "/workspace/PLAN.md",
+    "/workspace/prompts-for-agent.txt"
+  ],
+  "expectedReplay": {
+    "taskPda": "task-ungrounded-writer-fabrication",
+    "finalStatus": "failed",
+    "replayErrors": 0,
+    "replayWarnings": 0,
+    "policyViolations": 1,
+    "verifierVerdicts": 1
+  },
+  "baselineMetrics": {
+    "turns": 1,
+    "toolCalls": 1,
+    "fallbackCount": 0,
+    "spuriousSubagentCount": 1,
+    "approvalCount": 0,
+    "restartRecoverySuccess": false
+  }
+}

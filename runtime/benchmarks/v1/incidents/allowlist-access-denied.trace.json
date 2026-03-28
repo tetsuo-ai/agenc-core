@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "traceId": "allowlist-access-denied",
+  "seed": 1,
+  "createdAtMs": 1700000000200,
+  "events": [
+    {
+      "seq": 1,
+      "type": "discovered",
+      "taskPda": "task-allowlist-access-denied",
+      "timestampMs": 1700000000201,
+      "payload": {}
+    },
+    {
+      "seq": 2,
+      "type": "claimed",
+      "taskPda": "task-allowlist-access-denied",
+      "timestampMs": 1700000000202,
+      "payload": {}
+    },
+    {
+      "seq": 3,
+      "type": "executed",
+      "taskPda": "task-allowlist-access-denied",
+      "timestampMs": 1700000000203,
+      "payload": {}
+    },
+    {
+      "seq": 4,
+      "type": "policy_violation",
+      "taskPda": "task-allowlist-access-denied",
+      "timestampMs": 1700000000204,
+      "payload": {
+        "code": "required_source_outside_read_roots"
+      }
+    },
+    {
+      "seq": 5,
+      "type": "failed",
+      "taskPda": "task-allowlist-access-denied",
+      "timestampMs": 1700000000205,
+      "payload": {
+        "reason": "filesystem_policy_denied"
+      }
+    }
+  ]
+}

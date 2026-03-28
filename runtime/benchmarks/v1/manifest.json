@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "v1",
+  "baselineScenarioId": "delegated_split_workspace_root",
+  "k": 2,
+  "scenarios": [
+    {
+      "id": "delegated_split_workspace_root",
+      "title": "Delegated child persists /workspace while tool layer reads host root",
+      "taskClass": "orchestration",
+      "riskTier": "high",
+      "expectedConstraints": ["grounded_read", "workspace_root_consistency"],
+      "seeds": [1],
+      "fixtureTrace": "incidents/delegated-split-workspace-root.trace.json",
+      "costUnits": 1
+    },
+    {
+      "id": "wrong_workspace_root",
+      "title": "Delegated child resolves PLAN.md against umbrella root",
+      "taskClass": "orchestration",
+      "riskTier": "medium",
+      "expectedConstraints": ["workspace_root_consistency"],
+      "seeds": [1],
+      "fixtureTrace": "incidents/wrong-workspace-root.trace.json",
+      "costUnits": 1
+    },
+    {
+      "id": "allowlist_access_denied",
+      "title": "Delegated read blocked by stale allowed-directory scope",
+      "taskClass": "orchestration",
+      "riskTier": "medium",
+      "expectedConstraints": ["filesystem_scope_enforced"],
+      "seeds": [1],
+      "fixtureTrace": "incidents/allowlist-access-denied.trace.json",
+      "costUnits": 1
+    },
+    {
+      "id": "delegation_fallback_dual_truth",
+      "title": "Delegation fallback reports completion while carrying failure semantics",
+      "taskClass": "orchestration",
+      "riskTier": "high",
+      "expectedConstraints": ["fallback_consistency"],
+      "seeds": [1],
+      "fixtureTrace": "incidents/delegation-fallback-dual-truth.trace.json",
+      "costUnits": 1
+    },
+    {
+      "id": "readonly_review_overdelegated",
+      "title": "Single-file PLAN.md review explodes into parallel subagents",
+      "taskClass": "orchestration",
+      "riskTier": "medium",
+      "expectedConstraints": ["delegation_budget_respected"],
+      "seeds": [1],
+      "fixtureTrace": "incidents/readonly-review-overdelegated.trace.json",
+      "costUnits": 1
+    },
+    {
+      "id": "noop_success_rejected",
+      "title": "Grounded no-op write phase rejected for missing mutation evidence",
+      "taskClass": "orchestration",
+      "riskTier": "medium",
+      "expectedConstraints": ["noop_validation_consistency"],
+      "seeds": [1],
+      "fixtureTrace": "incidents/noop-success-rejected.trace.json",
+      "costUnits": 1
+    },
+    {
+      "id": "ungrounded_writer_fabrication",
+      "title": "Writer fabricated current repo structure without grounded reads",
+      "taskClass": "orchestration",
+      "riskTier": "high",
+      "expectedConstraints": ["grounded_read", "target_artifact_truth"],
+      "seeds": [1],
+      "fixtureTrace": "incidents/ungrounded-writer-fabrication.trace.json",
+      "costUnits": 1
+    },
+    {
+      "id": "shell_stub_false_completion",
+      "title": "Shell implementation accepted despite explicit stubs and skipped verifier",
+      "taskClass": "orchestration",
+      "riskTier": "high",
+      "expectedConstraints": ["implementation_gate", "verifier_required"],
+      "seeds": [1],
+      "fixtureTrace": "incidents/shell-stub-false-completion.trace.json",
+      "costUnits": 1
+    }
+  ]
+}

@@ -17,9 +17,9 @@ function hasAnchorToml(workspaceRoot: string): boolean {
   return pathExists(path.join(workspaceRoot, "Anchor.toml"));
 }
 
-export function resolveProtocolWorkspaceRoot(): string {
+function getProtocolWorkspaceCandidates(): string[] {
   const envRoot = process.env.AGENC_PROTOCOL_WORKSPACE_ROOT;
-  const candidates = [
+  return [
     envRoot
       ? path.isAbsolute(envRoot)
         ? envRoot
@@ -28,6 +28,10 @@ export function resolveProtocolWorkspaceRoot(): string {
     CORE_ROOT,
     path.resolve(CORE_ROOT, "..", "agenc-protocol"),
   ].filter((candidate): candidate is string => Boolean(candidate));
+}
+
+export function resolveProtocolWorkspaceRoot(): string {
+  const candidates = getProtocolWorkspaceCandidates();
 
   for (const candidate of candidates) {
     if (hasAnchorToml(candidate)) {
@@ -37,6 +41,12 @@ export function resolveProtocolWorkspaceRoot(): string {
 
   throw new Error(
     `Unable to locate an agenc-protocol workspace. Set AGENC_PROTOCOL_WORKSPACE_ROOT to a repo containing Anchor.toml.`,
+  );
+}
+
+export function isProtocolWorkspaceAvailable(): boolean {
+  return getProtocolWorkspaceCandidates().some((candidate) =>
+    hasAnchorToml(candidate),
   );
 }
 

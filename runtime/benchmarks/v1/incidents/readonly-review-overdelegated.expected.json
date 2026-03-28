@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "readonly_review_overdelegated",
+  "title": "Single-file PLAN.md review explodes into parallel subagents",
+  "sourceTraceId": "readonly-review-overdelegated",
+  "sourceArtifacts": [
+    "/workspace/PLAN.md"
+  ],
+  "expectedReplay": {
+    "taskPda": "task-readonly-review-overdelegated",
+    "finalStatus": "failed",
+    "replayErrors": 0,
+    "replayWarnings": 0,
+    "policyViolations": 0,
+    "verifierVerdicts": 0
+  },
+  "baselineMetrics": {
+    "turns": 1,
+    "toolCalls": 2,
+    "fallbackCount": 1,
+    "spuriousSubagentCount": 2,
+    "approvalCount": 0,
+    "restartRecoverySuccess": false
+  }
+}

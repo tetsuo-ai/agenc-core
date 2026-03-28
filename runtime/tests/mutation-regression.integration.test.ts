@@ -50,6 +50,8 @@ describe('mutation regression integration', () => {
       artifactPath,
       '--max-aggregate-pass-rate-drop',
       '0.01',
+      '--max-aggregate-conformance-drop',
+      '0.01',
       '--max-scenario-pass-rate-drop',
       '0.01',
       '--max-operator-pass-rate-drop',

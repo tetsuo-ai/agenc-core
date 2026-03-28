@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "traceId": "noop-success-rejected",
+  "seed": 1,
+  "createdAtMs": 1700000000500,
+  "events": [
+    {
+      "seq": 1,
+      "type": "discovered",
+      "taskPda": "task-noop-success-rejected",
+      "timestampMs": 1700000000501,
+      "payload": {}
+    },
+    {
+      "seq": 2,
+      "type": "claimed",
+      "taskPda": "task-noop-success-rejected",
+      "timestampMs": 1700000000502,
+      "payload": {}
+    },
+    {
+      "seq": 3,
+      "type": "executed",
+      "taskPda": "task-noop-success-rejected",
+      "timestampMs": 1700000000503,
+      "payload": {
+        "mode": "noop_write"
+      }
+    },
+    {
+      "seq": 4,
+      "type": "verifier_verdict",
+      "taskPda": "task-noop-success-rejected",
+      "timestampMs": 1700000000504,
+      "payload": {
+        "verdict": "fail",
+        "attempt": 1
+      }
+    },
+    {
+      "seq": 5,
+      "type": "failed",
+      "taskPda": "task-noop-success-rejected",
+      "timestampMs": 1700000000505,
+      "payload": {
+        "reason": "mutation_evidence_required"
+      }
+    }
+  ]
+}

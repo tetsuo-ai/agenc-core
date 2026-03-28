@@ -40,6 +40,11 @@ obj/
 !runtime/idl/*.json
 !runtime/src/replay/alert-schema-lockfile.json
 !runtime/benchmarks/v1/delegation-manifest.json
+!runtime/benchmarks/v1/*.json
+!runtime/benchmarks/v1/incidents/*.json
+!runtime/benchmarks/mutation-gating-policy.ci.json
+!runtime/tests/fixtures/*.json
+!runtime/tests/fixtures/replay-cli/*.json
 !runtime/tests/fixtures/golden/*.json
 !docs/api-baseline/*.json
 !docs/security/fender-medium-baseline.json

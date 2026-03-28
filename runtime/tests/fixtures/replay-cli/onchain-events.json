@@ -1,0 +1,75 @@
+[
+  {
+    "eventName": "taskCreated",
+    "slot": 10,
+    "signature": "SIG_TASK_CREATED",
+    "timestampMs": 1000,
+    "event": {
+      "taskId": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+      "creator": "11111111111111111111111111111111",
+      "requiredCapabilities": 1,
+      "rewardAmount": 1000000,
+      "taskType": 0,
+      "deadline": 1730000000,
+      "minReputation": 0,
+      "rewardMint": null,
+      "timestamp": 1000
+    }
+  },
+  {
+    "eventName": "taskClaimed",
+    "slot": 11,
+    "signature": "SIG_TASK_CLAIMED",
+    "timestampMs": 2000,
+    "event": {
+      "taskId": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+      "worker": "11111111111111111111111111111111",
+      "currentWorkers": 1,
+      "maxWorkers": 1,
+      "timestamp": 2000
+    }
+  },
+  {
+    "eventName": "taskCompleted",
+    "slot": 12,
+    "signature": "SIG_TASK_COMPLETED",
+    "timestampMs": 3000,
+    "event": {
+      "taskId": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+      "worker": "11111111111111111111111111111111",
+      "proofHash": [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
+      "resultData": [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3],
+      "rewardPaid": 1000000,
+      "timestamp": 3000
+    }
+  },
+  {
+    "eventName": "disputeInitiated",
+    "slot": 13,
+    "signature": "SIG_DISPUTE_INITIATED",
+    "timestampMs": 4000,
+    "event": {
+      "disputeId": [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9],
+      "taskId": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+      "initiator": "11111111111111111111111111111111",
+      "defendant": "11111111111111111111111111111111",
+      "resolutionType": 0,
+      "votingDeadline": 1730003600,
+      "timestamp": 4000
+    }
+  },
+  {
+    "eventName": "disputeResolved",
+    "slot": 14,
+    "signature": "SIG_DISPUTE_RESOLVED",
+    "timestampMs": 5000,
+    "event": {
+      "disputeId": [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9],
+      "resolutionType": 0,
+      "outcome": 1,
+      "votesFor": 1,
+      "votesAgainst": 0,
+      "timestamp": 5000
+    }
+  }
+]

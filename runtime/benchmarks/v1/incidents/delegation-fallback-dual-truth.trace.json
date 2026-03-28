@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "traceId": "delegation-fallback-dual-truth",
+  "seed": 1,
+  "createdAtMs": 1700000000300,
+  "events": [
+    {
+      "seq": 1,
+      "type": "discovered",
+      "taskPda": "task-delegation-fallback-dual-truth",
+      "timestampMs": 1700000000301,
+      "payload": {}
+    },
+    {
+      "seq": 2,
+      "type": "claimed",
+      "taskPda": "task-delegation-fallback-dual-truth",
+      "timestampMs": 1700000000302,
+      "payload": {}
+    },
+    {
+      "seq": 3,
+      "type": "executed",
+      "taskPda": "task-delegation-fallback-dual-truth",
+      "timestampMs": 1700000000303,
+      "payload": {
+        "mode": "delegation_fallback"
+      }
+    },
+    {
+      "seq": 4,
+      "type": "verifier_verdict",
+      "taskPda": "task-delegation-fallback-dual-truth",
+      "timestampMs": 1700000000304,
+      "payload": {
+        "verdict": "fail",
+        "attempt": 1
+      }
+    },
+    {
+      "seq": 5,
+      "type": "failed",
+      "taskPda": "task-delegation-fallback-dual-truth",
+      "timestampMs": 1700000000305,
+      "payload": {
+        "reason": "fallback_completion_mismatch"
+      }
+    }
+  ]
+}

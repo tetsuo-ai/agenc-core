@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "allowlist_access_denied",
+  "title": "Delegated read blocked by stale allowed-directory scope",
+  "sourceTraceId": "allowlist-access-denied",
+  "sourceArtifacts": [
+    "/workspace/PLAN.md",
+    "/workspace/docs/PLAN.md"
+  ],
+  "expectedReplay": {
+    "taskPda": "task-allowlist-access-denied",
+    "finalStatus": "failed",
+    "replayErrors": 0,
+    "replayWarnings": 0,
+    "policyViolations": 1,
+    "verifierVerdicts": 0
+  },
+  "baselineMetrics": {
+    "turns": 1,
+    "toolCalls": 2,
+    "fallbackCount": 0,
+    "spuriousSubagentCount": 1,
+    "approvalCount": 0,
+    "restartRecoverySuccess": false
+  }
+}

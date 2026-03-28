@@ -163,13 +163,29 @@ function parseCliOutput(result: { stdout: string; stderr: string }): unknown {
 
 describe('CLI output contract tests', () => {
   let workspace = '';
+  let originalAgencConfig: string | undefined;
+  let originalRuntimeConfig: string | undefined;
 
   beforeEach(() => {
     workspace = createWorkspace();
+    originalAgencConfig = process.env.AGENC_CONFIG;
+    originalRuntimeConfig = process.env.AGENC_RUNTIME_CONFIG;
+    process.env.AGENC_CONFIG = join(workspace, 'missing-canonical-config.json');
+    delete process.env.AGENC_RUNTIME_CONFIG;
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    if (originalAgencConfig === undefined) {
+      delete process.env.AGENC_CONFIG;
+    } else {
+      process.env.AGENC_CONFIG = originalAgencConfig;
+    }
+    if (originalRuntimeConfig === undefined) {
+      delete process.env.AGENC_RUNTIME_CONFIG;
+    } else {
+      process.env.AGENC_RUNTIME_CONFIG = originalRuntimeConfig;
+    }
     rmSync(workspace, { recursive: true, force: true });
   });
 
@@ -317,8 +333,11 @@ describe('CLI output contract tests', () => {
           status: parsed.status,
           code: parsed.code,
           message: parsed.message.replace(
-            /\/tmp\/agenc-cli-contract-[^/]+\/empty-cli-config\.json/g,
+            /\/(?:var\/folders\/[^/]+\/[^/]+\/T|tmp)\/agenc-cli-contract-[^/]+\/empty-cli-config\.json/g,
             '/tmp/agenc-cli-contract-<fixture>/empty-cli-config.json',
+          ).replace(
+            /(?:\/Users\/[^/]+|\/home\/[^/]+)\/\.agenc\/config\.json/g,
+            '<canonical-config-path>',
           ),
         };
       },
