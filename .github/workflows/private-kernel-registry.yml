@@ -59,11 +59,8 @@ jobs:
     permissions:
       contents: read
     env:
-      PRIVATE_REGISTRY_INSTANCE: ${{ github.run_id }}-${{ github.job }}
       PRIVATE_REGISTRY_PORT: "4873"
       PRIVATE_KERNEL_REGISTRY_URL: http://127.0.0.1:4873
-      PRIVATE_REGISTRY_TOKEN_FILE: ${{ runner.temp }}/agenc-private-registry.token
-      PRIVATE_REGISTRY_BOOTSTRAP_JSON: ${{ runner.temp }}/agenc-private-registry-bootstrap.json
       PRIVATE_REGISTRY_USERNAME: agenc-ci
       PRIVATE_REGISTRY_EMAIL: ci+private-registry@tetsuo.ai
       PRIVATE_REGISTRY_PASSWORD: agenc-ci-${{ github.run_id }}-${{ github.run_attempt }}
@@ -75,6 +72,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+
+      - name: Initialize private registry env
+        run: |
+          echo "PRIVATE_REGISTRY_INSTANCE=${GITHUB_RUN_ID}-${GITHUB_JOB}" >> "$GITHUB_ENV"
+          echo "PRIVATE_REGISTRY_TOKEN_FILE=${RUNNER_TEMP}/agenc-private-registry.token" >> "$GITHUB_ENV"
+          echo "PRIVATE_REGISTRY_BOOTSTRAP_JSON=${RUNNER_TEMP}/agenc-private-registry-bootstrap.json" >> "$GITHUB_ENV"
 
       - name: Pin npm
         run: npm install --global npm@11.7.0
