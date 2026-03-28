@@ -49,8 +49,8 @@ export function TaskCard({
   const statusKey = task.status.toLowerCase();
   const statusClass = STATUS_STYLES[statusKey] ?? STATUS_STYLES.open;
   const description = task.description?.trim() || 'untitled task';
-  const canClaim  = statusKey === 'open' && task.creator !== agentWallet;
-  const canCancel = statusKey === 'open' && task.creator === agentWallet;
+  const canClaim  = statusKey === 'open' && !!agentWallet && task.creator !== agentWallet;
+  const canCancel = statusKey === 'open' && !!agentWallet && task.creator === agentWallet;
   const canComplete = statusKey === 'in_progress' || statusKey === 'pending_validation';
   const canDispute = statusKey === 'in_progress' || statusKey === 'pending_validation';
 

@@ -1,9 +1,11 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TaskCard } from './TaskCard';
 
+afterEach(cleanup);
+
 describe('TaskCard', () => {
-  it('shows open-task actions and dispatches claim/cancel', () => {
+  it('shows [cancel] only for own open task (creator === agentWallet)', () => {
     const onClaim = vi.fn();
     const onComplete = vi.fn();
     const onDispute = vi.fn();
@@ -12,11 +14,42 @@ describe('TaskCard', () => {
     render(
       <TaskCard
         task={{
-          id: 'task-open',
+          id: 'task-own',
           status: 'open',
-          description: 'Open task',
+          description: 'My task',
           reward: '1.5',
+          creator: 'wallet-abc',
         }}
+        agentWallet="wallet-abc"
+        onClaim={onClaim}
+        onComplete={onComplete}
+        onDispute={onDispute}
+        onCancel={onCancel}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '[cancel]' }));
+
+    expect(onCancel).toHaveBeenCalledWith('task-own');
+    expect(screen.queryByRole('button', { name: '[claim]' })).toBeNull();
+  });
+
+  it('shows [claim] only for someone else\'s open task (creator !== agentWallet)', () => {
+    const onClaim = vi.fn();
+    const onComplete = vi.fn();
+    const onDispute = vi.fn();
+    const onCancel = vi.fn();
+
+    render(
+      <TaskCard
+        task={{
+          id: 'task-other',
+          status: 'open',
+          description: 'Someone else\'s task',
+          reward: '2',
+          creator: 'wallet-xyz',
+        }}
+        agentWallet="wallet-abc"
         onClaim={onClaim}
         onComplete={onComplete}
         onDispute={onDispute}
@@ -25,11 +58,29 @@ describe('TaskCard', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: '[claim]' }));
-    fireEvent.click(screen.getByRole('button', { name: '[cancel]' }));
 
-    expect(onClaim).toHaveBeenCalledWith('task-open');
-    expect(onCancel).toHaveBeenCalledWith('task-open');
-    expect(screen.queryByRole('button', { name: '[complete]' })).toBeNull();
+    expect(onClaim).toHaveBeenCalledWith('task-other');
+    expect(screen.queryByRole('button', { name: '[cancel]' })).toBeNull();
+  });
+
+  it('shows neither [claim] nor [cancel] when wallet is unavailable', () => {
+    render(
+      <TaskCard
+        task={{
+          id: 'task-open',
+          status: 'open',
+          description: 'Open task',
+          reward: '1.5',
+        }}
+        onClaim={vi.fn()}
+        onComplete={vi.fn()}
+        onDispute={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: '[claim]' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '[cancel]' })).toBeNull();
   });
 
   it('opens completion and dispute forms for in-progress tasks', () => {
