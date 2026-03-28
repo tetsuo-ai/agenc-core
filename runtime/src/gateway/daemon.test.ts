@@ -4029,6 +4029,7 @@ describe("DaemonManager", () => {
       sessionId: "session-parent",
       parentSessionId: "session-parent",
       payload: {
+        completionState: "needs_verification",
         stopReason: "completed",
         stopReasonDetail: "Compiled parser, ran probes, and emitted final synthesis",
         outputChars: 128,
@@ -4049,6 +4050,7 @@ describe("DaemonManager", () => {
     expect(synthesisPushPayload.payload.data).toMatchObject({
       stepName: "runtime_probe",
       objective: "Create src/parser.js and inspect it",
+      completionState: "needs_verification",
       stopReason: "completed",
       stopReasonDetail: "Compiled parser, ran probes, and emitted final synthesis",
       outputChars: 128,
@@ -4063,6 +4065,7 @@ describe("DaemonManager", () => {
     expect(synthesisBroadcast.subagentSessionId).toBe("subagent:child");
     expect(synthesisBroadcast.stepName).toBe("runtime_probe");
     expect(synthesisBroadcast.objective).toBe("Create src/parser.js and inspect it");
+    expect(synthesisBroadcast.completionState).toBe("needs_verification");
     expect(synthesisBroadcast.stopReasonDetail).toBe(
       "Compiled parser, ran probes, and emitted final synthesis",
     );

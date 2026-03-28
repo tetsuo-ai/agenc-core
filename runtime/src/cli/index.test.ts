@@ -508,4 +508,22 @@ describe("runtime root CLI", () => {
     );
     expect(runInteractiveOnboarding).not.toHaveBeenCalled();
   });
+
+  it("treats onboard --help as help text instead of entering onboarding flows", async () => {
+    setStdinTTY(true);
+    const stdout = captureStream();
+    const stderr = captureStream();
+    (stdout.stream as Writable & { isTTY?: boolean }).isTTY = true;
+
+    const code = await runCli({
+      argv: ["onboard", "--help"],
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+    });
+
+    expect(code).toBe(0);
+    expect(runInteractiveOnboarding).not.toHaveBeenCalled();
+    expect(runOnboardCommand).not.toHaveBeenCalled();
+    expect(stdout.data()).toContain("onboard [--help] [options]");
+  });
 });

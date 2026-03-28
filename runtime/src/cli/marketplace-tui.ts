@@ -675,6 +675,20 @@ async function runDisputesLoop(
         rl,
         "extra workers claimPda:workerPda[,..] (optional)",
       );
+      let arbiterVotes: ReturnType<typeof parseArbiterVotes>;
+      let extraWorkers: ReturnType<typeof parseExtraWorkers> | undefined;
+      try {
+        arbiterVotes = parseArbiterVotes(arbiterVotesRaw);
+        extraWorkers = extraWorkersRaw
+          ? parseExtraWorkers(extraWorkersRaw)
+          : undefined;
+      } catch (error) {
+        renderPayloadBlock(stdout, "dispute resolve failed", {
+          message: error instanceof Error ? error.message : String(error),
+        });
+        await pause(rl);
+        continue;
+      }
       await showRunnerResult(
         rl,
         stdout,
@@ -684,10 +698,8 @@ async function runDisputesLoop(
         {
           ...base,
           disputePda,
-          arbiterVotes: parseArbiterVotes(arbiterVotesRaw),
-          extraWorkers: extraWorkersRaw
-            ? parseExtraWorkers(extraWorkersRaw)
-            : undefined,
+          arbiterVotes,
+          extraWorkers,
         } as MarketDisputeResolveOptions,
       );
       continue;

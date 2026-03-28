@@ -50,6 +50,7 @@ function createTransportHarness(overrides = {}) {
     bootstrapReady: false,
     bootstrapAttempts: 0,
     sessionId: "sess-1",
+    runInspectPending: false,
     manualSessionsRequestPending: false,
     manualHistoryRequestPending: false,
   };
@@ -204,5 +205,18 @@ test("transport controller reconnects after socket close and marks bootstrap rea
   assert.equal(harness.watchState.bootstrapAttempts, 0);
   assert.ok(harness.calls.some((entry) => entry.type === "flushQueuedInputs"));
 
+  harness.controller.dispose();
+});
+
+test("transport controller clears stale run inspect state on socket close", () => {
+  const harness = createTransportHarness();
+  harness.watchState.runInspectPending = true;
+  harness.controller.connect();
+  const socket = harness.sockets[0];
+  socket.emit("open");
+
+  socket.emit("close");
+
+  assert.equal(harness.watchState.runInspectPending, false);
   harness.controller.dispose();
 });

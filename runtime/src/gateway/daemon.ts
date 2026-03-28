@@ -5937,6 +5937,10 @@ export class DaemonManager {
             sessionId: msg.sessionId,
             parentSessionId: msg.sessionId,
             payload: {
+              ...(typeof result.completionState === "string" &&
+              result.completionState.trim().length > 0
+                ? { completionState: result.completionState.trim() }
+                : {}),
               stopReason: result.stopReason,
               ...(stopReasonDetail ? { stopReasonDetail } : {}),
               outputChars: result.content.length,

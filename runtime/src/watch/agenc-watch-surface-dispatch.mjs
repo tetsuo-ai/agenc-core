@@ -197,6 +197,16 @@ function handleChatSurfaceEvent(surfaceEvent, state, api) {
       }
       return true;
     case "chat.cancelled":
+      if (payload.cancelled === false) {
+        api.setTransientStatus("chat cancel failed");
+        api.eventStore.pushEvent(
+          "error",
+          "Chat Cancel Failed",
+          api.tryPrettyJson(payload),
+          "red",
+        );
+        return true;
+      }
       api.eventStore.cancelAgentStream("cancelled");
       api.setTransientStatus("chat cancelled");
       api.eventStore.pushEvent("cancelled", "Chat Cancelled", api.tryPrettyJson(payload), "amber");
@@ -315,12 +325,10 @@ function handleRunSurfaceEvent(surfaceEvent, state, api) {
           : payload;
         state.runState = runTruth.runState ?? state.runState;
         state.runPhase = payload.currentPhase ?? state.runPhase;
-        if (
-          typeof state.activeRunStartedAtMs !== "number" ||
-          !Number.isFinite(state.activeRunStartedAtMs)
-        ) {
-          state.activeRunStartedAtMs = api.now();
-        }
+        const createdAt = Number(payload.createdAt);
+        state.activeRunStartedAtMs = Number.isFinite(createdAt)
+          ? createdAt
+          : state.activeRunStartedAtMs ?? api.now();
         api.setTransientStatus(
           `run updated: ${String(state.runState ?? "unknown").replace(/_/g, " ")}`,
         );
