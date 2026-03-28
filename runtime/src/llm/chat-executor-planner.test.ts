@@ -11,9 +11,11 @@ import {
   extractPlannerVerificationCommandRequirements,
   extractPlannerVerificationRequirements,
   buildPlannerStructuralRefinementHint,
+  classifyPlannerPlanArtifactIntent,
   extractExplicitDeterministicToolRequirements,
   extractExplicitSubagentOrchestrationRequirements,
   parsePlannerPlan,
+  plannerRequestImplementsFromArtifact,
   requestExplicitlyRequestsDelegation,
   salvagePlannerToolCallsAsPlan,
   validatePlannerVerificationRequirements,
@@ -107,6 +109,51 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
     expect(messages[0]?.content).not.toContain(
       '"requiredSourceArtifacts": ["/abs/path/PLAN.md"]',
     );
+  });
+
+  it("filters same-target artifact-edit history when the current turn is implementing from the artifact", () => {
+    const messages = buildPlannerMessages(
+      "Read all of @PLAN.md and implement every phase in full.",
+      [
+        {
+          role: "user",
+          content: "Go through @PLAN.md and make sure it is perfect before we implement anything.",
+        },
+        {
+          role: "assistant",
+          content: "I found several gaps in PLAN.md and can fix them next.",
+        },
+        {
+          role: "user",
+          content: "Keep the workspace root at /tmp/agenc-shell and use gcc with non-interactive tests.",
+        },
+      ],
+      512,
+    );
+
+    const finalUserMessage = messages[messages.length - 1];
+    expect(finalUserMessage?.role).toBe("user");
+    expect(finalUserMessage?.content).not.toContain("make sure it is perfect");
+    expect(finalUserMessage?.content).not.toContain("I found several gaps in PLAN.md");
+    expect(finalUserMessage?.content).toContain(
+      "Keep the workspace root at /tmp/agenc-shell",
+    );
+  });
+
+  it("keeps different-target artifact history when implementing from a plan artifact", () => {
+    const messages = buildPlannerMessages(
+      "Read all of @PLAN.md and implement every phase in full.",
+      [
+        {
+          role: "user",
+          content: "Please perfect ROADMAP.md before the release.",
+        },
+      ],
+      512,
+    );
+
+    const finalUserMessage = messages[messages.length - 1];
+    expect(finalUserMessage?.content).toContain("perfect ROADMAP.md");
   });
 
   it("treats plain-language delegation research requests as explicit delegation", () => {
@@ -582,12 +629,27 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
   it("forces planner routing for plan-artifact execution requests", () => {
     const decision = assessPlannerDecision(
       true,
-      "You are to read all of @PLAN.md and complete every single phase in full.",
+      "Update PLAN.md so it reflects the corrected architecture and missing validation steps.",
       [],
     );
 
     expect(decision.shouldPlan).toBe(true);
     expect(decision.reason).toContain("plan_artifact_execution_request");
+  });
+
+  it("routes implement-from-plan requests through the planner without classifying them as artifact edits", () => {
+    const messageText =
+      "You are to read all of @PLAN.md and complete every single phase in full.";
+
+    expect(classifyPlannerPlanArtifactIntent(messageText)).toBe(
+      "implement_from_artifact",
+    );
+    expect(plannerRequestImplementsFromArtifact(messageText)).toBe(true);
+
+    const decision = assessPlannerDecision(true, messageText, []);
+
+    expect(decision.shouldPlan).toBe(true);
+    expect(decision.reason).toContain("artifact_spec_execution_request");
   });
 
   it("extracts required subagent steps from the compact 'plan required' prompt shape", () => {
@@ -1570,6 +1632,84 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
         }),
       ]),
     );
+  });
+
+  it("does not require a final artifact write step for implement-from-plan requests", () => {
+    const workspaceRoot = "/tmp/agenc-shell";
+    const diagnostics = validatePlannerStepContracts(
+      {
+        reason: "implement_from_plan",
+        requiresSynthesis: false,
+        confidence: 0.82,
+        steps: [
+          {
+            name: "read_plan",
+            stepType: "deterministic_tool",
+            dependsOn: [],
+            tool: "system.readFile",
+            args: {
+              path: `${workspaceRoot}/PLAN.md`,
+            },
+          },
+          {
+            name: "implement_phase_work",
+            stepType: "subagent_task",
+            dependsOn: ["read_plan"],
+            objective: "Implement the requested shell phases from PLAN.md.",
+            inputContract: "PLAN.md plus existing source tree.",
+            acceptanceCriteria: ["Requested shell phases are implemented and tested."],
+            requiredToolCapabilities: ["read", "write", "bash"],
+            contextRequirements: ["read_plan"],
+            maxBudgetHint: "20m",
+            canRunParallel: false,
+            executionContext: {
+              version: "v1",
+              workspaceRoot,
+              allowedReadRoots: [workspaceRoot],
+              allowedWriteRoots: [workspaceRoot],
+              requiredSourceArtifacts: [`${workspaceRoot}/PLAN.md`],
+              targetArtifacts: [`${workspaceRoot}/src`],
+              effectClass: "filesystem_write",
+              verificationMode: "mutation_required",
+              stepKind: "delegated_write",
+            },
+          },
+        ],
+        edges: [{ from: "read_plan", to: "implement_phase_work" }],
+      },
+      "Read all of @PLAN.md and complete every single phase in full.",
+    );
+
+    expect(diagnostics).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "planner_plan_artifact_missing_write_step",
+        }),
+      ]),
+    );
+  });
+
+  it("classifies the full existing artifact alias family consistently", () => {
+    expect(
+      classifyPlannerPlanArtifactIntent(
+        "Read TODO.md and turn it into a complete implementation plan.",
+      ),
+    ).toBe("grounded_plan_generation");
+    expect(
+      classifyPlannerPlanArtifactIntent(
+        "Update roadmap.md so it reflects the latest sequencing and owners.",
+      ),
+    ).toBe("edit_artifact");
+    expect(
+      classifyPlannerPlanArtifactIntent(
+        "Implement everything in implementation-plan.md and verify each phase before moving on.",
+      ),
+    ).toBe("implement_from_artifact");
+    expect(
+      classifyPlannerPlanArtifactIntent(
+        "Use spec.md as the source of truth and implement the project in full.",
+      ),
+    ).toBe("implement_from_artifact");
   });
 
   it("rejects deterministic bash steps that embed shell separators in direct args", () => {

@@ -13073,7 +13073,7 @@ describe("ChatExecutor", () => {
       expect(result.callUsage.map((entry) => entry.phase)).toEqual(["planner"]);
     });
 
-    it("routes plan-artifact execution requests through the planner instead of the direct tool loop", async () => {
+    it("routes plan-artifact edit requests through the planner instead of the direct tool loop", async () => {
       const provider = createMockProvider("primary", {
         chat: vi.fn().mockResolvedValueOnce(
           mockResponse({
@@ -13133,7 +13133,7 @@ describe("ChatExecutor", () => {
       const result = await executor.execute(
         createParams({
           message: createMessage(
-            "You are to read all of @PLAN.md and complete every single phase in full.",
+            "Read PLAN.md and update it with a final phase summary for the completed work.",
           ),
         }),
       );
@@ -14795,6 +14795,13 @@ describe("ChatExecutor", () => {
           expect.objectContaining({
             category: "policy",
             code: "planner_step_contract_retry",
+          }),
+        ]),
+      );
+      expect(result.plannerSummary?.diagnostics).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            code: "planner_plan_artifact_missing_write_step",
           }),
         ]),
       );

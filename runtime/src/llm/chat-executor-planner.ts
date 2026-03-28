@@ -335,7 +335,9 @@ export function assessPlannerDecision(
     };
   }
 
-  if (plannerRequestNeedsGroundedPlanArtifact(messageText)) {
+  const artifactIntent = classifyPlannerPlanArtifactIntent(messageText);
+
+  if (artifactIntent === "grounded_plan_generation") {
     return {
       score: Math.max(score, 3),
       shouldPlan: true,
@@ -346,7 +348,7 @@ export function assessPlannerDecision(
     };
   }
 
-  if (plannerRequestNeedsPlanArtifactExecution(messageText)) {
+  if (artifactIntent === "edit_artifact") {
     return {
       score: Math.max(score, 4),
       shouldPlan: true,
@@ -354,6 +356,17 @@ export function assessPlannerDecision(
         reasons.length > 0
           ? `${reasons.join("+")}+plan_artifact_execution_request`
           : "plan_artifact_execution_request",
+    };
+  }
+
+  if (artifactIntent === "implement_from_artifact") {
+    return {
+      score: Math.max(score, 4),
+      shouldPlan: true,
+      reason:
+        reasons.length > 0
+          ? `${reasons.join("+")}+artifact_spec_execution_request`
+          : "artifact_spec_execution_request",
     };
   }
 
@@ -605,15 +618,53 @@ export function buildPlannerMessages(
     extractPlannerVerificationRequirements(messageText);
   const verificationCommandRequirements =
     extractPlannerVerificationCommandRequirements(messageText);
-  const planArtifactExecutionRequest =
-    plannerRequestNeedsPlanArtifactExecution(messageText);
+  const artifactIntent = classifyPlannerPlanArtifactIntent(messageText);
+  const planArtifactExecutionRequest = artifactIntent === "edit_artifact";
+  const implementFromArtifactRequest =
+    artifactIntent === "implement_from_artifact";
+  const currentArtifactTargets = extractPlannerArtifactTargets(messageText);
   const hostToolingHint = buildPlannerHostToolingHint(
     messageText,
     history,
     hostToolingProfile,
   );
+  let suppressImmediateAssistantReply = false;
   const historyPreview = history
     .slice(-6)
+    .filter((entry) => {
+      const raw =
+        typeof entry.content === "string"
+          ? entry.content
+          : entry.content
+              .filter((part) => part.type === "text")
+              .map((part) => part.text)
+              .join(" ");
+      if (!implementFromArtifactRequest) {
+        suppressImmediateAssistantReply = false;
+        return true;
+      }
+      if (entry.role === "assistant" && suppressImmediateAssistantReply) {
+        suppressImmediateAssistantReply = false;
+        return false;
+      }
+      const entryIntent = classifyPlannerPlanArtifactIntent(raw);
+      const sameArtifactTarget = plannerArtifactTargetsOverlap(
+        currentArtifactTargets,
+        extractPlannerArtifactTargets(raw),
+      );
+      if (
+        sameArtifactTarget &&
+        (
+          entryIntent === "grounded_plan_generation" ||
+          entryIntent === "edit_artifact"
+        )
+      ) {
+        suppressImmediateAssistantReply = entry.role === "user";
+        return false;
+      }
+      suppressImmediateAssistantReply = false;
+      return true;
+    })
     .map((entry) => {
       const raw =
         typeof entry.content === "string"
@@ -788,6 +839,15 @@ export function buildPlannerMessages(
         "If you need prior grounding, keep it read-only and bounded to explicit source or analysis artifacts. " +
         "Do not emit multiple mutable, validation, or QA subagent_task steps that all re-own the same workspace root. " +
         "Build, test, and verification around the implementation owner should be deterministic_tool steps unless a later delegated step owns disjoint artifacts.",
+    });
+  }
+  if (implementFromArtifactRequest) {
+    messages.push({
+      role: "system",
+      content:
+        "The named planning artifact is the source specification for implementation work, not the primary artifact to rewrite. " +
+        "Plan code changes, build/test verification, and bounded delegated implementation around the source spec. " +
+        "Do not collapse the task into editing the planning artifact unless the user explicitly asks to update that artifact.",
     });
   }
 
@@ -1024,18 +1084,30 @@ const PLANNER_PLAN_ARTIFACT_REQUEST_RE =
   /\b(?:write|create|draft|generate|produce|make)\b[\s\S]{0,120}\b(?:todo(?:\.md)?|implementation plan|project plan|plan doc(?:ument)?|roadmap|checklist|spec(?:ification)?)\b/i;
 const PLANNER_PLAN_ARTIFACT_FILE_RE =
   /\b(?:todo(?:\.md)?|plan\.(?:md|txt|rst)|implementation[-_ ]plan(?:\.md)?|project[-_ ]plan(?:\.md)?|roadmap(?:\.md)?|checklist(?:\.md)?|spec(?:ification)?(?:\.md)?)\b/i;
+const PLANNER_PLAN_ARTIFACT_FILE_CAPTURE_RE =
+  /\b(?:todo(?:\.md)?|plan\.(?:md|txt|rst)|implementation[-_ ]plan(?:\.md)?|project[-_ ]plan(?:\.md)?|roadmap(?:\.md)?|checklist(?:\.md)?|spec(?:ification)?(?:\.md)?)\b/gi;
 const PLANNER_PLAN_ARTIFACT_SOURCE_CUE_RE =
   /\b(?:read|review|inspect|use|follow|based on|source of truth|go through)\b/i;
 const PLANNER_PLAN_ARTIFACT_EXECUTION_CUE_RE =
   /\b(?:implement|execute|complete|finish|carry\s+out|apply|fix|repair|refactor|ship)\b/i;
 const PLANNER_PLAN_ARTIFACT_PHASE_CUE_RE =
   /\b(?:phase|step|task|item)s?\b/i;
+const PLANNER_PLAN_ARTIFACT_EDIT_CUE_RE =
+  /\b(?:update|rewrite|improve|perfect|polish|edit|revise|expand|flesh\s+out|address\s+gaps?|fix\s+gaps?|tighten|correct)\b/i;
+const PLANNER_PLAN_ARTIFACT_IMPLEMENTATION_CUE_RE =
+  /\b(?:all|each|every|entire|full|fully|phase\s+by\s+phase|one\s+phase\s+at\s+a\s+time|before\s+moving\s+on|move\s+on\s+to\s+the\s+next\s+phase)\b/i;
 const REQUEST_VERIFICATION_DIRECTIVE_RE =
   /\b(?:verify|verification|validated?|before\s+finish(?:ing)?|before\s+returning|before\s+completion|browser-grounded checks?)\b/i;
 const REQUEST_INSTALL_VERIFICATION_RE =
   /\b(?:npm|pnpm|yarn|bun)\s+(?:install|ci)\b|\binstall(?:ation|able|ed|ing|s)?\b/i;
 const REQUEST_BUILD_VERIFICATION_RE =
   /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:build|typecheck|lint)\b|\b(?:vite\s+build|tsc\b|build(?:s|ing)?|compile(?:s|d|ing)?|typecheck(?:s|ed|ing)?|lint(?:s|ed|ing)?)\b/i;
+
+export type PlannerPlanArtifactIntent =
+  | "none"
+  | "grounded_plan_generation"
+  | "edit_artifact"
+  | "implement_from_artifact";
 const REQUEST_TEST_VERIFICATION_RE =
   /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|coverage|vitest|jest)\b|\b(?:tests?|testing|smoke tests?|unit tests?|vitest|jest|pytest|mocha|ava|coverage)\b/i;
 const REQUEST_BROWSER_VERIFICATION_RE =
@@ -3273,11 +3345,17 @@ export function validatePlannerStepContracts(
 ): readonly PlannerDiagnostic[] {
   const diagnostics: PlannerDiagnostic[] = [];
 
-  if (typeof messageText === "string" && plannerRequestNeedsGroundedPlanArtifact(messageText)) {
-    diagnostics.push(...validatePlannerPlanArtifactSteps(plannerPlan));
-  }
-  if (typeof messageText === "string" && plannerRequestNeedsPlanArtifactExecution(messageText)) {
-    diagnostics.push(...validatePlannerPlanArtifactExecutionOwnership(plannerPlan));
+  if (typeof messageText === "string") {
+    const artifactIntent = classifyPlannerPlanArtifactIntent(messageText);
+    if (
+      artifactIntent === "grounded_plan_generation" ||
+      artifactIntent === "edit_artifact"
+    ) {
+      diagnostics.push(...validatePlannerPlanArtifactSteps(plannerPlan));
+    }
+    if (artifactIntent === "implement_from_artifact") {
+      diagnostics.push(...validatePlannerPlanArtifactExecutionOwnership(plannerPlan));
+    }
   }
 
   for (const step of plannerPlan.steps) {
@@ -3392,15 +3470,26 @@ export function validatePlannerStepContracts(
   return diagnostics;
 }
 
-function plannerRequestNeedsGroundedPlanArtifact(messageText: string): boolean {
+function extractPlannerArtifactTargets(messageText: string): readonly string[] {
   const normalized = messageText.trim();
   if (normalized.length === 0) {
-    return false;
+    return [];
   }
-  if (
-    !PLANNER_PLAN_ARTIFACT_REQUEST_RE.test(normalized) &&
-    !PLANNER_PLAN_ARTIFACT_FILE_RE.test(normalized)
-  ) {
+  PLANNER_PLAN_ARTIFACT_FILE_CAPTURE_RE.lastIndex = 0;
+  const targets = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = PLANNER_PLAN_ARTIFACT_FILE_CAPTURE_RE.exec(normalized)) !== null) {
+    const value = (match[0] ?? "").trim().toLowerCase();
+    if (value.length > 0) {
+      targets.add(value);
+    }
+  }
+  return [...targets];
+}
+
+function plannerRequestGroundedPlanArtifactIntent(messageText: string): boolean {
+  const normalized = messageText.trim();
+  if (normalized.length === 0) {
     return false;
   }
   const signals = collectPlannerRequestSignals(normalized, []);
@@ -3408,9 +3497,16 @@ function plannerRequestNeedsGroundedPlanArtifact(messageText: string): boolean {
     /\b(?:read|expand|turn|convert|rewrite|flesh\s+out|promote)\b[\s\S]{0,80}\b(?:into|to)\b[\s\S]{0,80}\b(?:complete|full|detailed)?\s*(?:implementation\s+)?plan\b/i.test(
       normalized,
     );
+  const hasGenerationCue =
+    PLANNER_PLAN_ARTIFACT_REQUEST_RE.test(normalized) ||
+    explicitPlanExpansionCue;
+  if (!hasGenerationCue) {
+    return false;
+  }
   return (
     (signals.hasImplementationScopeCue || explicitPlanExpansionCue) &&
     (
+      PLANNER_PLAN_ARTIFACT_FILE_RE.test(normalized) ||
       signals.hasDocumentationCue ||
       signals.hasMultiStepCue ||
       signals.longTask ||
@@ -3421,25 +3517,88 @@ function plannerRequestNeedsGroundedPlanArtifact(messageText: string): boolean {
   );
 }
 
-export function plannerRequestNeedsPlanArtifactExecution(messageText: string): boolean {
+export function classifyPlannerPlanArtifactIntent(
+  messageText: string,
+): PlannerPlanArtifactIntent {
   const normalized = messageText.trim();
   if (normalized.length === 0) {
-    return false;
+    return "none";
   }
+
+  if (plannerRequestGroundedPlanArtifactIntent(normalized)) {
+    return "grounded_plan_generation";
+  }
+
   if (!PLANNER_PLAN_ARTIFACT_FILE_RE.test(normalized)) {
-    return false;
-  }
-  if (!PLANNER_PLAN_ARTIFACT_EXECUTION_CUE_RE.test(normalized)) {
-    return false;
+    return "none";
   }
   const signals = collectPlannerRequestSignals(normalized, []);
+  const hasDirectArtifactEditCue =
+    /\b(?:todo(?:\.md)?|plan\.(?:md|txt|rst)|implementation[-_ ]plan(?:\.md)?|project[-_ ]plan(?:\.md)?|roadmap(?:\.md)?|checklist(?:\.md)?|spec(?:ification)?(?:\.md)?)\b[\s\S]{0,80}\b(?:update|rewrite|improve|perfect|polish|edit|revise|expand|flesh\s+out|address\s+gaps?|fix\s+gaps?|tighten|correct)\b/i.test(
+      normalized,
+    ) ||
+    /\b(?:update|rewrite|improve|perfect|polish|edit|revise|expand|flesh\s+out|address\s+gaps?|fix\s+gaps?|tighten|correct)\b[\s\S]{0,80}\b(?:todo(?:\.md)?|plan\.(?:md|txt|rst)|implementation[-_ ]plan(?:\.md)?|project[-_ ]plan(?:\.md)?|roadmap(?:\.md)?|checklist(?:\.md)?|spec(?:ification)?(?:\.md)?)\b/i.test(
+      normalized,
+    );
+  const hasImplementationFromArtifactCue =
+    PLANNER_PLAN_ARTIFACT_EXECUTION_CUE_RE.test(normalized) &&
+    (
+      PLANNER_PLAN_ARTIFACT_SOURCE_CUE_RE.test(normalized) ||
+      PLANNER_PLAN_ARTIFACT_PHASE_CUE_RE.test(normalized) ||
+      PLANNER_PLAN_ARTIFACT_IMPLEMENTATION_CUE_RE.test(normalized) ||
+      signals.hasImplementationScopeCue ||
+      signals.hasVerificationCue ||
+      signals.hasMultiStepCue ||
+      signals.longTask
+    );
+  const hasArtifactEditCue =
+    hasDirectArtifactEditCue ||
+    PLANNER_PLAN_ARTIFACT_EDIT_CUE_RE.test(normalized) ||
+    /\b(?:fill|add)\b[\s\S]{0,80}\b(?:gaps?|missing sections?|missing items?)\b/i.test(
+      normalized,
+    ) ||
+    /\b(?:make|keep)\b[\s\S]{0,80}\b(?:perfect|complete|consistent|correct)\b/i.test(
+      normalized,
+    );
+  if (hasArtifactEditCue) {
+    return "edit_artifact";
+  }
+  if (hasImplementationFromArtifactCue) {
+    return "implement_from_artifact";
+  }
+
+  return "none";
+}
+
+export function plannerRequestNeedsGroundedPlanArtifact(messageText: string): boolean {
   return (
-    PLANNER_PLAN_ARTIFACT_SOURCE_CUE_RE.test(normalized) ||
-    PLANNER_PLAN_ARTIFACT_PHASE_CUE_RE.test(normalized) ||
-    signals.hasImplementationScopeCue ||
-    signals.hasMultiStepCue ||
-    signals.longTask
+    classifyPlannerPlanArtifactIntent(messageText) ===
+    "grounded_plan_generation"
   );
+}
+
+export function plannerRequestNeedsPlanArtifactExecution(messageText: string): boolean {
+  return classifyPlannerPlanArtifactIntent(messageText) === "edit_artifact";
+}
+
+export function plannerRequestImplementsFromArtifact(
+  messageText: string,
+): boolean {
+  return (
+    classifyPlannerPlanArtifactIntent(messageText) ===
+    "implement_from_artifact"
+  );
+}
+
+function plannerArtifactTargetsOverlap(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  if (left.length === 0 || right.length === 0) {
+    return false;
+  }
+  const rightSet = new Set(right);
+  return left.some((target) => rightSet.has(target));
 }
 
 function isPlannerFileWriteStep(step: PlannerStepIntent): boolean {

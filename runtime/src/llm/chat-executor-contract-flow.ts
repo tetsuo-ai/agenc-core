@@ -37,6 +37,7 @@ import {
 } from "./chat-executor-routing-state.js";
 import { didToolCallFail } from "./chat-executor-tool-utils.js";
 import {
+  plannerRequestNeedsGroundedPlanArtifact,
   plannerRequestNeedsPlanArtifactExecution,
   requestRequiresToolGroundedExecution,
 } from "./chat-executor-planner.js";
@@ -478,7 +479,10 @@ function mergeWorkflowVerificationContext(input: {
 function synthesizeDirectImplementationWorkflowContext(
   ctx: ContractFlowContext,
 ): RuntimeWorkflowContextResolution | undefined {
-  if (plannerRequestNeedsPlanArtifactExecution(ctx.messageText)) {
+  if (
+    plannerRequestNeedsGroundedPlanArtifact(ctx.messageText) ||
+    plannerRequestNeedsPlanArtifactExecution(ctx.messageText)
+  ) {
     return undefined;
   }
   const workspaceRoot = normalizeWorkspaceRoot(ctx.runtimeWorkspaceRoot);

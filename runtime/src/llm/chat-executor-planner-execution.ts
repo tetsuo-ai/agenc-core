@@ -52,7 +52,7 @@ import {
   buildExplicitSubagentOrchestrationFailureMessage,
   extractRecoverablePlannerParseDiagnostics,
   isHighRiskSubagentPlan,
-  plannerRequestNeedsPlanArtifactExecution,
+  plannerRequestImplementsFromArtifact,
 } from "./chat-executor-planner.js";
 import { normalizePlannerResponse } from "./chat-executor-planner-normalization.js";
 import {
@@ -1173,7 +1173,7 @@ export async function executePlannerPath(
       );
     ctx.plannerImplementationFallbackBlocked =
       plannerImplementationFallbackBlocked;
-    const planArtifactExecutionRequest = plannerRequestNeedsPlanArtifactExecution(
+    const planArtifactExecutionRequest = plannerRequestImplementsFromArtifact(
       ctx.messageText,
     );
     const delegationVetoReason = delegationDecision?.reason;

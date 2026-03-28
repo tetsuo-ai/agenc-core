@@ -134,7 +134,7 @@ describe("chat-executor-contract-flow", () => {
     expect(workflowContext).toEqual({});
   });
 
-  it("does not synthesize direct implementation ownership for explicit PLAN.md phase-execution requests", () => {
+  it("synthesizes direct implementation ownership for implement-from-plan requests", () => {
     const workflowContext = resolveRuntimeWorkflowContext({
       ctx: {
         messageText:
@@ -169,7 +169,17 @@ describe("chat-executor-contract-flow", () => {
       } as any,
     });
 
-    expect(workflowContext).toEqual({});
+    expect(workflowContext).toMatchObject({
+      ownershipSource: "direct_deterministic_implementation",
+      verificationContract: {
+        workspaceRoot: "/tmp/project",
+        verificationMode: "mutation_required",
+        targetArtifacts: ["/tmp/project/src/main.c"],
+      },
+      completionContract: {
+        taskClass: "artifact_only",
+      },
+    });
   });
 
   it("requires workflow-owned completion for implementation-class turns outside legacy compatibility", () => {
