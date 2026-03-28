@@ -53,6 +53,7 @@ import {
   extractRecoverablePlannerParseDiagnostics,
   isHighRiskSubagentPlan,
   plannerRequestImplementsFromArtifact,
+  pipelineResultToToolCalls,
 } from "./chat-executor-planner.js";
 import { normalizePlannerResponse } from "./chat-executor-planner-normalization.js";
 import {
@@ -1471,9 +1472,14 @@ export async function executePlannerPath(
         if (runtimeRepairFailureSignature) {
           seenRuntimeRepairFailureSignatures.add(runtimeRepairFailureSignature);
         }
+        const plannerToolCalls = pipelineResultToToolCalls(
+          plannerPlan.steps,
+          pipelineResult,
+        );
         refinementHint = buildPipelineFailureRepairRefinementHint({
           pipelineResult,
           plannerPlan,
+          plannerToolCalls,
         });
         ctx.plannerSummaryState.diagnostics.push({
           category: "policy",

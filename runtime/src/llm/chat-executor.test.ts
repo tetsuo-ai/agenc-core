@@ -10130,6 +10130,241 @@ describe("ChatExecutor", () => {
       );
     });
 
+    it("grounds planner repair retries with nested workspace npm build context", async () => {
+      const provider = createMockProvider("primary", {
+        chat: vi.fn()
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: safeJson({
+                reason: "initial_workspace_build_plan",
+                requiresSynthesis: false,
+                steps: [
+                  {
+                    name: "scaffold_black_hole_app",
+                    step_type: "subagent_task",
+                    objective: "Scaffold the black-hole simulation workspace package.",
+                    input_contract: "Umbrella workspace root exists.",
+                    acceptance_criteria: [
+                      "Workspace package manifest and source files exist",
+                    ],
+                    required_tool_capabilities: ["system.writeFile"],
+                    context_requirements: ["umbrella workspace root"],
+                    execution_context: plannerWriteExecutionContext(
+                      "/tmp/agenc-umbrella",
+                      {
+                        stepKind: "delegated_scaffold",
+                        effectClass: "filesystem_scaffold",
+                        targetArtifacts: ["examples/black-hole-simulation"],
+                      },
+                    ),
+                    max_budget_hint: "3m",
+                    can_run_parallel: false,
+                  },
+                  {
+                    name: "build_black_hole_app",
+                    step_type: "deterministic_tool",
+                    tool: "system.bash",
+                    args: {
+                      command: "npm",
+                      args: ["run", "build"],
+                      cwd: "/tmp/agenc-umbrella",
+                    },
+                    onError: "abort",
+                    depends_on: ["scaffold_black_hole_app"],
+                  },
+                ],
+              }),
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: safeJson({
+                reason: "repair_workspace_build_command",
+                requiresSynthesis: false,
+                steps: [
+                  {
+                    name: "diagnose_workspace_build_command",
+                    step_type: "subagent_task",
+                    objective:
+                      "Inspect the umbrella and nested workspace manifests to identify the correct build entrypoint.",
+                    input_contract:
+                      "The nested workspace package already exists from the prior scaffold step.",
+                    acceptance_criteria: [
+                      "Correct workspace build command is identified without rewriting the existing scaffold",
+                    ],
+                    required_tool_capabilities: ["system.readFile"],
+                    context_requirements: ["existing umbrella workspace"],
+                    execution_context: plannerReadOnlyExecutionContext(
+                      "/tmp/agenc-umbrella",
+                      {
+                        stepKind: "delegated_research",
+                        sourceArtifacts: [
+                          "package.json",
+                          "examples/black-hole-simulation/package.json",
+                        ],
+                      },
+                    ),
+                    max_budget_hint: "2m",
+                    can_run_parallel: false,
+                  },
+                  {
+                    name: "build_black_hole_app",
+                    step_type: "deterministic_tool",
+                    tool: "system.bash",
+                    args: {
+                      command: "npm",
+                      args: ["run", "build", "--workspace", "black-hole-simulation"],
+                      cwd: "/tmp/agenc-umbrella",
+                    },
+                    onError: "abort",
+                    depends_on: ["diagnose_workspace_build_command"],
+                  },
+                ],
+              }),
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: safeJson({
+                overall: "pass",
+                confidence: 0.95,
+                unresolved: [],
+                steps: [
+                  {
+                    name: "implementation_completion",
+                    verdict: "pass",
+                    confidence: 0.95,
+                    retryable: true,
+                    issues: [],
+                    summary:
+                      "The repaired workspace build command matches the scaffolded package and deterministic verification passed.",
+                  },
+                ],
+              }),
+            }),
+          ),
+      });
+      const pipelineExecutor = {
+        execute: vi
+          .fn()
+          .mockResolvedValueOnce({
+            status: "failed",
+            context: {
+              results: {
+                scaffold_black_hole_app:
+                  completedDelegatedPlannerResult("Workspace package scaffolded", [
+                    {
+                      name: "system.writeFile",
+                      args: {
+                        path: "examples/black-hole-simulation/package.json",
+                        content:
+                          '{"name":"black-hole-simulation","scripts":{"build":"vite build"}}',
+                      },
+                    },
+                  ]),
+                build_black_hole_app: safeJson({
+                  exitCode: 1,
+                  stdout: "",
+                  stderr:
+                    'npm ERR! Missing script: "build"\nnpm ERR! To see a list of scripts, run:\nnpm ERR!   npm run',
+                }),
+              },
+            },
+            completedSteps: 1,
+            totalSteps: 2,
+            stopReasonHint: "tool_error",
+            error:
+              'npm ERR! Missing script: "build"\nnpm ERR! To see a list of scripts, run:\nnpm ERR!   npm run',
+          })
+          .mockResolvedValueOnce({
+            status: "completed",
+            context: {
+              results: {
+                diagnose_workspace_build_command:
+                  completedDelegatedPlannerResult(
+                    "Workspace build entrypoint identified",
+                    [
+                      {
+                        name: "system.readFile",
+                        args: {
+                          path: "package.json",
+                        },
+                        result: safeJson({
+                          path: "package.json",
+                          content:
+                            '{"workspaces":["examples/black-hole-simulation"],"scripts":{"example:black-hole:build":"npm run build --workspace black-hole-simulation"}}',
+                        }),
+                      },
+                      {
+                        name: "system.readFile",
+                        args: {
+                          path: "examples/black-hole-simulation/package.json",
+                        },
+                        result: safeJson({
+                          path: "examples/black-hole-simulation/package.json",
+                          content:
+                            '{"name":"black-hole-simulation","scripts":{"build":"vite build"}}',
+                        }),
+                      },
+                    ],
+                  ),
+                build_black_hole_app: '{"exitCode":0,"stdout":"vite build completed"}',
+              },
+            },
+            completedSteps: 2,
+            totalSteps: 2,
+          }),
+      };
+
+      const executor = new ChatExecutor({
+        providers: [provider],
+        toolHandler: vi.fn().mockResolvedValue("unused"),
+        plannerEnabled: true,
+        pipelineExecutor: pipelineExecutor as any,
+        delegationDecision: {
+          enabled: true,
+          scoreThreshold: 0.2,
+          maxFanoutPerTurn: 8,
+          maxDepth: 4,
+        },
+      });
+
+      const result = await executor.execute(
+        createParams({
+          message: createMessage(
+            "Build the black-hole simulation app in this umbrella workspace and repair deterministic verification failures before finishing.",
+          ),
+          runtimeContext: {
+            workspaceRoot: "/tmp/agenc-umbrella",
+          },
+        }),
+      );
+
+      expect(provider.chat).toHaveBeenCalledTimes(2);
+      expect(pipelineExecutor.execute).toHaveBeenCalledTimes(1);
+      const secondPlannerMessages = (provider.chat as ReturnType<typeof vi.fn>)
+        .mock.calls[1][0] as LLMMessage[];
+      const repairHintMessage = secondPlannerMessages.find(
+        (msg) =>
+          msg.role === "system" &&
+          typeof msg.content === "string" &&
+          msg.content.includes("The failed deterministic shell command was `npm run build`"),
+      );
+      expect(repairHintMessage).toBeDefined();
+      expect(String(repairHintMessage?.content)).toContain("cwd `/tmp/agenc-umbrella`");
+      expect(String(repairHintMessage?.content)).toContain(
+        "matching workspace/package-specific command",
+      );
+      expect(String(repairHintMessage?.content)).toContain("generic `npm run build`");
+      expect(result.plannerSummary?.diagnostics).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            code: "planner_runtime_repair_retry",
+          }),
+        ]),
+      );
+    });
+
     it("does not treat a planner repair retry as completed without verifier-backed evidence", async () => {
       const provider = createMockProvider("primary", {
         chat: vi.fn()

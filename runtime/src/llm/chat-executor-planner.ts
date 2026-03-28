@@ -4329,9 +4329,17 @@ export function buildPipelineDecompositionRefinementHint(
 export function buildPipelineFailureRepairRefinementHint(params: {
   readonly pipelineResult: PipelineResult;
   readonly plannerPlan: PlannerPlan;
+  readonly plannerToolCalls?: readonly ToolCallRecord[];
 }): string {
+  const failedPlannerCall = findRelevantFailedPlannerToolCall(
+    params.plannerToolCalls,
+  );
+  const failedPlannerCallHint = buildFailedPlannerCallHint(
+    failedPlannerCall,
+  );
   const failureSpecificRepairHint = buildFailureSpecificRepairHint(
     params.pipelineResult.error,
+    failedPlannerCall,
   );
   const unresolvedSteps = params.plannerPlan.steps
     .slice(Math.max(0, params.pipelineResult.completedSteps))
@@ -4347,6 +4355,7 @@ export function buildPipelineFailureRepairRefinementHint(params: {
       params.pipelineResult.error.trim().length > 0
       ? `failure details: ${truncateText(params.pipelineResult.error.trim(), 800)}`
       : "",
+    failedPlannerCallHint ?? "",
     failureSpecificRepairHint ?? "",
   ].filter((fragment) => fragment.length > 0);
   return (
@@ -4357,13 +4366,129 @@ export function buildPipelineFailureRepairRefinementHint(params: {
   );
 }
 
+function findRelevantFailedPlannerToolCall(
+  plannerToolCalls: readonly ToolCallRecord[] | undefined,
+): ToolCallRecord | undefined {
+  if (!plannerToolCalls || plannerToolCalls.length === 0) {
+    return undefined;
+  }
+  for (let index = plannerToolCalls.length - 1; index >= 0; index--) {
+    const candidate = plannerToolCalls[index];
+    if (candidate?.isError) {
+      return candidate;
+    }
+  }
+  return plannerToolCalls[plannerToolCalls.length - 1];
+}
+
+function buildFailedPlannerCallHint(
+  call: ToolCallRecord | undefined,
+): string | undefined {
+  if (!call) {
+    return undefined;
+  }
+  if (call.name === "system.bash" || call.name === "desktop.bash") {
+    const commandText = extractPlannerToolCommandText(call.args).trim();
+    const cwd = extractPlannerToolCwd(call.args);
+    if (commandText.length === 0 && !cwd) {
+      return undefined;
+    }
+    return (
+      `The failed deterministic shell command was \`${truncateText(commandText, 240)}\`` +
+      `${cwd ? ` with cwd \`${cwd}\`` : ""}.`
+    );
+  }
+  return `The failed deterministic tool was \`${call.name}\`.`;
+}
+
+function extractPlannerToolCommandText(args: Record<string, unknown>): string {
+  const parts: string[] = [];
+  if (typeof args.command === "string") {
+    parts.push(args.command);
+  }
+  if (Array.isArray(args.args)) {
+    for (const entry of args.args) {
+      if (typeof entry === "string") {
+        parts.push(entry);
+      }
+    }
+  }
+  return parts.join(" ");
+}
+
+function extractPlannerToolCwd(
+  args: Record<string, unknown>,
+): string | undefined {
+  return typeof args.cwd === "string" && args.cwd.trim().length > 0
+    ? args.cwd.trim()
+    : undefined;
+}
+
+function extractMissingNpmScriptNameFromError(
+  error: string,
+): string | undefined {
+  const match = error.match(/missing script:\s*["'`]?([^"'`\n]+)["'`]?/i);
+  const scriptName = match?.[1]?.trim();
+  return scriptName && scriptName.length > 0 ? scriptName : undefined;
+}
+
+function extractRequestedWorkspaceSelectorsFromToolCall(
+  call: ToolCallRecord | undefined,
+): string[] {
+  const rawArgs = Array.isArray(call?.args.args) ? call?.args.args : [];
+  const selectors: string[] = [];
+  for (let index = 0; index < rawArgs.length; index++) {
+    const value = rawArgs[index];
+    if (typeof value !== "string") {
+      continue;
+    }
+    if (value.startsWith("--workspace=")) {
+      const selector = value.slice("--workspace=".length).trim();
+      if (selector.length > 0) {
+        selectors.push(selector);
+      }
+      continue;
+    }
+    if (value === "--workspace") {
+      const next = rawArgs[index + 1];
+      if (typeof next === "string" && next.trim().length > 0) {
+        selectors.push(next.trim());
+      }
+    }
+  }
+  return [...new Set(selectors)];
+}
+
 function buildFailureSpecificRepairHint(
   error: string | undefined,
+  failedPlannerCall?: ToolCallRecord,
 ): string | undefined {
   if (typeof error !== "string" || error.trim().length === 0) {
     return undefined;
   }
   const normalized = error.toLowerCase();
+  const failingCwd = extractPlannerToolCwd(failedPlannerCall?.args ?? {});
+  const missingScriptName = extractMissingNpmScriptNameFromError(error);
+  if (missingScriptName) {
+    return (
+      `The current package.json${failingCwd ? ` at \`${failingCwd}\`` : ""} does not define the npm script \`${missingScriptName}\`. ` +
+      `Inspect that manifest${failingCwd ? " and any nested workspace package manifests created earlier" : ""}, then rerun the matching workspace/package-specific command or execute from the matching workspace cwd instead of retrying the same generic \`npm run ${missingScriptName}\`.`
+    );
+  }
+  if (normalized.includes("no workspaces found:")) {
+    const selectors = extractRequestedWorkspaceSelectorsFromToolCall(
+      failedPlannerCall,
+    );
+    const selectorSuffix =
+      selectors.length > 0
+        ? ` The rejected selectors were: ${selectors.map((value) => `\`${value}\``).join(", ")}.`
+        : "";
+    return (
+      "npm could not match one or more `--workspace` selectors in this repo." +
+      selectorSuffix +
+      " Inspect the root `package.json` workspaces and each package `name`, then rerun with the exact workspace package names or execute from the matching workspace cwd instead of collapsing back to a generic repo-root npm command."
+    );
+  }
   if (
     normalized.includes('unsupported url type "workspace:"') ||
     normalized.includes("eunsupportedprotocol")

@@ -462,6 +462,133 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
     expect(hint).toContain("CI=1 npm test");
   });
 
+  it("grounds missing npm script repair hints with the failing command and cwd", () => {
+    const hint = buildPipelineFailureRepairRefinementHint({
+      pipelineResult: {
+        status: "failed",
+        completedSteps: 2,
+        totalSteps: 4,
+        error:
+          'npm ERR! Missing script: "build"\nnpm ERR! To see a list of scripts, run:\nnpm ERR!   npm run',
+        stopReasonHint: "tool_error",
+      },
+      plannerPlan: {
+        reason: "repair",
+        requiresSynthesis: true,
+        steps: [
+          {
+            name: "scaffold_workspace",
+            stepType: "subagent_task",
+            objective: "Scaffold the nested workspace app.",
+            inputContract: "Repo root exists.",
+            acceptanceCriteria: ["Workspace package.json exists"],
+            requiredToolCapabilities: ["system.writeFile"],
+            contextRequirements: ["repo root"],
+            maxBudgetHint: "2m",
+            canRunParallel: false,
+          },
+          {
+            name: "build_workspace_app",
+            stepType: "deterministic_tool",
+            tool: "system.bash",
+            args: {
+              command: "npm",
+              args: ["run", "build"],
+              cwd: "/tmp/agenc-umbrella",
+            },
+          },
+        ],
+      },
+      plannerToolCalls: [
+        {
+          name: "execute_with_agent",
+          args: { objective: "Scaffold the nested workspace app." },
+          result: '{"status":"completed","success":true}',
+          isError: false,
+          durationMs: 0,
+        },
+        {
+          name: "system.bash",
+          args: {
+            command: "npm",
+            args: ["run", "build"],
+            cwd: "/tmp/agenc-umbrella",
+          },
+          result:
+            '{"exitCode":1,"stdout":"","stderr":"npm ERR! Missing script: \\"build\\""}',
+          isError: true,
+          durationMs: 0,
+        },
+      ],
+    });
+
+    expect(hint).toContain("The failed deterministic shell command was `npm run build`");
+    expect(hint).toContain("cwd `/tmp/agenc-umbrella`");
+    expect(hint).toContain("matching workspace/package-specific command");
+    expect(hint).toContain("generic `npm run build`");
+  });
+
+  it("adds exact workspace selector repair guidance for planner retry hints", () => {
+    const hint = buildPipelineFailureRepairRefinementHint({
+      pipelineResult: {
+        status: "failed",
+        completedSteps: 3,
+        totalSteps: 5,
+        error:
+          "npm error No workspaces found:\nnpm error   --workspace=core --workspace=cli --workspace=web",
+        stopReasonHint: "tool_error",
+      },
+      plannerPlan: {
+        reason: "repair",
+        requiresSynthesis: true,
+        steps: [
+          {
+            name: "build_workspace_packages",
+            stepType: "deterministic_tool",
+            tool: "system.bash",
+            args: {
+              command: "npm",
+              args: [
+                "run",
+                "build",
+                "--workspace=core",
+                "--workspace=cli",
+                "--workspace=web",
+              ],
+              cwd: "/tmp/transit-weave",
+            },
+          },
+        ],
+      },
+      plannerToolCalls: [
+        {
+          name: "system.bash",
+          args: {
+            command: "npm",
+            args: [
+              "run",
+              "build",
+              "--workspace=core",
+              "--workspace=cli",
+              "--workspace=web",
+            ],
+            cwd: "/tmp/transit-weave",
+          },
+          result:
+            '{"exitCode":1,"stdout":"","stderr":"npm error No workspaces found:\\nnpm error   --workspace=core --workspace=cli --workspace=web"}',
+          isError: true,
+          durationMs: 0,
+        },
+      ],
+    });
+
+    expect(hint).toContain("npm could not match one or more `--workspace` selectors");
+    expect(hint).toContain("`core`");
+    expect(hint).toContain("`cli`");
+    expect(hint).toContain("`web`");
+    expect(hint).toContain("matching workspace cwd");
+  });
+
   it("adds host tooling planner guidance when npm workspace protocol is unsupported", () => {
     const messages = buildPlannerMessages(
       "Create a TypeScript npm workspace project with package.json files for core and cli.",
