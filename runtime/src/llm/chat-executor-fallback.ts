@@ -46,21 +46,25 @@ import type { RuntimeFaultInjector } from "../eval/fault-injection.js";
 // Helper
 // ============================================================================
 
-function shouldBypassStreamingForForcedSingleToolTurn(
+function shouldBypassStreamingForModelCall(
   options: LLMChatOptions | undefined,
+  callPhase: ChatCallUsageRecord["phase"] | undefined,
 ): boolean {
+  const isExplicitToolTurn =
+    options?.toolChoice === "required" ||
+    (typeof options?.toolChoice === "object" &&
+      options.toolChoice !== null &&
+      options.toolChoice.type === "function");
+  if (callPhase === "tool_followup" && isExplicitToolTurn) {
+    return true;
+  }
   if (!options?.toolRouting?.allowedToolNames) {
     return false;
   }
   if (options.toolRouting.allowedToolNames.length !== 1) {
     return false;
   }
-  if (options.toolChoice === "required") {
-    return true;
-  }
-  return typeof options.toolChoice === "object" &&
-    options.toolChoice !== null &&
-    options.toolChoice.type === "function";
+  return isExplicitToolTurn;
 }
 
 // ============================================================================
@@ -83,6 +87,7 @@ export interface CallWithFallbackOptions {
   reconciliationMessages?: readonly LLMMessage[];
   routedToolNames?: readonly string[];
   toolChoice?: LLMToolChoice;
+  structuredOutput?: LLMChatOptions["structuredOutput"];
   requestDeadlineAt?: number;
   signal?: AbortSignal;
   trace?: ChatExecuteParams["trace"];
@@ -124,6 +129,7 @@ export async function callWithFallback(
     hasStatefulSessionId && options?.statefulHistoryCompacted === true;
   const hasRoutedToolNames = options?.routedToolNames !== undefined;
   const hasToolChoice = options?.toolChoice !== undefined;
+  const hasStructuredOutput = options?.structuredOutput !== undefined;
   const hasAbortSignal = options?.signal !== undefined;
   const hasProviderTrace =
     options?.trace?.includeProviderPayloads === true ||
@@ -132,6 +138,7 @@ export async function callWithFallback(
     hasStatefulSessionId ||
       hasRoutedToolNames ||
       hasToolChoice ||
+      hasStructuredOutput ||
       hasAbortSignal ||
       hasProviderTrace
       ? {
@@ -154,6 +161,9 @@ export async function callWithFallback(
           ? { toolRouting: { allowedToolNames: options?.routedToolNames } }
           : {}),
         ...(hasToolChoice ? { toolChoice: options?.toolChoice } : {}),
+        ...(hasStructuredOutput
+          ? { structuredOutput: options?.structuredOutput }
+          : {}),
         ...(hasAbortSignal ? { signal: options?.signal } : {}),
         ...(hasProviderTrace
           ? {
@@ -174,7 +184,7 @@ export async function callWithFallback(
   let lastError: Error | undefined;
   const transport =
     onStreamChunk !== undefined &&
-    !shouldBypassStreamingForForcedSingleToolTurn(baseChatOptions)
+    !shouldBypassStreamingForModelCall(baseChatOptions, options?.callPhase)
       ? "chat_stream"
       : "chat";
 

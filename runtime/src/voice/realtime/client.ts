@@ -1,5 +1,5 @@
 /**
- * xAI Realtime Voice WebSocket client.
+ * xAI Voice Agent WebSocket client.
  *
  * Connects to wss://api.x.ai/v1/realtime and manages bidirectional
  * audio streaming, tool calling, and automatic reconnection.
@@ -31,13 +31,13 @@ type ConnectionState =
   | "reconnecting";
 
 /**
- * WebSocket client for xAI's real-time voice API.
+ * WebSocket client for xAI's documented Voice Agent API.
  *
  * Usage:
  * ```ts
  * const client = new XaiRealtimeClient({
  *   apiKey: 'xai-...',
- *   sessionConfig: { voice: 'Ara', model: 'grok-4-1-fast-reasoning' },
+ *   sessionConfig: { voice: 'Ara' },
  *   callbacks: {
  *     onAudioDelta: (pcm) => playback.enqueue(pcm),
  *     onTranscriptDone: (text) => console.log('Agent:', text),
@@ -161,11 +161,6 @@ export class XaiRealtimeClient {
     this.sendEvent({ type: "input_audio_buffer.commit" });
   }
 
-  /** Clear the pending audio buffer. */
-  clearAudio(): void {
-    this.sendEvent({ type: "input_audio_buffer.clear" });
-  }
-
   /** Explicitly request the model to generate a response. */
   requestResponse(): void {
     this.sendEvent({ type: "response.create" });
@@ -177,21 +172,20 @@ export class XaiRealtimeClient {
   }
 
   /**
-   * Inject conversation history items into the session.
+   * Inject documented user text history into the session.
    * Each item is sent as a `conversation.item.create` event with
-   * `type: "message"` — restores context on reconnect.
+   * `type: "message"` and `input_text` content.
    */
   injectConversationHistory(
-    messages: ReadonlyArray<{ role: "user" | "assistant"; content: string }>,
+    messages: ReadonlyArray<{ role: "user"; content: string }>,
   ): void {
     for (const msg of messages) {
-      const contentType = msg.role === "assistant" ? "text" : "input_text";
       this.sendEvent({
         type: "conversation.item.create",
         item: {
           type: "message",
-          role: msg.role,
-          content: [{ type: contentType, text: msg.content }],
+          role: "user",
+          content: [{ type: "input_text", text: msg.content }],
         },
       });
     }
@@ -270,13 +264,6 @@ export class XaiRealtimeClient {
         if (event.transcript) {
           this.callbacks.onInputTranscriptDone?.(event.transcript);
         }
-        break;
-
-      case "conversation.item.input_audio_transcription.failed":
-        this.logger?.debug?.(
-          "Input audio transcription failed:",
-          event.error?.message,
-        );
         break;
 
       case "input_audio_buffer.speech_started":

@@ -1,7 +1,7 @@
 /**
- * xAI Realtime Voice API protocol types.
+ * xAI Voice Agent API protocol types.
  *
- * Follows the xAI/OpenAI Realtime API WebSocket protocol for
+ * Follows the xAI-documented Realtime WebSocket protocol for
  * bidirectional voice streaming at wss://api.x.ai/v1/realtime.
  *
  * @module
@@ -21,7 +21,7 @@ export type XaiAudioFormat = "audio/pcm" | "audio/pcmu" | "audio/pcma";
 export type XaiPcmSampleRate =
   | 8000
   | 16000
-  | 21050
+  | 22050
   | 24000
   | 32000
   | 44100
@@ -68,24 +68,13 @@ export interface VoiceTool {
 // Session Configuration
 // ============================================================================
 
-/** Input audio transcription configuration. */
-export interface InputAudioTranscriptionConfig {
-  /** Transcription model. Default: "whisper-1". */
-  readonly model?: string;
-}
-
 /** Configuration sent via session.update event. */
 export interface VoiceSessionConfig {
-  readonly model?: string;
   readonly voice?: XaiVoice;
-  readonly modalities?: ReadonlyArray<"text" | "audio">;
   readonly instructions?: string;
   readonly audio?: VoiceAudioConfig;
   readonly turn_detection?: VadConfig | null;
   readonly tools?: readonly VoiceTool[];
-  readonly temperature?: number;
-  /** Enable transcription of user's spoken input. */
-  readonly input_audio_transcription?: InputAudioTranscriptionConfig | null;
 }
 
 // ============================================================================
@@ -106,15 +95,8 @@ export interface InputAudioBufferCommitEvent {
   readonly type: "input_audio_buffer.commit";
 }
 
-export interface InputAudioBufferClearEvent {
-  readonly type: "input_audio_buffer.clear";
-}
-
 export interface ResponseCreateEvent {
   readonly type: "response.create";
-  readonly response?: {
-    readonly modalities?: ReadonlyArray<"text" | "audio">;
-  };
 }
 
 export interface ResponseCancelEvent {
@@ -131,19 +113,16 @@ export interface ConversationItemCreateFunctionOutputEvent {
   };
 }
 
-/** Content part for message conversation items. */
-export interface ConversationItemContentPart {
-  readonly type: "input_text" | "text" | "input_audio";
-  readonly text?: string;
-}
-
-/** Conversation item for injecting message history. */
+/** Conversation item for injecting documented user text history. */
 export interface ConversationItemCreateMessageEvent {
   readonly type: "conversation.item.create";
   readonly item: {
     readonly type: "message";
-    readonly role: "user" | "assistant";
-    readonly content: readonly ConversationItemContentPart[];
+    readonly role: "user";
+    readonly content: ReadonlyArray<{
+      readonly type: "input_text";
+      readonly text: string;
+    }>;
   };
 }
 
@@ -155,7 +134,6 @@ export type ClientEvent =
   | SessionUpdateEvent
   | InputAudioBufferAppendEvent
   | InputAudioBufferCommitEvent
-  | InputAudioBufferClearEvent
   | ResponseCreateEvent
   | ResponseCancelEvent
   | ConversationItemCreateEvent;
@@ -253,8 +231,8 @@ export interface InputAudioBufferCommittedEvent {
   readonly item_id: string;
 }
 
-export interface ConversationItemCreatedEvent {
-  readonly type: "conversation.item.created";
+export interface ConversationItemAddedEvent {
+  readonly type: "conversation.item.added";
   readonly item: Record<string, unknown>;
 }
 
@@ -263,13 +241,6 @@ export interface InputAudioTranscriptionCompletedEvent {
   readonly item_id: string;
   readonly content_index: number;
   readonly transcript: string;
-}
-
-export interface InputAudioTranscriptionFailedEvent {
-  readonly type: "conversation.item.input_audio_transcription.failed";
-  readonly item_id: string;
-  readonly content_index: number;
-  readonly error: { readonly type: string; readonly message: string };
 }
 
 export interface ErrorServerEvent {
@@ -306,9 +277,8 @@ export type ServerEvent =
   | InputAudioBufferSpeechStartedEvent
   | InputAudioBufferSpeechStoppedEvent
   | InputAudioBufferCommittedEvent
-  | ConversationItemCreatedEvent
+  | ConversationItemAddedEvent
   | InputAudioTranscriptionCompletedEvent
-  | InputAudioTranscriptionFailedEvent
   | ErrorServerEvent
   | RateLimitsUpdatedEvent;
 
@@ -332,7 +302,7 @@ export interface VoiceSessionCallbacks {
     args: string,
     callId: string,
   ) => Promise<string>;
-  /** Transcription of the user's spoken input (from input_audio_transcription). */
+  /** Transcription of the user's spoken input. */
   onInputTranscriptDone?: (text: string) => void;
   /** VAD detected speech start. */
   onSpeechStarted?: () => void;

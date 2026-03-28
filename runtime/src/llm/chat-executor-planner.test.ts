@@ -4,15 +4,19 @@ import {
   assessPlannerDecision,
   buildPipelineFailureRepairRefinementHint,
   buildPlannerMessages,
+  buildPlannerStructuredOutputRequest,
   buildPlannerSynthesisFallbackContent,
   buildPlannerVerificationRequirementsFailureMessage,
   buildPlannerVerificationRequirementsRefinementHint,
   extractPlannerVerificationCommandRequirements,
   extractPlannerVerificationRequirements,
   buildPlannerStructuralRefinementHint,
+  classifyPlannerPlanArtifactIntent,
   extractExplicitDeterministicToolRequirements,
   extractExplicitSubagentOrchestrationRequirements,
   parsePlannerPlan,
+  plannerRequestImplementsFromArtifact,
+  requestExplicitlyRequestsDelegation,
   salvagePlannerToolCallsAsPlan,
   validatePlannerVerificationRequirements,
   validatePlannerGraph,
@@ -22,6 +26,17 @@ import {
 } from "./chat-executor-planner.js";
 
 describe("chat-executor-planner explicit orchestration requirements", () => {
+  it("builds a strict documented planner json_schema request", () => {
+    expect(buildPlannerStructuredOutputRequest()).toEqual({
+      enabled: true,
+      schema: expect.objectContaining({
+        type: "json_schema",
+        name: "agenc_planner_plan",
+        strict: true,
+      }),
+    });
+  });
+
   it("includes non-interactive validation guidance in planner messages", () => {
     const messages = buildPlannerMessages(
       "Create a TypeScript package and run tests before finishing.",
@@ -94,6 +109,59 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
     expect(messages[0]?.content).not.toContain(
       '"requiredSourceArtifacts": ["/abs/path/PLAN.md"]',
     );
+  });
+
+  it("filters same-target artifact-edit history when the current turn is implementing from the artifact", () => {
+    const messages = buildPlannerMessages(
+      "Read all of @PLAN.md and implement every phase in full.",
+      [
+        {
+          role: "user",
+          content: "Go through @PLAN.md and make sure it is perfect before we implement anything.",
+        },
+        {
+          role: "assistant",
+          content: "I found several gaps in PLAN.md and can fix them next.",
+        },
+        {
+          role: "user",
+          content: "Keep the workspace root at /tmp/agenc-shell and use gcc with non-interactive tests.",
+        },
+      ],
+      512,
+    );
+
+    const finalUserMessage = messages[messages.length - 1];
+    expect(finalUserMessage?.role).toBe("user");
+    expect(finalUserMessage?.content).not.toContain("make sure it is perfect");
+    expect(finalUserMessage?.content).not.toContain("I found several gaps in PLAN.md");
+    expect(finalUserMessage?.content).toContain(
+      "Keep the workspace root at /tmp/agenc-shell",
+    );
+  });
+
+  it("keeps different-target artifact history when implementing from a plan artifact", () => {
+    const messages = buildPlannerMessages(
+      "Read all of @PLAN.md and implement every phase in full.",
+      [
+        {
+          role: "user",
+          content: "Please perfect ROADMAP.md before the release.",
+        },
+      ],
+      512,
+    );
+
+    const finalUserMessage = messages[messages.length - 1];
+    expect(finalUserMessage?.content).toContain("perfect ROADMAP.md");
+  });
+
+  it("treats plain-language delegation research requests as explicit delegation", () => {
+    expect(
+      requestExplicitlyRequestsDelegation(
+        "First run setup checks, then delegate deeper research, then synthesize results.",
+      ),
+    ).toBe(true);
   });
 
   it("extracts explicit request-level verification requirements from verification directives", () => {
@@ -394,6 +462,133 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
     expect(hint).toContain("CI=1 npm test");
   });
 
+  it("grounds missing npm script repair hints with the failing command and cwd", () => {
+    const hint = buildPipelineFailureRepairRefinementHint({
+      pipelineResult: {
+        status: "failed",
+        completedSteps: 2,
+        totalSteps: 4,
+        error:
+          'npm ERR! Missing script: "build"\nnpm ERR! To see a list of scripts, run:\nnpm ERR!   npm run',
+        stopReasonHint: "tool_error",
+      },
+      plannerPlan: {
+        reason: "repair",
+        requiresSynthesis: true,
+        steps: [
+          {
+            name: "scaffold_workspace",
+            stepType: "subagent_task",
+            objective: "Scaffold the nested workspace app.",
+            inputContract: "Repo root exists.",
+            acceptanceCriteria: ["Workspace package.json exists"],
+            requiredToolCapabilities: ["system.writeFile"],
+            contextRequirements: ["repo root"],
+            maxBudgetHint: "2m",
+            canRunParallel: false,
+          },
+          {
+            name: "build_workspace_app",
+            stepType: "deterministic_tool",
+            tool: "system.bash",
+            args: {
+              command: "npm",
+              args: ["run", "build"],
+              cwd: "/tmp/agenc-umbrella",
+            },
+          },
+        ],
+      },
+      plannerToolCalls: [
+        {
+          name: "execute_with_agent",
+          args: { objective: "Scaffold the nested workspace app." },
+          result: '{"status":"completed","success":true}',
+          isError: false,
+          durationMs: 0,
+        },
+        {
+          name: "system.bash",
+          args: {
+            command: "npm",
+            args: ["run", "build"],
+            cwd: "/tmp/agenc-umbrella",
+          },
+          result:
+            '{"exitCode":1,"stdout":"","stderr":"npm ERR! Missing script: \\"build\\""}',
+          isError: true,
+          durationMs: 0,
+        },
+      ],
+    });
+
+    expect(hint).toContain("The failed deterministic shell command was `npm run build`");
+    expect(hint).toContain("cwd `/tmp/agenc-umbrella`");
+    expect(hint).toContain("matching workspace/package-specific command");
+    expect(hint).toContain("generic `npm run build`");
+  });
+
+  it("adds exact workspace selector repair guidance for planner retry hints", () => {
+    const hint = buildPipelineFailureRepairRefinementHint({
+      pipelineResult: {
+        status: "failed",
+        completedSteps: 3,
+        totalSteps: 5,
+        error:
+          "npm error No workspaces found:\nnpm error   --workspace=core --workspace=cli --workspace=web",
+        stopReasonHint: "tool_error",
+      },
+      plannerPlan: {
+        reason: "repair",
+        requiresSynthesis: true,
+        steps: [
+          {
+            name: "build_workspace_packages",
+            stepType: "deterministic_tool",
+            tool: "system.bash",
+            args: {
+              command: "npm",
+              args: [
+                "run",
+                "build",
+                "--workspace=core",
+                "--workspace=cli",
+                "--workspace=web",
+              ],
+              cwd: "/tmp/transit-weave",
+            },
+          },
+        ],
+      },
+      plannerToolCalls: [
+        {
+          name: "system.bash",
+          args: {
+            command: "npm",
+            args: [
+              "run",
+              "build",
+              "--workspace=core",
+              "--workspace=cli",
+              "--workspace=web",
+            ],
+            cwd: "/tmp/transit-weave",
+          },
+          result:
+            '{"exitCode":1,"stdout":"","stderr":"npm error No workspaces found:\\nnpm error   --workspace=core --workspace=cli --workspace=web"}',
+          isError: true,
+          durationMs: 0,
+        },
+      ],
+    });
+
+    expect(hint).toContain("npm could not match one or more `--workspace` selectors");
+    expect(hint).toContain("`core`");
+    expect(hint).toContain("`cli`");
+    expect(hint).toContain("`web`");
+    expect(hint).toContain("matching workspace cwd");
+  });
+
   it("adds host tooling planner guidance when npm workspace protocol is unsupported", () => {
     const messages = buildPlannerMessages(
       "Create a TypeScript npm workspace project with package.json files for core and cli.",
@@ -561,12 +756,27 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
   it("forces planner routing for plan-artifact execution requests", () => {
     const decision = assessPlannerDecision(
       true,
-      "You are to read all of @PLAN.md and complete every single phase in full.",
+      "Update PLAN.md so it reflects the corrected architecture and missing validation steps.",
       [],
     );
 
     expect(decision.shouldPlan).toBe(true);
     expect(decision.reason).toContain("plan_artifact_execution_request");
+  });
+
+  it("routes implement-from-plan requests through the planner without classifying them as artifact edits", () => {
+    const messageText =
+      "You are to read all of @PLAN.md and complete every single phase in full.";
+
+    expect(classifyPlannerPlanArtifactIntent(messageText)).toBe(
+      "implement_from_artifact",
+    );
+    expect(plannerRequestImplementsFromArtifact(messageText)).toBe(true);
+
+    const decision = assessPlannerDecision(true, messageText, []);
+
+    expect(decision.shouldPlan).toBe(true);
+    expect(decision.reason).toContain("artifact_spec_execution_request");
   });
 
   it("extracts required subagent steps from the compact 'plan required' prompt shape", () => {
@@ -1378,7 +1588,7 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
     );
   });
 
-  it("rejects deterministic bash wrapper steps that use bash -c", () => {
+  it("allows deterministic bash wrapper steps that use bash -c", () => {
     const diagnostics = validatePlannerStepContracts({
       reason: "bad_bash_wrapper",
       requiresSynthesis: false,
@@ -1391,19 +1601,14 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
           tool: "system.bash",
           args: {
             command: "bash",
-            args: ["-c", "mkdir -p grid-router-ts && cat > tsconfig.json <<'EOF'"],
+            args: ["-c", "mkdir -p grid-router-ts && touch tsconfig.json"],
           },
         },
       ],
       edges: [],
     });
 
-    expect(diagnostics).toEqual([
-      expect.objectContaining({
-        category: "validation",
-        code: "planner_bash_nested_shell_forbidden",
-      }),
-    ]);
+    expect(diagnostics).toEqual([]);
   });
 
   it("rejects substantial software plan-doc requests that collapse directly to a single writeFile step", () => {
@@ -1556,6 +1761,84 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
     );
   });
 
+  it("does not require a final artifact write step for implement-from-plan requests", () => {
+    const workspaceRoot = "/tmp/agenc-shell";
+    const diagnostics = validatePlannerStepContracts(
+      {
+        reason: "implement_from_plan",
+        requiresSynthesis: false,
+        confidence: 0.82,
+        steps: [
+          {
+            name: "read_plan",
+            stepType: "deterministic_tool",
+            dependsOn: [],
+            tool: "system.readFile",
+            args: {
+              path: `${workspaceRoot}/PLAN.md`,
+            },
+          },
+          {
+            name: "implement_phase_work",
+            stepType: "subagent_task",
+            dependsOn: ["read_plan"],
+            objective: "Implement the requested shell phases from PLAN.md.",
+            inputContract: "PLAN.md plus existing source tree.",
+            acceptanceCriteria: ["Requested shell phases are implemented and tested."],
+            requiredToolCapabilities: ["read", "write", "bash"],
+            contextRequirements: ["read_plan"],
+            maxBudgetHint: "20m",
+            canRunParallel: false,
+            executionContext: {
+              version: "v1",
+              workspaceRoot,
+              allowedReadRoots: [workspaceRoot],
+              allowedWriteRoots: [workspaceRoot],
+              requiredSourceArtifacts: [`${workspaceRoot}/PLAN.md`],
+              targetArtifacts: [`${workspaceRoot}/src`],
+              effectClass: "filesystem_write",
+              verificationMode: "mutation_required",
+              stepKind: "delegated_write",
+            },
+          },
+        ],
+        edges: [{ from: "read_plan", to: "implement_phase_work" }],
+      },
+      "Read all of @PLAN.md and complete every single phase in full.",
+    );
+
+    expect(diagnostics).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "planner_plan_artifact_missing_write_step",
+        }),
+      ]),
+    );
+  });
+
+  it("classifies the full existing artifact alias family consistently", () => {
+    expect(
+      classifyPlannerPlanArtifactIntent(
+        "Read TODO.md and turn it into a complete implementation plan.",
+      ),
+    ).toBe("grounded_plan_generation");
+    expect(
+      classifyPlannerPlanArtifactIntent(
+        "Update roadmap.md so it reflects the latest sequencing and owners.",
+      ),
+    ).toBe("edit_artifact");
+    expect(
+      classifyPlannerPlanArtifactIntent(
+        "Implement everything in implementation-plan.md and verify each phase before moving on.",
+      ),
+    ).toBe("implement_from_artifact");
+    expect(
+      classifyPlannerPlanArtifactIntent(
+        "Use spec.md as the source of truth and implement the project in full.",
+      ),
+    ).toBe("implement_from_artifact");
+  });
+
   it("rejects deterministic bash steps that embed shell separators in direct args", () => {
     const diagnostics = validatePlannerStepContracts({
       reason: "bad_direct_bash_args",
@@ -1626,14 +1909,10 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
         category: "validation",
         code: "planner_subagent_budget_hint_ambiguous",
       }),
-      expect.objectContaining({
-        category: "validation",
-        code: "planner_subagent_budget_hint_too_small",
-      }),
     ]);
   });
 
-  it("repairs explicit planner subagent budget hints up to the runtime minimum during parsing", () => {
+  it("preserves explicit planner subagent budget hints during parsing", () => {
     const parsed = parsePlannerPlan(
       JSON.stringify({
         reason: "budget_repair",
@@ -1660,18 +1939,13 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
     expect(parsed.plan?.steps[0]).toEqual(
       expect.objectContaining({
         stepType: "subagent_task",
-        maxBudgetHint: "60s",
+        maxBudgetHint: "30s",
       }),
     );
-    expect(parsed.diagnostics).toEqual(
+    expect(parsed.diagnostics ?? []).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          category: "policy",
           code: "planner_subagent_budget_hint_clamped",
-          details: expect.objectContaining({
-            originalMaxBudgetHint: "30s",
-            repairedMaxBudgetHint: "60s",
-          }),
         }),
       ]),
     );

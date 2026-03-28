@@ -786,6 +786,54 @@ describe("SubAgentManager", () => {
       }
     });
 
+    it("preserves explicit unlimited child tool budgets", async () => {
+      const executeSpy = vi.spyOn(ChatExecutor.prototype, "execute")
+        .mockResolvedValueOnce({
+          content: "sub-agent output",
+          provider: "mock",
+          model: "mock",
+          usedFallback: false,
+          toolCalls: [],
+          tokenUsage: {
+            promptTokens: 10,
+            completionTokens: 5,
+            totalTokens: 15,
+          },
+          callUsage: [],
+          durationMs: 1,
+          compacted: false,
+          stopReason: "completed",
+          completionState: "completed",
+          completionProgress: {
+            completionState: "completed",
+            stopReason: "completed",
+            requiredRequirements: [],
+            satisfiedRequirements: [],
+            remainingRequirements: [],
+            reusableEvidence: [],
+            updatedAt: 1_700_000_000_000,
+          },
+        });
+
+      try {
+        const manager = new SubAgentManager(makeManagerConfig());
+        await manager.spawn({
+          parentSessionId: "p",
+          task: "a",
+          toolBudgetPerRequest: 0,
+        });
+        await settle();
+
+        expect(executeSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            toolBudgetPerRequest: 0,
+          }),
+        );
+      } finally {
+        executeSpy.mockRestore();
+      }
+    });
+
     it("preserves delegated validation codes from non-completed chat executor results", async () => {
       const executeSpy = vi.spyOn(ChatExecutor.prototype, "execute")
         .mockResolvedValueOnce({
@@ -1670,24 +1718,25 @@ describe("SubAgentManager", () => {
       expect(manager.activeCount).toBe(0);
     });
 
-    it("uses default timeout when not specified", async () => {
-      const createContext = vi.fn(
-        () => new Promise<IsolatedSessionContext>(() => {}),
-      );
+    it("does not apply an execution timeout when not specified", async () => {
+      const slowContext = makeMockContext();
+      slowContext.llmProvider = {
+        ...makeMockLLMProvider("slow-llm"),
+        chat: vi.fn(async () => await new Promise<LLMResponse>(() => {})),
+        chatStream: vi.fn(
+          async () => await new Promise<LLMResponse>(() => {}),
+        ),
+      };
+      const createContext = vi.fn(async () => slowContext);
       const manager = new SubAgentManager(makeManagerConfig({
         createContext,
-        contextStartupTimeoutMs: DEFAULT_SUB_AGENT_TIMEOUT_MS,
+        contextStartupTimeoutMs: 5_000,
       }));
 
       await manager.spawn({ parentSessionId: "p", task: "a" });
 
-      // Not timed out before default
-      await vi.advanceTimersByTimeAsync(DEFAULT_SUB_AGENT_TIMEOUT_MS - 1000);
+      await vi.advanceTimersByTimeAsync(60_000);
       expect(manager.activeCount).toBe(1);
-
-      // Timed out after default
-      await vi.advanceTimersByTimeAsync(2000);
-      expect(manager.activeCount).toBe(0);
     });
 
     it("starts the execution timeout after context startup completes", async () => {
@@ -2298,8 +2347,8 @@ describe("SubAgentManager", () => {
   // --------------------------------------------------------------------------
 
   describe("constants", () => {
-    it("DEFAULT_SUB_AGENT_TIMEOUT_MS is 60 minutes", () => {
-      expect(DEFAULT_SUB_AGENT_TIMEOUT_MS).toBe(3_600_000);
+    it("DEFAULT_SUB_AGENT_TIMEOUT_MS disables execution deadlines by default", () => {
+      expect(DEFAULT_SUB_AGENT_TIMEOUT_MS).toBe(0);
     });
 
     it("MAX_CONCURRENT_SUB_AGENTS is 16", () => {

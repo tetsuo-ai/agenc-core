@@ -758,7 +758,7 @@ function requestRunInspect(reason, { force = false } = {}) {
   if (
     !watchState.sessionId ||
     !transportState.isOpen ||
-    watchState.runInspectPending ||
+    (!force && watchState.runInspectPending) ||
     (!force && !shouldAutoInspectRun(watchState.runDetail, watchState.runState))
   ) {
     return;
@@ -1304,8 +1304,13 @@ watchInputController = createWatchInputController({
   operatorInputBatcher,
   setTransientStatus,
   cancelActiveChat: () => {
+    if (!hasActiveSurfaceRun() && !findLatestPendingAgentEvent(events)) {
+      setTransientStatus("nothing to cancel");
+      return false;
+    }
     send("chat.cancel", authPayload());
     setTransientStatus("cancelled");
+    return true;
   },
   scheduleRender,
 });

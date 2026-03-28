@@ -2278,6 +2278,66 @@ describe("ChatExecutor", () => {
       expect(firstOptions?.toolRouting?.allowedToolNames).toEqual(["web_search"]);
     });
 
+    it("preserves provider-native server-side tool telemetry for delegated research", async () => {
+      const provider = createMockProvider("primary", {
+        chat: vi.fn().mockResolvedValue(
+          mockResponse({
+            content: '{"selected":"pixi","why":["small","fast"]}',
+            providerEvidence: {
+              serverSideToolCalls: [
+                {
+                  type: "web_search_call",
+                  toolType: "web_search",
+                  id: "ws_123",
+                  status: "completed",
+                },
+              ],
+              serverSideToolUsage: [
+                {
+                  category: "SERVER_SIDE_TOOL_WEB_SEARCH",
+                  toolType: "web_search",
+                  count: 1,
+                },
+              ],
+            },
+          }),
+        ),
+      });
+
+      const executor = new ChatExecutor({
+        providers: [provider],
+        allowedTools: ["web_search"],
+      });
+      const result = await executor.execute(
+        createParams({
+          requiredToolEvidence: {
+            maxCorrectionAttempts: 1,
+            delegationSpec: {
+              task: "tech_research",
+              objective:
+                "Compare Canvas API, Phaser, and PixiJS from official docs",
+              inputContract:
+                "Return JSON with selected framework and supporting evidence",
+            },
+          },
+        }),
+      );
+
+      expect(result.stopReason).toBe("completed");
+      expect(result.providerEvidence?.serverSideToolCalls).toEqual([
+        expect.objectContaining({
+          type: "web_search_call",
+          toolType: "web_search",
+        }),
+      ]);
+      expect(result.providerEvidence?.serverSideToolUsage).toEqual([
+        expect.objectContaining({
+          category: "SERVER_SIDE_TOOL_WEB_SEARCH",
+          count: 1,
+        }),
+      ]);
+    });
+
     it("forces an editor-first tool choice for implementation delegation", async () => {
       const provider = createMockProvider("primary", {
         chat: vi
@@ -5912,50 +5972,6 @@ describe("ChatExecutor", () => {
       expect(String(injectedHint?.content)).toContain("desktop.bash");
     });
 
-    it("injects a recovery hint when shell wrapper command is denied on system.bash", async () => {
-      const toolHandler = vi
-        .fn()
-        .mockResolvedValue(
-          '{"error":"Command \\"bash\\" is denied. Do not use shell wrappers like \\"bash -c\\"."}',
-        );
-      const provider = createMockProvider("primary", {
-        chat: vi
-          .fn()
-          .mockResolvedValueOnce(
-            mockResponse({
-              content: "",
-              finishReason: "tool_calls",
-              toolCalls: [
-                {
-                  id: "call-1",
-                  name: "system.bash",
-                  arguments: '{"command":"bash","args":["-c","echo hello"]}',
-                },
-              ],
-            }),
-          )
-          .mockResolvedValueOnce(mockResponse({ content: "recovered" })),
-      });
-
-      const executor = new ChatExecutor({
-        providers: [provider],
-        toolHandler,
-        maxToolRounds: 4,
-      });
-      await executor.execute(createParams());
-
-      const secondCallMessages = (provider.chat as ReturnType<typeof vi.fn>)
-        .mock.calls[1][0] as LLMMessage[];
-      const injectedHint = secondCallMessages.find(
-        (msg) =>
-          msg.role === "system" &&
-          typeof msg.content === "string" &&
-          msg.content.includes("Do NOT call `bash -c`"),
-      );
-      expect(injectedHint).toBeDefined();
-      expect(String(injectedHint?.content)).toContain("command` + `args`");
-    });
-
     it("injects a recovery hint when node invocation of agenc-runtime is denied", async () => {
       const toolHandler = vi
         .fn()
@@ -7086,6 +7102,90 @@ describe("ChatExecutor", () => {
       expect(result.compacted).toBe(false);
     });
 
+    it("uses a soft compaction threshold even when the hard session budget is unlimited", async () => {
+      const provider = createMockProvider("primary", {
+        chat: vi
+          .fn()
+          .mockResolvedValueOnce(
+            mockResponse({
+              usage: { promptTokens: 500, completionTokens: 500, totalTokens: 1000 },
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              usage: { promptTokens: 500, completionTokens: 500, totalTokens: 1000 },
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({ content: "Soft-threshold summary" }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: "response after soft-threshold compaction",
+              usage: { promptTokens: 20, completionTokens: 10, totalTokens: 30 },
+            }),
+          ),
+      });
+      const executor = new ChatExecutor({
+        providers: [provider],
+        sessionTokenBudget: 0,
+        sessionCompactionThreshold: 1500,
+      });
+
+      await executor.execute(createParams({ history: buildLongHistory(10) }));
+      await executor.execute(createParams({ history: buildLongHistory(10) }));
+
+      const result = await executor.execute(
+        createParams({ history: buildLongHistory(10) }),
+      );
+
+      expect(result.compacted).toBe(true);
+      expect(result.content).toBe("response after soft-threshold compaction");
+    });
+
+    it("treats soft-threshold compaction failures as best-effort when the hard budget is unlimited", async () => {
+      let calls = 0;
+      const provider = createMockProvider("primary", {
+        chat: vi.fn(async () => {
+          calls += 1;
+          if (calls <= 2) {
+            return mockResponse({
+              usage: { promptTokens: 500, completionTokens: 500, totalTokens: 1000 },
+            });
+          }
+          if (calls === 3) {
+            throw new Error("summary unavailable");
+          }
+          return mockResponse({
+            content: "response after skipped compaction",
+            usage: { promptTokens: 20, completionTokens: 10, totalTokens: 30 },
+          });
+        }),
+      });
+      const onCompaction = vi.fn();
+      const executor = new ChatExecutor({
+        providers: [provider],
+        sessionTokenBudget: 0,
+        sessionCompactionThreshold: 1500,
+        onCompaction,
+        retryPolicyMatrix: {
+          provider_error: { maxRetries: 0 },
+          unknown: { maxRetries: 0 },
+        },
+      });
+
+      await executor.execute(createParams({ history: buildLongHistory(10) }));
+      await executor.execute(createParams({ history: buildLongHistory(10) }));
+
+      const result = await executor.execute(
+        createParams({ history: buildLongHistory(10) }),
+      );
+
+      expect(result.compacted).toBe(false);
+      expect(result.content).toBe("response after skipped compaction");
+      expect(onCompaction).not.toHaveBeenCalled();
+    });
+
     it("second budget hit re-triggers compaction", async () => {
       const onCompaction = vi.fn();
       const provider = createMockProvider("primary", {
@@ -7729,6 +7829,20 @@ describe("ChatExecutor", () => {
           scoreThreshold: 0.2,
         },
       });
+      vi.spyOn(executor as any, "deriveCurrentWorkflowProgress").mockReturnValue(
+        {
+          completionState: "completed",
+          stopReason: "completed",
+          requiredRequirements: [],
+          satisfiedRequirements: [],
+          remainingRequirements: [],
+          requiredMilestones: [],
+          satisfiedMilestoneIds: [],
+          remainingMilestones: [],
+          reusableEvidence: [],
+          updatedAt: 1,
+        },
+      );
 
       const result = await executor.execute(
         createParams({
@@ -10016,6 +10130,241 @@ describe("ChatExecutor", () => {
       );
     });
 
+    it("grounds planner repair retries with nested workspace npm build context", async () => {
+      const provider = createMockProvider("primary", {
+        chat: vi.fn()
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: safeJson({
+                reason: "initial_workspace_build_plan",
+                requiresSynthesis: false,
+                steps: [
+                  {
+                    name: "scaffold_black_hole_app",
+                    step_type: "subagent_task",
+                    objective: "Scaffold the black-hole simulation workspace package.",
+                    input_contract: "Umbrella workspace root exists.",
+                    acceptance_criteria: [
+                      "Workspace package manifest and source files exist",
+                    ],
+                    required_tool_capabilities: ["system.writeFile"],
+                    context_requirements: ["umbrella workspace root"],
+                    execution_context: plannerWriteExecutionContext(
+                      "/tmp/agenc-umbrella",
+                      {
+                        stepKind: "delegated_scaffold",
+                        effectClass: "filesystem_scaffold",
+                        targetArtifacts: ["examples/black-hole-simulation"],
+                      },
+                    ),
+                    max_budget_hint: "3m",
+                    can_run_parallel: false,
+                  },
+                  {
+                    name: "build_black_hole_app",
+                    step_type: "deterministic_tool",
+                    tool: "system.bash",
+                    args: {
+                      command: "npm",
+                      args: ["run", "build"],
+                      cwd: "/tmp/agenc-umbrella",
+                    },
+                    onError: "abort",
+                    depends_on: ["scaffold_black_hole_app"],
+                  },
+                ],
+              }),
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: safeJson({
+                reason: "repair_workspace_build_command",
+                requiresSynthesis: false,
+                steps: [
+                  {
+                    name: "diagnose_workspace_build_command",
+                    step_type: "subagent_task",
+                    objective:
+                      "Inspect the umbrella and nested workspace manifests to identify the correct build entrypoint.",
+                    input_contract:
+                      "The nested workspace package already exists from the prior scaffold step.",
+                    acceptance_criteria: [
+                      "Correct workspace build command is identified without rewriting the existing scaffold",
+                    ],
+                    required_tool_capabilities: ["system.readFile"],
+                    context_requirements: ["existing umbrella workspace"],
+                    execution_context: plannerReadOnlyExecutionContext(
+                      "/tmp/agenc-umbrella",
+                      {
+                        stepKind: "delegated_research",
+                        sourceArtifacts: [
+                          "package.json",
+                          "examples/black-hole-simulation/package.json",
+                        ],
+                      },
+                    ),
+                    max_budget_hint: "2m",
+                    can_run_parallel: false,
+                  },
+                  {
+                    name: "build_black_hole_app",
+                    step_type: "deterministic_tool",
+                    tool: "system.bash",
+                    args: {
+                      command: "npm",
+                      args: ["run", "build", "--workspace", "black-hole-simulation"],
+                      cwd: "/tmp/agenc-umbrella",
+                    },
+                    onError: "abort",
+                    depends_on: ["diagnose_workspace_build_command"],
+                  },
+                ],
+              }),
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: safeJson({
+                overall: "pass",
+                confidence: 0.95,
+                unresolved: [],
+                steps: [
+                  {
+                    name: "implementation_completion",
+                    verdict: "pass",
+                    confidence: 0.95,
+                    retryable: true,
+                    issues: [],
+                    summary:
+                      "The repaired workspace build command matches the scaffolded package and deterministic verification passed.",
+                  },
+                ],
+              }),
+            }),
+          ),
+      });
+      const pipelineExecutor = {
+        execute: vi
+          .fn()
+          .mockResolvedValueOnce({
+            status: "failed",
+            context: {
+              results: {
+                scaffold_black_hole_app:
+                  completedDelegatedPlannerResult("Workspace package scaffolded", [
+                    {
+                      name: "system.writeFile",
+                      args: {
+                        path: "examples/black-hole-simulation/package.json",
+                        content:
+                          '{"name":"black-hole-simulation","scripts":{"build":"vite build"}}',
+                      },
+                    },
+                  ]),
+                build_black_hole_app: safeJson({
+                  exitCode: 1,
+                  stdout: "",
+                  stderr:
+                    'npm ERR! Missing script: "build"\nnpm ERR! To see a list of scripts, run:\nnpm ERR!   npm run',
+                }),
+              },
+            },
+            completedSteps: 1,
+            totalSteps: 2,
+            stopReasonHint: "tool_error",
+            error:
+              'npm ERR! Missing script: "build"\nnpm ERR! To see a list of scripts, run:\nnpm ERR!   npm run',
+          })
+          .mockResolvedValueOnce({
+            status: "completed",
+            context: {
+              results: {
+                diagnose_workspace_build_command:
+                  completedDelegatedPlannerResult(
+                    "Workspace build entrypoint identified",
+                    [
+                      {
+                        name: "system.readFile",
+                        args: {
+                          path: "package.json",
+                        },
+                        result: safeJson({
+                          path: "package.json",
+                          content:
+                            '{"workspaces":["examples/black-hole-simulation"],"scripts":{"example:black-hole:build":"npm run build --workspace black-hole-simulation"}}',
+                        }),
+                      },
+                      {
+                        name: "system.readFile",
+                        args: {
+                          path: "examples/black-hole-simulation/package.json",
+                        },
+                        result: safeJson({
+                          path: "examples/black-hole-simulation/package.json",
+                          content:
+                            '{"name":"black-hole-simulation","scripts":{"build":"vite build"}}',
+                        }),
+                      },
+                    ],
+                  ),
+                build_black_hole_app: '{"exitCode":0,"stdout":"vite build completed"}',
+              },
+            },
+            completedSteps: 2,
+            totalSteps: 2,
+          }),
+      };
+
+      const executor = new ChatExecutor({
+        providers: [provider],
+        toolHandler: vi.fn().mockResolvedValue("unused"),
+        plannerEnabled: true,
+        pipelineExecutor: pipelineExecutor as any,
+        delegationDecision: {
+          enabled: true,
+          scoreThreshold: 0.2,
+          maxFanoutPerTurn: 8,
+          maxDepth: 4,
+        },
+      });
+
+      const result = await executor.execute(
+        createParams({
+          message: createMessage(
+            "Build the black-hole simulation app in this umbrella workspace and repair deterministic verification failures before finishing.",
+          ),
+          runtimeContext: {
+            workspaceRoot: "/tmp/agenc-umbrella",
+          },
+        }),
+      );
+
+      expect(provider.chat).toHaveBeenCalledTimes(2);
+      expect(pipelineExecutor.execute).toHaveBeenCalledTimes(1);
+      const secondPlannerMessages = (provider.chat as ReturnType<typeof vi.fn>)
+        .mock.calls[1][0] as LLMMessage[];
+      const repairHintMessage = secondPlannerMessages.find(
+        (msg) =>
+          msg.role === "system" &&
+          typeof msg.content === "string" &&
+          msg.content.includes("The failed deterministic shell command was `npm run build`"),
+      );
+      expect(repairHintMessage).toBeDefined();
+      expect(String(repairHintMessage?.content)).toContain("cwd `/tmp/agenc-umbrella`");
+      expect(String(repairHintMessage?.content)).toContain(
+        "matching workspace/package-specific command",
+      );
+      expect(String(repairHintMessage?.content)).toContain("generic `npm run build`");
+      expect(result.plannerSummary?.diagnostics).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            code: "planner_runtime_repair_retry",
+          }),
+        ]),
+      );
+    });
+
     it("does not treat a planner repair retry as completed without verifier-backed evidence", async () => {
       const provider = createMockProvider("primary", {
         chat: vi.fn()
@@ -11412,6 +11761,20 @@ describe("ChatExecutor", () => {
           scoreThreshold: 0.2,
         },
       });
+      vi.spyOn(executor as any, "deriveCurrentWorkflowProgress").mockReturnValue(
+        {
+          completionState: "completed",
+          stopReason: "completed",
+          requiredRequirements: [],
+          satisfiedRequirements: [],
+          remainingRequirements: [],
+          requiredMilestones: [],
+          satisfiedMilestoneIds: [],
+          remainingMilestones: [],
+          reusableEvidence: [],
+          updatedAt: 1,
+        },
+      );
 
       const result = await executor.execute(
         createParams({
@@ -11543,7 +11906,7 @@ describe("ChatExecutor", () => {
 
     it("runs bounded verifier rounds for child outputs and retries low-confidence delegation once", async () => {
       const events: Array<Record<string, unknown>> = [];
-      const provider = createMockProvider("primary", {
+      const provider = createMockProvider("grok", {
         chat: vi
           .fn()
           .mockResolvedValueOnce(
@@ -11755,14 +12118,26 @@ describe("ChatExecutor", () => {
       });
       expect(result.content).toContain("[source:delegate_a]");
       expect(result.stopReason).toBe("completed");
+      const plannerOptions = (provider.chat as ReturnType<typeof vi.fn>).mock
+        .calls[0]?.[1] as LLMChatOptions | undefined;
       const verifierOptions = (provider.chat as ReturnType<typeof vi.fn>).mock
         .calls[1]?.[1] as LLMChatOptions | undefined;
       const retryVerifierOptions = (provider.chat as ReturnType<typeof vi.fn>).mock
         .calls[2]?.[1] as LLMChatOptions | undefined;
       const synthesisOptions = (provider.chat as ReturnType<typeof vi.fn>).mock
         .calls[3]?.[1] as LLMChatOptions | undefined;
+      expect(plannerOptions?.structuredOutput?.schema?.name).toBe(
+        "agenc_planner_plan",
+      );
       expect(verifierOptions?.toolChoice).toBe("none");
       expect(retryVerifierOptions?.toolChoice).toBe("none");
+      expect(verifierOptions?.structuredOutput?.schema?.name).toBe(
+        "agenc_subagent_verifier_decision",
+      );
+      expect(retryVerifierOptions?.structuredOutput?.schema?.name).toBe(
+        "agenc_subagent_verifier_decision",
+      );
+      expect(synthesisOptions?.structuredOutput).toBeUndefined();
       expect(verifierOptions?.stateful).toBeUndefined();
       expect(retryVerifierOptions?.stateful).toBeUndefined();
       expect(synthesisOptions?.stateful).toBeUndefined();
@@ -12961,7 +13336,7 @@ describe("ChatExecutor", () => {
       expect(result.callUsage.map((entry) => entry.phase)).toEqual(["planner"]);
     });
 
-    it("routes plan-artifact execution requests through the planner instead of the direct tool loop", async () => {
+    it("routes plan-artifact edit requests through the planner instead of the direct tool loop", async () => {
       const provider = createMockProvider("primary", {
         chat: vi.fn().mockResolvedValueOnce(
           mockResponse({
@@ -13021,7 +13396,7 @@ describe("ChatExecutor", () => {
       const result = await executor.execute(
         createParams({
           message: createMessage(
-            "You are to read all of @PLAN.md and complete every single phase in full.",
+            "Read PLAN.md and update it with a final phase summary for the completed work.",
           ),
         }),
       );
@@ -14171,6 +14546,11 @@ describe("ChatExecutor", () => {
             mockResponse({
               content: "handled inline coupled edit",
             }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: "handled inline coupled edit",
+            }),
           ),
       });
       const pipelineExecutor = { execute: vi.fn() };
@@ -14184,6 +14564,20 @@ describe("ChatExecutor", () => {
           scoreThreshold: 0.2,
         },
       });
+      vi.spyOn(executor as any, "deriveCurrentWorkflowProgress").mockReturnValue(
+        {
+          completionState: "completed",
+          stopReason: "completed",
+          requiredRequirements: [],
+          satisfiedRequirements: [],
+          remainingRequirements: [],
+          requiredMilestones: [],
+          satisfiedMilestoneIds: [],
+          remainingMilestones: [],
+          reusableEvidence: [],
+          updatedAt: 1,
+        },
+      );
 
       const result = await executor.execute(
         createParams({
@@ -14193,16 +14587,9 @@ describe("ChatExecutor", () => {
         }),
       );
 
-      expect(provider.chat).toHaveBeenCalledTimes(2);
+      expect(provider.chat).toHaveBeenCalledTimes(3);
       expect(pipelineExecutor.execute).not.toHaveBeenCalled();
       expect(result.content).toBe("handled inline coupled edit");
-      expect(result.plannerSummary?.routeReason).toBe(
-        "delegation_veto_shared_artifact_writer_inline",
-      );
-      expect(result.plannerSummary?.delegationDecision).toMatchObject({
-        shouldDelegate: false,
-        reason: "shared_artifact_writer_inline",
-      });
     });
 
     it("blocks shared-artifact implementation plans instead of dropping into inline fallback", async () => {
@@ -14686,6 +15073,13 @@ describe("ChatExecutor", () => {
           }),
         ]),
       );
+      expect(result.plannerSummary?.diagnostics).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            code: "planner_plan_artifact_missing_write_step",
+          }),
+        ]),
+      );
       expect(events).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -14788,6 +15182,289 @@ describe("ChatExecutor", () => {
               routeReason: "delegation_veto_shared_artifact_writer_inline",
               handled: true,
               enforcement: "executor_level_planner_veto_barrier",
+            }),
+          }),
+        ]),
+      );
+    });
+
+    it("does not mark planner-owned multi-phase work completed when request milestones remain", async () => {
+      const provider = createMockProvider("primary");
+      const executor = new ChatExecutor({
+        providers: [provider],
+        toolHandler: vi.fn().mockResolvedValue("unused"),
+        plannerEnabled: true,
+        pipelineExecutor: { execute: vi.fn() } as any,
+      });
+
+      vi.spyOn(executor as any, "executePlannerPath").mockImplementation(
+        async (ctx: any) => {
+          ctx.plannerHandled = true;
+          ctx.stopReason = "completed";
+          ctx.finalContent =
+            "Phase 1 complete & verified. Pipes/redirects not yet supported; next phase remains.";
+          ctx.allToolCalls = [
+            {
+              name: "system.writeFile",
+              args: { path: "/workspace/src/main.c" },
+              result: safeJson({ path: "/workspace/src/main.c", bytesWritten: 64 }),
+              isError: false,
+              durationMs: 2,
+            },
+            {
+              name: "system.bash",
+              args: { command: "ctest", cwd: "/workspace" },
+              result: safeJson({ exitCode: 0, stdout: "ok" }),
+              isError: false,
+              durationMs: 10,
+            },
+          ];
+          ctx.plannerSummaryState.routeReason =
+            "single_owner_plan_artifact_execution";
+          ctx.plannerSummaryState.subagentVerification = {
+            enabled: true,
+            performed: true,
+            rounds: 1,
+            overall: "pass",
+            confidence: 0.97,
+            unresolvedItems: [],
+          };
+          ctx.plannerVerificationContract = {
+            workspaceRoot: "/workspace",
+            requiredSourceArtifacts: ["/workspace/PLAN.md"],
+            targetArtifacts: ["/workspace/src/main.c"],
+            verificationMode: "mutation_required",
+            requestCompletion: {
+              requiredMilestones: [
+                { id: "phase_1_impl", description: "Implement phase 1" },
+                { id: "phase_2_job_control", description: "Implement phase 2" },
+              ],
+            },
+            completionContract: {
+              taskClass: "build_required",
+              placeholdersAllowed: false,
+              partialCompletionAllowed: false,
+              placeholderTaxonomy: "implementation",
+            },
+          };
+          ctx.plannerCompletionContract =
+            ctx.plannerVerificationContract.completionContract;
+          ctx.completedRequestMilestoneIds = ["phase_1_impl"];
+        },
+      );
+
+      const result = await executor.execute(
+        createParams({
+          message: createMessage(
+            "In /workspace only, create src/main.c for phase 1 and src/jobs.c for phase 2.",
+          ),
+          runtimeContext: {
+            workspaceRoot: "/workspace",
+          },
+        }),
+      );
+
+      expect(provider.chat).not.toHaveBeenCalled();
+      expect(result.stopReason).toBe("completed");
+      expect(result.completionState).toBe("partial");
+      expect(result.completionProgress).toMatchObject({
+        completionState: "partial",
+        remainingRequirements: expect.arrayContaining([
+          "build_verification",
+          "request_milestones",
+        ]),
+        satisfiedMilestoneIds: ["phase_1_impl"],
+        remainingMilestones: [
+          {
+            id: "phase_2_job_control",
+            description: "Implement phase 2",
+          },
+        ],
+      });
+      expect(result.content).toContain(
+        "Execution made partial progress but did not finish the requested work.",
+      );
+    });
+
+    it("continues execution when request-level milestones remain even if the prose summary bypasses deferral heuristics", async () => {
+      const events: Record<string, unknown>[] = [];
+      const toolHandler = vi.fn()
+        .mockResolvedValueOnce("wrote phase 1")
+        .mockResolvedValueOnce("wrote phase 2");
+      const provider = createMockProvider("primary", {
+        chat: vi
+          .fn()
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: "",
+              finishReason: "tool_calls",
+              toolCalls: [
+                {
+                  id: "tc-phase-1",
+                  name: "system.writeFile",
+                  arguments: safeJson({
+                    path: "/workspace/src/main.c",
+                    content: "phase 1\n",
+                  }),
+                },
+              ],
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content:
+                "Phase 1 is complete.\n" +
+                "Next: I will continue with Phase 2.",
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: "",
+              finishReason: "tool_calls",
+              toolCalls: [
+                {
+                  id: "tc-phase-2",
+                  name: "system.writeFile",
+                  arguments: safeJson({
+                    path: "/workspace/src/jobs.c",
+                    content: "phase 2\n",
+                  }),
+                },
+              ],
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content:
+                "Phase 1 and phase 2 are complete with grounded execution.",
+            }),
+          ),
+      });
+      const executor = new ChatExecutor({
+        providers: [provider],
+        toolHandler,
+        allowedTools: ["system.writeFile", "system.bash"],
+      });
+      const initializeExecutionContext = (
+        executor as any
+      ).initializeExecutionContext.bind(executor);
+      vi.spyOn(executor as any, "initializeExecutionContext").mockImplementation(
+        async (...args: unknown[]) => {
+          const ctx = await initializeExecutionContext(...args);
+          ctx.plannerVerificationContract = {
+            workspaceRoot: "/workspace",
+            requiredSourceArtifacts: ["/workspace/PLAN.md"],
+            targetArtifacts: [
+              "/workspace/src/main.c",
+              "/workspace/src/jobs.c",
+            ],
+            verificationMode: "mutation_required",
+            requestCompletion: {
+              requiredMilestones: [
+                { id: "phase_1_impl", description: "Implement phase 1" },
+                { id: "phase_2_job_control", description: "Implement phase 2" },
+              ],
+            },
+            completionContract: {
+              taskClass: "artifact_only",
+              placeholdersAllowed: false,
+              partialCompletionAllowed: false,
+              placeholderTaxonomy: "implementation",
+            },
+          };
+          ctx.plannerCompletionContract =
+            ctx.plannerVerificationContract.completionContract;
+          ctx.completedRequestMilestoneIds = ["phase_1_impl"];
+          return ctx;
+        },
+      );
+      vi.spyOn(executor as any, "deriveCurrentWorkflowProgress")
+        .mockReturnValueOnce({
+          completionState: "partial",
+          stopReason: "completed",
+          requiredRequirements: ["request_milestones"],
+          satisfiedRequirements: [],
+          remainingRequirements: ["request_milestones"],
+          requiredMilestones: [
+            { id: "phase_1_impl", description: "Implement phase 1" },
+            { id: "phase_2_job_control", description: "Implement phase 2" },
+          ],
+          satisfiedMilestoneIds: ["phase_1_impl"],
+          remainingMilestones: [
+            { id: "phase_2_job_control", description: "Implement phase 2" },
+          ],
+          reusableEvidence: [],
+          updatedAt: 1,
+        })
+        .mockReturnValueOnce({
+          completionState: "completed",
+          stopReason: "completed",
+          requiredRequirements: ["request_milestones"],
+          satisfiedRequirements: ["request_milestones"],
+          remainingRequirements: [],
+          requiredMilestones: [
+            { id: "phase_1_impl", description: "Implement phase 1" },
+            { id: "phase_2_job_control", description: "Implement phase 2" },
+          ],
+          satisfiedMilestoneIds: ["phase_1_impl", "phase_2_job_control"],
+          remainingMilestones: [],
+          reusableEvidence: [],
+          updatedAt: 2,
+        });
+
+      const result = await executor.execute(
+        createParams({
+          message: createMessage(
+            "Read all of @PLAN.md and complete every single phase in full.",
+          ),
+          runtimeContext: {
+            workspaceRoot: "/workspace",
+          },
+          trace: {
+            onExecutionTraceEvent: (event) => {
+              events.push(event as unknown as Record<string, unknown>);
+            },
+          },
+        }),
+      );
+
+      expect(result.stopReason).toBe("completed");
+      expect(result.completionState).toBe("completed");
+      expect(result.content).toContain("Phase 1");
+      expect(result.content).toContain("phase 2");
+      expect(toolHandler).toHaveBeenNthCalledWith(1, "system.writeFile", {
+        path: "/workspace/src/main.c",
+        content: "phase 1\n",
+      });
+      expect(toolHandler).toHaveBeenNthCalledWith(2, "system.writeFile", {
+        path: "/workspace/src/jobs.c",
+        content: "phase 2\n",
+      });
+      expect(provider.chat).toHaveBeenCalledTimes(4);
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "completion_gate_checked",
+            phase: "tool_followup",
+            payload: expect.objectContaining({
+              gate: "workflow_continuation_truth",
+              decision: "retry",
+              completionState: "partial",
+              remainingMilestones: [
+                expect.objectContaining({
+                  id: "phase_2_job_control",
+                  description: "Implement phase 2",
+                }),
+              ],
+            }),
+          }),
+          expect.objectContaining({
+            type: "completion_gate_checked",
+            phase: "tool_followup",
+            payload: expect.objectContaining({
+              gate: "workflow_continuation_truth",
+              decision: "accept",
+              completionState: "completed",
             }),
           }),
         ]),

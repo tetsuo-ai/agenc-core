@@ -26,6 +26,9 @@ export interface ResolvedLLMStatefulResponsesConfig {
 export const UNSUPPORTED_STATEFUL_CAPABILITIES: LLMProviderCapabilities["stateful"] = {
   assistantPhase: false,
   previousResponseId: false,
+  encryptedReasoning: false,
+  storedResponseRetrieval: false,
+  storedResponseDeletion: false,
   opaqueCompaction: false,
   deterministicFallback: true,
 };
@@ -95,7 +98,7 @@ export function buildUnsupportedCompactionDiagnostics(input: {
     enabled: true,
     requested: true,
     active: false,
-    mode: "server_side_context_management",
+    mode: "provider_managed_state",
     threshold: compaction.compactThreshold,
     observedItemCount: 0,
     fallbackReason: "unsupported",

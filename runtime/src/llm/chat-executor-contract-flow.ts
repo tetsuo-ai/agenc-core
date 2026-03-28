@@ -36,7 +36,14 @@ import {
   getAllowedToolNamesForEvidence,
 } from "./chat-executor-routing-state.js";
 import { didToolCallFail } from "./chat-executor-tool-utils.js";
-import { requestRequiresToolGroundedExecution } from "./chat-executor-planner.js";
+import {
+  plannerRequestNeedsGroundedPlanArtifact,
+  plannerRequestNeedsPlanArtifactExecution,
+  requestRequiresToolGroundedExecution,
+} from "./chat-executor-planner.js";
+import {
+  PROVIDER_NATIVE_GROUNDED_INFORMATION_TOOL_NAMES,
+} from "./provider-native-search.js";
 
 type ToolNameCollection = Iterable<string> | readonly string[];
 
@@ -91,7 +98,9 @@ const DIRECT_MUTATION_TOOL_NAMES = new Set([
   "system.writeFile",
 ]);
 const BROWSER_TOOL_PREFIX = "mcp.browser.";
-const RESEARCH_TOOL_NAMES = new Set(["web_search"]);
+const RESEARCH_TOOL_NAMES: ReadonlySet<string> = new Set(
+  PROVIDER_NATIVE_GROUNDED_INFORMATION_TOOL_NAMES,
+);
 const DOC_ONLY_PATH_RE = /\.(?:md|mdx|txt|rst|adoc)$/i;
 const DOC_BASENAME_RE =
   /(?:^|\/)(?:README|CHANGELOG|CONTRIBUTING|LICENSE|COPYING|NOTES|AGENTS|AGENC)(?:\.[^/]+)?$/i;
@@ -470,6 +479,12 @@ function mergeWorkflowVerificationContext(input: {
 function synthesizeDirectImplementationWorkflowContext(
   ctx: ContractFlowContext,
 ): RuntimeWorkflowContextResolution | undefined {
+  if (
+    plannerRequestNeedsGroundedPlanArtifact(ctx.messageText) ||
+    plannerRequestNeedsPlanArtifactExecution(ctx.messageText)
+  ) {
+    return undefined;
+  }
   const workspaceRoot = normalizeWorkspaceRoot(ctx.runtimeWorkspaceRoot);
   if (!workspaceRoot) {
     return undefined;
@@ -576,6 +591,8 @@ function analyzeLegacyCompletionTurn(
   const hasMutationProgress = mutatedArtifacts.length > 0;
   const hasResearchEvidence =
     (ctx.providerEvidence?.citations?.length ?? 0) > 0 ||
+    (ctx.providerEvidence?.serverSideToolCalls?.length ?? 0) > 0 ||
+    (ctx.providerEvidence?.serverSideToolUsage?.length ?? 0) > 0 ||
     successfulToolCalls.some((toolCall) =>
       toolCall.name.startsWith(BROWSER_TOOL_PREFIX) ||
       RESEARCH_TOOL_NAMES.has(toolCall.name),

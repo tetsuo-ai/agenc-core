@@ -56,6 +56,34 @@ describe("chat-executor-text", () => {
     );
   });
 
+  it("surfaces provider-native server-side tool telemetry even without citations", () => {
+    const message = buildToolExecutionGroundingMessage({
+      toolCalls: [],
+      providerEvidence: {
+        serverSideToolCalls: [
+          {
+            type: "web_search_call",
+            toolType: "web_search",
+            id: "ws_123",
+            status: "completed",
+          },
+        ],
+        serverSideToolUsage: [
+          {
+            category: "SERVER_SIDE_TOOL_WEB_SEARCH",
+            toolType: "web_search",
+            count: 1,
+          },
+        ],
+      },
+    });
+
+    expect(message).toBeDefined();
+    expect(String(message?.content)).toContain('"providerServerSideToolCallCount":1');
+    expect(String(message?.content)).toContain('"type":"web_search_call"');
+    expect(String(message?.content)).toContain('"category":"SERVER_SIDE_TOOL_WEB_SEARCH"');
+  });
+
   it("keeps oversized runtime tool ledgers bounded and marks them truncated", () => {
     const message = buildToolExecutionGroundingMessage({
       toolCalls: Array.from({ length: 30 }, (_, index) => ({

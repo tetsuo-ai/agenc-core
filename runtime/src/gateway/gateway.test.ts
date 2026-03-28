@@ -1196,11 +1196,31 @@ describe("config loading", () => {
     );
   });
 
-  it("validateGatewayConfig requires a compaction threshold when statefulResponses.compaction is enabled", () => {
+  it("validateGatewayConfig allows Grok compaction defaults when the threshold is omitted", () => {
     const result = validateGatewayConfig(
       makeConfig({
         llm: {
           provider: "grok",
+          apiKey: "test",
+          statefulResponses: {
+            enabled: true,
+            compaction: {
+              enabled: true,
+            },
+          },
+        },
+      }),
+    );
+
+    expect(result.valid).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
+  it("validateGatewayConfig still requires a compaction threshold for non-Grok providers", () => {
+    const result = validateGatewayConfig(
+      makeConfig({
+        llm: {
+          provider: "ollama",
           apiKey: "test",
           statefulResponses: {
             enabled: true,
@@ -1255,6 +1275,61 @@ describe("config loading", () => {
           apiKey: "test",
           webSearch: true,
           searchMode: "auto",
+        },
+      }),
+    );
+
+    expect(result.valid).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
+  it("validateGatewayConfig accepts explicit xAI capability surface fields", () => {
+    const result = validateGatewayConfig(
+      makeConfig({
+        llm: {
+          provider: "grok",
+          apiKey: "test",
+          webSearch: true,
+          searchMode: "auto",
+          webSearchOptions: {
+            allowedDomains: ["docs.x.ai"],
+            enableImageUnderstanding: true,
+          },
+          xSearch: true,
+          xSearchOptions: {
+            allowedXHandles: ["xai"],
+            fromDate: "2026-03-01",
+            toDate: "2026-03-27",
+            enableVideoUnderstanding: true,
+          },
+          codeExecution: true,
+          collectionsSearch: {
+            enabled: true,
+            vectorStoreIds: ["collection-1", "collection-2"],
+            maxNumResults: 10,
+          },
+          remoteMcp: {
+            enabled: true,
+            servers: [
+              {
+                serverUrl: "https://mcp.example.com/sse",
+                serverLabel: "docs",
+                serverDescription: "Documentation MCP",
+                allowedTools: ["search_docs"],
+                authorization: "Bearer token",
+                headers: {
+                  "x-tenant": "agenc",
+                },
+              },
+            ],
+          },
+          structuredOutputs: {
+            enabled: true,
+            strict: true,
+          },
+          includeEncryptedReasoning: true,
+          maxTurns: 4,
+          reasoningEffort: "high",
         },
       }),
     );
@@ -1337,6 +1412,130 @@ describe("config loading", () => {
     );
   });
 
+  it("validateGatewayConfig rejects invalid explicit xAI capability surface fields", () => {
+    const result = validateGatewayConfig(
+      makeConfig({
+        llm: {
+          provider: "grok",
+          apiKey: "test",
+          xSearch: "yes" as unknown as boolean,
+          webSearchOptions: {
+            allowedDomains: ["a", "b", "c", "d", "e", "f"],
+            excludedDomains: ["docs.x.ai"],
+            enableImageUnderstanding: "yes" as unknown as boolean,
+          },
+          codeExecution: "yes" as unknown as boolean,
+          xSearchOptions: {
+            allowedXHandles: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"],
+            excludedXHandles: ["xai"],
+            fromDate: "later",
+            toDate: "soon",
+            enableImageUnderstanding: "yes" as unknown as boolean,
+            enableVideoUnderstanding: "yes" as unknown as boolean,
+          },
+          collectionsSearch: {
+            enabled: true,
+            vectorStoreIds: [1, 2] as unknown as string[],
+            maxNumResults: 0,
+          },
+          remoteMcp: {
+            enabled: true,
+            servers: [
+              {
+                serverUrl: "",
+                serverLabel: "",
+                serverDescription: 1,
+                allowedTools: [1] as unknown as string[],
+                authorization: 2,
+                headers: {
+                  a: 1,
+                },
+              },
+            ],
+          },
+          structuredOutputs: {
+            enabled: "yes" as unknown as boolean,
+            strict: "yes" as unknown as boolean,
+          },
+          includeEncryptedReasoning: "yes" as unknown as boolean,
+          maxTurns: 0,
+          reasoningEffort: "deeper" as unknown as "high",
+        },
+      }),
+    );
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("llm.xSearch must be a boolean");
+    expect(result.errors).toContain(
+      "llm.webSearchOptions.allowedDomains must contain at most 5 entries",
+    );
+    expect(result.errors).toContain(
+      "llm.webSearchOptions.allowedDomains and llm.webSearchOptions.excludedDomains cannot both be set",
+    );
+    expect(result.errors).toContain(
+      "llm.webSearchOptions.enableImageUnderstanding must be a boolean",
+    );
+    expect(result.errors).toContain("llm.codeExecution must be a boolean");
+    expect(result.errors).toContain(
+      "llm.xSearchOptions.allowedXHandles must contain at most 10 entries",
+    );
+    expect(result.errors).toContain(
+      "llm.xSearchOptions.allowedXHandles and llm.xSearchOptions.excludedXHandles cannot both be set",
+    );
+    expect(result.errors).toContain(
+      "llm.xSearchOptions.fromDate must be an ISO8601 string",
+    );
+    expect(result.errors).toContain(
+      "llm.xSearchOptions.toDate must be an ISO8601 string",
+    );
+    expect(result.errors).toContain(
+      "llm.xSearchOptions.enableImageUnderstanding must be a boolean",
+    );
+    expect(result.errors).toContain(
+      "llm.xSearchOptions.enableVideoUnderstanding must be a boolean",
+    );
+    expect(result.errors).toContain(
+      "llm.collectionsSearch.vectorStoreIds must be a string array",
+    );
+    expect(result.errors).toContain(
+      "llm.collectionsSearch.maxNumResults must be a positive integer",
+    );
+    expect(result.errors).toContain(
+      "llm.collectionsSearch.vectorStoreIds is required when llm.collectionsSearch.enabled is true",
+    );
+    expect(result.errors).toContain(
+      "llm.remoteMcp.servers[0].serverUrl must be a non-empty string",
+    );
+    expect(result.errors).toContain(
+      "llm.remoteMcp.servers[0].serverLabel must be a non-empty string",
+    );
+    expect(result.errors).toContain(
+      "llm.remoteMcp.servers[0].serverDescription must be a string",
+    );
+    expect(result.errors).toContain(
+      "llm.remoteMcp.servers[0].allowedTools must be a string array",
+    );
+    expect(result.errors).toContain(
+      "llm.remoteMcp.servers[0].authorization must be a string",
+    );
+    expect(result.errors).toContain(
+      "llm.remoteMcp.servers[0].headers.a must be a string",
+    );
+    expect(result.errors).toContain(
+      "llm.structuredOutputs.enabled must be a boolean",
+    );
+    expect(result.errors).toContain(
+      "llm.structuredOutputs.strict must be a boolean",
+    );
+    expect(result.errors).toContain(
+      "llm.includeEncryptedReasoning must be a boolean",
+    );
+    expect(result.errors).toContain("llm.maxTurns must be a positive integer");
+    expect(result.errors).toContain(
+      "llm.reasoningEffort must be one of: low, medium, high, xhigh",
+    );
+  });
+
   it("validateGatewayConfig accepts llm.subagents fields", () => {
     const result = validateGatewayConfig(
       makeConfig({
@@ -1404,11 +1603,11 @@ describe("config loading", () => {
             enabled: "yes" as unknown as boolean,
             mode: "invalid-mode",
             delegationAggressiveness: "extreme",
-            maxConcurrent: 0,
-            maxDepth: 0,
+            maxConcurrent: -1,
+            maxDepth: -1,
             maxFanoutPerTurn: 100,
-            maxTotalSubagentsPerRequest: 0,
-            maxCumulativeToolCallsPerRequestTree: 0,
+            maxTotalSubagentsPerRequest: 64,
+            maxCumulativeToolCallsPerRequestTree: -1,
             maxCumulativeTokensPerRequestTree: -1,
             defaultTimeoutMs: 500,
             spawnDecisionThreshold: 2,
@@ -1435,25 +1634,22 @@ describe("config loading", () => {
       "llm.subagents.delegationAggressiveness must be one of: conservative, balanced, aggressive, adaptive",
     );
     expect(result.errors).toContain(
-      "llm.subagents.maxConcurrent must be an integer between 1 and 64",
+      "llm.subagents.maxConcurrent must be 0 or an integer between 1 and 64",
     );
     expect(result.errors).toContain(
-      "llm.subagents.maxDepth must be an integer between 1 and 16",
+      "llm.subagents.maxDepth must be 0 or an integer between 1 and 16",
     );
     expect(result.errors).toContain(
-      "llm.subagents.maxFanoutPerTurn must be an integer between 1 and 64",
+      "llm.subagents.maxFanoutPerTurn must be 0 or an integer between 1 and 64",
     );
     expect(result.errors).toContain(
-      "llm.subagents.maxTotalSubagentsPerRequest must be an integer between 1 and 1024",
-    );
-    expect(result.errors).toContain(
-      "llm.subagents.maxCumulativeToolCallsPerRequestTree must be an integer between 1 and 4096",
+      "llm.subagents.maxCumulativeToolCallsPerRequestTree must be 0 or an integer between 1 and 4096",
     );
     expect(result.errors).toContain(
       "llm.subagents.maxCumulativeTokensPerRequestTree must be an integer between 0 and 10000000",
     );
     expect(result.errors).toContain(
-      "llm.subagents.defaultTimeoutMs must be an integer between 1000 and 3600000",
+      "llm.subagents.defaultTimeoutMs must be 0 or an integer between 1000 and 3600000",
     );
     expect(result.errors).toContain(
       "llm.subagents.spawnDecisionThreshold must be a number between 0 and 1",
@@ -1536,9 +1732,9 @@ describe("config loading", () => {
           maxToolRounds: 2_049,
           plannerEnabled: "yes" as unknown as boolean,
           plannerMaxTokens: 8,
-          toolBudgetPerRequest: 0,
+          toolBudgetPerRequest: -1,
           maxModelRecallsPerRequest: -1,
-          maxFailureBudgetPerRequest: 0,
+          maxFailureBudgetPerRequest: -1,
           toolCallTimeoutMs: 100,
           requestTimeoutMs: 1_000,
           toolFailureCircuitBreaker: {
@@ -1563,23 +1759,23 @@ describe("config loading", () => {
 
     expect(result.valid).toBe(false);
     expect(result.errors).toContain(
-      "llm.maxToolRounds must be an integer between 1 and 2048",
+      "llm.maxToolRounds must be 0 or an integer between 1 and 2048",
     );
     expect(result.errors).toContain("llm.plannerEnabled must be a boolean");
     expect(result.errors).toContain(
-      "llm.plannerMaxTokens must be an integer between 16 and 65536",
+      "llm.plannerMaxTokens must be 0 or an integer between 16 and 65536",
     );
     expect(result.errors).toContain(
-      "llm.toolBudgetPerRequest must be an integer between 1 and 8192",
+      "llm.toolBudgetPerRequest must be 0 or an integer between 1 and 8192",
     );
     expect(result.errors).toContain(
       "llm.maxModelRecallsPerRequest must be an integer between 0 and 128",
     );
     expect(result.errors).toContain(
-      "llm.maxFailureBudgetPerRequest must be an integer between 1 and 256",
+      "llm.maxFailureBudgetPerRequest must be 0 or an integer between 1 and 256",
     );
     expect(result.errors).toContain(
-      "llm.toolCallTimeoutMs must be an integer between 1000 and 3600000",
+      "llm.toolCallTimeoutMs must be 0 or an integer between 1000 and 3600000",
     );
     expect(result.errors).toContain(
       "llm.requestTimeoutMs must be 0 or an integer between 5000 and 7200000",

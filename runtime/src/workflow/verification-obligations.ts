@@ -4,6 +4,7 @@ import type {
   ImplementationCompletionContract,
   PlaceholderTaxonomy,
 } from "./completion-contract.js";
+import type { WorkflowRequestCompletionContract } from "./request-completion.js";
 import type {
   ExecutionStepKind,
   ExecutionVerificationMode,
@@ -18,6 +19,7 @@ export interface WorkflowVerificationContract {
   readonly verificationMode?: ExecutionVerificationMode;
   readonly stepKind?: ExecutionStepKind;
   readonly completionContract?: ImplementationCompletionContract;
+  readonly requestCompletion?: WorkflowRequestCompletionContract;
 }
 
 export interface VerificationObligations {

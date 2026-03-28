@@ -1,4 +1,5 @@
 import type { ToolRoutingDecision } from "./tool-routing.js";
+import { hasRuntimeLimit } from "../llm/runtime-limit-policy.js";
 
 export const COMPLEX_TURN_MAX_TOOL_ROUNDS = 2_048;
 
@@ -32,6 +33,9 @@ export function resolveMaxToolRoundsForToolNames(
     return defaultMaxToolRounds;
   }
   if (!shouldRaiseToolRoundBudget(toolNames)) {
+    return defaultMaxToolRounds;
+  }
+  if (!hasRuntimeLimit(defaultMaxToolRounds)) {
     return defaultMaxToolRounds;
   }
   return Math.max(defaultMaxToolRounds, COMPLEX_TURN_MAX_TOOL_ROUNDS);

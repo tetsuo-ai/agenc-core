@@ -2986,6 +2986,10 @@ async function dispatchBootstrapCommands(
 ): Promise<RoutedStatus> {
   if (parsed.positional[0] === "onboard") {
     try {
+      if (parsed.flags.help === true || parsed.flags.h === true) {
+        context.output(buildHelp());
+        return 0;
+      }
       if (parsed.positional.length > 1) {
         throw createCliError(
           "onboard does not accept positional arguments",

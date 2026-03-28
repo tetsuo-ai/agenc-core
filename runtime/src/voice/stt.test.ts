@@ -108,6 +108,18 @@ describe("WhisperAPIProvider", () => {
     }
   });
 
+  it("fails loudly when pointed at xAI's undocumented OpenAI transcription surface", async () => {
+    provider = new WhisperAPIProvider({
+      apiKey: "test-key",
+      baseURL: "https://api.x.ai/v1",
+    });
+
+    await expect(provider.transcribe(new Uint8Array([1]))).rejects.toThrow(
+      /xAI does not document the OpenAI \/audio\/transcriptions surface/i,
+    );
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
   it("handles string response", async () => {
     mockCreate.mockResolvedValue("Just text");
 

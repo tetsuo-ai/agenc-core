@@ -42,6 +42,7 @@ const SHELL_WRAPPER_COMMANDS = new Set([
   "ksh",
   "tcsh",
 ]);
+const SHELL_WRAPPER_INLINE_FLAG_RE = /^-[A-Za-z]*c[A-Za-z]*$/;
 const SHELL_BUILTIN_COMMANDS = new Set([
   "set",
   "cd",
@@ -226,6 +227,21 @@ export function validateShellCommand(
   return { allowed: true };
 }
 
+function extractShellWrapperInlineScript(
+  command: string,
+  args: readonly string[],
+): string | undefined {
+  if (!SHELL_WRAPPER_COMMANDS.has(basename(command).toLowerCase())) {
+    return undefined;
+  }
+  for (let index = 0; index < args.length; index += 1) {
+    if (SHELL_WRAPPER_INLINE_FLAG_RE.test(args[index] ?? "")) {
+      return args[index + 1];
+    }
+  }
+  return undefined;
+}
+
 /** Detect whether a command string requires shell interpretation. */
 function isShellModeCommand(
   command: string,
@@ -378,15 +394,6 @@ export function isCommandAllowed(
 
   // Exact deny list takes precedence
   if (!isExcluded && (denySet.has(command) || denySet.has(base))) {
-    if (SHELL_WRAPPER_COMMANDS.has(base)) {
-      return {
-        allowed: false,
-        reason:
-          `Command "${command}" is denied. Do not use shell wrappers like "bash -c". ` +
-          `Call the executable directly with \`command\` + \`args\` (e.g. \`command:"curl", args:["-sSf","http://..."]\`). ` +
-          `For multi-step logic, write a script file and execute that file path directly.`,
-      };
-    }
     return { allowed: false, reason: `Command "${command}" is denied` };
   }
 
@@ -577,6 +584,15 @@ export function createBashTool(config?: BashToolConfig): Tool {
               return errorResult("Each argument must be a string");
             }
             args.push(arg);
+          }
+        }
+
+        const shellWrapperScript = extractShellWrapperInlineScript(command, args);
+        if (shellWrapperScript) {
+          const shellCheck = validateShellCommand(shellWrapperScript);
+          if (!shellCheck.allowed) {
+            logger.warn(`Bash tool shell-wrapper denied: ${shellCheck.reason}`);
+            return errorResult(shellCheck.reason);
           }
         }
 

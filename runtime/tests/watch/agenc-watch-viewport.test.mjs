@@ -65,3 +65,11 @@ test("bottomAlignRows pads short views and isTranscriptFollowing respects offset
     true,
   );
 });
+
+test("sliceRowsFromBottom honors very short target heights", () => {
+  const sliced = sliceRowsFromBottom(["a", "b", "c"], 2, 0);
+
+  assert.deepEqual(sliced.rows, ["b", "c"]);
+  assert.equal(sliced.hiddenAbove, 1);
+  assert.equal(sliced.hiddenBelow, 0);
+});

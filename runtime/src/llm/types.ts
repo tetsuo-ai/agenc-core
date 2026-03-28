@@ -13,10 +13,10 @@
 export type MessageRole = "system" | "user" | "assistant" | "tool";
 
 /**
- * Assistant message phase for long-running/tool-heavy flows.
+ * Local assistant message phase for long-running/tool-heavy flows.
  *
- * Preserved in local history so providers that support phase-aware replay can
- * distinguish working commentary from the completed answer.
+ * Preserved in AgenC history so the runtime can distinguish working
+ * commentary from the completed answer without assuming provider support.
  */
 export type LLMAssistantPhase = "commentary" | "final_answer";
 
@@ -37,7 +37,7 @@ export type LLMContentPart =
 export interface LLMMessage {
   role: MessageRole;
   content: string | LLMContentPart[];
-  /** Optional assistant phase metadata for phase-aware replay/continuation. */
+  /** Optional local phase metadata for runtime-side replay and completion logic. */
   phase?: LLMAssistantPhase;
   /** For assistant messages that request tool execution */
   toolCalls?: LLMToolCall[];
@@ -66,6 +66,22 @@ export interface LLMToolCall {
   id: string;
   name: string;
   arguments: string;
+}
+
+export interface ToolCallValidationFailure {
+  readonly code:
+    | "invalid_shape"
+    | "missing_id"
+    | "missing_name"
+    | "non_string_arguments"
+    | "invalid_json"
+    | "non_object_arguments";
+  readonly message: string;
+}
+
+export interface ToolCallValidationResult {
+  readonly toolCall: LLMToolCall | null;
+  readonly failure?: ToolCallValidationFailure;
 }
 
 /**
@@ -102,6 +118,9 @@ export interface LLMRequestMetrics {
   toolSuppressionReason?: string;
   toolChoice?: string;
   toolSchemaChars: number;
+  structuredOutputEnabled?: boolean;
+  structuredOutputName?: string;
+  structuredOutputStrict?: boolean;
   serializedChars: number;
   previousResponseId?: string;
   statefulInputMode?: "full_replay" | "incremental_delta";
@@ -205,13 +224,13 @@ export type LLMCompactionFallbackReason =
   | "request_rejected";
 
 /**
- * Opaque provider compaction item metadata.
+ * Opaque provider-managed state item metadata.
  *
  * The runtime stores only identifiers/digests needed for tracing and replay;
  * the payload itself stays provider-owned and out-of-band.
  */
 export interface LLMCompactionItemRef {
-  /** Provider-emitted item type, e.g. `compaction` or equivalent. */
+  /** Provider-emitted state item type. */
   readonly type: string;
   /** Provider-emitted item identifier when available. */
   readonly id?: string;
@@ -219,25 +238,23 @@ export interface LLMCompactionItemRef {
   readonly digest: string;
 }
 
-/**
- * Per-call diagnostics for provider-native context compaction.
- */
+/** Per-call diagnostics for provider-managed continuation state. */
 export interface LLMCompactionDiagnostics {
-  /** True when provider-native compaction is enabled in config for this call. */
+  /** True when provider-managed continuation state is enabled in config for this call. */
   readonly enabled: boolean;
-  /** True when the initial request attempted provider-native compaction. */
+  /** True when the initial request attempted provider-managed continuation state. */
   readonly requested: boolean;
-  /** True when the final request sent to the provider still included compaction. */
+  /** True when the final request sent to the provider still included that state feature. */
   readonly active: boolean;
-  /** Provider-specific compaction mode used for the call. */
-  readonly mode: "server_side_context_management";
-  /** Configured compaction threshold sent to the provider. */
+  /** Provider-specific state mode used for the call. */
+  readonly mode: "provider_managed_state";
+  /** Configured threshold associated with the state feature. */
   readonly threshold: number;
-  /** Number of opaque compaction items observed in the provider response. */
+  /** Number of opaque state items observed in the provider response. */
   readonly observedItemCount: number;
-  /** Latest opaque compaction item returned by the provider, if any. */
+  /** Latest opaque provider state item returned by the provider, if any. */
   readonly latestItem?: LLMCompactionItemRef;
-  /** Fallback reason when compaction had to be disabled for the call. */
+  /** Fallback reason when the state feature had to be disabled for the call. */
   readonly fallbackReason?: LLMCompactionFallbackReason;
 }
 
@@ -246,7 +263,7 @@ export interface LLMCompactionDiagnostics {
  *
  * Providers may fully support these controls, ignore them with explicit
  * unsupported diagnostics, or selectively support subsets such as
- * `previous_response_id` without opaque compaction.
+ * `previous_response_id` without provider-managed state items.
  */
 export interface LLMStatefulResponsesConfig {
   /** Enable session-scoped continuation using provider-managed response IDs. */
@@ -257,13 +274,13 @@ export interface LLMStatefulResponsesConfig {
   readonly fallbackToStateless?: boolean;
   /** Number of recent normalized turns used for reconciliation hashing. */
   readonly reconciliationWindow?: number;
-  /** Optional provider-native opaque compaction controls. */
+  /** Optional runtime/provider continuation-state controls. */
   readonly compaction?: {
-    /** Enable provider-native server-side compaction. */
+    /** Enable continuation-state compaction behavior when supported. */
     readonly enabled?: boolean;
-    /** Rendered-token threshold for provider compaction. */
+    /** Rendered-token threshold for local/provider compaction policy. */
     readonly compactThreshold?: number;
-    /** Retry once without compaction if the provider rejects the field. */
+    /** Retry once without the compaction hint if the provider rejects it. */
     readonly fallbackOnUnsupported?: boolean;
   };
 }
@@ -273,6 +290,12 @@ export interface LLMProviderStatefulCapabilities {
   readonly assistantPhase: boolean;
   /** Provider supports `previous_response_id` / equivalent continuation. */
   readonly previousResponseId: boolean;
+  /** Provider supports requesting encrypted reasoning content via include. */
+  readonly encryptedReasoning: boolean;
+  /** Provider supports fetching stored responses by ID. */
+  readonly storedResponseRetrieval: boolean;
+  /** Provider supports deleting stored responses by ID. */
+  readonly storedResponseDeletion: boolean;
   /** Provider supports opaque provider-managed compaction state. */
   readonly opaqueCompaction: boolean;
   /** Runtime can safely fall back to stateless replay for unsupported features. */
@@ -356,8 +379,177 @@ export interface LLMChatToolRoutingOptions {
   readonly allowedToolNames?: readonly string[];
 }
 
+export type LLMReasoningEffort = "low" | "medium" | "high" | "xhigh";
+
+export type LLMProviderNativeServerToolType =
+  | "web_search"
+  | "x_search"
+  | "code_interpreter"
+  | "file_search"
+  | "mcp"
+  | "view_image"
+  | "view_x_video";
+
+export type LLMProviderNativeServerToolCallType =
+  | "web_search_call"
+  | "x_search_call"
+  | "code_interpreter_call"
+  | "file_search_call"
+  | "mcp_call";
+
+export interface LLMProviderNativeServerToolCall {
+  /** Provider-emitted output item type such as `web_search_call`. */
+  readonly type: LLMProviderNativeServerToolCallType;
+  /** Logical server-side tool family for routing, tracing, and billing. */
+  readonly toolType: LLMProviderNativeServerToolType;
+  /** Provider-emitted call identifier when present. */
+  readonly id?: string;
+  /** Provider-emitted function/tool name when present. */
+  readonly functionName?: string;
+  /** Provider-emitted arguments payload when present. */
+  readonly arguments?: string;
+  /** Provider-emitted status string when present. */
+  readonly status?: string;
+  /** Sanitized raw provider payload for future adapter-specific enrichment. */
+  readonly raw?: Record<string, unknown>;
+}
+
+export interface LLMProviderServerSideToolUsageEntry {
+  /** Provider usage category, e.g. `SERVER_SIDE_TOOL_WEB_SEARCH`. */
+  readonly category: string;
+  /** AgenC-normalized tool family when it can be inferred. */
+  readonly toolType?: LLMProviderNativeServerToolType;
+  /** Successful invocation count reported by the provider. */
+  readonly count: number;
+}
+
+export interface LLMStructuredOutputSchema {
+  /** Structured output mode documented by the provider surface. */
+  readonly type: "json_schema";
+  /** Stable schema name sent to the provider. */
+  readonly name: string;
+  /** JSON Schema payload. */
+  readonly schema: Record<string, unknown>;
+  /** Enforce strict schema adherence when supported. */
+  readonly strict?: boolean;
+}
+
+export interface LLMStructuredOutputRequest {
+  /** Provider/runtime enable switch for structured output mode. */
+  readonly enabled?: boolean;
+  /** Optional schema payload for request-scoped structured output. */
+  readonly schema?: LLMStructuredOutputSchema;
+}
+
+export interface LLMStructuredOutputResult {
+  /** Structured output mode returned by the provider/runtime. */
+  readonly type: "json_schema";
+  /** Schema name associated with the response when available. */
+  readonly name?: string;
+  /** Parsed structured payload when AgenC or the provider validated it. */
+  readonly parsed?: unknown;
+  /** Raw JSON string content when the provider returned structured text only. */
+  readonly rawText?: string;
+}
+
+export interface LLMEncryptedReasoningDiagnostics {
+  /** True when the request explicitly asked for encrypted reasoning content. */
+  readonly requested: boolean;
+  /** True when encrypted reasoning content was present in the provider response. */
+  readonly available: boolean;
+}
+
+export interface LLMCollectionsSearchConfig {
+  /** Enable the provider-native collections/file search tool. */
+  readonly enabled?: boolean;
+  /** xAI/OpenAI-compatible collection/vector store identifiers. */
+  readonly vectorStoreIds?: readonly string[];
+  /** Optional server-side retrieval limit. */
+  readonly maxNumResults?: number;
+}
+
+export interface LLMWebSearchConfig {
+  /** Restrict web search/browsing to these domains only. */
+  readonly allowedDomains?: readonly string[];
+  /** Exclude these domains from web search/browsing. */
+  readonly excludedDomains?: readonly string[];
+  /** Enable server-side image understanding during web search. */
+  readonly enableImageUnderstanding?: boolean;
+}
+
+export interface LLMXSearchConfig {
+  /** Restrict X search to posts from these handles only. */
+  readonly allowedXHandles?: readonly string[];
+  /** Exclude posts from these handles. */
+  readonly excludedXHandles?: readonly string[];
+  /** Inclusive ISO8601 start date for X search. */
+  readonly fromDate?: string;
+  /** Inclusive ISO8601 end date for X search. */
+  readonly toDate?: string;
+  /** Enable image understanding on discovered X posts. */
+  readonly enableImageUnderstanding?: boolean;
+  /** Enable video understanding on discovered X posts. */
+  readonly enableVideoUnderstanding?: boolean;
+}
+
+export interface LLMRemoteMcpServerConfig {
+  /** xAI/OpenAI-compatible remote MCP server URL. */
+  readonly serverUrl: string;
+  /** Stable label used for tool prefixing and trace readability. */
+  readonly serverLabel: string;
+  /** Optional provider-facing description of the MCP server. */
+  readonly serverDescription?: string;
+  /** Restrict server-exposed tool names when supported. */
+  readonly allowedTools?: readonly string[];
+  /** Authorization token forwarded to the MCP server when configured. */
+  readonly authorization?: string;
+  /** Additional static headers forwarded to the MCP server. */
+  readonly headers?: Readonly<Record<string, string>>;
+}
+
+export interface LLMRemoteMcpConfig {
+  /** Enable provider-managed remote MCP tool injection. */
+  readonly enabled?: boolean;
+  /** Configured remote MCP servers exposed to the provider. */
+  readonly servers?: readonly LLMRemoteMcpServerConfig[];
+}
+
+export interface LLMStructuredOutputsConfig {
+  /** Enable provider-level structured output support. */
+  readonly enabled?: boolean;
+  /** Default strictness applied when building provider schema requests. */
+  readonly strict?: boolean;
+}
+
+export interface LLMXaiCapabilitySurface {
+  /** Enable provider-native web search tool routing. */
+  readonly webSearch?: boolean;
+  /** Provider-native web search routing preference. */
+  readonly searchMode?: "auto" | "on" | "off";
+  /** Provider-native web search filters/capabilities. */
+  readonly webSearchOptions?: LLMWebSearchConfig;
+  /** Enable provider-native X search tools. */
+  readonly xSearch?: boolean;
+  /** Provider-native X search filters/capabilities. */
+  readonly xSearchOptions?: LLMXSearchConfig;
+  /** Enable provider-native code execution / code interpreter. */
+  readonly codeExecution?: boolean;
+  /** Collections / file search configuration. */
+  readonly collectionsSearch?: LLMCollectionsSearchConfig;
+  /** Remote MCP server configuration. */
+  readonly remoteMcp?: LLMRemoteMcpConfig;
+  /** Structured output capability defaults. */
+  readonly structuredOutputs?: LLMStructuredOutputsConfig;
+  /** Request encrypted reasoning content when supported. */
+  readonly includeEncryptedReasoning?: boolean;
+  /** Maximum assistant/tool turns allowed in one provider-managed loop. */
+  readonly maxTurns?: number;
+  /** Provider-native reasoning depth control. */
+  readonly reasoningEffort?: LLMReasoningEffort;
+}
+
 export interface LLMProviderTraceEvent {
-  readonly kind: "request" | "response" | "error";
+  readonly kind: "request" | "response" | "error" | "stream_event";
   readonly transport: "chat" | "chat_stream";
   readonly provider: string;
   readonly model?: string;
@@ -376,9 +568,9 @@ export interface LLMProviderTraceEvent {
 }
 
 export interface LLMChatTraceOptions {
-  /** Emit raw provider request/response/error payloads through the trace callback. */
+  /** Emit raw provider request/response/error/stream-event payloads through the trace callback. */
   readonly includeProviderPayloads?: boolean;
-  /** Callback invoked with provider-native request/response/error payloads. */
+  /** Callback invoked with provider-native request/response/error/stream-event payloads. */
   readonly onProviderTraceEvent?: (event: LLMProviderTraceEvent) => void;
 }
 
@@ -401,6 +593,14 @@ export interface LLMChatOptions {
   readonly stateful?: LLMChatStatefulOptions;
   readonly toolRouting?: LLMChatToolRoutingOptions;
   readonly toolChoice?: LLMToolChoice;
+  /** Optional request-scoped structured output contract. */
+  readonly structuredOutput?: LLMStructuredOutputRequest;
+  /** Request encrypted reasoning content from providers that support it. */
+  readonly includeEncryptedReasoning?: boolean;
+  /** Provider-native max-turns cap for server-side tool loops. */
+  readonly maxTurns?: number;
+  /** Provider-native reasoning depth override. */
+  readonly reasoningEffort?: LLMReasoningEffort;
   readonly trace?: LLMChatTraceOptions;
   /** Upper bound for this individual provider call. */
   readonly timeoutMs?: number;
@@ -410,6 +610,48 @@ export interface LLMChatOptions {
 
 export interface LLMProviderEvidence {
   readonly citations?: readonly string[];
+  /** Server-side tool calls attempted by the provider during the request. */
+  readonly serverSideToolCalls?: readonly LLMProviderNativeServerToolCall[];
+  /** Successful/billable server-side tool usage summary from the provider. */
+  readonly serverSideToolUsage?: readonly LLMProviderServerSideToolUsageEntry[];
+}
+
+export interface LLMStoredResponse {
+  /** Provider-emitted response identifier. */
+  readonly id: string;
+  /** Provider name backing the stored response. */
+  readonly provider: string;
+  /** Provider-emitted model identifier when available. */
+  readonly model?: string;
+  /** Provider-emitted lifecycle status when available. */
+  readonly status?: string;
+  /** Parsed assistant text content derived from the stored response output. */
+  readonly content: string;
+  /** Parsed client-side function calls preserved in the stored response. */
+  readonly toolCalls: readonly LLMToolCall[];
+  /** Provider usage block when available. */
+  readonly usage?: LLMUsage;
+  /** Provider-side tool/citation evidence derived from stored output. */
+  readonly providerEvidence?: LLMProviderEvidence;
+  /** Structured output parsing result when present in the stored response. */
+  readonly structuredOutput?: LLMStructuredOutputResult;
+  /** Encrypted reasoning request/availability diagnostics for the stored response. */
+  readonly encryptedReasoning?: LLMEncryptedReasoningDiagnostics;
+  /** Raw provider output array, cloned for debugging/replay inspection. */
+  readonly output?: readonly Record<string, unknown>[];
+  /** Sanitized raw provider response object for debugging/replay inspection. */
+  readonly raw?: Record<string, unknown>;
+}
+
+export interface LLMStoredResponseDeleteResult {
+  /** Deleted response identifier. */
+  readonly id: string;
+  /** Provider name backing the deletion request. */
+  readonly provider: string;
+  /** Whether the provider confirmed the response was deleted. */
+  readonly deleted: boolean;
+  /** Sanitized raw provider delete response for debugging/auditing. */
+  readonly raw?: Record<string, unknown>;
 }
 
 /**
@@ -428,6 +670,10 @@ export interface LLMResponse {
   compaction?: LLMCompactionDiagnostics;
   /** Provider-side evidence from built-in/server-side tools. */
   providerEvidence?: LLMProviderEvidence;
+  /** Structured-output schema result metadata when requested/returned. */
+  structuredOutput?: LLMStructuredOutputResult;
+  /** Encrypted reasoning availability for this provider response. */
+  encryptedReasoning?: LLMEncryptedReasoningDiagnostics;
   finishReason: "stop" | "tool_calls" | "length" | "content_filter" | "error";
   /** Underlying error when finishReason is "error". */
   error?: Error;
@@ -477,6 +723,12 @@ export interface LLMProvider {
   resetSessionState?(sessionId: string): void;
   /** Optional lifecycle hook to clear all provider-managed session state. */
   clearSessionState?(): void;
+  /** Optional debug/replay hook for fetching a stored provider response by ID. */
+  retrieveStoredResponse?(responseId: string): Promise<LLMStoredResponse>;
+  /** Optional debug/replay hook for deleting a stored provider response by ID. */
+  deleteStoredResponse?(
+    responseId: string,
+  ): Promise<LLMStoredResponseDeleteResult>;
 }
 
 /**
@@ -517,15 +769,61 @@ function decodeHtmlEntities(s: string): string {
     .replace(/&#39;/g, "'");
 }
 
+function decodeHtmlEntitiesDeep(value: unknown): unknown {
+  if (typeof value === "string") {
+    return decodeHtmlEntities(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => decodeHtmlEntitiesDeep(entry));
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+      key,
+      decodeHtmlEntitiesDeep(entry),
+    ]),
+  );
+}
+
+function parseToolArguments(
+  argumentsRaw: string,
+): { value: unknown } | null {
+  try {
+    return {
+      value: JSON.parse(argumentsRaw) as unknown,
+    };
+  } catch {
+    try {
+      return {
+        value: JSON.parse(decodeHtmlEntities(argumentsRaw)) as unknown,
+      };
+    } catch {
+      return null;
+    }
+  }
+}
+
 /**
  * Validate/sanitize a raw tool call payload.
  *
  * Ensures `id` and `name` are non-empty strings, and `arguments` is a JSON string.
- * Decodes HTML entities both in the JSON string and in parsed string values.
+ * Preserves valid JSON structure first, then decodes HTML entities inside
+ * parsed string values. Falls back to decoding the raw JSON text only when the
+ * original argument string is not valid JSON.
  */
-export function validateToolCall(raw: unknown): LLMToolCall | null {
+export function validateToolCallDetailed(
+  raw: unknown,
+): ToolCallValidationResult {
   if (typeof raw !== "object" || raw === null) {
-    return null;
+    return {
+      toolCall: null,
+      failure: {
+        code: "invalid_shape",
+        message: "Tool call payload must be an object.",
+      },
+    };
   }
 
   const candidate = raw as Record<string, unknown>;
@@ -533,30 +831,69 @@ export function validateToolCall(raw: unknown): LLMToolCall | null {
   const name = typeof candidate.name === "string" ? candidate.name.trim() : "";
   const argumentsRaw = candidate.arguments;
 
-  if (!id || !name || typeof argumentsRaw !== "string") {
-    return null;
+  if (!id) {
+    return {
+      toolCall: null,
+      failure: {
+        code: "missing_id",
+        message: "Tool call payload is missing a non-empty id.",
+      },
+    };
+  }
+  if (!name) {
+    return {
+      toolCall: null,
+      failure: {
+        code: "missing_name",
+        message: "Tool call payload is missing a non-empty name.",
+      },
+    };
+  }
+  if (typeof argumentsRaw !== "string") {
+    return {
+      toolCall: null,
+      failure: {
+        code: "non_string_arguments",
+        message: "Tool call arguments must be a JSON string.",
+      },
+    };
   }
 
-  // Decode the JSON string itself (entities in JSON syntax)
-  const decoded = decodeHtmlEntities(argumentsRaw);
-
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(decoded) as Record<string, unknown>;
-  } catch {
-    return null;
+  const parsedResult = parseToolArguments(argumentsRaw);
+  if (!parsedResult) {
+    return {
+      toolCall: null,
+      failure: {
+        code: "invalid_json",
+        message: "Tool call arguments are not valid JSON.",
+      },
+    };
   }
 
-  // Also decode entities inside parsed string values (entities within JSON values)
-  for (const key of Object.keys(parsed)) {
-    if (typeof parsed[key] === "string") {
-      parsed[key] = decodeHtmlEntities(parsed[key] as string);
-    }
+  const parsed = parsedResult.value;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      toolCall: null,
+      failure: {
+        code: "non_object_arguments",
+        message: "Tool call arguments must decode to a JSON object.",
+      },
+    };
   }
+
+  const normalizedArguments = JSON.stringify(
+    decodeHtmlEntitiesDeep(parsed) as Record<string, unknown>,
+  );
 
   return {
-    id,
-    name,
-    arguments: JSON.stringify(parsed),
+    toolCall: {
+      id,
+      name,
+      arguments: normalizedArguments,
+    },
   };
+}
+
+export function validateToolCall(raw: unknown): LLMToolCall | null {
+  return validateToolCallDetailed(raw).toolCall;
 }

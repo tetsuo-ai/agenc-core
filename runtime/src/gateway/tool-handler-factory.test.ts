@@ -3556,6 +3556,86 @@ describe("createSessionToolHandler", () => {
     ]);
   });
 
+  it("preserves provider-native server-side tool telemetry in delegated child results", async () => {
+    const subAgentManager = {
+      spawn: vi.fn(async () => "subagent:child-native-tools"),
+      getResult: vi.fn(() => makeCompletedChildResult({
+        sessionId: "subagent:child-native-tools",
+        output: '{"selected":"pixi"}',
+        success: true,
+        durationMs: 18,
+        toolCalls: [],
+        providerEvidence: {
+          serverSideToolCalls: [
+            {
+              type: "web_search_call",
+              toolType: "web_search",
+              id: "ws_123",
+              status: "completed",
+            },
+          ],
+          serverSideToolUsage: [
+            {
+              category: "SERVER_SIDE_TOOL_WEB_SEARCH",
+              toolType: "web_search",
+              count: 1,
+            },
+          ],
+        },
+      })),
+      getInfo: vi.fn(() => ({
+        sessionId: "subagent:child-native-tools",
+        parentSessionId: "session-parent",
+        depth: 1,
+        status: "completed",
+        startedAt: Date.now() - 25,
+        task: "Compare official framework docs",
+      })),
+    };
+
+    const handler = createSessionToolHandler({
+      sessionId: "session-parent",
+      baseHandler: vi.fn(async () => "should-not-run"),
+      availableToolNames: ["web_search"],
+      routerId: "router-a",
+      send: vi.fn(),
+      delegation: () => ({
+        subAgentManager: subAgentManager as any,
+        policyEngine: null,
+        verifier: null,
+        lifecycleEmitter: null,
+      }),
+    });
+
+    const result = await handler("execute_with_agent", {
+      task: "Compare Canvas API, Phaser, and PixiJS from official docs",
+      inputContract:
+        "Return JSON with selected framework and supporting evidence",
+      tools: ["web_search"],
+    });
+    const parsed = JSON.parse(result) as {
+      success?: boolean;
+      providerEvidence?: {
+        serverSideToolCalls?: Array<{ type?: string; toolType?: string }>;
+        serverSideToolUsage?: Array<{ category?: string; count?: number }>;
+      };
+    };
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.providerEvidence?.serverSideToolCalls).toEqual([
+      expect.objectContaining({
+        type: "web_search_call",
+        toolType: "web_search",
+      }),
+    ]);
+    expect(parsed.providerEvidence?.serverSideToolUsage).toEqual([
+      expect.objectContaining({
+        category: "SERVER_SIDE_TOOL_WEB_SEARCH",
+        count: 1,
+      }),
+    ]);
+  });
+
   it("clamps execute_with_agent timeoutMs to a safe minimum", async () => {
     const subAgentManager = {
       spawn: vi.fn(async () => "subagent:child-min-timeout"),

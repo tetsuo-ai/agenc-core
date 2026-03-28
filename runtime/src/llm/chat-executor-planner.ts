@@ -4,7 +4,11 @@
  * @module
  */
 
-import type { LLMMessage, LLMToolCall } from "./types.js";
+import type {
+  LLMMessage,
+  LLMStructuredOutputRequest,
+  LLMToolCall,
+} from "./types.js";
 import type {
   PromptBudgetSection,
 } from "./prompt-budget.js";
@@ -52,6 +56,7 @@ import {
   MAX_SUBAGENT_VERIFIER_OUTPUT_CHARS,
   RECOVERY_HINT_PREFIX,
 } from "./chat-executor-constants.js";
+import { hasRuntimeLimit } from "./runtime-limit-policy.js";
 import {
   truncateText,
   extractLLMMessageText,
@@ -107,7 +112,7 @@ interface PlannerRequestSignals {
 }
 
 const EXPLICIT_DELEGATION_REQUEST_RE =
-  /\b(?:spawn|use|run|launch|start|delegate(?:\s+to)?|hand\s+off\s+to)\b[\s\S]{0,48}\b(?:sub[\s-]?agents?|child\s+agents?|another\s+agent|execute_with_agent)\b/i;
+  /\b(?:spawn|use|run|launch|start|delegate(?:\s+to)?|hand\s+off\s+to)\b[\s\S]{0,64}\b(?:sub[\s-]?agents?|child\s+agents?|another\s+agent|execute_with_agent|deeper\s+research|research|investigation|investigate|inspection|inspect|triage|analy[sz]e|analysis)\b/i;
 const PLANNER_PATH_PLACEHOLDER_ROOTS = [
   "/workspace",
   "/abs/path",
@@ -330,7 +335,9 @@ export function assessPlannerDecision(
     };
   }
 
-  if (plannerRequestNeedsGroundedPlanArtifact(messageText)) {
+  const artifactIntent = classifyPlannerPlanArtifactIntent(messageText);
+
+  if (artifactIntent === "grounded_plan_generation") {
     return {
       score: Math.max(score, 3),
       shouldPlan: true,
@@ -341,7 +348,7 @@ export function assessPlannerDecision(
     };
   }
 
-  if (plannerRequestNeedsPlanArtifactExecution(messageText)) {
+  if (artifactIntent === "edit_artifact") {
     return {
       score: Math.max(score, 4),
       shouldPlan: true,
@@ -349,6 +356,17 @@ export function assessPlannerDecision(
         reasons.length > 0
           ? `${reasons.join("+")}+plan_artifact_execution_request`
           : "plan_artifact_execution_request",
+    };
+  }
+
+  if (artifactIntent === "implement_from_artifact") {
+    return {
+      score: Math.max(score, 4),
+      shouldPlan: true,
+      reason:
+        reasons.length > 0
+          ? `${reasons.join("+")}+artifact_spec_execution_request`
+          : "artifact_spec_execution_request",
     };
   }
 
@@ -600,15 +618,53 @@ export function buildPlannerMessages(
     extractPlannerVerificationRequirements(messageText);
   const verificationCommandRequirements =
     extractPlannerVerificationCommandRequirements(messageText);
-  const planArtifactExecutionRequest =
-    plannerRequestNeedsPlanArtifactExecution(messageText);
+  const artifactIntent = classifyPlannerPlanArtifactIntent(messageText);
+  const planArtifactExecutionRequest = artifactIntent === "edit_artifact";
+  const implementFromArtifactRequest =
+    artifactIntent === "implement_from_artifact";
+  const currentArtifactTargets = extractPlannerArtifactTargets(messageText);
   const hostToolingHint = buildPlannerHostToolingHint(
     messageText,
     history,
     hostToolingProfile,
   );
+  let suppressImmediateAssistantReply = false;
   const historyPreview = history
     .slice(-6)
+    .filter((entry) => {
+      const raw =
+        typeof entry.content === "string"
+          ? entry.content
+          : entry.content
+              .filter((part) => part.type === "text")
+              .map((part) => part.text)
+              .join(" ");
+      if (!implementFromArtifactRequest) {
+        suppressImmediateAssistantReply = false;
+        return true;
+      }
+      if (entry.role === "assistant" && suppressImmediateAssistantReply) {
+        suppressImmediateAssistantReply = false;
+        return false;
+      }
+      const entryIntent = classifyPlannerPlanArtifactIntent(raw);
+      const sameArtifactTarget = plannerArtifactTargetsOverlap(
+        currentArtifactTargets,
+        extractPlannerArtifactTargets(raw),
+      );
+      if (
+        sameArtifactTarget &&
+        (
+          entryIntent === "grounded_plan_generation" ||
+          entryIntent === "edit_artifact"
+        )
+      ) {
+        suppressImmediateAssistantReply = entry.role === "user";
+        return false;
+      }
+      suppressImmediateAssistantReply = false;
+      return true;
+    })
     .map((entry) => {
       const raw =
         typeof entry.content === "string"
@@ -620,10 +676,7 @@ export function buildPlannerMessages(
       return `[${entry.role}] ${truncateText(raw, 300)}`;
     })
     .join("\n");
-  const maxSteps = Math.min(
-    MAX_PLANNER_STEPS,
-    Math.max(1, Math.floor(plannerMaxTokens / 8)),
-  );
+  const maxSteps = resolvePlannerStepLimit(plannerMaxTokens);
   const canonicalPlannerWorkspaceRoot =
     normalizeWorkspaceRoot(plannerWorkspaceRoot);
   const schemaWorkspaceRoot =
@@ -706,13 +759,20 @@ export function buildPlannerMessages(
         ) +
         "- If you need to reduce delegated fanout, only merge adjacent steps from the same phase family. Never merge research with setup/manifest work, or code implementation with broad validation/browser QA.\n" +
         "- For Node workspace scaffold/setup steps that run before the real install step, objectives and acceptance criteria must stay file-authoring-only. Do not mention install/build/test/typecheck/lint/coverage/runtime success there; put those checks in later steps after install.\n" +
-        "- For deterministic system.bash/desktop.bash steps, do not use nested shell wrappers like `bash -c` or `sh -c`; call the target command directly or use shell mode.\n" +
         "- Do not embed heredocs, multi-line shell scripts, or generated file contents inside deterministic bash steps. Use file mutation tools for file contents instead.\n" +
         "- Verification/build/test commands must be non-interactive and exit on their own. Do not use watch mode or dev servers for validation. Prefer runner-native single-run invocations. For Vitest use `vitest run`/`vitest --run`. For Jest use `CI=1 npm test` or `jest --runInBand`. Only pass extra npm `--` flags when the underlying runner supports them.\n" +
         "- max_budget_hint must use explicit units like `90s`, `2m`, or `1h`; do not use bare numeric hints such as `0.08`.\n" +
         "- synthesis steps describe final merge/synthesis intent and do not call tools.\n" +
-        `Keep output concise and below approximately ${plannerMaxTokens} tokens. ` +
-        `Never emit more than ${maxSteps} steps.`,
+        (
+          hasRuntimeLimit(plannerMaxTokens)
+            ? `Keep output concise and below approximately ${plannerMaxTokens} tokens. `
+            : ""
+        ) +
+        (
+          Number.isFinite(maxSteps)
+            ? `Never emit more than ${maxSteps} steps.`
+            : ""
+        ),
     },
   ];
 
@@ -781,6 +841,15 @@ export function buildPlannerMessages(
         "Build, test, and verification around the implementation owner should be deterministic_tool steps unless a later delegated step owns disjoint artifacts.",
     });
   }
+  if (implementFromArtifactRequest) {
+    messages.push({
+      role: "system",
+      content:
+        "The named planning artifact is the source specification for implementation work, not the primary artifact to rewrite. " +
+        "Plan code changes, build/test verification, and bounded delegated implementation around the source spec. " +
+        "Do not collapse the task into editing the planning artifact unless the user explicitly asks to update that artifact.",
+    });
+  }
 
   if (typeof hostToolingHint === "string" && hostToolingHint.length > 0) {
     messages.push({
@@ -809,6 +878,166 @@ export function buildPlannerMessages(
   });
 
   return messages;
+}
+
+export function buildPlannerStructuredOutputRequest(): LLMStructuredOutputRequest {
+  return {
+    enabled: true,
+    schema: {
+      type: "json_schema",
+      name: "agenc_planner_plan",
+      strict: true,
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          reason: { type: "string" },
+          confidence: { type: "number" },
+          requiresSynthesis: { type: "boolean" },
+          steps: {
+            type: "array",
+            items: {
+              anyOf: [
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    name: { type: "string" },
+                    step_type: { enum: ["deterministic_tool"] },
+                    depends_on: { type: "array", items: { type: "string" } },
+                    tool: { type: "string" },
+                    args: { type: "object", additionalProperties: true },
+                    onError: { enum: ["abort", "retry", "skip"] },
+                    maxRetries: { type: "integer" },
+                  },
+                  required: ["name", "step_type", "tool", "args"],
+                },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    name: { type: "string" },
+                    step_type: { enum: ["subagent_task"] },
+                    depends_on: { type: "array", items: { type: "string" } },
+                    objective: { type: "string" },
+                    input_contract: { type: "string" },
+                    acceptance_criteria: {
+                      type: "array",
+                      items: { type: "string" },
+                    },
+                    required_tool_capabilities: {
+                      type: "array",
+                      items: { type: "string" },
+                    },
+                    context_requirements: {
+                      type: "array",
+                      items: { type: "string" },
+                    },
+                    execution_context: {
+                      type: "object",
+                      additionalProperties: false,
+                      properties: {
+                        workspaceRoot: { type: "string" },
+                        allowedReadRoots: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                        allowedWriteRoots: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                        allowedTools: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                        requiredSourceArtifacts: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                        inputArtifacts: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                        targetArtifacts: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                        effectClass: {
+                          enum: [
+                            "read_only",
+                            "filesystem_write",
+                            "filesystem_scaffold",
+                            "shell",
+                            "mixed",
+                          ],
+                        },
+                        verificationMode: {
+                          enum: [
+                            "none",
+                            "grounded_read",
+                            "mutation_required",
+                            "deterministic_followup",
+                          ],
+                        },
+                        stepKind: {
+                          enum: [
+                            "delegated_research",
+                            "delegated_review",
+                            "delegated_write",
+                            "delegated_scaffold",
+                            "delegated_validation",
+                          ],
+                        },
+                        fallbackPolicy: {
+                          enum: [
+                            "continue_without_delegation",
+                            "fail_request",
+                          ],
+                        },
+                        resumePolicy: {
+                          enum: ["stateless_retry", "checkpoint_resume"],
+                        },
+                        approvalProfile: {
+                          enum: ["inherit", "read_only", "filesystem_write", "shell"],
+                        },
+                      },
+                    },
+                    max_budget_hint: { type: "string" },
+                    can_run_parallel: { type: "boolean" },
+                  },
+                  required: [
+                    "name",
+                    "step_type",
+                    "objective",
+                    "input_contract",
+                    "acceptance_criteria",
+                    "required_tool_capabilities",
+                    "max_budget_hint",
+                  ],
+                  anyOf: [
+                    { required: ["execution_context"] },
+                    { required: ["context_requirements"] },
+                  ],
+                },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    name: { type: "string" },
+                    step_type: { enum: ["synthesis"] },
+                    depends_on: { type: "array", items: { type: "string" } },
+                    objective: { type: "string" },
+                  },
+                  required: ["name", "step_type"],
+                },
+              ],
+            },
+          },
+        },
+        required: ["steps"],
+      },
+    },
+  };
 }
 
 export interface ExplicitSubagentOrchestrationRequirementStep {
@@ -855,18 +1084,30 @@ const PLANNER_PLAN_ARTIFACT_REQUEST_RE =
   /\b(?:write|create|draft|generate|produce|make)\b[\s\S]{0,120}\b(?:todo(?:\.md)?|implementation plan|project plan|plan doc(?:ument)?|roadmap|checklist|spec(?:ification)?)\b/i;
 const PLANNER_PLAN_ARTIFACT_FILE_RE =
   /\b(?:todo(?:\.md)?|plan\.(?:md|txt|rst)|implementation[-_ ]plan(?:\.md)?|project[-_ ]plan(?:\.md)?|roadmap(?:\.md)?|checklist(?:\.md)?|spec(?:ification)?(?:\.md)?)\b/i;
+const PLANNER_PLAN_ARTIFACT_FILE_CAPTURE_RE =
+  /\b(?:todo(?:\.md)?|plan\.(?:md|txt|rst)|implementation[-_ ]plan(?:\.md)?|project[-_ ]plan(?:\.md)?|roadmap(?:\.md)?|checklist(?:\.md)?|spec(?:ification)?(?:\.md)?)\b/gi;
 const PLANNER_PLAN_ARTIFACT_SOURCE_CUE_RE =
   /\b(?:read|review|inspect|use|follow|based on|source of truth|go through)\b/i;
 const PLANNER_PLAN_ARTIFACT_EXECUTION_CUE_RE =
   /\b(?:implement|execute|complete|finish|carry\s+out|apply|fix|repair|refactor|ship)\b/i;
 const PLANNER_PLAN_ARTIFACT_PHASE_CUE_RE =
   /\b(?:phase|step|task|item)s?\b/i;
+const PLANNER_PLAN_ARTIFACT_EDIT_CUE_RE =
+  /\b(?:update|rewrite|improve|perfect|polish|edit|revise|expand|flesh\s+out|address\s+gaps?|fix\s+gaps?|tighten|correct)\b/i;
+const PLANNER_PLAN_ARTIFACT_IMPLEMENTATION_CUE_RE =
+  /\b(?:all|each|every|entire|full|fully|phase\s+by\s+phase|one\s+phase\s+at\s+a\s+time|before\s+moving\s+on|move\s+on\s+to\s+the\s+next\s+phase)\b/i;
 const REQUEST_VERIFICATION_DIRECTIVE_RE =
   /\b(?:verify|verification|validated?|before\s+finish(?:ing)?|before\s+returning|before\s+completion|browser-grounded checks?)\b/i;
 const REQUEST_INSTALL_VERIFICATION_RE =
   /\b(?:npm|pnpm|yarn|bun)\s+(?:install|ci)\b|\binstall(?:ation|able|ed|ing|s)?\b/i;
 const REQUEST_BUILD_VERIFICATION_RE =
   /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:build|typecheck|lint)\b|\b(?:vite\s+build|tsc\b|build(?:s|ing)?|compile(?:s|d|ing)?|typecheck(?:s|ed|ing)?|lint(?:s|ed|ing)?)\b/i;
+
+export type PlannerPlanArtifactIntent =
+  | "none"
+  | "grounded_plan_generation"
+  | "edit_artifact"
+  | "implement_from_artifact";
 const REQUEST_TEST_VERIFICATION_RE =
   /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|coverage|vitest|jest)\b|\b(?:tests?|testing|smoke tests?|unit tests?|vitest|jest|pytest|mocha|ava|coverage)\b/i;
 const REQUEST_BROWSER_VERIFICATION_RE =
@@ -1776,7 +2017,7 @@ function normalizePlannerShellModeToken(token: string): string {
 }
 
 export function parsePlannerPlan(
-  content: string,
+  content: string | Record<string, unknown>,
   repairRequirements?: ExplicitSubagentOrchestrationRequirements,
   options: {
     readonly plannerWorkspaceRoot?: string;
@@ -1784,7 +2025,8 @@ export function parsePlannerPlan(
 ): PlannerParseResult {
   void options;
   const diagnostics: PlannerDiagnostic[] = [];
-  const parsed = parseJsonObjectFromText(content);
+  const parsed =
+    typeof content === "string" ? parseJsonObjectFromText(content) : content;
   if (!parsed) {
     diagnostics.push(
       createPlannerDiagnostic(
@@ -1810,7 +2052,10 @@ export function parsePlannerPlan(
   const unresolvedDependencies = new Map<string, readonly string[]>();
   const nameAliases = new Map<string, string>();
   const usedStepNames = new Set<string>();
-  const maxSteps = Math.min(MAX_PLANNER_STEPS, parsed.steps.length);
+  const maxSteps = resolvePlannerStepLimit(
+    0,
+    parsed.steps.length,
+  );
 
   for (const [index, rawStep] of parsed.steps.slice(0, maxSteps).entries()) {
     if (
@@ -3063,19 +3308,6 @@ export function validateExplicitDeterministicToolRequirements(
 }
 
 const PLANNER_BASH_TOOL_NAMES = new Set(["system.bash", "desktop.bash"]);
-const PLANNER_SHELL_WRAPPER_COMMANDS = new Set([
-  "bash",
-  "sh",
-  "zsh",
-  "dash",
-  "ksh",
-  "fish",
-  "csh",
-  "tcsh",
-]);
-const PLANNER_SHELL_WRAPPER_FLAG_RE = /^-[A-Za-z]*c[A-Za-z]*$/;
-const PLANNER_INLINE_SHELL_WRAPPER_RE =
-  /^(?:\S+\/)?(?:bash|sh|zsh|dash|ksh|fish|csh|tcsh)\s+-[A-Za-z]*c\b/i;
 const PLANNER_HEREDOC_RE = /<<-?\s*['"]?[A-Za-z0-9_-]+['"]?/;
 const PLANNER_INLINE_FILE_WRITE_RE =
   /\b(?:cat|tee)\b[\s\S]{0,96}(?:>\s*\S|>>\s*\S|<<-?\s*['"]?[A-Za-z0-9_-]+['"]?)|\b(?:echo|printf)\b[\s\S]{0,160}(?:>\s*\S|>>\s*\S)/i;
@@ -3113,11 +3345,17 @@ export function validatePlannerStepContracts(
 ): readonly PlannerDiagnostic[] {
   const diagnostics: PlannerDiagnostic[] = [];
 
-  if (typeof messageText === "string" && plannerRequestNeedsGroundedPlanArtifact(messageText)) {
-    diagnostics.push(...validatePlannerPlanArtifactSteps(plannerPlan));
-  }
-  if (typeof messageText === "string" && plannerRequestNeedsPlanArtifactExecution(messageText)) {
-    diagnostics.push(...validatePlannerPlanArtifactExecutionOwnership(plannerPlan));
+  if (typeof messageText === "string") {
+    const artifactIntent = classifyPlannerPlanArtifactIntent(messageText);
+    if (
+      artifactIntent === "grounded_plan_generation" ||
+      artifactIntent === "edit_artifact"
+    ) {
+      diagnostics.push(...validatePlannerPlanArtifactSteps(plannerPlan));
+    }
+    if (artifactIntent === "implement_from_artifact") {
+      diagnostics.push(...validatePlannerPlanArtifactExecutionOwnership(plannerPlan));
+    }
   }
 
   for (const step of plannerPlan.steps) {
@@ -3155,30 +3393,6 @@ export function validatePlannerStepContracts(
         );
         continue;
       }
-
-      const commandBase = commandBasename(command);
-      const firstArg = parsedArgs[0]?.trim() ?? "";
-      if (
-        (parsedArgs.length === 0 &&
-          PLANNER_INLINE_SHELL_WRAPPER_RE.test(command.trim())) ||
-        PLANNER_SHELL_WRAPPER_COMMANDS.has(commandBase) &&
-        PLANNER_SHELL_WRAPPER_FLAG_RE.test(firstArg)
-      ) {
-        diagnostics.push(
-          createPlannerDiagnostic(
-            "validation",
-            "planner_bash_nested_shell_forbidden",
-            `Planner bash step "${step.name}" uses forbidden nested shell wrapper invocation`,
-            {
-              stepName: step.name,
-              tool: step.tool,
-              command: commandBase,
-            },
-          ),
-        );
-        continue;
-      }
-
       const directModeShellTokens = collectDirectModeShellControlTokens(parsedArgs);
       if (directModeShellTokens.length > 0) {
         diagnostics.push(
@@ -3256,15 +3470,26 @@ export function validatePlannerStepContracts(
   return diagnostics;
 }
 
-function plannerRequestNeedsGroundedPlanArtifact(messageText: string): boolean {
+function extractPlannerArtifactTargets(messageText: string): readonly string[] {
   const normalized = messageText.trim();
   if (normalized.length === 0) {
-    return false;
+    return [];
   }
-  if (
-    !PLANNER_PLAN_ARTIFACT_REQUEST_RE.test(normalized) &&
-    !PLANNER_PLAN_ARTIFACT_FILE_RE.test(normalized)
-  ) {
+  PLANNER_PLAN_ARTIFACT_FILE_CAPTURE_RE.lastIndex = 0;
+  const targets = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = PLANNER_PLAN_ARTIFACT_FILE_CAPTURE_RE.exec(normalized)) !== null) {
+    const value = (match[0] ?? "").trim().toLowerCase();
+    if (value.length > 0) {
+      targets.add(value);
+    }
+  }
+  return [...targets];
+}
+
+function plannerRequestGroundedPlanArtifactIntent(messageText: string): boolean {
+  const normalized = messageText.trim();
+  if (normalized.length === 0) {
     return false;
   }
   const signals = collectPlannerRequestSignals(normalized, []);
@@ -3272,9 +3497,16 @@ function plannerRequestNeedsGroundedPlanArtifact(messageText: string): boolean {
     /\b(?:read|expand|turn|convert|rewrite|flesh\s+out|promote)\b[\s\S]{0,80}\b(?:into|to)\b[\s\S]{0,80}\b(?:complete|full|detailed)?\s*(?:implementation\s+)?plan\b/i.test(
       normalized,
     );
+  const hasGenerationCue =
+    PLANNER_PLAN_ARTIFACT_REQUEST_RE.test(normalized) ||
+    explicitPlanExpansionCue;
+  if (!hasGenerationCue) {
+    return false;
+  }
   return (
     (signals.hasImplementationScopeCue || explicitPlanExpansionCue) &&
     (
+      PLANNER_PLAN_ARTIFACT_FILE_RE.test(normalized) ||
       signals.hasDocumentationCue ||
       signals.hasMultiStepCue ||
       signals.longTask ||
@@ -3285,25 +3517,88 @@ function plannerRequestNeedsGroundedPlanArtifact(messageText: string): boolean {
   );
 }
 
-export function plannerRequestNeedsPlanArtifactExecution(messageText: string): boolean {
+export function classifyPlannerPlanArtifactIntent(
+  messageText: string,
+): PlannerPlanArtifactIntent {
   const normalized = messageText.trim();
   if (normalized.length === 0) {
-    return false;
+    return "none";
   }
+
+  if (plannerRequestGroundedPlanArtifactIntent(normalized)) {
+    return "grounded_plan_generation";
+  }
+
   if (!PLANNER_PLAN_ARTIFACT_FILE_RE.test(normalized)) {
-    return false;
-  }
-  if (!PLANNER_PLAN_ARTIFACT_EXECUTION_CUE_RE.test(normalized)) {
-    return false;
+    return "none";
   }
   const signals = collectPlannerRequestSignals(normalized, []);
+  const hasDirectArtifactEditCue =
+    /\b(?:todo(?:\.md)?|plan\.(?:md|txt|rst)|implementation[-_ ]plan(?:\.md)?|project[-_ ]plan(?:\.md)?|roadmap(?:\.md)?|checklist(?:\.md)?|spec(?:ification)?(?:\.md)?)\b[\s\S]{0,80}\b(?:update|rewrite|improve|perfect|polish|edit|revise|expand|flesh\s+out|address\s+gaps?|fix\s+gaps?|tighten|correct)\b/i.test(
+      normalized,
+    ) ||
+    /\b(?:update|rewrite|improve|perfect|polish|edit|revise|expand|flesh\s+out|address\s+gaps?|fix\s+gaps?|tighten|correct)\b[\s\S]{0,80}\b(?:todo(?:\.md)?|plan\.(?:md|txt|rst)|implementation[-_ ]plan(?:\.md)?|project[-_ ]plan(?:\.md)?|roadmap(?:\.md)?|checklist(?:\.md)?|spec(?:ification)?(?:\.md)?)\b/i.test(
+      normalized,
+    );
+  const hasImplementationFromArtifactCue =
+    PLANNER_PLAN_ARTIFACT_EXECUTION_CUE_RE.test(normalized) &&
+    (
+      PLANNER_PLAN_ARTIFACT_SOURCE_CUE_RE.test(normalized) ||
+      PLANNER_PLAN_ARTIFACT_PHASE_CUE_RE.test(normalized) ||
+      PLANNER_PLAN_ARTIFACT_IMPLEMENTATION_CUE_RE.test(normalized) ||
+      signals.hasImplementationScopeCue ||
+      signals.hasVerificationCue ||
+      signals.hasMultiStepCue ||
+      signals.longTask
+    );
+  const hasArtifactEditCue =
+    hasDirectArtifactEditCue ||
+    PLANNER_PLAN_ARTIFACT_EDIT_CUE_RE.test(normalized) ||
+    /\b(?:fill|add)\b[\s\S]{0,80}\b(?:gaps?|missing sections?|missing items?)\b/i.test(
+      normalized,
+    ) ||
+    /\b(?:make|keep)\b[\s\S]{0,80}\b(?:perfect|complete|consistent|correct)\b/i.test(
+      normalized,
+    );
+  if (hasArtifactEditCue) {
+    return "edit_artifact";
+  }
+  if (hasImplementationFromArtifactCue) {
+    return "implement_from_artifact";
+  }
+
+  return "none";
+}
+
+export function plannerRequestNeedsGroundedPlanArtifact(messageText: string): boolean {
   return (
-    PLANNER_PLAN_ARTIFACT_SOURCE_CUE_RE.test(normalized) ||
-    PLANNER_PLAN_ARTIFACT_PHASE_CUE_RE.test(normalized) ||
-    signals.hasImplementationScopeCue ||
-    signals.hasMultiStepCue ||
-    signals.longTask
+    classifyPlannerPlanArtifactIntent(messageText) ===
+    "grounded_plan_generation"
   );
+}
+
+export function plannerRequestNeedsPlanArtifactExecution(messageText: string): boolean {
+  return classifyPlannerPlanArtifactIntent(messageText) === "edit_artifact";
+}
+
+export function plannerRequestImplementsFromArtifact(
+  messageText: string,
+): boolean {
+  return (
+    classifyPlannerPlanArtifactIntent(messageText) ===
+    "implement_from_artifact"
+  );
+}
+
+function plannerArtifactTargetsOverlap(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  if (left.length === 0 || right.length === 0) {
+    return false;
+  }
+  const rightSet = new Set(right);
+  return left.some((target) => rightSet.has(target));
 }
 
 function isPlannerFileWriteStep(step: PlannerStepIntent): boolean {
@@ -3469,9 +3764,6 @@ export function buildPlannerStepContractRefinementHint(
 ): string {
   const fragments = diagnostics
     .map((diagnostic) => {
-      if (diagnostic.code === "planner_bash_nested_shell_forbidden") {
-        return "do not use `bash -c` or `sh -c` in deterministic bash steps";
-      }
       if (
         diagnostic.code === "planner_bash_shell_syntax_in_direct_args"
       ) {
@@ -4037,9 +4329,17 @@ export function buildPipelineDecompositionRefinementHint(
 export function buildPipelineFailureRepairRefinementHint(params: {
   readonly pipelineResult: PipelineResult;
   readonly plannerPlan: PlannerPlan;
+  readonly plannerToolCalls?: readonly ToolCallRecord[];
 }): string {
+  const failedPlannerCall = findRelevantFailedPlannerToolCall(
+    params.plannerToolCalls,
+  );
+  const failedPlannerCallHint = buildFailedPlannerCallHint(
+    failedPlannerCall,
+  );
   const failureSpecificRepairHint = buildFailureSpecificRepairHint(
     params.pipelineResult.error,
+    failedPlannerCall,
   );
   const unresolvedSteps = params.plannerPlan.steps
     .slice(Math.max(0, params.pipelineResult.completedSteps))
@@ -4055,6 +4355,7 @@ export function buildPipelineFailureRepairRefinementHint(params: {
       params.pipelineResult.error.trim().length > 0
       ? `failure details: ${truncateText(params.pipelineResult.error.trim(), 800)}`
       : "",
+    failedPlannerCallHint ?? "",
     failureSpecificRepairHint ?? "",
   ].filter((fragment) => fragment.length > 0);
   return (
@@ -4065,13 +4366,129 @@ export function buildPipelineFailureRepairRefinementHint(params: {
   );
 }
 
+function findRelevantFailedPlannerToolCall(
+  plannerToolCalls: readonly ToolCallRecord[] | undefined,
+): ToolCallRecord | undefined {
+  if (!plannerToolCalls || plannerToolCalls.length === 0) {
+    return undefined;
+  }
+  for (let index = plannerToolCalls.length - 1; index >= 0; index--) {
+    const candidate = plannerToolCalls[index];
+    if (candidate?.isError) {
+      return candidate;
+    }
+  }
+  return plannerToolCalls[plannerToolCalls.length - 1];
+}
+
+function buildFailedPlannerCallHint(
+  call: ToolCallRecord | undefined,
+): string | undefined {
+  if (!call) {
+    return undefined;
+  }
+  if (call.name === "system.bash" || call.name === "desktop.bash") {
+    const commandText = extractPlannerToolCommandText(call.args).trim();
+    const cwd = extractPlannerToolCwd(call.args);
+    if (commandText.length === 0 && !cwd) {
+      return undefined;
+    }
+    return (
+      `The failed deterministic shell command was \`${truncateText(commandText, 240)}\`` +
+      `${cwd ? ` with cwd \`${cwd}\`` : ""}.`
+    );
+  }
+  return `The failed deterministic tool was \`${call.name}\`.`;
+}
+
+function extractPlannerToolCommandText(args: Record<string, unknown>): string {
+  const parts: string[] = [];
+  if (typeof args.command === "string") {
+    parts.push(args.command);
+  }
+  if (Array.isArray(args.args)) {
+    for (const entry of args.args) {
+      if (typeof entry === "string") {
+        parts.push(entry);
+      }
+    }
+  }
+  return parts.join(" ");
+}
+
+function extractPlannerToolCwd(
+  args: Record<string, unknown>,
+): string | undefined {
+  return typeof args.cwd === "string" && args.cwd.trim().length > 0
+    ? args.cwd.trim()
+    : undefined;
+}
+
+function extractMissingNpmScriptNameFromError(
+  error: string,
+): string | undefined {
+  const match = error.match(/missing script:\s*["'`]?([^"'`\n]+)["'`]?/i);
+  const scriptName = match?.[1]?.trim();
+  return scriptName && scriptName.length > 0 ? scriptName : undefined;
+}
+
+function extractRequestedWorkspaceSelectorsFromToolCall(
+  call: ToolCallRecord | undefined,
+): string[] {
+  const rawArgs = Array.isArray(call?.args.args) ? call?.args.args : [];
+  const selectors: string[] = [];
+  for (let index = 0; index < rawArgs.length; index++) {
+    const value = rawArgs[index];
+    if (typeof value !== "string") {
+      continue;
+    }
+    if (value.startsWith("--workspace=")) {
+      const selector = value.slice("--workspace=".length).trim();
+      if (selector.length > 0) {
+        selectors.push(selector);
+      }
+      continue;
+    }
+    if (value === "--workspace") {
+      const next = rawArgs[index + 1];
+      if (typeof next === "string" && next.trim().length > 0) {
+        selectors.push(next.trim());
+      }
+    }
+  }
+  return [...new Set(selectors)];
+}
+
 function buildFailureSpecificRepairHint(
   error: string | undefined,
+  failedPlannerCall?: ToolCallRecord,
 ): string | undefined {
   if (typeof error !== "string" || error.trim().length === 0) {
     return undefined;
   }
   const normalized = error.toLowerCase();
+  const failingCwd = extractPlannerToolCwd(failedPlannerCall?.args ?? {});
+  const missingScriptName = extractMissingNpmScriptNameFromError(error);
+  if (missingScriptName) {
+    return (
+      `The current package.json${failingCwd ? ` at \`${failingCwd}\`` : ""} does not define the npm script \`${missingScriptName}\`. ` +
+      `Inspect that manifest${failingCwd ? " and any nested workspace package manifests created earlier" : ""}, then rerun the matching workspace/package-specific command or execute from the matching workspace cwd instead of retrying the same generic \`npm run ${missingScriptName}\`.`
+    );
+  }
+  if (normalized.includes("no workspaces found:")) {
+    const selectors = extractRequestedWorkspaceSelectorsFromToolCall(
+      failedPlannerCall,
+    );
+    const selectorSuffix =
+      selectors.length > 0
+        ? ` The rejected selectors were: ${selectors.map((value) => `\`${value}\``).join(", ")}.`
+        : "";
+    return (
+      "npm could not match one or more `--workspace` selectors in this repo." +
+      selectorSuffix +
+      " Inspect the root `package.json` workspaces and each package `name`, then rerun with the exact workspace package names or execute from the matching workspace cwd instead of collapsing back to a generic repo-root npm command."
+    );
+  }
   if (
     normalized.includes('unsupported url type "workspace:"') ||
     normalized.includes("eunsupportedprotocol")
@@ -4988,4 +5405,22 @@ export function didSubagentStepFail(result: string): boolean {
   } catch {
     return didToolCallFail(false, result);
   }
+}
+function resolvePlannerStepLimit(
+  plannerMaxTokens: number,
+  requestedStepCount?: number,
+): number {
+  if (!hasRuntimeLimit(plannerMaxTokens) && !hasRuntimeLimit(MAX_PLANNER_STEPS)) {
+    return requestedStepCount ?? Number.POSITIVE_INFINITY;
+  }
+  const tokenDerivedLimit = hasRuntimeLimit(plannerMaxTokens)
+    ? Math.max(1, Math.floor(plannerMaxTokens / 8))
+    : Number.POSITIVE_INFINITY;
+  const hardLimit = hasRuntimeLimit(MAX_PLANNER_STEPS)
+    ? MAX_PLANNER_STEPS
+    : Number.POSITIVE_INFINITY;
+  const resolved = Math.min(tokenDerivedLimit, hardLimit);
+  return requestedStepCount === undefined
+    ? resolved
+    : Math.min(resolved, requestedStepCount);
 }

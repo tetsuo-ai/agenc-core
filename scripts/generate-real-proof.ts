@@ -15,7 +15,7 @@
  *   - A remote prover endpoint exposed via AGENC_PROVER_ENDPOINT
  *
  * Usage:
- *   npx tsx scripts/generate-real-proof.ts
+ *   npx tsx scripts/generate-real-proof.ts --program-id <PROGRAM_ID> --prover-endpoint <URL>
  *
  * Output:
  *   tests/fixtures/real-groth16-proof.json
@@ -25,9 +25,8 @@ import { Keypair, PublicKey } from "@solana/web3.js";
 import { createHash } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
+import { parseGenerateRealProofArgs } from "./generate-real-proof-cli.js";
 
-// SDK constants
-const PROGRAM_ID = new PublicKey("6UcJzbTEemBz3aY5wK5qKHGMD7bdRsmR4smND29gB2ab");
 const FIELD_MODULUS = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 const FIXTURE_AGENT_SECRET_DOMAIN_TAG = Buffer.from(
   "AGENC_E2E_FIXTURE_AGENT_SECRET",
@@ -113,19 +112,24 @@ async function callRemoteProver(input: {
   output: number[][];
   salt: number[];
   agent_secret: number[];
+}, options: {
+  endpoint: string;
+  timeoutMs?: number;
+  headers: Record<string, string>;
 }): Promise<{ seal_bytes: number[]; journal: number[]; image_id: number[] }> {
-  const endpoint = process.env.AGENC_PROVER_ENDPOINT;
-  if (!endpoint) {
-    throw new Error("AGENC_PROVER_ENDPOINT is required");
-  }
-
-  const url = endpoint.endsWith("/prove")
-    ? endpoint
-    : `${endpoint.replace(/\/+$/, "")}/prove`;
+  const url = options.endpoint.endsWith("/prove")
+    ? options.endpoint
+    : `${options.endpoint.replace(/\/+$/, "")}/prove`;
 
   const response = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+    signal: options.timeoutMs
+      ? AbortSignal.timeout(options.timeoutMs)
+      : undefined,
     body: JSON.stringify(input),
   });
   if (!response.ok) {
@@ -140,7 +144,12 @@ async function callRemoteProver(input: {
 }
 
 async function main() {
+  const options = parseGenerateRealProofArgs(process.argv.slice(2));
+  const programId = new PublicKey(options.programId);
+
   console.log("=== Generating Real Groth16 Proof Fixture ===\n");
+  console.log("Program ID:", programId.toBase58());
+  console.log("Fixture path:", options.fixturePath);
 
   // 1. Create deterministic keypairs
   const creatorSeed = deterministicSeed("agenc-e2e-creator");
@@ -162,7 +171,7 @@ async function main() {
   taskIdBytes.writeUInt32LE(taskId, 0);
   const [taskPda] = PublicKey.findProgramAddressSync(
     [Buffer.from("task"), creator.publicKey.toBuffer(), taskIdBytes],
-    PROGRAM_ID,
+    programId,
   );
   console.log("Task PDA:", taskPda.toBase58());
 
@@ -170,7 +179,7 @@ async function main() {
   const workerAgentId = Buffer.from("e2e-worker-agent\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
   const [workerAgentPda] = PublicKey.findProgramAddressSync(
     [Buffer.from("agent"), workerAgentId],
-    PROGRAM_ID,
+    programId,
   );
   console.log("Worker Agent PDA:", workerAgentPda.toBase58());
 
@@ -202,7 +211,11 @@ async function main() {
   // 6. Generate proof
   console.log("\nGenerating Groth16 proof...");
   const startTime = Date.now();
-  const result = await callRemoteProver(proverInput);
+  const result = await callRemoteProver(proverInput, {
+    endpoint: options.proverEndpoint,
+    timeoutMs: options.proverTimeoutMs,
+    headers: options.proverHeaders,
+  });
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log(`\nProof generated in ${elapsed}s`);
 
@@ -227,6 +240,7 @@ async function main() {
   const fixture = {
     _comment:
       "Real RISC Zero Groth16 proof fixture for E2E testing. Test-only fixture; do not use its witness pattern in production.",
+    programId: programId.toBase58(),
     sealBytes: result.seal_bytes,
     journal: result.journal,
     imageId: result.image_id,
@@ -241,9 +255,9 @@ async function main() {
   };
 
   // 9. Write fixture
-  const fixturePath = path.resolve(__dirname, "..", "tests", "fixtures", "real-groth16-proof.json");
-  fs.writeFileSync(fixturePath, JSON.stringify(fixture, null, 2) + "\n");
-  console.log(`\nFixture written to: ${fixturePath}`);
+  fs.mkdirSync(path.dirname(options.fixturePath), { recursive: true });
+  fs.writeFileSync(options.fixturePath, JSON.stringify(fixture, null, 2) + "\n");
+  console.log(`\nFixture written to: ${options.fixturePath}`);
   console.log(`  seal_bytes: ${result.seal_bytes.length} bytes`);
   console.log(`  journal: ${result.journal.length} bytes`);
   console.log(`  imageId: ${result.image_id.length} bytes`);

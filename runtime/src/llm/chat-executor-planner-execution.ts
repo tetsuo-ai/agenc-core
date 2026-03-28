@@ -24,6 +24,7 @@ import {
   mapPlannerStepsToPipelineSteps,
   validateSalvagedPlannerToolPlan,
   buildPlannerMessages,
+  buildPlannerStructuredOutputRequest,
   buildPlannerExecutionContext,
   buildPlannerVerificationRequirementsFailureMessage,
   buildPlannerVerificationRequirementsRefinementHint,
@@ -51,7 +52,8 @@ import {
   buildExplicitSubagentOrchestrationFailureMessage,
   extractRecoverablePlannerParseDiagnostics,
   isHighRiskSubagentPlan,
-  plannerRequestNeedsPlanArtifactExecution,
+  plannerRequestImplementsFromArtifact,
+  pipelineResultToToolCalls,
 } from "./chat-executor-planner.js";
 import { normalizePlannerResponse } from "./chat-executor-planner-normalization.js";
 import {
@@ -81,6 +83,9 @@ import type {
   ResolvedSubagentVerifierConfig,
   ChatCallUsageRecord,
 } from "./chat-executor-types.js";
+import {
+  isRuntimeLimitExceeded,
+} from "./runtime-limit-policy.js";
 import type { LLMPipelineStopReason } from "./policy.js";
 import type { LLMResponse } from "./types.js";
 import {
@@ -142,6 +147,7 @@ export interface PlannerExecutionCallbacks {
       routedToolNames?: readonly string[];
       persistRoutedToolNames?: boolean;
       toolChoice?: import("./types.js").LLMToolChoice;
+      structuredOutput?: import("./types.js").LLMStructuredOutputRequest;
       preparationDiagnostics?: Record<string, unknown>;
       allowRecallBudgetBypass?: boolean;
       budgetReason: string;
@@ -513,6 +519,7 @@ export async function executePlannerPath(
       ...(explicitPlannerToolNames
         ? { routedToolNames: explicitPlannerToolNames }
         : {}),
+      structuredOutput: buildPlannerStructuredOutputRequest(),
       budgetReason:
         "Planner pass blocked by max model recalls per request budget",
     });
@@ -529,6 +536,7 @@ export async function executePlannerPath(
     const plannerParse = normalizePlannerResponse({
       content: plannerResponse.content,
       toolCalls: plannerResponse.toolCalls,
+      structuredOutput: plannerResponse.structuredOutput,
       repairRequirements: explicitOrchestrationRequirements,
       plannerWorkspaceRoot,
     });
@@ -1166,7 +1174,7 @@ export async function executePlannerPath(
       );
     ctx.plannerImplementationFallbackBlocked =
       plannerImplementationFallbackBlocked;
-    const planArtifactExecutionRequest = plannerRequestNeedsPlanArtifactExecution(
+    const planArtifactExecutionRequest = plannerRequestImplementsFromArtifact(
       ctx.messageText,
     );
     const delegationVetoReason = delegationDecision?.reason;
@@ -1221,7 +1229,7 @@ export async function executePlannerPath(
       ctx.plannerSummaryState.routeReason !==
         "planner_explicit_tool_requirements_unmet"
     ) {
-      if (deterministicSteps.length > ctx.effectiveToolBudget) {
+      if (isRuntimeLimitExceeded(deterministicSteps.length, ctx.effectiveToolBudget)) {
         callbacks.setStopReason(
           ctx,
           "budget_exceeded",
@@ -1464,9 +1472,14 @@ export async function executePlannerPath(
         if (runtimeRepairFailureSignature) {
           seenRuntimeRepairFailureSignatures.add(runtimeRepairFailureSignature);
         }
+        const plannerToolCalls = pipelineResultToToolCalls(
+          plannerPlan.steps,
+          pipelineResult,
+        );
         refinementHint = buildPipelineFailureRepairRefinementHint({
           pipelineResult,
           plannerPlan,
+          plannerToolCalls,
         });
         ctx.plannerSummaryState.diagnostics.push({
           category: "policy",
@@ -1546,6 +1559,9 @@ export async function executePlannerPath(
       }
 
       if (pipelineResult) {
+        ctx.completedRequestMilestoneIds = Object.keys(
+          pipelineResult.context.results,
+        );
         if (pipelineResult.status === "failed") {
           const hintedStopReason = isPipelineStopReasonHint(
             pipelineResult.stopReasonHint,
@@ -1575,7 +1591,7 @@ export async function executePlannerPath(
         );
       }
 
-      if (ctx.failedToolCalls > ctx.effectiveFailureBudget) {
+      if (isRuntimeLimitExceeded(ctx.failedToolCalls, ctx.effectiveFailureBudget)) {
         callbacks.setStopReason(
           ctx,
           "tool_error",
@@ -1716,10 +1732,7 @@ export async function executePlannerPath(
             );
           }
         } catch (error) {
-          if (
-            pipelineResult.status === "completed" &&
-            stopReasonBeforeSynthesis === "completed"
-          ) {
+          if (pipelineResult.status === "completed") {
             const failureDetail =
               typeof (error as { stopReasonDetail?: unknown })?.stopReasonDetail === "string"
                 ? String((error as { stopReasonDetail: string }).stopReasonDetail)

@@ -1,6 +1,10 @@
 import type { LLMPipelineStopReason } from "../llm/policy.js";
 import type { DelegationOutputValidationCode } from "../utils/delegation-validation.js";
 import type { ImplementationCompletionContract } from "./completion-contract.js";
+import {
+  resolveWorkflowRequestCompletionStatus,
+  type WorkflowRequestMilestone,
+} from "./request-completion.js";
 import type { WorkflowCompletionState } from "./completion-state.js";
 import {
   deriveVerificationObligations,
@@ -11,7 +15,8 @@ export type WorkflowProgressRequirement =
   | "workflow_verifier_pass"
   | "build_verification"
   | "behavior_verification"
-  | "review_verification";
+  | "review_verification"
+  | "request_milestones";
 
 export interface WorkflowProgressEvidence {
   readonly requirement:
@@ -32,6 +37,9 @@ export interface WorkflowProgressSnapshot {
   readonly requiredRequirements: readonly WorkflowProgressRequirement[];
   readonly satisfiedRequirements: readonly WorkflowProgressRequirement[];
   readonly remainingRequirements: readonly WorkflowProgressRequirement[];
+  readonly requiredMilestones?: readonly WorkflowRequestMilestone[];
+  readonly satisfiedMilestoneIds?: readonly string[];
+  readonly remainingMilestones?: readonly WorkflowRequestMilestone[];
   readonly reusableEvidence: readonly WorkflowProgressEvidence[];
   readonly updatedAt: number;
 }
@@ -60,6 +68,7 @@ export function deriveWorkflowProgressSnapshot(params: {
   readonly toolCalls: readonly CompletionProgressToolCall[];
   readonly verificationContract?: WorkflowVerificationContract;
   readonly completionContract?: ImplementationCompletionContract;
+  readonly completedRequestMilestoneIds?: readonly string[];
   readonly updatedAt: number;
 }): WorkflowProgressSnapshot | undefined {
   const mergedContract = mergeVerificationContract({
@@ -81,6 +90,13 @@ export function deriveWorkflowProgressSnapshot(params: {
   }
   if (params.completionState === "needs_verification") {
     requiredRequirements.add("workflow_verifier_pass");
+  }
+  const requestCompletion = resolveWorkflowRequestCompletionStatus({
+    contract: mergedContract?.requestCompletion,
+    completedMilestoneIds: params.completedRequestMilestoneIds,
+  });
+  if (requestCompletion) {
+    requiredRequirements.add("request_milestones");
   }
 
   const reusableEvidence: WorkflowProgressEvidence[] = [];
@@ -105,6 +121,9 @@ export function deriveWorkflowProgressSnapshot(params: {
   if (params.completionState === "completed") {
     satisfiedRequirements.add("workflow_verifier_pass");
   }
+  if (requestCompletion && requestCompletion.remainingMilestones.length === 0) {
+    satisfiedRequirements.add("request_milestones");
+  }
 
   const remainingRequirements = [...requiredRequirements].filter(
     (requirement) => !satisfiedRequirements.has(requirement),
@@ -127,6 +146,13 @@ export function deriveWorkflowProgressSnapshot(params: {
     requiredRequirements: [...requiredRequirements],
     satisfiedRequirements: [...satisfiedRequirements],
     remainingRequirements,
+    ...(requestCompletion
+      ? {
+        requiredMilestones: requestCompletion.requiredMilestones,
+        satisfiedMilestoneIds: requestCompletion.satisfiedMilestoneIds,
+        remainingMilestones: requestCompletion.remainingMilestones,
+      }
+      : {}),
     reusableEvidence,
     updatedAt: params.updatedAt,
   };
@@ -165,6 +191,19 @@ export function mergeWorkflowProgressSnapshots(params: {
   const remainingRequirements = [...requiredRequirements].filter(
     (requirement) => !satisfiedRequirements.has(requirement),
   );
+  const requiredMilestones = mergeMilestoneLists(
+    prior?.requiredMilestones,
+    next.requiredMilestones,
+  );
+  const satisfiedMilestoneIds = [
+    ...new Set([
+      ...(prior?.satisfiedMilestoneIds ?? []),
+      ...(next.satisfiedMilestoneIds ?? []),
+    ]),
+  ];
+  const remainingMilestones = requiredMilestones.filter((milestone) =>
+    !satisfiedMilestoneIds.includes(milestone.id)
+  );
   const completionState = resolveMergedCompletionState({
     previous: prior,
     next,
@@ -183,6 +222,13 @@ export function mergeWorkflowProgressSnapshots(params: {
     requiredRequirements: [...requiredRequirements],
     satisfiedRequirements: [...satisfiedRequirements],
     remainingRequirements,
+    ...(requiredMilestones.length > 0
+      ? {
+        requiredMilestones,
+        satisfiedMilestoneIds,
+        remainingMilestones,
+      }
+      : {}),
     reusableEvidence: [...evidenceMap.values()].sort(
       (left, right) => left.observedAt - right.observedAt,
     ),
@@ -257,6 +303,20 @@ function buildProgressContractSignature(
     verificationContract: snapshot.verificationContract,
     completionContract: snapshot.completionContract,
   });
+}
+
+function mergeMilestoneLists(
+  previous: readonly WorkflowRequestMilestone[] | undefined,
+  next: readonly WorkflowRequestMilestone[] | undefined,
+): WorkflowRequestMilestone[] {
+  const merged = new Map<string, WorkflowRequestMilestone>();
+  for (const milestone of [...(previous ?? []), ...(next ?? [])]) {
+    if (typeof milestone.id !== "string" || milestone.id.trim().length === 0) {
+      continue;
+    }
+    merged.set(milestone.id, milestone);
+  }
+  return [...merged.values()];
 }
 
 function resolveMergedCompletionState(params: {

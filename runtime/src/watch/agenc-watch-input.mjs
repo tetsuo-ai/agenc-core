@@ -143,6 +143,26 @@ export function createWatchInputController(dependencies = {}) {
     scheduleRender();
   }
 
+  function consumeUnknownEscapeSequence(input, index) {
+    const rest = String(input ?? "").slice(index);
+    if (!rest.startsWith("\x1b")) {
+      return index + 1;
+    }
+    if (rest.length === 1) {
+      return index + 1;
+    }
+    if (rest[1] !== "[") {
+      return index + 2;
+    }
+    for (let cursor = index + 2; cursor < input.length; cursor += 1) {
+      const code = input.charCodeAt(cursor);
+      if (code >= 0x40 && code <= 0x7e) {
+        return cursor + 1;
+      }
+    }
+    return input.length;
+  }
+
   function handleTerminalEscapeSequence(input, index) {
     const rest = input.slice(index);
     const sequenceTable = [
@@ -182,14 +202,18 @@ export function createWatchInputController(dependencies = {}) {
       }
     }
 
-    if (watchState.expandedEventId) {
-      watchState.expandedEventId = null;
-      watchState.detailScrollOffset = 0;
-      setTransientStatus("detail closed");
-    } else if (typeof cancelActiveChat === "function") {
-      cancelActiveChat();
+    if (rest === "\x1b") {
+      if (watchState.expandedEventId) {
+        watchState.expandedEventId = null;
+        watchState.detailScrollOffset = 0;
+        setTransientStatus("detail closed");
+      } else if (typeof cancelActiveChat === "function") {
+        cancelActiveChat();
+      }
+      return index + 1;
     }
-    return index + 1;
+
+    return consumeUnknownEscapeSequence(input, index);
   }
 
   function handleTerminalInput(input) {

@@ -27,6 +27,7 @@ import type { SubagentFailureClass, SubagentRetryRule } from "./subagent-orchest
 import {
   DEFAULT_TOOL_BUDGET_PER_REQUEST,
 } from "../llm/chat-executor-constants.js";
+import { normalizeRuntimeLimit } from "../llm/runtime-limit-policy.js";
 import {
   isConcreteExecutableEnvelopeRoot,
   normalizeWorkspaceRoot,
@@ -48,9 +49,13 @@ const MODEL_AUTHORED_INVALID_ROOT_ATTEMPT_RE =
 /* ------------------------------------------------------------------ */
 
 const DEFAULT_PLANNED_SUBAGENT_TOOL_BUDGET = DEFAULT_TOOL_BUDGET_PER_REQUEST;
-const MAX_PLANNED_SUBAGENT_TOOL_BUDGET = DEFAULT_TOOL_BUDGET_PER_REQUEST;
 const PLANNED_SUBAGENT_TOOL_BUDGET_MS_PER_CALL = 7_500;
 const BUDGET_EXCEEDED_RETRY_TOOL_BUDGET_MULTIPLIER = 1.5;
+const CONTRACT_CLAUSE_SPLIT_RE = /\bthen\b|;|\n|,(?=\s*(?:and\b|[A-Za-z0-9_`"'/-]))/iu;
+const OBSERVATION_CAPABILITY_RE =
+  /\b(?:bash|browse|command|execute|find|grep|inspect|list|read|search|shell|stat|trace)\b/i;
+const MUTATION_CAPABILITY_RE =
+  /\b(?:append|delete|edit|mkdir|modify|patch|save|scaffold|write)\b/i;
 
 /* ------------------------------------------------------------------ */
 /*  Budget hint & tool budget resolution                               */
@@ -69,7 +74,14 @@ export function parseBudgetHintMs(
 export function resolveSubagentToolBudgetPerRequest(params: {
   readonly timeoutMs: number;
   readonly priorFailureClass?: SubagentFailureClass;
+  readonly step?: PipelinePlannerSubagentStep;
 }): number {
+  if (DEFAULT_PLANNED_SUBAGENT_TOOL_BUDGET <= 0) {
+    return DEFAULT_PLANNED_SUBAGENT_TOOL_BUDGET;
+  }
+  if (params.timeoutMs <= 0) {
+    return DEFAULT_TOOL_BUDGET_PER_REQUEST;
+  }
   const baseBudget = Math.max(
     DEFAULT_PLANNED_SUBAGENT_TOOL_BUDGET,
     Math.ceil(params.timeoutMs / PLANNED_SUBAGENT_TOOL_BUDGET_MS_PER_CALL),
@@ -80,7 +92,88 @@ export function resolveSubagentToolBudgetPerRequest(params: {
           baseBudget * BUDGET_EXCEEDED_RETRY_TOOL_BUDGET_MULTIPLIER,
         )
       : baseBudget;
-  return Math.min(MAX_PLANNED_SUBAGENT_TOOL_BUDGET, boostedBudget);
+  const contractFloor =
+    params.step
+      ? estimateContractShapedToolBudgetFloor(params.step)
+      : DEFAULT_TOOL_BUDGET_PER_REQUEST;
+  return normalizeRuntimeLimit(
+    Math.max(boostedBudget, contractFloor),
+    DEFAULT_TOOL_BUDGET_PER_REQUEST,
+  );
+}
+
+function collectUniqueExecutionArtifacts(
+  step: PipelinePlannerSubagentStep,
+): readonly string[] {
+  const context = step.executionContext;
+  return [
+    ...(context?.requiredSourceArtifacts ?? []),
+    ...(context?.inputArtifacts ?? []),
+    ...(context?.targetArtifacts ?? []),
+  ].filter((artifact, index, artifacts) => artifacts.indexOf(artifact) === index);
+}
+
+function countContractClauses(step: PipelinePlannerSubagentStep): number {
+  const segments = [
+    step.objective,
+    step.inputContract,
+    ...step.acceptanceCriteria,
+  ]
+    .flatMap((value) => value.split(CONTRACT_CLAUSE_SPLIT_RE))
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+  return segments.length;
+}
+
+export function estimateContractShapedToolBudgetFloor(
+  step: PipelinePlannerSubagentStep,
+): number {
+  const capabilities = step.requiredToolCapabilities.map((capability) =>
+    capability.trim().toLowerCase()
+  );
+  const hasObservationCapability = capabilities.some((capability) =>
+    OBSERVATION_CAPABILITY_RE.test(capability)
+  );
+  const hasMutationCapability = capabilities.some((capability) =>
+    MUTATION_CAPABILITY_RE.test(capability)
+  );
+  const artifacts = collectUniqueExecutionArtifacts(step);
+  const verificationMode = step.executionContext?.verificationMode;
+  const clauseCount = countContractClauses(step);
+  let budgetFloor = 1;
+
+  if (artifacts.length > 0) {
+    budgetFloor = Math.max(
+      budgetFloor,
+      Math.min(8, artifacts.length),
+    );
+  }
+  if (step.acceptanceCriteria.length > 0) {
+    budgetFloor = Math.max(
+      budgetFloor,
+      Math.min(8, step.acceptanceCriteria.length),
+    );
+  }
+  if (clauseCount > 0) {
+    budgetFloor = Math.max(
+      budgetFloor,
+      Math.min(8, clauseCount),
+    );
+  }
+  if (verificationMode === "deterministic_followup") {
+    budgetFloor += 1;
+  }
+  if (
+    hasMutationCapability &&
+    (step.executionContext?.targetArtifacts?.length ?? 0) > 0
+  ) {
+    budgetFloor += 1;
+  }
+  if (hasObservationCapability && !hasMutationCapability) {
+    budgetFloor = Math.max(budgetFloor, Math.min(6, Math.max(2, clauseCount)));
+  }
+
+  return Math.min(12, Math.max(1, budgetFloor));
 }
 
 /* ------------------------------------------------------------------ */

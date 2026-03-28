@@ -35,6 +35,10 @@ import type {
 import {
   DEFAULT_SUBAGENT_VERIFIER_MAX_ROUNDS,
 } from "../llm/chat-executor-constants.js";
+import {
+  hasRuntimeLimit,
+  normalizeRuntimeLimit,
+} from "../llm/runtime-limit-policy.js";
 import type {
   SubAgentLifecycleEmitter,
 } from "./delegation-runtime.js";
@@ -325,7 +329,10 @@ class RequestTreeBudgetTracker {
       };
     }
     const projected = this.spawnedChildren + this.reservedSpawns + 1;
-    if (projected > this.maxTotalSubagentsPerRequest) {
+    if (
+      hasRuntimeLimit(this.maxTotalSubagentsPerRequest) &&
+      projected > this.maxTotalSubagentsPerRequest
+    ) {
       this.circuitBreakerReason =
         `max spawned children per request exceeded (${this.maxTotalSubagentsPerRequest})`;
       return {
@@ -473,38 +480,29 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
       25,
       Math.floor(config.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS),
     );
-    this.defaultSubagentTimeoutMs = Math.max(
-      1_000,
-      Math.floor(config.defaultSubagentTimeoutMs ?? DEFAULT_SUBAGENT_TIMEOUT_MS),
+    this.defaultSubagentTimeoutMs = normalizeRuntimeLimit(
+      config.defaultSubagentTimeoutMs,
+      DEFAULT_SUBAGENT_TIMEOUT_MS,
     );
-    this.maxDepth = Math.max(
-      1,
-      Math.floor(config.maxDepth ?? DEFAULT_MAX_SUBAGENT_DEPTH),
+    this.maxDepth = normalizeRuntimeLimit(
+      config.maxDepth,
+      DEFAULT_MAX_SUBAGENT_DEPTH,
     );
-    this.maxFanoutPerTurn = Math.max(
-      1,
-      Math.floor(config.maxFanoutPerTurn ?? DEFAULT_MAX_SUBAGENT_FANOUT_PER_TURN),
+    this.maxFanoutPerTurn = normalizeRuntimeLimit(
+      config.maxFanoutPerTurn,
+      DEFAULT_MAX_SUBAGENT_FANOUT_PER_TURN,
     );
-    this.maxTotalSubagentsPerRequest = Math.max(
-      1,
-      Math.floor(
-        config.maxTotalSubagentsPerRequest ??
-          DEFAULT_MAX_TOTAL_SUBAGENTS_PER_REQUEST,
-      ),
+    this.maxTotalSubagentsPerRequest = normalizeRuntimeLimit(
+      config.maxTotalSubagentsPerRequest,
+      DEFAULT_MAX_TOTAL_SUBAGENTS_PER_REQUEST,
     );
-    this.maxCumulativeToolCallsPerRequestTree = Math.max(
-      1,
-      Math.floor(
-        config.maxCumulativeToolCallsPerRequestTree ??
-          DEFAULT_MAX_CUMULATIVE_TOOL_CALLS_PER_REQUEST_TREE,
-      ),
+    this.maxCumulativeToolCallsPerRequestTree = normalizeRuntimeLimit(
+      config.maxCumulativeToolCallsPerRequestTree,
+      DEFAULT_MAX_CUMULATIVE_TOOL_CALLS_PER_REQUEST_TREE,
     );
-    this.maxCumulativeTokensPerRequestTree = Math.max(
-      0,
-      Math.floor(
-        config.maxCumulativeTokensPerRequestTree ??
-          DEFAULT_MAX_CUMULATIVE_TOKENS_PER_REQUEST_TREE,
-      ),
+    this.maxCumulativeTokensPerRequestTree = normalizeRuntimeLimit(
+      config.maxCumulativeTokensPerRequestTree,
+      DEFAULT_MAX_CUMULATIVE_TOKENS_PER_REQUEST_TREE,
     );
     this.maxCumulativeTokensPerRequestTreeExplicitlyConfigured =
       config.maxCumulativeTokensPerRequestTreeExplicitlyConfigured === true;
@@ -603,7 +601,10 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
         step.stepType === "subagent_task",
     );
     if (subagentSteps.length === 0) return null;
-    if (subagentSteps.length > this.maxFanoutPerTurn) {
+    if (
+      hasRuntimeLimit(this.maxFanoutPerTurn) &&
+      subagentSteps.length > this.maxFanoutPerTurn
+    ) {
       return (
         `Planner emitted ${subagentSteps.length} subagent tasks but maxFanoutPerTurn ` +
         `is ${this.maxFanoutPerTurn}`
@@ -894,7 +895,7 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
       };
     }
 
-    const timeoutMs = parseBudgetHintMsFn(
+    const budgetHintTimeoutMs = parseBudgetHintMsFn(
       preparedStep.maxBudgetHint,
       this.defaultSubagentTimeoutMs,
     );
@@ -1027,10 +1028,11 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
         parentSessionId,
         parentRequest: pipeline.plannerContext?.parentRequest,
         lastValidationCode: lastFailure?.validationCode,
-        timeoutMs,
+        timeoutMs: 0,
         toolBudgetPerRequest: resolveSubagentToolBudgetPerRequestFn({
-          timeoutMs,
+          timeoutMs: budgetHintTimeoutMs,
           priorFailureClass: lastFailure?.failureClass,
+          step: preparedStep,
         }),
         taskPrompt,
         diagnostics: subagentTask.diagnostics,
@@ -1086,7 +1088,7 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
           ),
           fanout: Math.max(1, subagentStepCount),
           tools: toolScope.allowedTools,
-          timeoutMs,
+          timeoutMs: 0,
           delegated: true,
           strategyArmId: "balanced",
           qualityProxy: 0.9,
@@ -1128,7 +1130,7 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
             ),
             fanout: Math.max(1, subagentStepCount),
             tools: toolScope.allowedTools,
-            timeoutMs,
+            timeoutMs: 0,
             delegated: true,
             strategyArmId: "balanced",
             qualityProxy: 0.2,
@@ -1229,12 +1231,12 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
             ),
             fanout: Math.max(1, subagentStepCount),
             tools: toolScope.allowedTools,
-            timeoutMs,
+            timeoutMs: 0,
             delegated: true,
             strategyArmId: "balanced",
             qualityProxy: 0.1,
             tokenCost: lastFailure.tokenUsage?.totalTokens ?? 0,
-            latencyMs: lastFailure.durationMs ?? timeoutMs,
+            latencyMs: lastFailure.durationMs ?? budgetHintTimeoutMs,
             errorCount: 1,
             errorClass: "budget_exceeded",
             metadata: {
@@ -1296,12 +1298,12 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
         ),
         fanout: Math.max(1, subagentStepCount),
         tools: toolScope.allowedTools,
-        timeoutMs,
+        timeoutMs: 0,
         delegated: true,
         strategyArmId: "balanced",
         qualityProxy: shouldRetry ? 0.3 : 0.15,
         tokenCost: lastFailure.tokenUsage?.totalTokens ?? 0,
-        latencyMs: lastFailure.durationMs ?? timeoutMs,
+        latencyMs: lastFailure.durationMs ?? budgetHintTimeoutMs,
         errorCount: 1,
         errorClass: lastFailure.failureClass,
         metadata: {

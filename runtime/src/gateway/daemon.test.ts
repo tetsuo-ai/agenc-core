@@ -245,7 +245,7 @@ describe("isCommandUnavailableError", () => {
 });
 
 describe("resolveSessionTokenBudget", () => {
-  it("uses 60% of huge context windows as the session budget", () => {
+  it("defaults to unlimited when no explicit session token budget is configured", () => {
     expect(
       resolveSessionTokenBudget(
         {
@@ -254,10 +254,10 @@ describe("resolveSessionTokenBudget", () => {
         } as any,
         2_000_000,
       ),
-    ).toBe(1_200_000);
+    ).toBe(0);
   });
 
-  it("floors small context windows at the default budget minimum", () => {
+  it("keeps smaller context windows unlimited by default as well", () => {
     expect(
       resolveSessionTokenBudget(
         {
@@ -266,20 +266,20 @@ describe("resolveSessionTokenBudget", () => {
         } as any,
         64_000,
       ),
-    ).toBe(120_000);
+    ).toBe(0);
   });
 });
 
 describe("resolveBashToolTimeoutConfig", () => {
-  it("caps desktop bash timeout to the chat tool timeout budget", () => {
+  it("uses the desktop bash defaults when no llm tool timeout is configured", () => {
     expect(
       resolveBashToolTimeoutConfig({
         desktop: { enabled: true },
         llm: {},
       } as any),
     ).toEqual({
-      timeoutMs: 180_000,
-      maxTimeoutMs: 180_000,
+      timeoutMs: 300_000,
+      maxTimeoutMs: 600_000,
     });
   });
 
@@ -378,7 +378,7 @@ describe("resolveProviderExecutionBudget", () => {
         hardMaxPromptChars: 64_000,
       }),
     );
-    expect(resolved.sessionTokenBudget).toBe(153_600);
+    expect(resolved.sessionTokenBudget).toBe(0);
   });
 });
 
@@ -3311,6 +3311,64 @@ describe("DaemonManager", () => {
     expect(genericDecision?.routedToolNames).not.toContain("web_search");
   });
 
+  it("augments tool routing with xAI-native x_search, file_search, code_interpreter, and remote MCP tools", () => {
+    const dm = new DaemonManager({ configPath: "/tmp/config.json" });
+    (dm as any)._toolRouter = new ToolRouter([
+      {
+        type: "function",
+        function: {
+          name: "desktop.bash",
+          description: "run commands",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+    ]);
+
+    (dm as any)._primaryLlmConfig = {
+      provider: "grok",
+      model: "grok-4-1-fast-reasoning",
+      xSearch: true,
+      codeExecution: true,
+      collectionsSearch: {
+        enabled: true,
+        vectorStoreIds: ["collection-123"],
+      },
+      remoteMcp: {
+        enabled: true,
+        servers: [
+          {
+            serverUrl: "https://mcp.deepwiki.com/mcp",
+            serverLabel: "deepwiki",
+            serverDescription: "DeepWiki repository and documentation explorer",
+            allowedTools: ["search_docs"],
+          },
+        ],
+      },
+    };
+
+    const xDecision = (dm as any).buildToolRoutingDecision(
+      "s-x-search",
+      "What are people saying about xAI on X right now?",
+      [],
+    );
+    const fileAndCodeDecision = (dm as any).buildToolRoutingDecision(
+      "s-file-code",
+      "Using the uploaded knowledge base, calculate totals from the internal documents and show your working.",
+      [],
+    );
+    const remoteMcpDecision = (dm as any).buildToolRoutingDecision(
+      "s-remote-mcp",
+      "Use DeepWiki to search docs for the repository adapter behavior.",
+      [],
+    );
+
+    expect(xDecision?.routedToolNames).toContain("x_search");
+    expect(fileAndCodeDecision?.routedToolNames).toEqual(
+      expect.arrayContaining(["file_search", "code_interpreter"]),
+    );
+    expect(remoteMcpDecision?.routedToolNames).toContain("mcp:deepwiki");
+  });
+
   it("registers social tools when enabled", async () => {
     const dm = new DaemonManager({ configPath: "/tmp/config.json" });
     const registry = await (dm as any).createToolRegistry({
@@ -3971,6 +4029,7 @@ describe("DaemonManager", () => {
       sessionId: "session-parent",
       parentSessionId: "session-parent",
       payload: {
+        completionState: "needs_verification",
         stopReason: "completed",
         stopReasonDetail: "Compiled parser, ran probes, and emitted final synthesis",
         outputChars: 128,
@@ -3991,6 +4050,7 @@ describe("DaemonManager", () => {
     expect(synthesisPushPayload.payload.data).toMatchObject({
       stepName: "runtime_probe",
       objective: "Create src/parser.js and inspect it",
+      completionState: "needs_verification",
       stopReason: "completed",
       stopReasonDetail: "Compiled parser, ran probes, and emitted final synthesis",
       outputChars: 128,
@@ -4005,6 +4065,7 @@ describe("DaemonManager", () => {
     expect(synthesisBroadcast.subagentSessionId).toBe("subagent:child");
     expect(synthesisBroadcast.stepName).toBe("runtime_probe");
     expect(synthesisBroadcast.objective).toBe("Create src/parser.js and inspect it");
+    expect(synthesisBroadcast.completionState).toBe("needs_verification");
     expect(synthesisBroadcast.stopReasonDetail).toBe(
       "Compiled parser, ran probes, and emitted final synthesis",
     );

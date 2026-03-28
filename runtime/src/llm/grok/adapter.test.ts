@@ -12,13 +12,19 @@ import { sanitizeToolCallArgumentsForReplay } from "../chat-executor-tool-utils.
 
 // Mock the openai module
 const mockCreate = vi.fn();
+const mockRetrieve = vi.fn();
+const mockDelete = vi.fn();
 const mockModelsListFn = vi.fn();
 const mockOpenAIConstructor = vi.fn();
 
 vi.mock("openai", () => {
   return {
     default: class MockOpenAI {
-      responses = { create: mockCreate };
+      responses = {
+        create: mockCreate,
+        retrieve: mockRetrieve,
+        delete: mockDelete,
+      };
       models = { list: mockModelsListFn };
       constructor(opts: any) {
         mockOpenAIConstructor(opts);
@@ -29,6 +35,28 @@ vi.mock("openai", () => {
 
 // Import after mock setup
 import { GrokProvider } from "./adapter.js";
+
+const DOCUMENTED_XAI_RESPONSES_FIELDS = new Set([
+  "include",
+  "input",
+  "logprobs",
+  "max_output_tokens",
+  "max_turns",
+  "model",
+  "parallel_tool_calls",
+  "previous_response_id",
+  "prompt_cache_key",
+  "reasoning",
+  "store",
+  "stream",
+  "temperature",
+  "text",
+  "tool_choice",
+  "tools",
+  "top_logprobs",
+  "top_p",
+  "user",
+]);
 
 function makeCompletion(overrides: Record<string, any> = {}) {
   return {
@@ -78,14 +106,92 @@ describe("GrokProvider", () => {
     });
   });
 
-  it("coerces non-positive timeoutMs to the default request timeout", async () => {
+  it("does not advertise undocumented provider-side compaction support", () => {
+    const provider = new GrokProvider({ apiKey: "test-key" });
+
+    expect(provider.getCapabilities()).toMatchObject({
+      stateful: {
+        assistantPhase: false,
+        previousResponseId: true,
+        encryptedReasoning: true,
+        storedResponseRetrieval: true,
+        storedResponseDeletion: true,
+        opaqueCompaction: false,
+      },
+    });
+  });
+
+  it("retrieves a stored xAI response using the documented Responses API method", async () => {
+    mockRetrieve.mockResolvedValueOnce({
+      id: "resp_saved_1",
+      model: "grok-4.20-reasoning",
+      status: "completed",
+      output_text: "Saved answer",
+      output: [
+        {
+          type: "reasoning",
+          encrypted_content: "ciphertext",
+        },
+        {
+          type: "message",
+          content: [{ type: "output_text", text: "Saved answer" }],
+        },
+      ],
+      usage: { input_tokens: 12, output_tokens: 4, total_tokens: 16 },
+      server_side_tool_usage: {
+        SERVER_SIDE_TOOL_WEB_SEARCH: 1,
+      },
+    });
+
+    const provider = new GrokProvider({ apiKey: "test-key" });
+    const response = await provider.retrieveStoredResponse?.("resp_saved_1");
+
+    expect(mockRetrieve).toHaveBeenCalledWith("resp_saved_1");
+    expect(response).toMatchObject({
+      id: "resp_saved_1",
+      provider: "grok",
+      model: "grok-4.20-reasoning",
+      status: "completed",
+      content: "Saved answer",
+      encryptedReasoning: {
+        requested: true,
+        available: true,
+      },
+    });
+    expect(
+      response?.providerEvidence?.serverSideToolUsage?.[0]?.category,
+    ).toBe("SERVER_SIDE_TOOL_WEB_SEARCH");
+  });
+
+  it("deletes a stored xAI response using the documented Responses API method", async () => {
+    mockDelete.mockResolvedValueOnce({
+      id: "resp_saved_1",
+      deleted: true,
+    });
+
+    const provider = new GrokProvider({ apiKey: "test-key" });
+    const result = await provider.deleteStoredResponse?.("resp_saved_1");
+
+    expect(mockDelete).toHaveBeenCalledWith("resp_saved_1");
+    expect(result).toEqual({
+      id: "resp_saved_1",
+      provider: "grok",
+      deleted: true,
+      raw: {
+        id: "resp_saved_1",
+        deleted: true,
+      },
+    });
+  });
+
+  it("treats timeoutMs=0 as unlimited instead of restoring the default timeout", async () => {
     mockCreate.mockResolvedValueOnce(makeCompletion());
 
     const provider = new GrokProvider({ apiKey: "test-key", timeoutMs: 0 });
     await provider.chat([{ role: "user", content: "test" }]);
 
     expect(mockOpenAIConstructor).toHaveBeenCalledOnce();
-    expect(mockOpenAIConstructor.mock.calls[0][0].timeout).toBe(60_000);
+    expect(mockOpenAIConstructor.mock.calls[0][0].timeout).toBeUndefined();
   });
 
   it("sends messages in Responses-compatible format", async () => {
@@ -406,6 +512,244 @@ describe("GrokProvider", () => {
     expect((events[1].payload as { output_text?: string }).output_text).toBe("Hello!");
   });
 
+  it("captures provider request IDs and response headers in non-stream traces when exposed by the SDK", async () => {
+    mockCreate.mockReturnValueOnce({
+      withResponse: vi.fn().mockResolvedValue({
+        data: makeCompletion({ id: "resp_nonstream" }),
+        response: new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "x-request-id": "req_nonstream_123",
+          },
+        }),
+        request_id: "req_nonstream_123",
+      }),
+    });
+
+    const events: Array<Record<string, unknown>> = [];
+    const provider = new GrokProvider({ apiKey: "test-key" });
+
+    await provider.chat(
+      [{ role: "user", content: "inspect the repo" }],
+      {
+        trace: {
+          includeProviderPayloads: true,
+          onProviderTraceEvent: (event) => {
+            events.push(event as unknown as Record<string, unknown>);
+          },
+        },
+      },
+    );
+
+    expect(events[1]).toMatchObject({
+      kind: "response",
+      context: {
+        providerRequestId: "req_nonstream_123",
+        providerResponseId: "resp_nonstream",
+        responseStatus: 200,
+        responseHeaders: {
+          "content-type": "application/json",
+          "x-request-id": "req_nonstream_123",
+        },
+      },
+    });
+  });
+
+  it("records provider-default timeout provenance in request traces", async () => {
+    mockCreate.mockResolvedValueOnce(makeCompletion());
+
+    const events: Array<Record<string, unknown>> = [];
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+    });
+
+    await provider.chat(
+      [{ role: "user", content: "inspect the repo" }],
+      {
+        trace: {
+          includeProviderPayloads: true,
+          onProviderTraceEvent: (event) => {
+            events.push(event as unknown as Record<string, unknown>);
+          },
+        },
+      },
+    );
+
+    expect(events[0]).toMatchObject({
+      kind: "request",
+      context: {
+        configuredProviderTimeoutMs: null,
+        callOverrideTimeoutMs: null,
+        effectiveTimeoutMs: 60_000,
+        timeoutSource: "provider_default",
+        timeoutMs: 60_000,
+      },
+    });
+  });
+
+  it("preserves unlimited timeout provenance for streamed requests", async () => {
+    mockCreate.mockResolvedValueOnce(
+      (async function* () {
+        yield {
+          type: "response.completed",
+          response: makeCompletion({
+            output_text: "done",
+          }),
+        };
+      })(),
+    );
+
+    const events: Array<Record<string, unknown>> = [];
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+      timeoutMs: 0,
+    });
+
+    await provider.chatStream(
+      [{ role: "user", content: "inspect the repo" }],
+      () => undefined,
+      {
+        trace: {
+          includeProviderPayloads: true,
+          onProviderTraceEvent: (event) => {
+            events.push(event as unknown as Record<string, unknown>);
+          },
+        },
+      },
+    );
+
+    expect(events[0]).toMatchObject({
+      kind: "request",
+      transport: "chat_stream",
+      context: {
+        configuredProviderTimeoutMs: 0,
+        callOverrideTimeoutMs: null,
+        effectiveTimeoutMs: null,
+        timeoutSource: "provider_config",
+        timeoutMs: null,
+      },
+    });
+  });
+
+  it("emits a stream-open trace and raw stream events with provider request metadata", async () => {
+    mockCreate.mockReturnValueOnce({
+      withResponse: vi.fn().mockResolvedValue({
+        data: (async function* () {
+          yield {
+            type: "response.output_text.delta",
+            delta: "Hello",
+          };
+          yield {
+            type: "response.completed",
+            response: makeCompletion({
+              id: "resp_stream",
+              output_text: "Hello",
+            }),
+          };
+        })(),
+        response: new Response(null, {
+          status: 200,
+          headers: {
+            "x-request-id": "req_stream_123",
+          },
+        }),
+        request_id: "req_stream_123",
+      }),
+    });
+
+    const events: Array<Record<string, unknown>> = [];
+    const provider = new GrokProvider({ apiKey: "test-key" });
+
+    await provider.chatStream(
+      [{ role: "user", content: "inspect the repo" }],
+      () => undefined,
+      {
+        trace: {
+          includeProviderPayloads: true,
+          onProviderTraceEvent: (event) => {
+            events.push(event as unknown as Record<string, unknown>);
+          },
+        },
+      },
+    );
+
+    expect(events[1]).toMatchObject({
+      kind: "stream_event",
+      payload: { type: "stream.open" },
+      context: {
+        eventIndex: 0,
+        eventType: "stream.open",
+        providerRequestId: "req_stream_123",
+        responseStatus: 200,
+      },
+    });
+    expect(events[2]).toMatchObject({
+      kind: "stream_event",
+      payload: {
+        type: "response.output_text.delta",
+        delta: "Hello",
+      },
+      context: {
+        eventIndex: 1,
+        eventType: "response.output_text.delta",
+        providerRequestId: "req_stream_123",
+      },
+    });
+    expect(events[3]).toMatchObject({
+      kind: "stream_event",
+      payload: {
+        type: "response.completed",
+      },
+      context: {
+        eventIndex: 2,
+        eventType: "response.completed",
+        providerRequestId: "req_stream_123",
+      },
+    });
+    expect(events[4]).toMatchObject({
+      kind: "response",
+      context: {
+        providerRequestId: "req_stream_123",
+        providerResponseId: "resp_stream",
+      },
+    });
+  });
+
+  it("records per-call timeout overrides in request traces", async () => {
+    mockCreate.mockResolvedValueOnce(makeCompletion());
+
+    const events: Array<Record<string, unknown>> = [];
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+      timeoutMs: 60_000,
+    });
+
+    await provider.chat(
+      [{ role: "user", content: "inspect the repo" }],
+      {
+        timeoutMs: 5,
+        trace: {
+          includeProviderPayloads: true,
+          onProviderTraceEvent: (event) => {
+            events.push(event as unknown as Record<string, unknown>);
+          },
+        },
+      },
+    );
+
+    expect(events[0]).toMatchObject({
+      kind: "request",
+      context: {
+        configuredProviderTimeoutMs: 60_000,
+        callOverrideTimeoutMs: 5,
+        effectiveTimeoutMs: 5,
+        timeoutSource: "call_override",
+        timeoutMs: 5,
+      },
+    });
+  });
+
   it("records provider tool-resolution fallback when routed tools cannot be resolved", async () => {
     mockCreate.mockResolvedValueOnce(makeCompletion());
 
@@ -587,6 +931,83 @@ describe("GrokProvider", () => {
     expect(response.finishReason).toBe("tool_calls");
   });
 
+  it("preserves provider function calls whose JSON arguments contain HTML entities inside string values", async () => {
+    const completion = makeCompletion({
+      output_text: "",
+      output: [
+        {
+          type: "function_call",
+          call_id: "call_1",
+          name: "system.writeFile",
+          arguments:
+            '{"path":"src/parser.c","content":"strcmp(token, \\"&quot;&gt;&quot;\\") == 0 && strcmp(token, \\"&amp;\\") == 0;"}',
+        },
+      ],
+    });
+    mockCreate.mockResolvedValueOnce(completion);
+
+    const provider = new GrokProvider({ apiKey: "test-key" });
+    const response = await provider.chat([
+      { role: "user", content: "write parser.c" },
+    ]);
+
+    expect(response.finishReason).toBe("tool_calls");
+    expect(response.toolCalls).toEqual([
+      {
+        id: "call_1",
+        name: "system.writeFile",
+        arguments:
+          '{"path":"src/parser.c","content":"strcmp(token, \\"\\">\\"\\") == 0 && strcmp(token, \\"&\\") == 0;"}',
+      },
+    ]);
+  });
+
+  it("emits a trace when a provider function call is rejected during normalization", async () => {
+    mockCreate.mockResolvedValueOnce(
+      makeCompletion({
+        output_text: "",
+        output: [
+          {
+            type: "function_call",
+            call_id: "call_bad",
+            name: "system.writeFile",
+            arguments: '["bad"]',
+          },
+        ],
+      }),
+    );
+
+    const events: Array<Record<string, unknown>> = [];
+    const provider = new GrokProvider({ apiKey: "test-key" });
+    const response = await provider.chat(
+      [{ role: "user", content: "write parser.c" }],
+      {
+        trace: {
+          includeProviderPayloads: true,
+          onProviderTraceEvent: (event) => {
+            events.push(event as unknown as Record<string, unknown>);
+          },
+        },
+      },
+    );
+
+    expect(response.toolCalls).toHaveLength(0);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "stream_event",
+          transport: "chat",
+          payload: expect.objectContaining({
+            eventType: "tool_call_validation_failed",
+            failureCode: "non_object_arguments",
+            toolCallId: "call_bad",
+            toolName: "system.writeFile",
+          }),
+        }),
+      ]),
+    );
+  });
+
   it("surfaces provider citations as provider evidence", async () => {
     mockCreate.mockResolvedValueOnce(
       makeCompletion({
@@ -623,6 +1044,70 @@ describe("GrokProvider", () => {
     expect(params.tools.some((t: any) => t.type === "web_search")).toBe(true);
   });
 
+  it("injects documented xAI provider-native tools from the capability surface", async () => {
+    mockCreate.mockResolvedValueOnce(makeCompletion());
+
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+      model: "grok-4-1-fast-reasoning",
+      webSearch: true,
+      webSearchOptions: {
+        allowedDomains: ["docs.x.ai"],
+        enableImageUnderstanding: true,
+      },
+      xSearch: true,
+      xSearchOptions: {
+        allowedXHandles: ["xai"],
+        enableVideoUnderstanding: true,
+      },
+      codeExecution: true,
+      collectionsSearch: {
+        enabled: true,
+        vectorStoreIds: ["collection-123"],
+        maxNumResults: 10,
+      },
+      remoteMcp: {
+        enabled: true,
+        servers: [
+          {
+            serverUrl: "https://mcp.example.com/sse",
+            serverLabel: "docs",
+            allowedTools: ["search_docs"],
+          },
+        ],
+      },
+    });
+    await provider.chat([{ role: "user", content: "test" }]);
+
+    const params = mockCreate.mock.calls[0][0];
+    expect(params.tools).toEqual(
+      expect.arrayContaining([
+        {
+          type: "web_search",
+          filters: { allowed_domains: ["docs.x.ai"] },
+          enable_image_understanding: true,
+        },
+        {
+          type: "x_search",
+          allowed_x_handles: ["xai"],
+          enable_video_understanding: true,
+        },
+        { type: "code_interpreter" },
+        {
+          type: "file_search",
+          vector_store_ids: ["collection-123"],
+          max_num_results: 10,
+        },
+        {
+          type: "mcp",
+          server_url: "https://mcp.example.com/sse",
+          server_label: "docs",
+          allowed_tools: ["search_docs"],
+        },
+      ]),
+    );
+  });
+
   it("does not inject web_search tool for unsupported Grok models", async () => {
     mockCreate.mockResolvedValueOnce(makeCompletion());
 
@@ -635,6 +1120,208 @@ describe("GrokProvider", () => {
 
     const params = mockCreate.mock.calls[0][0];
     expect(params.tools).toBeUndefined();
+  });
+
+  it("captures documented server-side tool calls and usage in provider evidence", async () => {
+    mockCreate.mockResolvedValueOnce(
+      makeCompletion({
+        server_side_tool_usage: {
+          SERVER_SIDE_TOOL_WEB_SEARCH: 2,
+          SERVER_SIDE_TOOL_VIEW_IMAGE: 1,
+        },
+        output: [
+          {
+            type: "web_search_call",
+            id: "ws_123",
+            name: "web_search",
+            arguments: "{\"query\":\"xai\"}",
+            status: "completed",
+          },
+          {
+            type: "message",
+            content: [{ type: "output_text", text: "Hello!" }],
+          },
+        ],
+      }),
+    );
+
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+      webSearch: true,
+    });
+    const response = await provider.chat([{ role: "user", content: "test" }]);
+
+    expect(response.providerEvidence?.serverSideToolCalls).toEqual([
+      {
+        type: "web_search_call",
+        toolType: "web_search",
+        id: "ws_123",
+        functionName: "web_search",
+        arguments: "{\"query\":\"xai\"}",
+        status: "completed",
+        raw: expect.objectContaining({
+          type: "web_search_call",
+          id: "ws_123",
+        }),
+      },
+    ]);
+    expect(response.providerEvidence?.serverSideToolUsage).toEqual([
+      {
+        category: "SERVER_SIDE_TOOL_WEB_SEARCH",
+        toolType: "web_search",
+        count: 2,
+      },
+      {
+        category: "SERVER_SIDE_TOOL_VIEW_IMAGE",
+        toolType: "view_image",
+        count: 1,
+      },
+    ]);
+  });
+
+  it("wires max_turns, reasoning effort, and encrypted reasoning include from config", async () => {
+    mockCreate.mockResolvedValueOnce(makeCompletion());
+
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+      maxTurns: 4,
+      reasoningEffort: "high",
+      includeEncryptedReasoning: true,
+    });
+    await provider.chat([{ role: "user", content: "test" }]);
+
+    const params = mockCreate.mock.calls[0][0];
+    expect(params.max_turns).toBe(4);
+    expect(params.reasoning).toEqual({ effort: "high" });
+    expect(params.include).toEqual(["reasoning.encrypted_content"]);
+  });
+
+  it("sends documented xAI text.format requests and parses structured output payloads", async () => {
+    mockCreate.mockResolvedValueOnce(
+      makeCompletion({
+        output_text:
+          '{"overall":"pass","confidence":0.93,"unresolved":[],"steps":[{"name":"delegate_logs","verdict":"pass","confidence":0.93,"retryable":false,"issues":[],"summary":"grounded"}]}',
+        output: [
+          {
+            type: "message",
+            content: [
+              {
+                type: "output_text",
+                text:
+                  '{"overall":"pass","confidence":0.93,"unresolved":[],"steps":[{"name":"delegate_logs","verdict":"pass","confidence":0.93,"retryable":false,"issues":[],"summary":"grounded"}]}',
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    const provider = new GrokProvider({ apiKey: "test-key" });
+    const response = await provider.chat(
+      [{ role: "user", content: "verify the delegated output" }],
+      {
+        structuredOutput: {
+          enabled: true,
+          schema: {
+            type: "json_schema",
+            name: "agenc_subagent_verifier_decision",
+            schema: {
+              type: "object",
+              properties: {
+                overall: { type: "string" },
+              },
+              required: ["overall"],
+            },
+          },
+        },
+      },
+    );
+
+    const params = mockCreate.mock.calls[0][0];
+    expect(params.text).toEqual({
+      format: {
+        type: "json_schema",
+        name: "agenc_subagent_verifier_decision",
+        schema: {
+          type: "object",
+          properties: {
+            overall: { type: "string" },
+          },
+          required: ["overall"],
+        },
+        strict: true,
+      },
+    });
+    expect(response.structuredOutput).toEqual({
+      type: "json_schema",
+      name: "agenc_subagent_verifier_decision",
+      rawText:
+        '{"overall":"pass","confidence":0.93,"unresolved":[],"steps":[{"name":"delegate_logs","verdict":"pass","confidence":0.93,"retryable":false,"issues":[],"summary":"grounded"}]}',
+      parsed: {
+        overall: "pass",
+        confidence: 0.93,
+        unresolved: [],
+        steps: [
+          {
+            name: "delegate_logs",
+            verdict: "pass",
+            confidence: 0.93,
+            retryable: false,
+            issues: [],
+            summary: "grounded",
+          },
+        ],
+      },
+    });
+    expect(response.requestMetrics).toMatchObject({
+      structuredOutputEnabled: true,
+      structuredOutputName: "agenc_subagent_verifier_decision",
+      structuredOutputStrict: true,
+    });
+  });
+
+  it("fails closed when structured outputs are combined with tools on non-Grok-4 models", async () => {
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+      model: "grok-code-fast-1",
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "system.bash",
+            description: "run command",
+            parameters: {
+              type: "object",
+              properties: { command: { type: "string" } },
+            },
+          },
+        },
+      ],
+    });
+
+    await expect(
+      provider.chat(
+        [{ role: "user", content: "inspect the repo and summarize findings" }],
+        {
+          structuredOutput: {
+            enabled: true,
+            schema: {
+              type: "json_schema",
+              name: "repo_summary",
+              schema: {
+                type: "object",
+                properties: {
+                  summary: { type: "string" },
+                },
+                required: ["summary"],
+              },
+            },
+          },
+        },
+      ),
+    ).rejects.toThrow(
+      /Structured outputs with tools are only documented for the Grok 4 family/i,
+    );
   });
 
   it("disables parallel tool calls by default when tools are present", async () => {
@@ -1210,7 +1897,7 @@ describe("GrokProvider", () => {
     });
   });
 
-  it("preserves assistant phase on Responses API assistant input items", async () => {
+  it("drops undocumented assistant phase metadata from Responses API assistant input items", async () => {
     mockCreate.mockResolvedValueOnce(makeCompletion());
 
     const provider = new GrokProvider({ apiKey: "test-key" });
@@ -1228,19 +1915,13 @@ describe("GrokProvider", () => {
       {
         role: "assistant",
         content: "Checking the environment first.",
-        phase: "commentary",
       },
       { role: "user", content: "Continue." },
     ]);
   });
 
-  it("retries without assistant phase when the provider rejects the field", async () => {
-    mockCreate
-      .mockRejectedValueOnce({
-        status: 400,
-        message: "Unknown field 'phase' on assistant input item",
-      })
-      .mockResolvedValueOnce(makeCompletion({ id: "resp_phase_retry" }));
+  it("never emits assistant phase metadata in xAI Responses requests", async () => {
+    mockCreate.mockResolvedValueOnce(makeCompletion({ id: "resp_phase_retry" }));
 
     const provider = new GrokProvider({ apiKey: "test-key" });
     const response = await provider.chat([
@@ -1249,12 +1930,8 @@ describe("GrokProvider", () => {
       { role: "user", content: "Continue." },
     ]);
 
-    expect(mockCreate).toHaveBeenCalledTimes(2);
-    expect(mockCreate.mock.calls[0][0].input[1]).toMatchObject({
-      role: "assistant",
-      phase: "commentary",
-    });
-    expect(mockCreate.mock.calls[1][0].input[1]).toEqual({
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    expect(mockCreate.mock.calls[0][0].input[1]).toEqual({
       role: "assistant",
       content: "Working...",
     });
@@ -1867,7 +2544,7 @@ describe("GrokProvider", () => {
     expect(thirdInput).toContain("phase-2 complete");
   });
 
-  it("requests server-side compaction when configured", async () => {
+  it("does not emit undocumented server-side compaction fields when local compaction is configured", async () => {
     mockCreate.mockResolvedValueOnce(makeCompletion({ id: "resp_compact_req" }));
 
     const provider = new GrokProvider({
@@ -1888,104 +2565,78 @@ describe("GrokProvider", () => {
     );
 
     const params = mockCreate.mock.calls[0][0];
-    expect(params.context_management).toEqual({ compact_threshold: 12_000 });
-    expect(response.compaction).toMatchObject({
-      enabled: true,
-      requested: true,
-      active: true,
-      threshold: 12_000,
-      observedItemCount: 0,
-    });
+    expect(params.context_management).toBeUndefined();
+    expect(response.compaction).toBeUndefined();
   });
 
-  it("parses opaque provider compaction items into response diagnostics", async () => {
-    mockCreate.mockResolvedValueOnce(
-      makeCompletion({
-        id: "resp_compacted",
-        output: [
-          {
-            type: "compaction",
-            id: "cmp_1",
-            encrypted_content: "opaque",
-          },
-          {
-            type: "message",
-            content: [{ type: "output_text", text: "Hello after compaction!" }],
-          },
-        ],
-      }),
-    );
+  it("emits only xAI-documented top-level Responses fields", async () => {
+    mockCreate.mockResolvedValueOnce(makeCompletion({ id: "resp_documented_fields" }));
 
     const provider = new GrokProvider({
       apiKey: "test-key",
+      maxTokens: 128,
+      temperature: 0.2,
+      parallelToolCalls: true,
       statefulResponses: {
         enabled: true,
         store: true,
         compaction: {
           enabled: true,
-          compactThreshold: 8_000,
+          compactThreshold: 12_000,
         },
       },
-    });
-
-    const response = await provider.chat(
-      [{ role: "user", content: "compact if needed" }],
-      { stateful: { sessionId: "sess-compact-items" } },
-    );
-
-    expect(response.compaction).toMatchObject({
-      enabled: true,
-      requested: true,
-      active: true,
-      observedItemCount: 1,
-      latestItem: {
-        type: "compaction",
-        id: "cmp_1",
-      },
-    });
-    expect(response.compaction?.latestItem?.digest).toMatch(/^[0-9a-f]{16}$/);
-  });
-
-  it("retries without server-side compaction when the provider rejects context_management", async () => {
-    mockCreate
-      .mockRejectedValueOnce({
-        status: 400,
-        message: "Unknown field 'context_management.compact_threshold'",
-      })
-      .mockResolvedValueOnce(makeCompletion({ id: "resp_compact_retry" }));
-
-    const provider = new GrokProvider({
-      apiKey: "test-key",
-      statefulResponses: {
-        enabled: true,
-        store: true,
-        compaction: {
-          enabled: true,
-          compactThreshold: 20_000,
-          fallbackOnUnsupported: true,
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "system.readFile",
+            description: "Read a file",
+            parameters: {
+              type: "object",
+              properties: { path: { type: "string" } },
+              required: ["path"],
+            },
+          },
         },
-      },
+      ],
     });
 
-    const response = await provider.chat(
+    await provider.chat(
       [{ role: "user", content: "hello" }],
-      { stateful: { sessionId: "sess-compact-retry" } },
+      {
+        toolChoice: "required",
+        stateful: { sessionId: "sess-documented-fields" },
+      },
     );
 
-    expect(mockCreate).toHaveBeenCalledTimes(2);
-    expect(mockCreate.mock.calls[0][0].context_management).toEqual({
-      compact_threshold: 20_000,
-    });
-    expect(mockCreate.mock.calls[1][0].context_management).toBeUndefined();
-    expect(response.compaction).toMatchObject({
-      enabled: true,
-      requested: true,
-      active: false,
-      fallbackReason: "request_rejected",
-    });
+    const params = mockCreate.mock.calls[0][0];
+    expect(Object.keys(params).every((key) => DOCUMENTED_XAI_RESPONSES_FIELDS.has(key))).toBe(
+      true,
+    );
   });
 
-  it("keeps continuation behavior stable with and without provider compaction", async () => {
+  it("does not emit undocumented assistant phase metadata into xAI response input items", async () => {
+    mockCreate.mockResolvedValueOnce(makeCompletion({ id: "resp_no_phase" }));
+
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+      statefulResponses: {
+        enabled: true,
+        store: true,
+      },
+    });
+
+    await provider.chat([
+      { role: "user", content: "first" },
+      { role: "assistant", content: "working", phase: "commentary" },
+      { role: "user", content: "continue" },
+    ]);
+
+    const params = mockCreate.mock.calls[0][0];
+    expect(JSON.stringify(params.input)).not.toContain("\"phase\"");
+  });
+
+  it("keeps continuation behavior stable with and without local compaction config", async () => {
     mockCreate
       .mockResolvedValueOnce(
         makeCompletion({
@@ -2003,13 +2654,6 @@ describe("GrokProvider", () => {
         makeCompletion({
           id: "resp_compact_1",
           output_text: "Compact first",
-          output: [
-            { type: "compaction", id: "cmp_ab_1", encrypted_content: "opaque" },
-            {
-              type: "message",
-              content: [{ type: "output_text", text: "Compact first" }],
-            },
-          ],
         }),
       )
       .mockResolvedValueOnce(
@@ -2071,13 +2715,8 @@ describe("GrokProvider", () => {
     expect(mockCreate.mock.calls[1][0].previous_response_id).toBe("resp_plain_1");
     expect(mockCreate.mock.calls[1][0].context_management).toBeUndefined();
     expect(mockCreate.mock.calls[3][0].previous_response_id).toBe("resp_compact_1");
-    expect(mockCreate.mock.calls[3][0].context_management).toEqual({
-      compact_threshold: 10_000,
-    });
-    expect(compactFollowUp.compaction).toMatchObject({
-      enabled: true,
-      active: true,
-    });
+    expect(mockCreate.mock.calls[3][0].context_management).toBeUndefined();
+    expect(compactFollowUp.compaction).toBeUndefined();
   });
 
   it("falls back stateless on reconciliation mismatch and emits mismatch diagnostics", async () => {

@@ -198,6 +198,26 @@ describe("OpenAIEmbeddingProvider", () => {
       "Embedding generation failed",
     );
   });
+
+  it("fails closed when pointed at xAI's undocumented embeddings surface", async () => {
+    const provider = new OpenAIEmbeddingProvider({
+      apiKey: "test-key",
+      baseUrl: "https://api.x.ai/v1",
+    });
+
+    await expect(provider.embed("test")).rejects.toThrow(
+      /xAI does not document an OpenAI-compatible embeddings surface/i,
+    );
+  });
+
+  it("reports unavailable when pointed at xAI's undocumented embeddings surface", async () => {
+    const provider = new OpenAIEmbeddingProvider({
+      apiKey: "test-key",
+      baseUrl: "https://api.x.ai/v1",
+    });
+
+    await expect(provider.isAvailable()).resolves.toBe(false);
+  });
 });
 
 // ============================================================================

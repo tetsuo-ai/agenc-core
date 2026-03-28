@@ -33,7 +33,7 @@ export function preserveManualTranscriptViewport({
 
 export function sliceRowsAroundRange(allRows, targetHeight, range, trailingPad = 6) {
   const rows = Array.isArray(allRows) ? allRows : [];
-  const viewHeight = Math.max(8, Number(targetHeight) || 0);
+  const viewHeight = Math.max(1, Number(targetHeight) || 0);
   const maxStart = Math.max(0, rows.length - viewHeight);
   const preferredStart = Math.max(0, Number(range?.start ?? 0) - 1);
   let start = Math.min(preferredStart, maxStart);
@@ -59,7 +59,7 @@ export function sliceRowsAroundRange(allRows, targetHeight, range, trailingPad =
 
 export function sliceRowsFromBottom(allRows, targetHeight, offset) {
   const rows = Array.isArray(allRows) ? allRows : [];
-  const viewHeight = Math.max(8, Number(targetHeight) || 0);
+  const viewHeight = Math.max(1, Number(targetHeight) || 0);
   const maxOffset = Math.max(0, rows.length - viewHeight);
   const normalizedOffset = Math.max(0, Math.min(Number(offset ?? 0), maxOffset));
   const end = Math.max(0, rows.length - normalizedOffset);

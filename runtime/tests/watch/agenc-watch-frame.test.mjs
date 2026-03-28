@@ -105,6 +105,36 @@ test("frame controller exports transcript view through the extracted seam", () =
   });
 });
 
+test("frame controller exports the rendered detail view instead of raw event body", () => {
+  const harness = createWatchFrameHarness({
+    events: [
+      {
+        id: "evt-1",
+        kind: "tool result",
+        title: "Patch Preview",
+        body: "raw-body",
+        timestamp: "12:00:00",
+      },
+    ],
+    wrapEventDisplayLines() {
+      return [
+        createDisplayLine("diff --git a/file.ts b/file.ts", "diff-header"),
+        createDisplayLine("+const value = 1;", "diff-added"),
+      ];
+    },
+  });
+  harness.watchState.expandedEventId = "evt-1";
+
+  const exportPath = harness.controller.exportCurrentView({ announce: true });
+
+  assert.ok(exportPath);
+  assert.equal(harness.fileWrites.length, 1);
+  assert.equal(
+    harness.fileWrites[0].text,
+    "[12:00:00] Patch Preview\n\ndiff --git a/file.ts b/file.ts\n+const value = 1;\n",
+  );
+});
+
 test("frame controller scrolls transcript and detail view independently", async () => {
   const harness = createWatchFrameHarness();
 

@@ -14,9 +14,6 @@ import { isSubAgentSessionId } from "./delegation-runtime.js";
 import { assessDelegationScope } from "./delegation-scope.js";
 import { assessDirectDelegationAdmission } from "./delegation-admission.js";
 import {
-  normalizeDelegationTimeoutMs,
-} from "./delegation-timeout.js";
-import {
   resolveDelegatedChildToolScope,
   specRequiresSuccessfulToolEvidence,
 } from "../utils/delegation-validation.js";
@@ -460,7 +457,6 @@ export async function executeDelegationTool(
     });
   }
   const objective = input.objective ?? input.task;
-  const effectiveTimeoutMs = normalizeDelegationTimeoutMs(input.timeoutMs);
   const resolvedChildScope = resolveDelegatedChildToolScope({
     spec: input,
     requestedTools: input.tools,
@@ -636,7 +632,6 @@ export async function executeDelegationTool(
       ...(continuationSessionId
         ? { continuationSessionId }
         : {}),
-      ...(effectiveTimeoutMs ? { timeoutMs: effectiveTimeoutMs } : {}),
       ...(workingDirectory ? { workingDirectory } : {}),
       ...(effectiveExecutionContext?.workspaceRoot
         ? { workingDirectorySource: "execution_envelope" as const }
@@ -679,7 +674,6 @@ export async function executeDelegationTool(
     toolName: name,
     payload: {
       objective,
-      ...(effectiveTimeoutMs ? { timeoutMs: effectiveTimeoutMs } : {}),
       ...(workingDirectory ? { workingDirectory } : {}),
       ...(effectiveExecutionContext?.workspaceRoot
         ? { workingDirectorySource: "execution_envelope" as const }

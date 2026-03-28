@@ -103,4 +103,4 @@ This ADR continues to shape:
 - durable kernel hardening
 - event-driven wake plane
 - typed run domains and deterministic verifiers
-- provider-native compaction and long-horizon context control
+- local/runtime compaction and long-horizon context control

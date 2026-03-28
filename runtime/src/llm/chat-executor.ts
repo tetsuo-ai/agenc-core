@@ -14,6 +14,7 @@ import type {
   LLMProviderEvidence,
   LLMMessage,
   LLMStatefulResumeAnchor,
+  LLMStructuredOutputRequest,
   LLMToolChoice,
   LLMResponse,
   LLMUsage,
@@ -96,6 +97,11 @@ import {
   type RuntimeEconomicsPolicy,
   type RuntimeRunClass,
 } from "./run-budget.js";
+import {
+  hasRuntimeLimit,
+  isRuntimeLimitReached,
+  normalizeRuntimeLimit,
+} from "./runtime-limit-policy.js";
 import {
   MAX_EVAL_USER_CHARS,
   MAX_EVAL_RESPONSE_CHARS,
@@ -189,8 +195,41 @@ function mergeProviderEvidence(
     ...(current.citations ?? []),
     ...(incoming.citations ?? []),
   ]));
-  if (citations.length === 0) return undefined;
-  return { citations };
+  const serverSideToolCalls = [
+    ...(current.serverSideToolCalls ?? []),
+    ...(incoming.serverSideToolCalls ?? []),
+  ];
+  const serverSideToolUsageByCategory = new Map<string, number>();
+  for (const entry of [
+    ...(current.serverSideToolUsage ?? []),
+    ...(incoming.serverSideToolUsage ?? []),
+  ]) {
+    serverSideToolUsageByCategory.set(
+      entry.category,
+      (serverSideToolUsageByCategory.get(entry.category) ?? 0) + entry.count,
+    );
+  }
+  const serverSideToolUsage = [...serverSideToolUsageByCategory.entries()].map(
+    ([category, count]) => ({
+      category,
+      toolType:
+        [...(current.serverSideToolUsage ?? []), ...(incoming.serverSideToolUsage ?? [])]
+          .find((entry) => entry.category === category)?.toolType,
+      count,
+    }),
+  );
+  if (
+    citations.length === 0 &&
+    serverSideToolCalls.length === 0 &&
+    serverSideToolUsage.length === 0
+  ) {
+    return undefined;
+  }
+  return {
+    ...(citations.length > 0 ? { citations } : {}),
+    ...(serverSideToolCalls.length > 0 ? { serverSideToolCalls } : {}),
+    ...(serverSideToolUsage.length > 0 ? { serverSideToolUsage } : {}),
+  };
 }
 
 function mergeExplicitRequirementToolNames(
@@ -239,6 +278,7 @@ function buildDelegatedBudgetFinalizationInstruction(params: {
 }
 
 const MAX_PLAN_ONLY_EXECUTION_CORRECTIONS = 1;
+const MAX_PARTIAL_CONTINUATION_CORRECTIONS = 1;
 
 function buildPlanOnlyExecutionRetryInstruction(
   allowedToolNames: readonly string[],
@@ -251,6 +291,40 @@ function buildPlanOnlyExecutionRetryInstruction(
     "The user asked you to execute work in the environment, so start performing the requested file or system actions immediately using tools. " +
     "Only answer after tool results show what you actually completed. " +
     "If execution is blocked, state the concrete blocker instead of returning another plan." +
+    allowedToolSummary
+  );
+}
+
+function buildWorkflowContinuationRetryInstruction(params: {
+  readonly allowedToolNames: readonly string[];
+  readonly progress: NonNullable<ReturnType<typeof deriveWorkflowProgressSnapshot>>;
+}): string {
+  const allowedToolSummary = params.allowedToolNames.length > 0
+    ? ` Allowed tools for this turn: ${params.allowedToolNames.slice(0, 12).join(", ")}${params.allowedToolNames.length > 12 ? ", ..." : ""}.`
+    : "";
+  const remainingMilestones = (params.progress.remainingMilestones ?? [])
+    .map((milestone) => milestone.description.trim())
+    .filter((description) => description.length > 0)
+    .slice(0, 4);
+  const remainingRequirements = params.progress.remainingRequirements
+    .filter((requirement) => requirement !== "request_milestones")
+    .map((requirement) => requirement.replace(/_/g, " "))
+    .slice(0, 4);
+  const remainingSummaryParts: string[] = [];
+  if (remainingMilestones.length > 0) {
+    remainingSummaryParts.push(`Remaining request milestones: ${remainingMilestones.join("; ")}`);
+  }
+  if (remainingRequirements.length > 0) {
+    remainingSummaryParts.push(`Remaining execution requirements: ${remainingRequirements.join("; ")}`);
+  }
+  const remainingSummary = remainingSummaryParts.length > 0
+    ? ` ${remainingSummaryParts.join(". ")}.`
+    : "";
+  return (
+    "Do not stop with a partial progress summary while request-level work remains incomplete. " +
+    "Continue executing the remaining work with tools now. " +
+    "Only stop if the remaining milestones are actually complete in the tool ledger, or if you hit a concrete blocker that prevents further execution." +
+    remainingSummary +
     allowedToolSummary
   );
 }
@@ -342,6 +416,7 @@ export class ChatExecutor {
   private readonly onStreamChunk?: StreamProgressCallback;
   private readonly allowedTools: Set<string> | null;
   private readonly sessionTokenBudget?: number;
+  private readonly sessionCompactionThreshold?: number;
   private readonly cooldownMs: number;
   private readonly maxCooldownMs: number;
   private readonly maxTrackedSessions: number;
@@ -380,14 +455,7 @@ export class ChatExecutor {
   private readonly sessionTokens = new Map<string, number>();
 
   private static normalizeRequestTimeoutMs(timeoutMs: number | undefined): number {
-    if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs)) {
-      return DEFAULT_REQUEST_TIMEOUT_MS;
-    }
-    const normalized = Math.floor(timeoutMs);
-    if (normalized <= 0) {
-      return 0;
-    }
-    return Math.max(1, normalized);
+    return normalizeRuntimeLimit(timeoutMs, DEFAULT_REQUEST_TIMEOUT_MS);
   }
 
   constructor(config: ChatExecutorConfig) {
@@ -396,12 +464,16 @@ export class ChatExecutor {
     }
     this.providers = config.providers;
     this.toolHandler = config.toolHandler;
-    this.maxToolRounds = config.maxToolRounds ?? MAX_ADAPTIVE_TOOL_ROUNDS;
+    this.maxToolRounds = normalizeRuntimeLimit(
+      config.maxToolRounds,
+      MAX_ADAPTIVE_TOOL_ROUNDS,
+    );
     this.onStreamChunk = config.onStreamChunk;
     this.allowedTools = config.allowedTools
       ? new Set(config.allowedTools)
       : null;
     this.sessionTokenBudget = config.sessionTokenBudget;
+    this.sessionCompactionThreshold = config.sessionCompactionThreshold;
     this.cooldownMs = Math.max(0, config.providerCooldownMs ?? 60_000);
     this.maxCooldownMs = Math.max(0, config.maxCooldownMs ?? 300_000);
     this.maxTrackedSessions = Math.max(1, config.maxTrackedSessions ?? 10_000);
@@ -423,9 +495,9 @@ export class ChatExecutor {
     this.onCompaction = config.onCompaction;
     this.evaluator = config.evaluator;
     this.plannerEnabled = config.plannerEnabled ?? false;
-    this.plannerMaxTokens = Math.max(
-      32,
-      Math.floor(config.plannerMaxTokens ?? DEFAULT_PLANNER_MAX_TOKENS),
+    this.plannerMaxTokens = normalizeRuntimeLimit(
+      config.plannerMaxTokens,
+      DEFAULT_PLANNER_MAX_TOKENS,
     );
     this.delegationNestingDepth = Math.max(
       0,
@@ -445,25 +517,21 @@ export class ChatExecutor {
     this.delegationBanditTuner = config.delegationLearning?.banditTuner;
     this.delegationDefaultStrategyArmId =
       config.delegationLearning?.defaultStrategyArmId?.trim() || "balanced";
-    this.toolBudgetPerRequest = Math.max(
-      1,
-      Math.floor(config.toolBudgetPerRequest ?? DEFAULT_TOOL_BUDGET_PER_REQUEST),
+    this.toolBudgetPerRequest = normalizeRuntimeLimit(
+      config.toolBudgetPerRequest,
+      DEFAULT_TOOL_BUDGET_PER_REQUEST,
     );
-    this.maxModelRecallsPerRequest = Math.max(
-      0,
-      Math.floor(
-        config.maxModelRecallsPerRequest ?? DEFAULT_MODEL_RECALLS_PER_REQUEST,
-      ),
+    this.maxModelRecallsPerRequest = normalizeRuntimeLimit(
+      config.maxModelRecallsPerRequest,
+      DEFAULT_MODEL_RECALLS_PER_REQUEST,
     );
-    this.maxFailureBudgetPerRequest = Math.max(
-      1,
-      Math.floor(
-        config.maxFailureBudgetPerRequest ?? DEFAULT_FAILURE_BUDGET_PER_REQUEST,
-      ),
+    this.maxFailureBudgetPerRequest = normalizeRuntimeLimit(
+      config.maxFailureBudgetPerRequest,
+      DEFAULT_FAILURE_BUDGET_PER_REQUEST,
     );
-    this.toolCallTimeoutMs = Math.max(
-      1,
-      Math.floor(config.toolCallTimeoutMs ?? DEFAULT_TOOL_CALL_TIMEOUT_MS),
+    this.toolCallTimeoutMs = normalizeRuntimeLimit(
+      config.toolCallTimeoutMs,
+      DEFAULT_TOOL_CALL_TIMEOUT_MS,
     );
     this.requestTimeoutMs = ChatExecutor.normalizeRequestTimeoutMs(
       config.requestTimeoutMs,
@@ -521,7 +589,10 @@ export class ChatExecutor {
           config?.minConfidence ?? DEFAULT_SUBAGENT_VERIFIER_MIN_CONFIDENCE,
         ),
       ),
-      maxRounds: Math.max(1, Math.floor(maxRoundsRaw)),
+      maxRounds: normalizeRuntimeLimit(
+        maxRoundsRaw,
+        DEFAULT_SUBAGENT_VERIFIER_MAX_ROUNDS,
+      ),
     };
   }
 
@@ -629,6 +700,7 @@ export class ChatExecutor {
       toolCalls: ctx.allToolCalls,
       verificationContract: workflowContext.verificationContract,
       completionContract: workflowContext.completionContract,
+      completedRequestMilestoneIds: ctx.completedRequestMilestoneIds,
       updatedAt: Date.now(),
     });
 
@@ -729,11 +801,41 @@ export class ChatExecutor {
       toolCalls: ctx.allToolCalls,
       verificationContract: workflowContext.verificationContract,
       completionContract: workflowContext.completionContract,
+      completedRequestMilestoneIds: ctx.completedRequestMilestoneIds,
       validationCode: ctx.validationCode,
       verifier: {
         performed: ctx.plannerSummaryState.subagentVerification.performed,
         overall: ctx.plannerSummaryState.subagentVerification.overall,
       },
+    });
+  }
+
+  private deriveCurrentWorkflowProgress(
+    ctx: ExecutionContext,
+  ): ReturnType<typeof deriveWorkflowProgressSnapshot> {
+    const workflowContext = this.resolveWorkflowVerificationContext(ctx);
+    const completionState = resolveWorkflowCompletionState({
+      stopReason: ctx.stopReason,
+      toolCalls: ctx.allToolCalls,
+      verificationContract: workflowContext.verificationContract,
+      completionContract: workflowContext.completionContract,
+      completedRequestMilestoneIds: ctx.completedRequestMilestoneIds,
+      validationCode: ctx.validationCode,
+      verifier: {
+        performed: ctx.plannerSummaryState.subagentVerification.performed,
+        overall: ctx.plannerSummaryState.subagentVerification.overall,
+      },
+    });
+    return deriveWorkflowProgressSnapshot({
+      stopReason: ctx.stopReason,
+      completionState,
+      stopReasonDetail: ctx.stopReasonDetail,
+      validationCode: ctx.validationCode,
+      toolCalls: ctx.allToolCalls,
+      verificationContract: workflowContext.verificationContract,
+      completionContract: workflowContext.completionContract,
+      completedRequestMilestoneIds: ctx.completedRequestMilestoneIds,
+      updatedAt: Date.now(),
     });
   }
 
@@ -1333,6 +1435,182 @@ export class ChatExecutor {
     return retried ? "continue" : "not_required";
   }
 
+  private async enforceWorkflowContinuationBeforeCompletion(
+    ctx: ExecutionContext,
+    phase: "initial" | "tool_followup",
+  ): Promise<"continue" | "failed" | "not_required"> {
+    const executionRequested = requestRequiresToolGroundedExecution(
+      ctx.messageText,
+    );
+    const toolsAvailable = Boolean(ctx.activeToolHandler);
+    const trackedRequestMilestones = Boolean(
+      ctx.plannerVerificationContract?.requestCompletion?.requiredMilestones
+        ?.length ||
+      ctx.completedRequestMilestoneIds.length > 0,
+    );
+    if (
+      !ctx.response ||
+      !executionRequested ||
+      !trackedRequestMilestones ||
+      !toolsAvailable ||
+      ctx.response?.finishReason === "tool_calls" ||
+      ctx.stopReason !== "completed"
+    ) {
+      this.emitExecutionTrace(ctx, {
+        type: "completion_gate_checked",
+        phase,
+        callIndex: ctx.callIndex,
+        payload: {
+          gate: "workflow_continuation_truth",
+          decision: "not_required",
+          finishReason: ctx.response?.finishReason,
+          executionRequested,
+          trackedRequestMilestones,
+          toolsAvailable,
+          stopReason: ctx.stopReason,
+        },
+      });
+      return "not_required";
+    }
+
+    let correctionAttempts = 0;
+    let retried = false;
+    while (ctx.response?.finishReason !== "tool_calls") {
+      const progress = this.deriveCurrentWorkflowProgress(ctx);
+      const requiresContinuation = Boolean(
+        progress &&
+        progress.completionState === "partial" &&
+        (
+          (progress.remainingMilestones?.length ?? 0) > 0 ||
+          progress.remainingRequirements.includes("request_milestones")
+        ),
+      );
+      if (!requiresContinuation || !progress) {
+        if (progress) {
+          ctx.completionState = progress.completionState;
+          if (progress.satisfiedMilestoneIds) {
+            ctx.completedRequestMilestoneIds = [
+              ...progress.satisfiedMilestoneIds,
+            ];
+          }
+        }
+        this.emitExecutionTrace(ctx, {
+          type: "completion_gate_checked",
+          phase,
+          callIndex: ctx.callIndex,
+          payload: {
+            gate: "workflow_continuation_truth",
+            decision: retried ? "accept_after_retry" : "accept",
+            finishReason: ctx.response?.finishReason,
+            correctionAttempts,
+            completionState: progress?.completionState,
+            remainingRequirements: progress?.remainingRequirements ?? [],
+            remainingMilestones: (progress?.remainingMilestones ?? []).map((milestone) => ({
+              id: milestone.id,
+              description: milestone.description,
+            })),
+          },
+        });
+        return retried ? "continue" : "not_required";
+      }
+
+      const responseContent =
+        typeof ctx.response?.content === "string"
+          ? ctx.response.content.trim()
+          : "";
+      const allowedToolNames = resolveCorrectionAllowedToolNames(
+        ctx.activeRoutedToolNames,
+        this.allowedTools ?? undefined,
+      );
+      const remainingMilestones = (progress.remainingMilestones ?? [])
+        .map((milestone) => milestone.description.trim())
+        .filter((description) => description.length > 0);
+      const failureMessage = remainingMilestones.length > 0
+        ? `Execution stopped early with unfinished request milestones: ${remainingMilestones.join("; ")}. Continue executing instead of ending with a partial summary.`
+        : "Execution stopped early with unfinished request-level work. Continue executing instead of ending with a partial summary.";
+      if (correctionAttempts >= MAX_PARTIAL_CONTINUATION_CORRECTIONS) {
+        this.emitExecutionTrace(ctx, {
+          type: "completion_gate_checked",
+          phase,
+          callIndex: ctx.callIndex,
+          payload: {
+            gate: "workflow_continuation_truth",
+            decision: "fail",
+            finishReason: ctx.response?.finishReason,
+            correctionAttempts,
+            completionState: progress.completionState,
+            remainingRequirements: progress.remainingRequirements,
+            remainingMilestones: (progress.remainingMilestones ?? []).map((milestone) => ({
+              id: milestone.id,
+              description: milestone.description,
+            })),
+            responsePreview: truncateText(responseContent, 180),
+          },
+        });
+        this.setStopReason(ctx, "validation_error", failureMessage);
+        ctx.finalContent = failureMessage;
+        return "failed";
+      }
+
+      if (responseContent.length > 0) {
+        this.pushMessage(
+          ctx,
+          { role: "assistant", content: responseContent, phase: "commentary" },
+          "assistant_runtime",
+        );
+      }
+      this.pushMessage(
+        ctx,
+        {
+          role: "system",
+          content: buildWorkflowContinuationRetryInstruction({
+            allowedToolNames,
+            progress,
+          }),
+        },
+        "system_runtime",
+      );
+      correctionAttempts += 1;
+      retried = true;
+      this.emitExecutionTrace(ctx, {
+        type: "completion_gate_checked",
+        phase,
+        callIndex: ctx.callIndex,
+        payload: {
+          gate: "workflow_continuation_truth",
+          decision: "retry",
+          finishReason: ctx.response?.finishReason,
+          correctionAttempts,
+          completionState: progress.completionState,
+          remainingRequirements: progress.remainingRequirements,
+          remainingMilestones: (progress.remainingMilestones ?? []).map((milestone) => ({
+            id: milestone.id,
+            description: milestone.description,
+          })),
+          responsePreview: truncateText(responseContent, 180),
+          allowedToolNames,
+        },
+      });
+
+      const nextResponse = await this.callModelForPhase(ctx, {
+        phase,
+        callMessages: ctx.messages,
+        callSections: ctx.messageSections,
+        onStreamChunk: ctx.activeStreamCallback,
+        statefulSessionId: ctx.sessionId,
+        statefulResumeAnchor: ctx.stateful?.resumeAnchor,
+        statefulHistoryCompacted: ctx.stateful?.historyCompacted,
+        toolChoice: "required",
+        budgetReason:
+          "Max model recalls exceeded while retrying unfinished request-level execution",
+      });
+      if (!nextResponse) return "failed";
+      ctx.response = nextResponse;
+    }
+
+    return retried ? "continue" : "not_required";
+  }
+
   private async finalizeDelegatedTurnAfterToolBudgetExhaustion(
     ctx: ExecutionContext,
     effectiveMaxToolRounds: number,
@@ -1590,6 +1868,7 @@ export class ChatExecutor {
       routedToolNames?: readonly string[];
       persistRoutedToolNames?: boolean;
       toolChoice?: LLMToolChoice;
+      structuredOutput?: LLMStructuredOutputRequest;
       preparationDiagnostics?: Record<string, unknown>;
       allowRecallBudgetBypass?: boolean;
       budgetReason: string;
@@ -1630,6 +1909,11 @@ export class ChatExecutor {
       ? [...input.callSections, "system_runtime" as const]
       : input.callSections;
     const routingDecision = this.resolveRoutingDecision(ctx, input.phase);
+    const structuredOutput =
+      input.structuredOutput &&
+      this.supportsStructuredOutputsForProviders(routingDecision.route.providers)
+        ? input.structuredOutput
+        : undefined;
     if (
       this.economicsPolicy.mode === "enforce" &&
       routingDecision.pressure.hardExceeded
@@ -1664,6 +1948,7 @@ export class ChatExecutor {
             : typeof input.toolChoice === "string"
             ? input.toolChoice
             : input.toolChoice.name,
+        structuredOutputSchemaName: structuredOutput?.schema?.name,
         messageCount: effectiveCallMessages.length,
         groundingMessageAdded: Boolean(groundingMessage),
         activeRouteMisses: ctx.routedToolMisses,
@@ -1707,6 +1992,9 @@ export class ChatExecutor {
             : {}),
           ...(input.toolChoice !== undefined
             ? { toolChoice: input.toolChoice }
+            : {}),
+          ...(structuredOutput !== undefined
+            ? { structuredOutput }
             : {}),
           ...(ctx.trace
             ? {
@@ -1765,6 +2053,13 @@ export class ChatExecutor {
       }),
     );
     return next.response;
+  }
+
+  private supportsStructuredOutputsForProviders(
+    providers: readonly LLMProvider[],
+  ): boolean {
+    return providers.length > 0 &&
+      providers.every((provider) => provider.name === "grok");
   }
 
   private async runPipelineWithTimeout(
@@ -1841,17 +2136,23 @@ export class ChatExecutor {
     let { history } = params;
     const effectiveMaxToolRounds =
       typeof params.maxToolRounds === "number" && Number.isFinite(params.maxToolRounds)
-        ? Math.max(1, Math.floor(params.maxToolRounds))
+        ? normalizeRuntimeLimit(params.maxToolRounds, this.maxToolRounds)
         : this.maxToolRounds;
     const effectiveToolBudget =
       typeof params.toolBudgetPerRequest === "number" &&
         Number.isFinite(params.toolBudgetPerRequest)
-        ? Math.max(1, Math.floor(params.toolBudgetPerRequest))
+        ? normalizeRuntimeLimit(
+            params.toolBudgetPerRequest,
+            this.toolBudgetPerRequest,
+          )
         : this.toolBudgetPerRequest;
     const effectiveMaxModelRecalls =
       typeof params.maxModelRecallsPerRequest === "number" &&
         Number.isFinite(params.maxModelRecallsPerRequest)
-        ? Math.max(0, Math.floor(params.maxModelRecallsPerRequest))
+        ? normalizeRuntimeLimit(
+            params.maxModelRecallsPerRequest,
+            this.maxModelRecallsPerRequest,
+          )
         : this.maxModelRecallsPerRequest;
     const messageText = extractMessageText(message);
     const initialRoutedToolNames = params.toolRouting?.routedToolNames
@@ -1896,26 +2197,37 @@ export class ChatExecutor {
     // Pre-check token budget — attempt compaction instead of hard fail
     let compacted = false;
     let compactedArtifactContext = params.stateful?.artifactContext;
-    if (this.sessionTokenBudget !== undefined) {
-      const used = this.sessionTokens.get(sessionId) ?? 0;
-      if (used >= this.sessionTokenBudget) {
-        try {
-          const compactedResult = await this.compactHistory(
-            history,
-            sessionId,
-            params.trace,
-            params.stateful?.artifactContext,
-          );
-          history = compactedResult.history;
-          compactedArtifactContext = compactedResult.artifactContext;
-          this.resetSessionTokens(sessionId);
-          compacted = true;
-        } catch {
+    const compactionState = this.getSessionCompactionState(sessionId);
+    if (
+      compactionState.hardBudgetReached || compactionState.softThresholdReached
+    ) {
+      const cooldownSnapshot = compactionState.hardBudgetReached
+        ? undefined
+        : new Map(this.cooldowns);
+      try {
+        const compactedResult = await this.compactHistory(
+          history,
+          sessionId,
+          params.trace,
+          params.stateful?.artifactContext,
+        );
+        history = compactedResult.history;
+        compactedArtifactContext = compactedResult.artifactContext;
+        this.resetSessionTokens(sessionId);
+        compacted = true;
+      } catch {
+        if (compactionState.hardBudgetReached) {
           throw new ChatBudgetExceededError(
             sessionId,
-            used,
-            this.sessionTokenBudget,
+            compactionState.used,
+            this.sessionTokenBudget!,
           );
+        }
+        if (cooldownSnapshot) {
+          this.cooldowns.clear();
+          for (const [providerName, cooldown] of cooldownSnapshot.entries()) {
+            this.cooldowns.set(providerName, cooldown);
+          }
         }
       }
     }
@@ -2160,6 +2472,21 @@ export class ChatExecutor {
     return { plannerSummary, durationMs };
   }
 
+  private getSessionCompactionState(sessionId: string): {
+    readonly used: number;
+    readonly hardBudgetReached: boolean;
+    readonly softThresholdReached: boolean;
+  } {
+    const used = this.sessionTokens.get(sessionId) ?? 0;
+    return {
+      used,
+      hardBudgetReached: isRuntimeLimitReached(used, this.sessionTokenBudget),
+      softThresholdReached:
+        hasRuntimeLimit(this.sessionCompactionThreshold) &&
+        isRuntimeLimitReached(used, this.sessionCompactionThreshold),
+    };
+  }
+
   private async evaluateAndRetryResponse(ctx: ExecutionContext): Promise<void> {
     const minScore = this.evaluator!.minScore ?? 0.7;
     const maxRetries = this.evaluator!.maxRetries ?? 1;
@@ -2171,9 +2498,9 @@ export class ChatExecutor {
         break;
       }
       // Skip evaluation if token budget would be exceeded.
-      if (this.sessionTokenBudget !== undefined) {
+      if (hasRuntimeLimit(this.sessionTokenBudget)) {
         const used = this.sessionTokens.get(ctx.sessionId) ?? 0;
-        if (used >= this.sessionTokenBudget) break;
+        if (isRuntimeLimitReached(used, this.sessionTokenBudget)) break;
       }
       if (!this.hasModelRecallBudget(ctx)) {
         this.setStopReason(
@@ -2359,6 +2686,8 @@ export class ChatExecutor {
         this.enforceRequiredToolEvidenceBeforeCompletion(c, phase),
       enforcePlanOnlyExecutionBeforeCompletion: (c: ExecutionContext, phase: "initial" | "tool_followup") =>
         this.enforcePlanOnlyExecutionBeforeCompletion(c, phase),
+      enforceWorkflowContinuationBeforeCompletion: (c: ExecutionContext, phase: "initial" | "tool_followup") =>
+        this.enforceWorkflowContinuationBeforeCompletion(c, phase),
       finalizeDelegatedTurnAfterToolBudgetExhaustion: (c: ExecutionContext, maxRounds: number) =>
         this.finalizeDelegatedTurnAfterToolBudgetExhaustion(c, maxRounds),
       callModelForPhase: (c: ExecutionContext, input: Parameters<ChatExecutor["callModelForPhase"]>[1]) =>

@@ -112,7 +112,7 @@ export function buildDesktopContext(
     "Shell mode supports pipes, redirects, backgrounding (`&`), chaining (`&&`, `||`, `;`), and subshells. " +
     (yolo
       ? "YOLO mode is enabled for host execution, so the usual host deny lists are disabled for system.bash, system.process*, and system.server* tools. Unsafe delegation benchmark mode is also active, which bypasses delegation-policy checks and child contract enforcement for delegated-agent flows. Avoid destructive commands unless the user explicitly wants them. "
-      : "Dangerous patterns (sudo, rm -rf /, reverse shells, bash -c nesting) are blocked. ") +
+      : "Dangerous patterns (sudo, rm -rf /, reverse shells, download-and-execute payloads) are blocked. ") +
     "You should use your tools proactively to fulfill requests.\n\n";
 
   if (desktopEnabled && !isMac && environment === "both") {

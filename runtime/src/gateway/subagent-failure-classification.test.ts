@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   buildEffectiveContextRequirements,
   classifyDelegatedScopeTrustSignal,
+  estimateContractShapedToolBudgetFloor,
+  resolveSubagentToolBudgetPerRequest,
   resolvePlannerStepWorkingDirectory,
   stepRequiresStructuredDelegatedFilesystemScope,
 } from "./subagent-failure-classification.js";
@@ -140,5 +142,51 @@ describe("subagent-failure-classification", () => {
         contextRequirements: ["cwd=/workspace/demo", "repo_context"],
       }),
     ).toBe("informational_untrusted_cwd_mention");
+  });
+
+  it("derives a contract-shaped tool budget floor for multi-evidence delegated checks", () => {
+    const step = {
+      name: "repair_git_and_check_state",
+      stepType: "subagent_task" as const,
+      objective:
+        "Repair git if needed, then list files, run git status, and read README",
+      inputContract:
+        "Return a grounded workspace state check covering repository init, file listing, git status, and README evidence",
+      acceptanceCriteria: [
+        "Repository initialized if needed",
+        "Workspace files listed",
+        "Git status reported",
+        "README summarized from grounded evidence",
+      ],
+      requiredToolCapabilities: [
+        "system.bash",
+        "system.readFile",
+        "system.listDir",
+      ],
+      contextRequirements: ["repo_context"],
+      executionContext: {
+        version: "v1" as const,
+        workspaceRoot: "/tmp/project",
+        allowedReadRoots: ["/tmp/project"],
+        allowedWriteRoots: ["/tmp/project"],
+        requiredSourceArtifacts: ["/tmp/project/README.md"],
+        effectClass: "read_only" as const,
+        verificationMode: "grounded_read" as const,
+        stepKind: "delegated_review" as const,
+      },
+      maxBudgetHint: "1m",
+      canRunParallel: false,
+    };
+
+    expect(
+      estimateContractShapedToolBudgetFloor(step),
+    ).toBeGreaterThan(1);
+
+    expect(
+      resolveSubagentToolBudgetPerRequest({
+        timeoutMs: 60_000,
+        step,
+      }),
+    ).toBe(0);
   });
 });

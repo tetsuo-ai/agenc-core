@@ -130,7 +130,7 @@ Expected:
 
 - fact/artifact counts do not drop unexpectedly across compaction boundaries
 - `summaryHealth.status` only moves to `repairing` or `degraded` when drift was actually detected
-- provider continuation anchors (`previous_response_id` / opaque compaction items) line up with the latest persisted durable run snapshot
+- provider continuation anchors (`previous_response_id` / any persisted provider state items) line up with the latest persisted durable run snapshot
 
 ### 5) Trace capture template
 

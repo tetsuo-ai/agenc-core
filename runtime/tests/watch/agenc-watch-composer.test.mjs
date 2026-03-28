@@ -126,6 +126,21 @@ test("buildComposerRenderLine collapses pasted ranges into placeholder summaries
   assert.equal(rendered.cursorRow, 0);
 });
 
+test("buildComposerRenderLine keeps the cursor visible for long wrapped input", () => {
+  const rendered = buildComposerRenderLine({
+    input: "abcdefghijklmnopqrstuvwxyz0123456789",
+    cursor: "abcdefghijklmnopqrstuvwxyz0123456789".length,
+    prompt: "> ",
+    width: 10,
+    visibleLength: (value) => value.length,
+  });
+
+  assert.equal(rendered.lines.length, 4);
+  assert.equal(rendered.lines.at(-1), "23456789");
+  assert.equal(rendered.cursorRow, 3);
+  assert.equal(rendered.cursorColumn, 9);
+});
+
 test("cursor movement and deletion treat pasted placeholders as atomic blocks", () => {
   const backwardState = makeState("before ");
   insertComposerText(backwardState, "alpha\nbeta", { markPasted: true });

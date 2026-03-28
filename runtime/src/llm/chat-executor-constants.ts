@@ -95,8 +95,8 @@ export const REPETITIVE_LINE_MIN_REPEATS = 20;
 export const REPETITIVE_LINE_MAX_UNIQUE_RATIO = 0.35;
 /** Upper bound on additive runtime hint system messages per execution. */
 export const DEFAULT_MAX_RUNTIME_SYSTEM_HINTS = 4;
-/** Default max planner output budget in tokens (soft, prompt-enforced). */
-export const DEFAULT_PLANNER_MAX_TOKENS = 8_192;
+/** Default max planner output budget in tokens. 0 = unlimited. */
+export const DEFAULT_PLANNER_MAX_TOKENS = 0;
 /** Bounded planner retries when a delegated step is rejected for decomposition. */
 export const DEFAULT_PLANNER_MAX_REFINEMENT_ATTEMPTS = 2;
 /** Default retries reserved for planner step-contract cleanup before structural replans. */
@@ -106,8 +106,8 @@ export const DEFAULT_PLANNER_MAX_STEP_CONTRACT_RETRIES = 1;
  * already changed the workspace but deterministic verification still fails.
  */
 export const DEFAULT_PLANNER_MAX_RUNTIME_REPAIR_RETRIES = 1;
-/** Maximum deterministic steps accepted from a planner pass. */
-export const MAX_PLANNER_STEPS = 24;
+/** Maximum deterministic steps accepted from a planner pass. 0 = unlimited. */
+export const MAX_PLANNER_STEPS = 0;
 /** Parent history slice candidates retained for per-subagent curation. */
 export const MAX_PLANNER_CONTEXT_HISTORY_CANDIDATES = 12;
 /** Max chars retained for one planner history candidate entry. */
@@ -116,21 +116,20 @@ export const MAX_PLANNER_CONTEXT_HISTORY_CHARS = 600;
 export const MAX_PLANNER_CONTEXT_MEMORY_CHARS = 1_200;
 /** Max chars retained for one planner tool-output candidate entry. */
 export const MAX_PLANNER_CONTEXT_TOOL_OUTPUT_CHARS = 1_200;
-/** Default per-request tool-call budget. */
-export const DEFAULT_TOOL_BUDGET_PER_REQUEST = 2_048;
+/** Default per-request tool-call budget. 0 = unlimited. */
+export const DEFAULT_TOOL_BUDGET_PER_REQUEST = 0;
 /** Default per-request model recall budget (calls after first). 0 = unlimited. */
 export const DEFAULT_MODEL_RECALLS_PER_REQUEST = 0;
-/** Default per-request failed-tool-call budget. */
-export const DEFAULT_FAILURE_BUDGET_PER_REQUEST = 8;
-/** Default timeout for a single tool execution call in ms. */
-export const DEFAULT_TOOL_CALL_TIMEOUT_MS = 180_000;
+/** Default per-request failed-tool-call budget. 0 = unlimited. */
+export const DEFAULT_FAILURE_BUDGET_PER_REQUEST = 0;
+/** Default timeout for a single tool execution call in ms. 0 = unlimited. */
+export const DEFAULT_TOOL_CALL_TIMEOUT_MS = 0;
 /** Default end-to-end timeout for one execute() invocation in ms. 0 = unlimited. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 0;
 /**
- * Absolute adaptive ceiling for tool rounds.
- * Keep aligned with gateway config validation for `llm.maxToolRounds`.
+ * Absolute adaptive ceiling for tool rounds. 0 = unlimited.
  */
-export const MAX_ADAPTIVE_TOOL_ROUNDS = 2_048;
+export const MAX_ADAPTIVE_TOOL_ROUNDS = 0;
 /** Default minimum verifier confidence for accepting subagent outputs. */
 export const DEFAULT_SUBAGENT_VERIFIER_MIN_CONFIDENCE = 0.65;
 /** Default max rounds for verifier/critique loops (initial round included). */

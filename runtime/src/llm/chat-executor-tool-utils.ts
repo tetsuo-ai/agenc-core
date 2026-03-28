@@ -7,6 +7,7 @@
 import type { LLMToolCall, LLMMessage, ToolHandler } from "./types.js";
 import type { ToolCallRecord, ToolCallAction, ToolLoopState, RecoveryHint, LLMRetryPolicyOverrides } from "./chat-executor-types.js";
 import type { LLMRetryPolicyMatrix } from "./policy.js";
+import { resolveRuntimeTimeoutMs } from "./runtime-limit-policy.js";
 import { DEFAULT_LLM_RETRY_POLICY_MATRIX } from "./policy.js";
 import type { LLMFailureClass, LLMRetryPolicyRule } from "./policy.js";
 import {
@@ -595,12 +596,11 @@ export async function executeToolWithRetry(
   );
 
   for (let attempt = 0; attempt <= maxToolRetries; attempt++) {
-    const remainingRequestMs = config.requestDeadlineAt - Date.now();
-    const toolTimeoutMs = Math.min(
-      config.toolCallTimeoutMs,
-      Math.max(1, remainingRequestMs),
-    );
-    finalToolTimeoutMs = toolTimeoutMs;
+    const toolTimeoutMs = resolveRuntimeTimeoutMs({
+      configuredTimeoutMs: config.toolCallTimeoutMs,
+      requestDeadlineAt: config.requestDeadlineAt,
+    });
+    finalToolTimeoutMs = toolTimeoutMs ?? 0;
     let toolTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const toolCallPromise = (async (): Promise<{
       result: string;
@@ -625,27 +625,31 @@ export async function executeToolWithRetry(
         };
       }
     })();
-    const timeoutPromise = new Promise<{
-      result: string;
-      isError: boolean;
-      timedOut: boolean;
-      threw: boolean;
-    }>((resolve) => {
-      toolTimeoutHandle = setTimeout(() => {
-        resolve({
-          result: safeStringify({
-            error: `Tool "${toolCall.name}" timed out after ${toolTimeoutMs}ms`,
-          }),
-          isError: true,
-          timedOut: true,
-          threw: false,
-        });
-      }, toolTimeoutMs);
-    });
-    const toolOutcome = await Promise.race([
-      toolCallPromise,
-      timeoutPromise,
-    ]);
+    const timeoutPromise = toolTimeoutMs === undefined
+      ? undefined
+      : new Promise<{
+        result: string;
+        isError: boolean;
+        timedOut: boolean;
+        threw: boolean;
+      }>((resolve) => {
+        toolTimeoutHandle = setTimeout(() => {
+          resolve({
+            result: safeStringify({
+              error: `Tool "${toolCall.name}" timed out after ${toolTimeoutMs}ms`,
+            }),
+            isError: true,
+            timedOut: true,
+            threw: false,
+          });
+        }, toolTimeoutMs);
+      });
+    const toolOutcome = timeoutPromise
+      ? await Promise.race([
+          toolCallPromise,
+          timeoutPromise,
+        ])
+      : await toolCallPromise;
     if (toolTimeoutHandle !== undefined) {
       clearTimeout(toolTimeoutHandle);
     }

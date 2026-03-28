@@ -832,7 +832,7 @@ describe("SubAgentOrchestrator", () => {
     });
 
     expect(manager.spawnCalls).toHaveLength(1);
-    expect(manager.spawnCalls[0]?.timeoutMs).toBe(60_000);
+    expect(manager.spawnCalls[0]?.timeoutMs).toBe(0);
   });
 
   it("derives a larger child tool budget for long delegated steps", async () => {
@@ -876,7 +876,7 @@ describe("SubAgentOrchestrator", () => {
 
     expect(result.status).toBe("completed");
     expect(manager.spawnCalls).toHaveLength(1);
-    expect(manager.spawnCalls[0]?.toolBudgetPerRequest).toBe(2048);
+    expect(manager.spawnCalls[0]?.toolBudgetPerRequest).toBe(0);
   });
 
   it("emits normalized child trajectory records when trajectory sink is configured", async () => {
@@ -6923,8 +6923,8 @@ describe("SubAgentOrchestrator", () => {
 
     expect(result.status).toBe("completed");
     expect(manager.spawnCalls).toHaveLength(2);
-    expect(manager.spawnCalls[0]?.toolBudgetPerRequest).toBe(2048);
-    expect(manager.spawnCalls[1]?.toolBudgetPerRequest).toBe(2048);
+    expect(manager.spawnCalls[0]?.toolBudgetPerRequest).toBe(0);
+    expect(manager.spawnCalls[1]?.toolBudgetPerRequest).toBe(0);
   });
 
   it("retries child validation failures that return non-completed stop reasons without tool evidence", async () => {
