@@ -8,7 +8,7 @@ import { readFile } from "node:fs/promises";
 import { watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import type { GatewayConfig, ConfigDiff } from "./types.js";
+import type { GatewayConfig, ConfigDiff, GatewayLLMConfig } from "./types.js";
 import { GatewayValidationError, GatewayConnectionError } from "./errors.js";
 import {
   type ValidationResult,
@@ -1842,6 +1842,7 @@ function validateLlmRetryPolicySection(
 }
 
 function validateLlmStatefulResponsesSection(
+  provider: GatewayLLMConfig["provider"] | undefined,
   statefulResponsesValue: unknown,
   errors: string[],
 ): void {
@@ -1904,7 +1905,8 @@ function validateLlmStatefulResponsesSection(
   }
   if (
     compactionValue.enabled === true &&
-    compactionValue.compactThreshold === undefined
+    compactionValue.compactThreshold === undefined &&
+    provider !== "grok"
   ) {
     errors.push(
       "llm.statefulResponses.compaction.compactThreshold is required when compaction.enabled is true",
@@ -2816,10 +2818,19 @@ function validateLlmSection(llm: unknown, errors: string[]): void {
     errors.push("llm.parallelToolCalls must be a boolean");
   }
 
+  const llmProvider =
+    typeof llm.provider === "string" && VALID_LLM_PROVIDERS.has(llm.provider)
+      ? (llm.provider as GatewayLLMConfig["provider"])
+      : undefined;
+
   validateLlmCollectionsSearchSection(llm.collectionsSearch, errors);
   validateLlmRemoteMcpSection(llm.remoteMcp, errors);
   validateLlmStructuredOutputsSection(llm.structuredOutputs, errors);
-  validateLlmStatefulResponsesSection(llm.statefulResponses, errors);
+  validateLlmStatefulResponsesSection(
+    llmProvider,
+    llm.statefulResponses,
+    errors,
+  );
   validateLlmToolRoutingSection(llm.toolRouting, errors);
   validateLlmSubagentsSection(llm.subagents, errors);
 }

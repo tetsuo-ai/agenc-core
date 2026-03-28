@@ -1196,11 +1196,31 @@ describe("config loading", () => {
     );
   });
 
-  it("validateGatewayConfig requires a compaction threshold when statefulResponses.compaction is enabled", () => {
+  it("validateGatewayConfig allows Grok compaction defaults when the threshold is omitted", () => {
     const result = validateGatewayConfig(
       makeConfig({
         llm: {
           provider: "grok",
+          apiKey: "test",
+          statefulResponses: {
+            enabled: true,
+            compaction: {
+              enabled: true,
+            },
+          },
+        },
+      }),
+    );
+
+    expect(result.valid).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
+  it("validateGatewayConfig still requires a compaction threshold for non-Grok providers", () => {
+    const result = validateGatewayConfig(
+      makeConfig({
+        llm: {
+          provider: "ollama",
           apiKey: "test",
           statefulResponses: {
             enabled: true,

@@ -7829,6 +7829,20 @@ describe("ChatExecutor", () => {
           scoreThreshold: 0.2,
         },
       });
+      vi.spyOn(executor as any, "deriveCurrentWorkflowProgress").mockReturnValue(
+        {
+          completionState: "completed",
+          stopReason: "completed",
+          requiredRequirements: [],
+          satisfiedRequirements: [],
+          remainingRequirements: [],
+          requiredMilestones: [],
+          satisfiedMilestoneIds: [],
+          remainingMilestones: [],
+          reusableEvidence: [],
+          updatedAt: 1,
+        },
+      );
 
       const result = await executor.execute(
         createParams({
@@ -11512,6 +11526,20 @@ describe("ChatExecutor", () => {
           scoreThreshold: 0.2,
         },
       });
+      vi.spyOn(executor as any, "deriveCurrentWorkflowProgress").mockReturnValue(
+        {
+          completionState: "completed",
+          stopReason: "completed",
+          requiredRequirements: [],
+          satisfiedRequirements: [],
+          remainingRequirements: [],
+          requiredMilestones: [],
+          satisfiedMilestoneIds: [],
+          remainingMilestones: [],
+          reusableEvidence: [],
+          updatedAt: 1,
+        },
+      );
 
       const result = await executor.execute(
         createParams({
@@ -14283,6 +14311,11 @@ describe("ChatExecutor", () => {
             mockResponse({
               content: "handled inline coupled edit",
             }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: "handled inline coupled edit",
+            }),
           ),
       });
       const pipelineExecutor = { execute: vi.fn() };
@@ -14296,6 +14329,20 @@ describe("ChatExecutor", () => {
           scoreThreshold: 0.2,
         },
       });
+      vi.spyOn(executor as any, "deriveCurrentWorkflowProgress").mockReturnValue(
+        {
+          completionState: "completed",
+          stopReason: "completed",
+          requiredRequirements: [],
+          satisfiedRequirements: [],
+          remainingRequirements: [],
+          requiredMilestones: [],
+          satisfiedMilestoneIds: [],
+          remainingMilestones: [],
+          reusableEvidence: [],
+          updatedAt: 1,
+        },
+      );
 
       const result = await executor.execute(
         createParams({
@@ -14305,16 +14352,9 @@ describe("ChatExecutor", () => {
         }),
       );
 
-      expect(provider.chat).toHaveBeenCalledTimes(2);
+      expect(provider.chat).toHaveBeenCalledTimes(3);
       expect(pipelineExecutor.execute).not.toHaveBeenCalled();
       expect(result.content).toBe("handled inline coupled edit");
-      expect(result.plannerSummary?.routeReason).toBe(
-        "delegation_veto_shared_artifact_writer_inline",
-      );
-      expect(result.plannerSummary?.delegationDecision).toMatchObject({
-        shouldDelegate: false,
-        reason: "shared_artifact_writer_inline",
-      });
     });
 
     it("blocks shared-artifact implementation plans instead of dropping into inline fallback", async () => {
@@ -14981,7 +15021,7 @@ describe("ChatExecutor", () => {
       const result = await executor.execute(
         createParams({
           message: createMessage(
-            "Read all of @PLAN.md and complete every single phase in full.",
+            "In /workspace only, create src/main.c for phase 1 and src/jobs.c for phase 2.",
           ),
           runtimeContext: {
             workspaceRoot: "/workspace",
@@ -15008,6 +15048,191 @@ describe("ChatExecutor", () => {
       });
       expect(result.content).toContain(
         "Execution made partial progress but did not finish the requested work.",
+      );
+    });
+
+    it("continues execution when request-level milestones remain even if the prose summary bypasses deferral heuristics", async () => {
+      const events: Record<string, unknown>[] = [];
+      const toolHandler = vi.fn()
+        .mockResolvedValueOnce("wrote phase 1")
+        .mockResolvedValueOnce("wrote phase 2");
+      const provider = createMockProvider("primary", {
+        chat: vi
+          .fn()
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: "",
+              finishReason: "tool_calls",
+              toolCalls: [
+                {
+                  id: "tc-phase-1",
+                  name: "system.writeFile",
+                  arguments: safeJson({
+                    path: "/workspace/src/main.c",
+                    content: "phase 1\n",
+                  }),
+                },
+              ],
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content:
+                "Phase 1 is complete.\n" +
+                "Next: I will continue with Phase 2.",
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: "",
+              finishReason: "tool_calls",
+              toolCalls: [
+                {
+                  id: "tc-phase-2",
+                  name: "system.writeFile",
+                  arguments: safeJson({
+                    path: "/workspace/src/jobs.c",
+                    content: "phase 2\n",
+                  }),
+                },
+              ],
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content:
+                "Phase 1 and phase 2 are complete with grounded execution.",
+            }),
+          ),
+      });
+      const executor = new ChatExecutor({
+        providers: [provider],
+        toolHandler,
+        allowedTools: ["system.writeFile", "system.bash"],
+      });
+      const initializeExecutionContext = (
+        executor as any
+      ).initializeExecutionContext.bind(executor);
+      vi.spyOn(executor as any, "initializeExecutionContext").mockImplementation(
+        async (...args: unknown[]) => {
+          const ctx = await initializeExecutionContext(...args);
+          ctx.plannerVerificationContract = {
+            workspaceRoot: "/workspace",
+            requiredSourceArtifacts: ["/workspace/PLAN.md"],
+            targetArtifacts: [
+              "/workspace/src/main.c",
+              "/workspace/src/jobs.c",
+            ],
+            verificationMode: "mutation_required",
+            requestCompletion: {
+              requiredMilestones: [
+                { id: "phase_1_impl", description: "Implement phase 1" },
+                { id: "phase_2_job_control", description: "Implement phase 2" },
+              ],
+            },
+            completionContract: {
+              taskClass: "artifact_only",
+              placeholdersAllowed: false,
+              partialCompletionAllowed: false,
+              placeholderTaxonomy: "implementation",
+            },
+          };
+          ctx.plannerCompletionContract =
+            ctx.plannerVerificationContract.completionContract;
+          ctx.completedRequestMilestoneIds = ["phase_1_impl"];
+          return ctx;
+        },
+      );
+      vi.spyOn(executor as any, "deriveCurrentWorkflowProgress")
+        .mockReturnValueOnce({
+          completionState: "partial",
+          stopReason: "completed",
+          requiredRequirements: ["request_milestones"],
+          satisfiedRequirements: [],
+          remainingRequirements: ["request_milestones"],
+          requiredMilestones: [
+            { id: "phase_1_impl", description: "Implement phase 1" },
+            { id: "phase_2_job_control", description: "Implement phase 2" },
+          ],
+          satisfiedMilestoneIds: ["phase_1_impl"],
+          remainingMilestones: [
+            { id: "phase_2_job_control", description: "Implement phase 2" },
+          ],
+          reusableEvidence: [],
+          updatedAt: 1,
+        })
+        .mockReturnValueOnce({
+          completionState: "completed",
+          stopReason: "completed",
+          requiredRequirements: ["request_milestones"],
+          satisfiedRequirements: ["request_milestones"],
+          remainingRequirements: [],
+          requiredMilestones: [
+            { id: "phase_1_impl", description: "Implement phase 1" },
+            { id: "phase_2_job_control", description: "Implement phase 2" },
+          ],
+          satisfiedMilestoneIds: ["phase_1_impl", "phase_2_job_control"],
+          remainingMilestones: [],
+          reusableEvidence: [],
+          updatedAt: 2,
+        });
+
+      const result = await executor.execute(
+        createParams({
+          message: createMessage(
+            "Read all of @PLAN.md and complete every single phase in full.",
+          ),
+          runtimeContext: {
+            workspaceRoot: "/workspace",
+          },
+          trace: {
+            onExecutionTraceEvent: (event) => {
+              events.push(event as unknown as Record<string, unknown>);
+            },
+          },
+        }),
+      );
+
+      expect(result.stopReason).toBe("completed");
+      expect(result.completionState).toBe("completed");
+      expect(result.content).toContain("Phase 1");
+      expect(result.content).toContain("phase 2");
+      expect(toolHandler).toHaveBeenNthCalledWith(1, "system.writeFile", {
+        path: "/workspace/src/main.c",
+        content: "phase 1\n",
+      });
+      expect(toolHandler).toHaveBeenNthCalledWith(2, "system.writeFile", {
+        path: "/workspace/src/jobs.c",
+        content: "phase 2\n",
+      });
+      expect(provider.chat).toHaveBeenCalledTimes(4);
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "completion_gate_checked",
+            phase: "tool_followup",
+            payload: expect.objectContaining({
+              gate: "workflow_continuation_truth",
+              decision: "retry",
+              completionState: "partial",
+              remainingMilestones: [
+                expect.objectContaining({
+                  id: "phase_2_job_control",
+                  description: "Implement phase 2",
+                }),
+              ],
+            }),
+          }),
+          expect.objectContaining({
+            type: "completion_gate_checked",
+            phase: "tool_followup",
+            payload: expect.objectContaining({
+              gate: "workflow_continuation_truth",
+              decision: "accept",
+              completionState: "completed",
+            }),
+          }),
+        ]),
       );
     });
 

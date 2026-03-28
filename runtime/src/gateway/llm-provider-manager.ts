@@ -22,7 +22,10 @@ import {
   resolveContextWindowProfile,
 } from "./context-window.js";
 import { supportsProviderNativeWebSearch } from "../llm/provider-native-search.js";
-import { resolveGatewayStatefulResponses } from "./llm-stateful-defaults.js";
+import {
+  resolveDefaultGrokCompactionThreshold,
+  resolveGatewayStatefulResponses,
+} from "./llm-stateful-defaults.js";
 import { hasRuntimeLimit } from "../llm/runtime-limit-policy.js";
 
 // ============================================================================
@@ -186,7 +189,11 @@ export function resolveLocalCompactionThreshold(
     !Number.isFinite(compactThreshold) ||
     compactThreshold <= 0
   ) {
-    return undefined;
+    return provider === "grok"
+      ? resolveDefaultGrokCompactionThreshold(
+          contextWindowTokens ?? inferContextWindowTokens(llmConfig),
+        )
+      : undefined;
   }
   return Math.floor(compactThreshold);
 }

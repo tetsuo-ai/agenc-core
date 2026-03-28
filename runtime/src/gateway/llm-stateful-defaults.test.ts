@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveGatewayStatefulResponses } from "./llm-stateful-defaults.js";
+import {
+  resolveDefaultGrokCompactionThreshold,
+  resolveGatewayStatefulResponses,
+} from "./llm-stateful-defaults.js";
 
 describe("resolveGatewayStatefulResponses", () => {
-  it("enables Grok stateful responses with compaction defaults when omitted", () => {
+  it("enables Grok stateful responses with a dynamic compaction default when omitted", () => {
     const resolved = resolveGatewayStatefulResponses("grok", undefined);
 
     expect(resolved.usedDefaults).toBe(true);
@@ -13,7 +16,6 @@ describe("resolveGatewayStatefulResponses", () => {
       fallbackToStateless: true,
       compaction: {
         enabled: true,
-        compactThreshold: 16_000,
         fallbackOnUnsupported: true,
       },
     });
@@ -34,7 +36,6 @@ describe("resolveGatewayStatefulResponses", () => {
       fallbackToStateless: true,
       compaction: {
         enabled: false,
-        compactThreshold: 16_000,
         fallbackOnUnsupported: true,
       },
     });
@@ -53,7 +54,6 @@ describe("resolveGatewayStatefulResponses", () => {
       fallbackToStateless: true,
       compaction: {
         enabled: true,
-        compactThreshold: 16_000,
         fallbackOnUnsupported: true,
       },
     });
@@ -89,5 +89,15 @@ describe("resolveGatewayStatefulResponses", () => {
 
     expect(resolved.usedDefaults).toBe(false);
     expect(resolved.config).toBe(config);
+  });
+});
+
+describe("resolveDefaultGrokCompactionThreshold", () => {
+  it("uses 60% of the resolved context window when available", () => {
+    expect(resolveDefaultGrokCompactionThreshold(128_000)).toBe(76_800);
+  });
+
+  it("falls back to the legacy 16k threshold when the context window is unknown", () => {
+    expect(resolveDefaultGrokCompactionThreshold()).toBe(16_000);
   });
 });

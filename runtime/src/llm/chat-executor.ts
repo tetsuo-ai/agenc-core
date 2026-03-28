@@ -278,6 +278,7 @@ function buildDelegatedBudgetFinalizationInstruction(params: {
 }
 
 const MAX_PLAN_ONLY_EXECUTION_CORRECTIONS = 1;
+const MAX_PARTIAL_CONTINUATION_CORRECTIONS = 1;
 
 function buildPlanOnlyExecutionRetryInstruction(
   allowedToolNames: readonly string[],
@@ -290,6 +291,40 @@ function buildPlanOnlyExecutionRetryInstruction(
     "The user asked you to execute work in the environment, so start performing the requested file or system actions immediately using tools. " +
     "Only answer after tool results show what you actually completed. " +
     "If execution is blocked, state the concrete blocker instead of returning another plan." +
+    allowedToolSummary
+  );
+}
+
+function buildWorkflowContinuationRetryInstruction(params: {
+  readonly allowedToolNames: readonly string[];
+  readonly progress: NonNullable<ReturnType<typeof deriveWorkflowProgressSnapshot>>;
+}): string {
+  const allowedToolSummary = params.allowedToolNames.length > 0
+    ? ` Allowed tools for this turn: ${params.allowedToolNames.slice(0, 12).join(", ")}${params.allowedToolNames.length > 12 ? ", ..." : ""}.`
+    : "";
+  const remainingMilestones = (params.progress.remainingMilestones ?? [])
+    .map((milestone) => milestone.description.trim())
+    .filter((description) => description.length > 0)
+    .slice(0, 4);
+  const remainingRequirements = params.progress.remainingRequirements
+    .filter((requirement) => requirement !== "request_milestones")
+    .map((requirement) => requirement.replace(/_/g, " "))
+    .slice(0, 4);
+  const remainingSummaryParts: string[] = [];
+  if (remainingMilestones.length > 0) {
+    remainingSummaryParts.push(`Remaining request milestones: ${remainingMilestones.join("; ")}`);
+  }
+  if (remainingRequirements.length > 0) {
+    remainingSummaryParts.push(`Remaining execution requirements: ${remainingRequirements.join("; ")}`);
+  }
+  const remainingSummary = remainingSummaryParts.length > 0
+    ? ` ${remainingSummaryParts.join(". ")}.`
+    : "";
+  return (
+    "Do not stop with a partial progress summary while request-level work remains incomplete. " +
+    "Continue executing the remaining work with tools now. " +
+    "Only stop if the remaining milestones are actually complete in the tool ledger, or if you hit a concrete blocker that prevents further execution." +
+    remainingSummary +
     allowedToolSummary
   );
 }
@@ -772,6 +807,35 @@ export class ChatExecutor {
         performed: ctx.plannerSummaryState.subagentVerification.performed,
         overall: ctx.plannerSummaryState.subagentVerification.overall,
       },
+    });
+  }
+
+  private deriveCurrentWorkflowProgress(
+    ctx: ExecutionContext,
+  ): ReturnType<typeof deriveWorkflowProgressSnapshot> {
+    const workflowContext = this.resolveWorkflowVerificationContext(ctx);
+    const completionState = resolveWorkflowCompletionState({
+      stopReason: ctx.stopReason,
+      toolCalls: ctx.allToolCalls,
+      verificationContract: workflowContext.verificationContract,
+      completionContract: workflowContext.completionContract,
+      completedRequestMilestoneIds: ctx.completedRequestMilestoneIds,
+      validationCode: ctx.validationCode,
+      verifier: {
+        performed: ctx.plannerSummaryState.subagentVerification.performed,
+        overall: ctx.plannerSummaryState.subagentVerification.overall,
+      },
+    });
+    return deriveWorkflowProgressSnapshot({
+      stopReason: ctx.stopReason,
+      completionState,
+      stopReasonDetail: ctx.stopReasonDetail,
+      validationCode: ctx.validationCode,
+      toolCalls: ctx.allToolCalls,
+      verificationContract: workflowContext.verificationContract,
+      completionContract: workflowContext.completionContract,
+      completedRequestMilestoneIds: ctx.completedRequestMilestoneIds,
+      updatedAt: Date.now(),
     });
   }
 
@@ -1363,6 +1427,182 @@ export class ChatExecutor {
         toolChoice: "required",
         budgetReason:
           "Max model recalls exceeded while retrying a plan-only execution response",
+      });
+      if (!nextResponse) return "failed";
+      ctx.response = nextResponse;
+    }
+
+    return retried ? "continue" : "not_required";
+  }
+
+  private async enforceWorkflowContinuationBeforeCompletion(
+    ctx: ExecutionContext,
+    phase: "initial" | "tool_followup",
+  ): Promise<"continue" | "failed" | "not_required"> {
+    const executionRequested = requestRequiresToolGroundedExecution(
+      ctx.messageText,
+    );
+    const toolsAvailable = Boolean(ctx.activeToolHandler);
+    const trackedRequestMilestones = Boolean(
+      ctx.plannerVerificationContract?.requestCompletion?.requiredMilestones
+        ?.length ||
+      ctx.completedRequestMilestoneIds.length > 0,
+    );
+    if (
+      !ctx.response ||
+      !executionRequested ||
+      !trackedRequestMilestones ||
+      !toolsAvailable ||
+      ctx.response?.finishReason === "tool_calls" ||
+      ctx.stopReason !== "completed"
+    ) {
+      this.emitExecutionTrace(ctx, {
+        type: "completion_gate_checked",
+        phase,
+        callIndex: ctx.callIndex,
+        payload: {
+          gate: "workflow_continuation_truth",
+          decision: "not_required",
+          finishReason: ctx.response?.finishReason,
+          executionRequested,
+          trackedRequestMilestones,
+          toolsAvailable,
+          stopReason: ctx.stopReason,
+        },
+      });
+      return "not_required";
+    }
+
+    let correctionAttempts = 0;
+    let retried = false;
+    while (ctx.response?.finishReason !== "tool_calls") {
+      const progress = this.deriveCurrentWorkflowProgress(ctx);
+      const requiresContinuation = Boolean(
+        progress &&
+        progress.completionState === "partial" &&
+        (
+          (progress.remainingMilestones?.length ?? 0) > 0 ||
+          progress.remainingRequirements.includes("request_milestones")
+        ),
+      );
+      if (!requiresContinuation || !progress) {
+        if (progress) {
+          ctx.completionState = progress.completionState;
+          if (progress.satisfiedMilestoneIds) {
+            ctx.completedRequestMilestoneIds = [
+              ...progress.satisfiedMilestoneIds,
+            ];
+          }
+        }
+        this.emitExecutionTrace(ctx, {
+          type: "completion_gate_checked",
+          phase,
+          callIndex: ctx.callIndex,
+          payload: {
+            gate: "workflow_continuation_truth",
+            decision: retried ? "accept_after_retry" : "accept",
+            finishReason: ctx.response?.finishReason,
+            correctionAttempts,
+            completionState: progress?.completionState,
+            remainingRequirements: progress?.remainingRequirements ?? [],
+            remainingMilestones: (progress?.remainingMilestones ?? []).map((milestone) => ({
+              id: milestone.id,
+              description: milestone.description,
+            })),
+          },
+        });
+        return retried ? "continue" : "not_required";
+      }
+
+      const responseContent =
+        typeof ctx.response?.content === "string"
+          ? ctx.response.content.trim()
+          : "";
+      const allowedToolNames = resolveCorrectionAllowedToolNames(
+        ctx.activeRoutedToolNames,
+        this.allowedTools ?? undefined,
+      );
+      const remainingMilestones = (progress.remainingMilestones ?? [])
+        .map((milestone) => milestone.description.trim())
+        .filter((description) => description.length > 0);
+      const failureMessage = remainingMilestones.length > 0
+        ? `Execution stopped early with unfinished request milestones: ${remainingMilestones.join("; ")}. Continue executing instead of ending with a partial summary.`
+        : "Execution stopped early with unfinished request-level work. Continue executing instead of ending with a partial summary.";
+      if (correctionAttempts >= MAX_PARTIAL_CONTINUATION_CORRECTIONS) {
+        this.emitExecutionTrace(ctx, {
+          type: "completion_gate_checked",
+          phase,
+          callIndex: ctx.callIndex,
+          payload: {
+            gate: "workflow_continuation_truth",
+            decision: "fail",
+            finishReason: ctx.response?.finishReason,
+            correctionAttempts,
+            completionState: progress.completionState,
+            remainingRequirements: progress.remainingRequirements,
+            remainingMilestones: (progress.remainingMilestones ?? []).map((milestone) => ({
+              id: milestone.id,
+              description: milestone.description,
+            })),
+            responsePreview: truncateText(responseContent, 180),
+          },
+        });
+        this.setStopReason(ctx, "validation_error", failureMessage);
+        ctx.finalContent = failureMessage;
+        return "failed";
+      }
+
+      if (responseContent.length > 0) {
+        this.pushMessage(
+          ctx,
+          { role: "assistant", content: responseContent, phase: "commentary" },
+          "assistant_runtime",
+        );
+      }
+      this.pushMessage(
+        ctx,
+        {
+          role: "system",
+          content: buildWorkflowContinuationRetryInstruction({
+            allowedToolNames,
+            progress,
+          }),
+        },
+        "system_runtime",
+      );
+      correctionAttempts += 1;
+      retried = true;
+      this.emitExecutionTrace(ctx, {
+        type: "completion_gate_checked",
+        phase,
+        callIndex: ctx.callIndex,
+        payload: {
+          gate: "workflow_continuation_truth",
+          decision: "retry",
+          finishReason: ctx.response?.finishReason,
+          correctionAttempts,
+          completionState: progress.completionState,
+          remainingRequirements: progress.remainingRequirements,
+          remainingMilestones: (progress.remainingMilestones ?? []).map((milestone) => ({
+            id: milestone.id,
+            description: milestone.description,
+          })),
+          responsePreview: truncateText(responseContent, 180),
+          allowedToolNames,
+        },
+      });
+
+      const nextResponse = await this.callModelForPhase(ctx, {
+        phase,
+        callMessages: ctx.messages,
+        callSections: ctx.messageSections,
+        onStreamChunk: ctx.activeStreamCallback,
+        statefulSessionId: ctx.sessionId,
+        statefulResumeAnchor: ctx.stateful?.resumeAnchor,
+        statefulHistoryCompacted: ctx.stateful?.historyCompacted,
+        toolChoice: "required",
+        budgetReason:
+          "Max model recalls exceeded while retrying unfinished request-level execution",
       });
       if (!nextResponse) return "failed";
       ctx.response = nextResponse;
@@ -2446,6 +2686,8 @@ export class ChatExecutor {
         this.enforceRequiredToolEvidenceBeforeCompletion(c, phase),
       enforcePlanOnlyExecutionBeforeCompletion: (c: ExecutionContext, phase: "initial" | "tool_followup") =>
         this.enforcePlanOnlyExecutionBeforeCompletion(c, phase),
+      enforceWorkflowContinuationBeforeCompletion: (c: ExecutionContext, phase: "initial" | "tool_followup") =>
+        this.enforceWorkflowContinuationBeforeCompletion(c, phase),
       finalizeDelegatedTurnAfterToolBudgetExhaustion: (c: ExecutionContext, maxRounds: number) =>
         this.finalizeDelegatedTurnAfterToolBudgetExhaustion(c, maxRounds),
       callModelForPhase: (c: ExecutionContext, input: Parameters<ChatExecutor["callModelForPhase"]>[1]) =>

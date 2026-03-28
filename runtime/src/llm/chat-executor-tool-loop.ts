@@ -111,6 +111,10 @@ export interface ToolLoopCallbacks {
     ctx: ExecutionContext,
     phase: "initial" | "tool_followup",
   ): Promise<"continue" | "failed" | "not_required">;
+  enforceWorkflowContinuationBeforeCompletion(
+    ctx: ExecutionContext,
+    phase: "initial" | "tool_followup",
+  ): Promise<"continue" | "failed" | "not_required">;
   finalizeDelegatedTurnAfterToolBudgetExhaustion(
     ctx: ExecutionContext,
     effectiveMaxToolRounds: number,
@@ -496,6 +500,20 @@ export async function executeToolCallLoop(
   if (initialEvidenceAction === "failed" && !ctx.finalContent) {
     ctx.finalContent = ctx.response?.content ?? ctx.finalContent;
   }
+  if (initialEvidenceAction === "failed") {
+    return;
+  }
+  const initialContinuationAction =
+    await callbacks.enforceWorkflowContinuationBeforeCompletion(
+      ctx,
+      "initial",
+    );
+  if (initialContinuationAction === "failed" && !ctx.finalContent) {
+    ctx.finalContent = ctx.response?.content ?? ctx.finalContent;
+  }
+  if (initialContinuationAction === "failed") {
+    return;
+  }
 
   let rounds = 0;
   let effectiveMaxToolRounds = ctx.effectiveMaxToolRounds;
@@ -728,6 +746,12 @@ export async function executeToolCallLoop(
         "tool_followup",
       );
     if (evidenceAction === "failed") break;
+    const continuationAction =
+      await callbacks.enforceWorkflowContinuationBeforeCompletion(
+        ctx,
+        "tool_followup",
+      );
+    if (continuationAction === "failed") break;
 
     const roundProgress = summarizeToolRoundProgress(
       roundCalls,

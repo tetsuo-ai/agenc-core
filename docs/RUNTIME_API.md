@@ -698,6 +698,11 @@ The runtime preserves local assistant `phase` metadata in AgenC history and
 includes continuation diagnostics in call-level traces so compacted
 continuations remain replayable without assuming undocumented xAI behavior.
 
+When `compactThreshold` is omitted on Grok, AgenC now derives the local
+compaction threshold from the resolved model context window at roughly 60% of
+capacity. If the context window cannot be resolved, AgenC falls back to
+`16,000` tokens.
+
 ### Host vs Desktop Browser Tooling
 
 The tool surface is intentionally split by environment:
