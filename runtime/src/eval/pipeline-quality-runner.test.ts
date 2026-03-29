@@ -62,7 +62,7 @@ describe("pipeline-quality runner", () => {
     expect(artifact.liveCoding.scenarioCount).toBe(3);
     expect(artifact.liveCoding.passRate).toBe(1);
     expect(artifact.liveCoding.effectLedgerCompletenessRate).toBe(1);
-    expect(artifact.safety.scenarioCount).toBe(4);
+    expect(artifact.safety.scenarioCount).toBe(6);
     expect(artifact.safety.passRate).toBe(1);
     expect(artifact.longHorizon.scenarioCount).toBe(4);
     expect(artifact.longHorizon.passRate).toBe(1);

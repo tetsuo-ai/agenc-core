@@ -825,22 +825,27 @@ describe("createSessionToolHandler", () => {
   });
 
   it("passes through shell-mode commands that reference absolute paths outside the delegated workspace root after scoped validation removal", async () => {
+    const workspaceRoot = createTempDir("agenc-tool-handler-shell-pass-through-");
     const baseHandler = vi.fn(async () => '{"stdout":"","exitCode":0}');
     const handler = createSessionToolHandler({
       sessionId: "session-1",
       baseHandler,
       routerId: "router-a",
       send: vi.fn(),
-      defaultWorkingDirectory: "/home/tetsuo/agent-test/terrain-router-ts-1",
-      scopedFilesystemRoot: "/home/tetsuo/agent-test/terrain-router-ts-1",
+      defaultWorkingDirectory: workspaceRoot,
+      scopedFilesystemRoot: workspaceRoot,
     });
 
-    const result = await handler("system.bash", {
-      command: "mkdir -p /tmp/terrain-monorepo/packages/core/src",
-    });
+    try {
+      const result = await handler("system.bash", {
+        command: "mkdir -p /tmp/terrain-monorepo/packages/core/src",
+      });
 
-    expect(JSON.parse(result)).toEqual({ stdout: "", exitCode: 0 });
-    expect(baseHandler).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(result)).toEqual({ stdout: "", exitCode: 0 });
+      expect(baseHandler).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   it("rewrites /workspace aliases inside shell-mode commands to the configured host workspace root", async () => {
@@ -870,89 +875,109 @@ describe("createSessionToolHandler", () => {
   });
 
   it("does not treat shell-mode sed expressions as escaped filesystem paths in delegated bash commands", async () => {
+    const workspaceRoot = createTempDir("agenc-tool-handler-sed-shell-mode-");
     const baseHandler = vi.fn(async () => '{"stdout":"","exitCode":0}');
     const handler = createSessionToolHandler({
       sessionId: "session-1",
       baseHandler,
       routerId: "router-a",
       send: vi.fn(),
-      defaultWorkingDirectory: "/home/tetsuo/agent-test/terrain-router-ts-1",
-      scopedFilesystemRoot: "/home/tetsuo/agent-test/terrain-router-ts-1",
+      defaultWorkingDirectory: workspaceRoot,
+      scopedFilesystemRoot: workspaceRoot,
     });
 
-    const result = await handler("system.bash", {
-      command: "sed -n '/interface Scenario/,/}/p' packages/core/src/index.ts",
-    });
+    try {
+      const result = await handler("system.bash", {
+        command: "sed -n '/interface Scenario/,/}/p' packages/core/src/index.ts",
+      });
 
-    expect(JSON.parse(result)).toEqual({
-      stdout: "",
-      exitCode: 0,
-    });
-    expect(baseHandler).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(result)).toEqual({
+        stdout: "",
+        exitCode: 0,
+      });
+      expect(baseHandler).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   it("passes through shell-mode redirect targets outside the delegated workspace root after scoped validation removal", async () => {
+    const workspaceRoot = createTempDir("agenc-tool-handler-shell-redirect-");
     const baseHandler = vi.fn(async () => '{"stdout":"","exitCode":0}');
     const handler = createSessionToolHandler({
       sessionId: "session-1",
       baseHandler,
       routerId: "router-a",
       send: vi.fn(),
-      defaultWorkingDirectory: "/home/tetsuo/agent-test/terrain-router-ts-1",
-      scopedFilesystemRoot: "/home/tetsuo/agent-test/terrain-router-ts-1",
+      defaultWorkingDirectory: workspaceRoot,
+      scopedFilesystemRoot: workspaceRoot,
     });
 
-    const result = await handler("system.bash", {
-      command: "echo ok > /tmp/terrain-monorepo.log",
-    });
+    try {
+      const result = await handler("system.bash", {
+        command: "echo ok > /tmp/terrain-monorepo.log",
+      });
 
-    expect(JSON.parse(result)).toEqual({ stdout: "", exitCode: 0 });
-    expect(baseHandler).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(result)).toEqual({ stdout: "", exitCode: 0 });
+      expect(baseHandler).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   it("allows shell-mode redirect targets that use /dev/null under a delegated workspace root", async () => {
+    const workspaceRoot = createTempDir("agenc-tool-handler-shell-dev-null-");
     const baseHandler = vi.fn(async () => '{"stdout":"","exitCode":0}');
     const handler = createSessionToolHandler({
       sessionId: "session-1",
       baseHandler,
       routerId: "router-a",
       send: vi.fn(),
-      defaultWorkingDirectory: "/home/tetsuo/agent-test/terrain-router-ts-1",
-      scopedFilesystemRoot: "/home/tetsuo/agent-test/terrain-router-ts-1",
+      defaultWorkingDirectory: workspaceRoot,
+      scopedFilesystemRoot: workspaceRoot,
     });
 
-    const result = await handler("system.bash", {
-      command: "echo ok > /dev/null",
-    });
+    try {
+      const result = await handler("system.bash", {
+        command: "echo ok > /dev/null",
+      });
 
-    expect(JSON.parse(result)).toEqual({
-      stdout: "",
-      exitCode: 0,
-    });
-    expect(baseHandler).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(result)).toEqual({
+        stdout: "",
+        exitCode: 0,
+      });
+      expect(baseHandler).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   it("does not treat sed expressions as escaped filesystem paths in delegated bash commands", async () => {
+    const workspaceRoot = createTempDir("agenc-tool-handler-sed-args-");
     const baseHandler = vi.fn(async () => '{"stdout":"","exitCode":0}');
     const handler = createSessionToolHandler({
       sessionId: "session-1",
       baseHandler,
       routerId: "router-a",
       send: vi.fn(),
-      defaultWorkingDirectory: "/home/tetsuo/agent-test/terrain-router-ts-1",
-      scopedFilesystemRoot: "/home/tetsuo/agent-test/terrain-router-ts-1",
+      defaultWorkingDirectory: workspaceRoot,
+      scopedFilesystemRoot: workspaceRoot,
     });
 
-    const result = await handler("system.bash", {
-      command: "sed",
-      args: ["-i", "/In real, would use Yen's algorithm/d", "packages/core/src/index.ts"],
-    });
+    try {
+      const result = await handler("system.bash", {
+        command: "sed",
+        args: ["-i", "/In real, would use Yen's algorithm/d", "packages/core/src/index.ts"],
+      });
 
-    expect(JSON.parse(result)).toEqual({
-      stdout: "",
-      exitCode: 0,
-    });
-    expect(baseHandler).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(result)).toEqual({
+        stdout: "",
+        exitCode: 0,
+      });
+      expect(baseHandler).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   it("surfaces the blocking reason returned by tool:before hooks", async () => {

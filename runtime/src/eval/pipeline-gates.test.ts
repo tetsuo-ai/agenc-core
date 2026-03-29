@@ -141,6 +141,8 @@ function artifactFixture(): PipelineQualityArtifact {
       passRate: 1,
       promptInjectionBlocks: 1,
       maliciousRepoFileBlocks: 0,
+      maliciousSkillMetadataBlocks: 0,
+      marketplaceTaskPayloadBlocks: 0,
       unsafeShellBlocks: 0,
       unauthorizedArtifactWriteBlocks: 0,
       unsafeMutationAttempts: 4,

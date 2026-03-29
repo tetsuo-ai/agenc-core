@@ -1,9 +1,10 @@
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
 import { homedir } from "node:os";
 import {
   SkillDiscovery,
+  type DiscoveryTier,
   type DiscoveredSkill,
   type DiscoveryPaths,
 } from "../skills/markdown/discovery.js";
@@ -20,6 +21,15 @@ import type {
 
 const MAX_INSTALL_SIZE = 1_048_576; // 1 MB
 const BODY_PREVIEW_LENGTH = 500;
+const VALIDATION_DISCOVERY_TIERS: readonly Array<{
+  readonly tier: DiscoveryTier;
+  readonly key: keyof DiscoveryPaths;
+}> = [
+  { tier: "agent", key: "agentSkills" },
+  { tier: "user", key: "userSkills" },
+  { tier: "project", key: "projectSkills" },
+  { tier: "builtin", key: "builtinSkills" },
+];
 
 export function getDefaultDiscoveryPaths(): DiscoveryPaths {
   return {
@@ -91,6 +101,49 @@ async function resolveSkillByName(
     ? existsSync(`${match.skill.sourcePath}.disabled`)
     : false;
   return { skill: match, disabled };
+}
+
+async function collectSkillsForValidation(
+  paths: DiscoveryPaths,
+): Promise<Array<{ name: string; tier: DiscoveryTier; errors: ReturnType<typeof validateSkillMetadata> }>> {
+  const results: Array<{
+    name: string;
+    tier: DiscoveryTier;
+    errors: ReturnType<typeof validateSkillMetadata>;
+  }> = [];
+
+  for (const { tier, key } of VALIDATION_DISCOVERY_TIERS) {
+    const dirPath = paths[key];
+    if (!dirPath) continue;
+
+    let entries: string[] = [];
+    try {
+      entries = await readdir(dirPath);
+    } catch {
+      continue;
+    }
+
+    const mdFiles = entries.filter((entry) => entry.endsWith(".md")).sort();
+    for (const fileName of mdFiles) {
+      const filePath = join(dirPath, fileName);
+      let content: string;
+      try {
+        content = await readFile(filePath, "utf-8");
+      } catch {
+        continue;
+      }
+      if (!isSkillMarkdown(content)) continue;
+
+      const skill = parseSkillContent(content, filePath);
+      results.push({
+        name: skill.name || basename(fileName, ".md"),
+        tier,
+        errors: validateSkillMetadata(skill),
+      });
+    }
+  }
+
+  return results;
 }
 
 export async function runSkillListCommand(
@@ -204,19 +257,17 @@ export async function runSkillValidateCommand(
   overrides?: { discoveryPaths?: DiscoveryPaths },
 ): Promise<CliStatusCode> {
   const paths = overrides?.discoveryPaths ?? getDefaultDiscoveryPaths();
-  const discovery = new SkillDiscovery(paths);
 
   try {
-    const skills = await discovery.discoverAll();
+    const skills = await collectSkillsForValidation(paths);
     let hasErrors = false;
     const results = skills.map((s) => {
-      const errors = validateSkillMetadata(s.skill);
-      if (errors.length > 0) hasErrors = true;
+      if (s.errors.length > 0) hasErrors = true;
       return {
-        name: s.skill.name,
+        name: s.name,
         tier: s.tier,
-        valid: errors.length === 0,
-        errors,
+        valid: s.errors.length === 0,
+        errors: s.errors,
       };
     });
 
