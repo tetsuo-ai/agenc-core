@@ -317,7 +317,9 @@ describe("GrokProvider", () => {
     const params = mockCreate.mock.calls[0][0];
     expect(params.tool_choice).toEqual({
       type: "function",
-      name: "system.bash",
+      function: {
+        name: "system.bash",
+      },
     });
   });
 
@@ -439,7 +441,9 @@ describe("GrokProvider", () => {
     const params = mockCreate.mock.calls[0][0];
     expect(params.tool_choice).toEqual({
       type: "function",
-      name: "mcp.browser.browser_navigate",
+      function: {
+        name: "mcp.browser.browser_navigate",
+      },
     });
   });
 
@@ -497,7 +501,9 @@ describe("GrokProvider", () => {
       payload: {
         tool_choice: {
           type: "function",
-          name: "system.bash",
+          function: {
+            name: "system.bash",
+          },
         },
       },
     });
@@ -1280,7 +1286,24 @@ describe("GrokProvider", () => {
     });
   });
 
-  it("fails closed when structured outputs are combined with tools on non-Grok-4 models", async () => {
+  it("suppresses tools when structured outputs are combined with tools on non-Grok-4 models", async () => {
+    mockCreate.mockResolvedValueOnce(
+      makeCompletion({
+        output_text: '{"summary":"repo looks healthy"}',
+        output: [
+          {
+            type: "message",
+            content: [
+              {
+                type: "output_text",
+                text: '{"summary":"repo looks healthy"}',
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
     const provider = new GrokProvider({
       apiKey: "test-key",
       model: "grok-code-fast-1",
@@ -1299,29 +1322,63 @@ describe("GrokProvider", () => {
       ],
     });
 
-    await expect(
-      provider.chat(
-        [{ role: "user", content: "inspect the repo and summarize findings" }],
-        {
-          structuredOutput: {
-            enabled: true,
+    const response = await provider.chat(
+      [{ role: "user", content: "inspect the repo and summarize findings" }],
+      {
+        structuredOutput: {
+          enabled: true,
+          schema: {
+            type: "json_schema",
+            name: "repo_summary",
             schema: {
-              type: "json_schema",
-              name: "repo_summary",
-              schema: {
-                type: "object",
-                properties: {
-                  summary: { type: "string" },
-                },
-                required: ["summary"],
+              type: "object",
+              properties: {
+                summary: { type: "string" },
               },
+              required: ["summary"],
             },
           },
         },
-      ),
-    ).rejects.toThrow(
-      /Structured outputs with tools are only documented for the Grok 4 family/i,
+      },
     );
+
+    const params = mockCreate.mock.calls[0][0];
+    expect(params.tools).toBeUndefined();
+    expect(params.tool_choice).toBeUndefined();
+    expect(params.parallel_tool_calls).toBeUndefined();
+    expect(params.text).toEqual({
+      format: {
+        type: "json_schema",
+        name: "repo_summary",
+        schema: {
+          type: "object",
+          properties: {
+            summary: { type: "string" },
+          },
+          required: ["summary"],
+        },
+        strict: true,
+      },
+    });
+    expect(response.structuredOutput).toEqual({
+      type: "json_schema",
+      name: "repo_summary",
+      rawText: '{"summary":"repo looks healthy"}',
+      parsed: { summary: "repo looks healthy" },
+    });
+    expect(response.requestMetrics).toMatchObject({
+      toolCount: 0,
+      toolNames: ["system.bash"],
+      providerCatalogToolCount: 1,
+      toolsAttached: false,
+      toolSuppressionReason:
+        "structured_output_with_tools_unsupported_model",
+      structuredOutputEnabled: true,
+      structuredOutputName: "repo_summary",
+      structuredOutputStrict: true,
+      store: false,
+    });
+    expect(response.requestMetrics.toolChoice).toBeUndefined();
   });
 
   it("disables parallel tool calls by default when tools are present", async () => {

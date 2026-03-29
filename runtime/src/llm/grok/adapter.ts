@@ -294,7 +294,7 @@ function sanitizeLargeText(value: string): string {
 
 function normalizeResponsesToolChoice(
   toolChoice: LLMToolChoice | undefined,
-): LLMToolChoice | undefined {
+): string | Record<string, unknown> | undefined {
   if (toolChoice === undefined || typeof toolChoice === "string") {
     return toolChoice;
   }
@@ -303,7 +303,7 @@ function normalizeResponsesToolChoice(
     ? toolChoice.name.trim()
     : "";
   if (toolChoice.type === "function" && directName.length > 0) {
-    return { type: "function", name: directName };
+    return { type: "function", function: { name: directName } };
   }
 
   const legacyName = typeof (toolChoice as { function?: { name?: unknown } }).function
@@ -311,7 +311,7 @@ function normalizeResponsesToolChoice(
     ? (toolChoice as { function?: { name?: string } }).function!.name!.trim()
     : "";
   if (toolChoice.type === "function" && legacyName.length > 0) {
-    return { type: "function", name: legacyName };
+    return { type: "function", function: { name: legacyName } };
   }
 
   return toolChoice;
@@ -320,7 +320,7 @@ function normalizeResponsesToolChoice(
 function resolveResponsesToolChoice(
   toolChoice: LLMToolChoice | undefined,
   selection: ToolSelectionDiagnostics,
-): LLMToolChoice | undefined {
+): string | Record<string, unknown> | undefined {
   const normalized = normalizeResponsesToolChoice(toolChoice);
   if (normalized !== "required") {
     return normalized;
@@ -332,7 +332,9 @@ function resolveResponsesToolChoice(
 
   return {
     type: "function",
-    name: selection.resolvedToolNames[0],
+    function: {
+      name: selection.resolvedToolNames[0],
+    },
   };
 }
 
@@ -1876,10 +1878,12 @@ export class GrokProvider implements LLMProvider {
           typeof params.model === "string" ? params.model : this.config.model,
         )
       ) {
-        throw new LLMProviderError(
-          this.name,
-          `Structured outputs with tools are only documented for the Grok 4 family; refusing request for model "${String(params.model ?? this.config.model)}"`,
-        );
+        delete params.tools;
+        delete params.tool_choice;
+        delete params.parallel_tool_calls;
+        selectedTools.toolsAttached = false;
+        selectedTools.toolSuppressionReason =
+          "structured_output_with_tools_unsupported_model";
       }
       params.text = {
         format: {

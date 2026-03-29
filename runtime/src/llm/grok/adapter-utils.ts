@@ -106,6 +106,16 @@ export function summarizeTraceToolChoice(value: unknown): string | undefined {
   ) {
     return `function:${record.name.trim()}`;
   }
+  if (
+    record.type === "function" &&
+    record.function &&
+    typeof record.function === "object" &&
+    !Array.isArray(record.function) &&
+    typeof (record.function as Record<string, unknown>).name === "string" &&
+    String((record.function as Record<string, unknown>).name).trim().length > 0
+  ) {
+    return `function:${String((record.function as Record<string, unknown>).name).trim()}`;
+  }
   try {
     return safeStringify(record);
   } catch {
