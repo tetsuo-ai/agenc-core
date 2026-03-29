@@ -193,7 +193,11 @@ describe("contract-backed verification integration", () => {
         ],
       });
 
-      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error(
+          `Expected delegated output contract success, received ${JSON.stringify(result, null, 2)}`,
+        );
+      }
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
