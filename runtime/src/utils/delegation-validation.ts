@@ -65,6 +65,10 @@ export interface DelegationContractSpec {
   readonly isolationReason?: string;
   readonly ownedArtifacts?: readonly string[];
   readonly verifierObligations?: readonly string[];
+  readonly inheritedEvidence?: {
+    readonly workspaceInspectionSatisfied?: boolean;
+    readonly sourceSteps?: readonly string[];
+  };
   readonly lastValidationCode?: DelegationOutputValidationCode;
 }
 
@@ -1686,6 +1690,9 @@ export function specRequiresSuccessfulToolEvidence(
 export function specRequiresMeaningfulWorkspaceEvidence(
   spec: DelegationContractSpec,
 ): boolean {
+  if (spec.inheritedEvidence?.workspaceInspectionSatisfied === true) {
+    return false;
+  }
   const targetArtifacts = collectExplicitSpecFileArtifacts(spec);
   if (!areDocumentationOnlyArtifacts(targetArtifacts)) {
     return false;
@@ -3420,6 +3427,7 @@ function validateAcceptanceVerificationToolEvidence(
 
     if (
       categories.includes("inspection") &&
+      spec.inheritedEvidence?.workspaceInspectionSatisfied !== true &&
       !successfulCalls.some((toolCall) =>
         isMeaningfulWorkspaceInspectionToolCall({
           toolCall,

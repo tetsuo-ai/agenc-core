@@ -2,8 +2,8 @@
  * SubAgentOrchestrator — planner DAG execution with sub-agent scheduling.
  *
  * Executes planner-emitted DAGs through the existing pipeline executor contract.
- * Supports deterministic tool nodes, subagent task nodes, and synthesis no-op
- * nodes while preserving PipelineResult semantics.
+ * Supports deterministic tool nodes, subagent task nodes, and synthesis
+ * handoff nodes while preserving PipelineResult semantics.
  *
  * @module
  */
@@ -96,6 +96,7 @@ import {
 } from "./subagent-failure-classification.js";
 import { preflightDelegatedLocalFileScope } from "./delegated-scope-preflight.js";
 import {
+  materializePlannerSynthesisResult,
   summarizeDependencyResultForPrompt,
   resolveParentSessionId,
 } from "./subagent-dependency-summarization.js";
@@ -126,6 +127,10 @@ import {
   deriveDelegatedExecutionEnvelopeFromParent,
   type DelegatedExecutionEnvelopeDerivationResult,
 } from "../utils/delegation-execution-context.js";
+import {
+  allowsUserMandatedSubagentCardinalityOverride,
+  extractRequiredSubagentOrchestrationRequirements,
+} from "../workflow/subagent-orchestration-requirements.js";
 import { CanonicalExecutionKernel } from "../workflow/execution-kernel.js";
 import {
   assessPlannerDependencySatisfaction,
@@ -555,10 +560,7 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
           });
         },
         validatePipeline: (pipeline) =>
-          this.validateSubagentHardCaps(
-            pipeline.plannerSteps ?? [],
-            pipeline.edges ?? [],
-          ),
+          this.validateSubagentHardCaps(pipeline),
         resolveMaxParallelism: (pipeline) =>
           this.resolveMaxParallelism(pipeline.maxParallelism),
       },
@@ -600,17 +602,23 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
   }
 
   private validateSubagentHardCaps(
-    steps: readonly PipelinePlannerStep[],
-    edges: readonly WorkflowGraphEdge[],
+    pipeline: Pick<Pipeline, "plannerSteps" | "edges" | "plannerContext">,
   ): string | null {
-    const subagentSteps = steps.filter(
+    const subagentSteps = (pipeline.plannerSteps ?? []).filter(
       (step): step is PipelinePlannerSubagentStep =>
         step.stepType === "subagent_task",
     );
     if (subagentSteps.length === 0) return null;
+    const requiredOrchestration =
+      extractRequiredSubagentOrchestrationRequirements(
+        pipeline.plannerContext?.parentRequest ?? "",
+      );
+    const allowUserMandatedCardinality =
+      allowsUserMandatedSubagentCardinalityOverride(requiredOrchestration);
     if (
       hasRuntimeLimit(this.maxFanoutPerTurn) &&
-      subagentSteps.length > this.maxFanoutPerTurn
+      subagentSteps.length > this.maxFanoutPerTurn &&
+      !allowUserMandatedCardinality
     ) {
       return (
         `Planner emitted ${subagentSteps.length} subagent tasks but maxFanoutPerTurn ` +
@@ -626,7 +634,7 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
       );
       dependencies.set(step.name, new Set(fromDependsOn));
     }
-    for (const edge of edges) {
+    for (const edge of pipeline.edges ?? []) {
       if (!subagentNames.has(edge.from) || !subagentNames.has(edge.to)) continue;
       dependencies.get(edge.to)?.add(edge.from);
     }
@@ -758,14 +766,11 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
     if (step.stepType === "subagent_task") {
       return this.executeSubagentStep(step, pipeline, results, budgetTracker, signal);
     }
-    // Synthesis node is materialized as a no-op execution marker.
+    // Synthesis nodes materialize explicit handoff artifacts for downstream
+    // child phases instead of relying on transcript-only context.
     return {
       status: "completed",
-      result: safeStringify({
-        deferred: true,
-        type: "synthesis",
-        objective: step.objective ?? null,
-      }),
+      result: materializePlannerSynthesisResult(step, results),
     };
   }
 
@@ -1612,6 +1617,7 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
         lastValidationCode: input.lastValidationCode,
         delegatedWorkingDirectory: delegatedWorkingDirectory?.path,
         admission: input.stepAdmission,
+        results: input.pipeline.context.results,
         resolveHostToolingProfile: this.resolveHostToolingProfile,
       },
     );
@@ -2145,20 +2151,6 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
             "- Do not block solely because you cannot persist a workspace file unless the acceptance criteria explicitly require a file on disk.",
         );
       }
-      if (historySection.lines.length > 0) {
-        sections.push(
-          `Curated parent history slice:\n${
-            historySection.lines.map((line) => `- ${line}`).join("\n")
-          }`,
-        );
-      }
-      if (memorySection.lines.length > 0) {
-        sections.push(
-          `Required memory retrievals:\n${
-            memorySection.lines.map((line) => `- ${line}`).join("\n")
-          }`,
-        );
-      }
       if (toolOutputSection.lines.length > 0) {
         sections.push(
           `Relevant tool outputs:\n${
@@ -2185,6 +2177,20 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
         sections.push(
           "Observed workspace state:\n" +
             workspaceStateGuidanceLines.map((line) => `- ${line}`).join("\n"),
+        );
+      }
+      if (historySection.lines.length > 0) {
+        sections.push(
+          `Curated parent history slice:\n${
+            historySection.lines.map((line) => `- ${line}`).join("\n")
+          }`,
+        );
+      }
+      if (memorySection.lines.length > 0) {
+        sections.push(
+          `Required memory retrievals:\n${
+            memorySection.lines.map((line) => `- ${line}`).join("\n")
+          }`,
         );
       }
       if (hostToolingSection.lines.length > 0) {
@@ -2465,6 +2471,7 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
       readonly lastValidationCode?: DelegationOutputValidationCode;
       readonly delegatedWorkingDirectory?: string;
       readonly admission?: DelegationStepAdmission;
+      readonly results?: Readonly<Record<string, string>>;
     } = {},
   ) {
     const preparedStep = this.preparePlannerDelegatedStepContext(

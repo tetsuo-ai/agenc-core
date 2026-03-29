@@ -24,6 +24,7 @@ import {
   validatePlannerStepContracts,
   validateSalvagedPlannerToolPlan,
   validateExplicitDeterministicToolRequirements,
+  validateExplicitSubagentOrchestrationRequirements,
 } from "./chat-executor-planner.js";
 
 describe("chat-executor-planner explicit orchestration requirements", () => {
@@ -73,7 +74,7 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
         expect.objectContaining({
           role: "system",
           content: expect.stringContaining(
-            "Never emit more than 8 subagent_task steps in the full plan.",
+            "do not rely on more than 8 concurrently runnable subagent_task steps at once unless the user explicitly required a higher child-agent count",
           ),
         }),
         expect.objectContaining({
@@ -827,6 +828,140 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
     expect(requirements?.requiresSynthesis).toBe(true);
     expect(requirements?.steps[0]?.description).toContain(
       "recover the earlier continuity marker",
+    );
+  });
+
+  it("extracts minimum-step orchestration requirements from natural-language multi-agent requests", () => {
+    const requirements = extractExplicitSubagentOrchestrationRequirements(
+      "Read PLAN.md, create 6 agents with different roles to review architecture, QA, security, documentation, layout, and completeness, then update PLAN.md with the result.",
+    );
+
+    expect(requirements).toMatchObject({
+      mode: "minimum_steps",
+      requiredStepCount: 6,
+    });
+    expect(requirements?.roleHints).toEqual(
+      expect.arrayContaining([
+        "architecture",
+        "qa",
+        "security",
+        "documentation",
+        "layout",
+        "completeness",
+      ]),
+    );
+  });
+
+  it("fails validation when an implicit multi-agent request is collapsed into too few child steps", () => {
+    const requirements = extractExplicitSubagentOrchestrationRequirements(
+      "Read PLAN.md, create 3 agents with different roles to review architecture, QA, and security, then update PLAN.md.",
+    );
+    expect(requirements).toBeDefined();
+
+    const diagnostics =
+      validateExplicitSubagentOrchestrationRequirements(
+        {
+          reason: "collapsed_multi_agent_review",
+          requiresSynthesis: true,
+          steps: [
+            {
+              name: "architecture_review",
+              stepType: "subagent_task",
+              objective: "Review architecture alignment only.",
+              inputContract: "Return architecture review notes.",
+              acceptanceCriteria: ["Architecture review completed"],
+              requiredToolCapabilities: ["system.readFile"],
+              contextRequirements: ["repo_context"],
+              maxBudgetHint: "2m",
+              canRunParallel: true,
+            },
+            {
+              name: "qa_review",
+              stepType: "subagent_task",
+              objective: "Review QA and test coverage only.",
+              inputContract: "Return QA review notes.",
+              acceptanceCriteria: ["QA review completed"],
+              requiredToolCapabilities: ["system.readFile"],
+              contextRequirements: ["repo_context"],
+              maxBudgetHint: "2m",
+              canRunParallel: true,
+            },
+          ],
+          edges: [],
+        },
+        requirements!,
+      );
+
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "required_subagent_steps_missing",
+        }),
+        expect.objectContaining({
+          code: "required_subagent_role_missing",
+          details: expect.objectContaining({
+            missingRoles: expect.stringContaining("security"),
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("does not flag user-mandated multi-agent reviewer plans as generic fanout overflow", () => {
+    const requirements = extractExplicitSubagentOrchestrationRequirements(
+      "Read PLAN.md, create 2 agents with different roles to review architecture and QA, then update PLAN.md.",
+    );
+    expect(requirements).toBeDefined();
+
+    const diagnostics = validatePlannerGraph(
+      {
+        reason: "user_mandated_multi_agent_review",
+        requiresSynthesis: true,
+        steps: [
+          {
+            name: "architecture_review",
+            stepType: "subagent_task",
+            objective: "Review architecture alignment only.",
+            inputContract: "Return architecture review notes.",
+            acceptanceCriteria: ["Architecture review completed"],
+            requiredToolCapabilities: ["system.readFile"],
+            contextRequirements: ["repo_context"],
+            maxBudgetHint: "2m",
+            canRunParallel: false,
+          },
+          {
+            name: "qa_review",
+            stepType: "subagent_task",
+            objective: "Review QA/test gaps only.",
+            inputContract: "Return QA review notes.",
+            acceptanceCriteria: ["QA review completed"],
+            requiredToolCapabilities: ["system.readFile"],
+            contextRequirements: ["repo_context"],
+            maxBudgetHint: "2m",
+            canRunParallel: false,
+            dependsOn: ["architecture_review"],
+          },
+        ],
+        edges: [
+          {
+            from: "architecture_review",
+            to: "qa_review",
+          },
+        ],
+      },
+      {
+        maxSubagentFanout: 1,
+        maxSubagentDepth: 4,
+      },
+      requirements,
+    );
+
+    expect(diagnostics).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "subagent_fanout_exceeded",
+        }),
+      ]),
     );
   });
 

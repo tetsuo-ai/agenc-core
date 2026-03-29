@@ -43,6 +43,8 @@ import {
   sanitizeDelegationContextRequirements,
 } from "../utils/delegation-execution-context.js";
 import type { DelegationStepAdmission } from "./delegation-admission.js";
+import { areDocumentationOnlyArtifacts } from "../workflow/artifact-paths.js";
+import { isMeaningfulWorkspaceInspectionToolCall } from "../workflow/workspace-inspection-evidence.js";
 import {
   isNodeWorkspaceRelevant,
   collectReachableVerificationCategories,
@@ -325,6 +327,7 @@ export function buildEffectiveDelegationSpec(
     readonly lastValidationCode?: DelegationOutputValidationCode;
     readonly delegatedWorkingDirectory?: string;
     readonly admission?: DelegationStepAdmission;
+    readonly results?: Readonly<Record<string, string>>;
     readonly resolveHostToolingProfile?: () => HostToolingProfile | null;
   } = {},
 ): DelegationContractSpec {
@@ -338,6 +341,12 @@ export function buildEffectiveDelegationSpec(
       ? "deterministic_followup"
       : undefined);
   const effectiveExecutionContext = step.executionContext;
+  const inheritedWorkspaceInspectionSourceSteps =
+    collectInheritedWorkspaceInspectionSourceSteps(
+      step,
+      pipeline,
+      options.results,
+    );
   const sanitizedContextRequirements = sanitizeDelegationContextRequirements(
     step.contextRequirements,
   );
@@ -376,6 +385,14 @@ export function buildEffectiveDelegationSpec(
           approvalProfile: effectiveExecutionContext.approvalProfile,
         })
         : effectiveExecutionContext,
+    ...(inheritedWorkspaceInspectionSourceSteps.length > 0
+      ? {
+        inheritedEvidence: {
+          workspaceInspectionSatisfied: true,
+          sourceSteps: inheritedWorkspaceInspectionSourceSteps,
+        },
+      }
+      : {}),
     ...(options.admission?.shape
       ? { delegationShape: options.admission.shape }
       : {}),
@@ -392,6 +409,118 @@ export function buildEffectiveDelegationSpec(
       ? { lastValidationCode: options.lastValidationCode }
       : {}),
   };
+}
+
+function collectInheritedWorkspaceInspectionSourceSteps(
+  step: PipelinePlannerSubagentStep,
+  pipeline: Pipeline,
+  results: Readonly<Record<string, string>> | undefined,
+): readonly string[] {
+  if (!results || (step.dependsOn?.length ?? 0) === 0) {
+    return [];
+  }
+  const targetArtifacts = step.executionContext?.targetArtifacts ?? [];
+  if (!areDocumentationOnlyArtifacts(targetArtifacts)) {
+    return [];
+  }
+  const dependencies = collectDependencyContexts(step, pipeline, results);
+  if (dependencies.length === 0) {
+    return [];
+  }
+  const stepByName = new Map(
+    (pipeline.plannerSteps ?? []).map((plannerStep) => [plannerStep.name, plannerStep]),
+  );
+  const workspaceRoot =
+    step.executionContext?.workspaceRoot ?? pipeline.plannerContext?.workspaceRoot;
+  const requiredSourceArtifacts =
+    step.executionContext?.requiredSourceArtifacts ?? [];
+
+  return dependencies
+    .filter((dependency) =>
+      dependencyProvidesWorkspaceInspectionEvidence({
+        dependencyStep: stepByName.get(dependency.dependencyName),
+        result: dependency.result,
+        workspaceRoot,
+        targetArtifacts,
+        requiredSourceArtifacts,
+      })
+    )
+    .map((dependency) => dependency.dependencyName);
+}
+
+function dependencyProvidesWorkspaceInspectionEvidence(params: {
+  readonly dependencyStep: PipelinePlannerStep | undefined;
+  readonly result: string | null;
+  readonly workspaceRoot?: string;
+  readonly targetArtifacts: readonly string[];
+  readonly requiredSourceArtifacts: readonly string[];
+}): boolean {
+  const currentToolCalls = collectDependencyWorkspaceInspectionToolCalls(params);
+  return currentToolCalls.some((toolCall) =>
+    isMeaningfulWorkspaceInspectionToolCall({
+      toolCall,
+      workspaceRoot: params.workspaceRoot,
+      targetArtifacts: params.targetArtifacts,
+      requiredSourceArtifacts: params.requiredSourceArtifacts,
+    })
+  );
+}
+
+function collectDependencyWorkspaceInspectionToolCalls(params: {
+  readonly dependencyStep: PipelinePlannerStep | undefined;
+  readonly result: string | null;
+}): readonly Array<{
+  readonly name?: string;
+  readonly args?: unknown;
+  readonly result?: string;
+  readonly isError?: boolean;
+}> {
+  const calls: Array<{
+    readonly name?: string;
+    readonly args?: unknown;
+    readonly result?: string;
+    readonly isError?: boolean;
+  }> = [];
+
+  if (params.dependencyStep?.stepType === "deterministic_tool") {
+    calls.push({
+      name: params.dependencyStep.tool,
+      args: params.dependencyStep.args,
+      result: params.result ?? undefined,
+      isError: false,
+    });
+  }
+
+  if (typeof params.result !== "string" || params.result.trim().length === 0) {
+    return calls;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(params.result);
+  } catch {
+    return calls;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return calls;
+  }
+  const record = parsed as Record<string, unknown>;
+  if (
+    (typeof record.status === "string" && record.status !== "completed") ||
+    record.success === false ||
+    (typeof record.validationCode === "string" && record.validationCode.trim().length > 0)
+  ) {
+    return calls;
+  }
+  const toolCalls = Array.isArray(record.toolCalls)
+    ? record.toolCalls.filter((entry): entry is {
+      readonly name?: string;
+      readonly args?: unknown;
+      readonly result?: string;
+      readonly isError?: boolean;
+    } => !!entry && typeof entry === "object" && !Array.isArray(entry))
+    : [];
+  return [...calls, ...toolCalls];
 }
 
 export function buildEffectiveAcceptanceCriteria(

@@ -4,7 +4,7 @@
  * @module
  */
 
-import { resolve as resolvePath } from "node:path";
+import { basename as pathBasename, resolve as resolvePath } from "node:path";
 
 import type { PromptBudgetSection } from "./prompt-budget.js";
 import type {
@@ -199,7 +199,16 @@ function shouldBlockPlannerImplementationFallback(
     const docOnlyArtifacts =
       artifactPaths.length > 0 &&
       artifactPaths.every((path) => isDocOnlyPlannerArtifact(path));
-    if (docOnlyArtifacts) {
+    const childOwnsDocArtifactWrite =
+      docOnlyArtifacts &&
+      (
+        executionContext?.stepKind === "delegated_write" ||
+        executionContext?.verificationMode === "mutation_required" ||
+        executionContext?.effectClass === "filesystem_write" ||
+        executionContext?.effectClass === "filesystem_scaffold" ||
+        Boolean(executionContext?.completionContract)
+      );
+    if (docOnlyArtifacts && !childOwnsDocArtifactWrite) {
       return false;
     }
 
@@ -418,6 +427,66 @@ function plannerAlreadyMutatesFiles(plannerPlan: PlannerPlan): boolean {
       step.stepType === "deterministic_tool" &&
       (step.tool === "system.writeFile" || step.tool === "system.appendFile"),
   );
+}
+
+function plannerHasChildOwnedWriteTarget(
+  plannerPlan: PlannerPlan,
+  requestedWriteTarget: string | undefined,
+): boolean {
+  if (!requestedWriteTarget) {
+    return plannerPlan.steps.some(
+      (step) =>
+        step.stepType === "subagent_task" &&
+        step.executionContext?.verificationMode === "mutation_required" &&
+        (step.executionContext?.targetArtifacts?.length ?? 0) > 0,
+    );
+  }
+  const normalizedTarget = normalizeToolCallTargetPath(requestedWriteTarget);
+  const normalizedRequestedSuffix = requestedWriteTarget
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^[.][/\\]/, "");
+  const requestedBasename = pathBasename(normalizedRequestedSuffix);
+  return plannerPlan.steps.some((step) => {
+    if (
+      step.stepType !== "subagent_task" ||
+      step.executionContext?.verificationMode !== "mutation_required"
+    ) {
+      return false;
+    }
+    return (step.executionContext?.targetArtifacts ?? []).some((artifact) =>
+      matchesRequestedArtifactTarget(
+        normalizedTarget,
+        normalizedRequestedSuffix,
+        requestedBasename,
+        artifact,
+      )
+    );
+  });
+}
+
+function matchesRequestedArtifactTarget(
+  normalizedTarget: string | undefined,
+  normalizedRequestedSuffix: string,
+  requestedBasename: string,
+  artifact: string,
+): boolean {
+  const normalizedArtifact = normalizeToolCallTargetPath(artifact);
+  if (normalizedTarget && normalizedArtifact === normalizedTarget) {
+    return true;
+  }
+  const artifactText = artifact.trim().replace(/\\/g, "/");
+  if (
+    normalizedRequestedSuffix.length > 0 &&
+    (
+      artifactText === normalizedRequestedSuffix ||
+      artifactText.endsWith(`/${normalizedRequestedSuffix}`)
+    )
+  ) {
+    return true;
+  }
+  return requestedBasename.length > 0 &&
+    pathBasename(artifactText) === requestedBasename;
 }
 
 function normalizeToolCallTargetPath(value: unknown): string | undefined {
@@ -748,6 +817,7 @@ export async function executePlannerPath(
         maxSubagentFanout: config.delegationDecisionConfig.maxFanoutPerTurn,
         maxSubagentDepth: config.delegationDecisionConfig.maxDepth,
       },
+      explicitOrchestrationRequirements,
     );
     const plannerStepContractDiagnostics = validatePlannerStepContracts(
       plannerPlan,
@@ -1632,9 +1702,62 @@ export async function executePlannerPath(
           ctx.stopReason !== "completed"
         )
       ) {
-        const requestedWriteTarget =
-          !plannerAlreadyMutatesFiles(plannerPlan)
-            ? inferExplicitFileWriteTarget(ctx.messageText)
+        const requestedWriteTarget = inferExplicitFileWriteTarget(ctx.messageText);
+        const childOwnedWriteTarget = plannerHasChildOwnedWriteTarget(
+          plannerPlan,
+          requestedWriteTarget,
+        );
+        if (
+          childOwnedWriteTarget &&
+          pipelineResult.status !== "completed" &&
+          ctx.stopReason !== "completed"
+        ) {
+          ctx.plannerSummaryState.diagnostics.push({
+            category: "runtime",
+            code: "planner_synthesis_skipped_child_owned_artifact_failure",
+            message:
+              "Planner synthesis was skipped because a child-owned artifact write failed and inline materialization is not authoritative for that target",
+            details: {
+              targetPath: requestedWriteTarget,
+              pipelineStatus: pipelineResult.status,
+              stopReason: ctx.stopReason,
+            },
+          });
+          ctx.finalContent = buildPlannerSynthesisFallbackContent(
+            plannerPlan,
+            pipelineResult,
+            verificationDecision,
+            verifierRounds,
+            "Child-owned artifact write failed verification; inline planner synthesis is disabled for that target.",
+          );
+          callbacks.emitPlannerTrace(ctx, "planner_synthesis_fallback_applied", {
+            failureDetail:
+              "Child-owned artifact write failed verification; inline planner synthesis is disabled for that target.",
+            completedSteps: pipelineResult.completedSteps,
+            totalSteps: pipelineResult.totalSteps,
+          });
+          callbacks.emitPlannerTrace(ctx, "planner_path_finished", {
+            plannerCalls: plannerAttempt,
+            routeReason: ctx.plannerSummaryState.routeReason,
+            stopReason: ctx.stopReason,
+            stopReasonDetail: ctx.stopReasonDetail,
+            diagnostics: ctx.plannerSummaryState.diagnostics,
+            handled: true,
+            deterministicStepsExecuted:
+              ctx.plannerSummaryState.deterministicStepsExecuted,
+          });
+          ctx.plannerHandled = true;
+          return;
+        }
+        const synthesisWriteTarget =
+          requestedWriteTarget &&
+          !plannerHasChildOwnedWriteTarget(plannerPlan, requestedWriteTarget) &&
+          !plannerAlreadyMutatesFiles(plannerPlan) &&
+          (
+            plannerPlan.requiresSynthesis ||
+            hasSynthesisStep
+          )
+            ? requestedWriteTarget
             : undefined;
         let synthesisMessages = buildPlannerSynthesisMessages(
           ctx.systemPrompt,
@@ -1643,14 +1766,6 @@ export async function executePlannerPath(
           pipelineResult,
           verificationDecision,
         );
-        const synthesisWriteTarget =
-          requestedWriteTarget &&
-          (
-            plannerPlan.requiresSynthesis ||
-            hasSynthesisStep
-          )
-            ? requestedWriteTarget
-            : undefined;
         if (synthesisWriteTarget) {
           synthesisMessages = [
             synthesisMessages[0]!,

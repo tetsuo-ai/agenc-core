@@ -93,6 +93,12 @@ import {
   normalizeWorkspaceRoot,
 } from "../workflow/path-normalization.js";
 import { textRequiresWorkspaceGroundedArtifactUpdate } from "../workflow/workspace-inspection-evidence.js";
+import {
+  extractRequiredSubagentOrchestrationRequirements,
+  allowsUserMandatedSubagentCardinalityOverride,
+  orchestrationRoleHintRegex,
+  type RequiredSubagentOrchestrationRequirements as ExplicitSubagentOrchestrationRequirements,
+} from "../workflow/subagent-orchestration-requirements.js";
 
 // ============================================================================
 // Planner decision
@@ -760,7 +766,7 @@ export function buildPlannerMessages(
         "- Prefer multiple smaller subagent_task steps with explicit dependencies over one large delegated objective.\n" +
         (
           runtimeConstraints
-            ? `- Never emit more than ${runtimeConstraints.maxSubagentFanout} subagent_task steps in the full plan.\n`
+            ? `- Keep automatic delegated fanout bounded: do not rely on more than ${runtimeConstraints.maxSubagentFanout} concurrently runnable subagent_task steps at once unless the user explicitly required a higher child-agent count. When a higher count is user-mandated, serialize or batch the child steps with dependencies or \`can_run_parallel: false\` so the runtime can stay within its concurrency cap.\n`
             : ""
         ) +
         (
@@ -794,12 +800,23 @@ export function buildPlannerMessages(
     messages.push({
       role: "system",
       content:
-        "The user supplied a required sub-agent orchestration plan. " +
-        "You MUST emit one `subagent_task` step for each required step using " +
-        `these exact step names and order: ${explicitOrchestration.stepNames.join(" -> ")}. ` +
-        "Do not rename, omit, merge, or collapse any required step. " +
-        "Preserve dependency order so later steps depend on the earlier required steps they build on. " +
-        "Set `requiresSynthesis` to true so the parent can merge child outputs into the final response.",
+        explicitOrchestration.mode === "exact_steps"
+          ? "The user supplied a required sub-agent orchestration plan. " +
+            "You MUST emit one `subagent_task` step for each required step using " +
+            `these exact step names and order: ${explicitOrchestration.stepNames.join(" -> ")}. ` +
+            "Do not rename, omit, merge, or collapse any required step. " +
+            "Preserve dependency order so later steps depend on the earlier required steps they build on. " +
+            "Set `requiresSynthesis` to true so the parent can merge child outputs into the final response."
+          : "The user explicitly required multiple distinct child agents for this turn. " +
+            `Emit at least ${explicitOrchestration.requiredStepCount} separate \`subagent_task\` steps before any final synthesis or artifact write. ` +
+            "Do not collapse multiple reviewer or research roles into one delegated step. " +
+            "These child steps may run sequentially; use dependencies or `can_run_parallel: false` whenever needed to respect runtime concurrency limits. " +
+            (
+              explicitOrchestration.roleHints.length > 0
+                ? `Cover these distinct review or research roles when possible: ${explicitOrchestration.roleHints.join(", ")}. `
+                : ""
+            ) +
+            "If the request also updates a final artifact, keep the review children read-only and leave mutation to one final bounded owner.",
     });
   }
 
@@ -1074,17 +1091,6 @@ export function buildPlannerStructuredOutputRequest(): LLMStructuredOutputReques
   };
 }
 
-export interface ExplicitSubagentOrchestrationRequirementStep {
-  readonly name: string;
-  readonly description: string;
-}
-
-export interface ExplicitSubagentOrchestrationRequirements {
-  readonly steps: readonly ExplicitSubagentOrchestrationRequirementStep[];
-  readonly stepNames: readonly string[];
-  readonly requiresSynthesis: boolean;
-}
-
 export interface ExplicitDeterministicToolRequirements {
   readonly orderedToolNames: readonly string[];
   readonly minimumToolCallsByName: Readonly<Record<string, number>>;
@@ -1108,12 +1114,6 @@ export type PlannerVerificationRequirementCategory =
   | "test"
   | "browser";
 
-const REQUIRED_SUBAGENT_PLAN_MARKER_RE =
-  /sub-agent orchestration plan(?:\s*\((?:required|mandatory)\)|\s+(?:required|mandatory))\s*:/i;
-const REQUIRED_SUBAGENT_STEP_NAME_RE =
-  /(?:^|\s)(\d+)[\).:]\s*(?:`([^`]+)`|([A-Za-z0-9_-]+))/g;
-const REQUIRED_DELIVERABLE_CUE_RE =
-  /\b(final deliverables|how to play|known limitations|architecture summary)\b/i;
 const PLANNER_PLAN_ARTIFACT_REQUEST_RE =
   /\b(?:write|create|draft|generate|produce|make)\b[\s\S]{0,120}\b(?:todo(?:\.md)?|implementation plan|project plan|plan doc(?:ument)?|roadmap|checklist|spec(?:ification)?)\b/i;
 const PLANNER_PLAN_ARTIFACT_FILE_RE =
@@ -1171,52 +1171,7 @@ const PLANNER_VERIFICATION_CATEGORY_ORDER: readonly PlannerVerificationRequireme
 export function extractExplicitSubagentOrchestrationRequirements(
   messageText: string,
 ): ExplicitSubagentOrchestrationRequirements | undefined {
-  const markerMatch = REQUIRED_SUBAGENT_PLAN_MARKER_RE.exec(messageText);
-  if (!markerMatch) return undefined;
-
-  const section = messageText.slice(markerMatch.index + markerMatch[0].length);
-  const steps: ExplicitSubagentOrchestrationRequirementStep[] = [];
-  const seen = new Set<string>();
-  const itemMatches = section.matchAll(
-    /(\d+)[\).:]\s*(?:`([^`]+)`|([A-Za-z0-9_-]+))\s*:\s*([\s\S]*?)(?=(?:\s+\d+[\).:]\s*(?:`[^`]+`|[A-Za-z0-9_-]+)\s*:)|$)/g,
-  );
-  for (const match of itemMatches) {
-    const normalizedName = sanitizePlannerStepName(
-      match[2] ?? match[3] ?? "",
-    );
-    if (normalizedName.length === 0 || seen.has(normalizedName)) continue;
-    seen.add(normalizedName);
-    steps.push({
-      name: normalizedName,
-      description: normalizeExplicitRequirementDescription(match[4] ?? ""),
-    });
-  }
-
-  if (steps.length < 2) {
-    const stepNames: string[] = [];
-    REQUIRED_SUBAGENT_STEP_NAME_RE.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = REQUIRED_SUBAGENT_STEP_NAME_RE.exec(section)) !== null) {
-      const normalizedName = sanitizePlannerStepName(
-        match[2] ?? match[3] ?? "",
-      );
-      if (normalizedName.length === 0 || seen.has(normalizedName)) continue;
-      seen.add(normalizedName);
-      stepNames.push(normalizedName);
-    }
-    if (stepNames.length < 2) return undefined;
-    return {
-      steps: stepNames.map((name) => ({ name, description: "" })),
-      stepNames,
-      requiresSynthesis: REQUIRED_DELIVERABLE_CUE_RE.test(messageText),
-    };
-  }
-
-  return {
-    steps,
-    stepNames: steps.map((step) => step.name),
-    requiresSynthesis: REQUIRED_DELIVERABLE_CUE_RE.test(messageText),
-  };
+  return extractRequiredSubagentOrchestrationRequirements(messageText);
 }
 
 function normalizeExplicitRequirementDescription(description: string): string {
@@ -3021,6 +2976,7 @@ function validateNodeWorkspacePlannerStages(
 export function validatePlannerGraph(
   plannerPlan: PlannerPlan,
   config: PlannerGraphValidationConfig,
+  requiredOrchestration?: ExplicitSubagentOrchestrationRequirements,
 ): readonly PlannerDiagnostic[] {
   const diagnostics: PlannerDiagnostic[] = [];
   const subagentSteps = plannerPlan.steps.filter(
@@ -3029,7 +2985,10 @@ export function validatePlannerGraph(
   );
   if (subagentSteps.length === 0) return diagnostics;
 
-  if (subagentSteps.length > config.maxSubagentFanout) {
+  if (
+    subagentSteps.length > config.maxSubagentFanout &&
+    !allowsUserMandatedSubagentCardinalityOverride(requiredOrchestration)
+  ) {
     diagnostics.push(
       createPlannerDiagnostic(
         "validation",
@@ -3097,6 +3056,54 @@ export function validateExplicitSubagentOrchestrationRequirements(
   requirements: ExplicitSubagentOrchestrationRequirements,
 ): readonly PlannerDiagnostic[] {
   const diagnostics: PlannerDiagnostic[] = [];
+  const subagentSteps = plannerPlan.steps.filter(
+    (step): step is PlannerSubAgentTaskStepIntent =>
+      step.stepType === "subagent_task",
+  );
+  if (requirements.mode === "minimum_steps") {
+    if (subagentSteps.length < requirements.requiredStepCount) {
+      diagnostics.push(
+        createPlannerDiagnostic(
+          "validation",
+          "required_subagent_steps_missing",
+          "Planner collapsed a user-required multi-agent request into too few sub-agent steps",
+          {
+            requiredStepCount: requirements.requiredStepCount,
+            actualSubagentSteps: subagentSteps.length,
+          },
+        ),
+      );
+    }
+    const missingRoleHints = requirements.roleHints.filter((roleHint) => {
+      const roleRe = orchestrationRoleHintRegex(roleHint);
+      if (!roleRe) {
+        return false;
+      }
+      return !subagentSteps.some((step) =>
+        roleRe.test(
+          [
+            step.name,
+            step.objective,
+            step.inputContract,
+            ...step.acceptanceCriteria,
+          ].join(" "),
+        )
+      );
+    });
+    if (missingRoleHints.length > 0) {
+      diagnostics.push(
+        createPlannerDiagnostic(
+          "validation",
+          "required_subagent_role_missing",
+          "Planner omitted one or more user-requested child review roles",
+          {
+            missingRoles: missingRoleHints.join(","),
+          },
+        ),
+      );
+    }
+    return diagnostics;
+  }
   const stepIndexByName = new Map<string, number>();
   const stepByName = new Map<string, PlannerStepIntent>();
 

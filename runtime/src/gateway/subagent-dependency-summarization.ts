@@ -8,6 +8,7 @@
  */
 
 import { safeStringify } from "../tools/types.js";
+import type { PipelinePlannerSynthesisStep } from "../workflow/pipeline.js";
 import { truncateText, normalizeDependencyArtifactPath, isDependencyArtifactPathCandidate } from "./subagent-context-curation.js";
 
 /* ------------------------------------------------------------------ */
@@ -30,6 +31,48 @@ export function summarizeDependencyResultForPrompt(result: string | null): strin
 
   const record = parsed as Record<string, unknown>;
   const summary: Record<string, unknown> = {};
+
+  if (record.type === "planner_synthesis_feedback") {
+    const sourceSteps = Array.isArray(record.sourceSteps)
+      ? record.sourceSteps
+          .filter((value): value is string => typeof value === "string")
+          .slice(0, 8)
+      : [];
+    const reviewerFeedback = Array.isArray(record.reviewerFeedback)
+      ? record.reviewerFeedback
+          .map((entry) => {
+            if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+              return null;
+            }
+            const item = entry as Record<string, unknown>;
+            const stepName =
+              typeof item.stepName === "string" ? item.stepName.trim() : "";
+            const feedback =
+              typeof item.feedback === "string"
+                ? summarizeDependencyOutputText(item.feedback)
+                : "";
+            if (stepName.length === 0 || feedback.length === 0) {
+              return null;
+            }
+            return `${stepName}: ${feedback}`;
+          })
+          .filter((value): value is string => value !== null)
+          .slice(0, 8)
+      : [];
+    const synthesizedFeedback =
+      typeof record.synthesizedFeedback === "string"
+        ? truncateText(record.synthesizedFeedback, 1_200)
+        : undefined;
+    if (sourceSteps.length > 0) {
+      summary.sourceSteps = sourceSteps;
+    }
+    if (reviewerFeedback.length > 0) {
+      summary.reviewerFeedback = reviewerFeedback;
+    }
+    if (synthesizedFeedback && synthesizedFeedback.trim().length > 0) {
+      summary.synthesizedFeedback = synthesizedFeedback;
+    }
+  }
 
   for (const key of [
     "status",
@@ -116,6 +159,8 @@ export function summarizeDependencyResultForPrompt(result: string | null): strin
   if (
     typeof record.output === "string" &&
     record.output.trim().length > 0 &&
+    summary.reviewerFeedback === undefined &&
+    summary.synthesizedFeedback === undefined &&
     summary.modifiedFiles === undefined &&
     summary.verifiedCommands === undefined &&
     summary.failedCommands === undefined
@@ -126,6 +171,91 @@ export function summarizeDependencyResultForPrompt(result: string | null): strin
   return safeStringify(
     Object.keys(summary).length > 0 ? summary : record,
   );
+}
+
+function extractPlannerSynthesisFeedback(result: string | null): {
+  readonly status: string;
+  readonly stopReason?: string;
+  readonly validationCode?: string;
+  readonly feedback: string;
+} {
+  if (result === null) {
+    return {
+      status: "missing",
+      feedback: "Dependency result missing.",
+    };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result);
+  } catch {
+    return {
+      status: "completed",
+      feedback: summarizeDependencyOutputText(result),
+    };
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      status: "completed",
+      feedback: summarizeDependencyOutputText(result),
+    };
+  }
+
+  const record = parsed as Record<string, unknown>;
+  const output =
+    typeof record.output === "string" && record.output.trim().length > 0
+      ? record.output
+      : result;
+  return {
+    status:
+      typeof record.status === "string" && record.status.trim().length > 0
+        ? record.status
+        : "completed",
+    stopReason:
+      typeof record.stopReason === "string" ? record.stopReason : undefined,
+    validationCode:
+      typeof record.validationCode === "string"
+        ? record.validationCode
+        : undefined,
+    feedback: truncateText(output.trim(), 2_400),
+  };
+}
+
+export function materializePlannerSynthesisResult(
+  step: Pick<PipelinePlannerSynthesisStep, "name" | "objective" | "dependsOn">,
+  results: Readonly<Record<string, string>>,
+): string {
+  const reviewerFeedback = (step.dependsOn ?? []).map((dependencyName) => {
+    const dependencyResult = extractPlannerSynthesisFeedback(
+      results[dependencyName] ?? null,
+    );
+    return {
+      stepName: dependencyName,
+      status: dependencyResult.status,
+      ...(dependencyResult.stopReason
+        ? { stopReason: dependencyResult.stopReason }
+        : {}),
+      ...(dependencyResult.validationCode
+        ? { validationCode: dependencyResult.validationCode }
+        : {}),
+      feedback: dependencyResult.feedback,
+    };
+  });
+  const synthesizedFeedback = reviewerFeedback
+    .map((entry) => `- ${entry.stepName}: ${summarizeDependencyOutputText(entry.feedback)}`)
+    .join("\n");
+
+  return safeStringify({
+    type: "planner_synthesis_feedback",
+    name: step.name,
+    status: "completed",
+    objective: step.objective ?? null,
+    sourceSteps: reviewerFeedback.map((entry) => entry.stepName),
+    reviewerFeedback,
+    synthesizedFeedback,
+  });
 }
 
 export function summarizeDependencyShellCommand(

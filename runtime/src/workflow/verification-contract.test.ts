@@ -170,6 +170,65 @@ describe("verification-contract", () => {
     });
   });
 
+  it("accepts documentation rewrites that inherit verified workspace grounding from upstream dependencies", () => {
+    const decision = validateRuntimeVerificationContract({
+      verificationContract: {
+        workspaceRoot: "/tmp/project",
+        requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+        targetArtifacts: ["/tmp/project/PLAN.md"],
+        inheritedEvidence: {
+          workspaceInspectionSatisfied: true,
+          sourceSteps: ["qa_review", "layout_review"],
+        },
+        verificationMode: "mutation_required",
+        acceptanceCriteria: [
+          "PLAN.md reflects the current workspace layout and recent directory changes accurately.",
+        ],
+        completionContract: {
+          taskClass: "artifact_only",
+          placeholdersAllowed: false,
+          partialCompletionAllowed: false,
+          placeholderTaxonomy: "documentation",
+        },
+      },
+      output: "Updated /tmp/project/PLAN.md with the integrated reviewer feedback.",
+      toolCalls: [
+        {
+          name: "system.readFile",
+          args: { path: "/tmp/project/PLAN.md" },
+          result: JSON.stringify({
+            path: "/tmp/project/PLAN.md",
+            content: "# PLAN\n",
+          }),
+          isError: false,
+        },
+        {
+          name: "system.writeFile",
+          args: {
+            path: "/tmp/project/PLAN.md",
+            content:
+              "# PLAN\nIntegrated grounded reviewer findings about the current workspace layout.\n",
+          },
+          result: JSON.stringify({
+            path: "/tmp/project/PLAN.md",
+            bytesWritten: 82,
+          }),
+          isError: false,
+        },
+      ],
+    });
+
+    expect(decision).toMatchObject({
+      ok: true,
+      channels: expect.arrayContaining([
+        expect.objectContaining({
+          channel: "artifact_state",
+          ok: true,
+        }),
+      ]),
+    });
+  });
+
   it("fails placeholder/stub grading when implementation content still contains stub markers", () => {
     const decision = validateRuntimeVerificationContract({
       verificationContract: {

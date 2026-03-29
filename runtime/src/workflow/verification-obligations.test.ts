@@ -130,6 +130,35 @@ describe("verification-obligations", () => {
     });
   });
 
+  it("waives local workspace inspection when upstream dependency evidence already satisfied it", () => {
+    const obligations = deriveVerificationObligations({
+      workspaceRoot: "/tmp/project",
+      requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+      targetArtifacts: ["/tmp/project/PLAN.md"],
+      inheritedEvidence: {
+        workspaceInspectionSatisfied: true,
+        sourceSteps: ["qa_review", "layout_review"],
+      },
+      acceptanceCriteria: [
+        "PLAN.md reflects the current workspace layout and recent directory changes accurately.",
+      ],
+      verificationMode: "mutation_required",
+      completionContract: {
+        taskClass: "artifact_only",
+        placeholdersAllowed: false,
+        partialCompletionAllowed: false,
+      },
+    });
+
+    expect(obligations).toMatchObject({
+      requiresWorkspaceInspectionEvidence: false,
+      requiresSourceArtifactReads: true,
+      completionContract: {
+        taskClass: "artifact_only",
+      },
+    });
+  });
+
   it("preserves explicit repair placeholder taxonomy from the completion contract", () => {
     const obligations = deriveVerificationObligations({
       workspaceRoot: "/tmp/project",

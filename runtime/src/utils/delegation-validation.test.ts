@@ -1798,6 +1798,68 @@ describe("delegation-validation", () => {
     ).toBe(true);
   });
 
+  it("does not require local workspace inspection when grounded reviewer dependencies already satisfied it", () => {
+    const spec = {
+      task: "update_plan",
+      objective:
+        "Update PLAN.md with the integrated reviewer feedback.",
+      parentRequest:
+        "Review the entire codebase layout and code to verify if it correctly follows Phase1 as described in PLAN.md. Assess whether recent directory changes align with the plan.",
+      inputContract:
+        "Synthesized grounded reviewer feedback has already been provided for PLAN.md.",
+      acceptanceCriteria: [
+        "PLAN.md reflects the current workspace layout and recent directory changes accurately.",
+      ],
+      inheritedEvidence: {
+        workspaceInspectionSatisfied: true,
+        sourceSteps: ["qa_review", "layout_review"],
+      },
+      executionContext: {
+        version: "v1" as const,
+        workspaceRoot: "/tmp/agenc-shell",
+        allowedReadRoots: ["/tmp/agenc-shell"],
+        allowedWriteRoots: ["/tmp/agenc-shell"],
+        requiredSourceArtifacts: ["/tmp/agenc-shell/PLAN.md"],
+        targetArtifacts: ["/tmp/agenc-shell/PLAN.md"],
+        allowedTools: ["system.readFile", "system.writeFile"],
+        effectClass: "filesystem_write" as const,
+        verificationMode: "mutation_required" as const,
+        stepKind: "delegated_write" as const,
+      },
+    };
+
+    expect(specRequiresMeaningfulWorkspaceEvidence(spec)).toBe(false);
+
+    const result = validateDelegatedOutputContract({
+      spec,
+      output:
+        "Updated /tmp/agenc-shell/PLAN.md with the integrated grounded reviewer feedback so it now reflects the current workspace layout and recent directory changes accurately.",
+      toolCalls: [
+        {
+          name: "system.readFile",
+          args: { path: "/tmp/agenc-shell/PLAN.md" },
+          result: JSON.stringify({
+            path: "/tmp/agenc-shell/PLAN.md",
+            content: "# PLAN\n",
+          }),
+        },
+        {
+          name: "system.writeFile",
+          args: {
+            path: "/tmp/agenc-shell/PLAN.md",
+            content: "# PLAN\nIntegrated grounded reviewer feedback.\n",
+          },
+          result: JSON.stringify({
+            path: "/tmp/agenc-shell/PLAN.md",
+            written: true,
+          }),
+        },
+      ],
+    });
+
+    expect(result.ok).toBe(true);
+  });
+
   it("accepts derived file writes once the named source artifact was read first", () => {
     const result = validateDelegatedOutputContract({
       spec: {

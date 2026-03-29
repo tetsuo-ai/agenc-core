@@ -18,6 +18,10 @@ export interface WorkflowVerificationContract {
   readonly inputArtifacts?: readonly string[];
   readonly requiredSourceArtifacts?: readonly string[];
   readonly targetArtifacts?: readonly string[];
+  readonly inheritedEvidence?: {
+    readonly workspaceInspectionSatisfied?: boolean;
+    readonly sourceSteps?: readonly string[];
+  };
   readonly acceptanceCriteria?: readonly string[];
   readonly verificationMode?: ExecutionVerificationMode;
   readonly stepKind?: ExecutionStepKind;
@@ -130,7 +134,8 @@ export function deriveVerificationObligations(
   const requiresReviewVerification =
     completionContract?.taskClass === "review_required";
   const requiresWorkspaceInspectionEvidence =
-    acceptanceCriteriaRequireWorkspaceInspection;
+    acceptanceCriteriaRequireWorkspaceInspection &&
+    normalizedInput.inheritedEvidence?.workspaceInspectionSatisfied !== true;
   const requiresMutationEvidence =
     completionContract?.taskClass === "review_required"
       ? false
@@ -207,6 +212,7 @@ function normalizeVerificationContractInput(
       targetArtifacts:
         executionContext?.targetArtifacts ??
         input.ownedArtifacts,
+      inheritedEvidence: input.inheritedEvidence,
       acceptanceCriteria: input.acceptanceCriteria,
       verificationMode: executionContext?.verificationMode,
       stepKind: executionContext?.stepKind,

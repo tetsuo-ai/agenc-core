@@ -12,6 +12,7 @@ import type {
 } from "../workflow/pipeline.js";
 import type { SubAgentConfig, SubAgentResult } from "./sub-agent.js";
 import { SubAgentOrchestrator } from "./subagent-orchestrator.js";
+import { materializePlannerSynthesisResult } from "./subagent-dependency-summarization.js";
 
 const TEMP_DIRS_TO_CLEAN: string[] = [];
 
@@ -1113,6 +1114,93 @@ describe("SubAgentOrchestrator", () => {
     expect(result.stopReasonHint).toBe("validation_error");
     expect(result.error).toContain("maxFanoutPerTurn is 1");
     expect(manager.spawnCalls).toHaveLength(0);
+  });
+
+  it("allows user-mandated multi-agent reviewer plans to exceed the generic hard fanout cap and still spawn distinct children", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-user-mandated-fanout-"));
+    TEMP_DIRS_TO_CLEAN.push(workspaceRoot);
+    const planPath = join(workspaceRoot, "PLAN.md");
+    writeFileSync(planPath, "# PLAN\n", "utf8");
+    const fallback = createFallbackExecutor(async (pipeline) => ({
+      status: "completed",
+      context: pipeline.context,
+      completedSteps: pipeline.steps.length,
+      totalSteps: pipeline.steps.length,
+    }));
+    const manager = new FakeSubAgentManager(1, true);
+    const orchestrator = new SubAgentOrchestrator({
+      fallbackExecutor: fallback,
+      resolveSubAgentManager: () => manager,
+      resolveAvailableToolNames: () => ["system.readFile"],
+      resolveHostWorkspaceRoot: () => workspaceRoot,
+      maxFanoutPerTurn: 1,
+      pollIntervalMs: 5,
+    });
+
+    const result = await orchestrator.execute({
+      id: "planner:session-user-mandated-fanout:1",
+      createdAt: Date.now(),
+      context: { results: {} },
+      steps: [],
+      plannerContext: {
+        parentRequest:
+          "Read PLAN.md, create 2 agents with different roles to review architecture and security, then report the findings.",
+        history: [],
+        memory: [],
+        toolOutputs: [],
+        workspaceRoot,
+      },
+      plannerSteps: [
+        {
+          name: "architecture_review",
+          stepType: "subagent_task",
+          objective: "Review architecture alignment only.",
+          inputContract: "Return grounded architecture findings.",
+          acceptanceCriteria: ["Architecture findings are grounded"],
+          requiredToolCapabilities: ["system.readFile"],
+          contextRequirements: ["repo_context", "read_plan_md"],
+          executionContext: {
+            version: "v1",
+            workspaceRoot,
+            allowedReadRoots: [workspaceRoot],
+            allowedWriteRoots: [workspaceRoot],
+            requiredSourceArtifacts: [planPath],
+            effectClass: "read_only",
+            verificationMode: "grounded_read",
+            stepKind: "delegated_review",
+          },
+          maxBudgetHint: "1m",
+          canRunParallel: false,
+        },
+        {
+          name: "security_review",
+          stepType: "subagent_task",
+          objective: "Review security risks only.",
+          inputContract: "Return grounded security findings.",
+          acceptanceCriteria: ["Security findings are grounded"],
+          requiredToolCapabilities: ["system.readFile"],
+          contextRequirements: ["repo_context", "read_plan_md"],
+          executionContext: {
+            version: "v1",
+            workspaceRoot,
+            allowedReadRoots: [workspaceRoot],
+            allowedWriteRoots: [workspaceRoot],
+            requiredSourceArtifacts: [planPath],
+            effectClass: "read_only",
+            verificationMode: "grounded_read",
+            stepKind: "delegated_review",
+          },
+          maxBudgetHint: "1m",
+          canRunParallel: false,
+          dependsOn: ["architecture_review"],
+        },
+      ],
+      maxParallelism: 1,
+    });
+
+    expect(result.status).toBe("completed");
+    expect(result.completedSteps).toBe(2);
+    expect(manager.spawnCalls).toHaveLength(2);
   });
 
   it("allows long top-level planner dependency chains because recursive depth is enforced when children spawn", async () => {
@@ -2914,6 +3002,174 @@ describe("SubAgentOrchestrator", () => {
     expect(taskPrompt).toContain("\"modifiedFiles\":[\"/workspace/project/src/cli.ts\"]");
     expect(taskPrompt).not.toContain("\"toolCalls\"");
     expect(taskPrompt).not.toContain("\"tokenUsage\"");
+  });
+
+  it("prioritizes synthesized dependency feedback ahead of long parent history in downstream writer prompts", async () => {
+    const fallback = createFallbackExecutor(async (pipeline) => ({
+      status: "completed",
+      context: pipeline.context,
+      completedSteps: pipeline.steps.length,
+      totalSteps: pipeline.steps.length,
+    }));
+    const workspaceRoot = "/workspace/project";
+    const planPath = `${workspaceRoot}/PLAN.md`;
+    const orchestrator = new SubAgentOrchestrator({
+      fallbackExecutor: fallback,
+      resolveSubAgentManager: () => null,
+      pollIntervalMs: 5,
+      childPromptBudget: {
+        contextWindowTokens: 4_096,
+        maxOutputTokens: 512,
+        safetyMarginTokens: 1_024,
+        charPerToken: 4,
+        hardMaxPromptChars: 8_000,
+      },
+      resolveAvailableToolNames: () => [
+        "system.readFile",
+        "system.writeFile",
+      ],
+    });
+
+    const longHistory = Array.from({ length: 16 }, (_, index) => ({
+      role: index % 2 === 0 ? "user" : "assistant",
+      content:
+        `History item ${index}: ` +
+        "filler ".repeat(180),
+    })) as NonNullable<Pipeline["plannerContext"]>["history"];
+    const pipeline: Pipeline = {
+      id: "planner:session-synthesis-priority:123",
+      createdAt: Date.now(),
+      context: { results: {} },
+      steps: [],
+      plannerSteps: [
+        {
+          name: "qa_review",
+          stepType: "subagent_task",
+          dependsOn: ["read_plan"],
+          objective: "Review PLAN.md as the QA reviewer.",
+          inputContract: "Full content of PLAN.md.",
+          acceptanceCriteria: ["Return QA feedback."],
+          requiredToolCapabilities: ["system.readFile"],
+          contextRequirements: ["read_plan"],
+          maxBudgetHint: "5m",
+          canRunParallel: true,
+        },
+        {
+          name: "skeptic_review",
+          stepType: "subagent_task",
+          dependsOn: ["read_plan"],
+          objective: "Review PLAN.md as the skeptic reviewer.",
+          inputContract: "Full content of PLAN.md.",
+          acceptanceCriteria: ["Return skeptical feedback."],
+          requiredToolCapabilities: ["system.readFile"],
+          contextRequirements: ["read_plan"],
+          maxBudgetHint: "5m",
+          canRunParallel: true,
+        },
+        {
+          name: "synthesis_feedback",
+          stepType: "synthesis",
+          dependsOn: ["qa_review", "skeptic_review"],
+          objective: "Synthesize reviewer feedback for the final PLAN.md writer.",
+        },
+        {
+          name: "update_plan",
+          stepType: "subagent_task",
+          dependsOn: ["synthesis_feedback"],
+          objective: "Update PLAN.md with synthesized reviewer feedback.",
+          inputContract: "Synthesized feedback from the synthesis step.",
+          acceptanceCriteria: ["PLAN.md updated with integrated reviewer feedback."],
+          requiredToolCapabilities: ["system.readFile", "system.writeFile"],
+          contextRequirements: ["repo_context", "synthesis_feedback"],
+          executionContext: {
+            version: "v1",
+            workspaceRoot,
+            allowedReadRoots: [workspaceRoot],
+            allowedWriteRoots: [workspaceRoot],
+            allowedTools: ["system.readFile", "system.writeFile"],
+            requiredSourceArtifacts: [planPath],
+            targetArtifacts: [planPath],
+            effectClass: "filesystem_write",
+            verificationMode: "mutation_required",
+            stepKind: "delegated_write",
+            fallbackPolicy: "fail_request",
+            resumePolicy: "checkpoint_resume",
+            approvalProfile: "filesystem_write",
+          },
+          maxBudgetHint: "10m",
+          canRunParallel: false,
+        },
+      ],
+      plannerContext: {
+        parentRequest:
+          "Read PLAN.md, gather reviewer feedback, and update PLAN.md with the integrated changes.",
+        history: longHistory,
+        memory: [],
+        toolOutputs: [],
+        workspaceRoot,
+        parentAllowedTools: ["system.readFile", "system.writeFile"],
+      },
+    };
+
+    const synthesisResult = materializePlannerSynthesisResult(
+      pipeline.plannerSteps?.[2] as Extract<
+        Pipeline["plannerSteps"][number],
+        { stepType: "synthesis" }
+      >,
+      {
+        qa_review: JSON.stringify({
+          status: "completed",
+          output:
+            "QA reviewer: add exact test commands, expected outputs, and coverage gates for every phase.",
+        }),
+        skeptic_review: JSON.stringify({
+          status: "completed",
+          output:
+            "Skeptic reviewer: add timeline buffer, unresolved risks, and explicit blockers before claiming completion.",
+        }),
+      },
+    );
+
+    const step = pipeline.plannerSteps?.[3]!;
+    const toolScope = (orchestrator as unknown as {
+      deriveChildToolAllowlist: (
+        step: Pipeline["plannerSteps"][number],
+        pipeline: Pipeline,
+      ) => {
+        allowedTools: readonly string[];
+        allowsToollessExecution: boolean;
+        semanticFallback: readonly string[];
+        removedLowSignalBrowserTools: readonly string[];
+        removedByPolicy: readonly string[];
+        removedAsDelegationTools: readonly string[];
+        removedAsUnknownTools: readonly string[];
+        parentPolicyAllowed: readonly string[];
+      };
+    }).deriveChildToolAllowlist(step, pipeline);
+    const { taskPrompt } = await (orchestrator as unknown as {
+      buildSubagentTaskPrompt: (
+        step: Pipeline["plannerSteps"][number],
+        pipeline: Pipeline,
+        results: Readonly<Record<string, string>>,
+        toolScope: typeof toolScope,
+      ) => Promise<{ taskPrompt: string }>;
+    }).buildSubagentTaskPrompt(
+      step,
+      pipeline,
+      { synthesis_feedback: synthesisResult },
+      toolScope,
+    );
+
+    expect(taskPrompt.length).toBeLessThanOrEqual(8_000);
+    expect(taskPrompt).toContain("Relevant tool outputs:");
+    expect(taskPrompt).toContain("QA reviewer: add exact test commands");
+    expect(taskPrompt).toContain("Skeptic reviewer: add timeline buffer");
+    const toolOutputsIndex = taskPrompt.indexOf("Relevant tool outputs:");
+    const historyIndex = taskPrompt.indexOf("Curated parent history slice:");
+    expect(toolOutputsIndex).toBeGreaterThan(-1);
+    if (historyIndex >= 0) {
+      expect(toolOutputsIndex).toBeLessThan(historyIndex);
+    }
   });
 
   it("uses dynamically resolved child prompt budgets for context curation diagnostics and caps", async () => {
@@ -5099,6 +5355,142 @@ describe("SubAgentOrchestrator", () => {
     expect(taskPrompt).toContain(
       "No npm install/build/test/typecheck/lint commands executed or claimed in this phase.",
     );
+  });
+
+  it("inherits grounded workspace inspection evidence for doc-writer steps from reviewer dependencies", () => {
+    const fallback = createFallbackExecutor(async (pipeline) => ({
+      status: "completed",
+      context: pipeline.context,
+      completedSteps: pipeline.steps.length,
+      totalSteps: pipeline.steps.length,
+    }));
+    const orchestrator = new SubAgentOrchestrator({
+      fallbackExecutor: fallback,
+      resolveSubAgentManager: () => null,
+      pollIntervalMs: 5,
+      childToolAllowlistStrategy: "inherit_intersection",
+      resolveAvailableToolNames: () => ["system.readFile", "system.writeFile", "system.listDir"],
+    });
+
+    const workspaceRoot = "/tmp/project";
+    const planPath = `${workspaceRoot}/PLAN.md`;
+    const pipeline: Pipeline = {
+      id: "planner:session-inherited-workspace-grounding:123",
+      createdAt: Date.now(),
+      context: { results: {} },
+      steps: [],
+      plannerSteps: [
+        {
+          name: "layout_review",
+          stepType: "subagent_task",
+          objective: "Inspect the current workspace layout and report mismatches against PLAN.md.",
+          inputContract: "Read PLAN.md and inspect the current workspace layout.",
+          acceptanceCriteria: ["Return grounded layout findings."],
+          requiredToolCapabilities: ["system.readFile", "system.listDir"],
+          contextRequirements: ["repo_context"],
+          maxBudgetHint: "5m",
+          canRunParallel: true,
+        },
+        {
+          name: "synthesis_feedback",
+          stepType: "synthesis",
+          dependsOn: ["layout_review"],
+          objective: "Synthesize the reviewer findings for the PLAN.md writer.",
+        },
+        {
+          name: "update_plan",
+          stepType: "subagent_task",
+          dependsOn: ["synthesis_feedback"],
+          objective: "Update PLAN.md with the integrated reviewer feedback.",
+          inputContract: "Synthesized grounded reviewer feedback has already been provided for PLAN.md.",
+          acceptanceCriteria: [
+            "PLAN.md reflects the current workspace layout and recent directory changes accurately.",
+          ],
+          requiredToolCapabilities: ["system.readFile", "system.writeFile"],
+          contextRequirements: ["repo_context", "synthesis_feedback"],
+          executionContext: {
+            version: "v1",
+            workspaceRoot,
+            allowedReadRoots: [workspaceRoot],
+            allowedWriteRoots: [workspaceRoot],
+            requiredSourceArtifacts: [planPath],
+            targetArtifacts: [planPath],
+            effectClass: "filesystem_write",
+            verificationMode: "mutation_required",
+            stepKind: "delegated_write",
+            fallbackPolicy: "fail_request",
+            resumePolicy: "checkpoint_resume",
+            approvalProfile: "filesystem_write",
+          },
+          maxBudgetHint: "10m",
+          canRunParallel: false,
+        },
+      ],
+      plannerContext: {
+        parentRequest:
+          "Review the entire codebase layout and code to verify if it correctly follows Phase1 as described in PLAN.md, then update PLAN.md.",
+        history: [],
+        memory: [],
+        toolOutputs: [],
+        workspaceRoot,
+      },
+    };
+
+    const step = pipeline.plannerSteps[2] as PipelinePlannerSubagentStep;
+    const delegationSpec = (orchestrator as unknown as {
+      buildEffectiveDelegationSpec: (
+        step: PipelinePlannerSubagentStep,
+        pipeline: Pipeline,
+        options?: {
+          readonly parentRequest?: string;
+          readonly lastValidationCode?: string;
+          readonly delegatedWorkingDirectory?: string;
+          readonly results?: Readonly<Record<string, string>>;
+        },
+      ) => {
+        inheritedEvidence?: {
+          readonly workspaceInspectionSatisfied?: boolean;
+          readonly sourceSteps?: readonly string[];
+        };
+      };
+    }).buildEffectiveDelegationSpec(step, pipeline, {
+      parentRequest: pipeline.plannerContext?.parentRequest,
+      results: {
+        layout_review: JSON.stringify({
+          status: "completed",
+          success: true,
+          output: "The current workspace has src/shell.c and src/parser.c.",
+          toolCalls: [
+            {
+              name: "system.listDir",
+              args: { path: `${workspaceRoot}/src` },
+              result: JSON.stringify({
+                path: `${workspaceRoot}/src`,
+                entries: ["shell.c", "parser.c"],
+              }),
+            },
+          ],
+        }),
+        synthesis_feedback: materializePlannerSynthesisResult(
+          pipeline.plannerSteps?.[1] as Extract<
+            Pipeline["plannerSteps"][number],
+            { stepType: "synthesis" }
+          >,
+          {
+            layout_review: JSON.stringify({
+              status: "completed",
+              success: true,
+              output: "layout_review: the current workspace has src/shell.c and src/parser.c.",
+            }),
+          },
+        ),
+      },
+    });
+
+    expect(delegationSpec.inheritedEvidence).toEqual({
+      workspaceInspectionSatisfied: true,
+      sourceSteps: ["layout_review"],
+    });
   });
 
   it("derives multiple downstream root npm scripts from a combined shell-mode verification step", async () => {
