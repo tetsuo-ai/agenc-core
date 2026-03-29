@@ -60,6 +60,7 @@ import { PublicKey, SystemProgram } from '@solana/web3.js';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { normalizeTaskDescriptionForStorage } from '../../security/untrusted-content.js';
 
 export type SendFn = (response: ControlResponse) => void;
 export interface HandlerRequestContext {
@@ -917,6 +918,7 @@ export async function handleTasksCreate(
     const descStr = typeof (params as Record<string, unknown>).description === 'string'
       ? (params as Record<string, unknown>).description as string
       : 'Task from WebUI';
+    const preparedDescription = normalizeTaskDescriptionForStorage(descStr, 64);
     const rewardInput = typeof (params as Record<string, unknown>).reward === 'number'
       ? (params as Record<string, unknown>).reward as number
       : 0;
@@ -924,7 +926,7 @@ export async function handleTasksCreate(
     const { program } = await createProgramContext(deps);
     const tool = createCreateTaskTool(program, silentLogger);
     const result = await tool.execute({
-      description: descStr,
+      description: preparedDescription.normalizedText,
       reward: rewardLamports.toString(),
       requiredCapabilities: '1',
     });
@@ -933,15 +935,40 @@ export async function handleTasksCreate(
       return;
     }
     let createdTaskPda: string | undefined;
+    let descriptionSafeSummary: string | undefined;
+    let descriptionRiskScore: number | undefined;
+    let descriptionRiskLevel: string | undefined;
+    let agentExecutionEligible: boolean | undefined;
     try {
-      createdTaskPda = (JSON.parse(result.content) as { taskPda?: string }).taskPda;
+      const parsed = JSON.parse(result.content) as {
+        taskPda?: string;
+        descriptionSafeSummary?: string;
+        descriptionRiskScore?: number;
+        descriptionRiskLevel?: string;
+        agentExecutionEligible?: boolean;
+      };
+      createdTaskPda = parsed.taskPda;
+      descriptionSafeSummary = parsed.descriptionSafeSummary;
+      descriptionRiskScore = parsed.descriptionRiskScore;
+      descriptionRiskLevel = parsed.descriptionRiskLevel;
+      agentExecutionEligible = parsed.agentExecutionEligible;
     } catch {
       createdTaskPda = undefined;
     }
 
     // Auto-refresh task list after creation
     await sendTaskList(deps, id, send);
-    deps.broadcastEvent?.('task.created', { taskPda: createdTaskPda, description: descStr });
+    deps.broadcastEvent?.('task.created', {
+      taskPda: createdTaskPda,
+      safeSummary:
+        descriptionSafeSummary ?? preparedDescription.assessment.safeSummary,
+      riskScore:
+        descriptionRiskScore ?? preparedDescription.assessment.riskScore,
+      riskLevel:
+        descriptionRiskLevel ?? preparedDescription.assessment.riskLevel,
+      executionEligibility:
+        agentExecutionEligible ?? preparedDescription.assessment.executionEligible,
+    });
   } catch (err) {
     send({ type: 'error', error: `Failed to create task: ${(err as Error).message}`, id });
   }

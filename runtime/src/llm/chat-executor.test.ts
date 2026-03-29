@@ -7154,7 +7154,7 @@ describe("ChatExecutor", () => {
   // --------------------------------------------------------------------------
 
   describe("injection", () => {
-    it("skillInjector.inject() result appears in messages", async () => {
+    it("legacy skillInjector.inject() result appears in system messages", async () => {
       const skillInjector = {
         inject: vi.fn().mockResolvedValue("Skill context: you can search"),
       };
@@ -7172,6 +7172,40 @@ describe("ChatExecutor", () => {
         role: "system",
         content: "Skill context: you can search",
       });
+    });
+
+    it("injects trusted skill context as system and untrusted skill context as user", async () => {
+      const skillInjector = {
+        inject: vi.fn().mockResolvedValue(undefined),
+        injectDetailed: vi.fn().mockResolvedValue({
+          content: "unused combined content",
+          trustedContent: "# Trusted Skill Summaries\n\n{\"name\":\"builtin-search\"}",
+          untrustedContent:
+            "# Untrusted Skill Summaries\n\n{\"name\":\"project-deploy\"}",
+        }),
+      };
+      const provider = createMockProvider();
+      const executor = new ChatExecutor({
+        providers: [provider],
+        skillInjector,
+      });
+
+      await executor.execute(createParams());
+
+      const messages = (provider.chat as ReturnType<typeof vi.fn>).mock
+        .calls[0][0] as LLMMessage[];
+      expect(messages[1]).toEqual({
+        role: "system",
+        content: "# Trusted Skill Summaries\n\n{\"name\":\"builtin-search\"}",
+      });
+      expect(messages[2]).toEqual({
+        role: "user",
+        content: "# Untrusted Skill Summaries\n\n{\"name\":\"project-deploy\"}",
+      });
+      expect(skillInjector.injectDetailed).toHaveBeenCalledWith(
+        "hello",
+        "session-1",
+      );
     });
 
     it("skillInjector failure is non-blocking", async () => {

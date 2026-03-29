@@ -100,9 +100,19 @@ export class ChatBudgetExceededError extends RuntimeError {
 // Injection interfaces
 // ============================================================================
 
+export interface DetailedSkillInjectionResult {
+  readonly content: string | undefined;
+  readonly trustedContent?: string;
+  readonly untrustedContent?: string;
+}
+
 /** Injects skill context into a conversation. */
 export interface SkillInjector {
   inject(message: string, sessionId: string): Promise<string | undefined>;
+  injectDetailed?(
+    message: string,
+    sessionId: string,
+  ): Promise<DetailedSkillInjectionResult>;
 }
 
 /** Retrieves memory context for a conversation. */
