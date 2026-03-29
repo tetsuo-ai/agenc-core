@@ -6559,6 +6559,134 @@ describe("SubAgentOrchestrator", () => {
     });
   });
 
+  it("uses execution-context file tools for planner-owned documentation writes and strips recursive delegation tools", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-plan-doc-write-"));
+    TEMP_DIRS_TO_CLEAN.push(workspaceRoot);
+    const planPath = join(workspaceRoot, "PLAN.md");
+    writeFileSync(planPath, "# PLAN\n", "utf8");
+    const fallback = createFallbackExecutor(async () => ({
+      status: "completed",
+      context: { results: {} },
+      completedSteps: 0,
+      totalSteps: 0,
+    }));
+    const manager = new SequencedSubAgentManager([
+      {
+        delayMs: 1,
+        result: {
+          output: "PLAN.md updated from grounded repo inspection.",
+          success: true,
+          durationMs: 1,
+          toolCalls: [
+            {
+              name: "system.readFile",
+              args: { path: planPath },
+              result: JSON.stringify({ path: planPath, content: "# PLAN\n" }),
+              isError: false,
+              durationMs: 1,
+            },
+            {
+              name: "system.writeFile",
+              args: { path: planPath, content: "# PLAN\nUpdated\n" },
+              result: JSON.stringify({ path: planPath, bytesWritten: 15 }),
+              isError: false,
+              durationMs: 1,
+            },
+          ],
+        },
+      },
+    ]);
+    const orchestrator = new SubAgentOrchestrator({
+      fallbackExecutor: fallback,
+      resolveSubAgentManager: () => manager,
+      resolveHostWorkspaceRoot: () => workspaceRoot,
+      resolveAvailableToolNames: () => [
+        "system.readFile",
+        "system.listDir",
+        "system.writeFile",
+        "system.appendFile",
+        "execute_with_agent",
+      ],
+      pollIntervalMs: 1,
+      unsafeBenchmarkMode: true,
+    });
+
+    const result = await orchestrator.execute({
+      id: "planner:plan-doc-write-scope:1",
+      createdAt: Date.now(),
+      context: { results: {} },
+      steps: [],
+      plannerContext: {
+        parentRequest:
+          "Review the repo against PLAN.md and update PLAN.md if the structure changed. Please use subagents where they make sense.",
+        history: [],
+        memory: [],
+        toolOutputs: [],
+        workspaceRoot,
+        parentAllowedTools: [
+          "system.readFile",
+          "system.listDir",
+          "system.writeFile",
+          "system.appendFile",
+          "execute_with_agent",
+        ],
+      },
+      plannerSteps: [
+        {
+          name: "analyze_and_update_plan",
+          stepType: "subagent_task",
+          objective:
+            "Review the codebase layout against PLAN.md and update PLAN.md so it matches the current workspace state.",
+          inputContract: "Current PLAN.md and full workspace layout are available.",
+          acceptanceCriteria: [
+            "Update PLAN.md with corrected structure and any gaps.",
+          ],
+          requiredToolCapabilities: [
+            "Filesystem read access to all source files and directories in the workspace.",
+          ],
+          contextRequirements: ["repo_context", "read_plan_md"],
+          executionContext: {
+            version: "v1",
+            workspaceRoot,
+            allowedReadRoots: [workspaceRoot],
+            allowedWriteRoots: [workspaceRoot],
+            allowedTools: [
+              "system.readFile",
+              "system.listDir",
+              "system.writeFile",
+              "system.appendFile",
+            ],
+            requiredSourceArtifacts: [planPath],
+            targetArtifacts: [planPath],
+            effectClass: "filesystem_write",
+            verificationMode: "mutation_required",
+            stepKind: "delegated_write",
+            fallbackPolicy: "fail_request",
+            resumePolicy: "stateless_retry",
+            approvalProfile: "filesystem_write",
+          },
+          maxBudgetHint: "2m",
+          canRunParallel: false,
+        },
+      ],
+    });
+
+    expect(result.status).toBe("completed");
+    expect(manager.spawnCalls).toHaveLength(1);
+    expect(manager.spawnCalls[0]?.tools).toEqual([
+      "system.readFile",
+      "system.listDir",
+      "system.writeFile",
+      "system.appendFile",
+    ]);
+    expect(manager.spawnCalls[0]?.task).toContain(
+      "Allowed tools (policy-scoped):\n- system.readFile\n- system.listDir\n- system.writeFile\n- system.appendFile",
+    );
+    expect(manager.spawnCalls[0]?.task).toContain(
+      '"removedAsDelegationTools":["execute_with_agent"]',
+    );
+  });
+
   it("rejects local-file delegated steps that still rely on raw cwd hints instead of a canonical execution envelope", async () => {
     const hostWorkspaceRoot = "/home/tetsuo/agent-test";
     const fallback = createFallbackExecutor(async () => ({

@@ -294,6 +294,133 @@ describe("buildPlannerWorkflowAdmission", () => {
     expect(admission.requiresMandatoryImplementationVerification).toBe(false);
     expect(admission.completionContract?.taskClass).toBe("review_required");
   });
+
+  it("uses documentation completion verification for delegated plan rewrites", () => {
+    const admission = buildPlannerWorkflowAdmission({
+      workspaceRoot: "/tmp/project",
+      subagentSteps: [
+        createStep({
+          name: "rewrite_plan",
+          objective: "Rewrite PLAN.md to reflect the latest implementation state",
+          acceptanceCriteria: ["PLAN.md is fully updated with no shorthand placeholders"],
+          executionContext: {
+            version: "v1",
+            workspaceRoot: "/tmp/project",
+            allowedReadRoots: ["/tmp/project"],
+            allowedWriteRoots: ["/tmp/project"],
+            requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+            targetArtifacts: ["/tmp/project/PLAN.md"],
+            verificationMode: "mutation_required",
+            stepKind: "delegated_write",
+            effectClass: "filesystem_write",
+          },
+        }),
+      ],
+      deterministicSteps: [],
+    });
+
+    expect(admission.taskClassification).toBe("implementation_class");
+    expect(admission.requiresMandatoryImplementationVerification).toBe(true);
+    expect(admission.completionContract).toMatchObject({
+      taskClass: "artifact_only",
+      placeholderTaxonomy: "documentation",
+    });
+    expect(admission.verifierWorkItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "documentation_completion",
+          verificationKind: "deterministic_implementation",
+          objective: expect.stringContaining("documentation or planning artifact"),
+          verificationContract: expect.objectContaining({
+            completionContract: expect.objectContaining({
+              placeholderTaxonomy: "documentation",
+            }),
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("uses documentation completion verification for deterministic plan rewrites", () => {
+    const admission = buildPlannerWorkflowAdmission({
+      workspaceRoot: "/tmp/project",
+      subagentSteps: [],
+      deterministicSteps: [
+        {
+          name: "read_plan",
+          stepType: "deterministic_tool",
+          tool: "system.readFile",
+          args: { path: "/tmp/project/PLAN.md" },
+        },
+        {
+          name: "rewrite_plan",
+          stepType: "deterministic_tool",
+          tool: "system.writeFile",
+          args: { path: "/tmp/project/PLAN.md", content: "# PLAN\n" },
+        },
+      ],
+    });
+
+    expect(admission.taskClassification).toBe("implementation_class");
+    expect(admission.completionContract).toMatchObject({
+      taskClass: "artifact_only",
+      placeholderTaxonomy: "documentation",
+    });
+    expect(admission.verifierWorkItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "documentation_completion",
+        }),
+      ]),
+    );
+  });
+
+  it("normalizes contradictory review-tagged plan rewrites into documentation write admission", () => {
+    const admission = buildPlannerWorkflowAdmission({
+      workspaceRoot: "/tmp/project",
+      subagentSteps: [
+        createStep({
+          name: "analyze_and_update_plan",
+          objective:
+            "Assess the repo against PLAN.md and update PLAN.md to match the current state.",
+          acceptanceCriteria: ["PLAN.md is updated accurately."],
+          executionContext: {
+            version: "v1",
+            workspaceRoot: "/tmp/project",
+            allowedReadRoots: ["/tmp/project"],
+            allowedWriteRoots: ["/tmp/project"],
+            requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+            targetArtifacts: ["/tmp/project/PLAN.md"],
+            verificationMode: "mutation_required",
+            stepKind: "delegated_review",
+            effectClass: "filesystem_write",
+          },
+        }),
+      ],
+      deterministicSteps: [],
+    });
+
+    expect(admission.taskClassification).toBe("implementation_class");
+    expect(admission.completionContract).toMatchObject({
+      taskClass: "artifact_only",
+      placeholderTaxonomy: "documentation",
+    });
+    expect(admission.verificationContract).toMatchObject({
+      verificationMode: "mutation_required",
+      stepKind: "delegated_write",
+      completionContract: expect.objectContaining({
+        taskClass: "artifact_only",
+        placeholderTaxonomy: "documentation",
+      }),
+    });
+    expect(admission.verifierWorkItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "documentation_completion",
+        }),
+      ]),
+    );
+  });
 });
 
 describe("structured verifier outputs", () => {

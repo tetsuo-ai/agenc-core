@@ -4,6 +4,10 @@ import {
   normalizeWorkspaceRoot,
 } from "./path-normalization.js";
 import type { ImplementationCompletionContract } from "./completion-contract.js";
+import {
+  canonicalizeExecutionCompletionContract,
+  canonicalizeExecutionStepKind,
+} from "./execution-intent.js";
 
 export type ExecutionEnvelopeVersion = "v1";
 export type ExecutionEffectClass =
@@ -109,6 +113,19 @@ export function createExecutionEnvelope(params: {
     params.targetArtifacts ?? [],
     workspaceRoot,
   );
+  const stepKind = canonicalizeExecutionStepKind({
+    stepKind: params.stepKind,
+    effectClass: params.effectClass,
+    verificationMode: params.verificationMode,
+    targetArtifacts,
+  });
+  const completionContract = canonicalizeExecutionCompletionContract({
+    completionContract: params.completionContract,
+    stepKind,
+    effectClass: params.effectClass,
+    verificationMode: params.verificationMode,
+    targetArtifacts,
+  });
 
   if (
     !workspaceRoot &&
@@ -120,8 +137,8 @@ export function createExecutionEnvelope(params: {
     targetArtifacts.length === 0 &&
     !params.effectClass &&
     !params.verificationMode &&
-    !params.stepKind &&
-    !params.completionContract &&
+    !stepKind &&
+    !completionContract &&
     !params.fallbackPolicy &&
     !params.resumePolicy &&
     !params.approvalProfile
@@ -140,18 +157,18 @@ export function createExecutionEnvelope(params: {
     ...(targetArtifacts.length > 0 ? { targetArtifacts } : {}),
     ...(params.effectClass ? { effectClass: params.effectClass } : {}),
     ...(params.verificationMode ? { verificationMode: params.verificationMode } : {}),
-    ...(params.stepKind ? { stepKind: params.stepKind } : {}),
-    ...(params.completionContract
+    ...(stepKind ? { stepKind } : {}),
+    ...(completionContract
       ? {
         completionContract: {
-          taskClass: params.completionContract.taskClass,
-          placeholdersAllowed: params.completionContract.placeholdersAllowed,
+          taskClass: completionContract.taskClass,
+          placeholdersAllowed: completionContract.placeholdersAllowed,
           partialCompletionAllowed:
-            params.completionContract.partialCompletionAllowed,
-          ...(params.completionContract.placeholderTaxonomy
+            completionContract.partialCompletionAllowed,
+          ...(completionContract.placeholderTaxonomy
             ? {
               placeholderTaxonomy:
-                params.completionContract.placeholderTaxonomy,
+                completionContract.placeholderTaxonomy,
             }
             : {}),
         },

@@ -31,6 +31,7 @@ import type {
   WorkflowRequestMilestone,
 } from "../workflow/request-completion.js";
 import type { WorkflowVerificationContract } from "../workflow/verification-obligations.js";
+import { isDocumentationArtifactPath } from "../workflow/artifact-paths.js";
 import {
   DEFAULT_SUBAGENT_VERIFIER_MIN_CONFIDENCE,
   MAX_SUBAGENT_VERIFIER_OUTPUT_CHARS,
@@ -44,6 +45,7 @@ import {
 import { safeStringify } from "../tools/types.js";
 import { deriveVerificationObligations } from "../workflow/verification-obligations.js";
 import { validateRuntimeVerificationContract } from "../workflow/verification-contract.js";
+import { canonicalizeExecutionStepKind } from "../workflow/execution-intent.js";
 import {
   extractDelegationTokens,
   validateDelegatedOutputContract,
@@ -65,7 +67,6 @@ const DETERMINISTIC_IMPLEMENTATION_COMMAND_RE =
   /\b(?:implement|implementation|fix|repair|refactor|migrate|write|edit|update|create|build|compile|typecheck|lint|test|install|scaffold)\b/i;
 const SOURCE_LIKE_PATH_RE =
   /(?:^|\/)(?:src|lib|app|server|client|cmd|pkg|include|internal|tests?|spec)(?:\/|$)|\.(?:c|cc|cpp|cxx|h|hpp|m|mm|rs|go|py|rb|php|java|kt|swift|cs|js|jsx|ts|tsx|json|toml|yaml|yml|xml|sh|zsh|bash)$/i;
-const DOC_ONLY_PATH_RE = /\.(?:md|mdx|txt|rst|adoc)$/i;
 
 export function buildPlannerWorkflowAdmission(params: {
   readonly subagentSteps: readonly PlannerSubAgentTaskStepIntent[];
@@ -316,6 +317,10 @@ export function evaluatePlannerDeterministicChecks(
           contractValidation.code === "missing_required_source_evidence"
         ) {
           issues.push("missing_required_source_evidence");
+        } else if (
+          contractValidation.code === "missing_workspace_inspection_evidence"
+        ) {
+          issues.push("missing_workspace_inspection_evidence");
         } else if (
           contractValidation.code === "missing_file_artifact_evidence"
         ) {
@@ -1256,25 +1261,55 @@ function selectPlannerStepKind(params: {
   readonly completionContract?: ImplementationCompletionContract;
 }): WorkflowVerificationContract["stepKind"] | undefined {
   if (params.explicit) {
-    return params.explicit;
+    return canonicalizeExecutionStepKind({
+      stepKind: params.explicit,
+      verificationMode:
+        params.completionContract?.taskClass === "review_required"
+          ? "grounded_read"
+          : undefined,
+    });
   }
   for (const step of params.subagentSteps) {
-    if (step.executionContext?.stepKind === "delegated_write") {
+    const stepKind = canonicalizeExecutionStepKind({
+      stepKind: step.executionContext?.stepKind,
+      effectClass: step.executionContext?.effectClass,
+      verificationMode: step.executionContext?.verificationMode,
+      targetArtifacts: step.executionContext?.targetArtifacts,
+    });
+    if (stepKind === "delegated_write") {
       return "delegated_write";
     }
   }
   for (const step of params.subagentSteps) {
-    if (step.executionContext?.stepKind === "delegated_validation") {
+    const stepKind = canonicalizeExecutionStepKind({
+      stepKind: step.executionContext?.stepKind,
+      effectClass: step.executionContext?.effectClass,
+      verificationMode: step.executionContext?.verificationMode,
+      targetArtifacts: step.executionContext?.targetArtifacts,
+    });
+    if (stepKind === "delegated_validation") {
       return "delegated_validation";
     }
   }
   for (const step of params.subagentSteps) {
-    if (step.executionContext?.stepKind === "delegated_review") {
+    const stepKind = canonicalizeExecutionStepKind({
+      stepKind: step.executionContext?.stepKind,
+      effectClass: step.executionContext?.effectClass,
+      verificationMode: step.executionContext?.verificationMode,
+      targetArtifacts: step.executionContext?.targetArtifacts,
+    });
+    if (stepKind === "delegated_review") {
       return "delegated_review";
     }
   }
   for (const step of params.subagentSteps) {
-    if (step.executionContext?.stepKind === "delegated_scaffold") {
+    const stepKind = canonicalizeExecutionStepKind({
+      stepKind: step.executionContext?.stepKind,
+      effectClass: step.executionContext?.effectClass,
+      verificationMode: step.executionContext?.verificationMode,
+      targetArtifacts: step.executionContext?.targetArtifacts,
+    });
+    if (stepKind === "delegated_scaffold") {
       return "delegated_scaffold";
     }
   }
@@ -1297,13 +1332,21 @@ function buildDeterministicImplementationVerifierWorkItem(
     completionContract,
     verificationContract?.acceptanceCriteria,
   );
+  const documentationOnly =
+    completionContract.placeholderTaxonomy === "documentation";
   return {
-    name: "implementation_completion",
+    name: documentationOnly
+      ? "documentation_completion"
+      : "implementation_completion",
     verificationKind: "deterministic_implementation",
     objective:
-      "Verify that the deterministic implementation/fix/refactor work is complete enough to count as implemented.",
+      documentationOnly
+        ? "Verify that the deterministic documentation or planning artifact rewrite is complete enough to count as finished."
+        : "Verify that the deterministic implementation/fix/refactor work is complete enough to count as implemented.",
     inputContract:
-      "Assess the deterministic tool outputs and resulting artifacts against the implementation completion contract.",
+      documentationOnly
+        ? "Assess the deterministic tool outputs and resulting artifacts against the documentation completion contract."
+        : "Assess the deterministic tool outputs and resulting artifacts against the implementation completion contract.",
     acceptanceCriteria,
     requiredToolCapabilities: [
       ...new Set([
@@ -1347,6 +1390,12 @@ function hasDeterministicImplementationMutation(
   return deterministicSteps.some((step) => isImplementationMutationStep(step));
 }
 
+function hasDeterministicDocumentationMutation(
+  deterministicSteps: readonly PlannerDeterministicToolStepIntent[],
+): boolean {
+  return deterministicSteps.some((step) => isDocumentationMutationStep(step));
+}
+
 function resolveDeterministicImplementationCompletionContract(
   deterministicSteps: readonly PlannerDeterministicToolStepIntent[],
 ): ImplementationCompletionContract | undefined {
@@ -1372,6 +1421,14 @@ function resolveDeterministicImplementationCompletionContract(
       placeholdersAllowed: false,
       partialCompletionAllowed: false,
       placeholderTaxonomy: "implementation",
+    };
+  }
+  if (hasDeterministicDocumentationMutation(deterministicSteps)) {
+    return {
+      taskClass: "artifact_only",
+      placeholdersAllowed: false,
+      partialCompletionAllowed: false,
+      placeholderTaxonomy: "documentation",
     };
   }
   return undefined;
@@ -1411,7 +1468,7 @@ function isImplementationMutationStep(
     if (candidatePaths.length === 0) {
       return true;
     }
-    return candidatePaths.some((path) => !DOC_ONLY_PATH_RE.test(path));
+    return candidatePaths.some((path) => !isDocumentationArtifactPath(path));
   }
   if (step.tool !== "system.bash" && step.tool !== "desktop.bash") {
     return false;
@@ -1430,6 +1487,30 @@ function isImplementationMutationStep(
     );
   }
   return pathHints.some((path) => SOURCE_LIKE_PATH_RE.test(path));
+}
+
+function isDocumentationMutationStep(
+  step: PlannerDeterministicToolStepIntent,
+): boolean {
+  if (DIRECT_MUTATION_TOOL_NAMES.has(step.tool.trim())) {
+    const candidatePaths = extractDeterministicTargetPaths(step);
+    return (
+      candidatePaths.length > 0 &&
+      candidatePaths.every((path) => isDocumentationArtifactPath(path))
+    );
+  }
+  if (step.tool !== "system.bash" && step.tool !== "desktop.bash") {
+    return false;
+  }
+  const commandText = extractCommandText(step.args);
+  if (!SHELL_MUTATION_RE.test(commandText)) {
+    return false;
+  }
+  const pathHints = extractDeterministicTargetPaths(step);
+  return (
+    pathHints.length > 0 &&
+    pathHints.every((path) => isDocumentationArtifactPath(path))
+  );
 }
 
 function extractDeterministicTargetPaths(

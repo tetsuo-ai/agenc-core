@@ -785,6 +785,14 @@ export function inferRecoveryHint(
           "Retry only after reading those source files and preserving the distinction between planned structure and files that actually exist.",
       };
     }
+    if (validationCode === "missing_workspace_inspection_evidence") {
+      return {
+        key: "execute-with-agent-missing-workspace-inspection-evidence",
+        message:
+          "The previous `execute_with_agent` attempt updated a derived documentation artifact without first inspecting the current workspace state beyond the target artifact itself. " +
+          "Retry only after collecting concrete repo/layout inspection evidence and grounding the rewrite in that evidence.",
+      };
+    }
     if (validationCode === "forbidden_phase_action") {
       return {
         key: "execute-with-agent-forbidden-phase-action",

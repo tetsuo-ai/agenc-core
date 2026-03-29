@@ -42,6 +42,7 @@ import type { WorkflowVerificationContract } from "../workflow/verification-obli
 import type { HostToolingProfile } from "../gateway/host-tooling.js";
 import { resolveWorkflowCompletionState } from "../workflow/completion-state.js";
 import { deriveWorkflowProgressSnapshot } from "../workflow/completion-progress.js";
+import { isDocumentationArtifactPath } from "../workflow/artifact-paths.js";
 import {
   buildModelRoutingPolicy,
   resolveModelRoute,
@@ -132,6 +133,7 @@ import {
   resolveExecutionToolContractGuidance,
   resolveLegacyCompletionCompatibility,
   resolveRuntimeWorkflowContext,
+  type RuntimeWorkflowContextResolution,
   validateRequiredToolEvidence,
 } from "./chat-executor-contract-flow.js";
 import type { ToolContractGuidance } from "./chat-executor-contract-guidance.js";
@@ -247,6 +249,34 @@ function mergeExplicitRequirementToolNames(
     return merged;
   }
   return Array.from(new Set(fallbackToolNames));
+}
+
+function resolveWorkflowOwnerClass(params: {
+  readonly workflowContext?: RuntimeWorkflowContextResolution;
+  readonly plannerCompletionContract?: ImplementationCompletionContract;
+  readonly plannerVerificationContract?: WorkflowVerificationContract;
+}): "documentation" | "implementation" {
+  const completionContract =
+    params.workflowContext?.completionContract ??
+    params.workflowContext?.verificationContract?.completionContract ??
+    params.plannerCompletionContract ??
+    params.plannerVerificationContract?.completionContract;
+  if (completionContract?.placeholderTaxonomy === "documentation") {
+    return "documentation";
+  }
+  const targetArtifacts =
+    params.workflowContext?.verificationContract?.targetArtifacts ??
+    params.plannerVerificationContract?.targetArtifacts ??
+    [];
+  if (
+    targetArtifacts.length > 0 &&
+    targetArtifacts.every((artifact) => isDocumentationArtifactPath(artifact)) &&
+    completionContract?.taskClass !== "build_required" &&
+    completionContract?.taskClass !== "behavior_required"
+  ) {
+    return "documentation";
+  }
+  return "implementation";
 }
 
 function buildDelegatedBudgetFinalizationInstruction(params: {
@@ -1765,6 +1795,11 @@ export class ChatExecutor {
       workflowContext.verificationContract ||
       workflowContext.completionContract
     ) {
+      const ownerClass = resolveWorkflowOwnerClass({
+        workflowContext,
+        plannerCompletionContract: ctx.plannerCompletionContract,
+        plannerVerificationContract: ctx.plannerVerificationContract,
+      });
       this.emitExecutionTrace(ctx, {
         type: "completion_gate_checked",
         phase: "tool_followup",
@@ -1773,7 +1808,7 @@ export class ChatExecutor {
           gate: "workflow_completion_truth",
           decision:
             ctx.completionState === "completed" ? "accept" : "accept_nonterminal",
-          ownerClass: "implementation",
+          ownerClass,
           completionState: ctx.completionState,
           ownershipSource: workflowContext.ownershipSource,
           reason: "workflow_verification_contract_present",
@@ -1798,6 +1833,10 @@ export class ChatExecutor {
       ctx.plannerSummaryState.subagentVerification.performed === true &&
       ctx.plannerSummaryState.subagentVerification.overall === "pass"
     ) {
+      const ownerClass = resolveWorkflowOwnerClass({
+        plannerCompletionContract: ctx.plannerCompletionContract,
+        plannerVerificationContract: ctx.plannerVerificationContract,
+      });
       this.emitExecutionTrace(ctx, {
         type: "completion_gate_checked",
         phase: "tool_followup",
@@ -1806,7 +1845,7 @@ export class ChatExecutor {
           gate: "workflow_completion_truth",
           decision:
             ctx.completionState === "completed" ? "accept" : "accept_nonterminal",
-          ownerClass: "implementation",
+          ownerClass,
           completionState: ctx.completionState,
           ownershipSource: "planner_owned",
           reason: "planner_verifier_passed",

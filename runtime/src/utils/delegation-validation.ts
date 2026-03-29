@@ -37,6 +37,12 @@ import {
   toDelegationOutputValidationResult,
   validateRuntimeVerificationContract,
 } from "../workflow/index.js";
+import { areDocumentationOnlyArtifacts } from "../workflow/artifact-paths.js";
+import {
+  criterionRequiresWorkspaceInspectionVerification,
+  isMeaningfulWorkspaceInspectionToolCall,
+  textRequiresWorkspaceGroundedArtifactUpdate,
+} from "../workflow/workspace-inspection-evidence.js";
 
 export interface DelegationContractSpec {
   readonly task?: string;
@@ -85,6 +91,7 @@ export type DelegationOutputValidationCode =
   | "contradictory_completion_claim"
   | "missing_successful_tool_evidence"
   | "low_signal_browser_evidence"
+  | "missing_workspace_inspection_evidence"
   | "missing_file_mutation_evidence"
   | "missing_required_source_evidence"
   | "missing_file_artifact_evidence";
@@ -412,6 +419,8 @@ function isGenericFilesystemCapabilityName(capability: string): boolean {
 
 function looksLikeExplicitDelegatedToolName(toolName: string): boolean {
   const normalized = toolName.trim().toLowerCase();
+  if (normalized.length === 0) return false;
+  if (/\s/.test(normalized)) return false;
   return normalized === "execute_with_agent" ||
     isProviderNativeToolName(normalized) ||
     normalized.includes(".") ||
@@ -1664,6 +1673,7 @@ export function specRequiresSuccessfulToolEvidence(
   spec: DelegationContractSpec,
 ): boolean {
   if (hasExplicitToolRequirement(spec)) return true;
+  if (specRequiresMeaningfulWorkspaceEvidence(spec)) return true;
   const stepText = collectDelegationStepText(spec);
   if (TOOL_GROUNDED_TASK_RE.test(stepText)) return true;
   const taskIntent = classifyDelegatedTaskIntent(spec);
@@ -1671,6 +1681,24 @@ export function specRequiresSuccessfulToolEvidence(
     (taskIntent === "research" || taskIntent === "validation") &&
     TOOL_GROUNDED_TASK_RE.test(collectDelegationContextText(spec))
   );
+}
+
+export function specRequiresMeaningfulWorkspaceEvidence(
+  spec: DelegationContractSpec,
+): boolean {
+  const targetArtifacts = collectExplicitSpecFileArtifacts(spec);
+  if (!areDocumentationOnlyArtifacts(targetArtifacts)) {
+    return false;
+  }
+  if (!specTargetsLocalFiles(spec)) {
+    return false;
+  }
+  const text = collectDelegationStepText(spec, { includeParentRequest: true });
+  if (!textRequiresWorkspaceGroundedArtifactUpdate(text)) {
+    return false;
+  }
+  const capabilityProfile = getDelegatedCapabilityProfile(spec);
+  return capabilityProfile.hasFileWrite || targetArtifacts.length > 0;
 }
 
 export function specRequiresMeaningfulBrowserEvidence(
@@ -2055,11 +2083,16 @@ export function resolveDelegatedInitialToolChoiceToolName(
   const normalizedTools = normalizeToolNames(tools);
   const taskIntent = classifyDelegatedTaskIntent(spec);
   const requireBrowser = specRequiresMeaningfulBrowserEvidence(spec);
+  const requireWorkspaceInspection = specRequiresMeaningfulWorkspaceEvidence(spec);
   const requireFileMutation = specRequiresFileMutationEvidence(spec);
   const setupHeavy = isSetupHeavyDelegatedTask(spec);
   const localFileInspectionTask = specTargetsLocalFiles(spec);
   const shouldPrioritizeSourceGroundingRetry =
     spec.lastValidationCode === "missing_required_source_evidence" &&
+    localFileInspectionTask &&
+    !requireBrowser;
+  const shouldPrioritizeWorkspaceGroundingRetry =
+    spec.lastValidationCode === "missing_workspace_inspection_evidence" &&
     localFileInspectionTask &&
     !requireBrowser;
   const shouldPrioritizeVerificationRetry =
@@ -2076,6 +2109,16 @@ export function resolveDelegatedInitialToolChoiceToolName(
     return INITIAL_FILE_INSPECTION_TOOL_NAMES.find((toolName) =>
       normalizedTools.includes(toolName)
     );
+  }
+
+  if (shouldPrioritizeWorkspaceGroundingRetry || requireWorkspaceInspection) {
+    const preferredInspectionTool = [
+      "system.listDir",
+      ...INITIAL_FILE_INSPECTION_TOOL_NAMES,
+    ].find((toolName) => normalizedTools.includes(toolName));
+    if (preferredInspectionTool) {
+      return preferredInspectionTool;
+    }
   }
 
   if (shouldPrioritizeVerificationRetry) {
@@ -2157,6 +2200,7 @@ export function resolveDelegatedInitialToolChoiceToolNames(
 
   const taskIntent = classifyDelegatedTaskIntent(spec);
   const requireBrowser = specRequiresMeaningfulBrowserEvidence(spec);
+  const requireWorkspaceInspection = specRequiresMeaningfulWorkspaceEvidence(spec);
   const requireFileMutation = specRequiresFileMutationEvidence(spec);
   const setupHeavy = isSetupHeavyDelegatedTask(spec);
   const localFileInspectionTask = specTargetsLocalFiles(spec);
@@ -2166,6 +2210,10 @@ export function resolveDelegatedInitialToolChoiceToolNames(
   );
   const shouldPrioritizeSourceGroundingRetry =
     spec.lastValidationCode === "missing_required_source_evidence" &&
+    localFileInspectionTask &&
+    !requireBrowser;
+  const shouldPrioritizeWorkspaceGroundingRetry =
+    spec.lastValidationCode === "missing_workspace_inspection_evidence" &&
     localFileInspectionTask &&
     !requireBrowser;
   const shouldPrioritizeVerificationRetry =
@@ -2206,12 +2254,31 @@ export function resolveDelegatedInitialToolChoiceToolNames(
     return correctionTools.length > 0 ? correctionTools : [preferredToolName];
   }
 
+  if (shouldPrioritizeWorkspaceGroundingRetry) {
+    const correctionTools: string[] = [];
+    const pushFirstAvailable = (candidates: readonly string[]) => {
+      const toolName = candidates.find((candidate) =>
+        normalizedTools.includes(candidate)
+      );
+      if (toolName && !correctionTools.includes(toolName)) {
+        correctionTools.push(toolName);
+      }
+    };
+    pushFirstAvailable(["system.listDir"]);
+    pushFirstAvailable(INITIAL_FILE_INSPECTION_TOOL_NAMES);
+    if (requireFileMutation || taskIntent === "implementation") {
+      pushFirstAvailable(INITIAL_FILE_MUTATION_TOOL_NAMES);
+    }
+    return correctionTools.length > 0 ? correctionTools : [preferredToolName];
+  }
+
   const shouldUseFlexibleInitialSubset =
     hasSystemTooling &&
     (
       setupHeavy ||
       researchLikeButLocalInspectionOnly ||
       shouldUseFullInspectionCoverage ||
+      requireWorkspaceInspection ||
       verificationCue ||
       taskIntent === "validation" ||
       taskIntent === "implementation"
@@ -2241,10 +2308,9 @@ export function resolveDelegatedInitialToolChoiceToolNames(
   const inspectionCandidates = setupHeavy
     ? (["system.listDir", ...INITIAL_FILE_INSPECTION_TOOL_NAMES] as const)
     : INITIAL_FILE_INSPECTION_TOOL_NAMES;
-  const fullInspectionCandidates = [
-    "system.readFile",
-    "system.listDir",
-  ] as const;
+  const fullInspectionCandidates = requireWorkspaceInspection
+    ? (["system.listDir", "system.readFile"] as const)
+    : (["system.readFile", "system.listDir"] as const);
 
   if (shouldPrioritizeVerificationRetry) {
     pushFirstAvailable(INITIAL_SETUP_TOOL_NAMES);
@@ -2258,10 +2324,11 @@ export function resolveDelegatedInitialToolChoiceToolNames(
     if (
       taskIntent === "implementation" ||
       taskIntent === "validation" ||
+      requireWorkspaceInspection ||
       localFileInspectionTask ||
       setupHeavy
     ) {
-      if (shouldUseFullInspectionCoverage) {
+      if (shouldUseFullInspectionCoverage || requireWorkspaceInspection) {
         pushAllAvailable(fullInspectionCandidates);
       } else {
         pushFirstAvailable(inspectionCandidates);
@@ -2400,6 +2467,24 @@ export function resolveDelegatedCorrectionToolChoiceToolNames(
     };
     pushFirstAvailable(["system.listDir"]);
     pushFirstAvailable(INITIAL_FILE_INSPECTION_TOOL_NAMES);
+    if (correctionTools.length > 0) {
+      return correctionTools;
+    }
+  }
+
+  if (validationCode === "missing_workspace_inspection_evidence") {
+    const correctionTools: string[] = [];
+    const pushFirstAvailable = (candidates: readonly string[]) => {
+      const toolName = candidates.find((candidate) =>
+        normalizedTools.includes(candidate)
+      );
+      if (toolName && !correctionTools.includes(toolName)) {
+        correctionTools.push(toolName);
+      }
+    };
+    pushFirstAvailable(["system.listDir"]);
+    pushFirstAvailable(INITIAL_FILE_INSPECTION_TOOL_NAMES);
+    pushFirstAvailable(INITIAL_FILE_MUTATION_TOOL_NAMES);
     if (correctionTools.length > 0) {
       return correctionTools;
     }
@@ -2655,7 +2740,7 @@ function isToolCallFailure(toolCall: DelegationValidationToolCall): boolean {
   return false;
 }
 
-export type AcceptanceVerificationCategory = "build" | "test";
+export type AcceptanceVerificationCategory = "build" | "test" | "inspection";
 type ForbiddenPhaseActionCategory =
   | "install"
   | "build"
@@ -2828,6 +2913,9 @@ export function getAcceptanceVerificationCategories(
   }
   if (ACCEPTANCE_TEST_VERIFICATION_RE.test(criterion)) {
     categories.add("test");
+  }
+  if (criterionRequiresWorkspaceInspectionVerification(criterion)) {
+    categories.add("inspection");
   }
   return [...categories];
 }
@@ -3330,9 +3418,37 @@ function validateAcceptanceVerificationToolEvidence(
       continue;
     }
 
+    if (
+      categories.includes("inspection") &&
+      !successfulCalls.some((toolCall) =>
+        isMeaningfulWorkspaceInspectionToolCall({
+          toolCall,
+          workspaceRoot: spec.executionContext?.workspaceRoot,
+          targetArtifacts: collectExplicitSpecFileArtifacts(spec),
+          requiredSourceArtifacts: collectExplicitSourceSpecFileArtifacts(spec),
+        })
+      )
+    ) {
+      return validationFailure(
+        "missing_workspace_inspection_evidence",
+        "Acceptance criterion required grounded workspace inspection evidence but the child did not inspect non-target workspace state: " +
+          truncateValidationExcerpt(criterion),
+        parsedOutput,
+      );
+    }
+
+    const remainingCategories = categories.filter((category) =>
+      category !== "inspection"
+    );
+    if (remainingCategories.length === 0) {
+      continue;
+    }
+
     const hasMatchingSuccess = successfulCalls.some((toolCall) => {
       const toolCategories = getToolCallVerificationCategories(toolCall);
-      return categories.some((category) => toolCategories.includes(category));
+      return remainingCategories.some((category) =>
+        toolCategories.includes(category)
+      );
     });
     if (hasMatchingSuccess) {
       continue;
@@ -3453,6 +3569,58 @@ function isMeaningfulHostBrowserValidationToolCall(
   return hasBrowserCue && (hasTargetCue || specHasBrowserCue);
 }
 
+function getMeaningfulWorkspaceEvidenceFailureMessage(
+  spec: DelegationContractSpec,
+  successfulCalls: readonly DelegationValidationToolCall[],
+): string | undefined {
+  if (!specRequiresMeaningfulWorkspaceEvidence(spec)) {
+    return undefined;
+  }
+  const explicitSourceArtifacts = collectExplicitSourceSpecFileArtifacts(spec);
+  if (explicitSourceArtifacts.length > 0) {
+    const observedReadEvidence = collectLatestReadFileStateEvidence(successfulCalls);
+    const hasAllNamedSourceReads = explicitSourceArtifacts.every((target) => {
+      const normalizedTarget = normalizeExplicitArtifactPath(target);
+      const targetBasename = getNormalizedPathBasename(normalizedTarget);
+      return observedReadEvidence.some((entry) => {
+        const normalizedPath = normalizeExplicitArtifactPath(entry.path ?? "");
+        if (normalizedPath.length === 0) {
+          return false;
+        }
+        return pathsMatchByTarget(normalizedPath, normalizedTarget) ||
+          getNormalizedPathBasename(normalizedPath) === targetBasename;
+      });
+    });
+    if (!hasAllNamedSourceReads) {
+      return undefined;
+    }
+  }
+  if (
+    successfulCalls.some((toolCall) =>
+      isMeaningfulWorkspaceInspectionToolCall({
+        toolCall,
+        workspaceRoot: spec.executionContext?.workspaceRoot,
+        targetArtifacts: collectExplicitSpecFileArtifacts(spec),
+        requiredSourceArtifacts: collectExplicitSourceSpecFileArtifacts(spec),
+      })
+    )
+  ) {
+    return undefined;
+  }
+  const hadInspectionAttempt = successfulCalls.some((toolCall) => {
+    const toolName = toolCall.name?.trim() ?? "";
+    return toolName === "system.readFile" ||
+      toolName === "system.listDir" ||
+      toolName === "system.stat" ||
+      toolName === "desktop.text_editor" ||
+      toolName === "system.bash" ||
+      toolName === "desktop.bash";
+  });
+  return hadInspectionAttempt
+    ? "Delegated task required workspace-grounded evidence but the child only inspected the target documentation artifact instead of the current workspace state"
+    : "Delegated task required workspace-grounded evidence but the child recorded no meaningful non-target workspace inspection before completion";
+}
+
 function getMeaningfulBrowserEvidenceFailureMessage(
   spec: DelegationContractSpec,
   successfulCalls: readonly DelegationValidationToolCall[],
@@ -3507,7 +3675,10 @@ function getSuccessfulToolEvidenceFailure(
   spec?: DelegationContractSpec,
   providerEvidence?: DelegationValidationProviderEvidence,
 ): {
-  code: "missing_successful_tool_evidence" | "low_signal_browser_evidence";
+  code:
+    | "missing_successful_tool_evidence"
+    | "low_signal_browser_evidence"
+    | "missing_workspace_inspection_evidence";
   message: string;
 } | undefined {
   if (
@@ -3542,6 +3713,16 @@ function getSuccessfulToolEvidenceFailure(
       return {
         code: "low_signal_browser_evidence",
         message: browserEvidenceFailure,
+      };
+    }
+    const workspaceEvidenceFailure = getMeaningfulWorkspaceEvidenceFailureMessage(
+      spec,
+      successfulCalls,
+    );
+    if (workspaceEvidenceFailure) {
+      return {
+        code: "missing_workspace_inspection_evidence",
+        message: workspaceEvidenceFailure,
       };
     }
   }

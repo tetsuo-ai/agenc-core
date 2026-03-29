@@ -16,6 +16,7 @@ import {
   extractExplicitSubagentOrchestrationRequirements,
   parsePlannerPlan,
   plannerRequestImplementsFromArtifact,
+  plannerRequestNeedsWorkspaceGroundedArtifactUpdate,
   requestExplicitlyRequestsDelegation,
   salvagePlannerToolCallsAsPlan,
   validatePlannerVerificationRequirements,
@@ -108,6 +109,37 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
     );
     expect(messages[0]?.content).not.toContain(
       '"requiredSourceArtifacts": ["/abs/path/PLAN.md"]',
+    );
+  });
+
+  it("grounds plan-artifact edit schema examples to the requested artifact instead of AGENC.md", () => {
+    const messages = buildPlannerMessages(
+      "Update PLAN.md so it reflects the corrected architecture and missing validation steps.",
+      [],
+      512,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "/home/tetsuo/git/AgenC",
+    );
+
+    expect(messages[0]?.content).toContain(
+      '"requiredSourceArtifacts": ["/home/tetsuo/git/AgenC/PLAN.md"]',
+    );
+    expect(messages[0]?.content).toContain(
+      '"targetArtifacts": ["/home/tetsuo/git/AgenC/PLAN.md"]',
+    );
+    expect(messages[0]?.content).not.toContain("AGENC.md");
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "system",
+          content: expect.stringContaining(
+            "This request must materialize the named planning artifact itself.",
+          ),
+        }),
+      ]),
     );
   });
 
@@ -1177,6 +1209,53 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
     ]);
   });
 
+  it("canonicalizes contradictory review-tagged plan rewrites into delegated writes", () => {
+    const result = parsePlannerPlan(
+      JSON.stringify({
+        reason: "delegate_plan_rewrite",
+        requiresSynthesis: true,
+        steps: [
+          {
+            name: "analyze_and_update_plan",
+            step_type: "subagent_task",
+            objective:
+              "Review the repo against PLAN.md, then update PLAN.md so it reflects the current state.",
+            input_contract: "Use PLAN.md and the workspace tree as the source of truth.",
+            acceptance_criteria: [
+              "PLAN.md reflects the current repo layout accurately.",
+            ],
+            required_tool_capabilities: ["system.readFile", "system.writeFile"],
+            execution_context: {
+              workspaceRoot: "/tmp/agenc-shell",
+              allowedReadRoots: ["/tmp/agenc-shell"],
+              allowedWriteRoots: ["/tmp/agenc-shell"],
+              requiredSourceArtifacts: ["/tmp/agenc-shell/PLAN.md"],
+              targetArtifacts: ["/tmp/agenc-shell/PLAN.md"],
+              allowedTools: ["system.readFile", "system.writeFile"],
+              effectClass: "filesystem_write",
+              verificationMode: "mutation_required",
+              stepKind: "delegated_review",
+            },
+            max_budget_hint: "8m",
+          },
+        ],
+      }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(result.plan?.steps).toEqual([
+      expect.objectContaining({
+        name: "analyze_and_update_plan",
+        stepType: "subagent_task",
+        executionContext: expect.objectContaining({
+          targetArtifacts: ["/tmp/agenc-shell/PLAN.md"],
+          verificationMode: "mutation_required",
+          stepKind: "delegated_write",
+        }),
+      }),
+    ]);
+  });
+
   it("rejects subagent execution envelopes that still use /workspace placeholder roots", () => {
     const result = parsePlannerPlan(
       JSON.stringify({
@@ -1679,6 +1758,118 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
     expect(diagnostics).toEqual([]);
   });
 
+  it("allows grounded plan-artifact update requests that end in a bounded delegated write to the requested artifact", () => {
+    const workspaceRoot = "/tmp/agenc-shell";
+    const diagnostics = validatePlannerStepContracts(
+      {
+        reason: "update_plan_artifact",
+        requiresSynthesis: false,
+        confidence: 0.79,
+        steps: [
+          {
+            name: "read_plan",
+            stepType: "deterministic_tool",
+            dependsOn: [],
+            tool: "system.readFile",
+            args: {
+              path: `${workspaceRoot}/PLAN.md`,
+            },
+          },
+          {
+            name: "analyze_and_update_plan",
+            stepType: "subagent_task",
+            dependsOn: ["read_plan"],
+            objective:
+              "Review the codebase layout against phase1, identify plan gaps, and update PLAN.md.",
+            inputContract: "PLAN.md plus the current source tree.",
+            acceptanceCriteria: ["PLAN.md reflects the current workspace layout."],
+            requiredToolCapabilities: ["read", "write"],
+            contextRequirements: ["read_plan"],
+            maxBudgetHint: "10m",
+            canRunParallel: false,
+            executionContext: {
+              version: "v1",
+              workspaceRoot,
+              allowedReadRoots: [workspaceRoot],
+              allowedWriteRoots: [workspaceRoot],
+              requiredSourceArtifacts: [`${workspaceRoot}/PLAN.md`],
+              targetArtifacts: [`${workspaceRoot}/PLAN.md`],
+              effectClass: "filesystem_write",
+              verificationMode: "mutation_required",
+              stepKind: "delegated_write",
+            },
+          },
+        ],
+        edges: [{ from: "read_plan", to: "analyze_and_update_plan" }],
+      },
+      "Update PLAN.md so it reflects the corrected architecture and missing validation steps.",
+    );
+
+    expect(diagnostics).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "planner_plan_artifact_missing_write_step",
+        }),
+      ]),
+    );
+  });
+
+  it("rejects workspace-grounded artifact rewrites that only read the target doc before a generic rewrite", () => {
+    const workspaceRoot = "/tmp/agenc-shell";
+    const diagnostics = validatePlannerStepContracts(
+      {
+        reason: "review_and_update_plan",
+        requiresSynthesis: false,
+        confidence: 0.81,
+        steps: [
+          {
+            name: "read_plan",
+            stepType: "deterministic_tool",
+            dependsOn: [],
+            tool: "system.readFile",
+            args: {
+              path: `${workspaceRoot}/PLAN.md`,
+            },
+          },
+          {
+            name: "review_and_update_plan",
+            stepType: "subagent_task",
+            dependsOn: ["read_plan"],
+            objective:
+              "Review PLAN.md from multiple perspectives and update it accordingly.",
+            inputContract: "Provide the PLAN.md contents.",
+            acceptanceCriteria: [
+              "PLAN.md is updated cleanly and remains coherent.",
+            ],
+            requiredToolCapabilities: ["system.readFile", "system.writeFile"],
+            maxBudgetHint: "8m",
+            executionContext: {
+              version: "v1",
+              workspaceRoot,
+              allowedReadRoots: [workspaceRoot],
+              allowedWriteRoots: [workspaceRoot],
+              requiredSourceArtifacts: [`${workspaceRoot}/PLAN.md`],
+              targetArtifacts: [`${workspaceRoot}/PLAN.md`],
+              allowedTools: ["system.readFile", "system.writeFile"],
+              effectClass: "filesystem_write",
+              verificationMode: "mutation_required",
+              stepKind: "delegated_write",
+            },
+          },
+        ],
+      },
+      "Review the codebase layout and code against Phase1 in PLAN.md, assess whether recent directory changes align with the plan, then update PLAN.md accordingly.",
+    );
+
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "planner_plan_artifact_missing_workspace_grounding",
+        }),
+      ]),
+    );
+  });
+
   it("rejects plan-artifact execution requests that emit multiple mutable delegated owners for one workspace root", () => {
     const workspaceRoot = "/tmp/agenc-shell";
     const diagnostics = validatePlannerStepContracts(
@@ -1837,6 +2028,43 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
         "Use spec.md as the source of truth and implement the project in full.",
       ),
     ).toBe("implement_from_artifact");
+  });
+
+  it("detects workspace-grounded artifact update requests separately from plain artifact edits", () => {
+    expect(
+      plannerRequestNeedsWorkspaceGroundedArtifactUpdate(
+        "Review the codebase layout against Phase1 in PLAN.md and update PLAN.md so it reflects the current workspace state.",
+      ),
+    ).toBe(true);
+    expect(
+      plannerRequestNeedsWorkspaceGroundedArtifactUpdate(
+        "Update roadmap.md so it reflects the latest sequencing and owners.",
+      ),
+    ).toBe(false);
+  });
+
+  it("adds explicit workspace-grounding guidance to planner prompts for grounded artifact rewrites", () => {
+    const messages = buildPlannerMessages(
+      "Review the codebase layout against Phase1 in PLAN.md and update PLAN.md so it reflects the current workspace state.",
+      [],
+      4000,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "/tmp/agenc-shell",
+    );
+
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "system",
+          content: expect.stringContaining(
+            "This is a workspace-grounded artifact update request.",
+          ),
+        }),
+      ]),
+    );
   });
 
   it("rejects deterministic bash steps that embed shell separators in direct args", () => {

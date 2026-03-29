@@ -13318,8 +13318,11 @@ describe("ChatExecutor", () => {
       const result = await executor.execute(
         createParams({
           message: createMessage(
-            "i want you to read @TODO.md and turn it into a complete plan for making a shell in the c-programming language.",
+            "i want you to read @TODO.md and turn it into a complete plan in @PLAN.md for making a shell in the c-programming language.",
           ),
+          runtimeContext: {
+            workspaceRoot: "/home/tetsuo/git/stream-test/agenc-shell",
+          },
         }),
       );
 
@@ -13353,13 +13356,13 @@ describe("ChatExecutor", () => {
                   },
                 },
                 {
-                  name: "write_phase_summary",
+                  name: "write_plan_summary",
                   step_type: "deterministic_tool",
                   depends_on: ["read_plan"],
                   tool: "system.writeFile",
                   args: {
-                    path: "/home/tetsuo/git/stream-test/agenc-shell/PHASE_SUMMARY.md",
-                    content: "# Phase summary\n",
+                    path: "/home/tetsuo/git/stream-test/agenc-shell/PLAN.md",
+                    content: "# Plan\n\n## Final Phase Summary\n",
                   },
                 },
               ],
@@ -13376,9 +13379,9 @@ describe("ChatExecutor", () => {
                 path: "/home/tetsuo/git/stream-test/agenc-shell/PLAN.md",
                 size: 4096,
               }),
-              write_phase_summary: safeJson({
-                path: "/home/tetsuo/git/stream-test/agenc-shell/PHASE_SUMMARY.md",
-                bytesWritten: 16,
+              write_plan_summary: safeJson({
+                path: "/home/tetsuo/git/stream-test/agenc-shell/PLAN.md",
+                bytesWritten: 31,
               }),
             },
           },
@@ -13398,6 +13401,9 @@ describe("ChatExecutor", () => {
           message: createMessage(
             "Read PLAN.md and update it with a final phase summary for the completed work.",
           ),
+          runtimeContext: {
+            workspaceRoot: "/home/tetsuo/git/stream-test/agenc-shell",
+          },
         }),
       );
 
@@ -17920,6 +17926,99 @@ describe("ChatExecutor", () => {
             phase: "tool_followup",
             payload: expect.objectContaining({
               gate: "legacy_completion_compatibility",
+            }),
+          }),
+        ]),
+      );
+    });
+
+    it("labels planner-owned documentation rewrites as documentation in completion-gate traces", async () => {
+      const events: Record<string, unknown>[] = [];
+      const provider = createMockProvider("primary", {
+        chat: vi.fn().mockResolvedValue(
+          mockResponse({
+            content: safeJson({
+              reason: "planner_doc_contract",
+              requiresSynthesis: false,
+              steps: [
+                {
+                  name: "read_plan",
+                  step_type: "deterministic_tool",
+                  tool: "system.readFile",
+                  args: {
+                    path: "/home/tetsuo/git/stream-test/agenc-shell/PLAN.md",
+                  },
+                },
+                {
+                  name: "rewrite_plan",
+                  step_type: "deterministic_tool",
+                  depends_on: ["read_plan"],
+                  tool: "system.writeFile",
+                  args: {
+                    path: "/home/tetsuo/git/stream-test/agenc-shell/PLAN.md",
+                    content: "# PLAN\n",
+                  },
+                },
+              ],
+            }),
+          }),
+        ),
+      });
+      const pipelineExecutor = {
+        execute: vi.fn().mockResolvedValue({
+          status: "completed",
+          completionState: "completed",
+          context: {
+            results: {
+              read_plan: safeJson({
+                path: "/home/tetsuo/git/stream-test/agenc-shell/PLAN.md",
+                size: 4096,
+              }),
+              rewrite_plan: safeJson({
+                path: "/home/tetsuo/git/stream-test/agenc-shell/PLAN.md",
+                bytesWritten: 7,
+              }),
+            },
+          },
+          completedSteps: 2,
+          totalSteps: 2,
+        }),
+      };
+      const executor = new ChatExecutor({
+        providers: [provider],
+        toolHandler: vi.fn().mockResolvedValue("unused"),
+        plannerEnabled: true,
+        pipelineExecutor: pipelineExecutor as any,
+      });
+
+      const result = await executor.execute(
+        createParams({
+          message: createMessage(
+            "Update PLAN.md so it matches the current implementation.",
+          ),
+          runtimeContext: {
+            workspaceRoot: "/home/tetsuo/git/stream-test/agenc-shell",
+          },
+          trace: {
+            onExecutionTraceEvent: (event) => {
+              events.push(event as unknown as Record<string, unknown>);
+            },
+          },
+        }),
+      );
+
+      expect(result.stopReason).toBe("completed");
+      expect(result.completionState).toBe("completed");
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "completion_gate_checked",
+            phase: "tool_followup",
+            payload: expect.objectContaining({
+              gate: "workflow_completion_truth",
+              decision: expect.stringMatching(/^accept/),
+              ownerClass: "documentation",
+              reason: "workflow_verification_contract_present",
             }),
           }),
         ]),
