@@ -94,6 +94,15 @@ function normalizePersistedState(value: unknown): SystemProcessState | undefined
   return undefined;
 }
 
+function isMissingPathError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === "ENOENT"
+  );
+}
+
 function validateCommand(commandValue: unknown): string | ToolResult {
   const command = asTrimmedString(commandValue);
   if (!command) {
@@ -363,22 +372,55 @@ export class SystemProcessManager {
       version: SYSTEM_PROCESS_SCHEMA_VERSION,
       processes: [...this.records.values()].map((record) => cloneRecord(record)),
     };
-    this.persistChain = this.persistChain.then(async () => {
+    const serializedSnapshot = JSON.stringify(snapshot, null, 2);
+    const previousPersist = this.persistChain.catch(() => undefined);
+    this.persistChain = previousPersist.then(async () => {
       if (this.disposed) {
         return;
       }
-      await mkdir(this.rootDir, { recursive: true });
-      const tempPath = `${this.registryPath}.${randomUUID()}.tmp`;
-      const handle = await openFile(tempPath, "w");
-      try {
-        await handle.writeFile(JSON.stringify(snapshot, null, 2), "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const tempPath = `${this.registryPath}.${randomUUID()}.tmp`;
+        try {
+          await mkdir(this.rootDir, { recursive: true });
+          const handle = await openFile(tempPath, "w");
+          try {
+            await handle.writeFile(serializedSnapshot, "utf8");
+            await handle.sync();
+          } finally {
+            await handle.close().catch(() => undefined);
+          }
+          await rename(tempPath, this.registryPath);
+          return;
+        } catch (error) {
+          await rm(tempPath, { force: true }).catch(() => undefined);
+          if (this.disposed && isMissingPathError(error)) {
+            return;
+          }
+          if (!isMissingPathError(error) || attempt === 1) {
+            throw error;
+          }
+        }
       }
-      await rename(tempPath, this.registryPath);
     });
     await this.persistChain;
+  }
+
+  private persistLifecycleTransition(
+    record: SystemProcessRecord,
+    cause: SystemProcessLifecycleEvent["cause"],
+  ): void {
+    void this.persist().then(() => {
+      this.emitLifecycleEvent(record, cause);
+    }).catch((error) => {
+      if (this.disposed && isMissingPathError(error)) {
+        return;
+      }
+      this.logger.debug("Failed to persist system process lifecycle transition", {
+        processId: record.processId,
+        cause,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   }
 
   private findByLabel(label: string): SystemProcessRecord | undefined {
@@ -702,9 +744,7 @@ export class SystemProcessManager {
         current.lastExitAt = this.now();
         current.updatedAt = current.lastExitAt;
         this.runtimes.delete(processId);
-        void this.persist().then(() => {
-          this.emitLifecycleEvent(current, "child_exit");
-        });
+        this.persistLifecycleTransition(current, "child_exit");
       });
       child.once("error", (error) => {
         if (this.disposed) return;
@@ -725,9 +765,7 @@ export class SystemProcessManager {
         current.lastExitAt = this.now();
         current.updatedAt = current.lastExitAt;
         this.runtimes.delete(processId);
-        void this.persist().then(() => {
-          this.emitLifecycleEvent(current, "child_error");
-        });
+        this.persistLifecycleTransition(current, "child_error");
       });
       this.records.set(processId, record);
       this.runtimes.set(processId, {
