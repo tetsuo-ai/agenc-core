@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, openSync, closeSync, rmSync } from "node:fs";
-import { open as openFile, mkdir, readFile, rename, rm } from "node:fs/promises";
+import { open as openFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import {
@@ -76,6 +76,12 @@ interface SystemProcessRuntime {
   readonly record: SystemProcessRecord;
   readonly child: ChildProcess;
   exited: boolean;
+}
+
+function getFsErrorCode(error: unknown): string {
+  return typeof error === "object" && error && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : "";
 }
 
 const SYSTEM_PROCESS_FAMILY = "system_process";
@@ -363,20 +369,46 @@ export class SystemProcessManager {
       version: SYSTEM_PROCESS_SCHEMA_VERSION,
       processes: [...this.records.values()].map((record) => cloneRecord(record)),
     };
+    const serializedSnapshot = JSON.stringify(snapshot, null, 2);
     this.persistChain = this.persistChain.then(async () => {
       if (this.disposed) {
         return;
       }
-      await mkdir(this.rootDir, { recursive: true });
-      const tempPath = `${this.registryPath}.${randomUUID()}.tmp`;
-      const handle = await openFile(tempPath, "w");
-      try {
-        await handle.writeFile(JSON.stringify(snapshot, null, 2), "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        let tempPath: string | undefined;
+        try {
+          await mkdir(this.rootDir, { recursive: true });
+          tempPath = `${this.registryPath}.${randomUUID()}.tmp`;
+          const handle = await openFile(tempPath, "w");
+          try {
+            await handle.writeFile(serializedSnapshot, "utf8");
+            await handle.sync();
+          } finally {
+            await handle.close();
+          }
+          try {
+            await rename(tempPath, this.registryPath);
+          } catch (error) {
+            if (getFsErrorCode(error) !== "ENOENT") {
+              throw error;
+            }
+            if (this.disposed) {
+              return;
+            }
+            await mkdir(this.rootDir, { recursive: true });
+            await writeFile(this.registryPath, serializedSnapshot, "utf8");
+            await rm(tempPath, { force: true }).catch(() => undefined);
+          }
+          return;
+        } catch (error) {
+          if (tempPath) {
+            await rm(tempPath, { force: true }).catch(() => undefined);
+          }
+          if (getFsErrorCode(error) !== "ENOENT" || attempt === 1) {
+            throw error;
+          }
+        }
       }
-      await rename(tempPath, this.registryPath);
     });
     await this.persistChain;
   }

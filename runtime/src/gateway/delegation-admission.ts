@@ -98,10 +98,13 @@ function isSharedContextReadOnlyReview(
   if (!REVIEW_TEXT_RE.test(input.messageText)) return false;
   if (economics.stepAnalyses.some((analysis) => analysis.mutable)) return false;
   const first = economics.stepAnalyses[0];
-  if (!first || first.ownedArtifacts.length === 0) return false;
-  return economics.stepAnalyses.slice(1).every((analysis) =>
-    analysis.ownedArtifacts.some((artifact) => first.ownedArtifacts.includes(artifact))
-  );
+  if (!first) return false;
+  const sharedArtifacts = collectSharedReviewArtifacts(first);
+  if (sharedArtifacts.length === 0) return false;
+  return economics.stepAnalyses.slice(1).every((analysis) => {
+    const analysisArtifacts = collectSharedReviewArtifacts(analysis);
+    return analysisArtifacts.some((artifact) => sharedArtifacts.includes(artifact));
+  });
 }
 
 function collectPrimaryOwnedArtifacts(
@@ -112,6 +115,19 @@ function collectPrimaryOwnedArtifacts(
     return targetArtifacts;
   }
   return analysis.ownedArtifacts;
+}
+
+function collectSharedReviewArtifacts(
+  analysis: DelegationStepAnalysis,
+): readonly string[] {
+  const context = analysis.step.executionContext;
+  return [
+    ...analysis.ownedArtifacts,
+    ...analysis.referencedArtifacts,
+    ...(context?.requiredSourceArtifacts ?? []),
+    ...(context?.inputArtifacts ?? []),
+    ...(context?.targetArtifacts ?? []),
+  ].filter((artifact, index, artifacts) => artifacts.indexOf(artifact) === index);
 }
 
 function detectSharedArtifactWriterInline(
@@ -590,18 +606,10 @@ export function assessDelegationAdmission(
     });
   }
 
-  if (
-    input.explicitDelegationRequested !== true &&
-    input.steps.length <= 1 &&
-    input.totalSteps <= 2 &&
-    economics.dependencyDepth <= 1 &&
-    economics.parallelGain < 0.2 &&
-    !isIsolatedSingleStep(economics) &&
-    !isSharedContextReadOnlyReview(input, economics)
-  ) {
+  if (isSharedContextReadOnlyReview(input, economics)) {
     return buildDecision({
       allowed: false,
-      reason: "single_hop_request",
+      reason: "shared_context_review",
       shape,
       economics,
       stepAdmissions,
@@ -609,10 +617,17 @@ export function assessDelegationAdmission(
     });
   }
 
-  if (isSharedContextReadOnlyReview(input, economics)) {
+  if (
+    input.explicitDelegationRequested !== true &&
+    input.steps.length <= 1 &&
+    input.totalSteps <= 2 &&
+    economics.dependencyDepth <= 1 &&
+    economics.parallelGain < 0.2 &&
+    !isIsolatedSingleStep(economics)
+  ) {
     return buildDecision({
       allowed: false,
-      reason: "shared_context_review",
+      reason: "single_hop_request",
       shape,
       economics,
       stepAdmissions,

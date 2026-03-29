@@ -72,48 +72,72 @@ describe("contract-backed verification integration", () => {
     expect(result.code).toBe("missing_required_source_evidence");
   });
 
-  it("accepts real mutation evidence from runtime artifact records even when the prose does not name files", () => {
-    const workspace = "/tmp/agenc-verification-write";
-    const targetPath = `${workspace}/AGENC.md`;
-    const result = validateDelegatedOutputContract({
-      spec: {
-        task: "write_agenc_md",
-        objective: "Update the guide with the finalized repository rules.",
-        inputContract: "Inspect the current guide before editing it.",
-        acceptanceCriteria: ["State that the requested guide update completed."],
-        executionContext: {
-          version: "v1",
-          workspaceRoot: workspace,
-          requiredSourceArtifacts: [targetPath],
-          targetArtifacts: [targetPath],
-          stepKind: "delegated_write",
-          verificationMode: "mutation_required",
-        },
-      },
-      output: "Completed the requested guide update.",
-      toolCalls: [
-        {
-          name: "system.readFile",
-          args: { path: targetPath },
-          result: JSON.stringify({
-            path: targetPath,
-            content: "old content",
-          }),
-          isError: false,
-        },
-        {
-          name: "system.writeFile",
-          args: { path: targetPath, content: "new content" },
-          result: JSON.stringify({
-            path: targetPath,
-            written: true,
-          }),
-          isError: false,
-        },
-      ],
+  it("accepts real mutation evidence from runtime artifact records even when the prose does not name files", async () => {
+    const workspace = createTempDir("agenc-verification-write-");
+    const targetPath = join(workspace, "AGENC.md");
+    writeFileSync(targetPath, "old content", "utf8");
+    const ledger = EffectLedger.fromMemoryBackend(createMockMemoryBackend());
+    const handler = createSessionToolHandler({
+      sessionId: "subagent:verify-write",
+      baseHandler: vi.fn(async (_toolName, args) => {
+        writeFileSync(String(args.path), String(args.content), "utf8");
+        return JSON.stringify({ path: args.path, written: true });
+      }),
+      availableToolNames: ["system.writeFile"],
+      routerId: "router-a",
+      send: vi.fn(),
+      defaultWorkingDirectory: workspace,
+      effectLedger: ledger,
+      effectChannel: "test",
     });
 
-    expect(result.ok).toBe(true);
+    try {
+      const writeResult = await handler("system.writeFile", {
+        path: targetPath,
+        content: "new content",
+      });
+      const [effect] = await ledger.listSessionEffects("subagent:verify-write");
+      expect(effect?.postExecutionSnapshots?.[0]?.path).toBe(targetPath);
+
+      const result = validateDelegatedOutputContract({
+        spec: {
+          task: "write_agenc_md",
+          objective: "Update the guide with the finalized repository rules.",
+          inputContract: "Inspect the current guide before editing it.",
+          acceptanceCriteria: ["State that the requested guide update completed."],
+          executionContext: {
+            version: "v1",
+            workspaceRoot: workspace,
+            requiredSourceArtifacts: [targetPath],
+            targetArtifacts: [targetPath],
+            stepKind: "delegated_write",
+            verificationMode: "mutation_required",
+          },
+        },
+        output: "Completed the requested guide update.",
+        toolCalls: [
+          {
+            name: "system.readFile",
+            args: { path: targetPath },
+            result: JSON.stringify({
+              path: targetPath,
+              content: "old content",
+            }),
+            isError: false,
+          },
+          {
+            name: "system.writeFile",
+            args: { path: targetPath, content: "new content" },
+            result: writeResult,
+            isError: false,
+          },
+        ],
+      });
+
+      expect(result.ok).toBe(true);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   it("accepts shell-based mutation evidence when effect records prove the target artifact changed", async () => {

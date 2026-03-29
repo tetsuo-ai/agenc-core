@@ -1834,7 +1834,6 @@ describe("createSessionToolHandler", () => {
     expect(spawnInput).toMatchObject({
       parentSessionId: "session-parent",
       task: "Inspect file",
-      timeoutMs: 120_000,
       workingDirectory: "/tmp/project-root",
       workingDirectorySource: "execution_envelope",
       tools: ["system.readFile"],
@@ -3447,7 +3446,6 @@ describe("createSessionToolHandler", () => {
     expect(spawnInput).toMatchObject({
       parentSessionId: "session-parent",
       task: "Inspect file quickly",
-      timeoutMs: 60_000,
       workingDirectory: "/tmp/runtime-timeout-scope",
       workingDirectorySource: "execution_envelope",
       tools: ["desktop.bash"],
