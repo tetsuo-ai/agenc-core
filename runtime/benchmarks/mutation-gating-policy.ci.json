@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "name": "ci-mutation-gates",
+  "updatedAt": "2026-03-28T00:00:00Z",
+  "thresholds": {
+    "maxAggregatePassRateDrop": 0.6,
+    "maxAggregateConformanceDrop": 0.35,
+    "maxAggregateCostUtilityDrop": 0.45,
+    "maxScenarioPassRateDrop": 1.0,
+    "maxOperatorPassRateDrop": 0.6,
+    "maxChaosScenarioFailRate": 0.0
+  }
+}

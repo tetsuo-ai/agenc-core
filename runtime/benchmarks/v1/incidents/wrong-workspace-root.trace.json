@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "traceId": "wrong-workspace-root",
+  "seed": 1,
+  "createdAtMs": 1700000000100,
+  "events": [
+    {
+      "seq": 1,
+      "type": "discovered",
+      "taskPda": "task-wrong-workspace-root",
+      "timestampMs": 1700000000101,
+      "payload": {}
+    },
+    {
+      "seq": 2,
+      "type": "claimed",
+      "taskPda": "task-wrong-workspace-root",
+      "timestampMs": 1700000000102,
+      "payload": {}
+    },
+    {
+      "seq": 3,
+      "type": "executed",
+      "taskPda": "task-wrong-workspace-root",
+      "timestampMs": 1700000000103,
+      "payload": {}
+    },
+    {
+      "seq": 4,
+      "type": "failed",
+      "taskPda": "task-wrong-workspace-root",
+      "timestampMs": 1700000000104,
+      "payload": {
+        "reason": "umbrella_root_resolution"
+      }
+    }
+  ]
+}

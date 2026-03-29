@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "request_tree_budget_retry_reset",
+  "title": "Planner retries reset request-tree child budgets",
+  "sourceTraceId": "synthetic:phase8:request-tree-budget-retry-reset",
+  "sourceArtifacts": [
+    "synthetic://phase8/request-tree-budget-retry-reset"
+  ],
+  "expectedReplay": {
+    "taskPda": "request_tree_budget_retry_reset",
+    "finalStatus": "failed",
+    "completionState": "blocked",
+    "dependencyStateKind": "unsatisfied_terminal",
+    "resolutionSemantics": "normal",
+    "replayErrors": 0,
+    "replayWarnings": 0,
+    "policyViolations": 1,
+    "verifierVerdicts": 0
+  },
+  "baselineMetrics": {
+    "turns": 1,
+    "toolCalls": 2,
+    "fallbackCount": 0,
+    "spuriousSubagentCount": 0,
+    "approvalCount": 0,
+    "restartRecoverySuccess": false
+  }
+}

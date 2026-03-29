@@ -3,7 +3,7 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { DelegationBenchmarkSummary } from "../src/eval/delegation-benchmark.js";
 import { parseBackgroundRunQualityArtifact } from "../src/eval/background-run-quality.js";
 import {
@@ -21,6 +21,10 @@ interface CliOptions {
   readonly dryRun: boolean;
 }
 
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const RUNTIME_DIR = path.resolve(SCRIPT_DIR, "..");
+const REPO_ROOT = path.resolve(RUNTIME_DIR, "..");
+
 export function resolveExistingPath(candidates: readonly string[]): string {
   for (const candidate of candidates) {
     if (existsSync(candidate)) {
@@ -37,14 +41,29 @@ export function resolveProjectPathCandidates(
   if (path.isAbsolute(inputPath)) {
     return [inputPath];
   }
-  const repoRoot = path.resolve(baseDir, "..");
   const normalizedInputPath = inputPath.replace(/\\/g, "/");
-  const runtimeRelativeInput = normalizedInputPath.startsWith("runtime/")
-    ? normalizedInputPath.slice("runtime/".length)
-    : normalizedInputPath;
+  const directCandidate = path.resolve(baseDir, normalizedInputPath);
+
+  if (normalizedInputPath.startsWith("runtime/")) {
+    const runtimeRelativeInput = normalizedInputPath.slice("runtime/".length);
+    return [
+      path.resolve(RUNTIME_DIR, runtimeRelativeInput),
+      path.resolve(REPO_ROOT, normalizedInputPath),
+      directCandidate,
+    ];
+  }
+
+  if (normalizedInputPath.startsWith("docs/")) {
+    return [
+      path.resolve(REPO_ROOT, normalizedInputPath),
+      directCandidate,
+    ];
+  }
+
   return [
-    path.resolve(baseDir, runtimeRelativeInput),
-    path.resolve(repoRoot, inputPath),
+    directCandidate,
+    path.resolve(RUNTIME_DIR, normalizedInputPath),
+    path.resolve(REPO_ROOT, normalizedInputPath),
   ];
 }
 

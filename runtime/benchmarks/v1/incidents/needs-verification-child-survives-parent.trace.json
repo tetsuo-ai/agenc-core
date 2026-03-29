@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "traceId": "orchestration:needs-verification-child-survives-parent",
+  "seed": 202,
+  "createdAtMs": 1774410000002,
+  "metadata": {
+    "scenarioId": "needs_verification_child_survives_parent",
+    "sourceTraceId": "synthetic:phase8:needs-verification-child-survives-parent"
+  },
+  "events": [
+    { "seq": 1, "type": "discovered", "taskPda": "needs_verification_child_survives_parent", "timestampMs": 1, "payload": {} },
+    { "seq": 2, "type": "claimed", "taskPda": "needs_verification_child_survives_parent", "timestampMs": 2, "payload": {} },
+    {
+      "seq": 3,
+      "type": "executed",
+      "taskPda": "needs_verification_child_survives_parent",
+      "timestampMs": 3,
+      "payload": {
+        "completionState": "needs_verification",
+        "reportedStatus": "completed"
+      }
+    },
+    {
+      "seq": 4,
+      "type": "completed",
+      "taskPda": "needs_verification_child_survives_parent",
+      "timestampMs": 4,
+      "payload": {
+        "completionState": "needs_verification"
+      }
+    }
+  ]
+}

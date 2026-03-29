@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "traceId": "orchestration:xai-route-mismatch-fail-open",
+  "seed": 204,
+  "createdAtMs": 1774410000004,
+  "metadata": {
+    "scenarioId": "xai_route_mismatch_fail_open",
+    "sourceTraceId": "synthetic:phase8:xai-route-mismatch-fail-open"
+  },
+  "events": [
+    { "seq": 1, "type": "discovered", "taskPda": "xai_route_mismatch_fail_open", "timestampMs": 1, "payload": {} },
+    { "seq": 2, "type": "claimed", "taskPda": "xai_route_mismatch_fail_open", "timestampMs": 2, "payload": {} },
+    {
+      "seq": 3,
+      "type": "executed",
+      "taskPda": "xai_route_mismatch_fail_open",
+      "timestampMs": 3,
+      "payload": {
+        "reportedStatus": "provider_capability_mismatch"
+      }
+    },
+    {
+      "seq": 4,
+      "type": "policy_violation",
+      "taskPda": "xai_route_mismatch_fail_open",
+      "timestampMs": 4,
+      "payload": {
+        "code": "provider_capability_mismatch"
+      }
+    },
+    {
+      "seq": 5,
+      "type": "failed",
+      "taskPda": "xai_route_mismatch_fail_open",
+      "timestampMs": 5,
+      "payload": {
+        "error": "xAI multi-agent route accepted incompatible custom tool routing."
+      }
+    }
+  ]
+}

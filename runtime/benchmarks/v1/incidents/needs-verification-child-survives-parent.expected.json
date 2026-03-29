@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "needs_verification_child_survives_parent",
+  "title": "Child needs_verification state survives to the parent verifier",
+  "sourceTraceId": "synthetic:phase8:needs-verification-child-survives-parent",
+  "sourceArtifacts": [
+    "synthetic://phase8/needs-verification-child-survives-parent"
+  ],
+  "expectedReplay": {
+    "taskPda": "needs_verification_child_survives_parent",
+    "finalStatus": "completed",
+    "completionState": "needs_verification",
+    "dependencyStateKind": "satisfied_nonterminal",
+    "resolutionSemantics": "normal",
+    "replayErrors": 0,
+    "replayWarnings": 0,
+    "policyViolations": 0,
+    "verifierVerdicts": 0
+  },
+  "baselineMetrics": {
+    "turns": 1,
+    "toolCalls": 1,
+    "fallbackCount": 0,
+    "spuriousSubagentCount": 0,
+    "approvalCount": 0,
+    "restartRecoverySuccess": false
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "traceId": "orchestration:request-tree-budget-retry-reset",
+  "seed": 205,
+  "createdAtMs": 1774410000005,
+  "metadata": {
+    "scenarioId": "request_tree_budget_retry_reset",
+    "sourceTraceId": "synthetic:phase8:request-tree-budget-retry-reset"
+  },
+  "events": [
+    { "seq": 1, "type": "discovered", "taskPda": "request_tree_budget_retry_reset", "timestampMs": 1, "payload": {} },
+    { "seq": 2, "type": "claimed", "taskPda": "request_tree_budget_retry_reset", "timestampMs": 2, "payload": {} },
+    {
+      "seq": 3,
+      "type": "executed",
+      "taskPda": "request_tree_budget_retry_reset",
+      "timestampMs": 3,
+      "payload": {
+        "retryAttempt": 2,
+        "reportedStatus": "request_tree_budget_reset"
+      }
+    },
+    {
+      "seq": 4,
+      "type": "policy_violation",
+      "taskPda": "request_tree_budget_retry_reset",
+      "timestampMs": 4,
+      "payload": {
+        "code": "request_tree_budget_reset"
+      }
+    },
+    {
+      "seq": 5,
+      "type": "failed",
+      "taskPda": "request_tree_budget_retry_reset",
+      "timestampMs": 5,
+      "payload": {
+        "error": "Planner retries recreated the request-tree budget tracker."
+      }
+    }
+  ]
+}

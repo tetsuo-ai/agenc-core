@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "followup_tool_contract_suppressed",
+  "title": "Follow-up routed tool contract is silently stripped on xAI",
+  "sourceTraceId": "synthetic:phase8:followup-tool-contract-suppressed",
+  "sourceArtifacts": [
+    "synthetic://phase8/followup-tool-contract-suppressed"
+  ],
+  "expectedReplay": {
+    "taskPda": "followup_tool_contract_suppressed",
+    "finalStatus": "failed",
+    "completionState": "blocked",
+    "dependencyStateKind": "unsatisfied_terminal",
+    "resolutionSemantics": "normal",
+    "replayErrors": 0,
+    "replayWarnings": 0,
+    "policyViolations": 1,
+    "verifierVerdicts": 0
+  },
+  "baselineMetrics": {
+    "turns": 1,
+    "toolCalls": 1,
+    "fallbackCount": 0,
+    "spuriousSubagentCount": 0,
+    "approvalCount": 0,
+    "restartRecoverySuccess": false
+  }
+}

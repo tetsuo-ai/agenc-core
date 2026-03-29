@@ -1,0 +1,41 @@
+{
+  "autonomy": {
+    "enabled": true,
+    "featureFlags": {
+      "backgroundRuns": true,
+      "multiAgent": false,
+      "notifications": true,
+      "replayGates": true,
+      "canaryRollout": true
+    },
+    "killSwitches": {
+      "backgroundRuns": false,
+      "multiAgent": false,
+      "notifications": false,
+      "replayGates": false,
+      "canaryRollout": false
+    },
+    "slo": {
+      "runStartLatencyMs": 1000,
+      "updateCadenceMs": 10000,
+      "completionAccuracyRate": 0.95,
+      "recoverySuccessRate": 0.9,
+      "stopLatencyMs": 2000,
+      "eventLossRate": 0
+    },
+    "canary": {
+      "enabled": true,
+      "tenantAllowList": [
+        "tenant-a"
+      ],
+      "featureAllowList": [
+        "backgroundRuns"
+      ],
+      "domainAllowList": [
+        "generic",
+        "research"
+      ],
+      "percentage": 1
+    }
+  }
+}

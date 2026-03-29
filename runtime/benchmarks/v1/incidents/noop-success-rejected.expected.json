@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "noop_success_rejected",
+  "title": "Grounded no-op write phase rejected for missing mutation evidence",
+  "sourceTraceId": "noop-success-rejected",
+  "sourceArtifacts": [
+    "/workspace/prompts-for-agent.txt"
+  ],
+  "expectedReplay": {
+    "taskPda": "task-noop-success-rejected",
+    "finalStatus": "failed",
+    "replayErrors": 0,
+    "replayWarnings": 0,
+    "policyViolations": 0,
+    "verifierVerdicts": 1
+  },
+  "baselineMetrics": {
+    "turns": 1,
+    "toolCalls": 1,
+    "fallbackCount": 0,
+    "spuriousSubagentCount": 0,
+    "approvalCount": 0,
+    "restartRecoverySuccess": false
+  }
+}

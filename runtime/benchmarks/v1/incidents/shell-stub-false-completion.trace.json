@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "traceId": "shell-stub-false-completion",
+  "seed": 1,
+  "createdAtMs": 1700000000700,
+  "events": [
+    {
+      "seq": 1,
+      "type": "discovered",
+      "taskPda": "task-shell-stub-false-completion",
+      "timestampMs": 1700000000701,
+      "payload": {}
+    },
+    {
+      "seq": 2,
+      "type": "claimed",
+      "taskPda": "task-shell-stub-false-completion",
+      "timestampMs": 1700000000702,
+      "payload": {}
+    },
+    {
+      "seq": 3,
+      "type": "executed",
+      "taskPda": "task-shell-stub-false-completion",
+      "timestampMs": 1700000000703,
+      "payload": {
+        "mode": "plan_only_execution"
+      }
+    },
+    {
+      "seq": 4,
+      "type": "verifier_verdict",
+      "taskPda": "task-shell-stub-false-completion",
+      "timestampMs": 1700000000704,
+      "payload": {
+        "verdict": "fail",
+        "attempt": 1
+      }
+    },
+    {
+      "seq": 5,
+      "type": "failed",
+      "taskPda": "task-shell-stub-false-completion",
+      "timestampMs": 1700000000705,
+      "payload": {
+        "reason": "stubbed_shell_detected"
+      }
+    }
+  ]
+}

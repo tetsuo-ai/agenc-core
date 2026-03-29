@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "scenarioId": "shell_stub_false_completion",
+  "title": "Shell implementation accepted despite explicit stubs and skipped verifier",
+  "sourceTraceId": "shell-stub-false-completion",
+  "sourceArtifacts": [
+    "src/builtins.c",
+    "src/jobs.c",
+    "src/signals.c",
+    "src/executor.c"
+  ],
+  "expectedReplay": {
+    "taskPda": "task-shell-stub-false-completion",
+    "finalStatus": "failed",
+    "replayErrors": 0,
+    "replayWarnings": 0,
+    "policyViolations": 0,
+    "verifierVerdicts": 1
+  },
+  "baselineMetrics": {
+    "turns": 1,
+    "toolCalls": 2,
+    "fallbackCount": 0,
+    "spuriousSubagentCount": 2,
+    "approvalCount": 0,
+    "restartRecoverySuccess": false
+  }
+}

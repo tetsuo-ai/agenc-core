@@ -1,0 +1,44 @@
+{
+  "completionGate": {
+    "gate": "plan_only_execution",
+    "decision": "accept",
+    "finishReason": "stop"
+  },
+  "finalResponse": {
+    "stopReason": "completed",
+    "verifierPerformed": false,
+    "claimedImplemented": true,
+    "claimSnippet": "Implemented the remaining shell pieces in one pass.",
+    "claimSummary": [
+      "Implemented",
+      "The shell is functional and matches the spec as closely as possible in one pass."
+    ]
+  },
+  "stubbedFiles": [
+    {
+      "path": "src/builtins.c",
+      "markers": [
+        "fg not implemented",
+        "bg not implemented"
+      ]
+    },
+    {
+      "path": "src/jobs.c",
+      "markers": [
+        "/* Stub */"
+      ]
+    },
+    {
+      "path": "src/signals.c",
+      "markers": [
+        "/* Stub */"
+      ]
+    },
+    {
+      "path": "src/executor.c",
+      "markers": [
+        "Pipes not fully implemented yet"
+      ]
+    }
+  ]
+}

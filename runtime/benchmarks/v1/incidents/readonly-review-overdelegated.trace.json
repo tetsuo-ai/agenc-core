@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "traceId": "readonly-review-overdelegated",
+  "seed": 1,
+  "createdAtMs": 1700000000400,
+  "events": [
+    {
+      "seq": 1,
+      "type": "discovered",
+      "taskPda": "task-readonly-review-overdelegated",
+      "timestampMs": 1700000000401,
+      "payload": {}
+    },
+    {
+      "seq": 2,
+      "type": "claimed",
+      "taskPda": "task-readonly-review-overdelegated",
+      "timestampMs": 1700000000402,
+      "payload": {}
+    },
+    {
+      "seq": 3,
+      "type": "executed",
+      "taskPda": "task-readonly-review-overdelegated",
+      "timestampMs": 1700000000403,
+      "payload": {
+        "childCount": 3
+      }
+    },
+    {
+      "seq": 4,
+      "type": "failed",
+      "taskPda": "task-readonly-review-overdelegated",
+      "timestampMs": 1700000000404,
+      "payload": {
+        "reason": "overdelegated_shared_context"
+      }
+    }
+  ]
+}

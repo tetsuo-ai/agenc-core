@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "traceId": "ungrounded-writer-fabrication",
+  "seed": 1,
+  "createdAtMs": 1700000000600,
+  "events": [
+    {
+      "seq": 1,
+      "type": "discovered",
+      "taskPda": "task-ungrounded-writer-fabrication",
+      "timestampMs": 1700000000601,
+      "payload": {}
+    },
+    {
+      "seq": 2,
+      "type": "claimed",
+      "taskPda": "task-ungrounded-writer-fabrication",
+      "timestampMs": 1700000000602,
+      "payload": {}
+    },
+    {
+      "seq": 3,
+      "type": "executed",
+      "taskPda": "task-ungrounded-writer-fabrication",
+      "timestampMs": 1700000000603,
+      "payload": {
+        "mode": "write_without_grounding"
+      }
+    },
+    {
+      "seq": 4,
+      "type": "policy_violation",
+      "taskPda": "task-ungrounded-writer-fabrication",
+      "timestampMs": 1700000000604,
+      "payload": {
+        "code": "ungrounded_write"
+      }
+    },
+    {
+      "seq": 5,
+      "type": "verifier_verdict",
+      "taskPda": "task-ungrounded-writer-fabrication",
+      "timestampMs": 1700000000605,
+      "payload": {
+        "verdict": "fail",
+        "attempt": 1
+      }
+    },
+    {
+      "seq": 6,
+      "type": "failed",
+      "taskPda": "task-ungrounded-writer-fabrication",
+      "timestampMs": 1700000000606,
+      "payload": {
+        "reason": "fabricated_repo_structure"
+      }
+    }
+  ]
+}
