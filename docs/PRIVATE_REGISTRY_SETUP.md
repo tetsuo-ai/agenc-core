@@ -68,6 +68,8 @@ volumes for the non-root Verdaccio container user before startup. Bootstrap
 does not rely on npm prompt automation; it provisions the service account
 through the registry user API and then verifies the issued token with
 `npm whoami` after the registry is restarted in locked mode.
+The Verdaccio configs raise `max_body_size` above the default `10mb` so the
+staged private runtime tarball can be published during CI rehearsal.
 
 ## Local runtime contract
 

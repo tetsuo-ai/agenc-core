@@ -2,6 +2,10 @@ storage: /verdaccio/storage/data
 
 plugins: /verdaccio/plugins
 
+# The staged private runtime package currently exceeds Verdaccio's default
+# 10mb publish body limit once npm wraps the tarball in publish metadata.
+max_body_size: 64mb
+
 web:
   title: AgenC Private Registry
 
