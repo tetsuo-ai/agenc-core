@@ -176,6 +176,20 @@ describe("contract-backed verification integration", () => {
         output: "Completed the requested guide update.",
         toolCalls: [
           {
+            name: "system.listDir",
+            args: { path: workspace },
+            result: JSON.stringify({
+              path: workspace,
+              entries: [
+                {
+                  name: "AGENC.md",
+                  type: "file",
+                },
+              ],
+            }),
+            isError: false,
+          },
+          {
             name: "system.readFile",
             args: { path: targetPath },
             result: JSON.stringify({
