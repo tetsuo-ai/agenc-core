@@ -20,10 +20,17 @@ function createInputHarness(overrides = {}) {
     introDismissed: false,
     composerPastedRanges: [],
     composerPasteSequence: 0,
+    inputPreferences: overrides.inputPreferences ?? {
+      inputModeProfile: "default",
+      keybindingProfile: "default",
+      themeName: "default",
+    },
+    composerMode: overrides.composerMode ?? "insert",
   };
   const calls = [];
   const controller = createWatchInputController({
     watchState,
+    currentInputPreferences: overrides.currentInputPreferences ?? (() => watchState.inputPreferences),
     shuttingDown: overrides.shuttingDown ?? (() => false),
     parseMouseWheelSequence: overrides.parseMouseWheelSequence ?? (() => null),
     scrollCurrentViewBy(delta) {
@@ -238,4 +245,42 @@ test("input controller delete removes an entire pasted placeholder block from it
   assert.equal(watchState.composerInput, "x");
   assert.equal(watchState.composerCursor, 1);
   assert.deepEqual(watchState.composerPastedRanges, []);
+});
+
+test("input controller enters vim normal mode on escape and resumes insert mode on i", () => {
+  const { controller, watchState, calls } = createInputHarness({
+    inputPreferences: {
+      inputModeProfile: "vim",
+      keybindingProfile: "vim",
+      themeName: "aurora",
+    },
+  });
+
+  controller.handleTerminalEscapeSequence("\x1b", 0);
+  controller.handleTerminalInput("ix");
+
+  assert.equal(watchState.composerMode, "insert");
+  assert.equal(watchState.composerInput, "x");
+  assert.ok(calls.some((entry) => entry.type === "status" && entry.status === "vim normal"));
+  assert.ok(calls.some((entry) => entry.type === "status" && entry.status === "vim insert"));
+});
+
+test("input controller uses vim normal-mode motions without inserting text", () => {
+  const { controller, watchState, calls } = createInputHarness({
+    inputPreferences: {
+      inputModeProfile: "vim",
+      keybindingProfile: "vim",
+      themeName: "ember",
+    },
+    composerMode: "normal",
+  });
+  watchState.composerInput = "abcd";
+  watchState.composerCursor = 2;
+
+  controller.handleTerminalInput("hxjk");
+
+  assert.equal(watchState.composerInput, "acd");
+  assert.equal(watchState.composerCursor, 1);
+  assert.ok(calls.some((entry) => entry.type === "scroll" && entry.delta === -1));
+  assert.ok(calls.some((entry) => entry.type === "scroll" && entry.delta === 1));
 });

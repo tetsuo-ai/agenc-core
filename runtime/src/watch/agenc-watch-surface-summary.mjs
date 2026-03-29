@@ -33,6 +33,7 @@ const BADGE_MAP = Object.freeze({
   help: { label: "HELP", tone: "slate" },
   status: { label: "STATUS", tone: "blue" },
   session: { label: "SESS", tone: "teal" },
+  checkpoint: { label: "SNAP", tone: "blue" },
   approval: { label: "AUTH", tone: "red" },
   queued: { label: "QUEUE", tone: "amber" },
   subagent: { label: "AGENT", tone: "magenta" },
@@ -98,6 +99,81 @@ function stateTone(value) {
 
 function formatCount(value, fallback = 0) {
   return Number.isFinite(Number(value)) ? Number(value) : fallback;
+}
+
+function isPresentStatuslineValue(value) {
+  const text = sanitizeText(value);
+  if (!text) {
+    return false;
+  }
+  return text.toLowerCase() !== "n/a";
+}
+
+function buildFooterStatuslineSegments(
+  surfaceSummary,
+  checkpointSummary = null,
+  {
+    inputModeProfile = "default",
+    keybindingProfile = "default",
+    composerMode = "insert",
+    themeName = "default",
+  } = {},
+) {
+  const overview = surfaceSummary?.overview ?? {};
+  const attention = surfaceSummary?.attention ?? {};
+  const segments = [];
+  if (isPresentStatuslineValue(overview.providerLabel)) {
+    segments.push(`PROV ${overview.providerLabel}`);
+  }
+  if (isPresentStatuslineValue(overview.modelLabel)) {
+    segments.push(`MODEL ${overview.modelLabel}`);
+  }
+  if (isPresentStatuslineValue(overview.sessionToken)) {
+    segments.push(`SESS ${overview.sessionToken}`);
+  }
+  if (isPresentStatuslineValue(overview.sessionLabel)) {
+    segments.push(`LABEL ${overview.sessionLabel}`);
+  }
+  if (isPresentStatuslineValue(overview.usage)) {
+    segments.push(`USAGE ${overview.usage}`);
+  }
+  if (isPresentStatuslineValue(overview.runtimeState)) {
+    segments.push(`RUNTIME ${overview.runtimeState}`);
+  }
+  if (isPresentStatuslineValue(overview.durableRunsState)) {
+    segments.push(`DURABLE ${overview.durableRunsState}`);
+  }
+  if (isPresentStatuslineValue(overview.transcriptMode)) {
+    segments.push(`MODE ${overview.transcriptMode}`);
+  }
+  if (isPresentStatuslineValue(inputModeProfile)) {
+    segments.push(
+      inputModeProfile === "vim"
+        ? `INPUT vim/${sanitizeText(composerMode, "insert")}`
+        : `INPUT ${inputModeProfile}`,
+    );
+  }
+  if (isPresentStatuslineValue(keybindingProfile) && keybindingProfile !== inputModeProfile) {
+    segments.push(`KEYS ${keybindingProfile}`);
+  }
+  if (isPresentStatuslineValue(themeName)) {
+    segments.push(`THEME ${themeName}`);
+  }
+  if (formatCount(overview.queuedInputCount, 0) > 0) {
+    segments.push(`QUEUE ${overview.queuedInputCount}`);
+  }
+  if (formatCount(overview.pendingAttachmentCount, 0) > 0) {
+    segments.push(`FILES ${overview.pendingAttachmentCount}`);
+  }
+  if (formatCount(attention.approvalAlertCount, 0) > 0) {
+    segments.push(`GUARD ${attention.approvalAlertCount} approval`);
+  } else if (formatCount(attention.errorAlertCount, 0) > 0) {
+    segments.push(`GUARD ${attention.errorAlertCount} error`);
+  }
+  if (checkpointSummary?.id) {
+    segments.push(`CKPT ${checkpointSummary.id}`);
+  }
+  return segments;
 }
 
 function fallbackStateFromRoute(route) {
@@ -390,6 +466,13 @@ export function buildWatchFooterSummary({
   latestExpandable,
   enableMouseTracking,
   detailDiffNavigation = null,
+  activeCheckpointId = null,
+  checkpointCount = 0,
+  inputModeProfile = "default",
+  keybindingProfile = "default",
+  composerMode = "insert",
+  themeName = "default",
+  featureFlags = {},
 }) {
   const surfaceSummary = summary ?? buildWatchSurfaceSummary({});
   const input = String(inputValue ?? "");
@@ -451,6 +534,31 @@ export function buildWatchFooterSummary({
   if (surfaceSummary?.overview?.usage && surfaceSummary.overview.usage !== "n/a") {
     leftDetails.push(`usage ${surfaceSummary.overview.usage}`);
   }
+  if (formatCount(surfaceSummary?.overview?.pendingAttachmentCount, 0) > 0) {
+    leftDetails.push(`attachments ${surfaceSummary.overview.pendingAttachmentCount}`);
+  }
+  const statuslineEnabled = featureFlags?.statusline === true;
+  const checkpointSummary =
+    featureFlags?.checkpoints === true && activeCheckpointId
+      ? {
+          id: sanitizeText(activeCheckpointId, null),
+          count: formatCount(checkpointCount, 0),
+        }
+      : null;
+  if (checkpointSummary?.id && !statuslineEnabled) {
+    leftDetails.push(
+      checkpointSummary.count > 0
+        ? `checkpoint ${checkpointSummary.id}/${checkpointSummary.count}`
+        : `checkpoint ${checkpointSummary.id}`,
+    );
+  }
+  if (statuslineEnabled && formatCount(surfaceSummary?.overview?.pendingAttachmentCount, 0) > 0) {
+    const attachmentDetail = `attachments ${surfaceSummary.overview.pendingAttachmentCount}`;
+    const detailIndex = leftDetails.indexOf(attachmentDetail);
+    if (detailIndex >= 0) {
+      leftDetails.splice(detailIndex, 1);
+    }
+  }
 
   const nextRightStatus = sanitizeText(
     transientStatus ||
@@ -485,10 +593,26 @@ export function buildWatchFooterSummary({
     hintLeft = palette.suggestionHint;
     hintStatus = modelSuggestions.length > 0 ? "tab complete  enter switch" : "enter run";
   } else {
-    hintLeft = input.trim().length > 0
-      ? `enter send  ctrl+k kill  ctrl+←/→ word${latestExpandable ? "  ctrl+o detail" : ""}  ctrl+y copy  pgup/pgdn scroll`
-      : `/ commands${latestExpandable ? "  ctrl+o detail" : ""}  ctrl+y copy  /export save  pgup/pgdn scroll  ctrl+l clear`;
+    if (inputModeProfile === "vim") {
+      hintLeft = composerMode === "normal"
+        ? `i insert  h/l move  b/w word  j/k scroll  x delete${latestExpandable ? "  ctrl+o detail" : ""}`
+        : `esc normal  enter send  ctrl+k kill${latestExpandable ? "  ctrl+o detail" : ""}  ctrl+y copy`;
+      hintStatus = composerMode === "normal" ? "vim normal" : "vim insert";
+    } else {
+      hintLeft = input.trim().length > 0
+        ? `enter send  ctrl+k kill  ctrl+←/→ word${latestExpandable ? "  ctrl+o detail" : ""}  ctrl+y copy  pgup/pgdn scroll`
+        : `/ commands${latestExpandable ? "  ctrl+o detail" : ""}  ctrl+y copy  /export save  pgup/pgdn scroll  ctrl+l clear`;
+    }
   }
+  const statuslineSegments = statuslineEnabled
+    ? buildFooterStatuslineSegments(surfaceSummary, checkpointSummary, {
+      inputModeProfile,
+      keybindingProfile,
+      composerMode,
+      themeName,
+    })
+    : [];
+  const statuslineText = statuslineSegments.join("  ");
 
   return {
     statusLabel: workingLabel,
@@ -499,6 +623,9 @@ export function buildWatchFooterSummary({
     hintRight: hintStatus,
     palette,
     fileTagPalette,
+    statuslineEnabled,
+    statuslineSegments,
+    statuslineText,
   };
 }
 
@@ -513,6 +640,7 @@ export function buildWatchSurfaceSummary({
   latestTool,
   latestToolState,
   queuedInputCount,
+  pendingAttachmentCount,
   events = [],
   planCount,
   activeAgentCount,
@@ -526,6 +654,7 @@ export function buildWatchSurfaceSummary({
   activeAgentActivity = null,
   plannerStatus = null,
   plannerNote = null,
+  sessionLabel = null,
   detail = null,
 }) {
   const recentEvents = events.slice(-24);
@@ -610,6 +739,7 @@ export function buildWatchSurfaceSummary({
   const runtimeState = runtimeStateFromInputs(connectionState, backgroundRunStatus, errorAlertCount);
   const runtimeLabel = runtimeLabelFromInputs(connectionState, backgroundRunStatus);
   const plannerLabel = sanitizeText(plannerNote, "");
+  const localSessionLabel = sanitizeText(sessionLabel, "");
   const activeAgentFocus = sanitizeText(activeAgentLabel, "");
   const activeAgentLive = sanitizeText(activeAgentActivity, "");
   const activeLine = sanitizeText(
@@ -634,6 +764,7 @@ export function buildWatchSurfaceSummary({
       connectionState: sanitizeText(connectionState, "unknown"),
       phaseLabel: sanitizeText(phaseLabel, "idle"),
       sessionToken: compactSessionToken(sessionId),
+      sessionLabel: localSessionLabel,
       lastActivityAt: sanitizeText(lastActivityAt, "idle"),
       latestTool: sanitizeText(latestTool, "idle"),
       latestToolState: sanitizeText(latestToolState, latestTool ? "running" : "idle"),
@@ -641,6 +772,7 @@ export function buildWatchSurfaceSummary({
       durableRunsState,
       durableRunsLabel,
       queuedInputCount: formatCount(queuedInputCount, 0),
+      pendingAttachmentCount: formatCount(pendingAttachmentCount, 0),
       planCount: formatCount(planCount, 0),
       activeAgentCount: formatCount(activeAgentCount, 0),
       transcriptMode,
@@ -666,6 +798,15 @@ export function buildWatchSurfaceSummary({
       { label: "MODEL", value: modelLabel, tone: route ? "teal" : "slate" },
       { label: "FAILOVER", value: fallbackState, tone: stateTone(fallbackState) },
       { label: "QUEUE", value: String(formatCount(queuedInputCount, 0)), tone: Number(queuedInputCount) > 0 ? "amber" : "green" },
+      ...(
+        Number(pendingAttachmentCount) > 0
+          ? [{
+            label: "FILES",
+            value: String(formatCount(pendingAttachmentCount, 0)),
+            tone: "teal",
+          }]
+          : []
+      ),
       { label: "GUARD", value: guardValue, tone: approvalAlertCount > 0 ? "red" : errorAlertCount > 0 ? "amber" : "green" },
       { label: "RUNTIME", value: runtimeState, tone: stateTone(runtimeState) },
       { label: "DURABLE", value: durableRunsState, tone: stateTone(durableRunsState) },
@@ -675,6 +816,7 @@ export function buildWatchSurfaceSummary({
       approvalAlertCount,
       errorAlertCount,
       queuedInputCount: formatCount(queuedInputCount, 0),
+      pendingAttachmentCount: formatCount(pendingAttachmentCount, 0),
       items: recentAlerts,
     },
     recentTools,

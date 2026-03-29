@@ -587,6 +587,80 @@ describe('ApprovalEngine', () => {
     });
   });
 
+  describe('session policy mutation state', () => {
+    it('applies allow, deny, clear, and reset mutations', () => {
+      expect(engine.getSessionPolicyState('sess-1')).toEqual({
+        elevatedPatterns: [],
+        deniedPatterns: [],
+      });
+
+      expect(
+        engine.applySessionPolicyMutation({
+          sessionId: 'sess-1',
+          operation: 'allow',
+          pattern: 'system.writeFile',
+        }),
+      ).toEqual({
+        elevatedPatterns: ['system.writeFile'],
+        deniedPatterns: [],
+      });
+
+      expect(
+        engine.applySessionPolicyMutation({
+          sessionId: 'sess-1',
+          operation: 'deny',
+          pattern: 'wallet.*',
+        }),
+      ).toEqual({
+        elevatedPatterns: ['system.writeFile'],
+        deniedPatterns: ['wallet.*'],
+      });
+
+      expect(
+        engine.applySessionPolicyMutation({
+          sessionId: 'sess-1',
+          operation: 'clear',
+          pattern: 'wallet.*',
+        }),
+      ).toEqual({
+        elevatedPatterns: ['system.writeFile'],
+        deniedPatterns: [],
+      });
+
+      expect(
+        engine.applySessionPolicyMutation({
+          sessionId: 'sess-1',
+          operation: 'reset',
+        }),
+      ).toEqual({
+        elevatedPatterns: [],
+        deniedPatterns: [],
+      });
+    });
+
+    it('keeps allow and deny patterns mutually exclusive', () => {
+      engine.applySessionPolicyMutation({
+        sessionId: 'sess-1',
+        operation: 'allow',
+        pattern: 'wallet.*',
+      });
+      expect(engine.isToolElevated('sess-1', 'wallet.sign')).toBe(true);
+
+      expect(
+        engine.applySessionPolicyMutation({
+          sessionId: 'sess-1',
+          operation: 'deny',
+          pattern: 'wallet.*',
+        }),
+      ).toEqual({
+        elevatedPatterns: [],
+        deniedPatterns: ['wallet.*'],
+      });
+      expect(engine.isToolElevated('sess-1', 'wallet.sign')).toBe(false);
+      expect(engine.isToolDenied('sess-1', 'wallet.sign')).toBe(true);
+    });
+  });
+
   // ============================================================================
   // getPending
   // ============================================================================

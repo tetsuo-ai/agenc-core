@@ -58,6 +58,7 @@ test("buildSurfaceSummaryCacheKey invalidates richer status chrome inputs", () =
     latestTool: "system.bash",
     latestToolState: "ok",
     queuedInputCount: 0,
+    pendingAttachmentCount: 0,
     eventsLength: 3,
     lastEventId: "evt-3",
     planCount: 2,
@@ -67,6 +68,7 @@ test("buildSurfaceSummaryCacheKey invalidates richer status chrome inputs", () =
     plannerStatus: "running",
     plannerNote: "waiting on validation",
     sessionId: "session:1234",
+    sessionLabel: "Roadmap branch",
     following: true,
     detailOpen: false,
     transcriptScrollOffset: 0,
@@ -86,10 +88,20 @@ test("buildSurfaceSummaryCacheKey invalidates richer status chrome inputs", () =
     ...base,
     activeAgentActivity: "running acceptance probe",
   });
+  const attachmentKey = buildSurfaceSummaryCacheKey({
+    ...base,
+    pendingAttachmentCount: 2,
+  });
+  const sessionLabelKey = buildSurfaceSummaryCacheKey({
+    ...base,
+    sessionLabel: "Release prep",
+  });
 
   assert.notEqual(firstKey, fallbackKey);
   assert.notEqual(firstKey, runtimeKey);
   assert.notEqual(firstKey, agentKey);
+  assert.notEqual(firstKey, attachmentKey);
+  assert.notEqual(firstKey, sessionLabelKey);
 });
 
 test("latestSessionSummary prefers sessions from the current workspace root", () => {

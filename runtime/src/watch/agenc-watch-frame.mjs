@@ -16,6 +16,7 @@ export function createWatchFrameController(dependencies = {}) {
     plannerDagNodes,
     plannerDagEdges,
     workspaceFileIndex,
+    watchFeatureFlags = {},
     color,
     enableMouseTracking,
     launchedAtMs,
@@ -25,6 +26,7 @@ export function createWatchFrameController(dependencies = {}) {
     maxPreviewSourceLines,
     currentSurfaceSummary,
     currentInputValue,
+    currentInputPreferences,
     currentSlashSuggestions,
     currentModelSuggestions,
     currentFileTagPalette,
@@ -138,7 +140,10 @@ export function createWatchFrameController(dependencies = {}) {
 
   function headerLines(width, summary = currentSurfaceSummary()) {
     const elapsed = currentSessionElapsedLabel();
-    const connectionLabel = `${summary.overview.connectionState} ${summary.overview.sessionToken} ${elapsed}`;
+    const sessionDescriptor = summary.overview.sessionLabel
+      ? `${summary.overview.sessionLabel} · ${summary.overview.sessionToken}`
+      : summary.overview.sessionToken;
+    const connectionLabel = `${summary.overview.connectionState} ${sessionDescriptor} ${elapsed}`;
     const chipLines = [[]];
     for (const item of summary.chips) {
       const rendered = chip(item.label, item.value, item.tone);
@@ -1667,6 +1672,9 @@ export function createWatchFrameController(dependencies = {}) {
 
   function footerHintLine(width, diffNavigation = null) {
     const fileTagPalette = currentFileTagPalette(6);
+    const inputPreferences = typeof currentInputPreferences === "function"
+      ? currentInputPreferences() ?? {}
+      : {};
     const footer = buildWatchFooterSummary({
       summary: currentSurfaceSummary(),
       inputValue: currentInputValue(),
@@ -1691,6 +1699,13 @@ export function createWatchFrameController(dependencies = {}) {
       latestExpandable: Boolean(latestExpandableEvent()),
       enableMouseTracking,
       detailDiffNavigation: diffNavigation,
+      activeCheckpointId: watchState.activeCheckpointId,
+      checkpointCount: Array.isArray(watchState.checkpoints) ? watchState.checkpoints.length : 0,
+      inputModeProfile: inputPreferences.inputModeProfile,
+      keybindingProfile: inputPreferences.keybindingProfile,
+      composerMode: watchState.composerMode,
+      themeName: inputPreferences.themeName,
+      featureFlags: watchFeatureFlags,
     });
     return flexBetween(
       `${color.fog}${truncate(footer.hintLeft, Math.max(16, width - 22))}${color.reset}`,
@@ -1704,6 +1719,9 @@ export function createWatchFrameController(dependencies = {}) {
     const activeRun = hasActiveSurfaceRun();
     const elapsedLabel = activeRun ? currentRunElapsedLabel() : currentSessionElapsedLabel();
     const fileTagPalette = currentFileTagPalette(6);
+    const inputPreferences = typeof currentInputPreferences === "function"
+      ? currentInputPreferences() ?? {}
+      : {};
     const footer = buildWatchFooterSummary({
       summary,
       inputValue: currentInputValue(),
@@ -1726,13 +1744,23 @@ export function createWatchFrameController(dependencies = {}) {
       latestExpandable: Boolean(latestExpandableEvent()),
       enableMouseTracking,
       detailDiffNavigation: diffNavigation,
+      activeCheckpointId: watchState.activeCheckpointId,
+      checkpointCount: Array.isArray(watchState.checkpoints) ? watchState.checkpoints.length : 0,
+      inputModeProfile: inputPreferences.inputModeProfile,
+      keybindingProfile: inputPreferences.keybindingProfile,
+      composerMode: watchState.composerMode,
+      themeName: inputPreferences.themeName,
+      featureFlags: watchFeatureFlags,
     });
     const workingPrefix =
       activeRun && transportState.connectionState === "live"
         ? `${animatedWorkingGlyph()} `
         : "";
-    const left = footer.leftDetails.length > 0
-      ? `${toneColor(footer.statusTone)}${color.bold}${workingPrefix}${footer.statusLabel}${color.reset}${color.softInk}  ${footer.leftDetails.join("  ")}${color.reset}`
+    const statusDetails = footer.statuslineEnabled === true
+      ? footer.statuslineText
+      : footer.leftDetails.join("  ");
+    const left = statusDetails.length > 0
+      ? `${toneColor(footer.statusTone)}${color.bold}${workingPrefix}${footer.statusLabel}${color.reset}${color.softInk}  ${statusDetails}${color.reset}`
       : `${toneColor(footer.statusTone)}${color.bold}${workingPrefix}${footer.statusLabel}${color.reset}`;
 
     return flexBetween(

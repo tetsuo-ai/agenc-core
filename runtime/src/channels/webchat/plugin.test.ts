@@ -622,6 +622,43 @@ describe("WebChatChannel", () => {
       expect(context.onMessage).not.toHaveBeenCalled();
     });
 
+    it("accepts inline base64 attachments on chat.message", async () => {
+      const send = vi.fn<(response: ControlResponse) => void>();
+
+      channel.handleMessage(
+        "client_1",
+        "chat.message",
+        msg("chat.message", {
+          content: "see attached",
+          attachments: [{
+            type: "image",
+            mimeType: "image/png",
+            filename: "diagram.png",
+            sizeBytes: 4,
+            data: Buffer.from([0, 1, 2, 3]).toString("base64"),
+          }],
+        }),
+        send,
+      );
+
+      await vi.waitFor(() =>
+        expect(context.onMessage).toHaveBeenCalledWith(
+          expect.objectContaining({
+            content: "see attached",
+            attachments: [
+              expect.objectContaining({
+                type: "image",
+                mimeType: "image/png",
+                filename: "diagram.png",
+                sizeBytes: 4,
+                data: expect.any(Uint8Array),
+              }),
+            ],
+          }),
+        ),
+      );
+    });
+
     it("should reject missing content", () => {
       const send = vi.fn<(response: ControlResponse) => void>();
 

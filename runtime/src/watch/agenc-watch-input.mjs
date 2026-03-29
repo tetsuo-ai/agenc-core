@@ -13,6 +13,7 @@ function assertObject(name, value) {
 export function createWatchInputController(dependencies = {}) {
   const {
     watchState,
+    currentInputPreferences = () => watchState.inputPreferences ?? { inputModeProfile: "default" },
     shuttingDown,
     parseMouseWheelSequence,
     scrollCurrentViewBy,
@@ -40,6 +41,7 @@ export function createWatchInputController(dependencies = {}) {
   } = dependencies;
 
   assertObject("watchState", watchState);
+  assertFunction("currentInputPreferences", currentInputPreferences);
   assertFunction("shuttingDown", shuttingDown);
   assertFunction("parseMouseWheelSequence", parseMouseWheelSequence);
   assertFunction("scrollCurrentViewBy", scrollCurrentViewBy);
@@ -143,6 +145,18 @@ export function createWatchInputController(dependencies = {}) {
     scheduleRender();
   }
 
+  function currentInputModeProfile() {
+    return currentInputPreferences()?.inputModeProfile === "vim" ? "vim" : "default";
+  }
+
+  function currentKeybindingProfile() {
+    return currentInputPreferences()?.keybindingProfile === "vim" ? "vim" : "default";
+  }
+
+  function isVimNormalMode() {
+    return currentInputModeProfile() === "vim" && watchState.composerMode === "normal";
+  }
+
   function consumeUnknownEscapeSequence(input, index) {
     const rest = String(input ?? "").slice(index);
     if (!rest.startsWith("\x1b")) {
@@ -207,6 +221,9 @@ export function createWatchInputController(dependencies = {}) {
         watchState.expandedEventId = null;
         watchState.detailScrollOffset = 0;
         setTransientStatus("detail closed");
+      } else if (currentInputModeProfile() === "vim" && watchState.composerMode !== "normal") {
+        watchState.composerMode = "normal";
+        setTransientStatus("vim normal");
       } else if (typeof cancelActiveChat === "function") {
         cancelActiveChat();
       }
@@ -313,6 +330,101 @@ export function createWatchInputController(dependencies = {}) {
       if (char === "\x1b") {
         index = handleTerminalEscapeSequence(input, index);
         didMutate = true;
+        continue;
+      }
+      if (isVimNormalMode()) {
+        if (char === "i") {
+          watchState.composerMode = "insert";
+          setTransientStatus("vim insert");
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "a") {
+          if (watchState.composerCursor < watchState.composerInput.length) {
+            watchState.composerCursor += 1;
+          }
+          watchState.composerMode = "insert";
+          setTransientStatus("vim insert");
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "h") {
+          moveComposerCursorByCharacter(-1);
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "l") {
+          moveComposerCursorByCharacter(1);
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "b") {
+          moveComposerCursorByWord(-1);
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "w") {
+          moveComposerCursorByWord(1);
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "0") {
+          watchState.composerCursor = 0;
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "$") {
+          watchState.composerCursor = watchState.composerInput.length;
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "x") {
+          deleteComposerForward();
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "j") {
+          if (currentKeybindingProfile() === "vim") {
+            scrollCurrentViewBy(-1);
+          } else {
+            navigateComposer(1);
+          }
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "k") {
+          if (currentKeybindingProfile() === "vim") {
+            scrollCurrentViewBy(1);
+          } else {
+            navigateComposer(-1);
+          }
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "p") {
+          navigateComposer(-1);
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "n") {
+          navigateComposer(1);
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        index += 1;
         continue;
       }
       if (char < " ") {

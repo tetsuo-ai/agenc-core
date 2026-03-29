@@ -20,6 +20,7 @@ const REQUIRED_STATE_KEYS = Object.freeze([
   "configuredModelRoute",
   "manualStatusRequestPending",
   "lastStatusFeedFingerprint",
+  "manualSessionsQuery",
 ]);
 
 const REQUIRED_HELPER_KEYS = Object.freeze([
