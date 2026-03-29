@@ -215,7 +215,7 @@ describe("system.server tools", () => {
     const started = JSON.parse((await manager.start({
       command: "python3",
       args: ["-m", "http.server", String(port), "--bind", "127.0.0.1"],
-      cwd: "/home/tetsuo/git/AgenC",
+      cwd: rootDir,
       label: "python-http-server",
       port,
     })).content) as Record<string, unknown>;

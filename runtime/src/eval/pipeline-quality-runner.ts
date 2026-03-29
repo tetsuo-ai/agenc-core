@@ -7,6 +7,7 @@
 import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { GatewayMessage } from "../gateway/message.js";
 import {
   buildSessionStatefulOptions,
@@ -57,6 +58,8 @@ import { assessDelegationDecision } from "../llm/delegation-decision.js";
 const DEFAULT_CONTEXT_BENCHMARK_TURNS = 24;
 const DEFAULT_DESKTOP_RUNS = 1;
 const DEFAULT_DESKTOP_TIMEOUT_MS = 75_000;
+const SOURCE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const RUNTIME_DIR = path.resolve(SOURCE_DIR, "../..");
 
 export interface PipelineDesktopRunnerInput {
   runIndex: number;
@@ -618,7 +621,9 @@ function runToolTurnBenchmark(): ToolTurnBenchmarkResult {
 function resolveDefaultIncidentFixtureDir(): string {
   const local = path.resolve(process.cwd(), "benchmarks/v1/incidents");
   if (existsSync(local)) return local;
-  return path.resolve(process.cwd(), "runtime/benchmarks/v1/incidents");
+  const repoRuntimePath = path.resolve(process.cwd(), "runtime/benchmarks/v1/incidents");
+  if (existsSync(repoRuntimePath)) return repoRuntimePath;
+  return path.resolve(RUNTIME_DIR, "benchmarks/v1/incidents");
 }
 
 async function runOfflineReplayBenchmark(

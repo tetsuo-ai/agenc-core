@@ -3,12 +3,16 @@
 import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   MutationRunner,
   writeMutationArtifact,
   type MutationRegressionScenario,
 } from '../src/eval/mutation-runner.js';
 import { stableStringifyJson, type JsonValue } from '../src/eval/types.js';
+
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const RUNTIME_DIR = path.resolve(SCRIPT_DIR, '..');
 
 interface CliOptions {
   manifestPath: string;
@@ -41,19 +45,19 @@ interface MutationTrendReport {
 function resolveDefaultManifestPath(): string {
   const local = path.resolve(process.cwd(), 'benchmarks/v1/manifest.json');
   if (existsSync(local)) return local;
-  return path.resolve(process.cwd(), 'runtime/benchmarks/v1/manifest.json');
+  return path.resolve(RUNTIME_DIR, 'benchmarks/v1/manifest.json');
 }
 
 function resolveDefaultOutputPath(): string {
   const local = path.resolve(process.cwd(), 'benchmarks/artifacts/mutation.latest.json');
   if (existsSync(path.dirname(local))) return local;
-  return path.resolve(process.cwd(), 'runtime/benchmarks/artifacts/mutation.latest.json');
+  return path.resolve(RUNTIME_DIR, 'benchmarks/artifacts/mutation.latest.json');
 }
 
 function resolveDefaultTrendOutputPath(): string {
   const local = path.resolve(process.cwd(), 'benchmarks/artifacts/mutation-trend.latest.json');
   if (existsSync(path.dirname(local))) return local;
-  return path.resolve(process.cwd(), 'runtime/benchmarks/artifacts/mutation-trend.latest.json');
+  return path.resolve(RUNTIME_DIR, 'benchmarks/artifacts/mutation-trend.latest.json');
 }
 
 function parsePositiveInteger(input: string, flag: string): number {
@@ -188,4 +192,3 @@ main().catch((error) => {
   console.error(`Mutation run failed: ${message}`);
   process.exit(1);
 });
-

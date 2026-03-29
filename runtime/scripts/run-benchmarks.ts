@@ -2,10 +2,14 @@
 
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   BenchmarkRunner,
   writeBenchmarkArtifact,
 } from '../src/eval/benchmark-runner.js';
+
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const RUNTIME_DIR = path.resolve(SCRIPT_DIR, '..');
 
 interface CliOptions {
   manifestPath: string;
@@ -16,13 +20,13 @@ interface CliOptions {
 function resolveDefaultManifestPath(): string {
   const local = path.resolve(process.cwd(), 'benchmarks/v1/manifest.json');
   if (existsSync(local)) return local;
-  return path.resolve(process.cwd(), 'runtime/benchmarks/v1/manifest.json');
+  return path.resolve(RUNTIME_DIR, 'benchmarks/v1/manifest.json');
 }
 
 function resolveDefaultOutputPath(): string {
   const local = path.resolve(process.cwd(), 'benchmarks/artifacts/latest.json');
   if (existsSync(path.dirname(local))) return local;
-  return path.resolve(process.cwd(), 'runtime/benchmarks/artifacts/latest.json');
+  return path.resolve(RUNTIME_DIR, 'benchmarks/artifacts/latest.json');
 }
 
 function parseCliArgs(argv: string[]): CliOptions {
