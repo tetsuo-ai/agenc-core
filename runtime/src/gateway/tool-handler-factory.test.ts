@@ -1828,15 +1828,27 @@ describe("createSessionToolHandler", () => {
     };
 
     expect(baseHandler).not.toHaveBeenCalled();
-    expect(subAgentManager.spawn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        parentSessionId: "session-parent",
-        task: "Inspect file",
-        timeoutMs: 120_000,
-        tools: ["system.readFile"],
-        requireToolCall: true,
-      }),
-    );
+    const spawnInput = subAgentManager.spawn.mock.calls[0]?.[0] as
+      | Record<string, unknown>
+      | undefined;
+    expect(spawnInput).toMatchObject({
+      parentSessionId: "session-parent",
+      task: "Inspect file",
+      timeoutMs: 120_000,
+      workingDirectory: "/tmp/project-root",
+      workingDirectorySource: "execution_envelope",
+      tools: ["system.readFile"],
+      requireToolCall: true,
+    });
+    expect(spawnInput?.delegationSpec).toMatchObject({
+      task: "Inspect file",
+      timeoutMs: 120_000,
+      tools: ["system.readFile"],
+      executionContext: {
+        workspaceRoot: "/tmp/project-root",
+        allowedReadRoots: ["/tmp/project-root"],
+      },
+    });
     expect(parsed.success).toBe(true);
     expect(parsed.status).toBe("completed");
     expect(parsed.completionState).toBe("completed");
@@ -3429,14 +3441,25 @@ describe("createSessionToolHandler", () => {
       },
     });
 
-    expect(subAgentManager.spawn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        parentSessionId: "session-parent",
-        task: "Inspect file quickly",
-        timeoutMs: 60_000,
-        requireToolCall: false,
-      }),
-    );
+    const spawnInput = subAgentManager.spawn.mock.calls[0]?.[0] as
+      | Record<string, unknown>
+      | undefined;
+    expect(spawnInput).toMatchObject({
+      parentSessionId: "session-parent",
+      task: "Inspect file quickly",
+      timeoutMs: 60_000,
+      workingDirectory: "/tmp/runtime-timeout-scope",
+      workingDirectorySource: "execution_envelope",
+      tools: ["desktop.bash"],
+      requireToolCall: false,
+    });
+    expect(spawnInput?.delegationSpec).toMatchObject({
+      task: "Inspect file quickly",
+      timeoutMs: 10_000,
+      executionContext: {
+        workspaceRoot: "/tmp/runtime-timeout-scope",
+      },
+    });
   });
 
   it("rejects overloaded execute_with_agent objectives before spawn", async () => {

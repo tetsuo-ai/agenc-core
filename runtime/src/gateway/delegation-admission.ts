@@ -596,7 +596,8 @@ export function assessDelegationAdmission(
     input.totalSteps <= 2 &&
     economics.dependencyDepth <= 1 &&
     economics.parallelGain < 0.2 &&
-    !isIsolatedSingleStep(economics)
+    !isIsolatedSingleStep(economics) &&
+    !isSharedContextReadOnlyReview(input, economics)
   ) {
     return buildDecision({
       allowed: false,
