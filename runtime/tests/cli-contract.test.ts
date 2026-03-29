@@ -61,6 +61,22 @@ function createWorkspace(): string {
   return workspace;
 }
 
+function writeGatewayConfig(directory: string): string {
+  const configPath = join(directory, 'config.json');
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      gateway: { port: 3100 },
+      agent: { name: 'cli-contract-agent' },
+      connection: { rpcUrl: 'https://example.com' },
+      replay: { store: { type: 'memory' } },
+      cli: { outputFormat: 'json' },
+    }),
+    'utf8',
+  );
+  return configPath;
+}
+
 function createReplayRecords(
   events: OnChainFixtureEvent[],
   traceId: string,
@@ -163,13 +179,29 @@ function parseCliOutput(result: { stdout: string; stderr: string }): unknown {
 
 describe('CLI output contract tests', () => {
   let workspace = '';
+  let originalConfig: string | undefined;
+  let originalRuntimeConfig: string | undefined;
 
   beforeEach(() => {
     workspace = createWorkspace();
+    originalConfig = process.env.AGENC_CONFIG;
+    originalRuntimeConfig = process.env.AGENC_RUNTIME_CONFIG;
+    process.env.AGENC_CONFIG = writeGatewayConfig(workspace);
+    delete process.env.AGENC_RUNTIME_CONFIG;
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    if (originalConfig === undefined) {
+      delete process.env.AGENC_CONFIG;
+    } else {
+      process.env.AGENC_CONFIG = originalConfig;
+    }
+    if (originalRuntimeConfig === undefined) {
+      delete process.env.AGENC_RUNTIME_CONFIG;
+    } else {
+      process.env.AGENC_RUNTIME_CONFIG = originalRuntimeConfig;
+    }
     rmSync(workspace, { recursive: true, force: true });
   });
 
@@ -317,8 +349,11 @@ describe('CLI output contract tests', () => {
           status: parsed.status,
           code: parsed.code,
           message: parsed.message.replace(
-            /\/tmp\/agenc-cli-contract-[^/]+\/empty-cli-config\.json/g,
+            /(?:\/tmp|\/private\/tmp|\/var\/folders\/[^/]+\/[^/]+\/T)\/agenc-cli-contract-[^/]+\/empty-cli-config\.json/g,
             '/tmp/agenc-cli-contract-<fixture>/empty-cli-config.json',
+          ).replace(
+            /(?:\/Users|\/home)\/[^/]+\/\.agenc\/config\.json/g,
+            '/home/tetsuo/.agenc/config.json',
           ),
         };
       },
