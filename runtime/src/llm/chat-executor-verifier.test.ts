@@ -341,6 +341,68 @@ describe("buildPlannerWorkflowAdmission", () => {
     );
   });
 
+  it("keeps required reviewer-step verification even when the optional child verifier is disabled", () => {
+    const admission = buildPlannerWorkflowAdmission({
+      workspaceRoot: "/tmp/project",
+      subagentSteps: [
+        createStep({
+          name: "architecture_review",
+          objective: "Review architecture alignment only.",
+          acceptanceCriteria: ["Architecture findings are grounded"],
+          executionContext: {
+            version: "v1",
+            workspaceRoot: "/tmp/project",
+            allowedReadRoots: ["/tmp/project"],
+            requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+            verificationMode: "grounded_read",
+            stepKind: "delegated_review",
+            effectClass: "read_only",
+          },
+        }),
+        createStep({
+          name: "qa_review",
+          objective: "Review QA coverage only.",
+          acceptanceCriteria: ["QA findings are grounded"],
+          executionContext: {
+            version: "v1",
+            workspaceRoot: "/tmp/project",
+            allowedReadRoots: ["/tmp/project"],
+            requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+            verificationMode: "grounded_read",
+            stepKind: "delegated_review",
+            effectClass: "read_only",
+          },
+        }),
+        createStep({
+          name: "rewrite_plan",
+          objective: "Rewrite PLAN.md with the synthesized reviewer findings.",
+          acceptanceCriteria: ["PLAN.md is fully updated"],
+          executionContext: {
+            version: "v1",
+            workspaceRoot: "/tmp/project",
+            allowedReadRoots: ["/tmp/project"],
+            allowedWriteRoots: ["/tmp/project"],
+            requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+            targetArtifacts: ["/tmp/project/PLAN.md"],
+            verificationMode: "mutation_required",
+            stepKind: "delegated_write",
+            effectClass: "filesystem_write",
+          },
+        }),
+      ],
+      deterministicSteps: [],
+      includeSubagentOutputVerification: false,
+      requiredSubagentOutputStepNames: ["architecture_review", "qa_review"],
+    });
+
+    expect(admission.requiresMandatorySubagentOutputVerification).toBe(true);
+    expect(admission.verifierWorkItems.map((item) => item.name)).toEqual([
+      "architecture_review",
+      "qa_review",
+      "documentation_completion",
+    ]);
+  });
+
   it("uses documentation completion verification for deterministic plan rewrites", () => {
     const admission = buildPlannerWorkflowAdmission({
       workspaceRoot: "/tmp/project",

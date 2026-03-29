@@ -185,7 +185,10 @@ export async function executePlannerPipelineWithVerifierLoop(
     }
 
     if (!input.shouldRunPlannerVerifier) {
-      if (!input.requiresMandatoryImplementationVerification) {
+      if (
+        !input.requiresMandatoryImplementationVerification &&
+        !input.requiresMandatorySubagentOutputVerification
+      ) {
         break;
       }
       const deterministicDecision = evaluatePlannerDeterministicChecks(

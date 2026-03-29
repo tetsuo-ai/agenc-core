@@ -88,6 +88,7 @@ import {
 } from "./runtime-limit-policy.js";
 import type { LLMPipelineStopReason } from "./policy.js";
 import type { LLMResponse } from "./types.js";
+import { resolveRequiredSubagentVerificationStepNames } from "../workflow/subagent-orchestration-requirements.js";
 import {
   summarizeToolCalls,
   generateFallbackContent,
@@ -1157,6 +1158,11 @@ export async function executePlannerPath(
       (step): step is PlannerSubAgentTaskStepIntent =>
         step.stepType === "subagent_task",
     );
+    const requiredSubagentOutputStepNames =
+      resolveRequiredSubagentVerificationStepNames({
+        requirements: explicitOrchestrationRequirements,
+        candidates: subagentSteps,
+      });
     let delegationDecision: ReturnType<
       typeof assessAndRecordDelegationDecision
     > | undefined;
@@ -1359,6 +1365,7 @@ export async function executePlannerPath(
         includeSubagentOutputVerification:
           config.subagentVerifierConfig.enabled ||
           config.subagentVerifierConfig.force,
+        requiredSubagentOutputStepNames,
       });
       ctx.plannerWorkflowTaskClassification =
         plannerWorkflowAdmission.taskClassification;
@@ -1397,6 +1404,7 @@ export async function executePlannerPath(
         includeSubagentOutputVerification:
           config.subagentVerifierConfig.enabled ||
           config.subagentVerifierConfig.force,
+        requiredSubagentOutputStepNames,
       });
       const shouldRunPlannerVerifier =
         plannerVerifierAdmission.verifierWorkItems.length > 0 &&
@@ -1426,6 +1434,8 @@ export async function executePlannerPath(
         shouldRunPlannerVerifier,
         requiresMandatoryImplementationVerification:
           plannerVerifierAdmission.requiresMandatoryImplementationVerification,
+        requiresMandatorySubagentOutputVerification:
+          plannerVerifierAdmission.requiresMandatorySubagentOutputVerification,
         verifierConfig: config.subagentVerifierConfig,
         plannerSummaryState: ctx.plannerSummaryState,
         checkRequestTimeout: (stage: string) => callbacks.checkRequestTimeout(ctx, stage),

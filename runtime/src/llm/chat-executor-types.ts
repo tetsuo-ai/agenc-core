@@ -600,6 +600,7 @@ export interface PlannerWorkflowAdmission {
   readonly completionContract?: ImplementationCompletionContract;
   readonly verifierWorkItems: readonly PlannerVerifierWorkItem[];
   readonly requiresMandatoryImplementationVerification: boolean;
+  readonly requiresMandatorySubagentOutputVerification: boolean;
   readonly invalidReason?: string;
 }
 
@@ -680,6 +681,7 @@ export interface PlannerPipelineVerifierLoopInput {
   plannerExecutionContext: PipelinePlannerContext;
   shouldRunPlannerVerifier: boolean;
   requiresMandatoryImplementationVerification: boolean;
+  requiresMandatorySubagentOutputVerification: boolean;
   plannerSummaryState: MutablePlannerSummaryState;
   checkRequestTimeout: (stage: string) => boolean;
   runPipelineWithGlobalTimeout: (

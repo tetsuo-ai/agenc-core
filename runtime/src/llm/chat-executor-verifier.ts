@@ -75,6 +75,7 @@ export function buildPlannerWorkflowAdmission(params: {
   readonly verificationContract?: WorkflowVerificationContract;
   readonly completionContract?: ImplementationCompletionContract;
   readonly includeSubagentOutputVerification?: boolean;
+  readonly requiredSubagentOutputStepNames?: readonly string[];
 }): PlannerWorkflowAdmission {
   const completionContract = resolvePlannerCompletionContract(params);
   const verificationContract = buildPlannerWorkflowVerificationContract({
@@ -95,14 +96,24 @@ export function buildPlannerWorkflowAdmission(params: {
       completionContract,
       verifierWorkItems: [],
       requiresMandatoryImplementationVerification: false,
+      requiresMandatorySubagentOutputVerification: false,
       invalidReason:
         "Implementation-class planner work requires a runtime-owned workspace root and workflow contract before execution can begin.",
     };
   }
-  const verifierWorkItems: PlannerVerifierWorkItem[] =
+  const requiredSubagentOutputStepNames = new Set(
+    (params.requiredSubagentOutputStepNames ?? [])
+      .map((name) => name.trim())
+      .filter((name) => name.length > 0),
+  );
+  const subagentStepsForVerification =
     params.includeSubagentOutputVerification === false
-      ? []
-      : params.subagentSteps.map((step) => ({
+      ? params.subagentSteps.filter((step) =>
+        requiredSubagentOutputStepNames.has(step.name)
+      )
+      : params.subagentSteps;
+  const verifierWorkItems: PlannerVerifierWorkItem[] =
+    subagentStepsForVerification.map((step) => ({
         name: step.name,
         verificationKind: "subagent_output",
         objective: step.objective,
@@ -113,6 +124,8 @@ export function buildPlannerWorkflowAdmission(params: {
       }));
   const requiresMandatoryImplementationVerification =
     taskClassification === "implementation_class";
+  const requiresMandatorySubagentOutputVerification =
+    requiredSubagentOutputStepNames.size > 0;
 
   if (requiresMandatoryImplementationVerification) {
     verifierWorkItems.push(
@@ -131,6 +144,7 @@ export function buildPlannerWorkflowAdmission(params: {
     completionContract,
     verifierWorkItems,
     requiresMandatoryImplementationVerification,
+    requiresMandatorySubagentOutputVerification,
   };
 }
 
@@ -141,15 +155,19 @@ export function buildPlannerVerifierAdmission(params: {
   readonly verificationContract?: WorkflowVerificationContract;
   readonly completionContract?: ImplementationCompletionContract;
   readonly includeSubagentOutputVerification?: boolean;
+  readonly requiredSubagentOutputStepNames?: readonly string[];
 }): {
   readonly verifierWorkItems: readonly PlannerVerifierWorkItem[];
   readonly requiresMandatoryImplementationVerification: boolean;
+  readonly requiresMandatorySubagentOutputVerification: boolean;
 } {
   const admission = buildPlannerWorkflowAdmission(params);
   return {
     verifierWorkItems: admission.verifierWorkItems,
     requiresMandatoryImplementationVerification:
       admission.requiresMandatoryImplementationVerification,
+    requiresMandatorySubagentOutputVerification:
+      admission.requiresMandatorySubagentOutputVerification,
   };
 }
 

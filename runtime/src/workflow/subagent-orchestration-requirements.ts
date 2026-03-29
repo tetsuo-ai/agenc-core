@@ -1,3 +1,10 @@
+import { canonicalizeExecutionStepKind } from "./execution-intent.js";
+import type {
+  ExecutionEffectClass,
+  ExecutionStepKind,
+  ExecutionVerificationMode,
+} from "./execution-envelope.js";
+
 export interface RequiredSubagentOrchestrationStep {
   readonly name: string;
   readonly description: string;
@@ -10,6 +17,19 @@ export interface RequiredSubagentOrchestrationRequirements {
   readonly requiredStepCount: number;
   readonly roleHints: readonly string[];
   readonly requiresSynthesis: boolean;
+}
+
+export interface RequiredSubagentVerificationCandidate {
+  readonly name: string;
+  readonly objective?: string;
+  readonly inputContract?: string;
+  readonly acceptanceCriteria?: readonly string[];
+  readonly executionContext?: {
+    readonly stepKind?: ExecutionStepKind;
+    readonly effectClass?: ExecutionEffectClass;
+    readonly verificationMode?: ExecutionVerificationMode;
+    readonly targetArtifacts?: readonly string[];
+  };
 }
 
 const REQUIRED_SUBAGENT_PLAN_MARKER_RE =
@@ -209,4 +229,153 @@ export function allowsUserMandatedSubagentCardinalityOverride(
 
 export function orchestrationRoleHintRegex(roleHint: string): RegExp | undefined {
   return ROLE_HINT_PATTERNS.find((pattern) => pattern.hint === roleHint)?.re;
+}
+
+function joinCandidateRoleText(
+  candidate: RequiredSubagentVerificationCandidate,
+): string {
+  return [
+    candidate.name,
+    candidate.objective,
+    candidate.inputContract,
+    ...(candidate.acceptanceCriteria ?? []),
+  ]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join(" ");
+}
+
+function candidateExecutionStepKind(
+  candidate: RequiredSubagentVerificationCandidate,
+): ExecutionStepKind | undefined {
+  return canonicalizeExecutionStepKind({
+    stepKind: candidate.executionContext?.stepKind,
+    effectClass: candidate.executionContext?.effectClass,
+    verificationMode: candidate.executionContext?.verificationMode,
+    targetArtifacts: candidate.executionContext?.targetArtifacts,
+  });
+}
+
+function isMutableArtifactOwnerCandidate(
+  candidate: RequiredSubagentVerificationCandidate,
+): boolean {
+  const stepKind = candidateExecutionStepKind(candidate);
+  return (
+    stepKind === "delegated_write" ||
+    stepKind === "delegated_scaffold" ||
+    candidate.executionContext?.verificationMode === "mutation_required"
+  );
+}
+
+function isReviewPreferredCandidate(
+  candidate: RequiredSubagentVerificationCandidate,
+): boolean {
+  const stepKind = candidateExecutionStepKind(candidate);
+  if (stepKind === "delegated_review" || stepKind === "delegated_validation") {
+    return true;
+  }
+  if (isMutableArtifactOwnerCandidate(candidate)) {
+    return false;
+  }
+  return (
+    candidate.executionContext?.verificationMode === "grounded_read" ||
+    candidate.executionContext?.effectClass === "read_only" ||
+    candidate.executionContext === undefined
+  );
+}
+
+export function resolveRequiredSubagentVerificationStepNames(params: {
+  readonly requirements?: RequiredSubagentOrchestrationRequirements;
+  readonly candidates: readonly RequiredSubagentVerificationCandidate[];
+}): readonly string[] {
+  const requirements = params.requirements;
+  if (!requirements) {
+    return [];
+  }
+
+  const candidatesByNormalizedName = new Map<
+    string,
+    RequiredSubagentVerificationCandidate
+  >();
+  for (const candidate of params.candidates) {
+    candidatesByNormalizedName.set(
+      sanitizePlannerStepName(candidate.name),
+      candidate,
+    );
+  }
+
+  if (requirements.mode === "exact_steps") {
+    return requirements.stepNames
+      .map((name) => candidatesByNormalizedName.get(name)?.name)
+      .filter((name): name is string => typeof name === "string");
+  }
+
+  const reviewPreferredCandidates = params.candidates.filter(
+    isReviewPreferredCandidate,
+  );
+  const prioritizedCandidates =
+    reviewPreferredCandidates.length >= requirements.requiredStepCount
+      ? reviewPreferredCandidates
+      : params.candidates.filter(
+          (candidate) => !isMutableArtifactOwnerCandidate(candidate),
+        );
+  const orderedPool =
+    prioritizedCandidates.length > 0
+      ? prioritizedCandidates
+      : params.candidates;
+
+  const selectedNames: string[] = [];
+  const seenNames = new Set<string>();
+
+  const trySelect = (
+    predicate: (candidate: RequiredSubagentVerificationCandidate) => boolean,
+  ): void => {
+    const match = orderedPool.find((candidate) => {
+      if (seenNames.has(candidate.name)) {
+        return false;
+      }
+      return predicate(candidate);
+    });
+    if (!match) {
+      return;
+    }
+    seenNames.add(match.name);
+    selectedNames.push(match.name);
+  };
+
+  for (const roleHint of requirements.roleHints) {
+    const roleRe = orchestrationRoleHintRegex(roleHint);
+    if (!roleRe) {
+      continue;
+    }
+    trySelect((candidate) => roleRe.test(joinCandidateRoleText(candidate)));
+    if (selectedNames.length >= requirements.requiredStepCount) {
+      return selectedNames.slice(0, requirements.requiredStepCount);
+    }
+  }
+
+  for (const candidate of orderedPool) {
+    if (selectedNames.length >= requirements.requiredStepCount) {
+      break;
+    }
+    if (seenNames.has(candidate.name)) {
+      continue;
+    }
+    seenNames.add(candidate.name);
+    selectedNames.push(candidate.name);
+  }
+
+  if (selectedNames.length < requirements.requiredStepCount) {
+    for (const candidate of params.candidates) {
+      if (selectedNames.length >= requirements.requiredStepCount) {
+        break;
+      }
+      if (seenNames.has(candidate.name)) {
+        continue;
+      }
+      seenNames.add(candidate.name);
+      selectedNames.push(candidate.name);
+    }
+  }
+
+  return selectedNames.slice(0, requirements.requiredStepCount);
 }
