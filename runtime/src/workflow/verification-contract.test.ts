@@ -49,6 +49,127 @@ describe("verification-contract", () => {
     });
   });
 
+  it("fails workspace-grounded documentation rewrites that never inspect non-target workspace state", () => {
+    const decision = validateRuntimeVerificationContract({
+      verificationContract: {
+        workspaceRoot: "/tmp/project",
+        requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+        targetArtifacts: ["/tmp/project/PLAN.md"],
+        verificationMode: "mutation_required",
+        acceptanceCriteria: [
+          "PLAN.md reflects the current workspace layout and recent directory changes accurately.",
+        ],
+        completionContract: {
+          taskClass: "artifact_only",
+          placeholdersAllowed: false,
+          partialCompletionAllowed: false,
+          placeholderTaxonomy: "documentation",
+        },
+      },
+      output: "Updated /tmp/project/PLAN.md to reflect the current workspace layout.",
+      toolCalls: [
+        {
+          name: "system.readFile",
+          args: { path: "/tmp/project/PLAN.md" },
+          result: JSON.stringify({
+            path: "/tmp/project/PLAN.md",
+            content: "# PLAN\n",
+          }),
+          isError: false,
+        },
+        {
+          name: "system.writeFile",
+          args: {
+            path: "/tmp/project/PLAN.md",
+            content: "# PLAN\nUpdated\n",
+          },
+          result: JSON.stringify({
+            path: "/tmp/project/PLAN.md",
+            bytesWritten: 16,
+          }),
+          isError: false,
+        },
+      ],
+    });
+
+    expect(decision).toMatchObject({
+      ok: false,
+      diagnostic: {
+        code: "missing_workspace_inspection_evidence",
+      },
+      channels: expect.arrayContaining([
+        expect.objectContaining({
+          channel: "artifact_state",
+          ok: false,
+        }),
+      ]),
+    });
+  });
+
+  it("accepts workspace-grounded documentation rewrites when non-target workspace inspection is recorded", () => {
+    const decision = validateRuntimeVerificationContract({
+      verificationContract: {
+        workspaceRoot: "/tmp/project",
+        requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+        targetArtifacts: ["/tmp/project/PLAN.md"],
+        verificationMode: "mutation_required",
+        acceptanceCriteria: [
+          "PLAN.md reflects the current workspace layout and recent directory changes accurately.",
+        ],
+        completionContract: {
+          taskClass: "artifact_only",
+          placeholdersAllowed: false,
+          partialCompletionAllowed: false,
+          placeholderTaxonomy: "documentation",
+        },
+      },
+      output: "Updated /tmp/project/PLAN.md to reflect the current workspace layout.",
+      toolCalls: [
+        {
+          name: "system.listDir",
+          args: { path: "/tmp/project/src" },
+          result: JSON.stringify({
+            path: "/tmp/project/src",
+            entries: ["shell.c", "parser.c"],
+          }),
+          isError: false,
+        },
+        {
+          name: "system.readFile",
+          args: { path: "/tmp/project/PLAN.md" },
+          result: JSON.stringify({
+            path: "/tmp/project/PLAN.md",
+            content: "# PLAN\n",
+          }),
+          isError: false,
+        },
+        {
+          name: "system.writeFile",
+          args: {
+            path: "/tmp/project/PLAN.md",
+            content:
+              "# PLAN\nCurrent workspace layout includes src/shell.c and src/parser.c.\n",
+          },
+          result: JSON.stringify({
+            path: "/tmp/project/PLAN.md",
+            bytesWritten: 70,
+          }),
+          isError: false,
+        },
+      ],
+    });
+
+    expect(decision).toMatchObject({
+      ok: true,
+      channels: expect.arrayContaining([
+        expect.objectContaining({
+          channel: "artifact_state",
+          ok: true,
+        }),
+      ]),
+    });
+  });
+
   it("fails placeholder/stub grading when implementation content still contains stub markers", () => {
     const decision = validateRuntimeVerificationContract({
       verificationContract: {
@@ -484,6 +605,147 @@ describe("verification-contract", () => {
         expect.objectContaining({
           channel: "rubric",
           ok: false,
+        }),
+      ]),
+    });
+  });
+
+  it("allows documentation rewrites that accurately describe stubbed or pending code", () => {
+    const decision = validateRuntimeVerificationContract({
+      verificationContract: {
+        workspaceRoot: "/tmp/project",
+        targetArtifacts: ["/tmp/project/PLAN.md"],
+        verificationMode: "mutation_required",
+        completionContract: {
+          taskClass: "artifact_only",
+          placeholdersAllowed: false,
+          partialCompletionAllowed: false,
+          placeholderTaxonomy: "documentation",
+        },
+      },
+      output: "Updated PLAN.md to reflect the current stubbed modules and pending parser work.",
+      toolCalls: [
+        {
+          name: "system.writeFile",
+          args: {
+            path: "/tmp/project/PLAN.md",
+            content:
+              "# Plan\n\nCurrent state: parser and dispatcher are still stub implementations. Remaining work is pending behind the next milestone.\n",
+          },
+          result: JSON.stringify({
+            path: "/tmp/project/PLAN.md",
+            bytesWritten: 124,
+          }),
+          isError: false,
+        },
+      ],
+    });
+
+    expect(decision).toMatchObject({
+      ok: true,
+      channels: expect.arrayContaining([
+        expect.objectContaining({
+          channel: "placeholder_stub",
+          ok: true,
+        }),
+      ]),
+    });
+  });
+
+  it("fails documentation rewrites that keep shorthand placeholder elisions", () => {
+    const decision = validateRuntimeVerificationContract({
+      verificationContract: {
+        workspaceRoot: "/tmp/project",
+        targetArtifacts: ["/tmp/project/PLAN.md"],
+        verificationMode: "mutation_required",
+        completionContract: {
+          taskClass: "artifact_only",
+          placeholdersAllowed: false,
+          partialCompletionAllowed: false,
+          placeholderTaxonomy: "documentation",
+        },
+      },
+      output: "Updated PLAN.md completely.",
+      toolCalls: [
+        {
+          name: "system.writeFile",
+          args: {
+            path: "/tmp/project/PLAN.md",
+            content:
+              "# Plan\n\n[Same as original, copied here]\n\n[etc., full content from original plan]\n",
+          },
+          result: JSON.stringify({
+            path: "/tmp/project/PLAN.md",
+            bytesWritten: 80,
+          }),
+          isError: false,
+        },
+      ],
+    });
+
+    expect(decision).toMatchObject({
+      ok: false,
+      diagnostic: {
+        code: "contradictory_completion_claim",
+      },
+      channels: expect.arrayContaining([
+        expect.objectContaining({
+          channel: "placeholder_stub",
+          ok: false,
+          message: expect.stringContaining("Documentation completion"),
+        }),
+      ]),
+    });
+  });
+
+  it("does not treat TODO.md source artifact paths as unresolved documentation placeholders", () => {
+    const decision = validateRuntimeVerificationContract({
+      verificationContract: {
+        workspaceRoot: "/tmp/project",
+        targetArtifacts: ["/tmp/project/PLAN.md"],
+        verificationMode: "mutation_required",
+        completionContract: {
+          taskClass: "artifact_only",
+          placeholdersAllowed: false,
+          partialCompletionAllowed: false,
+          placeholderTaxonomy: "documentation",
+        },
+      },
+      output:
+        'result_1: {"path":"/tmp/project/TODO.md","size":849}\n' +
+        'result_2: {"path":"/tmp/project/PLAN.md","bytesWritten":16}',
+      toolCalls: [
+        {
+          name: "system.readFile",
+          args: { path: "/tmp/project/TODO.md" },
+          result: JSON.stringify({
+            path: "/tmp/project/TODO.md",
+            content: "- shell parser\n- job control\n",
+          }),
+          isError: false,
+        },
+        {
+          name: "system.writeFile",
+          args: {
+            path: "/tmp/project/PLAN.md",
+            content:
+              "# Plan\n\nImplement the shell parser and job control in the next two phases.\n",
+          },
+          result: JSON.stringify({
+            path: "/tmp/project/PLAN.md",
+            bytesWritten: 76,
+          }),
+          isError: false,
+        },
+      ],
+    });
+
+    expect(decision).toMatchObject({
+      ok: true,
+      channels: expect.arrayContaining([
+        expect.objectContaining({
+          channel: "placeholder_stub",
+          ok: true,
         }),
       ]),
     });

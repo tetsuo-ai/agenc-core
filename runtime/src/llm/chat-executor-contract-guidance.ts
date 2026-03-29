@@ -27,6 +27,7 @@ import {
   resolveDelegatedCorrectionToolChoiceToolNames,
   resolveDelegatedInitialToolChoiceToolNames,
   resolveDelegatedInitialToolChoiceToolName,
+  specRequiresMeaningfulWorkspaceEvidence,
   specRequiresFileMutationEvidence,
 } from "../utils/delegation-validation.js";
 import { sanitizeDelegationContextRequirements } from "../utils/delegation-execution-context.js";
@@ -518,6 +519,9 @@ function isDelegatedFileAuthoringPhaseWithoutVerification(
   spec: DelegationContractSpec,
 ): boolean {
   if ((spec.lastValidationCode ?? "") === "acceptance_evidence_missing") {
+    return false;
+  }
+  if (specRequiresMeaningfulWorkspaceEvidence(spec)) {
     return false;
   }
   if (!specRequiresFileMutationEvidence(spec)) {

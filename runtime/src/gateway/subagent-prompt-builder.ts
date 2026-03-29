@@ -852,6 +852,14 @@ export function buildRetryTaskPrompt(
         "If those sources describe intended or planned structure, say that explicitly instead of presenting those files as already present.",
       );
     }
+    if (failure.validationCode === "missing_workspace_inspection_evidence") {
+      corrections.push(
+        "Inspect the current workspace state beyond the target documentation artifact before writing again.",
+      );
+      corrections.push(
+        "Use directory listing, file inspection, or bounded shell inspection to ground claims about repo layout, current implementation state, or recent directory changes.",
+      );
+    }
     if (failure.validationCode === "acceptance_probe_failed") {
       corrections.push(
         "A parent-side deterministic acceptance probe failed after your edits. Fix the cited package/workspace compatibility issue in the authored files before answering again.",
@@ -888,6 +896,15 @@ export function buildRetryTaskPrompt(
       corrections.push(
         "Fix and verify the issue with the allowed tools first. If the issue remains unresolved, report the phase as blocked instead of successful.",
       );
+      if (
+        /documentation completion|shorthand placeholders|todo markers/i.test(
+          failure.message,
+        )
+      ) {
+        corrections.push(
+          "For documentation rewrites, replace shorthand elisions such as [Same as original], [etc.], TODO, FIXME, or TBD with the full concrete text before returning completed.",
+        );
+      }
     }
     const delegatedScopeTrustSignal = classifyDelegatedScopeTrustSignal({
       message: failure.message,

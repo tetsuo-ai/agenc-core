@@ -206,6 +206,13 @@ const HARD_PLANNER_ADMISSION_REASONS = new Set<DelegationAdmissionReason>([
   "depth_exceeded",
 ]);
 
+function isPlannerChildDelegationToolName(toolName: string): boolean {
+  const normalized = toolName.trim().toLowerCase();
+  return normalized === "execute_with_agent" ||
+    normalized.startsWith("subagent.") ||
+    normalized.startsWith("agenc.subagent.");
+}
+
 function shouldRejectPlannedDelegationAtExecutionTime(
   reason: DelegationAdmissionReason,
 ): boolean {
@@ -2308,6 +2315,11 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
   } {
     const parentPolicyAllowed = resolveParentPolicyAllowlistFn(pipeline, this.allowedParentTools);
     const availableTools = this.resolveAvailableToolNames();
+    const requestedTools =
+      step.executionContext?.allowedTools &&
+        step.executionContext.allowedTools.length > 0
+        ? step.executionContext.allowedTools
+        : step.requiredToolCapabilities;
     const resolvedScope = resolveDelegatedChildToolScope({
       spec: {
         task: step.name,
@@ -2317,7 +2329,7 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
         acceptanceCriteria: step.acceptanceCriteria,
         requiredToolCapabilities: step.requiredToolCapabilities,
       },
-      requestedTools: step.requiredToolCapabilities,
+      requestedTools,
       parentAllowedTools: parentPolicyAllowed,
       availableTools: availableTools ?? undefined,
       forbiddenTools: [...this.forbiddenParentTools],
@@ -2325,15 +2337,33 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
         this.childToolAllowlistStrategy === "inherit_intersection",
       unsafeBenchmarkMode: this.unsafeBenchmarkMode,
     });
+    const strippedDelegationTools = resolvedScope.allowedTools.filter(
+      isPlannerChildDelegationToolName,
+    );
+    const allowedTools = strippedDelegationTools.length > 0
+      ? resolvedScope.allowedTools.filter(
+        (toolName) => !isPlannerChildDelegationToolName(toolName),
+      )
+      : resolvedScope.allowedTools;
+    const removedAsDelegationTools = [
+      ...resolvedScope.removedAsDelegationTools,
+      ...strippedDelegationTools.filter((toolName) =>
+        !resolvedScope.removedAsDelegationTools.includes(toolName)
+      ),
+    ];
 
     return {
-      allowedTools: resolvedScope.allowedTools,
+      allowedTools,
       allowsToollessExecution: resolvedScope.allowsToollessExecution,
       semanticFallback: resolvedScope.semanticFallback,
       removedLowSignalBrowserTools: resolvedScope.removedLowSignalBrowserTools,
-      blockedReason: resolvedScope.blockedReason,
+      blockedReason:
+        resolvedScope.blockedReason ??
+        (!resolvedScope.allowsToollessExecution && allowedTools.length === 0
+          ? "No permitted child tools remain after policy scoping"
+          : undefined),
       removedByPolicy: resolvedScope.removedByPolicy,
-      removedAsDelegationTools: resolvedScope.removedAsDelegationTools,
+      removedAsDelegationTools,
       removedAsUnknownTools: resolvedScope.removedAsUnknownTools,
       parentPolicyAllowed,
     };

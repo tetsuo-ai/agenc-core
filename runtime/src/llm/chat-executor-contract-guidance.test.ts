@@ -548,6 +548,55 @@ describe("chat-executor-contract-guidance", () => {
     });
   });
 
+  it("prioritizes workspace inspection ahead of mutation for workspace-grounded doc rewrites", () => {
+    const guidance = resolveToolContractGuidance({
+      phase: "initial",
+      messageText:
+        "Review the codebase layout against phase1, identify plan gaps, and update PLAN.md so it reflects the current state.",
+      toolCalls: [],
+      allowedToolNames: [
+        "system.bash",
+        "system.writeFile",
+        "system.readFile",
+        "system.listDir",
+      ],
+      requiredToolEvidence: {
+        delegationSpec: {
+          task: "review_and_update_plan",
+          objective:
+            "Review the codebase layout against phase1, identify plan gaps, and update PLAN.md.",
+          parentRequest:
+            "Assess whether recent directory changes align with the plan and update PLAN.md accordingly.",
+          inputContract: "Use PLAN.md and the current workspace state as sources of truth.",
+          acceptanceCriteria: [
+            "PLAN.md reflects the current workspace layout and recent directory changes accurately.",
+          ],
+          executionContext: {
+            workspaceRoot: "/tmp/agenc-shell",
+            targetArtifacts: ["/tmp/agenc-shell/PLAN.md"],
+            requiredSourceArtifacts: ["/tmp/agenc-shell/PLAN.md"],
+          },
+        },
+      },
+    });
+
+    expect(guidance).toEqual({
+      source: "delegation-initial",
+      runtimeInstruction:
+        "Start with the smallest grounded step that reduces uncertainty in the delegated contract. " +
+        "Inspect the existing workspace state before mutating files when that will prevent avoidable rework, " +
+        "and use shell verification when build/test/install evidence is part of acceptance.",
+      routedToolNames: [
+        "system.listDir",
+        "system.readFile",
+        "system.writeFile",
+        "system.bash",
+      ],
+      persistRoutedToolNames: false,
+      toolChoice: "required",
+    });
+  });
+
   it("keeps listDir and readFile together for delegated local exploration phases", () => {
     const guidance = resolveToolContractGuidance({
       phase: "initial",
@@ -865,6 +914,42 @@ describe("chat-executor-contract-guidance", () => {
     expect(guidance).toEqual({
       source: "delegation-correction",
       routedToolNames: ["system.listDir", "system.readFile"],
+      persistRoutedToolNames: false,
+      toolChoice: "required",
+    });
+  });
+
+  it("routes delegated correction turns to workspace inspection after missing workspace-grounding evidence", () => {
+    const guidance = resolveToolContractGuidance({
+      phase: "correction",
+      messageText:
+        "Inspect the current workspace state before updating PLAN.md again.",
+      toolCalls: [],
+      allowedToolNames: ["system.listDir", "system.readFile", "system.writeFile"],
+      requiredToolEvidence: {
+        delegationSpec: {
+          task: "review_and_update_plan",
+          objective:
+            "Review the codebase layout against phase1, identify plan gaps, and update PLAN.md.",
+          parentRequest:
+            "Assess whether recent directory changes align with the plan and update PLAN.md accordingly.",
+          inputContract: "Use PLAN.md and the current workspace state as sources of truth.",
+          acceptanceCriteria: [
+            "PLAN.md reflects the current workspace layout and recent directory changes accurately.",
+          ],
+          executionContext: {
+            workspaceRoot: "/tmp/agenc-shell",
+            targetArtifacts: ["/tmp/agenc-shell/PLAN.md"],
+            requiredSourceArtifacts: ["/tmp/agenc-shell/PLAN.md"],
+          },
+        },
+      },
+      validationCode: "missing_workspace_inspection_evidence",
+    });
+
+    expect(guidance).toEqual({
+      source: "delegation-correction",
+      routedToolNames: ["system.listDir", "system.readFile", "system.writeFile"],
       persistRoutedToolNames: false,
       toolChoice: "required",
     });

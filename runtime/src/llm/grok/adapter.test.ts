@@ -289,7 +289,7 @@ describe("GrokProvider", () => {
     expect(params.tools[0].name).toBe("system.bash");
   });
 
-  it("normalizes required single-tool choice to a named function for the Responses API", async () => {
+  it("preserves documented required single-tool choice for the Responses API", async () => {
     mockCreate.mockResolvedValueOnce(makeCompletion());
 
     const provider = new GrokProvider({
@@ -315,12 +315,7 @@ describe("GrokProvider", () => {
     );
 
     const params = mockCreate.mock.calls[0][0];
-    expect(params.tool_choice).toEqual({
-      type: "function",
-      function: {
-        name: "system.bash",
-      },
-    });
+    expect(params.tool_choice).toBe("required");
   });
 
   it("captures selected tools and tool_choice in request metrics", async () => {
@@ -368,7 +363,7 @@ describe("GrokProvider", () => {
       requestedToolNames: ["system.bash"],
       missingRequestedToolNames: [],
       toolResolution: "subset_exact",
-      toolChoice: "function:system.bash",
+      toolChoice: "required",
       store: false,
     });
   });
@@ -499,12 +494,7 @@ describe("GrokProvider", () => {
         toolMessages: 0,
       },
       payload: {
-        tool_choice: {
-          type: "function",
-          function: {
-            name: "system.bash",
-          },
-        },
+        tool_choice: "required",
       },
     });
     expect((events[0].payload as { tools?: Array<{ name?: string }> }).tools?.[0]?.name).toBe(

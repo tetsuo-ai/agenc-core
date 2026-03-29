@@ -8,6 +8,7 @@ export type ImplementationCompletionTaskClass =
 export type PlaceholderTaxonomy =
   | "scaffold"
   | "implementation"
+  | "documentation"
   | "repair";
 
 export interface ImplementationCompletionContract {

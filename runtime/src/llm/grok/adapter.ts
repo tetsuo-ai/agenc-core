@@ -319,23 +319,10 @@ function normalizeResponsesToolChoice(
 
 function resolveResponsesToolChoice(
   toolChoice: LLMToolChoice | undefined,
-  selection: ToolSelectionDiagnostics,
 ): string | Record<string, unknown> | undefined {
-  const normalized = normalizeResponsesToolChoice(toolChoice);
-  if (normalized !== "required") {
-    return normalized;
-  }
-
-  if (!selection.toolsAttached || selection.resolvedToolNames.length !== 1) {
-    return normalized;
-  }
-
-  return {
-    type: "function",
-    function: {
-      name: selection.resolvedToolNames[0],
-    },
-  };
+  // xAI documents `required` as a first-class tool_choice mode. Preserve it
+  // instead of tightening it into a named-function selection.
+  return normalizeResponsesToolChoice(toolChoice);
 }
 
 function estimateOpenAIContentChars(content: unknown): number {
@@ -1858,10 +1845,7 @@ export class GrokProvider implements LLMProvider {
         params.tools = selectedTools.tools;
         selectedTools.toolsAttached = true;
         params.parallel_tool_calls = this.config.parallelToolCalls;
-        const toolChoice = resolveResponsesToolChoice(
-          options?.toolChoice,
-          selectedTools,
-        );
+        const toolChoice = resolveResponsesToolChoice(options?.toolChoice);
         if (toolChoice !== undefined) {
           params.tool_choice = toolChoice;
         }
