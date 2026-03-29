@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -8,6 +9,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createPdfTools } from "./pdf.js";
 
 const cleanupPaths: string[] = [];
+const hasPdfCliTools =
+  spawnSync("pdfinfo", ["-v"], { stdio: "ignore" }).error === undefined &&
+  spawnSync("pdftotext", ["-v"], { stdio: "ignore" }).error === undefined;
 
 afterEach(async () => {
   while (cleanupPaths.length > 0) {
@@ -85,7 +89,7 @@ describe("system.pdf tools", () => {
     ]);
   });
 
-  it("returns PDF metadata", async () => {
+  it.skipIf(!hasPdfCliTools)("returns PDF metadata", async () => {
     const pdfPath = makeTempPdf("sample.pdf", minimalPdf());
 
     const result = await findTool("system.pdfInfo").execute({ path: pdfPath });
@@ -97,7 +101,7 @@ describe("system.pdf tools", () => {
     });
   });
 
-  it("extracts PDF text", async () => {
+  it.skipIf(!hasPdfCliTools)("extracts PDF text", async () => {
     const pdfPath = makeTempPdf("sample.pdf", minimalPdf());
 
     const result = await findTool("system.pdfExtractText").execute({

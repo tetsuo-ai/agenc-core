@@ -17,7 +17,7 @@ describe("orchestration baseline regression corpus", () => {
       delegationBenchmarkK: 2,
     });
 
-    expect(artifact.offlineReplay.fixtureCount).toBe(8);
+    expect(artifact.offlineReplay.fixtureCount).toBe(13);
     expect(artifact.offlineReplay.parseFailures).toBe(0);
     expect(artifact.offlineReplay.replayFailures).toBe(0);
 

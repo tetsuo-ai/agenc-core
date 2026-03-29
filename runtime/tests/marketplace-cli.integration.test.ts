@@ -43,6 +43,7 @@ import {
 } from "../src/tools/agenc/mutation-tools.js";
 import type { ToolResult } from "../src/tools/types.js";
 import { silentLogger } from "../src/utils/logger.js";
+import { isProtocolWorkspaceAvailable } from "../../tests/protocol-workspace.ts";
 import {
   advanceClock,
   createRuntimeSignerContext,
@@ -77,6 +78,9 @@ const runId =
 let baseCtx: RuntimeTestContext;
 let protocolPda: PublicKey;
 let activeSignerAgentPda: string | null = null;
+const describeIfProtocolWorkspace = isProtocolWorkspaceAvailable()
+  ? describe
+  : describe.skip;
 
 let creator: Actor;
 let worker: Actor;
@@ -219,6 +223,9 @@ async function runMarketCommand(
 }
 
 beforeAll(async () => {
+  if (!isProtocolWorkspaceAvailable()) {
+    return;
+  }
   baseCtx = createRuntimeTestContext();
   await initializeProtocol(baseCtx);
   protocolPda = deriveProtocolPda(baseCtx.program.programId);
@@ -288,7 +295,7 @@ afterAll(() => {
   resetMarketplaceCliProgramContextOverrides();
 });
 
-describe("marketplace CLI integration", () => {
+describeIfProtocolWorkspace("marketplace CLI integration", () => {
   it("runs task lifecycle commands against LiteSVM", async () => {
     const createPayload = await runMarketCommand(
       runMarketTaskCreateCommand,

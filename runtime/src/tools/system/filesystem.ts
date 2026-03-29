@@ -186,8 +186,10 @@ export async function safePath(
         reason: "No allowed paths configured",
       };
     }
-    const normalizedAllowed = allowedPaths.map((p) =>
-      resolve(expandHomeDirectory(p)).normalize("NFC"),
+    const normalizedAllowed = await Promise.all(
+      allowedPaths.map(async (p) =>
+        (await canonicalize(expandHomeDirectory(p))).normalize("NFC"),
+      ),
     );
     const inside = normalizedAllowed.some(
       (prefix) =>
