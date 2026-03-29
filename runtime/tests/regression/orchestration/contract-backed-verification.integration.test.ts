@@ -12,6 +12,64 @@ function createTempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
 }
 
+function encodeEffectToolResult(effect: {
+  readonly status?: string;
+  readonly targets?: readonly unknown[];
+  readonly preExecutionSnapshots?: readonly Array<{
+    readonly path?: string;
+    readonly exists?: boolean;
+    readonly entryType?: string;
+    readonly sizeBytes?: number;
+    readonly sha256?: string;
+  }>;
+  readonly postExecutionSnapshots?: readonly Array<{
+    readonly path?: string;
+    readonly exists?: boolean;
+    readonly entryType?: string;
+    readonly sizeBytes?: number;
+    readonly sha256?: string;
+  }>;
+}, path: string): string {
+  return JSON.stringify({
+    path,
+    written: true,
+    __agencEffect: {
+      status: effect.status,
+      targets: effect.targets,
+      ...(effect.preExecutionSnapshots && effect.preExecutionSnapshots.length > 0
+        ? {
+            preExecutionSnapshots: effect.preExecutionSnapshots.map((snapshot) => ({
+              path: snapshot.path,
+              exists: snapshot.exists,
+              entryType: snapshot.entryType,
+              ...(typeof snapshot.sizeBytes === "number"
+                ? { sizeBytes: snapshot.sizeBytes }
+                : {}),
+              ...(typeof snapshot.sha256 === "string"
+                ? { sha256: snapshot.sha256 }
+                : {}),
+            })),
+          }
+        : {}),
+      ...(effect.postExecutionSnapshots && effect.postExecutionSnapshots.length > 0
+        ? {
+            postExecutionSnapshots: effect.postExecutionSnapshots.map((snapshot) => ({
+              path: snapshot.path,
+              exists: snapshot.exists,
+              entryType: snapshot.entryType,
+              ...(typeof snapshot.sizeBytes === "number"
+                ? { sizeBytes: snapshot.sizeBytes }
+                : {}),
+              ...(typeof snapshot.sha256 === "string"
+                ? { sha256: snapshot.sha256 }
+                : {}),
+            })),
+          }
+        : {}),
+    },
+  });
+}
+
 describe("contract-backed verification integration", () => {
   it("accepts grounded no-op success when the target artifact was read and no mutation was needed", () => {
     const workspace = "/tmp/agenc-verification-noop";
@@ -92,12 +150,13 @@ describe("contract-backed verification integration", () => {
     });
 
     try {
-      const writeResult = await handler("system.writeFile", {
+      await handler("system.writeFile", {
         path: targetPath,
         content: "new content",
       });
       const [effect] = await ledger.listSessionEffects("subagent:verify-write");
       expect(effect?.postExecutionSnapshots?.[0]?.path).toBe(targetPath);
+      const writeResult = encodeEffectToolResult(effect ?? {}, targetPath);
 
       const result = validateDelegatedOutputContract({
         spec: {
