@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "migration": {
+    "playbook": {
+      "path": "docs/AUTONOMY_RUNTIME_ROLLOUT.md",
+      "section": "Schema Migration and Backward Compatibility"
+    },
+    "backwardCompatibilityGuarantee": "Persisted autonomy records are backward-compatible across one schema generation.",
+    "rollbackWindow": "One release train"
+  },
+  "canary": {
+    "strategy": {
+      "path": "docs/AUTONOMY_RUNTIME_ROLLOUT.md",
+      "section": "Canary Rollout Strategy"
+    },
+    "successCriteria": [
+      "Background-run quality gates stay green.",
+      "No autonomy SLO regression during the canary window."
+    ],
+    "automatedGate": "npm --prefix runtime run autonomy:rollout:gates"
+  },
+  "runbooks": {
+    "stuck_run": {
+      "path": "docs/AUTONOMY_RUNTIME_ROLLOUT.md",
+      "section": "Stuck Runs"
+    },
+    "split_brain": {
+      "path": "docs/AUTONOMY_RUNTIME_ROLLOUT.md",
+      "section": "Split-Brain"
+    },
+    "bad_compaction": {
+      "path": "docs/AUTONOMY_RUNTIME_ROLLOUT.md",
+      "section": "Bad Compaction"
+    },
+    "webhook_failure": {
+      "path": "docs/AUTONOMY_RUNTIME_ROLLOUT.md",
+      "section": "Webhook Failure"
+    },
+    "policy_regression": {
+      "path": "docs/AUTONOMY_RUNTIME_ROLLOUT.md",
+      "section": "Policy Regressions"
+    }
+  },
+  "drills": {
+    "stuck_run": {
+      "validated": true,
+      "testRefs": [
+        "runtime/src/gateway/autonomy-rollout.test.ts"
+      ]
+    },
+    "split_brain": {
+      "validated": true,
+      "testRefs": [
+        "runtime/src/gateway/autonomy-rollout.test.ts"
+      ]
+    },
+    "bad_compaction": {
+      "validated": true,
+      "testRefs": [
+        "runtime/src/gateway/autonomy-rollout.test.ts"
+      ]
+    },
+    "webhook_failure": {
+      "validated": true,
+      "testRefs": [
+        "runtime/src/gateway/autonomy-rollout.test.ts"
+      ]
+    },
+    "policy_regression": {
+      "validated": true,
+      "testRefs": [
+        "runtime/src/gateway/autonomy-rollout.test.ts"
+      ]
+    },
+    "rollback": {
+      "validated": true,
+      "testRefs": [
+        "runtime/src/gateway/autonomy-rollout.test.ts"
+      ]
+    }
+  },
+  "rollback": {
+    "tested": true,
+    "strategy": {
+      "path": "docs/AUTONOMY_RUNTIME_ROLLOUT.md",
+      "section": "Rollback and Kill Switches"
+    },
+    "testRefs": [
+      "runtime/src/gateway/autonomy-rollout.test.ts"
+    ]
+  },
+  "externalReview": {
+    "security": false,
+    "privacy": false,
+    "compliance": false
+  }
+}
