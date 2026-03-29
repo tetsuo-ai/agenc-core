@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ChatExecutor, ChatBudgetExceededError } from "./chat-executor.js";
 import type { ChatExecuteParams, ChatExecutorConfig } from "./chat-executor.js";
+import { buildModelRoutingPolicy } from "./model-routing-policy.js";
+import { buildRuntimeEconomicsPolicy } from "./run-budget.js";
 import type {
   LLMChatOptions,
   LLMProvider,
@@ -9505,6 +9507,7 @@ describe("ChatExecutor", () => {
     });
 
     it("refines the planner when a delegated step is rejected as overloaded before execution", async () => {
+      const workspaceRoot = "/tmp/gameplay-refinement";
       const provider = createMockProvider("primary", {
         chat: vi
           .fn()
@@ -9556,6 +9559,14 @@ describe("ChatExecutor", () => {
                     ],
                     required_tool_capabilities: ["system.readFile"],
                     context_requirements: ["repo_context"],
+                    execution_context: plannerReadOnlyExecutionContext(
+                      workspaceRoot,
+                      {
+                        sourceArtifacts: ["docs/framework-choice.md"],
+                        inputArtifacts: ["docs/framework-choice.md"],
+                        stepKind: "delegated_review",
+                      },
+                    ),
                     max_budget_hint: "2m",
                     can_run_parallel: true,
                   },
@@ -9571,6 +9582,13 @@ describe("ChatExecutor", () => {
                     ],
                     required_tool_capabilities: ["desktop.bash"],
                     context_requirements: ["repo_context", "research_framework"],
+                    execution_context: plannerWriteExecutionContext(
+                      workspaceRoot,
+                      {
+                        inputArtifacts: ["docs/framework-choice.md"],
+                        targetArtifacts: ["packages/gameplay/src/index.ts"],
+                      },
+                    ),
                     max_budget_hint: "2m",
                     can_run_parallel: false,
                     depends_on: ["research_framework"],
@@ -9598,6 +9616,14 @@ describe("ChatExecutor", () => {
                     ],
                     required_tool_capabilities: ["system.readFile"],
                     context_requirements: ["repo_context"],
+                    execution_context: plannerReadOnlyExecutionContext(
+                      workspaceRoot,
+                      {
+                        sourceArtifacts: ["docs/framework-choice.md"],
+                        inputArtifacts: ["docs/framework-choice.md"],
+                        stepKind: "delegated_review",
+                      },
+                    ),
                     max_budget_hint: "2m",
                     can_run_parallel: true,
                   },
@@ -9613,6 +9639,13 @@ describe("ChatExecutor", () => {
                     ],
                     required_tool_capabilities: ["desktop.bash"],
                     context_requirements: ["repo_context", "research_framework"],
+                    execution_context: plannerWriteExecutionContext(
+                      workspaceRoot,
+                      {
+                        inputArtifacts: ["docs/framework-choice.md"],
+                        targetArtifacts: ["packages/gameplay/src/index.ts"],
+                      },
+                    ),
                     max_budget_hint: "2m",
                     can_run_parallel: false,
                     depends_on: ["research_framework"],
@@ -9664,8 +9697,8 @@ describe("ChatExecutor", () => {
         }),
       );
 
-      expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThanOrEqual(2);
-      expect(pipelineExecutor.execute).toHaveBeenCalledTimes(1);
+      expect(provider.chat).toHaveBeenCalledTimes(2);
+      expect(pipelineExecutor.execute).not.toHaveBeenCalled();
       const secondPlannerMessages = (provider.chat as ReturnType<typeof vi.fn>)
         .mock.calls[1][0] as LLMMessage[];
       expect(
@@ -9676,9 +9709,15 @@ describe("ChatExecutor", () => {
             msg.content.includes("Planner refinement required"),
         ),
       ).toBe(true);
-      expect(result.stopReason).toBe("completed");
+      expect(result.stopReason).toBe("validation_error");
+      expect(result.completionState).toBe("blocked");
+      expect(result.stopReasonDetail).toContain(
+        "Inline legacy fallback is disabled for this task class.",
+      );
       expect(result.plannerSummary?.plannerCalls).toBe(2);
-      expect(result.plannerSummary?.routeReason).toBe("refined_decomposition");
+      expect(result.plannerSummary?.routeReason).toBe(
+        "delegation_veto_no_safe_delegation_shape",
+      );
       expect(result.plannerSummary?.diagnostics).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -9687,11 +9726,15 @@ describe("ChatExecutor", () => {
           expect.objectContaining({
             code: "planner_refinement_retry",
           }),
+          expect.objectContaining({
+            code: "delegation_veto",
+          }),
         ]),
       );
     });
 
     it("replans when delegated execution requests parent-side decomposition", async () => {
+      const workspaceRoot = "/tmp/gameplay-decomposition";
       const provider = createMockProvider("primary", {
         chat: vi
           .fn()
@@ -9713,6 +9756,14 @@ describe("ChatExecutor", () => {
                     ],
                     required_tool_capabilities: ["desktop.bash"],
                     context_requirements: ["repo_context"],
+                    execution_context: plannerWriteExecutionContext(
+                      workspaceRoot,
+                      {
+                        stepKind: "delegated_scaffold",
+                        effectClass: "filesystem_scaffold",
+                        targetArtifacts: ["packages/gameplay/package.json"],
+                      },
+                    ),
                     max_budget_hint: "2m",
                     can_run_parallel: true,
                   },
@@ -9728,6 +9779,13 @@ describe("ChatExecutor", () => {
                     ],
                     required_tool_capabilities: ["desktop.bash"],
                     context_requirements: ["repo_context", "delegate_setup"],
+                    execution_context: plannerWriteExecutionContext(
+                      workspaceRoot,
+                      {
+                        inputArtifacts: ["packages/gameplay/package.json"],
+                        targetArtifacts: ["packages/gameplay/src/index.ts"],
+                      },
+                    ),
                     max_budget_hint: "2m",
                     can_run_parallel: false,
                     depends_on: ["delegate_setup"],
@@ -9754,6 +9812,14 @@ describe("ChatExecutor", () => {
                     ],
                     required_tool_capabilities: ["desktop.bash"],
                     context_requirements: ["repo_context"],
+                    execution_context: plannerWriteExecutionContext(
+                      workspaceRoot,
+                      {
+                        stepKind: "delegated_scaffold",
+                        effectClass: "filesystem_scaffold",
+                        targetArtifacts: ["packages/gameplay/package.json"],
+                      },
+                    ),
                     max_budget_hint: "2m",
                     can_run_parallel: true,
                   },
@@ -9769,6 +9835,13 @@ describe("ChatExecutor", () => {
                     ],
                     required_tool_capabilities: ["desktop.bash"],
                     context_requirements: ["repo_context", "delegate_setup"],
+                    execution_context: plannerWriteExecutionContext(
+                      workspaceRoot,
+                      {
+                        inputArtifacts: ["packages/gameplay/package.json"],
+                        targetArtifacts: ["packages/gameplay/src/index.ts"],
+                      },
+                    ),
                     max_budget_hint: "2m",
                     can_run_parallel: false,
                     depends_on: ["delegate_setup"],
@@ -9795,6 +9868,14 @@ describe("ChatExecutor", () => {
                     ],
                     required_tool_capabilities: ["desktop.bash"],
                     context_requirements: ["repo_context"],
+                    execution_context: plannerWriteExecutionContext(
+                      workspaceRoot,
+                      {
+                        stepKind: "delegated_scaffold",
+                        effectClass: "filesystem_scaffold",
+                        targetArtifacts: ["packages/gameplay/package.json"],
+                      },
+                    ),
                     max_budget_hint: "2m",
                     can_run_parallel: true,
                   },
@@ -9810,6 +9891,13 @@ describe("ChatExecutor", () => {
                     ],
                     required_tool_capabilities: ["desktop.bash"],
                     context_requirements: ["repo_context", "delegate_setup"],
+                    execution_context: plannerWriteExecutionContext(
+                      workspaceRoot,
+                      {
+                        inputArtifacts: ["packages/gameplay/package.json"],
+                        targetArtifacts: ["packages/gameplay/src/index.ts"],
+                      },
+                    ),
                     max_budget_hint: "2m",
                     can_run_parallel: false,
                     depends_on: ["delegate_setup"],
@@ -9833,7 +9921,15 @@ describe("ChatExecutor", () => {
             context: {
               results: {
                 delegate_setup:
-                  '{"status":"completed","success":true,"output":"Setup complete","toolCalls":[]}',
+                  completedDelegatedPlannerResult("Setup complete", [
+                    {
+                      name: "system.writeFile",
+                      args: {
+                        path: `${workspaceRoot}/packages/gameplay/package.json`,
+                        content: '{"name":"gameplay"}',
+                      },
+                    },
+                  ]),
                 delegate_impl:
                   '{"status":"needs_decomposition","success":false,"error":"Implement + validate must be split","decomposition":{"code":"needs_decomposition","phases":["implementation","validation"],"suggestedSteps":[{"name":"implement_core_scope"},{"name":"verify_acceptance"}]}}',
               },
@@ -9866,9 +9962,35 @@ describe("ChatExecutor", () => {
             context: {
               results: {
                 delegate_setup:
-                  '{"status":"completed","success":true,"output":"Setup complete","toolCalls":[]}',
+                  completedDelegatedPlannerResult("Setup complete", [
+                    {
+                      name: "system.writeFile",
+                      args: {
+                        path: `${workspaceRoot}/packages/gameplay/package.json`,
+                        content: '{"name":"gameplay"}',
+                      },
+                    },
+                  ]),
                 delegate_impl:
-                  '{"status":"completed","success":true,"output":"Gameplay implemented","toolCalls":[]}',
+                  completedDelegatedPlannerResult("Gameplay implemented", [
+                    {
+                      name: "system.readFile",
+                      args: {
+                        path: `${workspaceRoot}/packages/gameplay/package.json`,
+                      },
+                      result: safeJson({
+                        path: `${workspaceRoot}/packages/gameplay/package.json`,
+                        content: '{"name":"gameplay"}',
+                      }),
+                    },
+                    {
+                      name: "system.writeFile",
+                      args: {
+                        path: `${workspaceRoot}/packages/gameplay/src/index.ts`,
+                        content: "export const ready = true;\n",
+                      },
+                    },
+                  ]),
               },
             },
             completedSteps: 2,
@@ -9893,10 +10015,13 @@ describe("ChatExecutor", () => {
           message: createMessage(
             "Implement the gameplay flow and make sure it is validated correctly.",
           ),
+          runtimeContext: {
+            workspaceRoot,
+          },
         }),
       );
 
-      expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(provider.chat).toHaveBeenCalledTimes(2);
       expect(pipelineExecutor.execute).toHaveBeenCalledTimes(2);
       const secondPlannerMessages = (provider.chat as ReturnType<typeof vi.fn>)
         .mock.calls[1][0] as LLMMessage[];
@@ -9909,6 +10034,7 @@ describe("ChatExecutor", () => {
         ),
       ).toBe(true);
       expect(result.stopReason).toBe("completed");
+      expect(result.completionState).toBe("completed");
       expect(result.plannerSummary?.plannerCalls).toBe(2);
       expect(result.plannerSummary?.routeReason).toBe(
         "refined_after_runtime_signal",
@@ -10182,7 +10308,7 @@ describe("ChatExecutor", () => {
       );
 
       expect(provider.chat).toHaveBeenCalledTimes(2);
-      expect(pipelineExecutor.execute).toHaveBeenCalledTimes(2);
+      expect(pipelineExecutor.execute).toHaveBeenCalledTimes(1);
       const secondPlannerMessages = (provider.chat as ReturnType<typeof vi.fn>)
         .mock.calls[1][0] as LLMMessage[];
       expect(
@@ -10195,13 +10321,22 @@ describe("ChatExecutor", () => {
             ),
         ),
       ).toBe(true);
-      expect(result.stopReason).toBe("completed");
+      expect(result.stopReason).toBe("validation_error");
+      expect(result.completionState).toBe("partial");
+      expect(result.stopReasonDetail).toContain(
+        "Inline legacy fallback is disabled for this task class.",
+      );
       expect(result.plannerSummary?.plannerCalls).toBe(2);
-      expect(result.plannerSummary?.routeReason).toBe("repair_after_test_failure");
+      expect(result.plannerSummary?.routeReason).toBe(
+        "delegation_veto_no_safe_delegation_shape",
+      );
       expect(result.plannerSummary?.diagnostics).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             code: "planner_runtime_repair_retry",
+          }),
+          expect.objectContaining({
+            code: "delegation_veto",
           }),
         ]),
       );
@@ -10966,16 +11101,22 @@ describe("ChatExecutor", () => {
         }),
       );
 
-      expect(provider.chat).toHaveBeenCalledTimes(3);
-      expect(pipelineExecutor.execute).toHaveBeenCalledTimes(3);
-      expect(result.stopReason).toBe("completed");
-      expect(result.plannerSummary?.plannerCalls).toBe(3);
-      expect(result.plannerSummary?.routeReason).toBe("repair_after_import_failure");
+      expect(provider.chat).toHaveBeenCalledTimes(2);
+      expect(pipelineExecutor.execute).toHaveBeenCalledTimes(1);
+      expect(result.stopReason).toBe("validation_error");
+      expect(result.completionState).toBe("partial");
+      expect(result.stopReasonDetail).toContain(
+        "Inline legacy fallback is disabled for this task class.",
+      );
+      expect(result.plannerSummary?.plannerCalls).toBe(2);
+      expect(result.plannerSummary?.routeReason).toBe(
+        "delegation_veto_no_safe_delegation_shape",
+      );
       expect(
         result.plannerSummary?.diagnostics.filter(
           (diagnostic) => diagnostic.code === "planner_runtime_repair_retry",
         ),
-      ).toHaveLength(2);
+      ).toHaveLength(1);
     });
 
     it("passes the active session tool handler into deterministic pipeline execution", async () => {
@@ -11266,7 +11407,8 @@ describe("ChatExecutor", () => {
                       "/tmp/trace-lab",
                       {
                         stepKind: "delegated_research",
-                        sourceArtifacts: ["README.md"],
+                        sourceArtifacts: ["package.json"],
+                        inputArtifacts: ["package.json"],
                       },
                     ),
                     max_budget_hint: "2m",
@@ -11322,8 +11464,10 @@ describe("ChatExecutor", () => {
                 inputContract: "Empty target directory",
               },
               durationMs: 18,
-              result:
-                '{"status":"completed","success":true,"subagentSessionId":"sub-trace-1"}',
+              result: completedDelegatedPlannerResult(
+                "Workspace scaffolded and root manifest authored.",
+                ["system.writeFile"],
+              ),
             });
             options?.onEvent?.({
               type: "step_started",
@@ -11349,17 +11493,25 @@ describe("ChatExecutor", () => {
                 inputContract: "Scaffolded workspace exists",
               },
               durationMs: 9,
-              result:
-                '{"status":"completed","success":true,"subagentSessionId":"sub-trace-2"}',
+              result: completedDelegatedPlannerResult(
+                "Root manifest path identified from the scaffolded workspace.",
+                ["system.readFile"],
+              ),
             });
             return {
               status: "completed",
               context: {
                 results: {
                   scaffold_workspace:
-                    '{"status":"completed","success":true,"subagentSessionId":"sub-trace-1"}',
+                    completedDelegatedPlannerResult(
+                      "Workspace scaffolded and root manifest authored.",
+                      ["system.writeFile"],
+                    ),
                   inspect_workspace:
-                    '{"status":"completed","success":true,"subagentSessionId":"sub-trace-2"}',
+                    completedDelegatedPlannerResult(
+                      "Root manifest path identified from the scaffolded workspace.",
+                      ["system.readFile"],
+                    ),
                 },
               },
               completedSteps: 2,
@@ -11414,7 +11566,7 @@ describe("ChatExecutor", () => {
               stepName: "scaffold_workspace",
               tool: "execute_with_agent",
               isError: false,
-              result: '{"status":"completed","success":true,"subagentSessionId":"sub-trace-1"}',
+              result: expect.stringContaining('"status":"completed"'),
             }),
           }),
         ]),
@@ -12145,6 +12297,14 @@ describe("ChatExecutor", () => {
         toolHandler: vi.fn().mockResolvedValue("unused"),
         plannerEnabled: true,
         pipelineExecutor: pipelineExecutor as any,
+        modelRoutingPolicy: buildModelRoutingPolicy({
+          providers: [provider],
+          economicsPolicy: buildRuntimeEconomicsPolicy({ mode: "enforce" }),
+          llmConfig: {
+            provider: "grok",
+            model: "grok-4-1-fast-reasoning",
+          },
+        }),
         delegationDecision: {
           enabled: true,
           scoreThreshold: 0.1,
@@ -13908,6 +14068,7 @@ describe("ChatExecutor", () => {
     });
 
     it("treats natural-language multi-agent cardinality requests as required distinct child steps", async () => {
+      const workspaceRoot = "/home/tetsuo/git/stream-test/agenc-shell";
       const provider = createMockProvider("primary", {
         chat: vi
           .fn()
@@ -13926,6 +14087,11 @@ describe("ChatExecutor", () => {
                     acceptance_criteria: ["Provide consolidated findings"],
                     required_tool_capabilities: ["system.readFile"],
                     context_requirements: ["repo_context", "read_plan_md"],
+                    execution_context: plannerReadOnlyExecutionContext(workspaceRoot, {
+                      sourceArtifacts: ["PLAN.md"],
+                      inputArtifacts: ["PLAN.md"],
+                      stepKind: "delegated_review",
+                    }),
                     max_budget_hint: "4m",
                     can_run_parallel: false,
                   },
@@ -13947,6 +14113,11 @@ describe("ChatExecutor", () => {
                     acceptance_criteria: ["Architecture findings are grounded"],
                     required_tool_capabilities: ["system.readFile", "system.listDir"],
                     context_requirements: ["repo_context", "read_plan_md"],
+                    execution_context: plannerReadOnlyExecutionContext(workspaceRoot, {
+                      sourceArtifacts: ["PLAN.md"],
+                      inputArtifacts: ["PLAN.md"],
+                      stepKind: "delegated_review",
+                    }),
                     max_budget_hint: "2m",
                     can_run_parallel: false,
                   },
@@ -13958,6 +14129,11 @@ describe("ChatExecutor", () => {
                     acceptance_criteria: ["QA findings are grounded"],
                     required_tool_capabilities: ["system.readFile", "system.listDir"],
                     context_requirements: ["repo_context", "read_plan_md"],
+                    execution_context: plannerReadOnlyExecutionContext(workspaceRoot, {
+                      sourceArtifacts: ["PLAN.md"],
+                      inputArtifacts: ["PLAN.md"],
+                      stepKind: "delegated_review",
+                    }),
                     max_budget_hint: "2m",
                     can_run_parallel: false,
                     depends_on: ["architecture_review"],
@@ -13970,6 +14146,11 @@ describe("ChatExecutor", () => {
                     acceptance_criteria: ["Security findings are grounded"],
                     required_tool_capabilities: ["system.readFile", "system.listDir"],
                     context_requirements: ["repo_context", "read_plan_md"],
+                    execution_context: plannerReadOnlyExecutionContext(workspaceRoot, {
+                      sourceArtifacts: ["PLAN.md"],
+                      inputArtifacts: ["PLAN.md"],
+                      stepKind: "delegated_review",
+                    }),
                     max_budget_hint: "2m",
                     can_run_parallel: false,
                     depends_on: ["qa_review"],
@@ -13982,6 +14163,11 @@ describe("ChatExecutor", () => {
                     acceptance_criteria: ["Documentation findings are grounded"],
                     required_tool_capabilities: ["system.readFile", "system.listDir"],
                     context_requirements: ["repo_context", "read_plan_md"],
+                    execution_context: plannerReadOnlyExecutionContext(workspaceRoot, {
+                      sourceArtifacts: ["PLAN.md"],
+                      inputArtifacts: ["PLAN.md"],
+                      stepKind: "delegated_review",
+                    }),
                     max_budget_hint: "2m",
                     can_run_parallel: false,
                     depends_on: ["security_review"],
@@ -13994,6 +14180,11 @@ describe("ChatExecutor", () => {
                     acceptance_criteria: ["Layout findings are grounded"],
                     required_tool_capabilities: ["system.readFile", "system.listDir"],
                     context_requirements: ["repo_context", "read_plan_md"],
+                    execution_context: plannerReadOnlyExecutionContext(workspaceRoot, {
+                      sourceArtifacts: ["PLAN.md"],
+                      inputArtifacts: ["PLAN.md"],
+                      stepKind: "delegated_review",
+                    }),
                     max_budget_hint: "2m",
                     can_run_parallel: false,
                     depends_on: ["documentation_review"],
@@ -14006,19 +14197,33 @@ describe("ChatExecutor", () => {
                     acceptance_criteria: ["Completeness findings are grounded"],
                     required_tool_capabilities: ["system.readFile", "system.listDir"],
                     context_requirements: ["repo_context", "read_plan_md"],
+                    execution_context: plannerReadOnlyExecutionContext(workspaceRoot, {
+                      sourceArtifacts: ["PLAN.md"],
+                      inputArtifacts: ["PLAN.md"],
+                      stepKind: "delegated_review",
+                    }),
                     max_budget_hint: "2m",
                     can_run_parallel: false,
                     depends_on: ["layout_review"],
                   },
                   {
                     name: "rewrite_plan",
-                    step_type: "deterministic_tool",
-                    tool: "system.writeFile",
+                    step_type: "subagent_task",
                     depends_on: ["completeness_review"],
-                    args: {
-                      path: "/home/tetsuo/git/stream-test/agenc-shell/PLAN.md",
-                      content: "# PLAN\nUpdated from six reviews.\n",
-                    },
+                    objective: "Update PLAN.md with the synthesized six-review findings only.",
+                    input_contract:
+                      "The six reviewer outputs already exist and must be incorporated into PLAN.md.",
+                    acceptance_criteria: [
+                      "PLAN.md is updated with the integrated reviewer findings",
+                    ],
+                    required_tool_capabilities: ["system.readFile", "system.writeFile"],
+                    context_requirements: ["repo_context", "reviewer_outputs"],
+                    execution_context: plannerWriteExecutionContext(workspaceRoot, {
+                      sourceArtifacts: ["PLAN.md"],
+                      targetArtifacts: ["PLAN.md"],
+                    }),
+                    max_budget_hint: "2m",
+                    can_run_parallel: false,
                   },
                 ],
               }),
@@ -14042,52 +14247,51 @@ describe("ChatExecutor", () => {
           status: "completed",
           context: {
             results: {
-              architecture_review: safeJson({
-                status: "completed",
-                subagentSessionId: "sub-arch",
-                output:
-                  "Grounded architecture findings: the runtime routes planner-owned plan rewrites through documentation completion checks.",
-                success: true,
-              }),
-              qa_review: safeJson({
-                status: "completed",
-                subagentSessionId: "sub-qa",
-                output:
-                  "Grounded QA findings: the PLAN.md audit path still requires repository inspection evidence before accepting the rewrite.",
-                success: true,
-              }),
-              security_review: safeJson({
-                status: "completed",
-                subagentSessionId: "sub-sec",
-                output:
-                  "Grounded security findings: no new privileged mutation scope or unsafe delegation path was introduced.",
-                success: true,
-              }),
-              documentation_review: safeJson({
-                status: "completed",
-                subagentSessionId: "sub-docs",
-                output:
-                  "Grounded documentation findings: PLAN.md wording now matches the runtime behavior and verifier expectations.",
-                success: true,
-              }),
-              layout_review: safeJson({
-                status: "completed",
-                subagentSessionId: "sub-layout",
-                output:
-                  "Grounded layout findings: the agenc-core/runtime directory structure matches the revised plan sections.",
-                success: true,
-              }),
-              completeness_review: safeJson({
-                status: "completed",
-                subagentSessionId: "sub-complete",
-                output:
-                  "Grounded completeness findings: the remaining gaps were captured and the missing plan updates were closed.",
-                success: true,
-              }),
-              rewrite_plan: safeJson({
-                path: "/home/tetsuo/git/stream-test/agenc-shell/PLAN.md",
-                bytesWritten: 33,
-              }),
+              architecture_review: completedDelegatedPlannerResult(
+                "Grounded architecture findings: the runtime routes planner-owned plan rewrites through documentation completion checks.",
+                ["system.readFile", "system.listDir"],
+              ),
+              qa_review: completedDelegatedPlannerResult(
+                "Grounded QA findings: the PLAN.md audit path still requires repository inspection evidence before accepting the rewrite.",
+                ["system.readFile", "system.listDir"],
+              ),
+              security_review: completedDelegatedPlannerResult(
+                "Grounded security findings: no new privileged mutation scope or unsafe delegation path was introduced.",
+                ["system.readFile", "system.listDir"],
+              ),
+              documentation_review: completedDelegatedPlannerResult(
+                "Grounded documentation findings: PLAN.md wording now matches the runtime behavior and verifier expectations.",
+                ["system.readFile", "system.listDir"],
+              ),
+              layout_review: completedDelegatedPlannerResult(
+                "Grounded layout findings: the agenc-core/runtime directory structure matches the revised plan sections.",
+                ["system.readFile", "system.listDir"],
+              ),
+              completeness_review: completedDelegatedPlannerResult(
+                "Grounded completeness findings: the remaining gaps were captured and the missing plan updates were closed.",
+                ["system.readFile", "system.listDir"],
+              ),
+              rewrite_plan: completedDelegatedPlannerResult(
+                "Updated PLAN.md with the integrated six-review findings.",
+                [
+                  {
+                    name: "system.readFile",
+                    args: { path: `${workspaceRoot}/PLAN.md` },
+                    result: safeJson({ path: `${workspaceRoot}/PLAN.md`, size: 5614 }),
+                  },
+                  {
+                    name: "system.writeFile",
+                    args: {
+                      path: `${workspaceRoot}/PLAN.md`,
+                      content: "# PLAN\nUpdated from six reviews.\n",
+                    },
+                    result: safeJson({
+                      path: `${workspaceRoot}/PLAN.md`,
+                      bytesWritten: 33,
+                    }),
+                  },
+                ],
+              ),
             },
           },
           completedSteps: 7,
@@ -14112,14 +14316,28 @@ describe("ChatExecutor", () => {
             "Read PLAN.md, create 6 agents with different roles to review architecture, QA, security, documentation, layout, and completeness, then update PLAN.md with the synthesized result.",
           ),
           runtimeContext: {
-            workspaceRoot: "/home/tetsuo/git/stream-test/agenc-shell",
+            workspaceRoot,
           },
         }),
       );
 
       expect(provider.chat).toHaveBeenCalledTimes(3);
-      expect(result.stopReason).toBe("completed");
+      expect(result.stopReason).toBe("validation_error");
+      expect(result.completionState).toBe("partial");
       expect(result.content).toContain("Updated PLAN.md after six grounded child reviews.");
+      expect(result.content).toContain("Sub-agent verifier rejected child outputs");
+      expect(result.callUsage.map((entry) => entry.phase)).toEqual([
+        "planner",
+        "planner",
+        "planner_synthesis",
+      ]);
+      expect(result.plannerSummary?.routeReason).toBe(
+        "delegation_veto_score_below_threshold",
+      );
+      expect(result.plannerSummary?.delegationDecision).toMatchObject({
+        shouldDelegate: false,
+        reason: "score_below_threshold",
+      });
       expect(result.plannerSummary?.diagnostics).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -15685,69 +15903,23 @@ describe("ChatExecutor", () => {
               onError: "abort",
             },
             {
-              name: "analyze_plan",
-              step_type: "subagent_task",
-              objective:
-                "Read PLAN.md completely and write a bounded implementation analysis artifact.",
-              input_contract: "PLAN.md text only.",
-              acceptance_criteria: [
-                "ANALYSIS.md cites the full PLAN.md requirements.",
-              ],
-              required_tool_capabilities: ["read_file", "write_file"],
-              context_requirements: ["read_plan"],
-              execution_context: {
-                version: "v1",
-                workspace_root: workspaceRoot,
-                allowed_read_roots: [workspaceRoot],
-                allowed_write_roots: [workspaceRoot],
-                required_source_artifacts: [`${workspaceRoot}/PLAN.md`],
-                target_artifacts: [`${workspaceRoot}/ANALYSIS.md`],
-                effect_class: "read_only",
-                verification_mode: "grounded_read",
-                step_kind: "delegated_research",
-                fallback_policy: "continue_without_delegation",
-                resume_policy: "stateless_retry",
-                approval_profile: "read_only",
-              },
-              max_budget_hint: "10m",
-              can_run_parallel: false,
-              depends_on: ["read_plan"],
-            },
-            {
               name: "implement_owner",
               step_type: "subagent_task",
               objective:
-                "Own the code changes required by PLAN.md inside the repo workspace.",
-              input_contract: "PLAN.md plus the bounded analysis artifact.",
+                "Read PLAN.md completely and own the code changes required by PLAN.md inside the repo workspace.",
+              input_contract: "PLAN.md text only.",
               acceptance_criteria: [
                 "src/main.ts contains the required implementation changes.",
               ],
-              required_tool_capabilities: [
-                "read_file",
-                "write_file",
-                "execute_command",
-              ],
-              context_requirements: ["analyze_plan"],
-              execution_context: {
-                version: "v1",
-                workspace_root: workspaceRoot,
-                allowed_read_roots: [workspaceRoot],
-                allowed_write_roots: [workspaceRoot],
-                required_source_artifacts: [
-                  `${workspaceRoot}/PLAN.md`,
-                  `${workspaceRoot}/ANALYSIS.md`,
-                ],
-                target_artifacts: [`${workspaceRoot}/src`],
-                effect_class: "filesystem_write",
-                verification_mode: "mutation_required",
-                step_kind: "delegated_write",
-                fallback_policy: "continue_without_delegation",
-                resume_policy: "stateless_retry",
-                approval_profile: "filesystem_write",
-              },
-              max_budget_hint: "30m",
+              required_tool_capabilities: ["system.readFile", "system.writeFile", "system.bash"],
+              context_requirements: ["read_plan"],
+              execution_context: plannerWriteExecutionContext(workspaceRoot, {
+                sourceArtifacts: ["PLAN.md"],
+                targetArtifacts: ["src"],
+              }),
+              max_budget_hint: "10m",
               can_run_parallel: false,
-              depends_on: ["analyze_plan"],
+              depends_on: ["read_plan"],
             },
             {
               name: "verify_build",
@@ -15794,9 +15966,9 @@ describe("ChatExecutor", () => {
                       "Directory structure matches plan",
                     ],
                     required_tool_capabilities: [
-                      "read_file",
-                      "write_file",
-                      "list_dir",
+                      "system.readFile",
+                      "system.writeFile",
+                      "system.listDir",
                     ],
                     context_requirements: ["repo_context", "read_plan"],
                     execution_context: {
@@ -15845,9 +16017,9 @@ describe("ChatExecutor", () => {
                       "Changes limited to target artifacts",
                     ],
                     required_tool_capabilities: [
-                      "read_file",
-                      "write_file",
-                      "execute_command",
+                      "system.readFile",
+                      "system.writeFile",
+                      "system.bash",
                     ],
                     context_requirements: ["repo_context", "setup_phase"],
                     execution_context: {
@@ -15882,8 +16054,8 @@ describe("ChatExecutor", () => {
                       "Failures and passes reported concretely",
                     ],
                     required_tool_capabilities: [
-                      "read_file",
-                      "execute_command",
+                      "system.readFile",
+                      "system.bash",
                     ],
                     context_requirements: ["repo_context", "core_implementation"],
                     execution_context: {
@@ -15913,7 +16085,7 @@ describe("ChatExecutor", () => {
             }),
           )
           .mockResolvedValueOnce(refinedSingleOwnerPlan)
-          .mockResolvedValueOnce(
+          .mockResolvedValue(
             mockResponse({
               content:
                 "Implementation completed successfully. PLAN.md was analyzed, the owned source artifacts were updated, and npm test passed in the workspace.",
@@ -15929,31 +16101,13 @@ describe("ChatExecutor", () => {
                 path: `${workspaceRoot}/PLAN.md`,
                 size: 4096,
               }),
-              analyze_plan: completedDelegatedPlannerResult(
-                "ANALYSIS.md captures the full PLAN.md requirements and implementation order.",
+              implement_owner: completedDelegatedPlannerResult(
+                "Read PLAN.md, updated src/main.ts with the required implementation changes, and verified tests passed.",
                 [
                   {
                     name: "system.readFile",
                     args: {
                       path: `${workspaceRoot}/PLAN.md`,
-                    },
-                  },
-                  {
-                    name: "system.writeFile",
-                    args: {
-                      path: `${workspaceRoot}/ANALYSIS.md`,
-                      content: "analysis artifact",
-                    },
-                  },
-                ],
-              ),
-              implement_owner: completedDelegatedPlannerResult(
-                "Updated src/main.ts with the required implementation changes and verified tests passed.",
-                [
-                  {
-                    name: "system.readFile",
-                    args: {
-                      path: `${workspaceRoot}/ANALYSIS.md`,
                     },
                   },
                   {
@@ -15983,8 +16137,8 @@ describe("ChatExecutor", () => {
               }),
             },
           },
-          completedSteps: 4,
-          totalSteps: 4,
+          completedSteps: 3,
+          totalSteps: 3,
         }),
       };
       const executor = new ChatExecutor({
@@ -16513,6 +16667,7 @@ describe("ChatExecutor", () => {
     });
 
     it("vetoes delegation when utility score is below threshold", async () => {
+      const workspaceRoot = "/tmp/service-failure-analysis";
       const provider = createMockProvider("primary", {
         chat: vi
           .fn()
@@ -16531,6 +16686,11 @@ describe("ChatExecutor", () => {
                     ],
                     required_tool_capabilities: ["system.readFile"],
                     context_requirements: ["ci_logs_a"],
+                    execution_context: plannerReadOnlyExecutionContext(workspaceRoot, {
+                      sourceArtifacts: ["service-a.log"],
+                      inputArtifacts: ["service-a.log"],
+                      stepKind: "delegated_research",
+                    }),
                     max_budget_hint: "8m",
                     can_run_parallel: false,
                   },
@@ -16544,6 +16704,11 @@ describe("ChatExecutor", () => {
                     ],
                     required_tool_capabilities: ["system.readFile"],
                     context_requirements: ["ci_logs_b"],
+                    execution_context: plannerReadOnlyExecutionContext(workspaceRoot, {
+                      sourceArtifacts: ["service-b.log"],
+                      inputArtifacts: ["service-b.log"],
+                      stepKind: "delegated_research",
+                    }),
                     max_budget_hint: "8m",
                     can_run_parallel: false,
                   },
