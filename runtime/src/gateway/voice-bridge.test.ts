@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { XaiRealtimeClient } from "../voice/realtime/client.js";
 import {
   VoiceBridge,
   createVoiceDelegationTool,
@@ -23,6 +24,73 @@ describe("createVoiceDelegationTool", () => {
 });
 
 describe("VoiceBridge delegation", () => {
+  it("sends only xAI-documented session.update fields to the realtime client", async () => {
+    const connectSpy = vi
+      .spyOn(XaiRealtimeClient.prototype, "connect")
+      .mockResolvedValue();
+
+    const bridge = new VoiceBridge({
+      apiKey: "voice-key",
+      toolHandler: vi.fn(async () => ""),
+      systemPrompt: "You are a helpful assistant.",
+      getChatExecutor: () => null,
+      voice: "Ara",
+      model: "grok-4-1-fast-reasoning",
+    });
+
+    await bridge.startSession("client-1", vi.fn(), "session-1");
+
+    const session = (bridge as any).sessions.get("client-1");
+    const sessionConfig = (session?.client as any)?.sessionConfig;
+
+    expect(sessionConfig).toMatchObject({
+      voice: "Ara",
+      instructions: expect.stringContaining("You are a helpful assistant."),
+      tools: [expect.objectContaining({ name: "execute_with_agent" })],
+    });
+    expect(sessionConfig).not.toHaveProperty("model");
+    expect(sessionConfig).not.toHaveProperty("modalities");
+    expect(sessionConfig).not.toHaveProperty("input_audio_transcription");
+
+    connectSpy.mockRestore();
+  });
+
+  it("injects only documented user text history into realtime sessions", async () => {
+    const connectSpy = vi
+      .spyOn(XaiRealtimeClient.prototype, "connect")
+      .mockResolvedValue();
+    const injectSpy = vi
+      .spyOn(XaiRealtimeClient.prototype, "injectConversationHistory")
+      .mockImplementation(() => {});
+
+    const bridge = new VoiceBridge({
+      apiKey: "voice-key",
+      toolHandler: vi.fn(async () => ""),
+      systemPrompt: "You are a helpful assistant.",
+      getChatExecutor: () => null,
+      sessionManager: {
+        getOrCreate: () => ({ id: "managed-voice-session" }),
+        get: () => ({
+          history: [
+            { role: "user", content: "First question" },
+            { role: "assistant", content: "First answer" },
+            { role: "user", content: "Second question" },
+          ],
+        }),
+      } as any,
+    });
+
+    await bridge.startSession("client-1", vi.fn(), "session-1");
+
+    expect(injectSpy).toHaveBeenCalledWith([
+      { role: "user", content: "First question" },
+      { role: "user", content: "Second question" },
+    ]);
+
+    injectSpy.mockRestore();
+    connectSpy.mockRestore();
+  });
+
   it("logs direct voice turns under a single trace when trace logging is enabled", () => {
     const logger = {
       info: vi.fn(),

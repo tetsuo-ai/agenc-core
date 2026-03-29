@@ -13,10 +13,21 @@ import { resolve as resolvePath } from "node:path";
 import type { Logger } from "../utils/logger.js";
 import { toErrorMessage } from "../utils/async.js";
 import type { GatewayConfig } from "./types.js";
-import type { LLMProvider, LLMProviderTraceEvent, ToolHandler } from "../llm/types.js";
+import type {
+  LLMProvider,
+  LLMProviderTraceEvent,
+  LLMStoredResponse,
+  ToolHandler,
+} from "../llm/types.js";
 import type { MemoryBackend } from "../memory/types.js";
 import { SlashCommandRegistry, createDefaultCommands } from "./commands.js";
-import { SessionManager } from "./session.js";
+import {
+  clearStatefulContinuationMetadata,
+  SessionManager,
+  SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY,
+  SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY,
+  type Session,
+} from "./session.js";
 import type { DiscoveredSkill } from "../skills/markdown/discovery.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { HookDispatcher } from "./hooks.js";
@@ -39,8 +50,11 @@ import {
 // ResolvedTraceLoggingConfig used indirectly via resolveTraceLoggingConfig
 import {
   resolveSessionTokenBudget,
+  resolveLocalCompactionThreshold,
   DEFAULT_GROK_MODEL,
 } from "./llm-provider-manager.js";
+import { clearWebSessionRuntimeState } from "./daemon-session-state.js";
+import { hasRuntimeLimit } from "../llm/runtime-limit-policy.js";
 import {
   listKnownGrokModels,
   normalizeGrokModel,
@@ -293,6 +307,136 @@ export interface WebChatSkillSummary {
   name: string;
   description: string;
   enabled: boolean;
+}
+
+function getSessionResumeAnchorResponseId(session: Session | undefined): string | undefined {
+  const candidate = session?.metadata[SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY];
+  if (!candidate || typeof candidate !== "object") return undefined;
+  const responseId = (candidate as { previousResponseId?: unknown }).previousResponseId;
+  return typeof responseId === "string" && responseId.trim().length > 0
+    ? responseId.trim()
+    : undefined;
+}
+
+function getSessionHistoryCompacted(session: Session | undefined): boolean {
+  return session?.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY] === true;
+}
+
+function summarizeStoredResponse(response: LLMStoredResponse): string {
+  const usage = response.usage
+    ? `prompt=${response.usage.promptTokens}, completion=${response.usage.completionTokens}, total=${response.usage.totalTokens}`
+    : "unavailable";
+  const citations = response.providerEvidence?.citations ?? [];
+  const serverSideToolCalls = response.providerEvidence?.serverSideToolCalls ?? [];
+  const serverSideToolUsage = response.providerEvidence?.serverSideToolUsage ?? [];
+  const content = response.content.trim();
+  const contentPreview =
+    content.length > 0
+      ? truncateToolLogText(content, 1_000)
+      : "(no assistant text content)";
+  const lines = [
+    `Stored response: ${response.id}`,
+    `Provider: ${response.provider}`,
+    `Model: ${response.model ?? "unknown"}`,
+    `Status: ${response.status ?? "unknown"}`,
+    `Usage: ${usage}`,
+    `Client-side tool calls: ${response.toolCalls.length}`,
+    `Server-side tool calls: ${serverSideToolCalls.length}`,
+    `Server-side tool usage entries: ${serverSideToolUsage.length}`,
+    `Citations: ${citations.length}`,
+    `Encrypted reasoning: ${
+      response.encryptedReasoning
+        ? `${response.encryptedReasoning.available ? "available" : "not returned"}`
+        : "not requested/not available"
+    }`,
+    "Content:",
+    contentPreview,
+  ];
+  if (serverSideToolUsage.length > 0) {
+    lines.push(
+      "Server-side usage:",
+      ...serverSideToolUsage.map((entry) =>
+        `  ${entry.category}: ${entry.count}${entry.toolType ? ` (${entry.toolType})` : ""}`
+      ),
+    );
+  }
+  return lines.join("\n");
+}
+
+function orderProvidersForStoredResponses(
+  providers: readonly LLMProvider[],
+  preferredProviderName: string | undefined,
+  operation: "retrieve" | "delete",
+): LLMProvider[] {
+  const supported = providers.filter((provider) =>
+    operation === "retrieve"
+      ? typeof provider.retrieveStoredResponse === "function"
+      : typeof provider.deleteStoredResponse === "function"
+  );
+  if (!preferredProviderName) {
+    return supported;
+  }
+  return [
+    ...supported.filter((provider) => provider.name === preferredProviderName),
+    ...supported.filter((provider) => provider.name !== preferredProviderName),
+  ];
+}
+
+async function retrieveStoredResponseWithFallback(
+  providers: readonly LLMProvider[],
+  responseId: string,
+  preferredProviderName?: string,
+): Promise<LLMStoredResponse> {
+  const candidates = orderProvidersForStoredResponses(
+    providers,
+    preferredProviderName,
+    "retrieve",
+  );
+  if (candidates.length === 0) {
+    throw new Error("No configured provider supports stored response retrieval.");
+  }
+  let lastError: unknown;
+  for (const provider of candidates) {
+    try {
+      return await provider.retrieveStoredResponse!(responseId);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Stored response retrieval failed.");
+}
+
+async function deleteStoredResponseWithFallback(
+  providers: readonly LLMProvider[],
+  responseId: string,
+  preferredProviderName?: string,
+): Promise<{ readonly providerName: string; readonly deleted: boolean; readonly id: string }> {
+  const candidates = orderProvidersForStoredResponses(
+    providers,
+    preferredProviderName,
+    "delete",
+  );
+  if (candidates.length === 0) {
+    throw new Error("No configured provider supports stored response deletion.");
+  }
+  let lastError: unknown;
+  for (const provider of candidates) {
+    try {
+      const result = await provider.deleteStoredResponse!(responseId);
+      return {
+        providerName: provider.name,
+        deleted: result.deleted,
+        id: result.id,
+      };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Stored response deletion failed.");
 }
 
 // ============================================================================
@@ -607,8 +751,20 @@ export function createDaemonCommandRegistry(
         ctx.gateway?.config.llm,
         contextWindowTokens,
       );
+      const localCompactionThreshold = resolveLocalCompactionThreshold(
+        ctx.gateway?.config.llm,
+        contextWindowTokens,
+      );
+      const displayThreshold =
+        hasRuntimeLimit(localCompactionThreshold)
+          ? Number(localCompactionThreshold)
+          : hasRuntimeLimit(sessionTokenBudget)
+            ? Number(sessionTokenBudget)
+            : undefined;
       const ratio =
-        sessionTokenBudget > 0 ? totalTokens / sessionTokenBudget : 0;
+        typeof displayThreshold === "number" && displayThreshold > 0
+          ? totalTokens / displayThreshold
+          : 0;
       const percent = Math.min(100, Math.max(0, ratio * 100));
 
       // Build breakdown
@@ -622,13 +778,29 @@ export function createDaemonCommandRegistry(
       const model = normalizeGrokModel(ctx.gateway?.config.llm?.model) ?? "unknown";
       const provider = ctx.gateway?.config.llm?.provider ?? "unknown";
 
-      const overBudget = totalTokens > sessionTokenBudget;
+      const compactionPending =
+        typeof displayThreshold === "number" && totalTokens > displayThreshold;
       const lines = [
         `Context Window: ${(contextWindowTokens ?? 0).toLocaleString()} tokens (${model} via ${provider})`,
-        `Session Budget: ${sessionTokenBudget.toLocaleString()} tokens`,
+        `Session Budget: ${
+          hasRuntimeLimit(sessionTokenBudget)
+            ? `${sessionTokenBudget.toLocaleString()} tokens`
+            : "unlimited"
+        }`,
         `Used: ${totalTokens.toLocaleString()} tokens (${percent.toFixed(percent >= 10 ? 0 : 1)}%)` +
-          (overBudget ? " — COMPACTION PENDING (next message will compact)" : ""),
-        `Free: ${overBudget ? "0" : Math.max(0, sessionTokenBudget - totalTokens).toLocaleString()} tokens`,
+          (compactionPending
+            ? " — COMPACTION PENDING (next message will compact)"
+            : ""),
+        `Free: ${
+          typeof displayThreshold === "number"
+            ? `${compactionPending ? "0" : Math.max(0, displayThreshold - totalTokens).toLocaleString()} tokens`
+            : "unknown"
+        }`,
+        `Compaction: local ${
+          typeof displayThreshold === "number"
+            ? `enabled @ ${displayThreshold.toLocaleString()} tokens`
+            : "enabled (threshold unavailable)"
+        }; provider disabled`,
         "",
         "Breakdown:",
         `  System prompt: ~${systemPromptTokens.toLocaleString()} tokens`,
@@ -665,15 +837,137 @@ export function createDaemonCommandRegistry(
       const historyLen = session?.history.length ?? 0;
       const providerNames =
         providers.map((provider) => provider.name).join(" → ") || "none";
+      const statefulConfig = ctx.gateway?.config.llm?.statefulResponses;
+      const encryptedReasoningEnabled =
+        ctx.gateway?.config.llm?.includeEncryptedReasoning === true;
+      const responseAnchor = getSessionResumeAnchorResponseId(session);
       await cmdCtx.reply(
         `Agent is running.\n` +
           `Session: ${cmdCtx.sessionId}\n` +
           `History: ${historyLen} messages\n` +
           `LLM: ${providerNames}\n` +
+          `Stateful: ${
+            statefulConfig?.enabled === true
+              ? `enabled (store=${statefulConfig.store === true ? "yes" : "no"}, encrypted_reasoning=${encryptedReasoningEnabled ? "yes" : "no"}, anchor=${responseAnchor ?? "none"})`
+              : "disabled"
+          }\n` +
           `Memory: ${memoryBackend.name}\n` +
           `Tools: ${registry.size}\n` +
           `Skills: ${availableSkills.length}`,
       );
+    },
+  });
+  commandRegistry.register({
+    name: "response",
+    description: "Inspect or delete stored xAI Responses API objects",
+    args: "[status|get [response-id|latest] [--json]|delete [response-id|latest]]",
+    global: true,
+    handler: async (cmdCtx) => {
+      const subcommand = cmdCtx.argv[0]?.toLowerCase() ?? "status";
+      const sessionId = resolveSessionId(cmdCtx.sessionId);
+      const session = sessionMgr.get(sessionId);
+      const responseAnchor = getSessionResumeAnchorResponseId(session);
+      const preferredProviderName =
+        ctx.getSessionModelInfo(cmdCtx.sessionId)?.provider ??
+        ctx.gateway?.config.llm?.provider;
+      const providersWithReplay = orderProvidersForStoredResponses(
+        providers,
+        preferredProviderName,
+        "retrieve",
+      );
+      const capabilityProvider = providersWithReplay[0];
+      const capabilityStateful = capabilityProvider?.getCapabilities?.().stateful;
+      const encryptedReasoningEnabled =
+        ctx.gateway?.config.llm?.includeEncryptedReasoning === true;
+      const statefulConfig = ctx.gateway?.config.llm?.statefulResponses;
+
+      if (subcommand === "status") {
+        await cmdCtx.reply(
+          [
+            "Stored response state:",
+            `  Replay provider available: ${capabilityProvider ? "yes" : "no"}`,
+            `  Retrieval supported: ${capabilityStateful?.storedResponseRetrieval === true ? "yes" : "no"}`,
+            `  Deletion supported: ${capabilityStateful?.storedResponseDeletion === true ? "yes" : "no"}`,
+            `  Encrypted reasoning support: ${capabilityStateful?.encryptedReasoning === true ? "yes" : "no"}`,
+            `  Stateful responses: ${statefulConfig?.enabled === true ? "enabled" : "disabled"}`,
+            `  Provider storage: ${statefulConfig?.store === true ? "enabled" : "disabled"}`,
+            `  Runtime includeEncryptedReasoning: ${encryptedReasoningEnabled ? "enabled" : "disabled"}`,
+            `  Current response anchor: ${responseAnchor ?? "none"}`,
+            `  History compacted: ${getSessionHistoryCompacted(session) ? "yes" : "no"}`,
+          ].join("\n"),
+        );
+        return;
+      }
+
+      if (subcommand !== "get" && subcommand !== "delete") {
+        await cmdCtx.reply(
+          "Usage: /response [status|get [response-id|latest] [--json]|delete [response-id|latest]]",
+        );
+        return;
+      }
+
+      const wantsJson = cmdCtx.argv.some((arg) => arg === "--json");
+      const requestedId = cmdCtx.argv
+        .slice(1)
+        .find((arg) => arg !== "--json");
+      const responseId =
+        !requestedId || requestedId.toLowerCase() === "latest"
+          ? responseAnchor
+          : requestedId.trim();
+      if (!responseId) {
+        await cmdCtx.reply(
+          subcommand === "get"
+            ? "No stored response anchor is available for this session. Pass an explicit response id or run another stateful turn first."
+            : "No stored response anchor is available for this session to delete. Pass an explicit response id or run another stateful turn first.",
+        );
+        return;
+      }
+
+      if (subcommand === "get") {
+        try {
+          const stored = await retrieveStoredResponseWithFallback(
+            providers,
+            responseId,
+            preferredProviderName,
+          );
+          if (wantsJson) {
+            await cmdCtx.reply(JSON.stringify(stored.raw ?? stored, null, 2));
+            return;
+          }
+          await cmdCtx.reply(summarizeStoredResponse(stored));
+        } catch (error) {
+          await cmdCtx.reply(
+            `Stored response retrieval failed: ${toErrorMessage(error)}`,
+          );
+        }
+        return;
+      }
+
+      try {
+        const deleted = await deleteStoredResponseWithFallback(
+          providers,
+          responseId,
+          preferredProviderName,
+        );
+        let clearedAnchor = false;
+        if (responseAnchor && responseAnchor === responseId && session) {
+          clearStatefulContinuationMetadata(session.metadata);
+          await clearWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId);
+          clearedAnchor = true;
+        }
+        await cmdCtx.reply(
+          [
+            `Stored response delete: ${deleted.deleted ? "confirmed" : "not confirmed"}`,
+            `  Provider: ${deleted.providerName}`,
+            `  Response: ${deleted.id}`,
+            `  Cleared active anchor: ${clearedAnchor ? "yes" : "no"}`,
+          ].join("\n"),
+        );
+      } catch (error) {
+        await cmdCtx.reply(
+          `Stored response deletion failed: ${toErrorMessage(error)}`,
+        );
+      }
     },
   });
   commandRegistry.register({

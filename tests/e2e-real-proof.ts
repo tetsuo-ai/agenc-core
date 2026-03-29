@@ -46,6 +46,7 @@ import {
 } from "../tools/proof-harness/verifier-localnet.ts";
 
 interface ProofFixture {
+  programId?: string;
   sealBytes: number[];
   journal: number[];
   imageId: number[];
@@ -125,6 +126,15 @@ describe("E2E Real RISC Zero Groth16 Proof Verification", function () {
       return;
     }
     fixture = JSON.parse(fs.readFileSync(fixturePath, "utf8"));
+    if (
+      fixture.programId &&
+      fixture.programId !== program.programId.toBase58()
+    ) {
+      throw new Error(
+        `Proof fixture targets program ${fixture.programId}, but the current coordination program is ${program.programId.toBase58()}. ` +
+          `Re-run: npx tsx scripts/generate-real-proof.ts --program-id ${program.programId.toBase58()}`,
+      );
+    }
 
     const routerIdlPath = path.resolve(
       __dirname,
@@ -416,7 +426,9 @@ describe("E2E Real RISC Zero Groth16 Proof Verification", function () {
     );
     expect(taskPda.equals(journalTaskPda)).to.equal(
       true,
-      `Task PDA mismatch: expected ${journalTaskPda.toBase58()}, got ${taskPda.toBase58()}`,
+      `Task PDA mismatch: fixture journal points at ${journalTaskPda.toBase58()}, but the current coordination program derives ${taskPda.toBase58()}. ` +
+        `This usually means the proof fixture was generated for a different program ID. ` +
+        `Re-run: npx tsx scripts/generate-real-proof.ts --program-id ${program.programId.toBase58()}`,
     );
 
     // Verify agent authority matches journal

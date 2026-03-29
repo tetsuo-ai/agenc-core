@@ -50,6 +50,8 @@ export interface CreateChatExecutorParams {
   maxToolRounds: number;
   /** Session token budget. */
   sessionTokenBudget?: ChatExecutorConfig["sessionTokenBudget"];
+  /** Soft local compaction threshold. */
+  sessionCompactionThreshold?: ChatExecutorConfig["sessionCompactionThreshold"];
   /** Compaction callback. */
   onCompaction?: ChatExecutorConfig["onCompaction"];
   /** Gateway LLM config (for planner, timeout, retry, circuit breaker settings). */
@@ -96,7 +98,7 @@ export function createChatExecutor(
     requestTimeoutMs: llmConfig?.requestTimeoutMs,
     childTimeoutMs: subagentConfig.defaultTimeoutMs,
     maxFanoutPerTurn: subagentConfig.maxFanoutPerTurn,
-    mode: "enforce",
+    mode: llmConfig?.economicsMode ?? "enforce",
   });
   const modelRoutingPolicy = buildModelRoutingPolicy({
     providers: params.providers,
@@ -151,6 +153,7 @@ export function createChatExecutor(
     resolveHostWorkspaceRoot: params.resolveHostWorkspaceRoot,
     pipelineExecutor: params.pipelineExecutor,
     sessionTokenBudget: params.sessionTokenBudget,
+    sessionCompactionThreshold: params.sessionCompactionThreshold,
     onCompaction: params.onCompaction,
     economicsPolicy,
     modelRoutingPolicy,

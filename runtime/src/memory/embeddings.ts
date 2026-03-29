@@ -1,7 +1,7 @@
 /**
  * Multi-provider embedding generation for semantic memory.
  *
- * Supports OpenAI/Grok (via compatible API), Ollama (local), and a Noop
+ * Supports OpenAI, Ollama (local), and a Noop
  * provider for testing. Provider auto-selection tries local-first for
  * privacy, then falls back to cloud providers.
  *
@@ -30,14 +30,23 @@ export interface EmbeddingProvider {
 }
 
 // ============================================================================
-// OpenAI-compatible provider (works with Grok)
+// OpenAI-compatible provider
 // ============================================================================
 
 const OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const OPENAI_DEFAULT_MODEL = "text-embedding-3-small";
 const OPENAI_DEFAULT_DIMENSION = 1536;
 
-/** OpenAI-compatible embedding provider (works with Grok). */
+function isXaiApiBaseUrl(baseUrl: string | undefined): boolean {
+  if (!baseUrl) return false;
+  try {
+    return new URL(baseUrl).hostname === "api.x.ai";
+  } catch {
+    return false;
+  }
+}
+
+/** OpenAI-compatible embedding provider. */
 export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   readonly name = "openai";
   readonly dimension = OPENAI_DEFAULT_DIMENSION;
@@ -60,6 +69,12 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
 
   async embedBatch(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return [];
+    if (isXaiApiBaseUrl(this.baseUrl)) {
+      throw new MemoryBackendError(
+        this.name,
+        "xAI does not document an OpenAI-compatible embeddings surface in the public API docs; do not point the generic OpenAI embeddings provider at api.x.ai",
+      );
+    }
 
     const client = await this.ensureClient();
     try {
@@ -77,6 +92,9 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   }
 
   async isAvailable(): Promise<boolean> {
+    if (isXaiApiBaseUrl(this.baseUrl)) {
+      return false;
+    }
     try {
       const client = await this.ensureClient();
       await (client as any).models.list();
@@ -240,7 +258,7 @@ export async function createEmbeddingProvider(config?: {
     });
   }
 
-  // Auto-selection: Ollama (local, private) → OpenAI/Grok → Noop fallback
+  // Auto-selection: Ollama (local, private) → OpenAI → Noop fallback
   const ollama = new OllamaEmbeddingProvider({
     host: config?.baseUrl,
     model: config?.model,

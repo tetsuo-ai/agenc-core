@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, openSync, closeSync, rmSync } from "node:fs";
-import { open as openFile, mkdir, readFile, rename, rm } from "node:fs/promises";
+import { open as openFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import {
@@ -379,9 +379,10 @@ export class SystemProcessManager {
         return;
       }
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        const tempPath = `${this.registryPath}.${randomUUID()}.tmp`;
+        let tempPath: string | undefined;
         try {
           await mkdir(this.rootDir, { recursive: true });
+          tempPath = `${this.registryPath}.${randomUUID()}.tmp`;
           const handle = await openFile(tempPath, "w");
           try {
             await handle.writeFile(serializedSnapshot, "utf8");
@@ -389,10 +390,26 @@ export class SystemProcessManager {
           } finally {
             await handle.close().catch(() => undefined);
           }
-          await rename(tempPath, this.registryPath);
+          try {
+            await rename(tempPath, this.registryPath);
+          } catch (error) {
+            if (!isMissingPathError(error)) {
+              throw error;
+            }
+            if (this.disposed) {
+              return;
+            }
+            await mkdir(this.rootDir, { recursive: true });
+            await writeFile(this.registryPath, serializedSnapshot, "utf8");
+            if (tempPath) {
+              await rm(tempPath, { force: true }).catch(() => undefined);
+            }
+          }
           return;
         } catch (error) {
-          await rm(tempPath, { force: true }).catch(() => undefined);
+          if (tempPath) {
+            await rm(tempPath, { force: true }).catch(() => undefined);
+          }
           if (this.disposed && isMissingPathError(error)) {
             return;
           }

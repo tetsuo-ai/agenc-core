@@ -52,6 +52,7 @@ For whole-repo navigation, start with [../CODEBASE_MAP.md](../CODEBASE_MAP.md) a
 | [guides/public-runtime-release-channel.md](guides/public-runtime-release-channel.md) | Public `agenc` wrapper release channel, trust model, and runtime artifact contract |
 | [guides/runtime-install-matrix.md](guides/runtime-install-matrix.md) | Current Node/OS/service-mode support and canonical local operator state layout |
 | [guides/runtime-completion-semantics.md](guides/runtime-completion-semantics.md) | Final completion-state rules, implementation verifier authority, and the only allowed legacy compatibility classes |
+| [guides/workflow-cleanup-mode.md](guides/workflow-cleanup-mode.md) | Temporary Phase 0 cleanup freeze for planner/delegation/verifier semantics, issue-code registries, and must-pass incident targets |
 | [guides/delegated-workspace-semantics.md](guides/delegated-workspace-semantics.md) | Canonical delegated local-file scope, `/workspace` presentation-only rules, shared-artifact denial, and preflight debugging |
 | [guides/new-module-template.md](guides/new-module-template.md) | Standard module structure, error codes, barrel exports |
 | [guides/type-conventions.md](guides/type-conventions.md) | bigint vs BN, Uint8Array vs Buffer, etc. |

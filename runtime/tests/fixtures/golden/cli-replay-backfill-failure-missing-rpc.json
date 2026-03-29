@@ -17,7 +17,7 @@
     "shape": {
       "status": "error",
       "code": "CONFIG_PARSE_ERROR",
-      "message": "failed to parse config file /tmp/agenc-cli-contract-<fixture>/empty-cli-config.json: Config at /tmp/agenc-cli-contract-<fixture>/empty-cli-config.json is a legacy runtime config, but AGENC_CONFIG must point to a canonical gateway config. Use --config or AGENC_RUNTIME_CONFIG for legacy compatibility input, or migrate the file into /home/tetsuo/.agenc/config.json."
+      "message": "failed to parse config file /tmp/agenc-cli-contract-<fixture>/empty-cli-config.json: Config at /tmp/agenc-cli-contract-<fixture>/empty-cli-config.json is a legacy runtime config, but AGENC_CONFIG must point to a canonical gateway config. Use --config or AGENC_RUNTIME_CONFIG for legacy compatibility input, or migrate the file into <canonical-config-path>."
     }
   },
   "metadata": {

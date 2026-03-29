@@ -473,6 +473,7 @@ export function buildComposerRenderLine({
   width,
   visibleLength,
   pastedRanges = [],
+  maxWrappedLines = 4,
 }) {
   const {
     displayInput: value,
@@ -499,28 +500,41 @@ export function buildComposerRenderLine({
     };
   }
 
-  // Wrap: first line gets the prompt, continuation lines use full width
-  const maxWrappedLines = 4;
+  // Wrap: first line gets the prompt, continuation lines use full width.
+  // Keep the cursor visible even when the composer must window the content.
   const wrappedLines = [];
   wrappedLines.push(`${promptText}${value.slice(0, firstLineAvailable)}`);
   let offset = firstLineAvailable;
-  while (offset < value.length && wrappedLines.length < maxWrappedLines) {
+  while (offset < value.length) {
     wrappedLines.push(value.slice(offset, offset + lineWidth));
     offset += lineWidth;
   }
 
   // Find cursor position in the wrapped lines
-  let cursorRow = 0;
+  let absoluteCursorRow = 0;
   let cursorCol = promptWidth + clampedCursor + 1;
   if (clampedCursor >= firstLineAvailable) {
     const remaining = clampedCursor - firstLineAvailable;
-    cursorRow = Math.min(wrappedLines.length - 1, 1 + Math.floor(remaining / lineWidth));
+    absoluteCursorRow = Math.min(wrappedLines.length - 1, 1 + Math.floor(remaining / lineWidth));
     cursorCol = (remaining % lineWidth) + 1;
   }
 
+  const visibleLineLimit = Number.isFinite(Number(maxWrappedLines))
+    ? Math.max(1, Math.floor(Number(maxWrappedLines)))
+    : wrappedLines.length;
+  const windowStart = Math.max(
+    0,
+    Math.min(
+      absoluteCursorRow,
+      wrappedLines.length - visibleLineLimit,
+    ),
+  );
+  const visibleLines = wrappedLines.slice(windowStart, windowStart + visibleLineLimit);
+  const cursorRow = absoluteCursorRow - windowStart;
+
   return {
-    line: wrappedLines[0],
-    lines: wrappedLines,
+    line: visibleLines[0],
+    lines: visibleLines,
     cursorColumn: Math.max(1, cursorCol),
     cursorRow,
   };

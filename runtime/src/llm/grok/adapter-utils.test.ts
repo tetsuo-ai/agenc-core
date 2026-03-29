@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { LLMMessage, LLMTool } from "../types.js";
 import {
   computeReconciliationChain,
-  extractCompactionItemRefs,
   extractTraceToolNames,
   toSlimTool,
 } from "./adapter-utils.js";
@@ -138,22 +137,5 @@ describe("grok adapter utils", () => {
       type: "object",
       additionalProperties: true,
     });
-  });
-
-  it("extracts opaque provider compaction items with digests", () => {
-    const refs = extractCompactionItemRefs({
-      output: [
-        { type: "message", id: "msg_1" },
-        { type: "compaction", id: "cmp_1", encrypted_content: "opaque" },
-      ],
-    });
-
-    expect(refs).toEqual([
-      expect.objectContaining({
-        type: "compaction",
-        id: "cmp_1",
-      }),
-    ]);
-    expect(refs[0]?.digest).toMatch(/^[0-9a-f]{16}$/);
   });
 });

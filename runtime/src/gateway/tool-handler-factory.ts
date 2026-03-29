@@ -289,6 +289,190 @@ function referencesAbsolutePathWithinRoot(
   return false;
 }
 
+function extractNonOptionOperands(
+  args: readonly unknown[],
+  optionValueFlags: ReadonlySet<string> = new Set(),
+): string[] {
+  const matches: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (typeof arg !== "string") continue;
+    const trimmed = arg.trim();
+    if (trimmed.length === 0) continue;
+    if (optionValueFlags.has(trimmed)) {
+      index += 1;
+      continue;
+    }
+    if (trimmed.startsWith("-")) {
+      continue;
+    }
+    matches.push(trimmed);
+  }
+  return matches;
+}
+
+function extractSedTargetArgs(args: readonly unknown[]): string[] {
+  let index = 0;
+  while (index < args.length) {
+    const arg = args[index];
+    if (typeof arg !== "string") {
+      index += 1;
+      continue;
+    }
+    const trimmed = arg.trim();
+    if (trimmed.length === 0) {
+      index += 1;
+      continue;
+    }
+    if (SED_OPTION_VALUE_FLAGS.has(trimmed)) {
+      index += 2;
+      continue;
+    }
+    if (trimmed.startsWith("-")) {
+      index += 1;
+      continue;
+    }
+    index += 1;
+    break;
+  }
+  return args
+    .slice(index)
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+}
+
+function extractGrepTargetArgs(args: readonly unknown[]): string[] {
+  let index = 0;
+  while (index < args.length) {
+    const arg = args[index];
+    if (typeof arg !== "string") {
+      index += 1;
+      continue;
+    }
+    const trimmed = arg.trim();
+    if (trimmed.length === 0) {
+      index += 1;
+      continue;
+    }
+    if (GREP_OPTION_VALUE_FLAGS.has(trimmed)) {
+      index += 2;
+      continue;
+    }
+    if (trimmed.startsWith("-")) {
+      index += 1;
+      continue;
+    }
+    index += 1;
+    break;
+  }
+  return args
+    .slice(index)
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+}
+
+function extractExplicitFilesystemTargets(
+  command: unknown,
+  args: readonly unknown[],
+): string[] {
+  const commandName = typeof command === "string"
+    ? command.trim().replace(/^.*[\\/]/, "").toLowerCase()
+    : "";
+  switch (commandName) {
+    case "sed":
+      return extractSedTargetArgs(args);
+    case "grep":
+      return extractGrepTargetArgs(args);
+    case "head":
+    case "tail":
+      return extractNonOptionOperands(args, HEAD_TAIL_OPTION_VALUE_FLAGS);
+    case "ls":
+    case "cat":
+    case "wc":
+    case "mkdir":
+    case "rm":
+    case "mv":
+    case "cp":
+    case "touch":
+    case "install":
+    case "find":
+      return extractNonOptionOperands(args);
+    default:
+      return [];
+  }
+}
+
+function isFilesystemRedirectionOperator(value: string): boolean {
+  return isShellRedirectionOperator(value) && !value.includes("<<");
+}
+
+function referencesExplicitFilesystemTarget(
+  toolName: string,
+  args: Record<string, unknown>,
+): boolean {
+  if (toolName !== "system.bash" && toolName !== "desktop.bash") {
+    return false;
+  }
+
+  if (Array.isArray(args.args)) {
+    return extractExplicitFilesystemTargets(args.command, args.args).length > 0;
+  }
+
+  if (typeof args.command !== "string") {
+    return false;
+  }
+
+  const tokens = tokenizeShellCommand(args.command);
+  let currentCommandName: string | undefined;
+  let currentArgs: string[] = [];
+
+  const flushCurrentCommand = (): boolean => {
+    if (!currentCommandName) {
+      currentArgs = [];
+      return false;
+    }
+    const hasFilesystemTarget =
+      extractExplicitFilesystemTargets(currentCommandName, currentArgs).length > 0;
+    currentCommandName = undefined;
+    currentArgs = [];
+    return hasFilesystemTarget;
+  };
+
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index]!;
+    if (token.type === "operator") {
+      if (isShellCommandBoundaryOperator(token.value)) {
+        if (flushCurrentCommand()) {
+          return true;
+        }
+        continue;
+      }
+      if (isFilesystemRedirectionOperator(token.value)) {
+        const next = tokens[index + 1];
+        if (next?.type === "word" && next.value.trim().length > 0) {
+          return true;
+        }
+      }
+      continue;
+    }
+
+    const value = token.value.trim();
+    if (value.length === 0) continue;
+    if (!currentCommandName) {
+      if (isShellVariableAssignment(value)) {
+        continue;
+      }
+      currentCommandName = value;
+      continue;
+    }
+    currentArgs.push(value);
+  }
+
+  return flushCurrentCommand();
+}
+
 interface DefaultWorkingDirectoryApplication {
   readonly args: Record<string, unknown>;
   readonly missingDefaultWorkingDirectory?: {
@@ -801,11 +985,12 @@ function applyDefaultWorkingDirectory(
     executionWorkingDirectory = undefined;
     missingDefaultWorkingDirectory = {
       path: logicalWorkingDirectory,
-      bootstrapPermitted: referencesAbsolutePathWithinRoot(
-        toolName,
-        nextArgs,
-        logicalWorkingDirectory,
-      ),
+      bootstrapPermitted:
+        referencesAbsolutePathWithinRoot(
+          toolName,
+          nextArgs,
+          logicalWorkingDirectory,
+        ) || referencesExplicitFilesystemTarget(toolName, nextArgs),
     };
   }
 

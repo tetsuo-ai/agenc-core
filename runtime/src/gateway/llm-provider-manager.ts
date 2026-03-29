@@ -11,6 +11,7 @@ import type {
   LLMProvider,
   LLMProviderExecutionProfile,
   LLMTool,
+  LLMXaiCapabilitySurface,
 } from "../llm/types.js";
 import type { GatewayLLMConfig } from "./types.js";
 import type { Logger } from "../utils/logger.js";
@@ -21,7 +22,11 @@ import {
   resolveContextWindowProfile,
 } from "./context-window.js";
 import { supportsProviderNativeWebSearch } from "../llm/provider-native-search.js";
-import { resolveGatewayStatefulResponses } from "./llm-stateful-defaults.js";
+import {
+  resolveDefaultGrokCompactionThreshold,
+  resolveGatewayStatefulResponses,
+} from "./llm-stateful-defaults.js";
+import { hasRuntimeLimit } from "../llm/runtime-limit-policy.js";
 
 // ============================================================================
 // Constants
@@ -29,6 +34,34 @@ import { resolveGatewayStatefulResponses } from "./llm-stateful-defaults.js";
 
 export const DEFAULT_GROK_MODEL = "grok-4-1-fast-reasoning";
 export const DEFAULT_GROK_FALLBACK_MODEL = "grok-4-1-fast-non-reasoning";
+
+function normalizeOptionalPositiveInt(value: number | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  const normalized = Math.floor(value);
+  return normalized > 0 ? normalized : undefined;
+}
+
+function buildGrokCapabilitySurface(
+  llmConfig: GatewayLLMConfig,
+  nativeWebSearchEnabled: boolean,
+): LLMXaiCapabilitySurface {
+  return {
+    webSearch: nativeWebSearchEnabled,
+    searchMode: llmConfig.searchMode,
+    webSearchOptions: llmConfig.webSearchOptions,
+    xSearch: llmConfig.xSearch,
+    xSearchOptions: llmConfig.xSearchOptions,
+    codeExecution: llmConfig.codeExecution,
+    collectionsSearch: llmConfig.collectionsSearch,
+    remoteMcp: llmConfig.remoteMcp,
+    structuredOutputs: llmConfig.structuredOutputs,
+    includeEncryptedReasoning: llmConfig.includeEncryptedReasoning,
+    maxTurns: normalizeOptionalPositiveInt(llmConfig.maxTurns),
+    reasoningEffort: llmConfig.reasoningEffort,
+  };
+}
 
 // ============================================================================
 // Types
@@ -59,6 +92,7 @@ export interface CreateLLMProvidersResult {
 export interface ResolvedProviderExecutionBudget {
   readonly promptBudget?: ReturnType<typeof buildPromptBudgetConfig>;
   readonly sessionTokenBudget?: number;
+  readonly sessionCompactionThreshold?: number;
   readonly providerProfile?: LLMProviderExecutionProfile;
 }
 
@@ -90,7 +124,9 @@ export function buildPromptBudgetConfig(
   return {
     contextWindowTokens:
       contextWindowTokens ?? inferContextWindowTokens(llmConfig),
-    maxOutputTokens: maxOutputTokens ?? llmConfig?.maxTokens,
+    maxOutputTokens:
+      normalizeOptionalPositiveInt(maxOutputTokens) ??
+      normalizeOptionalPositiveInt(llmConfig?.maxTokens),
     hardMaxPromptChars: llmConfig?.promptHardMaxChars,
     safetyMarginTokens: llmConfig?.promptSafetyMarginTokens,
     charPerToken: llmConfig?.promptCharPerToken,
@@ -102,7 +138,7 @@ export function buildPromptBudgetConfig(
 // Session token budget (module-level, re-exported for daemon use)
 // ============================================================================
 
-const DEFAULT_SESSION_TOKEN_BUDGET = 120_000;
+const DEFAULT_SESSION_TOKEN_BUDGET = 0;
 
 export function resolveSessionTokenBudget(
   llmConfig: GatewayLLMConfig | undefined,
@@ -117,13 +153,49 @@ export function resolveSessionTokenBudget(
   const inferredContextWindow =
     contextWindowTokens ?? inferContextWindowTokens(llmConfig);
   if (inferredContextWindow !== undefined) {
-    // Use 60% of the model's context window as the session budget,
-    // leaving room for system prompt, tools, and output tokens.
-    // Floor at 120K for small models, no cap for large ones.
-    const proportionalBudget = Math.floor(inferredContextWindow * 0.6);
-    return Math.max(proportionalBudget, DEFAULT_SESSION_TOKEN_BUDGET);
+    void inferredContextWindow;
+    return DEFAULT_SESSION_TOKEN_BUDGET;
   }
   return DEFAULT_SESSION_TOKEN_BUDGET;
+}
+
+export function resolveLocalCompactionThreshold(
+  llmConfig: GatewayLLMConfig | undefined,
+  contextWindowTokens?: number,
+): number | undefined {
+  const sessionTokenBudget = resolveSessionTokenBudget(
+    llmConfig,
+    contextWindowTokens,
+  );
+  if (hasRuntimeLimit(sessionTokenBudget)) {
+    return sessionTokenBudget;
+  }
+  const provider = llmConfig?.provider;
+  if (!provider) return undefined;
+  const resolvedStatefulResponses = resolveGatewayStatefulResponses(
+    provider,
+    llmConfig?.statefulResponses,
+  );
+  if (
+    resolvedStatefulResponses.config?.enabled === false ||
+    resolvedStatefulResponses.config?.compaction?.enabled !== true
+  ) {
+    return undefined;
+  }
+  const compactThreshold =
+    resolvedStatefulResponses.config.compaction.compactThreshold;
+  if (
+    typeof compactThreshold !== "number" ||
+    !Number.isFinite(compactThreshold) ||
+    compactThreshold <= 0
+  ) {
+    return provider === "grok"
+      ? resolveDefaultGrokCompactionThreshold(
+          contextWindowTokens ?? inferContextWindowTokens(llmConfig),
+        )
+      : undefined;
+  }
+  return Math.floor(compactThreshold);
 }
 
 // ============================================================================
@@ -276,6 +348,10 @@ export async function resolveProviderExecutionBudget(
       budgetConfig,
       providerProfile?.contextWindowTokens,
     ),
+    sessionCompactionThreshold: resolveLocalCompactionThreshold(
+      budgetConfig,
+      providerProfile?.contextWindowTokens,
+    ),
     providerProfile,
   };
 }
@@ -297,8 +373,6 @@ export async function createSingleLLMProvider(
     apiKey,
     model,
     baseUrl,
-    webSearch,
-    searchMode,
     timeoutMs,
     parallelToolCalls,
     maxTokens,
@@ -316,9 +390,13 @@ export async function createSingleLLMProvider(
       const nativeWebSearchEnabled = supportsProviderNativeWebSearch({
         provider,
         model: normalizedModel,
-        webSearch,
-        searchMode,
+        webSearch: llmConfig.webSearch,
+        searchMode: llmConfig.searchMode,
       });
+      const grokCapabilitySurface = buildGrokCapabilitySurface(
+        llmConfig,
+        nativeWebSearchEnabled,
+      );
       if (resolvedStatefulResponses.usedDefaults) {
         logger.info(
           "Enabled Grok stateful response defaults for provider continuity",
@@ -332,14 +410,15 @@ export async function createSingleLLMProvider(
         apiKey: apiKey ?? "",
         model: normalizedModel,
         baseURL: baseUrl,
-        contextWindowTokens: llmConfig.contextWindowTokens,
-        webSearch: nativeWebSearchEnabled,
-        searchMode,
+        contextWindowTokens: normalizeOptionalPositiveInt(
+          llmConfig.contextWindowTokens,
+        ),
         timeoutMs,
-        maxTokens,
+        maxTokens: normalizeOptionalPositiveInt(maxTokens),
         parallelToolCalls,
         statefulResponses: resolvedStatefulResponses.config,
         tools,
+        ...grokCapabilitySurface,
       });
     }
     case "ollama": {
@@ -348,8 +427,8 @@ export async function createSingleLLMProvider(
         model: model ?? "llama3",
         host: baseUrl,
         timeoutMs,
-        maxTokens,
-        numCtx: llmConfig.contextWindowTokens,
+        maxTokens: normalizeOptionalPositiveInt(maxTokens),
+        numCtx: normalizeOptionalPositiveInt(llmConfig.contextWindowTokens),
         statefulResponses,
         tools,
       });

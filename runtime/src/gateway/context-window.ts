@@ -110,6 +110,118 @@ export interface KnownGrokModelEntry {
   readonly modality?: string;
 }
 
+export type GrokModelCapabilityFamily =
+  | "grok_4_general"
+  | "grok_4_multi_agent"
+  | "grok_code"
+  | "grok_3"
+  | "media_or_audio"
+  | "unknown";
+
+export interface GrokModelCapabilities {
+  readonly family: GrokModelCapabilityFamily;
+  readonly languageModel: boolean;
+  readonly multiAgent: boolean;
+  readonly supportsClientTools: boolean;
+  readonly supportsServerSideTools: boolean;
+  readonly supportsRemoteMcpTools: boolean;
+  readonly supportsStructuredOutputs: boolean;
+  readonly supportsStructuredOutputsWithTools: boolean;
+  readonly supportsPreviousResponseId: boolean;
+}
+
+const UNKNOWN_GROK_MODEL_CAPABILITIES: GrokModelCapabilities = {
+  family: "unknown",
+  languageModel: false,
+  multiAgent: false,
+  supportsClientTools: false,
+  supportsServerSideTools: false,
+  supportsRemoteMcpTools: false,
+  supportsStructuredOutputs: false,
+  supportsStructuredOutputsWithTools: false,
+  supportsPreviousResponseId: false,
+};
+
+const GROK_4_GENERAL_CAPABILITIES: GrokModelCapabilities = {
+  family: "grok_4_general",
+  languageModel: true,
+  multiAgent: false,
+  supportsClientTools: true,
+  supportsServerSideTools: true,
+  supportsRemoteMcpTools: true,
+  supportsStructuredOutputs: true,
+  supportsStructuredOutputsWithTools: true,
+  supportsPreviousResponseId: true,
+};
+
+const GROK_4_MULTI_AGENT_CAPABILITIES: GrokModelCapabilities = {
+  family: "grok_4_multi_agent",
+  languageModel: true,
+  multiAgent: true,
+  supportsClientTools: false,
+  supportsServerSideTools: true,
+  supportsRemoteMcpTools: true,
+  supportsStructuredOutputs: true,
+  supportsStructuredOutputsWithTools: true,
+  supportsPreviousResponseId: true,
+};
+
+const GROK_CODE_CAPABILITIES: GrokModelCapabilities = {
+  family: "grok_code",
+  languageModel: true,
+  multiAgent: false,
+  supportsClientTools: true,
+  supportsServerSideTools: false,
+  supportsRemoteMcpTools: false,
+  supportsStructuredOutputs: true,
+  supportsStructuredOutputsWithTools: false,
+  supportsPreviousResponseId: true,
+};
+
+const GROK_3_CAPABILITIES: GrokModelCapabilities = {
+  family: "grok_3",
+  languageModel: true,
+  multiAgent: false,
+  supportsClientTools: true,
+  supportsServerSideTools: false,
+  supportsRemoteMcpTools: false,
+  supportsStructuredOutputs: true,
+  supportsStructuredOutputsWithTools: false,
+  supportsPreviousResponseId: true,
+};
+
+const GROK_MEDIA_OR_AUDIO_CAPABILITIES: GrokModelCapabilities = {
+  family: "media_or_audio",
+  languageModel: false,
+  multiAgent: false,
+  supportsClientTools: false,
+  supportsServerSideTools: false,
+  supportsRemoteMcpTools: false,
+  supportsStructuredOutputs: false,
+  supportsStructuredOutputsWithTools: false,
+  supportsPreviousResponseId: false,
+};
+
+const GROK_CAPABILITIES_BY_PREFIX: ReadonlyArray<{
+  readonly prefix: string;
+  readonly capabilities: GrokModelCapabilities;
+}> = [
+  {
+    prefix: "grok-4.20-multi-agent-beta-0309",
+    capabilities: GROK_4_MULTI_AGENT_CAPABILITIES,
+  },
+  { prefix: "grok-4.20-beta-0309", capabilities: GROK_4_GENERAL_CAPABILITIES },
+  { prefix: "grok-4-1-fast", capabilities: GROK_4_GENERAL_CAPABILITIES },
+  { prefix: "grok-4-fast", capabilities: GROK_4_GENERAL_CAPABILITIES },
+  { prefix: "grok-4-0709", capabilities: GROK_4_GENERAL_CAPABILITIES },
+  { prefix: "grok-code-fast-1", capabilities: GROK_CODE_CAPABILITIES },
+  { prefix: "grok-3-mini", capabilities: GROK_3_CAPABILITIES },
+  { prefix: "grok-3", capabilities: GROK_3_CAPABILITIES },
+  { prefix: "grok-imagine-", capabilities: GROK_MEDIA_OR_AUDIO_CAPABILITIES },
+  { prefix: "grok-realtime-voice", capabilities: GROK_MEDIA_OR_AUDIO_CAPABILITIES },
+  { prefix: "grok-tts", capabilities: GROK_MEDIA_OR_AUDIO_CAPABILITIES },
+];
+
 const GROK_MEDIA_MODEL_MODALITY: Record<string, string> = {
   "grok-imagine-image": "text, image → image",
   "grok-imagine-image-pro": "text, image → image",
@@ -162,6 +274,14 @@ function parseContextTokenValue(value: unknown): number | undefined {
     return normalizeNumericContextWindow(parsed);
   }
   return undefined;
+}
+
+function normalizeOptionalPositiveInt(value: number | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  const normalized = Math.floor(value);
+  return normalized > 0 ? normalized : undefined;
 }
 
 function isContextCandidatePath(path: string): boolean {
@@ -628,6 +748,21 @@ export function inferGrokContextWindowTokens(model: string | undefined): number 
   return DEFAULT_GROK_CONTEXT_WINDOW_TOKENS;
 }
 
+export function getGrokModelCapabilities(
+  model: string | undefined,
+): GrokModelCapabilities {
+  const normalized = normalizeGrokModel(model)?.toLowerCase();
+  if (!normalized) {
+    return UNKNOWN_GROK_MODEL_CAPABILITIES;
+  }
+  for (const entry of GROK_CAPABILITIES_BY_PREFIX) {
+    if (normalized.startsWith(entry.prefix)) {
+      return entry.capabilities;
+    }
+  }
+  return UNKNOWN_GROK_MODEL_CAPABILITIES;
+}
+
 export function listKnownGrokModels(): readonly KnownGrokModelEntry[] {
   return KNOWN_GROK_MODEL_IDS.map((id) => {
     const modality = GROK_MEDIA_MODEL_MODALITY[id];
@@ -690,7 +825,7 @@ export async function resolveContextWindowProfile(
         model,
         contextWindowTokens: explicit,
         contextWindowSource: "explicit_config",
-        maxOutputTokens: llmConfig.maxTokens,
+        maxOutputTokens: normalizeOptionalPositiveInt(llmConfig.maxTokens),
       };
     }
     const dynamic = await resolveDynamicGrokContextWindowTokens(llmConfig, options);
@@ -700,7 +835,7 @@ export async function resolveContextWindowProfile(
         model,
         contextWindowTokens: dynamic,
         contextWindowSource: "grok_model_catalog",
-        maxOutputTokens: llmConfig.maxTokens,
+        maxOutputTokens: normalizeOptionalPositiveInt(llmConfig.maxTokens),
       };
     }
     return {
@@ -708,7 +843,7 @@ export async function resolveContextWindowProfile(
       model,
       contextWindowTokens: inferGrokContextWindowTokens(model),
       contextWindowSource: "grok_model_heuristic",
-      maxOutputTokens: llmConfig.maxTokens,
+      maxOutputTokens: normalizeOptionalPositiveInt(llmConfig.maxTokens),
     };
   }
 
@@ -720,7 +855,7 @@ export async function resolveContextWindowProfile(
         model,
         contextWindowTokens: explicit,
         contextWindowSource: "ollama_request_num_ctx",
-        maxOutputTokens: llmConfig.maxTokens,
+        maxOutputTokens: normalizeOptionalPositiveInt(llmConfig.maxTokens),
       };
     }
     const dynamic = await resolveDynamicOllamaContextWindow(llmConfig, options);
@@ -730,7 +865,7 @@ export async function resolveContextWindowProfile(
         model,
         contextWindowTokens: dynamic.contextWindowTokens,
         contextWindowSource: dynamic.source,
-        maxOutputTokens: llmConfig.maxTokens,
+        maxOutputTokens: normalizeOptionalPositiveInt(llmConfig.maxTokens),
       };
     }
     return {
@@ -738,7 +873,7 @@ export async function resolveContextWindowProfile(
       model,
       contextWindowTokens: DEFAULT_OLLAMA_CONTEXT_WINDOW_TOKENS,
       contextWindowSource: "ollama_default",
-      maxOutputTokens: llmConfig.maxTokens,
+      maxOutputTokens: normalizeOptionalPositiveInt(llmConfig.maxTokens),
     };
   }
 

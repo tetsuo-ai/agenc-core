@@ -2,6 +2,11 @@ import type { WorkflowGraphEdge } from "../workflow/types.js";
 import type { ExecuteWithAgentInput } from "./delegation-tool.js";
 import type { DelegationBudgetSnapshot } from "../llm/run-budget.js";
 import { estimateDelegationStepSpendUnits } from "../llm/model-routing-policy.js";
+import { hasRuntimeLimit } from "../llm/runtime-limit-policy.js";
+import {
+  allowsUserMandatedSubagentCardinalityOverride,
+  extractRequiredSubagentOrchestrationRequirements,
+} from "../workflow/subagent-orchestration-requirements.js";
 import {
   deriveDelegationEconomics,
   type DelegationCandidateStep,
@@ -17,6 +22,8 @@ const TEST_TRIAGE_TEXT_RE =
   /\b(?:test|tests|ci|failure|failures|failing|flaky|error|errors|stack\s+trace|logs?)\b/i;
 const BUILD_OR_TEST_OBLIGATION_RE =
   /\b(?:build|compile|typecheck|lint|test|tests|pytest|vitest|cargo test|npm run|pnpm|yarn)\b/i;
+const LOCAL_INSPECTION_TEXT_RE =
+  /\b(?:catalog|check|explore|find|git status|inspect|inventory|list|locate|ls|map|read|readme|review|status|survey|trace|understand)\b/i;
 
 export type DelegationAdmissionShape =
   | "repo_exploration"
@@ -88,6 +95,9 @@ function isSharedContextReadOnlyReview(
   input: DelegationAdmissionInput,
   economics: DelegationEconomics,
 ): boolean {
+  if (input.explicitDelegationRequested === true) {
+    return false;
+  }
   if (
     input.steps.length === 0 ||
     input.steps.length > 4 ||
@@ -97,23 +107,71 @@ function isSharedContextReadOnlyReview(
   }
   if (!REVIEW_TEXT_RE.test(input.messageText)) return false;
   if (economics.stepAnalyses.some((analysis) => analysis.mutable)) return false;
+  if (economics.stepAnalyses.some((analysis) => analysis.shellObservationOnly)) {
+    return false;
+  }
   const first = economics.stepAnalyses[0];
-  if (!first || first.ownedArtifacts.length === 0) return false;
-  return economics.stepAnalyses.slice(1).every((analysis) =>
-    analysis.ownedArtifacts.some((artifact) => first.ownedArtifacts.includes(artifact))
-  );
+  if (!first) return false;
+  const sharedArtifacts = collectSharedReviewArtifacts(first);
+  if (sharedArtifacts.length === 0) return false;
+  return economics.stepAnalyses.slice(1).every((analysis) => {
+    const analysisArtifacts = collectSharedReviewArtifacts(analysis);
+    return analysisArtifacts.some((artifact) => sharedArtifacts.includes(artifact));
+  });
 }
 
 function collectPrimaryOwnedArtifacts(
   analysis: DelegationStepAnalysis,
 ): readonly string[] {
-  const targetArtifacts = analysis.step.executionContext?.targetArtifacts ?? [];
-  if (targetArtifacts.length > 0) {
-    return targetArtifacts;
-  }
   return analysis.ownedArtifacts;
 }
 
+function hasSingleWriterReadOnlyReviewerHandoff(
+  analyses: readonly DelegationStepAnalysis[],
+): boolean {
+  const writers = analyses.filter((analysis) => analysis.mutable);
+  if (writers.length !== 1) {
+    return false;
+  }
+  const [writer] = writers;
+  if (!writer || writer.ownedArtifacts.length === 0) {
+    return false;
+  }
+  const writerArtifacts = new Set(writer.ownedArtifacts);
+  let readOnlyReviewerCount = 0;
+  for (const analysis of analyses) {
+    if (analysis.step.name === writer.step.name) {
+      continue;
+    }
+    if (!analysis.readOnly && !analysis.shellObservationOnly) {
+      return false;
+    }
+    if (analysis.ownedArtifacts.length > 0) {
+      return false;
+    }
+    if (
+      !analysis.referencedArtifacts.some((artifact) =>
+        writerArtifacts.has(artifact)
+      )
+    ) {
+      return false;
+    }
+    readOnlyReviewerCount += 1;
+  }
+  return readOnlyReviewerCount > 0;
+}
+function collectSharedReviewArtifacts(
+  analysis: DelegationStepAnalysis,
+): readonly string[] {
+  const context = analysis.step.executionContext;
+  return [
+    ...analysis.ownedArtifacts,
+    ...analysis.referencedArtifacts,
+    ...(context?.requiredSourceArtifacts ?? []),
+    ...(context?.inputArtifacts ?? []),
+    ...(context?.targetArtifacts ?? []),
+  ].filter((artifact, index, artifacts) => artifacts.indexOf(artifact) === index);
+}
 function detectSharedArtifactWriterInline(
   economics: DelegationEconomics,
 ): {
@@ -186,6 +244,42 @@ function isIsolatedSingleStep(
   );
 }
 
+function isParentSafeReadOnlyInspection(
+  input: DelegationAdmissionInput,
+  economics: DelegationEconomics,
+  _shape: DelegationAdmissionShape | null,
+): boolean {
+  if (input.explicitDelegationRequested === true) {
+    return false;
+  }
+  if (input.steps.length !== 1) return false;
+  const analysis = economics.stepAnalyses[0];
+  if (!analysis) return false;
+  if (!analysis.readOnly && !analysis.shellObservationOnly) {
+    return false;
+  }
+  if (analysis.mutable) return false;
+  const executionContext = analysis.step.executionContext;
+  if ((executionContext?.targetArtifacts?.length ?? 0) > 0) {
+    return false;
+  }
+  if (economics.parallelizableCount > 1 || economics.parallelGain >= 0.35) {
+    return false;
+  }
+  const contractText = [
+    input.messageText,
+    analysis.step.objective,
+    analysis.step.inputContract,
+    ...analysis.step.acceptanceCriteria,
+  ]
+    .filter((value) => typeof value === "string" && value.trim().length > 0)
+    .join(" ");
+  if (!LOCAL_INSPECTION_TEXT_RE.test(contractText)) {
+    return false;
+  }
+  return true;
+}
+
 function detectShape(
   input: DelegationAdmissionInput,
   economics: DelegationEconomics,
@@ -241,6 +335,15 @@ function detectShape(
     )
   ) {
     return "test_triage";
+  }
+  if (
+    input.steps.length >= 2 &&
+    input.steps.length <= 6 &&
+    hasSingleWriterReadOnlyReviewerHandoff(analyses) &&
+    economics.dependencyDepth <= Math.max(3, input.maxDepth * 2) &&
+    economics.dependencyCoupling <= 0.72
+  ) {
+    return "bounded_sequential_handoff";
   }
   if (
     parallelizable >= 2 &&
@@ -328,6 +431,8 @@ function buildIsolationReason(
 ): string {
   const ownedArtifacts = analysis.ownedArtifacts.length > 0
     ? analysis.ownedArtifacts.join(", ")
+    : analysis.referencedArtifacts.length > 0
+    ? analysis.referencedArtifacts.join(", ")
     : (analysis.step.executionContext?.workspaceRoot ?? analysis.step.name);
   switch (shape) {
     case "repo_exploration":
@@ -468,7 +573,10 @@ function isEconomicallyNegative(
   if (
     childMostlyAvailable &&
     !parentPressureHigh &&
-    economics.parallelizableCount <= snapshot.childFanoutSoftCap
+    (
+      !hasRuntimeLimit(snapshot.childFanoutSoftCap) ||
+      economics.parallelizableCount <= snapshot.childFanoutSoftCap
+    )
   ) {
     return {
       negative: false,
@@ -495,7 +603,10 @@ function isEconomicallyNegative(
     snapshot.remainingSpendUnits - estimatedSpendUnits;
   return {
     negative:
-      economics.parallelizableCount > snapshot.childFanoutSoftCap ||
+      (
+        hasRuntimeLimit(snapshot.childFanoutSoftCap) &&
+        economics.parallelizableCount > snapshot.childFanoutSoftCap
+      ) ||
       remainingTokensAfter < snapshot.negativeDelegationMarginTokens ||
       remainingSpendAfter < snapshot.negativeDelegationMarginUnits ||
       parentPressureHigh,
@@ -561,7 +672,15 @@ export function assessDelegationAdmission(
     });
   }
 
-  if (input.steps.length > input.maxFanoutPerTurn) {
+  const requiredOrchestration =
+    extractRequiredSubagentOrchestrationRequirements(input.messageText);
+  const allowUserMandatedCardinality =
+    allowsUserMandatedSubagentCardinalityOverride(requiredOrchestration);
+
+  if (
+    input.steps.length > input.maxFanoutPerTurn &&
+    !allowUserMandatedCardinality
+  ) {
     return buildDecision({
       allowed: false,
       reason: "fanout_exceeded",
@@ -590,6 +709,17 @@ export function assessDelegationAdmission(
     });
   }
 
+  if (isSharedContextReadOnlyReview(input, economics)) {
+    return buildDecision({
+      allowed: false,
+      reason: "shared_context_review",
+      shape,
+      economics,
+      stepAdmissions,
+      diagnostics,
+    });
+  }
+
   if (
     input.explicitDelegationRequested !== true &&
     input.steps.length <= 1 &&
@@ -601,17 +731,6 @@ export function assessDelegationAdmission(
     return buildDecision({
       allowed: false,
       reason: "single_hop_request",
-      shape,
-      economics,
-      stepAdmissions,
-      diagnostics,
-    });
-  }
-
-  if (isSharedContextReadOnlyReview(input, economics)) {
-    return buildDecision({
-      allowed: false,
-      reason: "shared_context_review",
       shape,
       economics,
       stepAdmissions,
@@ -635,6 +754,31 @@ export function assessDelegationAdmission(
         sharedArtifactReadOnlySteps:
           sharedArtifactWriterInline.readOnlyStepNames.join(","),
       },
+    });
+  }
+
+  if (isParentSafeReadOnlyInspection(input, economics, shape)) {
+    return buildDecision({
+      allowed: false,
+      reason: "single_hop_request",
+      shape,
+      economics,
+      stepAdmissions,
+      diagnostics: {
+        ...diagnostics,
+        parentSafeReadOnlyInspection: true,
+      },
+    });
+  }
+
+  if (isSharedContextReadOnlyReview(input, economics)) {
+    return buildDecision({
+      allowed: false,
+      reason: "shared_context_review",
+      shape,
+      economics,
+      stepAdmissions,
+      diagnostics,
     });
   }
 

@@ -1453,6 +1453,23 @@ function buildToolExecutionLedgerPayload(params: {
   );
   const citations = (providerEvidence?.citations ?? [])
     .map((citation) => truncateText(citation, MAX_TOOL_LEDGER_CITATION_CHARS));
+  const providerServerSideToolCalls = (providerEvidence?.serverSideToolCalls ?? [])
+    .map((toolCall, index) => ({
+      index: index + 1,
+      type: toolCall.type,
+      toolType: toolCall.toolType,
+      ...(typeof toolCall.status === "string" ? { status: toolCall.status } : {}),
+      ...(typeof toolCall.functionName === "string"
+        ? { functionName: toolCall.functionName }
+        : {}),
+      ...(typeof toolCall.id === "string" ? { id: toolCall.id } : {}),
+    }));
+  const providerServerSideToolUsage = (providerEvidence?.serverSideToolUsage ?? [])
+    .map((entry) => ({
+      category: entry.category,
+      ...(typeof entry.toolType === "string" ? { toolType: entry.toolType } : {}),
+      count: entry.count,
+    }));
 
   return {
     authoritative: true,
@@ -1468,6 +1485,15 @@ function buildToolExecutionLedgerPayload(params: {
       }
       : {}),
     ...(citations.length > 0 ? { providerCitations: citations } : {}),
+    ...(providerServerSideToolCalls.length > 0
+      ? {
+        providerServerSideToolCallCount: providerServerSideToolCalls.length,
+        providerServerSideToolCalls,
+      }
+      : {}),
+    ...(providerServerSideToolUsage.length > 0
+      ? { providerServerSideToolUsage }
+      : {}),
   };
 }
 
@@ -1507,7 +1533,11 @@ export function buildToolExecutionGroundingMessage(params: {
   providerEvidence?: LLMProviderEvidence;
 }): LLMMessage | undefined {
   const { toolCalls, providerEvidence } = params;
-  if (toolCalls.length === 0 && (providerEvidence?.citations?.length ?? 0) === 0) {
+  const hasProviderEvidence =
+    (providerEvidence?.citations?.length ?? 0) > 0 ||
+    (providerEvidence?.serverSideToolCalls?.length ?? 0) > 0 ||
+    (providerEvidence?.serverSideToolUsage?.length ?? 0) > 0;
+  if (toolCalls.length === 0 && !hasProviderEvidence) {
     return undefined;
   }
 

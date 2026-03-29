@@ -33,6 +33,15 @@ function mimeToExtension(mimeType: string): string {
   return MIME_TO_CODEC[base] ?? "ogg";
 }
 
+function isXaiApiBaseUrl(baseURL: string | undefined): boolean {
+  if (!baseURL) return false;
+  try {
+    return new URL(baseURL).hostname === "api.x.ai";
+  } catch {
+    return false;
+  }
+}
+
 // ============================================================================
 // WhisperAPIProvider
 // ============================================================================
@@ -84,6 +93,12 @@ export class WhisperAPIProvider implements SpeechToTextProvider {
     audio: Buffer | Uint8Array,
     options?: STTOptions,
   ): Promise<TranscriptionResult> {
+    if (isXaiApiBaseUrl(this.config.baseURL)) {
+      throw new VoiceTranscriptionError(
+        this.name,
+        "xAI does not document the OpenAI /audio/transcriptions surface; use documented xAI voice/realtime transcription flows instead",
+      );
+    }
     const client = (await this.ensureClient()) as any;
     const ext = options?.format?.codec ?? "ogg";
     const filename = `audio.${ext}`;

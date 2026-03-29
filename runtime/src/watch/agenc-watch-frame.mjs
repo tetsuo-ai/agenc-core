@@ -1515,10 +1515,22 @@ export function createWatchFrameController(dependencies = {}) {
       if (!event) {
         return "";
       }
-      return [
+      const { transcriptWidth, bodyHeight } = currentTranscriptLayout();
+      const detail = buildExpandedDetailView(transcriptWidth, bodyHeight);
+      const bodyLines = (detail?.body ?? wrapEventDisplayLines(event, transcriptWidth)).map((line) =>
+        displayLinePlainText(line),
+      );
+      const detailSummary = detail?.detailSummary ?? buildTranscriptEventSummary(event);
+      const headerLines = [
         `[${event.timestamp}] ${sanitizeDisplayText(event.title)}`,
-        event.body,
-      ].join("\n\n").trim();
+        detailSummary.meta && detailSummary.meta !== sanitizeDisplayText(detailSummary.title)
+          ? detailSummary.meta
+          : null,
+      ].filter(Boolean);
+      return [
+        headerLines.join("\n"),
+        bodyLines.join("\n"),
+      ].filter(Boolean).join("\n\n").trim();
     }
 
     return events

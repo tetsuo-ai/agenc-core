@@ -9,10 +9,15 @@
 
 import type { LLMProviderEvidence } from "../llm/types.js";
 import type { DelegationExecutionContext } from "./delegation-execution-context.js";
+import type { WorkflowStepRole } from "../workflow/execution-envelope.js";
 import {
+  PROVIDER_NATIVE_FILE_SEARCH_TOOL,
+  PROVIDER_NATIVE_RESEARCH_TOOL_NAMES,
   PROVIDER_NATIVE_WEB_SEARCH_TOOL,
-  isResearchLikeText,
+  PROVIDER_NATIVE_X_SEARCH_TOOL,
   isProviderNativeToolName,
+  isResearchLikeText,
+  selectPreferredProviderNativeResearchToolName,
 } from "../llm/provider-native-search.js";
 import {
   extractExactOutputExpectation,
@@ -33,6 +38,12 @@ import {
   toDelegationOutputValidationResult,
   validateRuntimeVerificationContract,
 } from "../workflow/index.js";
+import { areDocumentationOnlyArtifacts } from "../workflow/artifact-paths.js";
+import {
+  criterionRequiresWorkspaceInspectionVerification,
+  isMeaningfulWorkspaceInspectionToolCall,
+  textRequiresWorkspaceGroundedArtifactUpdate,
+} from "../workflow/workspace-inspection-evidence.js";
 
 export interface DelegationContractSpec {
   readonly task?: string;
@@ -55,7 +66,12 @@ export interface DelegationContractSpec {
   readonly isolationReason?: string;
   readonly ownedArtifacts?: readonly string[];
   readonly verifierObligations?: readonly string[];
+  readonly inheritedEvidence?: {
+    readonly workspaceInspectionSatisfied?: boolean;
+    readonly sourceSteps?: readonly string[];
+  };
   readonly lastValidationCode?: DelegationOutputValidationCode;
+  readonly toolContract?: DelegatedToolContractResolution;
 }
 
 export interface DelegationValidationToolCall {
@@ -68,22 +84,27 @@ export interface DelegationValidationToolCall {
 export interface DelegationValidationProviderEvidence
   extends LLMProviderEvidence {}
 
+export const DELEGATION_OUTPUT_VALIDATION_CODES = [
+  "empty_output",
+  "empty_structured_payload",
+  "expected_json_object",
+  "acceptance_count_mismatch",
+  "acceptance_evidence_missing",
+  "acceptance_probe_failed",
+  "missing_behavior_harness",
+  "forbidden_phase_action",
+  "blocked_phase_output",
+  "contradictory_completion_claim",
+  "missing_successful_tool_evidence",
+  "low_signal_browser_evidence",
+  "missing_workspace_inspection_evidence",
+  "missing_file_mutation_evidence",
+  "missing_required_source_evidence",
+  "missing_file_artifact_evidence",
+] as const;
+
 export type DelegationOutputValidationCode =
-  | "empty_output"
-  | "empty_structured_payload"
-  | "expected_json_object"
-  | "acceptance_count_mismatch"
-  | "acceptance_evidence_missing"
-  | "acceptance_probe_failed"
-  | "missing_behavior_harness"
-  | "forbidden_phase_action"
-  | "blocked_phase_output"
-  | "contradictory_completion_claim"
-  | "missing_successful_tool_evidence"
-  | "low_signal_browser_evidence"
-  | "missing_file_mutation_evidence"
-  | "missing_required_source_evidence"
-  | "missing_file_artifact_evidence";
+  typeof DELEGATION_OUTPUT_VALIDATION_CODES[number];
 
 export interface DelegationOutputValidationResult {
   readonly ok: boolean;
@@ -98,6 +119,19 @@ export interface DelegatedChildToolAllowlistRefinement {
   readonly blockedReason?: string;
 }
 
+export type DelegatedToolContractState = "exact" | "enriched" | "degraded";
+
+export interface DelegatedToolContractResolution {
+  readonly state: DelegatedToolContractState;
+  readonly requestedSource: readonly string[];
+  readonly requestedConcreteTools: readonly string[];
+  readonly requestedSemanticCapabilities: readonly string[];
+  readonly resolvedTools: readonly string[];
+  readonly missingRequestedTools: readonly string[];
+  readonly optionalEnrichment: readonly string[];
+  readonly requiredSubstitution: readonly string[];
+}
+
 export interface ResolvedDelegatedChildToolScope
   extends DelegatedChildToolAllowlistRefinement {
   readonly semanticFallback: readonly string[];
@@ -105,6 +139,7 @@ export interface ResolvedDelegatedChildToolScope
   readonly removedAsDelegationTools: readonly string[];
   readonly removedAsUnknownTools: readonly string[];
   readonly allowsToollessExecution: boolean;
+  readonly toolContract: DelegatedToolContractResolution;
 }
 
 const EMPTY_DELEGATION_OUTPUT_VALUES = new Set(["null", "undefined", "{}", "[]"]);
@@ -332,8 +367,8 @@ const LOCAL_FILE_INSPECTION_TOOL_NAMES = new Set([
   "mcp.neovim.vim_buffer_save",
   "mcp.neovim.vim_search_replace",
 ]);
-const PREFERRED_PROVIDER_NATIVE_RESEARCH_TOOL_NAMES = new Set([
-  PROVIDER_NATIVE_WEB_SEARCH_TOOL,
+const PREFERRED_PROVIDER_NATIVE_RESEARCH_TOOL_NAMES: ReadonlySet<string> = new Set([
+  ...PROVIDER_NATIVE_RESEARCH_TOOL_NAMES,
 ]);
 const PREFERRED_IMPLEMENTATION_EDITOR_TOOL_NAMES = new Set([
   "desktop.text_editor",
@@ -408,8 +443,10 @@ function isGenericFilesystemCapabilityName(capability: string): boolean {
 
 function looksLikeExplicitDelegatedToolName(toolName: string): boolean {
   const normalized = toolName.trim().toLowerCase();
+  if (normalized.length === 0) return false;
+  if (/\s/.test(normalized)) return false;
   return normalized === "execute_with_agent" ||
-    normalized === PROVIDER_NATIVE_WEB_SEARCH_TOOL ||
+    isProviderNativeToolName(normalized) ||
     normalized.includes(".") ||
     normalized.startsWith("browser") ||
     normalized.startsWith("playwright") ||
@@ -528,7 +565,16 @@ function hasReviewFindingsIntent(spec: DelegationContractSpec): boolean {
   return REVIEW_FINDINGS_TASK_RE.test(text) && REVIEW_FINDINGS_OUTPUT_RE.test(text);
 }
 
-function isReviewFindingsDelegatedTask(spec: DelegationContractSpec): boolean {
+function getDelegatedWorkflowRole(
+  spec: DelegationContractSpec,
+): WorkflowStepRole | undefined {
+  return spec.executionContext?.role;
+}
+
+function isReviewerDelegatedTask(spec: DelegationContractSpec): boolean {
+  if (getDelegatedWorkflowRole(spec) === "reviewer") {
+    return true;
+  }
   if (!hasReviewFindingsIntent(spec)) {
     return false;
   }
@@ -1287,12 +1333,23 @@ function outputClaimsAlreadySatisfiedWithoutMutation(output: string): boolean {
     !FILE_MUTATION_CLAIM_RE.test(output);
 }
 
+function parsedOutputClaimsAlreadySatisfiedWithoutMutation(
+  parsedOutput: Record<string, unknown> | undefined,
+): boolean {
+  return typeof parsedOutput?.reportedOutcome === "string" &&
+    parsedOutput.reportedOutcome.trim().toLowerCase() === "already_satisfied";
+}
+
 function hasExplicitTargetFileNoopSatisfactionEvidence(
   spec: DelegationContractSpec,
   output: string,
+  parsedOutput: Record<string, unknown> | undefined,
   toolCalls: readonly DelegationValidationToolCall[],
 ): boolean {
-  if (!outputClaimsAlreadySatisfiedWithoutMutation(output)) {
+  if (
+    !outputClaimsAlreadySatisfiedWithoutMutation(output) &&
+    !parsedOutputClaimsAlreadySatisfiedWithoutMutation(parsedOutput)
+  ) {
     return false;
   }
 
@@ -1353,7 +1410,14 @@ function validateRequiredSourceArtifactEvidence(
     return undefined;
   }
 
-  if (hasExplicitTargetFileNoopSatisfactionEvidence(spec, output, toolCalls)) {
+  if (
+    hasExplicitTargetFileNoopSatisfactionEvidence(
+      spec,
+      output,
+      parsedOutput,
+      toolCalls,
+    )
+  ) {
     return undefined;
   }
 
@@ -1660,6 +1724,7 @@ export function specRequiresSuccessfulToolEvidence(
   spec: DelegationContractSpec,
 ): boolean {
   if (hasExplicitToolRequirement(spec)) return true;
+  if (specRequiresMeaningfulWorkspaceEvidence(spec)) return true;
   const stepText = collectDelegationStepText(spec);
   if (TOOL_GROUNDED_TASK_RE.test(stepText)) return true;
   const taskIntent = classifyDelegatedTaskIntent(spec);
@@ -1667,6 +1732,27 @@ export function specRequiresSuccessfulToolEvidence(
     (taskIntent === "research" || taskIntent === "validation") &&
     TOOL_GROUNDED_TASK_RE.test(collectDelegationContextText(spec))
   );
+}
+
+export function specRequiresMeaningfulWorkspaceEvidence(
+  spec: DelegationContractSpec,
+): boolean {
+  if (spec.inheritedEvidence?.workspaceInspectionSatisfied === true) {
+    return false;
+  }
+  const targetArtifacts = collectExplicitSpecFileArtifacts(spec);
+  if (!areDocumentationOnlyArtifacts(targetArtifacts)) {
+    return false;
+  }
+  if (!specTargetsLocalFiles(spec)) {
+    return false;
+  }
+  const text = collectDelegationStepText(spec, { includeParentRequest: true });
+  if (!textRequiresWorkspaceGroundedArtifactUpdate(text)) {
+    return false;
+  }
+  const capabilityProfile = getDelegatedCapabilityProfile(spec);
+  return capabilityProfile.hasFileWrite || targetArtifacts.length > 0;
 }
 
 export function specRequiresMeaningfulBrowserEvidence(
@@ -1805,6 +1891,8 @@ export function resolveDelegatedChildToolScope(params: {
   const allowedTools: string[] = [];
   const explicitRequestedTools: string[] = [];
   const semanticFallback: string[] = [];
+  const requiredSubstitutionCandidates: string[] = [];
+  const optionalEnrichmentCandidates: string[] = [];
   const capabilityProfile = getDelegatedCapabilityProfile(params.spec);
   const taskIntent = classifyDelegatedTaskIntent(params.spec);
   const requireBrowser = specRequiresMeaningfulBrowserEvidence(params.spec);
@@ -1882,6 +1970,9 @@ export function resolveDelegatedChildToolScope(params: {
       removalBucket: removedByPolicy,
       preserveExplicitRequest: true,
     });
+    if (!requiredSubstitutionCandidates.includes(toolName)) {
+      requiredSubstitutionCandidates.push(toolName);
+    }
   };
 
   if (
@@ -1908,16 +1999,29 @@ export function resolveDelegatedChildToolScope(params: {
     addRequestedSemanticTool("system.bash");
   }
 
-  const addSemanticFallback = (toolName: string): void => {
+  const addSemanticFallback = (
+    toolName: string,
+    classification: "optional_enrichment" | "required_substitution" =
+      "optional_enrichment",
+  ): void => {
     if (!semanticFallback.includes(toolName)) {
       semanticFallback.push(toolName);
+    }
+    const bucket = classification === "required_substitution"
+      ? requiredSubstitutionCandidates
+      : optionalEnrichmentCandidates;
+    if (!bucket.includes(toolName)) {
+      bucket.push(toolName);
     }
     addCandidate(toolName);
   };
 
-  const addShellSemanticFallback = (): void => {
-    addSemanticFallback("desktop.bash");
-    addSemanticFallback("system.bash");
+  const addShellSemanticFallback = (
+    classification: "optional_enrichment" | "required_substitution" =
+      "optional_enrichment",
+  ): void => {
+    addSemanticFallback("desktop.bash", classification);
+    addSemanticFallback("system.bash", classification);
   };
 
   if (
@@ -1940,6 +2044,8 @@ export function resolveDelegatedChildToolScope(params: {
     (requireBrowser || (taskIntent === "research" && !localFileInspectionTask))
   ) {
     addSemanticFallback(PROVIDER_NATIVE_WEB_SEARCH_TOOL);
+    addSemanticFallback(PROVIDER_NATIVE_X_SEARCH_TOOL);
+    addSemanticFallback(PROVIDER_NATIVE_FILE_SEARCH_TOOL);
     addSemanticFallback("system.browse");
     addSemanticFallback("system.browserSessionStart");
     addSemanticFallback("system.browserAction");
@@ -2016,13 +2122,45 @@ export function resolveDelegatedChildToolScope(params: {
   const profiledSemanticFallback = semanticFallback.filter((toolName) =>
     profiledAllowedTools.includes(toolName)
   );
+  const missingRequestedTools = requested.filter((toolName) =>
+    !profiledAllowedTools.includes(toolName)
+  );
+  const filteredRequiredSubstitution = requiredSubstitutionCandidates.filter(
+    (toolName) => profiledAllowedTools.includes(toolName),
+  );
+  const nonRequestedAllowedTools = profiledAllowedTools.filter((toolName) =>
+    !refinedExplicitRequestedTools.includes(toolName),
+  );
+  const inferredRequiredSubstitution = missingRequestedTools.length > 0
+    ? nonRequestedAllowedTools
+    : [];
+  const requiredSubstitution = normalizeToolNames([
+    ...filteredRequiredSubstitution,
+    ...inferredRequiredSubstitution,
+  ]);
+  const optionalEnrichment = optionalEnrichmentCandidates.filter((toolName) =>
+    profiledAllowedTools.includes(toolName) &&
+    !requiredSubstitution.includes(toolName)
+  );
+  const toolContractState: DelegatedToolContractState =
+    requiredSubstitution.length > 0 || missingRequestedTools.length > 0
+      ? "degraded"
+      : optionalEnrichment.length > 0
+      ? "enriched"
+      : "exact";
   const explicitAllowlistUnsatisfied =
     strictExplicitToolAllowlist &&
-    requested.length > 0 &&
-    profiledAllowedTools.length === 0;
+    (
+      missingRequestedTools.length > 0 ||
+      profiledAllowedTools.some((toolName) =>
+        !refinedExplicitRequestedTools.includes(toolName)
+      )
+    );
   const allowsToollessExecution =
     !explicitAllowlistUnsatisfied &&
     profiledAllowedTools.length === 0 &&
+    (requestedSource.length === 0 || contextOnlyCapabilityRequest) &&
+    requested.length === 0 &&
     !specRequiresSuccessfulToolEvidence(params.spec) &&
     !refined.blockedReason;
 
@@ -2039,6 +2177,16 @@ export function resolveDelegatedChildToolScope(params: {
     removedAsDelegationTools,
     removedAsUnknownTools,
     allowsToollessExecution,
+    toolContract: {
+      state: toolContractState,
+      requestedSource,
+      requestedConcreteTools: requested,
+      requestedSemanticCapabilities: semanticCapabilities,
+      resolvedTools: profiledAllowedTools,
+      missingRequestedTools,
+      optionalEnrichment,
+      requiredSubstitution,
+    },
   };
 }
 
@@ -2049,11 +2197,16 @@ export function resolveDelegatedInitialToolChoiceToolName(
   const normalizedTools = normalizeToolNames(tools);
   const taskIntent = classifyDelegatedTaskIntent(spec);
   const requireBrowser = specRequiresMeaningfulBrowserEvidence(spec);
+  const requireWorkspaceInspection = specRequiresMeaningfulWorkspaceEvidence(spec);
   const requireFileMutation = specRequiresFileMutationEvidence(spec);
   const setupHeavy = isSetupHeavyDelegatedTask(spec);
   const localFileInspectionTask = specTargetsLocalFiles(spec);
   const shouldPrioritizeSourceGroundingRetry =
     spec.lastValidationCode === "missing_required_source_evidence" &&
+    localFileInspectionTask &&
+    !requireBrowser;
+  const shouldPrioritizeWorkspaceGroundingRetry =
+    spec.lastValidationCode === "missing_workspace_inspection_evidence" &&
     localFileInspectionTask &&
     !requireBrowser;
   const shouldPrioritizeVerificationRetry =
@@ -2070,6 +2223,16 @@ export function resolveDelegatedInitialToolChoiceToolName(
     return INITIAL_FILE_INSPECTION_TOOL_NAMES.find((toolName) =>
       normalizedTools.includes(toolName)
     );
+  }
+
+  if (shouldPrioritizeWorkspaceGroundingRetry || requireWorkspaceInspection) {
+    const preferredInspectionTool = [
+      "system.listDir",
+      ...INITIAL_FILE_INSPECTION_TOOL_NAMES,
+    ].find((toolName) => normalizedTools.includes(toolName));
+    if (preferredInspectionTool) {
+      return preferredInspectionTool;
+    }
   }
 
   if (shouldPrioritizeVerificationRetry) {
@@ -2109,9 +2272,14 @@ export function resolveDelegatedInitialToolChoiceToolName(
   }
 
   if (taskIntent === "research" || taskIntent === "validation" || requireBrowser) {
-    const preferredProviderResearchTool = normalizedTools.find((toolName) =>
-      PREFERRED_PROVIDER_NATIVE_RESEARCH_TOOL_NAMES.has(toolName)
-    );
+    const preferredProviderResearchTool = selectPreferredProviderNativeResearchToolName({
+      messageText: [spec.task, spec.objective, ...(spec.acceptanceCriteria ?? [])]
+        .filter((value): value is string => typeof value === "string" && value.length > 0)
+        .join("\n"),
+      allowedToolNames: normalizedTools.filter((toolName) =>
+        PREFERRED_PROVIDER_NATIVE_RESEARCH_TOOL_NAMES.has(toolName)
+      ),
+    });
     if (taskIntent === "research" && preferredProviderResearchTool) {
       return preferredProviderResearchTool;
     }
@@ -2146,6 +2314,7 @@ export function resolveDelegatedInitialToolChoiceToolNames(
 
   const taskIntent = classifyDelegatedTaskIntent(spec);
   const requireBrowser = specRequiresMeaningfulBrowserEvidence(spec);
+  const requireWorkspaceInspection = specRequiresMeaningfulWorkspaceEvidence(spec);
   const requireFileMutation = specRequiresFileMutationEvidence(spec);
   const setupHeavy = isSetupHeavyDelegatedTask(spec);
   const localFileInspectionTask = specTargetsLocalFiles(spec);
@@ -2155,6 +2324,10 @@ export function resolveDelegatedInitialToolChoiceToolNames(
   );
   const shouldPrioritizeSourceGroundingRetry =
     spec.lastValidationCode === "missing_required_source_evidence" &&
+    localFileInspectionTask &&
+    !requireBrowser;
+  const shouldPrioritizeWorkspaceGroundingRetry =
+    spec.lastValidationCode === "missing_workspace_inspection_evidence" &&
     localFileInspectionTask &&
     !requireBrowser;
   const shouldPrioritizeVerificationRetry =
@@ -2195,12 +2368,31 @@ export function resolveDelegatedInitialToolChoiceToolNames(
     return correctionTools.length > 0 ? correctionTools : [preferredToolName];
   }
 
+  if (shouldPrioritizeWorkspaceGroundingRetry) {
+    const correctionTools: string[] = [];
+    const pushFirstAvailable = (candidates: readonly string[]) => {
+      const toolName = candidates.find((candidate) =>
+        normalizedTools.includes(candidate)
+      );
+      if (toolName && !correctionTools.includes(toolName)) {
+        correctionTools.push(toolName);
+      }
+    };
+    pushFirstAvailable(["system.listDir"]);
+    pushFirstAvailable(INITIAL_FILE_INSPECTION_TOOL_NAMES);
+    if (requireFileMutation || taskIntent === "implementation") {
+      pushFirstAvailable(INITIAL_FILE_MUTATION_TOOL_NAMES);
+    }
+    return correctionTools.length > 0 ? correctionTools : [preferredToolName];
+  }
+
   const shouldUseFlexibleInitialSubset =
     hasSystemTooling &&
     (
       setupHeavy ||
       researchLikeButLocalInspectionOnly ||
       shouldUseFullInspectionCoverage ||
+      requireWorkspaceInspection ||
       verificationCue ||
       taskIntent === "validation" ||
       taskIntent === "implementation"
@@ -2230,10 +2422,9 @@ export function resolveDelegatedInitialToolChoiceToolNames(
   const inspectionCandidates = setupHeavy
     ? (["system.listDir", ...INITIAL_FILE_INSPECTION_TOOL_NAMES] as const)
     : INITIAL_FILE_INSPECTION_TOOL_NAMES;
-  const fullInspectionCandidates = [
-    "system.readFile",
-    "system.listDir",
-  ] as const;
+  const fullInspectionCandidates = requireWorkspaceInspection
+    ? (["system.listDir", "system.readFile"] as const)
+    : (["system.readFile", "system.listDir"] as const);
 
   if (shouldPrioritizeVerificationRetry) {
     pushFirstAvailable(INITIAL_SETUP_TOOL_NAMES);
@@ -2247,10 +2438,11 @@ export function resolveDelegatedInitialToolChoiceToolNames(
     if (
       taskIntent === "implementation" ||
       taskIntent === "validation" ||
+      requireWorkspaceInspection ||
       localFileInspectionTask ||
       setupHeavy
     ) {
-      if (shouldUseFullInspectionCoverage) {
+      if (shouldUseFullInspectionCoverage || requireWorkspaceInspection) {
         pushAllAvailable(fullInspectionCandidates);
       } else {
         pushFirstAvailable(inspectionCandidates);
@@ -2394,6 +2586,24 @@ export function resolveDelegatedCorrectionToolChoiceToolNames(
     }
   }
 
+  if (validationCode === "missing_workspace_inspection_evidence") {
+    const correctionTools: string[] = [];
+    const pushFirstAvailable = (candidates: readonly string[]) => {
+      const toolName = candidates.find((candidate) =>
+        normalizedTools.includes(candidate)
+      );
+      if (toolName && !correctionTools.includes(toolName)) {
+        correctionTools.push(toolName);
+      }
+    };
+    pushFirstAvailable(["system.listDir"]);
+    pushFirstAvailable(INITIAL_FILE_INSPECTION_TOOL_NAMES);
+    pushFirstAvailable(INITIAL_FILE_MUTATION_TOOL_NAMES);
+    if (correctionTools.length > 0) {
+      return correctionTools;
+    }
+  }
+
   if (validationCode === "low_signal_browser_evidence") {
     const taskIntent = classifyDelegatedTaskIntent(spec);
     const requireFileMutation = specRequiresFileMutationEvidence(spec);
@@ -2408,8 +2618,21 @@ export function resolveDelegatedCorrectionToolChoiceToolNames(
     };
 
     if (taskIntent === "research") {
+      const preferredProviderResearchTool = selectPreferredProviderNativeResearchToolName({
+        messageText: [spec.task, spec.objective, ...(spec.acceptanceCriteria ?? [])]
+          .filter((value): value is string => typeof value === "string" && value.length > 0)
+          .join("\n"),
+        allowedToolNames: normalizedTools.filter((toolName) =>
+          PREFERRED_PROVIDER_NATIVE_RESEARCH_TOOL_NAMES.has(toolName)
+        ),
+      });
+      if (preferredProviderResearchTool) {
+        pushFirstAvailable([preferredProviderResearchTool]);
+      }
       pushFirstAvailable([
         PROVIDER_NATIVE_WEB_SEARCH_TOOL,
+        PROVIDER_NATIVE_X_SEARCH_TOOL,
+        PROVIDER_NATIVE_FILE_SEARCH_TOOL,
         ...INITIAL_RESEARCH_TOOL_NAMES,
         ...PREFERRED_RESEARCH_BROWSER_TOOL_NAMES,
       ]);
@@ -2631,7 +2854,7 @@ function isToolCallFailure(toolCall: DelegationValidationToolCall): boolean {
   return false;
 }
 
-export type AcceptanceVerificationCategory = "build" | "test";
+export type AcceptanceVerificationCategory = "build" | "test" | "inspection";
 type ForbiddenPhaseActionCategory =
   | "install"
   | "build"
@@ -2804,6 +3027,9 @@ export function getAcceptanceVerificationCategories(
   }
   if (ACCEPTANCE_TEST_VERIFICATION_RE.test(criterion)) {
     categories.add("test");
+  }
+  if (criterionRequiresWorkspaceInspectionVerification(criterion)) {
+    categories.add("inspection");
   }
   return [...categories];
 }
@@ -3306,9 +3532,38 @@ function validateAcceptanceVerificationToolEvidence(
       continue;
     }
 
+    if (
+      categories.includes("inspection") &&
+      spec.inheritedEvidence?.workspaceInspectionSatisfied !== true &&
+      !successfulCalls.some((toolCall) =>
+        isMeaningfulWorkspaceInspectionToolCall({
+          toolCall,
+          workspaceRoot: spec.executionContext?.workspaceRoot,
+          targetArtifacts: collectExplicitSpecFileArtifacts(spec),
+          requiredSourceArtifacts: collectExplicitSourceSpecFileArtifacts(spec),
+        })
+      )
+    ) {
+      return validationFailure(
+        "missing_workspace_inspection_evidence",
+        "Acceptance criterion required grounded workspace inspection evidence but the child did not inspect non-target workspace state: " +
+          truncateValidationExcerpt(criterion),
+        parsedOutput,
+      );
+    }
+
+    const remainingCategories = categories.filter((category) =>
+      category !== "inspection"
+    );
+    if (remainingCategories.length === 0) {
+      continue;
+    }
+
     const hasMatchingSuccess = successfulCalls.some((toolCall) => {
       const toolCategories = getToolCallVerificationCategories(toolCall);
-      return categories.some((category) => toolCategories.includes(category));
+      return remainingCategories.some((category) =>
+        toolCategories.includes(category)
+      );
     });
     if (hasMatchingSuccess) {
       continue;
@@ -3429,6 +3684,58 @@ function isMeaningfulHostBrowserValidationToolCall(
   return hasBrowserCue && (hasTargetCue || specHasBrowserCue);
 }
 
+function getMeaningfulWorkspaceEvidenceFailureMessage(
+  spec: DelegationContractSpec,
+  successfulCalls: readonly DelegationValidationToolCall[],
+): string | undefined {
+  if (!specRequiresMeaningfulWorkspaceEvidence(spec)) {
+    return undefined;
+  }
+  const explicitSourceArtifacts = collectExplicitSourceSpecFileArtifacts(spec);
+  if (explicitSourceArtifacts.length > 0) {
+    const observedReadEvidence = collectLatestReadFileStateEvidence(successfulCalls);
+    const hasAllNamedSourceReads = explicitSourceArtifacts.every((target) => {
+      const normalizedTarget = normalizeExplicitArtifactPath(target);
+      const targetBasename = getNormalizedPathBasename(normalizedTarget);
+      return observedReadEvidence.some((entry) => {
+        const normalizedPath = normalizeExplicitArtifactPath(entry.path ?? "");
+        if (normalizedPath.length === 0) {
+          return false;
+        }
+        return pathsMatchByTarget(normalizedPath, normalizedTarget) ||
+          getNormalizedPathBasename(normalizedPath) === targetBasename;
+      });
+    });
+    if (!hasAllNamedSourceReads) {
+      return undefined;
+    }
+  }
+  if (
+    successfulCalls.some((toolCall) =>
+      isMeaningfulWorkspaceInspectionToolCall({
+        toolCall,
+        workspaceRoot: spec.executionContext?.workspaceRoot,
+        targetArtifacts: collectExplicitSpecFileArtifacts(spec),
+        requiredSourceArtifacts: collectExplicitSourceSpecFileArtifacts(spec),
+      })
+    )
+  ) {
+    return undefined;
+  }
+  const hadInspectionAttempt = successfulCalls.some((toolCall) => {
+    const toolName = toolCall.name?.trim() ?? "";
+    return toolName === "system.readFile" ||
+      toolName === "system.listDir" ||
+      toolName === "system.stat" ||
+      toolName === "desktop.text_editor" ||
+      toolName === "system.bash" ||
+      toolName === "desktop.bash";
+  });
+  return hadInspectionAttempt
+    ? "Delegated task required workspace-grounded evidence but the child only inspected the target documentation artifact instead of the current workspace state"
+    : "Delegated task required workspace-grounded evidence but the child recorded no meaningful non-target workspace inspection before completion";
+}
+
 function getMeaningfulBrowserEvidenceFailureMessage(
   spec: DelegationContractSpec,
   successfulCalls: readonly DelegationValidationToolCall[],
@@ -3436,7 +3743,7 @@ function getMeaningfulBrowserEvidenceFailureMessage(
 ): string | undefined {
   if (!specRequiresMeaningfulBrowserEvidence(spec)) return undefined;
   const taskIntent = classifyDelegatedTaskIntent(spec);
-  if (taskIntent === "research" && hasProviderCitationEvidence(providerEvidence)) {
+  if (taskIntent === "research" && hasProviderResearchEvidence(providerEvidence)) {
     return undefined;
   }
   if (
@@ -3462,18 +3769,37 @@ function hasProviderCitationEvidence(
   );
 }
 
+function hasProviderServerSideToolEvidence(
+  providerEvidence: DelegationValidationProviderEvidence | undefined,
+): boolean {
+  return (providerEvidence?.serverSideToolCalls?.length ?? 0) > 0 ||
+    (providerEvidence?.serverSideToolUsage ?? []).some((entry) =>
+      typeof entry.count === "number" && Number.isFinite(entry.count) && entry.count > 0
+    );
+}
+
+function hasProviderResearchEvidence(
+  providerEvidence: DelegationValidationProviderEvidence | undefined,
+): boolean {
+  return hasProviderCitationEvidence(providerEvidence) ||
+    hasProviderServerSideToolEvidence(providerEvidence);
+}
+
 function getSuccessfulToolEvidenceFailure(
   toolCalls: readonly DelegationValidationToolCall[] | undefined,
   spec?: DelegationContractSpec,
   providerEvidence?: DelegationValidationProviderEvidence,
 ): {
-  code: "missing_successful_tool_evidence" | "low_signal_browser_evidence";
+  code:
+    | "missing_successful_tool_evidence"
+    | "low_signal_browser_evidence"
+    | "missing_workspace_inspection_evidence";
   message: string;
 } | undefined {
   if (
     spec &&
     classifyDelegatedTaskIntent(spec) === "research" &&
-    hasProviderCitationEvidence(providerEvidence)
+    hasProviderResearchEvidence(providerEvidence)
   ) {
     return undefined;
   }
@@ -3504,6 +3830,16 @@ function getSuccessfulToolEvidenceFailure(
         message: browserEvidenceFailure,
       };
     }
+    const workspaceEvidenceFailure = getMeaningfulWorkspaceEvidenceFailureMessage(
+      spec,
+      successfulCalls,
+    );
+    if (workspaceEvidenceFailure) {
+      return {
+        code: "missing_workspace_inspection_evidence",
+        message: workspaceEvidenceFailure,
+      };
+    }
   }
   return undefined;
 }
@@ -3518,7 +3854,7 @@ function validateSuccessfulToolEvidence(
     if (
       specRequiresSuccessfulToolEvidence(spec) &&
       classifyDelegatedTaskIntent(spec) === "research" &&
-      hasProviderCitationEvidence(providerEvidence)
+      hasProviderResearchEvidence(providerEvidence)
     ) {
       return undefined;
     }
@@ -3557,7 +3893,7 @@ function validateContradictoryCompletionClaim(
   parsedOutput: Record<string, unknown> | undefined,
   toolCalls: readonly DelegationValidationToolCall[] | undefined,
 ): DelegationOutputValidationResult | undefined {
-  if (isReviewFindingsDelegatedTask(spec)) {
+  if (isReviewerDelegatedTask(spec)) {
     return undefined;
   }
   const stringValues = [
@@ -3619,7 +3955,7 @@ function validateBlockedPhaseOutput(
   output: string,
   parsedOutput: Record<string, unknown> | undefined,
 ): DelegationOutputValidationResult | undefined {
-  if (isReviewFindingsDelegatedTask(spec)) {
+  if (isReviewerDelegatedTask(spec)) {
     return undefined;
   }
   const stringValues = [
@@ -3710,7 +4046,14 @@ function validateFileMutationEvidence(
   }
 
   if (!hasAnyToolCallFileMutationEvidence(toolCalls)) {
-    if (hasExplicitTargetFileNoopSatisfactionEvidence(spec, output, toolCalls)) {
+    if (
+      hasExplicitTargetFileNoopSatisfactionEvidence(
+        spec,
+        output,
+        parsedOutput,
+        toolCalls,
+      )
+    ) {
       return undefined;
     }
     return validationFailure(

@@ -152,13 +152,29 @@ function assertResultKeys(result: Record<string, unknown>, required: string[]): 
 
 describe('runtime replay cli commands', () => {
   let workspace = '';
+  let originalAgencConfig: string | undefined;
+  let originalRuntimeConfig: string | undefined;
 
   beforeEach(() => {
     workspace = createTempWorkspace();
+    originalAgencConfig = process.env.AGENC_CONFIG;
+    originalRuntimeConfig = process.env.AGENC_RUNTIME_CONFIG;
+    process.env.AGENC_CONFIG = join(workspace, 'missing-canonical-config.json');
+    delete process.env.AGENC_RUNTIME_CONFIG;
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    if (originalAgencConfig === undefined) {
+      delete process.env.AGENC_CONFIG;
+    } else {
+      process.env.AGENC_CONFIG = originalAgencConfig;
+    }
+    if (originalRuntimeConfig === undefined) {
+      delete process.env.AGENC_RUNTIME_CONFIG;
+    } else {
+      process.env.AGENC_RUNTIME_CONFIG = originalRuntimeConfig;
+    }
     rmSync(workspace, { recursive: true, force: true });
   });
 

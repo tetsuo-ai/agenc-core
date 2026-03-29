@@ -1850,15 +1850,26 @@ describe("createSessionToolHandler", () => {
     };
 
     expect(baseHandler).not.toHaveBeenCalled();
-    expect(subAgentManager.spawn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        parentSessionId: "session-parent",
-        task: "Inspect file",
-        timeoutMs: 120_000,
-        tools: ["system.readFile"],
-        requireToolCall: true,
-      }),
-    );
+    const spawnInput = subAgentManager.spawn.mock.calls[0]?.[0] as
+      | Record<string, unknown>
+      | undefined;
+    expect(spawnInput).toMatchObject({
+      parentSessionId: "session-parent",
+      task: "Inspect file",
+      workingDirectory: "/tmp/project-root",
+      workingDirectorySource: "execution_envelope",
+      tools: ["system.readFile"],
+      requireToolCall: true,
+    });
+    expect(spawnInput?.delegationSpec).toMatchObject({
+      task: "Inspect file",
+      timeoutMs: 120_000,
+      tools: ["system.readFile"],
+      executionContext: {
+        workspaceRoot: "/tmp/project-root",
+        allowedReadRoots: ["/tmp/project-root"],
+      },
+    });
     expect(parsed.success).toBe(true);
     expect(parsed.status).toBe("completed");
     expect(parsed.completionState).toBe("completed");
@@ -3581,6 +3592,86 @@ describe("createSessionToolHandler", () => {
     ]);
   });
 
+  it("preserves provider-native server-side tool telemetry in delegated child results", async () => {
+    const subAgentManager = {
+      spawn: vi.fn(async () => "subagent:child-native-tools"),
+      getResult: vi.fn(() => makeCompletedChildResult({
+        sessionId: "subagent:child-native-tools",
+        output: '{"selected":"pixi"}',
+        success: true,
+        durationMs: 18,
+        toolCalls: [],
+        providerEvidence: {
+          serverSideToolCalls: [
+            {
+              type: "web_search_call",
+              toolType: "web_search",
+              id: "ws_123",
+              status: "completed",
+            },
+          ],
+          serverSideToolUsage: [
+            {
+              category: "SERVER_SIDE_TOOL_WEB_SEARCH",
+              toolType: "web_search",
+              count: 1,
+            },
+          ],
+        },
+      })),
+      getInfo: vi.fn(() => ({
+        sessionId: "subagent:child-native-tools",
+        parentSessionId: "session-parent",
+        depth: 1,
+        status: "completed",
+        startedAt: Date.now() - 25,
+        task: "Compare official framework docs",
+      })),
+    };
+
+    const handler = createSessionToolHandler({
+      sessionId: "session-parent",
+      baseHandler: vi.fn(async () => "should-not-run"),
+      availableToolNames: ["web_search"],
+      routerId: "router-a",
+      send: vi.fn(),
+      delegation: () => ({
+        subAgentManager: subAgentManager as any,
+        policyEngine: null,
+        verifier: null,
+        lifecycleEmitter: null,
+      }),
+    });
+
+    const result = await handler("execute_with_agent", {
+      task: "Compare Canvas API, Phaser, and PixiJS from official docs",
+      inputContract:
+        "Return JSON with selected framework and supporting evidence",
+      tools: ["web_search"],
+    });
+    const parsed = JSON.parse(result) as {
+      success?: boolean;
+      providerEvidence?: {
+        serverSideToolCalls?: Array<{ type?: string; toolType?: string }>;
+        serverSideToolUsage?: Array<{ category?: string; count?: number }>;
+      };
+    };
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.providerEvidence?.serverSideToolCalls).toEqual([
+      expect.objectContaining({
+        type: "web_search_call",
+        toolType: "web_search",
+      }),
+    ]);
+    expect(parsed.providerEvidence?.serverSideToolUsage).toEqual([
+      expect.objectContaining({
+        category: "SERVER_SIDE_TOOL_WEB_SEARCH",
+        count: 1,
+      }),
+    ]);
+  });
+
   it("clamps execute_with_agent timeoutMs to a safe minimum", async () => {
     const subAgentManager = {
       spawn: vi.fn(async () => "subagent:child-min-timeout"),
@@ -3621,14 +3712,24 @@ describe("createSessionToolHandler", () => {
       timeoutMs: 10_000,
     });
 
-    expect(subAgentManager.spawn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        parentSessionId: "session-parent",
-        task: "Inspect file quickly",
-        timeoutMs: 60_000,
-        requireToolCall: false,
-      }),
-    );
+    const spawnInput = subAgentManager.spawn.mock.calls[0]?.[0] as
+      | Record<string, unknown>
+      | undefined;
+    expect(spawnInput).toMatchObject({
+      parentSessionId: "session-parent",
+      task: "Inspect file quickly",
+      workingDirectory: "/tmp/runtime-timeout-scope",
+      workingDirectorySource: "execution_envelope",
+      tools: ["desktop.bash"],
+      requireToolCall: false,
+    });
+    expect(spawnInput?.delegationSpec).toMatchObject({
+      task: "Inspect file quickly",
+      timeoutMs: 10_000,
+      executionContext: {
+        workspaceRoot: "/tmp/runtime-timeout-scope",
+      },
+    });
   });
 
   it("rejects overloaded execute_with_agent objectives before spawn", async () => {
@@ -3958,6 +4059,7 @@ describe("createSessionToolHandler", () => {
           }],
           tokenUsage: undefined,
           providerName: "mock",
+          completionState: "completed",
           stopReason: "completed",
         }),
       getInfo: vi.fn(() => ({ status: "completed" })),
@@ -4002,6 +4104,86 @@ describe("createSessionToolHandler", () => {
       "system.writeFile",
     ]);
     expect(subAgentManager.spawn).not.toHaveBeenCalled();
+  });
+
+  it("records degraded tool-contract state when execute_with_agent resolves abstract capabilities into concrete child tools", async () => {
+    const hostWorkspaceRoot = createTempDir("delegated-file-system-contract-");
+    const subAgentManager = {
+      spawn: vi.fn(async () => "subagent:spawned"),
+      getResult: vi
+        .fn()
+        .mockReturnValueOnce(null)
+        .mockReturnValue(makeCompletedChildResult({
+          sessionId: "subagent:spawned",
+          output: '{"summary":"workspace scaffolded"}',
+          success: true,
+          durationMs: 25,
+          toolCalls: [{
+            name: "system.writeFile",
+            args: {
+              path: "/workspace/runtime/package.json",
+              content: '{"name":"runtime"}',
+            },
+            result: '{"ok":true}',
+            isError: false,
+            durationMs: 5,
+          }],
+          tokenUsage: undefined,
+          providerName: "mock",
+        })),
+      getInfo: vi.fn(() => ({ status: "completed" })),
+    };
+
+    const handler = createSessionToolHandler({
+      sessionId: "session-parent",
+      baseHandler: vi.fn(async () => "should-not-run"),
+      availableToolNames: [
+        "system.listDir",
+        "system.writeFile",
+        "system.mkdir",
+        "system.bash",
+      ],
+      routerId: "router-a",
+      send: vi.fn(),
+      defaultWorkingDirectory: hostWorkspaceRoot,
+      delegation: () => ({
+        subAgentManager: subAgentManager as any,
+        policyEngine: null,
+        verifier: null,
+        lifecycleEmitter: null,
+      }),
+    });
+
+    const result = await handler("execute_with_agent", {
+      task: "Scaffold project and implement the game files in the desktop workspace",
+      objective:
+        "Scaffold project and implement the game files in the desktop workspace",
+      inputContract: "JSON output with created files",
+      requiredToolCapabilities: ["file_system"],
+    });
+    expect(result).toContain("delegatedScopeTrust");
+    expect(subAgentManager.spawn).toHaveBeenCalledTimes(1);
+    expect(subAgentManager.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tools: [
+          "system.listDir",
+          "system.writeFile",
+          "system.mkdir",
+          "system.bash",
+        ],
+        delegationSpec: expect.objectContaining({
+          toolContract: expect.objectContaining({
+            state: "degraded",
+            requiredSubstitution: [
+              "system.listDir",
+              "system.writeFile",
+              "system.mkdir",
+            ],
+            optionalEnrichment: ["system.bash"],
+          }),
+        }),
+      }),
+    );
   });
 
   it("keeps the explicit execute_with_agent delegation spec while promoting an objective-rich child prompt", async () => {

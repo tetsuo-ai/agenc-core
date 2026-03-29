@@ -69,6 +69,9 @@ export function deriveDefaultBackgroundRunMaxCycles(params?: {
   readonly nextCheckMs?: number;
 }): number {
   const maxRuntimeMs = params?.maxRuntimeMs ?? DEFAULT_BACKGROUND_RUN_MAX_RUNTIME_MS;
+  if (maxRuntimeMs <= 0) {
+    return 0;
+  }
   const requestedCadenceMs =
     typeof params?.nextCheckMs === "number" && params.nextCheckMs > 0
       ? params.nextCheckMs
@@ -615,6 +618,14 @@ function coercePositiveInteger(value: unknown): number | undefined {
   }
   const normalized = Math.floor(value);
   return normalized > 0 ? normalized : undefined;
+}
+
+function coerceNonNegativeBudgetInteger(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  const normalized = Math.floor(value);
+  return normalized >= 0 ? normalized : undefined;
 }
 
 function coerceNonNegativeInteger(value: unknown): number | undefined {
@@ -1523,11 +1534,12 @@ function coerceBudgetState(
       coerceNonNegativeInteger(raw.managedProcessCount) ??
       defaults.managedProcessCount,
     maxRuntimeMs:
-      coercePositiveInteger(raw.maxRuntimeMs) ?? defaults.maxRuntimeMs,
+      coerceNonNegativeBudgetInteger(raw.maxRuntimeMs) ??
+      defaults.maxRuntimeMs,
     maxCycles:
-      coercePositiveInteger(raw.maxCycles) ?? defaults.maxCycles,
+      coerceNonNegativeBudgetInteger(raw.maxCycles) ?? defaults.maxCycles,
     maxIdleMs:
-      coercePositiveInteger(raw.maxIdleMs) ?? defaults.maxIdleMs,
+      coerceNonNegativeBudgetInteger(raw.maxIdleMs) ?? defaults.maxIdleMs,
     nextCheckIntervalMs:
       coercePositiveInteger(raw.nextCheckIntervalMs) ??
       defaults.nextCheckIntervalMs,
@@ -1697,7 +1709,8 @@ function coerceRecentSnapshot(
             entry === "workflow_verifier_pass" ||
             entry === "build_verification" ||
             entry === "behavior_verification" ||
-            entry === "review_verification",
+            entry === "review_verification" ||
+            entry === "request_milestones",
         )
       : undefined,
     watchCount:
@@ -1762,7 +1775,8 @@ function coerceCompletionProgress(
         entry === "workflow_verifier_pass" ||
         entry === "build_verification" ||
         entry === "behavior_verification" ||
-        entry === "review_verification",
+        entry === "review_verification" ||
+        entry === "request_milestones",
     );
   const reusableEvidence = raw.reusableEvidence
     .map((entry) => {
@@ -1805,6 +1819,45 @@ function coerceCompletionProgress(
     requiredRequirements: parseRequirementArray(raw.requiredRequirements),
     satisfiedRequirements: parseRequirementArray(raw.satisfiedRequirements),
     remainingRequirements: parseRequirementArray(raw.remainingRequirements),
+    requiredMilestones: Array.isArray(raw.requiredMilestones)
+      ? raw.requiredMilestones
+          .map((entry) => {
+            if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+              return undefined;
+            }
+            const milestone = entry as Record<string, unknown>;
+            return typeof milestone.id === "string" &&
+                typeof milestone.description === "string"
+              ? {
+                id: milestone.id,
+                description: milestone.description,
+              }
+              : undefined;
+          })
+          .filter((entry): entry is NonNullable<typeof entry> => entry !== undefined)
+      : undefined,
+    satisfiedMilestoneIds: Array.isArray(raw.satisfiedMilestoneIds)
+      ? raw.satisfiedMilestoneIds.filter(
+          (entry): entry is string => typeof entry === "string",
+        )
+      : undefined,
+    remainingMilestones: Array.isArray(raw.remainingMilestones)
+      ? raw.remainingMilestones
+          .map((entry) => {
+            if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+              return undefined;
+            }
+            const milestone = entry as Record<string, unknown>;
+            return typeof milestone.id === "string" &&
+                typeof milestone.description === "string"
+              ? {
+                id: milestone.id,
+                description: milestone.description,
+              }
+              : undefined;
+          })
+          .filter((entry): entry is NonNullable<typeof entry> => entry !== undefined)
+      : undefined,
     reusableEvidence,
     updatedAt: raw.updatedAt,
   };

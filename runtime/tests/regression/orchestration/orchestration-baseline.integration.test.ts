@@ -21,15 +21,15 @@ describe("orchestration baseline regression corpus", () => {
     expect(artifact.offlineReplay.parseFailures).toBe(0);
     expect(artifact.offlineReplay.replayFailures).toBe(0);
 
-    expect(artifact.orchestrationBaseline.scenarioCount).toBe(8);
-    expect(artifact.orchestrationBaseline.passingScenarios).toBe(8);
+    expect(artifact.orchestrationBaseline.scenarioCount).toBe(13);
+    expect(artifact.orchestrationBaseline.passingScenarios).toBe(13);
     expect(artifact.orchestrationBaseline.passRate).toBe(1);
     expect(artifact.orchestrationBaseline.averageToolCalls).toBeCloseTo(
-      17 / 8,
+      23 / 13,
       8,
     );
     expect(artifact.orchestrationBaseline.fallbackCount).toBe(5);
-    expect(artifact.orchestrationBaseline.spuriousSubagentCount).toBe(11);
+    expect(artifact.orchestrationBaseline.spuriousSubagentCount).toBe(12);
     expect(artifact.orchestrationBaseline.approvalCount).toBe(0);
     expect(artifact.orchestrationBaseline.restartRecoverySuccessRate).toBe(0);
   });

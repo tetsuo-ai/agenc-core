@@ -1,10 +1,29 @@
 import type { GatewayLLMConfig } from "./types.js";
 
-const DEFAULT_GROK_COMPACTION_THRESHOLD = 16_000;
+const DEFAULT_GROK_COMPACTION_THRESHOLD_FALLBACK = 16_000;
+const DEFAULT_GROK_COMPACTION_CONTEXT_WINDOW_RATIO = 0.3;
 
 export interface GatewayStatefulResponsesResolution {
   readonly config: GatewayLLMConfig["statefulResponses"];
   readonly usedDefaults: boolean;
+}
+
+export function resolveDefaultGrokCompactionThreshold(
+  contextWindowTokens?: number,
+): number {
+  if (
+    typeof contextWindowTokens === "number" &&
+    Number.isFinite(contextWindowTokens) &&
+    contextWindowTokens > 0
+  ) {
+    return Math.max(
+      1,
+      Math.floor(
+        contextWindowTokens * DEFAULT_GROK_COMPACTION_CONTEXT_WINDOW_RATIO,
+      ),
+    );
+  }
+  return DEFAULT_GROK_COMPACTION_THRESHOLD_FALLBACK;
 }
 
 export function resolveGatewayStatefulResponses(
@@ -32,18 +51,14 @@ export function resolveGatewayStatefulResponses(
   const store = statefulResponses?.store ?? false;
   if (statefulResponses?.store === undefined) usedDefaults = true;
 
-  const fallbackToStateless = statefulResponses?.fallbackToStateless ?? true;
+  const fallbackToStateless = statefulResponses?.fallbackToStateless ?? false;
   if (statefulResponses?.fallbackToStateless === undefined) usedDefaults = true;
 
   const compactionEnabled = statefulResponses?.compaction?.enabled ?? true;
   if (statefulResponses?.compaction?.enabled === undefined) usedDefaults = true;
 
-  const compactThreshold =
-    statefulResponses?.compaction?.compactThreshold ??
-    DEFAULT_GROK_COMPACTION_THRESHOLD;
-  if (statefulResponses?.compaction?.compactThreshold === undefined) {
-    usedDefaults = true;
-  }
+  const compactThreshold = statefulResponses?.compaction?.compactThreshold;
+  if (compactThreshold === undefined) usedDefaults = true;
 
   const fallbackOnUnsupported =
     statefulResponses?.compaction?.fallbackOnUnsupported ?? true;
@@ -58,7 +73,7 @@ export function resolveGatewayStatefulResponses(
       fallbackToStateless,
       compaction: {
         enabled: compactionEnabled,
-        compactThreshold,
+        ...(compactThreshold !== undefined ? { compactThreshold } : {}),
         fallbackOnUnsupported,
       },
     },

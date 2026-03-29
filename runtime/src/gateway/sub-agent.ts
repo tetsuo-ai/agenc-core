@@ -17,7 +17,10 @@ import { createGatewayMessage } from "./message.js";
 import { ChatExecutor } from "../llm/chat-executor.js";
 import { buildModelRoutingPolicy } from "../llm/model-routing-policy.js";
 import type { PromptBudgetConfig } from "../llm/prompt-budget.js";
-import { buildRuntimeEconomicsPolicy } from "../llm/run-budget.js";
+import {
+  buildRuntimeEconomicsPolicy,
+  type RuntimeBudgetMode,
+} from "../llm/run-budget.js";
 import type {
   ChatExecutorResult,
   ToolCallRecord,
@@ -38,6 +41,13 @@ import {
   logStructuredTraceEvent,
 } from "../llm/provider-trace-logger.js";
 import { resolveMaxToolRoundsForToolNames } from "./tool-round-budget.js";
+import {
+  hasRuntimeLimit,
+  isRuntimeLimitExceeded,
+  isRuntimeLimitReached,
+  normalizeRuntimeLimit,
+} from "../llm/runtime-limit-policy.js";
+import { resolveWorkflowDependencyState } from "../workflow/completion-state.js";
 import type {
   DelegationContractSpec,
   DelegationOutputValidationCode,
@@ -48,7 +58,7 @@ import { SubAgentSpawnError } from "./errors.js";
 // Constants
 // ============================================================================
 
-export const DEFAULT_SUB_AGENT_TIMEOUT_MS = 3_600_000; // 60 min
+export const DEFAULT_SUB_AGENT_TIMEOUT_MS = 0; // unlimited
 export const DEFAULT_SUB_AGENT_CONTEXT_STARTUP_TIMEOUT_MS = 15_000;
 export const MAX_CONCURRENT_SUB_AGENTS = 16;
 export const DEFAULT_MAX_SUB_AGENT_DEPTH = 4;
@@ -124,6 +134,9 @@ function raceAbortOrTimeout<T>(
 export type SubAgentStatus =
   | "running"
   | "completed"
+  | "needs_verification"
+  | "partial"
+  | "blocked"
   | "cancelled"
   | "timed_out"
   | "failed";
@@ -209,12 +222,15 @@ export interface SubAgentManagerConfig {
   readonly traceProviderPayloads?: boolean;
   readonly promptBudget?: PromptBudgetConfig;
   readonly sessionTokenBudget?: number;
+  readonly sessionCompactionThreshold?: number;
+  readonly economicsMode?: RuntimeBudgetMode;
   readonly onCompaction?: (sessionId: string, summary: string) => void;
 }
 
 export interface ResolvedSubAgentExecutionBudget {
   readonly promptBudget?: PromptBudgetConfig;
   readonly sessionTokenBudget?: number;
+  readonly sessionCompactionThreshold?: number;
   readonly providerProfile?: LLMProviderExecutionProfile;
 }
 
@@ -254,6 +270,11 @@ function mapChatCompletionToSubAgentStatus(input: {
   if (input.stopReason === "timeout") return "timed_out";
   if (input.stopReason === "cancelled") return "cancelled";
   if (input.completionState === "completed") return "completed";
+  if (input.completionState === "needs_verification") {
+    return "needs_verification";
+  }
+  if (input.completionState === "partial") return "partial";
+  if (input.completionState === "blocked") return "blocked";
   return "failed";
 }
 
@@ -272,10 +293,13 @@ export class SubAgentManager {
 
   constructor(config: SubAgentManagerConfig) {
     this.config = config;
-    this.maxConcurrent = config.maxConcurrent ?? MAX_CONCURRENT_SUB_AGENTS;
-    this.maxDepth = Math.max(
-      1,
-      Math.floor(config.maxDepth ?? DEFAULT_MAX_SUB_AGENT_DEPTH),
+    this.maxConcurrent = normalizeRuntimeLimit(
+      config.maxConcurrent,
+      MAX_CONCURRENT_SUB_AGENTS,
+    );
+    this.maxDepth = normalizeRuntimeLimit(
+      config.maxDepth,
+      DEFAULT_MAX_SUB_AGENT_DEPTH,
     );
     this.maxRetainedTerminalHandles = Math.max(
       1,
@@ -315,7 +339,7 @@ export class SubAgentManager {
         "task must be non-empty",
       );
     }
-    if (this.activeCount >= this.maxConcurrent) {
+    if (isRuntimeLimitReached(this.activeCount, this.maxConcurrent)) {
       throw new SubAgentSpawnError(
         config.parentSessionId,
         `max concurrent sub-agents reached (${this.maxConcurrent})`,
@@ -326,7 +350,7 @@ export class SubAgentManager {
     const depth = continuationHandle
       ? continuationHandle.depth
       : parentDepth + 1;
-    if (!continuationHandle && depth > this.maxDepth) {
+    if (!continuationHandle && isRuntimeLimitExceeded(depth, this.maxDepth)) {
       throw new SubAgentSpawnError(
         config.parentSessionId,
         `max sub-agent depth reached (${this.maxDepth})`,
@@ -522,6 +546,10 @@ export class SubAgentManager {
     if (handle.timeoutTimer !== null) {
       clearTimeout(handle.timeoutTimer);
     }
+    if (!hasRuntimeLimit(timeoutMs)) {
+      handle.timeoutTimer = null;
+      return;
+    }
     handle.timeoutTimer = setTimeout(() => {
       if (handle.status === "running") {
         this.markTerminalState(handle, "timed_out", {
@@ -637,6 +665,9 @@ export class SubAgentManager {
       const resolvedSessionTokenBudget =
         resolvedExecutionBudget?.sessionTokenBudget ??
         this.config.sessionTokenBudget;
+      const resolvedSessionCompactionThreshold =
+        resolvedExecutionBudget?.sessionCompactionThreshold ??
+        this.config.sessionCompactionThreshold;
       const resolvedProviderProfile =
         resolvedExecutionBudget?.providerProfile;
       const defaultMaxToolRounds = this.config.resolveDefaultMaxToolRounds?.();
@@ -651,7 +682,10 @@ export class SubAgentManager {
       const effectiveToolBudgetPerRequest =
         typeof handle.config.toolBudgetPerRequest === "number" &&
           Number.isFinite(handle.config.toolBudgetPerRequest)
-          ? Math.max(1, Math.floor(handle.config.toolBudgetPerRequest))
+          ? normalizeRuntimeLimit(
+              handle.config.toolBudgetPerRequest,
+              0,
+            )
           : undefined;
       const economicsPolicy = buildRuntimeEconomicsPolicy({
         sessionTokenBudget: resolvedSessionTokenBudget,
@@ -659,7 +693,7 @@ export class SubAgentManager {
         childTimeoutMs: handle.config.timeoutMs,
         childTokenBudget: resolvedSessionTokenBudget,
         maxFanoutPerTurn: 1,
-        mode: "enforce",
+        mode: this.config.economicsMode ?? "enforce",
       });
       const executor = new ChatExecutor({
         providers: [selectedProvider],
@@ -669,6 +703,7 @@ export class SubAgentManager {
           : undefined,
         promptBudget: resolvedPromptBudget,
         sessionTokenBudget: resolvedSessionTokenBudget,
+        sessionCompactionThreshold: resolvedSessionCompactionThreshold,
         onCompaction: this.config.onCompaction,
         delegationNestingDepth: handle.depth,
         defaultRunClass: "child",
@@ -789,7 +824,12 @@ export class SubAgentManager {
         completionState: resultOrAbort.completionState,
         stopReason: resultOrAbort.stopReason,
       });
-      const success = resultOrAbort.completionState === "completed";
+      const dependencyState = resultOrAbort.completionState
+        ? resolveWorkflowDependencyState({
+          completionState: resultOrAbort.completionState,
+        })
+        : undefined;
+      const success = dependencyState?.dependencySatisfied ?? false;
       const output =
         success || !resultOrAbort.stopReasonDetail
           ? resultOrAbort.content

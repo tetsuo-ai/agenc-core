@@ -4,6 +4,12 @@ import type {
   BackgroundRunStore,
 } from "../gateway/background-run-store.js";
 import type { MemoryEntry } from "../memory/types.js";
+import {
+  resolveWorkflowDependencyState,
+  type WorkflowCompletionState,
+  type WorkflowDependencyStateKind,
+  type WorkflowResolutionSemantics,
+} from "../workflow/completion-state.js";
 
 export interface BackgroundRunReplayEvent {
   readonly type: string;
@@ -17,6 +23,11 @@ export interface BackgroundRunReplayResult {
   readonly sessionId: string;
   readonly runId: string;
   readonly finalState: BackgroundRunState;
+  readonly completionState: WorkflowCompletionState;
+  readonly dependencyStateKind: WorkflowDependencyStateKind;
+  readonly dependencySatisfied: boolean;
+  readonly verifierClosed: boolean;
+  readonly resolutionSemantics: WorkflowResolutionSemantics;
   readonly snapshot: BackgroundRunRecentSnapshot;
   readonly eventCount: number;
   readonly startedAt?: number;
@@ -73,6 +84,26 @@ function expectedTerminalEvent(state: BackgroundRunState): string | undefined {
       return "run_cancelled";
     default:
       return undefined;
+  }
+}
+
+function mapBackgroundRunStateToCompletionState(
+  state: BackgroundRunState,
+): WorkflowCompletionState {
+  switch (state) {
+    case "completed":
+      return "completed";
+    case "pending":
+    case "running":
+    case "working":
+    case "paused":
+    case "suspended":
+      return "partial";
+    case "blocked":
+    case "failed":
+    case "cancelled":
+    default:
+      return "blocked";
   }
 }
 
@@ -139,6 +170,9 @@ export async function replayBackgroundRunFromStore(params: {
   const blockedWithoutNotice =
     snapshot.state === "blocked" && blockedNotice === undefined;
   const verifierAccurate = !falseCompletion && !blockedWithoutNotice;
+  const dependencyState = resolveWorkflowDependencyState({
+    completionState: mapBackgroundRunStateToCompletionState(snapshot.state),
+  });
 
   if (falseCompletion) {
     transitionViolations.push(
@@ -155,6 +189,11 @@ export async function replayBackgroundRunFromStore(params: {
     sessionId: snapshot.sessionId,
     runId: snapshot.runId,
     finalState: snapshot.state,
+    completionState: dependencyState.completionState,
+    dependencyStateKind: dependencyState.kind,
+    dependencySatisfied: dependencyState.dependencySatisfied,
+    verifierClosed: dependencyState.verifierClosed,
+    resolutionSemantics: dependencyState.semantics,
     snapshot,
     eventCount: events.length,
     startedAt: runStarted?.timestamp,

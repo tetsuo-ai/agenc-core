@@ -13,6 +13,7 @@ import type {
 } from "../workflow/pipeline.js";
 import type { ContextArtifactRef } from "../memory/artifact-store.js";
 import type { LLMUsage } from "../llm/types.js";
+import type { WorkflowStepRole } from "../workflow/execution-envelope.js";
 import type {
   DelegationOutputValidationCode,
 } from "../utils/delegation-validation.js";
@@ -152,6 +153,84 @@ export interface DependencyArtifactCandidate {
   readonly score: number;
   readonly order: number;
   readonly depth: number;
+  readonly artifactKind?: "workspace_artifact" | "reviewer_handoff";
+  readonly artifactType?: "reviewer_handoff_artifact";
+}
+
+export type ReviewerHandoffEvidenceKind =
+  | "workspace_inspection"
+  | "read_artifact"
+  | "modified_artifact"
+  | "verification_command";
+
+export interface ReviewerHandoffEvidenceRef {
+  readonly kind: ReviewerHandoffEvidenceKind;
+  readonly toolName?: string;
+  readonly path?: string;
+  readonly command?: string;
+  readonly exitCode?: number;
+}
+
+export interface ReviewerHandoffEntry {
+  readonly stepName: string;
+  readonly role: WorkflowStepRole;
+  readonly status: string;
+  readonly feedback: string;
+  readonly subagentSessionId?: string;
+  readonly stopReason?: string;
+  readonly validationCode?: string;
+  readonly evidenceRefs: readonly ReviewerHandoffEvidenceRef[];
+}
+
+export interface ReviewerHandoffArtifact {
+  readonly type: "reviewer_handoff_artifact";
+  readonly artifactId: string;
+  readonly producerStep: string;
+  readonly objective?: string | null;
+  readonly sourceSteps: readonly string[];
+  readonly synthesizedFeedback: string;
+  readonly reviewers: readonly ReviewerHandoffEntry[];
+}
+
+export function isReviewerHandoffArtifact(
+  value: unknown,
+): value is ReviewerHandoffArtifact {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    record.type === "reviewer_handoff_artifact" &&
+    typeof record.artifactId === "string" &&
+    typeof record.producerStep === "string" &&
+    Array.isArray(record.sourceSteps) &&
+    Array.isArray(record.reviewers)
+  );
+}
+
+export function extractReviewerHandoffArtifactFromResult(
+  result: string | null,
+): ReviewerHandoffArtifact | undefined {
+  if (typeof result !== "string" || result.trim().length === 0) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result);
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return undefined;
+  }
+  if (isReviewerHandoffArtifact(parsed)) {
+    return parsed;
+  }
+  const record = parsed as Record<string, unknown>;
+  if (isReviewerHandoffArtifact(record.reviewerHandoffArtifact)) {
+    return record.reviewerHandoffArtifact;
+  }
+  return undefined;
 }
 
 export interface SessionArtifactContextCandidate extends ContextArtifactRef {}
@@ -246,6 +325,10 @@ export interface SubagentContextDiagnostics {
     readonly resolved: readonly string[];
     readonly allowsToollessExecution: boolean;
     readonly semanticFallback: readonly string[];
+    readonly contractState: "exact" | "enriched" | "degraded";
+    readonly missingRequestedTools: readonly string[];
+    readonly optionalEnrichment: readonly string[];
+    readonly requiredSubstitution: readonly string[];
     readonly removedLowSignalBrowserTools: readonly string[];
     readonly removedByPolicy: readonly string[];
     readonly removedAsDelegationTools: readonly string[];

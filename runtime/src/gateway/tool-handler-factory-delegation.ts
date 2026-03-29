@@ -14,9 +14,7 @@ import { isSubAgentSessionId } from "./delegation-runtime.js";
 import { assessDelegationScope } from "./delegation-scope.js";
 import { assessDirectDelegationAdmission } from "./delegation-admission.js";
 import {
-  normalizeDelegationTimeoutMs,
-} from "./delegation-timeout.js";
-import {
+  type DelegationContractSpec,
   resolveDelegatedChildToolScope,
   specRequiresSuccessfulToolEvidence,
 } from "../utils/delegation-validation.js";
@@ -53,6 +51,51 @@ type DelegationContext = NonNullable<
 type DelegationSubAgentManager = NonNullable<DelegationContext["subAgentManager"]>;
 type DelegationLifecycleEmitter = DelegationContext["lifecycleEmitter"];
 type DelegationVerifier = DelegationContext["verifier"];
+
+function buildDirectDelegationSpec(params: {
+  readonly input: ExecuteWithAgentInput;
+  readonly toolContract: ReturnType<
+    typeof resolveDelegatedChildToolScope
+  >["toolContract"];
+}): DelegationContractSpec {
+  return {
+    task: params.input.task,
+    ...(params.input.objective ? { objective: params.input.objective } : {}),
+    ...(params.input.inputContract
+      ? { inputContract: params.input.inputContract }
+      : {}),
+    ...(params.input.acceptanceCriteria
+      ? { acceptanceCriteria: params.input.acceptanceCriteria }
+      : {}),
+    ...(params.input.tools ? { tools: params.input.tools } : {}),
+    ...(params.input.requiredToolCapabilities
+      ? {
+        requiredToolCapabilities: params.input.requiredToolCapabilities,
+      }
+      : {}),
+    ...(params.input.executionContext
+      ? { executionContext: params.input.executionContext }
+      : {}),
+    ...(params.input.delegationAdmission?.shape
+      ? { delegationShape: params.input.delegationAdmission.shape }
+      : {}),
+    ...(params.input.delegationAdmission?.isolationReason
+      ? {
+        isolationReason: params.input.delegationAdmission.isolationReason,
+      }
+      : {}),
+    ...(params.input.delegationAdmission?.ownedArtifacts
+      ? { ownedArtifacts: params.input.delegationAdmission.ownedArtifacts }
+      : {}),
+    ...(params.input.delegationAdmission?.verifierObligations
+      ? {
+        verifierObligations:
+          params.input.delegationAdmission.verifierObligations,
+      }
+      : {}),
+    toolContract: params.toolContract,
+  };
+}
 
 export interface ExecuteDelegationToolParams {
   readonly toolArgs: Record<string, unknown>;
@@ -460,14 +503,15 @@ export async function executeDelegationTool(
     });
   }
   const objective = input.objective ?? input.task;
-  const effectiveTimeoutMs = normalizeDelegationTimeoutMs(input.timeoutMs);
   const resolvedChildScope = resolveDelegatedChildToolScope({
     spec: input,
     requestedTools: input.tools,
     parentAllowedTools: availableToolNames,
     availableTools: availableToolNames,
     enforceParentIntersection: true,
-    strictExplicitToolAllowlist: Array.isArray(input.tools) && input.tools.length > 0,
+    strictExplicitToolAllowlist:
+      (Array.isArray(input.tools) && input.tools.length > 0) ||
+      ((input.executionContext?.allowedTools?.length ?? 0) > 0),
     unsafeBenchmarkMode,
   });
   const derivedExecutionEnvelope = deriveDelegatedExecutionEnvelopeFromParent({
@@ -587,6 +631,10 @@ export async function executeDelegationTool(
           : undefined,
       }
       : effectiveInput;
+  const effectiveDelegationSpec = buildDirectDelegationSpec({
+    input: admittedInput,
+    toolContract: resolvedChildScope.toolContract,
+  });
   if (resolvedChildScope.blockedReason) {
     lifecycleEmitter?.emit({
       type: "subagents.failed",
@@ -598,6 +646,7 @@ export async function executeDelegationTool(
         stage: "validation",
         objective,
         reason: resolvedChildScope.blockedReason,
+        toolContract: resolvedChildScope.toolContract,
         removedLowSignalBrowserTools:
           resolvedChildScope.removedLowSignalBrowserTools,
         removedByPolicy: resolvedChildScope.removedByPolicy,
@@ -612,6 +661,7 @@ export async function executeDelegationTool(
       status: "failed",
       objective,
       error: resolvedChildScope.blockedReason,
+      toolContract: resolvedChildScope.toolContract,
       removedLowSignalBrowserTools:
         resolvedChildScope.removedLowSignalBrowserTools,
       removedByPolicy: resolvedChildScope.removedByPolicy,
@@ -636,7 +686,6 @@ export async function executeDelegationTool(
       ...(continuationSessionId
         ? { continuationSessionId }
         : {}),
-      ...(effectiveTimeoutMs ? { timeoutMs: effectiveTimeoutMs } : {}),
       ...(workingDirectory ? { workingDirectory } : {}),
       ...(effectiveExecutionContext?.workspaceRoot
         ? { workingDirectorySource: "execution_envelope" as const }
@@ -645,10 +694,10 @@ export async function executeDelegationTool(
       ...(input.requiredToolCapabilities
         ? { requiredCapabilities: input.requiredToolCapabilities }
         : {}),
-      requireToolCall: specRequiresSuccessfulToolEvidence(effectiveInput),
-        delegationSpec: admittedInput,
-        unsafeBenchmarkMode,
-      });
+      requireToolCall: specRequiresSuccessfulToolEvidence(effectiveDelegationSpec),
+      delegationSpec: effectiveDelegationSpec,
+      unsafeBenchmarkMode,
+    });
   } catch (error) {
     const message = toErrorString(error);
     lifecycleEmitter?.emit({
@@ -679,7 +728,6 @@ export async function executeDelegationTool(
     toolName: name,
     payload: {
       objective,
-      ...(effectiveTimeoutMs ? { timeoutMs: effectiveTimeoutMs } : {}),
       ...(workingDirectory ? { workingDirectory } : {}),
       ...(effectiveExecutionContext?.workspaceRoot
         ? { workingDirectorySource: "execution_envelope" as const }
@@ -709,6 +757,7 @@ export async function executeDelegationTool(
       ...(resolvedChildScope.semanticFallback.length
         ? { semanticFallback: resolvedChildScope.semanticFallback }
         : {}),
+      toolContract: resolvedChildScope.toolContract,
       ...(unsafeBenchmarkMode ? { unsafeBenchmarkMode: true } : {}),
       toolCallId,
     },
@@ -804,6 +853,7 @@ export async function executeDelegationTool(
         providerEvidence: childResult.providerEvidence,
         providerName: childResult.providerName,
         tokenUsage: childResult.tokenUsage,
+        toolContract: resolvedChildScope.toolContract,
         completionState: childResult.completionState,
         completionProgress: childResult.completionProgress,
         stopReason: childResult.stopReason,
@@ -847,6 +897,7 @@ export async function executeDelegationTool(
       failedToolCalls: failedChildToolCalls,
       providerName: childResult.providerName,
       tokenUsage: childResult.tokenUsage,
+      toolContract: resolvedChildScope.toolContract,
       completionState: childResult.completionState,
       completionProgress: childResult.completionProgress,
       stopReason: childResult.stopReason,

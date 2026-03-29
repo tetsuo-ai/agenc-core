@@ -146,7 +146,11 @@ export interface VoiceBridgeConfig {
   systemPrompt: string;
   /** Default voice persona. */
   voice?: XaiVoice;
-  /** Default model. */
+  /**
+   * Reserved for future provider-specific routing.
+   * Not sent to xAI Realtime because the public docs do not document a
+   * session-level model field.
+   */
   model?: string;
   /** VAD mode or push-to-talk. Default: 'vad'. */
   mode?: "vad" | "push-to-talk";
@@ -309,15 +313,12 @@ export class VoiceBridge {
       this.config.systemPrompt + memoryContext + VOICE_DELEGATION_PROMPT;
 
     const sessionConfig: VoiceSessionConfig = {
-      model: this.config.model ?? "grok-4-1-fast-reasoning",
       voice: this.config.voice ?? "Ara",
-      modalities: ["text", "audio"],
       instructions: voiceInstructions,
       audio: {
         input: { format: { type: "audio/pcm", rate: 24000 } },
         output: { format: { type: "audio/pcm", rate: 24000 } },
       },
-      input_audio_transcription: { model: "whisper-1" },
       turn_detection:
         this.config.mode === "push-to-talk"
           ? null
@@ -587,11 +588,6 @@ export class VoiceBridge {
           // Cancel any in-progress xAI response so the agent shuts up
           // immediately when the user starts talking — even mid-sentence.
           session.client.cancelResponse();
-          // During active delegation, also clear buffered audio to prevent
-          // frustrated utterances from queuing as new delegation tasks.
-          if (session.delegationAbort) {
-            session.client.clearAudio();
-          }
         }
       },
       onSpeechStopped: () => { send({ type: VM.SPEECH_STOPPED }); },
@@ -1002,8 +998,9 @@ export class VoiceBridge {
   // --------------------------------------------------------------------------
 
   /**
-   * Inject session history into the xAI Realtime session so the voice
-   * model has conversation context from prior interactions.
+   * Inject documented user text history into the xAI Realtime session so the
+   * voice model has prior user context without relying on undocumented client
+   * event shapes.
    */
   private injectSessionContext(
     client: XaiRealtimeClient,
@@ -1018,14 +1015,12 @@ export class VoiceBridge {
     const history = storedSession.history;
     if (history.length === 0) return;
 
-    // Filter to user/assistant text messages, cap at last 40.
-    // Voice sessions need enough context to maintain conversation coherence
-    // across delegation results and prior exchanges.
+    // Filter to documented user text messages only, cap at last 40.
     const MAX_HISTORY_ITEMS = 40;
     const MAX_CONTENT_CHARS = 500;
     const eligible = history.filter(
       (m) =>
-        (m.role === "user" || m.role === "assistant") &&
+        m.role === "user" &&
         typeof m.content === "string" &&
         (m.content as string).trim(),
     );
@@ -1043,7 +1038,7 @@ export class VoiceBridge {
     if (recent.length > 0) {
       client.injectConversationHistory(
         recent.map((m) => ({
-          role: m.role as "user" | "assistant",
+          role: "user" as const,
           content: m.content as string,
         })),
       );

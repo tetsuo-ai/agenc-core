@@ -80,6 +80,24 @@ describe("verification-obligations", () => {
     });
   });
 
+  it("keeps reviewer obligations read-only even when the reviewed artifact is also the verification subject", () => {
+    const obligations = deriveVerificationObligations({
+      workspaceRoot: "/tmp/project",
+      requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+      targetArtifacts: ["/tmp/project/PLAN.md"],
+      stepKind: "delegated_review",
+      verificationMode: "grounded_read",
+      role: "reviewer",
+    });
+
+    expect(obligations).toMatchObject({
+      role: "reviewer",
+      requiresMutationEvidence: false,
+      requiresReviewVerification: true,
+      allowsGroundedNoop: false,
+    });
+  });
+
   it("treats behavior-like acceptance criteria as behavior verification requirements", () => {
     const obligations = deriveVerificationObligations({
       workspaceRoot: "/tmp/project",
@@ -105,6 +123,60 @@ describe("verification-obligations", () => {
     });
   });
 
+  it("treats current-workspace alignment criteria as workspace inspection requirements", () => {
+    const obligations = deriveVerificationObligations({
+      workspaceRoot: "/tmp/project",
+      requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+      targetArtifacts: ["/tmp/project/PLAN.md"],
+      acceptanceCriteria: [
+        "PLAN.md reflects the current workspace layout and recent directory changes accurately.",
+      ],
+      verificationMode: "mutation_required",
+      completionContract: {
+        taskClass: "artifact_only",
+        placeholdersAllowed: false,
+        partialCompletionAllowed: false,
+      },
+    });
+
+    expect(obligations).toMatchObject({
+      requiresWorkspaceInspectionEvidence: true,
+      requiresSourceArtifactReads: true,
+      completionContract: {
+        taskClass: "artifact_only",
+      },
+    });
+  });
+
+  it("waives local workspace inspection when upstream dependency evidence already satisfied it", () => {
+    const obligations = deriveVerificationObligations({
+      workspaceRoot: "/tmp/project",
+      requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+      targetArtifacts: ["/tmp/project/PLAN.md"],
+      inheritedEvidence: {
+        workspaceInspectionSatisfied: true,
+        sourceSteps: ["qa_review", "layout_review"],
+      },
+      acceptanceCriteria: [
+        "PLAN.md reflects the current workspace layout and recent directory changes accurately.",
+      ],
+      verificationMode: "mutation_required",
+      completionContract: {
+        taskClass: "artifact_only",
+        placeholdersAllowed: false,
+        partialCompletionAllowed: false,
+      },
+    });
+
+    expect(obligations).toMatchObject({
+      requiresWorkspaceInspectionEvidence: false,
+      requiresSourceArtifactReads: true,
+      completionContract: {
+        taskClass: "artifact_only",
+      },
+    });
+  });
+
   it("preserves explicit repair placeholder taxonomy from the completion contract", () => {
     const obligations = deriveVerificationObligations({
       workspaceRoot: "/tmp/project",
@@ -122,6 +194,46 @@ describe("verification-obligations", () => {
       placeholderTaxonomy: "repair",
       completionContract: {
         placeholderTaxonomy: "repair",
+      },
+    });
+  });
+
+  it("uses documentation placeholder defaults for delegated documentation writes", () => {
+    const obligations = deriveVerificationObligations({
+      workspaceRoot: "/tmp/project",
+      targetArtifacts: ["/tmp/project/PLAN.md"],
+      stepKind: "delegated_write",
+      verificationMode: "mutation_required",
+    });
+
+    expect(obligations).toMatchObject({
+      requiresMutationEvidence: true,
+      placeholderTaxonomy: "documentation",
+      placeholdersAllowed: false,
+      partialCompletionAllowed: false,
+      completionContract: {
+        taskClass: "artifact_only",
+        placeholderTaxonomy: "documentation",
+      },
+    });
+  });
+
+  it("infers documentation taxonomy for explicit artifact-only contracts on doc targets", () => {
+    const obligations = deriveVerificationObligations({
+      workspaceRoot: "/tmp/project",
+      targetArtifacts: ["/tmp/project/PLAN.md"],
+      verificationMode: "mutation_required",
+      completionContract: {
+        taskClass: "artifact_only",
+        placeholdersAllowed: false,
+        partialCompletionAllowed: false,
+      },
+    });
+
+    expect(obligations).toMatchObject({
+      placeholderTaxonomy: "documentation",
+      completionContract: {
+        taskClass: "artifact_only",
       },
     });
   });

@@ -16,6 +16,7 @@ import {
   validateDelegatedOutputContract,
 } from "../utils/delegation-validation.js";
 import { validateRuntimeVerificationContract } from "../workflow/index.js";
+import { isDocumentationArtifactPath } from "../workflow/artifact-paths.js";
 import type { ImplementationCompletionContract } from "../workflow/completion-contract.js";
 import {
   isPathWithinRoot,
@@ -36,7 +37,14 @@ import {
   getAllowedToolNamesForEvidence,
 } from "./chat-executor-routing-state.js";
 import { didToolCallFail } from "./chat-executor-tool-utils.js";
-import { requestRequiresToolGroundedExecution } from "./chat-executor-planner.js";
+import {
+  plannerRequestNeedsGroundedPlanArtifact,
+  plannerRequestNeedsPlanArtifactExecution,
+  requestRequiresToolGroundedExecution,
+} from "./chat-executor-planner.js";
+import {
+  PROVIDER_NATIVE_GROUNDED_INFORMATION_TOOL_NAMES,
+} from "./provider-native-search.js";
 
 type ToolNameCollection = Iterable<string> | readonly string[];
 
@@ -62,10 +70,14 @@ type ContractFlowContext =
     >
   >;
 
+export const LEGACY_COMPLETION_COMPATIBILITY_CLASSES = [
+  "docs",
+  "research",
+  "plan_only",
+] as const;
+
 export type LegacyCompletionCompatibilityClass =
-  | "docs"
-  | "research"
-  | "plan_only";
+  typeof LEGACY_COMPLETION_COMPATIBILITY_CLASSES[number];
 
 export interface LegacyCompletionCompatibilityDecision {
   readonly allowed: boolean;
@@ -91,10 +103,9 @@ const DIRECT_MUTATION_TOOL_NAMES = new Set([
   "system.writeFile",
 ]);
 const BROWSER_TOOL_PREFIX = "mcp.browser.";
-const RESEARCH_TOOL_NAMES = new Set(["web_search"]);
-const DOC_ONLY_PATH_RE = /\.(?:md|mdx|txt|rst|adoc)$/i;
-const DOC_BASENAME_RE =
-  /(?:^|\/)(?:README|CHANGELOG|CONTRIBUTING|LICENSE|COPYING|NOTES|AGENTS|AGENC)(?:\.[^/]+)?$/i;
+const RESEARCH_TOOL_NAMES: ReadonlySet<string> = new Set(
+  PROVIDER_NATIVE_GROUNDED_INFORMATION_TOOL_NAMES,
+);
 const SOURCE_LIKE_PATH_RE =
   /(?:^|\/)(?:src|lib|app|server|client|cmd|pkg|include|internal|tests?|spec)(?:\/|$)|\.(?:c|cc|cpp|cxx|h|hpp|m|mm|rs|go|py|rb|php|java|kt|swift|cs|js|jsx|ts|tsx|json|toml|yaml|yml|xml|sh|zsh|bash)$/i;
 const BUILD_OR_BEHAVIOR_COMMAND_RE =
@@ -413,6 +424,14 @@ export function buildRequiredToolEvidenceRetryInstruction(input: {
       "If those sources describe intended or planned structure, keep that distinction explicit instead of presenting planned files as already present.",
     );
   }
+  if (input.validationCode === "missing_workspace_inspection_evidence") {
+    correctionLines.push(
+      "Inspect the current workspace state beyond the target documentation artifact before writing again.",
+    );
+    correctionLines.push(
+      "Use directory listing, file inspection, or bounded shell inspection to ground claims about repo layout, current implementation state, or recent directory changes.",
+    );
+  }
   if (input.validationCode === "forbidden_phase_action") {
     correctionLines.push(
       "This phase explicitly forbids one or more actions such as install/build/test/typecheck/lint execution or banned dependency specifiers. Do not repeat them.",
@@ -470,6 +489,12 @@ function mergeWorkflowVerificationContext(input: {
 function synthesizeDirectImplementationWorkflowContext(
   ctx: ContractFlowContext,
 ): RuntimeWorkflowContextResolution | undefined {
+  if (
+    plannerRequestNeedsGroundedPlanArtifact(ctx.messageText) ||
+    plannerRequestNeedsPlanArtifactExecution(ctx.messageText)
+  ) {
+    return undefined;
+  }
   const workspaceRoot = normalizeWorkspaceRoot(ctx.runtimeWorkspaceRoot);
   if (!workspaceRoot) {
     return undefined;
@@ -576,6 +601,8 @@ function analyzeLegacyCompletionTurn(
   const hasMutationProgress = mutatedArtifacts.length > 0;
   const hasResearchEvidence =
     (ctx.providerEvidence?.citations?.length ?? 0) > 0 ||
+    (ctx.providerEvidence?.serverSideToolCalls?.length ?? 0) > 0 ||
+    (ctx.providerEvidence?.serverSideToolUsage?.length ?? 0) > 0 ||
     successfulToolCalls.some((toolCall) =>
       toolCall.name.startsWith(BROWSER_TOOL_PREFIX) ||
       RESEARCH_TOOL_NAMES.has(toolCall.name),
@@ -673,7 +700,7 @@ function normalizeStringPaths(value: unknown): readonly string[] {
 }
 
 function isDocOnlyArtifactPath(value: string): boolean {
-  return DOC_ONLY_PATH_RE.test(value) || DOC_BASENAME_RE.test(value);
+  return isDocumentationArtifactPath(value);
 }
 
 function parseEncodedEffectMetadata(

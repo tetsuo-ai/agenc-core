@@ -3,6 +3,12 @@
 This document describes the canonical delegation architecture for subagent execution in AgenC runtime.
 It covers message flow, policy gates, failure behavior, kill-switch controls, and observability surfaces.
 
+Temporary cleanup guardrails for this planner/delegation/verifier path are
+tracked in [../guides/workflow-cleanup-mode.md](../guides/workflow-cleanup-mode.md).
+That guide freezes the currently allowed status families, verifier issue-code
+families, compatibility branches, and incident targets while the architectural
+cleanup is in progress.
+
 ## Code Anchors
 
 - `runtime/src/llm/chat-executor.ts`

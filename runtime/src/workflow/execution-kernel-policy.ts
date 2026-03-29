@@ -12,6 +12,7 @@ import {
   didToolCallFail,
   extractToolFailureTextFromResult,
 } from "../llm/chat-executor-tool-utils.js";
+import { resolveWorkflowDependencyState } from "./completion-state.js";
 
 export function assessPlannerDependencySatisfaction(
   step: PipelinePlannerStep,
@@ -20,11 +21,17 @@ export function assessPlannerDependencySatisfaction(
   if (step.stepType === "deterministic_tool") {
     if (result.startsWith("SKIPPED:")) {
       if (step.onError === "skip") {
-        return { satisfied: true };
+        return {
+          ...resolveWorkflowDependencyState({
+            completionState: "completed",
+          }),
+        };
       }
       const reason = result.slice("SKIPPED:".length).trim();
       return {
-        satisfied: false,
+        ...resolveWorkflowDependencyState({
+          completionState: "blocked",
+        }),
         reason:
           reason.length > 0
             ? reason
@@ -34,19 +41,29 @@ export function assessPlannerDependencySatisfaction(
     }
     if (didToolCallFail(false, result)) {
       return {
-        satisfied: false,
+        ...resolveWorkflowDependencyState({
+          completionState: "blocked",
+        }),
         reason: extractToolFailureTextFromResult(result),
         stopReasonHint: "tool_error",
       };
     }
-    return { satisfied: true };
+    return {
+      ...resolveWorkflowDependencyState({
+        completionState: "completed",
+      }),
+    };
   }
 
   if (step.stepType === "subagent_task") {
     return assessSubagentDependencySatisfaction(step, result);
   }
 
-  return { satisfied: true };
+  return {
+    ...resolveWorkflowDependencyState({
+      completionState: "completed",
+    }),
+  };
 }
 
 function assessSubagentDependencySatisfaction(
@@ -56,7 +73,9 @@ function assessSubagentDependencySatisfaction(
   if (result.startsWith("SKIPPED:")) {
     const reason = result.slice("SKIPPED:".length).trim();
     return {
-      satisfied: false,
+      ...resolveWorkflowDependencyState({
+        completionState: "blocked",
+      }),
       reason:
         reason.length > 0
           ? reason
@@ -68,17 +87,43 @@ function assessSubagentDependencySatisfaction(
   try {
     const parsed = JSON.parse(result) as unknown;
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      return { satisfied: true };
+      return {
+        ...resolveWorkflowDependencyState({
+          completionState: "completed",
+        }),
+      };
     }
     const obj = parsed as Record<string, unknown>;
     const status = typeof obj.status === "string" ? obj.status : undefined;
-    if (status === "delegation_fallback") {
-      return { satisfied: true };
-    }
+    const completionState =
+      obj.completionState === "completed" ||
+      obj.completionState === "partial" ||
+      obj.completionState === "blocked" ||
+      obj.completionState === "needs_verification"
+        ? obj.completionState
+        : undefined;
     const error =
       typeof obj.error === "string" && obj.error.trim().length > 0
         ? obj.error.trim()
         : undefined;
+    const dependencyState = {
+      ...resolveWorkflowDependencyState({
+        completionState,
+        reportedStatus: status,
+        reportedOutcome:
+          typeof obj.reportedOutcome === "string"
+            ? obj.reportedOutcome
+            : undefined,
+        recoveredViaParentFallback: obj.recoveredViaParentFallback === true,
+      }),
+      ...(error ? { reason: error } : {}),
+      ...(toPipelineStopReasonHint(obj.stopReasonHint)
+        ? { stopReasonHint: toPipelineStopReasonHint(obj.stopReasonHint) }
+        : {}),
+    } satisfies ExecutionKernelDependencyState;
+    if (status === "completed" || completionState) {
+      return dependencyState;
+    }
     if (
       obj.success === false ||
       status === "failed" ||
@@ -87,7 +132,10 @@ function assessSubagentDependencySatisfaction(
       status === "dependency_blocked"
     ) {
       return {
-        satisfied: false,
+        ...resolveWorkflowDependencyState({
+          completionState: "blocked",
+          reportedStatus: status,
+        }),
         reason:
           error ??
           `Sub-agent step "${step.name}" returned unresolved status "${status ?? "unknown"}"`,
@@ -98,7 +146,9 @@ function assessSubagentDependencySatisfaction(
     }
     if (error) {
       return {
-        satisfied: false,
+        ...resolveWorkflowDependencyState({
+          completionState: "blocked",
+        }),
         reason: error,
         stopReasonHint:
           toPipelineStopReasonHint(obj.stopReasonHint) ?? "validation_error",
@@ -107,14 +157,20 @@ function assessSubagentDependencySatisfaction(
   } catch {
     if (didToolCallFail(false, result)) {
       return {
-        satisfied: false,
+        ...resolveWorkflowDependencyState({
+          completionState: "blocked",
+        }),
         reason: extractToolFailureTextFromResult(result),
         stopReasonHint: "tool_error",
       };
     }
   }
 
-  return { satisfied: true };
+  return {
+    ...resolveWorkflowDependencyState({
+      completionState: "completed",
+    }),
+  };
 }
 
 function toPipelineStopReasonHint(
@@ -163,6 +219,9 @@ export function buildDependencyBlockedResult(
   return JSON.stringify({
     status: "dependency_blocked",
     success: false,
+    dependencyState: "unsatisfied_terminal",
+    completionState: "blocked",
+    resolutionSemantics: "normal",
     stepName,
     error,
     stopReasonHint,

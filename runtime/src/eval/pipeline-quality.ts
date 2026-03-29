@@ -10,6 +10,11 @@ import type {
   ChaosSuiteArtifact as PipelineChaosArtifact,
 } from "./chaos-suite.js";
 import type { EconomicsScorecard } from "./economics-scorecard.js";
+import type {
+  WorkflowCompletionState,
+  WorkflowDependencyStateKind,
+  WorkflowResolutionSemantics,
+} from "../workflow/completion-state.js";
 
 const LEGACY_PIPELINE_QUALITY_ARTIFACT_SCHEMA_VERSION = 1 as const;
 const PIPELINE_QUALITY_ARTIFACT_SCHEMA_VERSION_V2 = 2 as const;
@@ -18,7 +23,8 @@ const PIPELINE_QUALITY_ARTIFACT_SCHEMA_VERSION_V4 = 4 as const;
 const PIPELINE_QUALITY_ARTIFACT_SCHEMA_VERSION_V5 = 5 as const;
 const PIPELINE_QUALITY_ARTIFACT_SCHEMA_VERSION_V6 = 6 as const;
 const PIPELINE_QUALITY_ARTIFACT_SCHEMA_VERSION_V7 = 7 as const;
-export const PIPELINE_QUALITY_ARTIFACT_SCHEMA_VERSION = 8 as const;
+const PIPELINE_QUALITY_ARTIFACT_SCHEMA_VERSION_V8 = 8 as const;
+export const PIPELINE_QUALITY_ARTIFACT_SCHEMA_VERSION = 9 as const;
 
 export interface PipelineContextGrowthArtifact {
   turns: number;
@@ -135,6 +141,9 @@ export interface PipelineOrchestrationScenarioArtifact {
   sourceTraceId: string;
   passed: boolean;
   finalStatus: string;
+  completionState: WorkflowCompletionState;
+  dependencyStateKind: WorkflowDependencyStateKind;
+  resolutionSemantics: WorkflowResolutionSemantics;
   replayErrors: number;
   replayWarnings: number;
   policyViolations: number;
@@ -450,6 +459,9 @@ export interface PipelineOrchestrationScenarioInput {
   sourceTraceId: string;
   passed: boolean;
   finalStatus: string;
+  completionState?: WorkflowCompletionState;
+  dependencyStateKind?: WorkflowDependencyStateKind;
+  resolutionSemantics?: WorkflowResolutionSemantics;
   replayErrors: number;
   replayWarnings: number;
   policyViolations: number;
@@ -993,6 +1005,12 @@ function normalizeOrchestrationBaseline(
       sourceTraceId: entry.sourceTraceId,
       passed: entry.passed,
       finalStatus: entry.finalStatus,
+      completionState: (entry.completionState ?? "blocked") as WorkflowCompletionState,
+      dependencyStateKind:
+        (entry.dependencyStateKind ??
+          "unsatisfied_terminal") as WorkflowDependencyStateKind,
+      resolutionSemantics:
+        (entry.resolutionSemantics ?? "normal") as WorkflowResolutionSemantics,
       replayErrors: asNonNegativeInteger(
         entry.replayErrors,
         `orchestrationBaseline.scenarios[${index}].replayErrors`,
@@ -1450,6 +1468,7 @@ export function parsePipelineQualityArtifact(
       schemaVersion === PIPELINE_QUALITY_ARTIFACT_SCHEMA_VERSION_V5 ||
       schemaVersion === PIPELINE_QUALITY_ARTIFACT_SCHEMA_VERSION_V6 ||
       schemaVersion === PIPELINE_QUALITY_ARTIFACT_SCHEMA_VERSION_V7 ||
+      schemaVersion === PIPELINE_QUALITY_ARTIFACT_SCHEMA_VERSION_V8 ||
       schemaVersion === PIPELINE_QUALITY_ARTIFACT_SCHEMA_VERSION,
     `unsupported pipeline quality schema version: ${String(value.schemaVersion)}`,
   );

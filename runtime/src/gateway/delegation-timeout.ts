@@ -7,7 +7,7 @@
  * @module
  */
 
-export const MIN_DELEGATION_TIMEOUT_MS = 60_000;
+export const MIN_DELEGATION_TIMEOUT_MS = 0;
 export const MAX_DELEGATION_TIMEOUT_MS = 3_600_000;
 
 const EXPLICIT_BUDGET_HINT_RE =
@@ -100,10 +100,11 @@ export function normalizeDelegationTimeoutMs(
   if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs)) {
     return undefined;
   }
-  return Math.min(
-    MAX_DELEGATION_TIMEOUT_MS,
-    Math.max(MIN_DELEGATION_TIMEOUT_MS, Math.floor(timeoutMs)),
-  );
+  const normalized = Math.floor(timeoutMs);
+  if (normalized <= MIN_DELEGATION_TIMEOUT_MS) {
+    return MIN_DELEGATION_TIMEOUT_MS;
+  }
+  return Math.min(MAX_DELEGATION_TIMEOUT_MS, normalized);
 }
 
 export function resolveDelegationBudgetHintMs(

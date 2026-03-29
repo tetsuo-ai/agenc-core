@@ -24,6 +24,15 @@ const FORMAT_TO_MIME: Record<string, string> = {
   flac: "audio/flac",
 };
 
+function isXaiApiBaseUrl(baseURL: string | undefined): boolean {
+  if (!baseURL) return false;
+  try {
+    return new URL(baseURL).hostname === "api.x.ai";
+  } catch {
+    return false;
+  }
+}
+
 // ============================================================================
 // ElevenLabsProvider
 // ============================================================================
@@ -189,6 +198,12 @@ export class OpenAITTSProvider implements TextToSpeechProvider {
     text: string,
     options?: TTSOptions,
   ): Promise<SynthesisResult> {
+    if (isXaiApiBaseUrl(this.config.baseURL)) {
+      throw new VoiceSynthesisError(
+        this.name,
+        "xAI does not document the OpenAI /audio/speech surface; use the documented xAI /v1/tts endpoint instead",
+      );
+    }
     const client = (await this.ensureClient()) as any;
     const voice = options?.voice ?? this.config.voice ?? DEFAULT_TTS_VOICE;
     const format = options?.format ?? "mp3";
@@ -220,6 +235,12 @@ export class OpenAITTSProvider implements TextToSpeechProvider {
   }
 
   async listVoices(): Promise<readonly VoiceInfo[]> {
+    if (isXaiApiBaseUrl(this.config.baseURL)) {
+      throw new VoiceSynthesisError(
+        this.name,
+        "xAI does not document the OpenAI /audio/speech voice surface; use the documented xAI /v1/tts/voices endpoint instead",
+      );
+    }
     return OPENAI_VOICES;
   }
 }

@@ -237,6 +237,39 @@ describe("validateGatewayConfig plugin channel hosting", () => {
   });
 });
 
+describe("validateGatewayConfig llm unlimited limit semantics", () => {
+  it("accepts 0 for provider and execution ceilings that now mean unlimited", () => {
+    const config = makeConfig();
+    config.llm = {
+      provider: "grok",
+      timeoutMs: 0,
+      requestTimeoutMs: 0,
+      toolCallTimeoutMs: 0,
+      maxTokens: 0,
+      contextWindowTokens: 0,
+      maxToolRounds: 0,
+      plannerMaxTokens: 0,
+      toolBudgetPerRequest: 0,
+      maxModelRecallsPerRequest: 0,
+      maxFailureBudgetPerRequest: 0,
+      sessionTokenBudget: 0,
+      subagents: {
+        enabled: true,
+        maxConcurrent: 0,
+        maxDepth: 0,
+        maxFanoutPerTurn: 0,
+        maxTotalSubagentsPerRequest: 0,
+        maxCumulativeToolCallsPerRequestTree: 0,
+        maxCumulativeTokensPerRequestTree: 0,
+        defaultTimeoutMs: 0,
+      },
+    };
+
+    const result = validateGatewayConfig(config);
+    expect(result.valid).toBe(true);
+  });
+});
+
 describe("validateGatewayConfig plugin host policy", () => {
   it("accepts plugin trust policy and plugin-backed channel wrapper fields", () => {
     const config = makeConfig();

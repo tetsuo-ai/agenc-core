@@ -8,7 +8,9 @@ import {
   getAcceptanceVerificationCategories,
 } from "../utils/delegation-validation.js";
 import { isArtifactAccessAllowed } from "./artifact-contract.js";
+import type { PlaceholderTaxonomy } from "./completion-contract.js";
 import { isPathWithinRoot, normalizeEnvelopePath } from "./path-normalization.js";
+import { isMeaningfulWorkspaceInspectionToolCall } from "./workspace-inspection-evidence.js";
 import {
   deriveVerificationObligations,
   hasDelegationRuntimeVerificationContext,
@@ -67,6 +69,7 @@ interface EncodedVerificationMetadata {
 interface RuntimeArtifactEvidence {
   readonly readArtifacts: ReadonlySet<string>;
   readonly readArtifactContents: ReadonlyMap<string, readonly string[]>;
+  readonly inspectedWorkspaceArtifacts: ReadonlySet<string>;
   readonly mutatedArtifacts: ReadonlySet<string>;
   readonly unauthorizedMutations: readonly string[];
   readonly successfulToolCalls: number;
@@ -87,6 +90,15 @@ interface RuntimeArtifactEvidence {
 }
 
 const READ_FILE_TOOL_NAMES = new Set(["system.readFile"]);
+const WORKSPACE_INSPECTION_TOOL_NAMES = new Set([
+  "system.readFile",
+  "system.listDir",
+  "system.stat",
+  "desktop.text_editor",
+  "mcp.neovim.vim_edit",
+  "mcp.neovim.vim_buffer_save",
+  "mcp.neovim.vim_search_replace",
+]);
 const DIRECT_MUTATION_TOOL_NAMES = new Set([
   "desktop.text_editor",
   "system.appendFile",
@@ -98,10 +110,14 @@ const DIRECT_MUTATION_TOOL_NAMES = new Set([
 const SHELL_TOOL_NAMES = new Set(["system.bash", "desktop.bash"]);
 const NOOP_COMPLETION_RE =
   /\b(?:already (?:satisf(?:ies|y)|exists?|present|up to date)|no (?:changes?|mutation|update)s? (?:needed|required)|nothing to change|no edits? needed)\b/i;
-const PLACEHOLDER_MARKER_RE =
+const IMPLEMENTATION_PLACEHOLDER_MARKER_RE =
   /\b(?:stub(?:bed)?|placeholder|todo|not implemented|unimplemented|pending implementation|coming soon|fixme)\b/i;
-const RESOLVED_PLACEHOLDER_CUE_RE =
+const DOCUMENTATION_PLACEHOLDER_MARKER_RE =
+  /\b(?:placeholder|todo|fixme|tbd|coming soon)\b|\[(?:same\b|etc\.?\b|omitted\b|truncated\b|cop(?:y|ied)\b|unchanged\b|full content\b)[^\]]*\]/i;
+const IMPLEMENTATION_RESOLVED_PLACEHOLDER_CUE_RE =
   /\b(?:resolve(?:d|s|ing)?|replace(?:d|s|ing)?|remove(?:d|s|ing)?|clear(?:ed|s|ing)?|fix(?:ed|es|ing)?|complete(?:d|s|ing)?)\b[^.\n]{0,64}\b(?:placeholder(?:s)?|stub(?:s|bed)?|todo|fixme|unimplemented)\b|\b(?:placeholder(?:s)?|stub(?:s|bed)?|todo|fixme|unimplemented)\b[^.\n]{0,64}\b(?:resolve(?:d|s|ing)?|replace(?:d|s|ing)?|remove(?:d|s|ing)?|clear(?:ed|s|ing)?|fix(?:ed|es|ing)?|complete(?:d|s|ing)?)\b/i;
+const DOCUMENTATION_RESOLVED_PLACEHOLDER_CUE_RE =
+  /\b(?:resolve(?:d|s|ing)?|replace(?:d|s|ing)?|remove(?:d|s|ing)?|clear(?:ed|s|ing)?|fix(?:ed|es|ing)?|complete(?:d|s|ing)?)\b[^.\n]{0,64}\b(?:placeholder(?:s)?|todo|fixme|tbd)\b|\b(?:placeholder(?:s)?|todo|fixme|tbd)\b[^.\n]{0,64}\b(?:resolve(?:d|s|ing)?|replace(?:d|s|ing)?|remove(?:d|s|ing)?|clear(?:ed|s|ing)?|fix(?:ed|es|ing)?|complete(?:d|s|ing)?)\b/i;
 const BUILD_SIGNAL_RE =
   /\b(?:build|compile|compiled|compiles|compiling|typecheck|typechecked|lint|linted|install|installed|tsc)\b/i;
 const TEST_SIGNAL_RE =
@@ -263,6 +279,18 @@ function evaluateArtifactStateChannel(params: {
     }
   }
 
+  if (
+    params.obligations.requiresWorkspaceInspectionEvidence &&
+    params.evidence.inspectedWorkspaceArtifacts.size === 0
+  ) {
+    return verificationChannelFail({
+      channel: "artifact_state",
+      code: "missing_workspace_inspection_evidence",
+      message:
+        "Execution required grounded inspection of current workspace state before deriving the updated artifact, but no non-target workspace inspection evidence was observed.",
+    });
+  }
+
   if (!params.obligations.requiresMutationEvidence) {
     if (params.hasGroundedNoop && !params.targetReadSatisfied) {
       const unreadTargets = params.obligations.artifactContract.targetArtifacts
@@ -331,11 +359,14 @@ function evaluatePlaceholderStubChannel(params: {
   }
 
   if (placeholderHits.length > 0) {
+    const placeholderConfig = getPlaceholderTaxonomyConfig(
+      params.obligations.placeholderTaxonomy,
+    );
     return verificationChannelFail({
       channel: "placeholder_stub",
       code: "contradictory_completion_claim",
       message:
-        "Implementation completion was claimed while placeholder or stub markers remained in authored evidence: " +
+        `${placeholderConfig.completionLabel} completion was claimed while ${placeholderConfig.unresolvedLabel} remained in authored evidence: ` +
         placeholderHits.slice(0, 3).join("; "),
       evidence: placeholderHits.slice(0, 3),
     });
@@ -343,7 +374,8 @@ function evaluatePlaceholderStubChannel(params: {
 
   return verificationChannelPass({
     channel: "placeholder_stub",
-    message: "No unresolved placeholder or stub markers were found in authored evidence.",
+    message: getPlaceholderTaxonomyConfig(params.obligations.placeholderTaxonomy)
+      .passMessage,
   });
 }
 
@@ -352,12 +384,15 @@ function evaluateRepairPlaceholderChannel(params: {
   readonly evidence: RuntimeArtifactEvidence;
   readonly placeholderHits: readonly string[];
 }): RuntimeVerificationChannelDecision | undefined {
+  const placeholderConfig = getPlaceholderTaxonomyConfig(
+    params.obligations.placeholderTaxonomy,
+  );
   const targetArtifacts = params.obligations.artifactContract.targetArtifacts;
   const baselineTargetReads = targetArtifacts.flatMap((artifact) =>
     params.evidence.readArtifactContents.get(artifact) ?? []
   );
   const baselineContainsPlaceholders =
-    baselineTargetReads.some((value) => PLACEHOLDER_MARKER_RE.test(value));
+    baselineTargetReads.some((value) => placeholderConfig.markerRe.test(value));
 
   if (!baselineContainsPlaceholders) {
     if (params.placeholderHits.length > 0) {
@@ -365,7 +400,7 @@ function evaluateRepairPlaceholderChannel(params: {
         channel: "placeholder_stub",
         code: "contradictory_completion_claim",
         message:
-          "Repair work introduced new placeholder or stub markers into artifacts that were previously concrete: " +
+          `Repair work introduced new ${placeholderConfig.unresolvedLabel} into artifacts that were previously concrete: ` +
           params.placeholderHits.slice(0, 3).join("; "),
         evidence: params.placeholderHits.slice(0, 3),
       });
@@ -382,7 +417,7 @@ function evaluateRepairPlaceholderChannel(params: {
       channel: "placeholder_stub",
       code: "contradictory_completion_claim",
       message:
-        "Repair work preserved unresolved placeholder or stub markers from the baseline artifacts: " +
+        `Repair work preserved unresolved ${placeholderConfig.unresolvedLabel} from the baseline artifacts: ` +
         params.placeholderHits.slice(0, 3).join("; "),
       evidence: params.placeholderHits.slice(0, 3),
     });
@@ -456,6 +491,8 @@ function evaluateExecutableOutcomeChannel(params: {
     params.obligations.requiresReviewVerification &&
     !(
       params.evidence.executableOutcomes.review ||
+      params.evidence.executableAttempts.review ||
+      params.evidence.inspectedWorkspaceArtifacts.size > 0 ||
       params.evidence.readArtifacts.size > 0
     )
   ) {
@@ -549,6 +586,7 @@ function collectRuntimeArtifactEvidence(params: {
 }): RuntimeArtifactEvidence {
   const readArtifacts = new Set<string>();
   const readArtifactContents = new Map<string, string[]>();
+  const inspectedWorkspaceArtifacts = new Set<string>();
   const mutatedArtifacts = new Set<string>();
   const unauthorizedMutations = new Set<string>();
   const authoredContent: string[] = [];
@@ -582,6 +620,22 @@ function collectRuntimeArtifactEvidence(params: {
     successfulToolCalls += 1;
     evidenceCorpus.push(...collectToolCallEvidenceStrings(toolCall));
     const directPaths = collectDirectArtifactPaths(toolCall, params.obligations.workspaceRoot);
+    if (
+      isMeaningfulWorkspaceInspectionToolCall({
+        toolCall,
+        workspaceRoot: params.obligations.workspaceRoot,
+        targetArtifacts: params.obligations.artifactContract.targetArtifacts,
+        requiredSourceArtifacts:
+          params.obligations.artifactContract.requiredSourceArtifacts,
+      })
+    ) {
+      for (const path of collectInspectionArtifactPaths(
+        toolCall,
+        params.obligations.workspaceRoot,
+      )) {
+        inspectedWorkspaceArtifacts.add(path);
+      }
+    }
     if (READ_FILE_TOOL_NAMES.has(toolCall.name?.trim() ?? "")) {
       for (const path of directPaths) {
         readArtifacts.add(path);
@@ -645,6 +699,7 @@ function collectRuntimeArtifactEvidence(params: {
   return {
     readArtifacts,
     readArtifactContents,
+    inspectedWorkspaceArtifacts,
     mutatedArtifacts,
     unauthorizedMutations: [...unauthorizedMutations],
     successfulToolCalls,
@@ -697,6 +752,31 @@ function collectDirectArtifactPaths(
     pushPathCandidate(candidates, parsedResult?.path, workspaceRoot);
   }
 
+  return [...new Set(candidates)];
+}
+
+function collectInspectionArtifactPaths(
+  toolCall: DelegationValidationToolCall,
+  workspaceRoot?: string,
+): readonly string[] {
+  const toolName = typeof toolCall.name === "string" ? toolCall.name.trim() : "";
+  if (
+    !WORKSPACE_INSPECTION_TOOL_NAMES.has(toolName) &&
+    !SHELL_TOOL_NAMES.has(toolName)
+  ) {
+    return [];
+  }
+  const args =
+    toolCall.args && typeof toolCall.args === "object" && !Array.isArray(toolCall.args)
+      ? (toolCall.args as Record<string, unknown>)
+      : {};
+  const parsedResult = parseResultObject(toolCall.result);
+  const candidates: string[] = [];
+  pushPathCandidate(candidates, args.path, workspaceRoot);
+  pushPathCandidate(candidates, args.source, workspaceRoot);
+  pushPathCandidate(candidates, args.destination, workspaceRoot);
+  pushPathCandidate(candidates, args.cwd, workspaceRoot);
+  pushPathCandidate(candidates, parsedResult?.path, workspaceRoot);
   return [...new Set(candidates)];
 }
 
@@ -805,15 +885,25 @@ function collectPlaceholderEvidence(params: {
   readonly output: string;
   readonly parsedOutput?: Record<string, unknown>;
 }): readonly string[] {
+  const placeholderConfig = getPlaceholderTaxonomyConfig(
+    params.obligations.placeholderTaxonomy,
+  );
   const rawValues = [
-    params.output,
-    ...collectStringValues(params.parsedOutput),
+    ...(params.obligations.placeholderTaxonomy === "documentation"
+      ? []
+      : [params.output]),
+    ...collectStringValues(params.parsedOutput).filter((value) =>
+      !(
+        params.obligations.placeholderTaxonomy === "documentation" &&
+        isLikelyFilesystemPathValue(value)
+      )
+    ),
     ...params.evidence.authoredContent,
   ];
   const matches: string[] = [];
   for (const value of rawValues) {
     const trimmed = value.trim();
-    if (!trimmed || !PLACEHOLDER_MARKER_RE.test(trimmed)) {
+    if (!trimmed || !placeholderConfig.markerRe.test(trimmed)) {
       continue;
     }
     if (
@@ -822,12 +912,56 @@ function collectPlaceholderEvidence(params: {
     ) {
       continue;
     }
-    if (RESOLVED_PLACEHOLDER_CUE_RE.test(trimmed)) {
+    if (placeholderConfig.resolvedCueRe.test(trimmed)) {
       continue;
     }
     matches.push(trimmed.slice(0, 160));
   }
   return [...new Set(matches)];
+}
+
+function isLikelyFilesystemPathValue(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || /\s/.test(trimmed)) {
+    return false;
+  }
+  return (
+    trimmed.startsWith("/") ||
+    trimmed.startsWith("./") ||
+    trimmed.startsWith("../") ||
+    /^[a-zA-Z]:[\\/]/.test(trimmed) ||
+    /^(?:[^\\/]+[\\/])+[^\\/]+$/.test(trimmed) ||
+    /^[^\\/]+\.[a-z0-9]+$/i.test(trimmed)
+  );
+}
+
+function getPlaceholderTaxonomyConfig(
+  taxonomy: PlaceholderTaxonomy,
+): {
+  readonly markerRe: RegExp;
+  readonly resolvedCueRe: RegExp;
+  readonly completionLabel: string;
+  readonly unresolvedLabel: string;
+  readonly passMessage: string;
+} {
+  if (taxonomy === "documentation") {
+    return {
+      markerRe: DOCUMENTATION_PLACEHOLDER_MARKER_RE,
+      resolvedCueRe: DOCUMENTATION_RESOLVED_PLACEHOLDER_CUE_RE,
+      completionLabel: "Documentation",
+      unresolvedLabel: "shorthand placeholders or TODO markers",
+      passMessage:
+        "No unresolved shorthand placeholders or TODO markers were found in authored documentation evidence.",
+    };
+  }
+  return {
+    markerRe: IMPLEMENTATION_PLACEHOLDER_MARKER_RE,
+    resolvedCueRe: IMPLEMENTATION_RESOLVED_PLACEHOLDER_CUE_RE,
+    completionLabel: "Implementation",
+    unresolvedLabel: "placeholder or stub markers",
+    passMessage:
+      "No unresolved placeholder or stub markers were found in authored evidence.",
+  };
 }
 
 function rubricCriterionSatisfied(
@@ -863,6 +997,7 @@ function summarizeArtifactEvidence(
 ): readonly string[] {
   return [
     ...[...evidence.readArtifacts].slice(0, 2),
+    ...[...evidence.inspectedWorkspaceArtifacts].slice(0, 2),
     ...[...evidence.mutatedArtifacts].slice(0, 2),
   ];
 }
@@ -942,6 +1077,12 @@ function hasGroundedNoopCompletion(
   output: string,
   parsedOutput?: Record<string, unknown>,
 ): boolean {
+  if (
+    typeof parsedOutput?.reportedOutcome === "string" &&
+    parsedOutput.reportedOutcome.trim().toLowerCase() === "already_satisfied"
+  ) {
+    return true;
+  }
   const values = [
     output,
     ...collectStringValues(parsedOutput),

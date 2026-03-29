@@ -34,6 +34,11 @@ import {
   MAX_TOOL_IMAGE_CHARS_BUDGET,
 } from "./chat-executor-constants.js";
 import {
+  hasRuntimeLimit,
+  isRuntimeLimitExceeded,
+  isRuntimeLimitReached,
+} from "./runtime-limit-policy.js";
+import {
   didToolCallFail,
   checkToolCallPermission,
   normalizeToolCallArguments,
@@ -106,6 +111,10 @@ export interface ToolLoopCallbacks {
     ctx: ExecutionContext,
     phase: "initial" | "tool_followup",
   ): Promise<"continue" | "failed" | "not_required">;
+  enforceWorkflowContinuationBeforeCompletion(
+    ctx: ExecutionContext,
+    phase: "initial" | "tool_followup",
+  ): Promise<"continue" | "failed" | "not_required">;
   finalizeDelegatedTurnAfterToolBudgetExhaustion(
     ctx: ExecutionContext,
     effectiveMaxToolRounds: number,
@@ -158,7 +167,7 @@ export async function executeSingleToolCall(
   if (callbacks.checkRequestTimeout(ctx, `tool "${toolCall.name}" dispatch`)) {
     return "abort_loop";
   }
-  if (ctx.allToolCalls.length >= ctx.effectiveToolBudget) {
+  if (isRuntimeLimitReached(ctx.allToolCalls.length, ctx.effectiveToolBudget)) {
     callbacks.setStopReason(
       ctx,
       "budget_exceeded",
@@ -352,7 +361,7 @@ export async function executeSingleToolCall(
     },
   });
 
-  if (ctx.failedToolCalls > ctx.effectiveFailureBudget) {
+  if (isRuntimeLimitExceeded(ctx.failedToolCalls, ctx.effectiveFailureBudget)) {
     callbacks.setStopReason(
       ctx,
       "tool_error",
@@ -491,6 +500,20 @@ export async function executeToolCallLoop(
   if (initialEvidenceAction === "failed" && !ctx.finalContent) {
     ctx.finalContent = ctx.response?.content ?? ctx.finalContent;
   }
+  if (initialEvidenceAction === "failed") {
+    return;
+  }
+  const initialContinuationAction =
+    await callbacks.enforceWorkflowContinuationBeforeCompletion(
+      ctx,
+      "initial",
+    );
+  if (initialContinuationAction === "failed" && !ctx.finalContent) {
+    ctx.finalContent = ctx.response?.content ?? ctx.finalContent;
+  }
+  if (initialContinuationAction === "failed") {
+    return;
+  }
 
   let rounds = 0;
   let effectiveMaxToolRounds = ctx.effectiveMaxToolRounds;
@@ -515,7 +538,10 @@ export async function executeToolCallLoop(
     ctx.response.finishReason === "tool_calls" &&
     ctx.response.toolCalls.length > 0 &&
     ctx.activeToolHandler &&
-    rounds < effectiveMaxToolRounds
+    (
+      !hasRuntimeLimit(effectiveMaxToolRounds) ||
+      rounds < effectiveMaxToolRounds
+    )
   ) {
     if (ctx.signal?.aborted) {
       callbacks.setStopReason(ctx, "cancelled", "Execution cancelled by caller");
@@ -680,6 +706,8 @@ export async function executeToolCallLoop(
         followupContractGuidance.runtimeInstruction,
       );
     }
+    const preservedFollowupRoutedToolNames =
+      followupContractGuidance?.routedToolNames ?? ctx.activeRoutedToolNames;
 
     // Re-call LLM.
     const nextResponse = await callbacks.callModelForPhase(ctx, {
@@ -693,15 +721,11 @@ export async function executeToolCallLoop(
       ...(followupContractGuidance
         ? {
           toolChoice: followupContractGuidance.toolChoice,
-          ...(followupContractGuidance.routedToolNames
-            ? {
-              routedToolNames: followupContractGuidance.routedToolNames,
-              ...(followupContractGuidance.persistRoutedToolNames === false
-                ? { persistRoutedToolNames: false }
-                : {}),
-            }
-            : {}),
         }
+        : {}),
+      routedToolNames: preservedFollowupRoutedToolNames,
+      ...(followupContractGuidance?.persistRoutedToolNames === false
+        ? { persistRoutedToolNames: false }
         : {}),
       budgetReason:
         "Max model recalls exceeded while following up after tool calls",
@@ -720,6 +744,12 @@ export async function executeToolCallLoop(
         "tool_followup",
       );
     if (evidenceAction === "failed") break;
+    const continuationAction =
+      await callbacks.enforceWorkflowContinuationBeforeCompletion(
+        ctx,
+        "tool_followup",
+      );
+    if (continuationAction === "failed") break;
 
     const roundProgress = summarizeToolRoundProgress(
       roundCalls,
@@ -734,7 +764,7 @@ export async function executeToolCallLoop(
 
     if (
       ctx.response.finishReason === "tool_calls" &&
-      rounds >= effectiveMaxToolRounds
+      isRuntimeLimitReached(rounds, effectiveMaxToolRounds)
     ) {
       const extension = callbacks.evaluateToolRoundBudgetExtension({
         ctx,
@@ -815,7 +845,7 @@ export async function executeToolCallLoop(
   } else if (
     ctx.response &&
     ctx.response.finishReason === "tool_calls" &&
-    rounds >= effectiveMaxToolRounds
+    isRuntimeLimitReached(rounds, effectiveMaxToolRounds)
   ) {
     const finalized = await callbacks.finalizeDelegatedTurnAfterToolBudgetExhaustion(
       ctx,

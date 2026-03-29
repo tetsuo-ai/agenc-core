@@ -616,9 +616,17 @@ function runToolTurnBenchmark(): ToolTurnBenchmarkResult {
 }
 
 function resolveDefaultIncidentFixtureDir(): string {
-  const local = path.resolve(process.cwd(), "benchmarks/v1/incidents");
-  if (existsSync(local)) return local;
-  return path.resolve(process.cwd(), "runtime/benchmarks/v1/incidents");
+  const candidates = [
+    path.resolve(process.cwd(), "benchmarks/v1/incidents"),
+    path.resolve(process.cwd(), "runtime/benchmarks/v1/incidents"),
+    path.resolve(process.cwd(), "../runtime/benchmarks/v1/incidents"),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return candidates[1];
 }
 
 async function runOfflineReplayBenchmark(
@@ -704,6 +712,13 @@ function parseOrchestrationExpectation(
     expectedReplay: {
       taskPda: String(expectedReplay.taskPda ?? ""),
       finalStatus: String(expectedReplay.finalStatus ?? "") as never,
+      completionState: String(expectedReplay.completionState ?? "blocked") as never,
+      dependencyStateKind: String(
+        expectedReplay.dependencyStateKind ?? "unsatisfied_terminal",
+      ) as never,
+      resolutionSemantics: String(
+        expectedReplay.resolutionSemantics ?? "normal",
+      ) as never,
       replayErrors: Number(expectedReplay.replayErrors ?? 0),
       replayWarnings: Number(expectedReplay.replayWarnings ?? 0),
       policyViolations: Number(expectedReplay.policyViolations ?? 0),
@@ -760,11 +775,36 @@ async function runOrchestrationBaselineBenchmark(
     const replay = new TrajectoryReplayEngine({ strictMode: true }).replay(trace);
     const task = replay.tasks[expected.expectedReplay.taskPda];
     const observedStatus = task?.status ?? "unknown";
+    const observedCompletionState = task?.completionState ?? "blocked";
+    const observedDependencyStateKind =
+      task?.dependencyStateKind ?? "unsatisfied_terminal";
+    const observedResolutionSemantics = task?.resolutionSemantics ?? "normal";
     const mismatchReasons: string[] = [];
 
     if (observedStatus !== expected.expectedReplay.finalStatus) {
       mismatchReasons.push(
         `finalStatus expected ${expected.expectedReplay.finalStatus} got ${observedStatus}`,
+      );
+    }
+    if (observedCompletionState !== expected.expectedReplay.completionState) {
+      mismatchReasons.push(
+        `completionState expected ${expected.expectedReplay.completionState} got ${observedCompletionState}`,
+      );
+    }
+    if (
+      observedDependencyStateKind !==
+      expected.expectedReplay.dependencyStateKind
+    ) {
+      mismatchReasons.push(
+        `dependencyStateKind expected ${expected.expectedReplay.dependencyStateKind} got ${observedDependencyStateKind}`,
+      );
+    }
+    if (
+      observedResolutionSemantics !==
+      expected.expectedReplay.resolutionSemantics
+    ) {
+      mismatchReasons.push(
+        `resolutionSemantics expected ${expected.expectedReplay.resolutionSemantics} got ${observedResolutionSemantics}`,
       );
     }
     if (replay.errors.length !== expected.expectedReplay.replayErrors) {
@@ -799,6 +839,9 @@ async function runOrchestrationBaselineBenchmark(
       sourceTraceId: expected.sourceTraceId,
       passed: mismatchReasons.length === 0,
       finalStatus: observedStatus,
+      completionState: observedCompletionState,
+      dependencyStateKind: observedDependencyStateKind,
+      resolutionSemantics: observedResolutionSemantics,
       replayErrors: replay.errors.length,
       replayWarnings: replay.warnings.length,
       policyViolations: task?.policyViolations ?? 0,

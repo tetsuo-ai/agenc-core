@@ -7,6 +7,7 @@
 import type {
   LLMProviderConfig,
   LLMStatefulResponsesConfig,
+  LLMXaiCapabilitySurface,
 } from "../types.js";
 
 export interface GrokStatefulResponsesConfig extends LLMStatefulResponsesConfig {}
@@ -15,7 +16,10 @@ export interface GrokStatefulResponsesConfig extends LLMStatefulResponsesConfig 
  * Configuration specific to the Grok (xAI) provider.
  * Uses the `openai` SDK pointed at the xAI API.
  */
-export interface GrokProviderConfig extends LLMProviderConfig {
+export interface GrokProviderConfig
+  extends LLMProviderConfig,
+    LLMXaiCapabilitySurface
+{
   /** xAI API key */
   apiKey: string;
   /** Base URL for the xAI API (default: 'https://api.x.ai/v1') */
@@ -24,10 +28,6 @@ export interface GrokProviderConfig extends LLMProviderConfig {
   contextWindowTokens?: number;
   /** Allow the model to emit multiple tool calls in parallel (default: false). */
   parallelToolCalls?: boolean;
-  /** Enable web search tool (injects a web_search tool) */
-  webSearch?: boolean;
-  /** Search mode when web search is enabled */
-  searchMode?: "auto" | "on" | "off";
   /** Vision-capable model to auto-switch to when images are present (default: 'grok-2-vision-1212') */
   visionModel?: string;
   /** Optional stateful continuation controls for Responses API. */

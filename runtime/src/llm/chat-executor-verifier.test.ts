@@ -7,7 +7,9 @@ import type { PlannerSubAgentTaskStepIntent } from "./chat-executor-types.js";
 import {
   buildPlannerWorkflowAdmission,
   buildPlannerVerifierAdmission,
+  buildSubagentVerifierStructuredOutputRequest,
   evaluatePlannerDeterministicChecks,
+  parseSubagentVerifierDecision,
 } from "./chat-executor-verifier.js";
 
 function createStep(
@@ -205,6 +207,37 @@ describe("evaluateSubagentDeterministicChecks", () => {
       "missing_successful_tool_evidence",
     );
   });
+
+  it("accepts provider-native server-side tool telemetry as research evidence", () => {
+    const decision = evaluateSubagentDeterministicChecks(
+      [createStep({
+        name: "tech_research",
+        objective:
+          "Compare Canvas API, Phaser, and PixiJS from official docs",
+        inputContract:
+          "Return JSON with selected framework and supporting evidence",
+        acceptanceCriteria: ["Ground the choice in official sources"],
+        requiredToolCapabilities: ["web_search"],
+      })],
+      {
+        status: "completed",
+        context: {
+          results: {
+            tech_research:
+              '{"success":true,"status":"completed","output":"{\\"selected\\":\\"pixi\\",\\"why\\":[\\"small\\",\\"fast\\"],\\"evidence\\":[\\"official docs reviewed via provider-native web search\\"]}","toolCalls":0,"providerEvidence":{"serverSideToolCalls":[{"type":"web_search_call","toolType":"web_search","status":"completed","id":"ws_123"}],"serverSideToolUsage":[{"category":"SERVER_SIDE_TOOL_WEB_SEARCH","toolType":"web_search","count":1}]}}',
+          },
+        },
+        completedSteps: 1,
+        totalSteps: 1,
+      },
+      createPlannerContext(),
+    );
+
+    expect(decision.overall).toBe("pass");
+    expect(decision.steps[0]?.issues).not.toContain(
+      "missing_successful_tool_evidence",
+    );
+  });
 });
 
 describe("buildPlannerWorkflowAdmission", () => {
@@ -260,5 +293,590 @@ describe("buildPlannerWorkflowAdmission", () => {
     expect(admission.taskClassification).toBe("docs_research_plan_only");
     expect(admission.requiresMandatoryImplementationVerification).toBe(false);
     expect(admission.completionContract?.taskClass).toBe("review_required");
+  });
+
+  it("uses documentation completion verification for delegated plan rewrites", () => {
+    const admission = buildPlannerWorkflowAdmission({
+      workspaceRoot: "/tmp/project",
+      subagentSteps: [
+        createStep({
+          name: "rewrite_plan",
+          objective: "Rewrite PLAN.md to reflect the latest implementation state",
+          acceptanceCriteria: ["PLAN.md is fully updated with no shorthand placeholders"],
+          executionContext: {
+            version: "v1",
+            workspaceRoot: "/tmp/project",
+            allowedReadRoots: ["/tmp/project"],
+            allowedWriteRoots: ["/tmp/project"],
+            requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+            targetArtifacts: ["/tmp/project/PLAN.md"],
+            verificationMode: "mutation_required",
+            stepKind: "delegated_write",
+            effectClass: "filesystem_write",
+          },
+        }),
+      ],
+      deterministicSteps: [],
+    });
+
+    expect(admission.taskClassification).toBe("implementation_class");
+    expect(admission.requiresMandatoryImplementationVerification).toBe(true);
+    expect(admission.completionContract).toMatchObject({
+      taskClass: "artifact_only",
+      placeholderTaxonomy: "documentation",
+    });
+    expect(admission.verifierWorkItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "documentation_completion",
+          verificationKind: "deterministic_implementation",
+          objective: expect.stringContaining("documentation or planning artifact"),
+          verificationContract: expect.objectContaining({
+            completionContract: expect.objectContaining({
+              placeholderTaxonomy: "documentation",
+            }),
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("keeps required reviewer-step verification even when the optional child verifier is disabled", () => {
+    const admission = buildPlannerWorkflowAdmission({
+      workspaceRoot: "/tmp/project",
+      subagentSteps: [
+        createStep({
+          name: "architecture_review",
+          objective: "Review architecture alignment only.",
+          acceptanceCriteria: ["Architecture findings are grounded"],
+          executionContext: {
+            version: "v1",
+            workspaceRoot: "/tmp/project",
+            allowedReadRoots: ["/tmp/project"],
+            requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+            verificationMode: "grounded_read",
+            stepKind: "delegated_review",
+            effectClass: "read_only",
+          },
+        }),
+        createStep({
+          name: "qa_review",
+          objective: "Review QA coverage only.",
+          acceptanceCriteria: ["QA findings are grounded"],
+          executionContext: {
+            version: "v1",
+            workspaceRoot: "/tmp/project",
+            allowedReadRoots: ["/tmp/project"],
+            requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+            verificationMode: "grounded_read",
+            stepKind: "delegated_review",
+            effectClass: "read_only",
+          },
+        }),
+        createStep({
+          name: "rewrite_plan",
+          objective: "Rewrite PLAN.md with the synthesized reviewer findings.",
+          acceptanceCriteria: ["PLAN.md is fully updated"],
+          executionContext: {
+            version: "v1",
+            workspaceRoot: "/tmp/project",
+            allowedReadRoots: ["/tmp/project"],
+            allowedWriteRoots: ["/tmp/project"],
+            requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+            targetArtifacts: ["/tmp/project/PLAN.md"],
+            verificationMode: "mutation_required",
+            stepKind: "delegated_write",
+            effectClass: "filesystem_write",
+          },
+        }),
+      ],
+      deterministicSteps: [],
+      includeSubagentOutputVerification: false,
+      requiredSubagentOutputStepNames: ["architecture_review", "qa_review"],
+    });
+
+    expect(admission.requiresMandatorySubagentOutputVerification).toBe(true);
+    expect(admission.verifierWorkItems.map((item) => item.name)).toEqual([
+      "architecture_review",
+      "qa_review",
+      "documentation_completion",
+    ]);
+  });
+
+  it("preserves distinct reviewer and writer contracts in verifier work items", () => {
+    const admission = buildPlannerWorkflowAdmission({
+      workspaceRoot: "/tmp/project",
+      subagentSteps: [
+        createStep({
+          name: "architecture_review",
+          objective:
+            "Review architecture alignment only and report grounded findings.",
+          acceptanceCriteria: ["Architecture findings are grounded"],
+          executionContext: {
+            version: "v1",
+            workspaceRoot: "/tmp/project",
+            allowedReadRoots: ["/tmp/project"],
+            requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+            verificationMode: "grounded_read",
+            stepKind: "delegated_review",
+            effectClass: "read_only",
+            role: "reviewer",
+            artifactRelations: [
+              {
+                relationType: "read_dependency",
+                artifactPath: "/tmp/project/PLAN.md",
+              },
+            ],
+          },
+        }),
+        createStep({
+          name: "rewrite_plan",
+          objective:
+            "Review the collected findings, then update PLAN.md with the synthesized result.",
+          acceptanceCriteria: ["PLAN.md is fully updated"],
+          executionContext: {
+            version: "v1",
+            workspaceRoot: "/tmp/project",
+            allowedReadRoots: ["/tmp/project"],
+            allowedWriteRoots: ["/tmp/project"],
+            requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+            targetArtifacts: ["/tmp/project/PLAN.md"],
+            verificationMode: "mutation_required",
+            stepKind: "delegated_write",
+            effectClass: "filesystem_write",
+            role: "writer",
+            artifactRelations: [
+              {
+                relationType: "read_dependency",
+                artifactPath: "/tmp/project/PLAN.md",
+              },
+              {
+                relationType: "write_owner",
+                artifactPath: "/tmp/project/PLAN.md",
+              },
+            ],
+          },
+        }),
+      ],
+      deterministicSteps: [],
+    });
+
+    const reviewerItem = admission.verifierWorkItems.find((item) =>
+      item.name === "architecture_review"
+    );
+    const writerItem = admission.verifierWorkItems.find((item) =>
+      item.name === "rewrite_plan"
+    );
+
+    expect(admission.workflowContract).toMatchObject({
+      workflowClass: "artifact_review_and_rewrite",
+      steps: expect.arrayContaining([
+        expect.objectContaining({
+          name: "architecture_review",
+          role: "reviewer",
+        }),
+        expect.objectContaining({
+          name: "rewrite_plan",
+          role: "writer",
+        }),
+      ]),
+    });
+    expect(reviewerItem?.workflowStep).toMatchObject({
+      name: "architecture_review",
+      role: "reviewer",
+      artifactRelations: [
+        {
+          relationType: "read_dependency",
+          artifactPath: "/tmp/project/PLAN.md",
+        },
+      ],
+    });
+    expect(reviewerItem?.verificationContract).toMatchObject({
+      role: "reviewer",
+      stepKind: "delegated_review",
+      verificationMode: "grounded_read",
+      requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+    });
+    expect(writerItem?.workflowStep).toMatchObject({
+      name: "rewrite_plan",
+      role: "writer",
+      artifactRelations: expect.arrayContaining([
+        {
+          relationType: "write_owner",
+          artifactPath: "/tmp/project/PLAN.md",
+        },
+      ]),
+    });
+    expect(writerItem?.verificationContract).toMatchObject({
+      role: "writer",
+      stepKind: "delegated_write",
+      verificationMode: "mutation_required",
+      targetArtifacts: ["/tmp/project/PLAN.md"],
+    });
+  });
+
+  it("fails writer verification when the required reviewer child output lacks an actual child session", () => {
+    const reviewerStep = createStep({
+      name: "architecture_review",
+      objective: "Review architecture only and report grounded findings.",
+      acceptanceCriteria: ["Architecture findings are grounded"],
+      executionContext: {
+        version: "v1",
+        workspaceRoot: "/tmp/project",
+        allowedReadRoots: ["/tmp/project"],
+        requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+        verificationMode: "grounded_read",
+        stepKind: "delegated_review",
+        effectClass: "read_only",
+        role: "reviewer",
+      },
+    });
+    const writerStep = createStep({
+      name: "rewrite_plan",
+      objective: "Update PLAN.md with the reviewer findings.",
+      acceptanceCriteria: ["PLAN.md is updated"],
+      requiredToolCapabilities: ["system.readFile", "system.writeFile"],
+      executionContext: {
+        version: "v1",
+        workspaceRoot: "/tmp/project",
+        allowedReadRoots: ["/tmp/project"],
+        allowedWriteRoots: ["/tmp/project"],
+        requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+        targetArtifacts: ["/tmp/project/PLAN.md"],
+        verificationMode: "mutation_required",
+        stepKind: "delegated_write",
+        effectClass: "filesystem_write",
+        role: "writer",
+      },
+    });
+    const workflowContract = {
+      workflowClass: "artifact_review_and_rewrite" as const,
+      steps: [
+        reviewerStep.workflowStep ?? {
+          name: reviewerStep.name,
+          role: "reviewer" as const,
+          objective: reviewerStep.objective,
+          inputContract: reviewerStep.inputContract,
+          acceptanceCriteria: reviewerStep.acceptanceCriteria,
+          requiredToolCapabilities: reviewerStep.requiredToolCapabilities,
+          contextRequirements: reviewerStep.contextRequirements,
+          executionContext: reviewerStep.executionContext,
+          artifactRelations: [],
+        },
+        writerStep.workflowStep ?? {
+          name: writerStep.name,
+          role: "writer" as const,
+          objective: writerStep.objective,
+          inputContract: writerStep.inputContract,
+          acceptanceCriteria: writerStep.acceptanceCriteria,
+          requiredToolCapabilities: writerStep.requiredToolCapabilities,
+          contextRequirements: writerStep.contextRequirements,
+          executionContext: writerStep.executionContext,
+          artifactRelations: [],
+        },
+      ],
+      requiredChildren: {
+        cardinality: 1,
+        roles: ["reviewer"] as const,
+        exactNames: ["architecture_review"],
+      },
+    };
+
+    const decision = evaluatePlannerDeterministicChecks(
+      [
+        {
+          name: "architecture_review",
+          verificationKind: "subagent_output",
+          objective: reviewerStep.objective,
+          inputContract: reviewerStep.inputContract,
+          acceptanceCriteria: reviewerStep.acceptanceCriteria,
+          requiredToolCapabilities: reviewerStep.requiredToolCapabilities,
+          workflowStep: {
+            name: reviewerStep.name,
+            role: "reviewer",
+            objective: reviewerStep.objective,
+            inputContract: reviewerStep.inputContract,
+            acceptanceCriteria: reviewerStep.acceptanceCriteria,
+            requiredToolCapabilities: reviewerStep.requiredToolCapabilities,
+            contextRequirements: reviewerStep.contextRequirements,
+            executionContext: reviewerStep.executionContext,
+            artifactRelations: [],
+          },
+          workflowContract,
+          resultStepNames: ["architecture_review"],
+        },
+        {
+          name: "rewrite_plan",
+          verificationKind: "subagent_output",
+          objective: writerStep.objective,
+          inputContract: writerStep.inputContract,
+          acceptanceCriteria: writerStep.acceptanceCriteria,
+          requiredToolCapabilities: writerStep.requiredToolCapabilities,
+          workflowStep: {
+            name: writerStep.name,
+            role: "writer",
+            objective: writerStep.objective,
+            inputContract: writerStep.inputContract,
+            acceptanceCriteria: writerStep.acceptanceCriteria,
+            requiredToolCapabilities: writerStep.requiredToolCapabilities,
+            contextRequirements: writerStep.contextRequirements,
+            executionContext: writerStep.executionContext,
+            artifactRelations: [],
+          },
+          workflowContract,
+          resultStepNames: ["rewrite_plan"],
+        },
+      ],
+      {
+        status: "completed",
+        context: {
+          results: {
+            architecture_review:
+              '{"success":true,"status":"completed","output":"Grounded architecture findings.","toolCalls":[{"name":"system.readFile","args":{"path":"/tmp/project/PLAN.md"},"result":"{\\"path\\":\\"/tmp/project/PLAN.md\\",\\"content\\":\\"# PLAN\\\\n\\"}","isError":false}]}',
+            rewrite_plan:
+              '{"success":true,"status":"completed","subagentSessionId":"sub-writer","output":"Updated PLAN.md.","toolCalls":[{"name":"system.readFile","args":{"path":"/tmp/project/PLAN.md"},"result":"{\\"path\\":\\"/tmp/project/PLAN.md\\",\\"content\\":\\"# PLAN\\\\n\\"}","isError":false},{"name":"system.writeFile","args":{"path":"/tmp/project/PLAN.md","content":"# PLAN\\\\nUpdated\\\\n"},"result":"{\\"path\\":\\"/tmp/project/PLAN.md\\",\\"bytesWritten\\":14}","isError":false}]}',
+          },
+        },
+        completedSteps: 2,
+        totalSteps: 2,
+      },
+      createPlannerContext(),
+      [],
+    );
+
+    expect(decision.overall).toBe("fail");
+    expect(
+      decision.steps.find((step) => step.name === "rewrite_plan")?.issues,
+    ).toContain("missing_required_reviewer_children");
+  });
+
+  it("fails final verification when a required reviewer child session reports failure", () => {
+    const reviewerStep = createStep({
+      name: "security_review",
+      objective: "Review security only and report grounded findings.",
+      acceptanceCriteria: ["Security findings are grounded"],
+      executionContext: {
+        version: "v1",
+        workspaceRoot: "/tmp/project",
+        allowedReadRoots: ["/tmp/project"],
+        requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+        verificationMode: "grounded_read",
+        stepKind: "delegated_review",
+        effectClass: "read_only",
+        role: "reviewer",
+      },
+    });
+    const validatorWorkflowContract = {
+      workflowClass: "artifact_review_and_rewrite" as const,
+      steps: [
+        {
+          name: reviewerStep.name,
+          role: "reviewer" as const,
+          objective: reviewerStep.objective,
+          inputContract: reviewerStep.inputContract,
+          acceptanceCriteria: reviewerStep.acceptanceCriteria,
+          requiredToolCapabilities: reviewerStep.requiredToolCapabilities,
+          contextRequirements: reviewerStep.contextRequirements,
+          executionContext: reviewerStep.executionContext,
+          artifactRelations: [],
+        },
+      ],
+      requiredChildren: {
+        cardinality: 1,
+        roles: ["reviewer"] as const,
+        exactNames: ["security_review"],
+      },
+    };
+
+    const decision = evaluatePlannerDeterministicChecks(
+      [
+        {
+          name: "security_review",
+          verificationKind: "subagent_output",
+          objective: reviewerStep.objective,
+          inputContract: reviewerStep.inputContract,
+          acceptanceCriteria: reviewerStep.acceptanceCriteria,
+          requiredToolCapabilities: reviewerStep.requiredToolCapabilities,
+          workflowStep: {
+            name: reviewerStep.name,
+            role: "reviewer",
+            objective: reviewerStep.objective,
+            inputContract: reviewerStep.inputContract,
+            acceptanceCriteria: reviewerStep.acceptanceCriteria,
+            requiredToolCapabilities: reviewerStep.requiredToolCapabilities,
+            contextRequirements: reviewerStep.contextRequirements,
+            executionContext: reviewerStep.executionContext,
+            artifactRelations: [],
+          },
+          workflowContract: validatorWorkflowContract,
+          resultStepNames: ["security_review"],
+        },
+        {
+          name: "implementation_completion",
+          verificationKind: "deterministic_implementation",
+          objective: "Validate final implementation completion.",
+          inputContract: "Use deterministic completion semantics.",
+          acceptanceCriteria: [],
+          requiredToolCapabilities: [],
+          workflowStep: {
+            name: "implementation_completion",
+            role: "validator",
+            objective: "Validate final implementation completion.",
+            inputContract: "Use deterministic completion semantics.",
+            acceptanceCriteria: [],
+            requiredToolCapabilities: [],
+            contextRequirements: [],
+            artifactRelations: [],
+          },
+          workflowContract: validatorWorkflowContract,
+          resultStepNames: ["security_review"],
+        },
+      ],
+      createPipelineResult(
+        '{"success":false,"status":"delegation_fallback","subagentSessionId":"sub-security","output":"Security review could not complete."}',
+        "security_review",
+      ),
+      createPlannerContext(),
+      [],
+    );
+
+    expect(decision.overall).toBe("fail");
+    expect(
+      decision.steps.find((step) => step.name === "implementation_completion")?.issues,
+    ).toContain("missing_required_reviewer_children");
+  });
+
+  it("uses documentation completion verification for deterministic plan rewrites", () => {
+    const admission = buildPlannerWorkflowAdmission({
+      workspaceRoot: "/tmp/project",
+      subagentSteps: [],
+      deterministicSteps: [
+        {
+          name: "read_plan",
+          stepType: "deterministic_tool",
+          tool: "system.readFile",
+          args: { path: "/tmp/project/PLAN.md" },
+        },
+        {
+          name: "rewrite_plan",
+          stepType: "deterministic_tool",
+          tool: "system.writeFile",
+          args: { path: "/tmp/project/PLAN.md", content: "# PLAN\n" },
+        },
+      ],
+    });
+
+    expect(admission.taskClassification).toBe("implementation_class");
+    expect(admission.completionContract).toMatchObject({
+      taskClass: "artifact_only",
+      placeholderTaxonomy: "documentation",
+    });
+    expect(admission.verifierWorkItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "documentation_completion",
+        }),
+      ]),
+    );
+  });
+
+  it("normalizes contradictory review-tagged plan rewrites into documentation write admission", () => {
+    const admission = buildPlannerWorkflowAdmission({
+      workspaceRoot: "/tmp/project",
+      subagentSteps: [
+        createStep({
+          name: "analyze_and_update_plan",
+          objective:
+            "Assess the repo against PLAN.md and update PLAN.md to match the current state.",
+          acceptanceCriteria: ["PLAN.md is updated accurately."],
+          executionContext: {
+            version: "v1",
+            workspaceRoot: "/tmp/project",
+            allowedReadRoots: ["/tmp/project"],
+            allowedWriteRoots: ["/tmp/project"],
+            requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+            targetArtifacts: ["/tmp/project/PLAN.md"],
+            verificationMode: "mutation_required",
+            stepKind: "delegated_review",
+            effectClass: "filesystem_write",
+          },
+        }),
+      ],
+      deterministicSteps: [],
+    });
+
+    expect(admission.taskClassification).toBe("implementation_class");
+    expect(admission.completionContract).toMatchObject({
+      taskClass: "artifact_only",
+      placeholderTaxonomy: "documentation",
+    });
+    expect(admission.verificationContract).toMatchObject({
+      verificationMode: "mutation_required",
+      stepKind: "delegated_write",
+      completionContract: expect.objectContaining({
+        taskClass: "artifact_only",
+        placeholderTaxonomy: "documentation",
+      }),
+    });
+    expect(admission.verifierWorkItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "documentation_completion",
+        }),
+      ]),
+    );
+  });
+});
+
+describe("structured verifier outputs", () => {
+  it("builds a strict documented json_schema request", () => {
+    expect(buildSubagentVerifierStructuredOutputRequest()).toEqual({
+      enabled: true,
+      schema: expect.objectContaining({
+        type: "json_schema",
+        name: "agenc_subagent_verifier_decision",
+        strict: true,
+      }),
+    });
+  });
+
+  it("parses structured verifier payload objects directly", () => {
+    const step = createStep();
+    const { verifierWorkItems } = buildPlannerVerifierAdmission({
+      subagentSteps: [step],
+      deterministicSteps: [],
+    });
+
+    const decision = parseSubagentVerifierDecision(
+      {
+        overall: "pass",
+        confidence: 0.91,
+        unresolved: [],
+        steps: [
+          {
+            name: step.name,
+            verdict: "pass",
+            confidence: 0.91,
+            retryable: false,
+            issues: [],
+            summary: "grounded and complete",
+          },
+        ],
+      },
+      verifierWorkItems,
+    );
+
+    expect(decision).toMatchObject({
+      overall: "pass",
+      confidence: 0.91,
+      unresolvedItems: [],
+      steps: [
+        expect.objectContaining({
+          name: step.name,
+          verdict: "pass",
+          retryable: false,
+        }),
+      ],
+    });
   });
 });

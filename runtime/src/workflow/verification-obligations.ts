@@ -4,20 +4,32 @@ import type {
   ImplementationCompletionContract,
   PlaceholderTaxonomy,
 } from "./completion-contract.js";
+import { areDocumentationOnlyArtifacts } from "./artifact-paths.js";
+import type { WorkflowRequestCompletionContract } from "./request-completion.js";
 import type {
   ExecutionStepKind,
   ExecutionVerificationMode,
+  WorkflowStepRole,
 } from "./execution-envelope.js";
+import { canonicalizeWorkflowStepRole } from "./execution-envelope.js";
+import { inferCompatibilityCompletionContract } from "./execution-intent.js";
+import { criterionRequiresWorkspaceInspectionVerification } from "./workspace-inspection-evidence.js";
 
 export interface WorkflowVerificationContract {
   readonly workspaceRoot?: string;
   readonly inputArtifacts?: readonly string[];
   readonly requiredSourceArtifacts?: readonly string[];
   readonly targetArtifacts?: readonly string[];
+  readonly inheritedEvidence?: {
+    readonly workspaceInspectionSatisfied?: boolean;
+    readonly sourceSteps?: readonly string[];
+  };
   readonly acceptanceCriteria?: readonly string[];
   readonly verificationMode?: ExecutionVerificationMode;
   readonly stepKind?: ExecutionStepKind;
+  readonly role?: WorkflowStepRole;
   readonly completionContract?: ImplementationCompletionContract;
+  readonly requestCompletion?: WorkflowRequestCompletionContract;
 }
 
 export interface VerificationObligations {
@@ -26,11 +38,13 @@ export interface VerificationObligations {
   readonly acceptanceCriteria: readonly string[];
   readonly verificationMode: ExecutionVerificationMode;
   readonly stepKind?: ExecutionStepKind;
+  readonly role?: WorkflowStepRole;
   readonly completionContract?: ImplementationCompletionContract;
   readonly placeholderTaxonomy: PlaceholderTaxonomy;
   readonly requiresBuildVerification: boolean;
   readonly requiresBehaviorVerification: boolean;
   readonly requiresReviewVerification: boolean;
+  readonly requiresWorkspaceInspectionEvidence: boolean;
   readonly requiresMutationEvidence: boolean;
   readonly requiresSourceArtifactReads: boolean;
   readonly requiresTargetAuthorization: boolean;
@@ -105,10 +119,19 @@ export function deriveVerificationObligations(
       verificationMode,
       targetArtifacts,
     });
+  const role = canonicalizeWorkflowStepRole({
+    role: normalizedInput.role,
+    stepKind,
+    verificationMode,
+  });
   const acceptanceCriteriaRequireBehavior =
     acceptanceCriteria.some((criterion) => criterionRequiresBehaviorVerification(criterion));
   const acceptanceCriteriaRequireBuild =
     acceptanceCriteria.some((criterion) => criterionRequiresBuildVerification(criterion));
+  const acceptanceCriteriaRequireWorkspaceInspection =
+    acceptanceCriteria.some((criterion) =>
+      criterionRequiresWorkspaceInspectionVerification(criterion)
+    );
   const requiresBuildVerification =
     completionContract?.taskClass === "build_required" ||
     completionContract?.taskClass === "behavior_required" ||
@@ -118,9 +141,13 @@ export function deriveVerificationObligations(
     completionContract?.taskClass === "behavior_required" ||
     acceptanceCriteriaRequireBehavior;
   const requiresReviewVerification =
-    completionContract?.taskClass === "review_required";
+    completionContract?.taskClass === "review_required" ||
+    role === "reviewer";
+  const requiresWorkspaceInspectionEvidence =
+    acceptanceCriteriaRequireWorkspaceInspection &&
+    normalizedInput.inheritedEvidence?.workspaceInspectionSatisfied !== true;
   const requiresMutationEvidence =
-    completionContract?.taskClass === "review_required"
+    role === "reviewer" || completionContract?.taskClass === "review_required"
       ? false
       : completionContract
         ? verificationMode === "mutation_required" ||
@@ -138,6 +165,7 @@ export function deriveVerificationObligations(
     inferPlaceholderTaxonomy({
       completionContract,
       stepKind,
+      targetArtifacts,
     });
 
   return {
@@ -149,19 +177,24 @@ export function deriveVerificationObligations(
     acceptanceCriteria,
     verificationMode,
     stepKind,
+    role,
     completionContract,
     placeholderTaxonomy,
     requiresBuildVerification,
     requiresBehaviorVerification,
     requiresReviewVerification,
+    requiresWorkspaceInspectionEvidence,
     requiresMutationEvidence,
     requiresSourceArtifactReads:
       verificationMode === "grounded_read" ||
       requiresReviewVerification ||
+      requiresWorkspaceInspectionEvidence ||
       requiresMutationEvidence ||
       requiredSourceArtifacts.length > 0,
     requiresTargetAuthorization: targetArtifacts.length > 0,
-    allowsGroundedNoop: targetArtifacts.length > 0,
+    allowsGroundedNoop:
+      role !== "reviewer" &&
+      targetArtifacts.length > 0,
     placeholdersAllowed,
     partialCompletionAllowed,
   };
@@ -192,9 +225,11 @@ function normalizeVerificationContractInput(
       targetArtifacts:
         executionContext?.targetArtifacts ??
         input.ownedArtifacts,
+      inheritedEvidence: input.inheritedEvidence,
       acceptanceCriteria: input.acceptanceCriteria,
       verificationMode: executionContext?.verificationMode,
       stepKind: executionContext?.stepKind,
+      role: executionContext?.role,
       completionContract: executionContext?.completionContract,
     };
   }
@@ -227,48 +262,10 @@ function inferVerificationMode(
   return "none";
 }
 
-function inferCompatibilityCompletionContract(params: {
-  readonly stepKind?: ExecutionStepKind;
-  readonly verificationMode: ExecutionVerificationMode;
-  readonly targetArtifacts: readonly string[];
-}): ImplementationCompletionContract | undefined {
-  if (params.stepKind === "delegated_scaffold") {
-    return {
-      taskClass: "scaffold_allowed",
-      placeholdersAllowed: true,
-      partialCompletionAllowed: true,
-      placeholderTaxonomy: "scaffold",
-    };
-  }
-  if (
-    params.stepKind === "delegated_review" ||
-    params.stepKind === "delegated_validation"
-  ) {
-    return {
-      taskClass: "review_required",
-      placeholdersAllowed: false,
-      partialCompletionAllowed: false,
-      placeholderTaxonomy: "implementation",
-    };
-  }
-  if (
-    params.stepKind === "delegated_write" ||
-    (params.verificationMode === "mutation_required" &&
-      params.targetArtifacts.length > 0)
-  ) {
-    return {
-      taskClass: "artifact_only",
-      placeholdersAllowed: false,
-      partialCompletionAllowed: false,
-      placeholderTaxonomy: "implementation",
-    };
-  }
-  return undefined;
-}
-
 function inferPlaceholderTaxonomy(params: {
   readonly completionContract?: ImplementationCompletionContract;
   readonly stepKind?: ExecutionStepKind;
+  readonly targetArtifacts?: readonly string[];
 }): PlaceholderTaxonomy {
   if (params.completionContract?.placeholderTaxonomy) {
     return params.completionContract.placeholderTaxonomy;
@@ -278,6 +275,12 @@ function inferPlaceholderTaxonomy(params: {
     params.stepKind === "delegated_scaffold"
   ) {
     return "scaffold";
+  }
+  if (
+    params.completionContract?.taskClass === "artifact_only" &&
+    areDocumentationOnlyArtifacts(params.targetArtifacts ?? [])
+  ) {
+    return "documentation";
   }
   return "implementation";
 }

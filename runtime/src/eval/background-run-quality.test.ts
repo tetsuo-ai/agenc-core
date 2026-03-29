@@ -20,6 +20,11 @@ describe("background-run-quality artifact", () => {
           category: "canary",
           ok: true,
           finalState: "completed",
+          completionState: "completed",
+          dependencyStateKind: "satisfied_terminal",
+          dependencySatisfied: true,
+          verifierClosed: true,
+          resolutionSemantics: "normal",
           latencyMs: 120,
           timeToFirstAckMs: 10,
           timeToFirstVerifiedUpdateMs: 40,
@@ -43,6 +48,11 @@ describe("background-run-quality artifact", () => {
           category: "chaos",
           ok: true,
           finalState: "blocked",
+          completionState: "blocked",
+          dependencyStateKind: "unsatisfied_terminal",
+          dependencySatisfied: false,
+          verifierClosed: false,
+          resolutionSemantics: "normal",
           latencyMs: 300,
           timeToFirstAckMs: 20,
           timeToFirstVerifiedUpdateMs: undefined,
@@ -86,6 +96,11 @@ describe("background-run-quality artifact", () => {
           category: "canary",
           ok: false,
           finalState: "completed",
+          completionState: "completed",
+          dependencyStateKind: "satisfied_terminal",
+          dependencySatisfied: true,
+          verifierClosed: true,
+          resolutionSemantics: "normal",
           latencyMs: 10_000,
           timeToFirstAckMs: 5_000,
           timeToFirstVerifiedUpdateMs: 12_000,
@@ -111,6 +126,52 @@ describe("background-run-quality artifact", () => {
     expect(evaluation.passed).toBe(false);
     expect(formatBackgroundRunGateEvaluation(evaluation)).toContain(
       "Background-run quality gates failed:",
+    );
+  });
+
+  it("flags canonically satisfied but verifier-open runs in background-run gates", () => {
+    const artifact = buildBackgroundRunQualityArtifact({
+      runId: "background-run-quality-open-satisfied",
+      generatedAtMs: 1_700_000_000_000,
+      scenarios: [
+        {
+          scenarioId: "open-satisfied",
+          category: "replay",
+          ok: false,
+          finalState: "completed",
+          completionState: "needs_verification",
+          dependencyStateKind: "satisfied_nonterminal",
+          dependencySatisfied: true,
+          verifierClosed: false,
+          resolutionSemantics: "normal",
+          latencyMs: 50,
+          falseCompletion: false,
+          blockedWithoutNotice: false,
+          recoverySucceeded: true,
+          verifierAccurate: true,
+          replayConsistent: true,
+          transcriptScore: 1,
+          toolTrajectoryScore: 1,
+          endStateCorrectnessScore: 1,
+          verifierCorrectnessScore: 1,
+          restartRecoveryCorrectnessScore: 1,
+          operatorUxCorrectnessScore: 1,
+          tokenCount: 10,
+          eventCount: 3,
+        },
+      ],
+    });
+
+    const evaluation = evaluateBackgroundRunQualityGates(artifact);
+    expect(evaluation.passed).toBe(false);
+    expect(evaluation.violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          metric: "open_satisfied_runs",
+          observed: 1,
+          threshold: 0,
+        }),
+      ]),
     );
   });
 });

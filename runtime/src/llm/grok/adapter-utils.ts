@@ -6,7 +6,6 @@
 
 import { createHash } from "node:crypto";
 import type {
-  LLMCompactionItemRef,
   LLMMessage,
   LLMResponse,
   LLMTool,
@@ -47,7 +46,7 @@ export type ToolResolutionStrategy =
   | "all_tools_empty_filter"
   | "subset_exact"
   | "subset_partial"
-  | "fallback_full_catalog_no_matches";
+  | "subset_missing";
 
 export interface ToolSelectionDiagnostics {
   readonly tools: Record<string, unknown>[];
@@ -106,6 +105,16 @@ export function summarizeTraceToolChoice(value: unknown): string | undefined {
     record.name.trim().length > 0
   ) {
     return `function:${record.name.trim()}`;
+  }
+  if (
+    record.type === "function" &&
+    record.function &&
+    typeof record.function === "object" &&
+    !Array.isArray(record.function) &&
+    typeof (record.function as Record<string, unknown>).name === "string" &&
+    String((record.function as Record<string, unknown>).name).trim().length > 0
+  ) {
+    return `function:${String((record.function as Record<string, unknown>).name).trim()}`;
   }
   try {
     return safeStringify(record);
@@ -172,6 +181,38 @@ export function buildProviderTraceErrorPayload(
       typeof status === "boolean"
     ) {
       payload.status = status;
+    }
+    const requestID =
+      (error as { requestID?: unknown }).requestID ??
+      (error as { requestId?: unknown }).requestId ??
+      (error as { _request_id?: unknown })._request_id;
+    if (typeof requestID === "string" && requestID.length > 0) {
+      payload.requestID = requestID;
+    }
+    const type = (error as { type?: unknown }).type;
+    if (typeof type === "string" && type.length > 0) {
+      payload.type = type;
+    }
+    const param = (error as { param?: unknown }).param;
+    if (typeof param === "string" && param.length > 0) {
+      payload.param = param;
+    }
+    const headers = (error as { headers?: unknown }).headers;
+    if (headers && typeof headers === "object") {
+      try {
+        if (typeof (headers as { entries?: unknown }).entries === "function") {
+          payload.headers = Object.fromEntries(
+            Array.from(
+              (headers as Headers).entries(),
+              ([key, value]) => [key, value],
+            ),
+          );
+        } else if (!Array.isArray(headers)) {
+          payload.headers = cloneProviderTracePayload(headers);
+        }
+      } catch {
+        // best-effort error header capture
+      }
     }
     return payload;
   }
@@ -368,69 +409,6 @@ export function isContinuationRetrievalFailure(error: unknown): boolean {
     message.includes("expired") ||
     message.includes("retriev")
   );
-}
-
-function toProviderErrorMessage(error: unknown): string {
-  if (typeof error === "string") return error.toLowerCase();
-  if (!error || typeof error !== "object") return "";
-  return String((error as { message?: unknown }).message ?? "").toLowerCase();
-}
-
-function isUnsupportedFieldError(message: string): boolean {
-  return (
-    message.includes("unknown") ||
-    message.includes("unsupported") ||
-    message.includes("invalid") ||
-    message.includes("unexpected") ||
-    message.includes("additional properties") ||
-    message.includes("not allowed")
-  );
-}
-
-export function isAssistantPhaseRejection(error: unknown): boolean {
-  const message = toProviderErrorMessage(error);
-  return message.includes("phase") && isUnsupportedFieldError(message);
-}
-
-export function isServerCompactionRejection(error: unknown): boolean {
-  const message = toProviderErrorMessage(error);
-  if (
-    !message.includes("context_management") &&
-    !message.includes("compact_threshold") &&
-    !message.includes("compaction")
-  ) {
-    return false;
-  }
-  return isUnsupportedFieldError(message);
-}
-
-function hashOpaqueCompactionItem(value: unknown): string {
-  return createHash("sha256").update(stableStringify(value)).digest("hex").slice(0, 16);
-}
-
-export function extractCompactionItemRefs(
-  response: Record<string, unknown>,
-): LLMCompactionItemRef[] {
-  const output = Array.isArray(response.output)
-    ? (response.output as Array<Record<string, unknown>>)
-    : [];
-  const items: LLMCompactionItemRef[] = [];
-  for (const item of output) {
-    const type = typeof item.type === "string" ? item.type.trim() : "";
-    if (type.length === 0 || !/compact/i.test(type)) {
-      continue;
-    }
-    const id =
-      typeof item.id === "string" && item.id.trim().length > 0
-        ? item.id.trim()
-        : undefined;
-    items.push({
-      type,
-      id,
-      digest: hashOpaqueCompactionItem(item),
-    });
-  }
-  return items;
 }
 
 function sanitizeSchema(value: unknown): unknown {

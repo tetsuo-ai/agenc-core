@@ -102,13 +102,14 @@ import {
 import { resolveToolContractExecutionBlock } from "../llm/chat-executor-contract-guidance.js";
 import {
   getProviderNativeAdvertisedToolNames,
-  getProviderNativeWebSearchRoutingDecision,
+  getProviderNativeToolRoutingDecisions,
 } from "../llm/provider-native-search.js";
 import {
   createLLMProviders as createLLMProvidersStandalone,
   resolveLlmContextWindowTokens as resolveLlmContextWindowTokensStandalone,
   resolveProviderExecutionBudget as resolveProviderExecutionBudgetStandalone,
   buildPromptBudgetConfig,
+  resolveLocalCompactionThreshold,
   resolveSessionTokenBudget,
   DEFAULT_GROK_MODEL,
   type LLMProviderConfigCatalogEntry,
@@ -126,6 +127,10 @@ import {
   InMemoryDelegationTrajectorySink,
 } from "../llm/delegation-learning.js";
 import { DEFAULT_TOOL_CALL_TIMEOUT_MS } from "../llm/chat-executor-constants.js";
+import {
+  hasRuntimeLimit,
+  normalizeRuntimeLimit,
+} from "../llm/runtime-limit-policy.js";
 import { ToolRegistry } from "../tools/registry.js";
 import {
   SystemRemoteJobManager,
@@ -623,9 +628,9 @@ export function resolveBashToolTimeoutConfig(
   timeoutMs: number;
   maxTimeoutMs: number;
 } {
-  const chatToolTimeoutMs = Math.max(
-    1,
-    Math.floor(config.llm?.toolCallTimeoutMs ?? DEFAULT_TOOL_CALL_TIMEOUT_MS),
+  const chatToolTimeoutMs = normalizeRuntimeLimit(
+    config.llm?.toolCallTimeoutMs,
+    DEFAULT_TOOL_CALL_TIMEOUT_MS,
   );
   const baseTimeoutMs = config.desktop?.enabled
     ? 300_000
@@ -635,8 +640,12 @@ export function resolveBashToolTimeoutConfig(
     : baseTimeoutMs;
 
   return {
-    timeoutMs: Math.min(baseTimeoutMs, chatToolTimeoutMs),
-    maxTimeoutMs: Math.min(baseMaxTimeoutMs, chatToolTimeoutMs),
+    timeoutMs: hasRuntimeLimit(chatToolTimeoutMs)
+      ? Math.min(baseTimeoutMs, chatToolTimeoutMs)
+      : baseTimeoutMs,
+    maxTimeoutMs: hasRuntimeLimit(chatToolTimeoutMs)
+      ? Math.min(baseMaxTimeoutMs, chatToolTimeoutMs)
+      : baseMaxTimeoutMs,
   };
 }
 
@@ -869,7 +878,7 @@ export type { EvalScriptResult };
  */
 function getDefaultMaxToolRounds(config: GatewayConfig): number {
   void config;
-  return 2_048;
+  return 0;
 }
 
 /** Result of loadWallet() — either a keypair + wallet adapter or null. */
@@ -1261,7 +1270,7 @@ export class DaemonManager {
       requestTimeoutMs: this._primaryLlmConfig?.requestTimeoutMs,
       childTimeoutMs: this._subAgentRuntimeConfig?.defaultTimeoutMs,
       maxFanoutPerTurn: this._subAgentRuntimeConfig?.maxFanoutPerTurn,
-      mode: "enforce",
+      mode: this._primaryLlmConfig?.economicsMode ?? "enforce",
     });
     const routingPolicy = buildModelRoutingPolicy({
       providers: this._llmProviders,
@@ -1421,6 +1430,10 @@ export class DaemonManager {
       config.llm,
       contextWindowTokens,
     );
+    const subAgentSessionCompactionThreshold = resolveLocalCompactionThreshold(
+      config.llm,
+      contextWindowTokens,
+    );
     const subAgentPromptBudget = buildPromptBudgetConfig(
       config.llm,
       contextWindowTokens,
@@ -1465,6 +1478,8 @@ export class DaemonManager {
       maxDepth: resolved.maxDepth,
       promptBudget: subAgentPromptBudget,
       sessionTokenBudget: subAgentSessionTokenBudget,
+      sessionCompactionThreshold: subAgentSessionCompactionThreshold,
+      economicsMode: config.llm?.economicsMode ?? "enforce",
       onCompaction: this.handleCompaction,
       resolveExecutionBudget: async ({ selectedProvider }) =>
         this.resolveProviderExecutionBudget(selectedProvider),
@@ -1987,6 +2002,10 @@ export class DaemonManager {
       config.llm,
       contextWindowTokens,
     );
+    const sessionCompactionThreshold = resolveLocalCompactionThreshold(
+      config.llm,
+      contextWindowTokens,
+    );
     const promptBudget = buildPromptBudgetConfig(
       config.llm,
       contextWindowTokens,
@@ -2018,6 +2037,7 @@ export class DaemonManager {
       promptBudget,
       maxToolRounds: defaultForegroundMaxToolRounds,
       sessionTokenBudget,
+      sessionCompactionThreshold,
       onCompaction: this.handleCompaction,
       llmConfig: config.llm,
       subagentConfig: resolvedSubAgentConfig,
@@ -3442,6 +3462,10 @@ export class DaemonManager {
         newConfig.llm,
         contextWindowTokens,
       );
+      const sessionCompactionThreshold = resolveLocalCompactionThreshold(
+        newConfig.llm,
+        contextWindowTokens,
+      );
       const promptBudget = buildPromptBudgetConfig(
         newConfig.llm,
         contextWindowTokens,
@@ -3480,6 +3504,7 @@ export class DaemonManager {
         promptBudget,
         maxToolRounds: defaultForegroundMaxToolRounds,
         sessionTokenBudget,
+        sessionCompactionThreshold,
         onCompaction: this.handleCompaction,
         llmConfig: newConfig.llm,
         subagentConfig: resolvedSubAgentConfig,
@@ -4035,7 +4060,6 @@ export class DaemonManager {
       desktopRouterFactory: this._desktopRouterFactory ?? undefined,
       systemPrompt: voicePrompt,
       voice: config.voice?.voice ?? "Ara",
-      model: config.voice?.model ?? DEFAULT_GROK_MODEL,
       mode: config.voice?.mode ?? "vad",
       vadThreshold: config.voice?.vadThreshold,
       vadSilenceDurationMs: config.voice?.vadSilenceDurationMs,
@@ -4672,7 +4696,7 @@ export class DaemonManager {
         messageText,
         history,
       });
-      return this.maybeAugmentToolRoutingDecisionWithNativeSearch(
+      return this.maybeAugmentToolRoutingDecisionWithNativeTools(
         decision,
         messageText,
         history,
@@ -4725,41 +4749,43 @@ export class DaemonManager {
     );
   }
 
-  private maybeAugmentToolRoutingDecisionWithNativeSearch(
+  private maybeAugmentToolRoutingDecisionWithNativeTools(
     decision: ToolRoutingDecision,
     messageText: string,
     history: readonly LLMMessage[],
   ): ToolRoutingDecision {
-    const nativeSearch = getProviderNativeWebSearchRoutingDecision({
+    const nativeTools = getProviderNativeToolRoutingDecisions({
       llmConfig: this._primaryLlmConfig,
       messageText,
       history,
     });
-    if (!nativeSearch) return decision;
+    if (nativeTools.length === 0) return decision;
 
-    const routedToolNames = Array.from(
-      new Set([...decision.routedToolNames, nativeSearch.toolName]),
-    );
-    const expandedToolNames = Array.from(
-      new Set([...decision.expandedToolNames, nativeSearch.toolName]),
-    );
-    if (
-      routedToolNames.length === decision.routedToolNames.length &&
-      expandedToolNames.length === decision.expandedToolNames.length
-    ) {
+    const addedRoutedTools = nativeTools
+      .map((tool) => tool.toolName)
+      .filter((toolName) => !decision.routedToolNames.includes(toolName));
+    const addedExpandedTools = nativeTools
+      .map((tool) => tool.toolName)
+      .filter((toolName) => !decision.expandedToolNames.includes(toolName));
+    if (addedRoutedTools.length === 0 && addedExpandedTools.length === 0) {
       return decision;
     }
 
-    const routedAdded =
-      routedToolNames.length > decision.routedToolNames.length
-        ? nativeSearch.schemaChars
-        : 0;
-    const expandedAdded =
-      expandedToolNames.length > decision.expandedToolNames.length
-        ? nativeSearch.schemaChars
-        : 0;
+    const routedToolNames = Array.from(
+      new Set([...decision.routedToolNames, ...addedRoutedTools]),
+    );
+    const expandedToolNames = Array.from(
+      new Set([...decision.expandedToolNames, ...addedExpandedTools]),
+    );
+    const routedAdded = nativeTools
+      .filter((tool) => addedRoutedTools.includes(tool.toolName))
+      .reduce((sum, tool) => sum + tool.schemaChars, 0);
+    const expandedAdded = nativeTools
+      .filter((tool) => addedExpandedTools.includes(tool.toolName))
+      .reduce((sum, tool) => sum + tool.schemaChars, 0);
     const schemaCharsFull =
-      decision.diagnostics.schemaCharsFull + nativeSearch.schemaChars;
+      decision.diagnostics.schemaCharsFull +
+      nativeTools.reduce((sum, tool) => sum + tool.schemaChars, 0);
     const schemaCharsRouted =
       decision.diagnostics.schemaCharsRouted + routedAdded;
     const schemaCharsExpanded =
@@ -4770,7 +4796,9 @@ export class DaemonManager {
       expandedToolNames,
       diagnostics: {
         ...decision.diagnostics,
-        totalToolCount: decision.diagnostics.totalToolCount + 1,
+        totalToolCount:
+          decision.diagnostics.totalToolCount +
+          nativeTools.length,
         routedToolCount: routedToolNames.length,
         expandedToolCount: expandedToolNames.length,
         schemaCharsFull,
@@ -5909,6 +5937,10 @@ export class DaemonManager {
             sessionId: msg.sessionId,
             parentSessionId: msg.sessionId,
             payload: {
+              ...(typeof result.completionState === "string" &&
+              result.completionState.trim().length > 0
+                ? { completionState: result.completionState.trim() }
+                : {}),
               stopReason: result.stopReason,
               ...(stopReasonDetail ? { stopReasonDetail } : {}),
               outputChars: result.content.length,

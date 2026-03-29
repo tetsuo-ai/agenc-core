@@ -98,6 +98,10 @@ function createInputHarness(overrides = {}) {
         calls.push({ type: "submit", value });
       },
     },
+    cancelActiveChat() {
+      calls.push({ type: "cancelActiveChat" });
+      return true;
+    },
     scheduleRender() {
       calls.push({ type: "render" });
     },
@@ -147,16 +151,27 @@ test("input controller routes mouse-wheel packets to viewport scrolling", () => 
   assert.ok(calls.some((entry) => entry.type === "scroll" && entry.delta === 3));
 });
 
-test("input controller closes expanded detail on unknown escape", () => {
+test("input controller closes expanded detail on plain escape", () => {
   const { controller, watchState, calls } = createInputHarness();
   watchState.expandedEventId = "evt-1";
   watchState.detailScrollOffset = 8;
 
-  controller.handleTerminalEscapeSequence("\x1b[999~", 0);
+  controller.handleTerminalEscapeSequence("\x1b", 0);
 
   assert.equal(watchState.expandedEventId, null);
   assert.equal(watchState.detailScrollOffset, 0);
   assert.ok(calls.some((entry) => entry.type === "status" && entry.status === "detail closed"));
+});
+
+test("input controller ignores unknown escape sequences without cancelling or leaking text", () => {
+  const { controller, watchState, calls } = createInputHarness();
+  watchState.composerInput = "hello";
+  watchState.composerCursor = 5;
+
+  controller.handleTerminalInput("\x1b[999~");
+
+  assert.equal(watchState.composerInput, "hello");
+  assert.equal(calls.some((entry) => entry.type === "cancelActiveChat"), false);
 });
 
 test("input controller routes ctrl+p and ctrl+n to diff hunk navigation only in diff detail mode", () => {

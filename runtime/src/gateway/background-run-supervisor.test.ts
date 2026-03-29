@@ -587,8 +587,8 @@ describe("background-run-supervisor", () => {
     expect(execute.mock.calls[0]?.[0].systemPrompt).toContain(
       "launch it so the tool call returns immediately",
     );
-    expect(execute.mock.calls[0]?.[0].maxToolRounds).toBe(1);
-    expect(execute.mock.calls[0]?.[0].toolBudgetPerRequest).toBe(4);
+    expect(execute.mock.calls[0]?.[0].maxToolRounds).toBe(0);
+    expect(execute.mock.calls[0]?.[0].toolBudgetPerRequest).toBe(0);
     expect(execute.mock.calls[0]?.[0].maxModelRecallsPerRequest).toBe(0);
     expect(publishUpdate).toHaveBeenNthCalledWith(
       1,
@@ -2255,7 +2255,7 @@ describe("background-run-supervisor", () => {
                   enabled: true,
                   requested: true,
                   active: true,
-                  mode: "server_side_context_management",
+                  mode: "provider_managed_state",
                   threshold: 12_000,
                   observedItemCount: 1,
                   latestItem: {
@@ -2323,9 +2323,9 @@ describe("background-run-supervisor", () => {
           ]),
         }),
         budgetState: expect.objectContaining({
-          maxRuntimeMs: 604_800_000,
+          maxRuntimeMs: 0,
           maxCycles: deriveDefaultBackgroundRunMaxCycles({
-            maxRuntimeMs: 604_800_000,
+            maxRuntimeMs: 0,
             nextCheckMs: 4000,
           }),
           nextCheckIntervalMs: 4000,
@@ -2347,9 +2347,9 @@ describe("background-run-supervisor", () => {
       await expect(runStore1.loadRun("session-recover")).resolves.toMatchObject({
         state: "suspended",
         budgetState: expect.objectContaining({
-          maxRuntimeMs: 604_800_000,
+          maxRuntimeMs: 0,
           maxCycles: deriveDefaultBackgroundRunMaxCycles({
-            maxRuntimeMs: 604_800_000,
+            maxRuntimeMs: 0,
             nextCheckMs: 4000,
           }),
         }),
@@ -2434,9 +2434,9 @@ describe("background-run-supervisor", () => {
           ]),
         }),
         budgetState: expect.objectContaining({
-          maxRuntimeMs: 604_800_000,
+          maxRuntimeMs: 0,
           maxCycles: deriveDefaultBackgroundRunMaxCycles({
-            maxRuntimeMs: 604_800_000,
+            maxRuntimeMs: 0,
             nextCheckMs: 4000,
           }),
         }),
@@ -3497,9 +3497,10 @@ describe("background-run-supervisor", () => {
       }),
       budgetState: expect.objectContaining({
         maxCycles: deriveDefaultBackgroundRunMaxCycles({
-          maxRuntimeMs: 604_800_000,
+          maxRuntimeMs: 0,
           nextCheckMs: 4000,
         }),
+        maxRuntimeMs: 0,
         nextCheckIntervalMs: 4000,
       }),
       fenceToken: expect.any(Number),
@@ -3863,7 +3864,7 @@ describe("background-run-supervisor", () => {
     expect(repaired?.carryForward?.summary).not.toBe(poisonedSummary);
   });
 
-  it("stores provider compaction artifacts out of band and traces them on memory refresh", async () => {
+  it("stores provider state artifacts out of band and traces them on memory refresh", async () => {
     const publishUpdate = vi.fn(async () => undefined);
     const execute = vi.fn().mockResolvedValue(
       makeResult({
@@ -3893,7 +3894,7 @@ describe("background-run-supervisor", () => {
               enabled: true,
               requested: true,
               active: true,
-              mode: "server_side_context_management",
+              mode: "provider_managed_state",
               threshold: 12_000,
               observedItemCount: 1,
               latestItem: {
@@ -3968,7 +3969,7 @@ describe("background-run-supervisor", () => {
           expect.objectContaining({
             kind: "opaque_provider_state",
             locator: "provider:grok:compaction:cmp_1",
-            source: "grok:context_management",
+            source: "grok:provider_state",
             digest: "deadbeefcafebabe",
           }),
         ],

@@ -19,6 +19,7 @@ describe("interactive onboarding gating", () => {
 
   it("only enables the TUI for real human terminal sessions", () => {
     expect(shouldUseInteractiveOnboarding({}, ttyDeps)).toBe(true);
+    expect(shouldUseInteractiveOnboarding({ help: true }, ttyDeps)).toBe(false);
     expect(
       shouldUseInteractiveOnboarding({ "non-interactive": true }, ttyDeps),
     ).toBe(false);

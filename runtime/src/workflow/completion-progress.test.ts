@@ -246,4 +246,47 @@ describe("completion-progress", () => {
       ]),
     );
   });
+
+  it("tracks remaining request milestones separately from local verification requirements", () => {
+    const snapshot = deriveWorkflowProgressSnapshot({
+      stopReason: "completed",
+      completionState: "partial",
+      toolCalls: [
+        {
+          name: "system.writeFile",
+          args: { path: "/workspace/src/main.c" },
+          result: JSON.stringify({ ok: true }),
+          isError: false,
+        },
+      ],
+      verificationContract: {
+        workspaceRoot: "/workspace",
+        targetArtifacts: ["/workspace/src/main.c"],
+        verificationMode: "mutation_required",
+        requestCompletion: {
+          requiredMilestones: [
+            { id: "phase_1", description: "Finish phase 1" },
+            { id: "phase_2", description: "Finish phase 2" },
+          ],
+        },
+        completionContract: {
+          taskClass: "artifact_only",
+          placeholdersAllowed: false,
+          partialCompletionAllowed: false,
+          placeholderTaxonomy: "implementation",
+        },
+      },
+      completedRequestMilestoneIds: ["phase_1"],
+      updatedAt: 30,
+    });
+
+    expect(snapshot).toMatchObject({
+      requiredRequirements: ["request_milestones"],
+      remainingRequirements: ["request_milestones"],
+      satisfiedMilestoneIds: ["phase_1"],
+      remainingMilestones: [
+        { id: "phase_2", description: "Finish phase 2" },
+      ],
+    });
+  });
 });

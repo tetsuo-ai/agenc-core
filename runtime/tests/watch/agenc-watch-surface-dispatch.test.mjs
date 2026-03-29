@@ -358,6 +358,29 @@ test("dispatchOperatorSurfaceEvent cancels live stream state when chats are canc
   ]);
 });
 
+test("dispatchOperatorSurfaceEvent keeps the live stream when chat cancellation fails", () => {
+  const { api, calls } = createHarness();
+
+  dispatchOperatorSurfaceEvent(
+    {
+      family: "chat",
+      type: "chat.cancelled",
+      payload: { cancelled: false },
+      payloadRecord: { cancelled: false },
+      payloadList: null,
+      isSessionScoped: true,
+      message: {},
+    },
+    null,
+    api,
+  );
+
+  assert.deepEqual(calls, [
+    ["status", "chat cancel failed"],
+    ["pushEvent", "error", "Chat Cancel Failed", JSON.stringify({ cancelled: false }), "red"],
+  ]);
+});
+
 test("dispatchOperatorSurfaceEvent routes planner families through the planner handler", () => {
   const { api, calls } = createHarness();
 
@@ -501,6 +524,7 @@ test("dispatchOperatorSurfaceEvent preserves completion truth on run.updated pay
     remainingRequirements: ["workflow_verifier_pass"],
     currentPhase: "active",
     explanation: "Verification is still required.",
+    createdAt: 456,
   };
   const { api, state, calls } = createHarness({
     state: {
@@ -527,7 +551,7 @@ test("dispatchOperatorSurfaceEvent preserves completion truth on run.updated pay
 
   assert.equal(state.runState, "needs_verification");
   assert.equal(state.runPhase, "active");
-  assert.equal(state.activeRunStartedAtMs, 123);
+  assert.equal(state.activeRunStartedAtMs, 456);
   assert.deepEqual(calls, [
     ["status", "run updated: needs verification"],
     [

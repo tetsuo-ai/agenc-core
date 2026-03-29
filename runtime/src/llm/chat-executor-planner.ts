@@ -4,7 +4,11 @@
  * @module
  */
 
-import type { LLMMessage, LLMToolCall } from "./types.js";
+import type {
+  LLMMessage,
+  LLMStructuredOutputRequest,
+  LLMToolCall,
+} from "./types.js";
 import type {
   PromptBudgetSection,
 } from "./prompt-budget.js";
@@ -31,6 +35,9 @@ import type {
   SubagentVerifierDecision,
   SubagentVerifierStepAssessment,
   ToolCallRecord,
+  WorkflowContract,
+  WorkflowContractClass,
+  WorkflowStepContract,
 } from "./chat-executor-types.js";
 import {
   assessDelegationDecision,
@@ -52,6 +59,7 @@ import {
   MAX_SUBAGENT_VERIFIER_OUTPUT_CHARS,
   RECOVERY_HINT_PREFIX,
 } from "./chat-executor-constants.js";
+import { hasRuntimeLimit } from "./runtime-limit-policy.js";
 import {
   truncateText,
   extractLLMMessageText,
@@ -87,6 +95,19 @@ import {
   isNonExecutableEnvelopePath,
   normalizeWorkspaceRoot,
 } from "../workflow/path-normalization.js";
+import {
+  canonicalizeWorkflowArtifactRelations,
+  canonicalizeWorkflowStepRole,
+  type WorkflowArtifactRelation,
+  type WorkflowStepRole,
+} from "../workflow/execution-envelope.js";
+import { textRequiresWorkspaceGroundedArtifactUpdate } from "../workflow/workspace-inspection-evidence.js";
+import {
+  extractRequiredSubagentOrchestrationRequirements,
+  allowsUserMandatedSubagentCardinalityOverride,
+  orchestrationRoleHintRegex,
+  type RequiredSubagentOrchestrationRequirements as ExplicitSubagentOrchestrationRequirements,
+} from "../workflow/subagent-orchestration-requirements.js";
 
 // ============================================================================
 // Planner decision
@@ -107,7 +128,7 @@ interface PlannerRequestSignals {
 }
 
 const EXPLICIT_DELEGATION_REQUEST_RE =
-  /\b(?:spawn|use|run|launch|start|delegate(?:\s+to)?|hand\s+off\s+to)\b[\s\S]{0,48}\b(?:sub[\s-]?agents?|child\s+agents?|another\s+agent|execute_with_agent)\b/i;
+  /\b(?:spawn|use|run|launch|start|delegate(?:\s+to)?|hand\s+off\s+to)\b[\s\S]{0,64}\b(?:sub[\s-]?agents?|child\s+agents?|another\s+agent|execute_with_agent|deeper\s+research|research|investigation|investigate|inspection|inspect|triage|analy[sz]e|analysis)\b/i;
 const PLANNER_PATH_PLACEHOLDER_ROOTS = [
   "/workspace",
   "/abs/path",
@@ -330,7 +351,9 @@ export function assessPlannerDecision(
     };
   }
 
-  if (plannerRequestNeedsGroundedPlanArtifact(messageText)) {
+  const artifactIntent = classifyPlannerPlanArtifactIntent(messageText);
+
+  if (artifactIntent === "grounded_plan_generation") {
     return {
       score: Math.max(score, 3),
       shouldPlan: true,
@@ -341,7 +364,7 @@ export function assessPlannerDecision(
     };
   }
 
-  if (plannerRequestNeedsPlanArtifactExecution(messageText)) {
+  if (artifactIntent === "edit_artifact") {
     return {
       score: Math.max(score, 4),
       shouldPlan: true,
@@ -349,6 +372,17 @@ export function assessPlannerDecision(
         reasons.length > 0
           ? `${reasons.join("+")}+plan_artifact_execution_request`
           : "plan_artifact_execution_request",
+    };
+  }
+
+  if (artifactIntent === "implement_from_artifact") {
+    return {
+      score: Math.max(score, 4),
+      shouldPlan: true,
+      reason:
+        reasons.length > 0
+          ? `${reasons.join("+")}+artifact_spec_execution_request`
+          : "artifact_spec_execution_request",
     };
   }
 
@@ -600,15 +634,57 @@ export function buildPlannerMessages(
     extractPlannerVerificationRequirements(messageText);
   const verificationCommandRequirements =
     extractPlannerVerificationCommandRequirements(messageText);
-  const planArtifactExecutionRequest =
-    plannerRequestNeedsPlanArtifactExecution(messageText);
+  const artifactIntent = classifyPlannerPlanArtifactIntent(messageText);
+  const planArtifactExecutionRequest = artifactIntent === "edit_artifact";
+  const implementFromArtifactRequest =
+    artifactIntent === "implement_from_artifact";
+  const groundedPlanArtifactRequest =
+    artifactIntent === "grounded_plan_generation";
+  const workspaceGroundedArtifactUpdate =
+    plannerRequestNeedsWorkspaceGroundedArtifactUpdate(messageText);
+  const currentArtifactTargets = extractPlannerArtifactTargets(messageText);
   const hostToolingHint = buildPlannerHostToolingHint(
     messageText,
     history,
     hostToolingProfile,
   );
+  let suppressImmediateAssistantReply = false;
   const historyPreview = history
     .slice(-6)
+    .filter((entry) => {
+      const raw =
+        typeof entry.content === "string"
+          ? entry.content
+          : entry.content
+              .filter((part) => part.type === "text")
+              .map((part) => part.text)
+              .join(" ");
+      if (!implementFromArtifactRequest) {
+        suppressImmediateAssistantReply = false;
+        return true;
+      }
+      if (entry.role === "assistant" && suppressImmediateAssistantReply) {
+        suppressImmediateAssistantReply = false;
+        return false;
+      }
+      const entryIntent = classifyPlannerPlanArtifactIntent(raw);
+      const sameArtifactTarget = plannerArtifactTargetsOverlap(
+        currentArtifactTargets,
+        extractPlannerArtifactTargets(raw),
+      );
+      if (
+        sameArtifactTarget &&
+        (
+          entryIntent === "grounded_plan_generation" ||
+          entryIntent === "edit_artifact"
+        )
+      ) {
+        suppressImmediateAssistantReply = entry.role === "user";
+        return false;
+      }
+      suppressImmediateAssistantReply = false;
+      return true;
+    })
     .map((entry) => {
       const raw =
         typeof entry.content === "string"
@@ -620,22 +696,28 @@ export function buildPlannerMessages(
       return `[${entry.role}] ${truncateText(raw, 300)}`;
     })
     .join("\n");
-  const maxSteps = Math.min(
-    MAX_PLANNER_STEPS,
-    Math.max(1, Math.floor(plannerMaxTokens / 8)),
-  );
+  const maxSteps = resolvePlannerStepLimit(plannerMaxTokens);
   const canonicalPlannerWorkspaceRoot =
     normalizeWorkspaceRoot(plannerWorkspaceRoot);
   const schemaWorkspaceRoot =
     canonicalPlannerWorkspaceRoot ?? "<actual-workspace-root>";
+  const schemaPrimaryArtifact =
+    currentArtifactTargets[0] ??
+    (groundedPlanArtifactRequest || planArtifactExecutionRequest || implementFromArtifactRequest
+      ? "PLAN.md"
+      : "output.md");
   const schemaPlanArtifact =
     canonicalPlannerWorkspaceRoot
-      ? `${canonicalPlannerWorkspaceRoot}/PLAN.md`
-      : "<actual-workspace-root>/PLAN.md";
+      ? `${canonicalPlannerWorkspaceRoot}/${schemaPrimaryArtifact}`
+      : `<actual-workspace-root>/${schemaPrimaryArtifact}`;
   const schemaTargetArtifact =
-    canonicalPlannerWorkspaceRoot
-      ? `${canonicalPlannerWorkspaceRoot}/AGENC.md`
-      : "<actual-workspace-root>/AGENC.md";
+    groundedPlanArtifactRequest || planArtifactExecutionRequest
+      ? schemaPlanArtifact
+      : (
+          canonicalPlannerWorkspaceRoot
+            ? `${canonicalPlannerWorkspaceRoot}/src`
+            : "<actual-workspace-root>/src"
+        );
 
   const messages: LLMMessage[] = [
     {
@@ -670,6 +752,8 @@ export function buildPlannerMessages(
         '        "effectClass": "read_only|filesystem_write|filesystem_scaffold|shell|mixed",\n' +
         '        "verificationMode": "none|grounded_read|mutation_required|deterministic_followup",\n' +
         '        "stepKind": "delegated_research|delegated_review|delegated_write|delegated_scaffold|delegated_validation",\n' +
+        '        "role": "reviewer|writer|validator|researcher|synthesizer",\n' +
+        '        "artifactRelations": [{"relationType":"read_dependency|write_owner|verification_subject|context_input|handoff_artifact","artifactPath":"/absolute/or/workspace-relative/path"}],\n' +
         '        "fallbackPolicy": "continue_without_delegation|fail_request",\n' +
         '        "resumePolicy": "stateless_retry|checkpoint_resume",\n' +
         '        "approvalProfile": "inherit|read_only|filesystem_write|shell"\n' +
@@ -685,6 +769,8 @@ export function buildPlannerMessages(
         "- `can_run_parallel` is optional; omit it when unknown and the runtime will default it to false.\n" +
         "- For subagent_task steps, put workspace, artifact, and tool scope truth inside `execution_context`; do not rely on `context_requirements` for authority.\n" +
         "- `execution_context.workspaceRoot` must be the canonical workspace root when the child touches local files.\n" +
+        "- `execution_context.role` is required whenever reviewer/writer/validator identity matters; do not expect the runtime to infer required reviewer identity from step names.\n" +
+        "- `execution_context.artifactRelations` is the typed source of truth for read dependencies, write ownership, and verification subjects.\n" +
         "- `execution_context.requiredSourceArtifacts` names the exact source artifacts the child must ground on before writing derived files.\n" +
         "- `execution_context.targetArtifacts` names the only files or directories the child may mutate in this phase.\n" +
         "- Never emit placeholder literals like `/abs/path` or `<actual-workspace-root>` in executable steps. Use the real canonical workspace root for this turn.\n" +
@@ -693,7 +779,7 @@ export function buildPlannerMessages(
         "- Prefer multiple smaller subagent_task steps with explicit dependencies over one large delegated objective.\n" +
         (
           runtimeConstraints
-            ? `- Never emit more than ${runtimeConstraints.maxSubagentFanout} subagent_task steps in the full plan.\n`
+            ? `- Keep automatic delegated fanout bounded: do not rely on more than ${runtimeConstraints.maxSubagentFanout} concurrently runnable subagent_task steps at once unless the user explicitly required a higher child-agent count. When a higher count is user-mandated, serialize or batch the child steps with dependencies or \`can_run_parallel: false\` so the runtime can stay within its concurrency cap.\n`
             : ""
         ) +
         (
@@ -706,13 +792,20 @@ export function buildPlannerMessages(
         ) +
         "- If you need to reduce delegated fanout, only merge adjacent steps from the same phase family. Never merge research with setup/manifest work, or code implementation with broad validation/browser QA.\n" +
         "- For Node workspace scaffold/setup steps that run before the real install step, objectives and acceptance criteria must stay file-authoring-only. Do not mention install/build/test/typecheck/lint/coverage/runtime success there; put those checks in later steps after install.\n" +
-        "- For deterministic system.bash/desktop.bash steps, do not use nested shell wrappers like `bash -c` or `sh -c`; call the target command directly or use shell mode.\n" +
         "- Do not embed heredocs, multi-line shell scripts, or generated file contents inside deterministic bash steps. Use file mutation tools for file contents instead.\n" +
         "- Verification/build/test commands must be non-interactive and exit on their own. Do not use watch mode or dev servers for validation. Prefer runner-native single-run invocations. For Vitest use `vitest run`/`vitest --run`. For Jest use `CI=1 npm test` or `jest --runInBand`. Only pass extra npm `--` flags when the underlying runner supports them.\n" +
         "- max_budget_hint must use explicit units like `90s`, `2m`, or `1h`; do not use bare numeric hints such as `0.08`.\n" +
         "- synthesis steps describe final merge/synthesis intent and do not call tools.\n" +
-        `Keep output concise and below approximately ${plannerMaxTokens} tokens. ` +
-        `Never emit more than ${maxSteps} steps.`,
+        (
+          hasRuntimeLimit(plannerMaxTokens)
+            ? `Keep output concise and below approximately ${plannerMaxTokens} tokens. `
+            : ""
+        ) +
+        (
+          Number.isFinite(maxSteps)
+            ? `Never emit more than ${maxSteps} steps.`
+            : ""
+        ),
     },
   ];
 
@@ -720,12 +813,23 @@ export function buildPlannerMessages(
     messages.push({
       role: "system",
       content:
-        "The user supplied a required sub-agent orchestration plan. " +
-        "You MUST emit one `subagent_task` step for each required step using " +
-        `these exact step names and order: ${explicitOrchestration.stepNames.join(" -> ")}. ` +
-        "Do not rename, omit, merge, or collapse any required step. " +
-        "Preserve dependency order so later steps depend on the earlier required steps they build on. " +
-        "Set `requiresSynthesis` to true so the parent can merge child outputs into the final response.",
+        explicitOrchestration.mode === "exact_steps"
+          ? "The user supplied a required sub-agent orchestration plan. " +
+            "You MUST emit one `subagent_task` step for each required step using " +
+            `these exact step names and order: ${explicitOrchestration.stepNames.join(" -> ")}. ` +
+            "Do not rename, omit, merge, or collapse any required step. " +
+            "Preserve dependency order so later steps depend on the earlier required steps they build on. " +
+            "Set `requiresSynthesis` to true so the parent can merge child outputs into the final response."
+          : "The user explicitly required multiple distinct child agents for this turn. " +
+            `Emit at least ${explicitOrchestration.requiredStepCount} separate \`subagent_task\` steps before any final synthesis or artifact write. ` +
+            "Do not collapse multiple reviewer or research roles into one delegated step. " +
+            "These child steps may run sequentially; use dependencies or `can_run_parallel: false` whenever needed to respect runtime concurrency limits. " +
+            (
+              explicitOrchestration.roleHints.length > 0
+                ? `Cover these distinct review or research roles when possible: ${explicitOrchestration.roleHints.join(", ")}. `
+                : ""
+            ) +
+            "If the request also updates a final artifact, keep the review children read-only and leave mutation to one final bounded owner.",
     });
   }
 
@@ -760,6 +864,17 @@ export function buildPlannerMessages(
     });
   }
 
+  if (workspaceGroundedArtifactUpdate) {
+    messages.push({
+      role: "system",
+      content:
+        "This is a workspace-grounded artifact update request. " +
+        "Do not satisfy it by reading and rewriting the planning document alone. " +
+        "The plan must preserve meaningful inspection of the current workspace state or codebase layout before final artifact mutation, " +
+        "and the delegated write step's objective or acceptance criteria must explicitly require the updated artifact to reflect current workspace state, repo layout, or recent directory changes.",
+    });
+  }
+
   if (verificationCommandRequirements.length > 0) {
     messages.push({
       role: "system",
@@ -775,10 +890,28 @@ export function buildPlannerMessages(
       role: "system",
       content:
         "This is a plan-artifact execution request over a real workspace. " +
-        "Use exactly one mutable implementation owner for the repo root. " +
+        "Use exactly one mutable implementation owner for the planning artifact scope. " +
         "If you need prior grounding, keep it read-only and bounded to explicit source or analysis artifacts. " +
-        "Do not emit multiple mutable, validation, or QA subagent_task steps that all re-own the same workspace root. " +
+        "Do not emit multiple delegated steps that all claim `write_owner` authority over the same artifact scope. " +
         "Build, test, and verification around the implementation owner should be deterministic_tool steps unless a later delegated step owns disjoint artifacts.",
+    });
+  }
+  if (groundedPlanArtifactRequest || planArtifactExecutionRequest) {
+    messages.push({
+      role: "system",
+      content:
+        "This request must materialize the named planning artifact itself. " +
+        `The step that mutates ${schemaTargetArtifact} may be either a final deterministic \`system.writeFile\`/\`system.appendFile\` step or a single bounded \`subagent_task\` whose \`execution_context.targetArtifacts\` explicitly include ${schemaTargetArtifact}. ` +
+        "Do not target a different file for the final artifact update.",
+    });
+  }
+  if (implementFromArtifactRequest) {
+    messages.push({
+      role: "system",
+      content:
+        "The named planning artifact is the source specification for implementation work, not the primary artifact to rewrite. " +
+        "Plan code changes, build/test verification, and bounded delegated implementation around the source spec. " +
+        "Do not collapse the task into editing the planning artifact unless the user explicitly asks to update that artifact.",
     });
   }
 
@@ -811,15 +944,193 @@ export function buildPlannerMessages(
   return messages;
 }
 
-export interface ExplicitSubagentOrchestrationRequirementStep {
-  readonly name: string;
-  readonly description: string;
-}
-
-export interface ExplicitSubagentOrchestrationRequirements {
-  readonly steps: readonly ExplicitSubagentOrchestrationRequirementStep[];
-  readonly stepNames: readonly string[];
-  readonly requiresSynthesis: boolean;
+export function buildPlannerStructuredOutputRequest(): LLMStructuredOutputRequest {
+  return {
+    enabled: true,
+    schema: {
+      type: "json_schema",
+      name: "agenc_planner_plan",
+      strict: true,
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          reason: { type: "string" },
+          confidence: { type: "number" },
+          requiresSynthesis: { type: "boolean" },
+          steps: {
+            type: "array",
+            items: {
+              anyOf: [
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    name: { type: "string" },
+                    step_type: { enum: ["deterministic_tool"] },
+                    depends_on: { type: "array", items: { type: "string" } },
+                    tool: { type: "string" },
+                    args: { type: "object", additionalProperties: true },
+                    onError: { enum: ["abort", "retry", "skip"] },
+                    maxRetries: { type: "integer" },
+                  },
+                  required: ["name", "step_type", "tool", "args"],
+                },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    name: { type: "string" },
+                    step_type: { enum: ["subagent_task"] },
+                    depends_on: { type: "array", items: { type: "string" } },
+                    objective: { type: "string" },
+                    input_contract: { type: "string" },
+                    acceptance_criteria: {
+                      type: "array",
+                      items: { type: "string" },
+                    },
+                    required_tool_capabilities: {
+                      type: "array",
+                      items: { type: "string" },
+                    },
+                    context_requirements: {
+                      type: "array",
+                      items: { type: "string" },
+                    },
+                    execution_context: {
+                      type: "object",
+                      additionalProperties: false,
+                      properties: {
+                        workspaceRoot: { type: "string" },
+                        allowedReadRoots: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                        allowedWriteRoots: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                        allowedTools: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                        requiredSourceArtifacts: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                        inputArtifacts: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                        targetArtifacts: {
+                          type: "array",
+                          items: { type: "string" },
+                        },
+                        effectClass: {
+                          enum: [
+                            "read_only",
+                            "filesystem_write",
+                            "filesystem_scaffold",
+                            "shell",
+                            "mixed",
+                          ],
+                        },
+                        verificationMode: {
+                          enum: [
+                            "none",
+                            "grounded_read",
+                            "mutation_required",
+                            "deterministic_followup",
+                          ],
+                        },
+                        stepKind: {
+                          enum: [
+                            "delegated_research",
+                            "delegated_review",
+                            "delegated_write",
+                            "delegated_scaffold",
+                            "delegated_validation",
+                          ],
+                        },
+                        role: {
+                          enum: [
+                            "reviewer",
+                            "writer",
+                            "validator",
+                            "researcher",
+                            "synthesizer",
+                          ],
+                        },
+                        artifactRelations: {
+                          type: "array",
+                          items: {
+                            type: "object",
+                            additionalProperties: false,
+                            properties: {
+                              relationType: {
+                                enum: [
+                                  "read_dependency",
+                                  "write_owner",
+                                  "verification_subject",
+                                  "context_input",
+                                  "handoff_artifact",
+                                ],
+                              },
+                              artifactPath: { type: "string" },
+                            },
+                            required: ["relationType", "artifactPath"],
+                          },
+                        },
+                        fallbackPolicy: {
+                          enum: [
+                            "continue_without_delegation",
+                            "fail_request",
+                          ],
+                        },
+                        resumePolicy: {
+                          enum: ["stateless_retry", "checkpoint_resume"],
+                        },
+                        approvalProfile: {
+                          enum: ["inherit", "read_only", "filesystem_write", "shell"],
+                        },
+                      },
+                    },
+                    max_budget_hint: { type: "string" },
+                    can_run_parallel: { type: "boolean" },
+                  },
+                  required: [
+                    "name",
+                    "step_type",
+                    "objective",
+                    "input_contract",
+                    "acceptance_criteria",
+                    "required_tool_capabilities",
+                    "max_budget_hint",
+                  ],
+                  anyOf: [
+                    { required: ["execution_context"] },
+                    { required: ["context_requirements"] },
+                  ],
+                },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    name: { type: "string" },
+                    step_type: { enum: ["synthesis"] },
+                    depends_on: { type: "array", items: { type: "string" } },
+                    objective: { type: "string" },
+                  },
+                  required: ["name", "step_type"],
+                },
+              ],
+            },
+          },
+        },
+        required: ["steps"],
+      },
+    },
+  };
 }
 
 export interface ExplicitDeterministicToolRequirements {
@@ -845,28 +1156,34 @@ export type PlannerVerificationRequirementCategory =
   | "test"
   | "browser";
 
-const REQUIRED_SUBAGENT_PLAN_MARKER_RE =
-  /sub-agent orchestration plan(?:\s*\((?:required|mandatory)\)|\s+(?:required|mandatory))\s*:/i;
-const REQUIRED_SUBAGENT_STEP_NAME_RE =
-  /(?:^|\s)(\d+)[\).:]\s*(?:`([^`]+)`|([A-Za-z0-9_-]+))/g;
-const REQUIRED_DELIVERABLE_CUE_RE =
-  /\b(final deliverables|how to play|known limitations|architecture summary)\b/i;
 const PLANNER_PLAN_ARTIFACT_REQUEST_RE =
   /\b(?:write|create|draft|generate|produce|make)\b[\s\S]{0,120}\b(?:todo(?:\.md)?|implementation plan|project plan|plan doc(?:ument)?|roadmap|checklist|spec(?:ification)?)\b/i;
 const PLANNER_PLAN_ARTIFACT_FILE_RE =
   /\b(?:todo(?:\.md)?|plan\.(?:md|txt|rst)|implementation[-_ ]plan(?:\.md)?|project[-_ ]plan(?:\.md)?|roadmap(?:\.md)?|checklist(?:\.md)?|spec(?:ification)?(?:\.md)?)\b/i;
+const PLANNER_PLAN_ARTIFACT_FILE_CAPTURE_RE =
+  /\b(?:todo(?:\.md)?|plan\.(?:md|txt|rst)|implementation[-_ ]plan(?:\.md)?|project[-_ ]plan(?:\.md)?|roadmap(?:\.md)?|checklist(?:\.md)?|spec(?:ification)?(?:\.md)?)\b/gi;
 const PLANNER_PLAN_ARTIFACT_SOURCE_CUE_RE =
   /\b(?:read|review|inspect|use|follow|based on|source of truth|go through)\b/i;
 const PLANNER_PLAN_ARTIFACT_EXECUTION_CUE_RE =
   /\b(?:implement|execute|complete|finish|carry\s+out|apply|fix|repair|refactor|ship)\b/i;
 const PLANNER_PLAN_ARTIFACT_PHASE_CUE_RE =
   /\b(?:phase|step|task|item)s?\b/i;
+const PLANNER_PLAN_ARTIFACT_EDIT_CUE_RE =
+  /\b(?:update|rewrite|improve|perfect|polish|edit|revise|expand|flesh\s+out|address\s+gaps?|fix\s+gaps?|tighten|correct)\b/i;
+const PLANNER_PLAN_ARTIFACT_IMPLEMENTATION_CUE_RE =
+  /\b(?:all|each|every|entire|full|fully|phase\s+by\s+phase|one\s+phase\s+at\s+a\s+time|before\s+moving\s+on|move\s+on\s+to\s+the\s+next\s+phase)\b/i;
 const REQUEST_VERIFICATION_DIRECTIVE_RE =
   /\b(?:verify|verification|validated?|before\s+finish(?:ing)?|before\s+returning|before\s+completion|browser-grounded checks?)\b/i;
 const REQUEST_INSTALL_VERIFICATION_RE =
   /\b(?:npm|pnpm|yarn|bun)\s+(?:install|ci)\b|\binstall(?:ation|able|ed|ing|s)?\b/i;
 const REQUEST_BUILD_VERIFICATION_RE =
   /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:build|typecheck|lint)\b|\b(?:vite\s+build|tsc\b|build(?:s|ing)?|compile(?:s|d|ing)?|typecheck(?:s|ed|ing)?|lint(?:s|ed|ing)?)\b/i;
+
+export type PlannerPlanArtifactIntent =
+  | "none"
+  | "grounded_plan_generation"
+  | "edit_artifact"
+  | "implement_from_artifact";
 const REQUEST_TEST_VERIFICATION_RE =
   /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|coverage|vitest|jest)\b|\b(?:tests?|testing|smoke tests?|unit tests?|vitest|jest|pytest|mocha|ava|coverage)\b/i;
 const REQUEST_BROWSER_VERIFICATION_RE =
@@ -896,52 +1213,7 @@ const PLANNER_VERIFICATION_CATEGORY_ORDER: readonly PlannerVerificationRequireme
 export function extractExplicitSubagentOrchestrationRequirements(
   messageText: string,
 ): ExplicitSubagentOrchestrationRequirements | undefined {
-  const markerMatch = REQUIRED_SUBAGENT_PLAN_MARKER_RE.exec(messageText);
-  if (!markerMatch) return undefined;
-
-  const section = messageText.slice(markerMatch.index + markerMatch[0].length);
-  const steps: ExplicitSubagentOrchestrationRequirementStep[] = [];
-  const seen = new Set<string>();
-  const itemMatches = section.matchAll(
-    /(\d+)[\).:]\s*(?:`([^`]+)`|([A-Za-z0-9_-]+))\s*:\s*([\s\S]*?)(?=(?:\s+\d+[\).:]\s*(?:`[^`]+`|[A-Za-z0-9_-]+)\s*:)|$)/g,
-  );
-  for (const match of itemMatches) {
-    const normalizedName = sanitizePlannerStepName(
-      match[2] ?? match[3] ?? "",
-    );
-    if (normalizedName.length === 0 || seen.has(normalizedName)) continue;
-    seen.add(normalizedName);
-    steps.push({
-      name: normalizedName,
-      description: normalizeExplicitRequirementDescription(match[4] ?? ""),
-    });
-  }
-
-  if (steps.length < 2) {
-    const stepNames: string[] = [];
-    REQUIRED_SUBAGENT_STEP_NAME_RE.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = REQUIRED_SUBAGENT_STEP_NAME_RE.exec(section)) !== null) {
-      const normalizedName = sanitizePlannerStepName(
-        match[2] ?? match[3] ?? "",
-      );
-      if (normalizedName.length === 0 || seen.has(normalizedName)) continue;
-      seen.add(normalizedName);
-      stepNames.push(normalizedName);
-    }
-    if (stepNames.length < 2) return undefined;
-    return {
-      steps: stepNames.map((name) => ({ name, description: "" })),
-      stepNames,
-      requiresSynthesis: REQUIRED_DELIVERABLE_CUE_RE.test(messageText),
-    };
-  }
-
-  return {
-    steps,
-    stepNames: steps.map((step) => step.name),
-    requiresSynthesis: REQUIRED_DELIVERABLE_CUE_RE.test(messageText),
-  };
+  return extractRequiredSubagentOrchestrationRequirements(messageText);
 }
 
 function normalizeExplicitRequirementDescription(description: string): string {
@@ -1776,7 +2048,7 @@ function normalizePlannerShellModeToken(token: string): string {
 }
 
 export function parsePlannerPlan(
-  content: string,
+  content: string | Record<string, unknown>,
   repairRequirements?: ExplicitSubagentOrchestrationRequirements,
   options: {
     readonly plannerWorkspaceRoot?: string;
@@ -1784,7 +2056,8 @@ export function parsePlannerPlan(
 ): PlannerParseResult {
   void options;
   const diagnostics: PlannerDiagnostic[] = [];
-  const parsed = parseJsonObjectFromText(content);
+  const parsed =
+    typeof content === "string" ? parseJsonObjectFromText(content) : content;
   if (!parsed) {
     diagnostics.push(
       createPlannerDiagnostic(
@@ -1810,7 +2083,10 @@ export function parsePlannerPlan(
   const unresolvedDependencies = new Map<string, readonly string[]>();
   const nameAliases = new Map<string, string>();
   const usedStepNames = new Set<string>();
-  const maxSteps = Math.min(MAX_PLANNER_STEPS, parsed.steps.length);
+  const maxSteps = resolvePlannerStepLimit(
+    0,
+    parsed.steps.length,
+  );
 
   for (const [index, rawStep] of parsed.steps.slice(0, maxSteps).entries()) {
     if (
@@ -2153,6 +2429,18 @@ export function parsePlannerPlan(
         maxBudgetHint,
         diagnostics,
       });
+      const workflowStep = buildPlannerWorkflowStepContract({
+        name: safeName,
+        stepType,
+        objective,
+        inputContract,
+        acceptanceCriteria,
+        requiredToolCapabilities,
+        contextRequirements,
+        executionContext,
+        maxBudgetHint: normalizedBudgetHint,
+        canRunParallel,
+      });
 
       steps.push({
         name: safeName,
@@ -2163,6 +2451,7 @@ export function parsePlannerPlan(
         requiredToolCapabilities,
         contextRequirements,
         ...(executionContext ? { executionContext } : {}),
+        workflowStep,
         maxBudgetHint: normalizedBudgetHint,
         canRunParallel,
       });
@@ -2248,6 +2537,13 @@ export function parsePlannerPlan(
           : containsSynthesisStep || undefined,
       steps,
       edges,
+      workflowContract: buildPlannerWorkflowContract({
+        steps: steps.filter(
+          (step): step is PlannerSubAgentTaskStepIntent =>
+            step.stepType === "subagent_task",
+        ),
+        requirements: repairRequirements,
+      }),
     },
     diagnostics,
   };
@@ -2437,7 +2733,7 @@ function stepRequiresInstallSensitiveNodeVerification(
     ...new Set(
       step.acceptanceCriteria.flatMap((criterion) =>
         getAcceptanceVerificationCategories(criterion)
-      ),
+      ).filter((category) => category === "build" || category === "test"),
     ),
   ];
   if (categories.length > 0) {
@@ -2742,6 +3038,7 @@ function validateNodeWorkspacePlannerStages(
 export function validatePlannerGraph(
   plannerPlan: PlannerPlan,
   config: PlannerGraphValidationConfig,
+  requiredOrchestration?: ExplicitSubagentOrchestrationRequirements,
 ): readonly PlannerDiagnostic[] {
   const diagnostics: PlannerDiagnostic[] = [];
   const subagentSteps = plannerPlan.steps.filter(
@@ -2750,7 +3047,10 @@ export function validatePlannerGraph(
   );
   if (subagentSteps.length === 0) return diagnostics;
 
-  if (subagentSteps.length > config.maxSubagentFanout) {
+  if (
+    subagentSteps.length > config.maxSubagentFanout &&
+    !allowsUserMandatedSubagentCardinalityOverride(requiredOrchestration)
+  ) {
     diagnostics.push(
       createPlannerDiagnostic(
         "validation",
@@ -2818,6 +3118,54 @@ export function validateExplicitSubagentOrchestrationRequirements(
   requirements: ExplicitSubagentOrchestrationRequirements,
 ): readonly PlannerDiagnostic[] {
   const diagnostics: PlannerDiagnostic[] = [];
+  const subagentSteps = plannerPlan.steps.filter(
+    (step): step is PlannerSubAgentTaskStepIntent =>
+      step.stepType === "subagent_task",
+  );
+  if (requirements.mode === "minimum_steps") {
+    if (subagentSteps.length < requirements.requiredStepCount) {
+      diagnostics.push(
+        createPlannerDiagnostic(
+          "validation",
+          "required_subagent_steps_missing",
+          "Planner collapsed a user-required multi-agent request into too few sub-agent steps",
+          {
+            requiredStepCount: requirements.requiredStepCount,
+            actualSubagentSteps: subagentSteps.length,
+          },
+        ),
+      );
+    }
+    const missingRoleHints = requirements.roleHints.filter((roleHint) => {
+      const roleRe = orchestrationRoleHintRegex(roleHint);
+      if (!roleRe) {
+        return false;
+      }
+      return !subagentSteps.some((step) =>
+        roleRe.test(
+          [
+            step.name,
+            step.objective,
+            step.inputContract,
+            ...step.acceptanceCriteria,
+          ].join(" "),
+        )
+      );
+    });
+    if (missingRoleHints.length > 0) {
+      diagnostics.push(
+        createPlannerDiagnostic(
+          "validation",
+          "required_subagent_role_missing",
+          "Planner omitted one or more user-requested child review roles",
+          {
+            missingRoles: missingRoleHints.join(","),
+          },
+        ),
+      );
+    }
+    return diagnostics;
+  }
   const stepIndexByName = new Map<string, number>();
   const stepByName = new Map<string, PlannerStepIntent>();
 
@@ -3063,19 +3411,6 @@ export function validateExplicitDeterministicToolRequirements(
 }
 
 const PLANNER_BASH_TOOL_NAMES = new Set(["system.bash", "desktop.bash"]);
-const PLANNER_SHELL_WRAPPER_COMMANDS = new Set([
-  "bash",
-  "sh",
-  "zsh",
-  "dash",
-  "ksh",
-  "fish",
-  "csh",
-  "tcsh",
-]);
-const PLANNER_SHELL_WRAPPER_FLAG_RE = /^-[A-Za-z]*c[A-Za-z]*$/;
-const PLANNER_INLINE_SHELL_WRAPPER_RE =
-  /^(?:\S+\/)?(?:bash|sh|zsh|dash|ksh|fish|csh|tcsh)\s+-[A-Za-z]*c\b/i;
 const PLANNER_HEREDOC_RE = /<<-?\s*['"]?[A-Za-z0-9_-]+['"]?/;
 const PLANNER_INLINE_FILE_WRITE_RE =
   /\b(?:cat|tee)\b[\s\S]{0,96}(?:>\s*\S|>>\s*\S|<<-?\s*['"]?[A-Za-z0-9_-]+['"]?)|\b(?:echo|printf)\b[\s\S]{0,160}(?:>\s*\S|>>\s*\S)/i;
@@ -3113,11 +3448,19 @@ export function validatePlannerStepContracts(
 ): readonly PlannerDiagnostic[] {
   const diagnostics: PlannerDiagnostic[] = [];
 
-  if (typeof messageText === "string" && plannerRequestNeedsGroundedPlanArtifact(messageText)) {
-    diagnostics.push(...validatePlannerPlanArtifactSteps(plannerPlan));
-  }
-  if (typeof messageText === "string" && plannerRequestNeedsPlanArtifactExecution(messageText)) {
-    diagnostics.push(...validatePlannerPlanArtifactExecutionOwnership(plannerPlan));
+  if (typeof messageText === "string") {
+    const artifactIntent = classifyPlannerPlanArtifactIntent(messageText);
+    if (
+      artifactIntent === "grounded_plan_generation" ||
+      artifactIntent === "edit_artifact"
+    ) {
+      diagnostics.push(
+        ...validatePlannerPlanArtifactSteps(plannerPlan, messageText),
+      );
+    }
+    if (artifactIntent === "implement_from_artifact") {
+      diagnostics.push(...validatePlannerPlanArtifactExecutionOwnership(plannerPlan));
+    }
   }
 
   for (const step of plannerPlan.steps) {
@@ -3155,30 +3498,6 @@ export function validatePlannerStepContracts(
         );
         continue;
       }
-
-      const commandBase = commandBasename(command);
-      const firstArg = parsedArgs[0]?.trim() ?? "";
-      if (
-        (parsedArgs.length === 0 &&
-          PLANNER_INLINE_SHELL_WRAPPER_RE.test(command.trim())) ||
-        PLANNER_SHELL_WRAPPER_COMMANDS.has(commandBase) &&
-        PLANNER_SHELL_WRAPPER_FLAG_RE.test(firstArg)
-      ) {
-        diagnostics.push(
-          createPlannerDiagnostic(
-            "validation",
-            "planner_bash_nested_shell_forbidden",
-            `Planner bash step "${step.name}" uses forbidden nested shell wrapper invocation`,
-            {
-              stepName: step.name,
-              tool: step.tool,
-              command: commandBase,
-            },
-          ),
-        );
-        continue;
-      }
-
       const directModeShellTokens = collectDirectModeShellControlTokens(parsedArgs);
       if (directModeShellTokens.length > 0) {
         diagnostics.push(
@@ -3256,15 +3575,26 @@ export function validatePlannerStepContracts(
   return diagnostics;
 }
 
-function plannerRequestNeedsGroundedPlanArtifact(messageText: string): boolean {
+function extractPlannerArtifactTargets(messageText: string): readonly string[] {
+  const sourceText = messageText.trim();
+  if (sourceText.length === 0) {
+    return [];
+  }
+  PLANNER_PLAN_ARTIFACT_FILE_CAPTURE_RE.lastIndex = 0;
+  const targets = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = PLANNER_PLAN_ARTIFACT_FILE_CAPTURE_RE.exec(sourceText)) !== null) {
+    const value = (match[0] ?? "").trim();
+    if (value.length > 0) {
+      targets.add(value);
+    }
+  }
+  return [...targets];
+}
+
+function plannerRequestGroundedPlanArtifactIntent(messageText: string): boolean {
   const normalized = messageText.trim();
   if (normalized.length === 0) {
-    return false;
-  }
-  if (
-    !PLANNER_PLAN_ARTIFACT_REQUEST_RE.test(normalized) &&
-    !PLANNER_PLAN_ARTIFACT_FILE_RE.test(normalized)
-  ) {
     return false;
   }
   const signals = collectPlannerRequestSignals(normalized, []);
@@ -3272,9 +3602,16 @@ function plannerRequestNeedsGroundedPlanArtifact(messageText: string): boolean {
     /\b(?:read|expand|turn|convert|rewrite|flesh\s+out|promote)\b[\s\S]{0,80}\b(?:into|to)\b[\s\S]{0,80}\b(?:complete|full|detailed)?\s*(?:implementation\s+)?plan\b/i.test(
       normalized,
     );
+  const hasGenerationCue =
+    PLANNER_PLAN_ARTIFACT_REQUEST_RE.test(normalized) ||
+    explicitPlanExpansionCue;
+  if (!hasGenerationCue) {
+    return false;
+  }
   return (
     (signals.hasImplementationScopeCue || explicitPlanExpansionCue) &&
     (
+      PLANNER_PLAN_ARTIFACT_FILE_RE.test(normalized) ||
       signals.hasDocumentationCue ||
       signals.hasMultiStepCue ||
       signals.longTask ||
@@ -3285,28 +3622,132 @@ function plannerRequestNeedsGroundedPlanArtifact(messageText: string): boolean {
   );
 }
 
-export function plannerRequestNeedsPlanArtifactExecution(messageText: string): boolean {
+export function classifyPlannerPlanArtifactIntent(
+  messageText: string,
+): PlannerPlanArtifactIntent {
   const normalized = messageText.trim();
   if (normalized.length === 0) {
-    return false;
+    return "none";
   }
+
+  if (plannerRequestGroundedPlanArtifactIntent(normalized)) {
+    return "grounded_plan_generation";
+  }
+
   if (!PLANNER_PLAN_ARTIFACT_FILE_RE.test(normalized)) {
-    return false;
-  }
-  if (!PLANNER_PLAN_ARTIFACT_EXECUTION_CUE_RE.test(normalized)) {
-    return false;
+    return "none";
   }
   const signals = collectPlannerRequestSignals(normalized, []);
+  const hasDirectArtifactEditCue =
+    /\b(?:todo(?:\.md)?|plan\.(?:md|txt|rst)|implementation[-_ ]plan(?:\.md)?|project[-_ ]plan(?:\.md)?|roadmap(?:\.md)?|checklist(?:\.md)?|spec(?:ification)?(?:\.md)?)\b[\s\S]{0,80}\b(?:update|rewrite|improve|perfect|polish|edit|revise|expand|flesh\s+out|address\s+gaps?|fix\s+gaps?|tighten|correct)\b/i.test(
+      normalized,
+    ) ||
+    /\b(?:update|rewrite|improve|perfect|polish|edit|revise|expand|flesh\s+out|address\s+gaps?|fix\s+gaps?|tighten|correct)\b[\s\S]{0,80}\b(?:todo(?:\.md)?|plan\.(?:md|txt|rst)|implementation[-_ ]plan(?:\.md)?|project[-_ ]plan(?:\.md)?|roadmap(?:\.md)?|checklist(?:\.md)?|spec(?:ification)?(?:\.md)?)\b/i.test(
+      normalized,
+    );
+  const hasImplementationFromArtifactCue =
+    PLANNER_PLAN_ARTIFACT_EXECUTION_CUE_RE.test(normalized) &&
+    (
+      PLANNER_PLAN_ARTIFACT_SOURCE_CUE_RE.test(normalized) ||
+      PLANNER_PLAN_ARTIFACT_PHASE_CUE_RE.test(normalized) ||
+      PLANNER_PLAN_ARTIFACT_IMPLEMENTATION_CUE_RE.test(normalized) ||
+      signals.hasImplementationScopeCue ||
+      signals.hasVerificationCue ||
+      signals.hasMultiStepCue ||
+      signals.longTask
+    );
+  const hasArtifactEditCue =
+    hasDirectArtifactEditCue ||
+    PLANNER_PLAN_ARTIFACT_EDIT_CUE_RE.test(normalized) ||
+    /\b(?:fill|add)\b[\s\S]{0,80}\b(?:gaps?|missing sections?|missing items?)\b/i.test(
+      normalized,
+    ) ||
+    /\b(?:make|keep)\b[\s\S]{0,80}\b(?:perfect|complete|consistent|correct)\b/i.test(
+      normalized,
+    );
+  if (hasArtifactEditCue) {
+    return "edit_artifact";
+  }
+  if (hasImplementationFromArtifactCue) {
+    return "implement_from_artifact";
+  }
+
+  return "none";
+}
+
+export function plannerRequestNeedsGroundedPlanArtifact(messageText: string): boolean {
   return (
-    PLANNER_PLAN_ARTIFACT_SOURCE_CUE_RE.test(normalized) ||
-    PLANNER_PLAN_ARTIFACT_PHASE_CUE_RE.test(normalized) ||
-    signals.hasImplementationScopeCue ||
-    signals.hasMultiStepCue ||
-    signals.longTask
+    classifyPlannerPlanArtifactIntent(messageText) ===
+    "grounded_plan_generation"
   );
 }
 
-function isPlannerFileWriteStep(step: PlannerStepIntent): boolean {
+export function plannerRequestNeedsPlanArtifactExecution(messageText: string): boolean {
+  return classifyPlannerPlanArtifactIntent(messageText) === "edit_artifact";
+}
+
+export function plannerRequestNeedsWorkspaceGroundedArtifactUpdate(
+  messageText: string,
+): boolean {
+  return (
+    classifyPlannerPlanArtifactIntent(messageText) === "edit_artifact" &&
+    textRequiresWorkspaceGroundedArtifactUpdate(messageText)
+  );
+}
+
+export function plannerRequestImplementsFromArtifact(
+  messageText: string,
+): boolean {
+  return (
+    classifyPlannerPlanArtifactIntent(messageText) ===
+    "implement_from_artifact"
+  );
+}
+
+function normalizePlannerArtifactTarget(target: string): string {
+  return target.trim().toLowerCase();
+}
+
+function plannerStepTextRequiresWorkspaceGrounding(value: string): boolean {
+  return textRequiresWorkspaceGroundedArtifactUpdate(value);
+}
+
+function plannerArtifactTargetsOverlap(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  if (left.length === 0 || right.length === 0) {
+    return false;
+  }
+  const rightSet = new Set(right.map(normalizePlannerArtifactTarget));
+  return left
+    .map(normalizePlannerArtifactTarget)
+    .some((target) => rightSet.has(target));
+}
+
+function plannerPathTargetsRequestedArtifact(
+  rawPath: string | undefined,
+  requestedArtifactTargets: readonly string[],
+): boolean {
+  if (typeof rawPath !== "string" || requestedArtifactTargets.length === 0) {
+    return false;
+  }
+  const normalizedPath = rawPath.trim().toLowerCase();
+  if (normalizedPath.length === 0) {
+    return false;
+  }
+  return requestedArtifactTargets.some((target) => {
+    const normalizedTarget = normalizePlannerArtifactTarget(target);
+    return (
+      normalizedPath === normalizedTarget ||
+      normalizedPath.endsWith(`/${normalizedTarget}`)
+    );
+  });
+}
+
+function isPlannerDeterministicFileWriteStep(
+  step: PlannerStepIntent,
+): boolean {
   return (
     step.stepType === "deterministic_tool" &&
     (step.tool === "system.writeFile" || step.tool === "system.appendFile")
@@ -3317,6 +3758,29 @@ function plannerStepHasMutableImplementationAuthority(
   step: PlannerSubAgentTaskStepIntent,
 ): boolean {
   const executionContext = step.executionContext;
+  const artifactRelations = canonicalizeWorkflowArtifactRelations({
+    workspaceRoot: executionContext?.workspaceRoot,
+    artifactRelations: executionContext?.artifactRelations,
+    inputArtifacts: executionContext?.inputArtifacts,
+    requiredSourceArtifacts: executionContext?.requiredSourceArtifacts,
+    targetArtifacts: executionContext?.targetArtifacts,
+    stepKind: executionContext?.stepKind,
+    verificationMode: executionContext?.verificationMode,
+    role: canonicalizeWorkflowStepRole({
+      role: executionContext?.role,
+      stepKind: executionContext?.stepKind,
+      effectClass: executionContext?.effectClass,
+      verificationMode: executionContext?.verificationMode,
+    }),
+  });
+  const hasExplicitArtifactRelations =
+    (executionContext?.artifactRelations?.length ?? 0) > 0;
+  const ownsMutableArtifacts = artifactRelations.some((relation) =>
+    relation.relationType === "write_owner"
+  );
+  if (hasExplicitArtifactRelations) {
+    return ownsMutableArtifacts;
+  }
   const isBoundedGroundingStep =
     executionContext?.effectClass === "read_only" &&
     executionContext?.verificationMode === "grounded_read" &&
@@ -3356,16 +3820,93 @@ function plannerStepHasMutableImplementationAuthority(
   }
   return (
     executionContext?.verificationMode === "mutation_required" ||
-    executionContext?.verificationMode === "deterministic_followup" ||
     executionContext?.stepKind === "delegated_write" ||
     executionContext?.stepKind === "delegated_scaffold" ||
-    executionContext?.stepKind === "delegated_validation" ||
-    executionContext?.stepKind === "delegated_review" ||
     executionContext?.effectClass === "filesystem_write" ||
     executionContext?.effectClass === "filesystem_scaffold" ||
     executionContext?.effectClass === "shell" ||
     executionContext?.effectClass === "mixed" ||
     Boolean(executionContext?.completionContract)
+  );
+}
+
+function isPlannerArtifactMaterializationStep(
+  step: PlannerStepIntent,
+  requestedArtifactTargets: readonly string[],
+): boolean {
+  if (isPlannerDeterministicFileWriteStep(step)) {
+    if (requestedArtifactTargets.length === 0) {
+      return true;
+    }
+    return plannerPathTargetsRequestedArtifact(
+      typeof step.args.path === "string" ? step.args.path : undefined,
+      requestedArtifactTargets,
+    );
+  }
+  if (step.stepType !== "subagent_task") {
+    return false;
+  }
+  if (!plannerStepHasMutableImplementationAuthority(step)) {
+    return false;
+  }
+  return (step.executionContext?.targetArtifacts ?? []).some((targetArtifact) =>
+    plannerPathTargetsRequestedArtifact(targetArtifact, requestedArtifactTargets)
+  );
+}
+
+function plannerSubagentHasWorkspaceGrounding(
+  step: PlannerSubAgentTaskStepIntent,
+): boolean {
+  const executionContext = step.executionContext;
+  const stepText = [
+    step.objective,
+    step.inputContract,
+    ...step.acceptanceCriteria,
+    ...(step.contextRequirements ?? []),
+  ]
+    .filter((value) => value.trim().length > 0)
+    .join(" ");
+  if (!plannerStepTextRequiresWorkspaceGrounding(stepText)) {
+    return false;
+  }
+  const scopedTools = [
+    ...(executionContext?.allowedTools ?? []),
+    ...step.requiredToolCapabilities,
+  ].map((value) => value.trim().toLowerCase());
+  return scopedTools.some((toolName) =>
+    toolName.includes("read") ||
+    toolName.includes("listdir") ||
+    toolName.includes("stat") ||
+    toolName.includes("bash") ||
+    toolName.includes("text_editor")
+  );
+}
+
+function isPlannerWorkspaceGroundingStep(
+  step: PlannerStepIntent,
+  requestedArtifactTargets: readonly string[],
+): boolean {
+  if (step.stepType === "subagent_task") {
+    return plannerSubagentHasWorkspaceGrounding(step);
+  }
+  if (step.stepType !== "deterministic_tool") {
+    return false;
+  }
+  if (step.tool === "system.listDir" || step.tool === "system.stat") {
+    return true;
+  }
+  if (step.tool === "system.readFile") {
+    return !plannerPathTargetsRequestedArtifact(
+      typeof step.args.path === "string" ? step.args.path : undefined,
+      requestedArtifactTargets,
+    );
+  }
+  if (!PLANNER_BASH_TOOL_NAMES.has(step.tool)) {
+    return false;
+  }
+  const commandText = extractCommandText(step.args).trim();
+  return /\b(?:ls|find|tree|rg|ripgrep|git\s+(?:status|diff|ls-files)|stat)\b/i.test(
+    commandText,
   );
 }
 
@@ -3417,10 +3958,20 @@ function validatePlannerPlanArtifactExecutionOwnership(
 
 function validatePlannerPlanArtifactSteps(
   plannerPlan: PlannerPlan,
+  messageText?: string,
 ): readonly PlannerDiagnostic[] {
   const diagnostics: PlannerDiagnostic[] = [];
-  const writeSteps = plannerPlan.steps.filter(isPlannerFileWriteStep);
-  if (writeSteps.length === 0) {
+  const workspaceGroundedArtifactUpdate =
+    typeof messageText === "string" &&
+    plannerRequestNeedsWorkspaceGroundedArtifactUpdate(messageText);
+  const requestedArtifactTargets =
+    typeof messageText === "string"
+      ? extractPlannerArtifactTargets(messageText)
+      : [];
+  const materializationSteps = plannerPlan.steps.filter((step) =>
+    isPlannerArtifactMaterializationStep(step, requestedArtifactTargets)
+  );
+  if (materializationSteps.length === 0) {
     diagnostics.push(
       createPlannerDiagnostic(
         "validation",
@@ -3430,24 +3981,40 @@ function validatePlannerPlanArtifactSteps(
     );
   }
 
-  if (plannerPlan.steps.length === 1 && isPlannerFileWriteStep(plannerPlan.steps[0]!)) {
+  if (
+    plannerPlan.steps.length === 1 &&
+    isPlannerArtifactMaterializationStep(
+      plannerPlan.steps[0]!,
+      requestedArtifactTargets,
+    )
+  ) {
     diagnostics.push(
       createPlannerDiagnostic(
         "validation",
         "planner_plan_artifact_single_write_collapse",
-        "Planner collapsed a substantial software planning-document request into a single writeFile step without prior grounding or decomposition",
+        "Planner collapsed a substantial software planning-document request into a single artifact-write step without prior grounding or decomposition",
         {
           stepName: plannerPlan.steps[0]!.name,
-          tool: (plannerPlan.steps[0] as PlannerDeterministicToolStepIntent).tool,
+          tool:
+            plannerPlan.steps[0]!.stepType === "deterministic_tool"
+              ? (plannerPlan.steps[0] as PlannerDeterministicToolStepIntent).tool
+              : "subagent_task",
         },
       ),
     );
   }
 
-  const lastWriteIndex = plannerPlan.steps.reduce((index, step, currentIndex) =>
-    isPlannerFileWriteStep(step) ? currentIndex : index, -1);
+  const lastWriteIndex = plannerPlan.steps.reduce(
+    (index, step, currentIndex) =>
+      isPlannerArtifactMaterializationStep(step, requestedArtifactTargets)
+        ? currentIndex
+        : index,
+    -1,
+  );
   const hasGroundingBeforeWrite = plannerPlan.steps.some(
-    (step, index) => index < lastWriteIndex && !isPlannerFileWriteStep(step),
+    (step, index) =>
+      index < lastWriteIndex &&
+      !isPlannerArtifactMaterializationStep(step, requestedArtifactTargets),
   );
   if (lastWriteIndex >= 0 && !hasGroundingBeforeWrite) {
     diagnostics.push(
@@ -3461,6 +4028,33 @@ function validatePlannerPlanArtifactSteps(
       ),
     );
   }
+
+  if (workspaceGroundedArtifactUpdate && lastWriteIndex >= 0) {
+    const finalWriteStep = plannerPlan.steps[lastWriteIndex]!;
+    const hasWorkspaceGroundingBeforeWrite = plannerPlan.steps.some(
+      (step, index) =>
+        index < lastWriteIndex &&
+        isPlannerWorkspaceGroundingStep(step, requestedArtifactTargets),
+    );
+    const finalWriteCarriesWorkspaceGrounding =
+      finalWriteStep.stepType === "subagent_task" &&
+      plannerSubagentHasWorkspaceGrounding(finalWriteStep);
+    if (
+      !hasWorkspaceGroundingBeforeWrite &&
+      !finalWriteCarriesWorkspaceGrounding
+    ) {
+      diagnostics.push(
+        createPlannerDiagnostic(
+          "validation",
+          "planner_plan_artifact_missing_workspace_grounding",
+          "Planner must preserve explicit current-workspace inspection before completing a workspace-grounded planning artifact update",
+          {
+            finalWriteStep: finalWriteStep.name,
+          },
+        ),
+      );
+    }
+  }
   return diagnostics;
 }
 
@@ -3469,9 +4063,6 @@ export function buildPlannerStepContractRefinementHint(
 ): string {
   const fragments = diagnostics
     .map((diagnostic) => {
-      if (diagnostic.code === "planner_bash_nested_shell_forbidden") {
-        return "do not use `bash -c` or `sh -c` in deterministic bash steps";
-      }
       if (
         diagnostic.code === "planner_bash_shell_syntax_in_direct_args"
       ) {
@@ -3496,7 +4087,13 @@ export function buildPlannerStepContractRefinementHint(
         diagnostic.code === "planner_plan_artifact_single_write_collapse" ||
         diagnostic.code === "planner_plan_artifact_needs_grounding_step"
       ) {
-        return "for substantial software plan/TODO requests, do not jump straight to writeFile; add at least one grounding or decomposition step before the final artifact write";
+        return "for substantial software planning-artifact requests, do not jump straight to the final artifact materialization step; add at least one grounding or decomposition step before the final artifact write";
+      }
+      if (diagnostic.code === "planner_plan_artifact_missing_workspace_grounding") {
+        return (
+          "for workspace-grounded planning-artifact rewrites, preserve explicit current-workspace inspection. " +
+          "Either add a prior repo/layout inspection step, or make the bounded delegated write step itself explicitly inspect current workspace state and require the artifact to reflect that evidence"
+        );
       }
       if (diagnostic.code === "planner_plan_artifact_single_owner_required") {
         const workspaceRoot =
@@ -3506,12 +4103,16 @@ export function buildPlannerStepContractRefinementHint(
           readDiagnosticDetail(diagnostic, "stepNames") ??
           "the delegated implementation steps";
         return (
-          `for PLAN.md/TODO execution over ${workspaceRoot}, use exactly one mutable implementation owner; ` +
-          `do not let ${stepNames} all re-own the same workspace. Keep plan analysis bounded, and move build/test/QA into deterministic verification steps unless a later step owns disjoint artifacts`
+          `for planning-artifact execution over ${workspaceRoot}, use exactly one mutable implementation owner; ` +
+          `do not let ${stepNames} all claim mutable ownership of the same artifact scope. Keep read-only review and grounding distinct from write ownership, and move build/test/QA into deterministic verification steps unless a later step owns disjoint artifacts`
         );
       }
       if (diagnostic.code === "planner_plan_artifact_missing_write_step") {
-        return "include a final file-write step for the requested planning artifact";
+        return (
+          "include a final artifact materialization step for the requested planning artifact; " +
+          "either use deterministic `system.writeFile`/`system.appendFile`, or a single bounded " +
+          "`subagent_task` whose `execution_context.targetArtifacts` explicitly include that artifact"
+        );
       }
       return diagnostic.message;
     })
@@ -4037,9 +4638,17 @@ export function buildPipelineDecompositionRefinementHint(
 export function buildPipelineFailureRepairRefinementHint(params: {
   readonly pipelineResult: PipelineResult;
   readonly plannerPlan: PlannerPlan;
+  readonly plannerToolCalls?: readonly ToolCallRecord[];
 }): string {
+  const failedPlannerCall = findRelevantFailedPlannerToolCall(
+    params.plannerToolCalls,
+  );
+  const failedPlannerCallHint = buildFailedPlannerCallHint(
+    failedPlannerCall,
+  );
   const failureSpecificRepairHint = buildFailureSpecificRepairHint(
     params.pipelineResult.error,
+    failedPlannerCall,
   );
   const unresolvedSteps = params.plannerPlan.steps
     .slice(Math.max(0, params.pipelineResult.completedSteps))
@@ -4055,6 +4664,7 @@ export function buildPipelineFailureRepairRefinementHint(params: {
       params.pipelineResult.error.trim().length > 0
       ? `failure details: ${truncateText(params.pipelineResult.error.trim(), 800)}`
       : "",
+    failedPlannerCallHint ?? "",
     failureSpecificRepairHint ?? "",
   ].filter((fragment) => fragment.length > 0);
   return (
@@ -4065,13 +4675,129 @@ export function buildPipelineFailureRepairRefinementHint(params: {
   );
 }
 
+function findRelevantFailedPlannerToolCall(
+  plannerToolCalls: readonly ToolCallRecord[] | undefined,
+): ToolCallRecord | undefined {
+  if (!plannerToolCalls || plannerToolCalls.length === 0) {
+    return undefined;
+  }
+  for (let index = plannerToolCalls.length - 1; index >= 0; index--) {
+    const candidate = plannerToolCalls[index];
+    if (candidate?.isError) {
+      return candidate;
+    }
+  }
+  return plannerToolCalls[plannerToolCalls.length - 1];
+}
+
+function buildFailedPlannerCallHint(
+  call: ToolCallRecord | undefined,
+): string | undefined {
+  if (!call) {
+    return undefined;
+  }
+  if (call.name === "system.bash" || call.name === "desktop.bash") {
+    const commandText = extractPlannerToolCommandText(call.args).trim();
+    const cwd = extractPlannerToolCwd(call.args);
+    if (commandText.length === 0 && !cwd) {
+      return undefined;
+    }
+    return (
+      `The failed deterministic shell command was \`${truncateText(commandText, 240)}\`` +
+      `${cwd ? ` with cwd \`${cwd}\`` : ""}.`
+    );
+  }
+  return `The failed deterministic tool was \`${call.name}\`.`;
+}
+
+function extractPlannerToolCommandText(args: Record<string, unknown>): string {
+  const parts: string[] = [];
+  if (typeof args.command === "string") {
+    parts.push(args.command);
+  }
+  if (Array.isArray(args.args)) {
+    for (const entry of args.args) {
+      if (typeof entry === "string") {
+        parts.push(entry);
+      }
+    }
+  }
+  return parts.join(" ");
+}
+
+function extractPlannerToolCwd(
+  args: Record<string, unknown>,
+): string | undefined {
+  return typeof args.cwd === "string" && args.cwd.trim().length > 0
+    ? args.cwd.trim()
+    : undefined;
+}
+
+function extractMissingNpmScriptNameFromError(
+  error: string,
+): string | undefined {
+  const match = error.match(/missing script:\s*["'`]?([^"'`\n]+)["'`]?/i);
+  const scriptName = match?.[1]?.trim();
+  return scriptName && scriptName.length > 0 ? scriptName : undefined;
+}
+
+function extractRequestedWorkspaceSelectorsFromToolCall(
+  call: ToolCallRecord | undefined,
+): string[] {
+  const rawArgs = Array.isArray(call?.args.args) ? call?.args.args : [];
+  const selectors: string[] = [];
+  for (let index = 0; index < rawArgs.length; index++) {
+    const value = rawArgs[index];
+    if (typeof value !== "string") {
+      continue;
+    }
+    if (value.startsWith("--workspace=")) {
+      const selector = value.slice("--workspace=".length).trim();
+      if (selector.length > 0) {
+        selectors.push(selector);
+      }
+      continue;
+    }
+    if (value === "--workspace") {
+      const next = rawArgs[index + 1];
+      if (typeof next === "string" && next.trim().length > 0) {
+        selectors.push(next.trim());
+      }
+    }
+  }
+  return [...new Set(selectors)];
+}
+
 function buildFailureSpecificRepairHint(
   error: string | undefined,
+  failedPlannerCall?: ToolCallRecord,
 ): string | undefined {
   if (typeof error !== "string" || error.trim().length === 0) {
     return undefined;
   }
   const normalized = error.toLowerCase();
+  const failingCwd = extractPlannerToolCwd(failedPlannerCall?.args ?? {});
+  const missingScriptName = extractMissingNpmScriptNameFromError(error);
+  if (missingScriptName) {
+    return (
+      `The current package.json${failingCwd ? ` at \`${failingCwd}\`` : ""} does not define the npm script \`${missingScriptName}\`. ` +
+      `Inspect that manifest${failingCwd ? " and any nested workspace package manifests created earlier" : ""}, then rerun the matching workspace/package-specific command or execute from the matching workspace cwd instead of retrying the same generic \`npm run ${missingScriptName}\`.`
+    );
+  }
+  if (normalized.includes("no workspaces found:")) {
+    const selectors = extractRequestedWorkspaceSelectorsFromToolCall(
+      failedPlannerCall,
+    );
+    const selectorSuffix =
+      selectors.length > 0
+        ? ` The rejected selectors were: ${selectors.map((value) => `\`${value}\``).join(", ")}.`
+        : "";
+    return (
+      "npm could not match one or more `--workspace` selectors in this repo." +
+      selectorSuffix +
+      " Inspect the root `package.json` workspaces and each package `name`, then rerun with the exact workspace package names or execute from the matching workspace cwd instead of collapsing back to a generic repo-root npm command."
+    );
+  }
   if (
     normalized.includes('unsupported url type "workspace:"') ||
     normalized.includes("eunsupportedprotocol")
@@ -4104,6 +4830,129 @@ export function createPlannerDiagnostic(
   details?: Readonly<Record<string, string | number | boolean>>,
 ): PlannerDiagnostic {
   return { category, code, message, ...(details ? { details } : {}) };
+}
+
+function inferWorkflowStepRoleFromText(
+  step: Pick<
+    PlannerSubAgentTaskStepIntent,
+    "objective" | "inputContract" | "acceptanceCriteria"
+  >,
+): WorkflowStepRole {
+  const combined = [
+    step.objective,
+    step.inputContract,
+    ...step.acceptanceCriteria,
+  ]
+    .join(" ")
+    .toLowerCase();
+  if (/\b(?:write|rewrite|update|edit|implement|fix|scaffold)\b/.test(combined)) {
+    return "writer";
+  }
+  if (/\b(?:validate|verification|verify|test|typecheck|lint|smoke)\b/.test(combined)) {
+    return "validator";
+  }
+  if (/\b(?:research|investigate|analyze|compare)\b/.test(combined)) {
+    return "researcher";
+  }
+  return "reviewer";
+}
+
+export function buildPlannerWorkflowStepContract(
+  step: PlannerSubAgentTaskStepIntent,
+): WorkflowStepContract {
+  const executionContext = step.executionContext;
+  const role =
+    step.workflowStep?.role ??
+    canonicalizeWorkflowStepRole({
+      role: executionContext?.role,
+      stepKind: executionContext?.stepKind,
+      effectClass: executionContext?.effectClass,
+      verificationMode: executionContext?.verificationMode,
+    }) ??
+    inferWorkflowStepRoleFromText(step);
+  const artifactRelations =
+    step.workflowStep?.artifactRelations ??
+    canonicalizeWorkflowArtifactRelations({
+      workspaceRoot: executionContext?.workspaceRoot,
+      artifactRelations: executionContext?.artifactRelations,
+      inputArtifacts: executionContext?.inputArtifacts,
+      requiredSourceArtifacts: executionContext?.requiredSourceArtifacts,
+      targetArtifacts: executionContext?.targetArtifacts,
+      stepKind: executionContext?.stepKind,
+      verificationMode: executionContext?.verificationMode,
+      role,
+    });
+  return {
+    name: step.name,
+    role,
+    objective: step.objective,
+    inputContract: step.inputContract,
+    acceptanceCriteria: step.acceptanceCriteria,
+    requiredToolCapabilities: step.requiredToolCapabilities,
+    contextRequirements: step.contextRequirements,
+    executionContext: executionContext
+      ? {
+        ...executionContext,
+        role,
+        artifactRelations,
+      }
+      : undefined,
+    artifactRelations,
+  };
+}
+
+function classifyWorkflowContractClass(
+  steps: readonly WorkflowStepContract[],
+): WorkflowContractClass {
+  const roles = new Set(steps.map((step) => step.role));
+  if (roles.has("writer") && roles.has("reviewer")) {
+    return "artifact_review_and_rewrite";
+  }
+  if (roles.has("writer")) {
+    return "implementation_with_verification";
+  }
+  if (roles.has("validator")) {
+    return roles.size === 1
+      ? "validation_only"
+      : "implementation_with_verification";
+  }
+  if (roles.size === 1 && roles.has("reviewer")) {
+    return "read_only_review";
+  }
+  return "research_and_synthesis";
+}
+
+export function buildPlannerWorkflowContract(params: {
+  readonly steps: readonly PlannerSubAgentTaskStepIntent[];
+  readonly requirements?: ExplicitSubagentOrchestrationRequirements;
+}): WorkflowContract | undefined {
+  const workflowSteps = params.steps.map((step) =>
+    buildPlannerWorkflowStepContract(step)
+  );
+  if (workflowSteps.length === 0) {
+    return undefined;
+  }
+  const exactNames =
+    params.requirements?.mode === "exact_steps"
+      ? params.requirements.stepNames.filter((name) =>
+          workflowSteps.some((step) => step.name === name)
+        )
+      : undefined;
+  const requiredChildren =
+    params.requirements
+      ? {
+        cardinality: params.requirements.requiredStepCount,
+        roles: workflowSteps
+          .filter((step) => step.role === "reviewer")
+          .map((step) => step.role),
+        ...(exactNames && exactNames.length > 0 ? { exactNames } : {}),
+      }
+      : undefined;
+  return {
+    workflowClass: classifyWorkflowContractClass(workflowSteps),
+    steps: workflowSteps,
+    ...(requiredChildren ? { requiredChildren } : {}),
+  };
 }
 
 export function isHighRiskSubagentPlan(
@@ -4312,6 +5161,44 @@ interface PlannerExecutionContextParseResult {
   readonly errorDetails?: Readonly<Record<string, unknown>>;
 }
 
+function parsePlannerArtifactRelations(
+  value: unknown,
+): readonly WorkflowArtifactRelation[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry) => {
+      const record = parsePlannerArgsRecord(entry);
+      if (!record) {
+        return undefined;
+      }
+      const relationType = parsePlannerStringFromKeys(record, [
+        "relationType",
+        "relation_type",
+      ]);
+      const artifactPath = parsePlannerStringFromKeys(record, [
+        "artifactPath",
+        "artifact_path",
+        "path",
+      ]);
+      if (!relationType || !artifactPath) {
+        return undefined;
+      }
+      return {
+        relationType:
+          relationType as WorkflowArtifactRelation["relationType"],
+        artifactPath,
+      };
+    })
+    .filter(
+      (relation): relation is WorkflowArtifactRelation => relation !== undefined,
+    );
+}
+
 function parsePlannerExecutionContext(
   source: unknown,
 ): PlannerExecutionContextParseResult {
@@ -4438,6 +5325,10 @@ function parsePlannerExecutionContext(
         "verification_mode",
       ]) as any,
       stepKind: parsePlannerStringFromKeys(record, ["stepKind", "step_kind"]) as any,
+      role: parsePlannerStringFromKeys(record, ["role", "stepRole", "step_role"]) as any,
+      artifactRelations: parsePlannerArtifactRelations(
+        record.artifactRelations ?? record.artifact_relations,
+      ),
       fallbackPolicy: parsePlannerStringFromKeys(record, [
         "fallbackPolicy",
         "fallback_policy",
@@ -4988,4 +5879,22 @@ export function didSubagentStepFail(result: string): boolean {
   } catch {
     return didToolCallFail(false, result);
   }
+}
+function resolvePlannerStepLimit(
+  plannerMaxTokens: number,
+  requestedStepCount?: number,
+): number {
+  if (!hasRuntimeLimit(plannerMaxTokens) && !hasRuntimeLimit(MAX_PLANNER_STEPS)) {
+    return requestedStepCount ?? Number.POSITIVE_INFINITY;
+  }
+  const tokenDerivedLimit = hasRuntimeLimit(plannerMaxTokens)
+    ? Math.max(1, Math.floor(plannerMaxTokens / 8))
+    : Number.POSITIVE_INFINITY;
+  const hardLimit = hasRuntimeLimit(MAX_PLANNER_STEPS)
+    ? MAX_PLANNER_STEPS
+    : Number.POSITIVE_INFINITY;
+  const resolved = Math.min(tokenDerivedLimit, hardLimit);
+  return requestedStepCount === undefined
+    ? resolved
+    : Math.min(resolved, requestedStepCount);
 }

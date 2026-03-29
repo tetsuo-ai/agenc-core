@@ -24,6 +24,8 @@ export type {
   LLMStatefulEventType,
   LLMStatefulFallbackReason,
   LLMStatefulResponsesConfig,
+  LLMStoredResponse,
+  LLMStoredResponseDeleteResult,
   LLMResponse,
   LLMStreamChunk,
   LLMTool,

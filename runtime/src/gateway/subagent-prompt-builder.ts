@@ -43,11 +43,14 @@ import {
   sanitizeDelegationContextRequirements,
 } from "../utils/delegation-execution-context.js";
 import type { DelegationStepAdmission } from "./delegation-admission.js";
+import { areDocumentationOnlyArtifacts } from "../workflow/artifact-paths.js";
+import { isMeaningfulWorkspaceInspectionToolCall } from "../workflow/workspace-inspection-evidence.js";
 import {
   isNodeWorkspaceRelevant,
   collectReachableVerificationCategories,
 } from "./subagent-workspace-probes.js";
 import { classifyDelegatedScopeTrustSignal } from "./subagent-failure-classification.js";
+import { resolveExecutionEnvelopeArtifactRelations, resolveExecutionEnvelopeRole } from "../workflow/execution-envelope.js";
 
 /* ------------------------------------------------------------------ */
 /*  Parent request summarization                                       */
@@ -155,6 +158,22 @@ export function buildArtifactRelevanceTerms(
     ...(step.executionContext?.targetArtifacts ?? []),
   ].join(" ");
   return new Set(extractTerms(aggregate));
+}
+
+export function stepPrefersReviewerHandoffArtifacts(
+  step: PipelinePlannerSubagentStep,
+): boolean {
+  const role = resolveExecutionEnvelopeRole(step.executionContext);
+  if (role === "writer") {
+    return true;
+  }
+  const artifactRelations = resolveExecutionEnvelopeArtifactRelations(
+    step.executionContext,
+  );
+  return artifactRelations.some((relation) =>
+    relation.relationType === "write_owner" ||
+    relation.relationType === "handoff_artifact"
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -325,6 +344,7 @@ export function buildEffectiveDelegationSpec(
     readonly lastValidationCode?: DelegationOutputValidationCode;
     readonly delegatedWorkingDirectory?: string;
     readonly admission?: DelegationStepAdmission;
+    readonly results?: Readonly<Record<string, string>>;
     readonly resolveHostToolingProfile?: () => HostToolingProfile | null;
   } = {},
 ): DelegationContractSpec {
@@ -338,6 +358,12 @@ export function buildEffectiveDelegationSpec(
       ? "deterministic_followup"
       : undefined);
   const effectiveExecutionContext = step.executionContext;
+  const inheritedWorkspaceInspectionSourceSteps =
+    collectInheritedWorkspaceInspectionSourceSteps(
+      step,
+      pipeline,
+      options.results,
+    );
   const sanitizedContextRequirements = sanitizeDelegationContextRequirements(
     step.contextRequirements,
   );
@@ -376,6 +402,14 @@ export function buildEffectiveDelegationSpec(
           approvalProfile: effectiveExecutionContext.approvalProfile,
         })
         : effectiveExecutionContext,
+    ...(inheritedWorkspaceInspectionSourceSteps.length > 0
+      ? {
+        inheritedEvidence: {
+          workspaceInspectionSatisfied: true,
+          sourceSteps: inheritedWorkspaceInspectionSourceSteps,
+        },
+      }
+      : {}),
     ...(options.admission?.shape
       ? { delegationShape: options.admission.shape }
       : {}),
@@ -392,6 +426,118 @@ export function buildEffectiveDelegationSpec(
       ? { lastValidationCode: options.lastValidationCode }
       : {}),
   };
+}
+
+function collectInheritedWorkspaceInspectionSourceSteps(
+  step: PipelinePlannerSubagentStep,
+  pipeline: Pipeline,
+  results: Readonly<Record<string, string>> | undefined,
+): readonly string[] {
+  if (!results || (step.dependsOn?.length ?? 0) === 0) {
+    return [];
+  }
+  const targetArtifacts = step.executionContext?.targetArtifacts ?? [];
+  if (!areDocumentationOnlyArtifacts(targetArtifacts)) {
+    return [];
+  }
+  const dependencies = collectDependencyContexts(step, pipeline, results);
+  if (dependencies.length === 0) {
+    return [];
+  }
+  const stepByName = new Map(
+    (pipeline.plannerSteps ?? []).map((plannerStep) => [plannerStep.name, plannerStep]),
+  );
+  const workspaceRoot =
+    step.executionContext?.workspaceRoot ?? pipeline.plannerContext?.workspaceRoot;
+  const requiredSourceArtifacts =
+    step.executionContext?.requiredSourceArtifacts ?? [];
+
+  return dependencies
+    .filter((dependency) =>
+      dependencyProvidesWorkspaceInspectionEvidence({
+        dependencyStep: stepByName.get(dependency.dependencyName),
+        result: dependency.result,
+        workspaceRoot,
+        targetArtifacts,
+        requiredSourceArtifacts,
+      })
+    )
+    .map((dependency) => dependency.dependencyName);
+}
+
+function dependencyProvidesWorkspaceInspectionEvidence(params: {
+  readonly dependencyStep: PipelinePlannerStep | undefined;
+  readonly result: string | null;
+  readonly workspaceRoot?: string;
+  readonly targetArtifacts: readonly string[];
+  readonly requiredSourceArtifacts: readonly string[];
+}): boolean {
+  const currentToolCalls = collectDependencyWorkspaceInspectionToolCalls(params);
+  return currentToolCalls.some((toolCall) =>
+    isMeaningfulWorkspaceInspectionToolCall({
+      toolCall,
+      workspaceRoot: params.workspaceRoot,
+      targetArtifacts: params.targetArtifacts,
+      requiredSourceArtifacts: params.requiredSourceArtifacts,
+    })
+  );
+}
+
+function collectDependencyWorkspaceInspectionToolCalls(params: {
+  readonly dependencyStep: PipelinePlannerStep | undefined;
+  readonly result: string | null;
+}): readonly Array<{
+  readonly name?: string;
+  readonly args?: unknown;
+  readonly result?: string;
+  readonly isError?: boolean;
+}> {
+  const calls: Array<{
+    readonly name?: string;
+    readonly args?: unknown;
+    readonly result?: string;
+    readonly isError?: boolean;
+  }> = [];
+
+  if (params.dependencyStep?.stepType === "deterministic_tool") {
+    calls.push({
+      name: params.dependencyStep.tool,
+      args: params.dependencyStep.args,
+      result: params.result ?? undefined,
+      isError: false,
+    });
+  }
+
+  if (typeof params.result !== "string" || params.result.trim().length === 0) {
+    return calls;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(params.result);
+  } catch {
+    return calls;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return calls;
+  }
+  const record = parsed as Record<string, unknown>;
+  if (
+    (typeof record.status === "string" && record.status !== "completed") ||
+    record.success === false ||
+    (typeof record.validationCode === "string" && record.validationCode.trim().length > 0)
+  ) {
+    return calls;
+  }
+  const toolCalls = Array.isArray(record.toolCalls)
+    ? record.toolCalls.filter((entry): entry is {
+      readonly name?: string;
+      readonly args?: unknown;
+      readonly result?: string;
+      readonly isError?: boolean;
+    } => !!entry && typeof entry === "object" && !Array.isArray(entry))
+    : [];
+  return [...calls, ...toolCalls];
 }
 
 export function buildEffectiveAcceptanceCriteria(
@@ -852,6 +998,14 @@ export function buildRetryTaskPrompt(
         "If those sources describe intended or planned structure, say that explicitly instead of presenting those files as already present.",
       );
     }
+    if (failure.validationCode === "missing_workspace_inspection_evidence") {
+      corrections.push(
+        "Inspect the current workspace state beyond the target documentation artifact before writing again.",
+      );
+      corrections.push(
+        "Use directory listing, file inspection, or bounded shell inspection to ground claims about repo layout, current implementation state, or recent directory changes.",
+      );
+    }
     if (failure.validationCode === "acceptance_probe_failed") {
       corrections.push(
         "A parent-side deterministic acceptance probe failed after your edits. Fix the cited package/workspace compatibility issue in the authored files before answering again.",
@@ -888,6 +1042,15 @@ export function buildRetryTaskPrompt(
       corrections.push(
         "Fix and verify the issue with the allowed tools first. If the issue remains unresolved, report the phase as blocked instead of successful.",
       );
+      if (
+        /documentation completion|shorthand placeholders|todo markers/i.test(
+          failure.message,
+        )
+      ) {
+        corrections.push(
+          "For documentation rewrites, replace shorthand elisions such as [Same as original], [etc.], TODO, FIXME, or TBD with the full concrete text before returning completed.",
+        );
+      }
     }
     const delegatedScopeTrustSignal = classifyDelegatedScopeTrustSignal({
       message: failure.message,

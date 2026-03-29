@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  collectDependencyArtifactCandidates,
   collectWorkspaceArtifactCandidates,
   normalizeDependencyArtifactPath,
   redactSensitiveData,
   sanitizeExecutionPromptText,
 } from "./subagent-context-curation.js";
+import { materializePlannerSynthesisResult } from "./subagent-dependency-summarization.js";
 
 describe("subagent-context-curation", () => {
   it("does not relativize dependency artifacts against placeholder workspace aliases", () => {
@@ -41,5 +43,56 @@ describe("subagent-context-curation", () => {
     );
     expect(sanitized).toContain("an absolute path omitted by runtime redaction");
     expect(sanitized).not.toContain("/home/tetsuo/.ssh/id_rsa");
+  });
+
+  it("surfaces synthesized reviewer handoff artifacts as first-class dependency artifacts", () => {
+    const synthesisResult = materializePlannerSynthesisResult(
+      {
+        name: "synthesis_feedback",
+        stepType: "synthesis",
+        objective: "Synthesize grounded reviewer findings for the writer.",
+        dependsOn: ["qa_review"],
+      },
+      {
+        qa_review: JSON.stringify({
+          status: "completed",
+          subagentSessionId: "sub-qa",
+          output: "Add exact test commands and call out the missing rollout note.",
+          toolCalls: [
+            {
+              name: "system.readFile",
+              args: { path: "/tmp/project/PLAN.md" },
+              result: JSON.stringify({
+                path: "/tmp/project/PLAN.md",
+                content: "# PLAN\n",
+              }),
+            },
+          ],
+        }),
+      },
+    );
+
+    const candidates = collectDependencyArtifactCandidates(
+      [
+        {
+          dependencyName: "synthesis_feedback",
+          result: synthesisResult,
+          depth: 1,
+          orderIndex: 0,
+        },
+      ],
+      new Set(["plan", "test", "rollout"]),
+      "/tmp/project",
+    );
+
+    expect(candidates[0]).toMatchObject({
+      dependencyName: "synthesis_feedback",
+      artifactKind: "reviewer_handoff",
+      artifactType: "reviewer_handoff_artifact",
+      path: "__reviewer_handoff__/synthesis_feedback.json",
+    });
+    expect(candidates[0]?.content).toContain('"type":"reviewer_handoff_artifact"');
+    expect(candidates[0]?.content).toContain('"subagentSessionId":"sub-qa"');
+    expect(candidates[0]?.content).toContain('"kind":"read_artifact"');
   });
 });

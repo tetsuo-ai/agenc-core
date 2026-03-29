@@ -89,6 +89,7 @@ function canUseInteractiveOnboarding(
   deps: Pick<OnboardingTuiDeps, "stdin" | "stdout">,
 ): boolean {
   if (flags["non-interactive"] === true) return false;
+  if (flags.help === true || flags.h === true) return false;
   if (flags.output === "json" || flags.output === "jsonl") return false;
   if (flags["output-format"] === "json" || flags["output-format"] === "jsonl") {
     return false;
@@ -223,13 +224,32 @@ class OnboardingTerminalSession {
     if (this.entered) return;
     emitKeypressEvents(this.stdin as any);
     this.stdin.resume();
-    this.stdin.setRawMode?.(true);
-    this.stdout.write("\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H");
-    this.resizeHandler = () => {
-      this.renderCurrent?.();
-    };
-    this.stdout.on("resize", this.resizeHandler);
-    this.entered = true;
+    let rawModeEnabled = false;
+    let altScreenEnabled = false;
+    try {
+      this.stdin.setRawMode?.(true);
+      rawModeEnabled = true;
+      this.stdout.write("\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H");
+      altScreenEnabled = true;
+      this.resizeHandler = () => {
+        this.renderCurrent?.();
+      };
+      this.stdout.on("resize", this.resizeHandler);
+      this.entered = true;
+    } catch (error) {
+      if (this.resizeHandler) {
+        this.stdout.off("resize", this.resizeHandler);
+        this.resizeHandler = null;
+      }
+      if (altScreenEnabled) {
+        this.stdout.write("\x1b[?25h\x1b[?1049l");
+      }
+      if (rawModeEnabled) {
+        this.stdin.setRawMode?.(false);
+      }
+      this.renderCurrent = null;
+      throw error;
+    }
   }
 
   dispose(): void {
@@ -624,8 +644,8 @@ export async function runInteractiveOnboarding(
     options.configPath ?? getCanonicalDefaultConfigPath(),
   );
   if (existsSync(resolvedConfigPath) && !options.force) {
-    session.enter();
     try {
+      session.enter();
       const outcome = await session.showMessage({
         step: 1,
         totalSteps: 1,
@@ -651,9 +671,8 @@ export async function runInteractiveOnboarding(
   const totalSteps = 17;
   let finalSummaryText: string | null = null;
 
-  session.enter();
-
   try {
+    session.enter();
     let stepIndex = 0;
     while (stepIndex < totalSteps) {
       if (stepIndex === 0) {
@@ -1080,14 +1099,23 @@ export async function runInteractiveOnboarding(
           footer: "Enter continue",
           statusTone: result.exitCode === 0 ? "green" : "yellow",
         });
-        finalSummaryText =
-          `${COLOR.bold}AgenC onboard${COLOR.reset}\n` +
-          `Config: ${result.configPath}\n` +
-          `${result.workspacePath ? `Workspace: ${result.workspacePath}\n` : ""}` +
-          "Next steps:\n" +
-          "  agenc start\n" +
-          "  agenc\n" +
-          "  agenc ui\n";
+        if (result.exitCode === 0) {
+          finalSummaryText =
+            `${COLOR.bold}AgenC onboard${COLOR.reset}\n` +
+            `Config: ${result.configPath}\n` +
+            `${result.workspacePath ? `Workspace: ${result.workspacePath}\n` : ""}` +
+            "Next steps:\n" +
+            "  agenc start\n" +
+            "  agenc\n" +
+            "  agenc ui\n";
+        } else {
+          finalSummaryText =
+            `${COLOR.bold}AgenC onboard${COLOR.reset}\n` +
+            `Config: ${result.configPath}\n` +
+            `${result.workspacePath ? `Workspace: ${result.workspacePath}\n` : ""}` +
+            "Setup finished with warnings.\n" +
+            "Review the health-check output before starting the runtime.\n";
+        }
         if (finished === CANCEL) return result.exitCode;
         return result.exitCode;
       }

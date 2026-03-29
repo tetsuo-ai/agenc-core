@@ -12,6 +12,64 @@ function createTempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
 }
 
+function encodeEffectToolResult(effect: {
+  readonly status?: string;
+  readonly targets?: readonly unknown[];
+  readonly preExecutionSnapshots?: readonly Array<{
+    readonly path?: string;
+    readonly exists?: boolean;
+    readonly entryType?: string;
+    readonly sizeBytes?: number;
+    readonly sha256?: string;
+  }>;
+  readonly postExecutionSnapshots?: readonly Array<{
+    readonly path?: string;
+    readonly exists?: boolean;
+    readonly entryType?: string;
+    readonly sizeBytes?: number;
+    readonly sha256?: string;
+  }>;
+}, path: string): string {
+  return JSON.stringify({
+    path,
+    written: true,
+    __agencEffect: {
+      status: effect.status,
+      targets: effect.targets,
+      ...(effect.preExecutionSnapshots && effect.preExecutionSnapshots.length > 0
+        ? {
+            preExecutionSnapshots: effect.preExecutionSnapshots.map((snapshot) => ({
+              path: snapshot.path,
+              exists: snapshot.exists,
+              entryType: snapshot.entryType,
+              ...(typeof snapshot.sizeBytes === "number"
+                ? { sizeBytes: snapshot.sizeBytes }
+                : {}),
+              ...(typeof snapshot.sha256 === "string"
+                ? { sha256: snapshot.sha256 }
+                : {}),
+            })),
+          }
+        : {}),
+      ...(effect.postExecutionSnapshots && effect.postExecutionSnapshots.length > 0
+        ? {
+            postExecutionSnapshots: effect.postExecutionSnapshots.map((snapshot) => ({
+              path: snapshot.path,
+              exists: snapshot.exists,
+              entryType: snapshot.entryType,
+              ...(typeof snapshot.sizeBytes === "number"
+                ? { sizeBytes: snapshot.sizeBytes }
+                : {}),
+              ...(typeof snapshot.sha256 === "string"
+                ? { sha256: snapshot.sha256 }
+                : {}),
+            })),
+          }
+        : {}),
+    },
+  });
+}
+
 describe("contract-backed verification integration", () => {
   it("accepts grounded no-op success when the target artifact was read and no mutation was needed", () => {
     const workspace = "/tmp/agenc-verification-noop";
@@ -72,15 +130,105 @@ describe("contract-backed verification integration", () => {
     expect(result.code).toBe("missing_required_source_evidence");
   });
 
-  it("accepts real mutation evidence from runtime artifact records even when the prose does not name files", () => {
-    const workspace = "/tmp/agenc-verification-write";
-    const targetPath = `${workspace}/AGENC.md`;
+  it("accepts real mutation evidence from runtime artifact records even when the prose does not name files", async () => {
+    const workspace = createTempDir("agenc-verification-write-");
+    const targetPath = join(workspace, "AGENC.md");
+    writeFileSync(targetPath, "old content", "utf8");
+    const ledger = EffectLedger.fromMemoryBackend(createMockMemoryBackend());
+    const handler = createSessionToolHandler({
+      sessionId: "subagent:verify-write",
+      baseHandler: vi.fn(async (_toolName, args) => {
+        writeFileSync(String(args.path), String(args.content), "utf8");
+        return JSON.stringify({ path: args.path, written: true });
+      }),
+      availableToolNames: ["system.writeFile"],
+      routerId: "router-a",
+      send: vi.fn(),
+      defaultWorkingDirectory: workspace,
+      effectLedger: ledger,
+      effectChannel: "test",
+    });
+
+    try {
+      await handler("system.writeFile", {
+        path: targetPath,
+        content: "new content",
+      });
+      const [effect] = await ledger.listSessionEffects("subagent:verify-write");
+      expect(effect?.postExecutionSnapshots?.[0]?.path).toBe(targetPath);
+      const writeResult = encodeEffectToolResult(effect ?? {}, targetPath);
+
+      const result = validateDelegatedOutputContract({
+        spec: {
+          task: "write_agenc_md",
+          objective: "Update the guide with the finalized repository rules.",
+          inputContract: "Inspect the current guide before editing it.",
+          acceptanceCriteria: ["State that the requested guide update completed."],
+          executionContext: {
+            version: "v1",
+            workspaceRoot: workspace,
+            requiredSourceArtifacts: [targetPath],
+            targetArtifacts: [targetPath],
+            stepKind: "delegated_write",
+            verificationMode: "mutation_required",
+          },
+        },
+        output: "Completed the requested guide update.",
+        toolCalls: [
+          {
+            name: "system.listDir",
+            args: { path: workspace },
+            result: JSON.stringify({
+              path: workspace,
+              entries: [
+                {
+                  name: "AGENC.md",
+                  type: "file",
+                },
+              ],
+            }),
+            isError: false,
+          },
+          {
+            name: "system.readFile",
+            args: { path: targetPath },
+            result: JSON.stringify({
+              path: targetPath,
+              content: "old content",
+            }),
+            isError: false,
+          },
+          {
+            name: "system.writeFile",
+            args: { path: targetPath, content: "new content" },
+            result: writeResult,
+            isError: false,
+          },
+        ],
+      });
+
+      if (!result.ok) {
+        throw new Error(
+          `Expected delegated output contract success, received ${JSON.stringify(result, null, 2)}`,
+        );
+      }
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts grounded PLAN.md no-op success for the final writer when reviewer findings are already incorporated", () => {
+    const workspace = "/tmp/agenc-verification-plan-noop";
+    const targetPath = `${workspace}/PLAN.md`;
     const result = validateDelegatedOutputContract({
       spec: {
-        task: "write_agenc_md",
-        objective: "Update the guide with the finalized repository rules.",
-        inputContract: "Inspect the current guide before editing it.",
-        acceptanceCriteria: ["State that the requested guide update completed."],
+        task: "update_plan_md",
+        objective: "Update PLAN.md with integrated reviewer findings when needed.",
+        inputContract:
+          "Consume the concrete reviewer handoff artifact, inspect PLAN.md, and either update it or report a grounded no-op.",
+        acceptanceCriteria: [
+          "State that PLAN.md already contains the integrated reviewer findings if no mutation is needed.",
+        ],
         executionContext: {
           version: "v1",
           workspaceRoot: workspace,
@@ -88,25 +236,18 @@ describe("contract-backed verification integration", () => {
           targetArtifacts: [targetPath],
           stepKind: "delegated_write",
           verificationMode: "mutation_required",
+          role: "writer",
         },
       },
-      output: "Completed the requested guide update.",
+      output:
+        "PLAN.md already contains the integrated reviewer findings. No mutation needed.",
       toolCalls: [
         {
           name: "system.readFile",
           args: { path: targetPath },
           result: JSON.stringify({
             path: targetPath,
-            content: "old content",
-          }),
-          isError: false,
-        },
-        {
-          name: "system.writeFile",
-          args: { path: targetPath, content: "new content" },
-          result: JSON.stringify({
-            path: targetPath,
-            written: true,
+            content: "# PLAN\nIntegrated reviewer findings already present.\n",
           }),
           isError: false,
         },

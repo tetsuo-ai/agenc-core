@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  resolvePipelineCompletionStateFromDependencyStates,
+  resolveWorkflowDependencyState,
   resolvePipelineCompletionState,
   resolveWorkflowCompletionState,
 } from "./completion-state.js";
@@ -21,6 +23,57 @@ describe("completion-state", () => {
         status: "halted",
         completedSteps: 1,
       }),
+    ).toBe("blocked");
+  });
+
+  it("treats needs_verification as dependency-satisfied but nonterminal", () => {
+    expect(
+      resolveWorkflowDependencyState({
+        completionState: "needs_verification",
+      }),
+    ).toEqual({
+      kind: "satisfied_nonterminal",
+      completionState: "needs_verification",
+      dependencySatisfied: true,
+      terminal: false,
+      verifierClosed: false,
+      semantics: "normal",
+    });
+  });
+
+  it("treats parent fallback as explicitly blocked and unsatisfied", () => {
+    expect(
+      resolveWorkflowDependencyState({
+        reportedStatus: "delegation_fallback",
+        recoveredViaParentFallback: true,
+      }),
+    ).toEqual({
+      kind: "unsatisfied_terminal",
+      completionState: "blocked",
+      dependencySatisfied: false,
+      terminal: true,
+      verifierClosed: false,
+      semantics: "delegation_fallback",
+    });
+  });
+
+  it("aggregates dependency states into a single pipeline completion lattice", () => {
+    expect(
+      resolvePipelineCompletionStateFromDependencyStates([
+        resolveWorkflowDependencyState({ completionState: "completed" }),
+        resolveWorkflowDependencyState({
+          completionState: "needs_verification",
+        }),
+      ]),
+    ).toBe("needs_verification");
+    expect(
+      resolvePipelineCompletionStateFromDependencyStates([
+        resolveWorkflowDependencyState({ completionState: "completed" }),
+        resolveWorkflowDependencyState({
+          reportedStatus: "delegation_fallback",
+          recoveredViaParentFallback: true,
+        }),
+      ]),
     ).toBe("blocked");
   });
 
@@ -181,5 +234,49 @@ describe("completion-state", () => {
         },
       }),
     ).toBe("completed");
+  });
+
+  it("keeps request-level multi-phase work partial when local verification passes but planner milestones remain", () => {
+    expect(
+      resolveWorkflowCompletionState({
+        stopReason: "completed",
+        toolCalls: [
+          {
+            name: "system.writeFile",
+            args: { path: "/workspace/src/main.c" },
+            result: JSON.stringify({ ok: true }),
+            isError: false,
+          },
+          {
+            name: "system.bash",
+            args: { command: "ctest" },
+            result: JSON.stringify({ stdout: "ok", stderr: "", exitCode: 0 }),
+            isError: false,
+          },
+        ],
+        verificationContract: {
+          workspaceRoot: "/workspace",
+          targetArtifacts: ["/workspace/src/main.c"],
+          verificationMode: "mutation_required",
+          requestCompletion: {
+            requiredMilestones: [
+              { id: "phase_1_impl", description: "Implement phase 1" },
+              { id: "phase_2_verify", description: "Verify phase 2" },
+            ],
+          },
+          completionContract: {
+            taskClass: "build_required",
+            placeholdersAllowed: false,
+            partialCompletionAllowed: false,
+            placeholderTaxonomy: "implementation",
+          },
+        },
+        completedRequestMilestoneIds: ["phase_1_impl"],
+        verifier: {
+          performed: true,
+          overall: "pass",
+        },
+      }),
+    ).toBe("partial");
   });
 });

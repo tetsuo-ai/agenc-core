@@ -128,6 +128,9 @@ describe("OllamaProvider", () => {
       stateful: {
         assistantPhase: false,
         previousResponseId: false,
+        encryptedReasoning: false,
+        storedResponseRetrieval: false,
+        storedResponseDeletion: false,
         opaqueCompaction: false,
         deterministicFallback: true,
       },

@@ -683,18 +683,25 @@ Set `llm.subagents.maxCumulativeTokensPerRequestTree` to `0` or omit it to allow
 
 ### Stateful Response Compaction
 
-`llm.statefulResponses.compaction` enables provider-native opaque compaction for
-providers that support server-side continuation. The current runtime surface is:
+`llm.statefulResponses.compaction` controls AgenC's compaction policy around
+stateful responses. On xAI/Grok, AgenC treats this as a local/runtime compaction
+threshold and does not rely on undocumented provider fields. The current runtime
+surface is:
 
-- `enabled`: turn provider compaction on for stateful responses.
-- `compactThreshold`: rendered-token threshold after which the provider may
-  compact server-side state.
-- `fallbackOnUnsupported`: retry once without compaction if the provider rejects
-  the field or does not support it.
+- `enabled`: turn compaction-aware stateful handling on.
+- `compactThreshold`: rendered-token threshold after which AgenC may compact or
+  trim local carried-forward state.
+- `fallbackOnUnsupported`: retry once without optional provider hints if a
+  provider rejects them.
 
-The runtime preserves assistant `phase` metadata in local history and includes
-provider compaction diagnostics in call-level traces so compacted continuations
-remain replayable.
+The runtime preserves local assistant `phase` metadata in AgenC history and
+includes continuation diagnostics in call-level traces so compacted
+continuations remain replayable without assuming undocumented xAI behavior.
+
+When `compactThreshold` is omitted on Grok, AgenC now derives the local
+compaction threshold from the resolved model context window at roughly 60% of
+capacity. If the context window cannot be resolved, AgenC falls back to
+`16,000` tokens.
 
 ### Host vs Desktop Browser Tooling
 

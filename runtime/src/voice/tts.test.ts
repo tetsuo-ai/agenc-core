@@ -230,11 +230,34 @@ describe("OpenAITTSProvider", () => {
     }
   });
 
+  it("fails loudly when pointed at xAI's undocumented OpenAI audio surface", async () => {
+    provider = new OpenAITTSProvider({
+      apiKey: "test-key",
+      baseURL: "https://api.x.ai/v1",
+    });
+
+    await expect(provider.synthesize("Hello")).rejects.toThrow(
+      /xAI does not document the OpenAI \/audio\/speech surface/i,
+    );
+    expect(mockSpeechCreate).not.toHaveBeenCalled();
+  });
+
   it("returns static voice list", async () => {
     const voices = await provider.listVoices();
     expect(voices.length).toBe(6);
     expect(voices.map((v) => v.id)).toContain("alloy");
     expect(voices.map((v) => v.id)).toContain("nova");
+  });
+
+  it("fails loudly for voice listing when pointed at xAI", async () => {
+    provider = new OpenAITTSProvider({
+      apiKey: "test-key",
+      baseURL: "https://api.x.ai/v1",
+    });
+
+    await expect(provider.listVoices()).rejects.toThrow(
+      /xAI does not document the OpenAI \/audio\/speech voice surface/i,
+    );
   });
 });
 

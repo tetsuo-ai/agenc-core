@@ -179,12 +179,12 @@ function parseCliOutput(result: { stdout: string; stderr: string }): unknown {
 
 describe('CLI output contract tests', () => {
   let workspace = '';
-  let originalConfig: string | undefined;
+  let originalAgencConfig: string | undefined;
   let originalRuntimeConfig: string | undefined;
 
   beforeEach(() => {
     workspace = createWorkspace();
-    originalConfig = process.env.AGENC_CONFIG;
+    originalAgencConfig = process.env.AGENC_CONFIG;
     originalRuntimeConfig = process.env.AGENC_RUNTIME_CONFIG;
     process.env.AGENC_CONFIG = writeGatewayConfig(workspace);
     delete process.env.AGENC_RUNTIME_CONFIG;
@@ -192,10 +192,10 @@ describe('CLI output contract tests', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-    if (originalConfig === undefined) {
+    if (originalAgencConfig === undefined) {
       delete process.env.AGENC_CONFIG;
     } else {
-      process.env.AGENC_CONFIG = originalConfig;
+      process.env.AGENC_CONFIG = originalAgencConfig;
     }
     if (originalRuntimeConfig === undefined) {
       delete process.env.AGENC_RUNTIME_CONFIG;
@@ -352,8 +352,8 @@ describe('CLI output contract tests', () => {
             /(?:\/tmp|\/private\/tmp|\/var\/folders\/[^/]+\/[^/]+\/T)\/agenc-cli-contract-[^/]+\/empty-cli-config\.json/g,
             '/tmp/agenc-cli-contract-<fixture>/empty-cli-config.json',
           ).replace(
-            /(?:\/Users|\/home)\/[^/]+\/\.agenc\/config\.json/g,
-            '/home/tetsuo/.agenc/config.json',
+            /(?:\/Users\/[^/]+|\/home\/[^/]+)\/\.agenc\/config\.json/g,
+            '<canonical-config-path>',
           ),
         };
       },

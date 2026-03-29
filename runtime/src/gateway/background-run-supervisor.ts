@@ -138,6 +138,7 @@ import {
   truncate,
   clampPollIntervalMs,
   normalizePositiveInteger,
+  normalizeOptionalBudgetLimit,
   normalizeOperatorStringList,
   summarizeToolCalls,
   sanitizeWorkerPools,
@@ -183,6 +184,7 @@ import {
   buildBackgroundRunTraceIds,
   toOperatorSummary,
 } from "./background-run-supervisor-helpers.js";
+import { isRuntimeLimitExceeded } from "../llm/runtime-limit-policy.js";
 
 // --- Re-export from extracted managed-process module ---
 import {
@@ -2537,13 +2539,14 @@ export class BackgroundRunSupervisor {
       run.budgetState = {
         ...run.budgetState,
         maxRuntimeMs:
-          normalizePositiveInteger(budget.maxRuntimeMs) ??
+          normalizeOptionalBudgetLimit(budget.maxRuntimeMs) ??
           run.budgetState.maxRuntimeMs,
         maxCycles:
-          normalizePositiveInteger(budget.maxCycles) ?? run.budgetState.maxCycles,
+          normalizeOptionalBudgetLimit(budget.maxCycles) ??
+          run.budgetState.maxCycles,
         maxIdleMs:
           budget.maxIdleMs !== undefined
-            ? normalizePositiveInteger(budget.maxIdleMs) ??
+            ? normalizeOptionalBudgetLimit(budget.maxIdleMs) ??
               run.budgetState.maxIdleMs
             : run.budgetState.maxIdleMs,
       };
@@ -3041,7 +3044,10 @@ export class BackgroundRunSupervisor {
     }
     if (
       !run.contract.requiresUserStop &&
-      this.now() - run.budgetState.runtimeStartedAt > run.budgetState.maxRuntimeMs
+      isRuntimeLimitExceeded(
+        this.now() - run.budgetState.runtimeStartedAt,
+        run.budgetState.maxRuntimeMs,
+      )
     ) {
       await this.finishRun(run, {
         state: "failed",
@@ -3051,7 +3057,10 @@ export class BackgroundRunSupervisor {
       });
       return undefined;
     }
-    if (!run.contract.requiresUserStop && run.cycleCount >= run.budgetState.maxCycles) {
+    if (
+      !run.contract.requiresUserStop &&
+      isRuntimeLimitExceeded(run.cycleCount, run.budgetState.maxCycles)
+    ) {
       await this.finishRun(run, {
         state: "failed",
         userUpdate: "Background run hit its cycle budget before completing.",
@@ -3062,7 +3071,10 @@ export class BackgroundRunSupervisor {
     }
     if (
       run.budgetState.maxIdleMs !== undefined &&
-      this.now() - run.budgetState.lastActivityAt > run.budgetState.maxIdleMs
+      isRuntimeLimitExceeded(
+        this.now() - run.budgetState.lastActivityAt,
+        run.budgetState.maxIdleMs,
+      )
     ) {
       await this.finishRun(run, {
         state: "failed",
@@ -3866,7 +3878,7 @@ export class BackgroundRunSupervisor {
       .reverse()
       .find((artifact) =>
         artifact.kind === "opaque_provider_state" &&
-        artifact.source.endsWith(":context_management")
+        artifact.source.endsWith(":provider_state")
       );
     await this.runStore.appendEvent(toPersistedRun(run), {
       type: "memory_compacted",
