@@ -32,6 +32,14 @@ function writeGatewayConfig(directory: string, body: Record<string, unknown>) {
   return path;
 }
 
+function writeMinimalGatewayConfig(directory: string) {
+  return writeGatewayConfig(directory, {
+    gateway: { port: 3100 },
+    agent: { name: 'cli-test-agent' },
+    connection: { rpcUrl: 'https://test.rpc' },
+  });
+}
+
 function createTempWorkspace(): string {
   const dir = mkdtempSync(join(tmpdir(), 'agenc-cli-'));
   mkdirSync(dir, { recursive: true });
@@ -79,18 +87,36 @@ async function runCliCapture(argv: string[]): Promise<{
 }> {
   const stdout = createCapture();
   const stderr = createCapture();
+  const hasExplicitConfig =
+    (process.env.AGENC_CONFIG ?? '').trim().length > 0 ||
+    (process.env.AGENC_RUNTIME_CONFIG ?? '').trim().length > 0;
+  const seededWorkspace = hasExplicitConfig ? null : createTempWorkspace();
+  const restoreEnv = seededWorkspace
+    ? cleanupEnv(['AGENC_CONFIG', 'AGENC_RUNTIME_CONFIG'])
+    : null;
 
-  const code = await runCli({
-    argv,
-    stdout: stdout.stream,
-    stderr: stderr.stream,
-  });
+  if (seededWorkspace) {
+    process.env.AGENC_CONFIG = writeMinimalGatewayConfig(seededWorkspace);
+  }
 
-  return {
-    code,
-    stdout: stdout.getText(),
-    stderr: stderr.getText(),
-  };
+  try {
+    const code = await runCli({
+      argv,
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+    });
+
+    return {
+      code,
+      stdout: stdout.getText(),
+      stderr: stderr.getText(),
+    };
+  } finally {
+    restoreEnv?.();
+    if (seededWorkspace) {
+      rmSync(seededWorkspace, { recursive: true, force: true });
+    }
+  }
 }
 
 describe('runtime cli foundation', () => {

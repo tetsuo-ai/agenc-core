@@ -172,7 +172,7 @@ function resolveWorkspaceArtifactPathCase(
   artifactPath: string,
   workspaceRoot?: string,
 ): string {
-  if (!workspaceRoot || artifactPath.length === 0 || existsSync(artifactPath)) {
+  if (!workspaceRoot || artifactPath.length === 0) {
     return artifactPath;
   }
 

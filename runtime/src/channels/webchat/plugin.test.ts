@@ -5,7 +5,7 @@
  * handler dispatch, error handling, and chat history/resume.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect, beforeEach, vi } from "vitest";
@@ -149,7 +149,7 @@ function createDesktopManager(
 }
 
 function createWorkspaceRoot(prefix: string): string {
-  return mkdtempSync(join(tmpdir(), prefix));
+  return realpathSync.native(mkdtempSync(join(tmpdir(), prefix)));
 }
 
 async function startDesktopChannel(
