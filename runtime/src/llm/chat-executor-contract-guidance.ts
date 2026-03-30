@@ -218,6 +218,10 @@ function inferServerHandleTurn(messageText: string): boolean {
     lower.includes("server handle");
   if (!mentionsServer) return false;
 
+  // Only trigger when the user explicitly asks for long-running / durable
+  // server semantics.  A bare "port NNNN" mention in a create-project or
+  // coding task should NOT gate file writes behind system.serverStart —
+  // file scaffolding is a prerequisite for starting the server.
   return (
     lower.includes("durable") ||
     lower.includes("typed server handle") ||
@@ -226,8 +230,7 @@ function inferServerHandleTurn(messageText: string): boolean {
     lower.includes("until i say stop") ||
     lower.includes("verify it is ready") ||
     lower.includes("verify readiness") ||
-    lower.includes("readiness") ||
-    /\bport\s+\d+\b/.test(lower)
+    lower.includes("readiness")
   );
 }
 
