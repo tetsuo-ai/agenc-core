@@ -1838,7 +1838,6 @@ describe("createSessionToolHandler", () => {
     });
     expect(spawnInput?.delegationSpec).toMatchObject({
       task: "Inspect file",
-      timeoutMs: 120_000,
       tools: ["system.readFile"],
       executionContext: {
         workspaceRoot: "/tmp/project-root",
@@ -3700,7 +3699,6 @@ describe("createSessionToolHandler", () => {
     });
     expect(spawnInput?.delegationSpec).toMatchObject({
       task: "Inspect file quickly",
-      timeoutMs: 10_000,
       executionContext: {
         workspaceRoot: "/tmp/runtime-timeout-scope",
       },
