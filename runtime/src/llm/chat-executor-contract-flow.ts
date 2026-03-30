@@ -38,6 +38,7 @@ import {
 } from "./chat-executor-routing-state.js";
 import { didToolCallFail } from "./chat-executor-tool-utils.js";
 import {
+  plannerRequestImplementsFromArtifact,
   plannerRequestNeedsGroundedPlanArtifact,
   plannerRequestNeedsPlanArtifactExecution,
   requestRequiresToolGroundedExecution,
@@ -70,10 +71,14 @@ type ContractFlowContext =
     >
   >;
 
+export const LEGACY_COMPLETION_COMPATIBILITY_CLASSES = [
+  "docs",
+  "research",
+  "plan_only",
+] as const;
+
 export type LegacyCompletionCompatibilityClass =
-  | "docs"
-  | "research"
-  | "plan_only";
+  typeof LEGACY_COMPLETION_COMPATIBILITY_CLASSES[number];
 
 export interface LegacyCompletionCompatibilityDecision {
   readonly allowed: boolean;
@@ -619,9 +624,26 @@ function analyzeLegacyCompletionTurn(
   const mutatesSourceLikeArtifacts = mutatedArtifacts.some((artifact) =>
     SOURCE_LIKE_PATH_RE.test(artifact),
   );
+  const implementsFromArtifact = plannerRequestImplementsFromArtifact(
+    ctx.messageText,
+  );
   const likelyImplementationRequest =
-    LIKELY_IMPLEMENTATION_REQUEST_RE.test(ctx.messageText) &&
-    requestRequiresToolGroundedExecution(ctx.messageText);
+    (
+      LIKELY_IMPLEMENTATION_REQUEST_RE.test(ctx.messageText) ||
+      implementsFromArtifact
+    ) &&
+    (
+      requestRequiresToolGroundedExecution(ctx.messageText) ||
+      implementsFromArtifact
+    );
+  const hasExecutionScopedArtifactCue =
+    implementsFromArtifact ||
+    SOURCE_LIKE_PATH_RE.test(ctx.messageText) ||
+    BUILD_REQUIREMENT_RE.test(ctx.messageText) ||
+    BEHAVIOR_REQUIREMENT_RE.test(ctx.messageText);
+  const hasOnlyNonTerminalExecutionEvidence =
+    !hasMutationProgress &&
+    !hasBuildOrBehaviorEvidence;
   return {
     successfulToolCalls,
     mutatedArtifacts,
@@ -631,7 +653,16 @@ function analyzeLegacyCompletionTurn(
     implementationLikeTurn:
       mutatesSourceLikeArtifacts ||
       hasBuildOrBehaviorEvidence ||
-      (successfulToolCalls.length === 0 && likelyImplementationRequest),
+      (
+        likelyImplementationRequest &&
+        (
+          successfulToolCalls.length === 0 ||
+          (
+            hasExecutionScopedArtifactCue &&
+            hasOnlyNonTerminalExecutionEvidence
+          )
+        )
+      ),
   };
 }
 

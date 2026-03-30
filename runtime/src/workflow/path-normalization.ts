@@ -1,3 +1,4 @@
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve as resolvePath } from "node:path";
 
 const WORKSPACE_ALIAS_ROOT = "/workspace";
@@ -156,12 +157,77 @@ export function normalizeArtifactPaths(
   for (const path of paths) {
     const trimmed = trimPath(path);
     if (!trimmed) continue;
-    const resolved = normalizeEnvelopePath(trimmed, workspaceRoot);
+    const resolved = resolveWorkspaceArtifactPathCase(
+      normalizeEnvelopePath(trimmed, workspaceRoot),
+      workspaceRoot,
+    );
     if (!resolved || seen.has(resolved)) continue;
     seen.add(resolved);
     normalized.push(resolved);
   }
   return normalized;
+}
+
+function resolveWorkspaceArtifactPathCase(
+  artifactPath: string,
+  workspaceRoot?: string,
+): string {
+  if (!workspaceRoot || artifactPath.length === 0 || existsSync(artifactPath)) {
+    return artifactPath;
+  }
+
+  const normalizedWorkspaceRoot = resolvePath(workspaceRoot);
+  const normalizedArtifactPath = resolvePath(artifactPath);
+  if (
+    normalizedArtifactPath !== normalizedWorkspaceRoot &&
+    !isPathWithinRoot(normalizedArtifactPath, normalizedWorkspaceRoot)
+  ) {
+    return normalizedArtifactPath;
+  }
+
+  const relativeArtifactPath = relative(
+    normalizedWorkspaceRoot,
+    normalizedArtifactPath,
+  );
+  if (
+    relativeArtifactPath.length === 0 ||
+    relativeArtifactPath.startsWith("..") ||
+    isAbsolute(relativeArtifactPath)
+  ) {
+    return normalizedArtifactPath;
+  }
+
+  const segments = relativeArtifactPath.split(/[\\/]+/u).filter(Boolean);
+  let currentPath = normalizedWorkspaceRoot;
+  for (const segment of segments) {
+    if (!existsSync(currentPath)) {
+      return normalizedArtifactPath;
+    }
+    let directoryEntries: readonly string[];
+    try {
+      if (!statSync(currentPath).isDirectory()) {
+        return normalizedArtifactPath;
+      }
+      directoryEntries = readdirSync(currentPath);
+    } catch {
+      return normalizedArtifactPath;
+    }
+    const exactMatch = directoryEntries.find((entry) => entry === segment);
+    const matchedSegment =
+      exactMatch ??
+      (() => {
+        const foldedMatches = directoryEntries.filter(
+          (entry) => entry.toLowerCase() === segment.toLowerCase(),
+        );
+        return foldedMatches.length === 1 ? foldedMatches[0] : undefined;
+      })();
+    if (!matchedSegment) {
+      return normalizedArtifactPath;
+    }
+    currentPath = resolvePath(currentPath, matchedSegment);
+  }
+
+  return currentPath;
 }
 
 export function inferDirectoryTargetsForArtifacts(

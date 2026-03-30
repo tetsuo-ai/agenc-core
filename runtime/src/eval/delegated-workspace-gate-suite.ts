@@ -13,7 +13,11 @@ import {
   buildCanonicalDelegatedFilesystemScope,
 } from "../workflow/delegated-filesystem-scope.js";
 import { isPathWithinRoot } from "../workflow/path-normalization.js";
-import { resolveWorkflowCompletionState } from "../workflow/completion-state.js";
+import {
+  resolveWorkflowCompletionState,
+  resolveWorkflowDependencyState,
+  type WorkflowCompletionState,
+} from "../workflow/completion-state.js";
 import type { WorkflowVerificationContract } from "../workflow/verification-obligations.js";
 import { TrajectoryReplayEngine } from "./replay.js";
 import { parseTrajectoryTrace } from "./types.js";
@@ -65,6 +69,14 @@ function ratio(numerator: number, denominator: number): number {
   return numerator / denominator;
 }
 
+function isSatisfiedTerminalCompletion(
+  completionState: string,
+): boolean {
+  return resolveWorkflowDependencyState({
+    completionState: completionState as WorkflowCompletionState,
+  }).kind === "satisfied_terminal";
+}
+
 function collectScopePaths(scope: {
   readonly workspaceRoot?: string;
   readonly allowedReadRoots?: readonly string[];
@@ -98,7 +110,7 @@ async function runDelegatedTraceReplayScenario(
   const expected = JSON.parse(rawExpected) as {
     expectedReplay: {
       taskPda: string;
-      finalStatus: string;
+      completionState?: string;
       replayErrors: number;
       replayWarnings: number;
       policyViolations: number;
@@ -107,7 +119,7 @@ async function runDelegatedTraceReplayScenario(
   };
   const replay = new TrajectoryReplayEngine({ strictMode: true }).replay(trace);
   const task = replay.tasks[expected.expectedReplay.taskPda];
-  const observedOutcome = task?.status ?? "missing";
+  const observedOutcome = task?.completionState ?? "missing";
   return {
     scenarioId: "delegated_split_workspace_root_trace_replay",
     title: "Exact delegated split-root trace stays failed under deterministic replay",
@@ -115,14 +127,14 @@ async function runDelegatedTraceReplayScenario(
     mandatory: true,
     executionMode: "replay",
     passed:
-      observedOutcome === expected.expectedReplay.finalStatus &&
+      observedOutcome === (expected.expectedReplay.completionState ?? "blocked") &&
       replay.errors.length === expected.expectedReplay.replayErrors &&
       replay.warnings.length === expected.expectedReplay.replayWarnings &&
       (task?.policyViolations ?? 0) === expected.expectedReplay.policyViolations &&
       (task?.verifierVerdicts ?? 0) === expected.expectedReplay.verifierVerdicts,
-    falseCompleted: observedOutcome === "completed",
+    falseCompleted: isSatisfiedTerminalCompletion(observedOutcome),
     observedOutcome,
-    expectedOutcome: expected.expectedReplay.finalStatus,
+    expectedOutcome: expected.expectedReplay.completionState ?? "blocked",
     notes: `policyViolations=${task?.policyViolations ?? 0} verifierVerdicts=${task?.verifierVerdicts ?? 0}`,
   };
 }
@@ -409,8 +421,8 @@ async function runDegradedProviderRetryBrokenScopeScenario(): Promise<PipelineDe
     passed:
       result.usedFallback === true &&
       preflight.ok === false &&
-      completionState !== "completed",
-    falseCompleted: completionState === "completed",
+      !isSatisfiedTerminalCompletion(completionState),
+    falseCompleted: isSatisfiedTerminalCompletion(completionState),
     observedOutcome: `${completionState}:${preflight.ok ? "preflight_ok" : "preflight_failed"}`,
     expectedOutcome: "needs_verification:preflight_failed",
     notes: preflight.ok ? undefined : preflight.error,

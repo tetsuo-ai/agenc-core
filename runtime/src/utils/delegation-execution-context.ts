@@ -8,6 +8,8 @@ import {
   type ExecutionResumePolicy,
   type ExecutionStepKind,
   type ExecutionVerificationMode,
+  type WorkflowArtifactRelation,
+  type WorkflowStepRole,
 } from "../workflow/execution-envelope.js";
 import type { ImplementationCompletionContract } from "../workflow/completion-contract.js";
 import { migrateExecutionEnvelope } from "../workflow/migrations.js";
@@ -116,6 +118,8 @@ export function buildDelegationExecutionContext(params: {
   readonly effectClass?: ExecutionEffectClass;
   readonly verificationMode?: ExecutionVerificationMode;
   readonly stepKind?: ExecutionStepKind;
+  readonly role?: WorkflowStepRole;
+  readonly artifactRelations?: readonly WorkflowArtifactRelation[];
   readonly completionContract?: ImplementationCompletionContract;
   readonly fallbackPolicy?: ExecutionFallbackPolicy;
   readonly resumePolicy?: ExecutionResumePolicy;
@@ -143,6 +147,8 @@ export function buildDelegationExecutionContext(params: {
     effectClass: params.effectClass,
     verificationMode: params.verificationMode,
     stepKind: params.stepKind,
+    role: params.role,
+    artifactRelations: params.artifactRelations,
     completionContract: params.completionContract,
     fallbackPolicy: params.fallbackPolicy,
     resumePolicy: params.resumePolicy,
@@ -171,6 +177,8 @@ export function buildLegacyDelegationExecutionContext(params: {
   readonly effectClass?: ExecutionEffectClass;
   readonly verificationMode?: ExecutionVerificationMode;
   readonly stepKind?: ExecutionStepKind;
+  readonly role?: WorkflowStepRole;
+  readonly artifactRelations?: readonly WorkflowArtifactRelation[];
   readonly completionContract?: ImplementationCompletionContract;
   readonly fallbackPolicy?: ExecutionFallbackPolicy;
   readonly resumePolicy?: ExecutionResumePolicy;
@@ -210,6 +218,8 @@ export function buildLegacyDelegationExecutionContext(params: {
     effectClass: params.effectClass,
     verificationMode: params.verificationMode,
     stepKind: params.stepKind,
+    role: params.role,
+    artifactRelations: params.artifactRelations,
     completionContract: params.completionContract,
     fallbackPolicy: params.fallbackPolicy,
     resumePolicy: params.resumePolicy,
@@ -241,6 +251,8 @@ export function canonicalizeDelegationExecutionContext(
     effectClass: context.effectClass,
     verificationMode: context.verificationMode,
     stepKind: context.stepKind,
+    role: context.role,
+    artifactRelations: context.artifactRelations,
     completionContract: context.completionContract,
     fallbackPolicy: context.fallbackPolicy,
     resumePolicy: context.resumePolicy,
@@ -545,6 +557,8 @@ export function deriveDelegatedExecutionEnvelopeFromParent(params: {
     effectClass: requestedContext?.effectClass,
     verificationMode: requestedContext?.verificationMode,
     stepKind: requestedContext?.stepKind,
+    role: requestedContext?.role,
+    artifactRelations: requestedContext?.artifactRelations,
     completionContract: requestedContext?.completionContract,
     fallbackPolicy: requestedContext?.fallbackPolicy,
     resumePolicy: requestedContext?.resumePolicy,

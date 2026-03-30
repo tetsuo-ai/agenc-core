@@ -45,6 +45,8 @@ import { deriveWorkflowProgressSnapshot } from "../workflow/completion-progress.
 import { isDocumentationArtifactPath } from "../workflow/artifact-paths.js";
 import {
   buildModelRoutingPolicy,
+  getProviderRouteKey,
+  resolveParallelToolCallPolicy,
   resolveModelRoute,
   type ModelRoutingPolicy,
 } from "./model-routing-policy.js";
@@ -71,6 +73,7 @@ import {
   buildDefaultExecutionContext,
 } from "./chat-executor-types.js";
 import type {
+  DetailedSkillInjectionResult,
   SkillInjector,
   MemoryRetriever,
   ToolCallRecord,
@@ -176,6 +179,13 @@ interface DetailedMemoryRetriever extends MemoryRetriever {
   ): Promise<DetailedMemoryRetrievalResult>;
 }
 
+interface DetailedSkillInjector extends SkillInjector {
+  injectDetailed(
+    message: string,
+    sessionId: string,
+  ): Promise<DetailedSkillInjectionResult>;
+}
+
 function isDetailedMemoryRetriever(
   provider: SkillInjector | MemoryRetriever | undefined,
 ): provider is DetailedMemoryRetriever {
@@ -183,6 +193,16 @@ function isDetailedMemoryRetriever(
     !!provider &&
     "retrieveDetailed" in provider &&
     typeof provider.retrieveDetailed === "function"
+  );
+}
+
+function isDetailedSkillInjector(
+  provider: SkillInjector | MemoryRetriever | undefined,
+): provider is DetailedSkillInjector {
+  return (
+    !!provider &&
+    "injectDetailed" in provider &&
+    typeof provider.injectDetailed === "function"
   );
 }
 
@@ -683,7 +703,6 @@ export class ChatExecutor {
     this.enforceLegacyCompletionCompatibilityBeforeFinalization(ctx);
 
     this.checkRequestTimeout(ctx, "finalization");
-    this.trackTokenUsage(ctx.sessionId, ctx.cumulativeUsage.totalTokens);
     this.synchronizeCompletionState(ctx);
 
     // Optional response evaluation (critic)
@@ -928,6 +947,11 @@ export class ChatExecutor {
   private resolveRoutingDecision(
     ctx: ExecutionContext,
     phase: ChatCallUsageRecord["phase"],
+    requirements?: {
+      readonly statefulContinuationRequired?: boolean;
+      readonly structuredOutputRequired?: boolean;
+      readonly routedToolNames?: readonly string[];
+    },
   ) {
     const runClass = this.resolveRunClassForPhase(ctx, phase);
     const pressure = getRuntimeBudgetPressure(
@@ -943,6 +967,7 @@ export class ChatExecutor {
         runClass,
         pressure,
         degradedProviderNames: this.buildDegradedProviderNames(),
+        requirements,
       }),
     };
   }
@@ -1934,6 +1959,12 @@ export class ChatExecutor {
     } else {
       ctx.transientRoutedToolNames = effectiveRoutedToolNames;
     }
+    const compactedCallInput = await this.maybeCompactInFlightCallInput(ctx, {
+      callMessages: input.callMessages,
+      callReconciliationMessages: input.callReconciliationMessages,
+      callSections: input.callSections,
+      statefulHistoryCompacted: input.statefulHistoryCompacted,
+    });
     const groundingMessage =
       input.phase === "tool_followup" || input.phase === "planner_synthesis"
         ? buildToolExecutionGroundingMessage({
@@ -1942,16 +1973,51 @@ export class ChatExecutor {
         })
         : undefined;
     const effectiveCallMessages = groundingMessage
-      ? [...input.callMessages, groundingMessage]
-      : [...input.callMessages];
-    const effectiveCallSections = groundingMessage && input.callSections
-      ? [...input.callSections, "system_runtime" as const]
-      : input.callSections;
-    const routingDecision = this.resolveRoutingDecision(ctx, input.phase);
+      ? [...compactedCallInput.callMessages, groundingMessage]
+      : [...compactedCallInput.callMessages];
+    const effectiveCallSections =
+      groundingMessage && compactedCallInput.callSections
+        ? [...compactedCallInput.callSections, "system_runtime" as const]
+        : compactedCallInput.callSections;
+    const requestedStructuredOutput =
+      input.structuredOutput?.enabled === false ||
+        input.structuredOutput?.schema === undefined
+        ? undefined
+        : input.structuredOutput;
+    const statefulContinuationRequired =
+      allowStatefulContinuation &&
+      Boolean(input.statefulSessionId) &&
+      (
+        input.phase === "tool_followup" ||
+        Boolean(input.statefulResumeAnchor) ||
+        compactedCallInput.statefulHistoryCompacted === true ||
+        ctx.history.length > 0
+      );
+    let routingDecision: ReturnType<ChatExecutor["resolveRoutingDecision"]>;
+    try {
+      routingDecision = this.resolveRoutingDecision(ctx, input.phase, {
+        statefulContinuationRequired,
+        structuredOutputRequired: requestedStructuredOutput !== undefined,
+        routedToolNames: effectiveRoutedToolNames,
+      });
+    } catch (error) {
+      const annotated = annotateFailureError(
+        error,
+        `${input.phase} routing preflight`,
+      );
+      this.setStopReason(ctx, annotated.stopReason, annotated.stopReasonDetail);
+      throw annotated.error;
+    }
+    const parallelToolCalls = resolveParallelToolCallPolicy({
+      policy: this.modelRoutingPolicy,
+      selectedProviderName: routingDecision.route.selectedProviderName,
+      selectedProviderRouteKey: routingDecision.route.selectedProviderRouteKey,
+      phase: input.phase,
+    });
     const structuredOutput =
-      input.structuredOutput &&
-      this.supportsStructuredOutputsForProviders(routingDecision.route.providers)
-        ? input.structuredOutput
+      requestedStructuredOutput &&
+      routingDecision.route.selectedProviderName === "grok"
+        ? requestedStructuredOutput
         : undefined;
     if (
       this.economicsPolicy.mode === "enforce" &&
@@ -1987,13 +2053,16 @@ export class ChatExecutor {
             : typeof input.toolChoice === "string"
             ? input.toolChoice
             : input.toolChoice.name,
+        parallelToolCalls,
         structuredOutputSchemaName: structuredOutput?.schema?.name,
         messageCount: effectiveCallMessages.length,
         groundingMessageAdded: Boolean(groundingMessage),
         activeRouteMisses: ctx.routedToolMisses,
         routedToolsExpanded: ctx.routedToolsExpanded,
         economicsRunClass: routingDecision.runClass,
-        providerRoute: routingDecision.route.providers.map((provider) => provider.name),
+        providerRoute: routingDecision.route.providers.map((provider) =>
+          getProviderRouteKey(provider)
+        ),
         providerRouteReason: routingDecision.route.reason,
         budgetPressure: {
           tokenRatio: Number(routingDecision.pressure.tokenRatio.toFixed(4)),
@@ -2017,8 +2086,9 @@ export class ChatExecutor {
             ? {
               statefulSessionId: input.statefulSessionId,
               reconciliationMessages:
-                input.callReconciliationMessages ?? ctx.reconciliationMessages,
-              ...(input.statefulHistoryCompacted
+                compactedCallInput.callReconciliationMessages ??
+                ctx.reconciliationMessages,
+              ...(compactedCallInput.statefulHistoryCompacted
                 ? { statefulHistoryCompacted: true }
                 : {}),
               ...(input.statefulResumeAnchor
@@ -2032,6 +2102,7 @@ export class ChatExecutor {
           ...(input.toolChoice !== undefined
             ? { toolChoice: input.toolChoice }
             : {}),
+          parallelToolCalls,
           ...(structuredOutput !== undefined
             ? { structuredOutput }
             : {}),
@@ -2062,6 +2133,7 @@ export class ChatExecutor {
     );
     if (next.usedFallback) ctx.usedFallback = true;
     this.accumulateUsage(ctx.cumulativeUsage, next.response.usage);
+    this.trackTokenUsage(ctx.sessionId, next.response.usage.totalTokens);
     recordRuntimeModelCall({
       policy: this.economicsPolicy,
       state: ctx.economicsState,
@@ -2092,13 +2164,6 @@ export class ChatExecutor {
       }),
     );
     return next.response;
-  }
-
-  private supportsStructuredOutputsForProviders(
-    providers: readonly LLMProvider[],
-  ): boolean {
-    return providers.length > 0 &&
-      providers.every((provider) => provider.name === "grok");
   }
 
   private async runPipelineWithTimeout(
@@ -2416,6 +2481,186 @@ export class ChatExecutor {
     );
 
     return ctx;
+  }
+
+  private async maybeCompactInFlightCallInput(
+    ctx: ExecutionContext,
+    input: {
+      readonly callMessages: readonly LLMMessage[];
+      readonly callReconciliationMessages?: readonly LLMMessage[];
+      readonly callSections?: readonly PromptBudgetSection[];
+      readonly statefulHistoryCompacted?: boolean;
+    },
+  ): Promise<{
+    readonly callMessages: readonly LLMMessage[];
+    readonly callReconciliationMessages?: readonly LLMMessage[];
+    readonly callSections?: readonly PromptBudgetSection[];
+    readonly statefulHistoryCompacted: boolean;
+  }> {
+    const compactionState = this.getSessionCompactionState(ctx.sessionId);
+    const statefulHistoryCompacted =
+      input.statefulHistoryCompacted === true || ctx.compacted;
+    if (
+      !compactionState.hardBudgetReached &&
+      !compactionState.softThresholdReached
+    ) {
+      return {
+        callMessages: input.callMessages,
+        callReconciliationMessages: input.callReconciliationMessages,
+        callSections: input.callSections,
+        statefulHistoryCompacted,
+      };
+    }
+
+    const usesLiveExecutionMessages =
+      input.callMessages === ctx.messages &&
+      (
+        input.callSections === undefined ||
+        input.callSections === ctx.messageSections
+      ) &&
+      (
+        input.callReconciliationMessages === undefined ||
+        input.callReconciliationMessages === ctx.reconciliationMessages
+      );
+    if (!usesLiveExecutionMessages) {
+      if (compactionState.hardBudgetReached) {
+        throw new ChatBudgetExceededError(
+          ctx.sessionId,
+          compactionState.used,
+          this.sessionTokenBudget!,
+        );
+      }
+      return {
+        callMessages: input.callMessages,
+        callReconciliationMessages: input.callReconciliationMessages,
+        callSections: input.callSections,
+        statefulHistoryCompacted,
+      };
+    }
+
+    const replayTailStartIndex = this.findInFlightCompactionTailStartIndex(
+      input.callMessages,
+      input.callSections,
+    );
+    const replayTail = input.callMessages.slice(replayTailStartIndex);
+    const inFlightKeepTailCount = 3;
+    if (replayTail.length <= inFlightKeepTailCount) {
+      if (compactionState.hardBudgetReached) {
+        throw new ChatBudgetExceededError(
+          ctx.sessionId,
+          compactionState.used,
+          this.sessionTokenBudget!,
+        );
+      }
+      return {
+        callMessages: input.callMessages,
+        callReconciliationMessages: input.callReconciliationMessages,
+        callSections: input.callSections,
+        statefulHistoryCompacted,
+      };
+    }
+
+    const cooldownSnapshot = compactionState.hardBudgetReached
+      ? undefined
+      : new Map(this.cooldowns);
+    try {
+      const compacted = await this.compactHistory(
+        replayTail,
+        ctx.sessionId,
+        ctx.trace,
+        ctx.compactedArtifactContext,
+        inFlightKeepTailCount,
+      );
+      const retainedTailCount = Math.max(0, compacted.history.length - 1);
+      const replayTailReconciliationMessages = (
+        input.callReconciliationMessages ?? ctx.reconciliationMessages
+      ).slice(replayTailStartIndex);
+      const replayTailSections = (
+        input.callSections ?? ctx.messageSections
+      ).slice(replayTailStartIndex);
+      const compactedReconciliationMessages: readonly LLMMessage[] = [
+        {
+          role: "system",
+          content:
+            typeof compacted.history[0]?.content === "string"
+              ? compacted.history[0].content
+              : "",
+        },
+        ...replayTailReconciliationMessages.slice(-retainedTailCount),
+      ];
+      const compactedSections: readonly PromptBudgetSection[] = [
+        "memory_working",
+        ...replayTailSections.slice(-retainedTailCount),
+      ];
+      const nextMessages = [
+        ...input.callMessages.slice(0, replayTailStartIndex),
+        ...compacted.history,
+      ];
+      const nextReconciliationMessages = [
+        ...(input.callReconciliationMessages ?? ctx.reconciliationMessages).slice(
+          0,
+          replayTailStartIndex,
+        ),
+        ...compactedReconciliationMessages,
+      ];
+      const nextSections = [
+        ...(input.callSections ?? ctx.messageSections).slice(
+          0,
+          replayTailStartIndex,
+        ),
+        ...compactedSections,
+      ];
+      ctx.messages = [...nextMessages];
+      ctx.reconciliationMessages = [...nextReconciliationMessages];
+      ctx.messageSections = [...nextSections];
+      ctx.compacted = true;
+      ctx.compactedArtifactContext = compacted.artifactContext;
+      this.resetSessionTokens(ctx.sessionId);
+      return {
+        callMessages: ctx.messages,
+        callReconciliationMessages: ctx.reconciliationMessages,
+        callSections: ctx.messageSections,
+        statefulHistoryCompacted: true,
+      };
+    } catch (error) {
+      if (compactionState.hardBudgetReached) {
+        if (error instanceof ChatBudgetExceededError) {
+          throw error;
+        }
+        throw new ChatBudgetExceededError(
+          ctx.sessionId,
+          compactionState.used,
+          this.sessionTokenBudget!,
+        );
+      }
+      if (cooldownSnapshot) {
+        this.cooldowns.clear();
+        for (const [providerName, cooldown] of cooldownSnapshot.entries()) {
+          this.cooldowns.set(providerName, cooldown);
+        }
+      }
+      return {
+        callMessages: input.callMessages,
+        callReconciliationMessages: input.callReconciliationMessages,
+        callSections: input.callSections,
+        statefulHistoryCompacted,
+      };
+    }
+  }
+
+  private findInFlightCompactionTailStartIndex(
+    messages: readonly LLMMessage[],
+    sections?: readonly PromptBudgetSection[],
+  ): number {
+    for (let index = messages.length - 1; index >= 0; index--) {
+      if (
+        sections?.[index] === "user" ||
+        messages[index]?.role === "user"
+      ) {
+        return index + 1;
+      }
+    }
+    return messages.length;
   }
 
   private recordOutcomeAndFinalize(ctx: ExecutionContext): {
@@ -2814,6 +3059,7 @@ export class ChatExecutor {
       reconciliationMessages?: readonly LLMMessage[];
       routedToolNames?: readonly string[];
       toolChoice?: LLMToolChoice;
+      parallelToolCalls?: boolean;
       requestDeadlineAt?: number;
       signal?: AbortSignal;
       trace?: ChatExecuteParams["trace"];
@@ -2865,19 +3111,56 @@ export class ChatExecutor {
     const isSkillInjector = "inject" in provider;
     const providerKind = isSkillInjector ? "skill" : "memory";
     try {
+      const detailedSkillResult =
+        providerKind === "skill" && isDetailedSkillInjector(provider)
+          ? await provider.injectDetailed(message, sessionId)
+          : undefined;
       const detailedMemoryResult =
         providerKind === "memory" && isDetailedMemoryRetriever(provider)
           ? await provider.retrieveDetailed(message, sessionId)
           : undefined;
+      const sectionMaxChars = this.getContextSectionMaxChars(section);
       const context =
-        isSkillInjector
-          ? await provider.inject(message, sessionId)
+        providerKind === "skill"
+          ? (detailedSkillResult?.content ??
+            await (provider as SkillInjector).inject(message, sessionId))
           : (detailedMemoryResult?.content ??
             await (provider as MemoryRetriever).retrieve(message, sessionId));
-      const sectionMaxChars = this.getContextSectionMaxChars(section);
-      const truncatedContext = typeof context === "string" && context.length > 0
+      const hasDetailedSkillSplit =
+        providerKind === "skill" &&
+        (typeof detailedSkillResult?.trustedContent === "string" ||
+          typeof detailedSkillResult?.untrustedContent === "string");
+      const truncatedTrustedContext =
+        providerKind === "skill" &&
+          typeof detailedSkillResult?.trustedContent === "string" &&
+          detailedSkillResult.trustedContent.length > 0
+          ? truncateText(detailedSkillResult.trustedContent, sectionMaxChars)
+          : undefined;
+      const truncatedUntrustedContext =
+        providerKind === "skill" &&
+          typeof detailedSkillResult?.untrustedContent === "string" &&
+          detailedSkillResult.untrustedContent.length > 0
+          ? truncateText(detailedSkillResult.untrustedContent, sectionMaxChars)
+          : undefined;
+      const truncatedContext = (!hasDetailedSkillSplit) &&
+          typeof context === "string" &&
+          context.length > 0
         ? truncateText(context, sectionMaxChars)
         : undefined;
+      if (truncatedTrustedContext) {
+        messages.push({
+          role: "system",
+          content: truncatedTrustedContext,
+        });
+        sections.push(section);
+      }
+      if (truncatedUntrustedContext) {
+        messages.push({
+          role: "user",
+          content: truncatedUntrustedContext,
+        });
+        sections.push("user");
+      }
       if (truncatedContext) {
         messages.push({
           role: "system",
@@ -2885,6 +3168,10 @@ export class ChatExecutor {
         });
         sections.push(section);
       }
+      const injectedChars =
+        (truncatedTrustedContext?.length ?? 0) +
+        (truncatedUntrustedContext?.length ?? 0) +
+        (truncatedContext?.length ?? 0);
       this.emitExecutionTrace(ctx, {
         type: "context_injected",
         phase: "initial",
@@ -2892,11 +3179,25 @@ export class ChatExecutor {
         payload: {
           providerKind,
           section,
-          injected: Boolean(truncatedContext),
+          injected: Boolean(
+            truncatedTrustedContext ||
+              truncatedUntrustedContext ||
+              truncatedContext,
+          ),
           originalChars: typeof context === "string" ? context.length : 0,
-          injectedChars: typeof truncatedContext === "string"
-            ? truncatedContext.length
-            : 0,
+          injectedChars,
+          ...(detailedSkillResult
+            ? {
+                trustedOriginalChars:
+                  detailedSkillResult.trustedContent?.length ?? 0,
+                trustedInjectedChars:
+                  truncatedTrustedContext?.length ?? 0,
+                untrustedOriginalChars:
+                  detailedSkillResult.untrustedContent?.length ?? 0,
+                untrustedInjectedChars:
+                  truncatedUntrustedContext?.length ?? 0,
+              }
+            : {}),
           ...(detailedMemoryResult
             ? {
                 curatedIncluded: detailedMemoryResult.curatedIncluded ?? false,
@@ -3110,8 +3411,10 @@ export class ChatExecutor {
     sessionId: string,
     trace?: ChatExecuteParams["trace"],
     existingArtifactContext?: ArtifactCompactionState,
+    keepTailCount?: number,
   ): Promise<{ history: readonly LLMMessage[]; artifactContext?: ArtifactCompactionState }> {
-    if (history.length <= 5) {
+    const effectiveKeepTailCount = Math.max(1, keepTailCount ?? 5);
+    if (history.length <= effectiveKeepTailCount) {
       return {
         history: [...history],
         artifactContext: existingArtifactContext,
@@ -3119,7 +3422,7 @@ export class ChatExecutor {
     }
 
     let narrativeSummary: string | undefined;
-    const toSummarize = history.slice(0, history.length - 5);
+    const toSummarize = history.slice(0, history.length - effectiveKeepTailCount);
     let historyText = toSummarize
       .map((message) => {
         const content =
@@ -3141,7 +3444,9 @@ export class ChatExecutor {
           {
             role: "system",
             content:
-              "Summarize only the durable task state from this history. Preserve key decisions, important tool outcomes, current artifacts, and unresolved work. Omit pleasantries.",
+              "Summarize only the durable task state from this history. Preserve key decisions, important tool outcomes, current artifacts, explicit blockers, and unfinished implementation or verification work. " +
+              "If the history contains stubs, placeholders, partial work, denied commands, or anything still needing verification, list that as unresolved work. " +
+              "Never say there is no unresolved work unless the history explicitly shows final completion and verification closure. Omit pleasantries.",
           },
           { role: "user", content: historyText },
         ],
@@ -3155,6 +3460,9 @@ export class ChatExecutor {
                 callPhase: "compaction" as const,
               }
             : {}),
+          routedToolNames: [],
+          toolChoice: "none",
+          parallelToolCalls: false,
         },
       );
       narrativeSummary = compactResponse.response.content.trim() || undefined;
@@ -3165,7 +3473,7 @@ export class ChatExecutor {
     const compacted = compactHistoryIntoArtifactContext({
       sessionId,
       history,
-      keepTailCount: 5,
+      keepTailCount: effectiveKeepTailCount,
       source: "executor_compaction",
       existingState: existingArtifactContext,
       ...(narrativeSummary ? { narrativeSummary } : {}),

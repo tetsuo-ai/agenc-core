@@ -43,8 +43,13 @@ import type { ImplementationCompletionContract } from "../workflow/completion-co
 import type { WorkflowCompletionState } from "../workflow/completion-state.js";
 import type { WorkflowProgressSnapshot } from "../workflow/completion-progress.js";
 import type {
+  WorkflowArtifactRelation,
+  WorkflowStepRole,
+} from "../workflow/execution-envelope.js";
+import type {
   WorkflowVerificationContract,
 } from "../workflow/verification-obligations.js";
+import type { PlannerVerifierIssueCode } from "../workflow/cleanup-mode.js";
 import type { DelegationDecision, DelegationDecisionConfig } from "./delegation-decision.js";
 import type { DelegationExecutionContext } from "../utils/delegation-execution-context.js";
 import type {
@@ -100,9 +105,19 @@ export class ChatBudgetExceededError extends RuntimeError {
 // Injection interfaces
 // ============================================================================
 
+export interface DetailedSkillInjectionResult {
+  readonly content: string | undefined;
+  readonly trustedContent?: string;
+  readonly untrustedContent?: string;
+}
+
 /** Injects skill context into a conversation. */
 export interface SkillInjector {
   inject(message: string, sessionId: string): Promise<string | undefined>;
+  injectDetailed?(
+    message: string,
+    sessionId: string,
+  ): Promise<DetailedSkillInjectionResult>;
 }
 
 /** Retrieves memory context for a conversation. */
@@ -574,8 +589,38 @@ export interface PlannerSubAgentTaskStepIntent extends PlannerStepBaseIntent {
   requiredToolCapabilities: readonly string[];
   contextRequirements: readonly string[];
   executionContext?: DelegationExecutionContext;
+  workflowStep?: WorkflowStepContract;
   maxBudgetHint: string;
   canRunParallel: boolean;
+}
+
+export type WorkflowContractClass =
+  | "artifact_review_and_rewrite"
+  | "implementation_with_verification"
+  | "read_only_review"
+  | "validation_only"
+  | "research_and_synthesis";
+
+export interface WorkflowStepContract {
+  readonly name: string;
+  readonly role: WorkflowStepRole;
+  readonly objective: string;
+  readonly inputContract: string;
+  readonly acceptanceCriteria: readonly string[];
+  readonly requiredToolCapabilities: readonly string[];
+  readonly contextRequirements: readonly string[];
+  readonly executionContext?: DelegationExecutionContext;
+  readonly artifactRelations: readonly WorkflowArtifactRelation[];
+}
+
+export interface WorkflowContract {
+  readonly workflowClass: WorkflowContractClass;
+  readonly steps: readonly WorkflowStepContract[];
+  readonly requiredChildren?: {
+    readonly cardinality: number;
+    readonly roles: readonly WorkflowStepRole[];
+    readonly exactNames?: readonly string[];
+  };
 }
 
 export interface PlannerVerifierWorkItem {
@@ -585,6 +630,8 @@ export interface PlannerVerifierWorkItem {
   readonly inputContract: string;
   readonly acceptanceCriteria: readonly string[];
   readonly requiredToolCapabilities: readonly string[];
+  readonly workflowStep: WorkflowStepContract;
+  readonly workflowContract?: WorkflowContract;
   readonly resultStepNames?: readonly string[];
   readonly verificationContract?: WorkflowVerificationContract;
 }
@@ -596,6 +643,7 @@ export type PlannerWorkflowTaskClassification =
 
 export interface PlannerWorkflowAdmission {
   readonly taskClassification: PlannerWorkflowTaskClassification;
+  readonly workflowContract?: WorkflowContract;
   readonly verificationContract?: WorkflowVerificationContract;
   readonly completionContract?: ImplementationCompletionContract;
   readonly verifierWorkItems: readonly PlannerVerifierWorkItem[];
@@ -620,6 +668,7 @@ export interface PlannerPlan {
   confidence?: number;
   steps: PlannerStepIntent[];
   edges: readonly WorkflowGraphEdge[];
+  workflowContract?: WorkflowContract;
 }
 
 export interface PlannerParseResult {
@@ -630,6 +679,7 @@ export interface PlannerParseResult {
 export interface PlannerGraphValidationConfig {
   readonly maxSubagentFanout: number;
   readonly maxSubagentDepth: number;
+  readonly workspaceRoot?: string;
 }
 
 export type SubagentVerifierStepVerdict = "pass" | "retry" | "fail";
@@ -639,7 +689,7 @@ export interface SubagentVerifierStepAssessment {
   readonly verdict: SubagentVerifierStepVerdict;
   readonly confidence: number;
   readonly retryable: boolean;
-  readonly issues: readonly string[];
+  readonly issues: readonly PlannerVerifierIssueCode[];
   readonly summary: string;
 }
 
@@ -824,6 +874,7 @@ export interface ExecutionContext {
   evaluation?: EvaluationResult;
   finalContent: string;
   compacted: boolean;
+  compactedArtifactContext?: ArtifactCompactionState;
   stopReason: LLMPipelineStopReason;
   completionState: WorkflowCompletionState;
   stopReasonDetail?: string;
@@ -975,6 +1026,7 @@ export function buildDefaultExecutionContext(
     evaluation: undefined,
     finalContent: "",
     compacted: params.compacted,
+    compactedArtifactContext: params.stateful?.artifactContext,
     stopReason: "completed",
     completionState: "completed",
     stopReasonDetail: undefined,

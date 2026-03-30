@@ -52,8 +52,11 @@ import {
   buildExplicitSubagentOrchestrationFailureMessage,
   extractRecoverablePlannerParseDiagnostics,
   isHighRiskSubagentPlan,
+  extractPlannerArtifactTargets,
   plannerRequestImplementsFromArtifact,
   pipelineResultToToolCalls,
+  buildPlannerWorkflowContract,
+  buildPlannerWorkflowStepContract,
 } from "./chat-executor-planner.js";
 import { normalizePlannerResponse } from "./chat-executor-planner-normalization.js";
 import {
@@ -88,16 +91,19 @@ import {
 } from "./runtime-limit-policy.js";
 import type { LLMPipelineStopReason } from "./policy.js";
 import type { LLMResponse } from "./types.js";
+import { createExecutionEnvelope } from "../workflow/execution-envelope.js";
 import { resolveRequiredSubagentVerificationStepNames } from "../workflow/subagent-orchestration-requirements.js";
 import {
   summarizeToolCalls,
   generateFallbackContent,
   truncateText,
 } from "./chat-executor-text.js";
+import { classifyLLMFailure } from "./errors.js";
 
 const DOC_ONLY_ARTIFACT_RE = /\.(?:md|mdx|txt|rst|adoc)$/i;
 const DOC_ONLY_BASENAME_RE =
   /(?:^|\/)(?:README|CHANGELOG|CONTRIBUTING|LICENSE|COPYING|NOTES|AGENTS|AGENC|PLAN|TASK_BREAKDOWN)(?:\.[^/]+)?$/i;
+const PLANNER_SYNTHESIS_TOOL_BLOCK_RE = /```tool:\s*([^\s`]+)[\s\S]*?```/gi;
 
 // ============================================================================
 // Dependencies interface
@@ -169,6 +175,34 @@ function isDocOnlyPlannerArtifact(path: string): boolean {
   return DOC_ONLY_ARTIFACT_RE.test(path) || DOC_ONLY_BASENAME_RE.test(path);
 }
 
+function extractClaimedToolBlockNames(content: string): readonly string[] {
+  const claimedNames = new Set<string>();
+  for (const match of content.matchAll(PLANNER_SYNTHESIS_TOOL_BLOCK_RE)) {
+    const toolName = match[1]?.trim();
+    if (toolName) {
+      claimedNames.add(toolName);
+    }
+  }
+  return [...claimedNames];
+}
+
+function resolvePlannerSynthesisToolMarkupMismatch(input: {
+  readonly content: string;
+  readonly toolCalls: readonly ToolCallRecord[];
+}): readonly string[] {
+  const claimedToolNames = extractClaimedToolBlockNames(input.content);
+  if (claimedToolNames.length === 0) {
+    return [];
+  }
+  const executedToolNames = new Set(
+    input.toolCalls
+      .filter((toolCall) => !toolCall.isError)
+      .map((toolCall) => toolCall.name.trim())
+      .filter((toolName) => toolName.length > 0),
+  );
+  return claimedToolNames.filter((toolName) => !executedToolNames.has(toolName));
+}
+
 function resolvePlannerWorkspaceRoot(
   ctx: ExecutionContext,
   config: PlannerExecutionConfig,
@@ -201,14 +235,7 @@ function shouldBlockPlannerImplementationFallback(
       artifactPaths.length > 0 &&
       artifactPaths.every((path) => isDocOnlyPlannerArtifact(path));
     const childOwnsDocArtifactWrite =
-      docOnlyArtifacts &&
-      (
-        executionContext?.stepKind === "delegated_write" ||
-        executionContext?.verificationMode === "mutation_required" ||
-        executionContext?.effectClass === "filesystem_write" ||
-        executionContext?.effectClass === "filesystem_scaffold" ||
-        Boolean(executionContext?.completionContract)
-      );
+      docOnlyArtifacts && stepOwnsWriteArtifacts(step);
     if (docOnlyArtifacts && !childOwnsDocArtifactWrite) {
       return false;
     }
@@ -243,6 +270,8 @@ function shouldBlockPlannerImplementationFallback(
     }
 
     return (
+      stepOwnsWriteArtifacts(step) ||
+      step.workflowStep?.role === "validator" ||
       executionContext?.verificationMode === "mutation_required" ||
       executionContext?.verificationMode === "deterministic_followup" ||
       executionContext?.stepKind === "delegated_write" ||
@@ -309,19 +338,19 @@ function canRefinePlannerDelegationVeto(reason: string): boolean {
 function buildPlannerDelegationVetoRefinementHint(reason: string): string {
   if (reason === "shared_artifact_writer_inline") {
     return (
-      "The previous plan gave multiple delegated steps mutable or verification authority over the same workspace root. " +
-      "Re-emit a single-owner execution contract: one mutable implementation owner for the repo root, optional bounded read-only grounding before it, and deterministic verification/build/test steps after it unless a later delegated step owns disjoint artifacts."
+      "The previous plan gave multiple delegated steps mutable ownership of the same artifact scope. " +
+      "Re-emit a relation-aware execution contract: optional bounded read-only reviewers or grounding steps may share the source artifact, but exactly one delegated step may hold `write_owner` authority for a given artifact scope unless a later delegated step owns disjoint artifacts."
     );
   }
   if (reason === "score_below_threshold") {
     return (
       "The previous delegated plan was not strong enough to justify multiple child owners. " +
-      "Re-emit a smaller plan with one implementation owner and deterministic verification around it."
+      "Re-emit a smaller plan with one `write_owner` implementation step and deterministic verification around it."
     );
   }
   return (
     `Runtime delegation admission rejected the previous implementation plan (${reason}). ` +
-    "Re-emit a valid single-owner execution contract with explicit artifact ownership and deterministic verification around the implementation owner."
+    "Re-emit a valid relation-aware execution contract with explicit artifact ownership and deterministic verification around the implementation owner."
   );
 }
 
@@ -430,6 +459,272 @@ function plannerAlreadyMutatesFiles(plannerPlan: PlannerPlan): boolean {
   );
 }
 
+function extractPlannerReadDependencyArtifacts(
+  plannerPlan: PlannerPlan,
+): readonly string[] {
+  const artifacts = new Set<string>();
+  for (const step of plannerPlan.steps) {
+    if (
+      step.stepType === "deterministic_tool" &&
+      step.tool === "system.readFile" &&
+      typeof step.args.path === "string" &&
+      step.args.path.trim().length > 0
+    ) {
+      artifacts.add(step.args.path.trim());
+    }
+  }
+  return [...artifacts];
+}
+
+function canRuntimeRepairImplementFromArtifactPlan(params: {
+  readonly plannerPlan: PlannerPlan;
+  readonly diagnostics: readonly PlannerDiagnostic[];
+  readonly messageText: string;
+  readonly workspaceRoot: string | undefined;
+}): boolean {
+  if (!plannerRequestImplementsFromArtifact(params.messageText)) {
+    return false;
+  }
+  if (!params.workspaceRoot) {
+    return false;
+  }
+  if (params.diagnostics.length === 0) {
+    return false;
+  }
+  if (
+    !params.diagnostics.every((diagnostic) =>
+      diagnostic.code === "planner_implementation_missing_mutation_path"
+    )
+  ) {
+    return false;
+  }
+  if (params.plannerPlan.steps.some((step) => step.stepType === "subagent_task")) {
+    return false;
+  }
+  if (plannerAlreadyMutatesFiles(params.plannerPlan)) {
+    return false;
+  }
+  return params.plannerPlan.steps.every((step) => {
+    if (step.stepType !== "deterministic_tool") {
+      return false;
+    }
+    return (
+      step.tool === "system.readFile" ||
+      step.tool === "system.listDir" ||
+      step.tool === "system.stat"
+    );
+  });
+}
+
+function buildSingleOwnerImplementFromArtifactPlan(params: {
+  readonly messageText: string;
+  readonly workspaceRoot: string;
+  readonly reason: string;
+  readonly requiredSourceArtifacts: readonly string[];
+  readonly readStepNames?: readonly string[];
+  readonly confidence?: number;
+}): PlannerPlan | undefined {
+  const requiredSourceArtifacts =
+    params.requiredSourceArtifacts.length > 0
+      ? [...new Set(params.requiredSourceArtifacts)]
+      : ["PLAN.md"];
+  const executionContext = createExecutionEnvelope({
+    workspaceRoot: params.workspaceRoot,
+    allowedReadRoots: [params.workspaceRoot],
+    allowedWriteRoots: [params.workspaceRoot],
+    allowedTools: [
+      "system.readFile",
+      "system.writeFile",
+      "system.bash",
+    ],
+    requiredSourceArtifacts,
+    targetArtifacts: [params.workspaceRoot],
+    effectClass: "filesystem_write",
+    verificationMode: "mutation_required",
+    stepKind: "delegated_write",
+    role: "writer",
+    artifactRelations: [
+      ...requiredSourceArtifacts.map((artifactPath) => ({
+        relationType: "read_dependency" as const,
+        artifactPath,
+      })),
+      {
+        relationType: "write_owner" as const,
+        artifactPath: params.workspaceRoot,
+      },
+    ],
+    fallbackPolicy: "fail_request",
+    resumePolicy: "stateless_retry",
+    approvalProfile: "filesystem_write",
+  });
+  if (!executionContext) {
+    return undefined;
+  }
+  const objectiveSource = truncateText(params.messageText.trim(), 240);
+  const writerBaseStep: PlannerSubAgentTaskStepIntent = {
+    name: "implement_owner",
+    stepType: "subagent_task",
+    objective:
+      objectiveSource.length > 0
+        ? `Execute this implementation request inside the workspace: ${objectiveSource}`
+        : "Implement the requested planning-artifact phases inside the workspace and verify the result before finishing.",
+    inputContract:
+      "Use the planning artifact plus the current workspace to perform the requested implementation end to end. Do not stop at analysis only.",
+    acceptanceCriteria: [
+      "Workspace files are updated to satisfy the requested implementation phases.",
+      "Grounded verification runs before completion, and passing or failing commands are reported concretely.",
+      "If a blocker prevents completion, report the concrete blocker with evidence instead of returning an analysis-only summary.",
+    ],
+    requiredToolCapabilities: [
+      "system.readFile",
+      "system.writeFile",
+      "system.bash",
+    ],
+    contextRequirements:
+      (params.readStepNames?.length ?? 0) > 0
+        ? params.readStepNames!
+        : requiredSourceArtifacts.length > 0
+          ? ["planning_artifact_context"]
+          : ["workspace_context"],
+    executionContext,
+    maxBudgetHint: "30m",
+    canRunParallel: false,
+    ...((params.readStepNames?.length ?? 0) > 0
+      ? { dependsOn: params.readStepNames }
+      : {}),
+  };
+  const writerStep: PlannerSubAgentTaskStepIntent = {
+    ...writerBaseStep,
+    workflowStep: buildPlannerWorkflowStepContract(writerBaseStep),
+  };
+  return {
+    reason: params.reason,
+    requiresSynthesis: false,
+    confidence: params.confidence,
+    steps: [writerStep],
+    edges: [],
+    workflowContract: buildPlannerWorkflowContract({
+      steps: [writerStep],
+    }),
+  };
+}
+
+function buildRuntimeRepairedImplementFromArtifactPlan(params: {
+  readonly plannerPlan: PlannerPlan;
+  readonly messageText: string;
+  readonly workspaceRoot: string;
+}): PlannerPlan | undefined {
+  const requestedArtifacts = extractPlannerArtifactTargets(params.messageText);
+  const readDependencyArtifacts = extractPlannerReadDependencyArtifacts(
+    params.plannerPlan,
+  );
+  const requiredSourceArtifacts = [
+    ...new Set([...requestedArtifacts, ...readDependencyArtifacts]),
+  ];
+  const readStepNames = params.plannerPlan.steps
+    .filter(
+      (step): step is PlannerDeterministicToolStepIntent =>
+        step.stepType === "deterministic_tool" && step.tool === "system.readFile",
+    )
+    .map((step) => step.name);
+  const repairedPlan = buildSingleOwnerImplementFromArtifactPlan({
+    messageText: params.messageText,
+    workspaceRoot: params.workspaceRoot,
+    reason: "runtime_repaired_single_owner_plan_artifact_execution",
+    requiredSourceArtifacts,
+    readStepNames,
+    confidence: params.plannerPlan.confidence,
+  });
+  if (!repairedPlan) {
+    return undefined;
+  }
+  return {
+    ...repairedPlan,
+    steps: [
+      ...params.plannerPlan.steps.filter((step) => step.stepType !== "synthesis"),
+      ...repairedPlan.steps,
+    ],
+    edges: [
+      ...params.plannerPlan.edges,
+      ...readStepNames.map((stepName) => ({
+        from: stepName,
+        to: repairedPlan.steps[0]!.name,
+      })),
+    ].filter(
+      (edge, index, edges) =>
+        edges.findIndex((candidate) =>
+          candidate.from === edge.from && candidate.to === edge.to
+        ) === index,
+    ),
+  };
+}
+
+function canRuntimeRepairPlannerProviderFailure(params: {
+  readonly messageText: string;
+  readonly workspaceRoot: string | undefined;
+  readonly failureClass: ReturnType<typeof classifyLLMFailure>;
+}): boolean {
+  if (!params.workspaceRoot) {
+    return false;
+  }
+  if (!plannerRequestImplementsFromArtifact(params.messageText)) {
+    return false;
+  }
+  return (
+    params.failureClass === "provider_error" ||
+    params.failureClass === "timeout" ||
+    params.failureClass === "rate_limited"
+  );
+}
+
+function buildRuntimeRepairedPlannerProviderFailurePlan(params: {
+  readonly messageText: string;
+  readonly workspaceRoot: string;
+}): PlannerPlan | undefined {
+  return buildSingleOwnerImplementFromArtifactPlan({
+    messageText: params.messageText,
+    workspaceRoot: params.workspaceRoot,
+    reason: "runtime_repaired_single_owner_planner_unavailable_execution",
+    requiredSourceArtifacts: extractPlannerArtifactTargets(params.messageText),
+    confidence: 0.25,
+  });
+}
+
+function stepWriteOwnerTargets(
+  step: PlannerSubAgentTaskStepIntent,
+): readonly string[] {
+  const typedTargets = (step.workflowStep?.artifactRelations ?? [])
+    .filter((relation) => relation.relationType === "write_owner")
+    .map((relation) => relation.artifactPath);
+  if (typedTargets.length > 0) {
+    return typedTargets;
+  }
+  return step.executionContext?.targetArtifacts ?? [];
+}
+
+function stepOwnsWriteArtifacts(
+  step: PlannerSubAgentTaskStepIntent,
+): boolean {
+  if (step.workflowStep?.role === "writer") {
+    return stepWriteOwnerTargets(step).length > 0;
+  }
+  if (
+    (step.workflowStep?.artifactRelations ?? []).some((relation) =>
+      relation.relationType === "write_owner"
+    )
+  ) {
+    return true;
+  }
+  const executionContext = step.executionContext;
+  return (
+    executionContext?.verificationMode === "mutation_required" ||
+    executionContext?.stepKind === "delegated_write" ||
+    executionContext?.stepKind === "delegated_scaffold" ||
+    executionContext?.effectClass === "filesystem_write" ||
+    executionContext?.effectClass === "filesystem_scaffold"
+  ) && (executionContext?.targetArtifacts?.length ?? 0) > 0;
+}
+
 function plannerHasChildOwnedWriteTarget(
   plannerPlan: PlannerPlan,
   requestedWriteTarget: string | undefined,
@@ -438,8 +733,7 @@ function plannerHasChildOwnedWriteTarget(
     return plannerPlan.steps.some(
       (step) =>
         step.stepType === "subagent_task" &&
-        step.executionContext?.verificationMode === "mutation_required" &&
-        (step.executionContext?.targetArtifacts?.length ?? 0) > 0,
+        stepOwnsWriteArtifacts(step),
     );
   }
   const normalizedTarget = normalizeToolCallTargetPath(requestedWriteTarget);
@@ -451,11 +745,11 @@ function plannerHasChildOwnedWriteTarget(
   return plannerPlan.steps.some((step) => {
     if (
       step.stepType !== "subagent_task" ||
-      step.executionContext?.verificationMode !== "mutation_required"
+      !stepOwnsWriteArtifacts(step)
     ) {
       return false;
     }
-    return (step.executionContext?.targetArtifacts ?? []).some((artifact) =>
+    return stepWriteOwnerTargets(step).some((artifact) =>
       matchesRequestedArtifactTarget(
         normalizedTarget,
         normalizedRequestedSuffix,
@@ -497,6 +791,146 @@ function normalizeToolCallTargetPath(value: unknown): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function resolveTypedRequiredSubagentOutputStepNames(params: {
+  readonly plannerPlan: PlannerPlan;
+  readonly requirements: ReturnType<
+    typeof extractExplicitSubagentOrchestrationRequirements
+  >;
+  readonly candidates: readonly PlannerSubAgentTaskStepIntent[];
+}): readonly string[] {
+  const requiredChildren = params.plannerPlan.workflowContract?.requiredChildren;
+  if (!requiredChildren) {
+    return resolveRequiredSubagentVerificationStepNames({
+      requirements: params.requirements,
+      candidates: params.candidates,
+    });
+  }
+  if ((requiredChildren.exactNames?.length ?? 0) > 0) {
+    return requiredChildren.exactNames!;
+  }
+  const typedReviewerNames = params.plannerPlan.workflowContract?.steps
+    .filter((step) => step.role === "reviewer")
+    .map((step) => step.name) ?? [];
+  if (typedReviewerNames.length > 0) {
+    return typedReviewerNames.slice(0, requiredChildren.cardinality);
+  }
+  return resolveRequiredSubagentVerificationStepNames({
+    requirements: params.requirements,
+    candidates: params.candidates,
+  });
+}
+
+function evaluatePlannerValidationState(params: {
+  readonly plannerPlan: PlannerPlan;
+  readonly messageText: string;
+  readonly workspaceRoot?: string;
+  readonly delegationConfig: PlannerExecutionConfig["delegationDecisionConfig"];
+  readonly explicitOrchestrationRequirements: ReturnType<
+    typeof extractExplicitSubagentOrchestrationRequirements
+  >;
+  readonly explicitDeterministicToolRequirements:
+    | ReturnType<typeof extractExplicitDeterministicToolRequirements>
+    | undefined;
+  readonly explicitVerificationRequirements: ReturnType<
+    typeof extractPlannerVerificationRequirements
+  >;
+  readonly explicitVerificationCommandRequirements: ReturnType<
+    typeof extractPlannerVerificationCommandRequirements
+  >;
+}): {
+  readonly graphDiagnostics: readonly PlannerDiagnostic[];
+  readonly plannerStepContractDiagnostics: readonly PlannerDiagnostic[];
+  readonly verificationRequirementDiagnostics: readonly PlannerDiagnostic[];
+  readonly structuralGraphDiagnostics: readonly PlannerDiagnostic[];
+  readonly decompositionGraphDiagnostics: readonly PlannerDiagnostic[];
+  readonly requiredOrchestrationDiagnostics: readonly PlannerDiagnostic[];
+  readonly explicitToolDiagnostics: readonly PlannerDiagnostic[];
+  readonly hasStructuralDiagnostics: boolean;
+  readonly currentValidationDiagnostics: readonly PlannerDiagnostic[];
+  readonly hasOnlyStepContractDiagnostics: boolean;
+  readonly structuralDiagnosticSignature: string;
+} {
+  const graphDiagnostics = validatePlannerGraph(
+    params.plannerPlan,
+    {
+      maxSubagentFanout: params.delegationConfig.maxFanoutPerTurn,
+      maxSubagentDepth: params.delegationConfig.maxDepth,
+      workspaceRoot: params.workspaceRoot,
+    },
+    params.explicitOrchestrationRequirements,
+  );
+  const plannerStepContractDiagnostics = validatePlannerStepContracts(
+    params.plannerPlan,
+    params.messageText,
+  );
+  const verificationRequirementDiagnostics =
+    params.explicitVerificationRequirements.length > 0 ||
+    params.explicitVerificationCommandRequirements.length > 0
+      ? validatePlannerVerificationRequirements(
+          params.plannerPlan,
+          params.explicitVerificationRequirements,
+          params.explicitVerificationCommandRequirements,
+        )
+      : [];
+  const structuralGraphDiagnostics = extractPlannerStructuralDiagnostics(
+    [
+      ...graphDiagnostics,
+      ...verificationRequirementDiagnostics,
+    ],
+  );
+  const decompositionGraphDiagnostics =
+    extractPlannerDecompositionDiagnostics(structuralGraphDiagnostics);
+  const requiredOrchestrationDiagnostics =
+    params.explicitOrchestrationRequirements
+      ? validateExplicitSubagentOrchestrationRequirements(
+          params.plannerPlan,
+          params.explicitOrchestrationRequirements,
+        )
+      : [];
+  const explicitToolDiagnostics =
+    params.explicitDeterministicToolRequirements
+      ? validateExplicitDeterministicToolRequirements(
+          params.plannerPlan,
+          params.explicitDeterministicToolRequirements,
+        )
+      : [];
+  const hasStructuralDiagnostics =
+    structuralGraphDiagnostics.length > 0 ||
+    requiredOrchestrationDiagnostics.length > 0 ||
+    explicitToolDiagnostics.length > 0;
+  const currentValidationDiagnostics = [
+    ...graphDiagnostics,
+    ...plannerStepContractDiagnostics,
+    ...verificationRequirementDiagnostics,
+    ...requiredOrchestrationDiagnostics,
+    ...explicitToolDiagnostics,
+  ];
+  const hasOnlyStepContractDiagnostics =
+    !hasStructuralDiagnostics &&
+    plannerStepContractDiagnostics.length > 0;
+  const structuralDiagnosticSignature =
+    hasStructuralDiagnostics
+      ? buildPlannerDiagnosticSignature([
+          ...structuralGraphDiagnostics,
+          ...requiredOrchestrationDiagnostics,
+          ...explicitToolDiagnostics,
+        ])
+      : "";
+  return {
+    graphDiagnostics,
+    plannerStepContractDiagnostics,
+    verificationRequirementDiagnostics,
+    structuralGraphDiagnostics,
+    decompositionGraphDiagnostics,
+    requiredOrchestrationDiagnostics,
+    explicitToolDiagnostics,
+    hasStructuralDiagnostics,
+    currentValidationDiagnostics,
+    hasOnlyStepContractDiagnostics,
+    structuralDiagnosticSignature,
+  };
 }
 
 // ============================================================================
@@ -582,18 +1016,72 @@ export async function executePlannerPath(
       },
       plannerWorkspaceRoot,
     );
-    const plannerResponse = await callbacks.callModelForPhase(ctx, {
-      phase: "planner",
-      callMessages: plannerMessages,
-      callSections: plannerSections,
-      ...(explicitPlannerToolNames
-        ? { routedToolNames: explicitPlannerToolNames }
-        : {}),
-      structuredOutput: buildPlannerStructuredOutputRequest(),
-      budgetReason:
-        "Planner pass blocked by max model recalls per request budget",
-    });
-    if (!plannerResponse) return;
+    let plannerResponse: LLMResponse | undefined;
+    let plannerParseDiagnostics: readonly PlannerDiagnostic[] = [];
+    let plannerPlan: PlannerPlan | undefined;
+    try {
+      plannerResponse = await callbacks.callModelForPhase(ctx, {
+        phase: "planner",
+        callMessages: plannerMessages,
+        callSections: plannerSections,
+        ...(explicitPlannerToolNames
+          ? { routedToolNames: explicitPlannerToolNames }
+          : {}),
+        structuredOutput: buildPlannerStructuredOutputRequest(),
+        budgetReason:
+          "Planner pass blocked by max model recalls per request budget",
+      });
+      if (!plannerResponse) return;
+
+      const plannerParse = normalizePlannerResponse({
+        content: plannerResponse.content,
+        toolCalls: plannerResponse.toolCalls,
+        structuredOutput: plannerResponse.structuredOutput,
+        repairRequirements: explicitOrchestrationRequirements,
+        plannerWorkspaceRoot,
+      });
+      plannerParseDiagnostics = plannerParse.diagnostics;
+      plannerPlan = plannerParse.plan;
+    } catch (error) {
+      const failureClass = classifyLLMFailure(error);
+      if (
+        canRuntimeRepairPlannerProviderFailure({
+          messageText: ctx.messageText,
+          workspaceRoot: plannerWorkspaceRoot,
+          failureClass,
+        })
+      ) {
+        plannerPlan = buildRuntimeRepairedPlannerProviderFailurePlan({
+          messageText: ctx.messageText,
+          workspaceRoot: plannerWorkspaceRoot!,
+        });
+        if (!plannerPlan) {
+          throw error;
+        }
+        ctx.stopReason = "completed";
+        ctx.completionState = "completed";
+        ctx.stopReasonDetail = undefined;
+        ctx.validationCode = undefined;
+        plannerParseDiagnostics = [
+          {
+            category: "policy",
+            code: "planner_runtime_repair_provider_unavailable",
+            message:
+              "Planner model was transiently unavailable; runtime promoted the request to a canonical single-owner implementation contract",
+            details: {
+              attempt: plannerAttempt,
+              failureClass,
+              providerError:
+                error instanceof Error
+                  ? truncateText(error.message, 240)
+                  : String(error),
+            },
+          },
+        ];
+      } else {
+        throw error;
+      }
+    }
 
     ctx.plannerSummaryState.plannerCalls = plannerAttempt;
     ctx.plannerSummaryState.delegationDecision = undefined;
@@ -602,16 +1090,7 @@ export async function executePlannerPath(
     ctx.plannedSynthesisSteps = 0;
     ctx.plannedFanout = 0;
     ctx.plannedDependencyDepth = 0;
-
-    const plannerParse = normalizePlannerResponse({
-      content: plannerResponse.content,
-      toolCalls: plannerResponse.toolCalls,
-      structuredOutput: plannerResponse.structuredOutput,
-      repairRequirements: explicitOrchestrationRequirements,
-      plannerWorkspaceRoot,
-    });
-    ctx.plannerSummaryState.diagnostics.push(...plannerParse.diagnostics);
-    const plannerPlan = plannerParse.plan;
+    ctx.plannerSummaryState.diagnostics.push(...plannerParseDiagnostics);
     if (!plannerPlan) {
       if (explicitOrchestrationRequirements) {
         if (
@@ -621,7 +1100,7 @@ export async function executePlannerPath(
           structuralPlannerRetriesUsed++;
           refinementHint = buildExplicitSubagentOrchestrationRefinementHint(
             explicitOrchestrationRequirements,
-            plannerParse.diagnostics,
+            plannerParseDiagnostics,
           );
           ctx.plannerSummaryState.diagnostics.push({
             category: "policy",
@@ -639,7 +1118,7 @@ export async function executePlannerPath(
             nextAttempt: plannerAttempt + 1,
             reason: "planner_required_orchestration_retry",
             routeReason: "planner_required_orchestration_unmet",
-            diagnostics: plannerParse.diagnostics,
+            diagnostics: plannerParseDiagnostics,
           });
           continue;
         }
@@ -652,7 +1131,7 @@ export async function executePlannerPath(
         );
         ctx.finalContent = buildExplicitSubagentOrchestrationFailureMessage(
           explicitOrchestrationRequirements,
-          plannerParse.diagnostics,
+          plannerParseDiagnostics,
         );
         callbacks.emitPlannerTrace(ctx, "planner_path_finished", {
           plannerCalls: plannerAttempt,
@@ -673,7 +1152,7 @@ export async function executePlannerPath(
           structuralPlannerRetriesUsed++;
           refinementHint = buildExplicitDeterministicToolRefinementHint(
             explicitDeterministicToolRequirements,
-            plannerParse.diagnostics,
+            plannerParseDiagnostics,
           );
           ctx.plannerSummaryState.diagnostics.push({
             category: "policy",
@@ -691,7 +1170,7 @@ export async function executePlannerPath(
             nextAttempt: plannerAttempt + 1,
             reason: "planner_explicit_tool_parse_retry",
             routeReason: "planner_explicit_tool_requirements_unmet",
-            diagnostics: plannerParse.diagnostics,
+            diagnostics: plannerParseDiagnostics,
           });
           continue;
         }
@@ -704,7 +1183,7 @@ export async function executePlannerPath(
         );
         ctx.finalContent = buildExplicitDeterministicToolFailureMessage(
           explicitDeterministicToolRequirements,
-          plannerParse.diagnostics,
+          plannerParseDiagnostics,
         );
         callbacks.emitPlannerTrace(ctx, "planner_path_finished", {
           plannerCalls: plannerAttempt,
@@ -719,12 +1198,12 @@ export async function executePlannerPath(
       }
       const recoverablePlannerParseDiagnostics =
         extractRecoverablePlannerParseDiagnostics(
-          plannerParse.diagnostics,
+          plannerParseDiagnostics,
         );
       if (
         recoverablePlannerParseDiagnostics.length > 0 &&
         recoverablePlannerParseDiagnostics.length ===
-          plannerParse.diagnostics.length &&
+          plannerParseDiagnostics.length &&
         plannerAttempt < maxPlannerAttempts &&
         plannerStepContractRetriesUsed < maxPlannerStepContractRetries
       ) {
@@ -812,102 +1291,50 @@ export async function executePlannerPath(
       return;
     }
 
-    const graphDiagnostics = validatePlannerGraph(
+    let validationState = evaluatePlannerValidationState({
       plannerPlan,
-      {
-        maxSubagentFanout: config.delegationDecisionConfig.maxFanoutPerTurn,
-        maxSubagentDepth: config.delegationDecisionConfig.maxDepth,
-      },
+      messageText: ctx.messageText,
+      workspaceRoot: plannerWorkspaceRoot,
+      delegationConfig: config.delegationDecisionConfig,
       explicitOrchestrationRequirements,
-    );
-    const plannerStepContractDiagnostics = validatePlannerStepContracts(
-      plannerPlan,
-      ctx.messageText,
-    );
-    const verificationRequirementDiagnostics =
-      explicitVerificationRequirements.length > 0 ||
-      explicitVerificationCommandRequirements.length > 0
-        ? validatePlannerVerificationRequirements(
-            plannerPlan,
-            explicitVerificationRequirements,
-            explicitVerificationCommandRequirements,
-          )
-        : [];
-    const structuralGraphDiagnostics = extractPlannerStructuralDiagnostics(
-      [
-        ...graphDiagnostics,
-        ...verificationRequirementDiagnostics,
-      ],
-    );
-    const decompositionGraphDiagnostics =
-      extractPlannerDecompositionDiagnostics(structuralGraphDiagnostics);
-    const requiredOrchestrationDiagnostics =
-      explicitOrchestrationRequirements
-        ? validateExplicitSubagentOrchestrationRequirements(
-            plannerPlan,
-            explicitOrchestrationRequirements,
-          )
-        : [];
-    const explicitToolDiagnostics =
-      explicitDeterministicToolRequirements
-        ? validateExplicitDeterministicToolRequirements(
-            plannerPlan,
-            explicitDeterministicToolRequirements,
-          )
-        : [];
-    const hasStructuralDiagnostics =
-      structuralGraphDiagnostics.length > 0 ||
-      requiredOrchestrationDiagnostics.length > 0 ||
-      explicitToolDiagnostics.length > 0;
-    const currentValidationDiagnostics = [
-      ...graphDiagnostics,
-      ...plannerStepContractDiagnostics,
-      ...verificationRequirementDiagnostics,
-      ...requiredOrchestrationDiagnostics,
-      ...explicitToolDiagnostics,
-    ];
-    latestPlannerValidationDiagnostics = currentValidationDiagnostics;
-    const hasOnlyStepContractDiagnostics =
-      !hasStructuralDiagnostics &&
-      plannerStepContractDiagnostics.length > 0;
-    const structuralDiagnosticSignature =
-      hasStructuralDiagnostics
-        ? buildPlannerDiagnosticSignature([
-            ...structuralGraphDiagnostics,
-            ...requiredOrchestrationDiagnostics,
-            ...explicitToolDiagnostics,
-          ])
-        : "";
+      explicitDeterministicToolRequirements,
+      explicitVerificationRequirements,
+      explicitVerificationCommandRequirements,
+    });
+    latestPlannerValidationDiagnostics =
+      validationState.currentValidationDiagnostics;
     const canUseProgressStructuralRetry =
-      hasStructuralDiagnostics &&
+      validationState.hasStructuralDiagnostics &&
       structuralPlannerRetriesUsed >= maxStructuralPlannerRetries &&
       plannerAttempt < maxPlannerAttempts &&
-      structuralDiagnosticSignature.length > 0 &&
-      !seenStructuralDiagnosticSignatures.has(structuralDiagnosticSignature);
+      validationState.structuralDiagnosticSignature.length > 0 &&
+      !seenStructuralDiagnosticSignatures.has(
+        validationState.structuralDiagnosticSignature,
+      );
     const hasOnlyDecompositionStructuralDiagnostics =
-      decompositionGraphDiagnostics.length > 0 &&
-      decompositionGraphDiagnostics.length ===
-        structuralGraphDiagnostics.length &&
-      plannerStepContractDiagnostics.length === 0 &&
-      verificationRequirementDiagnostics.length === 0 &&
-      requiredOrchestrationDiagnostics.length === 0 &&
-      explicitToolDiagnostics.length === 0;
+      validationState.decompositionGraphDiagnostics.length > 0 &&
+      validationState.decompositionGraphDiagnostics.length ===
+        validationState.structuralGraphDiagnostics.length &&
+      validationState.plannerStepContractDiagnostics.length === 0 &&
+      validationState.verificationRequirementDiagnostics.length === 0 &&
+      validationState.requiredOrchestrationDiagnostics.length === 0 &&
+      validationState.explicitToolDiagnostics.length === 0;
     const canUseDecompositionRetry =
       hasOnlyDecompositionStructuralDiagnostics &&
       decompositionPlannerRetriesUsed < maxPlannerDecompositionRetries &&
       plannerAttempt < maxPlannerAttempts;
     const shouldRefinePlan =
       (
-        structuralGraphDiagnostics.length > 0 ||
-        plannerStepContractDiagnostics.length > 0 ||
-        verificationRequirementDiagnostics.length > 0 ||
-        requiredOrchestrationDiagnostics.length > 0 ||
-        explicitToolDiagnostics.length > 0
+        validationState.structuralGraphDiagnostics.length > 0 ||
+        validationState.plannerStepContractDiagnostics.length > 0 ||
+        validationState.verificationRequirementDiagnostics.length > 0 ||
+        validationState.requiredOrchestrationDiagnostics.length > 0 ||
+        validationState.explicitToolDiagnostics.length > 0
       ) &&
       plannerAttempt < maxPlannerAttempts &&
       (
         (
-          hasOnlyStepContractDiagnostics &&
+          validationState.hasOnlyStepContractDiagnostics &&
           plannerStepContractRetriesUsed < maxPlannerStepContractRetries
         ) ||
         structuralPlannerRetriesUsed < maxStructuralPlannerRetries ||
@@ -915,26 +1342,28 @@ export async function executePlannerPath(
         canUseDecompositionRetry
       );
     if (
-      graphDiagnostics.length > 0 ||
-      plannerStepContractDiagnostics.length > 0 ||
-      verificationRequirementDiagnostics.length > 0 ||
-      requiredOrchestrationDiagnostics.length > 0 ||
-      explicitToolDiagnostics.length > 0
+      validationState.graphDiagnostics.length > 0 ||
+      validationState.plannerStepContractDiagnostics.length > 0 ||
+      validationState.verificationRequirementDiagnostics.length > 0 ||
+      validationState.requiredOrchestrationDiagnostics.length > 0 ||
+      validationState.explicitToolDiagnostics.length > 0
     ) {
-      ctx.plannerSummaryState.diagnostics.push(...graphDiagnostics);
+      ctx.plannerSummaryState.diagnostics.push(...validationState.graphDiagnostics);
       ctx.plannerSummaryState.diagnostics.push(
-        ...plannerStepContractDiagnostics,
+        ...validationState.plannerStepContractDiagnostics,
       );
       ctx.plannerSummaryState.diagnostics.push(
-        ...verificationRequirementDiagnostics,
+        ...validationState.verificationRequirementDiagnostics,
       );
       ctx.plannerSummaryState.diagnostics.push(
-        ...requiredOrchestrationDiagnostics,
+        ...validationState.requiredOrchestrationDiagnostics,
       );
-      ctx.plannerSummaryState.diagnostics.push(...explicitToolDiagnostics);
+      ctx.plannerSummaryState.diagnostics.push(
+        ...validationState.explicitToolDiagnostics,
+      );
       if (shouldRefinePlan) {
         if (
-          hasOnlyStepContractDiagnostics &&
+          validationState.hasOnlyStepContractDiagnostics &&
           plannerStepContractRetriesUsed < maxPlannerStepContractRetries
         ) {
           plannerStepContractRetriesUsed++;
@@ -943,69 +1372,69 @@ export async function executePlannerPath(
         } else if (canUseDecompositionRetry) {
           decompositionPlannerRetriesUsed++;
         }
-        if (structuralDiagnosticSignature.length > 0) {
+        if (validationState.structuralDiagnosticSignature.length > 0) {
           seenStructuralDiagnosticSignatures.add(
-            structuralDiagnosticSignature,
+            validationState.structuralDiagnosticSignature,
           );
         }
         const refinementHints: string[] = [];
-        if (structuralGraphDiagnostics.length > 0) {
+        if (validationState.structuralGraphDiagnostics.length > 0) {
           refinementHints.push(
             buildPlannerStructuralRefinementHint(
-              structuralGraphDiagnostics,
+              validationState.structuralGraphDiagnostics,
             ),
           );
         }
-        if (plannerStepContractDiagnostics.length > 0) {
+        if (validationState.plannerStepContractDiagnostics.length > 0) {
           refinementHints.push(
             buildPlannerStepContractRefinementHint(
-              plannerStepContractDiagnostics,
+              validationState.plannerStepContractDiagnostics,
             ),
           );
         }
-        if (verificationRequirementDiagnostics.length > 0) {
+        if (validationState.verificationRequirementDiagnostics.length > 0) {
           refinementHints.push(
             buildPlannerVerificationRequirementsRefinementHint(
               explicitVerificationRequirements,
-              verificationRequirementDiagnostics,
+              validationState.verificationRequirementDiagnostics,
             ),
           );
         }
-        if (requiredOrchestrationDiagnostics.length > 0) {
+        if (validationState.requiredOrchestrationDiagnostics.length > 0) {
           refinementHints.push(
             buildExplicitSubagentOrchestrationRefinementHint(
               explicitOrchestrationRequirements!,
-              requiredOrchestrationDiagnostics,
+              validationState.requiredOrchestrationDiagnostics,
             ),
           );
         }
-        if (explicitToolDiagnostics.length > 0) {
+        if (validationState.explicitToolDiagnostics.length > 0) {
           refinementHints.push(
             buildExplicitDeterministicToolRefinementHint(
               explicitDeterministicToolRequirements!,
-              explicitToolDiagnostics,
+              validationState.explicitToolDiagnostics,
             ),
           );
         }
         refinementHint = refinementHints.join(" ");
         const plannerRetryCode =
-          requiredOrchestrationDiagnostics.length > 0
+          validationState.requiredOrchestrationDiagnostics.length > 0
             ? "planner_required_orchestration_retry"
-            : explicitToolDiagnostics.length > 0
+            : validationState.explicitToolDiagnostics.length > 0
               ? "planner_explicit_tool_retry"
-              : verificationRequirementDiagnostics.length > 0
+              : validationState.verificationRequirementDiagnostics.length > 0
                 ? "planner_verification_requirements_retry"
-              : plannerStepContractDiagnostics.length > 0
+              : validationState.plannerStepContractDiagnostics.length > 0
                 ? "planner_step_contract_retry"
               : "planner_refinement_retry";
         const plannerRetryMessage =
-          requiredOrchestrationDiagnostics.length > 0
+          validationState.requiredOrchestrationDiagnostics.length > 0
             ? "Planner did not satisfy the user-required sub-agent orchestration plan; requesting a refined plan"
-            : explicitToolDiagnostics.length > 0
+            : validationState.explicitToolDiagnostics.length > 0
               ? "Planner drifted outside the explicitly requested deterministic tool contract; requesting a refined plan"
-              : verificationRequirementDiagnostics.length > 0
+              : validationState.verificationRequirementDiagnostics.length > 0
                 ? "Planner dropped one or more user-requested verification modes; requesting a refined plan"
-              : plannerStepContractDiagnostics.length > 0
+              : validationState.plannerStepContractDiagnostics.length > 0
                 ? "Planner emitted steps that violate runtime tool contracts; requesting a refined plan"
               : "Planner emitted structural delegation violations; requesting a refined plan";
         ctx.plannerSummaryState.diagnostics.push({
@@ -1024,19 +1453,73 @@ export async function executePlannerPath(
           attempt: plannerAttempt,
           nextAttempt: plannerAttempt + 1,
           reason: plannerRetryCode,
-          graphDiagnostics,
-          decompositionGraphDiagnostics,
-          plannerStepContractDiagnostics,
-          verificationRequirementDiagnostics,
+          graphDiagnostics: validationState.graphDiagnostics,
+          decompositionGraphDiagnostics:
+            validationState.decompositionGraphDiagnostics,
+          plannerStepContractDiagnostics:
+            validationState.plannerStepContractDiagnostics,
+          verificationRequirementDiagnostics:
+            validationState.verificationRequirementDiagnostics,
           requestedVerificationCategories: explicitVerificationRequirements,
           requestedVerificationCommands: explicitVerificationCommandRequirements,
-          requiredOrchestrationDiagnostics,
-          explicitToolDiagnostics,
+          requiredOrchestrationDiagnostics:
+            validationState.requiredOrchestrationDiagnostics,
+          explicitToolDiagnostics: validationState.explicitToolDiagnostics,
           decompositionRetry: canUseDecompositionRetry,
         });
         continue;
       }
-      if (requiredOrchestrationDiagnostics.length > 0) {
+      const repairedPlannerPlan = canRuntimeRepairImplementFromArtifactPlan({
+        plannerPlan,
+        diagnostics: validationState.currentValidationDiagnostics,
+        messageText: ctx.messageText,
+        workspaceRoot: plannerWorkspaceRoot,
+      })
+        ? buildRuntimeRepairedImplementFromArtifactPlan({
+            plannerPlan,
+            messageText: ctx.messageText,
+            workspaceRoot: plannerWorkspaceRoot!,
+          })
+        : undefined;
+      if (repairedPlannerPlan) {
+        const repairedFromStepCount = plannerPlan.steps.length;
+        plannerPlan = repairedPlannerPlan;
+        ctx.plannerSummaryState.diagnostics.push({
+          category: "policy",
+          code: "planner_runtime_repair_single_owner_contract",
+          message:
+            "Planner collapsed an implement-from-artifact request into read-only inspection; runtime promoted it to a canonical single-owner implementation contract",
+          details: {
+            attempt: plannerAttempt,
+            repairedFromStepCount,
+            repairedToStepCount: repairedPlannerPlan.steps.length,
+            ...(plannerWorkspaceRoot
+              ? { workspaceRoot: plannerWorkspaceRoot }
+              : {}),
+          },
+        });
+        validationState = evaluatePlannerValidationState({
+          plannerPlan,
+          messageText: ctx.messageText,
+          workspaceRoot: plannerWorkspaceRoot,
+          delegationConfig: config.delegationDecisionConfig,
+          explicitOrchestrationRequirements,
+          explicitDeterministicToolRequirements,
+          explicitVerificationRequirements,
+          explicitVerificationCommandRequirements,
+        });
+        latestPlannerValidationDiagnostics =
+          validationState.currentValidationDiagnostics;
+        if (
+          validationState.currentValidationDiagnostics.length === 0 &&
+          plannerPlan.reason
+        ) {
+          ctx.plannerSummaryState.routeReason = plannerPlan.reason;
+        }
+      }
+      if (validationState.currentValidationDiagnostics.length === 0) {
+        latestPlannerValidationDiagnostics = [];
+      } else if (validationState.requiredOrchestrationDiagnostics.length > 0) {
         ctx.plannerSummaryState.routeReason =
           "planner_required_orchestration_unmet";
         callbacks.setStopReason(
@@ -1046,7 +1529,7 @@ export async function executePlannerPath(
         );
         ctx.finalContent = buildExplicitSubagentOrchestrationFailureMessage(
           explicitOrchestrationRequirements!,
-          requiredOrchestrationDiagnostics,
+          validationState.requiredOrchestrationDiagnostics,
         );
         callbacks.emitPlannerTrace(ctx, "planner_path_finished", {
           plannerCalls: plannerAttempt,
@@ -1058,8 +1541,7 @@ export async function executePlannerPath(
         });
         ctx.plannerHandled = true;
         return;
-      }
-      if (verificationRequirementDiagnostics.length > 0) {
+      } else if (validationState.verificationRequirementDiagnostics.length > 0) {
         ctx.plannerSummaryState.routeReason =
           "planner_verification_requirements_unmet";
         callbacks.setStopReason(
@@ -1070,7 +1552,7 @@ export async function executePlannerPath(
         ctx.finalContent =
           buildPlannerVerificationRequirementsFailureMessage(
             explicitVerificationRequirements,
-            verificationRequirementDiagnostics,
+            validationState.verificationRequirementDiagnostics,
           );
         callbacks.emitPlannerTrace(ctx, "planner_path_finished", {
           plannerCalls: plannerAttempt,
@@ -1082,8 +1564,7 @@ export async function executePlannerPath(
         });
         ctx.plannerHandled = true;
         return;
-      }
-      if (explicitToolDiagnostics.length > 0) {
+      } else if (validationState.explicitToolDiagnostics.length > 0) {
         ctx.plannerSummaryState.routeReason =
           "planner_explicit_tool_requirements_unmet";
         callbacks.setStopReason(
@@ -1093,7 +1574,7 @@ export async function executePlannerPath(
         );
         ctx.finalContent = buildExplicitDeterministicToolFailureMessage(
           explicitDeterministicToolRequirements!,
-          explicitToolDiagnostics,
+          validationState.explicitToolDiagnostics,
         );
         callbacks.emitPlannerTrace(ctx, "planner_path_finished", {
           plannerCalls: plannerAttempt,
@@ -1105,11 +1586,12 @@ export async function executePlannerPath(
         });
         ctx.plannerHandled = true;
         return;
+      } else {
+        ctx.plannerSummaryState.routeReason =
+          validationState.explicitToolDiagnostics.length > 0
+            ? "planner_explicit_tool_requirements_unmet"
+            : "planner_validation_failed";
       }
-      ctx.plannerSummaryState.routeReason =
-        explicitToolDiagnostics.length > 0
-          ? "planner_explicit_tool_requirements_unmet"
-          : "planner_validation_failed";
     } else if (plannerPlan.reason) {
       ctx.plannerSummaryState.routeReason = plannerPlan.reason;
     }
@@ -1128,12 +1610,15 @@ export async function executePlannerPath(
       synthesisSteps: plannerPlan.steps.filter((step) =>
         step.stepType === "synthesis"
       ).length,
-      graphDiagnostics,
-      plannerStepContractDiagnostics,
-      verificationRequirementDiagnostics,
+      graphDiagnostics: validationState.graphDiagnostics,
+      plannerStepContractDiagnostics:
+        validationState.plannerStepContractDiagnostics,
+      verificationRequirementDiagnostics:
+        validationState.verificationRequirementDiagnostics,
       requestedVerificationCategories: explicitVerificationRequirements,
-      requiredOrchestrationDiagnostics,
-      explicitToolDiagnostics,
+      requiredOrchestrationDiagnostics:
+        validationState.requiredOrchestrationDiagnostics,
+      explicitToolDiagnostics: validationState.explicitToolDiagnostics,
       steps: plannerPlan.steps.map((step) => ({ ...step })),
       edges: plannerPlan.edges.map((edge) => ({ ...edge })),
     });
@@ -1159,7 +1644,8 @@ export async function executePlannerPath(
         step.stepType === "subagent_task",
     );
     const requiredSubagentOutputStepNames =
-      resolveRequiredSubagentVerificationStepNames({
+      resolveTypedRequiredSubagentOutputStepNames({
+        plannerPlan,
         requirements: explicitOrchestrationRequirements,
         candidates: subagentSteps,
       });
@@ -1328,6 +1814,7 @@ export async function executePlannerPath(
 
       const pipeline: Pipeline = {
         id: `planner:${ctx.sessionId}:${Date.now()}`,
+        requestTreeBudgetKey: `planner:${ctx.sessionId}:${ctx.startTime}`,
         createdAt: Date.now(),
         context: { results: {} },
         steps: deterministicSteps.map((step) => ({
@@ -1346,6 +1833,7 @@ export async function executePlannerPath(
       callbacks.emitPlannerTrace(ctx, "planner_pipeline_started", {
         attempt: plannerAttempt,
         pipelineId: pipeline.id,
+        requestTreeBudgetKey: pipeline.requestTreeBudgetKey,
         routeReason: ctx.plannerSummaryState.routeReason,
         deterministicSteps: deterministicSteps.map((step) => ({
           name: step.name,
@@ -1359,7 +1847,8 @@ export async function executePlannerPath(
       const plannerWorkflowAdmission = buildPlannerWorkflowAdmission({
         subagentSteps,
         deterministicSteps,
-        workspaceRoot: plannerExecutionContext.workspaceRoot,
+        workflowContract: plannerPlan.workflowContract,
+        workspaceRoot: plannerExecutionContext?.workspaceRoot,
         verificationContract: ctx.requiredToolEvidence?.verificationContract,
         completionContract: ctx.requiredToolEvidence?.completionContract,
         includeSubagentOutputVerification:
@@ -1398,7 +1887,8 @@ export async function executePlannerPath(
       const plannerVerifierAdmission = buildPlannerVerifierAdmission({
         subagentSteps,
         deterministicSteps,
-        workspaceRoot: plannerExecutionContext.workspaceRoot,
+        workflowContract: plannerPlan.workflowContract,
+        workspaceRoot: plannerExecutionContext?.workspaceRoot,
         verificationContract: plannerWorkflowAdmission.verificationContract,
         completionContract: plannerWorkflowAdmission.completionContract,
         includeSubagentOutputVerification:
@@ -1728,7 +2218,9 @@ export async function executePlannerPath(
             message:
               "Planner synthesis was skipped because a child-owned artifact write failed and inline materialization is not authoritative for that target",
             details: {
-              targetPath: requestedWriteTarget,
+              ...(requestedWriteTarget
+                ? { targetPath: requestedWriteTarget }
+                : {}),
               pipelineStatus: pipelineResult.status,
               stopReason: ctx.stopReason,
             },
@@ -1845,10 +2337,62 @@ export async function executePlannerPath(
                   targetPath: synthesisWriteTarget,
                 },
               });
+              callbacks.emitPlannerTrace(ctx, "planner_path_finished", {
+                plannerCalls: plannerAttempt,
+                routeReason: ctx.plannerSummaryState.routeReason,
+                stopReason: ctx.stopReason,
+                stopReasonDetail: ctx.stopReasonDetail,
+                diagnostics: ctx.plannerSummaryState.diagnostics,
+                handled: true,
+                deterministicStepsExecuted:
+                  ctx.plannerSummaryState.deterministicStepsExecuted,
+              });
+              ctx.plannerHandled = true;
               return;
             }
           }
           if (synthesisResponse) {
+            const postSynthesisToolCalls = ctx.allToolCalls.slice(
+              toolCallCountBeforeSynthesis,
+            );
+            const claimedButUnexecutedToolNames =
+              resolvePlannerSynthesisToolMarkupMismatch({
+                content: synthesisResponse.content,
+                toolCalls: postSynthesisToolCalls,
+              });
+            if (claimedButUnexecutedToolNames.length > 0) {
+              callbacks.setStopReason(
+                ctx,
+                "validation_error",
+                "Planner synthesis emitted tool-call markup that was not executed. " +
+                  "Synthesis must summarize the authoritative execution ledger instead of inventing tool invocations.",
+              );
+              ctx.finalContent =
+                "Planner synthesis emitted tool-call markup that was not executed. " +
+                `Missing executed tool calls: ${claimedButUnexecutedToolNames.join(", ")}.`;
+              ctx.plannerSummaryState.diagnostics.push({
+                category: "runtime",
+                code: "planner_synthesis_unexecuted_tool_markup",
+                message:
+                  "Planner synthesis emitted fenced tool-call markup for tool invocations that do not exist in the authoritative execution ledger",
+                details: {
+                  claimedToolNames:
+                    claimedButUnexecutedToolNames.join(", "),
+                },
+              });
+              callbacks.emitPlannerTrace(ctx, "planner_path_finished", {
+                plannerCalls: plannerAttempt,
+                routeReason: ctx.plannerSummaryState.routeReason,
+                stopReason: ctx.stopReason,
+                stopReasonDetail: ctx.stopReasonDetail,
+                diagnostics: ctx.plannerSummaryState.diagnostics,
+                handled: true,
+                deterministicStepsExecuted:
+                  ctx.plannerSummaryState.deterministicStepsExecuted,
+              });
+              ctx.plannerHandled = true;
+              return;
+            }
             ctx.response = synthesisResponse;
             ctx.finalContent = ensureSubagentProvenanceCitations(
               synthesisResponse.content,

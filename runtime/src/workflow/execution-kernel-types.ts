@@ -6,18 +6,36 @@ import type {
   PipelineResult,
   PipelineStopReasonHint,
 } from "./pipeline.js";
+import type {
+  WorkflowCompletionState,
+  WorkflowDependencyStateKind,
+  WorkflowResolutionSemantics,
+} from "./completion-state.js";
+
+export const EXECUTION_KERNEL_STEP_STATES = [
+  "queued",
+  "ready",
+  "running",
+  "blocked_on_approval",
+  "blocked_on_dependency",
+  "retry_pending",
+  "completed",
+  "failed",
+  "resumed",
+  "compensated",
+] as const;
 
 export type ExecutionKernelStepState =
-  | "queued"
-  | "ready"
-  | "running"
-  | "blocked_on_approval"
-  | "blocked_on_dependency"
-  | "retry_pending"
-  | "completed"
-  | "failed"
-  | "resumed"
-  | "compensated";
+  typeof EXECUTION_KERNEL_STEP_STATES[number];
+
+export const EXECUTION_KERNEL_NODE_OUTCOME_STATUSES = [
+  "completed",
+  "failed",
+  "halted",
+] as const;
+
+export type ExecutionKernelNodeOutcomeStatus =
+  typeof EXECUTION_KERNEL_NODE_OUTCOME_STATUSES[number];
 
 export interface ExecutionKernelStepStateChange {
   readonly type: "step_state_changed";
@@ -33,15 +51,13 @@ export interface ExecutionKernelStepStateChange {
 }
 
 export interface ExecutionKernelDependencyState {
-  readonly satisfied: boolean;
+  readonly kind: WorkflowDependencyStateKind;
+  readonly completionState: WorkflowCompletionState;
+  readonly dependencySatisfied: boolean;
+  readonly terminal: boolean;
+  readonly verifierClosed: boolean;
+  readonly semantics: WorkflowResolutionSemantics;
   readonly reason?: string;
-  readonly stopReasonHint?: PipelineStopReasonHint;
-}
-
-export interface ExecutionKernelFallbackResolution {
-  readonly satisfied: boolean;
-  readonly result: string;
-  readonly reason: string;
   readonly stopReasonHint?: PipelineStopReasonHint;
 }
 
@@ -53,7 +69,6 @@ export type ExecutionKernelNodeOutcome =
     readonly stopReasonHint?: PipelineStopReasonHint;
     readonly decomposition?: DelegationDecompositionSignal;
     readonly result?: string;
-    readonly fallback?: ExecutionKernelFallbackResolution;
   }
   | {
     readonly status: "halted";

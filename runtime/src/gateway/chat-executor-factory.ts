@@ -56,6 +56,8 @@ export interface CreateChatExecutorParams {
   onCompaction?: ChatExecutorConfig["onCompaction"];
   /** Gateway LLM config (for planner, timeout, retry, circuit breaker settings). */
   llmConfig?: GatewayLLMConfig;
+  /** Provider configs aligned 1:1 with the provider chain, including auto-added fallbacks. */
+  providerConfigs?: readonly GatewayLLMConfig[];
   /** Resolved subagent runtime config. */
   subagentConfig: ResolvedSubAgentRuntimeConfig;
   /** Callback to resolve dynamic delegation score threshold. */
@@ -104,6 +106,7 @@ export function createChatExecutor(
     providers: params.providers,
     economicsPolicy,
     llmConfig,
+    providerConfigs: params.providerConfigs,
   });
 
   return new ChatExecutor({
@@ -134,9 +137,7 @@ export function createChatExecutor(
     },
     resolveDelegationScoreThreshold: params.resolveDelegationScoreThreshold,
     subagentVerifier: {
-      enabled:
-        subagentConfig.enabled &&
-        !subagentConfig.unsafeBenchmarkMode,
+      enabled: subagentConfig.enabled,
       force: subagentConfig.forceVerifier,
     },
     delegationLearning: {

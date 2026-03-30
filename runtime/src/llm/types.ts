@@ -593,6 +593,8 @@ export interface LLMChatOptions {
   readonly stateful?: LLMChatStatefulOptions;
   readonly toolRouting?: LLMChatToolRoutingOptions;
   readonly toolChoice?: LLMToolChoice;
+  /** Per-call override for provider-native parallel tool-call policy. */
+  readonly parallelToolCalls?: boolean;
   /** Optional request-scoped structured output contract. */
   readonly structuredOutput?: LLMStructuredOutputRequest;
   /** Request encrypted reasoning content from providers that support it. */

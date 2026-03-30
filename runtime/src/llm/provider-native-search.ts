@@ -8,7 +8,10 @@ import type {
   LLMWebSearchConfig,
 } from "./types.js";
 import type { GatewayLLMConfig } from "../gateway/types.js";
-import { normalizeGrokModel } from "../gateway/context-window.js";
+import {
+  getGrokModelCapabilities,
+  normalizeGrokModel,
+} from "../gateway/context-window.js";
 
 export const PROVIDER_NATIVE_WEB_SEARCH_TOOL = "web_search";
 export const PROVIDER_NATIVE_X_SEARCH_TOOL = "x_search";
@@ -38,7 +41,6 @@ const FILE_SEARCH_CUE_RE =
 const CODE_EXECUTION_CUE_RE =
   /\b(?:calculate|calculation|compute|computation|statistical|statistics|correlation|regression|linear regression|matrix|equation|simulate|simulation|forecast|predict|prediction|t-test|anova|sharpe|dataset|csv|plot|chart|graph|visuali[sz]ation|show your working|show the working)\b/i;
 const SIGNIFICANT_TOKEN_RE = /[a-z0-9][a-z0-9_-]{2,}/gi;
-const GROK_SERVER_SIDE_TOOL_PREFIX = "grok-4";
 
 export type ProviderNativeSearchMode = "auto" | "on" | "off";
 
@@ -61,9 +63,54 @@ type ProviderNativeToolConfig = Pick<
   LLMXaiCapabilitySurface;
 
 export function supportsGrokServerSideTools(model: string | undefined): boolean {
-  const normalized = normalizeGrokModel(model)?.trim().toLowerCase();
-  if (!normalized) return true;
-  return normalized.startsWith(GROK_SERVER_SIDE_TOOL_PREFIX);
+  const normalized = normalizeGrokModel(model);
+  return getGrokModelCapabilities(normalized).supportsServerSideTools;
+}
+
+export function isProviderNativeToolName(toolName: string | undefined): boolean {
+  const normalized = toolName?.trim();
+  if (!normalized) return false;
+  return (
+    normalized === PROVIDER_NATIVE_WEB_SEARCH_TOOL ||
+    normalized === PROVIDER_NATIVE_X_SEARCH_TOOL ||
+    normalized === PROVIDER_NATIVE_CODE_INTERPRETER_TOOL ||
+    normalized === PROVIDER_NATIVE_FILE_SEARCH_TOOL ||
+    normalized.startsWith(PROVIDER_NATIVE_MCP_TOOL_PREFIX)
+  );
+}
+
+export function summarizeRequestedToolKinds(
+  toolNames: readonly string[] | undefined,
+): {
+  readonly requestedToolNames: readonly string[];
+  readonly clientToolNames: readonly string[];
+  readonly providerNativeToolNames: readonly string[];
+  readonly remoteMcpToolNames: readonly string[];
+} {
+  const requestedToolNames = (toolNames ?? [])
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  const clientToolNames: string[] = [];
+  const providerNativeToolNames: string[] = [];
+  const remoteMcpToolNames: string[] = [];
+
+  for (const toolName of requestedToolNames) {
+    if (!isProviderNativeToolName(toolName)) {
+      clientToolNames.push(toolName);
+      continue;
+    }
+    providerNativeToolNames.push(toolName);
+    if (toolName.startsWith(PROVIDER_NATIVE_MCP_TOOL_PREFIX)) {
+      remoteMcpToolNames.push(toolName);
+    }
+  }
+
+  return {
+    requestedToolNames,
+    clientToolNames,
+    providerNativeToolNames,
+    remoteMcpToolNames,
+  };
 }
 
 export function resolveProviderNativeSearchMode(
@@ -438,16 +485,5 @@ export function getProviderNativeWebSearchRoutingDecision(
 ): ProviderNativeSearchRoutingDecision | undefined {
   return getProviderNativeToolRoutingDecisions(params).find(
     (decision) => decision.toolName === PROVIDER_NATIVE_WEB_SEARCH_TOOL,
-  );
-}
-
-export function isProviderNativeToolName(toolName: string): boolean {
-  const normalized = toolName.trim();
-  return (
-    normalized === PROVIDER_NATIVE_WEB_SEARCH_TOOL ||
-    normalized === PROVIDER_NATIVE_X_SEARCH_TOOL ||
-    normalized === PROVIDER_NATIVE_CODE_INTERPRETER_TOOL ||
-    normalized === PROVIDER_NATIVE_FILE_SEARCH_TOOL ||
-    normalized.startsWith(PROVIDER_NATIVE_MCP_TOOL_PREFIX)
   );
 }

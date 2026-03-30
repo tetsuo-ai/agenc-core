@@ -184,7 +184,7 @@ export const REPLAY_CHAOS_FIXTURE: ReplayChaosFixture = {
   ],
   expected: {
     lenientProjectedCount: 8,
-    lenientEventFingerprint: '8af18aad286a6299929f9c368849084281f794e959b4e3b30212a5827e394ab9',
+    lenientEventFingerprint: '35fed0d16ad36421b0c452c210a4aac3213113daa7bce30e4239f44b9f2b85c1',
     lenientEventTypes: [
       'discovered',
       'discovered',
@@ -204,7 +204,7 @@ export const REPLAY_CHAOS_FIXTURE: ReplayChaosFixture = {
       transitionViolations: 2,
     },
     strictThrowMessage: 'Replay projection strict mode failed: task:taskCreated@SIG_MALFORMED: missing_task_id',
-    droppedClaimedEventFingerprint: '0602282e4fe843558bd45c5e02b1de6c9cb08febf93994a7290a47db8f252153',
+    droppedClaimedEventFingerprint: 'e844cdd827de9e80a28fe6d5f7a2d530aba738d6995f3bd985bed3e40f7af2c9',
     droppedClaimedEventTypes: [
       'discovered',
       'discovered',

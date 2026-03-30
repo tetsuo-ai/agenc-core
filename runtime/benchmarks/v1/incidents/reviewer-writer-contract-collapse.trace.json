@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "traceId": "orchestration:reviewer-writer-contract-collapse",
+  "seed": 201,
+  "createdAtMs": 1774410000001,
+  "metadata": {
+    "scenarioId": "reviewer_writer_contract_collapse",
+    "sourceTraceId": "synthetic:phase8:reviewer-writer-contract-collapse"
+  },
+  "events": [
+    { "seq": 1, "type": "discovered", "taskPda": "reviewer_writer_contract_collapse", "timestampMs": 1, "payload": {} },
+    { "seq": 2, "type": "claimed", "taskPda": "reviewer_writer_contract_collapse", "timestampMs": 2, "payload": {} },
+    {
+      "seq": 3,
+      "type": "executed",
+      "taskPda": "reviewer_writer_contract_collapse",
+      "timestampMs": 3,
+      "payload": {
+        "plannedReviewerCount": 6,
+        "observedReviewerCount": 1,
+        "writerSessionId": "subrun:writer:1"
+      }
+    },
+    {
+      "seq": 4,
+      "type": "policy_violation",
+      "taskPda": "reviewer_writer_contract_collapse",
+      "timestampMs": 4,
+      "payload": {
+        "code": "reviewer_writer_contract_collapse"
+      }
+    },
+    {
+      "seq": 5,
+      "type": "failed",
+      "taskPda": "reviewer_writer_contract_collapse",
+      "timestampMs": 5,
+      "payload": {
+        "error": "Required reviewer and writer contracts collapsed into one mixed-role child."
+      }
+    }
+  ]
+}

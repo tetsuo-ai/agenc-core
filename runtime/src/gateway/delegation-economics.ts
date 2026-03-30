@@ -1,30 +1,15 @@
-import { normalizeArtifactPaths } from "../workflow/path-normalization.js";
 import type { WorkflowGraphEdge } from "../workflow/types.js";
 import type { DelegationExecutionContext } from "../utils/delegation-execution-context.js";
 import { sanitizeDelegationContextRequirements } from "../utils/delegation-execution-context.js";
+import {
+  collectWorkflowArtifactRelationPaths,
+  resolveExecutionEnvelopeArtifactRelations,
+  type WorkflowArtifactRelation,
+} from "../workflow/execution-envelope.js";
+import { normalizeArtifactPaths } from "../workflow/path-normalization.js";
 
 const EXPLICIT_FILE_ARTIFACT_GLOBAL_RE =
   /(?:^|[\s`'"])(?:\/[^\s`'"]*?\.[a-z0-9]{1,10}|\.{1,2}\/[^\s`'"]*?\.[a-z0-9]{1,10}|(?:[a-z0-9_.-]+\/)+[a-z0-9_.-]+\.[a-z0-9]{1,10}|[a-z0-9_.-]+\.[a-z0-9]{1,10})(?=$|[\s`'"])/gi;
-const EXPLICIT_SCOPED_PATH_GLOBAL_RE =
-  /(?:^|[\s`'"])(?:\/[^\s`'"]+|(?:[a-z0-9_.-]+\/)+[a-z0-9_.-]+)(?=$|[\s`'"])/gi;
-const REPO_SCOPED_ROOT_SEGMENTS = new Set([
-  "packages",
-  "apps",
-  "src",
-  "tests",
-  "test",
-  "docs",
-  "scripts",
-  "crates",
-  "programs",
-  "runtime",
-  "contracts",
-  "examples",
-  "plugins",
-  "sdk",
-  "lib",
-  "bin",
-]);
 
 const READ_ONLY_CAPABILITY_RE =
   /(?:read|list|search|snapshot|navigate|inspect|find|grep|glob|browser|documentation|trace|observe)/i;
@@ -52,6 +37,7 @@ export interface DelegationCandidateStep {
 
 export interface DelegationStepAnalysis {
   readonly step: DelegationCandidateStep;
+  readonly artifactRelations: readonly WorkflowArtifactRelation[];
   readonly ownedArtifacts: readonly string[];
   readonly referencedArtifacts: readonly string[];
   readonly mutable: boolean;
@@ -103,6 +89,55 @@ function parseBudgetHintMinutes(raw: string): number {
   return value;
 }
 
+function isWriteCapability(capability: string): boolean {
+  return WRITE_CAPABILITY_RE.test(capability);
+}
+
+function isShellCapability(capability: string): boolean {
+  return SHELL_CAPABILITY_RE.test(capability);
+}
+
+function isReadCapability(capability: string): boolean {
+  return READ_ONLY_CAPABILITY_RE.test(capability);
+}
+
+function isReadOnlyEnvelope(effectClass?: DelegationExecutionContext["effectClass"]): boolean {
+  return effectClass === "read_only";
+}
+
+function hasArtifactRelationType(
+  artifactRelations: readonly WorkflowArtifactRelation[],
+  relationType: WorkflowArtifactRelation["relationType"],
+): boolean {
+  return artifactRelations.some((relation) => relation.relationType === relationType);
+}
+
+function isTypedVerificationOnlyStep(params: {
+  readonly step: DelegationCandidateStep;
+  readonly artifactRelations: readonly WorkflowArtifactRelation[];
+  readonly shellCapabilityCount: number;
+  readonly writeCapabilityCount: number;
+}): boolean {
+  const { step, artifactRelations, shellCapabilityCount, writeCapabilityCount } =
+    params;
+  const executionContext = step.executionContext;
+  if (!executionContext) return false;
+  if (hasArtifactRelationType(artifactRelations, "write_owner")) {
+    return false;
+  }
+  if (writeCapabilityCount > 0) {
+    return false;
+  }
+  if (executionContext.role !== "validator") {
+    return false;
+  }
+  return (
+    executionContext.verificationMode === "deterministic_followup" ||
+    hasArtifactRelationType(artifactRelations, "verification_subject") ||
+    shellCapabilityCount > 0
+  );
+}
+
 function extractExplicitFileArtifacts(
   segments: readonly string[],
   workspaceRoot?: string,
@@ -123,124 +158,35 @@ function extractExplicitFileArtifacts(
   return [...matches];
 }
 
-function extractExplicitScopedArtifacts(
-  segments: readonly string[],
-  workspaceRoot?: string,
-): readonly string[] {
-  const matches = new Set<string>();
-  for (const segment of segments) {
-    if (typeof segment !== "string" || segment.trim().length === 0) continue;
-    for (const match of segment.matchAll(EXPLICIT_SCOPED_PATH_GLOBAL_RE)) {
-      const normalized = match[0]?.trim().replace(/^[`'"]+|[`'"]+$/g, "")
-        .replace(/[),.;:]+$/g, "");
-      if (!normalized) continue;
-      if (!normalized.includes("/")) continue;
-      if (/^(?:https?:)?\/\//i.test(normalized)) continue;
-      if (!looksLikeScopedRepoArtifact(normalized)) continue;
-      for (const artifact of normalizeArtifactPaths([normalized], workspaceRoot)) {
-        matches.add(artifact);
-      }
-    }
-  }
-  return [...matches];
-}
-
-function looksLikeScopedRepoArtifact(value: string): boolean {
-  if (
-    value.startsWith("/") ||
-    value.startsWith("./") ||
-    value.startsWith("../")
-  ) {
-    return true;
-  }
-  const segments = value.split("/").filter((segment) => segment.length > 0);
-  if (segments.length === 0) return false;
-  const first = segments[0]!.toLowerCase();
-  if (REPO_SCOPED_ROOT_SEGMENTS.has(first)) {
-    return true;
-  }
-  return segments.some((segment) => /[._-]|\d/.test(segment));
-}
-
-function isWriteCapability(capability: string): boolean {
-  return WRITE_CAPABILITY_RE.test(capability);
-}
-
-function isShellCapability(capability: string): boolean {
-  return SHELL_CAPABILITY_RE.test(capability);
-}
-
-function isReadCapability(capability: string): boolean {
-  return READ_ONLY_CAPABILITY_RE.test(capability);
-}
-
-function isReadOnlyEnvelope(effectClass?: DelegationExecutionContext["effectClass"]): boolean {
-  return effectClass === "read_only";
+function collectArtifactRelations(
+  step: DelegationCandidateStep,
+): readonly WorkflowArtifactRelation[] {
+  return resolveExecutionEnvelopeArtifactRelations(step.executionContext);
 }
 
 function collectOwnedArtifacts(
-  step: DelegationCandidateStep,
+  artifactRelations: readonly WorkflowArtifactRelation[],
 ): readonly string[] {
-  const workspaceRoot = step.executionContext?.workspaceRoot;
-  const targetArtifacts = step.executionContext?.targetArtifacts ?? [];
-  if (targetArtifacts.length > 0) {
-    return targetArtifacts;
-  }
-
-  const explicitTextArtifacts = extractExplicitFileArtifacts(
-    [
-      step.objective ?? "",
-      step.inputContract ?? "",
-      ...step.acceptanceCriteria,
-    ],
-    workspaceRoot,
-  );
-  if (explicitTextArtifacts.length > 0) {
-    return explicitTextArtifacts;
-  }
-
-  const explicitScopedArtifacts = extractExplicitScopedArtifacts(
-    [
-      step.objective ?? "",
-      step.inputContract ?? "",
-      ...step.acceptanceCriteria,
-    ],
-    workspaceRoot,
-  );
-  if (explicitScopedArtifacts.length > 0) {
-    return explicitScopedArtifacts;
-  }
-
-  const sourceArtifacts = step.executionContext?.requiredSourceArtifacts ??
-    step.executionContext?.inputArtifacts ??
-    [];
-  if (sourceArtifacts.length > 0) {
-    return sourceArtifacts;
-  }
-
-  return [];
+  return collectWorkflowArtifactRelationPaths({
+    relations: artifactRelations,
+    relationTypes: ["write_owner"],
+  });
 }
 
-function collectReferencedArtifacts(step: DelegationCandidateStep): readonly string[] {
-  const workspaceRoot = step.executionContext?.workspaceRoot;
-  const sanitizedContextRequirements = sanitizeDelegationContextRequirements(
-    step.contextRequirements,
-  );
-  const explicitArtifacts = extractExplicitFileArtifacts(
-    [
-      step.objective ?? "",
-      step.inputContract ?? "",
-      ...step.acceptanceCriteria,
-      ...sanitizedContextRequirements,
-    ],
-    workspaceRoot,
-  );
-  return [
-    ...(step.executionContext?.inputArtifacts ?? []),
-    ...(step.executionContext?.requiredSourceArtifacts ?? []),
-    ...(step.executionContext?.targetArtifacts ?? []),
-    ...explicitArtifacts,
-  ].filter((artifact, index, artifacts) => artifacts.indexOf(artifact) === index);
+function collectReferencedArtifacts(
+  step: DelegationCandidateStep,
+  artifactRelations: readonly WorkflowArtifactRelation[],
+): readonly string[] {
+  const relationArtifacts = collectWorkflowArtifactRelationPaths({
+    relations: artifactRelations,
+  });
+  const explicitTextArtifacts = extractExplicitFileArtifacts([
+    step.objective ?? "",
+    step.inputContract ?? "",
+    ...step.acceptanceCriteria,
+    ...sanitizeDelegationContextRequirements(step.contextRequirements),
+  ], step.executionContext?.workspaceRoot);
+  return [...new Set([...relationArtifacts, ...explicitTextArtifacts])];
 }
 
 function analyzeStep(step: DelegationCandidateStep): DelegationStepAnalysis {
@@ -251,8 +197,15 @@ function analyzeStep(step: DelegationCandidateStep): DelegationStepAnalysis {
   const shellCapabilityCount = capabilities.filter(isShellCapability).length;
   const readCapabilityCount = capabilities.filter(isReadCapability).length;
   const envelope = step.executionContext;
-  const ownedArtifacts = collectOwnedArtifacts(step);
-  const referencedArtifacts = collectReferencedArtifacts(step);
+  const artifactRelations = collectArtifactRelations(step);
+  const ownedArtifacts = collectOwnedArtifacts(artifactRelations);
+  const referencedArtifacts = collectReferencedArtifacts(step, artifactRelations);
+  const typedVerificationOnly = isTypedVerificationOnlyStep({
+    step,
+    artifactRelations,
+    shellCapabilityCount,
+    writeCapabilityCount,
+  });
   const readOnly = isReadOnlyEnvelope(envelope?.effectClass) ||
     (
       writeCapabilityCount === 0 &&
@@ -260,20 +213,23 @@ function analyzeStep(step: DelegationCandidateStep): DelegationStepAnalysis {
       capabilities.length > 0 &&
       readCapabilityCount === capabilities.length
     );
-  const shellObservationOnly =
+  const shellObservationOnly = typedVerificationOnly || (
     writeCapabilityCount === 0 &&
     shellCapabilityCount > 0 &&
     (envelope?.targetArtifacts?.length ?? 0) === 0 &&
-    (envelope?.effectClass === "read_only" || readOnly);
-  const mutable =
+    (envelope?.effectClass === "read_only" || readOnly)
+  );
+  const mutable = !typedVerificationOnly && (
     envelope?.effectClass === "filesystem_write" ||
     envelope?.effectClass === "filesystem_scaffold" ||
     envelope?.effectClass === "mixed" ||
     writeCapabilityCount > 0 ||
-    (!readOnly && shellCapabilityCount > 0);
+    (!readOnly && shellCapabilityCount > 0)
+  );
 
   return {
     step,
+    artifactRelations,
     ownedArtifacts,
     referencedArtifacts,
     mutable,

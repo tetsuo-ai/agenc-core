@@ -46,7 +46,7 @@ export type ToolResolutionStrategy =
   | "all_tools_empty_filter"
   | "subset_exact"
   | "subset_partial"
-  | "fallback_full_catalog_no_matches";
+  | "subset_missing";
 
 export interface ToolSelectionDiagnostics {
   readonly tools: Record<string, unknown>[];

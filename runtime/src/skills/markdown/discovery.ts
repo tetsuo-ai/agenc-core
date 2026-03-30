@@ -12,7 +12,8 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { isSkillMarkdown, parseSkillContent } from "./parser.js";
+import { assessSkillMetadataRisk } from "../../security/untrusted-content.js";
+import { isSkillMarkdown, parseSkillContent, validateSkillMetadata } from "./parser.js";
 import type { MarkdownSkill } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -126,6 +127,14 @@ export class SkillDiscovery {
       if (!isSkillMarkdown(content)) continue;
 
       const skill = parseSkillContent(content, filePath);
+      const validationErrors = validateSkillMetadata(skill);
+      if (validationErrors.length > 0) continue;
+      const metadataRisk = assessSkillMetadataRisk({
+        name: skill.name,
+        description: skill.description,
+        tags: skill.metadata.tags,
+      });
+      if (metadataRisk.riskLevel === "high") continue;
       const missing = await this.validateRequirements(skill);
       const available = missing.length === 0;
 

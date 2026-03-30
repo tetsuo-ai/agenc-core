@@ -12,7 +12,9 @@ describe("provider-native-search", () => {
   it("only enables Grok server-side tools for supported models", () => {
     expect(supportsGrokServerSideTools("grok-4-1-fast-reasoning")).toBe(true);
     expect(supportsGrokServerSideTools("grok-4-0709")).toBe(true);
+    expect(supportsGrokServerSideTools("grok-4.20-multi-agent-beta-0309")).toBe(true);
     expect(supportsGrokServerSideTools("grok-code-fast-1")).toBe(false);
+    expect(supportsGrokServerSideTools("grok-3")).toBe(false);
   });
 
   it("does not advertise web_search for unsupported Grok models", () => {

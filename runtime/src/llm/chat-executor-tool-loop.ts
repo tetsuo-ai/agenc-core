@@ -61,6 +61,7 @@ import {
 import {
   buildSemanticToolCallKey,
   buildRecoveryHints,
+  preflightStaleCopiedCmakeHarnessInvocation,
 } from "./chat-executor-recovery.js";
 import {
   sanitizeToolCallsForReplay,
@@ -261,6 +262,13 @@ export async function executeSingleToolCall(
     ctx.messageText,
   );
   args = repaired.args;
+  const staleHarnessPreflight = preflightStaleCopiedCmakeHarnessInvocation(
+    toolCall.name,
+    args,
+    ctx.runtimeWorkspaceRoot,
+    ctx.allToolCalls,
+  );
+  args = staleHarnessPreflight.args;
   const contractAdjustedFields: string[] = [];
   if (toolCall.name === "mcp.doom.start_game") {
     const doomTurnContract = inferDoomTurnContract(ctx.messageText);
@@ -280,11 +288,48 @@ export async function executeSingleToolCall(
     argumentDiagnostics.repairSource = "message_text";
     argumentDiagnostics.repairedFields = repaired.repairedFields;
   }
+  if (staleHarnessPreflight.repairedFields.length > 0) {
+    argumentDiagnostics.workspacePreflightReason = staleHarnessPreflight.reasonKey;
+    argumentDiagnostics.workspaceAdjustedFields =
+      staleHarnessPreflight.repairedFields;
+  }
   if (contractAdjustedFields.length > 0) {
     argumentDiagnostics.contractAdjustedFields = contractAdjustedFields;
   }
   if (Object.keys(argumentDiagnostics).length > 0) {
     argumentDiagnostics.rawArgs = rawArgs;
+  }
+  if (staleHarnessPreflight.rejectionError) {
+    callbacks.emitExecutionTrace(ctx, {
+      type: "tool_rejected",
+      phase: "tool_followup",
+      callIndex: ctx.callIndex,
+      payload: {
+        tool: toolCall.name,
+        args,
+        originalArgs: rawArgs,
+        reason: staleHarnessPreflight.reasonKey,
+        error: staleHarnessPreflight.rejectionError,
+      },
+    });
+    callbacks.pushMessage(
+      ctx,
+      {
+        role: "tool",
+        content: staleHarnessPreflight.rejectionError,
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+      },
+      "tools",
+    );
+    callbacks.appendToolRecord(ctx, {
+      name: toolCall.name,
+      args,
+      result: staleHarnessPreflight.rejectionError,
+      isError: true,
+      durationMs: 0,
+    });
+    return "skip";
   }
   callbacks.emitExecutionTrace(ctx, {
     type: "tool_dispatch_started",
@@ -622,7 +667,14 @@ export async function executeToolCallLoop(
     }
 
     // Recovery hints.
-    const recoveryHints = buildRecoveryHints(roundCalls, new Set<string>());
+    const recoveryHistoryWindow = ctx.allToolCalls.slice(
+      Math.max(0, ctx.allToolCalls.length - 48),
+    );
+    const recoveryHints = buildRecoveryHints(
+      roundCalls,
+      new Set<string>(),
+      recoveryHistoryWindow,
+    );
     callbacks.replaceRuntimeRecoveryHintMessages(ctx, recoveryHints);
     if (recoveryHints.length > 0) {
       callbacks.emitExecutionTrace(ctx, {
@@ -706,6 +758,8 @@ export async function executeToolCallLoop(
         followupContractGuidance.runtimeInstruction,
       );
     }
+    const preservedFollowupRoutedToolNames =
+      followupContractGuidance?.routedToolNames ?? ctx.activeRoutedToolNames;
 
     // Re-call LLM.
     const nextResponse = await callbacks.callModelForPhase(ctx, {
@@ -719,15 +773,11 @@ export async function executeToolCallLoop(
       ...(followupContractGuidance
         ? {
           toolChoice: followupContractGuidance.toolChoice,
-          ...(followupContractGuidance.routedToolNames
-            ? {
-              routedToolNames: followupContractGuidance.routedToolNames,
-              ...(followupContractGuidance.persistRoutedToolNames === false
-                ? { persistRoutedToolNames: false }
-                : {}),
-            }
-            : {}),
         }
+        : {}),
+      routedToolNames: preservedFollowupRoutedToolNames,
+      ...(followupContractGuidance?.persistRoutedToolNames === false
+        ? { persistRoutedToolNames: false }
         : {}),
       budgetReason:
         "Max model recalls exceeded while following up after tool calls",

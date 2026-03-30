@@ -4,6 +4,7 @@ import type { DelegationBudgetSnapshot } from "./run-budget.js";
 import {
   assessDelegationAdmission,
 } from "../gateway/delegation-admission.js";
+import { normalizeRuntimeLimit } from "./runtime-limit-policy.js";
 
 export type DelegationDecisionReason =
   | "delegation_disabled"
@@ -137,8 +138,24 @@ const DESTRUCTIVE_HOST_MUTATION_CAPABILITY_RE =
   /^system\.(?:delete|writeFile|execute|open|applescript)(?:\.|$)/i;
 const NETWORK_EGRESS_CAPABILITY_RE =
   /^(?:system\.http|system\.bash|desktop\.bash|playwright\.)/i;
-const CREDENTIAL_MARKER_RE =
-  /\b(secret|api[_-]?key|token|password|private[_\s-]?key|seed\s+phrase|mnemonic)\b/i;
+const CREDENTIAL_MARKER_PATTERNS: readonly RegExp[] = [
+  /\bsecret(?:s)?\b/i,
+  /\bapi(?:[_-]?key|\s+key)\b/i,
+  /\b(?:access|auth|bearer|refresh|session)\s+token\b/i,
+  /\bpassword(?:s)?\b/i,
+  /\bprivate[_\s-]?key\b/i,
+  /\bseed\s+phrase\b/i,
+  /\bmnemonic\b/i,
+  /\bssh\s+key\b/i,
+  /\bcredentials?\b/i,
+  /\bclient\s+secret\b/i,
+  /\bconsumer\s+secret\b/i,
+  /\b\.env\b/i,
+];
+const CREDENTIAL_EXFIL_INTENT_PATTERNS: readonly RegExp[] = [
+  /\b(?:exfiltrat(?:e|ion)|leak|steal|dump|export|extract|copy|print|echo|reveal|expose|show|send|upload|post|curl|transmit|forward)\b[\s\S]{0,72}\b(?:secret|api(?:[_-]?key|\s+key)|token|password|private[_\s-]?key|seed\s+phrase|mnemonic|credentials?|\.env)\b/i,
+  /\b(?:secret|api(?:[_-]?key|\s+key)|token|password|private[_\s-]?key|seed\s+phrase|mnemonic|credentials?|\.env)\b[\s\S]{0,72}\b(?:exfiltrat(?:e|ion)|leak|steal|dump|export|extract|copy|print|echo|reveal|expose|show|send|upload|post|curl|transmit|forward)\b/i,
+];
 const WALLET_SIGNING_TEXT_RE =
   /\b(sign|authorize|approve)\b[\s\S]{0,48}\b(wallet|transaction|tx)\b/i;
 const WALLET_TRANSFER_TEXT_RE =
@@ -171,7 +188,7 @@ export function resolveDelegationDecisionConfig(
     : DEFAULT_SUBAGENT_MODE;
   const hardBlockedTaskClasses = new Set<DelegationHardBlockedTaskClass>();
   const configuredHardBlocked = config?.hardBlockedTaskClasses;
-  if (Array.isArray(configuredHardBlocked) && configuredHardBlocked.length > 0) {
+  if (Array.isArray(configuredHardBlocked)) {
     for (const taskClass of configuredHardBlocked) {
       if (
         taskClass === "wallet_signing" ||
@@ -192,9 +209,9 @@ export function resolveDelegationDecisionConfig(
     enabled: config?.enabled === true,
     mode,
     scoreThreshold: clamp01(config?.scoreThreshold ?? DEFAULT_SCORE_THRESHOLD),
-    maxFanoutPerTurn: Math.max(
-      1,
-      Math.floor(config?.maxFanoutPerTurn ?? DEFAULT_MAX_FANOUT_PER_TURN),
+    maxFanoutPerTurn: normalizeRuntimeLimit(
+      config?.maxFanoutPerTurn,
+      DEFAULT_MAX_FANOUT_PER_TURN,
     ),
     maxDepth: Math.max(1, Math.floor(config?.maxDepth ?? DEFAULT_MAX_DEPTH)),
     handoffMinPlannerConfidence: clamp01(
@@ -530,15 +547,20 @@ function detectHardBlockedTaskClass(
     }
   }
 
-  if (
-    config.hardBlockedTaskClasses.has("credential_exfiltration") &&
-    CREDENTIAL_MARKER_RE.test(textBlob)
-  ) {
+  if (config.hardBlockedTaskClasses.has("credential_exfiltration")) {
+    const credentialTextMatch = findTextMatch(
+      textBlob,
+      CREDENTIAL_MARKER_PATTERNS,
+    );
+    const exfilIntentTextMatch = findTextMatch(
+      textBlob,
+      CREDENTIAL_EXFIL_INTENT_PATTERNS,
+    );
     const capabilityMatch = findCapabilityMatch(
       capabilities,
       NETWORK_EGRESS_CAPABILITY_RE,
     );
-    if (capabilityMatch) {
+    if (credentialTextMatch && exfilIntentTextMatch && capabilityMatch) {
       return buildHardBlockedMatch(
         "credential_exfiltration",
         "capability",

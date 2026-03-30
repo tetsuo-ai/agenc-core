@@ -5,15 +5,19 @@ import type {
   RuntimeEconomicsPolicy,
   RuntimeRunClass,
 } from "./run-budget.js";
+import { getGrokModelCapabilities } from "../gateway/context-window.js";
+import { summarizeRequestedToolKinds } from "./provider-native-search.js";
 
 export interface ProviderRouteDescriptor {
   readonly index: number;
   readonly providerName: string;
   readonly model?: string;
+  readonly routeKey: string;
   readonly provider: LLMProvider;
   readonly reasoning: boolean;
   readonly costWeight: number;
   readonly latencyWeight: number;
+  readonly parallelToolCallsConfigured: boolean;
 }
 
 export interface ModelRoutingPolicy {
@@ -26,9 +30,26 @@ export interface ModelRouteDecision {
   readonly providers: readonly LLMProvider[];
   readonly selectedProviderName: string;
   readonly selectedModel?: string;
+  readonly selectedProviderRouteKey: string;
   readonly rerouted: boolean;
   readonly downgraded: boolean;
   readonly reason: string;
+}
+
+export type ModelRoutingWorkflowPhase =
+  | "compaction"
+  | "initial"
+  | "planner"
+  | "planner_verifier"
+  | "planner_synthesis"
+  | "tool_followup"
+  | "evaluator"
+  | "evaluator_retry";
+
+export interface ModelRouteRequirements {
+  readonly statefulContinuationRequired?: boolean;
+  readonly structuredOutputRequired?: boolean;
+  readonly routedToolNames?: readonly string[];
 }
 
 function clamp01(value: number): number {
@@ -63,12 +84,41 @@ function estimateLatencyWeight(provider: string, model?: string): number {
   return 0.95;
 }
 
+function normalizeRouteKeyPart(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.toLowerCase() : undefined;
+}
+
+export function buildProviderRouteKey(
+  providerName: string,
+  model?: string,
+): string {
+  const providerPart = normalizeRouteKeyPart(providerName) ?? "unknown";
+  const modelPart = normalizeRouteKeyPart(model);
+  return modelPart ? `${providerPart}:${modelPart}` : providerPart;
+}
+
+export function getProviderRouteKey(
+  provider: LLMProvider,
+  modelHint?: string,
+): string {
+  const providerModel =
+    modelHint ??
+    ((provider as { config?: { model?: string } }).config?.model as
+      | string
+      | undefined);
+  return buildProviderRouteKey(provider.name, providerModel);
+}
+
 export function buildModelRoutingPolicy(params: {
   readonly providers: readonly LLMProvider[];
   readonly economicsPolicy: RuntimeEconomicsPolicy;
   readonly llmConfig?: GatewayLLMConfig;
+  readonly providerConfigs?: readonly GatewayLLMConfig[];
 }): ModelRoutingPolicy {
-  const configs = params.llmConfig
+  const configs = params.providerConfigs && params.providerConfigs.length > 0
+    ? [...params.providerConfigs]
+    : params.llmConfig
     ? [params.llmConfig, ...(params.llmConfig.fallback ?? [])]
     : [];
   return {
@@ -80,10 +130,12 @@ export function buildModelRoutingPolicy(params: {
         index,
         providerName: provider.name,
         model,
+        routeKey: buildProviderRouteKey(provider.name, model),
         provider,
         reasoning: modelLooksReasoning(model),
         costWeight: estimateCostWeight(provider.name, model),
         latencyWeight: estimateLatencyWeight(provider.name, model),
+        parallelToolCallsConfigured: config?.parallelToolCalls === true,
       };
     }),
   };
@@ -135,22 +187,161 @@ function chooseDowngradedCandidate(
   )[0];
 }
 
+function providerSupportsRouteRequirements(
+  candidate: ProviderRouteDescriptor,
+  requirements: ModelRouteRequirements | undefined,
+): boolean {
+  if (!requirements) return true;
+  if (
+    requirements.statefulContinuationRequired &&
+    candidate.provider.getCapabilities &&
+    candidate.provider.getCapabilities().stateful.previousResponseId !== true
+  ) {
+    return false;
+  }
+  if (candidate.providerName !== "grok") {
+    if (
+      requirements.structuredOutputRequired &&
+      candidate.providerName === "ollama"
+    ) {
+      return false;
+    }
+    return true;
+  }
+  const grokCapabilities = getGrokModelCapabilities(candidate.model);
+  if (
+    requirements.structuredOutputRequired &&
+    !grokCapabilities.supportsStructuredOutputs
+  ) {
+    return false;
+  }
+  const requestedToolKinds = summarizeRequestedToolKinds(
+    requirements.routedToolNames,
+  );
+  if (
+    requestedToolKinds.clientToolNames.length > 0 &&
+    !grokCapabilities.supportsClientTools
+  ) {
+    return false;
+  }
+  if (
+    requestedToolKinds.providerNativeToolNames.length > 0 &&
+    !grokCapabilities.supportsServerSideTools
+  ) {
+    return false;
+  }
+  if (
+    requestedToolKinds.remoteMcpToolNames.length > 0 &&
+    !grokCapabilities.supportsRemoteMcpTools
+  ) {
+    return false;
+  }
+  if (
+    requirements.structuredOutputRequired &&
+    requestedToolKinds.requestedToolNames.length > 0 &&
+    !grokCapabilities.supportsStructuredOutputsWithTools
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function describeRouteRequirements(
+  requirements: ModelRouteRequirements | undefined,
+): string[] {
+  if (!requirements) return [];
+  const descriptions: string[] = [];
+  if (requirements.statefulContinuationRequired) {
+    descriptions.push("stateful continuation");
+  }
+  if (requirements.structuredOutputRequired) {
+    descriptions.push("structured output");
+  }
+  const requestedToolKinds = summarizeRequestedToolKinds(
+    requirements.routedToolNames,
+  );
+  if (requestedToolKinds.clientToolNames.length > 0) {
+    descriptions.push("client-side/custom tools");
+  }
+  if (requestedToolKinds.providerNativeToolNames.length > 0) {
+    descriptions.push("provider-native tools");
+  }
+  if (requestedToolKinds.remoteMcpToolNames.length > 0) {
+    descriptions.push("remote MCP tools");
+  }
+  return descriptions;
+}
+
+export function resolveParallelToolCallPolicy(params: {
+  readonly policy: ModelRoutingPolicy;
+  readonly selectedProviderName: string;
+  readonly selectedProviderRouteKey?: string;
+  readonly phase: ModelRoutingWorkflowPhase;
+}): boolean {
+  const descriptor =
+    params.policy.providers.find(
+      (entry) =>
+        params.selectedProviderRouteKey !== undefined &&
+        entry.routeKey === params.selectedProviderRouteKey,
+    ) ??
+    params.policy.providers.find(
+      (entry) => entry.providerName === params.selectedProviderName,
+    );
+  switch (params.phase) {
+    case "initial":
+    case "tool_followup":
+      return descriptor?.parallelToolCallsConfigured === true;
+    case "compaction":
+    case "planner":
+    case "planner_verifier":
+    case "planner_synthesis":
+    case "evaluator":
+    case "evaluator_retry":
+    default:
+      return false;
+  }
+}
+
 export function resolveModelRoute(params: {
   readonly policy: ModelRoutingPolicy;
   readonly runClass: RuntimeRunClass;
   readonly pressure: RuntimeBudgetPressure;
   readonly degradedProviderNames?: readonly string[];
   readonly requiredCapabilities?: readonly string[];
+  readonly requirements?: ModelRouteRequirements;
 }): ModelRouteDecision {
   const degraded = new Set(
     (params.degradedProviderNames ?? []).map((entry) => entry.toLowerCase()),
   );
   const healthyCandidates = params.policy.providers.filter((candidate) =>
-    !degraded.has(candidate.providerName.toLowerCase())
+    !degraded.has(candidate.routeKey.toLowerCase())
   );
-  const routePool = healthyCandidates.length > 0
+  const compatibleHealthyCandidates = healthyCandidates.filter((candidate) =>
+    providerSupportsRouteRequirements(candidate, params.requirements)
+  );
+  const compatibleAllCandidates = params.policy.providers.filter((candidate) =>
+    providerSupportsRouteRequirements(candidate, params.requirements)
+  );
+  const routePool = compatibleHealthyCandidates.length > 0
+    ? compatibleHealthyCandidates
+    : compatibleAllCandidates.length > 0
+    ? compatibleAllCandidates
+    : healthyCandidates.length > 0
     ? healthyCandidates
     : params.policy.providers;
+  if (
+    routePool.length === 0 ||
+    !routePool.some((candidate) =>
+      providerSupportsRouteRequirements(candidate, params.requirements)
+    )
+  ) {
+    const required = describeRouteRequirements(params.requirements);
+    throw new Error(
+      required.length > 0
+        ? `No configured provider route can honor ${required.join(", ")}.`
+        : "No configured provider route can honor the requested model contract.",
+    );
+  }
   const defaultCandidate = chooseDefaultCandidate(
     params.runClass,
     routePool,
@@ -177,9 +368,13 @@ export function resolveModelRoute(params: {
     : rerouted
     ? "degraded_provider_reroute"
     : "default_route";
+  const compatibleRouteCandidates =
+    compatibleAllCandidates.length > 0
+      ? compatibleAllCandidates
+      : routePool;
   const orderedFallbacks = [
     chosen,
-    ...params.policy.providers.filter((candidate) => candidate.index !== chosen.index),
+    ...compatibleRouteCandidates.filter((candidate) => candidate.index !== chosen.index),
   ];
 
   return {
@@ -187,6 +382,7 @@ export function resolveModelRoute(params: {
     providers: orderedFallbacks.map((candidate) => candidate.provider),
     selectedProviderName: chosen.providerName,
     selectedModel: chosen.model,
+    selectedProviderRouteKey: chosen.routeKey,
     rerouted,
     downgraded,
     reason,

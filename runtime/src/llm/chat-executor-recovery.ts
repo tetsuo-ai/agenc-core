@@ -4,6 +4,8 @@
  * @module
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 import type {
   ToolCallRecord,
   RecoveryHint,
@@ -73,6 +75,10 @@ function isPythonInterpreterCommand(command: string): boolean {
   return base === "python" || /^python\d+(?:\.\d+)?$/.test(base);
 }
 
+function isDestructiveRemovalCommand(command: string): boolean {
+  return commandBasename(command) === "rm";
+}
+
 function isAgencRuntimeNodeInvocation(args: Record<string, unknown>): boolean {
   const raw = args.args;
   if (!Array.isArray(raw)) return false;
@@ -104,6 +110,12 @@ function isDesktopBiasedSystemCommandFailure(
     failureTextLower.includes("command not found") ||
     failureTextLower.includes("is denied") ||
     failureTextLower.includes("not found")
+  );
+}
+
+function isShellExecutionAnomalyFailure(failureText: string): boolean {
+  return /(?:^|\n)(?:[^:\n]+:\s+line\s+\d+:\s+)?(?:(?:ba|z|k)?sh|cd|pushd|popd|source|\.)[^:\n]*:\s+.*(?:no such file or directory|command not found|not found|permission denied|not a directory)/i.test(
+    failureText,
   );
 }
 
@@ -380,6 +392,499 @@ function isJsonEscapedSourceLiteralFailure(failureText: string): boolean {
   return hasCompilerStylePath && hasEscapeTokenSignal && hasEscapedLiteralSignal;
 }
 
+function isCmakeCacheSourceMismatchFailure(failureText: string): boolean {
+  return (
+    /cmakecache\.txt directory .* is different than the directory .* was created/i
+      .test(failureText) ||
+    /does not match the source .* used to generate cache/i.test(failureText) ||
+    /re-run cmake with a different source directory/i.test(failureText)
+  );
+}
+
+function extractShellCommand(call: ToolCallRecord): string {
+  const command =
+    typeof call.args?.command === "string" ? call.args.command.trim() : "";
+  const rawArgs = Array.isArray(call.args?.args)
+    ? call.args.args.filter((value): value is string => typeof value === "string")
+    : [];
+  if (rawArgs.length === 0) {
+    return command;
+  }
+  return [command, ...rawArgs].filter((value) => value.length > 0).join(" ").trim();
+}
+
+function normalizeShellPathToken(raw: string): string {
+  return raw.replace(/^['"`]+|['"`]+$/g, "").trim();
+}
+
+function extractNonDefaultBuildDirectory(command: string): string | undefined {
+  const candidates: string[] = [];
+  for (const pattern of [
+    /\bcmake\b[\s\S]*?\s-B\s+([^\s;&|]+)/gi,
+    /\bcmake\b[\s\S]*?\s--build\s+([^\s;&|]+)/gi,
+    /\bcd\s+([^\s;&|]+)\s*&&\s*(?:cmake|make|ninja|ctest)\b/gi,
+  ]) {
+    for (const match of command.matchAll(pattern)) {
+      const candidate = normalizeShellPathToken(match[1] ?? "");
+      if (candidate.length > 0) {
+        candidates.push(candidate);
+      }
+    }
+  }
+  for (const candidate of candidates) {
+    const normalized = candidate.replace(/\\/g, "/");
+    const basename = normalized.split("/").pop()?.toLowerCase() ?? normalized.toLowerCase();
+    if (basename.startsWith("build") && basename !== "build") {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function isSuccessfulFreshBuildCall(call: ToolCallRecord): boolean {
+  if (call.name !== "system.bash" && call.name !== "desktop.bash") {
+    return false;
+  }
+  if (didToolCallFail(call.isError, call.result)) {
+    return false;
+  }
+  const command = extractShellCommand(call);
+  if (command.length === 0) {
+    return false;
+  }
+  if (extractNonDefaultBuildDirectory(command) === undefined) {
+    return false;
+  }
+  return /\b(?:cmake|make|ninja|ctest)\b/i.test(command);
+}
+
+function isRepositoryBuildHarnessCommand(call: ToolCallRecord): boolean {
+  if (call.name !== "system.bash" && call.name !== "desktop.bash") {
+    return false;
+  }
+  const command = extractShellCommand(call).toLowerCase();
+  return (
+    /(?:^|\s)(?:ba|z|k)?sh\s+(?:\.\/)?(?:[^\s]+\/)?tests\/run_tests\.sh(?:\s|$)/.test(
+      command,
+    ) ||
+    /(?:^|\s)(?:ba|z|k)?sh\s+(?:\.\/)?run_tests\.sh(?:\s|$)/.test(command) ||
+    /(?:^|[\s;&|])(?:\.\/)?(?:[^\s]+\/)?tests\/run_tests\.sh(?:\s|$)/.test(
+      command,
+    ) ||
+    /(?:^|[\s;&|])(?:\.\/)?run_tests\.sh(?:\s|$)/.test(command)
+  );
+}
+
+interface RepositoryBuildHarnessInvocation {
+  readonly cwd: string;
+  readonly scriptPath: string;
+}
+
+interface StaleCopiedCmakeHarnessPreflightResult {
+  readonly args: Record<string, unknown>;
+  readonly repairedFields: readonly string[];
+  readonly reasonKey?: string;
+  readonly rejectionError?: string;
+}
+
+function isStaleCopiedCmakeWorkspace(workspaceRoot: string | undefined): boolean {
+  if (!workspaceRoot) return false;
+  const cmakeListsPath = resolvePath(workspaceRoot, "CMakeLists.txt");
+  const cmakeCachePath = resolvePath(workspaceRoot, "build", "CMakeCache.txt");
+  if (!existsSync(cmakeListsPath) || !existsSync(cmakeCachePath)) {
+    return false;
+  }
+  try {
+    const cache = readFileSync(cmakeCachePath, "utf8");
+    const homeDirectoryMatch = cache.match(
+      /^CMAKE_HOME_DIRECTORY(?::[A-Z]+)?=(.+)$/m,
+    );
+    const cacheHomeDirectory = homeDirectoryMatch?.[1]?.trim();
+    if (!cacheHomeDirectory) return false;
+    return resolvePath(cacheHomeDirectory) !== resolvePath(workspaceRoot);
+  } catch {
+    return false;
+  }
+}
+
+function resolveRepositoryBuildHarnessInvocation(
+  args: Record<string, unknown>,
+  workspaceRoot?: string,
+): RepositoryBuildHarnessInvocation | undefined {
+  const cwdCandidate =
+    typeof args.cwd === "string" && args.cwd.trim().length > 0
+      ? resolvePath(args.cwd)
+      : workspaceRoot
+        ? resolvePath(workspaceRoot)
+        : undefined;
+  if (!cwdCandidate) return undefined;
+
+  const command =
+    typeof args.command === "string" ? args.command.trim() : "";
+  const rawArgs = Array.isArray(args.args)
+    ? args.args.filter((value): value is string => typeof value === "string")
+    : [];
+
+  const shellBase = commandBasename(command);
+  if (rawArgs.length > 0 && /^(?:ba|z|k)?sh$/.test(shellBase)) {
+    const scriptArg = rawArgs.find((value) => !value.startsWith("-"));
+    if (!scriptArg) return undefined;
+    return {
+      cwd: cwdCandidate,
+      scriptPath: resolvePath(cwdCandidate, scriptArg),
+    };
+  }
+
+  const inlineShellMatch = command.match(
+    /(?:^|\s)(?:ba|z|k)?sh\s+((?:\.\/)?[^\s]+\.(?:sh|bash|zsh))(?:\s|$)/i,
+  );
+  if (inlineShellMatch?.[1]) {
+    return {
+      cwd: cwdCandidate,
+      scriptPath: resolvePath(cwdCandidate, inlineShellMatch[1]),
+    };
+  }
+
+  if (/\.(?:sh|bash|zsh)$/i.test(command)) {
+    return {
+      cwd: cwdCandidate,
+      scriptPath: resolvePath(cwdCandidate, command),
+    };
+  }
+  return undefined;
+}
+
+function parseSimpleRepositoryBuildHarness(
+  scriptContent: string,
+): { readonly equivalentCommand: string } | undefined {
+  const segments = scriptContent
+    .split(/\r?\n/)
+    .flatMap((line) => line.split("&&"))
+    .map((line) => line.trim())
+    .filter((line) =>
+      line.length > 0 &&
+      !line.startsWith("#") &&
+      !/^set(?:\s+-[A-Za-z]+|\s+-o\s+\w+)/.test(line)
+    );
+  if (segments.length === 0) return undefined;
+
+  const normalized = segments.map((segment) =>
+    segment.replace(/\s+/g, " ").trim().toLowerCase()
+  );
+  const supported = new Set([
+    "mkdir build",
+    "mkdir -p build",
+    "cd build",
+    "cmake ..",
+    "cmake --build .",
+    "make",
+    "ctest",
+    "ctest --output-on-failure",
+  ]);
+  if (normalized.some((segment) => !supported.has(segment))) {
+    return undefined;
+  }
+  if (!normalized.includes("cd build") || !normalized.includes("cmake ..")) {
+    return undefined;
+  }
+  const needsBuild = normalized.includes("make") || normalized.includes("cmake --build .");
+  if (!needsBuild) return undefined;
+
+  const commands = [
+    "cmake -S . -B __AGENC_FRESH_BUILD_DIR__",
+    "cmake --build __AGENC_FRESH_BUILD_DIR__",
+  ];
+  if (normalized.includes("ctest") || normalized.includes("ctest --output-on-failure")) {
+    commands.push("ctest --test-dir __AGENC_FRESH_BUILD_DIR__ --output-on-failure");
+  }
+  return {
+    equivalentCommand: commands.join(" && "),
+  };
+}
+
+function resolvePreferredFreshBuildDirectory(
+  recentCalls: readonly ToolCallRecord[],
+): string {
+  const latestFreshBuild = [...recentCalls]
+    .reverse()
+    .find((call) => isSuccessfulFreshBuildCall(call));
+  return (
+    (latestFreshBuild
+      ? extractNonDefaultBuildDirectory(extractShellCommand(latestFreshBuild))
+      : undefined) ?? "build-agenc-fresh"
+  );
+}
+
+function buildFreshBuildDirectoryPath(
+  workspaceRoot: string,
+  freshBuildDir: string,
+): string {
+  if (freshBuildDir.startsWith("/")) {
+    return freshBuildDir;
+  }
+  return resolvePath(workspaceRoot, freshBuildDir);
+}
+
+function isWorkspaceBuildDirectoryPath(
+  candidate: string,
+  workspaceRoot: string,
+): boolean {
+  return resolvePath(candidate) === resolvePath(workspaceRoot, "build");
+}
+
+function isDirectConfigureIntoStaleDefaultBuild(
+  args: Record<string, unknown>,
+  workspaceRoot: string,
+): boolean {
+  const command =
+    typeof args.command === "string" ? args.command.trim().toLowerCase() : "";
+  const commandBase = commandBasename(command);
+  const rawArgs = Array.isArray(args.args)
+    ? args.args.filter((value): value is string => typeof value === "string")
+    : [];
+  const cwd =
+    typeof args.cwd === "string" && args.cwd.trim().length > 0
+      ? resolvePath(args.cwd)
+      : resolvePath(workspaceRoot);
+  if (
+    commandBase === "cd" &&
+    rawArgs.length >= 4 &&
+    isWorkspaceBuildDirectoryPath(rawArgs[0], workspaceRoot) &&
+    rawArgs[1] === "&&" &&
+    rawArgs[2]?.toLowerCase() === "cmake" &&
+    rawArgs[3] === ".."
+  ) {
+    return true;
+  }
+  if (commandBase !== "cmake") return false;
+  if (cwd === resolvePath(workspaceRoot, "build") && rawArgs.length === 1 && rawArgs[0] === "..") {
+    return true;
+  }
+  const buildIndex = rawArgs.findIndex((value) => value === "-B");
+  if (buildIndex >= 0) {
+    const buildTarget = rawArgs[buildIndex + 1];
+    if (
+      typeof buildTarget === "string" &&
+      (buildTarget === "build" || isWorkspaceBuildDirectoryPath(buildTarget, workspaceRoot))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isDirectBuildAgainstStaleDefaultBuild(
+  args: Record<string, unknown>,
+  workspaceRoot: string,
+): boolean {
+  const command =
+    typeof args.command === "string" ? args.command.trim().toLowerCase() : "";
+  const commandBase = commandBasename(command);
+  const cwd =
+    typeof args.cwd === "string" && args.cwd.trim().length > 0
+      ? resolvePath(args.cwd)
+      : resolvePath(workspaceRoot);
+  return (
+    ["make", "ninja", "ctest"].includes(commandBase) &&
+    cwd === resolvePath(workspaceRoot, "build")
+  );
+}
+
+export function preflightStaleCopiedCmakeHarnessInvocation(
+  toolName: string,
+  args: Record<string, unknown>,
+  workspaceRoot: string | undefined,
+  recentCalls: readonly ToolCallRecord[],
+): StaleCopiedCmakeHarnessPreflightResult {
+  if (toolName !== "system.bash" && toolName !== "desktop.bash") {
+    return { args, repairedFields: [] };
+  }
+  if (!isStaleCopiedCmakeWorkspace(workspaceRoot)) {
+    return { args, repairedFields: [] };
+  }
+  const normalizedWorkspaceRoot = resolvePath(workspaceRoot);
+  const freshBuildDir = resolvePreferredFreshBuildDirectory(recentCalls);
+  const freshBuildPath = buildFreshBuildDirectoryPath(
+    normalizedWorkspaceRoot,
+    freshBuildDir,
+  );
+
+  if (isDirectConfigureIntoStaleDefaultBuild(args, normalizedWorkspaceRoot)) {
+    return {
+      args: {
+        command: "cmake",
+        args: ["-S", normalizedWorkspaceRoot, "-B", freshBuildPath],
+        cwd: normalizedWorkspaceRoot,
+      },
+      repairedFields: ["command", "args", "cwd"],
+      reasonKey: "system-bash-cmake-stale-default-build-rewritten",
+    };
+  }
+  if (isDirectBuildAgainstStaleDefaultBuild(args, normalizedWorkspaceRoot)) {
+    return {
+      args: {
+        command: "cmake",
+        args: ["--build", freshBuildPath],
+        cwd: normalizedWorkspaceRoot,
+      },
+      repairedFields: ["command", "args", "cwd"],
+      reasonKey: "system-bash-cmake-stale-default-build-rewritten",
+    };
+  }
+
+  const invocation = resolveRepositoryBuildHarnessInvocation(args, normalizedWorkspaceRoot);
+  if (!invocation || !existsSync(invocation.scriptPath)) {
+    return { args, repairedFields: [] };
+  }
+
+  try {
+    const scriptContent = readFileSync(invocation.scriptPath, "utf8");
+    const normalizedScript = scriptContent.toLowerCase();
+    if (
+      !/\bcd\s+build\b/.test(normalizedScript) ||
+      !/\bcmake\s+\.\./.test(normalizedScript)
+    ) {
+      return { args, repairedFields: [] };
+    }
+
+    const parsedHarness = parseSimpleRepositoryBuildHarness(scriptContent);
+    if (!parsedHarness) {
+      return {
+        args,
+        repairedFields: [],
+        reasonKey: "system-bash-cmake-stale-harness-rejected",
+        rejectionError:
+          `Refusing to invoke \`${invocation.scriptPath}\` in this delegated workspace because the script hardcodes the stale copied \`build/\` directory and cannot be safely rewritten automatically. ` +
+          `Run the equivalent verification directly from \`${resolvePath(normalizedWorkspaceRoot ?? invocation.cwd)}\` against a fresh build directory such as \`${freshBuildDir}\` instead.`,
+      };
+    }
+
+    return {
+      args: {
+        command: parsedHarness.equivalentCommand.replaceAll(
+          "__AGENC_FRESH_BUILD_DIR__",
+          freshBuildDir,
+        ),
+        cwd: resolvePath(normalizedWorkspaceRoot ?? invocation.cwd),
+      },
+      repairedFields: ["command", "args", "cwd"],
+      reasonKey: "system-bash-cmake-stale-harness-rewritten",
+    };
+  } catch {
+    return { args, repairedFields: [] };
+  }
+}
+
+function isUnconfiguredBuildDirectoryFailure(
+  call: ToolCallRecord,
+  failureText: string,
+): boolean {
+  if (call.name !== "system.bash" && call.name !== "desktop.bash") {
+    return false;
+  }
+  const command = String(call.args?.command ?? "").trim().toLowerCase();
+  const args = Array.isArray(call.args?.args)
+    ? call.args.args
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.toLowerCase())
+    : [];
+  const joined = [command, ...args].join(" ");
+  const buildCommand =
+    /\b(?:make|cmake|ninja)\b/.test(joined);
+  if (!buildCommand) {
+    return false;
+  }
+  return (
+    /no targets specified and no makefile found/i.test(failureText) ||
+    /ninja:\s+error:\s+loading ['"`]?build\.ninja['"`]?: no such file or directory/i.test(
+      failureText,
+    ) ||
+    /could not load cache/i.test(failureText)
+  );
+}
+
+function extractCompilerDiagnosticLocation(
+  failureText: string,
+): string | undefined {
+  const match = failureText.match(
+    /(^|\n)([^:\n]+\.(?:c|cc|cpp|cxx|h|hpp|hh|m|mm|rs|go|ts|tsx|js|jsx|py)):(\d+)(?::(\d+))?:\s*(?:fatal\s+)?error:/i,
+  );
+  const file = match?.[2]?.trim();
+  const line = match?.[3]?.trim();
+  const column = match?.[4]?.trim();
+  if (!file || !line) {
+    return undefined;
+  }
+  return `${file}:${line}${column ? `:${column}` : ""}`;
+}
+
+function extractUnknownTypeNameFromCompilerFailure(
+  failureText: string,
+): string | undefined {
+  const match = failureText.match(
+    /\bunknown type name ['"`]?([A-Za-z_][A-Za-z0-9_]*)['"`]?/i,
+  );
+  return match?.[1]?.trim();
+}
+
+function extractCompilerSuggestedName(
+  failureText: string,
+): string | undefined {
+  const match = failureText.match(/\bdid you mean ['"`]?([A-Za-z_][A-Za-z0-9_]*)['"`]?/i);
+  return match?.[1]?.trim();
+}
+
+function isHeaderTypeOrderingCompilerFailure(
+  failureText: string,
+): boolean {
+  return (
+    /\bunknown type name ['"`]?[A-Za-z_][A-Za-z0-9_]*['"`]?/i.test(
+      failureText,
+    ) ||
+    /\bfield has incomplete type\b/i.test(failureText) ||
+    /\bunknown type\b/i.test(failureText) &&
+      /\b(?:struct|typedef|enum|union|header)\b/i.test(failureText)
+  );
+}
+
+function isCompilerInterfaceDriftFailure(
+  failureText: string,
+): boolean {
+  return (
+    /\bhas no member named ['"`]?[A-Za-z_][A-Za-z0-9_]*['"`]?/i.test(
+      failureText,
+    ) ||
+    /\bdid you mean ['"`]?[A-Za-z_][A-Za-z0-9_]*['"`]?/i.test(failureText) ||
+    /\bincompatible types when assigning to type\b/i.test(failureText) ||
+    /\bundeclared\b.*\bdid you mean\b/i.test(failureText)
+  );
+}
+
+function isCompilerDiagnosticFailure(
+  call: ToolCallRecord,
+  failureText: string,
+): boolean {
+  if (call.name !== "system.bash" && call.name !== "desktop.bash") return false;
+  const command = String(call.args?.command ?? "").toLowerCase();
+  const args = Array.isArray(call.args?.args)
+    ? call.args.args
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.toLowerCase())
+    : [];
+  const joined = [command, ...args].join(" ");
+  const looksLikeBuildCommand =
+    /\b(?:cmake|ctest|make|ninja|meson|gcc|g\+\+|clang|clang\+\+|cc|c\+\+)\b/
+      .test(joined);
+  const looksLikeRepoScriptBuildWrapper =
+    (
+      /^(?:ba|z|k)?sh$/.test(command.split(/[\\/]/).pop() ?? "") &&
+      args.some((value) => /(?:^|\/)[^/\s]+\.(?:sh|bash|zsh)$/i.test(value))
+    ) ||
+    /\b(?:ba|z|k)?sh\s+[^\s]+\.(?:sh|bash|zsh)\b/i.test(joined);
+  return (looksLikeBuildCommand || looksLikeRepoScriptBuildWrapper) &&
+    extractCompilerDiagnosticLocation(failureText) !== undefined;
+}
+
 function isPackagePathNotExportedFailure(failureTextLower: string): boolean {
   return (
     failureTextLower.includes("err_package_path_not_exported") ||
@@ -571,9 +1076,10 @@ export function summarizeStateful(
 export function buildRecoveryHints(
   roundCalls: readonly ToolCallRecord[],
   emittedHints: Set<string>,
+  recentCalls: readonly ToolCallRecord[] = roundCalls,
 ): RecoveryHint[] {
   const hints: RecoveryHint[] = [];
-  const roundHint = inferRoundRecoveryHint(roundCalls);
+  const roundHint = inferRoundRecoveryHint(roundCalls, recentCalls);
   if (roundHint && !emittedHints.has(roundHint.key)) {
     emittedHints.add(roundHint.key);
     hints.push(roundHint);
@@ -590,7 +1096,110 @@ export function buildRecoveryHints(
 
 function inferRoundRecoveryHint(
   roundCalls: readonly ToolCallRecord[],
+  recentCalls: readonly ToolCallRecord[] = roundCalls,
 ): RecoveryHint | undefined {
+  const latestStaleCmakeMismatch = [...recentCalls]
+    .reverse()
+    .find((call) => {
+      if (!didToolCallFail(call.isError, call.result)) return false;
+      return isCmakeCacheSourceMismatchFailure(extractToolFailureText(call));
+    });
+  const latestFreshBuild = [...recentCalls]
+    .reverse()
+    .find((call) => isSuccessfulFreshBuildCall(call));
+  const latestStaleHarnessMismatch = [...recentCalls]
+    .reverse()
+    .find((call) => {
+      if (!didToolCallFail(call.isError, call.result)) return false;
+      if (!isRepositoryBuildHarnessCommand(call)) return false;
+      return isCmakeCacheSourceMismatchFailure(extractToolFailureText(call));
+    });
+  const roundHasStaleHarnessMismatch = roundCalls.some((call) => {
+    if (!didToolCallFail(call.isError, call.result)) return false;
+    if (!isRepositoryBuildHarnessCommand(call)) return false;
+    return isCmakeCacheSourceMismatchFailure(extractToolFailureText(call));
+  });
+  const recentHarnessRetryAfterFreshBuild = (() => {
+    if (!latestFreshBuild) return false;
+    const freshBuildIndex = recentCalls.lastIndexOf(latestFreshBuild);
+    return recentCalls.some(
+      (call, index) =>
+        index > freshBuildIndex && isRepositoryBuildHarnessCommand(call),
+    );
+  })();
+  if (
+    latestFreshBuild &&
+    latestStaleHarnessMismatch &&
+    (roundHasStaleHarnessMismatch || recentHarnessRetryAfterFreshBuild)
+  ) {
+    const freshBuildDir =
+      extractNonDefaultBuildDirectory(extractShellCommand(latestFreshBuild)) ??
+      "build-agenc-fresh";
+    return {
+      key: "system-bash-cmake-stale-harness-after-fresh-build",
+      message:
+        "The repository verification script is still bound to the stale copied `build/` directory, but a regenerated build directory already succeeded. " +
+        "Do not bounce back into `bash tests/run_tests.sh` or edit that script unless it is an explicit writable target. " +
+        `Continue verification directly against \`${freshBuildDir}\` with equivalent build/test commands from the workspace root.`,
+    };
+  }
+  if (latestFreshBuild && latestStaleCmakeMismatch) {
+    const freshBuildDir =
+      extractNonDefaultBuildDirectory(extractShellCommand(latestFreshBuild)) ??
+      "build-agenc-fresh";
+    return {
+      key: "system-bash-cmake-use-established-fresh-build-dir",
+      message:
+        `A regenerated build directory (\`${freshBuildDir}\`) already succeeded after the stale copied CMake cache failure. ` +
+        `Treat \`${freshBuildDir}\` as the trusted build root for the rest of this workspace run. ` +
+        "Keep rebuilds and verification in that directory after source edits, and do not switch back to `build/`, recreate `build/`, or delete build directories with `rm` unless the contract explicitly requires that cleanup.",
+    };
+  }
+
+  const staleCmakeMismatchCall = roundCalls.find((call) => {
+    if (!didToolCallFail(call.isError, call.result)) return false;
+    return isCmakeCacheSourceMismatchFailure(extractToolFailureText(call));
+  });
+  if (staleCmakeMismatchCall) {
+    const successfulFreshBuildCall = roundCalls.find((call) =>
+      isSuccessfulFreshBuildCall(call)
+    );
+    if (
+      successfulFreshBuildCall &&
+      isRepositoryBuildHarnessCommand(staleCmakeMismatchCall)
+    ) {
+      const freshBuildDir = extractNonDefaultBuildDirectory(
+        extractShellCommand(successfulFreshBuildCall),
+      ) ?? "build-agenc-fresh";
+      return {
+        key: "system-bash-cmake-stale-harness-after-fresh-build",
+        message:
+          "The repository verification script is still bound to the stale copied `build/` directory, but a regenerated build directory already succeeded. " +
+          `Do not bounce back into \`bash tests/run_tests.sh\` or edit that script unless it is an explicit writable target. ` +
+          `Continue verification directly against \`${freshBuildDir}\` with equivalent build/test commands from the workspace root.`,
+      };
+    }
+    const deniedRemovalCall = roundCalls.find((call) => {
+      if (!didToolCallFail(call.isError, call.result)) return false;
+      const failureText = extractToolFailureText(call);
+      const deniedCommand = extractDeniedCommand(failureText);
+      if (!deniedCommand || !isDestructiveRemovalCommand(deniedCommand)) {
+        return false;
+      }
+      const rawCommand =
+        typeof call.args?.command === "string" ? call.args.command : "";
+      return /(?:^|\/)build(?:[\/\s]|$)|cmakecache\.txt/i.test(rawCommand);
+    });
+    if (deniedRemovalCall) {
+      return {
+        key: "system-bash-cmake-cache-rebuild-in-fresh-dir",
+        message:
+          "The current workspace contains a stale copied CMake cache, and destructive cleanup is blocked. " +
+          "Do not retry `rm`. Configure a fresh build directory instead (for example `cmake -S . -B build-agenc-fresh`), " +
+          "build from that directory, and if the repository test script hardcodes the stale `build/` path, run the equivalent compile/test verification command directly against the fresh build directory.",
+      };
+    }
+  }
   const failedManagedStop = roundCalls.some((call) => {
     if (call.name !== "desktop.process_stop") return false;
     if (!didToolCallFail(call.isError, call.result)) return false;
@@ -662,6 +1271,18 @@ export function inferRecoveryHint(
 
   const failureText = extractToolFailureText(call);
   const failureTextLower = failureText.toLowerCase();
+  if (
+    failureTextLower.includes("repo-local verification harness") &&
+    failureTextLower.includes("writable target")
+  ) {
+    return {
+      key: `${call.name}-repo-local-verification-harness`,
+      message:
+        "This attempt tried to bypass the repo-local verification harness contract by rewriting or shadowing a grader script. " +
+        "Do not edit `tests/run_tests.sh`, do not create alternate wrappers like `run_tests_fresh.sh`, and do not clone the harness under a new filename unless the contract explicitly names that file as writable. " +
+        "Keep the repo harness read-only and run the equivalent bounded verification commands directly from the workspace root instead.",
+    };
+  }
   if (isWatchModeTestRunnerFailure(call, parsedResult, failureTextLower)) {
     return {
       key: `${call.name}-test-runner-watch-mode`,
@@ -960,6 +1581,73 @@ export function inferRecoveryHint(
           "Only rerun the compile/test command after the source file itself is fixed.",
       };
     }
+    if (isCmakeCacheSourceMismatchFailure(failureText)) {
+      return {
+        key: "system-bash-cmake-cache-source-mismatch",
+        message:
+          "This build directory contains a stale CMake cache from a different workspace or source root. " +
+          "Do not keep retrying the same build command or delete files with `rm`. Reconfigure the project into a fresh build directory " +
+          "(for example `cmake -S . -B build-agenc-fresh`) and continue from that regenerated cache before rerunning follow-up builds.",
+      };
+    }
+    if (isUnconfiguredBuildDirectoryFailure(call, failureText)) {
+      return {
+        key: "system-bash-build-directory-not-configured",
+        message:
+          "This build directory is present on disk but is not configured for the current workspace. " +
+          "Do not keep retrying `make`/`ninja` inside that stale directory. Configure a fresh build directory first " +
+          "(for example `cmake -S . -B build-agenc-fresh`), then build and test from that new directory instead of assuming `build/` is reusable.",
+      };
+    }
+    if (isCompilerDiagnosticFailure(call, failureText)) {
+      const location = extractCompilerDiagnosticLocation(failureText);
+      const unknownTypeName = extractUnknownTypeNameFromCompilerFailure(
+        failureText,
+      );
+      const suggestedName = extractCompilerSuggestedName(failureText);
+      if (isCompilerInterfaceDriftFailure(failureText)) {
+        return {
+          key: location
+            ? `system-bash-compiler-interface-drift:${location.toLowerCase()}`
+            : "system-bash-compiler-interface-drift",
+          message:
+            "The compiler is reporting cross-file interface drift" +
+            (location ? ` at \`${location}\`` : "") +
+            (suggestedName ? ` and is already suggesting \`${suggestedName}\`` : "") +
+            ". Treat the cited header or shared type surface as authoritative. Read the cited header plus every touched source file that consumes it, align the type/member/enum names in one coherent repair pass, and only rerun the minimal build/test command after the full interface is consistent again.",
+        };
+      }
+      if (isHeaderTypeOrderingCompilerFailure(failureText)) {
+        return {
+          key: location
+            ? `system-bash-compiler-header-ordering:${location.toLowerCase()}`
+            : "system-bash-compiler-header-ordering",
+          message:
+            "The compiler is reporting a header/type-ordering error" +
+            (location ? ` at \`${location}\`` : "") +
+            (unknownTypeName ? ` involving \`${unknownTypeName}\`` : "") +
+            ". Read the cited header and the first source file that includes it, move the type definition or forward declaration before the first use, and only rerun the minimal build/test command after the header itself is fixed.",
+        };
+      }
+      return {
+        key: location
+          ? `system-bash-compiler-diagnostic:${location.toLowerCase()}`
+          : "system-bash-compiler-diagnostic",
+        message:
+          "The compiler already identified a concrete source or header location" +
+          (location ? ` (\`${location}\`)` : "") +
+          ". Stop rerunning the same build command. Read and edit the cited file or header, fix the reported code error, and only rerun the minimal build command after the source change is in place.",
+      };
+    }
+    if (isShellExecutionAnomalyFailure(failureText)) {
+      return {
+        key: "system-bash-shell-execution-anomaly",
+        message:
+          "This shell command printed a real shell/runtime error on stderr even though the outer process returned success. " +
+          "Treat that verification step as failed. Fix the cwd/path/script invocation before rerunning it. " +
+          "For repository scripts that use relative paths, invoke them from the workspace root (for example `bash tests/run_tests.sh`) instead of `cd`-ing into the script directory unless the script explicitly requires that cwd.",
+      };
+    }
     if (isPackagePathNotExportedFailure(failureTextLower)) {
       return {
         key: usesCommonJsRequireSnippet(call)
@@ -1047,6 +1735,25 @@ export function inferRecoveryHint(
     }
     const deniedCommand = extractDeniedCommand(failureText);
     if (deniedCommand) {
+      if (isDestructiveRemovalCommand(deniedCommand)) {
+        const rawCommand =
+          typeof call.args?.command === "string" ? call.args.command : "";
+        if (/(?:^|\/)build(?:[\/\s]|$)|cmakecache\.txt/i.test(rawCommand)) {
+          return {
+            key: "system-bash-command-denied-rm-build-artifacts",
+            message:
+              "Destructive deletion is blocked here. For stale generated build artifacts such as `build/` or `CMakeCache.txt`, " +
+              "do not retry with `rm`. Reconfigure into a fresh build directory instead (for example `cmake -S . -B build-agenc-fresh`) " +
+              "and run build/test verification from that new directory.",
+          };
+        }
+        return {
+          key: "system-bash-command-denied-rm",
+          message:
+            "Destructive file-deletion commands are blocked on system.bash unless the user explicitly asked for deletion. " +
+            "Do not retry with `rm`. For rebuild verification, prefer non-destructive commands such as `make clean && make`, `cmake --build . --clean-first`, or another build-system-native clean rebuild path.",
+        };
+      }
       if (isNodeInterpreterCommand(deniedCommand)) {
         if (isAgencRuntimeNodeInvocation(call.args)) {
           return {
@@ -1103,6 +1810,19 @@ export function inferRecoveryHint(
         "This child task is scoped to a delegated workspace root. " +
         "Keep file paths under the assigned root, prefer relative paths from that cwd, " +
         "and do not create fallback workspaces elsewhere (for example under `/tmp`).",
+      };
+  }
+
+  if (
+    call.name === "system.writeFile" &&
+    failureTextLower.includes("refusing destructive overwrite of previously-read file")
+  ) {
+    return {
+      key: "system-writefile-destructive-overwrite",
+      message:
+        "This `system.writeFile` call tried to replace a previously-read file with partial or destructive content. " +
+        "Re-read the current file contents, preserve the unchanged sections, and rewrite the COMPLETE file body in one `system.writeFile` call. " +
+        "Do not send only the changed snippet unless you are using an additive tool like `system.appendFile`.",
     };
   }
 

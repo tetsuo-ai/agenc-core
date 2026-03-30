@@ -121,6 +121,31 @@ describe("GrokProvider", () => {
     });
   });
 
+  it("rejects client-side/custom tools on xAI multi-agent routes", async () => {
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+      model: "grok-4.20-multi-agent-beta-0309",
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "system.bash",
+            description: "run command",
+            parameters: {
+              type: "object",
+              properties: { command: { type: "string" } },
+            },
+          },
+        },
+      ],
+    });
+
+    await expect(
+      provider.chat([{ role: "user", content: "inspect the repo" }]),
+    ).rejects.toThrow(/multi-agent routes do not support client-side\/custom tools/i);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
   it("retrieves a stored xAI response using the documented Responses API method", async () => {
     mockRetrieve.mockResolvedValueOnce({
       id: "resp_saved_1",
@@ -746,9 +771,7 @@ describe("GrokProvider", () => {
     });
   });
 
-  it("records provider tool-resolution fallback when routed tools cannot be resolved", async () => {
-    mockCreate.mockResolvedValueOnce(makeCompletion());
-
+  it("fails closed when a routed tool subset cannot be realized exactly", async () => {
     const events: Array<Record<string, unknown>> = [];
     const provider = new GrokProvider({
       apiKey: "test-key",
@@ -767,37 +790,23 @@ describe("GrokProvider", () => {
       ],
     });
 
-    const response = await provider.chat(
-      [{ role: "user", content: "inspect the repo" }],
-      {
-        toolRouting: { allowedToolNames: ["mcp.doom.start_game"] },
-        trace: {
-          includeProviderPayloads: true,
-          onProviderTraceEvent: (event) => {
-            events.push(event as unknown as Record<string, unknown>);
+    await expect(
+      provider.chat(
+        [{ role: "user", content: "inspect the repo" }],
+        {
+          toolRouting: { allowedToolNames: ["mcp.doom.start_game"] },
+          trace: {
+            includeProviderPayloads: true,
+            onProviderTraceEvent: (event) => {
+              events.push(event as unknown as Record<string, unknown>);
+            },
           },
         },
-      },
+      ),
+    ).rejects.toThrow(
+      /routed tool subset could not be realized exactly/i,
     );
-
-    expect(response.requestMetrics).toMatchObject({
-      toolCount: 1,
-      toolNames: ["system.bash"],
-      requestedToolNames: ["mcp.doom.start_game"],
-      missingRequestedToolNames: ["mcp.doom.start_game"],
-      toolResolution: "fallback_full_catalog_no_matches",
-      providerCatalogToolCount: 1,
-    });
-    expect(events[0]).toMatchObject({
-      kind: "request",
-      context: {
-        requestedToolNames: ["mcp.doom.start_game"],
-        resolvedToolNames: ["system.bash"],
-        missingRequestedToolNames: ["mcp.doom.start_game"],
-        toolResolution: "fallback_full_catalog_no_matches",
-        providerCatalogToolCount: 1,
-      },
-    });
+    expect(events).toHaveLength(0);
   });
 
   it("records persisted stateful anchor details on provider response traces", async () => {
@@ -1276,24 +1285,7 @@ describe("GrokProvider", () => {
     });
   });
 
-  it("suppresses tools when structured outputs are combined with tools on non-Grok-4 models", async () => {
-    mockCreate.mockResolvedValueOnce(
-      makeCompletion({
-        output_text: '{"summary":"repo looks healthy"}',
-        output: [
-          {
-            type: "message",
-            content: [
-              {
-                type: "output_text",
-                text: '{"summary":"repo looks healthy"}',
-              },
-            ],
-          },
-        ],
-      }),
-    );
-
+  it("fails closed when structured outputs are combined with tools on non-Grok-4 models", async () => {
     const provider = new GrokProvider({
       apiKey: "test-key",
       model: "grok-code-fast-1",
@@ -1312,63 +1304,30 @@ describe("GrokProvider", () => {
       ],
     });
 
-    const response = await provider.chat(
-      [{ role: "user", content: "inspect the repo and summarize findings" }],
-      {
-        structuredOutput: {
-          enabled: true,
-          schema: {
-            type: "json_schema",
-            name: "repo_summary",
+    await expect(
+      provider.chat(
+        [{ role: "user", content: "inspect the repo and summarize findings" }],
+        {
+          structuredOutput: {
+            enabled: true,
             schema: {
-              type: "object",
-              properties: {
-                summary: { type: "string" },
+              type: "json_schema",
+              name: "repo_summary",
+              schema: {
+                type: "object",
+                properties: {
+                  summary: { type: "string" },
+                },
+                required: ["summary"],
               },
-              required: ["summary"],
             },
           },
         },
-      },
+      ),
+    ).rejects.toThrow(
+      /does not support structured outputs combined with tools/i,
     );
-
-    const params = mockCreate.mock.calls[0][0];
-    expect(params.tools).toBeUndefined();
-    expect(params.tool_choice).toBeUndefined();
-    expect(params.parallel_tool_calls).toBeUndefined();
-    expect(params.text).toEqual({
-      format: {
-        type: "json_schema",
-        name: "repo_summary",
-        schema: {
-          type: "object",
-          properties: {
-            summary: { type: "string" },
-          },
-          required: ["summary"],
-        },
-        strict: true,
-      },
-    });
-    expect(response.structuredOutput).toEqual({
-      type: "json_schema",
-      name: "repo_summary",
-      rawText: '{"summary":"repo looks healthy"}',
-      parsed: { summary: "repo looks healthy" },
-    });
-    expect(response.requestMetrics).toMatchObject({
-      toolCount: 0,
-      toolNames: ["system.bash"],
-      providerCatalogToolCount: 1,
-      toolsAttached: false,
-      toolSuppressionReason:
-        "structured_output_with_tools_unsupported_model",
-      structuredOutputEnabled: true,
-      structuredOutputName: "repo_summary",
-      structuredOutputStrict: true,
-      store: false,
-    });
-    expect(response.requestMetrics.toolChoice).toBeUndefined();
+    expect(mockCreate).not.toHaveBeenCalled();
   });
 
   it("disables parallel tool calls by default when tools are present", async () => {
@@ -1453,9 +1412,7 @@ describe("GrokProvider", () => {
     expect(paramsJson.includes("description")).toBe(false);
   });
 
-  it("omits tools on follow-up turns when tool payload is large", async () => {
-    mockCreate.mockResolvedValueOnce(makeCompletion());
-
+  it("fails closed when a follow-up turn cannot preserve the tool contract", async () => {
     const manyTools: LLMTool[] = Array.from({ length: 120 }, (_, i) => ({
       type: "function",
       function: {
@@ -1480,29 +1437,29 @@ describe("GrokProvider", () => {
       apiKey: "test-key",
       tools: manyTools,
     });
-    await provider.chat([
-      { role: "user", content: "run tool" },
-      {
-        role: "assistant",
-        content: "",
-        toolCalls: [
-          {
-            id: "call_1",
-            name: "tool_1",
-            arguments: '{"a":"value"}',
-          },
-        ],
-      },
-      {
-        role: "tool",
-        content: "{\"ok\":true}",
-        toolCallId: "call_1",
-        toolName: "tool_1",
-      },
-    ]);
-
-    const params = mockCreate.mock.calls[0][0];
-    expect(params.tools).toBeUndefined();
+    await expect(
+      provider.chat([
+        { role: "user", content: "run tool" },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            {
+              id: "call_1",
+              name: "tool_1",
+              arguments: '{"a":"value"}',
+            },
+          ],
+        },
+        {
+          role: "tool",
+          content: "{\"ok\":true}",
+          toolCallId: "call_1",
+          toolName: "tool_1",
+        },
+      ]),
+    ).rejects.toThrow(/cannot preserve the routed tool contract/i);
+    expect(mockCreate).not.toHaveBeenCalled();
   });
 
   it("passes usage information", async () => {
@@ -2924,6 +2881,50 @@ describe("GrokProvider", () => {
     expect(second.stateful?.events?.some((event) =>
       event.reason === "provider_retrieval_failure"
     )).toBe(true);
+  });
+
+  it("fails closed when previous_response_id retrieval cannot preserve state", async () => {
+    mockCreate
+      .mockResolvedValueOnce(
+        makeCompletion({
+          id: "resp_1",
+          output_text: "First",
+        }),
+      )
+      .mockRejectedValueOnce({
+        status: 404,
+        message: "previous_response_id not found",
+      });
+
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+      statefulResponses: {
+        enabled: true,
+        store: true,
+        fallbackToStateless: false,
+      },
+    });
+
+    await provider.chat(
+      [
+        { role: "system", content: "You are helpful." },
+        { role: "user", content: "hello" },
+      ],
+      { stateful: { sessionId: "sess-stale-strict" } },
+    );
+
+    await expect(
+      provider.chat(
+        [
+          { role: "system", content: "You are helpful." },
+          { role: "user", content: "hello" },
+          { role: "assistant", content: "First" },
+          { role: "user", content: "continue" },
+        ],
+        { stateful: { sessionId: "sess-stale-strict" } },
+      ),
+    ).rejects.toThrow(/previous_response_id not found/i);
+    expect(mockCreate).toHaveBeenCalledTimes(2);
   });
 
   it("falls back with missing_previous_response_id after provider restart", async () => {

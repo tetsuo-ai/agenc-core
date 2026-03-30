@@ -13,12 +13,12 @@ import type {
   LLMStructuredOutputResult,
 } from "./types.js";
 import { parseJsonObjectFromText } from "./chat-executor-text.js";
+import { getGrokModelCapabilities } from "../gateway/context-window.js";
 
 export function supportsXaiStructuredOutputsWithTools(
   model: string | undefined,
 ): boolean {
-  if (typeof model !== "string") return false;
-  return /^grok-4(?:[.-]|$)/i.test(model.trim());
+  return getGrokModelCapabilities(model).supportsStructuredOutputsWithTools;
 }
 
 export function parseStructuredOutputText(

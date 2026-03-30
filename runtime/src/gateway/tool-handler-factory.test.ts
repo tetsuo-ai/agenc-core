@@ -825,22 +825,27 @@ describe("createSessionToolHandler", () => {
   });
 
   it("passes through shell-mode commands that reference absolute paths outside the delegated workspace root after scoped validation removal", async () => {
+    const workspaceRoot = createTempDir("agenc-tool-handler-shell-pass-through-");
     const baseHandler = vi.fn(async () => '{"stdout":"","exitCode":0}');
     const handler = createSessionToolHandler({
       sessionId: "session-1",
       baseHandler,
       routerId: "router-a",
       send: vi.fn(),
-      defaultWorkingDirectory: "/home/tetsuo/agent-test/terrain-router-ts-1",
-      scopedFilesystemRoot: "/home/tetsuo/agent-test/terrain-router-ts-1",
+      defaultWorkingDirectory: workspaceRoot,
+      scopedFilesystemRoot: workspaceRoot,
     });
 
-    const result = await handler("system.bash", {
-      command: "mkdir -p /tmp/terrain-monorepo/packages/core/src",
-    });
+    try {
+      const result = await handler("system.bash", {
+        command: "mkdir -p /tmp/terrain-monorepo/packages/core/src",
+      });
 
-    expect(JSON.parse(result)).toEqual({ stdout: "", exitCode: 0 });
-    expect(baseHandler).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(result)).toEqual({ stdout: "", exitCode: 0 });
+      expect(baseHandler).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   it("rewrites /workspace aliases inside shell-mode commands to the configured host workspace root", async () => {
@@ -870,89 +875,109 @@ describe("createSessionToolHandler", () => {
   });
 
   it("does not treat shell-mode sed expressions as escaped filesystem paths in delegated bash commands", async () => {
+    const workspaceRoot = createTempDir("agenc-tool-handler-sed-shell-mode-");
     const baseHandler = vi.fn(async () => '{"stdout":"","exitCode":0}');
     const handler = createSessionToolHandler({
       sessionId: "session-1",
       baseHandler,
       routerId: "router-a",
       send: vi.fn(),
-      defaultWorkingDirectory: "/home/tetsuo/agent-test/terrain-router-ts-1",
-      scopedFilesystemRoot: "/home/tetsuo/agent-test/terrain-router-ts-1",
+      defaultWorkingDirectory: workspaceRoot,
+      scopedFilesystemRoot: workspaceRoot,
     });
 
-    const result = await handler("system.bash", {
-      command: "sed -n '/interface Scenario/,/}/p' packages/core/src/index.ts",
-    });
+    try {
+      const result = await handler("system.bash", {
+        command: "sed -n '/interface Scenario/,/}/p' packages/core/src/index.ts",
+      });
 
-    expect(JSON.parse(result)).toEqual({
-      stdout: "",
-      exitCode: 0,
-    });
-    expect(baseHandler).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(result)).toEqual({
+        stdout: "",
+        exitCode: 0,
+      });
+      expect(baseHandler).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   it("passes through shell-mode redirect targets outside the delegated workspace root after scoped validation removal", async () => {
+    const workspaceRoot = createTempDir("agenc-tool-handler-shell-redirect-");
     const baseHandler = vi.fn(async () => '{"stdout":"","exitCode":0}');
     const handler = createSessionToolHandler({
       sessionId: "session-1",
       baseHandler,
       routerId: "router-a",
       send: vi.fn(),
-      defaultWorkingDirectory: "/home/tetsuo/agent-test/terrain-router-ts-1",
-      scopedFilesystemRoot: "/home/tetsuo/agent-test/terrain-router-ts-1",
+      defaultWorkingDirectory: workspaceRoot,
+      scopedFilesystemRoot: workspaceRoot,
     });
 
-    const result = await handler("system.bash", {
-      command: "echo ok > /tmp/terrain-monorepo.log",
-    });
+    try {
+      const result = await handler("system.bash", {
+        command: "echo ok > /tmp/terrain-monorepo.log",
+      });
 
-    expect(JSON.parse(result)).toEqual({ stdout: "", exitCode: 0 });
-    expect(baseHandler).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(result)).toEqual({ stdout: "", exitCode: 0 });
+      expect(baseHandler).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   it("allows shell-mode redirect targets that use /dev/null under a delegated workspace root", async () => {
+    const workspaceRoot = createTempDir("agenc-tool-handler-shell-dev-null-");
     const baseHandler = vi.fn(async () => '{"stdout":"","exitCode":0}');
     const handler = createSessionToolHandler({
       sessionId: "session-1",
       baseHandler,
       routerId: "router-a",
       send: vi.fn(),
-      defaultWorkingDirectory: "/home/tetsuo/agent-test/terrain-router-ts-1",
-      scopedFilesystemRoot: "/home/tetsuo/agent-test/terrain-router-ts-1",
+      defaultWorkingDirectory: workspaceRoot,
+      scopedFilesystemRoot: workspaceRoot,
     });
 
-    const result = await handler("system.bash", {
-      command: "echo ok > /dev/null",
-    });
+    try {
+      const result = await handler("system.bash", {
+        command: "echo ok > /dev/null",
+      });
 
-    expect(JSON.parse(result)).toEqual({
-      stdout: "",
-      exitCode: 0,
-    });
-    expect(baseHandler).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(result)).toEqual({
+        stdout: "",
+        exitCode: 0,
+      });
+      expect(baseHandler).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   it("does not treat sed expressions as escaped filesystem paths in delegated bash commands", async () => {
+    const workspaceRoot = createTempDir("agenc-tool-handler-sed-args-");
     const baseHandler = vi.fn(async () => '{"stdout":"","exitCode":0}');
     const handler = createSessionToolHandler({
       sessionId: "session-1",
       baseHandler,
       routerId: "router-a",
       send: vi.fn(),
-      defaultWorkingDirectory: "/home/tetsuo/agent-test/terrain-router-ts-1",
-      scopedFilesystemRoot: "/home/tetsuo/agent-test/terrain-router-ts-1",
+      defaultWorkingDirectory: workspaceRoot,
+      scopedFilesystemRoot: workspaceRoot,
     });
 
-    const result = await handler("system.bash", {
-      command: "sed",
-      args: ["-i", "/In real, would use Yen's algorithm/d", "packages/core/src/index.ts"],
-    });
+    try {
+      const result = await handler("system.bash", {
+        command: "sed",
+        args: ["-i", "/In real, would use Yen's algorithm/d", "packages/core/src/index.ts"],
+      });
 
-    expect(JSON.parse(result)).toEqual({
-      stdout: "",
-      exitCode: 0,
-    });
-    expect(baseHandler).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(result)).toEqual({
+        stdout: "",
+        exitCode: 0,
+      });
+      expect(baseHandler).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   it("surfaces the blocking reason returned by tool:before hooks", async () => {
@@ -2536,6 +2561,112 @@ describe("createSessionToolHandler", () => {
     });
   });
 
+  it("blocks delegated child rewrites of repo-local verification harnesses unless explicitly writable", async () => {
+    const baseHandler = vi.fn(async () => JSON.stringify({ ok: true }));
+    const subAgentManager = {
+      getInfo: vi.fn(() => ({
+        sessionId: "subagent:child-harness-block",
+        parentSessionId: "session-parent",
+        depth: 1,
+        status: "running",
+        startedAt: Date.now() - 100,
+        task: "Implement the shell",
+      })),
+      getExecutionContext: vi.fn(() => ({
+        version: "v1",
+        workspaceRoot: "/tmp/workspace",
+        allowedReadRoots: ["/tmp/workspace"],
+        allowedWriteRoots: ["/tmp/workspace"],
+        targetArtifacts: ["/tmp/workspace"],
+        artifactRelations: [
+          {
+            relationType: "write_owner",
+            artifactPath: "/tmp/workspace",
+          },
+        ],
+      })),
+    };
+
+    const handler = createSessionToolHandler({
+      sessionId: "subagent:child-harness-block",
+      baseHandler,
+      availableToolNames: ["system.writeFile"],
+      routerId: "router-a",
+      send: vi.fn(),
+      defaultWorkingDirectory: "/tmp/workspace",
+      delegation: () => ({
+        subAgentManager: subAgentManager as any,
+        policyEngine: null,
+        verifier: null,
+        lifecycleEmitter: null,
+      }),
+    });
+
+    const result = await handler("system.writeFile", {
+      path: "tests/run_tests.sh",
+      content: "#!/bin/bash\nrm -rf build\n",
+    });
+
+    expect(baseHandler).not.toHaveBeenCalled();
+    expect(JSON.parse(result)).toEqual({
+      error:
+        'Delegated write path "/tmp/workspace/tests/run_tests.sh" rewrites a repo-local verification harness without explicitly owning it as a writable target',
+    });
+  });
+
+  it("allows delegated verification harness rewrites when the harness is explicitly writable", async () => {
+    const baseHandler = vi.fn(async () => JSON.stringify({ ok: true }));
+    const subAgentManager = {
+      getInfo: vi.fn(() => ({
+        sessionId: "subagent:child-harness-allow",
+        parentSessionId: "session-parent",
+        depth: 1,
+        status: "running",
+        startedAt: Date.now() - 100,
+        task: "Update the test harness",
+      })),
+      getExecutionContext: vi.fn(() => ({
+        version: "v1",
+        workspaceRoot: "/tmp/workspace",
+        allowedReadRoots: ["/tmp/workspace"],
+        allowedWriteRoots: ["/tmp/workspace"],
+        targetArtifacts: ["/tmp/workspace"],
+        artifactRelations: [
+          {
+            relationType: "write_owner",
+            artifactPath: "/tmp/workspace/tests/run_tests.sh",
+          },
+        ],
+      })),
+    };
+
+    const handler = createSessionToolHandler({
+      sessionId: "subagent:child-harness-allow",
+      baseHandler,
+      availableToolNames: ["system.writeFile"],
+      routerId: "router-a",
+      send: vi.fn(),
+      defaultWorkingDirectory: "/tmp/workspace",
+      delegation: () => ({
+        subAgentManager: subAgentManager as any,
+        policyEngine: null,
+        verifier: null,
+        lifecycleEmitter: null,
+      }),
+    });
+
+    await handler("system.writeFile", {
+      path: "tests/run_tests.sh",
+      content: "#!/bin/bash\nbash tests/run_tests.sh\n",
+    });
+
+    expect(baseHandler).toHaveBeenCalledWith("system.writeFile", {
+      path: "/tmp/workspace/tests/run_tests.sh",
+      content: "#!/bin/bash\nbash tests/run_tests.sh\n",
+      [SESSION_ALLOWED_ROOTS_ARG]: ["/tmp/workspace"],
+    });
+  });
+
   it("allows scaffold flows within the execution envelope for mkdir plus relative file writes", async () => {
     const baseHandler = vi.fn(async () => JSON.stringify({ ok: true }));
     const subAgentManager = {
@@ -4032,6 +4163,7 @@ describe("createSessionToolHandler", () => {
           }],
           tokenUsage: undefined,
           providerName: "mock",
+          completionState: "completed",
           stopReason: "completed",
         }),
       getInfo: vi.fn(() => ({ status: "completed" })),
@@ -4076,6 +4208,86 @@ describe("createSessionToolHandler", () => {
       "system.writeFile",
     ]);
     expect(subAgentManager.spawn).not.toHaveBeenCalled();
+  });
+
+  it("records degraded tool-contract state when execute_with_agent resolves abstract capabilities into concrete child tools", async () => {
+    const hostWorkspaceRoot = createTempDir("delegated-file-system-contract-");
+    const subAgentManager = {
+      spawn: vi.fn(async () => "subagent:spawned"),
+      getResult: vi
+        .fn()
+        .mockReturnValueOnce(null)
+        .mockReturnValue(makeCompletedChildResult({
+          sessionId: "subagent:spawned",
+          output: '{"summary":"workspace scaffolded"}',
+          success: true,
+          durationMs: 25,
+          toolCalls: [{
+            name: "system.writeFile",
+            args: {
+              path: "/workspace/runtime/package.json",
+              content: '{"name":"runtime"}',
+            },
+            result: '{"ok":true}',
+            isError: false,
+            durationMs: 5,
+          }],
+          tokenUsage: undefined,
+          providerName: "mock",
+        })),
+      getInfo: vi.fn(() => ({ status: "completed" })),
+    };
+
+    const handler = createSessionToolHandler({
+      sessionId: "session-parent",
+      baseHandler: vi.fn(async () => "should-not-run"),
+      availableToolNames: [
+        "system.listDir",
+        "system.writeFile",
+        "system.mkdir",
+        "system.bash",
+      ],
+      routerId: "router-a",
+      send: vi.fn(),
+      defaultWorkingDirectory: hostWorkspaceRoot,
+      delegation: () => ({
+        subAgentManager: subAgentManager as any,
+        policyEngine: null,
+        verifier: null,
+        lifecycleEmitter: null,
+      }),
+    });
+
+    const result = await handler("execute_with_agent", {
+      task: "Scaffold project and implement the game files in the desktop workspace",
+      objective:
+        "Scaffold project and implement the game files in the desktop workspace",
+      inputContract: "JSON output with created files",
+      requiredToolCapabilities: ["file_system"],
+    });
+    expect(result).toContain("delegatedScopeTrust");
+    expect(subAgentManager.spawn).toHaveBeenCalledTimes(1);
+    expect(subAgentManager.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tools: [
+          "system.listDir",
+          "system.writeFile",
+          "system.mkdir",
+          "system.bash",
+        ],
+        delegationSpec: expect.objectContaining({
+          toolContract: expect.objectContaining({
+            state: "degraded",
+            requiredSubstitution: [
+              "system.listDir",
+              "system.writeFile",
+              "system.mkdir",
+            ],
+            optionalEnrichment: ["system.bash"],
+          }),
+        }),
+      }),
+    );
   });
 
   it("keeps the explicit execute_with_agent delegation spec while promoting an objective-rich child prompt", async () => {

@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "traceId": "orchestration:followup-tool-contract-suppressed",
+  "seed": 203,
+  "createdAtMs": 1774410000003,
+  "metadata": {
+    "scenarioId": "followup_tool_contract_suppressed",
+    "sourceTraceId": "synthetic:phase8:followup-tool-contract-suppressed"
+  },
+  "events": [
+    { "seq": 1, "type": "discovered", "taskPda": "followup_tool_contract_suppressed", "timestampMs": 1, "payload": {} },
+    { "seq": 2, "type": "claimed", "taskPda": "followup_tool_contract_suppressed", "timestampMs": 2, "payload": {} },
+    {
+      "seq": 3,
+      "type": "executed",
+      "taskPda": "followup_tool_contract_suppressed",
+      "timestampMs": 3,
+      "payload": {
+        "reportedStatus": "tool_contract_suppressed"
+      }
+    },
+    {
+      "seq": 4,
+      "type": "policy_violation",
+      "taskPda": "followup_tool_contract_suppressed",
+      "timestampMs": 4,
+      "payload": {
+        "code": "followup_tool_contract_suppressed"
+      }
+    },
+    {
+      "seq": 5,
+      "type": "failed",
+      "taskPda": "followup_tool_contract_suppressed",
+      "timestampMs": 5,
+      "payload": {
+        "error": "Required routed tools were silently stripped on a follow-up turn."
+      }
+    }
+  ]
+}

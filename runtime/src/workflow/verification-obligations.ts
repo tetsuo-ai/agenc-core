@@ -9,7 +9,9 @@ import type { WorkflowRequestCompletionContract } from "./request-completion.js"
 import type {
   ExecutionStepKind,
   ExecutionVerificationMode,
+  WorkflowStepRole,
 } from "./execution-envelope.js";
+import { canonicalizeWorkflowStepRole } from "./execution-envelope.js";
 import { inferCompatibilityCompletionContract } from "./execution-intent.js";
 import { criterionRequiresWorkspaceInspectionVerification } from "./workspace-inspection-evidence.js";
 
@@ -25,6 +27,7 @@ export interface WorkflowVerificationContract {
   readonly acceptanceCriteria?: readonly string[];
   readonly verificationMode?: ExecutionVerificationMode;
   readonly stepKind?: ExecutionStepKind;
+  readonly role?: WorkflowStepRole;
   readonly completionContract?: ImplementationCompletionContract;
   readonly requestCompletion?: WorkflowRequestCompletionContract;
 }
@@ -35,6 +38,7 @@ export interface VerificationObligations {
   readonly acceptanceCriteria: readonly string[];
   readonly verificationMode: ExecutionVerificationMode;
   readonly stepKind?: ExecutionStepKind;
+  readonly role?: WorkflowStepRole;
   readonly completionContract?: ImplementationCompletionContract;
   readonly placeholderTaxonomy: PlaceholderTaxonomy;
   readonly requiresBuildVerification: boolean;
@@ -115,6 +119,11 @@ export function deriveVerificationObligations(
       verificationMode,
       targetArtifacts,
     });
+  const role = canonicalizeWorkflowStepRole({
+    role: normalizedInput.role,
+    stepKind,
+    verificationMode,
+  });
   const acceptanceCriteriaRequireBehavior =
     acceptanceCriteria.some((criterion) => criterionRequiresBehaviorVerification(criterion));
   const acceptanceCriteriaRequireBuild =
@@ -132,12 +141,13 @@ export function deriveVerificationObligations(
     completionContract?.taskClass === "behavior_required" ||
     acceptanceCriteriaRequireBehavior;
   const requiresReviewVerification =
-    completionContract?.taskClass === "review_required";
+    completionContract?.taskClass === "review_required" ||
+    role === "reviewer";
   const requiresWorkspaceInspectionEvidence =
     acceptanceCriteriaRequireWorkspaceInspection &&
     normalizedInput.inheritedEvidence?.workspaceInspectionSatisfied !== true;
   const requiresMutationEvidence =
-    completionContract?.taskClass === "review_required"
+    role === "reviewer" || completionContract?.taskClass === "review_required"
       ? false
       : completionContract
         ? verificationMode === "mutation_required" ||
@@ -167,6 +177,7 @@ export function deriveVerificationObligations(
     acceptanceCriteria,
     verificationMode,
     stepKind,
+    role,
     completionContract,
     placeholderTaxonomy,
     requiresBuildVerification,
@@ -181,7 +192,9 @@ export function deriveVerificationObligations(
       requiresMutationEvidence ||
       requiredSourceArtifacts.length > 0,
     requiresTargetAuthorization: targetArtifacts.length > 0,
-    allowsGroundedNoop: targetArtifacts.length > 0,
+    allowsGroundedNoop:
+      role !== "reviewer" &&
+      targetArtifacts.length > 0,
     placeholdersAllowed,
     partialCompletionAllowed,
   };
@@ -216,6 +229,7 @@ function normalizeVerificationContractInput(
       acceptanceCriteria: input.acceptanceCriteria,
       verificationMode: executionContext?.verificationMode,
       stepKind: executionContext?.stepKind,
+      role: executionContext?.role,
       completionContract: executionContext?.completionContract,
     };
   }

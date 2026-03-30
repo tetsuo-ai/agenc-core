@@ -4,6 +4,14 @@
  * @module
  */
 
+import { existsSync } from "node:fs";
+import {
+  basename as pathBasename,
+  dirname as pathDirname,
+  join as joinPath,
+  resolve as resolvePath,
+} from "node:path";
+
 import type {
   LLMMessage,
   LLMStructuredOutputRequest,
@@ -35,6 +43,9 @@ import type {
   SubagentVerifierDecision,
   SubagentVerifierStepAssessment,
   ToolCallRecord,
+  WorkflowContract,
+  WorkflowContractClass,
+  WorkflowStepContract,
 } from "./chat-executor-types.js";
 import {
   assessDelegationDecision,
@@ -92,6 +103,12 @@ import {
   isNonExecutableEnvelopePath,
   normalizeWorkspaceRoot,
 } from "../workflow/path-normalization.js";
+import {
+  canonicalizeWorkflowArtifactRelations,
+  canonicalizeWorkflowStepRole,
+  type WorkflowArtifactRelation,
+  type WorkflowStepRole,
+} from "../workflow/execution-envelope.js";
 import { textRequiresWorkspaceGroundedArtifactUpdate } from "../workflow/workspace-inspection-evidence.js";
 import {
   extractRequiredSubagentOrchestrationRequirements,
@@ -486,13 +503,21 @@ const EXECUTION_SCOPE_BOUNDARY_CUE_RE =
 const EXPLANATION_ONLY_REQUEST_RE =
   /\b(?:explain|describe|outline|summarize|brainstorm|compare|review|analy(?:s|z)e|what would|how would|plan(?:\s+out)?|walk me through)\b/i;
 const NODE_PACKAGE_TOOLING_RE =
-  /\b(?:node(?:\.js)?|npm|npx|package\.json|package-lock\.json|pnpm|pnpm-workspace\.yaml|yarn|bun|workspaces?|typescript|tsconfig(?:\.[a-z]+)?\.json|tsx|vitest|commander)\b/i;
+  /\b(?:node(?:\.js)?|npm|npx|package\.json|package-lock\.json|pnpm|pnpm-workspace\.yaml|yarn|bun|typescript|tsconfig(?:\.[a-z]+)?\.json|tsx|vitest|commander|(?:npm|pnpm|yarn|bun)\s+workspaces?)\b/i;
+const NODE_DECLARED_ECOSYSTEM_STRONG_RE =
+  /\b(?:npm|npx|package\.json|package-lock\.json|pnpm|pnpm-workspace\.yaml|yarn|bun|tsconfig(?:\.[a-z]+)?\.json|node_modules|vite\.config(?:\.[a-z]+)?|vitest\.config(?:\.[a-z]+)?|(?:npm|pnpm|yarn|bun)\s+workspaces?)\b/i;
+const NODE_DECLARED_ECOSYSTEM_COMMAND_RE = /\b(?:npm|npx|pnpm|yarn|bun)\b/i;
 const NODE_PACKAGE_MANIFEST_PATH_RE =
   /(?:^|\/)(?:package\.json|package-lock\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|bun\.lockb|tsconfig(?:\.[a-z]+)?\.json)$/i;
 const NODE_LOCAL_DEPENDENCY_SPEC_RE =
   /\b(?:file:\.\.\/|workspace:\*|local deps?|local dependency references?)\b/i;
 const NODE_MANIFEST_OR_CONFIG_RE =
-  /\b(?:package\.json|package-lock\.json|pnpm-workspace\.yaml|pnpm-lock\.yaml|yarn\.lock|bun\.lockb|tsconfig(?:\.[a-z]+)?\.json|vite\.config(?:\.[a-z]+)?|vitest\.config(?:\.[a-z]+)?|workspaces?|dependencies|devdependencies|scripts?|bin)\b/i;
+  /\b(?:package\.json|package-lock\.json|pnpm-workspace\.yaml|pnpm-lock\.yaml|yarn\.lock|bun\.lockb|tsconfig(?:\.[a-z]+)?\.json|vite\.config(?:\.[a-z]+)?|vitest\.config(?:\.[a-z]+)?|(?:npm|pnpm|yarn|bun)\s+workspaces?|package\s+scripts?|dependencies|devdependencies|bin)\b/i;
+const NATIVE_TOOLING_RE =
+  /\b(?:cmake|ctest|ninja|gcc|g\+\+|clang|clang\+\+|make|valgrind|gprof|perf|meson)\b/i;
+const NATIVE_MANIFEST_PATH_RE =
+  /(?:^|\/)(?:CMakeLists\.txt|Makefile|meson\.build|build\.ninja|compile_commands\.json)$/i;
+const NATIVE_SOURCE_PATH_RE = /(?:^|\/)[^/]+\.(?:c|cc|cpp|cxx|h|hpp)$/i;
 const NODE_INSTALL_SENSITIVE_VERIFICATION_ACTION_RE =
   /\b(?:verify|verified|validat(?:e|ed|ion)|confirm|confirmed|ensure|ensures|ensured|check|checks|checked|run|runs|running|execute|executes|executed|prove|proves|proven)\b/i;
 const NODE_INSTALL_SENSITIVE_VERIFICATION_TARGET_RE =
@@ -501,11 +526,20 @@ const NODE_INSTALL_SENSITIVE_VERIFICATION_PHRASE_RE =
   /\b(?:tests?\s+(?:pass|passing|passed|run|runs|running|succeed|succeeds|succeeded)|coverage(?:\s+(?:reported|generated|collected|runs?|ran))?|builds?\s+(?:cleanly|correctly|successfully|without errors?|ok)|compiles?\s+(?:cleanly|correctly|successfully|without errors?)|typechecks?\s+(?:cleanly|correctly|successfully|without errors?)|lints?\s+(?:cleanly|correctly|successfully|without errors?)|installs?\s+(?:cleanly|correctly|successfully|without errors?)|npm\s+(?:test|run\s+build|run\s+typecheck|run\s+lint)\s+(?:passes?|succeeds?|runs?)|pnpm\s+(?:test|build|typecheck|lint)\s+(?:passes?|succeeds?|runs?)|yarn\s+(?:test|build|typecheck|lint)\s+(?:passes?|succeeds?|runs?)|bun\s+(?:test|run(?:\s+(?:build|typecheck|lint))?)\s+(?:passes?|succeeds?|runs?)|vite\s+build\s+(?:passes?|succeeds?|runs?)|tsc\s+(?:passes?|succeeds?|runs?))\b/i;
 const NEGATED_NODE_VERIFICATION_RE =
   /\b(?:no|without|avoid(?:ing)?|skip|exclude(?:d|ing)?|do\s+not|don't)\s+(?:any\s+)?(?:install(?:ation|ing)?|run(?:ning)?|runtime\s+testing|tests?|testing|build(?:s|ing)?|compile(?:s|d|ing)?|typecheck(?:s|ed|ing)?|lint(?:s|ed|ing)?)(?:\s*(?:\/|or|and)\s*(?:install(?:ation|ing)?|run(?:ning)?|tests?|testing|build(?:s|ing)?|compile(?:s|d|ing)?|typecheck(?:s|ed|ing)?|lint(?:s|ed|ing)?))*\b/gi;
+const NEGATED_NODE_ARTIFACT_RE =
+  /\b(?:no|without|avoid(?:ing)?|skip|exclude(?:d|ing)?|do\s+not|don't)\s+(?:any\s+)?(?:package\.json|package-lock\.json|pnpm-workspace\.yaml|pnpm-lock\.yaml|yarn\.lock|bun\.lockb|tsconfig(?:\.[a-z]+)?\.json|vite\.config(?:\.[a-z]+)?|vitest\.config(?:\.[a-z]+)?|npm|npx|pnpm|yarn|bun)(?:\s+changes?)?\b/gi;
 const NODE_PACKAGE_MANAGER_COMMANDS = new Set(["npm", "pnpm", "yarn", "bun"]);
 const NODE_INSTALL_ACTIONS = new Set(["install", "ci", "add"]);
 
 function stripNegatedNodeVerificationLanguage(value: string): string {
   return value.replace(NEGATED_NODE_VERIFICATION_RE, " ");
+}
+
+function stripNegatedNodeEcosystemLanguage(value: string): string {
+  return stripNegatedNodeVerificationLanguage(value).replace(
+    NEGATED_NODE_ARTIFACT_RE,
+    " ",
+  );
 }
 
 function isDialogueOnlyExactResponseTurn(messageText: string): boolean {
@@ -633,6 +667,8 @@ export function buildPlannerMessages(
     artifactIntent === "grounded_plan_generation";
   const workspaceGroundedArtifactUpdate =
     plannerRequestNeedsWorkspaceGroundedArtifactUpdate(messageText);
+  const sameTargetImplementFromArtifactHistoryBlockedRe =
+    /\b(?:validation_error|workflow state:\s*(?:blocked|partial)|inline legacy fallback is disabled|planner emitted a structured plan that failed local validation|implementation-class completion requires workflow-owned verification closure|do not present the work as complete)\b/i;
   const currentArtifactTargets = extractPlannerArtifactTargets(messageText);
   const hostToolingHint = buildPlannerHostToolingHint(
     messageText,
@@ -671,6 +707,20 @@ export function buildPlannerMessages(
         )
       ) {
         suppressImmediateAssistantReply = entry.role === "user";
+        return false;
+      }
+      if (
+        sameArtifactTarget &&
+        entryIntent === "implement_from_artifact"
+      ) {
+        suppressImmediateAssistantReply = entry.role === "user";
+        return false;
+      }
+      if (
+        sameArtifactTarget &&
+        entry.role === "assistant" &&
+        sameTargetImplementFromArtifactHistoryBlockedRe.test(raw)
+      ) {
         return false;
       }
       suppressImmediateAssistantReply = false;
@@ -743,6 +793,8 @@ export function buildPlannerMessages(
         '        "effectClass": "read_only|filesystem_write|filesystem_scaffold|shell|mixed",\n' +
         '        "verificationMode": "none|grounded_read|mutation_required|deterministic_followup",\n' +
         '        "stepKind": "delegated_research|delegated_review|delegated_write|delegated_scaffold|delegated_validation",\n' +
+        '        "role": "reviewer|writer|validator|researcher|synthesizer",\n' +
+        '        "artifactRelations": [{"relationType":"read_dependency|write_owner|verification_subject|context_input|handoff_artifact","artifactPath":"/absolute/or/workspace-relative/path"}],\n' +
         '        "fallbackPolicy": "continue_without_delegation|fail_request",\n' +
         '        "resumePolicy": "stateless_retry|checkpoint_resume",\n' +
         '        "approvalProfile": "inherit|read_only|filesystem_write|shell"\n' +
@@ -758,6 +810,8 @@ export function buildPlannerMessages(
         "- `can_run_parallel` is optional; omit it when unknown and the runtime will default it to false.\n" +
         "- For subagent_task steps, put workspace, artifact, and tool scope truth inside `execution_context`; do not rely on `context_requirements` for authority.\n" +
         "- `execution_context.workspaceRoot` must be the canonical workspace root when the child touches local files.\n" +
+        "- `execution_context.role` is required whenever reviewer/writer/validator identity matters; do not expect the runtime to infer required reviewer identity from step names.\n" +
+        "- `execution_context.artifactRelations` is the typed source of truth for read dependencies, write ownership, and verification subjects.\n" +
         "- `execution_context.requiredSourceArtifacts` names the exact source artifacts the child must ground on before writing derived files.\n" +
         "- `execution_context.targetArtifacts` names the only files or directories the child may mutate in this phase.\n" +
         "- Never emit placeholder literals like `/abs/path` or `<actual-workspace-root>` in executable steps. Use the real canonical workspace root for this turn.\n" +
@@ -765,7 +819,8 @@ export function buildPlannerMessages(
         "- Each subagent_task must stay narrowly scoped to one phase of work. Do not combine research, setup, implementation, and validation into one delegated step.\n" +
         "- Prefer multiple smaller subagent_task steps with explicit dependencies over one large delegated objective.\n" +
         (
-          runtimeConstraints
+          runtimeConstraints &&
+          hasRuntimeLimit(runtimeConstraints.maxSubagentFanout)
             ? `- Keep automatic delegated fanout bounded: do not rely on more than ${runtimeConstraints.maxSubagentFanout} concurrently runnable subagent_task steps at once unless the user explicitly required a higher child-agent count. When a higher count is user-mandated, serialize or batch the child steps with dependencies or \`can_run_parallel: false\` so the runtime can stay within its concurrency cap.\n`
             : ""
         ) +
@@ -877,9 +932,9 @@ export function buildPlannerMessages(
       role: "system",
       content:
         "This is a plan-artifact execution request over a real workspace. " +
-        "Use exactly one mutable implementation owner for the repo root. " +
+        "Use exactly one mutable implementation owner for the planning artifact scope. " +
         "If you need prior grounding, keep it read-only and bounded to explicit source or analysis artifacts. " +
-        "Do not emit multiple mutable, validation, or QA subagent_task steps that all re-own the same workspace root. " +
+        "Do not emit multiple delegated steps that all claim `write_owner` authority over the same artifact scope. " +
         "Build, test, and verification around the implementation owner should be deterministic_tool steps unless a later delegated step owns disjoint artifacts.",
     });
   }
@@ -898,7 +953,9 @@ export function buildPlannerMessages(
       content:
         "The named planning artifact is the source specification for implementation work, not the primary artifact to rewrite. " +
         "Plan code changes, build/test verification, and bounded delegated implementation around the source spec. " +
-        "Do not collapse the task into editing the planning artifact unless the user explicitly asks to update that artifact.",
+        "Do not collapse the task into editing the planning artifact unless the user explicitly asks to update that artifact. " +
+        "A plan that only reads the plan artifact, lists files, or produces read-only analysis is invalid for this request class. " +
+        "Emit at least one concrete mutable implementation step, or a deterministic build/test-backed mutation path that changes owned source artifacts.",
     });
   }
 
@@ -1038,6 +1095,35 @@ export function buildPlannerStructuredOutputRequest(): LLMStructuredOutputReques
                             "delegated_scaffold",
                             "delegated_validation",
                           ],
+                        },
+                        role: {
+                          enum: [
+                            "reviewer",
+                            "writer",
+                            "validator",
+                            "researcher",
+                            "synthesizer",
+                          ],
+                        },
+                        artifactRelations: {
+                          type: "array",
+                          items: {
+                            type: "object",
+                            additionalProperties: false,
+                            properties: {
+                              relationType: {
+                                enum: [
+                                  "read_dependency",
+                                  "write_owner",
+                                  "verification_subject",
+                                  "context_input",
+                                  "handoff_artifact",
+                                ],
+                              },
+                              artifactPath: { type: "string" },
+                            },
+                            required: ["relationType", "artifactPath"],
+                          },
                         },
                         fallbackPolicy: {
                           enum: [
@@ -2387,6 +2473,18 @@ export function parsePlannerPlan(
         maxBudgetHint,
         diagnostics,
       });
+      const workflowStep = buildPlannerWorkflowStepContract({
+        name: safeName,
+        stepType,
+        objective,
+        inputContract,
+        acceptanceCriteria,
+        requiredToolCapabilities,
+        contextRequirements,
+        executionContext,
+        maxBudgetHint: normalizedBudgetHint,
+        canRunParallel,
+      });
 
       steps.push({
         name: safeName,
@@ -2397,6 +2495,7 @@ export function parsePlannerPlan(
         requiredToolCapabilities,
         contextRequirements,
         ...(executionContext ? { executionContext } : {}),
+        workflowStep,
         maxBudgetHint: normalizedBudgetHint,
         canRunParallel,
       });
@@ -2482,6 +2581,13 @@ export function parsePlannerPlan(
           : containsSynthesisStep || undefined,
       steps,
       edges,
+      workflowContract: buildPlannerWorkflowContract({
+        steps: steps.filter(
+          (step): step is PlannerSubAgentTaskStepIntent =>
+            step.stepType === "subagent_task",
+        ),
+        requirements: repairRequirements,
+      }),
     },
     diagnostics,
   };
@@ -2618,19 +2724,61 @@ export function validateSalvagedPlannerToolPlan(input: {
 function collectPlannerSubagentStepText(
   step: PlannerSubAgentTaskStepIntent,
 ): string {
+  const acceptanceCriteria = Array.isArray(step.acceptanceCriteria)
+    ? step.acceptanceCriteria.filter(
+      (value): value is string =>
+        typeof value === "string" && value.trim().length > 0,
+    )
+    : [];
   return [
     step.objective,
     step.inputContract,
-    ...step.acceptanceCriteria,
+    ...acceptanceCriteria,
   ]
-    .filter((value) => value.trim().length > 0)
+    .filter((value): value is string =>
+      typeof value === "string" && value.trim().length > 0
+    )
     .join(" ");
+}
+
+function collectMalformedPlannerSubagentContractFields(
+  step: PlannerSubAgentTaskStepIntent,
+): readonly string[] {
+  const malformedFields: string[] = [];
+  const hasValidStringArray = (value: unknown): boolean =>
+    Array.isArray(value) &&
+    value.every((entry) =>
+      typeof entry === "string" && entry.trim().length > 0
+    );
+
+  if (typeof step.objective !== "string" || step.objective.trim().length === 0) {
+    malformedFields.push("objective");
+  }
+  if (
+    typeof step.inputContract !== "string" ||
+    step.inputContract.trim().length === 0
+  ) {
+    malformedFields.push("inputContract");
+  }
+  if (!hasValidStringArray(step.acceptanceCriteria)) {
+    malformedFields.push("acceptanceCriteria");
+  }
+  if (!hasValidStringArray(step.requiredToolCapabilities)) {
+    malformedFields.push("requiredToolCapabilities");
+  }
+  if (!hasValidStringArray(step.contextRequirements)) {
+    malformedFields.push("contextRequirements");
+  }
+
+  return malformedFields;
 }
 
 function isNodeWorkspaceSubagentStep(
   step: PlannerSubAgentTaskStepIntent,
 ): boolean {
-  const combined = collectPlannerSubagentStepText(step);
+  const combined = stripNegatedNodeEcosystemLanguage(
+    collectPlannerSubagentStepText(step),
+  );
   return NODE_PACKAGE_TOOLING_RE.test(combined) ||
     NODE_PACKAGE_MANIFEST_PATH_RE.test(combined) ||
     NODE_LOCAL_DEPENDENCY_SPEC_RE.test(combined);
@@ -2640,7 +2788,7 @@ function stepAuthorsNodeManifestOrConfig(
   step: PlannerSubAgentTaskStepIntent,
 ): boolean {
   return NODE_MANIFEST_OR_CONFIG_RE.test(
-    [step.objective, step.inputContract, ...step.acceptanceCriteria].join(" "),
+    collectPlannerSubagentStepText(step),
   );
 }
 
@@ -2669,7 +2817,7 @@ function stepRequiresInstallSensitiveNodeVerification(
 } {
   const categories = [
     ...new Set(
-      step.acceptanceCriteria.flatMap((criterion) =>
+      (Array.isArray(step.acceptanceCriteria) ? step.acceptanceCriteria : []).flatMap((criterion) =>
         getAcceptanceVerificationCategories(criterion)
       ).filter((category) => category === "build" || category === "test"),
     ),
@@ -2705,6 +2853,217 @@ function isNodeInstallPlannerStep(
   return parsedArgs.some((entry, index) =>
     index === 0 && NODE_INSTALL_ACTIONS.has(entry.trim().toLowerCase())
   );
+}
+
+type WorkspacePlanEcosystem = "node" | "cmake" | "mixed" | "unknown";
+
+function mergeWorkspacePlanEcosystems(
+  current: WorkspacePlanEcosystem,
+  next: WorkspacePlanEcosystem,
+): WorkspacePlanEcosystem {
+  if (next === "unknown") return current;
+  if (current === "unknown") return next;
+  if (current === next) return current;
+  return "mixed";
+}
+
+function detectDeclaredArtifactEcosystem(path: string): WorkspacePlanEcosystem {
+  const trimmedPath = path.trim();
+  if (trimmedPath.length === 0) return "unknown";
+  const basename = pathBasename(trimmedPath);
+  if (
+    NODE_PACKAGE_MANIFEST_PATH_RE.test(basename) ||
+    NODE_MANIFEST_OR_CONFIG_RE.test(basename)
+  ) {
+    return "node";
+  }
+  if (
+    NATIVE_MANIFEST_PATH_RE.test(basename) ||
+    NATIVE_SOURCE_PATH_RE.test(basename)
+  ) {
+    return "cmake";
+  }
+  return "unknown";
+}
+
+function isSamePathOrDescendant(path: string, root: string): boolean {
+  return path === root || path.startsWith(`${root}/`);
+}
+
+function detectWorkspacePlanEcosystem(
+  workspaceRoot?: string,
+  boundaryRoot?: string,
+): WorkspacePlanEcosystem {
+  if (typeof workspaceRoot !== "string" || workspaceRoot.trim().length === 0) {
+    return "unknown";
+  }
+  try {
+    const declaredEcosystem = detectDeclaredArtifactEcosystem(workspaceRoot);
+    if (declaredEcosystem !== "unknown") {
+      return declaredEcosystem;
+    }
+    const resolvedBoundary =
+      typeof boundaryRoot === "string" && boundaryRoot.trim().length > 0
+        ? resolvePath(boundaryRoot)
+        : undefined;
+    let current =
+      /\.[^/]+$/.test(pathBasename(workspaceRoot))
+        ? pathDirname(resolvePath(workspaceRoot))
+        : resolvePath(workspaceRoot);
+    let detected: WorkspacePlanEcosystem = "unknown";
+    while (true) {
+      const hasNodeManifest =
+        existsSync(joinPath(current, "package.json")) ||
+        existsSync(joinPath(current, "pnpm-workspace.yaml")) ||
+        existsSync(joinPath(current, "package-lock.json")) ||
+        existsSync(joinPath(current, "yarn.lock")) ||
+        existsSync(joinPath(current, "bun.lockb"));
+      const hasCmakeManifest =
+        existsSync(joinPath(current, "CMakeLists.txt")) ||
+        existsSync(joinPath(current, "Makefile")) ||
+        existsSync(joinPath(current, "meson.build")) ||
+        existsSync(joinPath(current, "build.ninja"));
+      detected = mergeWorkspacePlanEcosystems(
+        detected,
+        hasNodeManifest && hasCmakeManifest
+          ? "mixed"
+          : hasNodeManifest
+            ? "node"
+            : hasCmakeManifest
+              ? "cmake"
+              : "unknown",
+      );
+      if (detected === "mixed") return detected;
+      const parent = pathDirname(current);
+      if (parent === current) break;
+      if (!resolvedBoundary) break;
+      if (current === resolvedBoundary) break;
+      if (!isSamePathOrDescendant(parent, resolvedBoundary)) break;
+      current = parent;
+    }
+    return detected;
+  } catch {
+    return "unknown";
+  }
+}
+
+function collectPlannerStepScopedPaths(
+  step: PlannerStepIntent,
+  workspaceRoot?: string,
+): readonly string[] {
+  const paths = new Set<string>();
+  if (typeof workspaceRoot === "string" && workspaceRoot.trim().length > 0) {
+    paths.add(resolvePath(workspaceRoot));
+  }
+
+  if (step.stepType === "deterministic_tool") {
+    const candidateValues = [
+      step.args.path,
+      step.args.sourcePath,
+      step.args.destinationPath,
+      step.args.cwd,
+    ];
+    for (const value of candidateValues) {
+      if (typeof value !== "string" || value.trim().length === 0) continue;
+      paths.add(resolvePath(value.trim()));
+    }
+    return [...paths];
+  }
+
+  const executionContext = step.executionContext;
+  const candidatePaths = [
+    executionContext?.workspaceRoot,
+    ...(executionContext?.allowedReadRoots ?? []),
+    ...(executionContext?.allowedWriteRoots ?? []),
+    ...(executionContext?.requiredSourceArtifacts ?? []),
+    ...(executionContext?.targetArtifacts ?? []),
+    ...(executionContext?.inputArtifacts ?? []),
+    ...(executionContext?.artifactRelations ?? []).map(
+      (relation) => relation.artifactPath,
+    ),
+  ];
+  for (const value of candidatePaths) {
+    if (typeof value !== "string" || value.trim().length === 0) continue;
+    paths.add(resolvePath(value.trim()));
+  }
+  return [...paths];
+}
+
+function collectPlannerStepDeclaredEcosystems(
+  step: PlannerStepIntent,
+): ReadonlySet<WorkspacePlanEcosystem> {
+  const declared = new Set<WorkspacePlanEcosystem>();
+  const pushIfKnown = (ecosystem: WorkspacePlanEcosystem): void => {
+    if (ecosystem !== "unknown") {
+      declared.add(ecosystem);
+    }
+  };
+
+  if (step.stepType === "deterministic_tool") {
+    const pathValues = [
+      step.args.path,
+      step.args.sourcePath,
+      step.args.destinationPath,
+      step.args.cwd,
+    ];
+    for (const value of pathValues) {
+      if (typeof value !== "string") continue;
+      pushIfKnown(detectDeclaredArtifactEcosystem(value));
+    }
+    if (isNodeInstallPlannerStep(step)) {
+      declared.add("node");
+    }
+    if (PLANNER_BASH_TOOL_NAMES.has(step.tool)) {
+      const command =
+        typeof step.args.command === "string" ? step.args.command : "";
+      const parsedArgs = parsePlannerStringArgs(step.args.args) ?? [];
+      const combined = [command, ...parsedArgs].join(" ").trim();
+      if (NODE_PACKAGE_TOOLING_RE.test(combined)) {
+        declared.add("node");
+      }
+      if (NATIVE_TOOLING_RE.test(combined)) {
+        declared.add("cmake");
+      }
+    }
+    return declared;
+  }
+
+  const scopedPathEcosystems = new Set<WorkspacePlanEcosystem>();
+  for (const path of collectPlannerStepScopedPaths(step)) {
+    pushIfKnown(detectDeclaredArtifactEcosystem(path));
+    const detected = detectWorkspacePlanEcosystem(path);
+    if (detected !== "unknown") {
+      scopedPathEcosystems.add(detected);
+    }
+  }
+
+  const combined = stripNegatedNodeEcosystemLanguage(
+    collectPlannerSubagentStepText(step),
+  );
+  const hasStrongNodeText = NODE_DECLARED_ECOSYSTEM_STRONG_RE.test(combined);
+  const hasNodeCommandIntent = NODE_DECLARED_ECOSYSTEM_COMMAND_RE.test(combined);
+  const hasNativeText = NATIVE_TOOLING_RE.test(combined);
+  if (
+    !(
+      scopedPathEcosystems.size === 1 &&
+      scopedPathEcosystems.has("cmake") &&
+      !hasNodeCommandIntent
+    ) &&
+    NODE_PACKAGE_TOOLING_RE.test(combined)
+  ) {
+    declared.add("node");
+  }
+  if (
+    !(
+      scopedPathEcosystems.size === 1 &&
+      scopedPathEcosystems.has("node") &&
+      !hasNativeText
+    ) &&
+    hasNativeText
+  ) {
+    declared.add("cmake");
+  }
+  return declared;
 }
 
 function collectPlannerStepVerificationCategories(
@@ -2749,7 +3108,7 @@ function collectPlannerStepVerificationCategories(
   }
 
   const combined = stripNegatedNodeVerificationLanguage(
-    [step.objective, step.inputContract, ...step.acceptanceCriteria].join(" "),
+    collectPlannerSubagentStepText(step),
   );
   if (REQUEST_INSTALL_VERIFICATION_RE.test(combined)) {
     categories.add("install");
@@ -2973,6 +3332,55 @@ function validateNodeWorkspacePlannerStages(
   return diagnostics;
 }
 
+function validateWorkspaceEcosystemConsistency(
+  plannerPlan: PlannerPlan,
+  workspaceRoot?: string,
+): readonly PlannerDiagnostic[] {
+  const workspaceEcosystem = detectWorkspacePlanEcosystem(workspaceRoot);
+  const mismatchedSteps = plannerPlan.steps.flatMap((step) => {
+    const declaredEcosystems = collectPlannerStepDeclaredEcosystems(step);
+    if (declaredEcosystems.size === 0) {
+      return [];
+    }
+    const scopedPaths = collectPlannerStepScopedPaths(step, workspaceRoot);
+    const scopedEcosystem = scopedPaths.reduce<WorkspacePlanEcosystem>(
+      (current, path) =>
+        mergeWorkspacePlanEcosystems(
+          current,
+          detectWorkspacePlanEcosystem(path, workspaceRoot),
+        ),
+      workspaceEcosystem,
+    );
+    const mismatchedNode =
+      declaredEcosystems.has("node") && scopedEcosystem === "cmake";
+    const mismatchedNative =
+      declaredEcosystems.has("cmake") && scopedEcosystem === "node";
+    if (!mismatchedNode && !mismatchedNative) {
+      return [];
+    }
+    return [
+      `${step.name}:${step.stepType}:declared=${[...declaredEcosystems].join("+")}:scoped=${scopedEcosystem}`,
+    ];
+  });
+
+  if (mismatchedSteps.length === 0) {
+    return [];
+  }
+
+  return [
+    createPlannerDiagnostic(
+      "validation",
+      "planner_workspace_ecosystem_mismatch",
+      "Planner emitted step contracts whose declared toolchain does not match the scoped workspace slice they own",
+      {
+        workspaceRoot: workspaceRoot ?? "",
+        actualEcosystem: workspaceEcosystem,
+        mismatchedSteps: mismatchedSteps.join(","),
+      },
+    ),
+  ];
+}
+
 export function validatePlannerGraph(
   plannerPlan: PlannerPlan,
   config: PlannerGraphValidationConfig,
@@ -2986,6 +3394,7 @@ export function validatePlannerGraph(
   if (subagentSteps.length === 0) return diagnostics;
 
   if (
+    hasRuntimeLimit(config.maxSubagentFanout) &&
     subagentSteps.length > config.maxSubagentFanout &&
     !allowsUserMandatedSubagentCardinalityOverride(requiredOrchestration)
   ) {
@@ -3022,6 +3431,21 @@ export function validatePlannerGraph(
   }
 
   for (const step of subagentSteps) {
+    const malformedFields = collectMalformedPlannerSubagentContractFields(step);
+    if (malformedFields.length > 0) {
+      diagnostics.push(
+        createPlannerDiagnostic(
+          "validation",
+          "planner_subagent_step_malformed_contract",
+          `Planner subagent step "${step.name}" has malformed contract fields and cannot be admitted`,
+          {
+            stepName: step.name,
+            malformedFields: malformedFields.join(","),
+          },
+        ),
+      );
+      continue;
+    }
     const scopeAssessment = assessDelegationScope({
       objective: step.objective,
       inputContract: step.inputContract,
@@ -3047,6 +3471,12 @@ export function validatePlannerGraph(
   }
 
   diagnostics.push(...validateNodeWorkspacePlannerStages(plannerPlan));
+  diagnostics.push(
+    ...validateWorkspaceEcosystemConsistency(
+      plannerPlan,
+      config.workspaceRoot,
+    ),
+  );
 
   return diagnostics;
 }
@@ -3398,6 +3828,15 @@ export function validatePlannerStepContracts(
     }
     if (artifactIntent === "implement_from_artifact") {
       diagnostics.push(...validatePlannerPlanArtifactExecutionOwnership(plannerPlan));
+      if (!plannerPlanHasMutableImplementationPath(plannerPlan)) {
+        diagnostics.push(
+          createPlannerDiagnostic(
+            "validation",
+            "planner_implementation_missing_mutation_path",
+            "Planner emitted an implementation-scoped plan without any mutable implementation step or verification-backed mutation path",
+          ),
+        );
+      }
     }
   }
 
@@ -3476,6 +3915,21 @@ export function validatePlannerStepContracts(
     }
 
     if (step.stepType !== "subagent_task") continue;
+    const malformedFields = collectMalformedPlannerSubagentContractFields(step);
+    if (malformedFields.length > 0) {
+      diagnostics.push(
+        createPlannerDiagnostic(
+          "validation",
+          "planner_subagent_step_malformed_contract",
+          `Planner subagent step "${step.name}" has malformed contract fields and cannot be admitted`,
+          {
+            stepName: step.name,
+            malformedFields: malformedFields.join(","),
+          },
+        ),
+      );
+      continue;
+    }
     const budgetHint = inspectDelegationBudgetHint(step.maxBudgetHint);
     if (budgetHint.kind === "ambiguous_numeric") {
       diagnostics.push(
@@ -3513,7 +3967,9 @@ export function validatePlannerStepContracts(
   return diagnostics;
 }
 
-function extractPlannerArtifactTargets(messageText: string): readonly string[] {
+export function extractPlannerArtifactTargets(
+  messageText: string,
+): readonly string[] {
   const sourceText = messageText.trim();
   if (sourceText.length === 0) {
     return [];
@@ -3696,6 +4152,29 @@ function plannerStepHasMutableImplementationAuthority(
   step: PlannerSubAgentTaskStepIntent,
 ): boolean {
   const executionContext = step.executionContext;
+  const artifactRelations = canonicalizeWorkflowArtifactRelations({
+    workspaceRoot: executionContext?.workspaceRoot,
+    artifactRelations: executionContext?.artifactRelations,
+    inputArtifacts: executionContext?.inputArtifacts,
+    requiredSourceArtifacts: executionContext?.requiredSourceArtifacts,
+    targetArtifacts: executionContext?.targetArtifacts,
+    stepKind: executionContext?.stepKind,
+    verificationMode: executionContext?.verificationMode,
+    role: canonicalizeWorkflowStepRole({
+      role: executionContext?.role,
+      stepKind: executionContext?.stepKind,
+      effectClass: executionContext?.effectClass,
+      verificationMode: executionContext?.verificationMode,
+    }),
+  });
+  const hasExplicitArtifactRelations =
+    (executionContext?.artifactRelations?.length ?? 0) > 0;
+  const ownsMutableArtifacts = artifactRelations.some((relation) =>
+    relation.relationType === "write_owner"
+  );
+  if (hasExplicitArtifactRelations) {
+    return ownsMutableArtifacts;
+  }
   const isBoundedGroundingStep =
     executionContext?.effectClass === "read_only" &&
     executionContext?.verificationMode === "grounded_read" &&
@@ -3735,17 +4214,37 @@ function plannerStepHasMutableImplementationAuthority(
   }
   return (
     executionContext?.verificationMode === "mutation_required" ||
-    executionContext?.verificationMode === "deterministic_followup" ||
     executionContext?.stepKind === "delegated_write" ||
     executionContext?.stepKind === "delegated_scaffold" ||
-    executionContext?.stepKind === "delegated_validation" ||
-    executionContext?.stepKind === "delegated_review" ||
     executionContext?.effectClass === "filesystem_write" ||
     executionContext?.effectClass === "filesystem_scaffold" ||
     executionContext?.effectClass === "shell" ||
     executionContext?.effectClass === "mixed" ||
     Boolean(executionContext?.completionContract)
   );
+}
+
+function plannerPlanHasMutableImplementationPath(
+  plannerPlan: PlannerPlan,
+): boolean {
+  return plannerPlan.steps.some((step) => {
+    if (isPlannerDeterministicFileWriteStep(step)) {
+      return true;
+    }
+    if (step.stepType === "subagent_task") {
+      return plannerStepHasMutableImplementationAuthority(step);
+    }
+    if (
+      step.stepType === "deterministic_tool" &&
+      PLANNER_BASH_TOOL_NAMES.has(step.tool)
+    ) {
+      const commandText = extractCommandText(step.args).trim();
+      return /\b(?:build|compile|typecheck|lint|test|install|implement|scaffold|write|edit|create|fix|refactor|migrate)\b/i.test(
+        commandText,
+      );
+    }
+    return false;
+  });
 }
 
 function isPlannerArtifactMaterializationStep(
@@ -4002,14 +4501,23 @@ export function buildPlannerStepContractRefinementHint(
         return `give subagent steps at least ${readDiagnosticDetail(diagnostic, "minimumSeconds") ?? "60"}s with an explicit unit`;
       }
       if (
+        diagnostic.code === "planner_implementation_missing_mutation_path"
+      ) {
+        return (
+          "for implement-from-plan requests, the executable plan must include at least one mutable implementation step or deterministic build/test-backed mutation path. " +
+          "Do not emit an analysis-only delegated research/review step, do not say \"do not implement code yet\" when the user asked for implementation, " +
+          "and do not return a plan whose only action is reading PLAN.md or listing the workspace"
+        );
+      }
+      if (
         diagnostic.code === "planner_plan_artifact_single_write_collapse" ||
         diagnostic.code === "planner_plan_artifact_needs_grounding_step"
       ) {
-        return "for substantial software plan/TODO requests, do not jump straight to the final artifact materialization step; add at least one grounding or decomposition step before the final artifact write";
+        return "for substantial software planning-artifact requests, do not jump straight to the final artifact materialization step; add at least one grounding or decomposition step before the final artifact write";
       }
       if (diagnostic.code === "planner_plan_artifact_missing_workspace_grounding") {
         return (
-          "for workspace-grounded PLAN.md/TODO rewrites, preserve explicit current-workspace inspection. " +
+          "for workspace-grounded planning-artifact rewrites, preserve explicit current-workspace inspection. " +
           "Either add a prior repo/layout inspection step, or make the bounded delegated write step itself explicitly inspect current workspace state and require the artifact to reflect that evidence"
         );
       }
@@ -4021,8 +4529,8 @@ export function buildPlannerStepContractRefinementHint(
           readDiagnosticDetail(diagnostic, "stepNames") ??
           "the delegated implementation steps";
         return (
-          `for PLAN.md/TODO execution over ${workspaceRoot}, use exactly one mutable implementation owner; ` +
-          `do not let ${stepNames} all re-own the same workspace. Keep plan analysis bounded, and move build/test/QA into deterministic verification steps unless a later step owns disjoint artifacts`
+          `for planning-artifact execution over ${workspaceRoot}, use exactly one mutable implementation owner; ` +
+          `do not let ${stepNames} all claim mutable ownership of the same artifact scope. Keep read-only review and grounding distinct from write ownership, and move build/test/QA into deterministic verification steps unless a later step owns disjoint artifacts`
         );
       }
       if (diagnostic.code === "planner_plan_artifact_missing_write_step") {
@@ -4750,6 +5258,129 @@ export function createPlannerDiagnostic(
   return { category, code, message, ...(details ? { details } : {}) };
 }
 
+function inferWorkflowStepRoleFromText(
+  step: Pick<
+    PlannerSubAgentTaskStepIntent,
+    "objective" | "inputContract" | "acceptanceCriteria"
+  >,
+): WorkflowStepRole {
+  const combined = [
+    step.objective,
+    step.inputContract,
+    ...step.acceptanceCriteria,
+  ]
+    .join(" ")
+    .toLowerCase();
+  if (/\b(?:write|rewrite|update|edit|implement|fix|scaffold)\b/.test(combined)) {
+    return "writer";
+  }
+  if (/\b(?:validate|verification|verify|test|typecheck|lint|smoke)\b/.test(combined)) {
+    return "validator";
+  }
+  if (/\b(?:research|investigate|analyze|compare)\b/.test(combined)) {
+    return "researcher";
+  }
+  return "reviewer";
+}
+
+export function buildPlannerWorkflowStepContract(
+  step: PlannerSubAgentTaskStepIntent,
+): WorkflowStepContract {
+  const executionContext = step.executionContext;
+  const role =
+    step.workflowStep?.role ??
+    canonicalizeWorkflowStepRole({
+      role: executionContext?.role,
+      stepKind: executionContext?.stepKind,
+      effectClass: executionContext?.effectClass,
+      verificationMode: executionContext?.verificationMode,
+    }) ??
+    inferWorkflowStepRoleFromText(step);
+  const artifactRelations =
+    step.workflowStep?.artifactRelations ??
+    canonicalizeWorkflowArtifactRelations({
+      workspaceRoot: executionContext?.workspaceRoot,
+      artifactRelations: executionContext?.artifactRelations,
+      inputArtifacts: executionContext?.inputArtifacts,
+      requiredSourceArtifacts: executionContext?.requiredSourceArtifacts,
+      targetArtifacts: executionContext?.targetArtifacts,
+      stepKind: executionContext?.stepKind,
+      verificationMode: executionContext?.verificationMode,
+      role,
+    });
+  return {
+    name: step.name,
+    role,
+    objective: step.objective,
+    inputContract: step.inputContract,
+    acceptanceCriteria: step.acceptanceCriteria,
+    requiredToolCapabilities: step.requiredToolCapabilities,
+    contextRequirements: step.contextRequirements,
+    executionContext: executionContext
+      ? {
+        ...executionContext,
+        role,
+        artifactRelations,
+      }
+      : undefined,
+    artifactRelations,
+  };
+}
+
+function classifyWorkflowContractClass(
+  steps: readonly WorkflowStepContract[],
+): WorkflowContractClass {
+  const roles = new Set(steps.map((step) => step.role));
+  if (roles.has("writer") && roles.has("reviewer")) {
+    return "artifact_review_and_rewrite";
+  }
+  if (roles.has("writer")) {
+    return "implementation_with_verification";
+  }
+  if (roles.has("validator")) {
+    return roles.size === 1
+      ? "validation_only"
+      : "implementation_with_verification";
+  }
+  if (roles.size === 1 && roles.has("reviewer")) {
+    return "read_only_review";
+  }
+  return "research_and_synthesis";
+}
+
+export function buildPlannerWorkflowContract(params: {
+  readonly steps: readonly PlannerSubAgentTaskStepIntent[];
+  readonly requirements?: ExplicitSubagentOrchestrationRequirements;
+}): WorkflowContract | undefined {
+  const workflowSteps = params.steps.map((step) =>
+    buildPlannerWorkflowStepContract(step)
+  );
+  if (workflowSteps.length === 0) {
+    return undefined;
+  }
+  const exactNames =
+    params.requirements?.mode === "exact_steps"
+      ? params.requirements.stepNames.filter((name) =>
+          workflowSteps.some((step) => step.name === name)
+        )
+      : undefined;
+  const requiredChildren =
+    params.requirements
+      ? {
+        cardinality: params.requirements.requiredStepCount,
+        roles: workflowSteps
+          .filter((step) => step.role === "reviewer")
+          .map((step) => step.role),
+        ...(exactNames && exactNames.length > 0 ? { exactNames } : {}),
+      }
+      : undefined;
+  return {
+    workflowClass: classifyWorkflowContractClass(workflowSteps),
+    steps: workflowSteps,
+    ...(requiredChildren ? { requiredChildren } : {}),
+  };
+}
+
 export function isHighRiskSubagentPlan(
   steps: readonly PlannerSubAgentTaskStepIntent[],
 ): boolean {
@@ -4956,6 +5587,44 @@ interface PlannerExecutionContextParseResult {
   readonly errorDetails?: Readonly<Record<string, unknown>>;
 }
 
+function parsePlannerArtifactRelations(
+  value: unknown,
+): readonly WorkflowArtifactRelation[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry) => {
+      const record = parsePlannerArgsRecord(entry);
+      if (!record) {
+        return undefined;
+      }
+      const relationType = parsePlannerStringFromKeys(record, [
+        "relationType",
+        "relation_type",
+      ]);
+      const artifactPath = parsePlannerStringFromKeys(record, [
+        "artifactPath",
+        "artifact_path",
+        "path",
+      ]);
+      if (!relationType || !artifactPath) {
+        return undefined;
+      }
+      return {
+        relationType:
+          relationType as WorkflowArtifactRelation["relationType"],
+        artifactPath,
+      };
+    })
+    .filter(
+      (relation): relation is WorkflowArtifactRelation => relation !== undefined,
+    );
+}
+
 function parsePlannerExecutionContext(
   source: unknown,
 ): PlannerExecutionContextParseResult {
@@ -5082,6 +5751,10 @@ function parsePlannerExecutionContext(
         "verification_mode",
       ]) as any,
       stepKind: parsePlannerStringFromKeys(record, ["stepKind", "step_kind"]) as any,
+      role: parsePlannerStringFromKeys(record, ["role", "stepRole", "step_role"]) as any,
+      artifactRelations: parsePlannerArtifactRelations(
+        record.artifactRelations ?? record.artifact_relations,
+      ),
       fallbackPolicy: parsePlannerStringFromKeys(record, [
         "fallbackPolicy",
         "fallback_policy",

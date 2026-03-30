@@ -259,7 +259,7 @@ describe("system.bash tool", () => {
 
   it("allows bash, sh, zsh, dash shell invocation", async () => {
     const tool = createBashTool();
-    mockSuccess("test\n", "");
+    mockSpawnSuccess("test\n", "");
 
     for (const shell of ["bash", "sh", "zsh", "dash"]) {
       const result = await tool.execute({
@@ -269,23 +269,63 @@ describe("system.bash tool", () => {
       expect(result.isError).toBeUndefined();
     }
 
-    expect(mockExecFile).toHaveBeenCalledTimes(4);
+    expect(mockExecFile).not.toHaveBeenCalled();
+    expect(mockSpawn).toHaveBeenCalledTimes(4);
+  });
+
+  it("runs builtin-plus-chaining invocations in shell mode with the full command", async () => {
+    const tool = createBashTool();
+    mockSpawnSuccess("/tmp/project\n", "", 0);
+
+    const result = await tool.execute({
+      command: "cd",
+      args: ["/tmp/project", "&&", "pwd"],
+    });
+    const parsed = parseContent(result);
+
+    expect(result.isError).toBeUndefined();
+    expect(parsed.exitCode).toBe(0);
+    expect(mockExecFile).not.toHaveBeenCalled();
+    expect(writeFileSync).toHaveBeenCalledWith(
+      expect.stringMatching(/agenc-sh-[a-f0-9]+\.sh$/),
+      "cd /tmp/project && pwd",
+      { mode: 0o700 },
+    );
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "/bin/bash",
+      [expect.stringMatching(/agenc-sh-[a-f0-9]+\.sh$/)],
+      expect.any(Object),
+    );
+  });
+
+  it("rejects direct-mode args that contain shell separators for non-builtin commands", async () => {
+    const tool = createBashTool();
+
+    const result = await tool.execute({
+      command: "ls",
+      args: ["-la", "&&", "pwd"],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(parseContent(result).error).toContain("Invalid direct-mode args");
+    expect(mockExecFile).not.toHaveBeenCalled();
+    expect(mockSpawn).not.toHaveBeenCalled();
   });
 
   it("allows shell wrapper commands in direct mode", async () => {
     const tool = createBashTool();
-    mockSuccess("hi\n", "");
+    mockSpawnSuccess("hi\n", "");
 
     const result = await tool.execute({
       command: "bash",
       args: ["-c", "echo hi"],
     });
     expect(result.isError).toBeUndefined();
-    expect(mockExecFile).toHaveBeenCalledWith(
+    expect(mockExecFile).not.toHaveBeenCalled();
+    expect(mockSpawn).toHaveBeenCalledWith(
       "bash",
       ["-c", "echo hi"],
       expect.any(Object),
-      expect.any(Function),
     );
   });
 
@@ -707,6 +747,43 @@ describe("system.bash tool", () => {
     expect(mockExecFile).not.toHaveBeenCalled();
   });
 
+  it("normalizes safe direct-mode command lines when args are present", async () => {
+    const tool = createBashTool();
+    mockSuccess("ok\n");
+
+    const result = await tool.execute({
+      command: "ls -la",
+      args: ["/tmp"],
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(mockExecFile).toHaveBeenCalledWith(
+      "ls",
+      ["-la", "/tmp"],
+      expect.any(Object),
+      expect.any(Function),
+    );
+  });
+
+  it("promotes builtin chaining requests into shell mode instead of failing direct execution", async () => {
+    const tool = createBashTool();
+    mockSpawnSuccess("/tmp\n");
+
+    const result = await tool.execute({
+      command: "cd",
+      args: ["/tmp", "&&", "pwd"],
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(mockExecFile).not.toHaveBeenCalled();
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "/bin/bash",
+      [expect.stringMatching(/^\/tmp\/agenc-sh-[0-9a-f]+\.sh$/)],
+      expect.any(Object),
+    );
+    expect(parseContent(result).stdout).toContain("/tmp");
+  });
+
   it("applies shell safety guards to inline shell wrapper scripts", async () => {
     const tool = createBashTool();
 
@@ -938,14 +1015,33 @@ describe("system.bash tool", () => {
       expect(parsed.exitCode).toBe(1);
     });
 
-    it("handles timeout in shell mode", async () => {
-      const tool = createBashTool({ timeoutMs: 50 });
-      mockSpawnTimeout();
+  it("handles timeout in shell mode", async () => {
+    const tool = createBashTool({ timeoutMs: 50 });
+    mockSpawnTimeout();
 
-      const result = await tool.execute({ command: "sleep 60 && echo done" });
-      expect(result.isError).toBe(true);
-      expect(parseContent(result).timedOut).toBe(true);
+    const result = await tool.execute({ command: "sleep 60 && echo done" });
+    expect(result.isError).toBe(true);
+    expect(parseContent(result).timedOut).toBe(true);
+  });
+
+  it("handles timeout for direct shell-wrapper scripts via spawned process groups", async () => {
+    const tool = createBashTool({ timeoutMs: 50 });
+    mockSpawnTimeout();
+
+    const result = await tool.execute({
+      command: "bash",
+      args: ["tests/run_tests.sh"],
     });
+
+    expect(result.isError).toBe(true);
+    expect(parseContent(result).timedOut).toBe(true);
+    expect(mockExecFile).not.toHaveBeenCalled();
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "bash",
+      ["tests/run_tests.sh"],
+      expect.any(Object),
+    );
+  });
 
     it("truncates shell mode output exceeding maxOutputBytes", async () => {
       const tool = createBashTool({ maxOutputBytes: 20 });
@@ -957,15 +1053,14 @@ describe("system.bash tool", () => {
       expect((parsed.stdout as string)).toContain("[truncated]");
     });
 
-    it("does NOT use shell mode when args is provided", async () => {
+    it("fails closed when direct-mode args contain shell separators", async () => {
       const tool = createBashTool();
-      mockSuccess("hello\n");
 
-      await tool.execute({ command: "echo", args: ["hello | world"] });
-      const [cmd, args] = mockExecFile.mock.calls[0];
-      // Direct mode: execFile with echo, not bash -c
-      expect(cmd).toBe("echo");
-      expect(args).toEqual(["hello | world"]);
+      const result = await tool.execute({ command: "echo", args: ["hello | world"] });
+      expect(result.isError).toBe(true);
+      expect(parseContent(result).error).toContain("Invalid direct-mode args");
+      expect(mockExecFile).not.toHaveBeenCalled();
+      expect(mockSpawn).not.toHaveBeenCalled();
     });
 
     it("treats an explicit empty args array as direct mode and rejects shell-shaped commands", async () => {

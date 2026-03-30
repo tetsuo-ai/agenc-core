@@ -21,7 +21,13 @@ function scoreRef(
   for (const term of queryTerms) {
     if (haystack.has(term)) score += 2;
   }
-  if (artifact.kind === "plan" || artifact.kind === "test_result") score += 1;
+  if (
+    artifact.kind === "plan" ||
+    artifact.kind === "test_result" ||
+    artifact.kind === "compiler_diagnostic"
+  ) {
+    score += 2;
+  }
   return score;
 }
 

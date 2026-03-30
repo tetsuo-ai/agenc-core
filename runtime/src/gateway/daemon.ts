@@ -633,7 +633,7 @@ export function resolveBashToolTimeoutConfig(
     DEFAULT_TOOL_CALL_TIMEOUT_MS,
   );
   const baseTimeoutMs = config.desktop?.enabled
-    ? 300_000
+    ? 60_000
     : DEFAULT_BASH_TOOL_TIMEOUT_MS;
   const baseMaxTimeoutMs = config.desktop?.enabled
     ? 600_000
@@ -1276,6 +1276,7 @@ export class DaemonManager {
       providers: this._llmProviders,
       economicsPolicy,
       llmConfig: this._primaryLlmConfig,
+      providerConfigs: this._llmProviderConfigCatalog.map((entry) => entry.config),
     });
     const routingDecision = resolveModelRoute({
       policy: routingPolicy,
@@ -2040,6 +2041,7 @@ export class DaemonManager {
       sessionCompactionThreshold,
       onCompaction: this.handleCompaction,
       llmConfig: config.llm,
+      providerConfigs: this._llmProviderConfigCatalog.map((entry) => entry.config),
       subagentConfig: resolvedSubAgentConfig,
       resolveDelegationScoreThreshold: () =>
         this.resolveDelegationScoreThreshold(),
@@ -3507,6 +3509,7 @@ export class DaemonManager {
         sessionCompactionThreshold,
         onCompaction: this.handleCompaction,
         llmConfig: newConfig.llm,
+        providerConfigs: this._llmProviderConfigCatalog.map((entry) => entry.config),
         subagentConfig: resolvedSubAgentConfig,
         resolveDelegationScoreThreshold: () =>
           this.resolveDelegationScoreThreshold(),

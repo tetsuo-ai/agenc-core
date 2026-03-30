@@ -7,6 +7,8 @@ import type {
 import type { ImplementationCompletionContract } from "./completion-contract.js";
 import type { ExecutionEnvelope } from "./execution-envelope.js";
 import {
+  WORKFLOW_ARTIFACT_RELATION_TYPES,
+  WORKFLOW_STEP_ROLES,
   createExecutionEnvelope,
   isCompatibilityExecutionEnvelope,
 } from "./execution-envelope.js";
@@ -98,6 +100,12 @@ export function migrateExecutionEnvelope(
       typeof raw.stepKind === "string"
         ? (raw.stepKind as ExecutionEnvelope["stepKind"])
         : undefined,
+    role:
+      typeof raw.role === "string" &&
+        (WORKFLOW_STEP_ROLES as readonly string[]).includes(raw.role)
+        ? (raw.role as ExecutionEnvelope["role"])
+        : undefined,
+    artifactRelations: parseArtifactRelations(raw.artifactRelations),
     completionContract: parseCompletionContract(
       raw.completionContract,
     ),
@@ -258,6 +266,12 @@ function normalizeLivePlannerExecutionEnvelope(
       typeof raw.stepKind === "string"
         ? (raw.stepKind as ExecutionEnvelope["stepKind"])
         : undefined,
+    role:
+      typeof raw.role === "string" &&
+        (WORKFLOW_STEP_ROLES as readonly string[]).includes(raw.role)
+        ? (raw.role as ExecutionEnvelope["role"])
+        : undefined,
+    artifactRelations: parseArtifactRelations(raw.artifactRelations),
     completionContract: parseCompletionContract(raw.completionContract),
     fallbackPolicy:
       typeof raw.fallbackPolicy === "string"
@@ -272,6 +286,50 @@ function normalizeLivePlannerExecutionEnvelope(
         ? (raw.approvalProfile as ExecutionEnvelope["approvalProfile"])
         : undefined,
   });
+}
+
+function parseArtifactRelations(
+  value: unknown,
+): NonNullable<ExecutionEnvelope["artifactRelations"]> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        return undefined;
+      }
+      const record = entry as Record<string, unknown>;
+      const relationType =
+        typeof record.relationType === "string"
+          ? record.relationType.trim().toLowerCase()
+          : "";
+      const artifactPath =
+        typeof record.artifactPath === "string"
+          ? record.artifactPath.trim()
+          : "";
+      if (
+        !(WORKFLOW_ARTIFACT_RELATION_TYPES as readonly string[]).includes(
+          relationType,
+        ) ||
+        artifactPath.length === 0
+      ) {
+        return undefined;
+      }
+      return {
+        relationType:
+          relationType as NonNullable<
+            ExecutionEnvelope["artifactRelations"]
+          >[number]["relationType"],
+        artifactPath,
+      };
+    })
+    .filter(
+      (
+        entry,
+      ): entry is NonNullable<ExecutionEnvelope["artifactRelations"]>[number] =>
+        entry !== undefined,
+    );
 }
 
 export function canonicalizePipelinePlannerExecutionContexts(
