@@ -118,6 +118,25 @@ import {
 } from "../workflow/subagent-orchestration-requirements.js";
 
 // ============================================================================
+// Safe array accessor — LLM-parsed step fields may violate their declared type
+// at runtime.  This utility is intentionally used at every spread / iteration
+// site so that each consumer is independently safe regardless of the entry
+// path a step arrived through.
+// ============================================================================
+
+export function safeStepStringArray(
+  value: unknown,
+): readonly string[] {
+  if (Array.isArray(value)) {
+    return value.filter(
+      (entry): entry is string =>
+        typeof entry === "string" && entry.trim().length > 0,
+    );
+  }
+  return [];
+}
+
+// ============================================================================
 // Planner decision
 // ============================================================================
 
@@ -2724,16 +2743,10 @@ export function validateSalvagedPlannerToolPlan(input: {
 function collectPlannerSubagentStepText(
   step: PlannerSubAgentTaskStepIntent,
 ): string {
-  const acceptanceCriteria = Array.isArray(step.acceptanceCriteria)
-    ? step.acceptanceCriteria.filter(
-      (value): value is string =>
-        typeof value === "string" && value.trim().length > 0,
-    )
-    : [];
   return [
     step.objective,
     step.inputContract,
-    ...acceptanceCriteria,
+    ...safeStepStringArray(step.acceptanceCriteria),
   ]
     .filter((value): value is string =>
       typeof value === "string" && value.trim().length > 0
@@ -2817,7 +2830,7 @@ function stepRequiresInstallSensitiveNodeVerification(
 } {
   const categories = [
     ...new Set(
-      (Array.isArray(step.acceptanceCriteria) ? step.acceptanceCriteria : []).flatMap((criterion) =>
+      safeStepStringArray(step.acceptanceCriteria).flatMap((criterion) =>
         getAcceptanceVerificationCategories(criterion)
       ).filter((category) => category === "build" || category === "test"),
     ),
@@ -3171,7 +3184,7 @@ function collectPlannerStepVerificationCommandTexts(
   }
 
   const normalized = normalizePlannerVerificationCommandKey(
-    [step.objective, step.inputContract, ...step.acceptanceCriteria].join("\n"),
+    [step.objective, step.inputContract, ...safeStepStringArray(step.acceptanceCriteria)].join("\n"),
   );
   return normalized.length > 0 ? [normalized] : [];
 }
@@ -3515,7 +3528,7 @@ export function validateExplicitSubagentOrchestrationRequirements(
             step.name,
             step.objective,
             step.inputContract,
-            ...step.acceptanceCriteria,
+            ...safeStepStringArray(step.acceptanceCriteria),
           ].join(" "),
         )
       );
@@ -4185,7 +4198,7 @@ function plannerStepHasMutableImplementationAuthority(
   if (isBoundedGroundingStep) {
     return false;
   }
-  const requiredCapabilities = step.requiredToolCapabilities.map((capability) =>
+  const requiredCapabilities = safeStepStringArray(step.requiredToolCapabilities).map((capability) =>
     capability.trim().toLowerCase(),
   );
   if (
@@ -4206,7 +4219,7 @@ function plannerStepHasMutableImplementationAuthority(
       [
         step.objective,
         step.inputContract,
-        ...step.acceptanceCriteria,
+        ...safeStepStringArray(step.acceptanceCriteria),
       ].join(" "),
     )
   ) {
@@ -4278,8 +4291,8 @@ function plannerSubagentHasWorkspaceGrounding(
   const stepText = [
     step.objective,
     step.inputContract,
-    ...step.acceptanceCriteria,
-    ...(step.contextRequirements ?? []),
+    ...safeStepStringArray(step.acceptanceCriteria),
+    ...safeStepStringArray(step.contextRequirements),
   ]
     .filter((value) => value.trim().length > 0)
     .join(" ");
@@ -4288,7 +4301,7 @@ function plannerSubagentHasWorkspaceGrounding(
   }
   const scopedTools = [
     ...(executionContext?.allowedTools ?? []),
-    ...step.requiredToolCapabilities,
+    ...safeStepStringArray(step.requiredToolCapabilities),
   ].map((value) => value.trim().toLowerCase());
   return scopedTools.some((toolName) =>
     toolName.includes("read") ||
@@ -5267,7 +5280,7 @@ function inferWorkflowStepRoleFromText(
   const combined = [
     step.objective,
     step.inputContract,
-    ...step.acceptanceCriteria,
+    ...safeStepStringArray(step.acceptanceCriteria),
   ]
     .join(" ")
     .toLowerCase();
@@ -5385,7 +5398,7 @@ export function isHighRiskSubagentPlan(
   steps: readonly PlannerSubAgentTaskStepIntent[],
 ): boolean {
   for (const step of steps) {
-    for (const capability of step.requiredToolCapabilities) {
+    for (const capability of safeStepStringArray(step.requiredToolCapabilities)) {
       const normalized = capability.trim().toLowerCase();
       if (!normalized) continue;
       if (

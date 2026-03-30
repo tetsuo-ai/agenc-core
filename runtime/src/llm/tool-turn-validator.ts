@@ -163,6 +163,100 @@ export function findToolTurnValidationIssue(
 }
 
 /**
+ * Repair tool-turn ordering issues by synthesizing missing assistant
+ * tool_calls messages before orphaned tool results.
+ *
+ * This handles the case where history compaction, in-flight retry,
+ * or stateful reconciliation drops an assistant message but retains
+ * the corresponding tool results.  Rather than crashing the provider
+ * call, we synthesize a minimal assistant envelope so the tool result
+ * sequence is valid.
+ *
+ * The function is idempotent — if the sequence is already valid it
+ * returns the input unchanged (same array reference).
+ */
+export function repairToolTurnSequence(
+  messages: readonly LLMMessage[],
+): readonly LLMMessage[] {
+  const issue = findToolTurnValidationIssue(messages);
+  if (!issue) return messages;
+
+  const repaired: LLMMessage[] = [];
+  let pendingToolCallIds: Set<string> | null = null;
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+
+    if (msg.role === "assistant" && msg.toolCalls && msg.toolCalls.length > 0) {
+      pendingToolCallIds = new Set(
+        msg.toolCalls
+          .map((tc) => tc.id?.trim())
+          .filter((id): id is string => Boolean(id)),
+      );
+      repaired.push(msg);
+      continue;
+    }
+
+    if (msg.role === "tool") {
+      const toolCallId = msg.toolCallId?.trim();
+      if (toolCallId && (!pendingToolCallIds || !pendingToolCallIds.has(toolCallId))) {
+        // Collect consecutive orphaned tool messages to synthesize a
+        // single assistant envelope for the whole block.
+        const orphanedBlock: LLMMessage[] = [msg];
+        let j = i + 1;
+        while (j < messages.length && messages[j].role === "tool") {
+          const nextId = messages[j].toolCallId?.trim();
+          if (nextId && (!pendingToolCallIds || !pendingToolCallIds.has(nextId))) {
+            orphanedBlock.push(messages[j]);
+            j++;
+          } else {
+            break;
+          }
+        }
+
+        const syntheticToolCalls = orphanedBlock
+          .map((orphan) => ({
+            id: orphan.toolCallId!,
+            name: orphan.toolName ?? "unknown",
+            arguments: "{}",
+          }));
+
+        repaired.push({
+          role: "assistant",
+          content: "",
+          toolCalls: syntheticToolCalls,
+        });
+        repaired.push(...orphanedBlock);
+
+        pendingToolCallIds = new Set(
+          syntheticToolCalls.map((tc) => tc.id),
+        );
+        for (const orphan of orphanedBlock) {
+          const id = orphan.toolCallId?.trim();
+          if (id) pendingToolCallIds.delete(id);
+        }
+        i = j - 1;
+        continue;
+      }
+
+      if (toolCallId && pendingToolCallIds) {
+        pendingToolCallIds.delete(toolCallId);
+      }
+      repaired.push(msg);
+      continue;
+    }
+
+    // Non-tool, non-assistant-with-tool-calls message — reset pending state
+    if (msg.role !== "system") {
+      pendingToolCallIds = null;
+    }
+    repaired.push(msg);
+  }
+
+  return repaired;
+}
+
+/**
  * Validate tool-turn ordering for outbound provider calls.
  * Throws a local 400-class error when sequence is malformed.
  */

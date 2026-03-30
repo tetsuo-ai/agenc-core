@@ -40,6 +40,27 @@ import {
 } from "./migrations.js";
 
 // ============================================================================
+// Deterministic error detection — errors that will never resolve on retry
+// because they stem from content validation, permission denials, or other
+// invariant checks.  Retrying with the same args wastes the retry budget.
+// ============================================================================
+
+const DETERMINISTIC_ERROR_PATTERNS = [
+  "refusing destructive overwrite",
+  "is denied",
+  "permission denied",
+  "not allowed",
+  "shell operators/newlines are not allowed",
+  "matches deny prefix",
+  "path restricted to",
+] as const;
+
+function isDeterministicPipelineStepError(error: string): boolean {
+  const lower = error.toLowerCase();
+  return DETERMINISTIC_ERROR_PATTERNS.some((pattern) => lower.includes(pattern));
+}
+
+// ============================================================================
 // Types
 // ============================================================================
 
@@ -615,30 +636,38 @@ export class PipelineExecutor {
 
     if (policy === "retry") {
       const maxRetries = step.maxRetries ?? 0;
-      for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        emitStepStateChange({
-          options,
-          pipelineId,
-          stepName: step.name,
-          stepIndex,
-          previousState: "running",
-          state: "retry_pending",
-          tool: step.tool,
-          args: step.args,
-          reason: `Retry ${attempt}/${maxRetries} after: ${error}`,
-        });
-        const retryResult = await this.executeStep(
-          pipelineId,
-          step,
-          stepIndex,
-          toolHandler,
-        );
-        if (!retryResult.error) {
-          return { terminal: false, result: retryResult.result };
+      if (maxRetries > 0 && !isDeterministicPipelineStepError(error)) {
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+          emitStepStateChange({
+            options,
+            pipelineId,
+            stepName: step.name,
+            stepIndex,
+            previousState: "running",
+            state: "retry_pending",
+            tool: step.tool,
+            args: step.args,
+            reason: `Retry ${attempt}/${maxRetries} after: ${error}`,
+          });
+          const retryResult = await this.executeStep(
+            pipelineId,
+            step,
+            stepIndex,
+            toolHandler,
+          );
+          if (!retryResult.error) {
+            return { terminal: false, result: retryResult.result };
+          }
+          if (isDeterministicPipelineStepError(retryResult.error)) {
+            this.logger?.warn(
+              `Pipeline "${pipelineId}" step "${step.name}" deterministic failure on retry ${attempt}/${maxRetries}, skipping remaining retries`,
+            );
+            break;
+          }
+          this.logger?.warn(
+            `Pipeline "${pipelineId}" step "${step.name}" retry ${attempt}/${maxRetries} failed`,
+          );
         }
-        this.logger?.warn(
-          `Pipeline "${pipelineId}" step "${step.name}" retry ${attempt}/${maxRetries} failed`,
-        );
       }
     }
 

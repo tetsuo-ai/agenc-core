@@ -75,6 +75,7 @@ export type {
 // Tool-turn protocol validation (Phase 1)
 export {
   findToolTurnValidationIssue,
+  repairToolTurnSequence,
   validateToolTurnSequence,
 } from "./tool-turn-validator.js";
 export type {

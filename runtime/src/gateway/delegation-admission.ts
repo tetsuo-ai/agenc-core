@@ -17,6 +17,7 @@ import {
   resolveExecutionEnvelopeArtifactRelations,
   resolveExecutionEnvelopeRole,
 } from "../workflow/execution-envelope.js";
+import { safeStepStringArray } from "../llm/chat-executor-planner.js";
 
 const REVIEW_TEXT_RE =
   /\b(?:review|critique|audit|inspect|assess|evaluate|docs?|documentation|security|architecture)\b/i;
@@ -302,7 +303,7 @@ function isParentSafeReadOnlyInspection(
     input.messageText,
     analysis.step.objective,
     analysis.step.inputContract,
-    ...analysis.step.acceptanceCriteria,
+    ...safeStepStringArray(analysis.step.acceptanceCriteria),
   ]
     .filter((value) => typeof value === "string" && value.trim().length > 0)
     .join(" ");
@@ -408,7 +409,7 @@ function matchesDelegationIntent(
     return true;
   }
   return analyses.some((analysis) => {
-    const acceptanceText = analysis.step.acceptanceCriteria.join(" ");
+    const acceptanceText = safeStepStringArray(analysis.step.acceptanceCriteria).join(" ");
     const executionText = [
       analysis.step.name,
       analysis.step.objective,
@@ -445,7 +446,7 @@ function buildVerifierObligations(
     obligations.push("Run or cite deterministic follow-up verification for the owned artifacts.");
   }
   if (
-    analysis.step.acceptanceCriteria.some((criterion) =>
+    safeStepStringArray(analysis.step.acceptanceCriteria).some((criterion) =>
       BUILD_OR_TEST_OBLIGATION_RE.test(criterion)
     )
   ) {
@@ -508,7 +509,7 @@ function ownsRemainingRequestEndToEnd(
     analysis.step.name,
     analysis.step.objective,
     analysis.step.inputContract,
-    ...(analysis.step.acceptanceCriteria ?? []),
+    ...safeStepStringArray(analysis.step.acceptanceCriteria),
   ]
     .join(" ")
     .toLowerCase();

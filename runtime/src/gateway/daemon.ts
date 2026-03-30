@@ -3181,7 +3181,11 @@ export class DaemonManager {
               `Voice bridge ${newBridge ? "recreated" : "disabled"}`,
             );
           }
-        })();
+        })().catch((error) => {
+          this.logger.error(
+            `Config hot-reload async update failed: ${toErrorMessage(error)}`,
+          );
+        });
       }
     });
   }

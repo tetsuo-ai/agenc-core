@@ -181,7 +181,14 @@ function argsRequireShellSemantics(args: readonly string[]): boolean {
   );
 }
 
-function validateDirectArgs(args: readonly string[]): string | undefined {
+function validateDirectArgs(
+  command: string,
+  args: readonly string[],
+): string | undefined {
+  const shellWrapperScript = extractShellWrapperInlineScript(command, args);
+  if (typeof shellWrapperScript === "string") {
+    return undefined;
+  }
   if (!argsRequireShellSemantics(args)) {
     return undefined;
   }
@@ -841,7 +848,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
             }
             args.push(arg);
           }
-          const directArgsError = validateDirectArgs(args);
+          const directArgsError = validateDirectArgs(command, args);
           if (directArgsError) {
             return errorResult(directArgsError);
           }
