@@ -110,6 +110,7 @@ import {
 import {
   createQueuedWatchAttachment,
   formatQueuedWatchAttachments,
+  resolveWatchAttachmentInputPath,
   resolveQueuedWatchAttachmentPayloads,
 } from "./agenc-watch-attachments.mjs";
 import {
@@ -572,13 +573,14 @@ function formatPendingAttachments() {
   return formatQueuedWatchAttachments(currentPendingAttachments());
 }
 
-function queuePendingAttachment(inputPath) {
+function queuePendingAttachment(inputPath, { allowMissing = false } = {}) {
   const attachment = createQueuedWatchAttachment({
     fs,
     pathModule: path,
     inputPath,
     projectRoot,
     id: nextAttachmentId(),
+    allowMissing,
   });
   const existing = pendingAttachments.find((entry) => entry.path === attachment.path);
   if (existing) {
@@ -1239,6 +1241,12 @@ watchCommandController = createWatchCommandController({
   listPendingAttachments: currentPendingAttachments,
   formatPendingAttachments,
   queuePendingAttachment,
+  resolveImplicitAttachmentInput: (value) => resolveWatchAttachmentInputPath({
+    fs,
+    pathModule: path,
+    inputPath: value,
+    projectRoot,
+  }),
   removePendingAttachment,
   clearPendingAttachments,
   prepareChatMessagePayload,

@@ -250,8 +250,8 @@ function createCommandHarness(overrides = {}) {
         .map((attachment, index) => `${index + 1}. ${attachment.filename ?? attachment.id ?? "attachment"}`)
         .join("\n");
     },
-    queuePendingAttachment(inputPath) {
-      calls.push({ type: "queuePendingAttachment", inputPath });
+    queuePendingAttachment(inputPath, options = {}) {
+      calls.push({ type: "queuePendingAttachment", inputPath, options });
       const attachment = {
         id: `att-${pendingAttachments.length + 1}`,
         path: inputPath,
@@ -263,6 +263,12 @@ function createCommandHarness(overrides = {}) {
       };
       pendingAttachments.push(attachment);
       return { attachment, duplicate: false };
+    },
+    resolveImplicitAttachmentInput(inputPath) {
+      calls.push({ type: "resolveImplicitAttachmentInput", inputPath });
+      return overrides.resolveImplicitAttachmentInput
+        ? overrides.resolveImplicitAttachmentInput(inputPath)
+        : null;
     },
     removePendingAttachment(reference) {
       calls.push({ type: "removePendingAttachment", reference });
@@ -532,6 +538,14 @@ test("command controller manages local attachment queue commands without daemon 
   const sendCalls = calls.filter((entry) => entry.type === "send");
   assert.equal(sendCalls.length, 0);
   assert.ok(calls.some((entry) => entry.type === "queuePendingAttachment"));
+  assert.ok(
+    calls.some(
+      (entry) =>
+        entry.type === "queuePendingAttachment" &&
+        entry.inputPath === "./assets/diagram.png" &&
+        entry.options?.allowMissing === false,
+    ),
+  );
   assert.ok(calls.some((entry) => entry.type === "removePendingAttachment"));
   assert.ok(
     calls.some(
@@ -539,6 +553,40 @@ test("command controller manages local attachment queue commands without daemon 
         entry.type === "event" &&
         entry.title === "Queued Attachments",
     ),
+  );
+});
+
+test("command controller treats a dragged local file path as an implicit attachment", () => {
+  const screenshotPath = "/var/folders/demo/NSIRD_screencaptureui_RE96fZ/Screen Shot 2026-03-30 at 18.14.38.png";
+  let resolvedInput = null;
+  const { controller, pendingAttachments, calls } = createCommandHarness({
+    resolveImplicitAttachmentInput(inputPath) {
+      resolvedInput = inputPath;
+      return inputPath === screenshotPath ? screenshotPath : null;
+    },
+  });
+
+  assert.equal(controller.dispatchOperatorInput(screenshotPath), true);
+  assert.equal(pendingAttachments.length, 1);
+  assert.equal(resolvedInput, screenshotPath);
+  assert.ok(
+    calls.some(
+      (entry) =>
+        entry.type === "queuePendingAttachment" &&
+        entry.inputPath === screenshotPath &&
+        entry.options?.allowMissing === true,
+    ),
+  );
+  assert.ok(
+    calls.some(
+      (entry) =>
+        entry.type === "event" &&
+        entry.title === "Attachment Queued From Path",
+    ),
+  );
+  assert.equal(
+    calls.some((entry) => entry.type === "event" && entry.title === "Unknown Command"),
+    false,
   );
 });
 

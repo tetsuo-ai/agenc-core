@@ -882,6 +882,7 @@ export function createWatchCommandController(dependencies = {}) {
     listPendingAttachments,
     formatPendingAttachments,
     queuePendingAttachment,
+    resolveImplicitAttachmentInput,
     removePendingAttachment,
     clearPendingAttachments,
     prepareChatMessagePayload,
@@ -1089,6 +1090,38 @@ export function createWatchCommandController(dependencies = {}) {
     return !isOpen() || bootstrapPending();
   }
 
+  function queueLocalAttachment(inputPath, { implicit = false } = {}) {
+    try {
+      const result = queuePendingAttachment(inputPath, {
+        allowMissing: implicit === true,
+      });
+      setTransientStatus(
+        result.duplicate === true
+          ? `attachment already queued: ${result.attachment.filename}`
+          : `attachment queued: ${result.attachment.filename}`,
+      );
+      pushEvent(
+        "operator",
+        result.duplicate === true
+          ? "Attachment Already Queued"
+          : implicit === true
+            ? "Attachment Queued From Path"
+            : "Attachment Queued",
+        formatPendingAttachmentsImpl(),
+        result.duplicate === true ? "amber" : "teal",
+      );
+    } catch (error) {
+      setTransientStatus("attachment error");
+      pushEvent(
+        "error",
+        "Attachment Error",
+        error instanceof Error ? error.message : String(error),
+        "red",
+      );
+    }
+    return true;
+  }
+
   function dispatchOperatorInput(value, { replayed = false } = {}) {
     dismissIntro();
     watchState.transcriptScrollOffset = 0;
@@ -1271,29 +1304,7 @@ export function createWatchCommandController(dependencies = {}) {
           pushEvent("error", "Usage Error", "Usage: /attach <path>", "red");
           return true;
         }
-        try {
-          const result = queuePendingAttachment(inputPath);
-          setTransientStatus(
-            result.duplicate === true
-              ? `attachment already queued: ${result.attachment.filename}`
-              : `attachment queued: ${result.attachment.filename}`,
-          );
-          pushEvent(
-            "operator",
-            result.duplicate === true ? "Attachment Already Queued" : "Attachment Queued",
-            formatPendingAttachmentsImpl(),
-            result.duplicate === true ? "amber" : "teal",
-          );
-        } catch (error) {
-          setTransientStatus("attachment error");
-          pushEvent(
-            "error",
-            "Attachment Error",
-            error instanceof Error ? error.message : String(error),
-            "red",
-          );
-        }
-        return true;
+        return queueLocalAttachment(inputPath);
       }
 
       if (canonicalName === "/attachments") {
@@ -1339,6 +1350,12 @@ export function createWatchCommandController(dependencies = {}) {
       }
 
       if (!canonicalName) {
+        if (attachmentCommandsEnabled && typeof resolveImplicitAttachmentInput === "function") {
+          const implicitAttachmentInput = resolveImplicitAttachmentInput(value);
+          if (implicitAttachmentInput) {
+            return queueLocalAttachment(implicitAttachmentInput, { implicit: true });
+          }
+        }
         pushEvent(
           "error",
           "Unknown Command",
