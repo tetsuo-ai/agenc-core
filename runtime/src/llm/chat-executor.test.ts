@@ -1085,7 +1085,7 @@ describe("ChatExecutor", () => {
 
       expect(result.content).toBe("done");
       expect(result.toolCalls).toHaveLength(2);
-      expect(provider.chat).toHaveBeenCalledTimes(4);
+      expect(provider.chat).toHaveBeenCalledTimes(3);
     });
 
     it("retries once with a correction hint when delegated tool evidence is required", async () => {
@@ -1135,7 +1135,7 @@ describe("ChatExecutor", () => {
       expect(toolHandler).toHaveBeenCalledWith("search", {
         query: "official docs",
       });
-      expect(provider.chat).toHaveBeenCalledTimes(4);
+      expect(provider.chat).toHaveBeenCalledTimes(3);
       expect(
         (provider.chat as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]?.toolChoice,
       ).toBe("required");
@@ -1262,7 +1262,7 @@ describe("ChatExecutor", () => {
         path: "/tmp/tui-smoke/main.c",
         content: "int main(void) { return 0; }\n",
       });
-      expect(provider.chat).toHaveBeenCalledTimes(4);
+      expect(provider.chat).toHaveBeenCalledTimes(3);
       expect(
         (provider.chat as ReturnType<typeof vi.fn>).mock.calls[1]?.[1]?.toolChoice,
       ).toBe("required");
@@ -1549,8 +1549,8 @@ describe("ChatExecutor", () => {
         }),
       );
 
-      expect(result.stopReason).toBe("validation_error");
-      expect(result.completionState).toBe("partial");
+      expect(result.stopReason).toBe("completed");
+      expect(result.completionState).toBe("completed");
       expect(result.completionProgress?.verificationContract).toMatchObject({
         workspaceRoot: "/tmp/phase9-direct",
         targetArtifacts: ["/tmp/phase9-direct/src/main.c"],
@@ -2011,7 +2011,7 @@ describe("ChatExecutor", () => {
 
       expect(result.stopReason).toBe("completed");
       expect(toolHandler).toHaveBeenCalledTimes(1);
-      expect(provider.chat).toHaveBeenCalledTimes(4);
+      expect(provider.chat).toHaveBeenCalledTimes(3);
       const correctionOptions = (provider.chat as ReturnType<typeof vi.fn>).mock
         .calls[2]?.[1] as LLMChatOptions | undefined;
       expect(correctionOptions?.tools).toBeUndefined();
@@ -2486,7 +2486,7 @@ describe("ChatExecutor", () => {
       ]);
     });
 
-    it("restores the broader delegated tool subset after the initial grounded implementation subset", async () => {
+    it("keeps the grounded delegated tool subset after the initial grounded implementation turn", async () => {
       const provider = createMockProvider("primary", {
         chat: vi
           .fn()
@@ -2564,10 +2564,8 @@ describe("ChatExecutor", () => {
         "system.writeFile",
       ]);
       expect(secondOptions?.toolRouting?.allowedToolNames).toEqual([
-        "system.bash",
-        "system.writeFile",
         "system.readFile",
-        "system.listDir",
+        "system.writeFile",
       ]);
     });
 
@@ -8390,7 +8388,7 @@ describe("ChatExecutor", () => {
       expect(result.callUsage.map((entry) => entry.phase)).toEqual(["initial"]);
       expect(result.plannerSummary?.used).toBe(false);
       expect(result.plannerSummary?.routeReason).toBe("exact_response_turn");
-      expect(provider.chat).toHaveBeenCalledTimes(3);
+      expect(provider.chat).toHaveBeenCalledTimes(1);
       expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]).toMatchObject({
         toolChoice: "none",
         toolRouting: { allowedToolNames: [] },
@@ -8428,7 +8426,7 @@ describe("ChatExecutor", () => {
       expect(result.callUsage.map((entry) => entry.phase)).toEqual(["initial"]);
       expect(result.plannerSummary?.used).toBe(false);
       expect(result.plannerSummary?.routeReason).toBe("exact_response_turn");
-      expect(provider.chat).toHaveBeenCalledTimes(3);
+      expect(provider.chat).toHaveBeenCalledTimes(1);
       expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]).toMatchObject({
         toolChoice: "none",
         toolRouting: { allowedToolNames: [] },
@@ -8808,7 +8806,7 @@ describe("ChatExecutor", () => {
         }),
       );
 
-      expect(provider.chat).toHaveBeenCalledTimes(3);
+      expect(provider.chat).toHaveBeenCalledTimes(1);
       expect(pipelineExecutor.execute).toHaveBeenCalledTimes(1);
       expect(result.callUsage.map((entry) => entry.phase)).toEqual(["planner"]);
       expect(result.content).toBe("A1_R1_DONE");
@@ -8909,7 +8907,7 @@ describe("ChatExecutor", () => {
         }),
       );
 
-      expect(provider.chat).toHaveBeenCalledTimes(3);
+      expect(provider.chat).toHaveBeenCalledTimes(1);
       expect(pipelineExecutor.execute).toHaveBeenCalledTimes(1);
       expect(result.callUsage.map((entry) => entry.phase)).toEqual(["planner"]);
       expect(result.stopReason).toBe("completed");
@@ -9580,8 +9578,10 @@ describe("ChatExecutor", () => {
         deterministicStepsExecuted: 1,
       });
       expect(result.callUsage.map((entry) => entry.phase)).toEqual(["planner"]);
-      expect(result.stopReason).toBe("completed");
-      expect(result.content.toLowerCase()).toContain("hi");
+      expect(result.stopReason).toBe("validation_error");
+      expect(result.stopReasonDetail).toContain(
+        "workflow-owned verification closure",
+      );
     });
 
     it("requires planner verification for deterministic implementation plans even without delegated children", async () => {
@@ -11093,7 +11093,7 @@ describe("ChatExecutor", () => {
       // it can consume an extra direct-execution model turn.
       expect(provider.chat).toHaveBeenCalledTimes(1);
       expect(result.stopReason).toBe("validation_error");
-      expect(result.completionState).toBe("partial");
+      expect(result.completionState).toBe("blocked");
     });
 
     it("continues repair-focused replans across distinct deterministic failure signatures", async () => {
@@ -14291,7 +14291,14 @@ describe("ChatExecutor", () => {
 
       expect(provider.chat).toHaveBeenCalledTimes(1);
       expect(pipelineExecutor.execute).toHaveBeenCalledTimes(1);
-      expect(result.content).toBe("TOKEN=ONYX-SHARD-58");
+      expect(result.stopReason).toBe("validation_error");
+      expect(result.completionState).toBe("partial");
+      expect(result.content).toContain(
+        "Execution made partial progress but did not finish the requested work.",
+      );
+      expect(result.content).toContain(
+        "workflow-owned verification closure",
+      );
       expect(result.plannerSummary?.routeReason).toBe(
         "planner_tool_call_salvaged",
       );

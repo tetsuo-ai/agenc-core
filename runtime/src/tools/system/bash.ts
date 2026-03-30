@@ -63,7 +63,7 @@ const SHELL_BUILTIN_COMMANDS = new Set([
   "builtin",
 ]);
 const SINGLE_EXECUTABLE_RE = /^[A-Za-z0-9_./+-]+$/;
-const SHELL_OPERATOR_RE = /[|&;<>()`$\\\r\n]/;
+const SHELL_OPERATOR_RE = /[|&;<>`$\\\r\n]/;
 const SHELL_COMMAND_SEPARATORS = new Set([
   "|",
   "||",

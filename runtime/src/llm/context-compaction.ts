@@ -409,6 +409,23 @@ function findSafeRetainedTailStartIndex(
   return 0;
 }
 
+function resolveRetainedTailStartIndex(
+  input: ArtifactCompactionInput,
+  keepTailCount: number,
+): number {
+  const preferredTailStartIndex = Math.max(
+    0,
+    input.history.length - keepTailCount,
+  );
+  if (input.source !== "executor_compaction") {
+    return preferredTailStartIndex;
+  }
+  return findSafeRetainedTailStartIndex(
+    input.history,
+    preferredTailStartIndex,
+  );
+}
+
 export function compactHistoryIntoArtifactContext(
   input: ArtifactCompactionInput,
 ): ArtifactCompactionOutput {
@@ -436,16 +453,12 @@ export function compactHistoryIntoArtifactContext(
     };
   }
 
-  const preferredTailStartIndex = Math.max(
-    0,
-    input.history.length - keepTailCount,
+  const retainedTailStartIndex = resolveRetainedTailStartIndex(
+    input,
+    keepTailCount,
   );
-  const safeTailStartIndex = findSafeRetainedTailStartIndex(
-    input.history,
-    preferredTailStartIndex,
-  );
-  const toCompact = input.history.slice(0, safeTailStartIndex);
-  const toKeep = input.history.slice(safeTailStartIndex);
+  const toCompact = input.history.slice(0, retainedTailStartIndex);
+  const toKeep = input.history.slice(retainedTailStartIndex);
   const now = Date.now();
   const records = toCompact
     .map((message, index) => {
