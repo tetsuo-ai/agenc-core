@@ -361,6 +361,12 @@ const EXTENSIBILITY_COMMANDS = Object.freeze([
 
 const INPUT_MODE_COMMANDS = Object.freeze([
   Object.freeze({
+    name: "/config",
+    aliases: ["/settings"],
+    usage: "/config [show]",
+    description: "Show the local watch UI config and quick toggles.",
+  }),
+  Object.freeze({
     name: "/input-mode",
     usage: "/input-mode [show|default|vim]",
     description: "Show or switch the local input profile for the watch composer.",
@@ -372,8 +378,18 @@ const INPUT_MODE_COMMANDS = Object.freeze([
   }),
   Object.freeze({
     name: "/theme",
-    usage: "/theme [show|default|aurora|ember]",
+    usage: "/theme [show|default|aurora|ember|matrix]",
     description: "Show or switch the local watch color theme.",
+  }),
+  Object.freeze({
+    name: "/statusline",
+    usage: "/statusline [show|on|off|toggle]",
+    description: "Show or toggle the structured footer statusline locally.",
+  }),
+  Object.freeze({
+    name: "/vim",
+    usage: "/vim [show|on|off|toggle]",
+    description: "Toggle the local watch composer between default and vim mode.",
   }),
 ]);
 
@@ -473,11 +489,23 @@ export function createOperatorInputBatcher({
     }
   };
 
+  const looksLikeSlashCommand = (value) => String(value ?? "").trim().startsWith("/");
+
   const flush = () => {
     clearPendingTimer();
     if (pendingLines.length === 0) return;
-    const value = pendingLines.join("\n").trim();
+    const batch = pendingLines;
     pendingLines = [];
+    if (batch.length > 1 && batch.some((entry) => looksLikeSlashCommand(entry))) {
+      for (const entry of batch) {
+        const value = String(entry ?? "").trim();
+        if (value) {
+          onDispatch(value);
+        }
+      }
+      return;
+    }
+    const value = batch.join("\n").trim();
     if (value) {
       onDispatch(value);
     }

@@ -119,7 +119,10 @@ import {
 } from "./agenc-watch-export-bundle.mjs";
 import { buildWatchInsightsReport } from "./agenc-watch-insights.mjs";
 import { buildWatchAgentsReport } from "./agenc-watch-agents.mjs";
-import { buildWatchUiPreferencesReport } from "./agenc-watch-ui-preferences.mjs";
+import {
+  buildWatchLocalConfigReport,
+  buildWatchUiPreferencesReport,
+} from "./agenc-watch-ui-preferences.mjs";
 import {
   buildWatchSessionQueryCandidates,
   clearWatchSessionLabel,
@@ -479,6 +482,26 @@ function showInputModes() {
   });
   setTransientStatus("input preferences ready");
   pushEvent("operator", "Input Preferences", report, "slate");
+  return report;
+}
+
+function currentStatuslineEnabled() {
+  return watchFeatureFlags.statusline === true;
+}
+
+function setStatuslineEnabled(enabled) {
+  watchFeatureFlags.statusline = enabled === true;
+  scheduleRender();
+  return watchFeatureFlags.statusline;
+}
+
+function showConfig() {
+  const report = buildWatchLocalConfigReport({
+    preferences: watchState.inputPreferences,
+    composerMode: watchState.composerMode,
+    statuslineEnabled: currentStatuslineEnabled(),
+  });
+  pushEvent("operator", "Local Config", report, "slate");
   return report;
 }
 
@@ -1223,6 +1246,7 @@ watchCommandController = createWatchCommandController({
   showAgents,
   showExtensibility,
   showInputModes,
+  showConfig,
   resetLiveRunSurface,
   resetDelegationState,
   persistSessionId,
@@ -1233,6 +1257,8 @@ watchCommandController = createWatchCommandController({
   setInputModeProfile,
   setKeybindingProfile,
   setThemeName,
+  currentStatuslineEnabled,
+  setStatuslineEnabled,
   trustPluginPackage,
   untrustPluginPackage,
   setMcpServerEnabled,
@@ -1809,6 +1835,7 @@ watchFrameController = createWatchFrameController({
   chip,
   row,
   renderPanel,
+  wrapAndLimit,
   joinColumns,
   blankRow,
   paintSurface,

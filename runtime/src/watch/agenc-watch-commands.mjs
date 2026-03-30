@@ -742,6 +742,64 @@ function buildInputPreferenceCommand(parsedSlash, {
   };
 }
 
+function isVimPreferenceEnabled(preferences = {}) {
+  return preferences?.inputModeProfile === "vim" || preferences?.keybindingProfile === "vim";
+}
+
+function buildConfigCommand(parsedSlash) {
+  const args = Array.isArray(parsedSlash?.args) ? parsedSlash.args : [];
+  const token = (args[0] ?? "show").trim().toLowerCase();
+  if (!token || ["show", "status", "ui", "local"].includes(token)) {
+    return { mode: "show" };
+  }
+  return {
+    error: "Usage: /config [show]",
+  };
+}
+
+function buildStatuslineCommand(parsedSlash) {
+  const args = Array.isArray(parsedSlash?.args) ? parsedSlash.args : [];
+  const token = (args[0] ?? "show").trim().toLowerCase();
+  if (!token || token === "show" || token === "status") {
+    return { mode: "show" };
+  }
+  if (["on", "enable", "enabled"].includes(token)) {
+    return { mode: "set", enabled: true };
+  }
+  if (["off", "disable", "disabled"].includes(token)) {
+    return { mode: "set", enabled: false };
+  }
+  if (token === "toggle") {
+    return { mode: "toggle" };
+  }
+  return {
+    error: "Usage: /statusline [show|on|off|toggle]",
+  };
+}
+
+function buildVimCommand(parsedSlash, { currentInputPreferences } = {}) {
+  const args = Array.isArray(parsedSlash?.args) ? parsedSlash.args : [];
+  const token = (args[0] ?? "toggle").trim().toLowerCase();
+  if (token === "show" || token === "status") {
+    return { mode: "show" };
+  }
+  if (!token || token === "toggle") {
+    return {
+      mode: "set",
+      enabled: !isVimPreferenceEnabled(currentInputPreferences?.() ?? {}),
+    };
+  }
+  if (["on", "enable", "enabled"].includes(token)) {
+    return { mode: "set", enabled: true };
+  }
+  if (["off", "disable", "disabled"].includes(token)) {
+    return { mode: "set", enabled: false };
+  }
+  return {
+    error: "Usage: /vim [show|on|off|toggle]",
+  };
+}
+
 function buildDiffCommand(
   parsedSlash,
   {
@@ -864,6 +922,7 @@ export function createWatchCommandController(dependencies = {}) {
     showAgents,
     showExtensibility,
     showInputModes,
+    showConfig,
     resetLiveRunSurface,
     resetDelegationState,
     persistSessionId,
@@ -874,6 +933,8 @@ export function createWatchCommandController(dependencies = {}) {
     setInputModeProfile,
     setKeybindingProfile,
     setThemeName,
+    currentStatuslineEnabled,
+    setStatuslineEnabled,
     trustPluginPackage,
     untrustPluginPackage,
     setMcpServerEnabled,
@@ -979,6 +1040,18 @@ export function createWatchCommandController(dependencies = {}) {
     assertFunction("setInputModeProfile", setInputModeProfile);
     assertFunction("setKeybindingProfile", setKeybindingProfile);
     assertFunction("setThemeName", setThemeName);
+  }
+  if (
+    commandNames.has("/config") ||
+    commandNames.has("/statusline") ||
+    commandNames.has("/vim")
+  ) {
+    assertFunction("showConfig", showConfig);
+    assertFunction("currentInputPreferences", currentInputPreferences);
+    assertFunction("setInputModeProfile", setInputModeProfile);
+    assertFunction("setKeybindingProfile", setKeybindingProfile);
+    assertFunction("currentStatuslineEnabled", currentStatuslineEnabled);
+    assertFunction("setStatuslineEnabled", setStatuslineEnabled);
   }
   if (commandNames.has("/plugins")) {
     assertFunction("trustPluginPackage", trustPluginPackage);
@@ -1247,6 +1320,17 @@ export function createWatchCommandController(dependencies = {}) {
         return true;
       }
 
+      if (canonicalName === "/config") {
+        const action = buildConfigCommand(parsedSlash);
+        if (action.error) {
+          pushEvent("error", "Usage Error", action.error, "red");
+          return true;
+        }
+        setTransientStatus("local config ready");
+        showConfig();
+        return true;
+      }
+
       if (
         canonicalName === "/input-mode" ||
         canonicalName === "/keybindings" ||
@@ -1269,9 +1353,9 @@ export function createWatchCommandController(dependencies = {}) {
               })
               : buildInputPreferenceCommand(parsedSlash, {
                 commandName: canonicalName,
-                usage: "/theme [show|default|aurora|ember]",
+                usage: "/theme [show|default|aurora|ember|matrix]",
                 defaultValue: "default",
-                allowedValues: ["default", "aurora", "ember"],
+                allowedValues: ["default", "aurora", "ember", "matrix"],
               });
         if (action.error) {
           pushEvent("error", "Usage Error", action.error, "red");
@@ -1295,6 +1379,46 @@ export function createWatchCommandController(dependencies = {}) {
           setTransientStatus(`theme: ${watchState.inputPreferences.themeName}`);
         }
         showInputModes();
+        return true;
+      }
+
+      if (canonicalName === "/statusline") {
+        const action = buildStatuslineCommand(parsedSlash);
+        if (action.error) {
+          pushEvent("error", "Usage Error", action.error, "red");
+          return true;
+        }
+        if (action.mode === "show") {
+          setTransientStatus("local config ready");
+          showConfig();
+          return true;
+        }
+        const enabled =
+          action.mode === "toggle"
+            ? currentStatuslineEnabled() !== true
+            : action.enabled === true;
+        setStatuslineEnabled(enabled);
+        setTransientStatus(`statusline: ${enabled ? "on" : "off"}`);
+        showConfig();
+        return true;
+      }
+
+      if (canonicalName === "/vim") {
+        const action = buildVimCommand(parsedSlash, { currentInputPreferences });
+        if (action.error) {
+          pushEvent("error", "Usage Error", action.error, "red");
+          return true;
+        }
+        if (action.mode === "show") {
+          setTransientStatus("local config ready");
+          showConfig();
+          return true;
+        }
+        setInputModeProfile(action.enabled === true ? "vim" : "default");
+        setKeybindingProfile(action.enabled === true ? "vim" : "default");
+        watchState.composerMode = "insert";
+        setTransientStatus(`vim mode: ${action.enabled === true ? "on" : "off"}`);
+        showConfig();
         return true;
       }
 

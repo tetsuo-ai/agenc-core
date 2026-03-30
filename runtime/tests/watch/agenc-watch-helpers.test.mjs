@@ -455,10 +455,10 @@ test("buildWatchCommands adds input-mode commands only when enabled", () => {
   assert.deepEqual(
     inputModeCommands
       .filter((command) =>
-        ["/input-mode", "/keybindings", "/theme"].includes(command.name)
+        ["/config", "/input-mode", "/keybindings", "/theme", "/statusline", "/vim"].includes(command.name)
       )
       .map((command) => command.name),
-    ["/input-mode", "/keybindings", "/theme"],
+    ["/config", "/input-mode", "/keybindings", "/theme", "/statusline", "/vim"],
   );
 });
 

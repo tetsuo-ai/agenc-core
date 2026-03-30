@@ -20,6 +20,7 @@ export const WATCH_THEME_NAMES = Object.freeze([
   "default",
   "aurora",
   "ember",
+  "matrix",
 ]);
 
 export function normalizeWatchInputModeProfile(value, fallback = "default") {
@@ -45,6 +46,9 @@ export function normalizeWatchThemeName(value, fallback = "default") {
   }
   if (normalized === "cool") {
     return "aurora";
+  }
+  if (normalized === "green" || normalized === "neo") {
+    return "matrix";
   }
   return WATCH_THEME_NAMES.includes(normalized) ? normalized : fallback;
 }
@@ -92,5 +96,32 @@ export function buildWatchUiPreferencesReport({
     `- Input modes: ${WATCH_INPUT_MODE_PROFILES.join(", ")}`,
     `- Keybindings: ${WATCH_KEYBINDING_PROFILES.join(", ")}`,
     `- Themes: ${WATCH_THEME_NAMES.join(", ")}`,
+  ].join("\n");
+}
+
+export function buildWatchLocalConfigReport({
+  preferences = {},
+  composerMode = "insert",
+  statuslineEnabled = false,
+} = {}) {
+  const normalized = createWatchUiPreferences(preferences);
+  const modeLabel =
+    normalized.inputModeProfile === "vim"
+      ? `vim (${String(composerMode ?? "insert").trim() || "insert"})`
+      : normalized.inputModeProfile;
+  return [
+    "Watch Local Config",
+    `Input mode: ${modeLabel}`,
+    `Keybindings: ${normalized.keybindingProfile}`,
+    `Theme: ${normalized.themeName}`,
+    `Statusline: ${statuslineEnabled === true ? "on" : "off"}`,
+    "",
+    "Quick Commands",
+    "- /config",
+    "- /vim [show|on|off|toggle]",
+    "- /input-mode [show|default|vim]",
+    "- /keybindings [show|default|vim]",
+    "- /theme [show|default|aurora|ember|matrix]",
+    "- /statusline [show|on|off|toggle]",
   ].join("\n");
 }

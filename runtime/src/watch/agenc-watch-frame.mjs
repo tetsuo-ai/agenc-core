@@ -71,6 +71,7 @@ export function createWatchFrameController(dependencies = {}) {
     chip,
     row,
     renderPanel,
+    wrapAndLimit,
     joinColumns,
     blankRow,
     paintSurface,
@@ -206,18 +207,37 @@ export function createWatchFrameController(dependencies = {}) {
       lines.push(row(`${color.softInk}Use /help for the full command reference.${color.reset}`, color.panelBg));
     } else {
       for (const command of suggestions) {
-        const aliasSuffix =
-          Array.isArray(command.aliases) && command.aliases.length > 0
-            ? `  ${color.fog}${command.aliases.join(", ")}${color.reset}`
-            : "";
-        const usageLine = fitAnsi(`${color.magenta}${command.usage}${color.reset}${aliasSuffix}`, inner);
-        lines.push(row(usageLine, color.panelBg));
+        const usageText = String(command.usage ?? "");
+        const aliasText = Array.isArray(command.aliases) && command.aliases.length > 0
+          ? command.aliases.join(", ")
+          : "";
+        const usageLines = wrapAndLimit(usageText, inner, 3);
+        const canInlineAlias = usageLines.length === 1 && aliasText.length > 0
+          ? visibleLength(`${usageLines[0]}  ${aliasText}`) <= inner
+          : false;
+
+        for (const usageLine of usageLines) {
+          lines.push(row(fitAnsi(`${color.magenta}${usageLine}${color.reset}`, inner), color.panelBg));
+        }
+        if (aliasText) {
+          if (canInlineAlias) {
+            const aliasLine = `${color.magenta}${usageLines[0]}${color.reset}  ${color.fog}${aliasText}${color.reset}`;
+            lines[lines.length - 1] = row(fitAnsi(aliasLine, inner), color.panelBg);
+          } else {
+            const aliasLines = wrapAndLimit(aliasText, Math.max(8, inner - 2), 2);
+            for (const aliasLine of aliasLines) {
+              lines.push(row(fitAnsi(`  ${color.fog}${aliasLine}${color.reset}`, inner), color.panelBg));
+            }
+          }
+        }
         if (command.description) {
-          const descriptionLine = fitAnsi(
-            `${color.softInk}${command.description}${color.reset}`,
-            inner,
-          );
-          lines.push(row(descriptionLine, color.panelBg));
+          const descriptionLines = wrapAndLimit(String(command.description), inner, 2);
+          for (const descriptionLine of descriptionLines) {
+            lines.push(row(
+              fitAnsi(`${color.softInk}${descriptionLine}${color.reset}`, inner),
+              color.panelBg,
+            ));
+          }
         }
       }
     }

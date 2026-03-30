@@ -150,14 +150,15 @@ test("frame controller scrolls transcript and detail view independently", async 
   });
 });
 
-test("frame controller routes slash palette rows through ansi-aware fitting", () => {
+test("frame controller wraps long slash palette usage lines instead of truncating them", () => {
   const fitCalls = [];
+  const wrapCalls = [];
   const harness = createWatchFrameHarness({
-    inputValue: "/",
+    inputValue: "/pe",
     suggestions: [{
-      usage: "/export",
-      description: "Write the current detail view or transcript to a temp file.",
-      aliases: ["/copy"],
+      usage: "/permissions [status|simulate <toolName> [jsonArgs]|credentials|requests|approve <requestId>|deny <requestId>]",
+      description: "Inspect policy state or simulate approval and policy decisions.",
+      aliases: [],
     }],
     width: 40,
     height: 18,
@@ -184,6 +185,18 @@ test("frame controller routes slash palette rows through ansi-aware fitting", ()
         fitCalls.push({ text: String(text ?? ""), width });
         return String(text ?? "");
       },
+      wrapAndLimit(text, width, maxLines = 2) {
+        const value = String(text ?? "");
+        wrapCalls.push({ text: value, width, maxLines });
+        if (value.startsWith("/permissions")) {
+          return [
+            "/permissions [status|simulate",
+            "<toolName> [jsonArgs]|credentials|",
+            "requests|approve <requestId>|deny <requestId>]",
+          ];
+        }
+        return [value];
+      },
       truncate(value, maxChars = 220) {
         const text = String(value ?? "");
         assert.equal(
@@ -199,12 +212,24 @@ test("frame controller routes slash palette rows through ansi-aware fitting", ()
   harness.controller.buildVisibleFrameSnapshot();
 
   assert.ok(
-    fitCalls.some((call) => call.width === 36 && call.text.includes("/export") && call.text.includes("/copy")),
+    wrapCalls.some((call) => call.width === 36 && call.maxLines === 3 && call.text.startsWith("/permissions")),
   );
   assert.ok(
     fitCalls.some((call) =>
       call.width === 36 &&
-      call.text.includes("Write the current detail view or transcript to a temp file."),
+      call.text.includes("/permissions [status|simulate"),
+    ),
+  );
+  assert.ok(
+    fitCalls.some((call) =>
+      call.width === 36 &&
+      call.text.includes("<toolName> [jsonArgs]|credentials|"),
+    ),
+  );
+  assert.ok(
+    fitCalls.some((call) =>
+      call.width === 36 &&
+      call.text.includes("requests|approve <requestId>|deny <requestId>]"),
     ),
   );
 });
