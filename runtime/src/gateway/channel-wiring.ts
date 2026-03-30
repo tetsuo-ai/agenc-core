@@ -120,22 +120,6 @@ function isPluginChannelConfig(config: unknown): config is {
   return isRecord(config) && config.type === "plugin";
 }
 
-async function registerGatewayChannel(
-  gateway: Gateway | null,
-  channel: ChannelPlugin,
-): Promise<void> {
-  if (!gateway) return;
-  try {
-    gateway.registerChannel(channel);
-  } catch (error) {
-    try {
-      await channel.stop();
-    } catch {
-      // Best-effort cleanup after failed registration.
-    }
-    throw error;
-  }
-}
 
 async function stopExternalChannelRegistry(
   channels: ExternalChannelRegistry,
@@ -386,7 +370,6 @@ export async function wireTelegram(
     config: telegramConfig as unknown as Record<string, unknown>,
   });
   await telegram.start();
-  await registerGatewayChannel(deps.gateway, telegram);
   deps.logger.info("Telegram channel wired");
   return telegram;
 }
@@ -548,7 +531,6 @@ export async function wireExternalChannel(
     config: channelConfig,
   });
   await channel.start();
-  await registerGatewayChannel(deps.gateway, channel);
   deps.logger.info(`${channelName} channel wired`);
 }
 
