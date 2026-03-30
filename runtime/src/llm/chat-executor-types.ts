@@ -679,6 +679,7 @@ export interface PlannerParseResult {
 export interface PlannerGraphValidationConfig {
   readonly maxSubagentFanout: number;
   readonly maxSubagentDepth: number;
+  readonly workspaceRoot?: string;
 }
 
 export type SubagentVerifierStepVerdict = "pass" | "retry" | "fail";
@@ -873,6 +874,7 @@ export interface ExecutionContext {
   evaluation?: EvaluationResult;
   finalContent: string;
   compacted: boolean;
+  compactedArtifactContext?: ArtifactCompactionState;
   stopReason: LLMPipelineStopReason;
   completionState: WorkflowCompletionState;
   stopReasonDetail?: string;
@@ -1024,6 +1026,7 @@ export function buildDefaultExecutionContext(
     evaluation: undefined,
     finalContent: "",
     compacted: params.compacted,
+    compactedArtifactContext: params.stateful?.artifactContext,
     stopReason: "completed",
     completionState: "completed",
     stopReasonDetail: undefined,

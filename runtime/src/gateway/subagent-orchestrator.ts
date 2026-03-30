@@ -109,6 +109,7 @@ import {
 } from "./subagent-workspace-probes.js";
 import {
   summarizeParentRequestForSubagent,
+  isFullRequestOwnerStep,
   collectDependencyContexts,
   buildArtifactRelevanceTerms,
   buildDownstreamRequirementLines,
@@ -140,6 +141,7 @@ import {
   mapDeterministicPipelineResultToNodeOutcome,
 } from "../workflow/execution-kernel-policy.js";
 import type { ExecutionKernelNodeOutcome } from "../workflow/execution-kernel-types.js";
+import { areDocumentationOnlyArtifacts } from "../workflow/artifact-paths.js";
 
 interface ExecuteSubagentAttemptParams {
   readonly subAgentManager: SubAgentExecutionManager;
@@ -276,6 +278,20 @@ interface SubAgentExecutionManager {
 interface ResolvedChildPromptBudget {
   readonly promptBudget?: PromptBudgetConfig;
   readonly providerProfile?: LLMProviderExecutionProfile;
+}
+
+function resolveStepFallbackBehavior(
+  step: PipelinePlannerSubagentStep,
+  orchestratorFallbackBehavior: "continue_without_delegation" | "fail_request",
+): "continue_without_delegation" | "fail_request" {
+  const stepPolicy = step.executionContext?.fallbackPolicy;
+  if (
+    stepPolicy === "continue_without_delegation" ||
+    stepPolicy === "fail_request"
+  ) {
+    return stepPolicy;
+  }
+  return orchestratorFallbackBehavior;
 }
 
 export interface SubAgentOrchestratorConfig {
@@ -1370,8 +1386,37 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
       }
       const retryRule = SUBAGENT_RETRY_POLICY[lastFailure.failureClass];
       const retriesUsed = retryAttempts[lastFailure.failureClass];
+      const stepLooksLikeLocalWriter =
+        preparedStep.executionContext?.verificationMode ===
+          "mutation_required" ||
+        (preparedStep.executionContext?.allowedWriteRoots?.length ?? 0) > 0 ||
+        preparedStep.requiredToolCapabilities.some((capability) =>
+          capability === "system.writeFile" ||
+          capability === "system.appendFile" ||
+          capability === "desktop.text_editor" ||
+          capability === "mcp.neovim.vim_edit" ||
+          capability === "mcp.neovim.vim_buffer_save" ||
+          capability === "mcp.neovim.vim_search_replace"
+        );
+      const allowResultContractRepairRetry =
+        lastFailure.failureClass === "malformed_result_contract" &&
+        (
+          (
+            lastFailure.validationCode === "blocked_phase_output" &&
+            isFullRequestOwnerStep(preparedStep)
+          ) ||
+          (
+            lastFailure.validationCode === "contradictory_completion_claim" &&
+            (
+              isFullRequestOwnerStep(preparedStep) ||
+              stepLooksLikeLocalWriter
+            )
+          )
+        );
       const shouldRetry =
-        lastFailure.validationCode !== "blocked_phase_output" &&
+        ((lastFailure.validationCode !== "blocked_phase_output" &&
+          lastFailure.validationCode !== "contradictory_completion_claim") ||
+          allowResultContractRepairRetry) &&
         retriesUsed < retryRule.maxRetries;
       const retryAttempt = retriesUsed + 1;
       const retryDelayMs = shouldRetry
@@ -1510,7 +1555,10 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
         };
       }
 
-      if (this.fallbackBehavior === "continue_without_delegation") {
+      if (
+        resolveStepFallbackBehavior(preparedStep, this.fallbackBehavior) ===
+          "continue_without_delegation"
+      ) {
         return {
           status: "completed",
           result: safeStringify({
@@ -2169,8 +2217,29 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
         toolName === "system.appendFile" ||
         toolName === "desktop.text_editor"
       );
+      const fullRequestOwner = isFullRequestOwnerStep(effectiveStep);
+      const planBackedFullRequestOwner =
+        fullRequestOwner &&
+        areDocumentationOnlyArtifacts(
+          effectiveStep.executionContext?.requiredSourceArtifacts ?? [],
+        );
       sections.push(
-        `Execution rules:
+        fullRequestOwner
+          ? `Execution rules:
+- You own the assigned implementation contract end to end inside the approved workspace.
+- Complete the remaining requested phases sequentially; do not stop after a single named phase from the planning artifact.
+- You may organize the work phase by phase internally, but do not hand back an intermediate phase completion as the final result.
+- Do not delegate unless the task explicitly grants that authority.
+- If the task requires tool-grounded evidence, you must use one or more allowed tools before answering.
+- If the input contract or context requirements name source files or current workspace artifacts, inspect those sources before writing derived files.
+- If a source artifact describes intended or planned structure, label it as intended/planned unless you directly confirmed the files currently exist.
+- When the planning artifact is the source specification, inspect the current workspace before assuming plan-listed files already exist.${planBackedFullRequestOwner ? " Confirm relevant directories or files under the owned workspace before reading them or presenting them as present." : ""}
+-${planBackedFullRequestOwner
+            ? " Treat generated artifacts such as copied build/output directories as provisional state, not trusted source inputs. If verification shows a generated directory is stale or unconfigured, do not delete it with `rm`; create a fresh generated directory/path for the current workspace and verify against that instead."
+            : " Treat generated artifacts and build outputs as provisional state. If verification shows they are stale or unconfigured, regenerate them in a fresh location for the current workspace instead of assuming they are reusable."}
+- The per-call tool JSON is authoritative for the current recall. The phase allowlist below is broader policy scope, and the runtime may attach only a routed subset on a given turn.
+- If you cannot complete the remaining request with the currently attached tools, state the concrete blocker and the unfinished phase instead of claiming success.`
+          : `Execution rules:
 - Execute only the assigned phase \`${effectiveStep.name}\`.
 - Do not create a new multi-step plan for the broader parent request.
 - Do not attempt sibling phases or synthesize the final deliverable.
@@ -2245,6 +2314,21 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
           );
           toolUsageRules.push(
             "- Verification commands must be non-interactive and exit on their own. Do not use watch/dev mode for tests or validation. Prefer runner-native single-run invocations. For Vitest use `vitest run`/`vitest --run`. For Jest use `CI=1 npm test` or `jest --runInBand`. Only pass extra npm `--` flags when the underlying runner supports them.",
+          );
+          toolUsageRules.push(
+            "- When running repository scripts that rely on relative paths, invoke them from the workspace root (for example `bash tests/run_tests.sh`) unless the script explicitly documents a different required cwd.",
+          );
+          toolUsageRules.push(
+            "- Treat existing repo-local verification scripts and harnesses as read-only grader infrastructure unless the contract explicitly names them as writable targets. Do not rewrite them just to make verification pass.",
+          );
+          toolUsageRules.push(
+            "- Do not create alternate copies or wrapper variants of repo-local verification harnesses (for example `run_tests_fresh.sh`) to work around that read-only restriction. Use equivalent bounded verification commands directly from the workspace root instead.",
+          );
+          toolUsageRules.push(
+            "- If a repo-local verification script contains a command that can block indefinitely without its own one-shot flag or timeout, do not invoke the script raw. Wrap the script in an outer timeout or run the equivalent bounded verification commands directly and report that grounded result.",
+          );
+          toolUsageRules.push(
+            "- Prefer non-destructive rebuild or verification commands. Do not delete binaries or build artifacts with commands like `rm` just to prove a rebuild; use build-system-native clean rebuild commands instead.",
           );
         }
         if (allowsDirectFileWrite) {

@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   buildWorkflowRecoveryStateLines,
   buildRecoveryHints,
   computeQualityProxy,
   inferRecoveryHint,
+  preflightStaleCopiedCmakeHarnessInvocation,
 } from "./chat-executor-recovery.js";
 
 describe("chat-executor-recovery", () => {
@@ -117,6 +121,526 @@ describe("chat-executor-recovery", () => {
     expect(hint?.key).toBe("system-bash-sandbox-handle");
     expect(hint?.message).toContain("system.sandboxStart");
     expect(hint?.message).toContain("system.sandboxJobStart");
+  });
+
+  it("injects a recovery hint for stale CMake cache path mismatches", () => {
+    const hint = inferRecoveryHint({
+      name: "system.bash",
+      args: {
+        command: "cd /tmp/agenc-shell/build && cmake .. && make",
+      },
+      result: JSON.stringify({
+        exitCode: 1,
+        stderr:
+          "CMake Error: The current CMakeCache.txt directory /tmp/agenc-shell/build/CMakeCache.txt is different than the directory /home/tetsuo/git/stream-test/agenc-shell/build where CMakeCache.txt was created.\n" +
+          'CMake Error: The source "/tmp/agenc-shell/CMakeLists.txt" does not match the source "/home/tetsuo/git/stream-test/agenc-shell/CMakeLists.txt" used to generate cache.\n' +
+          "Re-run cmake with a different source directory.\n",
+      }),
+      isError: true,
+      durationMs: 61,
+    });
+
+    expect(hint).toBeDefined();
+    expect(hint?.key).toBe("system-bash-cmake-cache-source-mismatch");
+    expect(hint?.message).toContain("stale CMake cache");
+    expect(hint?.message).toContain("Do not keep retrying");
+    expect(hint?.message).toContain("build-agenc-fresh");
+  });
+
+  it("rewrites a simple stale copied build harness to direct fresh-build commands before execution", () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-stale-cmake-"));
+    mkdirSync(join(workspaceRoot, "build"), { recursive: true });
+    mkdirSync(join(workspaceRoot, "tests"), { recursive: true });
+    writeFileSync(join(workspaceRoot, "CMakeLists.txt"), "cmake_minimum_required(VERSION 3.20)\nproject(test)\n");
+    writeFileSync(
+      join(workspaceRoot, "build", "CMakeCache.txt"),
+      "CMAKE_HOME_DIRECTORY:INTERNAL=/home/tetsuo/git/stream-test/agenc-shell\n",
+    );
+    writeFileSync(
+      join(workspaceRoot, "tests", "run_tests.sh"),
+      "#!/bin/bash\nset -e\ncd build\ncmake .. && make\n",
+    );
+
+    const result = preflightStaleCopiedCmakeHarnessInvocation(
+      "system.bash",
+      {
+        command: "bash",
+        args: ["tests/run_tests.sh"],
+        cwd: workspaceRoot,
+      },
+      workspaceRoot,
+      [],
+    );
+
+    expect(result.rejectionError).toBeUndefined();
+    expect(result.reasonKey).toBe("system-bash-cmake-stale-harness-rewritten");
+    expect(result.args).toEqual({
+      command:
+        "cmake -S . -B build-agenc-fresh && cmake --build build-agenc-fresh",
+      cwd: workspaceRoot,
+    });
+    expect(result.repairedFields).toEqual(["command", "args", "cwd"]);
+  });
+
+  it("rewrites direct configure commands that target the stale copied build directory", () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-stale-cmake-"));
+    mkdirSync(join(workspaceRoot, "build"), { recursive: true });
+    writeFileSync(join(workspaceRoot, "CMakeLists.txt"), "cmake_minimum_required(VERSION 3.20)\nproject(test)\n");
+    writeFileSync(
+      join(workspaceRoot, "build", "CMakeCache.txt"),
+      "CMAKE_HOME_DIRECTORY:INTERNAL=/home/tetsuo/git/stream-test/agenc-shell\n",
+    );
+
+    const result = preflightStaleCopiedCmakeHarnessInvocation(
+      "system.bash",
+      {
+        command: "cd",
+        args: [join(workspaceRoot, "build"), "&&", "cmake", ".."],
+        cwd: workspaceRoot,
+      },
+      workspaceRoot,
+      [],
+    );
+
+    expect(result.rejectionError).toBeUndefined();
+    expect(result.reasonKey).toBe("system-bash-cmake-stale-default-build-rewritten");
+    expect(result.args).toEqual({
+      command: "cmake",
+      args: ["-S", workspaceRoot, "-B", join(workspaceRoot, "build-agenc-fresh")],
+      cwd: workspaceRoot,
+    });
+    expect(result.repairedFields).toEqual(["command", "args", "cwd"]);
+  });
+
+  it("rewrites direct make calls from the stale copied build directory to the fresh build root", () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-stale-cmake-"));
+    mkdirSync(join(workspaceRoot, "build"), { recursive: true });
+    writeFileSync(join(workspaceRoot, "CMakeLists.txt"), "cmake_minimum_required(VERSION 3.20)\nproject(test)\n");
+    writeFileSync(
+      join(workspaceRoot, "build", "CMakeCache.txt"),
+      "CMAKE_HOME_DIRECTORY:INTERNAL=/home/tetsuo/git/stream-test/agenc-shell\n",
+    );
+
+    const result = preflightStaleCopiedCmakeHarnessInvocation(
+      "system.bash",
+      {
+        command: "make",
+        cwd: join(workspaceRoot, "build"),
+      },
+      workspaceRoot,
+      [],
+    );
+
+    expect(result.rejectionError).toBeUndefined();
+    expect(result.reasonKey).toBe("system-bash-cmake-stale-default-build-rewritten");
+    expect(result.args).toEqual({
+      command: "cmake",
+      args: ["--build", join(workspaceRoot, "build-agenc-fresh")],
+      cwd: workspaceRoot,
+    });
+    expect(result.repairedFields).toEqual(["command", "args", "cwd"]);
+  });
+
+  it("fails closed when a stale copied build harness hardcodes build/ but cannot be safely rewritten", () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-stale-cmake-"));
+    mkdirSync(join(workspaceRoot, "build"), { recursive: true });
+    mkdirSync(join(workspaceRoot, "tests"), { recursive: true });
+    writeFileSync(join(workspaceRoot, "CMakeLists.txt"), "cmake_minimum_required(VERSION 3.20)\nproject(test)\n");
+    writeFileSync(
+      join(workspaceRoot, "build", "CMakeCache.txt"),
+      "CMAKE_HOME_DIRECTORY:INTERNAL=/home/tetsuo/git/stream-test/agenc-shell\n",
+    );
+    writeFileSync(
+      join(workspaceRoot, "tests", "run_tests.sh"),
+      "#!/bin/bash\nset -e\ncd build\ncmake .. && make\n./integration_suite.sh\n",
+    );
+
+    const result = preflightStaleCopiedCmakeHarnessInvocation(
+      "system.bash",
+      {
+        command: "bash",
+        args: ["tests/run_tests.sh"],
+        cwd: workspaceRoot,
+      },
+      workspaceRoot,
+      [],
+    );
+
+    expect(result.repairedFields).toEqual([]);
+    expect(result.reasonKey).toBe("system-bash-cmake-stale-harness-rejected");
+    expect(result.rejectionError).toContain("Refusing to invoke");
+    expect(result.rejectionError).toContain("build-agenc-fresh");
+  });
+
+  it("injects a round-level recovery hint when stale CMake cleanup falls into denied rm", () => {
+    const hints = buildRecoveryHints(
+      [
+        {
+          name: "system.bash",
+          args: {
+            command: "bash tests/run_tests.sh",
+          },
+          result: JSON.stringify({
+            exitCode: 1,
+            stderr:
+              "CMake Error: The current CMakeCache.txt directory /tmp/agenc-shell/build/CMakeCache.txt is different than the directory /home/tetsuo/git/stream-test/agenc-shell/build where CMakeCache.txt was created.\n" +
+              'CMake Error: The source "/tmp/agenc-shell/CMakeLists.txt" does not match the source "/home/tetsuo/git/stream-test/agenc-shell/CMakeLists.txt" used to generate cache.\n' +
+              "Re-run cmake with a different source directory.\n",
+          }),
+          isError: true,
+          durationMs: 11,
+        },
+        {
+          name: "system.bash",
+          args: {
+            command: "rm /tmp/agenc-shell/build/CMakeCache.txt",
+          },
+          result: JSON.stringify({
+            error: 'Command "rm" is denied',
+          }),
+          isError: true,
+          durationMs: 1,
+        },
+      ],
+      new Set(),
+    );
+
+    const hint = hints.find(
+      (entry) => entry.key === "system-bash-cmake-cache-rebuild-in-fresh-dir",
+    );
+    expect(hint).toBeDefined();
+    expect(hint?.message).toContain("destructive cleanup is blocked");
+    expect(hint?.message).toContain("build-agenc-fresh");
+    expect(hint?.message).toContain("run the equivalent compile/test verification command directly");
+  });
+
+  it("injects a round-level recovery hint when a stale repo harness is retried after a successful fresh build", () => {
+    const hints = buildRecoveryHints(
+      [
+        {
+          name: "system.bash",
+          args: {
+            command: "bash tests/run_tests.sh",
+          },
+          result: JSON.stringify({
+            exitCode: 1,
+            stderr:
+              "CMake Error: The current CMakeCache.txt directory /tmp/agenc-shell/build/CMakeCache.txt is different than the directory /home/tetsuo/git/stream-test/agenc-shell/build where CMakeCache.txt was created.\n" +
+              'CMake Error: The source "/tmp/agenc-shell/CMakeLists.txt" does not match the source "/home/tetsuo/git/stream-test/agenc-shell/CMakeLists.txt" used to generate cache.\n',
+          }),
+          isError: true,
+          durationMs: 38,
+        },
+        {
+          name: "system.bash",
+          args: {
+            command: "cd build-fresh && cmake .. && make",
+          },
+          result: JSON.stringify({
+            exitCode: 0,
+            stdout:
+              "-- Build files have been written to: /tmp/agenc-shell/build-fresh\n[100%] Built target agenc-shell\n",
+            stderr: "",
+          }),
+          isError: false,
+          durationMs: 119,
+        },
+      ],
+      new Set(),
+    );
+
+    const hint = hints.find(
+      (entry) => entry.key === "system-bash-cmake-stale-harness-after-fresh-build",
+    );
+    expect(hint).toBeDefined();
+    expect(hint?.message).toContain("bash tests/run_tests.sh");
+    expect(hint?.message).toContain("build-fresh");
+    expect(hint?.message).toContain("explicit writable target");
+  });
+
+  it("injects the stale harness hint regardless of whether the fresh build succeeded earlier in the round", () => {
+    const hints = buildRecoveryHints(
+      [
+        {
+          name: "system.bash",
+          args: {
+            command: "cmake -S . -B build-agenc-fresh && cmake --build build-agenc-fresh",
+          },
+          result: JSON.stringify({
+            exitCode: 0,
+            stdout:
+              "-- Build files have been written to: /tmp/agenc-shell/build-agenc-fresh\n[100%] Built target agenc-shell\n",
+            stderr: "",
+          }),
+          isError: false,
+          durationMs: 151,
+        },
+        {
+          name: "system.bash",
+          args: {
+            command: "bash tests/run_tests.sh",
+          },
+          result: JSON.stringify({
+            exitCode: 1,
+            stderr:
+              "Running tests...\n" +
+              "CMake Error: The current CMakeCache.txt directory /tmp/agenc-shell/build/CMakeCache.txt is different than the directory /home/tetsuo/git/stream-test/agenc-shell/build where CMakeCache.txt was created.\n" +
+              'CMake Error: The source "/tmp/agenc-shell/CMakeLists.txt" does not match the source "/home/tetsuo/git/stream-test/agenc-shell/CMakeLists.txt" used to generate cache.\n',
+          }),
+          isError: true,
+          durationMs: 63,
+        },
+      ],
+      new Set(),
+    );
+
+    const hint = hints.find(
+      (entry) => entry.key === "system-bash-cmake-stale-harness-after-fresh-build",
+    );
+    expect(hint).toBeDefined();
+    expect(hint?.message).toContain("build-agenc-fresh");
+    expect(hint?.message).toContain("Continue verification directly");
+  });
+
+  it("carries the stale harness hint across rounds when a later split-shell retry falls back into run_tests.sh", () => {
+    const history = [
+      {
+        name: "system.bash",
+        args: {
+          command: "cmake",
+          args: ["-S", ".", "-B", "build-new", "&&", "cmake", "--build", "build-new"],
+        },
+        result: JSON.stringify({
+          exitCode: 0,
+          stdout:
+            "-- Build files have been written to: /tmp/agenc-shell/build-new\n[100%] Built target agenc-shell\n",
+          stderr: "",
+        }),
+        isError: false,
+        durationMs: 144,
+      },
+      {
+        name: "system.bash",
+        args: {
+          command: "cd",
+          args: [
+            "/tmp/agenc-shell",
+            "&&",
+            "chmod",
+            "+x",
+            "tests/run_tests.sh",
+            "&&",
+            "./tests/run_tests.sh",
+          ],
+        },
+        result: JSON.stringify({
+          exitCode: 1,
+          stderr:
+            "CMake Error: The current CMakeCache.txt directory /tmp/agenc-shell/build/CMakeCache.txt is different than the directory /home/tetsuo/git/stream-test/agenc-shell/build where CMakeCache.txt was created.\n" +
+            'CMake Error: The source "/tmp/agenc-shell/CMakeLists.txt" does not match the source "/home/tetsuo/git/stream-test/agenc-shell/CMakeLists.txt" used to generate cache.\n',
+        }),
+        isError: true,
+        durationMs: 72,
+      },
+    ] as const;
+
+    const hints = buildRecoveryHints(
+      history.slice(-1),
+      new Set(),
+      history,
+    );
+
+    const hint = hints.find(
+      (entry) => entry.key === "system-bash-cmake-stale-harness-after-fresh-build",
+    );
+    expect(hint).toBeDefined();
+    expect(hint?.message).toContain("build-new");
+    expect(hint?.message).toContain("bash tests/run_tests.sh");
+  });
+
+  it("pins subsequent rebuilds to the established fresh build dir after a stale CMake cache is repaired", () => {
+    const history = [
+      {
+        name: "system.bash",
+        args: {
+          command: "cd /tmp/agenc-shell/build && cmake .. && make",
+        },
+        result: JSON.stringify({
+          exitCode: 1,
+          stderr:
+            "CMake Error: The current CMakeCache.txt directory /tmp/agenc-shell/build/CMakeCache.txt is different than the directory /home/tetsuo/git/stream-test/agenc-shell/build where CMakeCache.txt was created.\n" +
+            'CMake Error: The source "/tmp/agenc-shell/CMakeLists.txt" does not match the source "/home/tetsuo/git/stream-test/agenc-shell/CMakeLists.txt" used to generate cache.\n',
+        }),
+        isError: true,
+        durationMs: 41,
+      },
+      {
+        name: "system.bash",
+        args: {
+          command: "cd /tmp/agenc-shell && cmake -S . -B build-fresh && make -C build-fresh",
+        },
+        result: JSON.stringify({
+          exitCode: 0,
+          stdout:
+            "-- Build files have been written to: /tmp/agenc-shell/build-fresh\n[100%] Built target agenc-shell\n",
+          stderr: "",
+        }),
+        isError: false,
+        durationMs: 188,
+      },
+    ] as const;
+
+    const hints = buildRecoveryHints(
+      history.slice(-1),
+      new Set(),
+      history,
+    );
+
+    const hint = hints.find(
+      (entry) => entry.key === "system-bash-cmake-use-established-fresh-build-dir",
+    );
+    expect(hint).toBeDefined();
+    expect(hint?.message).toContain("build-fresh");
+    expect(hint?.message).toContain("do not switch back to `build/`");
+    expect(hint?.message).toContain("delete build directories with `rm`");
+  });
+
+  it("suggests a fresh build directory when rm is denied for stale build artifacts", () => {
+    const hint = inferRecoveryHint({
+      name: "system.bash",
+      args: {
+        command: "rm /tmp/agenc-shell/build/CMakeCache.txt",
+      },
+      result: JSON.stringify({
+        error: 'Command "rm" is denied',
+      }),
+      isError: true,
+      durationMs: 1,
+    });
+
+    expect(hint).toBeDefined();
+    expect(hint?.key).toBe("system-bash-command-denied-rm-build-artifacts");
+    expect(hint?.message).toContain("build-agenc-fresh");
+  });
+
+  it("suggests configuring a fresh build directory when make runs in an unconfigured stale build dir", () => {
+    const hint = inferRecoveryHint({
+      name: "system.bash",
+      args: {
+        command: "make",
+        cwd: "/tmp/agenc-shell/build",
+      },
+      result: JSON.stringify({
+        exitCode: 2,
+        stderr: "make: *** No targets specified and no makefile found.  Stop.\n",
+      }),
+      isError: true,
+      durationMs: 5,
+    });
+
+    expect(hint).toBeDefined();
+    expect(hint?.key).toBe("system-bash-build-directory-not-configured");
+    expect(hint?.message).toContain("build-agenc-fresh");
+    expect(hint?.message).toContain("Do not keep retrying `make`");
+  });
+
+  it("injects a recovery hint for compiler diagnostics so the model repairs source instead of rerunning build", () => {
+    const hint = inferRecoveryHint({
+      name: "system.bash",
+      args: {
+        command: "cd /tmp/agenc-shell && cmake -S . -B build && cmake --build build",
+      },
+      result: JSON.stringify({
+        exitCode: 2,
+        stderr:
+          "/tmp/agenc-shell/src/lexer.c:54:44: error: macro \"ALLOC\" passed 2 arguments, but takes just 1\n" +
+          "/tmp/agenc-shell/src/lexer.c:54:25: error: ‘ALLOC’ undeclared (first use in this function)\n",
+      }),
+      isError: true,
+      durationMs: 184,
+    });
+
+    expect(hint).toBeDefined();
+    expect(hint?.key).toBe(
+      "system-bash-compiler-diagnostic:/tmp/agenc-shell/src/lexer.c:54:44",
+    );
+    expect(hint?.message).toContain("/tmp/agenc-shell/src/lexer.c:54:44");
+    expect(hint?.message).toContain("Stop rerunning the same build command");
+    expect(hint?.message).toContain("Read and edit the cited file");
+  });
+
+  it("injects a stronger recovery hint for header type-order compiler failures", () => {
+    const hint = inferRecoveryHint({
+      name: "system.bash",
+      args: {
+        command: "bash tests/run_tests.sh",
+      },
+      result: JSON.stringify({
+        exitCode: 2,
+        stderr:
+          "/tmp/agenc-shell/include/shell.h:27:5: error: unknown type name 'AstNode'\n" +
+          "/tmp/agenc-shell/include/shell.h:28:5: error: unknown type name 'AstNode'\n",
+      }),
+      isError: true,
+      durationMs: 211,
+    });
+
+    expect(hint).toBeDefined();
+    expect(hint?.key).toBe(
+      "system-bash-compiler-header-ordering:/tmp/agenc-shell/include/shell.h:27:5",
+    );
+    expect(hint?.message).toContain("header/type-ordering error");
+    expect(hint?.message).toContain("AstNode");
+    expect(hint?.message).toContain("forward declaration");
+  });
+
+  it("injects a stronger recovery hint for cross-file compiler interface drift", () => {
+    const hint = inferRecoveryHint({
+      name: "system.bash",
+      args: {
+        command: "bash tests/run_tests.sh",
+      },
+      result: JSON.stringify({
+        exitCode: 2,
+        stderr:
+          "/tmp/agenc-shell/src/parser.c:87:23: error: 'ASTNode' has no member named 'next'\n" +
+          "/tmp/agenc-shell/src/parser.c:102:17: error: unknown type name 'Redirect'; did you mean 'Redir'?\n" +
+          "/tmp/agenc-shell/src/parser.c:133:21: error: 'TOK_REDIRECT_IN' undeclared (first use in this function); did you mean 'TOK_REDIR_IN'?\n",
+      }),
+      isError: true,
+      durationMs: 233,
+    });
+
+    expect(hint).toBeDefined();
+    expect(hint?.key).toBe(
+      "system-bash-compiler-interface-drift:/tmp/agenc-shell/src/parser.c:87:23",
+    );
+    expect(hint?.message).toContain("cross-file interface drift");
+    expect(hint?.message).toContain("Redir");
+    expect(hint?.message).toContain("shared type surface");
+    expect(hint?.message).toContain("one coherent repair pass");
+  });
+
+  it("injects a recovery hint when a repo script is run from the wrong cwd and shell stderr reports a path failure", () => {
+    const hint = inferRecoveryHint({
+      name: "system.bash",
+      args: {
+        command: "cd /tmp/agenc-shell/tests && bash run_tests.sh",
+      },
+      result: JSON.stringify({
+        exitCode: 0,
+        stdout: "Running tests...\nCompilation test passed\n",
+        stderr:
+          "run_tests.sh: line 6: cd: build: No such file or directory\n",
+      }),
+      isError: false,
+      durationMs: 263,
+    });
+
+    expect(hint).toBeDefined();
+    expect(hint?.key).toBe("system-bash-shell-execution-anomaly");
+    expect(hint?.message).toContain("stderr even though the outer process returned success");
+    expect(hint?.message).toContain("bash tests/run_tests.sh");
   });
 
   it("flags heredoc commands that put a conjunction on a fresh line", () => {
@@ -283,6 +807,49 @@ describe("chat-executor-recovery", () => {
     expect(hint?.key).toBe("system-bash-workspace-protocol-unsupported");
     expect(hint?.message).toContain("workspace:*");
     expect(hint?.message).toContain("rerun `npm install`");
+  });
+
+  it("flags destructive writeFile overwrites with whole-file rewrite guidance", () => {
+    const hint = inferRecoveryHint({
+      name: "system.writeFile",
+      args: {
+        path: "/tmp/workspace/src/lexer.c",
+        content: "advance(lexer); // skip backslash",
+      },
+      result: JSON.stringify({
+        error:
+          'Refusing destructive overwrite of previously-read file "/tmp/workspace/src/lexer.c". Preserve the existing content when revising the file, or use system.appendFile for an additive update.',
+      }),
+      isError: true,
+      durationMs: 2,
+    });
+
+    expect(hint).toBeDefined();
+    expect(hint?.key).toBe("system-writefile-destructive-overwrite");
+    expect(hint?.message).toContain("rewrite the COMPLETE file body");
+    expect(hint?.message).toContain("system.appendFile");
+  });
+
+  it("flags repo-local verification harness shadow copies and redirects to direct bounded verification", () => {
+    const hint = inferRecoveryHint({
+      name: "system.writeFile",
+      args: {
+        path: "/tmp/agenc-shell/tests/run_tests_fresh.sh",
+        content: "#!/bin/bash\ncmake -S . -B build-agenc-fresh && cmake --build build-agenc-fresh\n",
+      },
+      result: JSON.stringify({
+        error:
+          'Delegated write path "/tmp/agenc-shell/tests/run_tests_fresh.sh" rewrites a repo-local verification harness without explicitly owning it as a writable target',
+      }),
+      isError: true,
+      durationMs: 2,
+    });
+
+    expect(hint).toBeDefined();
+    expect(hint?.key).toBe("system.writeFile-repo-local-verification-harness");
+    expect(hint?.message).toContain("run_tests_fresh.sh");
+    expect(hint?.message).toContain("Do not edit `tests/run_tests.sh`");
+    expect(hint?.message).toContain("equivalent bounded verification commands directly");
   });
 
   it("flags recursive npm install lifecycle scripts before they burn the turn budget", () => {

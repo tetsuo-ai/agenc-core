@@ -42,6 +42,7 @@ import {
 } from "../utils/parent-safe-introspection.js";
 import { extractExplicitImperativeToolNames } from "./chat-executor-explicit-tools.js";
 import { getAcceptanceVerificationCategories } from "../utils/delegation-validation.js";
+import { areDocumentationOnlyArtifacts } from "../workflow/artifact-paths.js";
 
 export type ToolContractGuidancePhase =
   | "initial"
@@ -482,6 +483,11 @@ function resolveDelegationInitialContractGuidance(
   const usesFlexibleInitialSubset = effectiveRoutedToolNames.length > 1;
   const sourceGroundingRetry =
     (spec.lastValidationCode ?? "") === "missing_required_source_evidence";
+  const planBackedImplementationOwner =
+    isPlanBackedImplementationOwnerSpec(spec);
+  const planBackedWorkspaceInspectionInstruction =
+    "When the planning artifact is the source specification, survey the current workspace before assuming plan-listed files already exist. " +
+    "Confirm directories or files under the owned workspace before reading them or presenting them as present.";
   const runtimeInstruction = usesFlexibleInitialSubset
     ? workspaceBootstrap
       ? "Bootstrap the delegated workspace before inspecting it. " +
@@ -493,9 +499,16 @@ function resolveDelegationInitialContractGuidance(
       : fileAuthoringOnlyPhase
         ? "Start with the smallest grounded step that reduces uncertainty in the delegated contract. " +
           "Inspect the existing workspace state before mutating files when that will prevent avoidable rework, " +
-          "then create or update the required files directly. Do not spend shell rounds on speculative build/test/runtime verification unless acceptance explicitly requires that evidence."
+          "then create or update the required files directly. " +
+          (planBackedImplementationOwner
+            ? `${planBackedWorkspaceInspectionInstruction} `
+            : "") +
+          "Do not spend shell rounds on speculative build/test/runtime verification unless acceptance explicitly requires that evidence."
       : "Start with the smallest grounded step that reduces uncertainty in the delegated contract. " +
         "Inspect the existing workspace state before mutating files when that will prevent avoidable rework, " +
+        (planBackedImplementationOwner
+          ? `${planBackedWorkspaceInspectionInstruction} `
+          : "") +
         "and use shell verification when build/test/install evidence is part of acceptance."
     : preferredToolName === "system.writeFile" ||
         preferredToolName === "system.appendFile"
@@ -510,9 +523,28 @@ function resolveDelegationInitialContractGuidance(
     source: "delegation-initial",
     runtimeInstruction,
     routedToolNames: effectiveRoutedToolNames,
-    persistRoutedToolNames: false,
+    persistRoutedToolNames: true,
     toolChoice: "required",
   };
+}
+
+function isPlanBackedImplementationOwnerSpec(
+  spec: DelegationContractSpec,
+): boolean {
+  const executionContext = spec.executionContext;
+  const workspaceRoot = executionContext?.workspaceRoot?.trim();
+  const requiredSourceArtifacts = executionContext?.requiredSourceArtifacts ?? [];
+  const targetArtifacts = executionContext?.targetArtifacts ?? [];
+  if (!workspaceRoot || requiredSourceArtifacts.length === 0) {
+    return false;
+  }
+  if (!areDocumentationOnlyArtifacts(requiredSourceArtifacts)) {
+    return false;
+  }
+  const ownsWorkspaceRoot = targetArtifacts.some((artifactPath) =>
+    artifactPath.trim() === workspaceRoot
+  );
+  return ownsWorkspaceRoot || spec.task.trim().toLowerCase() === "implement_owner";
 }
 
 function isDelegatedFileAuthoringPhaseWithoutVerification(

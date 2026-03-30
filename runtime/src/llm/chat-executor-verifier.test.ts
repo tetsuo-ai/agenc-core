@@ -295,6 +295,26 @@ describe("buildPlannerWorkflowAdmission", () => {
     expect(admission.completionContract?.taskClass).toBe("review_required");
   });
 
+  it("does not treat read-only deterministic implement-from-plan reconnaissance as workflow-owned completion", () => {
+    const admission = buildPlannerWorkflowAdmission({
+      workspaceRoot: "/tmp/project",
+      subagentSteps: [],
+      deterministicSteps: [
+        {
+          name: "read_plan",
+          stepType: "deterministic_tool",
+          tool: "system.readFile",
+          args: { path: "/tmp/project/PLAN.md" },
+        },
+      ],
+    });
+
+    expect(admission.taskClassification).toBe("docs_research_plan_only");
+    expect(admission.completionContract).toBeUndefined();
+    expect(admission.verificationContract).toBeUndefined();
+    expect(admission.requiresMandatoryImplementationVerification).toBe(false);
+  });
+
   it("uses documentation completion verification for delegated plan rewrites", () => {
     const admission = buildPlannerWorkflowAdmission({
       workspaceRoot: "/tmp/project",

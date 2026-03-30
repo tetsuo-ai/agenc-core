@@ -441,6 +441,84 @@ describe("SubAgentManager", () => {
       }
     });
 
+    it("preserves the resolved grok model contract for child route preflight", async () => {
+      const grokProvider: LLMProvider = {
+        name: "grok",
+        chat: vi.fn(async (): Promise<LLMResponse> => ({
+          content: "sub-agent output",
+          toolCalls: [],
+          usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+          model: "grok-code-fast-1",
+          finishReason: "stop",
+        })),
+        chatStream: vi.fn(
+          async (
+            _messages: LLMMessage[],
+            _cb: StreamProgressCallback,
+          ): Promise<LLMResponse> => ({
+            content: "sub-agent output",
+            toolCalls: [],
+            usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+            model: "grok-code-fast-1",
+            finishReason: "stop",
+          }),
+        ),
+        healthCheck: vi.fn(async () => true),
+        getCapabilities: () => ({
+          provider: "grok",
+          stateful: {
+            assistantPhase: false,
+            previousResponseId: true,
+            encryptedReasoning: true,
+            storedResponseRetrieval: true,
+            storedResponseDeletion: true,
+            opaqueCompaction: false,
+            deterministicFallback: true,
+          },
+        }),
+      };
+      const toolRegistry = new ToolRegistry({});
+      toolRegistry.register(makeMockTool("system.readFile"));
+      toolRegistry.register(makeMockTool("system.writeFile"));
+      toolRegistry.register(makeMockTool("system.bash"));
+      const createContext = vi.fn(async () => ({
+        ...makeMockContext(),
+        llmProvider: grokProvider,
+        toolRegistry,
+      }));
+      const manager = new SubAgentManager(
+        makeManagerConfig({
+          createContext,
+          resolveExecutionBudget: () => ({
+            providerProfile: {
+              provider: "grok",
+              model: "grok-code-fast-1",
+              contextWindowTokens: 256_000,
+              contextWindowSource: "grok_model_catalog",
+              maxOutputTokens: 4_096,
+            },
+          }),
+        }),
+      );
+
+      const sessionId = await manager.spawn({
+        parentSessionId: "p",
+        task: "Inspect the workspace and report which files need attention.",
+        tools: ["system.readFile", "system.writeFile", "system.bash"],
+      });
+
+      let result = manager.getResult(sessionId);
+      for (let i = 0; i < 20 && result === null; i += 1) {
+        await settle();
+        result = manager.getResult(sessionId);
+      }
+
+      expect(result).not.toBeNull();
+      expect(result?.success).toBe(true);
+      expect(result?.stopReason).toBe("completed");
+      expect(grokProvider.chat).toHaveBeenCalledTimes(1);
+    });
+
     it("allows iterative coding child phases to exceed the base text-only tool-round cap", async () => {
       let rounds = 0;
       const llmProvider: LLMProvider = {
@@ -1334,6 +1412,57 @@ describe("SubAgentManager", () => {
               maxCorrectionAttempts: 0,
               delegationSpec,
             }),
+          }),
+        );
+      } finally {
+        executeSpy.mockRestore();
+      }
+    });
+
+    it("passes delegated workspace roots into child execution runtime context", async () => {
+      const executeSpy = vi.spyOn(ChatExecutor.prototype, "execute")
+        .mockResolvedValueOnce({
+          content: "ok",
+          provider: "mock",
+          model: "mock",
+          usedFallback: false,
+          toolCalls: [],
+          tokenUsage: {
+            promptTokens: 10,
+            completionTokens: 5,
+            totalTokens: 15,
+          },
+          callUsage: [],
+          durationMs: 1,
+          compacted: false,
+          stopReason: "completed",
+          completionState: "completed",
+          completionProgress: {
+            completionState: "completed",
+            stopReason: "completed",
+            requiredRequirements: [],
+            satisfiedRequirements: [],
+            remainingRequirements: [],
+            reusableEvidence: [],
+            updatedAt: 1_700_000_000_000,
+          },
+        });
+
+      try {
+        const manager = new SubAgentManager(makeManagerConfig());
+        const sessionId = await manager.spawn({
+          parentSessionId: "p",
+          task: "Run repo-local verification",
+          workingDirectory: "/tmp/project",
+        });
+        await settle();
+
+        expect(manager.getResult(sessionId)?.success).toBe(true);
+        expect(executeSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            runtimeContext: {
+              workspaceRoot: "/tmp/project",
+            },
           }),
         );
       } finally {

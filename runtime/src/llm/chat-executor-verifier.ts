@@ -1283,16 +1283,17 @@ function buildPlannerWorkflowVerificationContract(params: {
       })
       : undefined
     );
+  const hasWorkflowVerificationSemantics =
+    acceptanceCriteria.length > 0 ||
+    inputArtifacts.length > 0 ||
+    requiredSourceArtifacts.length > 0 ||
+    targetArtifacts.length > 0 ||
+    Boolean(verificationMode) ||
+    Boolean(stepKind) ||
+    Boolean(params.completionContract) ||
+    Boolean(requestCompletion);
   if (
-    !workspaceRoot &&
-    acceptanceCriteria.length === 0 &&
-    inputArtifacts.length === 0 &&
-    requiredSourceArtifacts.length === 0 &&
-    targetArtifacts.length === 0 &&
-    !verificationMode &&
-    !stepKind &&
-    !params.completionContract &&
-    !requestCompletion
+    !hasWorkflowVerificationSemantics
   ) {
     return undefined;
   }

@@ -12,6 +12,7 @@ export interface ProviderRouteDescriptor {
   readonly index: number;
   readonly providerName: string;
   readonly model?: string;
+  readonly routeKey: string;
   readonly provider: LLMProvider;
   readonly reasoning: boolean;
   readonly costWeight: number;
@@ -29,6 +30,7 @@ export interface ModelRouteDecision {
   readonly providers: readonly LLMProvider[];
   readonly selectedProviderName: string;
   readonly selectedModel?: string;
+  readonly selectedProviderRouteKey: string;
   readonly rerouted: boolean;
   readonly downgraded: boolean;
   readonly reason: string;
@@ -82,12 +84,41 @@ function estimateLatencyWeight(provider: string, model?: string): number {
   return 0.95;
 }
 
+function normalizeRouteKeyPart(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.toLowerCase() : undefined;
+}
+
+export function buildProviderRouteKey(
+  providerName: string,
+  model?: string,
+): string {
+  const providerPart = normalizeRouteKeyPart(providerName) ?? "unknown";
+  const modelPart = normalizeRouteKeyPart(model);
+  return modelPart ? `${providerPart}:${modelPart}` : providerPart;
+}
+
+export function getProviderRouteKey(
+  provider: LLMProvider,
+  modelHint?: string,
+): string {
+  const providerModel =
+    modelHint ??
+    ((provider as { config?: { model?: string } }).config?.model as
+      | string
+      | undefined);
+  return buildProviderRouteKey(provider.name, providerModel);
+}
+
 export function buildModelRoutingPolicy(params: {
   readonly providers: readonly LLMProvider[];
   readonly economicsPolicy: RuntimeEconomicsPolicy;
   readonly llmConfig?: GatewayLLMConfig;
+  readonly providerConfigs?: readonly GatewayLLMConfig[];
 }): ModelRoutingPolicy {
-  const configs = params.llmConfig
+  const configs = params.providerConfigs && params.providerConfigs.length > 0
+    ? [...params.providerConfigs]
+    : params.llmConfig
     ? [params.llmConfig, ...(params.llmConfig.fallback ?? [])]
     : [];
   return {
@@ -99,6 +130,7 @@ export function buildModelRoutingPolicy(params: {
         index,
         providerName: provider.name,
         model,
+        routeKey: buildProviderRouteKey(provider.name, model),
         provider,
         reasoning: modelLooksReasoning(model),
         costWeight: estimateCostWeight(provider.name, model),
@@ -243,11 +275,18 @@ function describeRouteRequirements(
 export function resolveParallelToolCallPolicy(params: {
   readonly policy: ModelRoutingPolicy;
   readonly selectedProviderName: string;
+  readonly selectedProviderRouteKey?: string;
   readonly phase: ModelRoutingWorkflowPhase;
 }): boolean {
-  const descriptor = params.policy.providers.find(
-    (entry) => entry.providerName === params.selectedProviderName,
-  );
+  const descriptor =
+    params.policy.providers.find(
+      (entry) =>
+        params.selectedProviderRouteKey !== undefined &&
+        entry.routeKey === params.selectedProviderRouteKey,
+    ) ??
+    params.policy.providers.find(
+      (entry) => entry.providerName === params.selectedProviderName,
+    );
   switch (params.phase) {
     case "initial":
     case "tool_followup":
@@ -275,7 +314,7 @@ export function resolveModelRoute(params: {
     (params.degradedProviderNames ?? []).map((entry) => entry.toLowerCase()),
   );
   const healthyCandidates = params.policy.providers.filter((candidate) =>
-    !degraded.has(candidate.providerName.toLowerCase())
+    !degraded.has(candidate.routeKey.toLowerCase())
   );
   const compatibleHealthyCandidates = healthyCandidates.filter((candidate) =>
     providerSupportsRouteRequirements(candidate, params.requirements)
@@ -343,6 +382,7 @@ export function resolveModelRoute(params: {
     providers: orderedFallbacks.map((candidate) => candidate.provider),
     selectedProviderName: chosen.providerName,
     selectedModel: chosen.model,
+    selectedProviderRouteKey: chosen.routeKey,
     rerouted,
     downgraded,
     reason,

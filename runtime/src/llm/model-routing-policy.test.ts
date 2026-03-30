@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  buildProviderRouteKey,
   buildModelRoutingPolicy,
   resolveModelRoute,
   resolveParallelToolCallPolicy,
@@ -11,9 +12,11 @@ import type { LLMProvider } from "./types.js";
 function createMockProvider(
   name: "grok" | "ollama",
   statefulPreviousResponseId: boolean,
+  model?: string,
 ): LLMProvider {
   return {
     name,
+    ...(model ? { config: { model } } : {}),
     chat: vi.fn(),
     chatStream: vi.fn(),
     healthCheck: vi.fn(),
@@ -94,6 +97,84 @@ describe("model-routing-policy", () => {
     ).toThrow(/stateful continuation/i);
   });
 
+  it("uses provider configs for auto-added grok fallback capability routing", () => {
+    const policy = buildModelRoutingPolicy({
+      providers: [
+        createMockProvider("grok", true, "grok-code-fast-1"),
+        createMockProvider("grok", true, "grok-4-1-fast-non-reasoning"),
+      ],
+      economicsPolicy: buildRuntimeEconomicsPolicy({ mode: "enforce" }),
+      llmConfig: {
+        provider: "grok",
+        model: "grok-code-fast-1",
+      },
+      providerConfigs: [
+        {
+          provider: "grok",
+          model: "grok-code-fast-1",
+        },
+        {
+          provider: "grok",
+          model: "grok-4-1-fast-non-reasoning",
+        },
+      ],
+    });
+
+    const route = resolveModelRoute({
+      policy,
+      runClass: "planner",
+      pressure,
+      requirements: {
+        structuredOutputRequired: true,
+        routedToolNames: ["system.bash"],
+      },
+    });
+
+    expect(route.selectedProviderName).toBe("grok");
+    expect(route.selectedModel).toBe("grok-4-1-fast-non-reasoning");
+    expect(route.selectedProviderRouteKey).toBe(
+      buildProviderRouteKey("grok", "grok-4-1-fast-non-reasoning"),
+    );
+  });
+
+  it("degrades only the failing model route when duplicate provider families exist", () => {
+    const policy = buildModelRoutingPolicy({
+      providers: [
+        createMockProvider("grok", true, "grok-code-fast-1"),
+        createMockProvider("grok", true, "grok-4-1-fast-non-reasoning"),
+      ],
+      economicsPolicy: buildRuntimeEconomicsPolicy({ mode: "enforce" }),
+      llmConfig: {
+        provider: "grok",
+        model: "grok-code-fast-1",
+      },
+      providerConfigs: [
+        {
+          provider: "grok",
+          model: "grok-code-fast-1",
+        },
+        {
+          provider: "grok",
+          model: "grok-4-1-fast-non-reasoning",
+        },
+      ],
+    });
+
+    const route = resolveModelRoute({
+      policy,
+      runClass: "executor",
+      pressure,
+      degradedProviderNames: [
+        buildProviderRouteKey("grok", "grok-4-1-fast-non-reasoning"),
+      ],
+      requirements: {
+        routedToolNames: ["system.bash"],
+      },
+    });
+
+    expect(route.selectedModel).toBe("grok-code-fast-1");
+  });
+
   it("makes parallel tool-call policy explicit per workflow phase", () => {
     const policy = buildModelRoutingPolicy({
       providers: [createMockProvider("grok", true)],
@@ -109,6 +190,10 @@ describe("model-routing-policy", () => {
       resolveParallelToolCallPolicy({
         policy,
         selectedProviderName: "grok",
+        selectedProviderRouteKey: buildProviderRouteKey(
+          "grok",
+          "grok-4-1-fast-reasoning",
+        ),
         phase: "initial",
       }),
     ).toBe(true);
@@ -116,6 +201,10 @@ describe("model-routing-policy", () => {
       resolveParallelToolCallPolicy({
         policy,
         selectedProviderName: "grok",
+        selectedProviderRouteKey: buildProviderRouteKey(
+          "grok",
+          "grok-4-1-fast-reasoning",
+        ),
         phase: "planner",
       }),
     ).toBe(false);
@@ -123,6 +212,10 @@ describe("model-routing-policy", () => {
       resolveParallelToolCallPolicy({
         policy,
         selectedProviderName: "grok",
+        selectedProviderRouteKey: buildProviderRouteKey(
+          "grok",
+          "grok-4-1-fast-reasoning",
+        ),
         phase: "tool_followup",
       }),
     ).toBe(true);

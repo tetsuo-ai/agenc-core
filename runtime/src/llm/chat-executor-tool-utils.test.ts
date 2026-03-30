@@ -42,6 +42,20 @@ describe("chat-executor-tool-utils", () => {
       expect(didToolCallFail(false, '{"timedOut":true,"exitCode":null}')).toBe(true);
     });
 
+    it("returns true when shell stderr reports a path/cwd failure despite exitCode 0", () => {
+      expect(
+        didToolCallFail(
+          false,
+          JSON.stringify({
+            stdout: "Running tests...\nCompilation test passed\n",
+            stderr:
+              "run_tests.sh: line 6: cd: build: No such file or directory\n",
+            exitCode: 0,
+          }),
+        ),
+      ).toBe(true);
+    });
+
     it("returns true for MCP plain-text failure signatures", () => {
       expect(
         didToolCallFail(

@@ -79,6 +79,14 @@ describe("delegation-validation", () => {
     ).toEqual(["inspection"]);
   });
 
+  it("treats grounded verification command-reporting criteria as command verification", () => {
+    expect(
+      getAcceptanceVerificationCategories(
+        "Grounded verification runs before completion, and passing or failing commands are reported concretely.",
+      ),
+    ).toEqual(["command"]);
+  });
+
   it("does not treat current-guide review criteria as workspace inspection verification", () => {
     expect(
       getAcceptanceVerificationCategories(
@@ -593,7 +601,72 @@ describe("delegation-validation", () => {
     expect(result.error).toContain("npm install");
   });
 
-  it("bypasses delegated contract enforcement in unsafe benchmark mode", () => {
+  it("rejects rewriting a repo-local verification harness unless the contract names it as writable", () => {
+    const workspaceRoot = "/workspace/agenc-shell";
+    const result = validateDelegatedOutputContract({
+      spec: {
+        task: "implement_owner",
+        objective:
+          "Implement the requested shell features in the workspace and verify them with the existing repo-local harness.",
+        inputContract:
+          "Use PLAN.md plus the current workspace sources to complete the implementation.",
+        acceptanceCriteria: [
+          "Workspace files are updated to satisfy the requested implementation phases.",
+          "Verify with bash tests/run_tests.sh before completion.",
+        ],
+        executionContext: {
+          workspaceRoot,
+          allowedReadRoots: [workspaceRoot],
+          allowedWriteRoots: [workspaceRoot],
+          targetArtifacts: [workspaceRoot],
+          requiredSourceArtifacts: [`${workspaceRoot}/PLAN.md`],
+          effectClass: "filesystem_write",
+          verificationMode: "mutation_required",
+          stepKind: "delegated_write",
+          role: "writer",
+          artifactRelations: [
+            {
+              relationType: "read_dependency",
+              artifactPath: `${workspaceRoot}/PLAN.md`,
+            },
+            {
+              relationType: "write_owner",
+              artifactPath: workspaceRoot,
+            },
+          ],
+        },
+      },
+      output:
+        "Implemented the remaining phases and verified the full request with the workspace test harness.",
+      toolCalls: [
+        {
+          name: "system.writeFile",
+          args: {
+            path: `${workspaceRoot}/tests/run_tests.sh`,
+            content: "#!/usr/bin/env bash\nrm -rf build\nmkdir build\n",
+          },
+          result:
+            `{"path":"${workspaceRoot}/tests/run_tests.sh","bytesWritten":47}`,
+        },
+        {
+          name: "system.bash",
+          args: {
+            command: "bash",
+            args: ["tests/run_tests.sh"],
+            cwd: workspaceRoot,
+          },
+          result: '{"stdout":"all tests passed","stderr":"","exitCode":0}',
+        },
+      ],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("forbidden_phase_action");
+    expect(result.error).toContain("repo-local verification harness");
+    expect(result.error).toContain("run_tests.sh");
+  });
+
+  it("still enforces delegated contract truth in unsafe benchmark mode", () => {
     const result = validateDelegatedOutputContract({
       spec: {
         task: "scaffold_manifests",
@@ -620,7 +693,117 @@ describe("delegation-validation", () => {
       unsafeBenchmarkMode: true,
     });
 
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("forbidden_phase_action");
+    expect(result.error).toContain("dependency-install commands");
+  });
+
+  it("still rejects repo-local verification harness rewrites in unsafe benchmark mode", () => {
+    const result = validateDelegatedOutputContract({
+      spec: {
+        task: "implement_owner",
+        objective: "Implement the shell and verify it with the existing repo-local test harness.",
+        inputContract: "Use the workspace test script as read-only grader infrastructure.",
+        acceptanceCriteria: [
+          "Run the existing tests/run_tests.sh harness and report grounded results.",
+        ],
+      },
+      output:
+        "**implement_owner complete** Updated the shell and expanded tests/run_tests.sh to validate builtins before running it.",
+      toolCalls: [
+        {
+          name: "system.writeFile",
+          args: {
+            path: "/workspace/agenc-shell/tests/run_tests.sh",
+            content: "#!/bin/bash\necho hacked\n",
+          },
+          result:
+            "{\"path\":\"/workspace/agenc-shell/tests/run_tests.sh\",\"bytesWritten\":24,\"__agencVerification\":{\"category\":\"behavior\",\"generatedHarness\":true,\"path\":\"/workspace/agenc-shell/tests/run_tests.sh\",\"repoLocal\":true}}",
+        },
+        {
+          name: "system.bash",
+          args: {
+            command: "bash",
+            args: ["/workspace/agenc-shell/tests/run_tests.sh"],
+            cwd: "/workspace/agenc-shell",
+          },
+          result: "{\"stdout\":\"ok\",\"stderr\":\"\",\"exitCode\":0}",
+        },
+      ],
+      unsafeBenchmarkMode: true,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("forbidden_phase_action");
+    expect(result.error).toContain("repo-local verification harness");
+    expect(result.error).toContain("run_tests.sh");
+  });
+
+  it("rejects failed deterministic verification summaries in unsafe benchmark mode", () => {
+    const workspaceRoot = "/workspace/agenc-shell";
+    const result = validateDelegatedOutputContract({
+      spec: {
+        task: "test_phase_1",
+        objective:
+          "Run all tests for Phase 1 implementation. Verify 100% passing test suite specific to this phase. Fix any failures before completion.",
+        inputContract: "Run the repo-local harness and report grounded verification results.",
+        acceptanceCriteria: [
+          "All Phase 1 tests pass with 100% success rate",
+          "No test failures or errors remain",
+          "Test command exits with code 0",
+        ],
+        executionContext: {
+          workspaceRoot,
+          allowedReadRoots: [workspaceRoot],
+          allowedWriteRoots: [workspaceRoot],
+          targetArtifacts: [workspaceRoot],
+          requiredSourceArtifacts: [`${workspaceRoot}/tests/run_tests.sh`],
+          verificationMode: "deterministic_followup",
+          stepKind: "delegated_validation",
+          role: "validator",
+          artifactRelations: [
+            {
+              relationType: "read_dependency",
+              artifactPath: `${workspaceRoot}/tests/run_tests.sh`,
+            },
+            {
+              relationType: "verification_subject",
+              artifactPath: workspaceRoot,
+            },
+          ],
+        },
+        requiredToolCapabilities: ["shell", "system.readFile"],
+      },
+      output:
+        "Inspected tests/run_tests.sh. Blocked: The test suite in tests/run_tests.sh includes tests for later phases, so Phase 1 is complete but full verification is out of scope for this delegated contract.",
+      toolCalls: [
+        {
+          name: "system.readFile",
+          args: { path: `${workspaceRoot}/tests/run_tests.sh` },
+          result:
+            `{"path":"${workspaceRoot}/tests/run_tests.sh","content":"#!/bin/bash\\n./agenc-shell --help\\n"}`,
+        },
+        {
+          name: "system.bash",
+          args: {
+            command: "bash",
+            args: ["tests/run_tests.sh"],
+            cwd: workspaceRoot,
+          },
+          result:
+            "{\"exitCode\":1,\"stdout\":\"Running tests...\\npwd test failed: got 'Agenc Shell', expected '/workspace/agenc-shell/build'\\n\",\"stderr\":\"Command \\\"bash\\\" failed\",\"timedOut\":false}",
+          isError: true,
+        },
+      ],
+      unsafeBenchmarkMode: true,
+    });
+
+    expect(result.ok).toBe(false);
+    expect([
+      "missing_required_source_evidence",
+      "blocked_phase_output",
+      "acceptance_evidence_missing",
+    ]).toContain(result.code);
   });
 
   it("does not treat authored root config summaries as forbidden test execution claims", () => {
@@ -913,6 +1096,49 @@ describe("delegation-validation", () => {
     });
 
     expect(result.ok).toBe(true);
+  });
+
+  it("rejects full-request owner completions that defer later phases as out of scope", () => {
+    const workspaceRoot = "/workspace/agenc-shell";
+    const result = validateDelegatedOutputContract({
+      spec: {
+        task: "implement_owner",
+        objective:
+          "Execute this implementation request end to end and complete every phase sequentially in full.",
+        parentRequest:
+          "Can you go through @PLAN.md and implement every phase sequentially in full and make sure they are fully tested.",
+        inputContract:
+          "Use the planning artifact plus the current workspace to perform the requested implementation end to end.",
+        acceptanceCriteria: [
+          "Update the owned workspace files to implement the remaining plan phases.",
+        ],
+        executionContext: {
+          workspaceRoot,
+          targetArtifacts: [workspaceRoot],
+          role: "writer",
+          artifactRelations: [
+            {
+              relationType: "write_owner",
+              artifactPath: workspaceRoot,
+            },
+          ],
+        },
+      },
+      output:
+        "Implemented Phase 1 and Phase 2 successfully. Phase 3 is out of scope for this phase, so the remaining work belongs to the next phase.",
+      toolCalls: [{
+        name: "system.writeFile",
+        args: {
+          path: `${workspaceRoot}/src/parser.c`,
+          content: "/* parser */\n",
+        },
+        result: `{\"path\":\"${workspaceRoot}/src/parser.c\",\"bytesWritten\":13}`,
+      }],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("blocked_phase_output");
+    expect(result.error).toContain("out of scope");
   });
 
   it("rejects completion claims that describe an implementation as stubbed", () => {
@@ -2031,6 +2257,40 @@ describe("delegation-validation", () => {
         name: "mcp.browser.browser_snapshot",
         isError: true,
         result: '{"error":"navigation failed"}',
+      }],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("missing_successful_tool_evidence");
+  });
+
+  it("rejects shell verification output when stderr shows a shell path failure despite exitCode 0", () => {
+    const result = validateDelegatedOutputContract({
+      spec: {
+        objective: "Run the project test script and report whether verification passed",
+        acceptanceCriteria: [
+          "Tests pass with grounded shell evidence and commands are reported concretely.",
+        ],
+        tools: ["system.bash"],
+        executionContext: {
+          version: "v1",
+          workspaceRoot: "/tmp/project",
+          effectClass: "shell",
+          verificationMode: "deterministic_followup",
+          stepKind: "delegated_validation",
+          role: "validator",
+        },
+      },
+      output: "Tests passed.",
+      toolCalls: [{
+        name: "system.bash",
+        args: { command: "cd /tmp/project/tests && bash run_tests.sh" },
+        result: JSON.stringify({
+          stdout: "Running tests...\nCompilation test passed\n",
+          stderr:
+            "run_tests.sh: line 6: cd: build: No such file or directory\n",
+          exitCode: 0,
+        }),
       }],
     });
 
@@ -3886,6 +4146,55 @@ Project is functional for core/pathfinding; CLI/web assumed usable per authored 
       "system.bash",
       "system.listDir",
       "system.writeFile",
+    ]);
+  });
+
+  it("keeps shell available for live implement-from-plan owner contracts that require grounded verification", () => {
+    const toolNames = resolveDelegatedInitialToolChoiceToolNames(
+      {
+        task: "implement_owner",
+        objective:
+          "Execute this implementation request inside the workspace: okay what i did was delete absolutely everything except for the @PLAN.md because i want to start this fresh can you go through the plan.md file and anything that says it has been completed already fix since it's a fresh folder",
+        inputContract:
+          "Use the planning artifact plus the current workspace to perform the requested implementation end to end. Do not stop at analysis only.",
+        acceptanceCriteria: [
+          "Workspace files are updated to satisfy the requested implementation phases.",
+          "Grounded verification runs before completion, and passing or failing commands are reported concretely.",
+          "If a blocker prevents completion, report the concrete blocker with evidence instead of returning an analysis-only summary.",
+        ],
+        executionContext: {
+          workspaceRoot: "/tmp/agenc-shell-fresh",
+          allowedReadRoots: ["/tmp/agenc-shell-fresh"],
+          allowedWriteRoots: ["/tmp/agenc-shell-fresh"],
+          allowedTools: ["system.readFile", "system.writeFile", "system.bash"],
+          requiredSourceArtifacts: ["/tmp/agenc-shell-fresh/PLAN.md"],
+          targetArtifacts: ["/tmp/agenc-shell-fresh"],
+          effectClass: "filesystem_write",
+          verificationMode: "mutation_required",
+          stepKind: "delegated_write",
+          role: "writer",
+          artifactRelations: [
+            {
+              relationType: "read_dependency",
+              artifactPath: "/tmp/agenc-shell-fresh/PLAN.md",
+            },
+            {
+              relationType: "write_owner",
+              artifactPath: "/tmp/agenc-shell-fresh",
+            },
+          ],
+          fallbackPolicy: "fail_request",
+          resumePolicy: "stateless_retry",
+          approvalProfile: "filesystem_write",
+        },
+      },
+      ["system.readFile", "system.writeFile", "system.bash"],
+    );
+
+    expect(toolNames).toEqual([
+      "system.readFile",
+      "system.writeFile",
+      "system.bash",
     ]);
   });
 
