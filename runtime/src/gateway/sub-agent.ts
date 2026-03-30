@@ -826,7 +826,9 @@ export class SubAgentManager {
           history: handle.history,
           systemPrompt,
           sessionId: handle.sessionId,
-          ...(spawnRoutedTools ? { routedToolNames: spawnRoutedTools } : {}),
+          ...(spawnRoutedTools
+            ? { toolRouting: { routedToolNames: spawnRoutedTools } }
+            : {}),
           ...(handle.config.workingDirectory
             ? {
               runtimeContext: {
