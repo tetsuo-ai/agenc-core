@@ -3,19 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
-import { fileURLToPath } from "node:url";
 
 import { createWatchApp } from "../../../src/watch/agenc-watch-app.mjs";
-import { loadOperatorEventHelpers } from "../../../src/watch/agenc-watch-runtime.mjs";
-
-const FIXTURES_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SCRIPTS_DIR = path.resolve(FIXTURES_DIR, "..");
-
-export const IDENTITY_OPERATOR_EVENT_HELPERS = Object.freeze({
-  normalizeOperatorMessage: (value) => value,
-  projectOperatorSurfaceEvent: (value) => value,
-  shouldIgnoreOperatorMessage: () => false,
-});
+import * as fixtureOperatorEventHelpers from "./agenc-watch-operator-events.fixture.mjs";
 
 export class FakeStream extends EventEmitter {
   constructor({ throwsOnResize = false, columns = 120, rows = 40 } = {}) {
@@ -249,15 +239,11 @@ function summarizeReplayCheckpoint(checkpoint) {
 
 async function resolveReplayOperatorEventHelpers({
   operatorEventHelpers,
-  cwd,
 } = {}) {
   if (operatorEventHelpers) {
     return operatorEventHelpers;
   }
-  return loadOperatorEventHelpers({
-    baseDir: SCRIPTS_DIR,
-    cwd,
-  });
+  return fixtureOperatorEventHelpers;
 }
 
 export async function createWatchLiveReplayHarness(options = {}) {
@@ -281,7 +267,6 @@ export async function createWatchLiveReplayHarness(options = {}) {
   const checkpoints = [];
   const resolvedOperatorEventHelpers = await resolveReplayOperatorEventHelpers({
     operatorEventHelpers,
-    cwd,
   });
 
   const app = await createWatchApp({

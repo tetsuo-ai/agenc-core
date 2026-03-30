@@ -161,6 +161,7 @@ test("buildWatchSurfaceSummary derives route, alerts, and recent tool timeline",
     latestTool: "system.bash",
     latestToolState: "ok",
     queuedInputCount: 2,
+    pendingAttachmentCount: 1,
     events: [
       { kind: "approval", title: "Resolver needed", timestamp: "15:30:01" },
       { kind: "tool", title: "Run pwd", toolName: "system.bash", timestamp: "15:30:02" },
@@ -170,6 +171,7 @@ test("buildWatchSurfaceSummary derives route, alerts, and recent tool timeline",
     planCount: 3,
     activeAgentCount: 1,
     sessionId: "session:abcdef12345678",
+    sessionLabel: "Roadmap branch",
     following: false,
     detailOpen: false,
     transcriptScrollOffset: 12,
@@ -184,6 +186,7 @@ test("buildWatchSurfaceSummary derives route, alerts, and recent tool timeline",
   assert.equal(summary.recentTools[0].title, "Command failed");
   assert.equal(summary.recentTools[0].state, "error");
   assert.equal(summary.overview.sessionToken, "12345678");
+  assert.equal(summary.overview.sessionLabel, "Roadmap branch");
   assert.equal(summary.overview.transcriptMode, "scroll 12");
   assert.equal(summary.overview.durableRunsState, "disabled");
   assert.equal(summary.providerLabel, "grok");
@@ -196,6 +199,7 @@ test("buildWatchSurfaceSummary derives route, alerts, and recent tool timeline",
   assert.equal(summary.chips.find((chip) => chip.label === "FAILOVER")?.value, "active");
   assert.equal(summary.chips.find((chip) => chip.label === "RUNTIME")?.value, "degraded");
   assert.equal(summary.chips.find((chip) => chip.label === "DURABLE")?.value, "disabled");
+  assert.equal(summary.chips.find((chip) => chip.label === "FILES")?.value, "1");
 });
 
 test("buildWatchSurfaceSummary marks detail mode explicitly", () => {
@@ -381,6 +385,7 @@ test("buildWatchFooterSummary handles detail and slash modes", () => {
     planCount: 2,
     activeAgentCount: 1,
     sessionId: "session:99887766",
+    sessionLabel: "Release prep",
     following: true,
     detailOpen: true,
     transcriptScrollOffset: 0,
@@ -506,4 +511,126 @@ test("buildWatchFooterSummary handles detail and slash modes", () => {
   );
   assert.equal(fileTagFooter.hintRight, "tab insert tag");
   assert.equal(fileTagFooter.fileTagPalette.title, "@ oper");
+});
+
+test("buildWatchFooterSummary emits a structured statusline when enabled", () => {
+  const summary = buildWatchSurfaceSummary({
+    connectionState: "live",
+    phaseLabel: "running",
+    route: { provider: "grok", model: "grok-4.20", usedFallback: false },
+    objective: "Ship the operator surface",
+    lastUsageSummary: "1.8K total",
+    latestTool: "system.bash",
+    latestToolState: "ok",
+    queuedInputCount: 2,
+    pendingAttachmentCount: 2,
+    events: [
+      {
+        kind: "error",
+        title: "planner timeout",
+        timestamp: "15:47:00",
+      },
+    ],
+    planCount: 2,
+    activeAgentCount: 1,
+    sessionId: "session:99887766",
+    sessionLabel: "Release prep",
+    following: true,
+    detailOpen: false,
+    transcriptScrollOffset: 0,
+    lastActivityAt: "15:47:00",
+    backgroundRunStatus: {
+      enabled: true,
+      operatorAvailable: true,
+      activeTotal: 1,
+      queuedSignalsTotal: 0,
+    },
+  });
+
+  const footer = buildWatchFooterSummary({
+    summary,
+    inputValue: "",
+    suggestions: [],
+    connectionState: "live",
+    activeRun: true,
+    elapsedLabel: "00:42",
+    latestTool: "system.bash",
+    latestToolState: "ok",
+    transientStatus: "",
+    latestAgentSummary: "",
+    objective: "Ship the operator surface",
+    isOpen: true,
+    bootstrapPending: false,
+    latestExpandable: true,
+    enableMouseTracking: false,
+    activeCheckpointId: "cp-3",
+    checkpointCount: 5,
+    featureFlags: {
+      statusline: true,
+      checkpoints: true,
+    },
+    inputModeProfile: "vim",
+    keybindingProfile: "vim",
+    composerMode: "normal",
+    themeName: "aurora",
+  });
+
+  assert.equal(footer.statuslineEnabled, true);
+  assert.match(footer.statuslineText, /PROV grok/);
+  assert.match(footer.statuslineText, /MODEL grok-4\.20/);
+  assert.match(footer.statuslineText, /SESS 99887766/);
+  assert.match(footer.statuslineText, /LABEL Release prep/);
+  assert.match(footer.statuslineText, /USAGE 1\.8K total/);
+  assert.match(footer.statuslineText, /QUEUE 2/);
+  assert.match(footer.statuslineText, /FILES 2/);
+  assert.match(footer.statuslineText, /GUARD 1 error/);
+  assert.match(footer.statuslineText, /CKPT cp-3/);
+  assert.match(footer.statuslineText, /INPUT vim\/normal/);
+  assert.match(footer.statuslineText, /THEME aurora/);
+});
+
+test("buildWatchFooterSummary exposes the active checkpoint in fallback details", () => {
+  const footer = buildWatchFooterSummary({
+    summary: buildWatchSurfaceSummary({
+      connectionState: "live",
+      phaseLabel: "idle",
+      route: null,
+      objective: "",
+      lastUsageSummary: null,
+      latestTool: null,
+      latestToolState: null,
+      queuedInputCount: 0,
+      pendingAttachmentCount: 1,
+      events: [],
+      planCount: 0,
+      activeAgentCount: 0,
+      sessionId: "session:44556677",
+      following: true,
+      detailOpen: false,
+      transcriptScrollOffset: 0,
+      lastActivityAt: null,
+    }),
+    inputValue: "",
+    suggestions: [],
+    connectionState: "live",
+    activeRun: false,
+    elapsedLabel: "00:05",
+    latestTool: null,
+    latestToolState: null,
+    transientStatus: "",
+    latestAgentSummary: "",
+    objective: "",
+    isOpen: true,
+    bootstrapPending: false,
+    latestExpandable: false,
+    enableMouseTracking: false,
+    activeCheckpointId: "cp-4",
+    checkpointCount: 4,
+    featureFlags: {
+      checkpoints: true,
+    },
+  });
+
+  assert.ok(footer.leftDetails.includes("checkpoint cp-4/4"));
+  assert.ok(footer.leftDetails.includes("attachments 1"));
 });

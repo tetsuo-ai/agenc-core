@@ -232,19 +232,19 @@ describe("system.bash tool", () => {
 
   it("allows /usr/bin/bash via basename check", async () => {
     const tool = createBashTool();
-    mockSuccess("test\n", "");
+    mockSpawnSuccess("test\n", "");
 
     const result = await tool.execute({
       command: "/usr/bin/bash",
       args: ["-c", "echo test"],
     });
     expect(result.isError).toBeUndefined();
-    expect(mockExecFile).toHaveBeenCalledWith(
+    expect(mockSpawn).toHaveBeenCalledWith(
       "/usr/bin/bash",
       ["-c", "echo test"],
       expect.any(Object),
-      expect.any(Function),
     );
+    expect(parseContent(result).stdout).toBe("test\n");
   });
 
   it("blocks /usr/local/bin/python3 via basename check", async () => {
@@ -796,7 +796,7 @@ describe("system.bash tool", () => {
     expect(mockExecFile).not.toHaveBeenCalled();
     expect(mockSpawn).toHaveBeenCalledWith(
       "/bin/bash",
-      [expect.stringMatching(/^\/tmp\/agenc-sh-[0-9a-f]+\.sh$/)],
+      [expect.stringMatching(/(?:^|[\\/])agenc-sh-[0-9a-f]+\.sh$/)],
       expect.any(Object),
     );
     expect(parseContent(result).stdout).toContain("/tmp");

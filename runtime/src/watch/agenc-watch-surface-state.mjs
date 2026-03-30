@@ -4,6 +4,7 @@ export function createWatchSurfaceStateController(dependencies = {}) {
     transportState,
     events,
     queuedOperatorInputs,
+    pendingAttachments,
     subagentPlanSteps,
     nowMs,
     activityPulseIntervalMs,
@@ -15,6 +16,7 @@ export function createWatchSurfaceStateController(dependencies = {}) {
     isTranscriptFollowing,
     normalizeModelRouteImpl,
     modelRouteToneImpl,
+    resolveSessionLabel,
   } = dependencies;
 
   let cachedSurfaceSummaryKey = null;
@@ -44,6 +46,12 @@ export function createWatchSurfaceStateController(dependencies = {}) {
 
   function effectiveModelRoute() {
     return watchState.liveSessionModelRoute ?? watchState.configuredModelRoute;
+  }
+
+  function currentSessionLabel() {
+    return typeof resolveSessionLabel === "function"
+      ? resolveSessionLabel(watchState.sessionId)
+      : null;
   }
 
   function activePlanEntries(limit = 10) {
@@ -146,6 +154,9 @@ export function createWatchSurfaceStateController(dependencies = {}) {
       latestTool: watchState.latestTool,
       latestToolState: watchState.latestToolState,
       queuedInputCount: queuedOperatorInputs.length,
+      pendingAttachmentCount: Array.isArray(pendingAttachments)
+        ? pendingAttachments.length
+        : 0,
       eventsLength: events.length,
       lastEventId: lastEvent?.id ?? null,
       planCount: planEntries.length,
@@ -155,6 +166,7 @@ export function createWatchSurfaceStateController(dependencies = {}) {
       plannerStatus: watchState.plannerDagStatus,
       plannerNote: watchState.plannerDagNote,
       sessionId: watchState.sessionId,
+      sessionLabel: currentSessionLabel(),
       following: isTranscriptFollowing(),
       detailOpen: Boolean(watchState.expandedEventId),
       transcriptScrollOffset: watchState.transcriptScrollOffset,
@@ -174,6 +186,9 @@ export function createWatchSurfaceStateController(dependencies = {}) {
       latestTool: watchState.latestTool,
       latestToolState: watchState.latestToolState,
       queuedInputCount: queuedOperatorInputs.length,
+      pendingAttachmentCount: Array.isArray(pendingAttachments)
+        ? pendingAttachments.length
+        : 0,
       events,
       planCount: planEntries.length,
       activeAgentCount: activeAgents.length,
@@ -187,6 +202,7 @@ export function createWatchSurfaceStateController(dependencies = {}) {
       activeAgentActivity: activeAgentFocus.activity,
       plannerStatus: watchState.plannerDagStatus,
       plannerNote: watchState.plannerDagNote,
+      sessionLabel: currentSessionLabel(),
     });
     cachedSurfaceSummaryKey = summaryKey;
     return cachedSurfaceSummary;
@@ -205,6 +221,7 @@ export function createWatchSurfaceStateController(dependencies = {}) {
     currentPhaseLabel,
     currentPlanFocusStep,
     currentRunElapsedLabel,
+    currentSessionLabel,
     currentSessionElapsedLabel,
     currentSurfaceSummary,
     currentSurfaceToolLabel,

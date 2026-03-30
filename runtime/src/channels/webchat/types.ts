@@ -191,7 +191,14 @@ export interface ChatMessageRequest {
       tenantId?: string;
       projectId?: string;
     };
-    attachments?: Array<{ type: string; url?: string; mimeType: string }>;
+    attachments?: Array<{
+      type: string;
+      url?: string;
+      mimeType: string;
+      data?: string;
+      filename?: string;
+      sizeBytes?: number;
+    }>;
   };
   id?: string;
 }

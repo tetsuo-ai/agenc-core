@@ -74,7 +74,6 @@ describe("buildCanonicalDelegatedFilesystemScope", () => {
       requiredSourceArtifacts: [`${workspaceRoot}/plan.md`],
       targetArtifacts: [`${workspaceRoot}/src`],
     });
-
     expect(scope.requiredSourceArtifacts).toEqual([
       join(workspaceRoot, "PLAN.md"),
     ]);

@@ -6,10 +6,13 @@ import { runAgencWatchCli } from "../../../scripts/agenc-watch.mjs";
 function createProcessHarness() {
   const exits = [];
   const writes = [];
+  const env = {};
   return {
     exits,
     writes,
+    env,
     processLike: {
+      env,
       stderr: {
         write: (value) => {
           writes.push(String(value ?? ""));
@@ -32,6 +35,7 @@ test("runAgencWatchCli exits with the app exit code on success", async () => {
 
   assert.deepEqual(harness.exits, [7]);
   assert.deepEqual(harness.writes, []);
+  assert.equal(harness.env.AGENC_WATCH_ENABLE_ATTACHMENTS, "true");
 });
 
 test("runAgencWatchCli writes errors and exits non-zero on failure", async () => {
@@ -47,4 +51,18 @@ test("runAgencWatchCli writes errors and exits non-zero on failure", async () =>
   assert.deepEqual(harness.exits, [1]);
   assert.equal(harness.writes.length, 1);
   assert.match(harness.writes[0], /boom/);
+  assert.equal(harness.env.AGENC_WATCH_ENABLE_ATTACHMENTS, "true");
+});
+
+test("runAgencWatchCli preserves an explicit attachment override", async () => {
+  const harness = createProcessHarness();
+  harness.env.AGENC_WATCH_ENABLE_ATTACHMENTS = "false";
+
+  await runAgencWatchCli({
+    runWatchApp: async () => 0,
+    processLike: harness.processLike,
+  });
+
+  assert.deepEqual(harness.exits, [0]);
+  assert.equal(harness.env.AGENC_WATCH_ENABLE_ATTACHMENTS, "false");
 });

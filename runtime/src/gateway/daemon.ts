@@ -3789,6 +3789,16 @@ export class DaemonManager {
         this.resolvePolicyScopeForSession(params),
       buildPolicySimulationPreview: (params) =>
         this.buildPolicySimulationPreview(params),
+      getSessionPolicyState: (sessionId) =>
+        this._approvalEngine?.getSessionPolicyState(sessionId) ?? {
+          elevatedPatterns: [],
+          deniedPatterns: [],
+        },
+      updateSessionPolicyState: (params) =>
+        this._approvalEngine?.applySessionPolicyMutation(params) ?? {
+          elevatedPatterns: [],
+          deniedPatterns: [],
+        },
       getSubAgentRuntimeConfig: () => this._subAgentRuntimeConfig,
       getActiveDelegationAggressiveness: (config) =>
         this.getActiveDelegationAggressiveness(config),

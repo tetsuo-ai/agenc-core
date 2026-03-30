@@ -2899,7 +2899,11 @@ describe("SubAgentOrchestrator", () => {
       totalSteps: pipeline.steps.length,
     }));
     const manager = new FakeSubAgentManager(5, true);
-    const workspaceRoot = "/home/tetsuo/git/stream-test/agenc-shell";
+    const { workspaceRoot, executionContext } = createTestExecutionContext({
+      prefix: "subagent-owner-contract-",
+    });
+    const planPath = join(workspaceRoot, "PLAN.md");
+    writeFileSync(planPath, "# PLAN\n", "utf8");
     const orchestrator = new SubAgentOrchestrator({
       fallbackExecutor: fallback,
       resolveSubAgentManager: () => manager,
@@ -2935,11 +2939,9 @@ describe("SubAgentOrchestrator", () => {
           ],
           contextRequirements: ["read_plan"],
           executionContext: {
-            workspaceRoot,
-            allowedReadRoots: [workspaceRoot],
-            allowedWriteRoots: [workspaceRoot],
+            ...executionContext,
             targetArtifacts: [workspaceRoot],
-            requiredSourceArtifacts: [`${workspaceRoot}/PLAN.md`],
+            requiredSourceArtifacts: [planPath],
             effectClass: "filesystem_write",
             verificationMode: "mutation_required",
             stepKind: "delegated_write",
@@ -2947,7 +2949,7 @@ describe("SubAgentOrchestrator", () => {
             artifactRelations: [
               {
                 relationType: "read_dependency",
-                artifactPath: `${workspaceRoot}/PLAN.md`,
+                artifactPath: planPath,
               },
               {
                 relationType: "write_owner",
@@ -6947,7 +6949,11 @@ describe("SubAgentOrchestrator", () => {
       completedSteps: pipeline.steps.length,
       totalSteps: pipeline.steps.length,
     }));
-    const workspaceRoot = "/home/tetsuo/git/stream-test/agenc-shell";
+    const { workspaceRoot, executionContext } = createTestExecutionContext({
+      prefix: "subagent-owner-blocked-retry-",
+    });
+    const planPath = join(workspaceRoot, "PLAN.md");
+    writeFileSync(planPath, "# PLAN\n", "utf8");
     const manager = new SequencedSubAgentManager([
       {
         delayMs: 5,
@@ -7050,11 +7056,9 @@ describe("SubAgentOrchestrator", () => {
           ],
           contextRequirements: ["read_plan"],
           executionContext: {
-            workspaceRoot,
-            allowedReadRoots: [workspaceRoot],
-            allowedWriteRoots: [workspaceRoot],
+            ...executionContext,
             targetArtifacts: [workspaceRoot],
-            requiredSourceArtifacts: [`${workspaceRoot}/PLAN.md`],
+            requiredSourceArtifacts: [planPath],
             effectClass: "filesystem_write",
             verificationMode: "mutation_required",
             stepKind: "delegated_write",
@@ -7062,7 +7066,7 @@ describe("SubAgentOrchestrator", () => {
             artifactRelations: [
               {
                 relationType: "read_dependency",
-                artifactPath: `${workspaceRoot}/PLAN.md`,
+                artifactPath: planPath,
               },
               {
                 relationType: "write_owner",
@@ -7104,7 +7108,11 @@ describe("SubAgentOrchestrator", () => {
       completedSteps: pipeline.steps.length,
       totalSteps: pipeline.steps.length,
     }));
-    const workspaceRoot = "/home/tetsuo/git/stream-test/agenc-shell";
+    const { workspaceRoot, executionContext } = createTestExecutionContext({
+      prefix: "subagent-owner-contradictory-retry-",
+    });
+    const planPath = join(workspaceRoot, "PLAN.md");
+    writeFileSync(planPath, "# PLAN\n", "utf8");
     const manager = new SequencedSubAgentManager([
       {
         delayMs: 5,
@@ -7196,11 +7204,9 @@ describe("SubAgentOrchestrator", () => {
           ],
           contextRequirements: ["read_plan"],
           executionContext: {
-            workspaceRoot,
-            allowedReadRoots: [workspaceRoot],
-            allowedWriteRoots: [workspaceRoot],
+            ...executionContext,
             targetArtifacts: [workspaceRoot],
-            requiredSourceArtifacts: [`${workspaceRoot}/PLAN.md`],
+            requiredSourceArtifacts: [planPath],
             effectClass: "filesystem_write",
             verificationMode: "mutation_required",
             stepKind: "delegated_write",
@@ -7208,7 +7214,7 @@ describe("SubAgentOrchestrator", () => {
             artifactRelations: [
               {
                 relationType: "read_dependency",
-                artifactPath: `${workspaceRoot}/PLAN.md`,
+                artifactPath: planPath,
               },
               {
                 relationType: "write_owner",

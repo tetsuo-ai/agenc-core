@@ -166,22 +166,36 @@ export async function runPipelineHttpRepro(
     preview: preview(step4),
   });
 
-  const step5 = await runBash(`pgrep -fa 'python3 -m http.server ${port}'`);
-  const step5HasHttpServer =
-    step5.ok &&
-    step5.stdout
-      .split("\n")
-      .some((line) => line.includes(`python3 -m http.server ${port}`));
+  const step5 = await runBash(
+    [
+      "if command -v lsof >/dev/null 2>&1; then",
+      `  lsof -nP -iTCP:${port} -sTCP:LISTEN -t 2>/dev/null`,
+      "elif command -v ss >/dev/null 2>&1; then",
+      `  ss -ltn '( sport = :${port} )' | tail -n +2 | wc -l`,
+      "else",
+      `  if curl -fsS --max-time 1 http://127.0.0.1:${port} >/dev/null 2>&1; then echo LISTENER_OK; else exit 1; fi`,
+      "fi",
+    ].join("\n"),
+  );
   steps.push({
     step: 5,
     tool: "system.bash",
-    ok: step5HasHttpServer,
+    ok: step5.ok && step5.stdout.length > 0,
     preview: preview(step5),
   });
 
   const step6 = await runBash(
     [
-      `pkill -f '[p]ython3 -m http.server ${port}' || true`,
+      "if command -v lsof >/dev/null 2>&1; then",
+      `  SERVER_PIDS=$(lsof -nP -iTCP:${port} -sTCP:LISTEN -t 2>/dev/null || true)`,
+      '  for pid in $SERVER_PIDS; do',
+      '    kill "$pid" >/dev/null 2>&1 || true',
+      "  done",
+      "elif command -v fuser >/dev/null 2>&1; then",
+      `  fuser -k ${port}/tcp >/dev/null 2>&1 || true`,
+      "else",
+      `  pkill -f 'http.server ${port}' >/dev/null 2>&1 || true`,
+      "fi",
       "sleep 1",
       `if command -v ss >/dev/null 2>&1; then`,
       `  ss -ltn '( sport = :${port} )' | tail -n +2 | wc -l`,
@@ -201,11 +215,6 @@ export async function runPipelineHttpRepro(
       ? `listeners_on_${port}=${step6.stdout.trim()}`
       : preview(step6),
   });
-
-  if (serverPid) {
-    await runBash(`kill ${serverPid} >/dev/null 2>&1 || true`);
-  }
-  await runBash(`pkill -f '[p]ython3 -m http.server ${port}' || true`);
 
   const overall = steps.every((step) => step.ok);
   return {

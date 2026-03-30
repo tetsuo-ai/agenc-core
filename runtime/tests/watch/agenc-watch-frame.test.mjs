@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { buildWatchFooterSummary } from "../../src/watch/agenc-watch-surface-summary.mjs";
 import {
   createDisplayLine,
   createWatchFrameHarness,
@@ -272,4 +273,56 @@ test("frame controller routes file tag palette rows through ansi-aware fitting",
   assert.ok(
     fitCalls.some((call) => call.width === 36 && call.text.includes("runtime/src/channels/webchat")),
   );
+});
+
+test("frame controller renders the structured statusline when enabled", () => {
+  const harness = createWatchFrameHarness({
+    activeRun: true,
+    latestTool: "system.bash",
+    surfaceSummary: {
+      overview: {
+        connectionState: "live",
+        sessionToken: "12345678",
+        phaseLabel: "running",
+        queuedInputCount: 2,
+        latestTool: "system.bash",
+        latestToolState: "ok",
+        usage: "3.4K total",
+        lastActivityAt: "15:47:00",
+        activeAgentCount: 1,
+        planCount: 2,
+        transcriptMode: "follow",
+        fallbackState: "standby",
+        runtimeState: "healthy",
+        runtimeLabel: "live · durable ready",
+        activeLine: "Shipping statusline controls",
+        durableActiveTotal: 1,
+        durableQueuedSignalsTotal: 0,
+        durableRunsState: "ready",
+        providerLabel: "grok",
+        modelLabel: "grok-4.20",
+      },
+    },
+    dependencies: {
+      buildWatchFooterSummary,
+      watchFeatureFlags: { statusline: true, checkpoints: true },
+      animatedWorkingGlyph() {
+        return "*";
+      },
+    },
+  });
+  harness.watchState.activeCheckpointId = "cp-9";
+  harness.watchState.checkpoints = [{ id: "cp-1" }, { id: "cp-9" }];
+
+  const snapshot = harness.controller.buildVisibleFrameSnapshot({
+    width: 140,
+    height: 22,
+  });
+  const frameText = snapshot.lines.join("\n");
+
+  assert.match(frameText, /PROV grok/);
+  assert.match(frameText, /MODEL grok-4\.20/);
+  assert.match(frameText, /SESS 12345678/);
+  assert.match(frameText, /USAGE 3\.4K total/);
+  assert.match(frameText, /CKPT cp-9/);
 });

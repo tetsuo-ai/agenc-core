@@ -7,6 +7,9 @@
  * To run: npx vitest run src/cli/skills-cli-integration.test.ts
  */
 import { Writable } from "node:stream";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { runCli } from "./index.js";
 
@@ -34,12 +37,51 @@ function captureStream(): { stream: Writable; data: string } {
   };
 }
 
+async function runCliWithIsolatedConfig(options: {
+  argv: string[];
+  stdout: Writable;
+  stderr: Writable;
+}): Promise<number> {
+  const workspace = mkdtempSync(join(tmpdir(), "agenc-skill-cli-"));
+  const configPath = join(workspace, "config.json");
+  const previousAgencConfig = process.env.AGENC_CONFIG;
+  const previousLegacyConfig = process.env.AGENC_RUNTIME_CONFIG;
+
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      gateway: { port: 3100 },
+      agent: { name: "skill-cli-test-agent" },
+      connection: { rpcUrl: "https://test.rpc" },
+    }),
+    "utf8",
+  );
+  process.env.AGENC_CONFIG = configPath;
+  delete process.env.AGENC_RUNTIME_CONFIG;
+
+  try {
+    return await runCli(options);
+  } finally {
+    if (previousAgencConfig === undefined) {
+      delete process.env.AGENC_CONFIG;
+    } else {
+      process.env.AGENC_CONFIG = previousAgencConfig;
+    }
+    if (previousLegacyConfig === undefined) {
+      delete process.env.AGENC_RUNTIME_CONFIG;
+    } else {
+      process.env.AGENC_RUNTIME_CONFIG = previousLegacyConfig;
+    }
+    rmSync(workspace, { recursive: true, force: true });
+  }
+}
+
 describe("skill cli integration", () => {
   it("skill list routes correctly", async () => {
     const out = captureStream();
     const err = createNullStream();
 
-    const code = await runCli({
+    const code = await runCliWithIsolatedConfig({
       argv: ["skill", "list"],
       stdout: out.stream,
       stderr: err,
@@ -55,7 +97,7 @@ describe("skill cli integration", () => {
     const out = createNullStream();
     const err = captureStream();
 
-    const code = await runCli({
+    const code = await runCliWithIsolatedConfig({
       argv: ["skill"],
       stdout: out,
       stderr: err.stream,
@@ -70,7 +112,7 @@ describe("skill cli integration", () => {
     const out = createNullStream();
     const err = captureStream();
 
-    const code = await runCli({
+    const code = await runCliWithIsolatedConfig({
       argv: ["skill", "bogus"],
       stdout: out,
       stderr: err.stream,
@@ -85,7 +127,7 @@ describe("skill cli integration", () => {
     const out = createNullStream();
     const err = captureStream();
 
-    const code = await runCli({
+    const code = await runCliWithIsolatedConfig({
       argv: ["skill", "info"],
       stdout: out,
       stderr: err.stream,
@@ -100,7 +142,7 @@ describe("skill cli integration", () => {
     const out = captureStream();
     const err = createNullStream();
 
-    const code = await runCli({
+    const code = await runCliWithIsolatedConfig({
       argv: ["skill", "list", "--help"],
       stdout: out.stream,
       stderr: err,

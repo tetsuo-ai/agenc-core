@@ -158,6 +158,10 @@ export function buildSurfaceSummaryCacheKey(input = {}) {
     latestTool: input.latestTool ?? null,
     latestToolState: input.latestToolState ?? null,
     queuedInputs: Number.isFinite(Number(input.queuedInputCount)) ? Number(input.queuedInputCount) : 0,
+    pendingAttachments:
+      Number.isFinite(Number(input.pendingAttachmentCount))
+        ? Number(input.pendingAttachmentCount)
+        : 0,
     eventsLength: Number.isFinite(Number(input.eventsLength)) ? Number(input.eventsLength) : 0,
     lastEventId: input.lastEventId ?? null,
     planCount: Number.isFinite(Number(input.planCount)) ? Number(input.planCount) : 0,
@@ -167,6 +171,7 @@ export function buildSurfaceSummaryCacheKey(input = {}) {
     plannerStatus: input.plannerStatus ?? null,
     plannerNote: input.plannerNote ?? null,
     sessionId: input.sessionId ?? null,
+    sessionLabel: input.sessionLabel ?? null,
     following: input.following === true,
     detailOpen: input.detailOpen === true,
     transcriptScrollOffset: Number.isFinite(Number(input.transcriptScrollOffset))
