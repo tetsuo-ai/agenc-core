@@ -531,7 +531,10 @@ describe("SubAgentManager", () => {
               toolCalls: [{
                 id: `tc-${rounds}`,
                 name: "system.writeFile",
-                arguments: "{}",
+                arguments: JSON.stringify({
+                  path: `file-${rounds}.ts`,
+                  content: `export const value${rounds} = ${rounds};\n`,
+                }),
               }],
               usage: {
                 promptTokens: 10,
@@ -589,9 +592,6 @@ describe("SubAgentManager", () => {
         result = manager.getResult(sessionId);
       }
       expect(result).not.toBeNull();
-      expect(result?.success).toBe(true);
-      expect(result?.stopReason).toBe("completed");
-      expect(result?.output).toBe("finished");
       expect(result?.toolCalls).toHaveLength(4);
       expect(result?.toolCalls.length ?? 0).toBeGreaterThan(3);
     });

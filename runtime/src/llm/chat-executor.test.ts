@@ -2719,20 +2719,29 @@ describe("ChatExecutor", () => {
 
     it("maxToolRounds enforced — stops after limit", async () => {
       const toolHandler = vi.fn().mockResolvedValue("ok");
+      let round = 0;
       const provider = createMockProvider("primary", {
-        chat: vi.fn().mockResolvedValue(
-          mockResponse({
+        chat: vi.fn().mockImplementation(async () => {
+          round += 1;
+          return mockResponse({
             content: "looping",
             finishReason: "tool_calls",
-            toolCalls: [{ id: "tc-1", name: "tool", arguments: "{}" }],
-          }),
-        ),
+            toolCalls: [{
+              id: `tc-${round}`,
+              name: "tool",
+              arguments: JSON.stringify({
+                path: `file-${round}.ts`,
+              }),
+            }],
+          });
+        }),
       });
 
       const executor = new ChatExecutor({
         providers: [provider],
         toolHandler,
         maxToolRounds: 3,
+        toolBudgetPerRequest: 3,
       });
       const result = await executor.execute(createParams());
 
