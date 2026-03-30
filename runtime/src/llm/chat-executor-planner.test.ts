@@ -1,3 +1,7 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -84,6 +88,25 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
           ),
         }),
       ]),
+    );
+  });
+
+  it("omits numeric fanout guidance when runtime fanout is unlimited", () => {
+    const messages = buildPlannerMessages(
+      "Create a TypeScript monorepo from scratch with multiple packages, tests, and docs.",
+      [],
+      512,
+      undefined,
+      undefined,
+      undefined,
+      { maxSubagentFanout: 0 },
+    );
+
+    expect(messages[0]).toMatchObject({
+      role: "system",
+    });
+    expect(messages[0]?.content).not.toContain(
+      "do not rely on more than 0 concurrently runnable subagent_task steps at once",
     );
   });
 
@@ -187,6 +210,42 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
 
     const finalUserMessage = messages[messages.length - 1];
     expect(finalUserMessage?.content).toContain("perfect ROADMAP.md");
+  });
+
+  it("filters same-target failed implement-from-artifact history when retrying implementation", () => {
+    const messages = buildPlannerMessages(
+      "Read all of @PLAN.md and implement every phase in full.",
+      [
+        {
+          role: "user",
+          content:
+            "Can you go through @PLAN.md and implement every phase sequentially in full and make sure they are fully tested.",
+        },
+        {
+          role: "assistant",
+          content:
+            "Execution stopped before completion (validation_error). Planner emitted a structured plan that failed local validation.",
+        },
+        {
+          role: "user",
+          content:
+            "Keep the workspace root at /tmp/agenc-shell and do not move to the next phase until tests pass.",
+        },
+      ],
+      512,
+    );
+
+    const finalUserMessage = messages[messages.length - 1];
+    expect(finalUserMessage?.role).toBe("user");
+    expect(finalUserMessage?.content).not.toContain(
+      "implement every phase sequentially in full",
+    );
+    expect(finalUserMessage?.content).not.toContain(
+      "Planner emitted a structured plan that failed local validation",
+    );
+    expect(finalUserMessage?.content).toContain(
+      "Keep the workspace root at /tmp/agenc-shell",
+    );
   });
 
   it("treats plain-language delegation research requests as explicit delegation", () => {
@@ -1020,6 +1079,51 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
         ],
       }),
     ]);
+  });
+
+  it("treats zero fanout as unlimited during planner graph validation", () => {
+    const diagnostics = validatePlannerGraph(
+      {
+        requiresSynthesis: true,
+        steps: [
+          {
+            name: "review_architecture",
+            stepType: "subagent_task",
+            objective: "Review the architecture grounding.",
+            inputContract: "Read the workspace and return grounded findings.",
+            acceptanceCriteria: ["Findings are grounded in the workspace."],
+            requiredToolCapabilities: ["system.readFile"],
+            contextRequirements: ["repo_context"],
+            maxBudgetHint: "2m",
+            canRunParallel: true,
+          },
+          {
+            name: "review_quality",
+            stepType: "subagent_task",
+            objective: "Review the quality risks.",
+            inputContract: "Read the workspace and return grounded findings.",
+            acceptanceCriteria: ["Findings are grounded in the workspace."],
+            requiredToolCapabilities: ["system.readFile"],
+            contextRequirements: ["repo_context"],
+            maxBudgetHint: "2m",
+            canRunParallel: true,
+          },
+        ],
+        edges: [],
+      },
+      {
+        maxSubagentFanout: 0,
+        maxSubagentDepth: 4,
+      },
+    );
+
+    expect(diagnostics).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "subagent_fanout_exceeded",
+        }),
+      ]),
+    );
   });
 
   it("preserves semantic planner capabilities instead of falling back to heuristic repair defaults", () => {
@@ -2382,6 +2486,60 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
     );
   });
 
+  it("rejects implement-from-plan plans that only contain read-only analysis", () => {
+    const workspaceRoot = "/tmp/agenc-shell";
+    const diagnostics = validatePlannerStepContracts(
+      {
+        reason: "implement_from_plan",
+        requiresSynthesis: false,
+        confidence: 0.82,
+        steps: [
+          {
+            name: "read_plan",
+            stepType: "deterministic_tool",
+            dependsOn: [],
+            tool: "system.readFile",
+            args: {
+              path: `${workspaceRoot}/PLAN.md`,
+            },
+          },
+          {
+            name: "phase1_analysis",
+            stepType: "subagent_task",
+            dependsOn: ["read_plan"],
+            objective:
+              "Analyze PLAN.md to identify Phase 1 work. Do not implement code yet.",
+            inputContract: "PLAN.md plus the existing source tree.",
+            acceptanceCriteria: ["No code changes; output is analysis only."],
+            requiredToolCapabilities: ["system.readFile", "system.listDir"],
+            contextRequirements: ["read_plan"],
+            maxBudgetHint: "2m",
+            canRunParallel: false,
+            executionContext: {
+              version: "v1",
+              workspaceRoot,
+              allowedReadRoots: [workspaceRoot],
+              requiredSourceArtifacts: [`${workspaceRoot}/PLAN.md`],
+              effectClass: "read_only",
+              verificationMode: "grounded_read",
+              stepKind: "delegated_research",
+            },
+          },
+        ],
+        edges: [{ from: "read_plan", to: "phase1_analysis" }],
+      },
+      "Can you go through @PLAN.md and implement every phase sequentially in full and make sure they are fully tested.",
+    );
+
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "planner_implementation_missing_mutation_path",
+        }),
+      ]),
+    );
+  });
+
   it("classifies the full existing artifact alias family consistently", () => {
     expect(
       classifyPlannerPlanArtifactIntent(
@@ -2436,6 +2594,30 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
           role: "system",
           content: expect.stringContaining(
             "This is a workspace-grounded artifact update request.",
+          ),
+        }),
+      ]),
+    );
+  });
+
+  it("warns implement-from-artifact planner prompts that read-only plan inspection is invalid", () => {
+    const messages = buildPlannerMessages(
+      "Can you go through @PLAN.md and implement every phase sequentially in full and make sure they are fully tested.",
+      [],
+      4000,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "/tmp/agenc-shell",
+    );
+
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "system",
+          content: expect.stringContaining(
+            "A plan that only reads the plan artifact, lists files, or produces read-only analysis is invalid for this request class.",
           ),
         }),
       ]),
@@ -2745,6 +2927,419 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
         diagnostic.code === "node_workspace_install_phase_mismatch"
       ),
     ).toBe(false);
+  });
+
+  it("rejects node workspace scaffolding plans for a CMake workspace", () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "planner-cmake-"));
+    try {
+      writeFileSync(join(workspaceRoot, "CMakeLists.txt"), "cmake_minimum_required(VERSION 3.20)\nproject(agenc_shell C)\n");
+      const diagnostics = validatePlannerGraph(
+        {
+          reason: "workspace_project",
+          requiresSynthesis: true,
+          confidence: 0.77,
+          steps: [
+            {
+              name: "phase1_setup",
+              stepType: "subagent_task",
+              dependsOn: [],
+              objective:
+                "Create initial project structure, package.json, and scaffold files as specified.",
+              inputContract:
+                "Phase 1 details including file structure, initial package.json, and scaffold instructions.",
+              acceptanceCriteria: [
+                "package.json exists with exact dependencies/devDependencies from phase 1.",
+                "Buildable TypeScript workspace packages use package-local tsconfig/project references.",
+              ],
+              requiredToolCapabilities: ["system.writeFile", "system.listDir"],
+              contextRequirements: ["repo_context", "parse_phases"],
+              maxBudgetHint: "2m",
+              canRunParallel: false,
+            },
+          ],
+          edges: [],
+        },
+        {
+          maxSubagentFanout: 8,
+          maxSubagentDepth: 4,
+          workspaceRoot,
+        },
+      );
+
+      expect(diagnostics).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            category: "validation",
+            code: "planner_workspace_ecosystem_mismatch",
+            details: expect.objectContaining({
+              actualEcosystem: "cmake",
+              mismatchedSteps:
+                "phase1_setup:subagent_task:declared=node:scoped=cmake",
+            }),
+          }),
+        ]),
+      );
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("allows generic runtime-repaired writer steps for a CMake workspace", () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "planner-cmake-"));
+    try {
+      writeFileSync(
+        join(workspaceRoot, "CMakeLists.txt"),
+        "cmake_minimum_required(VERSION 3.20)\nproject(agenc_shell C)\n",
+      );
+      const diagnostics = validatePlannerGraph(
+        {
+          reason: "implement_from_artifact_repair",
+          requiresSynthesis: false,
+          confidence: 0.81,
+          steps: [
+            {
+              name: "read_plan",
+              stepType: "deterministic_tool",
+              dependsOn: [],
+              tool: "system.readFile",
+              args: {
+                path: `${workspaceRoot}/PLAN.md`,
+              },
+            },
+            {
+              name: "implement_owner",
+              stepType: "subagent_task",
+              dependsOn: ["read_plan"],
+              objective:
+                "Execute this implementation request inside the workspace: Can you go through @PLAN.md and implement every phase sequentially in full and make sure they are fully passing.",
+              inputContract:
+                "Use the planning artifact plus the current workspace to perform the requested implementation end to end. Do not stop at analysis only.",
+              acceptanceCriteria: [
+                "Workspace files are updated to satisfy the requested implementation phases.",
+                "Grounded verification runs before completion, and passing or failing commands are reported concretely.",
+              ],
+              requiredToolCapabilities: [
+                "system.readFile",
+                "system.writeFile",
+                "system.bash",
+              ],
+              contextRequirements: ["read_plan"],
+              maxBudgetHint: "30m",
+              canRunParallel: false,
+              executionContext: {
+                version: "v1",
+                workspaceRoot,
+                allowedReadRoots: [workspaceRoot],
+                allowedWriteRoots: [workspaceRoot],
+                allowedTools: ["system.readFile", "system.writeFile", "system.bash"],
+                requiredSourceArtifacts: [`${workspaceRoot}/PLAN.md`],
+                targetArtifacts: [workspaceRoot],
+                effectClass: "filesystem_write",
+                verificationMode: "mutation_required",
+                stepKind: "delegated_write",
+                role: "writer",
+                artifactRelations: [
+                  {
+                    relationType: "read_dependency",
+                    artifactPath: `${workspaceRoot}/PLAN.md`,
+                  },
+                  {
+                    relationType: "write_owner",
+                    artifactPath: workspaceRoot,
+                  },
+                ],
+              },
+            },
+          ],
+          edges: [{ from: "read_plan", to: "implement_owner" }],
+        },
+        {
+          maxSubagentFanout: 8,
+          maxSubagentDepth: 4,
+          workspaceRoot,
+        },
+      );
+
+      expect(
+        diagnostics.some(
+          (diagnostic) =>
+            diagnostic.code === "planner_workspace_ecosystem_mismatch",
+        ),
+      ).toBe(false);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not treat generic node runner examples as node ownership inside a CMake-scoped step", () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "planner-cmake-"));
+    try {
+      writeFileSync(
+        join(workspaceRoot, "CMakeLists.txt"),
+        "cmake_minimum_required(VERSION 3.20)\nproject(agenc_shell C)\n",
+      );
+      const diagnostics = validatePlannerGraph(
+        {
+          reason: "implementation_with_verification",
+          requiresSynthesis: false,
+          confidence: 0.81,
+          steps: [
+            {
+              name: "implement_phase_1",
+              stepType: "subagent_task",
+              dependsOn: [],
+              objective:
+                "Implement Phase 1 from PLAN.md using only filesystem write tools. Create all specified files and directories exactly as described. Do not install, build, or test yet - only scaffold files.",
+              inputContract: "PLAN.md content with Phase 1 details",
+              acceptanceCriteria: [
+                "All Phase 1 files created in targetArtifacts with correct structure",
+                "No package.json changes or installs performed",
+                "Files match Phase 1 spec from PLAN.md",
+              ],
+              requiredToolCapabilities: [
+                "system.writeFile",
+                "system.readFile",
+                "system.listDir",
+              ],
+              contextRequirements: ["repo_context"],
+              maxBudgetHint: "5m",
+              canRunParallel: false,
+              executionContext: {
+                version: "v1",
+                workspaceRoot,
+                allowedReadRoots: [workspaceRoot],
+                allowedWriteRoots: [workspaceRoot],
+                requiredSourceArtifacts: [`${workspaceRoot}/PLAN.md`],
+                targetArtifacts: [join(workspaceRoot, "src")],
+                effectClass: "filesystem_scaffold",
+                verificationMode: "mutation_required",
+                stepKind: "delegated_scaffold",
+                role: "writer",
+                artifactRelations: [
+                  {
+                    relationType: "read_dependency",
+                    artifactPath: `${workspaceRoot}/PLAN.md`,
+                  },
+                  {
+                    relationType: "write_owner",
+                    artifactPath: join(workspaceRoot, "src"),
+                  },
+                ],
+              },
+            },
+            {
+              name: "test_phase_1",
+              stepType: "subagent_task",
+              dependsOn: ["implement_phase_1"],
+              objective:
+                "Run all Phase 1 tests and verify 100% pass before completing.",
+              inputContract: "Phase 1 scaffolded files + PLAN.md test specs",
+              acceptanceCriteria: [
+                "All Phase 1 tests pass (vitest run, jest --runInBand, etc.)",
+                "No test failures or errors reported",
+                "Build succeeds if Phase 1 includes build step",
+              ],
+              requiredToolCapabilities: [
+                "system.bash",
+                "system.readFile",
+                "system.listDir",
+              ],
+              contextRequirements: ["repo_context", "implement_phase_1"],
+              maxBudgetHint: "10m",
+              canRunParallel: false,
+              executionContext: {
+                version: "v1",
+                workspaceRoot,
+                allowedReadRoots: [workspaceRoot],
+                allowedWriteRoots: [workspaceRoot],
+                requiredSourceArtifacts: [
+                  `${workspaceRoot}/PLAN.md`,
+                  join(workspaceRoot, "src"),
+                ],
+                targetArtifacts: [workspaceRoot],
+                effectClass: "shell",
+                verificationMode: "deterministic_followup",
+                stepKind: "delegated_validation",
+                role: "validator",
+                artifactRelations: [
+                  {
+                    relationType: "verification_subject",
+                    artifactPath: join(workspaceRoot, "src"),
+                  },
+                  {
+                    relationType: "read_dependency",
+                    artifactPath: `${workspaceRoot}/PLAN.md`,
+                  },
+                ],
+              },
+            },
+          ],
+          edges: [{ from: "implement_phase_1", to: "test_phase_1" }],
+        },
+        {
+          maxSubagentFanout: 8,
+          maxSubagentDepth: 4,
+          workspaceRoot,
+        },
+      );
+
+      expect(
+        diagnostics.some(
+          (diagnostic) =>
+            diagnostic.code === "planner_workspace_ecosystem_mismatch",
+        ),
+      ).toBe(false);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed on malformed subagent acceptance criteria instead of throwing", () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "planner-cmake-"));
+    try {
+      writeFileSync(
+        join(workspaceRoot, "CMakeLists.txt"),
+        "cmake_minimum_required(VERSION 3.20)\nproject(agenc_shell C)\n",
+      );
+      const diagnostics = validatePlannerGraph(
+        {
+          reason: "malformed_contract",
+          requiresSynthesis: false,
+          confidence: 0.7,
+          steps: [
+            {
+              name: "implement_owner",
+              stepType: "subagent_task",
+              dependsOn: [],
+              objective: "Implement the requested shell features in the workspace.",
+              inputContract: "Use PLAN.md and the workspace as the source of truth.",
+              acceptanceCriteria:
+                "Workspace files are updated and verified." as unknown as readonly string[],
+              requiredToolCapabilities: [
+                "system.readFile",
+                "system.writeFile",
+                "system.bash",
+              ],
+              contextRequirements: ["read_plan"],
+              maxBudgetHint: "30m",
+              canRunParallel: false,
+              executionContext: {
+                version: "v1",
+                workspaceRoot,
+                allowedReadRoots: [workspaceRoot],
+                allowedWriteRoots: [workspaceRoot],
+                targetArtifacts: [workspaceRoot],
+                effectClass: "filesystem_write",
+                verificationMode: "mutation_required",
+                stepKind: "delegated_write",
+                role: "writer",
+                artifactRelations: [
+                  {
+                    relationType: "write_owner",
+                    artifactPath: workspaceRoot,
+                  },
+                ],
+              },
+            } as never,
+          ],
+          edges: [],
+        },
+        {
+          maxSubagentFanout: 8,
+          maxSubagentDepth: 4,
+          workspaceRoot,
+        },
+      );
+
+      expect(diagnostics).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            code: "planner_subagent_step_malformed_contract",
+            details: expect.objectContaining({
+              stepName: "implement_owner",
+              malformedFields: expect.stringContaining("acceptanceCriteria"),
+            }),
+          }),
+        ]),
+      );
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("allows node-scoped steps inside a mixed CMake and Node workspace", () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "planner-polyglot-"));
+    try {
+      writeFileSync(
+        join(workspaceRoot, "CMakeLists.txt"),
+        "cmake_minimum_required(VERSION 3.20)\nproject(polyglot C)\n",
+      );
+      mkdirSync(join(workspaceRoot, "frontend"), { recursive: true });
+      writeFileSync(
+        join(workspaceRoot, "frontend", "package.json"),
+        '{"name":"frontend","private":true}\n',
+      );
+      const frontendRoot = join(workspaceRoot, "frontend");
+      const diagnostics = validatePlannerGraph(
+        {
+          reason: "polyglot_workspace",
+          requiresSynthesis: false,
+          confidence: 0.83,
+          steps: [
+            {
+              name: "scaffold_frontend",
+              stepType: "subagent_task",
+              dependsOn: [],
+              objective:
+                "Create package.json scripts and TypeScript frontend scaffolding under frontend/.",
+              inputContract:
+                "Implement the frontend package using package.json, tsconfig.json, and npm scripts.",
+              acceptanceCriteria: [
+                "frontend/package.json defines scripts and dependencies.",
+                "frontend/tsconfig.json is present and references the package-local source tree.",
+              ],
+              requiredToolCapabilities: ["system.writeFile", "system.bash"],
+              contextRequirements: ["repo_context"],
+              maxBudgetHint: "10m",
+              canRunParallel: false,
+              executionContext: {
+                version: "v1",
+                workspaceRoot: frontendRoot,
+                allowedReadRoots: [frontendRoot],
+                allowedWriteRoots: [frontendRoot],
+                allowedTools: ["system.readFile", "system.writeFile", "system.bash"],
+                targetArtifacts: [frontendRoot],
+                effectClass: "filesystem_scaffold",
+                verificationMode: "mutation_required",
+                stepKind: "delegated_scaffold",
+                role: "writer",
+                artifactRelations: [
+                  {
+                    relationType: "write_owner",
+                    artifactPath: frontendRoot,
+                  },
+                ],
+              },
+            },
+          ],
+          edges: [],
+        },
+        {
+          maxSubagentFanout: 8,
+          maxSubagentDepth: 4,
+          workspaceRoot,
+        },
+      );
+
+      expect(
+        diagnostics.some(
+          (diagnostic) =>
+            diagnostic.code === "planner_workspace_ecosystem_mismatch",
+        ),
+      ).toBe(false);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   it("allows scaffold_environment plans that inventory package metadata and build/test scripts before install", () => {

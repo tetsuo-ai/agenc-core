@@ -217,6 +217,73 @@ describe("chat-executor-contract-flow", () => {
     ).toBe(true);
   });
 
+  it("keeps implement-from-plan reconnaissance turns inside workflow-owned completion", () => {
+    expect(
+      requiresWorkflowOwnedImplementationCompletion({
+        ctx: {
+          messageText:
+            "Read all of @PLAN.md and complete every single phase in full.",
+          allToolCalls: [
+            {
+              name: "system.readFile",
+              args: {
+                path: "/tmp/project/PLAN.md",
+              },
+              result: JSON.stringify({
+                path: "/tmp/project/PLAN.md",
+                size: 4096,
+              }),
+              isError: false,
+              durationMs: 2,
+            },
+          ],
+          activeRoutedToolNames: ["system.readFile"],
+          initialRoutedToolNames: ["system.readFile"],
+          expandedRoutedToolNames: [],
+          requiredToolEvidence: undefined,
+          providerEvidence: undefined,
+          response: undefined,
+          plannerSummaryState: {
+            routeReason: "plan_artifact_execution_request",
+          },
+        } as any,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not classify documentation reconnaissance turns as implementation-class work", () => {
+    expect(
+      requiresWorkflowOwnedImplementationCompletion({
+        ctx: {
+          messageText: "Update README.md with usage notes for the workspace.",
+          allToolCalls: [
+            {
+              name: "system.readFile",
+              args: {
+                path: "/tmp/project/README.md",
+              },
+              result: JSON.stringify({
+                path: "/tmp/project/README.md",
+                size: 1024,
+              }),
+              isError: false,
+              durationMs: 2,
+            },
+          ],
+          activeRoutedToolNames: ["system.readFile"],
+          initialRoutedToolNames: ["system.readFile"],
+          expandedRoutedToolNames: [],
+          requiredToolEvidence: undefined,
+          providerEvidence: undefined,
+          response: undefined,
+          plannerSummaryState: {
+            routeReason: "tool_loop",
+          },
+        } as any,
+      }),
+    ).toBe(false);
+  });
+
   it("limits legacy completion compatibility to docs, research, and plan-only turns", () => {
     const docsDecision = resolveLegacyCompletionCompatibility({
       ctx: {
@@ -541,7 +608,7 @@ describe("chat-executor-contract-flow", () => {
     expect(result.missingEvidenceMessage).toContain("Behavior verification was required");
   });
 
-  it("treats unsafe benchmark mode as evidence-only for delegated validation", () => {
+  it("still enforces delegated validation truth in unsafe benchmark mode", () => {
     const result = validateRequiredToolEvidence({
       ctx: {
         messageText: "Scaffold manifests only for the workspace",
@@ -578,7 +645,10 @@ describe("chat-executor-contract-flow", () => {
       } as any,
     });
 
-    expect(result.contractValidation).toMatchObject({ ok: true });
-    expect(result.missingEvidenceMessage).toBeUndefined();
+    expect(result.contractValidation).toMatchObject({
+      ok: false,
+      code: "forbidden_phase_action",
+    });
+    expect(result.missingEvidenceMessage).toContain("dependency-install commands");
   });
 });

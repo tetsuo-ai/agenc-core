@@ -16,6 +16,7 @@ import type {
 import { createGatewayMessage } from "./message.js";
 import { ChatExecutor } from "../llm/chat-executor.js";
 import { buildModelRoutingPolicy } from "../llm/model-routing-policy.js";
+import type { GatewayLLMConfig } from "./types.js";
 import type { PromptBudgetConfig } from "../llm/prompt-budget.js";
 import {
   buildRuntimeEconomicsPolicy,
@@ -67,11 +68,10 @@ export const DEFAULT_TERMINAL_SUB_AGENT_RETENTION_MS = 6 * 60 * 60 * 1000; // 6h
 export const SUB_AGENT_SESSION_PREFIX = "subagent:";
 
 const DEFAULT_SUB_AGENT_SYSTEM_PROMPT =
-  "You are a sub-agent. Execute only the assigned phase, stay within the provided scope, " +
-  "and report the result concisely. Do not reinterpret the broader parent request into a " +
-  "new multi-step plan, do not attempt sibling phases, and do not delegate unless the " +
-  "task explicitly grants that authority. Honor the declared isolation reason, " +
-  "owned artifacts, and verifier obligations for the delegated phase.";
+  "You are a sub-agent. Execute only the assigned delegated contract, stay within the provided scope, " +
+  "and report the result concisely. Do not widen a bounded phase into a new broader parent plan, and do not delegate unless the " +
+  "task explicitly grants that authority. If the delegated contract owns the remaining request end to end, keep working until it is complete or concretely blocked. " +
+  "Honor the declared isolation reason, owned artifacts, and verifier obligations for the delegated contract.";
 
 const ABORT_SENTINEL = Symbol("abort");
 const TIMEOUT_SENTINEL = Symbol("timeout");
@@ -695,6 +695,15 @@ export class SubAgentManager {
         maxFanoutPerTurn: 1,
         mode: this.config.economicsMode ?? "enforce",
       });
+      const selectedProviderRoutingConfig: GatewayLLMConfig | undefined =
+        selectedProvider.name === "grok" || selectedProvider.name === "ollama"
+          ? {
+            provider: selectedProvider.name,
+            ...(resolvedProviderProfile?.model
+              ? { model: resolvedProviderProfile.model }
+              : {}),
+          }
+          : undefined;
       const executor = new ChatExecutor({
         providers: [selectedProvider],
         toolHandler,
@@ -711,6 +720,9 @@ export class SubAgentManager {
         modelRoutingPolicy: buildModelRoutingPolicy({
           providers: [selectedProvider],
           economicsPolicy,
+          ...(selectedProviderRoutingConfig
+            ? { providerConfigs: [selectedProviderRoutingConfig] }
+            : {}),
         }),
         resolveHostWorkspaceRoot: () =>
           handle.config.workingDirectory ?? null,
@@ -801,6 +813,13 @@ export class SubAgentManager {
           history: handle.history,
           systemPrompt,
           sessionId: handle.sessionId,
+          ...(handle.config.workingDirectory
+            ? {
+              runtimeContext: {
+                workspaceRoot: handle.config.workingDirectory,
+              },
+            }
+            : {}),
           ...(typeof effectiveToolBudgetPerRequest === "number"
             ? { toolBudgetPerRequest: effectiveToolBudgetPerRequest }
             : {}),

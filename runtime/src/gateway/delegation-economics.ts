@@ -105,6 +105,39 @@ function isReadOnlyEnvelope(effectClass?: DelegationExecutionContext["effectClas
   return effectClass === "read_only";
 }
 
+function hasArtifactRelationType(
+  artifactRelations: readonly WorkflowArtifactRelation[],
+  relationType: WorkflowArtifactRelation["relationType"],
+): boolean {
+  return artifactRelations.some((relation) => relation.relationType === relationType);
+}
+
+function isTypedVerificationOnlyStep(params: {
+  readonly step: DelegationCandidateStep;
+  readonly artifactRelations: readonly WorkflowArtifactRelation[];
+  readonly shellCapabilityCount: number;
+  readonly writeCapabilityCount: number;
+}): boolean {
+  const { step, artifactRelations, shellCapabilityCount, writeCapabilityCount } =
+    params;
+  const executionContext = step.executionContext;
+  if (!executionContext) return false;
+  if (hasArtifactRelationType(artifactRelations, "write_owner")) {
+    return false;
+  }
+  if (writeCapabilityCount > 0) {
+    return false;
+  }
+  if (executionContext.role !== "validator") {
+    return false;
+  }
+  return (
+    executionContext.verificationMode === "deterministic_followup" ||
+    hasArtifactRelationType(artifactRelations, "verification_subject") ||
+    shellCapabilityCount > 0
+  );
+}
+
 function extractExplicitFileArtifacts(
   segments: readonly string[],
   workspaceRoot?: string,
@@ -167,6 +200,12 @@ function analyzeStep(step: DelegationCandidateStep): DelegationStepAnalysis {
   const artifactRelations = collectArtifactRelations(step);
   const ownedArtifacts = collectOwnedArtifacts(artifactRelations);
   const referencedArtifacts = collectReferencedArtifacts(step, artifactRelations);
+  const typedVerificationOnly = isTypedVerificationOnlyStep({
+    step,
+    artifactRelations,
+    shellCapabilityCount,
+    writeCapabilityCount,
+  });
   const readOnly = isReadOnlyEnvelope(envelope?.effectClass) ||
     (
       writeCapabilityCount === 0 &&
@@ -174,17 +213,19 @@ function analyzeStep(step: DelegationCandidateStep): DelegationStepAnalysis {
       capabilities.length > 0 &&
       readCapabilityCount === capabilities.length
     );
-  const shellObservationOnly =
+  const shellObservationOnly = typedVerificationOnly || (
     writeCapabilityCount === 0 &&
     shellCapabilityCount > 0 &&
     (envelope?.targetArtifacts?.length ?? 0) === 0 &&
-    (envelope?.effectClass === "read_only" || readOnly);
-  const mutable =
+    (envelope?.effectClass === "read_only" || readOnly)
+  );
+  const mutable = !typedVerificationOnly && (
     envelope?.effectClass === "filesystem_write" ||
     envelope?.effectClass === "filesystem_scaffold" ||
     envelope?.effectClass === "mixed" ||
     writeCapabilityCount > 0 ||
-    (!readOnly && shellCapabilityCount > 0);
+    (!readOnly && shellCapabilityCount > 0)
+  );
 
   return {
     step,

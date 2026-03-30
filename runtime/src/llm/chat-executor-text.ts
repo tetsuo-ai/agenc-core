@@ -634,7 +634,7 @@ const PLAN_HEADING_RE = /^(?:\*\*)?plan(?:\*\*)?:?/im;
 const FUTURE_EXECUTION_SIGNAL_RE =
   /\b(?:starting execution|begin(?:ning)? execution|i(?:'ll| will)|going to|next(?: up)?|after that|then)\b/i;
 const EXECUTION_DEFERRAL_SIGNAL_RE =
-  /\b(?:let me know|ready for|next (?:feature|module|step)|deepen next|specific feature|specific module|continue next|follow up next)\b/i;
+  /\b(?:let me know|ready for (?:the )?(?:next|follow[- ]?up|another|you to)|next (?:feature|module|step)|deepen next|specific feature|specific module|continue next|follow up next)\b/i;
 const EXECUTION_PROGRESS_SUMMARY_SIGNAL_RE =
   /\b(?:summary of process|current status|compiled|build succeeded|updated\s+`|updated\s+src\/|wrote\s+|fixed\s+|implemented\s+|ready)\b/i;
 const EXECUTION_BLOCKER_SIGNAL_RE =

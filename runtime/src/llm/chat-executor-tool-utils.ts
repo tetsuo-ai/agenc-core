@@ -34,6 +34,8 @@ const DOOM_VALIDATION_FAILURE_RE =
   /^unknown\s+(?:resolution|screen resolution|scenario|map|skill(?:\s+level)?|wad)\b.*\bvalid:/i;
 const DOOM_RUNTIME_FAILURE_RE =
   /^(?:executor not running\b|no game is running\b|game is not running\b)/i;
+const SHELL_EXECUTION_ANOMALY_RE =
+  /(?:^|\n)(?:[^:\n]+:\s+line\s+\d+:\s+)?(?:(?:ba|z|k)?sh|cd|pushd|popd|source|\.)[^:\n]*:\s+.*(?:no such file or directory|command not found|not found|permission denied|not a directory)/i;
 const DOOM_SCREEN_RESOLUTION_RE = /^(?:RES_)?(\d{2,4})[xX](\d{2,4})$/i;
 const NULLISH_STRING_RE = /^(?:null|none|undefined)$/i;
 const DEFAULT_VISIBLE_DOOM_SCREEN_RESOLUTION = "RES_1280X720";
@@ -80,6 +82,12 @@ export function didToolCallFail(isError: boolean, result: string): boolean {
     }
     if (obj.timedOut === true) return true;
     if (typeof obj.exitCode === "number" && obj.exitCode !== 0) return true;
+    if (
+      typeof obj.stderr === "string" &&
+      SHELL_EXECUTION_ANOMALY_RE.test(obj.stderr)
+    ) {
+      return true;
+    }
   } catch {
     // Non-JSON tool output — detect known tool-wrapper failure signatures.
     return isLikelyFailureText(result);
