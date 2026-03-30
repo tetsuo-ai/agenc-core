@@ -142,6 +142,7 @@ import {
 } from "../workflow/execution-kernel-policy.js";
 import type { ExecutionKernelNodeOutcome } from "../workflow/execution-kernel-types.js";
 import { areDocumentationOnlyArtifacts } from "../workflow/artifact-paths.js";
+import { safeStepStringArray } from "../llm/chat-executor-planner.js";
 
 interface ExecuteSubagentAttemptParams {
   readonly subAgentManager: SubAgentExecutionManager;
@@ -785,8 +786,8 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
     return {
       objective: step.objective,
       inputContract: step.inputContract,
-      acceptanceCriteria: [...step.acceptanceCriteria],
-      requiredToolCapabilities: [...step.requiredToolCapabilities],
+      acceptanceCriteria: [...safeStepStringArray(step.acceptanceCriteria)],
+      requiredToolCapabilities: [...safeStepStringArray(step.requiredToolCapabilities)],
       contextRequirements: [...effectiveContextRequirements],
       ...(step.executionContext ? { executionContext: step.executionContext } : {}),
       maxBudgetHint: step.maxBudgetHint,
@@ -1680,8 +1681,8 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
     const scopeAssessment = assessDelegationScope({
       objective: input.step.objective,
       inputContract: input.step.inputContract,
-      acceptanceCriteria: input.step.acceptanceCriteria,
-      requiredToolCapabilities: input.step.requiredToolCapabilities,
+      acceptanceCriteria: safeStepStringArray(input.step.acceptanceCriteria),
+      requiredToolCapabilities: safeStepStringArray(input.step.requiredToolCapabilities),
     });
     if (!scopeAssessment.ok) {
       return {
@@ -1770,13 +1771,13 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
           ? { workingDirectorySource: delegatedWorkingDirectory.source }
           : {}),
         tools: input.tools,
-        requiredCapabilities: input.step.requiredToolCapabilities,
+        requiredCapabilities: safeStepStringArray(input.step.requiredToolCapabilities),
         requireToolCall: specRequiresSuccessfulToolEvidence({
             objective: input.step.objective,
             inputContract: input.step.inputContract,
             acceptanceCriteria:
               effectiveDelegationSpec.acceptanceCriteria,
-            requiredToolCapabilities: input.step.requiredToolCapabilities,
+            requiredToolCapabilities: safeStepStringArray(input.step.requiredToolCapabilities),
             tools: input.tools,
           }),
         delegationSpec: effectiveDelegationSpec,
@@ -2316,6 +2317,12 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
             "- Verification commands must be non-interactive and exit on their own. Do not use watch/dev mode for tests or validation. Prefer runner-native single-run invocations. For Vitest use `vitest run`/`vitest --run`. For Jest use `CI=1 npm test` or `jest --runInBand`. Only pass extra npm `--` flags when the underlying runner supports them.",
           );
           toolUsageRules.push(
+            "- For interactive CLIs or REPL-style binaries under test, do not treat exit code 0, banners, or prompt text as proof the command worked. Capture stdout, strip fixed prompt markers, and verify the semantic payload line for the command under test.",
+          );
+          toolUsageRules.push(
+            "- For prompt-based CLIs, feed the probe command and an explicit `exit` into stdin, then normalize stdout by removing banners and prompt prefixes. Do not use brittle positional slicing with `tail`, `head`, `sed -n`, or `awk NR==...` to guess which line contains the result.",
+          );
+          toolUsageRules.push(
             "- When running repository scripts that rely on relative paths, invoke them from the workspace root (for example `bash tests/run_tests.sh`) unless the script explicitly documents a different required cwd.",
           );
           toolUsageRules.push(
@@ -2486,7 +2493,7 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
         toolScope: {
           strategy: this.childToolAllowlistStrategy,
           unsafeBenchmarkMode: this.unsafeBenchmarkMode,
-          required: [...step.requiredToolCapabilities],
+          required: [...safeStepStringArray(step.requiredToolCapabilities)],
           parentPolicyAllowed: [...toolScope.parentPolicyAllowed],
           parentPolicyForbidden: [...this.forbiddenParentTools],
           resolved: [...toolScope.allowedTools],
@@ -2541,15 +2548,15 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
       step.executionContext?.allowedTools &&
         step.executionContext.allowedTools.length > 0
         ? step.executionContext.allowedTools
-        : step.requiredToolCapabilities;
+        : safeStepStringArray(step.requiredToolCapabilities);
     const resolvedScope = resolveDelegatedChildToolScope({
       spec: {
         task: step.name,
         objective: step.objective,
         parentRequest: pipeline.plannerContext?.parentRequest,
         inputContract: step.inputContract,
-        acceptanceCriteria: step.acceptanceCriteria,
-        requiredToolCapabilities: step.requiredToolCapabilities,
+        acceptanceCriteria: safeStepStringArray(step.acceptanceCriteria),
+        requiredToolCapabilities: safeStepStringArray(step.requiredToolCapabilities),
         executionContext: step.executionContext,
       },
       requestedTools,

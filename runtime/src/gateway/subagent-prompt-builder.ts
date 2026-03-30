@@ -51,6 +51,7 @@ import {
 } from "./subagent-workspace-probes.js";
 import { classifyDelegatedScopeTrustSignal } from "./subagent-failure-classification.js";
 import { resolveExecutionEnvelopeArtifactRelations, resolveExecutionEnvelopeRole } from "../workflow/execution-envelope.js";
+import { safeStepStringArray } from "../llm/chat-executor-planner.js";
 
 /* ------------------------------------------------------------------ */
 /*  Parent request summarization                                       */
@@ -110,7 +111,7 @@ export function isFullRequestOwnerStep(
     step.name,
     step.objective,
     step.inputContract,
-    ...step.acceptanceCriteria,
+    ...safeStepStringArray(step.acceptanceCriteria),
   ]
     .join(" ")
     .toLowerCase();
@@ -193,9 +194,9 @@ export function buildArtifactRelevanceTerms(
   const aggregate = [
     step.objective,
     step.inputContract,
-    ...step.acceptanceCriteria,
+    ...safeStepStringArray(step.acceptanceCriteria),
     ...sanitizedContextRequirements,
-    ...step.requiredToolCapabilities,
+    ...safeStepStringArray(step.requiredToolCapabilities),
     ...(step.executionContext?.requiredSourceArtifacts ?? []),
     ...(step.executionContext?.targetArtifacts ?? []),
   ].join(" ");
@@ -350,7 +351,7 @@ export function buildWorkspaceVerificationContractLines(
     step.name,
     step.objective,
     step.inputContract,
-    ...step.acceptanceCriteria,
+    ...safeStepStringArray(step.acceptanceCriteria),
     ...sanitizeDelegationContextRequirements(step.contextRequirements),
     pipeline.plannerContext?.parentRequest ?? "",
     ...downstreamRootScripts.map((script) => `npm run ${script}`),
@@ -421,7 +422,7 @@ export function buildEffectiveDelegationSpec(
       options.delegatedWorkingDirectory,
       options.resolveHostToolingProfile,
     ),
-    requiredToolCapabilities: step.requiredToolCapabilities,
+    requiredToolCapabilities: safeStepStringArray(step.requiredToolCapabilities),
     contextRequirements: sanitizedContextRequirements,
     executionContext:
       effectiveExecutionContext &&
@@ -589,7 +590,7 @@ export function buildEffectiveAcceptanceCriteria(
   resolveHostToolingProfile?: () => HostToolingProfile | null,
 ): readonly string[] {
   return [
-    ...step.acceptanceCriteria,
+    ...safeStepStringArray(step.acceptanceCriteria),
     ...buildDerivedWorkspaceAcceptanceCriteria(
       step,
       pipeline,
@@ -618,7 +619,7 @@ export function buildDerivedWorkspaceAcceptanceCriteria(
     step.name,
     step.objective,
     step.inputContract,
-    ...step.acceptanceCriteria,
+    ...safeStepStringArray(step.acceptanceCriteria),
     ...sanitizeDelegationContextRequirements(step.contextRequirements),
     pipeline.plannerContext?.parentRequest ?? "",
     ...downstreamRootScripts.map((script) => `npm run ${script}`),
@@ -674,7 +675,7 @@ export function stepAuthorsNodeWorkspaceManifestOrConfig(
     step.name,
     step.objective,
     step.inputContract,
-    ...step.acceptanceCriteria,
+    ...safeStepStringArray(step.acceptanceCriteria),
     ...sanitizedContextRequirements,
   ].join(" ");
   const hasNodeWorkspaceCue = isNodeWorkspaceRelevant([
@@ -704,7 +705,7 @@ export function isPreInstallNodeWorkspaceStep(
     step.name,
     step.objective,
     step.inputContract,
-    ...step.acceptanceCriteria,
+    ...safeStepStringArray(step.acceptanceCriteria),
     ...sanitizeDelegationContextRequirements(step.contextRequirements),
   ].join(" ");
   return isNodeWorkspaceRelevant([combined]);
@@ -995,8 +996,8 @@ export function buildRetryTaskPrompt(
           task: step.name,
           objective: step.objective,
           inputContract: step.inputContract,
-          acceptanceCriteria: step.acceptanceCriteria,
-          requiredToolCapabilities: step.requiredToolCapabilities,
+          acceptanceCriteria: safeStepStringArray(step.acceptanceCriteria),
+          requiredToolCapabilities: safeStepStringArray(step.requiredToolCapabilities),
           contextRequirements: sanitizeDelegationContextRequirements(
             step.contextRequirements,
           ),
@@ -1009,7 +1010,7 @@ export function buildRetryTaskPrompt(
           [
             step.objective,
             step.inputContract,
-            ...(step.acceptanceCriteria ?? []),
+            ...safeStepStringArray(step.acceptanceCriteria),
           ]
             .filter((value): value is string =>
               typeof value === "string" && value.length > 0
@@ -1060,7 +1061,7 @@ export function buildRetryTaskPrompt(
         `Probe failure details: ${sanitizeExecutionPromptText(failure.message)}`,
       );
       if (
-        step.acceptanceCriteria.some((criterion) =>
+        safeStepStringArray(step.acceptanceCriteria).some((criterion) =>
           /\bno npm install\/build\/test\/typecheck\/lint commands executed or claimed in this phase\b/i
             .test(criterion)
         )
@@ -1133,7 +1134,7 @@ export function buildRetryTaskPrompt(
       );
     }
     if (
-      step.requiredToolCapabilities.length > 0 ||
+      safeStepStringArray(step.requiredToolCapabilities).length > 0 ||
       /tool-grounded evidence|no tool calls|all child tool calls failed/i.test(
         failure.message,
       )
@@ -1179,7 +1180,7 @@ export function buildHostToolingPromptSection(
     step.name,
     step.objective,
     step.inputContract,
-    ...step.acceptanceCriteria,
+    ...safeStepStringArray(step.acceptanceCriteria),
     ...sanitizeDelegationContextRequirements(step.contextRequirements),
     pipeline.plannerContext?.parentRequest ?? "",
     ...dependencyArtifactCandidates.map((candidate) => candidate.path),

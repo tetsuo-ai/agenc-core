@@ -574,54 +574,54 @@ describe("OllamaProvider", () => {
     expect(params.tools[0].function.name).toBe("lookup");
   });
 
-  it("rejects orphan tool messages before calling Ollama", async () => {
+  it("repairs orphan tool messages and sends to Ollama", async () => {
+    mockChat.mockResolvedValueOnce(makeResponse());
     const provider = new OllamaProvider({});
 
-    await expect(
-      provider.chat([
-        { role: "user", content: "test" },
-        { role: "assistant", content: "" },
-        {
-          role: "tool",
-          content: '{"stdout":"","exitCode":0}',
-          toolCallId: "call_1",
-          toolName: "desktop.bash",
-        },
-      ]),
-    ).rejects.toThrow(LLMMessageValidationError);
-    expect(mockChat).not.toHaveBeenCalled();
+    const result = await provider.chat([
+      { role: "user", content: "test" },
+      { role: "assistant", content: "" },
+      {
+        role: "tool",
+        content: '{"stdout":"","exitCode":0}',
+        toolCallId: "call_1",
+        toolName: "desktop.bash",
+      },
+    ]);
+    expect(result.content).toBe("Hello!");
+    expect(mockChat).toHaveBeenCalled();
   });
 
-  it("rejects mixed valid/invalid tool history before calling Ollama", async () => {
+  it("repairs mixed valid/invalid tool history and sends to Ollama", async () => {
+    mockChat.mockResolvedValueOnce(makeResponse());
     const provider = new OllamaProvider({});
 
-    await expect(
-      provider.chat([
-        { role: "user", content: "test" },
-        {
-          role: "assistant",
-          content: "",
-          toolCalls: [
-            {
-              id: "call_1",
-              name: "desktop.bash",
-              arguments: '{"command":"echo hi"}',
-            },
-          ],
-        },
-        {
-          role: "tool",
-          content: '{"stdout":"hi\\n","exitCode":0}',
-          toolCallId: "call_1",
-        },
-        { role: "assistant", content: "" },
-        {
-          role: "tool",
-          content: '{"stdout":"","exitCode":0}',
-          toolCallId: "call_2",
-        },
-      ]),
-    ).rejects.toThrow(/tool_result_without_assistant_call/);
-    expect(mockChat).not.toHaveBeenCalled();
+    const result = await provider.chat([
+      { role: "user", content: "test" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          {
+            id: "call_1",
+            name: "desktop.bash",
+            arguments: '{"command":"echo hi"}',
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: '{"stdout":"hi\\n","exitCode":0}',
+        toolCallId: "call_1",
+      },
+      { role: "assistant", content: "" },
+      {
+        role: "tool",
+        content: '{"stdout":"","exitCode":0}',
+        toolCallId: "call_2",
+      },
+    ]);
+    expect(result.content).toBe("Hello!");
+    expect(mockChat).toHaveBeenCalled();
   });
 });

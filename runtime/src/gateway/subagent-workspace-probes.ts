@@ -24,6 +24,7 @@ import { normalizeDependencyArtifactPath, sanitizeExecutionPromptText } from "./
 import type {
   PipelinePlannerDeterministicStep as DeterministicStep,
 } from "../workflow/pipeline.js";
+import { safeStepStringArray } from "../llm/chat-executor-planner.js";
 
 function isNodeInstallPlannerStep(
   step: { stepType: string; tool?: string; args?: Record<string, unknown> },
@@ -260,7 +261,7 @@ export function shouldRunAcceptanceTestProbe(
     step.name,
     step.objective,
     step.inputContract,
-    ...step.acceptanceCriteria,
+    ...safeStepStringArray(step.acceptanceCriteria),
     ...sanitizeDelegationContextRequirements(step.contextRequirements),
   ].join(" ");
   if (/\b(?:test|tests|vitest|jest|spec|coverage)\b/i.test(stepText)) {
@@ -750,7 +751,7 @@ export function buildWorkspaceStateGuidanceLines(
     step.name,
     step.objective,
     step.inputContract,
-    ...step.acceptanceCriteria,
+    ...safeStepStringArray(step.acceptanceCriteria),
     ...sanitizeDelegationContextRequirements(step.contextRequirements),
   ].join(" ");
   const phaseMentionsTests =

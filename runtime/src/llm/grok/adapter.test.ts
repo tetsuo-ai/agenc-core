@@ -1942,34 +1942,24 @@ describe("GrokProvider", () => {
     expect(response.content).toBe("Hello!");
   });
 
-  it("rejects orphan tool messages without matching assistant tool_calls", async () => {
+  it("repairs orphan tool messages and sends to provider instead of rejecting", async () => {
     const provider = new GrokProvider({ apiKey: "test-key" });
 
-    await expect(
-      provider.chat([
-        { role: "user", content: "test" },
-        { role: "assistant", content: "" },
-        {
-          role: "tool",
-          content: '{"stdout":"","stderr":"","exitCode":0}',
-          toolCallId: "call_1",
-          toolName: "desktop.bash",
-        },
-      ]),
-    ).rejects.toThrow(LLMMessageValidationError);
-    await expect(
-      provider.chat([
-        { role: "user", content: "test" },
-        { role: "assistant", content: "" },
-        {
-          role: "tool",
-          content: '{"stdout":"","stderr":"","exitCode":0}',
-          toolCallId: "call_1",
-          toolName: "desktop.bash",
-        },
-      ]),
-    ).rejects.toThrow(/tool_result_without_assistant_call/);
-    expect(mockCreate).not.toHaveBeenCalled();
+    // repairToolTurnSequence synthesizes a minimal assistant tool_calls
+    // envelope for orphan tool results, so the call proceeds to the provider.
+    mockCreate.mockResolvedValueOnce(makeCompletion());
+    const result = await provider.chat([
+      { role: "user", content: "test" },
+      { role: "assistant", content: "" },
+      {
+        role: "tool",
+        content: '{"stdout":"","stderr":"","exitCode":0}',
+        toolCallId: "call_1",
+        toolName: "desktop.bash",
+      },
+    ]);
+    expect(result.content).toBe("Hello!");
+    expect(mockCreate).toHaveBeenCalled();
   });
 
   it("rejects non-tool messages before pending tool results are resolved", async () => {
@@ -2014,62 +2004,62 @@ describe("GrokProvider", () => {
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
-  it("rejects two malformed orphan pairs without making provider calls", async () => {
+  it("repairs two orphan tool-result pairs and sends them to the provider", async () => {
     const provider = new GrokProvider({ apiKey: "test-key" });
+    mockCreate.mockResolvedValueOnce(makeCompletion());
 
-    await expect(
-      provider.chat([
-        { role: "system", content: "You are helpful." },
-        { role: "user", content: "test" },
-        { role: "assistant", content: "" },
-        {
-          role: "tool",
-          content: '{"stdout":"","exitCode":0}',
-          toolCallId: "call_1",
-        },
-        { role: "assistant", content: "" },
-        {
-          role: "tool",
-          content: '{"stdout":"","exitCode":0}',
-          toolCallId: "call_2",
-        },
-      ]),
-    ).rejects.toThrow(/message\[3\]/);
-    expect(mockCreate).not.toHaveBeenCalled();
+    const result = await provider.chat([
+      { role: "system", content: "You are helpful." },
+      { role: "user", content: "test" },
+      { role: "assistant", content: "" },
+      {
+        role: "tool",
+        content: '{"stdout":"","exitCode":0}',
+        toolCallId: "call_1",
+      },
+      { role: "assistant", content: "" },
+      {
+        role: "tool",
+        content: '{"stdout":"","exitCode":0}',
+        toolCallId: "call_2",
+      },
+    ]);
+    expect(result.content).toBe("Hello!");
+    expect(mockCreate).toHaveBeenCalled();
   });
 
-  it("rejects mixed valid/invalid tool-turn history", async () => {
+  it("repairs mixed valid/invalid tool-turn history and sends to provider", async () => {
     const provider = new GrokProvider({ apiKey: "test-key" });
+    mockCreate.mockResolvedValueOnce(makeCompletion());
 
-    await expect(
-      provider.chat([
-        { role: "user", content: "test" },
-        {
-          role: "assistant",
-          content: "",
-          phase: "commentary",
-          toolCalls: [
-            {
-              id: "call_1",
-              name: "desktop.bash",
-              arguments: '{"command":"echo hi"}',
-            },
-          ],
-        },
-        {
-          role: "tool",
-          content: '{"stdout":"hi\\n","exitCode":0}',
-          toolCallId: "call_1",
-        },
-        { role: "assistant", content: "" },
-        {
-          role: "tool",
-          content: '{"stdout":"","exitCode":0}',
-          toolCallId: "call_2",
-        },
-      ]),
-    ).rejects.toThrow(/tool_result_without_assistant_call/);
-    expect(mockCreate).not.toHaveBeenCalled();
+    const result = await provider.chat([
+      { role: "user", content: "test" },
+      {
+        role: "assistant",
+        content: "",
+        phase: "commentary",
+        toolCalls: [
+          {
+            id: "call_1",
+            name: "desktop.bash",
+            arguments: '{"command":"echo hi"}',
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: '{"stdout":"hi\\n","exitCode":0}',
+        toolCallId: "call_1",
+      },
+      { role: "assistant", content: "" },
+      {
+        role: "tool",
+        content: '{"stdout":"","exitCode":0}',
+        toolCallId: "call_2",
+      },
+    ]);
+    expect(result.content).toBe("Hello!");
+    expect(mockCreate).toHaveBeenCalled();
   });
 
   it("uses previous_response_id for safe stateful continuation", async () => {

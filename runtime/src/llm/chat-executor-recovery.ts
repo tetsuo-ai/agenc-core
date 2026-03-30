@@ -119,6 +119,82 @@ function isShellExecutionAnomalyFailure(failureText: string): boolean {
   );
 }
 
+function stripPromptPrefixes(line: string): string {
+  return line.replace(/^\s*(?:>{1,3}|\$|#|\.\.\.)\s*/, "").trim();
+}
+
+function isLikelyInteractiveBannerLine(line: string): boolean {
+  return /^[A-Z][A-Za-z0-9 _:-]{2,80}$/.test(line.trim());
+}
+
+function extractSemanticShellOutputLines(stdout: string): readonly string[] {
+  return stdout
+    .split(/\r?\n/)
+    .map((line) => stripPromptPrefixes(line))
+    .filter((line) => line.length > 0)
+    .filter((line) => !isLikelyInteractiveBannerLine(line));
+}
+
+function isInteractiveCliVerificationCommand(call: ToolCallRecord): boolean {
+  if (call.name !== "system.bash" && call.name !== "desktop.bash") {
+    return false;
+  }
+  const command = extractShellCommand(call);
+  if (command.length === 0) {
+    return false;
+  }
+  return (
+    command.includes("|") &&
+    /\btimeout\b/i.test(command) &&
+    /(?:^|[\s;&|])(?:\.\/|\.\.\/|\/)[^\s|;&]+/.test(command)
+  );
+}
+
+function usesPromptSlicingHeuristic(command: string): boolean {
+  return (
+    /\|\s*tail\b/i.test(command) ||
+    /\|\s*head\b/i.test(command) ||
+    /\|\s*sed\s+-n\b/i.test(command) ||
+    /\|\s*awk\b/i.test(command)
+  );
+}
+
+function hasInteractiveCliVerificationOutputGap(
+  call: ToolCallRecord,
+  parsedResult: Record<string, unknown> | null,
+): boolean {
+  if (!isInteractiveCliVerificationCommand(call) || !parsedResult) {
+    return false;
+  }
+  const stdout =
+    typeof parsedResult.stdout === "string" ? parsedResult.stdout : "";
+  if (stdout.trim().length === 0) {
+    return false;
+  }
+  const semanticLines = extractSemanticShellOutputLines(stdout);
+  return semanticLines.length === 0;
+}
+
+function hasShellTimeoutAssignmentMisuse(
+  call: ToolCallRecord,
+  parsedResult: Record<string, unknown> | null,
+): boolean {
+  if (call.name !== "system.bash" && call.name !== "desktop.bash") {
+    return false;
+  }
+  const command = extractShellCommand(call);
+  if (command.length === 0) {
+    return false;
+  }
+  const stderr =
+    typeof parsedResult?.stderr === "string" ? parsedResult.stderr : "";
+  return (
+    /(?:^|[;&|]\s*|\s)timeout\b[^\n;&|]*\s+[A-Za-z_][A-Za-z0-9_]*=\$\(/.test(
+      command,
+    ) || /timeout: failed to run command/i.test(stderr)
+  );
+}
+
 function hasBrokenHeredocConjunctionShape(
   args: Record<string, unknown> | undefined,
   failureTextLower: string,
@@ -1264,6 +1340,38 @@ export function inferRecoveryHint(
         "The async Doom executor started, but you still need evidence before claiming success. " +
         "Call `mcp.doom.set_objective` with `objective_type: \"hold_position\"` when the task is stationary defense, " +
         "then verify with `mcp.doom.get_situation_report` or `mcp.doom.get_state`.",
+    };
+  }
+
+  if (
+    !didToolCallFail(call.isError, call.result) &&
+    hasShellTimeoutAssignmentMisuse(call, parsedResult)
+  ) {
+    return {
+      key: `${call.name}-timeout-assignment-misuse`,
+      message:
+        "This shell verification command exited 0, but the shell still failed to run the intended probe because `timeout` was wrapped around a variable assignment or another non-executable form. " +
+        "Do not write commands like `timeout 10s output=$(...)`. `timeout` can only wrap an executable. " +
+        "Capture the CLI output first, then compare it in a separate shell step, or wrap the whole probe in `sh -c`/shell mode. " +
+        "For prompt-based CLIs, feed the probe and an explicit `exit`, strip prompt prefixes, and compare the cleaned semantic payload instead of using brittle `tail`/`head` slicing.",
+    };
+  }
+
+  if (
+    !didToolCallFail(call.isError, call.result) &&
+    hasInteractiveCliVerificationOutputGap(call, parsedResult)
+  ) {
+    const command = extractShellCommand(call);
+    const promptSlicingWarning = usesPromptSlicingHeuristic(command)
+      ? " Do not use positional slicing like `tail`, `head`, `sed -n`, or `awk NR==...` to guess which prompt line contains the result."
+      : "";
+    return {
+      key: `${call.name}-interactive-cli-verification-output-gap`,
+      message:
+        "This verification command reached an interactive CLI/REPL, but the captured stdout only contains banner or prompt text and no semantic command result. " +
+        "Do not treat exit code 0, startup banners, or prompt markers as proof the feature works." +
+        promptSlicingWarning +
+        " Feed the command and an explicit `exit` into the CLI, strip fixed prompt prefixes from stdout, then compare the cleaned semantic payload for the command under test. If the cleaned output is empty, keep debugging the command behavior before claiming success.",
     };
   }
 

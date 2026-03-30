@@ -852,6 +852,78 @@ describe("chat-executor-recovery", () => {
     expect(hint?.message).toContain("equivalent bounded verification commands directly");
   });
 
+  it("flags interactive CLI verification runs that only return banner or prompt text", () => {
+    const hint = inferRecoveryHint({
+      name: "system.bash",
+      args: {
+        command:
+          'echo "echo hello world" | timeout 10s ./build-fresh/agenc-shell 2>/dev/null | tail -n 3 | head -n 1',
+      },
+      result: JSON.stringify({
+        exitCode: 0,
+        stdout: "Agenc Shell\n> \n> ",
+        stderr: "",
+        timedOut: false,
+        durationMs: 56,
+      }),
+      isError: false,
+      durationMs: 56,
+    });
+
+    expect(hint).toBeDefined();
+    expect(hint?.key).toBe("system.bash-interactive-cli-verification-output-gap");
+    expect(hint?.message).toContain("banner or prompt text");
+    expect(hint?.message).toContain("tail");
+    expect(hint?.message).toContain("explicit `exit`");
+    expect(hint?.message).toContain("strip fixed prompt prefixes");
+  });
+
+  it("does not flag interactive CLI verification when prompt-prefixed output still carries a semantic payload", () => {
+    const hint = inferRecoveryHint({
+      name: "system.bash",
+      args: {
+        command: 'echo "pwd" | timeout 10s ./build-fresh/agenc-shell 2>/dev/null',
+      },
+      result: JSON.stringify({
+        exitCode: 0,
+        stdout: "Agenc Shell\n> /tmp/agenc-shell\n> ",
+        stderr: "",
+        timedOut: false,
+        durationMs: 55,
+      }),
+      isError: false,
+      durationMs: 55,
+    });
+
+    expect(hint).toBeUndefined();
+  });
+
+  it("flags timeout-wrapped shell assignments that hide a broken verification probe behind exit code 0", () => {
+    const hint = inferRecoveryHint({
+      name: "system.bash",
+      args: {
+        command:
+          "cd /tmp/agenc-shell && timeout 10s output=$(echo 'pwd' | ./build-fresh/agenc-shell 2>/dev/null | tail -n 2 | head -n 1 | sed 's/^> //'); expected=$(pwd); if [ \"$output\" = \"$expected\" ]; then echo 'pwd test passed'; else echo 'pwd test failed'; fi",
+      },
+      result: JSON.stringify({
+        exitCode: 0,
+        stdout: "pwd test failed\n",
+        stderr:
+          "timeout: failed to run command ‘output=/tmp/agenc-shell’: No such file or directory\n",
+        timedOut: false,
+        durationMs: 54,
+      }),
+      isError: false,
+      durationMs: 54,
+    });
+
+    expect(hint).toBeDefined();
+    expect(hint?.key).toBe("system.bash-timeout-assignment-misuse");
+    expect(hint?.message).toContain("timeout 10s output=$(...)");
+    expect(hint?.message).toContain("explicit `exit`");
+    expect(hint?.message).toContain("tail`/`head`");
+  });
+
   it("flags recursive npm install lifecycle scripts before they burn the turn budget", () => {
     const hint = inferRecoveryHint({
       name: "system.bash",

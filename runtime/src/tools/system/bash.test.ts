@@ -329,6 +329,24 @@ describe("system.bash tool", () => {
     );
   });
 
+  it("allows shell wrapper inline scripts with shell syntax in direct mode", async () => {
+    const tool = createBashTool();
+    mockSpawnSuccess("test\n", "");
+
+    const result = await tool.execute({
+      command: "bash",
+      args: ["-c", "echo 'echo test' | ./agenc-shell"],
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(mockExecFile).not.toHaveBeenCalled();
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "bash",
+      ["-c", "echo 'echo test' | ./agenc-shell"],
+      expect.any(Object),
+    );
+  });
+
   // ---- Privilege escalation prevention ----
 
   it("blocks sudo and su", async () => {

@@ -52,6 +52,7 @@ import {
   buildExplicitSubagentOrchestrationFailureMessage,
   extractRecoverablePlannerParseDiagnostics,
   isHighRiskSubagentPlan,
+  safeStepStringArray,
   extractPlannerArtifactTargets,
   plannerRequestImplementsFromArtifact,
   pipelineResultToToolCalls,
@@ -240,7 +241,7 @@ function shouldBlockPlannerImplementationFallback(
       return false;
     }
 
-    const requiredCapabilities = step.requiredToolCapabilities.map((capability) =>
+    const requiredCapabilities = safeStepStringArray(step.requiredToolCapabilities).map((capability) =>
       capability.trim().toLowerCase(),
     );
     if (
@@ -262,7 +263,7 @@ function shouldBlockPlannerImplementationFallback(
         [
           step.objective,
           step.inputContract,
-          ...step.acceptanceCriteria,
+          ...safeStepStringArray(step.acceptanceCriteria),
         ].join(" "),
       )
     ) {

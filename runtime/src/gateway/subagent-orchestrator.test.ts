@@ -3079,6 +3079,12 @@ describe("SubAgentOrchestrator", () => {
       "Verification commands must be non-interactive and exit on their own.",
     );
     expect(taskPrompt).toContain(
+      "For interactive CLIs or REPL-style binaries under test, do not treat exit code 0, banners, or prompt text as proof the command worked.",
+    );
+    expect(taskPrompt).toContain(
+      "Do not use brittle positional slicing with `tail`, `head`, `sed -n`, or `awk NR==...`",
+    );
+    expect(taskPrompt).toContain(
       "invoke them from the workspace root (for example `bash tests/run_tests.sh`)",
     );
     expect(taskPrompt).toContain(

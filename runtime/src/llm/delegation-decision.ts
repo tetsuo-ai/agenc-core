@@ -5,6 +5,7 @@ import {
   assessDelegationAdmission,
 } from "../gateway/delegation-admission.js";
 import { normalizeRuntimeLimit } from "./runtime-limit-policy.js";
+import { safeStepStringArray } from "./chat-executor-planner.js";
 
 export type DelegationDecisionReason =
   | "delegation_disabled"
@@ -433,7 +434,7 @@ function computeSafetyRisk(
     ) {
       parallelMutableSteps += 1;
     }
-    for (const capability of step.requiredToolCapabilities) {
+    for (const capability of safeStepStringArray(step.requiredToolCapabilities)) {
       normalizedCapabilities.add(capability.trim().toLowerCase());
     }
   }
@@ -468,15 +469,15 @@ function detectHardBlockedTaskClass(
   if (config.hardBlockedTaskClasses.size === 0) return null;
 
   const capabilities = input.subagentSteps.flatMap((step) =>
-    step.requiredToolCapabilities.map((capability) => capability.trim()),
+    safeStepStringArray(step.requiredToolCapabilities).map((capability) => capability.trim()),
   );
   const textBlob = [
     input.messageText,
     ...input.subagentSteps.map((step) => step.name),
     ...input.subagentSteps.map((step) => step.objective ?? ""),
     ...input.subagentSteps.map((step) => step.inputContract ?? ""),
-    ...input.subagentSteps.flatMap((step) => step.acceptanceCriteria),
-    ...input.subagentSteps.flatMap((step) => step.contextRequirements),
+    ...input.subagentSteps.flatMap((step) => safeStepStringArray(step.acceptanceCriteria)),
+    ...input.subagentSteps.flatMap((step) => safeStepStringArray(step.contextRequirements)),
   ].join("\n");
 
   if (config.hardBlockedTaskClasses.has("wallet_signing")) {

@@ -30,7 +30,7 @@ import {
   type ResolvedLLMStatefulResponsesConfig,
 } from "../provider-capabilities.js";
 import { withTimeout } from "../timeout.js";
-import { validateToolTurnSequence } from "../tool-turn-validator.js";
+import { repairToolTurnSequence, validateToolTurnSequence } from "../tool-turn-validator.js";
 import { safeStringify } from "../../tools/types.js";
 import { resolveContextWindowProfile } from "../../gateway/context-window.js";
 
@@ -506,11 +506,12 @@ export class OllamaProvider implements LLMProvider {
     options?: LLMChatOptions,
     toolSelection?: ToolSelectionDiagnostics,
   ): Record<string, unknown> {
-    validateToolTurnSequence(messages, { providerName: this.name });
+    const repairedMessages = repairToolTurnSequence(messages);
+    validateToolTurnSequence(repairedMessages, { providerName: this.name });
 
     const params: Record<string, unknown> = {
       model: this.config.model,
-      messages: messages.map((m) => this.toOllamaMessage(m)),
+      messages: repairedMessages.map((m) => this.toOllamaMessage(m)),
     };
 
     // Build model options
