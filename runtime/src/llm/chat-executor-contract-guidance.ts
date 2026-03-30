@@ -467,9 +467,18 @@ function resolveDelegationInitialContractGuidance(
   );
   if (routedToolNames.length === 0) return undefined;
 
+  // When the execution context requires verification (anything beyond
+  // grounded_read), the sub-agent needs bash.  Don't classify the phase
+  // as workspace-bootstrap or file-authoring-only — those classifications
+  // strip bash from the initial tool set.
+  const requiresVerificationTools =
+    spec.executionContext?.verificationMode &&
+    spec.executionContext.verificationMode !== "none" &&
+    spec.executionContext.verificationMode !== "grounded_read";
   const workspaceBootstrap =
-    isDelegatedWorkspaceBootstrapPhase(spec);
+    !requiresVerificationTools && isDelegatedWorkspaceBootstrapPhase(spec);
   const fileAuthoringOnlyPhase =
+    !requiresVerificationTools &&
     !workspaceBootstrap &&
     isDelegatedFileAuthoringPhaseWithoutVerification(spec);
   const shellFilteredToolNames = fileAuthoringOnlyPhase
