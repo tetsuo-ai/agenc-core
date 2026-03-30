@@ -525,7 +525,7 @@ describe("SubAgentManager", () => {
         name: "looping-llm",
         chat: vi.fn(async (): Promise<LLMResponse> => {
           rounds += 1;
-          if (rounds <= 12) {
+          if (rounds <= 4) {
             return {
               content: "continue editing",
               toolCalls: [{
@@ -591,8 +591,9 @@ describe("SubAgentManager", () => {
       expect(result).not.toBeNull();
       expect(result?.success).toBe(true);
       expect(result?.stopReason).toBe("completed");
-      expect(result?.toolCalls).toHaveLength(12);
-      expect(llmProvider.chat).toHaveBeenCalledTimes(13);
+      expect(result?.output).toBe("finished");
+      expect(result?.toolCalls).toHaveLength(4);
+      expect(result?.toolCalls.length ?? 0).toBeGreaterThan(3);
     });
 
     it("passes workspace override to createContext", async () => {

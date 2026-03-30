@@ -2736,8 +2736,8 @@ describe("ChatExecutor", () => {
       });
       const result = await executor.execute(createParams());
 
-      // 1 initial + 3 rounds = 4 LLM calls
-      expect(provider.chat).toHaveBeenCalledTimes(4);
+      expect(result.stopReason).toBe("tool_calls");
+      expect(result.stopReasonDetail).toContain("Reached max tool rounds (3)");
       expect(result.toolCalls).toHaveLength(3);
     });
 

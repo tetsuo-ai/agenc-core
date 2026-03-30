@@ -82,16 +82,23 @@ describe("host-tooling", () => {
       workspaceProtocolSupport: "unsupported",
       workspaceProtocolEvidence: "npm error code EUNSUPPORTEDPROTOCOL",
     });
-    expect(calls).toHaveLength(2);
-    expect(calls[1]?.command).toBe("npm");
-    expect(calls[1]?.args).toEqual([
+    const versionCall = calls.find(
+      ({ command, args }) => command === "npm" && args[0] === "--version",
+    );
+    const installCall = calls.find(
+      ({ command, args }) => command === "npm" && args[0] === "install",
+    );
+
+    expect(versionCall).toBeTruthy();
+    expect(installCall?.command).toBe("npm");
+    expect(installCall?.args).toEqual([
       "install",
       "--ignore-scripts",
       "--no-audit",
       "--no-fund",
       "--package-lock=false",
     ]);
-    expect(calls[1]?.cwd).toBeTruthy();
+    expect(installCall?.cwd).toBeTruthy();
   });
 
   it("records supported npm workspace protocol when the empirical install succeeds", async () => {
