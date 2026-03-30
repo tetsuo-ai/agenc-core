@@ -241,6 +241,12 @@ function detectSharedArtifactWriterInline(
 
   for (const [artifact, owners] of artifactOwners.entries()) {
     if (owners.mutable.size >= 2) {
+      // Check if the mutable steps form a sequential dependency chain.
+      // Sequential writers (A → B → C) are safe handoffs, not concurrent
+      // conflicts.  Only flag truly concurrent (parallel) shared writers.
+      if (isSequentialDependencyChain(owners.mutable, economics.stepAnalyses)) {
+        continue;
+      }
       return {
         artifact,
         mutableStepNames: [...owners.mutable],
@@ -248,15 +254,37 @@ function detectSharedArtifactWriterInline(
       };
     }
     if (owners.mutable.size === 1 && owners.readOnly.size > 0) {
-      return {
-        artifact,
-        mutableStepNames: [...owners.mutable],
-        readOnlyStepNames: [...owners.readOnly],
-      };
+      // A single writer with read-only reviewers is a safe handoff pattern
+      // (writer → reviewer), not a conflict.
+      continue;
     }
   }
 
   return undefined;
+}
+
+function isSequentialDependencyChain(
+  stepNames: ReadonlySet<string>,
+  stepAnalyses: readonly DelegationStepAnalysis[],
+): boolean {
+  if (stepNames.size <= 1) return true;
+  const names = [...stepNames];
+  const stepMap = new Map(
+    stepAnalyses.map((analysis) => [analysis.step.name, analysis.step]),
+  );
+  // Check if every pair of mutable steps has a dependency relationship
+  // (one depends on the other, directly or transitively).
+  for (let i = 0; i < names.length; i++) {
+    for (let j = i + 1; j < names.length; j++) {
+      const stepA = stepMap.get(names[i]!);
+      const stepB = stepMap.get(names[j]!);
+      if (!stepA || !stepB) return false;
+      const aDepB = (stepA.dependsOn ?? []).includes(names[j]!);
+      const bDepA = (stepB.dependsOn ?? []).includes(names[i]!);
+      if (!aDepB && !bDepA) return false;
+    }
+  }
+  return true;
 }
 
 function isIsolatedSingleStep(
