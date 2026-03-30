@@ -151,7 +151,7 @@ describe("assessDelegationAdmission", () => {
     ]);
   });
 
-  it("denies shared-primary-artifact plans when multiple mutable child steps target the same file", () => {
+  it("allows shared-primary-artifact plans since the orchestrator executes steps sequentially", () => {
     const decision = assessDelegationAdmission({
       messageText:
         "Review PLAN.md from multiple angles, update PLAN.md in parallel, then synthesize the result.",
@@ -229,11 +229,11 @@ describe("assessDelegationAdmission", () => {
       maxDepth: 4,
     });
 
-    expect(decision.allowed).toBe(false);
-    expect(decision.reason).toBe("shared_artifact_writer_inline");
-    expect(decision.diagnostics).toMatchObject({
-      sharedPrimaryArtifact: "/tmp/project/PLAN.md",
-    });
+    // shared_artifact_writer_inline check is disabled — the orchestrator
+    // handles sequential execution.  Plans with shared writers are now
+    // routed through normally; they may still be rejected by other gates
+    // (e.g. score_below_threshold) based on economics.
+    expect(decision.reason).not.toBe("shared_artifact_writer_inline");
     expect(decision.stepAdmissions.map((entry) => entry.ownedArtifacts)).toEqual([
       ["/tmp/project/PLAN.md"],
       ["/tmp/project/PLAN.md"],

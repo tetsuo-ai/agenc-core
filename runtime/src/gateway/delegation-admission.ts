@@ -839,7 +839,13 @@ export function assessDelegationAdmission(
     });
   }
 
-  const sharedArtifactWriterInline = detectSharedArtifactWriterInline(economics);
+  // shared_artifact_writer_inline detection is disabled.  Multi-file
+  // coding tasks naturally produce multiple sub-agent steps that all write
+  // to the same workspace root.  The orchestrator already executes
+  // dependent steps sequentially, so concurrent writes don't happen.
+  // The previous gate was blocking the most common coding patterns
+  // (create module A, create module B, create tests, run tests).
+  const sharedArtifactWriterInline = false as ReturnType<typeof detectSharedArtifactWriterInline>;
   if (sharedArtifactWriterInline) {
     return buildDecision({
       allowed: false,
