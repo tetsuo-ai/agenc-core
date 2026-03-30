@@ -457,5 +457,8 @@ export const DEFAULT_DENY_PREFIXES: readonly string[] = [
   "node",
 ];
 
-export const DEFAULT_TIMEOUT_MS = 30_000;
+// Default bash command timeout.  Coding tasks routinely run test suites
+// that include TTL/timing tests with sleep calls, compilation passes,
+// or network probes.  30s was too tight and killed valid test runs.
+export const DEFAULT_TIMEOUT_MS = 120_000;
 export const DEFAULT_MAX_OUTPUT_BYTES = 100_000;
