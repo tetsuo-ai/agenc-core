@@ -156,6 +156,13 @@ export interface SubAgentConfig {
   readonly requireToolCall?: boolean;
   readonly delegationSpec?: DelegationContractSpec;
   readonly unsafeBenchmarkMode?: boolean;
+  /**
+   * Phase 2.8: Memory inheritance policy for sub-agents.
+   * - "none": fully isolated (default — sub-agent gets empty memory)
+   * - "read_snapshot": copy parent's recent N semantic entries as read-only context
+   * - "shared_workspace": same workspace scope, different agentId
+   */
+  readonly memoryInheritance?: "none" | "read_snapshot" | "shared_workspace";
 }
 
 export interface SubAgentResult {
@@ -367,6 +374,10 @@ export class SubAgentManager {
       depth,
       task: config.task,
       config,
+      // Phase 2.8: sub-agent memory inheritance
+      // "none" = empty history (default, fully isolated)
+      // "read_snapshot" handled by caller injecting parent context as system messages
+      // "shared_workspace" handled by workspace-scoped retrieval (same workspaceId)
       history: continuationHandle ? [...continuationHandle.history] : [],
       startedAt: Date.now(),
       status: "running",
