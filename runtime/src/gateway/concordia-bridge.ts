@@ -107,6 +107,7 @@ export class ConcordiaBridge {
     if (req.method === "GET") {
       if (path === "/health") return this.handleHealth(res);
       if (path === "/metrics") return this.handleMetrics(res);
+      if (path === "/agents") return this.handleListAgents(res);
       if (path.startsWith("/agent/") && path.endsWith("/state")) {
         const agentId = decodeURIComponent(path.split("/")[2]);
         return this.handleAgentState(agentId, res);
@@ -272,6 +273,18 @@ export class ConcordiaBridge {
   // ==========================================================================
   // GET handlers
   // ==========================================================================
+
+  private handleListAgents(res: ServerResponse): void {
+    const agents = Array.from(this.agents.entries()).map(([id, agent]) => ({
+      id,
+      name: agent.name,
+      personality: agent.personality,
+      goal: agent.goal,
+      turns: agent.turns,
+      lastAction: agent.lastAction,
+    }));
+    this.sendJson(res, 200, agents);
+  }
 
   private handleHealth(res: ServerResponse): void {
     this.sendJson(res, 200, {
