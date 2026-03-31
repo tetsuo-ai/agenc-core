@@ -278,7 +278,7 @@ describe("resolveBashToolTimeoutConfig", () => {
         llm: {},
       } as any),
     ).toEqual({
-      timeoutMs: 300_000,
+      timeoutMs: 60_000,
       maxTimeoutMs: 600_000,
     });
   });
@@ -314,7 +314,7 @@ describe("resolveBashToolTimeoutConfig", () => {
         llm: { toolCallTimeoutMs: 480_000 },
       } as any),
     ).toEqual({
-      timeoutMs: 300_000,
+      timeoutMs: 60_000,
       maxTimeoutMs: 480_000,
     });
   });

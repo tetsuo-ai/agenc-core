@@ -7,16 +7,16 @@ describe("loadConfiguredPluginChannel", () => {
   const trustedPackages = [
     {
       packageName: "@tetsuo-ai/plugin-kit-channel-fixture",
-      allowedSubpaths: ["slack"],
+      allowedSubpaths: ["mock"],
     },
   ] as const;
 
   it("loads a trusted channel adapter package", async () => {
     const loaded = await loadConfiguredPluginChannel({
-      channelName: "fixture-slack",
+      channelName: "fixture-chat",
       channelConfig: {
         type: "plugin",
-        moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/slack",
+        moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/mock",
         config: {
           token: "abc",
         },
@@ -24,18 +24,18 @@ describe("loadConfiguredPluginChannel", () => {
       trustedPackages,
     });
 
-    expect(loaded.manifest.plugin_id).toBe("fixtures/slack");
-    expect(loaded.manifest.channel_name).toBe("fixture-slack");
-    expect(loaded.channel.name).toBe("fixture-slack");
+    expect(loaded.manifest.plugin_id).toBe("fixtures/mock");
+    expect(loaded.manifest.channel_name).toBe("fixture-chat");
+    expect(loaded.channel.name).toBe("fixture-chat");
   });
 
   it("rejects channel names that shadow built-in runtime channels", async () => {
     await expect(
       loadConfiguredPluginChannel({
-        channelName: "slack",
+        channelName: "discord",
         channelConfig: {
           type: "plugin",
-          moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/slack",
+          moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/mock",
           config: {
             token: "abc",
           },
@@ -43,17 +43,17 @@ describe("loadConfiguredPluginChannel", () => {
         trustedPackages,
       }),
     ).rejects.toThrow(
-      'Gateway config validation failed: channels.slack — channel name "slack" is reserved for built-in runtime channels',
+      'Gateway config validation failed: channels.discord — channel name "discord" is reserved for built-in runtime channels',
     );
   });
 
   it("rejects subpath imports that are not explicitly trusted", async () => {
     await expect(
       loadConfiguredPluginChannel({
-        channelName: "fixture-slack",
+        channelName: "fixture-chat",
         channelConfig: {
           type: "plugin",
-          moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/slack",
+          moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/mock",
           config: {
             token: "abc",
           },
@@ -65,7 +65,7 @@ describe("loadConfiguredPluginChannel", () => {
         ],
       }),
     ).rejects.toThrow(
-      'Gateway config validation failed: channels.fixture-slack.moduleSpecifier — trusted package "@tetsuo-ai/plugin-kit-channel-fixture" does not allow subpath "slack"',
+      'Gateway config validation failed: channels.fixture-chat.moduleSpecifier — trusted package "@tetsuo-ai/plugin-kit-channel-fixture" does not allow subpath "mock"',
     );
   });
 
@@ -75,7 +75,7 @@ describe("loadConfiguredPluginChannel", () => {
         channelName: "custom",
         channelConfig: {
           type: "plugin",
-          moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/slack",
+          moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/mock",
           config: {
             token: "abc",
           },
@@ -83,23 +83,23 @@ describe("loadConfiguredPluginChannel", () => {
         trustedPackages,
       }),
     ).rejects.toThrow(
-      'Gateway config validation failed: channels.custom.moduleSpecifier — plugin manifest.channel_name "fixture-slack" must match the config key "custom"',
+      'Gateway config validation failed: channels.custom.moduleSpecifier — plugin manifest.channel_name "fixture-chat" must match the config key "custom"',
     );
   });
 
   it("surfaces adapter config validation as a gateway config error", async () => {
     await expect(
       loadConfiguredPluginChannel({
-        channelName: "fixture-slack",
+        channelName: "fixture-chat",
         channelConfig: {
           type: "plugin",
-          moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/slack",
+          moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/mock",
           config: {},
         },
         trustedPackages,
       }),
     ).rejects.toThrow(
-      "Gateway config validation failed: channels.fixture-slack.config — config.token must be a non-empty string",
+      "Gateway config validation failed: channels.fixture-chat.config — config.token must be a non-empty string",
     );
   });
 });

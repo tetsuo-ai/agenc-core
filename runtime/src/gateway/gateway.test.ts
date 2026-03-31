@@ -399,13 +399,13 @@ describe("Gateway", () => {
 
     it("unregisterChannel calls stop and removes", async () => {
       await gateway.start();
-      const ch = makeChannel("slack");
+      const ch = makeChannel("matrix");
       gateway.registerChannel(ch);
 
-      await gateway.unregisterChannel("slack");
+      await gateway.unregisterChannel("matrix");
 
       expect(ch.stop).toHaveBeenCalled();
-      expect(gateway.getStatus().channels).not.toContain("slack");
+      expect(gateway.getStatus().channels).not.toContain("matrix");
     });
   });
 

@@ -44,6 +44,7 @@ import {
   buildPlannerWorkflowStepContract,
   parsePlannerRequiredString,
   parsePlannerOptionalString,
+  safeStepStringArray,
 } from "./chat-executor-planner.js";
 import { safeStringify } from "../tools/types.js";
 import { deriveVerificationObligations } from "../workflow/verification-obligations.js";
@@ -389,11 +390,11 @@ export function evaluatePlannerDeterministicChecks(
       verdict = moreSevereVerifierVerdict(verdict, "retry");
     }
 
-    if (step.requiredToolCapabilities.length > 0 && toolCallsCount === 0) {
+    if (safeStepStringArray(step.requiredToolCapabilities).length > 0 && toolCallsCount === 0) {
       issues.push("missing_tool_result_consistency_signal");
     }
     if (
-      step.requiredToolCapabilities.length > 0 &&
+      safeStepStringArray(step.requiredToolCapabilities).length > 0 &&
       toolCallsCount > 0 &&
       failedToolCallsCount >= toolCallsCount
     ) {
@@ -1234,8 +1235,8 @@ function buildPlannerWorkflowVerificationContract(params: {
         ? params.verificationContract.workspaceRoot.trim()
         : undefined;
   const acceptanceCriteria = [
-    ...(params.verificationContract?.acceptanceCriteria ?? []),
-    ...params.subagentSteps.flatMap((step) => step.acceptanceCriteria),
+    ...safeStepStringArray(params.verificationContract?.acceptanceCriteria),
+    ...params.subagentSteps.flatMap((step) => safeStepStringArray(step.acceptanceCriteria)),
   ].filter((criterion) => criterion.trim().length > 0);
   const inputArtifacts = Array.from(
     new Set(
@@ -1283,16 +1284,17 @@ function buildPlannerWorkflowVerificationContract(params: {
       })
       : undefined
     );
+  const hasWorkflowVerificationSemantics =
+    acceptanceCriteria.length > 0 ||
+    inputArtifacts.length > 0 ||
+    requiredSourceArtifacts.length > 0 ||
+    targetArtifacts.length > 0 ||
+    Boolean(verificationMode) ||
+    Boolean(stepKind) ||
+    Boolean(params.completionContract) ||
+    Boolean(requestCompletion);
   if (
-    !workspaceRoot &&
-    acceptanceCriteria.length === 0 &&
-    inputArtifacts.length === 0 &&
-    requiredSourceArtifacts.length === 0 &&
-    targetArtifacts.length === 0 &&
-    !verificationMode &&
-    !stepKind &&
-    !params.completionContract &&
-    !requestCompletion
+    !hasWorkflowVerificationSemantics
   ) {
     return undefined;
   }

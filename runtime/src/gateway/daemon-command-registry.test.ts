@@ -77,6 +77,16 @@ function makeCommandRegistry(params?: {
     set: vi.fn(async () => {}),
     ...(params?.memoryBackendOverrides ?? {}),
   } as any;
+  const getSessionPolicyState = vi.fn(() => ({
+    elevatedPatterns: [],
+    deniedPatterns: [],
+  }));
+  const updateSessionPolicyState = vi.fn((params) => ({
+    elevatedPatterns:
+      params.operation === "allow" && params.pattern ? [params.pattern] : [],
+    deniedPatterns:
+      params.operation === "deny" && params.pattern ? [params.pattern] : [],
+  }));
 
   const registry = createDaemonCommandRegistry(
     {
@@ -124,6 +134,8 @@ function makeCommandRegistry(params?: {
         policy: { allowed: true, mode: "normal", violations: [] },
         approval: { required: false, elevated: false, denied: false },
       })),
+      getSessionPolicyState,
+      updateSessionPolicyState,
       getSubAgentRuntimeConfig: () => null,
       getActiveDelegationAggressiveness: () => "balanced",
       resolveDelegationScoreThreshold: () => 0,
@@ -170,6 +182,8 @@ function makeCommandRegistry(params?: {
     session,
     memoryBackend,
     providers,
+    getSessionPolicyState,
+    updateSessionPolicyState,
   };
 }
 
@@ -202,6 +216,97 @@ describe("createDaemonCommandRegistry /context", () => {
     expect(replies[0]).toContain(
       "Compaction: local enabled @ 600,000 tokens; provider disabled",
     );
+  });
+});
+
+describe("createDaemonCommandRegistry /policy", () => {
+  it("shows session allow and deny overrides in policy status", async () => {
+    const { registry, getSessionPolicyState } = makeCommandRegistry();
+    getSessionPolicyState.mockReturnValue({
+      elevatedPatterns: ["system.writeFile"],
+      deniedPatterns: ["wallet.*"],
+    });
+
+    const replies = await dispatchAndCollect(registry, "/policy status");
+
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toContain("Session allow patterns: system.writeFile");
+    expect(replies[0]).toContain("Session deny patterns: wallet.*");
+  });
+
+  it("updates session allow overrides", async () => {
+    const { registry, updateSessionPolicyState } = makeCommandRegistry();
+
+    const replies = await dispatchAndCollect(
+      registry,
+      "/policy update allow system.writeFile",
+    );
+
+    expect(updateSessionPolicyState).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      operation: "allow",
+      pattern: "system.writeFile",
+    });
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toContain("Policy update: allow system.writeFile");
+    expect(replies[0]).toContain("Session allow patterns: system.writeFile");
+  });
+
+  it("updates session deny and clear overrides", async () => {
+    const { registry, updateSessionPolicyState } = makeCommandRegistry();
+    updateSessionPolicyState
+      .mockReturnValueOnce({
+        elevatedPatterns: [],
+        deniedPatterns: ["wallet.*"],
+      })
+      .mockReturnValueOnce({
+        elevatedPatterns: [],
+        deniedPatterns: [],
+      });
+
+    const denyReplies = await dispatchAndCollect(
+      registry,
+      "/policy update deny wallet.*",
+    );
+    const clearReplies = await dispatchAndCollect(
+      registry,
+      "/policy update clear wallet.*",
+    );
+
+    expect(updateSessionPolicyState).toHaveBeenNthCalledWith(1, {
+      sessionId: "session-1",
+      operation: "deny",
+      pattern: "wallet.*",
+    });
+    expect(updateSessionPolicyState).toHaveBeenNthCalledWith(2, {
+      sessionId: "session-1",
+      operation: "clear",
+      pattern: "wallet.*",
+    });
+    expect(denyReplies[0]).toContain("Policy update: deny wallet.*");
+    expect(denyReplies[0]).toContain("Session deny patterns: wallet.*");
+    expect(clearReplies[0]).toContain("Policy update: clear wallet.*");
+    expect(clearReplies[0]).toContain("Session deny patterns: none");
+  });
+
+  it("resets session overrides", async () => {
+    const { registry, updateSessionPolicyState } = makeCommandRegistry();
+    updateSessionPolicyState.mockReturnValue({
+      elevatedPatterns: [],
+      deniedPatterns: [],
+    });
+
+    const replies = await dispatchAndCollect(registry, "/policy update reset");
+
+    expect(updateSessionPolicyState).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      operation: "reset",
+      pattern: undefined,
+    });
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toContain("Policy update: reset");
+    expect(replies[0]).toContain("Session allow patterns: none");
+    expect(replies[0]).toContain("Session deny patterns: none");
   });
 });
 

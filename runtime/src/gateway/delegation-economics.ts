@@ -7,6 +7,7 @@ import {
   type WorkflowArtifactRelation,
 } from "../workflow/execution-envelope.js";
 import { normalizeArtifactPaths } from "../workflow/path-normalization.js";
+import { safeStepStringArray } from "../llm/chat-executor-planner.js";
 
 const EXPLICIT_FILE_ARTIFACT_GLOBAL_RE =
   /(?:^|[\s`'"])(?:\/[^\s`'"]*?\.[a-z0-9]{1,10}|\.{1,2}\/[^\s`'"]*?\.[a-z0-9]{1,10}|(?:[a-z0-9_.-]+\/)+[a-z0-9_.-]+\.[a-z0-9]{1,10}|[a-z0-9_.-]+\.[a-z0-9]{1,10})(?=$|[\s`'"])/gi;
@@ -105,6 +106,39 @@ function isReadOnlyEnvelope(effectClass?: DelegationExecutionContext["effectClas
   return effectClass === "read_only";
 }
 
+function hasArtifactRelationType(
+  artifactRelations: readonly WorkflowArtifactRelation[],
+  relationType: WorkflowArtifactRelation["relationType"],
+): boolean {
+  return artifactRelations.some((relation) => relation.relationType === relationType);
+}
+
+function isTypedVerificationOnlyStep(params: {
+  readonly step: DelegationCandidateStep;
+  readonly artifactRelations: readonly WorkflowArtifactRelation[];
+  readonly shellCapabilityCount: number;
+  readonly writeCapabilityCount: number;
+}): boolean {
+  const { step, artifactRelations, shellCapabilityCount, writeCapabilityCount } =
+    params;
+  const executionContext = step.executionContext;
+  if (!executionContext) return false;
+  if (hasArtifactRelationType(artifactRelations, "write_owner")) {
+    return false;
+  }
+  if (writeCapabilityCount > 0) {
+    return false;
+  }
+  if (executionContext.role !== "validator") {
+    return false;
+  }
+  return (
+    executionContext.verificationMode === "deterministic_followup" ||
+    hasArtifactRelationType(artifactRelations, "verification_subject") ||
+    shellCapabilityCount > 0
+  );
+}
+
 function extractExplicitFileArtifacts(
   segments: readonly string[],
   workspaceRoot?: string,
@@ -150,14 +184,14 @@ function collectReferencedArtifacts(
   const explicitTextArtifacts = extractExplicitFileArtifacts([
     step.objective ?? "",
     step.inputContract ?? "",
-    ...step.acceptanceCriteria,
+    ...safeStepStringArray(step.acceptanceCriteria),
     ...sanitizeDelegationContextRequirements(step.contextRequirements),
   ], step.executionContext?.workspaceRoot);
   return [...new Set([...relationArtifacts, ...explicitTextArtifacts])];
 }
 
 function analyzeStep(step: DelegationCandidateStep): DelegationStepAnalysis {
-  const capabilities = step.requiredToolCapabilities.map((capability) =>
+  const capabilities = safeStepStringArray(step.requiredToolCapabilities).map((capability) =>
     capability.trim()
   ).filter((capability) => capability.length > 0);
   const writeCapabilityCount = capabilities.filter(isWriteCapability).length;
@@ -167,6 +201,12 @@ function analyzeStep(step: DelegationCandidateStep): DelegationStepAnalysis {
   const artifactRelations = collectArtifactRelations(step);
   const ownedArtifacts = collectOwnedArtifacts(artifactRelations);
   const referencedArtifacts = collectReferencedArtifacts(step, artifactRelations);
+  const typedVerificationOnly = isTypedVerificationOnlyStep({
+    step,
+    artifactRelations,
+    shellCapabilityCount,
+    writeCapabilityCount,
+  });
   const readOnly = isReadOnlyEnvelope(envelope?.effectClass) ||
     (
       writeCapabilityCount === 0 &&
@@ -174,17 +214,19 @@ function analyzeStep(step: DelegationCandidateStep): DelegationStepAnalysis {
       capabilities.length > 0 &&
       readCapabilityCount === capabilities.length
     );
-  const shellObservationOnly =
+  const shellObservationOnly = typedVerificationOnly || (
     writeCapabilityCount === 0 &&
     shellCapabilityCount > 0 &&
     (envelope?.targetArtifacts?.length ?? 0) === 0 &&
-    (envelope?.effectClass === "read_only" || readOnly);
-  const mutable =
+    (envelope?.effectClass === "read_only" || readOnly)
+  );
+  const mutable = !typedVerificationOnly && (
     envelope?.effectClass === "filesystem_write" ||
     envelope?.effectClass === "filesystem_scaffold" ||
     envelope?.effectClass === "mixed" ||
     writeCapabilityCount > 0 ||
-    (!readOnly && shellCapabilityCount > 0);
+    (!readOnly && shellCapabilityCount > 0)
+  );
 
   return {
     step,
@@ -337,9 +379,9 @@ function averageToolOverlap(
   const overlaps: number[] = [];
   for (let index = 0; index < analyses.length; index += 1) {
     const left = analyses[index]!;
-    const leftCapabilities = new Set(left.step.requiredToolCapabilities);
+    const leftCapabilities = new Set(safeStepStringArray(left.step.requiredToolCapabilities));
     for (let inner = index + 1; inner < analyses.length; inner += 1) {
-      const rightCapabilities = new Set(analyses[inner]!.step.requiredToolCapabilities);
+      const rightCapabilities = new Set(safeStepStringArray(analyses[inner]!.step.requiredToolCapabilities));
       overlaps.push(jaccard(leftCapabilities, rightCapabilities));
     }
   }
@@ -359,7 +401,7 @@ function computeVerifierCost(analyses: readonly DelegationStepAnalysis[]): numbe
         : 0.08;
     return clamp01(
       modeWeight +
-        Math.min(0.25, analysis.step.acceptanceCriteria.length * 0.05) +
+        Math.min(0.25, safeStepStringArray(analysis.step.acceptanceCriteria).length * 0.05) +
         Math.min(0.2, analysis.ownedArtifacts.length * 0.06),
     );
   });

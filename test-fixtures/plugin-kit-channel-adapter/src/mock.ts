@@ -9,11 +9,11 @@ import {
 
 export const manifest = {
   schema_version: 1 as const,
-  plugin_id: "fixtures/slack",
-  channel_name: "fixture-slack",
+  plugin_id: "fixtures/mock",
+  channel_name: "fixture-chat",
   plugin_type: "channel_adapter" as const,
   version: "0.0.0",
-  display_name: "Fixture Slack Channel",
+  display_name: "Fixture Chat Channel",
   description: "Workspace fixture channel adapter used by runtime tests",
   plugin_api_version: CHANNEL_ADAPTER_PLUGIN_API_VERSION,
   host_api_version: CHANNEL_ADAPTER_HOST_API_VERSION,
@@ -42,8 +42,8 @@ export function validateConfig(config: unknown): ChannelConfigValidationResult {
   };
 }
 
-class FixtureSlackChannelAdapter implements ChannelAdapter {
-  readonly name = "fixture-slack";
+class FixtureChatChannelAdapter implements ChannelAdapter {
+  readonly name = "fixture-chat";
   private context: ChannelAdapterContext | null = null;
   readonly sent: Array<{ session_id: string; content: string }> = [];
 
@@ -69,7 +69,7 @@ class FixtureSlackChannelAdapter implements ChannelAdapter {
 }
 
 export function createChannelAdapter(): ChannelAdapter {
-  return new FixtureSlackChannelAdapter();
+  return new FixtureChatChannelAdapter();
 }
 
 export default {

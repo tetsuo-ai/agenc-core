@@ -13,7 +13,6 @@ import { WebChatChannel } from "./plugin.js";
 import type { WebChatDeps } from "./types.js";
 import type { ChannelContext } from "../../gateway/channel.js";
 import type { ControlMessage, ControlResponse } from "../../gateway/types.js";
-import { HookDispatcher, createBuiltinHooks } from "../../gateway/hooks.js";
 import { silentLogger } from "../../utils/logger.js";
 import { InMemoryBackend } from "../../memory/in-memory/backend.js";
 import { WebChatSessionStore } from "./session-store.js";
@@ -150,7 +149,7 @@ function createDesktopManager(
 }
 
 function createWorkspaceRoot(prefix: string): string {
-  return realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+  return realpathSync.native(mkdtempSync(join(tmpdir(), prefix)));
 }
 
 async function startDesktopChannel(
@@ -1559,49 +1558,6 @@ describe("WebChatChannel", () => {
       );
     });
 
-    it("should expose runtime hook metadata via hooks.list", () => {
-      const dispatcher = new HookDispatcher({ logger: silentLogger });
-      for (const hook of createBuiltinHooks()) {
-        dispatcher.on(hook);
-      }
-      deps.hooks = dispatcher;
-      const send = vi.fn<(response: ControlResponse) => void>();
-
-      channel.handleMessage(
-        "client_1",
-        "hooks.list",
-        msg("hooks.list", undefined, "req-hooks"),
-        send,
-      );
-
-      expect(send).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: "hooks.list",
-          id: "req-hooks",
-          payload: expect.arrayContaining([
-            expect.objectContaining({
-              event: "gateway:startup",
-              name: "boot-executor",
-              source: "builtin",
-              kind: "lifecycle",
-              handlerType: "builtin",
-              target: "boot-executor",
-              supported: true,
-            }),
-            expect.objectContaining({
-              event: "tool:before",
-              name: "approval-gate",
-              source: "builtin",
-              kind: "approval",
-              handlerType: "builtin",
-              target: "approval-gate",
-              supported: true,
-            }),
-          ]),
-        }),
-      );
-    });
-
     it("should handle tasks.list with informative error (no Solana connection)", () => {
       const send = vi.fn<(response: ControlResponse) => void>();
 
@@ -1691,43 +1647,6 @@ describe("WebChatChannel", () => {
       );
     });
 
-    it("should handle maintenance.status without a memory backend", async () => {
-      const send = vi.fn<(response: ControlResponse) => void>();
-
-      channel.handleMessage(
-        "client_1",
-        "maintenance.status",
-        msg("maintenance.status", { limit: 4 }, "req-maintenance-status"),
-        send,
-      );
-
-      await vi.waitFor(() =>
-        expect(send).toHaveBeenCalledWith(
-          expect.objectContaining({
-            type: "maintenance.status",
-            id: "req-maintenance-status",
-            payload: expect.objectContaining({
-              sync: expect.objectContaining({
-                ownerSessionCount: 0,
-                activeSessionOwned: false,
-                durableRunsEnabled: true,
-                operatorAvailable: true,
-                inspectAvailable: true,
-                controlAvailable: true,
-              }),
-              memory: {
-                backendConfigured: false,
-                sessionCount: 0,
-                totalMessages: 0,
-                lastActiveAt: 0,
-                recentSessions: [],
-              },
-            }),
-          }),
-        ),
-      );
-    });
-
     it("should handle memory.search with missing query", () => {
       const send = vi.fn<(response: ControlResponse) => void>();
 
@@ -1790,71 +1709,6 @@ describe("WebChatChannel", () => {
           }),
         ),
       );
-    });
-
-    it("maintenance.status aggregates only owned session memory", async () => {
-      const threads = new Map<string, Array<{ content: string; timestamp: number; role: string }>>();
-      const memoryBackend = {
-        getThread: vi.fn(async (sessionId: string) => threads.get(sessionId) ?? []),
-      } as unknown as NonNullable<WebChatDeps["memoryBackend"]>;
-      deps = createDeps({ memoryBackend });
-      context = createContext();
-      channel = new WebChatChannel(deps);
-      await channel.initialize(context);
-      await channel.start();
-
-      const send1 = vi.fn<(response: ControlResponse) => void>();
-      const send2 = vi.fn<(response: ControlResponse) => void>();
-      const sessionId1 = openChatSession(channel, context, "client_1", send1, "hello one");
-      const sessionId2 = openChatSession(channel, context, "client_2", send2, "hello two");
-
-      threads.set(sessionId1, [
-        { content: "alpha note", timestamp: 100, role: "user" },
-        { content: "alpha reply", timestamp: 300, role: "agent" },
-      ]);
-      threads.set(sessionId2, [
-        { content: "beta note", timestamp: 200, role: "user" },
-        { content: "beta reply", timestamp: 400, role: "agent" },
-        { content: "beta follow-up", timestamp: 500, role: "user" },
-      ]);
-
-      channel.handleMessage(
-        "client_1",
-        "maintenance.status",
-        msg("maintenance.status", { limit: 8 }, "req-maintenance-owned"),
-        send1,
-      );
-
-      await vi.waitFor(() =>
-        expect(send1).toHaveBeenCalledWith(
-          expect.objectContaining({
-            type: "maintenance.status",
-            id: "req-maintenance-owned",
-            payload: expect.objectContaining({
-              sync: expect.objectContaining({
-                ownerSessionCount: 1,
-                activeSessionId: sessionId1,
-                activeSessionOwned: true,
-              }),
-              memory: expect.objectContaining({
-                backendConfigured: true,
-                sessionCount: 1,
-                totalMessages: 2,
-                lastActiveAt: 300,
-                recentSessions: [
-                  {
-                    id: sessionId1,
-                    messageCount: 2,
-                    lastActiveAt: 300,
-                  },
-                ],
-              }),
-            }),
-          }),
-        ),
-      );
-      expect(memoryBackend.getThread).toHaveBeenCalledWith(sessionId1);
-      expect(memoryBackend.getThread).not.toHaveBeenCalledWith(sessionId2);
     });
 
     it("should handle policy.simulate against the active owned session", async () => {

@@ -16,6 +16,7 @@ import type {
 import { createGatewayMessage } from "./message.js";
 import { ChatExecutor } from "../llm/chat-executor.js";
 import { buildModelRoutingPolicy } from "../llm/model-routing-policy.js";
+import type { GatewayLLMConfig } from "./types.js";
 import type { PromptBudgetConfig } from "../llm/prompt-budget.js";
 import {
   buildRuntimeEconomicsPolicy,
@@ -67,11 +68,10 @@ export const DEFAULT_TERMINAL_SUB_AGENT_RETENTION_MS = 6 * 60 * 60 * 1000; // 6h
 export const SUB_AGENT_SESSION_PREFIX = "subagent:";
 
 const DEFAULT_SUB_AGENT_SYSTEM_PROMPT =
-  "You are a sub-agent. Execute only the assigned phase, stay within the provided scope, " +
-  "and report the result concisely. Do not reinterpret the broader parent request into a " +
-  "new multi-step plan, do not attempt sibling phases, and do not delegate unless the " +
-  "task explicitly grants that authority. Honor the declared isolation reason, " +
-  "owned artifacts, and verifier obligations for the delegated phase.";
+  "You are a sub-agent. Execute only the assigned delegated contract, stay within the provided scope, " +
+  "and report the result concisely. Do not widen a bounded phase into a new broader parent plan, and do not delegate unless the " +
+  "task explicitly grants that authority. If the delegated contract owns the remaining request end to end, keep working until it is complete or concretely blocked. " +
+  "Honor the declared isolation reason, owned artifacts, and verifier obligations for the delegated contract.";
 
 const ABORT_SENTINEL = Symbol("abort");
 const TIMEOUT_SENTINEL = Symbol("timeout");
@@ -156,6 +156,13 @@ export interface SubAgentConfig {
   readonly requireToolCall?: boolean;
   readonly delegationSpec?: DelegationContractSpec;
   readonly unsafeBenchmarkMode?: boolean;
+  /**
+   * Phase 2.8: Memory inheritance policy for sub-agents.
+   * - "none": fully isolated (default — sub-agent gets empty memory)
+   * - "read_snapshot": copy parent's recent N semantic entries as read-only context
+   * - "shared_workspace": same workspace scope, different agentId
+   */
+  readonly memoryInheritance?: "none" | "read_snapshot" | "shared_workspace";
 }
 
 export interface SubAgentResult {
@@ -367,6 +374,10 @@ export class SubAgentManager {
       depth,
       task: config.task,
       config,
+      // Phase 2.8: sub-agent memory inheritance
+      // "none" = empty history (default, fully isolated)
+      // "read_snapshot" handled by caller injecting parent context as system messages
+      // "shared_workspace" handled by workspace-scoped retrieval (same workspaceId)
       history: continuationHandle ? [...continuationHandle.history] : [],
       startedAt: Date.now(),
       status: "running",
@@ -695,6 +706,15 @@ export class SubAgentManager {
         maxFanoutPerTurn: 1,
         mode: this.config.economicsMode ?? "enforce",
       });
+      const selectedProviderRoutingConfig: GatewayLLMConfig | undefined =
+        selectedProvider.name === "grok" || selectedProvider.name === "ollama"
+          ? {
+            provider: selectedProvider.name,
+            ...(resolvedProviderProfile?.model
+              ? { model: resolvedProviderProfile.model }
+              : {}),
+          }
+          : undefined;
       const executor = new ChatExecutor({
         providers: [selectedProvider],
         toolHandler,
@@ -711,6 +731,9 @@ export class SubAgentManager {
         modelRoutingPolicy: buildModelRoutingPolicy({
           providers: [selectedProvider],
           economicsPolicy,
+          ...(selectedProviderRoutingConfig
+            ? { providerConfigs: [selectedProviderRoutingConfig] }
+            : {}),
         }),
         resolveHostWorkspaceRoot: () =>
           handle.config.workingDirectory ?? null,
@@ -795,12 +818,35 @@ export class SubAgentManager {
         });
       }
 
+      // When the spawn comes from the orchestrator pipeline (has an
+      // execution context with explicit tool scope), pass the resolved
+      // tools as routedToolNames so the sub-agent's ChatExecutor uses
+      // the full scope instead of re-deriving a narrower set from
+      // message content heuristics.  Direct spawns (no delegation spec)
+      // continue to use the ChatExecutor's default routing.
+      const spawnRoutedTools =
+        handle.config.delegationSpec &&
+        handle.config.tools &&
+        handle.config.tools.length > 0
+          ? [...handle.config.tools]
+          : undefined;
+
       const resultOrAbort = await raceAbort(
         executor.execute({
           message,
           history: handle.history,
           systemPrompt,
           sessionId: handle.sessionId,
+          ...(spawnRoutedTools
+            ? { toolRouting: { routedToolNames: spawnRoutedTools } }
+            : {}),
+          ...(handle.config.workingDirectory
+            ? {
+              runtimeContext: {
+                workspaceRoot: handle.config.workingDirectory,
+              },
+            }
+            : {}),
           ...(typeof effectiveToolBudgetPerRequest === "number"
             ? { toolBudgetPerRequest: effectiveToolBudgetPerRequest }
             : {}),

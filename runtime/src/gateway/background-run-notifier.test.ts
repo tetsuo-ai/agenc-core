@@ -99,17 +99,12 @@ describe("BackgroundRunNotifier", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("formats Slack and Discord webhook payloads", async () => {
+  it("formats Discord webhook payloads", async () => {
     const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
     const notifier = new BackgroundRunNotifier({
       config: {
         enabled: true,
         sinks: [
-          {
-            id: "slack",
-            type: "slack_webhook",
-            url: "https://hooks.slack.test/a",
-          },
           {
             id: "discord",
             type: "discord_webhook",
@@ -130,10 +125,8 @@ describe("BackgroundRunNotifier", () => {
       }),
     });
 
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
-    const slackBody = JSON.parse(String((fetchImpl.mock.calls[0] as [string, RequestInit])[1].body));
-    const discordBody = JSON.parse(String((fetchImpl.mock.calls[1] as [string, RequestInit])[1].body));
-    expect(slackBody.text).toContain("run_blocked");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const discordBody = JSON.parse(String((fetchImpl.mock.calls[0] as [string, RequestInit])[1].body));
     expect(discordBody.content).toContain("run_blocked");
   });
 
@@ -163,5 +156,42 @@ describe("BackgroundRunNotifier", () => {
 
     const headers = (fetchImpl.mock.calls[0] as [string, RequestInit])[1].headers as Record<string, string>;
     expect(headers["x-agenc-signature"]).toMatch(/^sha256=/);
+  });
+
+  it("maps retry and fork control events to run_controlled notifications", async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    const notifier = new BackgroundRunNotifier({
+      config: {
+        enabled: true,
+        sinks: [
+          {
+            id: "ops-webhook",
+            type: "webhook",
+            url: "https://example.com/hook",
+            events: ["run_controlled"],
+          },
+        ],
+      },
+      fetchImpl,
+    });
+
+    for (const internalEventType of [
+      "run_retried_from_step",
+      "run_retried_from_trace",
+      "run_forked",
+    ] as const) {
+      await notifier.notify({
+        occurredAt: 2_345,
+        internalEventType,
+        summary: `Delivered ${internalEventType}.`,
+        run: makeSummary(),
+      });
+    }
+
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    for (const [, init] of fetchImpl.mock.calls as Array<[string, RequestInit]>) {
+      const body = JSON.parse(String(init.body));
+      expect(body.eventType).toBe("run_controlled");
+    }
   });
 });

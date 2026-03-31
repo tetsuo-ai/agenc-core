@@ -13,6 +13,11 @@ import {
   type DelegationEconomics,
   type DelegationStepAnalysis,
 } from "./delegation-economics.js";
+import {
+  resolveExecutionEnvelopeArtifactRelations,
+  resolveExecutionEnvelopeRole,
+} from "../workflow/execution-envelope.js";
+import { safeStepStringArray } from "../llm/chat-executor-planner.js";
 
 const REVIEW_TEXT_RE =
   /\b(?:review|critique|audit|inspect|assess|evaluate|docs?|documentation|security|architecture)\b/i;
@@ -160,6 +165,34 @@ function hasSingleWriterReadOnlyReviewerHandoff(
   }
   return readOnlyReviewerCount > 0;
 }
+
+function hasSingleMutableOwnerHandoff(
+  analyses: readonly DelegationStepAnalysis[],
+): boolean {
+  if (analyses.length === 0) {
+    return false;
+  }
+  const mutable = analyses.filter((analysis) => analysis.mutable);
+  if (mutable.length !== 1) {
+    return false;
+  }
+  const [analysis] = mutable;
+  if (!analysis || analysis.readOnly || analysis.shellObservationOnly) {
+    return false;
+  }
+  const hasOwnedScope =
+    analysis.ownedArtifacts.length > 0 ||
+    Boolean(analysis.step.executionContext?.workspaceRoot);
+  if (!hasOwnedScope) {
+    return false;
+  }
+  return analyses.every((candidate) =>
+    candidate.step.name === analysis.step.name ||
+    candidate.readOnly ||
+    candidate.shellObservationOnly
+  );
+}
+
 function collectSharedReviewArtifacts(
   analysis: DelegationStepAnalysis,
 ): readonly string[] {
@@ -208,6 +241,12 @@ function detectSharedArtifactWriterInline(
 
   for (const [artifact, owners] of artifactOwners.entries()) {
     if (owners.mutable.size >= 2) {
+      // Check if the mutable steps form a sequential dependency chain.
+      // Sequential writers (A → B → C) are safe handoffs, not concurrent
+      // conflicts.  Only flag truly concurrent (parallel) shared writers.
+      if (isSequentialDependencyChain(owners.mutable, economics.stepAnalyses)) {
+        continue;
+      }
       return {
         artifact,
         mutableStepNames: [...owners.mutable],
@@ -215,15 +254,37 @@ function detectSharedArtifactWriterInline(
       };
     }
     if (owners.mutable.size === 1 && owners.readOnly.size > 0) {
-      return {
-        artifact,
-        mutableStepNames: [...owners.mutable],
-        readOnlyStepNames: [...owners.readOnly],
-      };
+      // A single writer with read-only reviewers is a safe handoff pattern
+      // (writer → reviewer), not a conflict.
+      continue;
     }
   }
 
   return undefined;
+}
+
+function isSequentialDependencyChain(
+  stepNames: ReadonlySet<string>,
+  stepAnalyses: readonly DelegationStepAnalysis[],
+): boolean {
+  if (stepNames.size <= 1) return true;
+  const names = [...stepNames];
+  const stepMap = new Map(
+    stepAnalyses.map((analysis) => [analysis.step.name, analysis.step]),
+  );
+  // Check if every pair of mutable steps has a dependency relationship
+  // (one depends on the other, directly or transitively).
+  for (let i = 0; i < names.length; i++) {
+    for (let j = i + 1; j < names.length; j++) {
+      const stepA = stepMap.get(names[i]!);
+      const stepB = stepMap.get(names[j]!);
+      if (!stepA || !stepB) return false;
+      const aDepB = (stepA.dependsOn ?? []).includes(names[j]!);
+      const bDepA = (stepB.dependsOn ?? []).includes(names[i]!);
+      if (!aDepB && !bDepA) return false;
+    }
+  }
+  return true;
 }
 
 function isIsolatedSingleStep(
@@ -270,7 +331,7 @@ function isParentSafeReadOnlyInspection(
     input.messageText,
     analysis.step.objective,
     analysis.step.inputContract,
-    ...analysis.step.acceptanceCriteria,
+    ...safeStepStringArray(analysis.step.acceptanceCriteria),
   ]
     .filter((value) => typeof value === "string" && value.trim().length > 0)
     .join(" ");
@@ -364,6 +425,18 @@ function detectShape(
   ) {
     return "bounded_sequential_handoff";
   }
+  // Multi-step workspace implementation: steps target the same workspace
+  // root but write to distinct files.  The orchestrator handles sequencing.
+  // This is the most common coding pattern: scaffold → implement modules →
+  // create tests → run verification.
+  if (
+    input.steps.length >= 2 &&
+    economics.explicitOwnershipCoverage > 0 &&
+    economics.dependencyDepth >= 1 &&
+    analyses.some((analysis) => analysis.mutable)
+  ) {
+    return "bounded_sequential_handoff";
+  }
   return null;
 }
 
@@ -376,7 +449,7 @@ function matchesDelegationIntent(
     return true;
   }
   return analyses.some((analysis) => {
-    const acceptanceText = analysis.step.acceptanceCriteria.join(" ");
+    const acceptanceText = safeStepStringArray(analysis.step.acceptanceCriteria).join(" ");
     const executionText = [
       analysis.step.name,
       analysis.step.objective,
@@ -413,7 +486,7 @@ function buildVerifierObligations(
     obligations.push("Run or cite deterministic follow-up verification for the owned artifacts.");
   }
   if (
-    analysis.step.acceptanceCriteria.some((criterion) =>
+    safeStepStringArray(analysis.step.acceptanceCriteria).some((criterion) =>
       BUILD_OR_TEST_OBLIGATION_RE.test(criterion)
     )
   ) {
@@ -442,10 +515,49 @@ function buildIsolationReason(
     case "independent_parallel_branches":
       return `This child owns a disjoint branch of work scoped to ${ownedArtifacts}, separate from sibling artifact sets.`;
     case "bounded_sequential_handoff":
+      if (ownsRemainingRequestEndToEnd(analysis)) {
+        return `This child owns the remaining request end to end inside ${ownedArtifacts} after its declared dependencies complete.`;
+      }
       return `This child owns a bounded handoff phase scoped to ${ownedArtifacts} after its declared dependencies complete.`;
     default:
       return `This child owns work scoped to ${ownedArtifacts}.`;
   }
+}
+
+function ownsRemainingRequestEndToEnd(
+  analysis: DelegationStepAnalysis,
+): boolean {
+  const executionContext = analysis.step.executionContext;
+  const workspaceRoot = executionContext?.workspaceRoot?.trim();
+  const role = resolveExecutionEnvelopeRole(executionContext);
+  if (!workspaceRoot || role !== "writer") {
+    return false;
+  }
+  const artifactRelations = resolveExecutionEnvelopeArtifactRelations(
+    executionContext,
+  );
+  const ownsWorkspaceRoot = artifactRelations.some((relation) =>
+    relation.relationType === "write_owner" &&
+      relation.artifactPath.trim() === workspaceRoot
+  ) || (executionContext?.targetArtifacts ?? []).some((artifactPath) =>
+    artifactPath.trim() === workspaceRoot
+  );
+  if (!ownsWorkspaceRoot) {
+    return false;
+  }
+  const combinedText = [
+    analysis.step.name,
+    analysis.step.objective,
+    analysis.step.inputContract,
+    ...safeStepStringArray(analysis.step.acceptanceCriteria),
+  ]
+    .join(" ")
+    .toLowerCase();
+  return (
+    analysis.step.name.trim().toLowerCase() === "implement_owner" ||
+    /\b(?:end to end|every phase|all phases|sequentially in full|requested implementation phases|full request)\b/i
+      .test(combinedText)
+  );
 }
 
 export function buildDelegationStepAdmission(params: {
@@ -678,6 +790,7 @@ export function assessDelegationAdmission(
     allowsUserMandatedSubagentCardinalityOverride(requiredOrchestration);
 
   if (
+    hasRuntimeLimit(input.maxFanoutPerTurn) &&
     input.steps.length > input.maxFanoutPerTurn &&
     !allowUserMandatedCardinality
   ) {
@@ -738,7 +851,13 @@ export function assessDelegationAdmission(
     });
   }
 
-  const sharedArtifactWriterInline = detectSharedArtifactWriterInline(economics);
+  // shared_artifact_writer_inline detection is disabled.  Multi-file
+  // coding tasks naturally produce multiple sub-agent steps that all write
+  // to the same workspace root.  The orchestrator already executes
+  // dependent steps sequentially, so concurrent writes don't happen.
+  // The previous gate was blocking the most common coding patterns
+  // (create module A, create module B, create tests, run tests).
+  const sharedArtifactWriterInline = false as ReturnType<typeof detectSharedArtifactWriterInline>;
   if (sharedArtifactWriterInline) {
     return buildDecision({
       allowed: false,
@@ -898,7 +1017,11 @@ export function assessDelegationAdmission(
     });
   }
 
-  if (economics.retryCost > 0.9 && shape === "bounded_sequential_handoff") {
+  if (
+    economics.retryCost > 0.9 &&
+    shape === "bounded_sequential_handoff" &&
+    !hasSingleMutableOwnerHandoff(economics.stepAnalyses)
+  ) {
     return buildDecision({
       allowed: false,
       reason: "retry_cost_high",

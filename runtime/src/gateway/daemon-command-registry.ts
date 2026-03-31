@@ -843,6 +843,28 @@ export function createDaemonCommandRegistry(
         lines.push(`  ${loaded ? "●" : "○"} ${name}`);
       }
 
+      // Phase 9 / Task 7.2: memory health metrics in /context output
+      try {
+        const { collectMemoryHealthReport } = await import("../memory/diagnostics.js");
+        const report = await collectMemoryHealthReport({ memoryBackend });
+        lines.push("");
+        lines.push("Memory health:");
+        lines.push(`  Backend: ${report.backendType} (${report.durability})`);
+        lines.push(`  Status: ${report.healthy ? "healthy" : "unhealthy"}`);
+        lines.push(`  Entries: ~${report.entryCount.toLocaleString()} across ${report.sessionCount} sessions`);
+        if (report.vectorStore) {
+          lines.push(`  Vectors: dim=${report.vectorStore.dimension || "?"}${report.vectorStore.persistent ? " (persistent)" : " (ephemeral)"}`);
+        }
+        if (report.embeddingProvider) {
+          lines.push(`  Embeddings: ${report.embeddingProvider.name} (${report.embeddingProvider.available ? "available" : "unavailable"})`);
+        }
+        if (report.knowledgeGraph) {
+          lines.push(`  Graph: ${report.knowledgeGraph.nodeCount} nodes, ${report.knowledgeGraph.edgeCount} edges`);
+        }
+      } catch {
+        // Non-blocking — diagnostics may not be available
+      }
+
       await cmdCtx.reply(lines.join("\n"));
     },
   });
@@ -2168,6 +2190,140 @@ export function createDaemonCommandRegistry(
           `Active goals (${active.length}):\n${lines.join("\n")}`,
         );
       }
+    },
+  });
+
+  // ---- /memory (Phase 9.1) ----
+  commandRegistry.register({
+    name: "memory",
+    description: "Inspect and manage memory (search, list, forget, pin)",
+    global: true,
+    handler: async (cmdCtx) => {
+      const args = (cmdCtx.args ?? "").trim();
+      const subcommand = args.split(/\s+/)[0]?.toLowerCase() ?? "";
+      const rest = args.slice(subcommand.length).trim();
+
+      // /memory search <query>
+      if (subcommand === "search" && rest) {
+        try {
+          const needle = rest.toLowerCase();
+          const sessions = await memoryBackend.listSessions();
+          const matches: Array<{ content: string; role: string; timestamp: number; metadata?: Record<string, unknown> }> = [];
+          // Sample recent sessions for search (cap at 20 to avoid scanning everything)
+          for (const sid of sessions.slice(-20)) {
+            const thread = await memoryBackend.getThread(sid, 50);
+            for (const entry of thread) {
+              if (entry.content.toLowerCase().includes(needle)) {
+                matches.push(entry);
+                if (matches.length >= 10) break;
+              }
+            }
+            if (matches.length >= 10) break;
+          }
+          if (matches.length === 0) {
+            await cmdCtx.reply(`No memory entries matching "${rest}".`);
+            return;
+          }
+          const lines = matches.map((e, i) => {
+            const age = Math.round((Date.now() - e.timestamp) / 3_600_000);
+            const preview = e.content.slice(0, 80).replace(/\n/g, " ");
+            const meta = e.metadata as Record<string, unknown> | undefined;
+            const conf = typeof meta?.confidence === "number"
+              ? ` conf=${(meta.confidence as number).toFixed(2)}`
+              : "";
+            const access = typeof meta?.accessCount === "number"
+              ? ` access=${meta.accessCount}`
+              : "";
+            return `  ${i + 1}. [${e.role}] ${preview}${preview.length >= 80 ? "…" : ""} (${age}h ago${conf}${access})`;
+          });
+          await cmdCtx.reply(`Memory search results for "${rest}":\n${lines.join("\n")}`);
+        } catch (err) {
+          await cmdCtx.reply(`Memory search error: ${toErrorMessage(err)}`);
+        }
+        return;
+      }
+
+      // /memory stats
+      if (subcommand === "stats" || subcommand === "health" || !subcommand) {
+        try {
+          const { collectMemoryHealthReport, formatMemoryHealthReport } =
+            await import("../memory/diagnostics.js");
+          const report = await collectMemoryHealthReport({ memoryBackend });
+          await cmdCtx.reply(formatMemoryHealthReport(report));
+        } catch (err) {
+          await cmdCtx.reply(`Memory health error: ${toErrorMessage(err)}`);
+        }
+        return;
+      }
+
+      // /memory forget <sessionId>
+      if (subcommand === "forget" && rest) {
+        try {
+          const deleted = await memoryBackend.deleteThread(rest);
+          await cmdCtx.reply(`Deleted ${deleted} entries from session ${rest}.`);
+        } catch (err) {
+          await cmdCtx.reply(`Memory forget error: ${toErrorMessage(err)}`);
+        }
+        return;
+      }
+
+      // /memory pin <key> <value>
+      if (subcommand === "pin" && rest) {
+        try {
+          const [key, ...valueParts] = rest.split(/\s+/);
+          const value = valueParts.join(" ");
+          if (!key || !value) {
+            await cmdCtx.reply("Usage: /memory pin <key> <value>");
+            return;
+          }
+          await memoryBackend.set(`pinned:${key}`, value);
+          await cmdCtx.reply(`Pinned: ${key} = ${value}`);
+        } catch (err) {
+          await cmdCtx.reply(`Memory pin error: ${toErrorMessage(err)}`);
+        }
+        return;
+      }
+
+      // /memory recent [count]
+      if (subcommand === "recent") {
+        const count = Math.min(20, Math.max(1, parseInt(rest, 10) || 5));
+        try {
+          const results = await memoryBackend.query({
+            order: "desc",
+            limit: count,
+          });
+          if (results.length === 0) {
+            await cmdCtx.reply("No memory entries found.");
+            return;
+          }
+          const lines = results.map((e, i) => {
+            const age = Math.round((Date.now() - e.timestamp) / 3_600_000);
+            const preview = e.content.slice(0, 80).replace(/\n/g, " ");
+            return `  ${i + 1}. [${e.role}] ${preview}${preview.length >= 80 ? "…" : ""} (${age}h ago) id=${e.id.slice(0, 8)}`;
+          });
+          await cmdCtx.reply(`Recent memory entries:\n${lines.join("\n")}`);
+        } catch (err) {
+          await cmdCtx.reply(`Memory list error: ${toErrorMessage(err)}`);
+        }
+        return;
+      }
+
+      // /memory export
+      if (subcommand === "export") {
+        try {
+          const { exportMemory } = await import("../memory/export-import.js");
+          const data = await exportMemory({ memoryBackend });
+          const json = JSON.stringify(data, null, 2);
+          await cmdCtx.reply(`Memory export (${data.entries?.length ?? 0} entries):\n\`\`\`json\n${json.slice(0, 4000)}\n\`\`\``);
+        } catch (err) {
+          await cmdCtx.reply(`Memory export error: ${toErrorMessage(err)}`);
+        }
+        return;
+      }
+
+      await cmdCtx.reply(
+        "Usage: /memory [search <query> | stats | recent [count] | forget <sessionId> | pin <key> <value> | export]",
+      );
     },
   });
 

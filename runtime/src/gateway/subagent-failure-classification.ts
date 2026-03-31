@@ -32,6 +32,7 @@ import {
   isConcreteExecutableEnvelopeRoot,
   normalizeWorkspaceRoot,
 } from "../workflow/path-normalization.js";
+import { safeStepStringArray } from "../llm/chat-executor-planner.js";
 
 export type DelegatedScopeTrustSignal =
   | "trusted_runtime_envelope_mismatch"
@@ -117,7 +118,7 @@ function countContractClauses(step: PipelinePlannerSubagentStep): number {
   const segments = [
     step.objective,
     step.inputContract,
-    ...step.acceptanceCriteria,
+    ...safeStepStringArray(step.acceptanceCriteria),
   ]
     .flatMap((value) => value.split(CONTRACT_CLAUSE_SPLIT_RE))
     .map((value) => value.trim())
@@ -128,7 +129,7 @@ function countContractClauses(step: PipelinePlannerSubagentStep): number {
 export function estimateContractShapedToolBudgetFloor(
   step: PipelinePlannerSubagentStep,
 ): number {
-  const capabilities = step.requiredToolCapabilities.map((capability) =>
+  const capabilities = safeStepStringArray(step.requiredToolCapabilities).map((capability) =>
     capability.trim().toLowerCase()
   );
   const hasObservationCapability = capabilities.some((capability) =>
@@ -148,10 +149,11 @@ export function estimateContractShapedToolBudgetFloor(
       Math.min(8, artifacts.length),
     );
   }
-  if (step.acceptanceCriteria.length > 0) {
+  const safeAcceptanceCriteria = safeStepStringArray(step.acceptanceCriteria);
+  if (safeAcceptanceCriteria.length > 0) {
     budgetFloor = Math.max(
       budgetFloor,
-      Math.min(8, step.acceptanceCriteria.length),
+      Math.min(8, safeAcceptanceCriteria.length),
     );
   }
   if (clauseCount > 0) {

@@ -151,7 +151,7 @@ describe("assessDelegationAdmission", () => {
     ]);
   });
 
-  it("denies shared-primary-artifact plans when multiple mutable child steps target the same file", () => {
+  it("allows shared-primary-artifact plans since the orchestrator executes steps sequentially", () => {
     const decision = assessDelegationAdmission({
       messageText:
         "Review PLAN.md from multiple angles, update PLAN.md in parallel, then synthesize the result.",
@@ -229,11 +229,11 @@ describe("assessDelegationAdmission", () => {
       maxDepth: 4,
     });
 
-    expect(decision.allowed).toBe(false);
-    expect(decision.reason).toBe("shared_artifact_writer_inline");
-    expect(decision.diagnostics).toMatchObject({
-      sharedPrimaryArtifact: "/tmp/project/PLAN.md",
-    });
+    // shared_artifact_writer_inline check is disabled — the orchestrator
+    // handles sequential execution.  Plans with shared writers are now
+    // routed through normally; they may still be rejected by other gates
+    // (e.g. score_below_threshold) based on economics.
+    expect(decision.reason).not.toBe("shared_artifact_writer_inline");
     expect(decision.stepAdmissions.map((entry) => entry.ownedArtifacts)).toEqual([
       ["/tmp/project/PLAN.md"],
       ["/tmp/project/PLAN.md"],
@@ -399,6 +399,214 @@ describe("assessDelegationAdmission", () => {
     expect(decision.shape).toBe("test_triage");
   });
 
+  it("allows a single typed writer handoff for implement-from-plan work even when retry cost is high", () => {
+    const workspaceRoot = "/tmp/agenc-shell";
+    const decision = assessDelegationAdmission({
+      messageText:
+        "Can you go through @PLAN.md and implement every phase sequentially in full and make sure they are fully tested.",
+      totalSteps: 2,
+      synthesisSteps: 0,
+      steps: [
+        {
+          name: "implement_phase_1",
+          objective:
+            "Implement Phase 1 from PLAN.md in the workspace and verify the result.",
+          inputContract: "PLAN.md plus the existing source tree.",
+          acceptanceCriteria: [
+            "Phase 1 implementation is present in workspace files.",
+            "Verification passes for the updated phase.",
+          ],
+          requiredToolCapabilities: [
+            "system.readFile",
+            "system.writeFile",
+            "system.bash",
+          ],
+          contextRequirements: ["read_plan"],
+          executionContext: {
+            version: "v1",
+            workspaceRoot,
+            allowedReadRoots: [workspaceRoot],
+            allowedWriteRoots: [workspaceRoot],
+            requiredSourceArtifacts: [`${workspaceRoot}/PLAN.md`],
+            targetArtifacts: [
+              `${workspaceRoot}/src/lexer.c`,
+              `${workspaceRoot}/include/shell.h`,
+            ],
+            effectClass: "filesystem_write",
+            verificationMode: "mutation_required",
+            stepKind: "delegated_write",
+            artifactRelations: [
+              {
+                relationType: "read_dependency",
+                artifactPath: `${workspaceRoot}/PLAN.md`,
+              },
+              {
+                relationType: "write_owner",
+                artifactPath: `${workspaceRoot}/src/lexer.c`,
+              },
+              {
+                relationType: "write_owner",
+                artifactPath: `${workspaceRoot}/include/shell.h`,
+              },
+            ],
+          },
+          maxBudgetHint: "20m",
+          canRunParallel: false,
+        },
+      ],
+      edges: [],
+      threshold: 0.2,
+      maxFanoutPerTurn: 0,
+      maxDepth: 4,
+    });
+
+    expect(decision.allowed).toBe(true);
+    expect(decision.reason).toBe("approved");
+    expect(decision.shape).toBe("bounded_sequential_handoff");
+    expect(decision.stepAdmissions).toEqual([
+      expect.objectContaining({
+        stepName: "implement_phase_1",
+        ownedArtifacts: [
+          `${workspaceRoot}/src/lexer.c`,
+          `${workspaceRoot}/include/shell.h`,
+        ],
+      }),
+    ]);
+  });
+
+  it("allows a writer plus validator handoff for sequential implementation from PLAN.md", () => {
+    const workspaceRoot = "/home/tetsuo/git/stream-test/agenc-shell";
+    const sourceDir = `${workspaceRoot}/src`;
+    const decision = assessDelegationAdmission({
+      messageText:
+        "Can you go through @PLAN.md and implement every phase sequentially in full and make sure they are fully tested. Do not move on to the next phase until the current one passes.",
+      totalSteps: 4,
+      synthesisSteps: 1,
+      steps: [
+        {
+          name: "implement_phase_1",
+          objective:
+            "Fully implement Phase 1 as specified in PLAN.md. Create all required files and code. Do not proceed to later phases.",
+          inputContract:
+            "PLAN.md content with Phase 1 details extracted and summarized.",
+          acceptanceCriteria: [
+            "All Phase 1 deliverables created in targetArtifacts.",
+            "Phase 1 code implements exact spec from PLAN.md.",
+            "All Phase 1 tests pass successfully.",
+            "No work done on later phases.",
+          ],
+          requiredToolCapabilities: [
+            "system.readFile",
+            "system.writeFile",
+            "system.bash",
+          ],
+          contextRequirements: ["repo_context", "parse_phases"],
+          executionContext: {
+            version: "v1",
+            workspaceRoot,
+            allowedReadRoots: [workspaceRoot],
+            allowedWriteRoots: [workspaceRoot],
+            allowedTools: [
+              "system.readFile",
+              "system.writeFile",
+              "system.bash",
+              "system.listDir",
+            ],
+            requiredSourceArtifacts: [`${workspaceRoot}/PLAN.md`],
+            targetArtifacts: [sourceDir],
+            effectClass: "filesystem_write",
+            verificationMode: "mutation_required",
+            stepKind: "delegated_write",
+            role: "writer",
+            artifactRelations: [
+              {
+                relationType: "read_dependency",
+                artifactPath: `${workspaceRoot}/PLAN.md`,
+              },
+              {
+                relationType: "write_owner",
+                artifactPath: sourceDir,
+              },
+            ],
+            fallbackPolicy: "fail_request",
+            resumePolicy: "stateless_retry",
+            approvalProfile: "filesystem_write",
+          },
+          maxBudgetHint: "30m",
+          canRunParallel: false,
+        },
+        {
+          name: "test_phase_1",
+          objective:
+            "Run all Phase 1 tests from PLAN.md and report any failures blocking progression.",
+          inputContract:
+            "Phase 1 implementation artifacts and test specifications from PLAN.md.",
+          acceptanceCriteria: [
+            "All Phase 1 tests execute successfully with 100% pass rate.",
+            "No test failures or errors reported.",
+          ],
+          requiredToolCapabilities: ["system.bash", "system.readFile"],
+          contextRequirements: ["repo_context", "implement_phase_1"],
+          executionContext: {
+            version: "v1",
+            workspaceRoot,
+            allowedReadRoots: [workspaceRoot],
+            allowedWriteRoots: [workspaceRoot],
+            allowedTools: ["system.bash", "system.readFile", "system.listDir"],
+            requiredSourceArtifacts: [`${workspaceRoot}/PLAN.md`],
+            targetArtifacts: [workspaceRoot],
+            effectClass: "shell",
+            verificationMode: "deterministic_followup",
+            stepKind: "delegated_validation",
+            role: "validator",
+            artifactRelations: [
+              {
+                relationType: "read_dependency",
+                artifactPath: `${workspaceRoot}/PLAN.md`,
+              },
+              {
+                relationType: "verification_subject",
+                artifactPath: sourceDir,
+              },
+            ],
+            fallbackPolicy: "fail_request",
+            resumePolicy: "stateless_retry",
+            approvalProfile: "shell",
+          },
+          maxBudgetHint: "15m",
+          canRunParallel: false,
+        },
+      ],
+      edges: [{ from: "implement_phase_1", to: "test_phase_1" }],
+      threshold: 0,
+      maxFanoutPerTurn: 0,
+      maxDepth: 1,
+    });
+
+    expect(decision.allowed).toBe(true);
+    expect(decision.reason).toBe("approved");
+    expect(decision.shape).toBe("bounded_sequential_handoff");
+    expect(decision.diagnostics).toMatchObject({
+      shape: "bounded_sequential_handoff",
+      retryCost: expect.any(Number),
+    });
+    expect(
+      decision.stepAdmissions.map((entry) => ({
+        stepName: entry.stepName,
+        ownedArtifacts: entry.ownedArtifacts,
+      })),
+    ).toEqual([
+      {
+        stepName: "implement_phase_1",
+        ownedArtifacts: [sourceDir],
+      },
+      {
+        stepName: "test_phase_1",
+        ownedArtifacts: [],
+      },
+    ]);
+  });
+
   it("allows user-mandated multi-agent reviewer cardinality to bypass the generic fanout veto", () => {
     const decision = assessDelegationAdmission({
       messageText:
@@ -459,6 +667,114 @@ describe("assessDelegationAdmission", () => {
       edges: [],
       threshold: 0,
       maxFanoutPerTurn: 1,
+      maxDepth: 4,
+    });
+
+    expect(decision.allowed).toBe(true);
+    expect(decision.reason).toBe("approved");
+  });
+
+  it("treats zero fanout as unlimited during delegation admission", () => {
+    const decision = assessDelegationAdmission({
+      messageText:
+        "Delegate architecture review, security review, and the final writer update.",
+      totalSteps: 3,
+      synthesisSteps: 1,
+      explicitDelegationRequested: true,
+      steps: [
+        {
+          name: "architecture_review",
+          objective: "Review the architecture",
+          inputContract: "Return grounded architecture findings.",
+          acceptanceCriteria: ["Architecture findings are grounded."],
+          requiredToolCapabilities: ["system.readFile"],
+          contextRequirements: [],
+          executionContext: {
+            version: "v1",
+            workspaceRoot: "/tmp/project",
+            allowedReadRoots: ["/tmp/project"],
+            allowedWriteRoots: ["/tmp/project"],
+            requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+            effectClass: "read_only",
+            verificationMode: "grounded_read",
+            stepKind: "delegated_review",
+            role: "reviewer",
+            artifactRelations: [
+              {
+                relationType: "read_dependency",
+                artifactPath: "/tmp/project/PLAN.md",
+              },
+            ],
+          },
+          maxBudgetHint: "2m",
+          canRunParallel: true,
+        },
+        {
+          name: "security_review",
+          objective: "Review the security plan",
+          inputContract: "Return grounded security findings.",
+          acceptanceCriteria: ["Security findings are grounded."],
+          requiredToolCapabilities: ["system.readFile"],
+          contextRequirements: [],
+          executionContext: {
+            version: "v1",
+            workspaceRoot: "/tmp/project",
+            allowedReadRoots: ["/tmp/project"],
+            allowedWriteRoots: ["/tmp/project"],
+            requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+            effectClass: "read_only",
+            verificationMode: "grounded_read",
+            stepKind: "delegated_review",
+            role: "reviewer",
+            artifactRelations: [
+              {
+                relationType: "read_dependency",
+                artifactPath: "/tmp/project/PLAN.md",
+              },
+            ],
+          },
+          maxBudgetHint: "2m",
+          canRunParallel: true,
+        },
+        {
+          name: "writer",
+          objective: "Update PLAN.md with the review findings",
+          inputContract: "Apply grounded findings to PLAN.md only.",
+          acceptanceCriteria: ["PLAN.md is updated."],
+          requiredToolCapabilities: ["system.readFile", "system.writeFile"],
+          contextRequirements: [],
+          executionContext: {
+            version: "v1",
+            workspaceRoot: "/tmp/project",
+            allowedReadRoots: ["/tmp/project"],
+            allowedWriteRoots: ["/tmp/project"],
+            requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+            targetArtifacts: ["/tmp/project/PLAN.md"],
+            effectClass: "filesystem_write",
+            verificationMode: "mutation_required",
+            stepKind: "delegated_write",
+            role: "writer",
+            artifactRelations: [
+              {
+                relationType: "read_dependency",
+                artifactPath: "/tmp/project/PLAN.md",
+              },
+              {
+                relationType: "write_owner",
+                artifactPath: "/tmp/project/PLAN.md",
+              },
+            ],
+          },
+          maxBudgetHint: "3m",
+          canRunParallel: false,
+        },
+      ],
+      edges: [
+        { from: "architecture_review", to: "writer" },
+        { from: "security_review", to: "writer" },
+      ],
+      threshold: 0,
+      maxFanoutPerTurn: 0,
       maxDepth: 4,
     });
 

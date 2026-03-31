@@ -3,7 +3,7 @@
  *
  * Different messaging platforms expect different markup:
  * - Telegram: HTML entities must be escaped
- * - Discord / Matrix / Slack: native Markdown or mrkdwn
+ * - Discord / Matrix: native Markdown
  * - Signal / WhatsApp / iMessage: plain text (strip Markdown)
  *
  * @module
@@ -69,7 +69,6 @@ export function stripMarkdown(text: string): string {
  * | telegram   | Escape HTML entities              |
  * | discord    | Pass through (native Markdown)    |
  * | matrix     | Pass through (native Markdown)    |
- * | slack      | Pass through (mrkdwn compatible)  |
  * | signal     | Strip Markdown to plain text      |
  * | whatsapp   | Strip Markdown to plain text      |
  * | imessage   | Strip Markdown to plain text      |
@@ -81,7 +80,6 @@ export function formatForChannel(content: string, channelName: string): string {
       return escapeHtml(content);
     case "discord":
     case "matrix":
-    case "slack":
       return content;
     case "signal":
     case "whatsapp":

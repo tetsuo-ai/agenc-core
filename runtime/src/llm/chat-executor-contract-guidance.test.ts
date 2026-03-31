@@ -511,7 +511,7 @@ describe("chat-executor-contract-guidance", () => {
     expect(guidance).toEqual({
       source: "delegation-initial",
       routedToolNames: ["desktop.text_editor"],
-      persistRoutedToolNames: false,
+      persistRoutedToolNames: true,
       toolChoice: "required",
     });
   });
@@ -543,7 +543,7 @@ describe("chat-executor-contract-guidance", () => {
         "Inspect the existing workspace state before mutating files when that will prevent avoidable rework, " +
         "then create or update the required files directly. Do not spend shell rounds on speculative build/test/runtime verification unless acceptance explicitly requires that evidence.",
       routedToolNames: ["system.readFile", "system.writeFile"],
-      persistRoutedToolNames: false,
+      persistRoutedToolNames: true,
       toolChoice: "required",
     });
   });
@@ -592,7 +592,7 @@ describe("chat-executor-contract-guidance", () => {
         "system.writeFile",
         "system.bash",
       ],
-      persistRoutedToolNames: false,
+      persistRoutedToolNames: true,
       toolChoice: "required",
     });
   });
@@ -627,7 +627,7 @@ describe("chat-executor-contract-guidance", () => {
         "Inspect the existing workspace state before mutating files when that will prevent avoidable rework, " +
         "and use shell verification when build/test/install evidence is part of acceptance.",
       routedToolNames: ["system.readFile", "system.listDir"],
-      persistRoutedToolNames: false,
+      persistRoutedToolNames: true,
       toolChoice: "required",
     });
   });
@@ -663,7 +663,73 @@ describe("chat-executor-contract-guidance", () => {
         "Inspect the existing workspace state before mutating files when that will prevent avoidable rework, " +
         "then create or update the required files directly. Do not spend shell rounds on speculative build/test/runtime verification unless acceptance explicitly requires that evidence.",
       routedToolNames: ["system.readFile", "system.writeFile"],
-      persistRoutedToolNames: false,
+      persistRoutedToolNames: true,
+      toolChoice: "required",
+    });
+  });
+
+  it("keeps bash routed for end-to-end owner contracts when acceptance requires grounded verification commands", () => {
+    const guidance = resolveToolContractGuidance({
+      phase: "initial",
+      messageText:
+        "Execute this implementation request inside the workspace: okay what i did was delete absolutely everything except for the @PLAN.md because i want to start this fresh can you go through the plan.md file and anything that says it has been completed already fix since it's a fresh folder",
+      toolCalls: [],
+      allowedToolNames: [
+        "system.readFile",
+        "system.writeFile",
+        "system.bash",
+      ],
+      requiredToolEvidence: {
+        delegationSpec: {
+          task: "implement_owner",
+          objective:
+            "Execute this implementation request inside the workspace: okay what i did was delete absolutely everything except for the @PLAN.md because i want to start this fresh can you go through the plan.md file and anything that says it has been completed already fix since it's a fresh folder",
+          inputContract:
+            "Use the planning artifact plus the current workspace to perform the requested implementation end to end. Do not stop at analysis only.",
+          acceptanceCriteria: [
+            "Workspace files are updated to satisfy the requested implementation phases.",
+            "Grounded verification runs before completion, and passing or failing commands are reported concretely.",
+            "If a blocker prevents completion, report the concrete blocker with evidence instead of returning an analysis-only summary.",
+          ],
+          executionContext: {
+            workspaceRoot: "/tmp/agenc-shell-fresh",
+            allowedReadRoots: ["/tmp/agenc-shell-fresh"],
+            allowedWriteRoots: ["/tmp/agenc-shell-fresh"],
+            allowedTools: ["system.readFile", "system.writeFile", "system.bash"],
+            requiredSourceArtifacts: ["/tmp/agenc-shell-fresh/PLAN.md"],
+            targetArtifacts: ["/tmp/agenc-shell-fresh"],
+            effectClass: "filesystem_write",
+            verificationMode: "mutation_required",
+            stepKind: "delegated_write",
+            role: "writer",
+            artifactRelations: [
+              {
+                relationType: "read_dependency",
+                artifactPath: "/tmp/agenc-shell-fresh/PLAN.md",
+              },
+              {
+                relationType: "write_owner",
+                artifactPath: "/tmp/agenc-shell-fresh",
+              },
+            ],
+            fallbackPolicy: "fail_request",
+            resumePolicy: "stateless_retry",
+            approvalProfile: "filesystem_write",
+          },
+        },
+      },
+    });
+
+    expect(guidance).toEqual({
+      source: "delegation-initial",
+      runtimeInstruction:
+        "Start with the smallest grounded step that reduces uncertainty in the delegated contract. " +
+        "Inspect the existing workspace state before mutating files when that will prevent avoidable rework, " +
+        "When the planning artifact is the source specification, survey the current workspace before assuming plan-listed files already exist. " +
+        "Confirm directories or files under the owned workspace before reading them or presenting them as present. " +
+        "and use shell verification when build/test/install evidence is part of acceptance.",
+      routedToolNames: ["system.readFile", "system.writeFile", "system.bash"],
+      persistRoutedToolNames: true,
       toolChoice: "required",
     });
   });
@@ -697,7 +763,7 @@ describe("chat-executor-contract-guidance", () => {
         "Begin by creating or updating files under the delegated workspace root. " +
         "If the delegated cwd does not exist yet, target that workspace via absolute paths instead of starting with shell inspection.",
       routedToolNames: ["system.writeFile"],
-      persistRoutedToolNames: false,
+      persistRoutedToolNames: true,
       toolChoice: "required",
     });
   });
@@ -733,7 +799,7 @@ describe("chat-executor-contract-guidance", () => {
         "Begin by creating or updating files under the delegated workspace root. " +
         "If the delegated cwd does not exist yet, target that workspace via absolute paths instead of starting with shell inspection.",
       routedToolNames: ["system.writeFile"],
-      persistRoutedToolNames: false,
+      persistRoutedToolNames: true,
       toolChoice: "required",
     });
   });
@@ -770,7 +836,7 @@ describe("chat-executor-contract-guidance", () => {
         "Inspect the existing workspace state before mutating files when that will prevent avoidable rework, " +
         "and use shell verification when build/test/install evidence is part of acceptance.",
       routedToolNames: ["system.readFile", "system.writeFile", "system.bash"],
-      persistRoutedToolNames: false,
+      persistRoutedToolNames: true,
       toolChoice: "required",
     });
   });
@@ -806,7 +872,7 @@ describe("chat-executor-contract-guidance", () => {
     expect(guidance).toEqual({
       source: "delegation-initial",
       routedToolNames: ["desktop.text_editor"],
-      persistRoutedToolNames: false,
+      persistRoutedToolNames: true,
       toolChoice: "required",
     });
   });
@@ -1078,7 +1144,7 @@ describe("chat-executor-contract-guidance", () => {
         "Inspect the existing workspace state before mutating files when that will prevent avoidable rework, " +
         "and use shell verification when build/test/install evidence is part of acceptance.",
       routedToolNames: ["system.bash", "system.writeFile"],
-      persistRoutedToolNames: false,
+      persistRoutedToolNames: true,
       toolChoice: "required",
     });
   });

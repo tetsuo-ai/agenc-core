@@ -218,6 +218,8 @@ test("createWatchState seeds persisted identity and collection state", () => {
   assert.equal(state.composerMode, "insert");
   assert.equal(state.pendingAttachments.length, 1);
   assert.equal(state.attachmentSequence, 1);
+  assert.deepEqual(state.hookCatalog, []);
+  assert.equal(state.voiceCompanion, null);
   assert.equal(state.maintenanceSnapshot, null);
   assert.equal(state.maintenanceRequestPending, false);
   assert.equal(state.sessionAttachedAtMs, 123);

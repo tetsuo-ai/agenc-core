@@ -4,6 +4,14 @@
  * @module
  */
 
+import { existsSync } from "node:fs";
+import {
+  basename as pathBasename,
+  dirname as pathDirname,
+  join as joinPath,
+  resolve as resolvePath,
+} from "node:path";
+
 import type {
   LLMMessage,
   LLMStructuredOutputRequest,
@@ -108,6 +116,25 @@ import {
   orchestrationRoleHintRegex,
   type RequiredSubagentOrchestrationRequirements as ExplicitSubagentOrchestrationRequirements,
 } from "../workflow/subagent-orchestration-requirements.js";
+
+// ============================================================================
+// Safe array accessor — LLM-parsed step fields may violate their declared type
+// at runtime.  This utility is intentionally used at every spread / iteration
+// site so that each consumer is independently safe regardless of the entry
+// path a step arrived through.
+// ============================================================================
+
+export function safeStepStringArray(
+  value: unknown,
+): readonly string[] {
+  if (Array.isArray(value)) {
+    return value.filter(
+      (entry): entry is string =>
+        typeof entry === "string" && entry.trim().length > 0,
+    );
+  }
+  return [];
+}
 
 // ============================================================================
 // Planner decision
@@ -351,27 +378,48 @@ export function assessPlannerDecision(
     };
   }
 
+  // Review/analysis questions about files should go through the direct
+  // tool loop (readFile + conversational response), not the planner.
+  // "read through PLAN.md, are there any gaps?" is a review task.
+  if (
+    /\b(?:read\s+through|review|analyze|check|look\s+at|go\s+through|evaluate|assess)\b/i.test(messageText) &&
+    /\b(?:gaps?|missing|enough|sufficient|complete|cover|edge\s+cases?)\b/i.test(messageText) &&
+    /\?/.test(messageText)
+  ) {
+    return {
+      score,
+      shouldPlan: false,
+      reason: "review_analysis_question",
+    };
+  }
+
   const artifactIntent = classifyPlannerPlanArtifactIntent(messageText);
 
   if (artifactIntent === "grounded_plan_generation") {
+    // Plan/document creation is best handled by the direct tool loop.
+    // The LLM can reason about the plan structure and write the file
+    // directly.  The planner's validator rejects single-write plans
+    // and demands "grounding research" that isn't needed for document
+    // generation from the LLM's existing knowledge.
     return {
-      score: Math.max(score, 3),
-      shouldPlan: true,
-      reason:
-        reasons.length > 0
-          ? `${reasons.join("+")}+plan_artifact_request`
-          : "plan_artifact_request",
+      score,
+      shouldPlan: false,
+      reason: "plan_generation_direct_path",
     };
   }
 
   if (artifactIntent === "edit_artifact") {
+    // Edit-artifact requests (read file → analyze → rewrite) are best
+    // handled by the direct tool loop where the LLM can read the file,
+    // reason about edits, and write the updated version.  The planner
+    // can't express this as deterministic steps because the edit content
+    // requires LLM reasoning.  Sending through the planner causes either:
+    // (a) read-only plans that fail validation, or
+    // (b) implementation sub-agents that build code instead of editing.
     return {
-      score: Math.max(score, 4),
-      shouldPlan: true,
-      reason:
-        reasons.length > 0
-          ? `${reasons.join("+")}+plan_artifact_execution_request`
-          : "plan_artifact_execution_request",
+      score,
+      shouldPlan: false,
+      reason: "edit_artifact_direct_path",
     };
   }
 
@@ -495,13 +543,21 @@ const EXECUTION_SCOPE_BOUNDARY_CUE_RE =
 const EXPLANATION_ONLY_REQUEST_RE =
   /\b(?:explain|describe|outline|summarize|brainstorm|compare|review|analy(?:s|z)e|what would|how would|plan(?:\s+out)?|walk me through)\b/i;
 const NODE_PACKAGE_TOOLING_RE =
-  /\b(?:node(?:\.js)?|npm|npx|package\.json|package-lock\.json|pnpm|pnpm-workspace\.yaml|yarn|bun|workspaces?|typescript|tsconfig(?:\.[a-z]+)?\.json|tsx|vitest|commander)\b/i;
+  /\b(?:node(?:\.js)?|npm|npx|package\.json|package-lock\.json|pnpm|pnpm-workspace\.yaml|yarn|bun|typescript|tsconfig(?:\.[a-z]+)?\.json|tsx|vitest|commander|(?:npm|pnpm|yarn|bun)\s+workspaces?)\b/i;
+const NODE_DECLARED_ECOSYSTEM_STRONG_RE =
+  /\b(?:npm|npx|package\.json|package-lock\.json|pnpm|pnpm-workspace\.yaml|yarn|bun|tsconfig(?:\.[a-z]+)?\.json|node_modules|vite\.config(?:\.[a-z]+)?|vitest\.config(?:\.[a-z]+)?|(?:npm|pnpm|yarn|bun)\s+workspaces?)\b/i;
+const NODE_DECLARED_ECOSYSTEM_COMMAND_RE = /\b(?:npm|npx|pnpm|yarn|bun)\b/i;
 const NODE_PACKAGE_MANIFEST_PATH_RE =
   /(?:^|\/)(?:package\.json|package-lock\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|bun\.lockb|tsconfig(?:\.[a-z]+)?\.json)$/i;
 const NODE_LOCAL_DEPENDENCY_SPEC_RE =
   /\b(?:file:\.\.\/|workspace:\*|local deps?|local dependency references?)\b/i;
 const NODE_MANIFEST_OR_CONFIG_RE =
-  /\b(?:package\.json|package-lock\.json|pnpm-workspace\.yaml|pnpm-lock\.yaml|yarn\.lock|bun\.lockb|tsconfig(?:\.[a-z]+)?\.json|vite\.config(?:\.[a-z]+)?|vitest\.config(?:\.[a-z]+)?|workspaces?|dependencies|devdependencies|scripts?|bin)\b/i;
+  /\b(?:package\.json|package-lock\.json|pnpm-workspace\.yaml|pnpm-lock\.yaml|yarn\.lock|bun\.lockb|tsconfig(?:\.[a-z]+)?\.json|vite\.config(?:\.[a-z]+)?|vitest\.config(?:\.[a-z]+)?|(?:npm|pnpm|yarn|bun)\s+workspaces?|package\s+scripts?|dependencies|devdependencies|bin)\b/i;
+const NATIVE_TOOLING_RE =
+  /\b(?:cmake|ctest|ninja|gcc|g\+\+|clang|clang\+\+|make|valgrind|gprof|perf|meson)\b/i;
+const NATIVE_MANIFEST_PATH_RE =
+  /(?:^|\/)(?:CMakeLists\.txt|Makefile|meson\.build|build\.ninja|compile_commands\.json)$/i;
+const NATIVE_SOURCE_PATH_RE = /(?:^|\/)[^/]+\.(?:c|cc|cpp|cxx|h|hpp)$/i;
 const NODE_INSTALL_SENSITIVE_VERIFICATION_ACTION_RE =
   /\b(?:verify|verified|validat(?:e|ed|ion)|confirm|confirmed|ensure|ensures|ensured|check|checks|checked|run|runs|running|execute|executes|executed|prove|proves|proven)\b/i;
 const NODE_INSTALL_SENSITIVE_VERIFICATION_TARGET_RE =
@@ -510,11 +566,20 @@ const NODE_INSTALL_SENSITIVE_VERIFICATION_PHRASE_RE =
   /\b(?:tests?\s+(?:pass|passing|passed|run|runs|running|succeed|succeeds|succeeded)|coverage(?:\s+(?:reported|generated|collected|runs?|ran))?|builds?\s+(?:cleanly|correctly|successfully|without errors?|ok)|compiles?\s+(?:cleanly|correctly|successfully|without errors?)|typechecks?\s+(?:cleanly|correctly|successfully|without errors?)|lints?\s+(?:cleanly|correctly|successfully|without errors?)|installs?\s+(?:cleanly|correctly|successfully|without errors?)|npm\s+(?:test|run\s+build|run\s+typecheck|run\s+lint)\s+(?:passes?|succeeds?|runs?)|pnpm\s+(?:test|build|typecheck|lint)\s+(?:passes?|succeeds?|runs?)|yarn\s+(?:test|build|typecheck|lint)\s+(?:passes?|succeeds?|runs?)|bun\s+(?:test|run(?:\s+(?:build|typecheck|lint))?)\s+(?:passes?|succeeds?|runs?)|vite\s+build\s+(?:passes?|succeeds?|runs?)|tsc\s+(?:passes?|succeeds?|runs?))\b/i;
 const NEGATED_NODE_VERIFICATION_RE =
   /\b(?:no|without|avoid(?:ing)?|skip|exclude(?:d|ing)?|do\s+not|don't)\s+(?:any\s+)?(?:install(?:ation|ing)?|run(?:ning)?|runtime\s+testing|tests?|testing|build(?:s|ing)?|compile(?:s|d|ing)?|typecheck(?:s|ed|ing)?|lint(?:s|ed|ing)?)(?:\s*(?:\/|or|and)\s*(?:install(?:ation|ing)?|run(?:ning)?|tests?|testing|build(?:s|ing)?|compile(?:s|d|ing)?|typecheck(?:s|ed|ing)?|lint(?:s|ed|ing)?))*\b/gi;
+const NEGATED_NODE_ARTIFACT_RE =
+  /\b(?:no|without|avoid(?:ing)?|skip|exclude(?:d|ing)?|do\s+not|don't)\s+(?:any\s+)?(?:package\.json|package-lock\.json|pnpm-workspace\.yaml|pnpm-lock\.yaml|yarn\.lock|bun\.lockb|tsconfig(?:\.[a-z]+)?\.json|vite\.config(?:\.[a-z]+)?|vitest\.config(?:\.[a-z]+)?|npm|npx|pnpm|yarn|bun)(?:\s+changes?)?\b/gi;
 const NODE_PACKAGE_MANAGER_COMMANDS = new Set(["npm", "pnpm", "yarn", "bun"]);
 const NODE_INSTALL_ACTIONS = new Set(["install", "ci", "add"]);
 
 function stripNegatedNodeVerificationLanguage(value: string): string {
   return value.replace(NEGATED_NODE_VERIFICATION_RE, " ");
+}
+
+function stripNegatedNodeEcosystemLanguage(value: string): string {
+  return stripNegatedNodeVerificationLanguage(value).replace(
+    NEGATED_NODE_ARTIFACT_RE,
+    " ",
+  );
 }
 
 function isDialogueOnlyExactResponseTurn(messageText: string): boolean {
@@ -539,13 +604,17 @@ function isDialogueOnlyRecallTurn(messageText: string): boolean {
   );
 }
 
+const PYTHON_TOOLING_RE =
+  /\bpython[23]?\b|\bpytest\b|\bunittest\b|\bpip\b|\.py\b/i;
+
 function shouldIncludePlannerHostTooling(
   messageText: string,
   history: readonly LLMMessage[],
 ): boolean {
   if (
     NODE_PACKAGE_TOOLING_RE.test(messageText) ||
-    NODE_PACKAGE_MANIFEST_PATH_RE.test(messageText)
+    NODE_PACKAGE_MANIFEST_PATH_RE.test(messageText) ||
+    PYTHON_TOOLING_RE.test(messageText)
   ) {
     return true;
   }
@@ -559,7 +628,8 @@ function shouldIncludePlannerHostTooling(
             .join(" ");
     return (
       NODE_PACKAGE_TOOLING_RE.test(raw) ||
-      NODE_PACKAGE_MANIFEST_PATH_RE.test(raw)
+      NODE_PACKAGE_MANIFEST_PATH_RE.test(raw) ||
+      PYTHON_TOOLING_RE.test(raw)
     );
   });
 }
@@ -611,6 +681,16 @@ function buildPlannerHostToolingHint(
     );
   }
 
+  if (hostToolingProfile.pythonBinary) {
+    fragments.push(
+      `Host Python binary: \`${hostToolingProfile.pythonBinary}\`${
+        hostToolingProfile.pythonVersion
+          ? ` (${hostToolingProfile.pythonVersion})`
+          : ""
+      }. Use \`${hostToolingProfile.pythonBinary}\` instead of \`python\` in all shell commands.`,
+    );
+  }
+
   return fragments.join(" ");
 }
 
@@ -642,6 +722,8 @@ export function buildPlannerMessages(
     artifactIntent === "grounded_plan_generation";
   const workspaceGroundedArtifactUpdate =
     plannerRequestNeedsWorkspaceGroundedArtifactUpdate(messageText);
+  const sameTargetImplementFromArtifactHistoryBlockedRe =
+    /\b(?:validation_error|workflow state:\s*(?:blocked|partial)|inline legacy fallback is disabled|planner emitted a structured plan that failed local validation|implementation-class completion requires workflow-owned verification closure|do not present the work as complete)\b/i;
   const currentArtifactTargets = extractPlannerArtifactTargets(messageText);
   const hostToolingHint = buildPlannerHostToolingHint(
     messageText,
@@ -680,6 +762,20 @@ export function buildPlannerMessages(
         )
       ) {
         suppressImmediateAssistantReply = entry.role === "user";
+        return false;
+      }
+      if (
+        sameArtifactTarget &&
+        entryIntent === "implement_from_artifact"
+      ) {
+        suppressImmediateAssistantReply = entry.role === "user";
+        return false;
+      }
+      if (
+        sameArtifactTarget &&
+        entry.role === "assistant" &&
+        sameTargetImplementFromArtifactHistoryBlockedRe.test(raw)
+      ) {
         return false;
       }
       suppressImmediateAssistantReply = false;
@@ -778,7 +874,8 @@ export function buildPlannerMessages(
         "- Each subagent_task must stay narrowly scoped to one phase of work. Do not combine research, setup, implementation, and validation into one delegated step.\n" +
         "- Prefer multiple smaller subagent_task steps with explicit dependencies over one large delegated objective.\n" +
         (
-          runtimeConstraints
+          runtimeConstraints &&
+          hasRuntimeLimit(runtimeConstraints.maxSubagentFanout)
             ? `- Keep automatic delegated fanout bounded: do not rely on more than ${runtimeConstraints.maxSubagentFanout} concurrently runnable subagent_task steps at once unless the user explicitly required a higher child-agent count. When a higher count is user-mandated, serialize or batch the child steps with dependencies or \`can_run_parallel: false\` so the runtime can stay within its concurrency cap.\n`
             : ""
         ) +
@@ -889,11 +986,11 @@ export function buildPlannerMessages(
     messages.push({
       role: "system",
       content:
-        "This is a plan-artifact execution request over a real workspace. " +
-        "Use exactly one mutable implementation owner for the planning artifact scope. " +
-        "If you need prior grounding, keep it read-only and bounded to explicit source or analysis artifacts. " +
-        "Do not emit multiple delegated steps that all claim `write_owner` authority over the same artifact scope. " +
-        "Build, test, and verification around the implementation owner should be deterministic_tool steps unless a later delegated step owns disjoint artifacts.",
+        "This is a plan-artifact EDIT request — the user wants to modify the plan/document FILE itself. " +
+        "The deliverable is the updated plan file, NOT the implementation of what the plan describes. " +
+        "Read the plan file first, then write the updated version back with the requested changes. " +
+        "Do NOT create source code files, run build commands, or spawn implementation sub-agents. " +
+        "Keep the plan as a single deterministic read → write sequence.",
     });
   }
   if (groundedPlanArtifactRequest || planArtifactExecutionRequest) {
@@ -911,7 +1008,9 @@ export function buildPlannerMessages(
       content:
         "The named planning artifact is the source specification for implementation work, not the primary artifact to rewrite. " +
         "Plan code changes, build/test verification, and bounded delegated implementation around the source spec. " +
-        "Do not collapse the task into editing the planning artifact unless the user explicitly asks to update that artifact.",
+        "Do not collapse the task into editing the planning artifact unless the user explicitly asks to update that artifact. " +
+        "A plan that only reads the plan artifact, lists files, or produces read-only analysis is invalid for this request class. " +
+        "Emit at least one concrete mutable implementation step, or a deterministic build/test-backed mutation path that changes owned source artifacts.",
     });
   }
 
@@ -2683,16 +2782,52 @@ function collectPlannerSubagentStepText(
   return [
     step.objective,
     step.inputContract,
-    ...step.acceptanceCriteria,
+    ...safeStepStringArray(step.acceptanceCriteria),
   ]
-    .filter((value) => value.trim().length > 0)
+    .filter((value): value is string =>
+      typeof value === "string" && value.trim().length > 0
+    )
     .join(" ");
+}
+
+function collectMalformedPlannerSubagentContractFields(
+  step: PlannerSubAgentTaskStepIntent,
+): readonly string[] {
+  const malformedFields: string[] = [];
+  const hasValidStringArray = (value: unknown): boolean =>
+    Array.isArray(value) &&
+    value.every((entry) =>
+      typeof entry === "string" && entry.trim().length > 0
+    );
+
+  if (typeof step.objective !== "string" || step.objective.trim().length === 0) {
+    malformedFields.push("objective");
+  }
+  if (
+    typeof step.inputContract !== "string" ||
+    step.inputContract.trim().length === 0
+  ) {
+    malformedFields.push("inputContract");
+  }
+  if (!hasValidStringArray(step.acceptanceCriteria)) {
+    malformedFields.push("acceptanceCriteria");
+  }
+  if (!hasValidStringArray(step.requiredToolCapabilities)) {
+    malformedFields.push("requiredToolCapabilities");
+  }
+  if (!hasValidStringArray(step.contextRequirements)) {
+    malformedFields.push("contextRequirements");
+  }
+
+  return malformedFields;
 }
 
 function isNodeWorkspaceSubagentStep(
   step: PlannerSubAgentTaskStepIntent,
 ): boolean {
-  const combined = collectPlannerSubagentStepText(step);
+  const combined = stripNegatedNodeEcosystemLanguage(
+    collectPlannerSubagentStepText(step),
+  );
   return NODE_PACKAGE_TOOLING_RE.test(combined) ||
     NODE_PACKAGE_MANIFEST_PATH_RE.test(combined) ||
     NODE_LOCAL_DEPENDENCY_SPEC_RE.test(combined);
@@ -2702,7 +2837,7 @@ function stepAuthorsNodeManifestOrConfig(
   step: PlannerSubAgentTaskStepIntent,
 ): boolean {
   return NODE_MANIFEST_OR_CONFIG_RE.test(
-    [step.objective, step.inputContract, ...step.acceptanceCriteria].join(" "),
+    collectPlannerSubagentStepText(step),
   );
 }
 
@@ -2731,7 +2866,7 @@ function stepRequiresInstallSensitiveNodeVerification(
 } {
   const categories = [
     ...new Set(
-      step.acceptanceCriteria.flatMap((criterion) =>
+      safeStepStringArray(step.acceptanceCriteria).flatMap((criterion) =>
         getAcceptanceVerificationCategories(criterion)
       ).filter((category) => category === "build" || category === "test"),
     ),
@@ -2767,6 +2902,217 @@ function isNodeInstallPlannerStep(
   return parsedArgs.some((entry, index) =>
     index === 0 && NODE_INSTALL_ACTIONS.has(entry.trim().toLowerCase())
   );
+}
+
+type WorkspacePlanEcosystem = "node" | "cmake" | "mixed" | "unknown";
+
+function mergeWorkspacePlanEcosystems(
+  current: WorkspacePlanEcosystem,
+  next: WorkspacePlanEcosystem,
+): WorkspacePlanEcosystem {
+  if (next === "unknown") return current;
+  if (current === "unknown") return next;
+  if (current === next) return current;
+  return "mixed";
+}
+
+function detectDeclaredArtifactEcosystem(path: string): WorkspacePlanEcosystem {
+  const trimmedPath = path.trim();
+  if (trimmedPath.length === 0) return "unknown";
+  const basename = pathBasename(trimmedPath);
+  if (
+    NODE_PACKAGE_MANIFEST_PATH_RE.test(basename) ||
+    NODE_MANIFEST_OR_CONFIG_RE.test(basename)
+  ) {
+    return "node";
+  }
+  if (
+    NATIVE_MANIFEST_PATH_RE.test(basename) ||
+    NATIVE_SOURCE_PATH_RE.test(basename)
+  ) {
+    return "cmake";
+  }
+  return "unknown";
+}
+
+function isSamePathOrDescendant(path: string, root: string): boolean {
+  return path === root || path.startsWith(`${root}/`);
+}
+
+function detectWorkspacePlanEcosystem(
+  workspaceRoot?: string,
+  boundaryRoot?: string,
+): WorkspacePlanEcosystem {
+  if (typeof workspaceRoot !== "string" || workspaceRoot.trim().length === 0) {
+    return "unknown";
+  }
+  try {
+    const declaredEcosystem = detectDeclaredArtifactEcosystem(workspaceRoot);
+    if (declaredEcosystem !== "unknown") {
+      return declaredEcosystem;
+    }
+    const resolvedBoundary =
+      typeof boundaryRoot === "string" && boundaryRoot.trim().length > 0
+        ? resolvePath(boundaryRoot)
+        : undefined;
+    let current =
+      /\.[^/]+$/.test(pathBasename(workspaceRoot))
+        ? pathDirname(resolvePath(workspaceRoot))
+        : resolvePath(workspaceRoot);
+    let detected: WorkspacePlanEcosystem = "unknown";
+    while (true) {
+      const hasNodeManifest =
+        existsSync(joinPath(current, "package.json")) ||
+        existsSync(joinPath(current, "pnpm-workspace.yaml")) ||
+        existsSync(joinPath(current, "package-lock.json")) ||
+        existsSync(joinPath(current, "yarn.lock")) ||
+        existsSync(joinPath(current, "bun.lockb"));
+      const hasCmakeManifest =
+        existsSync(joinPath(current, "CMakeLists.txt")) ||
+        existsSync(joinPath(current, "Makefile")) ||
+        existsSync(joinPath(current, "meson.build")) ||
+        existsSync(joinPath(current, "build.ninja"));
+      detected = mergeWorkspacePlanEcosystems(
+        detected,
+        hasNodeManifest && hasCmakeManifest
+          ? "mixed"
+          : hasNodeManifest
+            ? "node"
+            : hasCmakeManifest
+              ? "cmake"
+              : "unknown",
+      );
+      if (detected === "mixed") return detected;
+      const parent = pathDirname(current);
+      if (parent === current) break;
+      if (!resolvedBoundary) break;
+      if (current === resolvedBoundary) break;
+      if (!isSamePathOrDescendant(parent, resolvedBoundary)) break;
+      current = parent;
+    }
+    return detected;
+  } catch {
+    return "unknown";
+  }
+}
+
+function collectPlannerStepScopedPaths(
+  step: PlannerStepIntent,
+  workspaceRoot?: string,
+): readonly string[] {
+  const paths = new Set<string>();
+  if (typeof workspaceRoot === "string" && workspaceRoot.trim().length > 0) {
+    paths.add(resolvePath(workspaceRoot));
+  }
+
+  if (step.stepType === "deterministic_tool") {
+    const candidateValues = [
+      step.args.path,
+      step.args.sourcePath,
+      step.args.destinationPath,
+      step.args.cwd,
+    ];
+    for (const value of candidateValues) {
+      if (typeof value !== "string" || value.trim().length === 0) continue;
+      paths.add(resolvePath(value.trim()));
+    }
+    return [...paths];
+  }
+
+  const executionContext = step.executionContext;
+  const candidatePaths = [
+    executionContext?.workspaceRoot,
+    ...(executionContext?.allowedReadRoots ?? []),
+    ...(executionContext?.allowedWriteRoots ?? []),
+    ...(executionContext?.requiredSourceArtifacts ?? []),
+    ...(executionContext?.targetArtifacts ?? []),
+    ...(executionContext?.inputArtifacts ?? []),
+    ...(executionContext?.artifactRelations ?? []).map(
+      (relation) => relation.artifactPath,
+    ),
+  ];
+  for (const value of candidatePaths) {
+    if (typeof value !== "string" || value.trim().length === 0) continue;
+    paths.add(resolvePath(value.trim()));
+  }
+  return [...paths];
+}
+
+function collectPlannerStepDeclaredEcosystems(
+  step: PlannerStepIntent,
+): ReadonlySet<WorkspacePlanEcosystem> {
+  const declared = new Set<WorkspacePlanEcosystem>();
+  const pushIfKnown = (ecosystem: WorkspacePlanEcosystem): void => {
+    if (ecosystem !== "unknown") {
+      declared.add(ecosystem);
+    }
+  };
+
+  if (step.stepType === "deterministic_tool") {
+    const pathValues = [
+      step.args.path,
+      step.args.sourcePath,
+      step.args.destinationPath,
+      step.args.cwd,
+    ];
+    for (const value of pathValues) {
+      if (typeof value !== "string") continue;
+      pushIfKnown(detectDeclaredArtifactEcosystem(value));
+    }
+    if (isNodeInstallPlannerStep(step)) {
+      declared.add("node");
+    }
+    if (PLANNER_BASH_TOOL_NAMES.has(step.tool)) {
+      const command =
+        typeof step.args.command === "string" ? step.args.command : "";
+      const parsedArgs = parsePlannerStringArgs(step.args.args) ?? [];
+      const combined = [command, ...parsedArgs].join(" ").trim();
+      if (NODE_PACKAGE_TOOLING_RE.test(combined)) {
+        declared.add("node");
+      }
+      if (NATIVE_TOOLING_RE.test(combined)) {
+        declared.add("cmake");
+      }
+    }
+    return declared;
+  }
+
+  const scopedPathEcosystems = new Set<WorkspacePlanEcosystem>();
+  for (const path of collectPlannerStepScopedPaths(step)) {
+    pushIfKnown(detectDeclaredArtifactEcosystem(path));
+    const detected = detectWorkspacePlanEcosystem(path);
+    if (detected !== "unknown") {
+      scopedPathEcosystems.add(detected);
+    }
+  }
+
+  const combined = stripNegatedNodeEcosystemLanguage(
+    collectPlannerSubagentStepText(step),
+  );
+  const hasStrongNodeText = NODE_DECLARED_ECOSYSTEM_STRONG_RE.test(combined);
+  const hasNodeCommandIntent = NODE_DECLARED_ECOSYSTEM_COMMAND_RE.test(combined);
+  const hasNativeText = NATIVE_TOOLING_RE.test(combined);
+  if (
+    !(
+      scopedPathEcosystems.size === 1 &&
+      scopedPathEcosystems.has("cmake") &&
+      !hasNodeCommandIntent
+    ) &&
+    NODE_PACKAGE_TOOLING_RE.test(combined)
+  ) {
+    declared.add("node");
+  }
+  if (
+    !(
+      scopedPathEcosystems.size === 1 &&
+      scopedPathEcosystems.has("node") &&
+      !hasNativeText
+    ) &&
+    hasNativeText
+  ) {
+    declared.add("cmake");
+  }
+  return declared;
 }
 
 function collectPlannerStepVerificationCategories(
@@ -2811,7 +3157,7 @@ function collectPlannerStepVerificationCategories(
   }
 
   const combined = stripNegatedNodeVerificationLanguage(
-    [step.objective, step.inputContract, ...step.acceptanceCriteria].join(" "),
+    collectPlannerSubagentStepText(step),
   );
   if (REQUEST_INSTALL_VERIFICATION_RE.test(combined)) {
     categories.add("install");
@@ -2874,7 +3220,7 @@ function collectPlannerStepVerificationCommandTexts(
   }
 
   const normalized = normalizePlannerVerificationCommandKey(
-    [step.objective, step.inputContract, ...step.acceptanceCriteria].join("\n"),
+    [step.objective, step.inputContract, ...safeStepStringArray(step.acceptanceCriteria)].join("\n"),
   );
   return normalized.length > 0 ? [normalized] : [];
 }
@@ -3035,6 +3381,55 @@ function validateNodeWorkspacePlannerStages(
   return diagnostics;
 }
 
+function validateWorkspaceEcosystemConsistency(
+  plannerPlan: PlannerPlan,
+  workspaceRoot?: string,
+): readonly PlannerDiagnostic[] {
+  const workspaceEcosystem = detectWorkspacePlanEcosystem(workspaceRoot);
+  const mismatchedSteps = plannerPlan.steps.flatMap((step) => {
+    const declaredEcosystems = collectPlannerStepDeclaredEcosystems(step);
+    if (declaredEcosystems.size === 0) {
+      return [];
+    }
+    const scopedPaths = collectPlannerStepScopedPaths(step, workspaceRoot);
+    const scopedEcosystem = scopedPaths.reduce<WorkspacePlanEcosystem>(
+      (current, path) =>
+        mergeWorkspacePlanEcosystems(
+          current,
+          detectWorkspacePlanEcosystem(path, workspaceRoot),
+        ),
+      workspaceEcosystem,
+    );
+    const mismatchedNode =
+      declaredEcosystems.has("node") && scopedEcosystem === "cmake";
+    const mismatchedNative =
+      declaredEcosystems.has("cmake") && scopedEcosystem === "node";
+    if (!mismatchedNode && !mismatchedNative) {
+      return [];
+    }
+    return [
+      `${step.name}:${step.stepType}:declared=${[...declaredEcosystems].join("+")}:scoped=${scopedEcosystem}`,
+    ];
+  });
+
+  if (mismatchedSteps.length === 0) {
+    return [];
+  }
+
+  return [
+    createPlannerDiagnostic(
+      "validation",
+      "planner_workspace_ecosystem_mismatch",
+      "Planner emitted step contracts whose declared toolchain does not match the scoped workspace slice they own",
+      {
+        workspaceRoot: workspaceRoot ?? "",
+        actualEcosystem: workspaceEcosystem,
+        mismatchedSteps: mismatchedSteps.join(","),
+      },
+    ),
+  ];
+}
+
 export function validatePlannerGraph(
   plannerPlan: PlannerPlan,
   config: PlannerGraphValidationConfig,
@@ -3048,6 +3443,7 @@ export function validatePlannerGraph(
   if (subagentSteps.length === 0) return diagnostics;
 
   if (
+    hasRuntimeLimit(config.maxSubagentFanout) &&
     subagentSteps.length > config.maxSubagentFanout &&
     !allowsUserMandatedSubagentCardinalityOverride(requiredOrchestration)
   ) {
@@ -3084,6 +3480,21 @@ export function validatePlannerGraph(
   }
 
   for (const step of subagentSteps) {
+    const malformedFields = collectMalformedPlannerSubagentContractFields(step);
+    if (malformedFields.length > 0) {
+      diagnostics.push(
+        createPlannerDiagnostic(
+          "validation",
+          "planner_subagent_step_malformed_contract",
+          `Planner subagent step "${step.name}" has malformed contract fields and cannot be admitted`,
+          {
+            stepName: step.name,
+            malformedFields: malformedFields.join(","),
+          },
+        ),
+      );
+      continue;
+    }
     const scopeAssessment = assessDelegationScope({
       objective: step.objective,
       inputContract: step.inputContract,
@@ -3109,6 +3520,12 @@ export function validatePlannerGraph(
   }
 
   diagnostics.push(...validateNodeWorkspacePlannerStages(plannerPlan));
+  diagnostics.push(
+    ...validateWorkspaceEcosystemConsistency(
+      plannerPlan,
+      config.workspaceRoot,
+    ),
+  );
 
   return diagnostics;
 }
@@ -3147,7 +3564,7 @@ export function validateExplicitSubagentOrchestrationRequirements(
             step.name,
             step.objective,
             step.inputContract,
-            ...step.acceptanceCriteria,
+            ...safeStepStringArray(step.acceptanceCriteria),
           ].join(" "),
         )
       );
@@ -3460,6 +3877,15 @@ export function validatePlannerStepContracts(
     }
     if (artifactIntent === "implement_from_artifact") {
       diagnostics.push(...validatePlannerPlanArtifactExecutionOwnership(plannerPlan));
+      if (!plannerPlanHasMutableImplementationPath(plannerPlan)) {
+        diagnostics.push(
+          createPlannerDiagnostic(
+            "validation",
+            "planner_implementation_missing_mutation_path",
+            "Planner emitted an implementation-scoped plan without any mutable implementation step or verification-backed mutation path",
+          ),
+        );
+      }
     }
   }
 
@@ -3538,6 +3964,21 @@ export function validatePlannerStepContracts(
     }
 
     if (step.stepType !== "subagent_task") continue;
+    const malformedFields = collectMalformedPlannerSubagentContractFields(step);
+    if (malformedFields.length > 0) {
+      diagnostics.push(
+        createPlannerDiagnostic(
+          "validation",
+          "planner_subagent_step_malformed_contract",
+          `Planner subagent step "${step.name}" has malformed contract fields and cannot be admitted`,
+          {
+            stepName: step.name,
+            malformedFields: malformedFields.join(","),
+          },
+        ),
+      );
+      continue;
+    }
     const budgetHint = inspectDelegationBudgetHint(step.maxBudgetHint);
     if (budgetHint.kind === "ambiguous_numeric") {
       diagnostics.push(
@@ -3575,7 +4016,9 @@ export function validatePlannerStepContracts(
   return diagnostics;
 }
 
-function extractPlannerArtifactTargets(messageText: string): readonly string[] {
+export function extractPlannerArtifactTargets(
+  messageText: string,
+): readonly string[] {
   const sourceText = messageText.trim();
   if (sourceText.length === 0) {
     return [];
@@ -3637,6 +4080,13 @@ export function classifyPlannerPlanArtifactIntent(
   if (!PLANNER_PLAN_ARTIFACT_FILE_RE.test(normalized)) {
     return "none";
   }
+  // Review/question intent — the user is asking ABOUT the plan, not
+  // asking to implement or edit it.  These should still go through
+  // normal tool routing (readFile) but must NOT trigger the
+  // implement_from_artifact or edit_artifact forced-implementation paths.
+  const isReviewQuestion =
+    /\b(?:are there|is there|is it|does it|do we|can you review|read through|look at|check|analyze|evaluate|assess)\b/i.test(normalized) &&
+    /\?/.test(normalized);
   const signals = collectPlannerRequestSignals(normalized, []);
   const hasDirectArtifactEditCue =
     /\b(?:todo(?:\.md)?|plan\.(?:md|txt|rst)|implementation[-_ ]plan(?:\.md)?|project[-_ ]plan(?:\.md)?|roadmap(?:\.md)?|checklist(?:\.md)?|spec(?:ification)?(?:\.md)?)\b[\s\S]{0,80}\b(?:update|rewrite|improve|perfect|polish|edit|revise|expand|flesh\s+out|address\s+gaps?|fix\s+gaps?|tighten|correct)\b/i.test(
@@ -3665,10 +4115,10 @@ export function classifyPlannerPlanArtifactIntent(
     /\b(?:make|keep)\b[\s\S]{0,80}\b(?:perfect|complete|consistent|correct)\b/i.test(
       normalized,
     );
-  if (hasArtifactEditCue) {
+  if (hasArtifactEditCue && !isReviewQuestion) {
     return "edit_artifact";
   }
-  if (hasImplementationFromArtifactCue) {
+  if (hasImplementationFromArtifactCue && !isReviewQuestion) {
     return "implement_from_artifact";
   }
 
@@ -3791,7 +4241,7 @@ function plannerStepHasMutableImplementationAuthority(
   if (isBoundedGroundingStep) {
     return false;
   }
-  const requiredCapabilities = step.requiredToolCapabilities.map((capability) =>
+  const requiredCapabilities = safeStepStringArray(step.requiredToolCapabilities).map((capability) =>
     capability.trim().toLowerCase(),
   );
   if (
@@ -3812,7 +4262,7 @@ function plannerStepHasMutableImplementationAuthority(
       [
         step.objective,
         step.inputContract,
-        ...step.acceptanceCriteria,
+        ...safeStepStringArray(step.acceptanceCriteria),
       ].join(" "),
     )
   ) {
@@ -3828,6 +4278,29 @@ function plannerStepHasMutableImplementationAuthority(
     executionContext?.effectClass === "mixed" ||
     Boolean(executionContext?.completionContract)
   );
+}
+
+function plannerPlanHasMutableImplementationPath(
+  plannerPlan: PlannerPlan,
+): boolean {
+  return plannerPlan.steps.some((step) => {
+    if (isPlannerDeterministicFileWriteStep(step)) {
+      return true;
+    }
+    if (step.stepType === "subagent_task") {
+      return plannerStepHasMutableImplementationAuthority(step);
+    }
+    if (
+      step.stepType === "deterministic_tool" &&
+      PLANNER_BASH_TOOL_NAMES.has(step.tool)
+    ) {
+      const commandText = extractCommandText(step.args).trim();
+      return /\b(?:build|compile|typecheck|lint|test|install|implement|scaffold|write|edit|create|fix|refactor|migrate)\b/i.test(
+        commandText,
+      );
+    }
+    return false;
+  });
 }
 
 function isPlannerArtifactMaterializationStep(
@@ -3861,8 +4334,8 @@ function plannerSubagentHasWorkspaceGrounding(
   const stepText = [
     step.objective,
     step.inputContract,
-    ...step.acceptanceCriteria,
-    ...(step.contextRequirements ?? []),
+    ...safeStepStringArray(step.acceptanceCriteria),
+    ...safeStepStringArray(step.contextRequirements),
   ]
     .filter((value) => value.trim().length > 0)
     .join(" ");
@@ -3871,7 +4344,7 @@ function plannerSubagentHasWorkspaceGrounding(
   }
   const scopedTools = [
     ...(executionContext?.allowedTools ?? []),
-    ...step.requiredToolCapabilities,
+    ...safeStepStringArray(step.requiredToolCapabilities),
   ].map((value) => value.trim().toLowerCase());
   return scopedTools.some((toolName) =>
     toolName.includes("read") ||
@@ -4082,6 +4555,15 @@ export function buildPlannerStepContractRefinementHint(
         diagnostic.code === "planner_subagent_budget_hint_too_small"
       ) {
         return `give subagent steps at least ${readDiagnosticDetail(diagnostic, "minimumSeconds") ?? "60"}s with an explicit unit`;
+      }
+      if (
+        diagnostic.code === "planner_implementation_missing_mutation_path"
+      ) {
+        return (
+          "for implement-from-plan requests, the executable plan must include at least one mutable implementation step or deterministic build/test-backed mutation path. " +
+          "Do not emit an analysis-only delegated research/review step, do not say \"do not implement code yet\" when the user asked for implementation, " +
+          "and do not return a plan whose only action is reading PLAN.md or listing the workspace"
+        );
       }
       if (
         diagnostic.code === "planner_plan_artifact_single_write_collapse" ||
@@ -4841,7 +5323,7 @@ function inferWorkflowStepRoleFromText(
   const combined = [
     step.objective,
     step.inputContract,
-    ...step.acceptanceCriteria,
+    ...safeStepStringArray(step.acceptanceCriteria),
   ]
     .join(" ")
     .toLowerCase();
@@ -4959,7 +5441,7 @@ export function isHighRiskSubagentPlan(
   steps: readonly PlannerSubAgentTaskStepIntent[],
 ): boolean {
   for (const step of steps) {
-    for (const capability of step.requiredToolCapabilities) {
+    for (const capability of safeStepStringArray(step.requiredToolCapabilities)) {
       const normalized = capability.trim().toLowerCase();
       if (!normalized) continue;
       if (

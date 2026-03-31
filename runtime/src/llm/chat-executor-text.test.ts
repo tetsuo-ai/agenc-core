@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildToolExecutionGroundingMessage,
   generateFallbackContent,
+  isExecutionDeferralResponse,
   normalizeHistory,
   prepareToolResultForPrompt,
   reconcileDirectShellObservationContent,
@@ -721,5 +722,15 @@ describe("chat-executor-text", () => {
     expect(content).toContain("execute_with_agent");
     expect(content).not.toContain("Partial response before failure:");
     expect(content).not.toContain("Completed execute_with_agent");
+  });
+
+  it("does not treat grounded completion summaries as execution deferrals just because they mention future readiness", () => {
+    const content =
+      "Phase 0 (Bootstrap) has been re-implemented from scratch and verified.\n\n" +
+      "Build successful. `./agenc-shell <<< 'exit'` exits cleanly.\n\n" +
+      'No further phases were addressed as only Phase 0 was marked "Fully implemented" in PLAN.md.\n' +
+      "The workspace is ready for incremental development of subsequent phases.";
+
+    expect(isExecutionDeferralResponse(content)).toBe(false);
   });
 });

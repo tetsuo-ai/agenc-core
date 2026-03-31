@@ -93,8 +93,7 @@ export type BackgroundRunWorkerPool =
   | "code"
   | "research"
   | "approval"
-  | "remote_mcp"
-  | "remote_session";
+  | "remote_mcp";
 
 export interface BackgroundRunManagedProcessLaunchSpec {
   readonly kind?: "process" | "server";
@@ -472,8 +471,8 @@ export type BackgroundRunEventType =
   | "run_retried"
   | "run_retried_from_step"
   | "run_retried_from_trace"
-  | "run_verification_overridden"
   | "run_forked"
+  | "run_verification_overridden"
   | "cycle_started"
   | "cycle_working"
   | "decision"
@@ -735,8 +734,7 @@ function isBackgroundRunWorkerPool(value: unknown): value is BackgroundRunWorker
     value === "code" ||
     value === "research" ||
     value === "approval" ||
-    value === "remote_mcp" ||
-    value === "remote_session"
+    value === "remote_mcp"
   );
 }
 
@@ -2979,7 +2977,6 @@ export class BackgroundRunStore {
       research: 0,
       approval: 0,
       remote_mcp: 0,
-      remote_session: 0,
     } satisfies Record<BackgroundRunWorkerPool, number>;
     const claimedByPool = {
       generic: 0,
@@ -2989,7 +2986,6 @@ export class BackgroundRunStore {
       research: 0,
       approval: 0,
       remote_mcp: 0,
-      remote_session: 0,
     } satisfies Record<BackgroundRunWorkerPool, number>;
     let totalClaimed = 0;
     for (const item of queue.items) {

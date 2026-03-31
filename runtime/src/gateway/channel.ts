@@ -87,7 +87,7 @@ export interface ChannelContext {
  * 3. Report health status via `isHealthy()`
  */
 export interface ChannelPlugin {
-  /** Channel name (e.g. 'telegram', 'discord', 'slack'). */
+  /** Channel name (e.g. 'telegram', 'discord', 'matrix'). */
   readonly name: string;
 
   /** Initialize the channel with gateway context. */

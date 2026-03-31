@@ -11,6 +11,10 @@ import type { LLMProviderEvidence } from "../llm/types.js";
 import type { DelegationExecutionContext } from "./delegation-execution-context.js";
 import type { WorkflowStepRole } from "../workflow/execution-envelope.js";
 import {
+  resolveExecutionEnvelopeArtifactRelations,
+  resolveExecutionEnvelopeRole,
+} from "../workflow/execution-envelope.js";
+import {
   PROVIDER_NATIVE_FILE_SEARCH_TOOL,
   PROVIDER_NATIVE_RESEARCH_TOOL_NAMES,
   PROVIDER_NATIVE_WEB_SEARCH_TOOL,
@@ -83,6 +87,9 @@ export interface DelegationValidationToolCall {
 
 export interface DelegationValidationProviderEvidence
   extends LLMProviderEvidence {}
+
+const SHELL_EXECUTION_ANOMALY_RE =
+  /(?:^|\n)(?:[^:\n]+:\s+line\s+\d+:\s+)?(?:(?:ba|z|k)?sh|cd|pushd|popd|source|\.)[^:\n]*:\s+.*(?:no such file or directory|command not found|not found|permission denied|not a directory)/i;
 
 export const DELEGATION_OUTPUT_VALIDATION_CODES = [
   "empty_output",
@@ -199,7 +206,7 @@ const VALIDATION_STRONG_TASK_RE =
   /\b(?:validate|validation|verify|verified|playtest|qa|end-to-end|e2e|test|tests|smoke test|acceptance test|build checks?)\b/i;
 const VALIDATION_WEAK_TASK_RE = /\b(?:browser|chromium|localhost)\b/i;
 const ACCEPTANCE_VERIFICATION_CUE_RE =
-  /\b(?:compile|compiles|compiled|compiling|build(?:able|\s+checks?)?|test(?:able|s)?|verify|validated?|confirm|install(?:able|s|ed|ing)?|stdout|stderr|exit(?:\s+code|s)?)\b/i;
+  /\b(?:compile|compiles|compiled|compiling|build(?:able|\s+checks?)?|test(?:able|s)?|verify|verification|validated?|confirm|install(?:able|s|ed|ing)?|stdout|stderr|exit(?:\s+code|s)?|passing\s+or\s+failing\s+commands?|commands?\s+are\s+reported)\b/i;
 const ACCEPTANCE_BUILD_VERIFICATION_RE =
   /\b(?:compiles?|compiled|compiling|builds?|built|typechecks?|lints?|installs?)\b(?:\s+(?:cleanly|correctly|successfully|without errors?))?|\b(?:compile|build|typecheck|lint|install)\s+(?:cleanly|correctly|successfully|without errors?|passes?|succeeds?)\b/i;
 const ACCEPTANCE_TEST_VERIFICATION_RE =
@@ -221,7 +228,9 @@ const ACCEPTANCE_DOCUMENTATION_DEFINITION_RE =
 const ACCEPTANCE_DOCUMENTATION_DEFINITION_VERB_RE =
   /\b(?:present|exists?|author(?:ed)?|wrote|created?|added?|included?|outlined?|section(?:s)?|placeholder(?:s)?|skeleton|template)\b/i;
 const ACCEPTANCE_STRONG_VERIFICATION_CUE_RE =
-  /\b(?:pass(?:es|ed|ing)?|succeed(?:s|ed|ing)?|run(?:s|ning)?|ran|verify|verified|validated?|confirm(?:ed|s)?|coverage|stdout|stderr|exit(?:\s+code|s)?|cleanly|correctly|successfully|without errors?)\b/i;
+  /\b(?:pass(?:es|ed|ing)?|succeed(?:s|ed|ing)?|run(?:s|ning)?|ran|verify|verification|verified|validated?|confirm(?:ed|s)?|coverage|stdout|stderr|exit(?:\s+code|s)?|cleanly|correctly|successfully|without errors?|passing\s+or\s+failing\s+commands?|commands?\s+are\s+reported)\b/i;
+const ACCEPTANCE_COMMAND_VERIFICATION_RE =
+  /\b(?:verification\s+runs?\b|passing\s+or\s+failing\s+commands?\b|commands?\s+are\s+reported\b|report(?:ed|ing)?\s+(?:passing|failing|command)\b)\b/i;
 const ACCEPTANCE_BUILD_TEST_OUTCOME_RE =
   /\b(?:compiles?|compiled|compiling|builds|built|building|typechecks?|typechecked|lints?|linted|installs?|installed|installing)\b/i;
 const ACCEPTANCE_EXPLICIT_EXECUTION_RE =
@@ -1328,6 +1337,43 @@ function collectExplicitSourceSpecFileArtifacts(
   ]);
 }
 
+function collectExplicitWritableSpecFileArtifacts(
+  spec: DelegationContractSpec,
+): readonly string[] {
+  const workspaceRoot = normalizeExplicitArtifactPath(
+    spec.executionContext?.workspaceRoot ?? "",
+  );
+  const explicitArtifacts = new Set<string>();
+  const addArtifact = (value: string | undefined): void => {
+    if (typeof value !== "string" || value.trim().length === 0) return;
+    const normalized = normalizeExplicitArtifactPath(value);
+    if (normalized.length === 0 || normalized === workspaceRoot) return;
+    explicitArtifacts.add(normalized);
+  };
+
+  for (const artifact of spec.executionContext?.targetArtifacts ?? []) {
+    addArtifact(artifact);
+  }
+  for (const artifact of spec.ownedArtifacts ?? []) {
+    addArtifact(artifact);
+  }
+  for (const relation of resolveExecutionEnvelopeArtifactRelations(
+    spec.executionContext,
+  )) {
+    if (relation.relationType !== "write_owner") continue;
+    addArtifact(relation.artifactPath);
+  }
+  for (const artifact of collectExplicitFileArtifactsFromSegments([
+    spec.task,
+    spec.objective,
+    spec.parentRequest,
+  ])) {
+    addArtifact(artifact);
+  }
+
+  return [...explicitArtifacts];
+}
+
 function outputClaimsAlreadySatisfiedWithoutMutation(output: string): boolean {
   return FILE_ALREADY_SATISFIED_NOOP_RE.test(output) &&
     !FILE_MUTATION_CLAIM_RE.test(output);
@@ -1387,6 +1433,150 @@ function pathsMatchByTarget(candidatePath: string, targetPath: string): boolean 
   return normalizedCandidate === normalizedTarget ||
     normalizedCandidate.endsWith(`/${normalizedTarget}`) ||
     normalizedTarget.endsWith(`/${normalizedCandidate}`);
+}
+
+function collectMutatedFilePaths(
+  toolCalls: readonly DelegationValidationToolCall[],
+): readonly string[] {
+  const paths = new Set<string>();
+  for (const toolCall of toolCalls) {
+    if (!hasToolCallFileMutationEvidence(toolCall)) continue;
+    const observedPaths = extractToolCallObservedFileStateEvidence(toolCall)
+      .map((entry) => entry.path)
+      .filter((value): value is string =>
+        typeof value === "string" && value.trim().length > 0
+      );
+    for (const value of observedPaths) {
+      paths.add(normalizeExplicitArtifactPath(value));
+    }
+    const resultPath = getToolCallResultPath(toolCall);
+    if (typeof resultPath === "string" && resultPath.trim().length > 0) {
+      paths.add(normalizeExplicitArtifactPath(resultPath));
+    }
+    if (
+      typeof toolCall.args === "object" &&
+      toolCall.args !== null &&
+      !Array.isArray(toolCall.args)
+    ) {
+      const argPath = (toolCall.args as { path?: unknown }).path;
+      if (typeof argPath === "string" && argPath.trim().length > 0) {
+        paths.add(normalizeExplicitArtifactPath(argPath));
+      }
+    }
+  }
+  return [...paths].filter((value) => value.length > 0);
+}
+
+function looksLikeLocalScriptPath(value: string): boolean {
+  const normalized = normalizeExplicitArtifactPath(value)
+    .replace(/^\.\/+/, "")
+    .replace(/^["'`]+|["'`]+$/g, "");
+  if (normalized.length === 0) return false;
+  if (/^(?:https?:|node:)/i.test(normalized)) return false;
+  return /(?:^|\/)[^/\s]+\.(?:sh|bash|zsh|ps1|py|js|ts)$/i.test(normalized);
+}
+
+function collectVerificationHarnessInvocationPaths(
+  toolCall: DelegationValidationToolCall,
+): readonly string[] {
+  if (!getToolCallVerificationCategories(toolCall).includes("command")) {
+    return [];
+  }
+  if (
+    typeof toolCall.args !== "object" ||
+    toolCall.args === null ||
+    Array.isArray(toolCall.args)
+  ) {
+    return [];
+  }
+
+  const payload = toolCall.args as { command?: unknown; args?: unknown };
+  const command =
+    typeof payload.command === "string" ? payload.command.trim() : "";
+  const args = Array.isArray(payload.args)
+    ? payload.args.filter((value): value is string => typeof value === "string")
+    : [];
+  const paths = new Set<string>();
+  const addIfScriptPath = (value: string): void => {
+    if (!looksLikeLocalScriptPath(value)) return;
+    paths.add(normalizeExplicitArtifactPath(value));
+  };
+
+  const commandBasename = command.split(/[\\/]/).pop()?.toLowerCase() ?? "";
+  if (
+    /^(?:ba|z|k)?sh$/.test(commandBasename) &&
+    typeof args[0] === "string"
+  ) {
+    addIfScriptPath(args[0]);
+  }
+  addIfScriptPath(command);
+
+  if (args.length === 0 && command.length > 0) {
+    const shellInvocationPatterns = [
+      /\b(?:ba|z|k)?sh\s+((?:\.{1,2}\/|\/)?[^\s;&|`'"]+\.(?:sh|bash|zsh))\b/gi,
+      /(?:^|[;&|]\s*)((?:\.{1,2}\/|\/)[^\s;&|`'"]+\.(?:sh|bash|zsh))\b/gi,
+    ];
+    for (const pattern of shellInvocationPatterns) {
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(command)) !== null) {
+        addIfScriptPath(match[1] ?? "");
+      }
+    }
+  }
+
+  return [...paths];
+}
+
+function validateRepoLocalVerificationHarnessMutation(
+  spec: DelegationContractSpec,
+  parsedOutput: Record<string, unknown> | undefined,
+  toolCalls: readonly DelegationValidationToolCall[] | undefined,
+): DelegationOutputValidationResult | undefined {
+  if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
+    return undefined;
+  }
+
+  const mutatedPaths = collectMutatedFilePaths(toolCalls);
+  if (mutatedPaths.length === 0) {
+    return undefined;
+  }
+
+  const executedHarnessPaths = [
+    ...new Set(
+      toolCalls.flatMap((toolCall) =>
+        collectVerificationHarnessInvocationPaths(toolCall)
+      ),
+    ),
+  ];
+  if (executedHarnessPaths.length === 0) {
+    return undefined;
+  }
+
+  const explicitlyWritableArtifacts = collectExplicitWritableSpecFileArtifacts(
+    spec,
+  );
+  const offendingHarnessPath = mutatedPaths.find((mutatedPath) =>
+    executedHarnessPaths.some((harnessPath) =>
+      pathsMatchByTarget(mutatedPath, harnessPath) ||
+      getNormalizedPathBasename(mutatedPath) ===
+        getNormalizedPathBasename(harnessPath)
+    ) &&
+    !explicitlyWritableArtifacts.some((artifactPath) =>
+      pathsMatchByTarget(mutatedPath, artifactPath) ||
+      getNormalizedPathBasename(mutatedPath) ===
+        getNormalizedPathBasename(artifactPath)
+    )
+  );
+  if (!offendingHarnessPath) {
+    return undefined;
+  }
+
+  return validationFailure(
+    "forbidden_phase_action",
+    "Delegated task rewrote a repo-local verification harness without explicitly owning it as a writable target: " +
+      offendingHarnessPath,
+    parsedOutput,
+  );
 }
 
 function collectLatestReadFileStateEvidence(
@@ -2851,10 +3041,20 @@ function isToolCallFailure(toolCall: DelegationValidationToolCall): boolean {
   ) {
     return true;
   }
+  if (
+    typeof parsed.stderr === "string" &&
+    SHELL_EXECUTION_ANOMALY_RE.test(parsed.stderr)
+  ) {
+    return true;
+  }
   return false;
 }
 
-export type AcceptanceVerificationCategory = "build" | "test" | "inspection";
+export type AcceptanceVerificationCategory =
+  | "build"
+  | "test"
+  | "inspection"
+  | "command";
 type ForbiddenPhaseActionCategory =
   | "install"
   | "build"
@@ -3028,6 +3228,9 @@ export function getAcceptanceVerificationCategories(
   if (ACCEPTANCE_TEST_VERIFICATION_RE.test(criterion)) {
     categories.add("test");
   }
+  if (ACCEPTANCE_COMMAND_VERIFICATION_RE.test(criterion)) {
+    categories.add("command");
+  }
   if (criterionRequiresWorkspaceInspectionVerification(criterion)) {
     categories.add("inspection");
   }
@@ -3052,6 +3255,9 @@ function getToolCallVerificationCategories(
   }
 
   const categories = new Set<AcceptanceVerificationCategory>();
+  if (combined.trim().length > 0) {
+    categories.add("command");
+  }
   if (TOOLCALL_BUILD_EVIDENCE_RE.test(combined)) {
     categories.add("build");
   }
@@ -3981,7 +4187,18 @@ function validateBlockedPhaseOutput(
         allowsExpectedPlaceholders ? DELEGATED_ALLOWABLE_PLACEHOLDER_RE : /$^/,
         " ",
       );
-      if (reportsCompletion && DELEGATED_SCOPED_EXCLUSION_RE.test(normalized)) {
+      if (
+        reportsCompletion &&
+        DELEGATED_SCOPED_EXCLUSION_RE.test(normalized) &&
+        specOwnsRemainingRequestEndToEnd(spec)
+      ) {
+        return true;
+      }
+      if (
+        reportsCompletion &&
+        DELEGATED_SCOPED_EXCLUSION_RE.test(normalized) &&
+        !specOwnsRemainingRequestEndToEnd(spec)
+      ) {
         return false;
       }
       return normalized.length > 0 && DELEGATED_BLOCKED_PHASE_RE.test(normalized);
@@ -3996,6 +4213,46 @@ function validateBlockedPhaseOutput(
     "Delegated task output reported the phase as blocked or incomplete instead of completing it: " +
       truncateValidationExcerpt(blockedSnippet),
     parsedOutput,
+  );
+}
+
+function specOwnsRemainingRequestEndToEnd(
+  spec: DelegationContractSpec,
+): boolean {
+  const executionContext = spec.executionContext;
+  const workspaceRoot = executionContext?.workspaceRoot?.trim();
+  const role = resolveExecutionEnvelopeRole(executionContext);
+  if (!workspaceRoot || role !== "writer") {
+    return false;
+  }
+  const artifactRelations = resolveExecutionEnvelopeArtifactRelations(
+    executionContext,
+  );
+  const ownsWorkspaceRoot = artifactRelations.some((relation) =>
+    relation.relationType === "write_owner" &&
+      relation.artifactPath.trim() === workspaceRoot
+  ) || (executionContext?.targetArtifacts ?? []).some((artifactPath) =>
+    artifactPath.trim() === workspaceRoot
+  );
+  if (!ownsWorkspaceRoot) {
+    return false;
+  }
+  const combinedText = [
+    spec.task,
+    spec.objective,
+    spec.parentRequest,
+    spec.inputContract,
+    ...(spec.acceptanceCriteria ?? []),
+  ]
+    .filter((value): value is string =>
+      typeof value === "string" && value.trim().length > 0
+    )
+    .join(" ")
+    .toLowerCase();
+  return (
+    (spec.task?.trim().toLowerCase() ?? "") === "implement_owner" ||
+    /\b(?:end to end|every phase|all phases|sequentially in full|requested implementation phases|full request)\b/i
+      .test(combinedText)
   );
 }
 
@@ -4093,16 +4350,21 @@ export function validateDelegatedOutputContract(params: {
     providerEvidence,
     enforceAcceptanceEvidence = true,
     deferExecutableOutcomeValidation = false,
-    unsafeBenchmarkMode = false,
   } = params;
   const baseValidation = validateBasicOutputContract({
     inputContract: spec.inputContract,
     output,
   });
   if (!baseValidation.ok) return baseValidation;
-  if (unsafeBenchmarkMode) return baseValidation;
 
   const parsedOutput = baseValidation.parsedOutput;
+  const harnessMutationFailure = validateRepoLocalVerificationHarnessMutation(
+    spec,
+    parsedOutput,
+    toolCalls,
+  );
+  if (harnessMutationFailure) return harnessMutationFailure;
+
   const toolEvidenceFailure = validateSuccessfulToolEvidence(
     spec,
     parsedOutput,

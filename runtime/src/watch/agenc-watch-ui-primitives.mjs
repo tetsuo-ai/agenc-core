@@ -55,6 +55,121 @@ export const toneTheme = {
   red: { fg: color.red, bg: "\x1b[49m" },
 };
 
+const WATCH_THEME_PRESETS = Object.freeze({
+  default: Object.freeze({
+    border: "\x1b[38;5;54m",
+    borderStrong: "\x1b[38;5;99m",
+    ink: "\x1b[38;5;225m",
+    softInk: "\x1b[38;5;189m",
+    slate: "\x1b[38;5;141m",
+    fog: "\x1b[38;5;97m",
+    cyan: "\x1b[38;5;117m",
+    teal: "\x1b[38;5;111m",
+    blue: "\x1b[38;5;39m",
+    green: "\x1b[38;5;50m",
+    lime: "\x1b[38;5;87m",
+    yellow: "\x1b[38;5;221m",
+    amber: "\x1b[38;5;213m",
+    magenta: "\x1b[38;5;177m",
+    red: "\x1b[38;5;203m",
+    panelBg: "\x1b[49m",
+    panelAltBg: "\x1b[48;5;233m",
+    panelHiBg: "\x1b[48;5;234m",
+  }),
+  aurora: Object.freeze({
+    border: "\x1b[38;5;31m",
+    borderStrong: "\x1b[38;5;45m",
+    ink: "\x1b[38;5;195m",
+    softInk: "\x1b[38;5;152m",
+    slate: "\x1b[38;5;110m",
+    fog: "\x1b[38;5;74m",
+    cyan: "\x1b[38;5;117m",
+    teal: "\x1b[38;5;86m",
+    blue: "\x1b[38;5;45m",
+    green: "\x1b[38;5;78m",
+    lime: "\x1b[38;5;85m",
+    yellow: "\x1b[38;5;222m",
+    amber: "\x1b[38;5;215m",
+    magenta: "\x1b[38;5;141m",
+    red: "\x1b[38;5;203m",
+    panelBg: "\x1b[49m",
+    panelAltBg: "\x1b[48;5;236m",
+    panelHiBg: "\x1b[48;5;237m",
+  }),
+  ember: Object.freeze({
+    border: "\x1b[38;5;94m",
+    borderStrong: "\x1b[38;5;130m",
+    ink: "\x1b[38;5;223m",
+    softInk: "\x1b[38;5;180m",
+    slate: "\x1b[38;5;173m",
+    fog: "\x1b[38;5;137m",
+    cyan: "\x1b[38;5;117m",
+    teal: "\x1b[38;5;109m",
+    blue: "\x1b[38;5;75m",
+    green: "\x1b[38;5;114m",
+    lime: "\x1b[38;5;150m",
+    yellow: "\x1b[38;5;221m",
+    amber: "\x1b[38;5;215m",
+    magenta: "\x1b[38;5;175m",
+    red: "\x1b[38;5;203m",
+    panelBg: "\x1b[49m",
+    panelAltBg: "\x1b[48;5;235m",
+    panelHiBg: "\x1b[48;5;236m",
+  }),
+});
+
+const THEME_KEYS = Object.freeze([
+  "border",
+  "borderStrong",
+  "ink",
+  "softInk",
+  "slate",
+  "fog",
+  "cyan",
+  "teal",
+  "blue",
+  "green",
+  "lime",
+  "yellow",
+  "amber",
+  "magenta",
+  "red",
+  "panelBg",
+  "panelAltBg",
+  "panelHiBg",
+]);
+
+const TONE_KEYS = Object.freeze([
+  "ink",
+  "slate",
+  "cyan",
+  "teal",
+  "blue",
+  "green",
+  "lime",
+  "yellow",
+  "amber",
+  "magenta",
+  "red",
+]);
+
+export function applyWatchTheme(themeName = "default") {
+  const normalized = Object.prototype.hasOwnProperty.call(WATCH_THEME_PRESETS, themeName)
+    ? themeName
+    : "default";
+  const preset = WATCH_THEME_PRESETS[normalized];
+  for (const key of THEME_KEYS) {
+    color[key] = preset[key];
+  }
+  for (const key of TONE_KEYS) {
+    toneTheme[key] = {
+      fg: color[key],
+      bg: color.panelBg,
+    };
+  }
+  return normalized;
+}
+
 export function toneColor(tone) {
   return color[tone] ?? color.ink;
 }

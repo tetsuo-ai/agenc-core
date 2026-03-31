@@ -40,6 +40,7 @@ import {
 import {
   estimatePromptShape,
 } from "./chat-executor-text.js";
+import { getProviderRouteKey } from "./model-routing-policy.js";
 import type { RuntimeFaultInjector } from "../eval/fault-injection.js";
 
 // ============================================================================
@@ -196,8 +197,9 @@ export async function callWithFallback(
 
   for (let i = 0; i < deps.providers.length; i++) {
     const provider = deps.providers[i];
+    const providerRouteKey = getProviderRouteKey(provider);
     const now = Date.now();
-    const cooldown = deps.cooldowns.get(provider.name);
+    const cooldown = deps.cooldowns.get(providerRouteKey);
 
     if (cooldown && cooldown.availableAt > now) {
       emitProviderTraceEvent(options, {
@@ -257,8 +259,8 @@ export async function callWithFallback(
         }
 
         // Success — clear cooldown
-        const priorCooldown = deps.cooldowns.get(provider.name);
-        deps.cooldowns.delete(provider.name);
+        const priorCooldown = deps.cooldowns.get(providerRouteKey);
+        deps.cooldowns.delete(providerRouteKey);
         if (priorCooldown) {
           emitProviderTraceEvent(options, {
             kind: "response",
@@ -308,7 +310,7 @@ export async function callWithFallback(
 
         // Apply cooldown for this provider before trying fallbacks.
         const failures =
-          (deps.cooldowns.get(provider.name)?.failures ?? 0) + 1;
+          (deps.cooldowns.get(providerRouteKey)?.failures ?? 0) + 1;
         const cooldownDuration = computeProviderCooldownMs(
           failures,
           retryRule,
@@ -317,7 +319,7 @@ export async function callWithFallback(
           deps.maxCooldownMs,
         );
         const availableAt = Date.now() + cooldownDuration;
-        deps.cooldowns.set(provider.name, {
+        deps.cooldowns.set(providerRouteKey, {
           availableAt,
           failures,
         });

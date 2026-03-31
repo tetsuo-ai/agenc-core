@@ -2,7 +2,7 @@
  * External channel wiring — extracted from daemon.ts.
  *
  * Standalone functions that wire Telegram and other external channel plugins
- * (Discord, Slack, WhatsApp, Signal, Matrix, iMessage) into the ChatExecutor
+ * (Discord, WhatsApp, Signal, Matrix, iMessage) into the ChatExecutor
  * pipeline.
  *
  * @module
@@ -31,7 +31,6 @@ import type { ChannelPlugin } from "./channel.js";
 import type { Gateway } from "./gateway.js";
 import { TelegramChannel } from "../channels/telegram/plugin.js";
 import { DiscordChannel } from "../channels/discord/plugin.js";
-import { SlackChannel } from "../channels/slack/plugin.js";
 import { WhatsAppChannel } from "../channels/whatsapp/plugin.js";
 import { SignalChannel } from "../channels/signal/plugin.js";
 import { MatrixChannel } from "../channels/matrix/plugin.js";
@@ -120,22 +119,6 @@ function isPluginChannelConfig(config: unknown): config is {
   return isRecord(config) && config.type === "plugin";
 }
 
-async function registerGatewayChannel(
-  gateway: Gateway | null,
-  channel: ChannelPlugin,
-): Promise<void> {
-  if (!gateway) return;
-  try {
-    gateway.registerChannel(channel);
-  } catch (error) {
-    try {
-      await channel.stop();
-    } catch {
-      // Best-effort cleanup after failed registration.
-    }
-    throw error;
-  }
-}
 
 async function stopExternalChannelRegistry(
   channels: ExternalChannelRegistry,
@@ -386,7 +369,6 @@ export async function wireTelegram(
     config: telegramConfig as unknown as Record<string, unknown>,
   });
   await telegram.start();
-  await registerGatewayChannel(deps.gateway, telegram);
   deps.logger.info("Telegram channel wired");
   return telegram;
 }
@@ -548,7 +530,6 @@ export async function wireExternalChannel(
     config: channelConfig,
   });
   await channel.start();
-  await registerGatewayChannel(deps.gateway, channel);
   deps.logger.info(`${channelName} channel wired`);
 }
 
@@ -557,7 +538,7 @@ export async function wireExternalChannel(
 // ---------------------------------------------------------------------------
 
 /**
- * Wire all enabled external channels (Telegram, Discord, Slack, WhatsApp,
+ * Wire all enabled external channels (Telegram, Discord, WhatsApp,
  * Signal, Matrix, iMessage) into one registry map.
  */
 export async function wireExternalChannels(
@@ -584,14 +565,6 @@ export async function wireExternalChannels(
         create: (cfg) =>
           new DiscordChannel(
             cfg as ConstructorParameters<typeof DiscordChannel>[0],
-          ),
-      },
-      {
-        key: "slack",
-        name: "slack",
-        create: (cfg) =>
-          new SlackChannel(
-            cfg as ConstructorParameters<typeof SlackChannel>[0],
           ),
       },
       {

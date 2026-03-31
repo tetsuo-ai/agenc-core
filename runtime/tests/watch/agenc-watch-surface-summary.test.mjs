@@ -156,45 +156,6 @@ test("buildWatchSurfaceSummary derives route, alerts, and recent tool timeline",
       operatorAvailable: false,
       disabledReason: "Durable background runs are disabled in autonomy feature flags.",
     },
-    maintenanceStatus: {
-      generatedAt: 1_730_000_000_000,
-      sync: {
-        ownerSessionCount: 2,
-        activeSessionId: "session:abcdef12345678",
-        activeSessionOwned: true,
-        durableRunsEnabled: false,
-        operatorAvailable: false,
-        inspectAvailable: true,
-        controlAvailable: false,
-        disabledReason: "Durable background runs are disabled in autonomy feature flags.",
-      },
-      memory: {
-        backendConfigured: true,
-        sessionCount: 3,
-        totalMessages: 14,
-        lastActiveAt: 1_730_000_010_000,
-        recentSessions: [{ id: "session-a", messageCount: 4, lastActiveAt: 1_730_000_010_000 }],
-      },
-    },
-    workspaceIndex: {
-      ready: true,
-      error: null,
-      files: [{ path: "runtime/src/index.ts" }, { path: "runtime/src/watch/agenc-watch-app.mjs" }],
-    },
-    voiceCompanion: {
-      active: true,
-      connectionState: "connected",
-      companionState: "delegating",
-      voice: "Ara",
-      mode: "vad",
-      sessionId: "voice:abcdef12345678",
-      managedSessionId: "session:abcdef12345678",
-      currentTask: "Trace the fallback path",
-      delegationStatus: "started",
-      lastUserTranscript: "Trace the fallback path",
-      lastAssistantTranscript: "Working on it.",
-      lastError: null,
-    },
     objective: "Trace the fallback path",
     lastUsageSummary: "2.1K total",
     latestTool: "system.bash",
@@ -211,6 +172,36 @@ test("buildWatchSurfaceSummary derives route, alerts, and recent tool timeline",
     activeAgentCount: 1,
     sessionId: "session:abcdef12345678",
     sessionLabel: "Roadmap branch",
+    maintenanceStatus: {
+      sync: {
+        durableRunsEnabled: false,
+        disabledReason: "durable sync disabled for this workspace",
+      },
+      memory: {
+        backendConfigured: true,
+        sessionCount: 4,
+        totalMessages: 31,
+      },
+    },
+    workspaceIndex: {
+      ready: true,
+      files: [
+        { path: "runtime/src/watch/agenc-watch-app.mjs" },
+        { path: "runtime/src/watch/agenc-watch-state.mjs" },
+      ],
+    },
+    voiceCompanion: {
+      active: true,
+      connectionState: "connected",
+      companionState: "delegating",
+      voice: "Ara",
+      mode: "vad",
+      currentTask: "Trace the fallback path",
+      delegationStatus: "handoff pending",
+      lastUserTranscript: "Trace the fallback path",
+      lastAssistantTranscript: "Splitting review work now.",
+      lastError: "",
+    },
     following: false,
     detailOpen: false,
     transcriptScrollOffset: 12,
@@ -246,12 +237,12 @@ test("buildWatchSurfaceSummary derives route, alerts, and recent tool timeline",
   assert.equal(summary.chips.find((chip) => chip.label === "FAILOVER")?.value, "active");
   assert.equal(summary.chips.find((chip) => chip.label === "RUNTIME")?.value, "degraded");
   assert.equal(summary.chips.find((chip) => chip.label === "DURABLE")?.value, "disabled");
+  assert.equal(summary.chips.find((chip) => chip.label === "FILES")?.value, "1");
   assert.equal(summary.chips.find((chip) => chip.label === "SYNC")?.value, "disabled");
   assert.equal(summary.chips.find((chip) => chip.label === "MEM")?.value, "ready");
   assert.equal(summary.chips.find((chip) => chip.label === "INDEX")?.value, "ready");
   assert.equal(summary.chips.find((chip) => chip.label === "VOICE")?.value, "delegating");
   assert.equal(summary.chips.find((chip) => chip.label === "MAINT")?.value, "limited");
-  assert.equal(summary.chips.find((chip) => chip.label === "FILES")?.value, "1");
 });
 
 test("buildWatchSurfaceSummary marks detail mode explicitly", () => {
@@ -591,11 +582,26 @@ test("buildWatchFooterSummary emits a structured statusline when enabled", () =>
     detailOpen: false,
     transcriptScrollOffset: 0,
     lastActivityAt: "15:47:00",
-    backgroundRunStatus: {
-      enabled: true,
-      operatorAvailable: true,
-      activeTotal: 1,
-      queuedSignalsTotal: 0,
+    maintenanceStatus: {
+      sync: {
+        durableRunsEnabled: true,
+        operatorAvailable: true,
+        ownerSessionCount: 1,
+        activeSessionId: "session:99887766",
+        activeSessionOwned: true,
+      },
+      memory: {
+        backendConfigured: true,
+        sessionCount: 6,
+        totalMessages: 64,
+      },
+    },
+    workspaceIndex: {
+      ready: true,
+      files: [
+        { path: "runtime/src/watch/agenc-watch-app.mjs" },
+        { path: "runtime/src/watch/agenc-watch-commands.mjs" },
+      ],
     },
     voiceCompanion: {
       active: true,
@@ -603,13 +609,12 @@ test("buildWatchFooterSummary emits a structured statusline when enabled", () =>
       companionState: "listening",
       voice: "Ara",
       mode: "vad",
-      sessionId: "voice:99887766",
-      managedSessionId: "session:99887766",
-      currentTask: null,
-      delegationStatus: "completed",
-      lastUserTranscript: "Ship the operator surface",
-      lastAssistantTranscript: "Done.",
-      lastError: null,
+    },
+    backgroundRunStatus: {
+      enabled: true,
+      operatorAvailable: true,
+      activeTotal: 1,
+      queuedSignalsTotal: 0,
     },
   });
 
@@ -649,8 +654,11 @@ test("buildWatchFooterSummary emits a structured statusline when enabled", () =>
   assert.match(footer.statuslineText, /USAGE 1\.8K total/);
   assert.match(footer.statuslineText, /QUEUE 2/);
   assert.match(footer.statuslineText, /FILES 2/);
-  assert.match(footer.statuslineText, /VOICE listening/);
   assert.match(footer.statuslineText, /GUARD 1 error/);
+  assert.match(footer.statuslineText, /SYNC ready/);
+  assert.match(footer.statuslineText, /MEM ready/);
+  assert.match(footer.statuslineText, /INDEX ready/);
+  assert.match(footer.statuslineText, /VOICE listening/);
   assert.match(footer.statuslineText, /CKPT cp-3/);
   assert.match(footer.statuslineText, /INPUT vim\/normal/);
   assert.match(footer.statuslineText, /THEME aurora/);

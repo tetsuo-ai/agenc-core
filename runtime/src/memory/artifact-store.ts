@@ -9,6 +9,7 @@ export type ContextArtifactKind =
   | "plan"
   | "review"
   | "repo_snapshot"
+  | "compiler_diagnostic"
   | "tool_result"
   | "test_result"
   | "file_change"

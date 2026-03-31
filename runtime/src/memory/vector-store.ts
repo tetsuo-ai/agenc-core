@@ -43,6 +43,10 @@ export interface VectorSearchOptions {
   tags?: string[];
   /** Filter entries by memory role metadata (`memoryRole` or `memoryRoles[]`). */
   memoryRoles?: readonly ("working" | "episodic" | "semantic")[];
+  /** Filter by workspace/context scope (Phase 2 scoping). */
+  workspaceId?: string;
+  /** Filter by agent identity. */
+  agentId?: string;
 }
 
 /** Options for hybrid vector + keyword search. */
@@ -522,6 +526,10 @@ export class InMemoryVectorStore implements VectorMemoryBackend {
         const tagSet = new Set(entryTags as string[]);
         if (!options.tags.every((t) => tagSet.has(t))) continue;
       }
+
+      // Workspace/agent scoping filters (Phase 2)
+      if (options.workspaceId && entry.workspaceId !== options.workspaceId) continue;
+      if (options.agentId && entry.agentId !== options.agentId) continue;
 
       // Memory role filter
       if (options.memoryRoles && options.memoryRoles.length > 0) {

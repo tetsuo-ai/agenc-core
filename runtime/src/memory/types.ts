@@ -29,6 +29,19 @@ export interface MemoryEntry {
   readonly timestamp: number;
   readonly taskPda?: string;
   readonly metadata?: Record<string, unknown>;
+  /** Context isolation scope — identifies which workspace/project/world this entry belongs to.
+   *  Entries from different workspaceIds are never returned in the same retrieval.
+   *  Per TODO Phase 2: prevents cross-context memory contamination (EC-1). */
+  readonly workspaceId?: string;
+  /** Agent identity — distinguishes parent agent from sub-agents.
+   *  Format: "parent" or "subagent:{uuid}". */
+  readonly agentId?: string;
+  /** User identity — for multi-user deployments. */
+  readonly userId?: string;
+  /** World/environment identity — for sandboxed/virtual world isolation. */
+  readonly worldId?: string;
+  /** Channel source — "webchat", "voice", "discord", etc. */
+  readonly channel?: string;
 }
 
 /**
@@ -43,6 +56,14 @@ export interface MemoryQuery {
   limit?: number;
   /** Sort order by timestamp. Default: 'asc' */
   order?: "asc" | "desc";
+  /** Filter by workspace/context scope. */
+  workspaceId?: string;
+  /** Filter by agent identity. */
+  agentId?: string;
+  /** Filter by user identity. */
+  userId?: string;
+  /** Filter by world/environment. */
+  worldId?: string;
 }
 
 /**
@@ -58,6 +79,16 @@ export interface AddEntryOptions {
   metadata?: Record<string, unknown>;
   /** Time-to-live in milliseconds. 0 or undefined = no expiry */
   ttlMs?: number;
+  /** Context isolation scope. */
+  workspaceId?: string;
+  /** Agent identity. */
+  agentId?: string;
+  /** User identity. */
+  userId?: string;
+  /** World/environment identity. */
+  worldId?: string;
+  /** Channel source. */
+  channel?: string;
 }
 
 /**

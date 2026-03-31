@@ -110,6 +110,7 @@ import {
 import {
   createQueuedWatchAttachment,
   formatQueuedWatchAttachments,
+  resolveWatchAttachmentInputPath,
   resolveQueuedWatchAttachmentPayloads,
 } from "./agenc-watch-attachments.mjs";
 import {
@@ -121,7 +122,10 @@ import {
   buildWatchMaintenanceReport,
 } from "./agenc-watch-insights.mjs";
 import { buildWatchAgentsReport } from "./agenc-watch-agents.mjs";
-import { buildWatchUiPreferencesReport } from "./agenc-watch-ui-preferences.mjs";
+import {
+  buildWatchLocalConfigReport,
+  buildWatchUiPreferencesReport,
+} from "./agenc-watch-ui-preferences.mjs";
 import {
   buildWatchSessionQueryCandidates,
   clearWatchSessionLabel,
@@ -484,6 +488,26 @@ function showInputModes() {
   return report;
 }
 
+function currentStatuslineEnabled() {
+  return watchFeatureFlags.statusline === true;
+}
+
+function setStatuslineEnabled(enabled) {
+  watchFeatureFlags.statusline = enabled === true;
+  scheduleRender();
+  return watchFeatureFlags.statusline;
+}
+
+function showConfig() {
+  const report = buildWatchLocalConfigReport({
+    preferences: watchState.inputPreferences,
+    composerMode: watchState.composerMode,
+    statuslineEnabled: currentStatuslineEnabled(),
+  });
+  pushEvent("operator", "Local Config", report, "slate");
+  return report;
+}
+
 function setInputModeProfile(profile) {
   watchState.inputPreferences = {
     ...watchState.inputPreferences,
@@ -575,13 +599,14 @@ function formatPendingAttachments() {
   return formatQueuedWatchAttachments(currentPendingAttachments());
 }
 
-function queuePendingAttachment(inputPath) {
+function queuePendingAttachment(inputPath, { allowMissing = false } = {}) {
   const attachment = createQueuedWatchAttachment({
     fs,
     pathModule: path,
     inputPath,
     projectRoot,
     id: nextAttachmentId(),
+    allowMissing,
   });
   const existing = pendingAttachments.find((entry) => entry.path === attachment.path);
   if (existing) {
@@ -1226,6 +1251,7 @@ watchCommandController = createWatchCommandController({
   showAgents,
   showExtensibility,
   showInputModes,
+  showConfig,
   resetLiveRunSurface,
   resetDelegationState,
   persistSessionId,
@@ -1236,6 +1262,8 @@ watchCommandController = createWatchCommandController({
   setInputModeProfile,
   setKeybindingProfile,
   setThemeName,
+  currentStatuslineEnabled,
+  setStatuslineEnabled,
   trustPluginPackage,
   untrustPluginPackage,
   setMcpServerEnabled,
@@ -1244,6 +1272,12 @@ watchCommandController = createWatchCommandController({
   listPendingAttachments: currentPendingAttachments,
   formatPendingAttachments,
   queuePendingAttachment,
+  resolveImplicitAttachmentInput: (value) => resolveWatchAttachmentInputPath({
+    fs,
+    pathModule: path,
+    inputPath: value,
+    projectRoot,
+  }),
   removePendingAttachment,
   clearPendingAttachments,
   prepareChatMessagePayload,
@@ -1918,6 +1952,7 @@ watchFrameController = createWatchFrameController({
   chip,
   row,
   renderPanel,
+  wrapAndLimit,
   joinColumns,
   blankRow,
   paintSurface,

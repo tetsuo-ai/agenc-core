@@ -11,16 +11,16 @@ import { silentLogger } from "../utils/logger.js";
 const manifest: ChannelAdapterManifest = {
   schema_version: 1,
   plugin_id: "fixtures/channel-host",
-  channel_name: "fixture-slack",
+  channel_name: "fixture-chat",
   plugin_type: "channel_adapter",
   version: "0.0.0",
-  display_name: "Fixture Slack Channel",
+  display_name: "Fixture Chat Channel",
   plugin_api_version: "1.0.0",
   host_api_version: "1.0.0",
 };
 
 class FixtureAdapter implements ChannelAdapter<Record<string, unknown>> {
-  readonly name = "fixture-slack";
+  readonly name = "fixture-chat";
   context: ChannelAdapterContext<Record<string, unknown>> | null = null;
   readonly sent: ChannelOutboundMessage[] = [];
 
@@ -54,7 +54,7 @@ describe("HostedChannelPlugin", () => {
       manifest,
       adapter,
       config: { token: "abc" },
-      moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/slack",
+      moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/mock",
     });
     const onMessage = vi.fn();
 
@@ -86,7 +86,7 @@ describe("HostedChannelPlugin", () => {
     expect(onMessage).toHaveBeenCalledTimes(1);
     expect(onMessage.mock.calls[0]?.[0]).toMatchObject({
       id: "msg-1",
-      channel: "fixture-slack",
+      channel: "fixture-chat",
       senderId: "user-1",
       senderName: "Fixture User",
       sessionId: "fixture:1",
@@ -144,7 +144,7 @@ describe("HostedChannelPlugin", () => {
       manifest,
       adapter,
       config: {},
-      moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/slack",
+      moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/mock",
     });
 
     await host.initialize({
@@ -156,7 +156,7 @@ describe("HostedChannelPlugin", () => {
     await expect(
       adapter.context!.on_message({
         id: "",
-        channel: "fixture-slack",
+        channel: "fixture-chat",
         sender_id: "user-1",
         sender_name: "Fixture User",
         session_id: "fixture:1",
@@ -164,7 +164,7 @@ describe("HostedChannelPlugin", () => {
         scope: "dm",
       }),
     ).rejects.toThrow(
-      'Channel plugin "fixture-slack" emitted message.id without a non-empty string',
+      'Channel plugin "fixture-chat" emitted message.id without a non-empty string',
     );
   });
 });

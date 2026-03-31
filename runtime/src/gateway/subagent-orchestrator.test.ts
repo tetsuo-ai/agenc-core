@@ -921,7 +921,8 @@ describe("SubAgentOrchestrator", () => {
     });
 
     expect(manager.spawnCalls).toHaveLength(1);
-    expect(manager.spawnCalls[0]?.timeoutMs).toBe(4_800);
+    // MIN_DELEGATION_TIMEOUT_MS (300s) clamps 4800ms up to 300000ms
+    expect(manager.spawnCalls[0]?.timeoutMs).toBe(300_000);
   });
 
   it("derives a larger child tool budget for long delegated steps", async () => {
@@ -2890,6 +2891,119 @@ describe("SubAgentOrchestrator", () => {
     expect(taskPrompt).toContain("Assigned phase only: recover_marker");
   });
 
+  it("treats single-owner implement_owner handoffs as end-to-end request ownership", async () => {
+    const fallback = createFallbackExecutor(async (pipeline) => ({
+      status: "completed",
+      context: pipeline.context,
+      completedSteps: pipeline.steps.length,
+      totalSteps: pipeline.steps.length,
+    }));
+    const manager = new FakeSubAgentManager(5, true);
+    const { workspaceRoot, executionContext } = createTestExecutionContext({
+      prefix: "subagent-owner-contract-",
+    });
+    const planPath = join(workspaceRoot, "PLAN.md");
+    writeFileSync(planPath, "# PLAN\n", "utf8");
+    const orchestrator = new SubAgentOrchestrator({
+      fallbackExecutor: fallback,
+      resolveSubAgentManager: () => manager,
+      pollIntervalMs: 5,
+      resolveAvailableToolNames: () => [
+        "system.readFile",
+        "system.writeFile",
+        "system.bash",
+      ],
+    });
+
+    const pipeline: Pipeline = {
+      id: "planner:session-parent-implement-owner:123",
+      createdAt: Date.now(),
+      context: { results: {} },
+      steps: [],
+      plannerSteps: [
+        {
+          name: "implement_owner",
+          stepType: "subagent_task",
+          objective:
+            "Execute this implementation request inside the workspace: Can you go through @PLAN.md and implement every phase sequentially in full and make sure they are fully tested.",
+          inputContract:
+            "Use the planning artifact plus the current workspace to perform the requested implementation end to end. Do not stop at analysis only.",
+          acceptanceCriteria: [
+            "Workspace files are updated to satisfy the requested implementation phases.",
+            "Grounded verification runs before completion, and passing or failing commands are reported concretely.",
+          ],
+          requiredToolCapabilities: [
+            "system.readFile",
+            "system.writeFile",
+            "system.bash",
+          ],
+          contextRequirements: ["read_plan"],
+          executionContext: {
+            ...executionContext,
+            targetArtifacts: [workspaceRoot],
+            requiredSourceArtifacts: [planPath],
+            effectClass: "filesystem_write",
+            verificationMode: "mutation_required",
+            stepKind: "delegated_write",
+            role: "writer",
+            artifactRelations: [
+              {
+                relationType: "read_dependency",
+                artifactPath: planPath,
+              },
+              {
+                relationType: "write_owner",
+                artifactPath: workspaceRoot,
+              },
+            ],
+          },
+          maxBudgetHint: "30m",
+          canRunParallel: false,
+        },
+      ],
+      plannerContext: {
+        parentRequest:
+          "Can you go through @PLAN.md and implement every phase sequentially in full and make sure they are fully tested. do not move on to the next phase until you finish the current one and it is passing all tests.",
+        history: [],
+        memory: [],
+        toolOutputs: [],
+        workspaceRoot,
+      },
+    };
+
+    const result = await orchestrator.execute(pipeline);
+
+    expect(result.status).toBe("completed");
+    const taskPrompt = manager.spawnCalls[0]?.task ?? "";
+    expect(taskPrompt).toContain(
+      "You own the assigned implementation contract end to end inside the approved workspace.",
+    );
+    expect(taskPrompt).toContain(
+      "Complete the remaining requested phases sequentially; do not stop after a single named phase from the planning artifact.",
+    );
+    expect(taskPrompt).toContain(
+      "When the planning artifact is the source specification, inspect the current workspace before assuming plan-listed files already exist.",
+    );
+    expect(taskPrompt).toContain(
+      "Confirm relevant directories or files under the owned workspace before reading them or presenting them as present.",
+    );
+    expect(taskPrompt).toContain(
+      "Treat generated artifacts such as copied build/output directories as provisional state, not trusted source inputs.",
+    );
+    expect(taskPrompt).toContain(
+      "create a fresh generated directory/path for the current workspace and verify against that instead.",
+    );
+    expect(taskPrompt).not.toContain("Execute only the assigned phase `implement_owner`.");
+    expect(taskPrompt).not.toContain("Assigned phase only: implement_owner");
+    expect(taskPrompt).not.toContain(
+      "Ignore broader orchestration instructions and other phases.",
+    );
+    expect(taskPrompt).toContain(
+      `This child owns the remaining request end to end inside ${workspaceRoot} after its declared dependencies complete.`,
+    );
+    expect(taskPrompt).not.toContain("bounded handoff phase");
+  });
+
   it("adds structured shell usage guidance to child prompts when shell tools are allowed", async () => {
     const fallback = createFallbackExecutor(async (pipeline) => ({
       status: "completed",
@@ -2966,6 +3080,27 @@ describe("SubAgentOrchestrator", () => {
     );
     expect(taskPrompt).toContain(
       "Verification commands must be non-interactive and exit on their own.",
+    );
+    expect(taskPrompt).toContain(
+      "For interactive CLIs or REPL-style binaries under test, do not treat exit code 0, banners, or prompt text as proof the command worked.",
+    );
+    expect(taskPrompt).toContain(
+      "Do not use brittle positional slicing with `tail`, `head`, `sed -n`, or `awk NR==...`",
+    );
+    expect(taskPrompt).toContain(
+      "invoke them from the workspace root (for example `bash tests/run_tests.sh`)",
+    );
+    expect(taskPrompt).toContain(
+      "Treat existing repo-local verification scripts and harnesses as read-only grader infrastructure unless the contract explicitly names them as writable targets.",
+    );
+    expect(taskPrompt).toContain(
+      "Do not create alternate copies or wrapper variants of repo-local verification harnesses",
+    );
+    expect(taskPrompt).toContain(
+      "If a repo-local verification script contains a command that can block indefinitely without its own one-shot flag or timeout, do not invoke the script raw.",
+    );
+    expect(taskPrompt).toContain(
+      "Do not delete binaries or build artifacts with commands like `rm` just to prove a rebuild",
     );
   });
 
@@ -6258,8 +6393,8 @@ describe("SubAgentOrchestrator", () => {
 
     expect(result.status).toBe("completed");
     expect(manager.spawnCalls).toHaveLength(2);
-    expect(manager.spawnCalls[0]?.timeoutMs).toBe(120_000);
-    expect(manager.spawnCalls[1]?.timeoutMs).toBe(120_000);
+    expect(manager.spawnCalls[0]?.timeoutMs).toBe(300_000);
+    expect(manager.spawnCalls[1]?.timeoutMs).toBe(300_000);
     const payload = JSON.parse(result.context.results.delegate_timeout ?? "{}") as {
       attempts?: number;
     };
@@ -6805,6 +6940,310 @@ describe("SubAgentOrchestrator", () => {
     expect(result.error).toContain("blocked or incomplete");
     expect(result.stopReasonHint).toBe("validation_error");
     expect(manager.spawnCalls).toHaveLength(1);
+  });
+
+  it("retries blocked_phase_output once for full-request owner implementation handoffs", async () => {
+    const fallback = createFallbackExecutor(async (pipeline) => ({
+      status: "completed",
+      context: pipeline.context,
+      completedSteps: pipeline.steps.length,
+      totalSteps: pipeline.steps.length,
+    }));
+    const { workspaceRoot, executionContext } = createTestExecutionContext({
+      prefix: "subagent-owner-blocked-retry-",
+    });
+    const planPath = join(workspaceRoot, "PLAN.md");
+    writeFileSync(planPath, "# PLAN\n", "utf8");
+    const manager = new SequencedSubAgentManager([
+      {
+        delayMs: 5,
+        result: {
+          output:
+            "Phase 0 complete. Phase 1 complete. Phase 2 implemented. Phase 3/4 implemented. " +
+            "Phase 2 is blocked by failing parser tests, so I cannot finish the full request yet.",
+          success: false,
+          completionState: "blocked",
+          durationMs: 14,
+          toolCalls: [
+            {
+              name: "system.writeFile",
+              args: {
+                path: `${workspaceRoot}/src/parser.c`,
+                content: "/* parser repair */\n",
+              },
+              result: `{"path":"${workspaceRoot}/src/parser.c","bytesWritten":19}`,
+              durationMs: 3,
+            },
+            {
+              name: "system.bash",
+              args: {
+                command: "./tests/run_tests.sh",
+                cwd: workspaceRoot,
+              },
+              result:
+                '{"stdout":"","stderr":"parser test segfault","exitCode":139}',
+              isError: false,
+              durationMs: 6,
+            },
+          ],
+          stopReason: "validation_error",
+          stopReasonDetail:
+            "Delegated task output reported the phase as blocked or incomplete instead of completing it: Phase 2 is blocked by failing parser tests, so I cannot finish the full request yet.",
+          validationCode: "blocked_phase_output",
+        },
+      },
+      {
+        delayMs: 5,
+        result: {
+          output:
+            "Implemented the remaining phases end to end, fixed the parser failure, and verified the full request with the workspace test harness.",
+          success: true,
+          completionState: "completed",
+          durationMs: 18,
+          toolCalls: [
+            {
+              name: "system.writeFile",
+              args: {
+                path: `${workspaceRoot}/src/parser.c`,
+                content: "/* parser repair final */\n",
+              },
+              result: `{"path":"${workspaceRoot}/src/parser.c","bytesWritten":25}`,
+              durationMs: 3,
+            },
+            {
+              name: "system.bash",
+              args: {
+                command: "./tests/run_tests.sh",
+                cwd: workspaceRoot,
+              },
+              result:
+                '{"stdout":"all tests passed","stderr":"","exitCode":0}',
+              isError: false,
+              durationMs: 7,
+            },
+          ],
+          stopReason: "completed",
+        },
+      },
+    ]);
+    const orchestrator = new SubAgentOrchestrator({
+      fallbackExecutor: fallback,
+      resolveSubAgentManager: () => manager,
+      pollIntervalMs: 5,
+    });
+
+    const pipeline: Pipeline = {
+      id: "planner:session-owner-blocked-retry:1",
+      createdAt: Date.now(),
+      context: { results: {} },
+      steps: [],
+      plannerSteps: [
+        {
+          name: "implement_owner",
+          stepType: "subagent_task",
+          objective:
+            "Execute this implementation request inside the workspace: Can you go through @PLAN.md and implement every phase sequentially in full and make sure they are fully tested.",
+          inputContract:
+            "Use the planning artifact plus the current workspace to perform the requested implementation end to end. Do not stop at analysis only.",
+          acceptanceCriteria: [
+            "Workspace files are updated to satisfy the requested implementation phases.",
+            "Grounded verification runs before completion, and passing or failing commands are reported concretely.",
+          ],
+          requiredToolCapabilities: [
+            "system.readFile",
+            "system.writeFile",
+            "system.bash",
+          ],
+          contextRequirements: ["read_plan"],
+          executionContext: {
+            ...executionContext,
+            targetArtifacts: [workspaceRoot],
+            requiredSourceArtifacts: [planPath],
+            effectClass: "filesystem_write",
+            verificationMode: "mutation_required",
+            stepKind: "delegated_write",
+            role: "writer",
+            artifactRelations: [
+              {
+                relationType: "read_dependency",
+                artifactPath: planPath,
+              },
+              {
+                relationType: "write_owner",
+                artifactPath: workspaceRoot,
+              },
+            ],
+          },
+          maxBudgetHint: "30m",
+          canRunParallel: false,
+        },
+      ],
+      plannerContext: {
+        parentRequest:
+          "Can you go through @PLAN.md and implement every phase sequentially in full and make sure they are fully tested. do not move on to the next phase until you finish the current one and it is passing all tests.",
+        history: [],
+        memory: [],
+        toolOutputs: [],
+        workspaceRoot,
+      },
+    };
+
+    const result = await orchestrator.execute(pipeline);
+
+    expect(result.status).toBe("completed");
+    expect(manager.spawnCalls).toHaveLength(2);
+    const retryPrompt = manager.spawnCalls[1]?.task ?? "";
+    expect(retryPrompt).toContain(
+      "This delegated contract owns the remaining request end to end. Do not stop at a phase-progress summary because one later phase is failing.",
+    );
+    expect(retryPrompt).toContain(
+      "Continue repairing the current blocker with the allowed tools until the full request is complete",
+    );
+  });
+
+  it("retries contradictory_completion_claim once for full-request owner implementation handoffs", async () => {
+    const fallback = createFallbackExecutor(async (pipeline) => ({
+      status: "completed",
+      context: pipeline.context,
+      completedSteps: pipeline.steps.length,
+      totalSteps: pipeline.steps.length,
+    }));
+    const { workspaceRoot, executionContext } = createTestExecutionContext({
+      prefix: "subagent-owner-contradictory-retry-",
+    });
+    const planPath = join(workspaceRoot, "PLAN.md");
+    writeFileSync(planPath, "# PLAN\n", "utf8");
+    const manager = new SequencedSubAgentManager([
+      {
+        delayMs: 5,
+        result: {
+          output:
+            "The assigned phase `implement_owner` completed Phase 1 and Phase 2 successfully. " +
+            "Phase 3 is out of scope for this phase, so the remaining work belongs to the next phase.",
+          success: false,
+          completionState: "blocked",
+          durationMs: 14,
+          toolCalls: [
+            {
+              name: "system.writeFile",
+              args: {
+                path: `${workspaceRoot}/src/parser.c`,
+                content: "/* parser repair */\n",
+              },
+              result: `{\"path\":\"${workspaceRoot}/src/parser.c\",\"bytesWritten\":19}`,
+              durationMs: 3,
+            },
+          ],
+          stopReason: "validation_error",
+          stopReasonDetail:
+            "Delegated task output claimed completion while still reporting unresolved work: Phase 3 is out of scope for this phase.",
+          validationCode: "contradictory_completion_claim",
+        },
+      },
+      {
+        delayMs: 5,
+        result: {
+          output:
+            "Implemented the remaining phases end to end, completed the shell plan, and verified the full request with the workspace test harness.",
+          success: true,
+          completionState: "completed",
+          durationMs: 18,
+          toolCalls: [
+            {
+              name: "system.writeFile",
+              args: {
+                path: `${workspaceRoot}/src/executor.c`,
+                content: "/* executor repair final */\n",
+              },
+              result: `{\"path\":\"${workspaceRoot}/src/executor.c\",\"bytesWritten\":27}`,
+              durationMs: 3,
+            },
+            {
+              name: "system.bash",
+              args: {
+                command: "./tests/run_tests.sh",
+                cwd: workspaceRoot,
+              },
+              result:
+                '{"stdout":"all tests passed","stderr":"","exitCode":0}',
+              isError: false,
+              durationMs: 7,
+            },
+          ],
+          stopReason: "completed",
+        },
+      },
+    ]);
+    const orchestrator = new SubAgentOrchestrator({
+      fallbackExecutor: fallback,
+      resolveSubAgentManager: () => manager,
+      pollIntervalMs: 5,
+    });
+
+    const pipeline: Pipeline = {
+      id: "planner:session-owner-contradictory-retry:1",
+      createdAt: Date.now(),
+      context: { results: {} },
+      steps: [],
+      plannerSteps: [
+        {
+          name: "implement_owner",
+          stepType: "subagent_task",
+          objective:
+            "Execute this implementation request inside the workspace: Can you go through @PLAN.md and implement every phase sequentially in full and make sure they are fully tested.",
+          inputContract:
+            "Use the planning artifact plus the current workspace to perform the requested implementation end to end. Do not stop at analysis only.",
+          acceptanceCriteria: [
+            "Workspace files are updated to satisfy the requested implementation phases.",
+            "Grounded verification runs before completion, and passing or failing commands are reported concretely.",
+          ],
+          requiredToolCapabilities: [
+            "system.readFile",
+            "system.writeFile",
+            "system.bash",
+          ],
+          contextRequirements: ["read_plan"],
+          executionContext: {
+            ...executionContext,
+            targetArtifacts: [workspaceRoot],
+            requiredSourceArtifacts: [planPath],
+            effectClass: "filesystem_write",
+            verificationMode: "mutation_required",
+            stepKind: "delegated_write",
+            role: "writer",
+            artifactRelations: [
+              {
+                relationType: "read_dependency",
+                artifactPath: planPath,
+              },
+              {
+                relationType: "write_owner",
+                artifactPath: workspaceRoot,
+              },
+            ],
+          },
+          maxBudgetHint: "30m",
+          canRunParallel: false,
+        },
+      ],
+      plannerContext: {
+        parentRequest:
+          "Can you go through @PLAN.md and implement every phase sequentially in full and make sure they are fully tested. do not move on to the next phase until you finish the current one and it is passing all tests.",
+        history: [],
+        memory: [],
+        toolOutputs: [],
+        workspaceRoot,
+      },
+    };
+
+    const result = await orchestrator.execute(pipeline);
+
+    expect(result.status).toBe("completed");
+    expect(manager.spawnCalls).toHaveLength(2);
+    const retryPrompt = manager.spawnCalls[1]?.task ?? "";
+    expect(retryPrompt).toContain(
+      "For an end-to-end owner contract, do not return a mixed phase-progress/completion summary.",
+    );
   });
 
   it("fails successful child outputs that hide omitted implementation behind code comments", async () => {
@@ -7477,6 +7916,64 @@ describe("SubAgentOrchestrator", () => {
     expect(corePayload.stopReasonHint).toBe("budget_exceeded");
     expect((corePayload as { attempts?: number }).attempts).toBe(2);
     expect(result.context.results.implement_cli).toContain("dependency_blocked");
+  });
+
+  it("honors per-step fail_request fallback policy even when orchestrator fallback is continue_without_delegation", async () => {
+    const fallback = createFallbackExecutor(async (pipeline) => ({
+      status: "completed",
+      context: pipeline.context,
+      completedSteps: pipeline.steps.length,
+      totalSteps: pipeline.steps.length,
+    }));
+    const manager = new SequencedSubAgentManager([
+      {
+        delayMs: 5,
+        result: {
+          output: "All tool calls failed for 3 consecutive rounds",
+          success: false,
+          durationMs: 20,
+          toolCalls: [],
+          stopReason: "no_progress",
+        },
+      },
+    ]);
+    const orchestrator = new SubAgentOrchestrator({
+      fallbackExecutor: fallback,
+      resolveSubAgentManager: () => manager,
+      pollIntervalMs: 5,
+      fallbackBehavior: "continue_without_delegation",
+    });
+
+    const { executionContext } = createTestExecutionContext({
+      prefix: "subagent-fail-request-precedence-",
+    });
+    const result = await orchestrator.execute({
+      id: "planner:session-step-fallback-precedence:1",
+      createdAt: Date.now(),
+      context: { results: {} },
+      steps: [],
+      plannerSteps: [
+        {
+          name: "implement_owner",
+          stepType: "subagent_task",
+          objective: "Implement the owned request end to end",
+          inputContract: "Workspace exists",
+          acceptanceCriteria: ["Implementation is complete"],
+          requiredToolCapabilities: ["system.bash", "system.writeFile"],
+          contextRequirements: [],
+          executionContext: {
+            ...executionContext,
+            fallbackPolicy: "fail_request",
+          },
+          maxBudgetHint: "3m",
+          canRunParallel: false,
+        },
+      ],
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("All tool calls failed for 3 consecutive rounds");
+    expect(result.context.results.implement_owner).toBeUndefined();
   });
 
   it("retries delegated budget exhaustion once with an expanded child tool budget", async () => {

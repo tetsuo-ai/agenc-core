@@ -8,10 +8,10 @@ import {
 describe("channel-policy", () => {
   it("parses scoped package specifiers with subpaths", () => {
     expect(
-      parsePluginModuleSpecifier("@tetsuo-ai/plugin-kit-channel-fixture/slack"),
+      parsePluginModuleSpecifier("@tetsuo-ai/plugin-kit-channel-fixture/mock"),
     ).toEqual({
       packageName: "@tetsuo-ai/plugin-kit-channel-fixture",
-      subpath: "slack",
+      subpath: "mock",
     });
   });
 
@@ -23,7 +23,7 @@ describe("channel-policy", () => {
   it("requires explicit subpath trust for subpath imports", () => {
     expect(
       isTrustedPluginModuleSpecifier({
-        moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/slack",
+        moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/mock",
         trustedPackages: [
           { packageName: "@tetsuo-ai/plugin-kit-channel-fixture" },
         ],
@@ -43,11 +43,11 @@ describe("channel-policy", () => {
   it("allows explicitly trusted subpaths", () => {
     expect(
       isTrustedPluginModuleSpecifier({
-        moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/slack",
+        moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/mock",
         trustedPackages: [
           {
             packageName: "@tetsuo-ai/plugin-kit-channel-fixture",
-            allowedSubpaths: ["slack"],
+            allowedSubpaths: ["mock"],
           },
         ],
       }),

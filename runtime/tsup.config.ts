@@ -20,7 +20,6 @@ const external = [
   'ws',
   'grammy',
   'discord.js',
-  '@slack/bolt',
   '@whiskeysockets/baileys',
   'matrix-js-sdk',
   'cheerio',

@@ -117,8 +117,38 @@ function handleSessionSurfaceEvent(surfaceEvent, state, api) {
       const sessions = surfaceEvent.payloadList ?? [];
       if (state.manualSessionsRequestPending) {
         state.manualSessionsRequestPending = false;
-        api.eventStore.pushEvent("session", "Sessions", api.formatSessionSummaries(sessions), "teal");
-        api.setTransientStatus("session list loaded");
+        const query = String(state.manualSessionsQuery ?? "").trim().toLowerCase();
+        state.manualSessionsQuery = null;
+        const filteredSessions =
+          query.length > 0
+            ? sessions.filter((session) => {
+                const candidates = [
+                  session?.sessionId,
+                  session?.label,
+                  session?.workspaceRoot,
+                  session?.workspacePath,
+                  session?.cwd,
+                  session?.model,
+                  ...(typeof api.sessionQueryCandidates === "function"
+                    ? api.sessionQueryCandidates(session)
+                    : []),
+                ]
+                  .map((value) => String(value ?? "").trim().toLowerCase())
+                  .filter(Boolean);
+                return candidates.some((value) => value.includes(query));
+              })
+            : sessions;
+        api.eventStore.pushEvent(
+          "session",
+          query.length > 0 ? "Filtered Sessions" : "Sessions",
+          api.formatSessionSummaries(filteredSessions),
+          "teal",
+        );
+        api.setTransientStatus(
+          query.length > 0
+            ? `session filter loaded: ${filteredSessions.length} match(es)`
+            : "session list loaded",
+        );
         return true;
       }
       const target = api.latestSessionSummary(sessions, state.sessionId);
@@ -464,6 +494,7 @@ function handleErrorSurfaceEvent(surfaceEvent, rawMessage, state, api) {
   state.runInspectPending = false;
   state.manualStatusRequestPending = false;
   state.manualSessionsRequestPending = false;
+  state.manualSessionsQuery = null;
   state.manualHistoryRequestPending = false;
   if (api.isExpectedMissingRunInspect(errorMessage, errorPayload)) {
     state.runDetail = null;

@@ -52,6 +52,21 @@ test("buildSurfaceSummaryCacheKey invalidates richer status chrome inputs", () =
       activeTotal: 0,
       queuedSignalsTotal: 0,
     },
+    maintenanceStatus: {
+      sync: { durableRunsEnabled: true, operatorAvailable: true },
+      memory: { backendConfigured: true, sessionCount: 1, totalMessages: 2 },
+    },
+    workspaceIndex: {
+      ready: true,
+      files: [{ path: "runtime/src/index.ts" }],
+    },
+    voiceCompanion: {
+      active: true,
+      connectionState: "connected",
+      companionState: "listening",
+      voice: "Ara",
+      mode: "vad",
+    },
     runtimeStatus: { state: "live" },
     objective: "Ship status chrome",
     lastUsageSummary: "1.2K total",
@@ -73,42 +88,6 @@ test("buildSurfaceSummaryCacheKey invalidates richer status chrome inputs", () =
     detailOpen: false,
     transcriptScrollOffset: 0,
     lastActivityAt: "15:47:00",
-    maintenanceStatus: {
-      generatedAt: 1_730_000_000_000,
-      sync: {
-        ownerSessionCount: 1,
-        activeSessionId: "session:1234",
-        activeSessionOwned: true,
-        durableRunsEnabled: true,
-        operatorAvailable: true,
-      },
-      memory: {
-        backendConfigured: true,
-        sessionCount: 2,
-        totalMessages: 11,
-        lastActiveAt: 1_730_000_010_000,
-        recentSessions: [{ id: "session:1234", messageCount: 11, lastActiveAt: 1_730_000_010_000 }],
-      },
-    },
-    workspaceIndex: {
-      ready: true,
-      error: null,
-      files: [{ path: "runtime/src/index.ts" }, { path: "runtime/src/watch/agenc-watch-app.mjs" }],
-    },
-    voiceCompanion: {
-      active: true,
-      connectionState: "connected",
-      companionState: "listening",
-      voice: "Ara",
-      mode: "vad",
-      sessionId: "voice:1234",
-      managedSessionId: "session:1234",
-      currentTask: null,
-      delegationStatus: "completed",
-      lastUserTranscript: "Ship status chrome",
-      lastAssistantTranscript: "Done.",
-      lastError: null,
-    },
   };
 
   const firstKey = buildSurfaceSummaryCacheKey(base);
@@ -136,19 +115,14 @@ test("buildSurfaceSummaryCacheKey invalidates richer status chrome inputs", () =
     ...base,
     maintenanceStatus: {
       ...base.maintenanceStatus,
-      memory: {
-        ...base.maintenanceStatus.memory,
-        totalMessages: 12,
-      },
+      sync: { ...base.maintenanceStatus.sync, durableRunsEnabled: false },
     },
   });
   const workspaceIndexKey = buildSurfaceSummaryCacheKey({
     ...base,
     workspaceIndex: {
       ...base.workspaceIndex,
-      ready: false,
-      error: "index unavailable",
-      files: [],
+      files: [...base.workspaceIndex.files, { path: "runtime/src/watch/index.ts" }],
     },
   });
   const voiceKey = buildSurfaceSummaryCacheKey({
@@ -156,7 +130,6 @@ test("buildSurfaceSummaryCacheKey invalidates richer status chrome inputs", () =
     voiceCompanion: {
       ...base.voiceCompanion,
       companionState: "delegating",
-      currentTask: "Run release validation",
     },
   });
 

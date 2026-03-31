@@ -12,14 +12,14 @@ function makeConfig(): GatewayConfig {
       trustedPackages: [
         {
           packageName: "@tetsuo-ai/plugin-kit-channel-fixture",
-          allowedSubpaths: ["slack"],
+          allowedSubpaths: ["mock"],
         },
       ],
     },
     channels: {
-      "fixture-slack": {
+      "fixture-chat": {
         type: "plugin",
-        moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/slack",
+        moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/mock",
         config: {
           token: "abc",
         },
@@ -56,8 +56,8 @@ describe("wireExternalChannels", () => {
       },
     });
 
-    const plugin = registry.get("fixture-slack");
-    expect(plugin?.name).toBe("fixture-slack");
+    const plugin = registry.get("fixture-chat");
+    expect(plugin?.name).toBe("fixture-chat");
     expect(plugin?.isHealthy()).toBe(true);
 
     await plugin?.stop();
