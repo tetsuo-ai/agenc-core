@@ -32,8 +32,8 @@ const PRESETS: Record<string, SimulationSetupConfig> = {
     premise:
       "It is morning in the medieval town of Thornfield. The market square is bustling with activity. Three residents begin their day.",
     maxSteps: 20,
-    gmModel: "grok-3-mini",
-    gmProvider: "ollama",
+    gmModel: "grok-4.20-beta-0309-reasoning",
+    gmProvider: "grok",
     agents: [
       {
         id: "elena",
@@ -63,8 +63,8 @@ const PRESETS: Record<string, SimulationSetupConfig> = {
     premise:
       "Four traders gather at the commodities exchange. Gold prices have been volatile. Each trader has different information and different risk tolerance.",
     maxSteps: 25,
-    gmModel: "grok-3-mini",
-    gmProvider: "ollama",
+    gmModel: "grok-4.20-beta-0309-reasoning",
+    gmProvider: "grok",
     agents: [
       {
         id: "alex",
@@ -101,8 +101,8 @@ const PRESETS: Record<string, SimulationSetupConfig> = {
     premise:
       "Three AI researchers share a lab at a prestigious university. A major conference deadline is in two weeks. They have overlapping research interests but limited compute budget.",
     maxSteps: 20,
-    gmModel: "grok-3-mini",
-    gmProvider: "ollama",
+    gmModel: "grok-4.20-beta-0309-reasoning",
+    gmProvider: "grok",
     agents: [
       {
         id: "dr-chen",
@@ -129,13 +129,25 @@ const PRESETS: Record<string, SimulationSetupConfig> = {
   },
 };
 
+// Chat-capable Grok models (source: xAI docs, March 2026)
+const GROK_MODELS = [
+  { id: "grok-4.20-beta-0309-reasoning", label: "Grok 4.20 Reasoning (2M ctx)", default: true },
+  { id: "grok-4.20-beta-0309-non-reasoning", label: "Grok 4.20 Non-Reasoning (2M ctx)" },
+  { id: "grok-4.20-multi-agent-beta-0309", label: "Grok 4.20 Multi-Agent (2M ctx)" },
+  { id: "grok-4-1-fast-reasoning", label: "Grok 4.1 Fast Reasoning (2M ctx)" },
+  { id: "grok-4-1-fast-non-reasoning", label: "Grok 4.1 Fast Non-Reasoning (2M ctx)" },
+  { id: "grok-code-fast-1", label: "Grok Code Fast (256K ctx)" },
+  { id: "grok-3", label: "Grok 3 (131K ctx)" },
+  { id: "grok-3-mini", label: "Grok 3 Mini (131K ctx)" },
+] as const;
+
 export function SimulationSetup({ onLaunch, loading, bridgeUrl = "http://localhost:3200" }: SimulationSetupProps) {
   const [config, setConfig] = useState<SimulationSetupConfig>({
     worldId: "",
     premise: "",
     maxSteps: 20,
-    gmModel: "grok-3-mini",
-    gmProvider: "ollama",
+    gmModel: "grok-4.20-beta-0309-reasoning",
+    gmProvider: "grok",
     agents: [],
   });
   const [agentCount, setAgentCount] = useState(3);
@@ -280,12 +292,17 @@ export function SimulationSetup({ onLaunch, loading, bridgeUrl = "http://localho
               </div>
               <div className="flex-1">
                 <label className="text-green-500 text-xs block mb-1">GM Model</label>
-                <input
-                  type="text"
+                <select
                   value={config.gmModel}
-                  onChange={(e) => setConfig({ ...config, gmModel: e.target.value })}
-                  className="w-full bg-black border border-green-800 text-green-300 px-2 py-1 focus:border-green-400 outline-none"
-                />
+                  onChange={(e) => setConfig({ ...config, gmModel: e.target.value, gmProvider: "grok" })}
+                  className="w-full bg-black border border-green-800 text-green-300 px-2 py-1 focus:border-green-400 outline-none cursor-pointer"
+                >
+                  {GROK_MODELS.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
           </div>
