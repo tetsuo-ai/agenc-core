@@ -80,6 +80,34 @@ function resolveWorkerSessionId(args: Record<string, unknown>): string | undefin
   );
 }
 
+function sanitizeCoordinatorDelegationArgs(
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  const executionContext = args.executionContext;
+  if (
+    !executionContext ||
+    typeof executionContext !== "object" ||
+    Array.isArray(executionContext)
+  ) {
+    return args;
+  }
+
+  const {
+    workspaceRoot: _workspaceRoot,
+    workspace_root: _workspaceRootLegacy,
+    allowedReadRoots: _allowedReadRoots,
+    allowed_read_roots: _allowedReadRootsLegacy,
+    allowedWriteRoots: _allowedWriteRoots,
+    allowed_write_roots: _allowedWriteRootsLegacy,
+    ...safeExecutionContext
+  } = executionContext as Record<string, unknown>;
+
+  return {
+    ...args,
+    executionContext: safeExecutionContext,
+  };
+}
+
 export function parseCoordinatorModeInput(
   args: Record<string, unknown>,
 ): ParseCoordinatorModeResult {
@@ -118,15 +146,9 @@ export function parseCoordinatorModeInput(
     };
   }
 
-  if (action === "spawn" && workerSessionId) {
-    return {
-      ok: false,
-      error:
-        'coordinator_mode action "spawn" does not accept "workerSessionId"; use "reuse" or "follow_up" instead',
-    };
-  }
-
-  const parsedRequest = parseExecuteWithAgentInput(args);
+  const parsedRequest = parseExecuteWithAgentInput(
+    sanitizeCoordinatorDelegationArgs(args),
+  );
   if (!parsedRequest.ok) {
     return {
       ok: false,
@@ -149,7 +171,11 @@ export function parseCoordinatorModeInput(
     ok: true,
     value: {
       action,
-      ...(resolvedWorkerSessionId ? { workerSessionId: resolvedWorkerSessionId } : {}),
+      ...(action === "spawn"
+        ? {}
+        : resolvedWorkerSessionId
+          ? { workerSessionId: resolvedWorkerSessionId }
+          : {}),
       request: parsedRequest.value,
     },
   };
@@ -171,7 +197,7 @@ export function createCoordinatorModeTool(): Tool {
         workerSessionId: {
           type: "string",
           description:
-            "Optional existing worker session to reuse, follow up, or stop. If omitted on reuse/follow_up, the latest successful worker is selected.",
+            "Optional existing worker session to reuse, follow up, or stop. Legacy planner payloads may also include it on spawn, where it is ignored.",
         },
         task: {
           type: "string",
