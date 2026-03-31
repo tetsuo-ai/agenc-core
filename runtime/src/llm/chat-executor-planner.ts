@@ -980,11 +980,11 @@ export function buildPlannerMessages(
     messages.push({
       role: "system",
       content:
-        "This is a plan-artifact execution request over a real workspace. " +
-        "Use exactly one mutable implementation owner for the planning artifact scope. " +
-        "If you need prior grounding, keep it read-only and bounded to explicit source or analysis artifacts. " +
-        "Do not emit multiple delegated steps that all claim `write_owner` authority over the same artifact scope. " +
-        "Build, test, and verification around the implementation owner should be deterministic_tool steps unless a later delegated step owns disjoint artifacts.",
+        "This is a plan-artifact EDIT request — the user wants to modify the plan/document FILE itself. " +
+        "The deliverable is the updated plan file, NOT the implementation of what the plan describes. " +
+        "Read the plan file first, then write the updated version back with the requested changes. " +
+        "Do NOT create source code files, run build commands, or spawn implementation sub-agents. " +
+        "Keep the plan as a single deterministic read → write sequence.",
     });
   }
   if (groundedPlanArtifactRequest || planArtifactExecutionRequest) {
