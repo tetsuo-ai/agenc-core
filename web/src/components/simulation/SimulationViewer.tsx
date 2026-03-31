@@ -178,7 +178,7 @@ export function SimulationViewer({
       {/* Main content */}
       <div className="flex-1 flex overflow-hidden">
         {/* Left: Agent cards */}
-        <div className="w-72 border-r border-green-800 overflow-y-auto p-2">
+        <div className="w-72 shrink-0 border-r border-green-800 overflow-y-auto p-2">
           <div className="text-green-600 text-xs mb-2 font-bold tracking-wider">
             AGENTS ({Object.keys(state.agentStates).length})
           </div>
@@ -207,7 +207,7 @@ export function SimulationViewer({
         </div>
 
         {/* Right: Event timeline */}
-        <div className="flex-1 flex flex-col">
+        <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
           <EventTimeline events={state.events} />
         </div>
       </div>
