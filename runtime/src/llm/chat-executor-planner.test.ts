@@ -845,15 +845,18 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
     expect(decision.reason).toContain("plan_artifact_request");
   });
 
-  it("forces planner routing for plan-artifact execution requests", () => {
+  it("routes plan-artifact edit requests through the direct tool loop", () => {
     const decision = assessPlannerDecision(
       true,
       "Update PLAN.md so it reflects the corrected architecture and missing validation steps.",
       [],
     );
 
-    expect(decision.shouldPlan).toBe(true);
-    expect(decision.reason).toContain("plan_artifact_execution_request");
+    // Edit-artifact requests go through the direct tool loop where the
+    // LLM can read → reason → write, not the planner which can't express
+    // LLM-driven edits as deterministic steps.
+    expect(decision.shouldPlan).toBe(false);
+    expect(decision.reason).toBe("edit_artifact_direct_path");
   });
 
   it("routes implement-from-plan requests through the planner without classifying them as artifact edits", () => {

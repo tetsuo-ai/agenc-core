@@ -407,13 +407,17 @@ export function assessPlannerDecision(
   }
 
   if (artifactIntent === "edit_artifact") {
+    // Edit-artifact requests (read file → analyze → rewrite) are best
+    // handled by the direct tool loop where the LLM can read the file,
+    // reason about edits, and write the updated version.  The planner
+    // can't express this as deterministic steps because the edit content
+    // requires LLM reasoning.  Sending through the planner causes either:
+    // (a) read-only plans that fail validation, or
+    // (b) implementation sub-agents that build code instead of editing.
     return {
-      score: Math.max(score, 4),
-      shouldPlan: true,
-      reason:
-        reasons.length > 0
-          ? `${reasons.join("+")}+plan_artifact_execution_request`
-          : "plan_artifact_execution_request",
+      score,
+      shouldPlan: false,
+      reason: "edit_artifact_direct_path",
     };
   }
 
