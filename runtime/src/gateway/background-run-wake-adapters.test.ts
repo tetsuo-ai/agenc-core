@@ -155,6 +155,38 @@ describe("background-run-wake-adapters", () => {
     });
   });
 
+  it("classifies durable remote session tool results with session identifiers", () => {
+    const signal = buildBackgroundRunSignalFromToolResult({
+      sessionId: "session-remote",
+      toolName: "system.remoteSessionSend",
+      args: {
+        sessionHandleId: "rsess_123",
+      },
+      result:
+        '{"sessionHandleId":"rsess_123","remoteSessionId":"remote-42","serverName":"coord","state":"running","delivered":true,"lastStatusCode":202}',
+      durationMs: 15,
+      toolCallId: "tool-remote-1",
+    });
+
+    expect(signal).toEqual({
+      type: "tool_result",
+      content: "Remote session message delivered for remote-42.",
+      data: {
+        toolName: "system.remoteSessionSend",
+        toolCallId: "tool-remote-1",
+        category: "remote_session",
+        failed: false,
+        durationMs: 15,
+        serverName: "coord",
+        sessionHandleId: "rsess_123",
+        remoteSessionId: "remote-42",
+        state: "running",
+        status: 202,
+        delivered: true,
+      },
+    });
+  });
+
   it("authenticates and enqueues background-run webhook signals", async () => {
     const signalRun = vi.fn().mockResolvedValue(true);
     const route = createBackgroundRunWebhookRoute({

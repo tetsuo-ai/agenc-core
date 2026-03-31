@@ -28,6 +28,7 @@ describe("VoiceBridge delegation", () => {
     const connectSpy = vi
       .spyOn(XaiRealtimeClient.prototype, "connect")
       .mockResolvedValue();
+    const send = vi.fn();
 
     const bridge = new VoiceBridge({
       apiKey: "voice-key",
@@ -38,7 +39,7 @@ describe("VoiceBridge delegation", () => {
       model: "grok-4-1-fast-reasoning",
     });
 
-    await bridge.startSession("client-1", vi.fn(), "session-1");
+    await bridge.startSession("client-1", send, "session-1");
 
     const session = (bridge as any).sessions.get("client-1");
     const sessionConfig = (session?.client as any)?.sessionConfig;
@@ -51,8 +52,68 @@ describe("VoiceBridge delegation", () => {
     expect(sessionConfig).not.toHaveProperty("model");
     expect(sessionConfig).not.toHaveProperty("modalities");
     expect(sessionConfig).not.toHaveProperty("input_audio_transcription");
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "voice.started",
+        payload: expect.objectContaining({
+          active: true,
+          connectionState: "connected",
+          companionState: "listening",
+          sessionId: "session-1",
+          managedSessionId: "session-1",
+          voice: "Ara",
+          mode: "vad",
+        }),
+      }),
+    );
 
     connectSpy.mockRestore();
+  });
+
+  it("emits rich connection state updates for the watch voice companion", () => {
+    const send = vi.fn();
+    const bridge = new VoiceBridge({
+      apiKey: "voice-key",
+      toolHandler: vi.fn(async () => ""),
+      systemPrompt: "You are a helpful assistant.",
+      getChatExecutor: () => null,
+      voice: "Ara",
+      mode: "push-to-talk",
+    });
+
+    (bridge as any).sessions.set("client-1", {
+      client: { cancelResponse: vi.fn(), clearAudio: vi.fn() } as any,
+      send,
+      toolHandler: vi.fn(async () => ""),
+      sessionId: "session-1",
+      managedSessionId: "managed-session-1",
+      delegationAbort: null,
+      currentTraceId: null,
+      currentTurnDelegated: false,
+    });
+
+    const callbacks = (bridge as any).buildClientCallbacks(
+      "client-1",
+      "session-1",
+      send,
+    );
+
+    callbacks.onConnectionStateChange("connected");
+
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "voice.state",
+        payload: expect.objectContaining({
+          active: true,
+          connectionState: "connected",
+          companionState: "listening",
+          sessionId: "session-1",
+          managedSessionId: "managed-session-1",
+          voice: "Ara",
+          mode: "push-to-talk",
+        }),
+      }),
+    );
   });
 
   it("injects only documented user text history into realtime sessions", async () => {

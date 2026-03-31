@@ -18,6 +18,7 @@ export const AGENT_RUN_DOMAINS = [
   "research",
   "pipeline",
   "remote_mcp",
+  "remote_session",
 ] as const;
 
 export type AgentRunDomain = (typeof AGENT_RUN_DOMAINS)[number];
@@ -297,6 +298,13 @@ export function inferAgentRunDomain(params: {
   }
   if (/\bremote mcp|mcp job|mcp server|remote tool\b/.test(corpus)) {
     return "remote_mcp";
+  }
+  if (
+    /\b(remote session|interactive remote|viewer[- ]only|session handle|session message|resume remote session|send message to remote|remote viewer)\b/.test(
+      corpus,
+    )
+  ) {
+    return "remote_session";
   }
 
   if (params.requiresUserStop) {

@@ -15,7 +15,11 @@
  */
 
 import type { ControlResponse } from '../../gateway/types.js';
-import type { WebChatDeps } from './types.js';
+import type {
+  WebChatDeps,
+  WebChatHookListEntry,
+  WebChatSkillListEntry,
+} from './types.js';
 import type {
   BackgroundRunControlAction,
   BackgroundRunOperatorErrorPayload,
@@ -60,7 +64,6 @@ import { PublicKey, SystemProgram } from '@solana/web3.js';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { normalizeTaskDescriptionForStorage } from '../../security/untrusted-content.js';
 
 export type SendFn = (response: ControlResponse) => void;
 export interface HandlerRequestContext {
@@ -280,6 +283,32 @@ export function handleStatusGet(
 // Tool registry handlers
 // ============================================================================
 
+function listSkills(deps: WebChatDeps): WebChatSkillListEntry[] {
+  return [...(deps.skills ?? [])];
+}
+
+function listHooks(deps: WebChatDeps): WebChatHookListEntry[] {
+  const hooks = deps.hooks;
+  if (!hooks) return [];
+
+  const entries: WebChatHookListEntry[] = [];
+  for (const [event, handlers] of hooks.listHandlers()) {
+    for (const handler of handlers) {
+      entries.push({
+        event,
+        ...handler,
+      });
+    }
+  }
+
+  return entries.sort((left, right) => {
+    const eventOrder = left.event.localeCompare(right.event);
+    if (eventOrder !== 0) return eventOrder;
+    if (left.priority !== right.priority) return left.priority - right.priority;
+    return left.name.localeCompare(right.name);
+  });
+}
+
 function sendToolList(
   deps: WebChatDeps,
   id: string | undefined,
@@ -288,7 +317,19 @@ function sendToolList(
 ): void {
   send({
     type: responseType,
-    payload: deps.skills ?? [],
+    payload: listSkills(deps),
+    id,
+  });
+}
+
+function sendHookList(
+  deps: WebChatDeps,
+  id: string | undefined,
+  send: SendFn,
+): void {
+  send({
+    type: 'hooks.list',
+    payload: listHooks(deps),
     id,
   });
 }
@@ -343,6 +384,15 @@ export function handleToolsList(
   send: SendFn,
 ): void {
   sendToolList(deps, id, send, 'tools.list');
+}
+
+export function handleHooksList(
+  deps: WebChatDeps,
+  _payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): void {
+  sendHookList(deps, id, send);
 }
 
 export function handleToolsToggle(
@@ -918,7 +968,6 @@ export async function handleTasksCreate(
     const descStr = typeof (params as Record<string, unknown>).description === 'string'
       ? (params as Record<string, unknown>).description as string
       : 'Task from WebUI';
-    const preparedDescription = normalizeTaskDescriptionForStorage(descStr, 64);
     const rewardInput = typeof (params as Record<string, unknown>).reward === 'number'
       ? (params as Record<string, unknown>).reward as number
       : 0;
@@ -926,7 +975,7 @@ export async function handleTasksCreate(
     const { program } = await createProgramContext(deps);
     const tool = createCreateTaskTool(program, silentLogger);
     const result = await tool.execute({
-      description: preparedDescription.normalizedText,
+      description: descStr,
       reward: rewardLamports.toString(),
       requiredCapabilities: '1',
     });
@@ -935,40 +984,15 @@ export async function handleTasksCreate(
       return;
     }
     let createdTaskPda: string | undefined;
-    let descriptionSafeSummary: string | undefined;
-    let descriptionRiskScore: number | undefined;
-    let descriptionRiskLevel: string | undefined;
-    let agentExecutionEligible: boolean | undefined;
     try {
-      const parsed = JSON.parse(result.content) as {
-        taskPda?: string;
-        descriptionSafeSummary?: string;
-        descriptionRiskScore?: number;
-        descriptionRiskLevel?: string;
-        agentExecutionEligible?: boolean;
-      };
-      createdTaskPda = parsed.taskPda;
-      descriptionSafeSummary = parsed.descriptionSafeSummary;
-      descriptionRiskScore = parsed.descriptionRiskScore;
-      descriptionRiskLevel = parsed.descriptionRiskLevel;
-      agentExecutionEligible = parsed.agentExecutionEligible;
+      createdTaskPda = (JSON.parse(result.content) as { taskPda?: string }).taskPda;
     } catch {
       createdTaskPda = undefined;
     }
 
     // Auto-refresh task list after creation
     await sendTaskList(deps, id, send);
-    deps.broadcastEvent?.('task.created', {
-      taskPda: createdTaskPda,
-      safeSummary:
-        descriptionSafeSummary ?? preparedDescription.assessment.safeSummary,
-      riskScore:
-        descriptionRiskScore ?? preparedDescription.assessment.riskScore,
-      riskLevel:
-        descriptionRiskLevel ?? preparedDescription.assessment.riskLevel,
-      executionEligibility:
-        agentExecutionEligible ?? preparedDescription.assessment.executionEligible,
-    });
+    deps.broadcastEvent?.('task.created', { taskPda: createdTaskPda, description: descStr });
   } catch (err) {
     send({ type: 'error', error: `Failed to create task: ${(err as Error).message}`, id });
   }
@@ -1132,6 +1156,98 @@ export async function handleTasksDispute(
 // Memory handlers
 // ============================================================================
 
+type OwnedMemorySessionSummary = {
+  id: string;
+  messageCount: number;
+  lastActiveAt: number;
+};
+
+async function listOwnedMemorySessions(
+  deps: WebChatDeps,
+  request: HandlerRequestContext,
+  { limit = Number.POSITIVE_INFINITY }: { limit?: number } = {},
+): Promise<OwnedMemorySessionSummary[]> {
+  if (!deps.memoryBackend) {
+    return [];
+  }
+  const cappedLimit = Number.isFinite(Number(limit))
+    ? Math.max(0, Math.floor(Number(limit)))
+    : Number.POSITIVE_INFINITY;
+  const sessionIds = request.listOwnedSessionIds();
+  const results: OwnedMemorySessionSummary[] = [];
+  for (const sid of sessionIds.slice(0, cappedLimit)) {
+    const thread = await deps.memoryBackend.getThread(sid);
+    results.push({
+      id: sid,
+      messageCount: thread.length,
+      lastActiveAt: thread.length > 0 ? thread[thread.length - 1].timestamp : 0,
+    });
+  }
+  return results;
+}
+
+function summarizeMaintenanceSync(
+  deps: WebChatDeps,
+  request: HandlerRequestContext,
+) {
+  const activeSessionId =
+    typeof request.activeSessionId === 'string' && request.activeSessionId.length > 0
+      ? request.activeSessionId
+      : undefined;
+  const activeSessionOwned = Boolean(
+    activeSessionId && request.isSessionOwned(activeSessionId),
+  );
+  const availability = deps.getBackgroundRunAvailability?.(
+    activeSessionOwned ? activeSessionId : undefined,
+  );
+  const gatewayBackgroundRuns = deps.gateway.getStatus()?.backgroundRuns;
+  return {
+    ownerSessionCount: request.listOwnedSessionIds().length,
+    activeSessionId,
+    activeSessionOwned,
+    durableRunsEnabled:
+      typeof availability?.enabled === 'boolean'
+        ? availability.enabled
+        : typeof gatewayBackgroundRuns?.enabled === 'boolean'
+          ? gatewayBackgroundRuns.enabled
+        : Boolean(
+            deps.listBackgroundRuns ||
+              deps.inspectBackgroundRun ||
+              deps.controlBackgroundRun,
+          ),
+    operatorAvailable:
+      typeof availability?.operatorAvailable === 'boolean'
+        ? availability.operatorAvailable
+        : typeof gatewayBackgroundRuns?.operatorAvailable === 'boolean'
+          ? gatewayBackgroundRuns.operatorAvailable
+        : Boolean(deps.listBackgroundRuns),
+    inspectAvailable:
+      typeof availability?.inspectAvailable === 'boolean'
+        ? availability.inspectAvailable
+        : typeof gatewayBackgroundRuns?.inspectAvailable === 'boolean'
+          ? gatewayBackgroundRuns.inspectAvailable
+        : Boolean(deps.inspectBackgroundRun),
+    controlAvailable:
+      typeof availability?.controlAvailable === 'boolean'
+        ? availability.controlAvailable
+        : typeof gatewayBackgroundRuns?.controlAvailable === 'boolean'
+          ? gatewayBackgroundRuns.controlAvailable
+        : Boolean(deps.controlBackgroundRun),
+    disabledCode:
+      typeof availability?.disabledCode === 'string'
+        ? availability.disabledCode
+        : typeof gatewayBackgroundRuns?.disabledCode === 'string'
+          ? gatewayBackgroundRuns.disabledCode
+        : undefined,
+    disabledReason:
+      typeof availability?.disabledReason === 'string'
+        ? availability.disabledReason
+        : typeof gatewayBackgroundRuns?.disabledReason === 'string'
+          ? gatewayBackgroundRuns.disabledReason
+        : undefined,
+  };
+}
+
 export async function handleMemorySearch(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
@@ -1195,21 +1311,58 @@ export async function handleMemorySessions(
   }
   try {
     const limit = typeof payload?.limit === 'number' ? payload.limit : 50;
-    const sessions = request.listOwnedSessionIds();
-    const results: Array<{ id: string; messageCount: number; lastActiveAt: number }> = [];
-
-    for (const sid of sessions.slice(0, limit)) {
-      const thread = await deps.memoryBackend.getThread(sid);
-      results.push({
-        id: sid,
-        messageCount: thread.length,
-        lastActiveAt: thread.length > 0 ? thread[thread.length - 1].timestamp : 0,
-      });
-    }
-
+    const results = await listOwnedMemorySessions(deps, request, { limit });
     send({ type: 'memory.sessions', payload: results, id });
   } catch (err) {
     send({ type: 'error', error: `Memory sessions failed: ${(err as Error).message}`, id });
+  }
+}
+
+export async function handleMaintenanceStatus(
+  deps: WebChatDeps,
+  payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+  request: HandlerRequestContext,
+): Promise<void> {
+  try {
+    const recentLimit = typeof payload?.limit === 'number'
+      ? Math.max(0, Math.min(50, Math.floor(payload.limit)))
+      : 8;
+    const sync = summarizeMaintenanceSync(deps, request);
+    const memorySessions = deps.memoryBackend
+      ? await listOwnedMemorySessions(deps, request)
+      : [];
+    const recentSessions = [...memorySessions]
+      .sort((left, right) => right.lastActiveAt - left.lastActiveAt)
+      .slice(0, recentLimit);
+    send({
+      type: 'maintenance.status',
+      payload: {
+        generatedAt: Date.now(),
+        sync,
+        memory: {
+          backendConfigured: Boolean(deps.memoryBackend),
+          sessionCount: memorySessions.length,
+          totalMessages: memorySessions.reduce(
+            (total, session) => total + session.messageCount,
+            0,
+          ),
+          lastActiveAt: memorySessions.reduce(
+            (latest, session) => Math.max(latest, session.lastActiveAt),
+            0,
+          ),
+          recentSessions,
+        },
+      },
+      id,
+    });
+  } catch (err) {
+    send({
+      type: 'error',
+      error: `Maintenance status failed: ${(err as Error).message}`,
+      id,
+    });
   }
 }
 
@@ -2023,6 +2176,7 @@ export const HANDLER_MAP: Readonly<Record<string, HandlerFn>> = {
   'skills.list': handleSkillsList,
   'skills.toggle': handleSkillsToggle,
   'tools.list': handleToolsList,
+  'hooks.list': handleHooksList,
   'tools.toggle': handleToolsToggle,
   'market.skills.list': handleMarketSkillsList,
   'market.skills.detail': handleMarketSkillsDetail,
@@ -2044,6 +2198,7 @@ export const HANDLER_MAP: Readonly<Record<string, HandlerFn>> = {
   'tasks.cancel': handleTasksCancel,
   'memory.search': handleMemorySearch,
   'memory.sessions': handleMemorySessions,
+  'maintenance.status': handleMaintenanceStatus,
   'approval.respond': handleApprovalRespond,
   'policy.simulate': handlePolicySimulate,
   'runs.list': handleRunsList,

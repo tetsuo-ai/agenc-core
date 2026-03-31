@@ -33,9 +33,11 @@ const BADGE_MAP = Object.freeze({
   help: { label: "HELP", tone: "slate" },
   status: { label: "STATUS", tone: "blue" },
   session: { label: "SESS", tone: "teal" },
+  checkpoint: { label: "SNAP", tone: "blue" },
   approval: { label: "AUTH", tone: "red" },
   queued: { label: "QUEUE", tone: "amber" },
   subagent: { label: "AGENT", tone: "magenta" },
+  voice: { label: "VOICE", tone: "purple" },
 });
 
 function sanitizeText(value, fallback = "") {
@@ -98,6 +100,96 @@ function stateTone(value) {
 
 function formatCount(value, fallback = 0) {
   return Number.isFinite(Number(value)) ? Number(value) : fallback;
+}
+
+function isPresentStatuslineValue(value) {
+  const text = sanitizeText(value);
+  if (!text) {
+    return false;
+  }
+  return text.toLowerCase() !== "n/a";
+}
+
+function buildFooterStatuslineSegments(
+  surfaceSummary,
+  checkpointSummary = null,
+  {
+    inputModeProfile = "default",
+    keybindingProfile = "default",
+    composerMode = "insert",
+    themeName = "default",
+  } = {},
+) {
+  const overview = surfaceSummary?.overview ?? {};
+  const attention = surfaceSummary?.attention ?? {};
+  const segments = [];
+  if (isPresentStatuslineValue(overview.providerLabel)) {
+    segments.push(`PROV ${overview.providerLabel}`);
+  }
+  if (isPresentStatuslineValue(overview.modelLabel)) {
+    segments.push(`MODEL ${overview.modelLabel}`);
+  }
+  if (isPresentStatuslineValue(overview.sessionToken)) {
+    segments.push(`SESS ${overview.sessionToken}`);
+  }
+  if (isPresentStatuslineValue(overview.sessionLabel)) {
+    segments.push(`LABEL ${overview.sessionLabel}`);
+  }
+  if (isPresentStatuslineValue(overview.usage)) {
+    segments.push(`USAGE ${overview.usage}`);
+  }
+  if (isPresentStatuslineValue(overview.runtimeState)) {
+    segments.push(`RUNTIME ${overview.runtimeState}`);
+  }
+  if (isPresentStatuslineValue(overview.durableRunsState)) {
+    segments.push(`DURABLE ${overview.durableRunsState}`);
+  }
+  if (isPresentStatuslineValue(overview.syncState)) {
+    segments.push(`SYNC ${overview.syncState}`);
+  }
+  if (isPresentStatuslineValue(overview.memoryState)) {
+    segments.push(`MEM ${overview.memoryState}`);
+  }
+  if (isPresentStatuslineValue(overview.workspaceIndexState)) {
+    segments.push(`INDEX ${overview.workspaceIndexState}`);
+  }
+  if (
+    isPresentStatuslineValue(overview.voiceState) &&
+    !["inactive", "stopped"].includes(String(overview.voiceState).toLowerCase())
+  ) {
+    segments.push(`VOICE ${overview.voiceState}`);
+  }
+  if (isPresentStatuslineValue(overview.transcriptMode)) {
+    segments.push(`MODE ${overview.transcriptMode}`);
+  }
+  if (isPresentStatuslineValue(inputModeProfile)) {
+    segments.push(
+      inputModeProfile === "vim"
+        ? `INPUT vim/${sanitizeText(composerMode, "insert")}`
+        : `INPUT ${inputModeProfile}`,
+    );
+  }
+  if (isPresentStatuslineValue(keybindingProfile) && keybindingProfile !== inputModeProfile) {
+    segments.push(`KEYS ${keybindingProfile}`);
+  }
+  if (isPresentStatuslineValue(themeName)) {
+    segments.push(`THEME ${themeName}`);
+  }
+  if (formatCount(overview.queuedInputCount, 0) > 0) {
+    segments.push(`QUEUE ${overview.queuedInputCount}`);
+  }
+  if (formatCount(overview.pendingAttachmentCount, 0) > 0) {
+    segments.push(`FILES ${overview.pendingAttachmentCount}`);
+  }
+  if (formatCount(attention.approvalAlertCount, 0) > 0) {
+    segments.push(`GUARD ${attention.approvalAlertCount} approval`);
+  } else if (formatCount(attention.errorAlertCount, 0) > 0) {
+    segments.push(`GUARD ${attention.errorAlertCount} error`);
+  }
+  if (checkpointSummary?.id) {
+    segments.push(`CKPT ${checkpointSummary.id}`);
+  }
+  return segments;
 }
 
 function fallbackStateFromRoute(route) {
@@ -390,6 +482,13 @@ export function buildWatchFooterSummary({
   latestExpandable,
   enableMouseTracking,
   detailDiffNavigation = null,
+  activeCheckpointId = null,
+  checkpointCount = 0,
+  inputModeProfile = "default",
+  keybindingProfile = "default",
+  composerMode = "insert",
+  themeName = "default",
+  featureFlags = {},
 }) {
   const surfaceSummary = summary ?? buildWatchSurfaceSummary({});
   const input = String(inputValue ?? "");
@@ -451,6 +550,48 @@ export function buildWatchFooterSummary({
   if (surfaceSummary?.overview?.usage && surfaceSummary.overview.usage !== "n/a") {
     leftDetails.push(`usage ${surfaceSummary.overview.usage}`);
   }
+  if (formatCount(surfaceSummary?.overview?.pendingAttachmentCount, 0) > 0) {
+    leftDetails.push(`attachments ${surfaceSummary.overview.pendingAttachmentCount}`);
+  }
+  if (
+    isPresentStatuslineValue(surfaceSummary?.overview?.voiceState) &&
+    !["inactive", "stopped"].includes(String(surfaceSummary.overview.voiceState).toLowerCase())
+  ) {
+    leftDetails.push(`voice ${surfaceSummary.overview.voiceState}`);
+  }
+  const statuslineEnabled = featureFlags?.statusline === true;
+  const checkpointSummary =
+    featureFlags?.checkpoints === true && activeCheckpointId
+      ? {
+          id: sanitizeText(activeCheckpointId, null),
+          count: formatCount(checkpointCount, 0),
+        }
+      : null;
+  if (checkpointSummary?.id && !statuslineEnabled) {
+    leftDetails.push(
+      checkpointSummary.count > 0
+        ? `checkpoint ${checkpointSummary.id}/${checkpointSummary.count}`
+        : `checkpoint ${checkpointSummary.id}`,
+    );
+  }
+  if (statuslineEnabled && formatCount(surfaceSummary?.overview?.pendingAttachmentCount, 0) > 0) {
+    const attachmentDetail = `attachments ${surfaceSummary.overview.pendingAttachmentCount}`;
+    const detailIndex = leftDetails.indexOf(attachmentDetail);
+    if (detailIndex >= 0) {
+      leftDetails.splice(detailIndex, 1);
+    }
+  }
+  if (
+    statuslineEnabled &&
+    isPresentStatuslineValue(surfaceSummary?.overview?.voiceState) &&
+    !["inactive", "stopped"].includes(String(surfaceSummary.overview.voiceState).toLowerCase())
+  ) {
+    const voiceDetail = `voice ${surfaceSummary.overview.voiceState}`;
+    const detailIndex = leftDetails.indexOf(voiceDetail);
+    if (detailIndex >= 0) {
+      leftDetails.splice(detailIndex, 1);
+    }
+  }
 
   const nextRightStatus = sanitizeText(
     transientStatus ||
@@ -485,10 +626,26 @@ export function buildWatchFooterSummary({
     hintLeft = palette.suggestionHint;
     hintStatus = modelSuggestions.length > 0 ? "tab complete  enter switch" : "enter run";
   } else {
-    hintLeft = input.trim().length > 0
-      ? `enter send  ctrl+k kill  ctrl+←/→ word${latestExpandable ? "  ctrl+o detail" : ""}  ctrl+y copy  pgup/pgdn scroll`
-      : `/ commands${latestExpandable ? "  ctrl+o detail" : ""}  ctrl+y copy  /export save  pgup/pgdn scroll  ctrl+l clear`;
+    if (inputModeProfile === "vim") {
+      hintLeft = composerMode === "normal"
+        ? `i insert  h/l move  b/w word  j/k scroll  x delete${latestExpandable ? "  ctrl+o detail" : ""}`
+        : `esc normal  enter send  ctrl+k kill${latestExpandable ? "  ctrl+o detail" : ""}  ctrl+y copy`;
+      hintStatus = composerMode === "normal" ? "vim normal" : "vim insert";
+    } else {
+      hintLeft = input.trim().length > 0
+        ? `enter send  ctrl+k kill  ctrl+←/→ word${latestExpandable ? "  ctrl+o detail" : ""}  ctrl+y copy  pgup/pgdn scroll`
+        : `/ commands${latestExpandable ? "  ctrl+o detail" : ""}  ctrl+y copy  /export save  pgup/pgdn scroll  ctrl+l clear`;
+    }
   }
+  const statuslineSegments = statuslineEnabled
+    ? buildFooterStatuslineSegments(surfaceSummary, checkpointSummary, {
+      inputModeProfile,
+      keybindingProfile,
+      composerMode,
+      themeName,
+    })
+    : [];
+  const statuslineText = statuslineSegments.join("  ");
 
   return {
     statusLabel: workingLabel,
@@ -499,6 +656,9 @@ export function buildWatchFooterSummary({
     hintRight: hintStatus,
     palette,
     fileTagPalette,
+    statuslineEnabled,
+    statuslineSegments,
+    statuslineText,
   };
 }
 
@@ -513,6 +673,7 @@ export function buildWatchSurfaceSummary({
   latestTool,
   latestToolState,
   queuedInputCount,
+  pendingAttachmentCount,
   events = [],
   planCount,
   activeAgentCount,
@@ -526,6 +687,10 @@ export function buildWatchSurfaceSummary({
   activeAgentActivity = null,
   plannerStatus = null,
   plannerNote = null,
+  sessionLabel = null,
+  maintenanceStatus = null,
+  workspaceIndex = null,
+  voiceCompanion = null,
   detail = null,
 }) {
   const recentEvents = events.slice(-24);
@@ -610,6 +775,7 @@ export function buildWatchSurfaceSummary({
   const runtimeState = runtimeStateFromInputs(connectionState, backgroundRunStatus, errorAlertCount);
   const runtimeLabel = runtimeLabelFromInputs(connectionState, backgroundRunStatus);
   const plannerLabel = sanitizeText(plannerNote, "");
+  const localSessionLabel = sanitizeText(sessionLabel, "");
   const activeAgentFocus = sanitizeText(activeAgentLabel, "");
   const activeAgentLive = sanitizeText(activeAgentActivity, "");
   const activeLine = sanitizeText(
@@ -618,6 +784,114 @@ export function buildWatchSurfaceSummary({
   );
   const durableActiveTotal = formatCount(backgroundRunStatus?.activeTotal, 0);
   const durableQueuedSignalsTotal = formatCount(backgroundRunStatus?.queuedSignalsTotal, 0);
+  const maintenanceSync =
+    maintenanceStatus?.sync && typeof maintenanceStatus.sync === "object"
+      ? maintenanceStatus.sync
+      : null;
+  const maintenanceMemory =
+    maintenanceStatus?.memory && typeof maintenanceStatus.memory === "object"
+      ? maintenanceStatus.memory
+      : null;
+  const syncState = !maintenanceSync
+    ? "pending"
+    : maintenanceSync.durableRunsEnabled === false
+      ? "disabled"
+      : maintenanceSync.operatorAvailable ||
+          maintenanceSync.inspectAvailable ||
+          maintenanceSync.controlAvailable
+        ? "ready"
+        : "limited";
+  const syncLabel = !maintenanceSync
+    ? "sync snapshot pending"
+    : maintenanceSync.durableRunsEnabled === false
+      ? sanitizeText(maintenanceSync.disabledReason, "durable sync disabled")
+      : [
+          `${formatCount(maintenanceSync.ownerSessionCount, 0)} owned session${formatCount(maintenanceSync.ownerSessionCount, 0) === 1 ? "" : "s"}`,
+          maintenanceSync.activeSessionId
+            ? maintenanceSync.activeSessionOwned === true
+              ? "active attached"
+              : "active external"
+            : "no active session",
+        ].join(" · ");
+  const memoryState = !maintenanceMemory
+    ? "pending"
+    : maintenanceMemory.backendConfigured === false
+      ? "disabled"
+      : "ready";
+  const memoryLabel = !maintenanceMemory
+    ? "memory snapshot pending"
+    : maintenanceMemory.backendConfigured === false
+      ? "memory backend not configured"
+      : `${formatCount(maintenanceMemory.sessionCount, 0)} sessions · ${formatCount(maintenanceMemory.totalMessages, 0)} msgs`;
+  const workspaceFileCount = Array.isArray(workspaceIndex?.files)
+    ? workspaceIndex.files.length
+    : 0;
+  const workspaceIndexState = !workspaceIndex
+    ? "pending"
+    : workspaceIndex.ready === true
+      ? "ready"
+      : workspaceIndex.error
+        ? "error"
+        : "pending";
+  const workspaceIndexLabel = !workspaceIndex
+    ? "workspace index pending"
+    : workspaceIndex.ready === true
+      ? `${workspaceFileCount} files indexed`
+      : sanitizeText(workspaceIndex.error, "workspace index unavailable");
+  const voiceSnapshot =
+    voiceCompanion && typeof voiceCompanion === "object"
+      ? voiceCompanion
+      : null;
+  const voiceActive =
+    typeof voiceSnapshot?.active === "boolean" ? voiceSnapshot.active : false;
+  const voiceState = !voiceSnapshot
+    ? "inactive"
+    : sanitizeText(
+      voiceSnapshot.companionState,
+      voiceActive
+        ? sanitizeText(voiceSnapshot.connectionState, "active")
+        : "inactive",
+    );
+  const voiceLabel = !voiceSnapshot
+    ? "voice companion idle"
+    : [
+        sanitizeText(voiceSnapshot.connectionState, voiceActive ? "connected" : "disconnected"),
+        voiceState,
+        sanitizeText(voiceSnapshot.voice, ""),
+        sanitizeText(voiceSnapshot.mode, ""),
+      ]
+        .filter(Boolean)
+        .join(" · ");
+  const voiceCurrentTask = sanitizeText(voiceSnapshot?.currentTask, "");
+  const voiceDelegationStatus = sanitizeText(voiceSnapshot?.delegationStatus, "");
+  const voiceLastUserTranscript = sanitizeText(voiceSnapshot?.lastUserTranscript, "");
+  const voiceLastAssistantTranscript = sanitizeText(
+    voiceSnapshot?.lastAssistantTranscript,
+    "",
+  );
+  const voiceLastError = sanitizeText(voiceSnapshot?.lastError, "");
+  let maintenanceState = "ready";
+  if (
+    syncState === "error" ||
+    memoryState === "error" ||
+    workspaceIndexState === "error"
+  ) {
+    maintenanceState = "degraded";
+  } else if (
+    syncState === "disabled" ||
+    syncState === "limited" ||
+    memoryState === "disabled" ||
+    workspaceIndexState === "disabled"
+  ) {
+    maintenanceState = "limited";
+  } else if (
+    syncState === "pending" ||
+    memoryState === "pending" ||
+    workspaceIndexState === "pending"
+  ) {
+    maintenanceState = "pending";
+  }
+  const maintenanceLabel = `${syncState} sync · ${memoryState} memory · ${workspaceIndexState} index`;
 
   return {
     routeLabel,
@@ -634,13 +908,33 @@ export function buildWatchSurfaceSummary({
       connectionState: sanitizeText(connectionState, "unknown"),
       phaseLabel: sanitizeText(phaseLabel, "idle"),
       sessionToken: compactSessionToken(sessionId),
+      sessionLabel: localSessionLabel,
       lastActivityAt: sanitizeText(lastActivityAt, "idle"),
       latestTool: sanitizeText(latestTool, "idle"),
       latestToolState: sanitizeText(latestToolState, latestTool ? "running" : "idle"),
       usage: sanitizeText(lastUsageSummary, "n/a"),
       durableRunsState,
       durableRunsLabel,
+      syncState,
+      syncLabel,
+      memoryState,
+      memoryLabel,
+      maintenanceState,
+      maintenanceLabel,
+      workspaceIndexState,
+      workspaceIndexLabel,
+      workspaceFileCount,
+      voiceState,
+      voiceLabel,
+      voiceCurrentTask,
+      voiceDelegationStatus,
+      voicePersona: sanitizeText(voiceSnapshot?.voice, ""),
+      voiceMode: sanitizeText(voiceSnapshot?.mode, ""),
+      voiceLastUserTranscript,
+      voiceLastAssistantTranscript,
+      voiceLastError,
       queuedInputCount: formatCount(queuedInputCount, 0),
+      pendingAttachmentCount: formatCount(pendingAttachmentCount, 0),
       planCount: formatCount(planCount, 0),
       activeAgentCount: formatCount(activeAgentCount, 0),
       transcriptMode,
@@ -666,15 +960,38 @@ export function buildWatchSurfaceSummary({
       { label: "MODEL", value: modelLabel, tone: route ? "teal" : "slate" },
       { label: "FAILOVER", value: fallbackState, tone: stateTone(fallbackState) },
       { label: "QUEUE", value: String(formatCount(queuedInputCount, 0)), tone: Number(queuedInputCount) > 0 ? "amber" : "green" },
+      ...(
+        Number(pendingAttachmentCount) > 0
+          ? [{
+            label: "FILES",
+            value: String(formatCount(pendingAttachmentCount, 0)),
+            tone: "teal",
+          }]
+          : []
+      ),
       { label: "GUARD", value: guardValue, tone: approvalAlertCount > 0 ? "red" : errorAlertCount > 0 ? "amber" : "green" },
       { label: "RUNTIME", value: runtimeState, tone: stateTone(runtimeState) },
       { label: "DURABLE", value: durableRunsState, tone: stateTone(durableRunsState) },
+      { label: "SYNC", value: syncState, tone: stateTone(syncState) },
+      { label: "MEM", value: memoryState, tone: stateTone(memoryState) },
+      { label: "INDEX", value: workspaceIndexState, tone: stateTone(workspaceIndexState) },
+      ...(
+        voiceSnapshot
+          ? [{
+            label: "VOICE",
+            value: voiceState,
+            tone: voiceActive ? stateTone(voiceState) : "slate",
+          }]
+          : []
+      ),
+      { label: "MAINT", value: maintenanceState, tone: stateTone(maintenanceState) },
       { label: "MODE", value: transcriptMode, tone: detailOpen ? "cyan" : following ? "green" : "amber" },
     ],
     attention: {
       approvalAlertCount,
       errorAlertCount,
       queuedInputCount: formatCount(queuedInputCount, 0),
+      pendingAttachmentCount: formatCount(pendingAttachmentCount, 0),
       items: recentAlerts,
     },
     recentTools,

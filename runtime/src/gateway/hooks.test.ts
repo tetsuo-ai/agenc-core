@@ -364,12 +364,33 @@ describe("HookDispatcher", () => {
 
       const startup = listing.get("gateway:startup");
       expect(startup).toHaveLength(2);
-      expect(startup![0]).toEqual({ name: "boot", priority: 10 });
-      expect(startup![1]).toEqual({ name: "metrics", priority: 50 });
+      expect(startup![0]).toEqual({
+        name: "boot",
+        priority: 10,
+        source: "runtime",
+        kind: "custom",
+        handlerType: "runtime",
+        supported: true,
+      });
+      expect(startup![1]).toEqual({
+        name: "metrics",
+        priority: 50,
+        source: "runtime",
+        kind: "custom",
+        handlerType: "runtime",
+        supported: true,
+      });
 
       const toolBefore = listing.get("tool:before");
       expect(toolBefore).toHaveLength(1);
-      expect(toolBefore![0]).toEqual({ name: "audit", priority: 100 });
+      expect(toolBefore![0]).toEqual({
+        name: "audit",
+        priority: 100,
+        source: "runtime",
+        kind: "custom",
+        handlerType: "runtime",
+        supported: true,
+      });
     });
   });
 
@@ -491,6 +512,13 @@ describe("HookDispatcher", () => {
       expect(logger).toBeDefined();
       expect(logger!.event).toBe("tool:after");
       expect(logger!.priority).toBe(90);
+      expect(logger).toMatchObject({
+        source: "builtin",
+        kind: "lifecycle",
+        handlerType: "builtin",
+        target: "tool-audit-logger",
+        supported: true,
+      });
     });
 
     it("includes boot-executor on gateway:startup", () => {
@@ -500,6 +528,13 @@ describe("HookDispatcher", () => {
       expect(boot).toBeDefined();
       expect(boot!.event).toBe("gateway:startup");
       expect(boot!.priority).toBe(10);
+      expect(boot).toMatchObject({
+        source: "builtin",
+        kind: "lifecycle",
+        handlerType: "builtin",
+        target: "boot-executor",
+        supported: true,
+      });
     });
 
     it("includes approval-gate on tool:before", () => {
@@ -509,6 +544,13 @@ describe("HookDispatcher", () => {
       expect(gate).toBeDefined();
       expect(gate!.event).toBe("tool:before");
       expect(gate!.priority).toBe(5);
+      expect(gate).toMatchObject({
+        source: "builtin",
+        kind: "approval",
+        handlerType: "builtin",
+        target: "approval-gate",
+        supported: true,
+      });
     });
 
     it("all built-in hooks are no-op stubs that continue", async () => {

@@ -1512,6 +1512,216 @@ describe("background-run-supervisor", () => {
     );
   });
 
+  it("retries a terminal checkpoint from a targeted step", async () => {
+    const runStore = createRunStore();
+    const publishUpdate = vi.fn(async () => undefined);
+    const execute = vi.fn(async () =>
+      makeResult({
+        content: "Watcher completed.",
+        toolCalls: [
+          {
+            name: "system.processStatus",
+            args: { processId: "proc_1" },
+            result: '{"processId":"proc_1","state":"exited","exitCode":0}',
+            isError: false,
+            durationMs: 10,
+          },
+        ],
+      }),
+    );
+    const supervisor = new BackgroundRunSupervisor({
+      chatExecutor: { execute } as any,
+      supervisorLlm: {
+        name: "supervisor",
+        chat: vi.fn(async () => ({
+          content:
+            '{"state":"completed","userUpdate":"Managed process exited cleanly.","internalSummary":"verified exit","shouldNotifyUser":true}',
+          toolCalls: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "supervisor-model",
+          finishReason: "stop",
+        })),
+        chatStream: vi.fn(),
+        healthCheck: vi.fn(async () => true),
+      },
+      getSystemPrompt: () => "system prompt",
+      runStore,
+      createToolHandler: (): ToolHandler => vi.fn(async () => "ok"),
+      publishUpdate,
+    });
+
+    await supervisor.startRun({
+      sessionId: "session-retry-step",
+      objective: "Watch the process until it exits.",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await eventuallyAsync(async () => {
+      expect(await runStore.loadCheckpoint("session-retry-step")).toBeDefined();
+    });
+
+    const retried = await supervisor.retryRunFromStep("session-retry-step", {
+      stepName: "verify tests",
+      traceId: "trace-1",
+      reason: "Operator replayed the verifier step.",
+    });
+
+    expect(retried).toBe(true);
+    const detail = await supervisor.getOperatorDetail("session-retry-step");
+    expect(detail?.state).toBe("working");
+
+    const events = await runStore.listEvents(detail!.runId);
+    expect(events.map((entry) => entry.metadata?.eventType)).toEqual(
+      expect.arrayContaining(["run_retried", "run_retried_from_step"]),
+    );
+    const stepEvent = events.find((entry) => entry.metadata?.eventType === "run_retried_from_step");
+    expect(stepEvent?.metadata).toMatchObject({
+      stepName: "verify tests",
+      traceId: "trace-1",
+    });
+  });
+
+  it("retries a terminal checkpoint from a targeted trace", async () => {
+    const runStore = createRunStore();
+    const publishUpdate = vi.fn(async () => undefined);
+    const execute = vi.fn(async () =>
+      makeResult({
+        content: "Watcher completed.",
+        toolCalls: [
+          {
+            name: "system.processStatus",
+            args: { processId: "proc_1" },
+            result: '{"processId":"proc_1","state":"exited","exitCode":0}',
+            isError: false,
+            durationMs: 10,
+          },
+        ],
+      }),
+    );
+    const supervisor = new BackgroundRunSupervisor({
+      chatExecutor: { execute } as any,
+      supervisorLlm: {
+        name: "supervisor",
+        chat: vi.fn(async () => ({
+          content:
+            '{"state":"completed","userUpdate":"Managed process exited cleanly.","internalSummary":"verified exit","shouldNotifyUser":true}',
+          toolCalls: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "supervisor-model",
+          finishReason: "stop",
+        })),
+        chatStream: vi.fn(),
+        healthCheck: vi.fn(async () => true),
+      },
+      getSystemPrompt: () => "system prompt",
+      runStore,
+      createToolHandler: (): ToolHandler => vi.fn(async () => "ok"),
+      publishUpdate,
+    });
+
+    await supervisor.startRun({
+      sessionId: "session-retry-trace",
+      objective: "Watch the process until it exits.",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await eventuallyAsync(async () => {
+      expect(await runStore.loadCheckpoint("session-retry-trace")).toBeDefined();
+    });
+
+    const retried = await supervisor.retryRunFromTrace("session-retry-trace", {
+      traceId: "trace-9",
+      stepName: "planner verify",
+      reason: "Operator replayed the failing trace.",
+    });
+
+    expect(retried).toBe(true);
+    const detail = await supervisor.getOperatorDetail("session-retry-trace");
+    expect(detail?.state).toBe("working");
+
+    const events = await runStore.listEvents(detail!.runId);
+    expect(events.map((entry) => entry.metadata?.eventType)).toEqual(
+      expect.arrayContaining(["run_retried", "run_retried_from_trace"]),
+    );
+    const traceEvent = events.find((entry) => entry.metadata?.eventType === "run_retried_from_trace");
+    expect(traceEvent?.metadata).toMatchObject({
+      traceId: "trace-9",
+      stepName: "planner verify",
+    });
+  });
+
+  it("forks a durable run checkpoint into a target session", async () => {
+    const runStore = createRunStore();
+    const publishUpdate = vi.fn(async () => undefined);
+    const execute = vi.fn(async () =>
+      makeResult({
+        content: "Watcher completed.",
+        toolCalls: [
+          {
+            name: "system.processStatus",
+            args: { processId: "proc_1" },
+            result: '{"processId":"proc_1","state":"exited","exitCode":0}',
+            isError: false,
+            durationMs: 10,
+          },
+        ],
+      }),
+    );
+    const supervisor = new BackgroundRunSupervisor({
+      chatExecutor: { execute } as any,
+      supervisorLlm: {
+        name: "supervisor",
+        chat: vi.fn(async () => ({
+          content:
+            '{"state":"completed","userUpdate":"Managed process exited cleanly.","internalSummary":"verified exit","shouldNotifyUser":true}',
+          toolCalls: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "supervisor-model",
+          finishReason: "stop",
+        })),
+        chatStream: vi.fn(),
+        healthCheck: vi.fn(async () => true),
+      },
+      getSystemPrompt: () => "system prompt",
+      runStore,
+      createToolHandler: (): ToolHandler => vi.fn(async () => "ok"),
+      publishUpdate,
+    });
+
+    await supervisor.startRun({
+      sessionId: "session-source",
+      objective: "Watch the process until it exits.",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await eventuallyAsync(async () => {
+      expect(await runStore.loadCheckpoint("session-source")).toBeDefined();
+    });
+
+    const forked = await supervisor.forkRunFromCheckpoint("session-source", {
+      targetSessionId: "session-fork",
+      objective: "Compare a recovery branch.",
+      reason: "Operator forked the durable run.",
+    });
+
+    expect(forked).toBe(true);
+    const sourceDetail = await supervisor.getOperatorDetail("session-source");
+    const targetDetail = await supervisor.getOperatorDetail("session-fork");
+    expect(targetDetail).toMatchObject({
+      sessionId: "session-fork",
+      objective: "Compare a recovery branch.",
+      state: "pending",
+      checkpointAvailable: true,
+    });
+    expect(targetDetail?.runId).not.toBe(sourceDetail?.runId);
+    await expect(runStore.loadCheckpoint("session-fork")).resolves.toBeDefined();
+
+    const events = await runStore.listEvents(targetDetail!.runId);
+    expect(events.map((entry) => entry.metadata?.eventType)).toContain("run_forked");
+    const forkEvent = events.find((entry) => entry.metadata?.eventType === "run_forked");
+    expect(forkEvent?.metadata).toMatchObject({
+      sourceSessionId: "session-source",
+      sourceRunId: sourceDetail?.runId,
+    });
+  });
+
   it("pauses a run, queues signals without waking it, and resumes cleanly", async () => {
     const publishUpdate = vi.fn(async () => undefined);
     const execute = vi

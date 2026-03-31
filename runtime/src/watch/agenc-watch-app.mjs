@@ -3,11 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import {
   createOperatorInputBatcher,
+  buildWatchCommands,
   matchWatchCommands,
   matchModelNames,
   parseWatchSlashCommand,
   shouldAutoInspectRun,
-  WATCH_COMMANDS,
 } from "./agenc-watch-helpers.mjs";
 import { readWatchDaemonLogTail } from "./agenc-watch-log-tail.mjs";
 import { createWatchCommandController } from "./agenc-watch-commands.mjs";
@@ -26,14 +26,17 @@ import {
   isDiffRenderableEvent,
 } from "./agenc-watch-diff-render.mjs";
 import {
+  captureWatchCheckpoint,
   clearSubagentToolArgs,
   createWatchState,
   createWatchStateBindings,
+  listWatchCheckpointSummaries,
   loadPersistedWatchState,
   persistWatchState,
   readSubagentToolArgs,
   rememberSubagentToolArgs,
   resetDelegatedWatchState,
+  rewindWatchToCheckpoint,
 } from "./agenc-watch-state.mjs";
 import {
   bindWatchSurfaceState,
@@ -96,6 +99,35 @@ import { createWatchToolPresentation } from "./agenc-watch-tool-presentation.mjs
 import { loadWorkspaceFileIndex } from "./agenc-watch-workspace-index.mjs";
 import { loadWebSocketConstructor } from "./agenc-websocket.mjs";
 import { createWatchSurfaceStateController } from "./agenc-watch-surface-state.mjs";
+import { resolveWatchFeatureFlags } from "./agenc-watch-feature-flags.mjs";
+import {
+  buildWatchExtensibilityReport,
+  listWatchUserSkills,
+  readWatchRuntimeConfig,
+  updateWatchMcpServerState,
+  updateWatchTrustedPluginPackage,
+} from "./agenc-watch-extensibility.mjs";
+import {
+  createQueuedWatchAttachment,
+  formatQueuedWatchAttachments,
+  resolveQueuedWatchAttachmentPayloads,
+} from "./agenc-watch-attachments.mjs";
+import {
+  buildWatchExportBundle,
+  writeWatchExportBundle,
+} from "./agenc-watch-export-bundle.mjs";
+import {
+  buildWatchInsightsReport,
+  buildWatchMaintenanceReport,
+} from "./agenc-watch-insights.mjs";
+import { buildWatchAgentsReport } from "./agenc-watch-agents.mjs";
+import { buildWatchUiPreferencesReport } from "./agenc-watch-ui-preferences.mjs";
+import {
+  buildWatchSessionQueryCandidates,
+  clearWatchSessionLabel,
+  resolveWatchSessionLabel,
+  setWatchSessionLabel,
+} from "./agenc-watch-session-indexing.mjs";
 
 // ─── Extracted modules ──────────────────────────────────────────────
 import {
@@ -122,6 +154,7 @@ import {
 
 import {
   color,
+  applyWatchTheme,
   toneTheme,
   toneColor,
   toneSpec,
@@ -267,6 +300,8 @@ const maxStoredBodyChars = 96_000;
 const enableMouseTracking = /^(1|true|yes|on)$/i.test(
   String(process.env.AGENC_WATCH_ENABLE_MOUSE ?? ""),
 );
+const watchFeatureFlags = resolveWatchFeatureFlags({ env: process.env });
+const watchCommands = buildWatchCommands({ featureFlags: watchFeatureFlags });
 const maxFeedPreviewLines = 3;
 const maxPreviewSourceLines = 160;
 const LIVE_EVENT_FILTERS = Object.freeze([
@@ -299,6 +334,7 @@ const persistedWatchState = loadPersistedWatchState({
   clientKey,
 });
 const watchState = createWatchState({ persistedWatchState, launchedAtMs });
+applyWatchTheme(watchState.inputPreferences?.themeName);
 
 let requestCounter = 0;
 let shuttingDown = false;
@@ -337,6 +373,7 @@ const operatorInputBatcher = createOperatorInputBatcher({
 
 const pendingFrames = [];
 const queuedOperatorInputs = watchState.queuedOperatorInputs;
+const pendingAttachments = watchState.pendingAttachments;
 const subagentPlanSteps = watchState.subagentPlanSteps;
 const subagentSessionPlanKeys = watchState.subagentSessionPlanKeys;
 const subagentLiveActivity = watchState.subagentLiveActivity;
@@ -378,25 +415,379 @@ function sessionValuesMatch(left, right) {
 }
 
 function persistOwnerToken(nextOwnerToken) {
-  persistWatchState({
-    fs,
-    path,
-    watchStateFile,
-    clientKey,
+  persistWatchLocalState({
     ownerToken: nextOwnerToken,
     sessionId: watchState.sessionId,
   });
 }
 
-function persistSessionId(nextSessionId) {
+function persistWatchLocalState({
+  ownerToken = watchState.ownerToken,
+  sessionId = watchState.sessionId,
+  sessionLabels = watchState.sessionLabels,
+  uiPreferences = watchState.inputPreferences,
+  pendingAttachmentState = watchState.pendingAttachments,
+  attachmentSequence = watchState.attachmentSequence,
+} = {}) {
   persistWatchState({
     fs,
     path,
     watchStateFile,
     clientKey,
+    ownerToken,
+    sessionId,
+    sessionLabels,
+    uiPreferences,
+    pendingAttachments: pendingAttachmentState,
+    attachmentSequence,
+    checkpoints: watchState.checkpoints,
+    checkpointSnapshots: watchState.checkpointSnapshots,
+    checkpointSequence: watchState.checkpointSequence,
+    activeCheckpointId: watchState.activeCheckpointId,
+  });
+}
+
+function persistSessionId(nextSessionId) {
+  persistWatchLocalState({
     ownerToken: watchState.ownerToken,
     sessionId: nextSessionId,
   });
+}
+
+function currentSessionLabel() {
+  return resolveWatchSessionLabel(watchState.sessionId, watchState.sessionLabels);
+}
+
+function currentInputPreferences() {
+  return watchState.inputPreferences;
+}
+
+function setCurrentSessionLabel(label) {
+  const result = setWatchSessionLabel(watchState.sessionLabels, watchState.sessionId, label);
+  persistWatchLocalState();
+  return result;
+}
+
+function clearCurrentSessionLabel() {
+  const previous = clearWatchSessionLabel(watchState.sessionLabels, watchState.sessionId);
+  persistWatchLocalState();
+  return previous;
+}
+
+function showInputModes() {
+  const report = buildWatchUiPreferencesReport({
+    preferences: watchState.inputPreferences,
+    composerMode: watchState.composerMode,
+  });
+  setTransientStatus("input preferences ready");
+  pushEvent("operator", "Input Preferences", report, "slate");
+  return report;
+}
+
+function setInputModeProfile(profile) {
+  watchState.inputPreferences = {
+    ...watchState.inputPreferences,
+    inputModeProfile: profile,
+    keybindingProfile: profile === "vim"
+      ? "vim"
+      : watchState.inputPreferences?.keybindingProfile === "vim"
+        ? "default"
+        : watchState.inputPreferences?.keybindingProfile ?? "default",
+  };
+  watchState.composerMode = "insert";
+  persistWatchLocalState();
+  scheduleRender();
+  return watchState.inputPreferences;
+}
+
+function setKeybindingProfile(profile) {
+  watchState.inputPreferences = {
+    ...watchState.inputPreferences,
+    keybindingProfile: profile,
+  };
+  if (profile === "vim") {
+    watchState.inputPreferences.inputModeProfile = "vim";
+  } else if (watchState.inputPreferences.inputModeProfile === "vim") {
+    watchState.inputPreferences.inputModeProfile = "default";
+    watchState.composerMode = "insert";
+  }
+  persistWatchLocalState();
+  scheduleRender();
+  return watchState.inputPreferences;
+}
+
+function setThemeName(themeName) {
+  const appliedTheme = applyWatchTheme(themeName);
+  watchState.inputPreferences = {
+    ...watchState.inputPreferences,
+    themeName: appliedTheme,
+  };
+  persistWatchLocalState();
+  scheduleRender();
+  return watchState.inputPreferences;
+}
+
+function sessionQueryCandidates(session) {
+  return buildWatchSessionQueryCandidates(session, {
+    sessionLabels: watchState.sessionLabels,
+  });
+}
+
+function captureCheckpoint(label, { reason = "manual" } = {}) {
+  const summary = captureWatchCheckpoint(watchState, {
+    label,
+    reason,
+    nowMs,
+  });
+  persistWatchLocalState();
+  return summary;
+}
+
+function listCheckpoints({ limit = 8 } = {}) {
+  return listWatchCheckpointSummaries(watchState, { limit });
+}
+
+function rewindToCheckpoint(reference = "latest") {
+  const summary = rewindWatchToCheckpoint(watchState, reference);
+  if (!summary) {
+    return null;
+  }
+  persistWatchLocalState();
+  return summary;
+}
+
+function nextAttachmentId() {
+  const nextSequence = Number.isFinite(Number(watchState.attachmentSequence))
+    ? Number(watchState.attachmentSequence) + 1
+    : 1;
+  watchState.attachmentSequence = nextSequence;
+  return `att-${nextSequence}`;
+}
+
+function currentPendingAttachments() {
+  return pendingAttachments.map((attachment, index) => ({
+    ...attachment,
+    index: index + 1,
+  }));
+}
+
+function formatPendingAttachments() {
+  return formatQueuedWatchAttachments(currentPendingAttachments());
+}
+
+function queuePendingAttachment(inputPath) {
+  const attachment = createQueuedWatchAttachment({
+    fs,
+    pathModule: path,
+    inputPath,
+    projectRoot,
+    id: nextAttachmentId(),
+  });
+  const existing = pendingAttachments.find((entry) => entry.path === attachment.path);
+  if (existing) {
+    return {
+      attachment: existing,
+      duplicate: true,
+    };
+  }
+  pendingAttachments.push(attachment);
+  persistWatchLocalState();
+  return {
+    attachment,
+    duplicate: false,
+  };
+}
+
+function clearPendingAttachments() {
+  const removed = pendingAttachments.splice(0, pendingAttachments.length);
+  if (removed.length > 0) {
+    persistWatchLocalState();
+  }
+  return removed;
+}
+
+function removePendingAttachment(reference = null) {
+  const normalized = String(reference ?? "").trim();
+  if (pendingAttachments.length === 0) {
+    return {
+      removed: [],
+      error: "No attachments are currently queued.",
+    };
+  }
+  if (!normalized) {
+    const removed = pendingAttachments.splice(-1, 1);
+    persistWatchLocalState();
+    return { removed };
+  }
+  if (normalized.toLowerCase() === "all") {
+    return {
+      removed: clearPendingAttachments(),
+    };
+  }
+  const asIndex = Number(normalized);
+  if (Number.isFinite(asIndex) && asIndex >= 1 && Number.isInteger(asIndex)) {
+    const zeroIndex = asIndex - 1;
+    if (zeroIndex >= pendingAttachments.length) {
+      return {
+        removed: [],
+        error: `No attachment matched ${normalized}.`,
+      };
+    }
+    const removed = pendingAttachments.splice(zeroIndex, 1);
+    persistWatchLocalState();
+    return { removed };
+  }
+  const exactMatches = pendingAttachments.filter((attachment) =>
+    attachment.id === normalized ||
+    attachment.path === normalized ||
+    attachment.displayPath === normalized,
+  );
+  const filenameMatches = pendingAttachments.filter((attachment) =>
+    attachment.filename === normalized,
+  );
+  const matches = exactMatches.length > 0 ? exactMatches : filenameMatches;
+  if (matches.length === 0) {
+    return {
+      removed: [],
+      error: `No attachment matched ${normalized}.`,
+    };
+  }
+  if (exactMatches.length === 0 && matches.length > 1) {
+    return {
+      removed: [],
+      error: `Attachment reference ${normalized} is ambiguous. Use /attachments for the numeric index or attachment id.`,
+    };
+  }
+  const removed = [];
+  for (const match of matches) {
+    const index = pendingAttachments.findIndex((attachment) => attachment.id === match.id);
+    if (index >= 0) {
+      removed.push(...pendingAttachments.splice(index, 1));
+    }
+  }
+  persistWatchLocalState();
+  return { removed };
+}
+
+function prepareChatMessagePayload(content, { consumeAttachments = true } = {}) {
+  const queued = currentPendingAttachments();
+  if (queued.length === 0) {
+    return {
+      payload: authPayload({ content }),
+      attachmentSummaries: [],
+    };
+  }
+  const attachments = resolveQueuedWatchAttachmentPayloads(queued, { fs });
+  if (consumeAttachments === true) {
+    pendingAttachments.splice(0, pendingAttachments.length);
+    persistWatchLocalState();
+  }
+  return {
+    payload: authPayload({ content, attachments }),
+    attachmentSummaries: queued,
+  };
+}
+
+function readExtensibilityContext() {
+  return {
+    configSnapshot: readWatchRuntimeConfig({
+      fs,
+      env: process.env,
+      osModule: os,
+      pathModule: path,
+    }),
+    localSkillCatalog: listWatchUserSkills({
+      fs,
+      env: process.env,
+      osModule: os,
+      pathModule: path,
+    }),
+  };
+}
+
+function showExtensibility({
+  section = "overview",
+} = {}) {
+  const { configSnapshot, localSkillCatalog } = readExtensibilityContext();
+  const report = buildWatchExtensibilityReport({
+    projectRoot,
+    watchState,
+    configSnapshot,
+    localSkillCatalog,
+    section,
+  });
+  setTransientStatus(`extensibility: ${section}`);
+  pushEvent("operator", "Extensibility", report, "slate");
+  return report;
+}
+
+function trustPluginPackage(packageName, allowedSubpaths = []) {
+  const { configSnapshot } = readExtensibilityContext();
+  const result = updateWatchTrustedPluginPackage({
+    fs,
+    configPath: configSnapshot.configPath,
+    packageName,
+    allowedSubpaths,
+  });
+  setTransientStatus(`plugin trusted: ${packageName}`);
+  pushEvent(
+    "operator",
+    "Plugin Trust Updated",
+    [
+      `Config: ${result.configPath}`,
+      `Package: ${result.packageName}`,
+      `Trusted packages: ${result.trustedPackages.length}`,
+      "Config watcher should pick up the change automatically if the daemon is live.",
+    ].join("\n"),
+    "teal",
+  );
+  return result;
+}
+
+function untrustPluginPackage(packageName) {
+  const { configSnapshot } = readExtensibilityContext();
+  const result = updateWatchTrustedPluginPackage({
+    fs,
+    configPath: configSnapshot.configPath,
+    packageName,
+    remove: true,
+  });
+  setTransientStatus(`plugin untrusted: ${packageName}`);
+  pushEvent(
+    "operator",
+    "Plugin Trust Updated",
+    [
+      `Config: ${result.configPath}`,
+      `Package: ${result.packageName}`,
+      `Trusted packages: ${result.trustedPackages.length}`,
+      "Config watcher should pick up the change automatically if the daemon is live.",
+    ].join("\n"),
+    "teal",
+  );
+  return result;
+}
+
+function setMcpServerEnabled(serverName, enabled) {
+  const { configSnapshot } = readExtensibilityContext();
+  const result = updateWatchMcpServerState({
+    fs,
+    configPath: configSnapshot.configPath,
+    serverName,
+    enabled,
+  });
+  setTransientStatus(`mcp ${enabled ? "enabled" : "disabled"}: ${serverName}`);
+  pushEvent(
+    "operator",
+    "MCP Server Updated",
+    [
+      `Config: ${result.configPath}`,
+      `Server: ${result.serverName}`,
+      `State: ${result.enabled ? "enabled" : "disabled"}`,
+      "Config watcher should pick up the change automatically if the daemon is live.",
+    ].join("\n"),
+    "teal",
+  );
+  return result;
 }
 
 function dismissIntro() {
@@ -427,6 +818,7 @@ const surfaceState = createWatchSurfaceStateController({
   transportState,
   events,
   queuedOperatorInputs,
+  pendingAttachments,
   subagentPlanSteps,
   nowMs,
   activityPulseIntervalMs,
@@ -438,6 +830,8 @@ const surfaceState = createWatchSurfaceStateController({
   isTranscriptFollowing,
   normalizeModelRouteImpl: _normalizeModelRoute,
   modelRouteToneImpl: _modelRouteTone,
+  resolveSessionLabel: currentSessionLabel,
+  workspaceIndex: workspaceFileIndex,
 });
 
 const {
@@ -618,7 +1012,7 @@ function currentInputValue() {
 }
 
 function currentSlashSuggestions(limit = 8) {
-  return matchWatchCommands(currentInputValue(), { limit });
+  return matchWatchCommands(currentInputValue(), { limit, commands: watchCommands });
 }
 
 function currentModelSuggestions(limit = 6) {
@@ -696,7 +1090,10 @@ function autocompleteComposerInput() {
   if (autocompleteComposerFileTag(watchState, workspaceFileIndex, { limit: 8 })) {
     return true;
   }
-  return autocompleteSlashComposerInput(watchState, matchWatchCommands);
+  return autocompleteSlashComposerInput(
+    watchState,
+    (input, options = {}) => matchWatchCommands(input, { ...options, commands: watchCommands }),
+  );
 }
 
 function composerRenderLine(width) {
@@ -815,17 +1212,59 @@ const watchVoiceController = createWatchVoiceController({
 watchCommandController = createWatchCommandController({
   watchState,
   queuedOperatorInputs,
-  WATCH_COMMANDS,
-  parseWatchSlashCommand,
+  WATCH_COMMANDS: watchCommands,
+  parseWatchSlashCommand: (input) => parseWatchSlashCommand(input, { commands: watchCommands }),
   authPayload,
   send,
   shutdownWatch,
   dismissIntro,
   clearLiveTranscriptView,
   exportCurrentView,
+  exportBundle,
+  showInsights,
+  showMaintenance,
+  showAgents,
+  showExtensibility,
+  showInputModes,
   resetLiveRunSurface,
   resetDelegationState,
   persistSessionId,
+  currentSessionLabel,
+  setSessionLabel: setCurrentSessionLabel,
+  clearSessionLabel: clearCurrentSessionLabel,
+  currentInputPreferences,
+  setInputModeProfile,
+  setKeybindingProfile,
+  setThemeName,
+  trustPluginPackage,
+  untrustPluginPackage,
+  setMcpServerEnabled,
+  captureCheckpoint,
+  listCheckpoints,
+  listPendingAttachments: currentPendingAttachments,
+  formatPendingAttachments,
+  queuePendingAttachment,
+  removePendingAttachment,
+  clearPendingAttachments,
+  prepareChatMessagePayload,
+  openLatestDiffDetail,
+  currentDiffNavigationState: () =>
+    watchFrameController?.currentDiffNavigationState() ?? {
+      enabled: false,
+      currentHunkIndex: 0,
+      totalHunks: 0,
+      currentFilePath: "",
+    },
+  jumpCurrentDiffHunk: (direction) => watchFrameController?.jumpCurrentDiffHunk(direction) ?? false,
+  closeDetailView: () => {
+    const navigation = watchFrameController?.currentDiffNavigationState() ?? { enabled: false };
+    if (navigation.enabled !== true) {
+      return false;
+    }
+    watchFrameController?.toggleExpandedEvent();
+    return true;
+  },
+  rewindToCheckpoint,
   clearBootstrapTimer,
   pushEvent,
   setTransientStatus,
@@ -862,6 +1301,20 @@ function currentExpandedEvent() {
       : null);
 }
 
+function openLatestDiffDetail() {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!isDiffRenderableEvent(event)) {
+      continue;
+    }
+    watchState.expandedEventId = event.id ?? null;
+    watchState.detailScrollOffset = 0;
+    setTransientStatus(`detail open: ${event.title}`);
+    return event;
+  }
+  return null;
+}
+
 function toggleExpandedEvent() {
   watchFrameController?.toggleExpandedEvent();
 }
@@ -886,6 +1339,97 @@ function isTranscriptFollowing() {
 
 function exportCurrentView({ announce = false } = {}) {
   return watchFrameController?.exportCurrentView({ announce }) ?? null;
+}
+
+function exportBundle({ announce = false } = {}) {
+  const bundle = buildWatchExportBundle({
+    projectRoot,
+    watchState,
+    surfaceSummary: currentSurfaceSummary(),
+    frameSnapshot: buildVisibleFrameSnapshot({
+      width: termWidth(),
+      height: termHeight(),
+    }),
+    exportedAtMs: nowMs(),
+  });
+  const exportPath = writeWatchExportBundle({
+    fs,
+    bundle,
+    nowMs,
+    pathModule: path,
+  });
+  if (announce) {
+    pushEvent(
+      "operator",
+      "Bundle Export",
+      `Session bundle exported to ${exportPath}.`,
+      "teal",
+    );
+  } else {
+    setTransientStatus(`bundle exported to ${exportPath}`);
+    scheduleRender();
+  }
+  return exportPath;
+}
+
+function showInsights() {
+  const report = buildWatchInsightsReport({
+    projectRoot,
+    watchState,
+    surfaceSummary: currentSurfaceSummary(),
+    maintenanceStatus: watchState.maintenanceSnapshot ?? null,
+    workspaceIndex: workspaceFileIndex,
+  });
+  setTransientStatus("insights ready");
+  pushEvent("operator", "Watch Insights", report, "slate");
+  return report;
+}
+
+function showMaintenance() {
+  const report = buildWatchMaintenanceReport({
+    projectRoot,
+    watchState,
+    surfaceSummary: currentSurfaceSummary(),
+    maintenanceStatus: watchState.maintenanceSnapshot ?? null,
+    workspaceIndex: workspaceFileIndex,
+  });
+  setTransientStatus("maintenance ready");
+  pushEvent("operator", "Maintenance Status", report, "slate");
+  return report;
+}
+
+function showAgents({
+  query = null,
+} = {}) {
+  const normalizedQuery = String(query ?? "").trim();
+  const includeCompleted = /^(all|recent)$/i.test(normalizedQuery);
+  const filteredQuery =
+    /^(all|recent|active)$/i.test(normalizedQuery) ? null : normalizedQuery || null;
+  const focus = currentActiveAgentFocus();
+  const report = buildWatchAgentsReport({
+    planSteps: includeCompleted
+      ? [...subagentPlanSteps.values()]
+      : activeAgentEntries(24),
+    plannerStatus: watchState.plannerDagStatus,
+    plannerNote: watchState.plannerDagNote,
+    activeAgentLabel: focus.label,
+    activeAgentActivity: focus.activity,
+    query: filteredQuery,
+    includeCompleted,
+    limit: 12,
+  });
+  setTransientStatus(
+    includeCompleted
+      ? "agent threads listed"
+      : "active agents listed",
+  );
+  pushEvent(
+    "subagent",
+    includeCompleted ? "Agent Threads" : "Active Agents",
+    report,
+    "slate",
+  );
+  return report;
 }
 
 function copyCurrentView() {
@@ -1063,6 +1607,13 @@ watchTransportController = createWatchTransportController({
   shouldIgnoreOperatorMessage,
   dispatchOperatorSurfaceEvent: (surfaceEvent, rawMessage) => {
     const rawType = rawMessage?.type;
+    if (
+      rawType === "status.update" &&
+      !watchState.maintenanceSnapshot &&
+      watchState.maintenanceRequestPending !== true
+    ) {
+      send("maintenance.status", authPayload({ limit: 8 }));
+    }
     // Intercept voice messages
     if (typeof rawType === "string" && rawType.startsWith("voice.")) {
       const handled = watchVoiceController.handleVoiceMessage(
@@ -1102,6 +1653,118 @@ watchTransportController = createWatchTransportController({
       setTransientStatus(`memory: ${sessions.length} session(s)`);
       return;
     }
+    if (rawType === "maintenance.status") {
+      watchState.maintenanceSnapshot =
+        rawMessage?.payload && typeof rawMessage.payload === "object"
+          ? rawMessage.payload
+          : null;
+      const shouldAnnounce = watchState.maintenanceRequestPending === true;
+      watchState.maintenanceRequestPending = false;
+      if (shouldAnnounce) {
+        showMaintenance();
+      } else {
+        setTransientStatus("maintenance updated");
+        scheduleRender();
+      }
+      return;
+    }
+    if (rawType === "skills.list") {
+      const skills = Array.isArray(rawMessage?.payload) ? rawMessage.payload : [];
+      watchState.skillCatalog = skills.map((skill) => ({
+        name: String(skill?.name ?? "").trim(),
+        description: String(skill?.description ?? "").trim(),
+        enabled: skill?.enabled === true,
+        available:
+          typeof skill?.available === "boolean" ? skill.available : undefined,
+        tier:
+          typeof skill?.tier === "string" && skill.tier.trim().length > 0
+            ? skill.tier.trim()
+            : undefined,
+        sourcePath:
+          typeof skill?.sourcePath === "string" && skill.sourcePath.trim().length > 0
+            ? skill.sourcePath.trim()
+            : undefined,
+        tags: Array.isArray(skill?.tags)
+          ? skill.tags
+              .map((tag) => String(tag ?? "").trim())
+              .filter(Boolean)
+          : [],
+        primaryEnv:
+          typeof skill?.primaryEnv === "string" && skill.primaryEnv.trim().length > 0
+            ? skill.primaryEnv.trim()
+            : undefined,
+        unavailableReason:
+          typeof skill?.unavailableReason === "string" &&
+          skill.unavailableReason.trim().length > 0
+            ? skill.unavailableReason.trim()
+            : undefined,
+        missingRequirements: Array.isArray(skill?.missingRequirements)
+          ? skill.missingRequirements
+              .map((requirement) => String(requirement ?? "").trim())
+              .filter(Boolean)
+          : [],
+      }));
+      pushEvent(
+        "operator",
+        "Skills",
+        watchState.skillCatalog.length > 0
+          ? watchState.skillCatalog
+            .map((skill) =>
+              `${skill.enabled ? "●" : "○"} ${skill.name}${
+                skill.available === false ? " [unavailable]" : ""
+              }${
+                skill.tier ? ` [${skill.tier}]` : ""
+              }${skill.description ? ` — ${skill.description}` : ""}${
+                skill.primaryEnv ? ` (${skill.primaryEnv})` : ""
+              }${
+                skill.unavailableReason
+                  ? ` | ${skill.unavailableReason}`
+                  : skill.missingRequirements.length > 0
+                    ? ` | missing: ${skill.missingRequirements.join(", ")}`
+                    : ""
+              }`,
+            )
+            .join("\n")
+          : "No skills available.",
+        "slate",
+      );
+      setTransientStatus(`skills: ${watchState.skillCatalog.length}`);
+      return;
+    }
+    if (rawType === "hooks.list") {
+      const hooks = Array.isArray(rawMessage?.payload) ? rawMessage.payload : [];
+      watchState.hookCatalog = hooks.map((hook) => ({
+        event: String(hook?.event ?? "").trim(),
+        name: String(hook?.name ?? "").trim(),
+        priority: Number.isFinite(Number(hook?.priority)) ? Number(hook.priority) : 100,
+        source: String(hook?.source ?? "runtime").trim() || "runtime",
+        kind: String(hook?.kind ?? "custom").trim() || "custom",
+        handlerType: String(hook?.handlerType ?? "runtime").trim() || "runtime",
+        target:
+          typeof hook?.target === "string" && hook.target.trim().length > 0
+            ? hook.target.trim()
+            : undefined,
+        supported: hook?.supported !== false,
+      }));
+      pushEvent(
+        "operator",
+        "Hooks",
+        watchState.hookCatalog.length > 0
+          ? watchState.hookCatalog
+              .map((hook) =>
+                `${hook.supported ? "●" : "○"} ${hook.event} :: ${hook.name} [${
+                  hook.source
+                }/${hook.kind}/${hook.handlerType}] p=${hook.priority}${
+                  hook.target ? ` -> ${hook.target}` : ""
+                }`,
+              )
+              .join("\n")
+          : "No hooks available.",
+        "slate",
+      );
+      setTransientStatus(`hooks: ${watchState.hookCatalog.length}`);
+      return;
+    }
     dispatchOperatorSurfaceEvent(surfaceEvent, rawMessage, surfaceDispatchApi);
   },
   scheduleRender,
@@ -1136,7 +1799,12 @@ watchTransportController = createWatchTransportController({
     authPayload,
     requestRunInspect,
     eventStore,
-    formatSessionSummaries,
+    formatSessionSummaries: (payload) =>
+      formatSessionSummaries(payload, {
+        sessionLabels: watchState.sessionLabels,
+        activeSessionId: watchState.sessionId,
+      }),
+    sessionQueryCandidates,
     latestSessionSummary: (payload, preferredSessionId = null) =>
       latestSessionSummary(payload, preferredSessionId, projectRoot),
     formatHistoryPayload,
@@ -1195,6 +1863,7 @@ watchFrameController = createWatchFrameController({
   plannerDagNodes,
   plannerDagEdges,
   workspaceFileIndex,
+  watchFeatureFlags,
   color,
   enableMouseTracking,
   launchedAtMs,
@@ -1224,6 +1893,7 @@ watchFrameController = createWatchFrameController({
   buildFileTagPaletteSummary,
   computeTranscriptPreviewMaxLines,
   splitTranscriptPreviewForHeadline,
+  currentInputPreferences,
   buildEventDisplayLines,
   wrapEventDisplayLines,
   wrapDisplayLines,
@@ -1281,6 +1951,7 @@ watchFrameController = createWatchFrameController({
 
 watchInputController = createWatchInputController({
   watchState,
+  currentInputPreferences,
   shuttingDown: () => shuttingDown,
   parseMouseWheelSequence,
   scrollCurrentViewBy,

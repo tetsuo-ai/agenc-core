@@ -35,6 +35,7 @@ import {
   createGenericRunDomain,
   createPipelineRunDomain,
   createRemoteMcpRunDomain,
+  createRemoteSessionRunDomain,
   createResearchRunDomain,
   createWorkspaceRunDomain,
   type RunDomain,
@@ -87,6 +88,7 @@ const WORKSPACE_RUN_DOMAIN = createWorkspaceRunDomain();
 const RESEARCH_RUN_DOMAIN = createResearchRunDomain();
 const PIPELINE_RUN_DOMAIN = createPipelineRunDomain();
 const REMOTE_MCP_RUN_DOMAIN = createRemoteMcpRunDomain();
+const REMOTE_SESSION_RUN_DOMAIN = createRemoteSessionRunDomain();
 
 // ---------------------------------------------------------------------------
 // Managed process policy helpers
@@ -1783,6 +1785,9 @@ export function getRunDomain(run: ActiveBackgroundRun): RunDomain<ActiveBackgrou
   }
   if (REMOTE_MCP_RUN_DOMAIN.matches(run)) {
     return REMOTE_MCP_RUN_DOMAIN as RunDomain<ActiveBackgroundRun>;
+  }
+  if (REMOTE_SESSION_RUN_DOMAIN.matches(run)) {
+    return REMOTE_SESSION_RUN_DOMAIN as RunDomain<ActiveBackgroundRun>;
   }
   return GENERIC_RUN_DOMAIN as RunDomain<ActiveBackgroundRun>;
 }

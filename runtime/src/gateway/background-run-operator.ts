@@ -180,6 +180,27 @@ export type BackgroundRunControlAction =
     readonly reason?: string;
   }
   | {
+    readonly action: "retry_from_step";
+    readonly sessionId: string;
+    readonly stepName: string;
+    readonly traceId?: string;
+    readonly reason?: string;
+  }
+  | {
+    readonly action: "retry_from_trace";
+    readonly sessionId: string;
+    readonly traceId: string;
+    readonly stepName?: string;
+    readonly reason?: string;
+  }
+  | {
+    readonly action: "fork_from_checkpoint";
+    readonly sessionId: string;
+    readonly targetSessionId: string;
+    readonly objective?: string;
+    readonly reason?: string;
+  }
+  | {
     readonly action: "verification_override";
     readonly sessionId: string;
     readonly override: {

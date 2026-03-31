@@ -49,6 +49,7 @@ export const DEFAULT_DISPATCH_QUEUE_MAX_PER_POOL: Record<
   research: 32,
   approval: 96,
   remote_mcp: 48,
+  remote_session: 48,
 };
 export const MAX_BACKGROUND_RUN_ALERTS = 16;
 

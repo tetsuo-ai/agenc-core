@@ -59,6 +59,30 @@ export interface HookResult {
   payload?: Record<string, unknown>;
 }
 
+export type HookHandlerSource = "builtin" | "runtime" | "config";
+
+export type HookHandlerKind =
+  | "lifecycle"
+  | "approval"
+  | "policy"
+  | "memory"
+  | "background"
+  | "progress"
+  | "script"
+  | "custom";
+
+export type HookHandlerType = "builtin" | "runtime" | "script";
+
+export interface HookHandlerDescriptor {
+  readonly name: string;
+  readonly priority: number;
+  readonly source: HookHandlerSource;
+  readonly kind: HookHandlerKind;
+  readonly handlerType: HookHandlerType;
+  readonly target?: string;
+  readonly supported: boolean;
+}
+
 /** A registered hook handler. */
 export interface HookHandler {
   /** Hook event to listen for. */
@@ -67,6 +91,16 @@ export interface HookHandler {
   readonly name: string;
   /** Priority (lower = runs first, default: 100). */
   readonly priority?: number;
+  /** Where the handler originated from. */
+  readonly source?: HookHandlerSource;
+  /** High-level runtime classification for operator UIs and diagnostics. */
+  readonly kind?: HookHandlerKind;
+  /** Implementation type behind this handler. */
+  readonly handlerType?: HookHandlerType;
+  /** Underlying runtime target or configured handler name/path. */
+  readonly target?: string;
+  /** Whether the handler is fully active versus metadata-only. */
+  readonly supported?: boolean;
   /** The handler function. */
   readonly handler: (context: HookContext) => Promise<HookResult>;
 }
@@ -108,6 +142,20 @@ export interface DispatchResult {
 // ============================================================================
 
 const DEFAULT_PRIORITY = 100;
+
+export function toHookHandlerDescriptor(
+  handler: HookHandler,
+): HookHandlerDescriptor {
+  return {
+    name: handler.name,
+    priority: handler.priority ?? DEFAULT_PRIORITY,
+    source: handler.source ?? "runtime",
+    kind: handler.kind ?? "custom",
+    handlerType: handler.handlerType ?? "runtime",
+    ...(handler.target ? { target: handler.target } : {}),
+    supported: handler.supported ?? true,
+  };
+}
 
 export interface HookDispatcherConfig {
   readonly logger?: Logger;
@@ -282,23 +330,14 @@ export class HookDispatcher {
     return [...(this.handlers.get(event) ?? [])];
   }
 
-  /** List all registered handler names, grouped by event. */
+  /** List all registered handlers, grouped by event. */
   listHandlers(): ReadonlyMap<
     HookEvent,
-    ReadonlyArray<{ name: string; priority: number }>
+    ReadonlyArray<HookHandlerDescriptor>
   > {
-    const result = new Map<
-      HookEvent,
-      ReadonlyArray<{ name: string; priority: number }>
-    >();
+    const result = new Map<HookEvent, ReadonlyArray<HookHandlerDescriptor>>();
     for (const [event, list] of this.handlers) {
-      result.set(
-        event,
-        list.map((h) => ({
-          name: h.name,
-          priority: h.priority ?? DEFAULT_PRIORITY,
-        })),
-      );
+      result.set(event, list.map((h) => toHookHandlerDescriptor(h)));
     }
     return result;
   }
@@ -321,18 +360,33 @@ export function createBuiltinHooks(): HookHandler[] {
       event: "tool:after",
       name: "tool-audit-logger",
       priority: 90,
+      source: "builtin",
+      kind: "lifecycle",
+      handlerType: "builtin",
+      target: "tool-audit-logger",
+      supported: true,
       handler: async () => ({ continue: true }),
     },
     {
       event: "gateway:startup",
       name: "boot-executor",
       priority: 10,
+      source: "builtin",
+      kind: "lifecycle",
+      handlerType: "builtin",
+      target: "boot-executor",
+      supported: true,
       handler: async () => ({ continue: true }),
     },
     {
       event: "tool:before",
       name: "approval-gate",
       priority: 5,
+      source: "builtin",
+      kind: "approval",
+      handlerType: "builtin",
+      target: "approval-gate",
+      supported: true,
       handler: async () => ({ continue: true }),
     },
   ];

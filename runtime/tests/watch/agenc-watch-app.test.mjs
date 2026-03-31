@@ -58,6 +58,7 @@ test("buildSurfaceSummaryCacheKey invalidates richer status chrome inputs", () =
     latestTool: "system.bash",
     latestToolState: "ok",
     queuedInputCount: 0,
+    pendingAttachmentCount: 0,
     eventsLength: 3,
     lastEventId: "evt-3",
     planCount: 2,
@@ -67,10 +68,47 @@ test("buildSurfaceSummaryCacheKey invalidates richer status chrome inputs", () =
     plannerStatus: "running",
     plannerNote: "waiting on validation",
     sessionId: "session:1234",
+    sessionLabel: "Roadmap branch",
     following: true,
     detailOpen: false,
     transcriptScrollOffset: 0,
     lastActivityAt: "15:47:00",
+    maintenanceStatus: {
+      generatedAt: 1_730_000_000_000,
+      sync: {
+        ownerSessionCount: 1,
+        activeSessionId: "session:1234",
+        activeSessionOwned: true,
+        durableRunsEnabled: true,
+        operatorAvailable: true,
+      },
+      memory: {
+        backendConfigured: true,
+        sessionCount: 2,
+        totalMessages: 11,
+        lastActiveAt: 1_730_000_010_000,
+        recentSessions: [{ id: "session:1234", messageCount: 11, lastActiveAt: 1_730_000_010_000 }],
+      },
+    },
+    workspaceIndex: {
+      ready: true,
+      error: null,
+      files: [{ path: "runtime/src/index.ts" }, { path: "runtime/src/watch/agenc-watch-app.mjs" }],
+    },
+    voiceCompanion: {
+      active: true,
+      connectionState: "connected",
+      companionState: "listening",
+      voice: "Ara",
+      mode: "vad",
+      sessionId: "voice:1234",
+      managedSessionId: "session:1234",
+      currentTask: null,
+      delegationStatus: "completed",
+      lastUserTranscript: "Ship status chrome",
+      lastAssistantTranscript: "Done.",
+      lastError: null,
+    },
   };
 
   const firstKey = buildSurfaceSummaryCacheKey(base);
@@ -86,10 +124,50 @@ test("buildSurfaceSummaryCacheKey invalidates richer status chrome inputs", () =
     ...base,
     activeAgentActivity: "running acceptance probe",
   });
+  const attachmentKey = buildSurfaceSummaryCacheKey({
+    ...base,
+    pendingAttachmentCount: 2,
+  });
+  const sessionLabelKey = buildSurfaceSummaryCacheKey({
+    ...base,
+    sessionLabel: "Release prep",
+  });
+  const maintenanceKey = buildSurfaceSummaryCacheKey({
+    ...base,
+    maintenanceStatus: {
+      ...base.maintenanceStatus,
+      memory: {
+        ...base.maintenanceStatus.memory,
+        totalMessages: 12,
+      },
+    },
+  });
+  const workspaceIndexKey = buildSurfaceSummaryCacheKey({
+    ...base,
+    workspaceIndex: {
+      ...base.workspaceIndex,
+      ready: false,
+      error: "index unavailable",
+      files: [],
+    },
+  });
+  const voiceKey = buildSurfaceSummaryCacheKey({
+    ...base,
+    voiceCompanion: {
+      ...base.voiceCompanion,
+      companionState: "delegating",
+      currentTask: "Run release validation",
+    },
+  });
 
   assert.notEqual(firstKey, fallbackKey);
   assert.notEqual(firstKey, runtimeKey);
   assert.notEqual(firstKey, agentKey);
+  assert.notEqual(firstKey, attachmentKey);
+  assert.notEqual(firstKey, sessionLabelKey);
+  assert.notEqual(firstKey, maintenanceKey);
+  assert.notEqual(firstKey, workspaceIndexKey);
+  assert.notEqual(firstKey, voiceKey);
 });
 
 test("latestSessionSummary prefers sessions from the current workspace root", () => {

@@ -147,6 +147,7 @@ interface ParsedDomainSignal {
     | "health"
     | "mcp"
     | "managed_process"
+    | "remote_session"
     | "generic";
   readonly eventType?: string;
   readonly toolName?: string;
@@ -160,6 +161,8 @@ interface ParsedDomainSignal {
   readonly status?: number;
   readonly jobId?: string;
   readonly serverName?: string;
+  readonly sessionHandleId?: string;
+  readonly remoteSessionId?: string;
   readonly source?: string;
   readonly error?: string;
   readonly failed: boolean;
@@ -220,6 +223,7 @@ function parseSignal(signal: BackgroundRunSignal): ParsedDomainSignal {
       category === "health" ||
       category === "mcp" ||
       category === "managed_process" ||
+      category === "remote_session" ||
       category === "generic"
         ? category
         : undefined,
@@ -235,6 +239,8 @@ function parseSignal(signal: BackgroundRunSignal): ParsedDomainSignal {
     status,
     jobId: asString(data?.jobId),
     serverName: asString(data?.serverName),
+    sessionHandleId: asString(data?.sessionHandleId),
+    remoteSessionId: asString(data?.remoteSessionId),
     source: asString(data?.source),
     error,
     failed:
@@ -720,6 +726,16 @@ function remoteMcpSignalMatches(info: ParsedDomainSignal): boolean {
   );
 }
 
+function remoteSessionSignalMatches(info: ParsedDomainSignal): boolean {
+  return (
+    info.category === "remote_session" ||
+    info.toolName?.startsWith("system.remoteSession") === true ||
+    (info.signal.type === "webhook" &&
+      typeof info.source === "string" &&
+      info.source.toLowerCase().includes("remote session"))
+  );
+}
+
 function browserCompletionSatisfied(
   run: RunDomainRun,
   info: ParsedDomainSignal,
@@ -960,6 +976,25 @@ function remoteMcpCompletionSatisfied(
       FINITE_COMPLETION_RE.test(info.signal.content) ||
       info.state === "completed" ||
       info.state === "succeeded" ||
+      info.status === 200
+    )
+  );
+}
+
+function remoteSessionCompletionSatisfied(
+  run: RunDomainRun,
+  info: ParsedDomainSignal,
+): boolean {
+  if (!allowsDeterministicCompletion(run)) {
+    return false;
+  }
+  return (
+    remoteSessionSignalMatches(info) &&
+    (
+      FINITE_COMPLETION_RE.test(info.signal.content) ||
+      info.state === "completed" ||
+      info.state === "succeeded" ||
+      info.state === "cancelled" ||
       info.status === 200
     )
   );
@@ -1418,6 +1453,77 @@ export function createRemoteMcpRunDomain(): RunDomain {
       }
       return safeToContinueVerification(
         "Remote MCP domain observed an explicit remote job event.",
+        info.signal.content,
+        run.contract.nextCheckMs,
+      );
+    },
+  };
+}
+
+export function createRemoteSessionRunDomain(): RunDomain {
+  return {
+    id: "remote_session",
+    matches: (run) => run.contract.domain === "remote_session",
+    plannerContract: () => [
+      ...domainPlannerContract("remote_session"),
+      "Treat remote session handles, message channels, viewer-only policy, and recorded events as durable evidence.",
+    ],
+    verifierContract: () =>
+      domainVerifierContract(
+        "remote_session",
+        "Remote interactive sessions should progress from explicit handle state, message delivery, and session events instead of assistant narration.",
+      ),
+    eventSubscriptions: () => [
+      "tool_result",
+      "external_event",
+      "webhook",
+      "approval",
+      "user_input",
+    ],
+    artifactContract: () => [
+      "Persist remote session handle IDs, remote session IDs, message events, viewer-only policy changes, and returned artifacts.",
+    ],
+    recoveryStrategy: () =>
+      "Recover the latest remote session handle and continue from the next durable session event, explicit status probe, or outbound follow-up message.",
+    retryPolicy: () => SIGNAL_PREFERRED_RETRY_POLICY,
+    summarizeStatus: (run) =>
+      latestSignal(run, remoteSessionSignalMatches)?.signal.content ??
+      summarizeFromRun(run),
+    detectBlocker: (run) => {
+      if (run.blocker) {
+        return verificationFromBlocker(run.blocker);
+      }
+      const info = latestSignal(run, remoteSessionSignalMatches);
+      const failure = detectSignalFailure(info, "tool_failure");
+      if (failure) {
+        return failure;
+      }
+      if (!info) {
+        return undefined;
+      }
+      if (
+        info.state === "failed" ||
+        info.state === "error" ||
+        (info.status ?? 0) >= 400
+      ) {
+        return blockedVerification(info.signal.content, "tool_failure");
+      }
+      return undefined;
+    },
+    detectDeterministicVerification: (run) => {
+      const info = latestSignal(run, remoteSessionSignalMatches);
+      if (!info) {
+        return undefined;
+      }
+      const failure = detectSignalFailure(info, "tool_failure");
+      if (failure) {
+        return failure;
+      }
+      if (remoteSessionCompletionSatisfied(run, info)) {
+        return successVerification(`${info.signal.content} Objective satisfied.`);
+      }
+      return safeToContinueVerification(
+        "Remote session domain observed an explicit remote session event.",
         info.signal.content,
         run.contract.nextCheckMs,
       );

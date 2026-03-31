@@ -307,6 +307,13 @@ export interface WebChatSkillSummary {
   name: string;
   description: string;
   enabled: boolean;
+  available?: boolean;
+  tier?: string;
+  sourcePath?: string;
+  tags?: string[];
+  primaryEnv?: string;
+  unavailableReason?: string;
+  missingRequirements?: string[];
 }
 
 function getSessionResumeAnchorResponseId(session: Session | undefined): string | undefined {
@@ -510,6 +517,18 @@ export interface CommandRegistryDaemonContext {
       };
     };
   }>;
+  getSessionPolicyState(sessionId: string): {
+    elevatedPatterns: readonly string[];
+    deniedPatterns: readonly string[];
+  };
+  updateSessionPolicyState(params: {
+    sessionId: string;
+    operation: "allow" | "deny" | "clear" | "reset";
+    pattern?: string;
+  }): {
+    elevatedPatterns: readonly string[];
+    deniedPatterns: readonly string[];
+  };
   getSubAgentRuntimeConfig(): ResolvedSubAgentRuntimeConfig | null;
   getActiveDelegationAggressiveness(
     config: ResolvedSubAgentRuntimeConfig,
@@ -973,13 +992,14 @@ export function createDaemonCommandRegistry(
   commandRegistry.register({
     name: "policy",
     description: "Show policy state or simulate a tool policy decision",
-    args: "[status|simulate <toolName> [jsonArgs]|credentials|revoke-credentials [credentialId]]",
+    args: "[status|simulate <toolName> [jsonArgs]|credentials|revoke-credentials [credentialId]|update <allow|deny|clear|reset> [pattern]]",
     global: true,
     handler: async (cmdCtx) => {
       const subcommand = cmdCtx.argv[0]?.toLowerCase();
       if (!subcommand || subcommand === "status") {
         const state = ctx.getPolicyEngineState();
         const policy = ctx.gateway?.config.policy;
+        const sessionPolicyState = ctx.getSessionPolicyState(cmdCtx.sessionId);
         await cmdCtx.reply(
           [
             `Policy engine: ${ctx.isPolicyEngineEnabled() ? "enabled" : "disabled"}`,
@@ -988,6 +1008,16 @@ export function createDaemonCommandRegistry(
             state
               ? `Circuit mode: ${state.mode} (recent violations: ${state.recentViolations})`
               : "Circuit mode: unavailable",
+            `Session allow patterns: ${
+              sessionPolicyState.elevatedPatterns.length > 0
+                ? sessionPolicyState.elevatedPatterns.join(", ")
+                : "none"
+            }`,
+            `Session deny patterns: ${
+              sessionPolicyState.deniedPatterns.length > 0
+                ? sessionPolicyState.deniedPatterns.join(", ")
+                : "none"
+            }`,
           ].join("\n"),
         );
         return;
@@ -1028,9 +1058,44 @@ export function createDaemonCommandRegistry(
         );
         return;
       }
+      if (subcommand === "update") {
+        const operation = cmdCtx.argv[1]?.trim().toLowerCase();
+        const pattern = cmdCtx.argv[2]?.trim();
+        if (
+          !operation ||
+          !["allow", "deny", "clear", "reset"].includes(operation) ||
+          (operation !== "reset" && (!pattern || pattern.length === 0))
+        ) {
+          await cmdCtx.reply(
+            "Usage: /policy update <allow|deny|clear|reset> [pattern]",
+          );
+          return;
+        }
+        const nextState = ctx.updateSessionPolicyState({
+          sessionId: cmdCtx.sessionId,
+          operation: operation as "allow" | "deny" | "clear" | "reset",
+          pattern,
+        });
+        await cmdCtx.reply(
+          [
+            `Policy update: ${operation}${pattern ? ` ${pattern}` : ""}`,
+            `Session allow patterns: ${
+              nextState.elevatedPatterns.length > 0
+                ? nextState.elevatedPatterns.join(", ")
+                : "none"
+            }`,
+            `Session deny patterns: ${
+              nextState.deniedPatterns.length > 0
+                ? nextState.deniedPatterns.join(", ")
+                : "none"
+            }`,
+          ].join("\n"),
+        );
+        return;
+      }
       if (subcommand !== "simulate") {
         await cmdCtx.reply(
-          "Usage: /policy [status|simulate <toolName> [jsonArgs]|credentials|revoke-credentials [credentialId]]",
+          "Usage: /policy [status|simulate <toolName> [jsonArgs]|credentials|revoke-credentials [credentialId]|update <allow|deny|clear|reset> [pattern]]",
         );
         return;
       }

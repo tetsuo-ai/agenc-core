@@ -6,6 +6,7 @@ import {
   createGenericRunDomain,
   createPipelineRunDomain,
   createRemoteMcpRunDomain,
+  createRemoteSessionRunDomain,
   createResearchRunDomain,
   createWorkspaceRunDomain,
   verificationSupportsContinuation,
@@ -441,6 +442,42 @@ describe("run-domains", () => {
             category: "mcp",
             jobId: "job-42",
             serverName: "remote-job-server",
+            state: "completed",
+            failed: false,
+          },
+        },
+      ],
+    });
+
+    expect(domain.detectDeterministicVerification(run)).toMatchObject({
+      state: "success",
+    });
+  });
+
+  it("remote session domain completes from explicit remote session completion events", () => {
+    const domain = createRemoteSessionRunDomain();
+    const run = makeRun({
+      objective: "Wait for the interactive remote session to finish cleanly.",
+      contract: {
+        domain: "remote_session",
+        kind: "finite",
+        successCriteria: ["Observe the remote session complete."],
+        completionCriteria: ["Receive a completion event from the remote session handle."],
+        blockedCriteria: ["Remote session fails."],
+        nextCheckMs: 4_000,
+        requiresUserStop: false,
+      },
+      pendingSignals: [
+        {
+          id: "sig-remote-session-complete",
+          type: "tool_result",
+          content: "Remote session remote-42 reported completed via system.remoteSessionStatus.",
+          timestamp: 7,
+          data: {
+            category: "remote_session",
+            sessionHandleId: "rsess_123",
+            remoteSessionId: "remote-42",
+            serverName: "coord",
             state: "completed",
             failed: false,
           },

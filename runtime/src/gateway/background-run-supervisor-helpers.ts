@@ -896,6 +896,7 @@ export function sanitizeWorkerPools(
     "research",
     "approval",
     "remote_mcp",
+    "remote_session",
   ];
   const normalized = [...new Set<BackgroundRunWorkerPool>(pools ?? defaults)];
   return normalized;
@@ -994,6 +995,8 @@ export function resolveWorkerPool(
       return "approval";
     case "remote_mcp":
       return "remote_mcp";
+    case "remote_session":
+      return "remote_session";
     case "managed_process": {
       const desktopObserved = run.observedTargets.some(
         (target) => target.kind === "managed_process" && target.surface === "desktop",
@@ -1380,7 +1383,7 @@ export function buildContractPrompt(objective: string): string {
   return (
     `User objective:\n${objective}\n\n` +
     "Return JSON only in this shape:\n" +
-    '{"domain":"generic|managed_process|approval|browser|desktop_gui|workspace|research|pipeline|remote_mcp","kind":"finite|until_condition|until_stopped","successCriteria":["..."],"completionCriteria":["..."],"blockedCriteria":["..."],"nextCheckMs":8000,"heartbeatMs":15000,"requiresUserStop":false,"managedProcessPolicy":{"mode":"none|until_exit|keep_running|restart_on_exit","maxRestarts":5,"restartBackoffMs":5000}}\n\n' +
+    '{"domain":"generic|managed_process|approval|browser|desktop_gui|workspace|research|pipeline|remote_mcp|remote_session","kind":"finite|until_condition|until_stopped","successCriteria":["..."],"completionCriteria":["..."],"blockedCriteria":["..."],"nextCheckMs":8000,"heartbeatMs":15000,"requiresUserStop":false,"managedProcessPolicy":{"mode":"none|until_exit|keep_running|restart_on_exit","maxRestarts":5,"restartBackoffMs":5000}}\n\n' +
     "Rules:\n" +
     "- Choose the domain that best matches the primary runtime surface being supervised.\n" +
     "- Use until_stopped only when the user explicitly says the task should continue until they stop it.\n" +

@@ -235,6 +235,42 @@ export class VoiceBridge {
     return this.sessions.size;
   }
 
+  private buildSessionStatePayload(
+    clientId: string,
+    connectionState: string,
+    overrides: Record<string, unknown> = {},
+  ) {
+    const session = this.sessions.get(clientId);
+    const normalizedConnectionState =
+      typeof connectionState === "string" && connectionState.trim().length > 0
+        ? connectionState.trim()
+        : "unknown";
+    let companionState = "listening";
+    let active = true;
+    if (
+      normalizedConnectionState === "connecting" ||
+      normalizedConnectionState === "reconnecting"
+    ) {
+      companionState = "connecting";
+    } else if (normalizedConnectionState === "disconnected") {
+      companionState = "stopped";
+      active = false;
+    } else if (normalizedConnectionState === "error") {
+      companionState = "error";
+      active = false;
+    }
+    return {
+      active,
+      connectionState: normalizedConnectionState,
+      companionState,
+      sessionId: session?.sessionId ?? null,
+      managedSessionId: session?.managedSessionId ?? null,
+      voice: this.config.voice ?? "Ara",
+      mode: this.config.mode === "push-to-talk" ? "push-to-talk" : "vad",
+      ...overrides,
+    };
+  }
+
   /**
    * Start a voice session for a client.
    *
@@ -359,7 +395,15 @@ export class VoiceBridge {
       // Inject session history so xAI has context on reconnect
       this.injectSessionContext(client, managedSessionId);
 
-      send({ type: VM.STARTED });
+      send({
+        type: VM.STARTED,
+        payload: this.buildSessionStatePayload(clientId, "connected", {
+          active: true,
+          companionState: "listening",
+          sessionId: effectiveSessionId,
+          managedSessionId,
+        }),
+      });
       this.logger?.info?.(
         `Voice session started for client ${clientId} (delegation mode)`,
       );
@@ -396,7 +440,15 @@ export class VoiceBridge {
     session.delegationAbort?.abort();
     session.client.close();
     this.sessions.delete(clientId);
-    session.send({ type: VM.STOPPED });
+    session.send({
+      type: VM.STOPPED,
+      payload: this.buildSessionStatePayload(clientId, "disconnected", {
+        active: false,
+        companionState: "stopped",
+        sessionId: session.sessionId,
+        managedSessionId: session.managedSessionId,
+      }),
+    });
     this.logger?.info?.(`Voice session stopped for client ${clientId}`);
   }
 
@@ -612,7 +664,10 @@ export class VoiceBridge {
         send({ type: VM.ERROR, payload: { message: error.message, code: error.code } });
       },
       onConnectionStateChange: (state: string) => {
-        send({ type: VM.STATE, payload: { connectionState: state } });
+        send({
+          type: VM.STATE,
+          payload: this.buildSessionStatePayload(clientId, state),
+        });
       },
     };
   }

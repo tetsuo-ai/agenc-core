@@ -23,6 +23,8 @@ import type { ApprovalEffectRef, ApprovalEngine } from './approvals.js';
 import {
   EXECUTE_WITH_AGENT_TOOL_NAME,
 } from './delegation-tool.js';
+import { COORDINATOR_MODE_TOOL_NAME } from "./coordinator-tool.js";
+import { executeCoordinatorModeTool } from "./tool-handler-factory-coordinator.js";
 import {
   isSubAgentSessionId,
   type DelegationToolCompositionResolver,
@@ -2938,24 +2940,44 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
     const routedHandler = desktopRouterFactory
       ? desktopRouterFactory(routerId, availableToolNames)
       : baseHandler;
-    const activeHandler: ToolHandler = toolName === EXECUTE_WITH_AGENT_TOOL_NAME
-      ? async (_toolName, toolArgs) =>
-        executeDelegationTool({
-          toolArgs,
-          name: toolName,
-          sessionId,
-          toolCallId,
-          subAgentManager,
-          lifecycleEmitter,
-          verifier,
-          availableToolNames,
-          defaultWorkingDirectory: effectiveDefaultWorkingDirectory,
-          parentAllowedReadRoots: delegatedParentAllowedRoots,
-          parentAllowedWriteRoots: delegatedParentAllowedRoots,
-          delegationThreshold: policyEngine?.snapshot().spawnDecisionThreshold,
-          unsafeBenchmarkMode,
-        })
-      : routedHandler;
+    const activeHandler: ToolHandler =
+      toolName === EXECUTE_WITH_AGENT_TOOL_NAME
+        ? async (_toolName, toolArgs) =>
+          executeDelegationTool({
+            toolArgs,
+            name: toolName,
+            sessionId,
+            toolCallId,
+            subAgentManager,
+            lifecycleEmitter,
+            verifier,
+            availableToolNames,
+            defaultWorkingDirectory: effectiveDefaultWorkingDirectory,
+            parentAllowedReadRoots: delegatedParentAllowedRoots,
+            parentAllowedWriteRoots: delegatedParentAllowedRoots,
+            delegationThreshold:
+              policyEngine?.snapshot().spawnDecisionThreshold,
+            unsafeBenchmarkMode,
+          })
+        : toolName === COORDINATOR_MODE_TOOL_NAME
+          ? async (_toolName, toolArgs) =>
+            executeCoordinatorModeTool({
+              toolArgs,
+              name: toolName,
+              sessionId,
+              toolCallId,
+              subAgentManager,
+              lifecycleEmitter,
+              verifier,
+              availableToolNames,
+              defaultWorkingDirectory: effectiveDefaultWorkingDirectory,
+              parentAllowedReadRoots: delegatedParentAllowedRoots,
+              parentAllowedWriteRoots: delegatedParentAllowedRoots,
+              delegationThreshold:
+                policyEngine?.snapshot().spawnDecisionThreshold,
+              unsafeBenchmarkMode,
+            })
+          : routedHandler;
 
     if (toolName === 'system.writeFile') {
       const targetPath = resolveFilesystemTargetPath(

@@ -166,6 +166,10 @@ function isHttpHealthTool(toolName: string): boolean {
   );
 }
 
+function isRemoteSessionTool(toolName: string): boolean {
+  return toolName.startsWith("system.remoteSession");
+}
+
 function buildManagedProcessToolSignal(
   payload: BackgroundRunToolResultPayload,
   parsed: Record<string, unknown> | null,
@@ -387,6 +391,76 @@ function buildMcpToolSignal(
       ...(jobId ? { jobId } : {}),
       ...(state ? { state } : {}),
       ...(typeof status === "number" ? { status } : {}),
+      ...(errorText ? { error: errorText } : {}),
+    },
+  };
+}
+
+function buildRemoteSessionToolSignal(
+  payload: BackgroundRunToolResultPayload,
+  parsed: Record<string, unknown> | null,
+  failed: boolean,
+): BackgroundRunWakeSignalDescriptor {
+  const errorText = extractToolResultError(parsed);
+  const sessionHandleId =
+    asTrimmedString(parsed?.sessionHandleId) ??
+    asTrimmedString(payload.args.sessionHandleId);
+  const remoteSessionId =
+    asTrimmedString(parsed?.remoteSessionId) ??
+    asTrimmedString(parsed?.sessionId) ??
+    asTrimmedString(payload.args.remoteSessionId) ??
+    asTrimmedString(payload.args.sessionId);
+  const serverName =
+    asTrimmedString(parsed?.serverName) ??
+    asTrimmedString(payload.args.serverName);
+  const state = asTrimmedString(parsed?.state);
+  const status =
+    typeof parsed?.status === "number"
+      ? parsed.status
+      : typeof parsed?.lastStatusCode === "number"
+        ? parsed.lastStatusCode
+        : typeof parsed?.statusCode === "number"
+          ? parsed.statusCode
+          : undefined;
+  const delivered =
+    typeof parsed?.delivered === "boolean" ? parsed.delivered : undefined;
+  const viewerOnly =
+    typeof parsed?.viewerOnly === "boolean" ? parsed.viewerOnly : undefined;
+  const target =
+    remoteSessionId ??
+    sessionHandleId ??
+    serverName ??
+    payload.toolName;
+  let content: string;
+  if (failed) {
+    content =
+      `Remote session tool ${payload.toolName} failed` +
+      (errorText ? `: ${errorText}` : ".");
+  } else if (payload.toolName === "system.remoteSessionSend") {
+    content =
+      `Remote session message ${delivered === false ? "failed delivery" : "delivered"} ` +
+      `for ${target}.`;
+  } else if (state) {
+    content = `Remote session ${target} reported ${state} via ${payload.toolName}.`;
+  } else {
+    content = `Remote session event observed for ${target} via ${payload.toolName}.`;
+  }
+  return {
+    type: "tool_result",
+    content: truncate(content),
+    data: {
+      toolName: payload.toolName,
+      toolCallId: payload.toolCallId,
+      category: "remote_session",
+      failed,
+      durationMs: payload.durationMs,
+      ...(serverName ? { serverName } : {}),
+      ...(sessionHandleId ? { sessionHandleId } : {}),
+      ...(remoteSessionId ? { remoteSessionId } : {}),
+      ...(state ? { state } : {}),
+      ...(typeof status === "number" ? { status } : {}),
+      ...(typeof delivered === "boolean" ? { delivered } : {}),
+      ...(typeof viewerOnly === "boolean" ? { viewerOnly } : {}),
       ...(errorText ? { error: errorText } : {}),
     },
   };
@@ -619,6 +693,9 @@ export function buildBackgroundRunSignalFromToolResult(
   if (isHttpHealthTool(payload.toolName)) {
     return buildHealthToolSignal(payload, parsed, failed);
   }
+  if (isRemoteSessionTool(payload.toolName)) {
+    return buildRemoteSessionToolSignal(payload, parsed, failed);
+  }
   if (payload.toolName.startsWith("mcp.")) {
     return buildMcpToolSignal(payload, parsed, failed);
   }
@@ -632,6 +709,11 @@ export function createBackgroundRunToolAfterHook(
   return {
     event: "tool:after",
     name: "background-run-tool-result-adapter",
+    source: "runtime",
+    kind: "background",
+    handlerType: "runtime",
+    target: "background-run-supervisor",
+    supported: true,
     handler: async (context) => {
       const sessionId = asTrimmedString(context.payload.sessionId);
       const toolName = asTrimmedString(context.payload.toolName);

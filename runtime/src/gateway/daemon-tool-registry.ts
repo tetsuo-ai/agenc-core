@@ -27,6 +27,10 @@ import {
   createRemoteJobTools,
   SystemRemoteJobManager,
 } from "../tools/system/remote-job.js";
+import {
+  createRemoteSessionTools,
+  SystemRemoteSessionManager,
+} from "../tools/system/remote-session.js";
 import { createResearchTools } from "../tools/system/research.js";
 import { createSandboxTools } from "../tools/system/sandbox-handle.js";
 import { createServerTools } from "../tools/system/server.js";
@@ -34,6 +38,7 @@ import { createSqliteTools } from "../tools/system/sqlite.js";
 import { createSpreadsheetTools } from "../tools/system/spreadsheet.js";
 import { resolveBrowserToolMode } from "./browser-tool-mode.js";
 import { createExecuteWithAgentTool } from "./delegation-tool.js";
+import { createCoordinatorModeTool } from "./coordinator-tool.js";
 import { loadWallet } from "./wallet-loader.js";
 import {
   buildAllowedFilesystemPaths,
@@ -78,6 +83,7 @@ function prependPathEntry(
 export interface ToolRegistrySideEffects {
   registry: ToolRegistry;
   remoteJobManager: SystemRemoteJobManager;
+  remoteSessionManager: SystemRemoteSessionManager;
   containerMCPConfigs: GatewayMCPServerConfig[];
   mcpManager: import("../mcp-client/manager.js").MCPManager | null;
   connectionManager: ConnectionManager | null;
@@ -192,6 +198,10 @@ export async function createDaemonToolRegistry(
     logger,
     callbackBaseUrl: `http://127.0.0.1:${callbackPort}`,
   });
+  const remoteSessionManager = new SystemRemoteSessionManager({
+    logger,
+    callbackBaseUrl: `http://127.0.0.1:${callbackPort}`,
+  });
   registry.registerAll(
     createRemoteJobTools(
       {
@@ -199,6 +209,15 @@ export async function createDaemonToolRegistry(
         callbackBaseUrl: `http://127.0.0.1:${callbackPort}`,
       },
       remoteJobManager,
+    ),
+  );
+  registry.registerAll(
+    createRemoteSessionTools(
+      {
+        logger,
+        callbackBaseUrl: `http://127.0.0.1:${callbackPort}`,
+      },
+      remoteSessionManager,
     ),
   );
   registry.registerAll(
@@ -289,6 +308,7 @@ export async function createDaemonToolRegistry(
     ),
   );
   registry.register(createExecuteWithAgentTool());
+  registry.register(createCoordinatorModeTool());
   const walletResult = await loadWallet(config);
   if (config.social?.enabled) {
     try {
@@ -600,6 +620,7 @@ export async function createDaemonToolRegistry(
   return {
     registry,
     remoteJobManager,
+    remoteSessionManager,
     containerMCPConfigs,
     mcpManager,
     connectionManager,

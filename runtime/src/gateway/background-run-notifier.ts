@@ -72,11 +72,14 @@ function mapInternalEventType(
     case "run_compaction_forced":
     case "run_worker_reassigned":
     case "run_retried":
+    case "run_retried_from_step":
+    case "run_retried_from_trace":
     case "run_verification_overridden":
       return "run_controlled";
     case "run_recovered":
     case "run_signalled":
     case "run_suspended":
+    case "run_forked":
     case "cycle_started":
     case "cycle_working":
     case "decision":

@@ -934,6 +934,27 @@ export class BackgroundRunSupervisor {
       case "retry_from_checkpoint":
         await this.retryRunFromCheckpoint(action.sessionId, action.reason);
         break;
+      case "retry_from_step":
+        await this.retryRunFromStep(action.sessionId, {
+          stepName: action.stepName,
+          traceId: action.traceId,
+          reason: action.reason,
+        });
+        break;
+      case "retry_from_trace":
+        await this.retryRunFromTrace(action.sessionId, {
+          traceId: action.traceId,
+          stepName: action.stepName,
+          reason: action.reason,
+        });
+        break;
+      case "fork_from_checkpoint":
+        await this.forkRunFromCheckpoint(action.sessionId, {
+          targetSessionId: action.targetSessionId,
+          objective: action.objective,
+          reason: action.reason,
+        });
+        return this.getOperatorDetail(action.targetSessionId);
       case "verification_override":
         await this.applyVerificationOverride(action.sessionId, action.override);
         break;
@@ -2740,6 +2761,186 @@ export class BackgroundRunSupervisor {
     await this.publishUpdate(sessionId, run.lastUserUpdate);
     await this.enqueueDispatchForSession({
       sessionId,
+      reason: "recovery",
+      availableAt: now,
+      preferredWorkerId: run.preferredWorkerId,
+    });
+    return true;
+  }
+
+  async retryRunFromStep(
+    sessionId: string,
+    params: {
+      stepName: string;
+      traceId?: string;
+      reason?: string;
+    },
+  ): Promise<boolean> {
+    const stepName = params.stepName.trim();
+    if (!stepName) {
+      return false;
+    }
+    const reason = params.reason?.trim() || [
+      `Retrying the durable run from its latest checkpoint for step "${stepName}".`,
+      params.traceId ? `Trace: ${params.traceId}.` : null,
+    ]
+      .filter(Boolean)
+      .join(" ");
+    const retried = await this.retryRunFromCheckpoint(sessionId, reason);
+    if (!retried) {
+      return false;
+    }
+    const detail = await this.getOperatorDetail(sessionId);
+    const runId = detail?.runId;
+    if (runId) {
+      await this.runStore.appendEvent(
+        {
+          id: runId,
+          sessionId,
+        },
+        {
+          type: "run_retried_from_step",
+          summary: truncate(`Retried from step "${stepName}".`, 200),
+          timestamp: this.now(),
+          data: {
+            stepName,
+            ...(params.traceId ? { traceId: params.traceId } : {}),
+          },
+        },
+      );
+    }
+    return true;
+  }
+
+  async retryRunFromTrace(
+    sessionId: string,
+    params: {
+      traceId: string;
+      stepName?: string;
+      reason?: string;
+    },
+  ): Promise<boolean> {
+    const traceId = params.traceId.trim();
+    if (!traceId) {
+      return false;
+    }
+    const reason = params.reason?.trim() || [
+      `Retrying the durable run from its latest checkpoint for trace "${traceId}".`,
+      params.stepName?.trim() ? `Step: ${params.stepName.trim()}.` : null,
+    ]
+      .filter(Boolean)
+      .join(" ");
+    const retried = await this.retryRunFromCheckpoint(sessionId, reason);
+    if (!retried) {
+      return false;
+    }
+    const detail = await this.getOperatorDetail(sessionId);
+    const runId = detail?.runId;
+    if (runId) {
+      await this.runStore.appendEvent(
+        {
+          id: runId,
+          sessionId,
+        },
+        {
+          type: "run_retried_from_trace",
+          summary: truncate(`Retried from trace "${traceId}".`, 200),
+          timestamp: this.now(),
+          data: {
+            traceId,
+            ...(params.stepName?.trim() ? { stepName: params.stepName.trim() } : {}),
+          },
+        },
+      );
+    }
+    return true;
+  }
+
+  async forkRunFromCheckpoint(
+    sessionId: string,
+    params: {
+      targetSessionId: string;
+      objective?: string;
+      reason?: string;
+    },
+  ): Promise<boolean> {
+    const targetSessionId = params.targetSessionId.trim();
+    if (!targetSessionId || targetSessionId === sessionId) {
+      return false;
+    }
+    const [targetRun, targetCheckpoint] = await Promise.all([
+      this.runStore.loadRun(targetSessionId),
+      this.runStore.loadCheckpoint(targetSessionId),
+    ]);
+    if (targetRun || targetCheckpoint || this.activeRuns.has(targetSessionId)) {
+      throw new Error(
+        `Target session "${targetSessionId}" already has an active or checkpointed durable run.`,
+      );
+    }
+
+    const source =
+      (await this.runStore.loadRun(sessionId)) ??
+      (await this.runStore.loadCheckpoint(sessionId));
+    if (!source) {
+      return false;
+    }
+
+    const now = this.now();
+    const run = toActiveRun(source);
+    run.id = `bg-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    run.sessionId = targetSessionId;
+    run.objective = params.objective?.trim() || source.objective;
+    run.state = "pending";
+    run.updatedAt = now;
+    run.createdAt = now;
+    run.cycleCount = 0;
+    run.stableWorkingCycles = 0;
+    run.consecutiveErrorCycles = 0;
+    run.nextCheckAt = undefined;
+    run.nextHeartbeatAt = undefined;
+    run.lastWakeReason = "recovery";
+    run.lastHeartbeatContent = undefined;
+    run.lastUserUpdate = truncate(
+      params.reason?.trim() ||
+        `Forked background run from ${sessionId} into ${targetSessionId}.`,
+      MAX_USER_UPDATE_CHARS,
+    );
+    run.pendingSignals = [];
+    run.leaseOwnerId = undefined;
+    run.leaseExpiresAt = undefined;
+    run.preferredWorkerId = this.instanceId;
+    run.workerAffinityKey = resolveWorkerAffinityKey(run);
+    clearRunBlockers(run);
+    run.abortController = null;
+    run.timer = null;
+    run.heartbeatTimer = null;
+    run.policyScope = this.resolveRunPolicyScope(run);
+    if (run.lineage) {
+      run.lineage = {
+        ...run.lineage,
+        parentRunId: source.id,
+        rootRunId: run.lineage.rootRunId || source.id,
+        depth: run.lineage.depth + 1,
+        childRunIds: [],
+      };
+    }
+
+    await this.persistRun(run, {
+      type: "run_forked",
+      summary: truncate(
+        `Forked from ${sessionId} into ${targetSessionId}: ${run.lastUserUpdate}`,
+        200,
+      ),
+      timestamp: now,
+      data: {
+        sourceSessionId: sessionId,
+        sourceRunId: source.id,
+      },
+    });
+    await this.runStore.saveCheckpoint(toPersistedRun(run));
+    await this.publishUpdate(targetSessionId, run.lastUserUpdate);
+    await this.enqueueDispatchForSession({
+      sessionId: targetSessionId,
       reason: "recovery",
       availableAt: now,
       preferredWorkerId: run.preferredWorkerId,

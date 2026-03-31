@@ -70,6 +70,11 @@ export {
 } from "./remote-job.js";
 
 export {
+  createRemoteSessionTools,
+  SystemRemoteSessionManager,
+} from "./remote-session.js";
+
+export {
   createResearchTools,
   SystemResearchManager,
 } from "./research.js";
@@ -93,6 +98,7 @@ export {
   type SystemProcessToolConfig,
   type SystemServerToolConfig,
   type SystemRemoteJobToolConfig,
+  type SystemRemoteSessionToolConfig,
   type SystemResearchToolConfig,
   type SystemSandboxToolConfig,
   type SystemSandboxWorkspaceAccessMode,

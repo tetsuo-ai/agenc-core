@@ -132,9 +132,8 @@ import {
   normalizeRuntimeLimit,
 } from "../llm/runtime-limit-policy.js";
 import { ToolRegistry } from "../tools/registry.js";
-import {
-  SystemRemoteJobManager,
-} from "../tools/system/remote-job.js";
+import { SystemRemoteJobManager } from "../tools/system/remote-job.js";
+import { SystemRemoteSessionManager } from "../tools/system/remote-session.js";
 import { DEFAULT_TIMEOUT_MS as DEFAULT_BASH_TOOL_TIMEOUT_MS } from "../tools/system/types.js";
 import {
   SkillDiscovery,
@@ -188,7 +187,12 @@ import {
   buildSystemPrompt,
   resolveActiveHostWorkspacePath,
 } from "./system-prompt-builder.js";
-import { HookDispatcher, createBuiltinHooks } from "./hooks.js";
+import {
+  HookDispatcher,
+  createBuiltinHooks,
+  type HookConfig,
+  type HookHandler,
+} from "./hooks.js";
 import {
   runModelBackedProjectGuide,
 } from "./init-runner.js";
@@ -1138,6 +1142,7 @@ export class DaemonManager {
   private _backgroundRunSupervisor: BackgroundRunSupervisor | null = null;
   private _durableSubrunOrchestrator: DurableSubrunOrchestrator | null = null;
   private _remoteJobManager: SystemRemoteJobManager | null = null;
+  private _remoteSessionManager: SystemRemoteSessionManager | null = null;
   private _sessionModelInfo = new Map<
     string,
     {
@@ -2099,6 +2104,7 @@ export class DaemonManager {
       },
       getDaemonStatus: () => this.getStatus(),
       skills: skillList,
+      hooks,
       voiceBridge,
       memoryBackend,
       approvalEngine: approvalEngine ?? undefined,
@@ -2331,6 +2337,23 @@ export class DaemonManager {
         },
       });
     }
+    if (this._remoteSessionManager) {
+      gateway.registerWebhookRoute({
+        method: "POST",
+        path: "/webhooks/remote-session/:sessionHandleId",
+        handler: async (req) => {
+          const response = await this._remoteSessionManager!.handleWebhook({
+            sessionHandleId: String(req.params?.sessionHandleId ?? ""),
+            headers: req.headers,
+            body: req.body,
+          });
+          return {
+            status: response.status,
+            body: response.body,
+          };
+        },
+      });
+    }
     this.attachSubAgentLifecycleBridge(webChat);
 
     this.registerWebChatConfigReloadHandler({
@@ -2372,6 +2395,27 @@ export class DaemonManager {
       name: entry.skill.name,
       description: entry.skill.description,
       enabled: entry.available,
+      available: entry.available,
+      tier: entry.tier,
+      ...(entry.skill.sourcePath
+        ? { sourcePath: entry.skill.sourcePath }
+        : {}),
+      ...(entry.skill.metadata.tags.length > 0
+        ? { tags: [...entry.skill.metadata.tags] }
+        : {}),
+      ...(entry.skill.metadata.primaryEnv
+        ? { primaryEnv: entry.skill.metadata.primaryEnv }
+        : {}),
+      ...(entry.unavailableReason
+        ? { unavailableReason: entry.unavailableReason }
+        : {}),
+      ...(entry.missingRequirements && entry.missingRequirements.length > 0
+        ? {
+            missingRequirements: entry.missingRequirements.map(
+              (requirement) => requirement.message,
+            ),
+          }
+        : {}),
     }));
     const skillToggle = (name: string, enabled: boolean): void => {
       const skill = skillList.find((entry) => entry.name === name);
@@ -3531,12 +3575,85 @@ export class DaemonManager {
     config: GatewayConfig,
   ): Promise<HookDispatcher> {
     const hooks = new HookDispatcher({ logger: this.logger });
-    for (const hook of createBuiltinHooks()) {
+    const builtinHooks = createBuiltinHooks();
+    for (const hook of builtinHooks) {
       hooks.on(hook);
     }
+    this.registerConfiguredHooks(config.hooks, hooks, builtinHooks);
     this._hookDispatcher = hooks;
     await hooks.dispatch("gateway:startup", { config });
     return hooks;
+  }
+
+  private registerConfiguredHooks(
+    config: HookConfig | undefined,
+    hooks: HookDispatcher,
+    builtinHooks: readonly HookHandler[],
+  ): void {
+    const entries = config?.handlers;
+    if (!entries || entries.length === 0) {
+      return;
+    }
+    const builtinRegistry = new Map(
+      builtinHooks.map((handler) => [handler.name, handler] as const),
+    );
+    for (const entry of entries) {
+      if (entry.enabled === false) continue;
+      const configured = this.createConfiguredHookHandler(
+        entry,
+        builtinRegistry,
+      );
+      if (!configured) continue;
+      hooks.on(configured);
+      if (entry.type === "script") {
+        this.logger.warn(
+          `Configured hook "${entry.name}" points to script "${entry.handler}", but script hook execution is not implemented yet; registered as metadata-only.`,
+        );
+      }
+    }
+  }
+
+  private createConfiguredHookHandler(
+    entry: NonNullable<HookConfig["handlers"]>[number],
+    builtinRegistry: ReadonlyMap<string, HookHandler>,
+  ): HookHandler | null {
+    if (entry.type === "builtin") {
+      const template = builtinRegistry.get(entry.handler);
+      if (!template) {
+        this.logger.warn(
+          `Configured hook "${entry.name}" references unknown builtin handler "${entry.handler}"`,
+        );
+        return null;
+      }
+      if (template.event !== entry.event) {
+        this.logger.warn(
+          `Configured hook "${entry.name}" declares event "${entry.event}" but builtin "${entry.handler}" handles "${template.event}"`,
+        );
+        return null;
+      }
+      return {
+        ...template,
+        event: template.event,
+        name: entry.name,
+        priority: entry.priority ?? template.priority,
+        source: "config",
+        handlerType: "builtin",
+        target: entry.handler,
+        supported: true,
+      };
+    }
+
+    return {
+      event: entry.event,
+      name: entry.name,
+      priority: entry.priority,
+      source: "config",
+      kind: "script",
+      handlerType: "script",
+      target: entry.handler,
+      supported: false,
+      handler: async () => ({ continue: true }),
+    };
   }
 
   private async createToolRegistry(
@@ -3554,6 +3671,7 @@ export class DaemonManager {
       getCollaborationProtocol: () => this._collaborationProtocol,
     }, metrics);
     this._remoteJobManager = result.remoteJobManager;
+    this._remoteSessionManager = result.remoteSessionManager;
     this._containerMCPConfigs = result.containerMCPConfigs;
     this._mcpManager = result.mcpManager;
     this._connectionManager = result.connectionManager;
@@ -3782,6 +3900,16 @@ export class DaemonManager {
         this.resolvePolicyScopeForSession(params),
       buildPolicySimulationPreview: (params) =>
         this.buildPolicySimulationPreview(params),
+      getSessionPolicyState: (sessionId) =>
+        this._approvalEngine?.getSessionPolicyState(sessionId) ?? {
+          elevatedPatterns: [],
+          deniedPatterns: [],
+        },
+      updateSessionPolicyState: (params) =>
+        this._approvalEngine?.applySessionPolicyMutation(params) ?? {
+          elevatedPatterns: [],
+          deniedPatterns: [],
+        },
       getSubAgentRuntimeConfig: () => this._subAgentRuntimeConfig,
       getActiveDelegationAggressiveness: (config) =>
         this.getActiveDelegationAggressiveness(config),

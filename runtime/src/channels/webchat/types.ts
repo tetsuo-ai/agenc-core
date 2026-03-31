@@ -11,6 +11,13 @@
 export type { WebChatHandler } from "../../gateway/types.js";
 import type { GatewayStatus } from "../../gateway/types.js";
 import type {
+  HookDispatcher,
+  HookEvent,
+  HookHandlerKind,
+  HookHandlerSource,
+  HookHandlerType,
+} from "../../gateway/hooks.js";
+import type {
   BackgroundRunOperatorAvailability,
   BackgroundRunControlAction,
   BackgroundRunOperatorDetail,
@@ -45,6 +52,30 @@ import type {
 /**
  * Dependencies injected into the WebChatChannel at construction time.
  */
+export interface WebChatSkillListEntry {
+  name: string;
+  description: string;
+  enabled: boolean;
+  available?: boolean;
+  tier?: string;
+  sourcePath?: string;
+  tags?: string[];
+  primaryEnv?: string;
+  unavailableReason?: string;
+  missingRequirements?: string[];
+}
+
+export interface WebChatHookListEntry {
+  event: HookEvent;
+  name: string;
+  priority: number;
+  source: HookHandlerSource;
+  kind: HookHandlerKind;
+  handlerType: HookHandlerType;
+  target?: string;
+  supported: boolean;
+}
+
 export interface WebChatDeps {
   /** Gateway instance for status queries. */
   gateway: {
@@ -65,11 +96,9 @@ export interface WebChatDeps {
     };
   };
   /** Optional tool listing for tools.list handler. */
-  skills?: ReadonlyArray<{
-    name: string;
-    description: string;
-    enabled: boolean;
-  }>;
+  skills?: ReadonlyArray<WebChatSkillListEntry>;
+  /** Optional hook listing for hooks.list handler. */
+  hooks?: HookDispatcher;
   /** Optional voice bridge for real-time voice sessions. */
   voiceBridge?: import("../../gateway/voice-bridge.js").VoiceBridge;
   /** Optional memory backend for memory.search / memory.sessions handlers. */
@@ -191,7 +220,14 @@ export interface ChatMessageRequest {
       tenantId?: string;
       projectId?: string;
     };
-    attachments?: Array<{ type: string; url?: string; mimeType: string }>;
+    attachments?: Array<{
+      type: string;
+      url?: string;
+      mimeType: string;
+      data?: string;
+      filename?: string;
+      sizeBytes?: number;
+    }>;
   };
   id?: string;
 }
@@ -263,6 +299,11 @@ export interface SkillsToggleRequest {
 
 export interface ToolsListRequest {
   type: "tools.list";
+  id?: string;
+}
+
+export interface HooksListRequest {
+  type: "hooks.list";
   id?: string;
 }
 
@@ -421,6 +462,12 @@ export interface MemorySearchRequest {
 
 export interface MemorySessionsRequest {
   type: "memory.sessions";
+  payload?: { limit?: number };
+  id?: string;
+}
+
+export interface MaintenanceStatusRequest {
+  type: "maintenance.status";
   payload?: { limit?: number };
   id?: string;
 }
@@ -675,21 +722,19 @@ export interface StatusUpdateResponse {
 
 export interface SkillsListResponse {
   type: "skills.list";
-  payload: Array<{
-    name: string;
-    description: string;
-    enabled: boolean;
-  }>;
+  payload: WebChatSkillListEntry[];
   id?: string;
 }
 
 export interface ToolsListResponse {
   type: "tools.list";
-  payload: Array<{
-    name: string;
-    description: string;
-    enabled: boolean;
-  }>;
+  payload: WebChatSkillListEntry[];
+  id?: string;
+}
+
+export interface HooksListResponse {
+  type: "hooks.list";
+  payload: WebChatHookListEntry[];
   id?: string;
 }
 
@@ -895,6 +940,36 @@ export interface MemorySessionsResponse {
     messageCount: number;
     lastActiveAt: number;
   }>;
+  id?: string;
+}
+
+export interface MaintenanceStatusResponse {
+  type: "maintenance.status";
+  payload: {
+    generatedAt: number;
+    sync: {
+      ownerSessionCount: number;
+      activeSessionId?: string;
+      activeSessionOwned: boolean;
+      durableRunsEnabled: boolean;
+      operatorAvailable: boolean;
+      inspectAvailable: boolean;
+      controlAvailable: boolean;
+      disabledCode?: string;
+      disabledReason?: string;
+    };
+    memory: {
+      backendConfigured: boolean;
+      sessionCount: number;
+      totalMessages: number;
+      lastActiveAt: number;
+      recentSessions: Array<{
+        id: string;
+        messageCount: number;
+        lastActiveAt: number;
+      }>;
+    };
+  };
   id?: string;
 }
 
