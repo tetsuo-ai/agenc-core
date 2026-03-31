@@ -252,9 +252,13 @@ export function resolveWatchFeatureFlags({ env = process.env } = {}) {
     extensibilityHub = explicitExtensibilityHub;
   }
 
-  let inputModes =
+  let inputModes = true;
+  if (
     featureEnabled(enabled, "input_modes") ||
-    featureEnabled(enabled, "inputmodes");
+    featureEnabled(enabled, "inputmodes")
+  ) {
+    inputModes = true;
+  }
   if (
     featureEnabled(disabled, "input_modes") ||
     featureEnabled(disabled, "inputmodes")

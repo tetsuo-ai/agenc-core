@@ -399,47 +399,51 @@ const INPUT_MODE_COMMANDS = Object.freeze([
 ]);
 
 export function buildWatchCommands({ featureFlags = {} } = {}) {
+  const resolvedFeatureFlags = {
+    inputModes: true,
+    ...(featureFlags ?? {}),
+  };
   const commands = [...CORE_WATCH_COMMANDS];
-  if (featureFlags?.reviewModes === true) {
+  if (resolvedFeatureFlags?.reviewModes === true) {
     commands.push(...REVIEW_MODE_COMMANDS);
   }
-  if (featureFlags?.checkpoints === true) {
+  if (resolvedFeatureFlags?.checkpoints === true) {
     commands.push(...CHECKPOINT_COMMANDS);
   }
-  if (featureFlags?.diffReview === true) {
+  if (resolvedFeatureFlags?.diffReview === true) {
     commands.push(...DIFF_REVIEW_COMMANDS);
   }
-  if (featureFlags?.compactionControls === true) {
+  if (resolvedFeatureFlags?.compactionControls === true) {
     commands.push(...COMPACTION_COMMANDS);
   }
-  if (featureFlags?.permissionsControls === true) {
+  if (resolvedFeatureFlags?.permissionsControls === true) {
     commands.push(...PERMISSIONS_COMMANDS);
   }
-  if (featureFlags?.attachments === true) {
+  if (resolvedFeatureFlags?.attachments === true) {
     commands.push(...ATTACHMENT_COMMANDS);
   }
-  if (featureFlags?.exportBundles === true) {
+  if (resolvedFeatureFlags?.exportBundles === true) {
     commands.push(...EXPORT_BUNDLE_COMMANDS);
   }
-  if (featureFlags?.insights === true) {
+  if (resolvedFeatureFlags?.insights === true) {
     commands.push(...INSIGHTS_COMMANDS);
   }
-  if (featureFlags?.threadSwitcher === true) {
+  if (resolvedFeatureFlags?.threadSwitcher === true) {
     commands.push(...THREAD_SWITCHER_COMMANDS);
   }
-  if (featureFlags?.sessionIndexing === true) {
+  if (resolvedFeatureFlags?.sessionIndexing === true) {
     commands.push(...SESSION_INDEXING_COMMANDS);
   }
-  if (featureFlags?.rerunFromTrace === true) {
+  if (resolvedFeatureFlags?.rerunFromTrace === true) {
     commands.push(...RUN_CONTROL_COMMANDS);
   }
-  if (featureFlags?.remoteTools === true) {
+  if (resolvedFeatureFlags?.remoteTools === true) {
     commands.push(...REMOTE_TOOL_COMMANDS);
   }
-  if (featureFlags?.extensibilityHub === true) {
+  if (resolvedFeatureFlags?.extensibilityHub === true) {
     commands.push(...EXTENSIBILITY_COMMANDS);
   }
-  if (featureFlags?.inputModes === true) {
+  if (resolvedFeatureFlags?.inputModes === true) {
     commands.push(...INPUT_MODE_COMMANDS);
   }
   return Object.freeze(commands.map((command) => Object.freeze({

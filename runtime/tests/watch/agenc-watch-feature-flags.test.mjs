@@ -244,20 +244,27 @@ test("resolveWatchFeatureFlags honors the explicit extensibility hub override", 
   assert.equal(flags.extensibilityHub, false);
 });
 
-test("resolveWatchFeatureFlags enables input modes from feature lists", () => {
+test("resolveWatchFeatureFlags enables input modes by default", () => {
   const flags = resolveWatchFeatureFlags({
-    env: {
-      AGENC_WATCH_FEATURES: "watch.input_modes",
-    },
+    env: {},
   });
 
   assert.equal(flags.inputModes, true);
 });
 
+test("resolveWatchFeatureFlags honors disabled input modes feature tokens", () => {
+  const flags = resolveWatchFeatureFlags({
+    env: {
+      AGENC_WATCH_DISABLE_FEATURES: "watch.input_modes",
+    },
+  });
+
+  assert.equal(flags.inputModes, false);
+});
+
 test("resolveWatchFeatureFlags honors the explicit input modes override", () => {
   const flags = resolveWatchFeatureFlags({
     env: {
-      AGENC_WATCH_FEATURES: "input-modes",
       AGENC_WATCH_ENABLE_INPUT_MODES: "off",
     },
   });

@@ -83,7 +83,7 @@ test("matchWatchCommands returns the full command palette for slash-only input",
 test("matchWatchCommands filters by prefix and aliases", () => {
   assert.deepEqual(
     matchWatchCommands("/se").map((command) => command.name),
-    ["/session", "/sessions"],
+    ["/config", "/session", "/sessions"],
   );
   assert.equal(findWatchCommandDefinition("/init")?.name, "/init");
   assert.equal(findWatchCommandDefinition("/commands")?.name, "/help");
@@ -440,25 +440,29 @@ test("buildWatchCommands adds extensibility commands only when enabled", () => {
   );
 });
 
-test("buildWatchCommands adds input-mode commands only when enabled", () => {
+test("buildWatchCommands enables input-mode commands by default and allows opt-out", () => {
   const defaultCommands = buildWatchCommands();
   const inputModeCommands = buildWatchCommands({
     featureFlags: {
-      inputModes: true,
+      inputModes: false,
     },
   });
 
   assert.equal(
     defaultCommands.some((command) => command.name === "/input-mode"),
-    false,
+    true,
   );
   assert.deepEqual(
-    inputModeCommands
+    defaultCommands
       .filter((command) =>
         ["/config", "/input-mode", "/keybindings", "/theme", "/statusline", "/vim"].includes(command.name)
       )
       .map((command) => command.name),
     ["/config", "/input-mode", "/keybindings", "/theme", "/statusline", "/vim"],
+  );
+  assert.equal(
+    inputModeCommands.some((command) => command.name === "/input-mode"),
+    false,
   );
 });
 
