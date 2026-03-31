@@ -26,7 +26,7 @@ vi.mock("../utils/logger.js", () => {
 
 // Mock gateway.js to avoid @coral-xyz/anchor dependency chain
 vi.mock("./gateway.js", () => {
-  const MockGateway = vi.fn(class MockGateway {
+  class MockGateway {
     private readonly channels = new Map<string, any>();
     config = { logging: undefined };
     start = vi.fn(async () => {});
@@ -55,7 +55,7 @@ vi.mock("./gateway.js", () => {
       controlPlanePort: 9000,
     }));
     reloadConfig = vi.fn(() => ({ safe: [], unsafe: [] }));
-  });
+  }
   return { Gateway: MockGateway };
 });
 
@@ -73,19 +73,21 @@ vi.mock("./wallet-loader.js", () => ({
   loadWallet: vi.fn(async () => null),
 }));
 
-vi.mock("../desktop/manager.js", () => ({
-  DesktopSandboxManager: vi.fn(class DesktopSandboxManager {
+vi.mock("../desktop/manager.js", () => {
+  class DesktopSandboxManager {
     start = mockDesktopManagerStart;
     stop = mockDesktopManagerStop;
-  }),
-}));
+  }
+  return { DesktopSandboxManager };
+});
 
-vi.mock("../desktop/health.js", () => ({
-  DesktopSandboxWatchdog: vi.fn(class DesktopSandboxWatchdog {
+vi.mock("../desktop/health.js", () => {
+  class DesktopSandboxWatchdog {
     start = mockWatchdogStart;
     stop = mockWatchdogStop;
-  }),
-}));
+  }
+  return { DesktopSandboxWatchdog };
+});
 
 import {
   getDefaultPidPath,

@@ -1207,10 +1207,14 @@ export async function executePlannerPath(
         extractRecoverablePlannerParseDiagnostics(
           plannerParseDiagnostics,
         );
+      const plannerParseIssueDiagnostics = plannerParseDiagnostics.filter(
+        (diagnostic) => diagnostic.category === "parse",
+      );
       if (
         recoverablePlannerParseDiagnostics.length > 0 &&
+        plannerParseIssueDiagnostics.length > 0 &&
         recoverablePlannerParseDiagnostics.length ===
-          plannerParseDiagnostics.length &&
+          plannerParseIssueDiagnostics.length &&
         plannerAttempt < maxPlannerAttempts &&
         plannerStepContractRetriesUsed < maxPlannerStepContractRetries
       ) {

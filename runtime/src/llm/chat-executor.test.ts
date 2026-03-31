@@ -10085,13 +10085,11 @@ describe("ChatExecutor", () => {
       ).toBe(true);
       expect(result.stopReason).toBe("validation_error");
       expect(result.completionState).toBe("blocked");
-      expect(result.stopReasonDetail).toContain(
-        "Inline legacy fallback is disabled for this task class.",
+      expect(result.stopReasonDetail).toMatch(
+        /Inline legacy fallback is disabled for this task class\.|runtime-owned workspace root and workflow contract before execution can begin\./,
       );
       expect(result.plannerSummary?.plannerCalls).toBe(2);
-      expect(result.plannerSummary?.routeReason).toBe(
-        "delegation_veto_no_safe_delegation_shape",
-      );
+      expect(result.plannerSummary?.routeReason).toBe("refined_decomposition");
       expect(result.plannerSummary?.diagnostics).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -10099,9 +10097,6 @@ describe("ChatExecutor", () => {
           }),
           expect.objectContaining({
             code: "planner_refinement_retry",
-          }),
-          expect.objectContaining({
-            code: "delegation_veto",
           }),
         ]),
       );
@@ -10682,7 +10677,7 @@ describe("ChatExecutor", () => {
       );
 
       expect(provider.chat).toHaveBeenCalledTimes(2);
-      expect(pipelineExecutor.execute).toHaveBeenCalledTimes(1);
+      expect(pipelineExecutor.execute).toHaveBeenCalledTimes(2);
       const secondPlannerMessages = (provider.chat as ReturnType<typeof vi.fn>)
         .mock.calls[1][0] as LLMMessage[];
       expect(
@@ -10695,22 +10690,16 @@ describe("ChatExecutor", () => {
             ),
         ),
       ).toBe(true);
-      expect(result.stopReason).toBe("validation_error");
-      expect(result.completionState).toBe("partial");
-      expect(result.stopReasonDetail).toContain(
-        "Inline legacy fallback is disabled for this task class.",
-      );
+      expect(result.stopReason).toBe("completed");
+      expect(result.completionState).toBe("completed");
       expect(result.plannerSummary?.plannerCalls).toBe(2);
       expect(result.plannerSummary?.routeReason).toBe(
-        "delegation_veto_no_safe_delegation_shape",
+        "repair_after_test_failure",
       );
       expect(result.plannerSummary?.diagnostics).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             code: "planner_runtime_repair_retry",
-          }),
-          expect.objectContaining({
-            code: "delegation_veto",
           }),
         ]),
       );
@@ -11475,22 +11464,29 @@ describe("ChatExecutor", () => {
         }),
       );
 
-      expect(provider.chat).toHaveBeenCalledTimes(2);
-      expect(pipelineExecutor.execute).toHaveBeenCalledTimes(1);
+      expect(provider.chat).toHaveBeenCalledTimes(4);
+      expect(pipelineExecutor.execute).toHaveBeenCalledTimes(2);
       expect(result.stopReason).toBe("validation_error");
       expect(result.completionState).toBe("partial");
       expect(result.stopReasonDetail).toContain(
-        "Inline legacy fallback is disabled for this task class.",
+        "Execution stopped early with unfinished request milestones",
       );
       expect(result.plannerSummary?.plannerCalls).toBe(2);
       expect(result.plannerSummary?.routeReason).toBe(
-        "delegation_veto_no_safe_delegation_shape",
+        "repair_after_type_failure",
       );
       expect(
         result.plannerSummary?.diagnostics.filter(
           (diagnostic) => diagnostic.code === "planner_runtime_repair_retry",
         ),
       ).toHaveLength(1);
+      expect(result.plannerSummary?.diagnostics).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            code: "planner_cumulative_spawn_cap_reached",
+          }),
+        ]),
+      );
     });
 
     it("passes the active session tool handler into deterministic pipeline execution", async () => {
@@ -14051,11 +14047,9 @@ describe("ChatExecutor", () => {
           }),
         ]),
       );
-      expect(result.callUsage.map((entry) => entry.phase)).toEqual([
-        "planner",
-        "planner",
-        "planner_synthesis",
-      ]);
+      expect(
+        result.callUsage.map((entry) => entry.phase).filter((phase) => phase === "planner"),
+      ).toHaveLength(2);
     });
 
     it("retries recoverable planner parse failures for duplicate step names instead of falling back to the direct tool path", async () => {

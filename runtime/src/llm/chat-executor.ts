@@ -408,6 +408,7 @@ import {
 import {
   assessPlannerDecision,
   extractExplicitDeterministicToolRequirements,
+  extractExplicitSubagentOrchestrationRequirements,
   requestRequiresToolGroundedExecution,
 } from "./chat-executor-planner.js";
 import {
@@ -2278,11 +2279,25 @@ export class ChatExecutor {
         messageText,
         explicitRequirementToolNames,
       );
+    const explicitSubagentOrchestrationRequirements =
+      extractExplicitSubagentOrchestrationRequirements(messageText);
+    const groundedExecutionRequested =
+      requestRequiresToolGroundedExecution(messageText);
     let plannerDecision = assessPlannerDecision(
       this.plannerEnabled,
       messageText,
       history,
     );
+    const plannerArtifactDirectPath =
+      plannerDecision.reason === "plan_generation_direct_path" ||
+      plannerDecision.reason === "edit_artifact_direct_path";
+    if (!plannerDecision.shouldPlan && plannerArtifactDirectPath) {
+      plannerDecision = {
+        score: Math.max(plannerDecision.score, 4),
+        shouldPlan: true,
+        reason: "planner_artifact_execution_request",
+      };
+    }
     if (
       explicitDeterministicToolRequirements?.forcePlanner &&
       !plannerDecision.shouldPlan
@@ -2291,6 +2306,23 @@ export class ChatExecutor {
         score: Math.max(plannerDecision.score, 3),
         shouldPlan: true,
         reason: "explicit_deterministic_tool_requirements",
+      };
+    }
+    if (
+      !plannerDecision.shouldPlan &&
+      explicitSubagentOrchestrationRequirements
+    ) {
+      plannerDecision = {
+        score: Math.max(plannerDecision.score, 4),
+        shouldPlan: true,
+        reason: "explicit_subagent_orchestration_requirements",
+      };
+    }
+    if (!plannerDecision.shouldPlan && groundedExecutionRequested) {
+      plannerDecision = {
+        score: Math.max(plannerDecision.score, 4),
+        shouldPlan: true,
+        reason: "grounded_execution_request",
       };
     }
     const resolvedThresholdOverride = this.resolveDelegationScoreThreshold?.();

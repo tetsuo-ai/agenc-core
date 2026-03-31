@@ -586,7 +586,7 @@ export function isRuntimeUserSkillDiscoveryEnabled(
 
 export function resolveRuntimeSkillDiscoveryPaths(
   env: NodeJS.ProcessEnv = process.env,
-  homeDir: string = homedir(),
+  homeDir: string = env.HOME?.trim() || homedir(),
   currentFilePath: string = CURRENT_MODULE_FILE_PATH,
 ): Pick<DiscoveryPaths, "builtinSkills" | "userSkills"> {
   const pkgRoot = resolvePath(dirname(currentFilePath), "..", "..");

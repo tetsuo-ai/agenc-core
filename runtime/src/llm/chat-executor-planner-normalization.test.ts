@@ -7,7 +7,7 @@ function safeJson(value: unknown): string {
 }
 
 describe("chat-executor-planner-normalization", () => {
-  it("returns strict planner json plans unchanged", () => {
+  it("returns strict planner json plans with runtime budget clamp diagnostics", () => {
     const result = normalizePlannerResponse({
       content: safeJson({
         reason: "strict_json",
@@ -30,7 +30,14 @@ describe("chat-executor-planner-normalization", () => {
 
     expect(result.plan?.reason).toBe("strict_json");
     expect(result.plan?.steps).toHaveLength(1);
-    expect(result.diagnostics).toEqual([]);
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "policy",
+          code: "planner_subagent_budget_hint_clamped",
+        }),
+      ]),
+    );
   });
 
   it("salvages direct planner tool calls and preserves parse diagnostics", () => {
@@ -68,7 +75,7 @@ describe("chat-executor-planner-normalization", () => {
     ]);
   });
 
-  it("prefers provider structured output payloads over raw text parsing", () => {
+  it("prefers provider structured output payloads over raw text parsing while preserving runtime budget clamp diagnostics", () => {
     const result = normalizePlannerResponse({
       content: "",
       structuredOutput: {
@@ -97,7 +104,14 @@ describe("chat-executor-planner-normalization", () => {
 
     expect(result.plan?.reason).toBe("structured_json");
     expect(result.plan?.steps).toHaveLength(1);
-    expect(result.diagnostics).toEqual([]);
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "policy",
+          code: "planner_subagent_budget_hint_clamped",
+        }),
+      ]),
+    );
   });
 
   it("surfaces salvage failures instead of inventing planner steps", () => {
