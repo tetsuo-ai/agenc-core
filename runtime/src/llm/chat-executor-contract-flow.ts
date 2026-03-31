@@ -23,6 +23,7 @@ import {
   normalizeEnvelopePath,
   normalizeWorkspaceRoot,
 } from "../workflow/path-normalization.js";
+import { textRequiresWorkspaceGroundedArtifactUpdate } from "../workflow/workspace-inspection-evidence.js";
 import type { WorkflowVerificationContract } from "../workflow/verification-obligations.js";
 import { buildBrowserEvidenceRetryGuidance } from "../utils/browser-tool-taxonomy.js";
 import type { ExecutionContext, ToolCallRecord } from "./chat-executor-types.js";
@@ -644,6 +645,10 @@ function analyzeLegacyCompletionTurn(
   const hasOnlyNonTerminalExecutionEvidence =
     !hasMutationProgress &&
     !hasBuildOrBehaviorEvidence;
+  const isReadOnlyWorkspaceInspectionTurn =
+    hasOnlyNonTerminalExecutionEvidence &&
+    successfulToolCalls.length > 0 &&
+    textRequiresWorkspaceGroundedArtifactUpdate(ctx.messageText);
   return {
     successfulToolCalls,
     mutatedArtifacts,
@@ -651,15 +656,18 @@ function analyzeLegacyCompletionTurn(
     hasResearchEvidence,
     hasBuildOrBehaviorEvidence,
     implementationLikeTurn:
-      mutatesSourceLikeArtifacts ||
-      hasBuildOrBehaviorEvidence ||
+      !isReadOnlyWorkspaceInspectionTurn &&
       (
-        likelyImplementationRequest &&
+        mutatesSourceLikeArtifacts ||
+        hasBuildOrBehaviorEvidence ||
         (
-          successfulToolCalls.length === 0 ||
+          likelyImplementationRequest &&
           (
-            hasExecutionScopedArtifactCue &&
-            hasOnlyNonTerminalExecutionEvidence
+            successfulToolCalls.length === 0 ||
+            (
+              hasExecutionScopedArtifactCue &&
+              hasOnlyNonTerminalExecutionEvidence
+            )
           )
         )
       ),

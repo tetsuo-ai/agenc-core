@@ -1656,6 +1656,95 @@ describe("ChatExecutor", () => {
       );
     });
 
+    it("does not classify read-only implementation inspection turns as implementation-class completion", async () => {
+      const events: Record<string, unknown>[] = [];
+      const provider = createMockProvider("primary", {
+        chat: vi
+          .fn()
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: "",
+              finishReason: "tool_calls",
+              toolCalls: [
+                {
+                  id: "tc-readonly-coordinator",
+                  name: "coordinator_mode",
+                  arguments: safeJson({
+                    action: "list",
+                  }),
+                },
+              ],
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content:
+                "Latest successful worker session: subagent:9427d092-42ae-4e53-9909-6357dd03a084.",
+            }),
+          ),
+      });
+
+      const executor = new ChatExecutor({
+        providers: [provider],
+        toolHandler: vi.fn().mockResolvedValue(
+          safeJson({
+            workerSessionIds: [
+              "subagent:9427d092-42ae-4e53-9909-6357dd03a084",
+              "subagent:16336e03-3196-4006-9b29-a43fb812901f",
+            ],
+            latestSuccessfulWorkerSessionId:
+              "subagent:9427d092-42ae-4e53-9909-6357dd03a084",
+          }),
+        ),
+        allowedTools: ["coordinator_mode"],
+      });
+
+      const result = await executor.execute(
+        createParams({
+          message: createMessage(
+            "Use coordinator_mode to inspect the current implementation under /tmp/project/runtime/src/llm/chat-executor.ts and /tmp/project/runtime/src/llm/chat-executor-contract-flow.ts, then summarize the latest worker session and failure logs.",
+          ),
+          trace: {
+            onExecutionTraceEvent: (event) => {
+              events.push(event as unknown as Record<string, unknown>);
+            },
+          },
+        }),
+      );
+
+      expect(result.stopReason).toBe("completed");
+      expect(result.completionState).toBe("completed");
+      expect(result.content).toContain(
+        "Latest successful worker session",
+      );
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "completion_gate_checked",
+            phase: "tool_followup",
+            payload: expect.objectContaining({
+              gate: "legacy_completion_compatibility",
+              decision: "accept",
+              compatibilityClass: "plan_only",
+            }),
+          }),
+        ]),
+      );
+      expect(events).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "completion_gate_checked",
+            phase: "tool_followup",
+            payload: expect.objectContaining({
+              gate: "workflow_completion_truth",
+              decision: "fail",
+              ownerClass: "implementation",
+            }),
+          }),
+        ]),
+      );
+    });
+
     it("reports equivalent completion semantics for direct and planner deterministic implementation", async () => {
       const directProvider = createMockProvider("primary", {
         chat: vi

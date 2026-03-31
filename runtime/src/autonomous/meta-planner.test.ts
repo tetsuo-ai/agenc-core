@@ -129,4 +129,33 @@ describe("meta-planner", () => {
     expect(store.has("goal:active")).toBe(true);
     expect(store.has("goals:active")).toBe(true);
   });
+
+  it("suppresses client tools on the planning LLM call", async () => {
+    const { backend } = makeMockMemory();
+    const chat = vi.fn().mockResolvedValue({
+      content: "[]",
+    });
+    const llm = {
+      name: "test-llm",
+      chat,
+    } as any;
+
+    const action = createMetaPlannerAction({
+      llm,
+      memory: backend as any,
+      traceProviderPayloads: false,
+    });
+
+    await action.execute({
+      logger: silentLogger,
+      sendToChannels: async () => {},
+    });
+
+    expect(chat).toHaveBeenCalledTimes(1);
+    expect(chat.mock.calls[0]?.[1]).toMatchObject({
+      toolChoice: "none",
+      toolRouting: { allowedToolNames: [] },
+      parallelToolCalls: false,
+    });
+  });
 });
