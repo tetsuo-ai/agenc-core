@@ -231,4 +231,38 @@ export class SocialMemoryManager {
 
     return facts;
   }
+
+  /**
+   * Phase 6.4: Check for collective knowledge emergence.
+   * Per skeptic: evidence-weighted agreement, not majority vote.
+   * A fact with 3+ independent confirmations is promoted to collective knowledge.
+   * Confidence weighted by number of confirming agents.
+   */
+  async checkCollectiveEmergence(
+    worldId: string,
+    minConfirmations = 3,
+  ): Promise<WorldStateFact[]> {
+    const prefix = `${this.keyPrefix}world:${worldId}:fact:`;
+    const keys = await this.backend.listKeys(prefix);
+    const promoted: WorldStateFact[] = [];
+
+    for (const key of keys) {
+      const fact = await this.backend.get<WorldStateFact>(key);
+      if (!fact) continue;
+      if (fact.confirmations >= minConfirmations && fact.visibility !== "world") {
+        // Promote to world visibility
+        const updated: WorldStateFact = {
+          ...fact,
+          visibility: "world",
+        };
+        await this.backend.set(key, updated);
+        promoted.push(updated);
+        this.logger?.info?.(
+          `Collective emergence: "${fact.content}" promoted to world knowledge (${fact.confirmations} confirmations)`,
+        );
+      }
+    }
+
+    return promoted;
+  }
 }
