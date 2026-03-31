@@ -836,6 +836,28 @@ export function createDaemonCommandRegistry(
         lines.push(`  ${loaded ? "●" : "○"} ${name}`);
       }
 
+      // Phase 9 / Task 7.2: memory health metrics in /context output
+      try {
+        const { collectMemoryHealthReport } = await import("../memory/diagnostics.js");
+        const report = await collectMemoryHealthReport({ memoryBackend });
+        lines.push("");
+        lines.push("Memory health:");
+        lines.push(`  Backend: ${report.backendType} (${report.durability})`);
+        lines.push(`  Status: ${report.healthy ? "healthy" : "unhealthy"}`);
+        lines.push(`  Entries: ~${report.entryCount.toLocaleString()} across ${report.sessionCount} sessions`);
+        if (report.vectorStore) {
+          lines.push(`  Vectors: dim=${report.vectorStore.dimension || "?"}${report.vectorStore.persistent ? " (persistent)" : " (ephemeral)"}`);
+        }
+        if (report.embeddingProvider) {
+          lines.push(`  Embeddings: ${report.embeddingProvider.name} (${report.embeddingProvider.available ? "available" : "unavailable"})`);
+        }
+        if (report.knowledgeGraph) {
+          lines.push(`  Graph: ${report.knowledgeGraph.nodeCount} nodes, ${report.knowledgeGraph.edgeCount} edges`);
+        }
+      } catch {
+        // Non-blocking — diagnostics may not be available
+      }
+
       await cmdCtx.reply(lines.join("\n"));
     },
   });
@@ -2209,7 +2231,7 @@ export function createDaemonCommandRegistry(
         try {
           const { collectMemoryHealthReport, formatMemoryHealthReport } =
             await import("../memory/diagnostics.js");
-          const report = await collectMemoryHealthReport(memoryBackend);
+          const report = await collectMemoryHealthReport({ memoryBackend });
           await cmdCtx.reply(formatMemoryHealthReport(report));
         } catch (err) {
           await cmdCtx.reply(`Memory health error: ${toErrorMessage(err)}`);
