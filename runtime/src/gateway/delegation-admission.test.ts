@@ -151,7 +151,7 @@ describe("assessDelegationAdmission", () => {
     ]);
   });
 
-  it("allows shared-primary-artifact plans since the orchestrator executes steps sequentially", () => {
+  it("rejects shared-primary-artifact multi-writer plans without explicit locking semantics", () => {
     const decision = assessDelegationAdmission({
       messageText:
         "Review PLAN.md from multiple angles, update PLAN.md in parallel, then synthesize the result.",
@@ -229,11 +229,9 @@ describe("assessDelegationAdmission", () => {
       maxDepth: 4,
     });
 
-    // shared_artifact_writer_inline check is disabled — the orchestrator
-    // handles sequential execution.  Plans with shared writers are now
-    // routed through normally; they may still be rejected by other gates
-    // (e.g. score_below_threshold) based on economics.
-    expect(decision.reason).not.toBe("shared_artifact_writer_inline");
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).toBe("shared_artifact_writer_inline");
+    expect(decision.diagnostics.sharedPrimaryArtifact).toBe("/tmp/project/PLAN.md");
     expect(decision.stepAdmissions.map((entry) => entry.ownedArtifacts)).toEqual([
       ["/tmp/project/PLAN.md"],
       ["/tmp/project/PLAN.md"],

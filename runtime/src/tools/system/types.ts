@@ -134,6 +134,26 @@ export interface SystemRemoteJobToolConfig {
 }
 
 /**
+ * Configuration for durable remote session handle tools.
+ */
+export interface SystemRemoteSessionToolConfig {
+  /** Durable registry root for remote session handles. */
+  readonly rootDir?: string;
+  /** Optional externally reachable callback base URL. */
+  readonly callbackBaseUrl?: string;
+  /** Polling timeout in milliseconds for remote status/send/stop HTTP calls. */
+  readonly defaultPollTimeoutMs?: number;
+  /** Optional external allowlist for remote polling/message/stop URLs. */
+  readonly allowedDomains?: readonly string[];
+  /** Optional external blocklist for remote polling/message/stop URLs. */
+  readonly blockedDomains?: readonly string[];
+  /** Logger for lifecycle and failure events. */
+  readonly logger?: Logger;
+  /** Time source override used by tests. */
+  readonly now?: () => number;
+}
+
+/**
  * Configuration for durable research handle tools.
  */
 export interface SystemResearchToolConfig {
@@ -457,8 +477,7 @@ export const DEFAULT_DENY_PREFIXES: readonly string[] = [
   "node",
 ];
 
-// Default bash command timeout.  Coding tasks routinely run test suites
-// that include TTL/timing tests with sleep calls, compilation passes,
-// or network probes.  30s was too tight and killed valid test runs.
-export const DEFAULT_TIMEOUT_MS = 120_000;
+// Default direct bash timeout. Daemon desktop mode lifts this ceiling via
+// resolveBashToolTimeoutConfig(), but the standalone tool stays short by default.
+export const DEFAULT_TIMEOUT_MS = 30_000;
 export const DEFAULT_MAX_OUTPUT_BYTES = 100_000;
