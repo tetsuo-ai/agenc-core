@@ -350,6 +350,9 @@ export class SqliteVectorBackend
         const combined = role ? [role, ...roles] : roles;
         if (!options.memoryRoles.some((r) => combined.includes(r))) continue;
       }
+      // Workspace/agent scoping (Phase 2)
+      if (options?.workspaceId && entry.workspaceId !== options.workspaceId) continue;
+      if (options?.agentId && entry.agentId !== options.agentId) continue;
       result.set(id, entry);
     }
     return result;
