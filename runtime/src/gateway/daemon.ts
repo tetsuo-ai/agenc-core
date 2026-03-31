@@ -1140,6 +1140,7 @@ export class DaemonManager {
     | import("../autonomous/desktop-executor.js").DesktopExecutor
     | null = null;
   private _backgroundRunSupervisor: BackgroundRunSupervisor | null = null;
+  private _concordiaBridge: import("./concordia-bridge.js").ConcordiaBridge | null = null;
   private _durableSubrunOrchestrator: DurableSubrunOrchestrator | null = null;
   private _remoteJobManager: SystemRemoteJobManager | null = null;
   private _remoteSessionManager: SystemRemoteSessionManager | null = null;
@@ -1679,6 +1680,86 @@ export class DaemonManager {
         gateway.registerChannel(channel);
         this._externalChannels.set(name, channel);
         pendingExternalChannels.delete(name);
+      }
+
+      // Wire up Concordia simulation bridge (port 3200)
+      try {
+        const { ConcordiaBridge } = await import("./concordia-bridge.js");
+        const chatExecutor = this._chatExecutor;
+        const daemonLogger = this.logger;
+        const concordiaHistories = new Map<string, Array<{ role: string; content: string }>>();
+
+        this._concordiaBridge = new ConcordiaBridge(
+          { enabled: true, bridgePort: 3200 },
+          {
+            logger: this.logger,
+            sendMessage: async (agentId: string, content: string): Promise<string> => {
+              if (!chatExecutor) return "";
+              const sessionId = `concordia:${agentId}`;
+              if (!concordiaHistories.has(sessionId)) {
+                concordiaHistories.set(sessionId, []);
+              }
+              const history = concordiaHistories.get(sessionId)!;
+              try {
+                const msg = createGatewayMessage({
+                  channel: "concordia",
+                  senderId: agentId,
+                  senderName: agentId,
+                  sessionId,
+                  content,
+                  scope: "dm",
+                });
+                const result = await chatExecutor.execute({
+                  sessionId,
+                  message: msg,
+                  history: history as import("../llm/types.js").LLMMessage[],
+                  systemPrompt: "You are a character in a social simulation. Stay in character. Respond concisely.",
+                });
+                const response = result.content ?? "";
+                history.push({ role: "user" as const, content });
+                history.push({ role: "assistant" as const, content: response });
+                if (history.length > 40) {
+                  history.splice(0, history.length - 40);
+                }
+                return response;
+              } catch (err) {
+                daemonLogger.error?.("Concordia sendMessage error:", err);
+                return "";
+              }
+            },
+            generateAgents: async (count: number, premise: string) => {
+              if (!chatExecutor) return [];
+              try {
+                const msg = createGatewayMessage({
+                  channel: "concordia",
+                  senderId: "agent-generator",
+                  senderName: "agent-generator",
+                  sessionId: "concordia:agent-generator",
+                  content: `Generate exactly ${count} diverse characters for this simulation.\n\nPremise: ${premise}\n\nRespond with ONLY a JSON array. Each element: {"id": "lowercase-id", "name": "Name", "personality": "2-3 sentences", "goal": "what they want"}\n\nMake them diverse with potential for conflict.`,
+                  scope: "dm",
+                });
+                const result = await chatExecutor.execute({
+                  sessionId: "concordia:agent-generator",
+                  message: msg,
+                  history: [],
+                  systemPrompt: "You are a character designer. Respond with only valid JSON arrays.",
+                });
+                const text = result.content ?? "[]";
+                const jsonMatch = text.match(/\[[\s\S]*\]/);
+                if (jsonMatch) {
+                  return JSON.parse(jsonMatch[0]);
+                }
+                return [];
+              } catch (err) {
+                daemonLogger.error?.("Concordia generateAgents error:", err);
+                return [];
+              }
+            },
+          },
+        );
+        await this._concordiaBridge.start();
+      } catch (err) {
+        this.logger.warn?.("Concordia bridge failed to start:", err);
       }
 
       // Wire up autonomous features (curiosity, self-learning, meta-planner, proactive comms)
@@ -6174,6 +6255,11 @@ export class DaemonManager {
         await this._hookDispatcher.dispatch("gateway:shutdown", {});
         this._hookDispatcher.clear();
         this._hookDispatcher = null;
+      }
+      // Stop Concordia bridge
+      if (this._concordiaBridge !== null) {
+        await this._concordiaBridge.stop();
+        this._concordiaBridge = null;
       }
       // Stop voice sessions before WebChat channel
       if (this._voiceBridge !== null) {

@@ -126,3 +126,4 @@ agents.md
 
 # Playwright outputs
 **/test-results/
+.agenc/
