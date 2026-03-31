@@ -51,38 +51,26 @@ export function SimulationViewer({
     if (checkedBridge) return;
     setCheckedBridge(true);
 
-    fetch(`${bridgeUrl}/health`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.active_sessions > 0) {
-          // Simulation is already running — restore agent IDs from metrics
-          fetch(`${bridgeUrl}/metrics`)
-            .then((r) => r.json())
-            .then((metrics) => {
-              // Poll the bridge for known agent IDs
-              // The health endpoint tells us sessions exist
-              setPhase(data.active_sessions > 0 ? "running" : "setup");
-            })
-            .catch(() => {});
+    (async () => {
+      try {
+        const healthResp = await fetch(`${bridgeUrl}/health`);
+        if (!healthResp.ok) return; // Bridge not available
+        const health = await healthResp.json();
+        if (!health.active_sessions || health.active_sessions === 0) return; // No simulation
 
-          // Try to get agent list from bridge
-          fetch(`${bridgeUrl}/agents`)
-            .then((r) => r.ok ? r.json() : null)
-            .then((agents) => {
-              if (agents && Array.isArray(agents)) {
-                setAgentIds(agents.map((a: { id: string }) => a.id));
-                setPhase("running");
-              }
-            })
-            .catch(() => {
-              // Fallback: we know sessions exist, show running view
-              setPhase("running");
-            });
-        }
-      })
-      .catch(() => {
+        // Simulation exists — get agent list
+        const agentsResp = await fetch(`${bridgeUrl}/agents`);
+        if (!agentsResp.ok) return;
+        const agents = await agentsResp.json();
+        if (!Array.isArray(agents) || agents.length === 0) return;
+
+        // Restore running state
+        setAgentIds(agents.map((a: { id: string }) => a.id));
+        setPhase("running");
+      } catch {
         // Bridge not available — stay on setup
-      });
+      }
+    })();
   }, [bridgeUrl, checkedBridge]);
 
   const handleLaunch = useCallback(
