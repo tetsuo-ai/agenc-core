@@ -417,7 +417,6 @@ export default function App() {
               eventWsUrl="ws://localhost:3201"
               bridgeUrl="http://localhost:3200"
               controlUrl="http://localhost:3202"
-              agentIds={['elena', 'marcus', 'sera']}
             />
           )}
         </main>

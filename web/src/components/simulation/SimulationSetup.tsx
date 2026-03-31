@@ -23,6 +23,7 @@ export interface AgentFormData {
 interface SimulationSetupProps {
   onLaunch: (config: SimulationSetupConfig) => void;
   loading: boolean;
+  bridgeUrl?: string;
 }
 
 const PRESETS: Record<string, SimulationSetupConfig> = {
@@ -128,7 +129,7 @@ const PRESETS: Record<string, SimulationSetupConfig> = {
   },
 };
 
-export function SimulationSetup({ onLaunch, loading }: SimulationSetupProps) {
+export function SimulationSetup({ onLaunch, loading, bridgeUrl = "http://localhost:3200" }: SimulationSetupProps) {
   const [config, setConfig] = useState<SimulationSetupConfig>({
     worldId: "",
     premise: "",
@@ -137,6 +138,9 @@ export function SimulationSetup({ onLaunch, loading }: SimulationSetupProps) {
     gmProvider: "ollama",
     agents: [],
   });
+  const [agentCount, setAgentCount] = useState(3);
+  const [generating, setGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<"preset" | "custom">("preset");
 
@@ -286,6 +290,72 @@ export function SimulationSetup({ onLaunch, loading }: SimulationSetupProps) {
             </div>
           </div>
 
+          {/* Agent Generation */}
+          <div className="mb-4 border border-green-800 p-3">
+            <div className="text-green-500 text-xs font-bold mb-2 tracking-wider">
+              GENERATE AGENTS WITH GROK
+            </div>
+            <div className="flex gap-2 items-end">
+              <div>
+                <label className="text-green-600 text-xs block mb-1">Count</label>
+                <input
+                  type="number"
+                  min={2}
+                  max={10}
+                  value={agentCount}
+                  onChange={(e) => setAgentCount(Math.max(2, Math.min(10, parseInt(e.target.value) || 3)))}
+                  className="w-16 bg-black border border-green-800 text-green-300 px-2 py-1 focus:border-green-400 outline-none"
+                />
+              </div>
+              <button
+                onClick={async () => {
+                  if (!config.premise) {
+                    setGenerateError("Enter a premise first");
+                    return;
+                  }
+                  setGenerating(true);
+                  setGenerateError(null);
+                  try {
+                    const resp = await fetch(`${bridgeUrl}/generate-agents`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        count: agentCount,
+                        premise: config.premise,
+                        worldId: config.worldId || "generated-world",
+                      }),
+                    });
+                    if (!resp.ok) throw new Error(`Generation failed: ${resp.status}`);
+                    const data = await resp.json();
+                    if (data.agents && Array.isArray(data.agents)) {
+                      setConfig({ ...config, agents: data.agents });
+                    } else {
+                      throw new Error("Invalid response format");
+                    }
+                  } catch (err) {
+                    setGenerateError(String(err));
+                  } finally {
+                    setGenerating(false);
+                  }
+                }}
+                disabled={generating || !config.premise}
+                className={`px-3 py-1 border text-xs font-bold ${
+                  generating || !config.premise
+                    ? "border-green-900 text-green-800 cursor-not-allowed"
+                    : "border-green-500 text-green-300 hover:bg-green-950 cursor-pointer"
+                }`}
+              >
+                {generating ? "Generating..." : `Generate ${agentCount} Agents`}
+              </button>
+            </div>
+            {generateError && (
+              <div className="text-red-500 text-xs mt-2">{generateError}</div>
+            )}
+            {!config.premise && (
+              <div className="text-green-800 text-xs mt-1">Enter a premise above first</div>
+            )}
+          </div>
+
           {/* Agents */}
           <div className="mb-4">
             <div className="flex items-center justify-between mb-2">
@@ -296,7 +366,7 @@ export function SimulationSetup({ onLaunch, loading }: SimulationSetupProps) {
                 onClick={addAgent}
                 className="text-green-400 border border-green-700 px-2 py-0.5 text-xs hover:bg-green-950"
               >
-                + Add Agent
+                + Add Manually
               </button>
             </div>
 

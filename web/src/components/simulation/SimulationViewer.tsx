@@ -7,7 +7,7 @@
  * 3. INSPECT: Click an agent card to deep-dive into memory/beliefs
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useSimulation } from "./useSimulation";
 import { SimulationSetup, type SimulationSetupConfig } from "./SimulationSetup";
 import { SimulationControls } from "./SimulationControls";
@@ -64,6 +64,9 @@ export function SimulationViewer({
               goal: a.goal,
             })),
             premise: config.premise,
+            max_steps: config.maxSteps,
+            gm_model: config.gmModel,
+            gm_provider: config.gmProvider,
           }),
         });
 
@@ -93,6 +96,13 @@ export function SimulationViewer({
     setPhase("finished");
   }, [stop]);
 
+  // Auto-finish detection: when simulation stops running after having started
+  useEffect(() => {
+    if (phase === "running" && !state.status.running && state.status.step > 0) {
+      setPhase("finished");
+    }
+  }, [phase, state.status.running, state.status.step]);
+
   const handleNewSimulation = useCallback(() => {
     setPhase("setup");
     setAgentIds([]);
@@ -104,7 +114,7 @@ export function SimulationViewer({
   // SETUP phase
   // ========================================================================
   if (phase === "setup") {
-    return <SimulationSetup onLaunch={handleLaunch} loading={launching} />;
+    return <SimulationSetup onLaunch={handleLaunch} loading={launching} bridgeUrl={bridgeUrl} />;
   }
 
   // ========================================================================

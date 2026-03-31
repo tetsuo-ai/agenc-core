@@ -136,26 +136,54 @@ export function useSimulation(config: {
   const [state, dispatch] = useReducer(reducer, initialState);
   const wsRef = useRef<WebSocket | null>(null);
 
-  // WebSocket connection for events
+  // WebSocket connection for events with auto-reconnect
   useEffect(() => {
-    const ws = new WebSocket(eventWsUrl);
-    wsRef.current = ws;
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let alive = true;
 
-    ws.onopen = () => dispatch({ type: "SET_CONNECTED", connected: true });
-    ws.onclose = () => dispatch({ type: "SET_CONNECTED", connected: false });
-    ws.onerror = () => dispatch({ type: "SET_ERROR", error: "WebSocket connection failed" });
-
-    ws.onmessage = (msg) => {
+    function connect() {
+      if (!alive) return;
       try {
-        const event: SimulationEvent = JSON.parse(msg.data);
-        dispatch({ type: "ADD_EVENT", event });
+        ws = new WebSocket(eventWsUrl);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          dispatch({ type: "SET_CONNECTED", connected: true });
+          dispatch({ type: "SET_ERROR", error: null });
+        };
+        ws.onclose = () => {
+          dispatch({ type: "SET_CONNECTED", connected: false });
+          // Auto-reconnect after 2s
+          if (alive) {
+            reconnectTimer = setTimeout(connect, 2000);
+          }
+        };
+        ws.onerror = () => {
+          // onclose will fire after onerror, triggering reconnect
+        };
+
+        ws.onmessage = (msg) => {
+          try {
+            const event: SimulationEvent = JSON.parse(msg.data);
+            dispatch({ type: "ADD_EVENT", event });
+          } catch {
+            // Ignore malformed events
+          }
+        };
       } catch {
-        // Ignore malformed events
+        if (alive) {
+          reconnectTimer = setTimeout(connect, 2000);
+        }
       }
-    };
+    }
+
+    connect();
 
     return () => {
-      ws.close();
+      alive = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (ws) ws.close();
       wsRef.current = null;
     };
   }, [eventWsUrl]);
