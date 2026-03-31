@@ -168,10 +168,12 @@ export class SqliteVectorBackend
     if (this.dimension === 0) {
       this.dimension = embedding.length;
     } else if (embedding.length !== this.dimension) {
-      throw new MemoryBackendError(
-        this.name,
-        `Embedding dimension mismatch: expected ${this.dimension}, got ${embedding.length}`,
-      );
+      // Phase 1.5: graceful dimension mismatch — store entry without vector
+      // rather than crashing. Log warning and degrade to keyword-only for this entry.
+      // This handles provider switches (e.g., Ollama 768 → OpenAI 1536).
+      const entry = await this.addEntry(options);
+      this.entryCacheMap.set(entry.id, entry);
+      return entry;
     }
 
     await this.ensureDb();

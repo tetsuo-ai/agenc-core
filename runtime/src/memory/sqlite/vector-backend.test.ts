@@ -50,19 +50,25 @@ describe("SqliteVectorBackend", () => {
     expect(backend.getVectorDimension()).toBe(4);
   });
 
-  it("rejects dimension mismatch", async () => {
+  it("gracefully handles dimension mismatch (stores entry without vector)", async () => {
     const backend = create({ dimension: 3 });
     await backend.storeWithEmbedding(
       { sessionId: "s1", role: "assistant", content: "ok" },
       [1, 0, 0],
     );
 
-    await expect(
-      backend.storeWithEmbedding(
-        { sessionId: "s1", role: "assistant", content: "bad" },
-        [1, 0, 0, 0],
-      ),
-    ).rejects.toThrow(/dimension mismatch/);
+    // Phase 1.5: dimension mismatch stores entry but without vector
+    // (degrades to keyword-only search for this entry)
+    const entry = await backend.storeWithEmbedding(
+      { sessionId: "s1", role: "assistant", content: "different dimension" },
+      [1, 0, 0, 0],
+    );
+    expect(entry.content).toBe("different dimension");
+
+    // Entry stored but not in vector search (wrong dimension)
+    const results = await backend.searchSimilar([1, 0, 0]);
+    expect(results).toHaveLength(1);
+    expect(results[0]!.entry.content).toBe("ok");
   });
 
   it("skips vector storage for empty embeddings (noop provider)", async () => {
