@@ -103,6 +103,8 @@ export class SqliteBackend implements MemoryBackend {
     }
 
     const storedContent = this.encryptField(options.content);
+    // Security: encrypt metadata alongside content
+    const storedMetadata = metadataJson ? this.encryptField(metadataJson) : null;
 
     db.prepare(
       `INSERT INTO memory_entries (id, session_id, role, content, tool_call_id, tool_name, task_pda, metadata, timestamp, expires_at, workspace_id, agent_id, user_id, world_id, channel)
@@ -115,7 +117,7 @@ export class SqliteBackend implements MemoryBackend {
       options.toolCallId ?? null,
       options.toolName ?? null,
       options.taskPda ?? null,
-      metadataJson,
+      storedMetadata,
       now,
       expiresAt,
       options.workspaceId ?? "default",
@@ -519,9 +521,10 @@ export class SqliteBackend implements MemoryBackend {
     if (row.task_pda) (entry as any).taskPda = row.task_pda;
     if (row.metadata) {
       try {
-        (entry as any).metadata = JSON.parse(row.metadata);
+        const decryptedMetadata = this.decryptField(row.metadata);
+        (entry as any).metadata = JSON.parse(decryptedMetadata);
       } catch {
-        // Ignore corrupt metadata
+        // Ignore corrupt or unencrypted metadata
       }
     }
     // Scoping fields (Phase 2)

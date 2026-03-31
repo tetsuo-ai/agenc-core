@@ -16,6 +16,7 @@
  */
 
 import type { MemoryBackend } from "./types.js";
+import type { MemoryRetriever } from "../llm/chat-executor.js";
 import type { Logger } from "../utils/logger.js";
 
 /** Persistent agent identity. */
@@ -253,4 +254,28 @@ export class AgentIdentityManager {
     // Budget cap: 2000 chars (~500 tokens)
     return full.length > 2000 ? full.slice(0, 1997) + "..." : full;
   }
+}
+
+/**
+ * Creates a MemoryRetriever that injects agent identity context into the
+ * ChatExecutor prompt assembly pipeline (Phase 5.4).
+ *
+ * Returns undefined (no context) if the agent identity has not been created yet,
+ * providing zero overhead for the single-agent default case.
+ */
+export function createAgentIdentityProvider(
+  identityManager: AgentIdentityManager,
+  agentId: string,
+  workspaceId?: string,
+): MemoryRetriever {
+  return {
+    async retrieve(
+      _query: string,
+      _sessionId: string,
+    ): Promise<string | undefined> {
+      const identity = await identityManager.load(agentId, workspaceId);
+      if (!identity) return undefined;
+      return identityManager.formatForPrompt(identity);
+    },
+  };
 }

@@ -82,6 +82,12 @@ export interface SemanticMemoryRetrieverConfig {
   graph?: import("./graph.js").MemoryGraph;
   /** Optional shared memory backend (Phase 8.3). */
   sharedMemory?: import("./shared-memory.js").SharedMemoryBackend;
+  /**
+   * Background run ID for memory scoping (Phase 2.9).
+   * When set, only entries with matching backgroundRunId in metadata are returned.
+   * When undefined (foreground), entries with any backgroundRunId are excluded.
+   */
+  backgroundRunId?: string;
   logger?: Logger;
 }
 
@@ -346,6 +352,7 @@ export class SemanticMemoryRetriever implements MemoryRetriever {
   private readonly workspaceId: string | undefined;
   private readonly graph: import("./graph.js").MemoryGraph | undefined;
   private readonly sharedMemory: import("./shared-memory.js").SharedMemoryBackend | undefined;
+  private readonly backgroundRunId: string | undefined;
   private readonly roleBudgetWeights: Record<RetrievalMemoryRole, number>;
   private readonly logger: Logger | undefined;
 
@@ -387,6 +394,7 @@ export class SemanticMemoryRetriever implements MemoryRetriever {
     this.workspaceId = config.workspaceId;
     this.graph = config.graph;
     this.sharedMemory = config.sharedMemory;
+    this.backgroundRunId = config.backgroundRunId;
     this.roleBudgetWeights = normalizeRoleWeights(config.roleBudgetWeights);
     this.logger = config.logger;
   }
@@ -695,11 +703,20 @@ export class SemanticMemoryRetriever implements MemoryRetriever {
       const entryRole = inferRole(result.entry, role);
       if (entryRole !== role) continue;
 
+      // Phase 2.9: background run memory scoping
+      const meta = result.entry.metadata as Record<string, unknown> | undefined;
+      const entryRunId = typeof meta?.backgroundRunId === "string" ? meta.backgroundRunId : undefined;
+      if (this.backgroundRunId) {
+        // In a background run context: only include entries from the same run
+        if (entryRunId && entryRunId !== this.backgroundRunId) continue;
+      } else {
+        // In foreground context: exclude entries from any background run
+        if (entryRunId) continue;
+      }
+
       const recency = this.computeRecency(result.entry.timestamp, now);
       const confidence = inferConfidence(result.entry);
       const salience = inferSalience(result.entry);
-      // Phase 4.2: include activation boost from access history
-      const meta = result.entry.metadata as Record<string, unknown> | undefined;
       const accessCount = typeof meta?.accessCount === "number" ? meta.accessCount : 0;
       const lastAccessTime = typeof meta?.lastAccessTime === "number" ? meta.lastAccessTime : undefined;
       const activation = computeActivationBoost(

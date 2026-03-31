@@ -474,6 +474,7 @@ export class ChatExecutor {
   private readonly memoryRetriever?: MemoryRetriever;
   private readonly learningProvider?: MemoryRetriever;
   private readonly progressProvider?: MemoryRetriever;
+  private readonly identityProvider?: MemoryRetriever;
   private readonly promptBudget: PromptBudgetConfig;
   private readonly maxRuntimeSystemHints: number;
   private readonly onCompaction?: (sessionId: string, summary: string) => void;
@@ -531,6 +532,7 @@ export class ChatExecutor {
     this.memoryRetriever = config.memoryRetriever;
     this.learningProvider = config.learningProvider;
     this.progressProvider = config.progressProvider;
+    this.identityProvider = config.identityProvider;
     const configuredPromptBudget = config.promptBudget ?? {};
     this.promptBudget = {
       hardMaxPromptChars:
@@ -2390,11 +2392,25 @@ export class ChatExecutor {
     const enableSkillContext = params.contextInjection?.skills !== false;
     const enableMemoryContext = params.contextInjection?.memory !== false;
 
-    // Context injection — skill, memory, and learning (all best-effort)
+    // Context injection — skill, identity, memory, and learning (all best-effort)
     if (enableSkillContext) {
       await this.injectContext(
         ctx,
         this.skillInjector,
+        ctx.messageText,
+        ctx.sessionId,
+        ctx.messages,
+        ctx.messageSections,
+        "system_runtime",
+      );
+    }
+    // Phase 5.4: inject agent identity (personality, beliefs, traits) after skills
+    // but before memory/learning so the agent's persona frames retrieved context.
+    // Identity is always injected (not gated on hasHistory) since it defines who the agent is.
+    if (this.identityProvider) {
+      await this.injectContext(
+        ctx,
+        this.identityProvider,
         ctx.messageText,
         ctx.sessionId,
         ctx.messages,

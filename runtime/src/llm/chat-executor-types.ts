@@ -435,6 +435,8 @@ export interface ChatExecutorConfig {
   readonly learningProvider?: MemoryRetriever;
   /** Optional provider that injects cross-session progress context per message. */
   readonly progressProvider?: MemoryRetriever;
+  /** Optional provider that injects agent identity/personality context (Phase 5.4). */
+  readonly identityProvider?: MemoryRetriever;
   /** Prompt budget allocator configuration (Phase 2). */
   readonly promptBudget?: PromptBudgetConfig;
   /** Base cooldown period for failed providers in ms (default: 60_000). */

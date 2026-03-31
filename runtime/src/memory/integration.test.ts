@@ -344,4 +344,183 @@ describe("Memory System Integration Tests", () => {
     expect(facts[0]!.content).toBe("User prefers dark mode");
     expect(facts[0]!.confidence).toBeGreaterThanOrEqual(0.8);
   });
+
+  // === Phase 10.8: End-to-end memory lifecycle ===
+  it("end-to-end memory lifecycle: ingest → retrieve → consolidate → new session retrieve", async () => {
+    const backend = new InMemoryBackend();
+    const vectorStore = new InMemoryVectorStore();
+    const embedding = new NoopEmbeddingProvider();
+    const logManager = new DailyLogManager(backend);
+    const tmpDir = makeTmpDir();
+    const curatedMemory = new CuratedMemoryManager(join(tmpDir, "curated.md"));
+
+    const ingestionEngine = new MemoryIngestionEngine({
+      embeddingProvider: embedding,
+      vectorStore,
+      logManager,
+      curatedMemory,
+      generateSummaries: false,
+      enableDailyLogs: false,
+      minTurnSalienceScore: 0, // index everything for this test
+    });
+
+    // 1. Ingest turn in session A
+    await ingestionEngine.ingestTurn("session-A", "What is TypeScript?", "TypeScript is a typed superset of JavaScript", {
+      workspaceId: "ws1",
+    });
+
+    // 2. Retrieve in session A — should find the entry
+    const retrieverA = new SemanticMemoryRetriever({
+      vectorBackend: vectorStore,
+      embeddingProvider: embedding,
+      curatedMemory,
+      workspaceId: "ws1",
+    });
+    const resultA = await retrieverA.retrieve("TypeScript definition", "session-A");
+    expect(resultA).toBeDefined();
+
+    // 3. New session B — should still retrieve cross-session semantic entries
+    const resultB = await retrieverA.retrieve("TypeScript definition", "session-B");
+    // Semantic entries are cross-session, so should be found
+    expect(resultB).toBeDefined();
+
+    // 4. Agent identity survives across sessions
+    const identityMgr = new AgentIdentityManager({ memoryBackend: backend });
+    await identityMgr.upsert({
+      agentId: "agent-1",
+      name: "TestAgent",
+      corePersonality: "Helpful assistant",
+      workspaceId: "ws1",
+    });
+    await identityMgr.upsertBelief("agent-1", "typescript", {
+      belief: "TypeScript is useful",
+      confidence: 0.8,
+      evidence: ["entry-1"],
+      formedAt: Date.now(),
+    }, "ws1");
+
+    const identity = await identityMgr.load("agent-1", "ws1");
+    expect(identity).not.toBeNull();
+    expect(identity!.beliefs["typescript"]?.belief).toBe("TypeScript is useful");
+  });
+
+  // === Phase 10.9: Multi-agent world simulation ===
+  it("multi-agent world simulation: 3 agents with isolated memory and shared state", async () => {
+    const backend = new InMemoryBackend();
+
+    // Create 3 agents in one world
+    const identityMgr = new AgentIdentityManager({ memoryBackend: backend });
+    const agents = ["alice", "bob", "charlie"];
+    for (const name of agents) {
+      await identityMgr.upsert({
+        agentId: name,
+        name: name.charAt(0).toUpperCase() + name.slice(1),
+        corePersonality: `${name} personality`,
+        workspaceId: "world-1",
+      });
+    }
+
+    // Each agent forms different beliefs
+    await identityMgr.upsertBelief("alice", "coding", {
+      belief: "Python is best",
+      confidence: 0.7,
+      evidence: ["e1"],
+      formedAt: Date.now(),
+    }, "world-1");
+    await identityMgr.upsertBelief("bob", "coding", {
+      belief: "Rust is best",
+      confidence: 0.9,
+      evidence: ["e2"],
+      formedAt: Date.now(),
+    }, "world-1");
+
+    // Verify isolation: each agent has different beliefs
+    const alice = await identityMgr.load("alice", "world-1");
+    const bob = await identityMgr.load("bob", "world-1");
+    expect(alice!.beliefs["coding"]?.belief).toBe("Python is best");
+    expect(bob!.beliefs["coding"]?.belief).toBe("Rust is best");
+
+    // Shared world state via social memory
+    const socialMgr = new SocialMemoryManager({ memoryBackend: backend });
+    await socialMgr.recordInteraction("alice", "bob", "world-1", {
+      timestamp: Date.now(),
+      summary: "Let's collaborate on the project",
+    });
+
+    // Alice's relationship with Bob recorded
+    const relationship = await socialMgr.getRelationship("alice", "bob", "world-1");
+    expect(relationship).not.toBeNull();
+    expect(relationship!.interactions).toHaveLength(1);
+
+    // World facts accessible to all agents
+    await socialMgr.addWorldFact(
+      "world-1",
+      "The server is running on port 3000",
+      "alice",
+      "world",
+    );
+
+    const worldFacts = await socialMgr.getWorldFacts("world-1");
+    expect(worldFacts).toHaveLength(1);
+    expect(worldFacts[0]!.content).toContain("port 3000");
+
+    // Charlie can see world facts too
+    const charlieView = await socialMgr.getWorldFacts("world-1");
+    expect(charlieView).toHaveLength(1);
+  });
+
+  // === Phase 10.11: Concurrent access stress test ===
+  it("concurrent access: 5 sessions writing simultaneously without data loss", async () => {
+    const backend = new InMemoryBackend();
+    const sessions = ["s1", "s2", "s3", "s4", "s5"];
+    const entriesPerSession = 20;
+
+    // Write concurrently
+    const writePromises = sessions.map(async (sessionId) => {
+      for (let i = 0; i < entriesPerSession; i++) {
+        await backend.addEntry({
+          sessionId,
+          role: "user",
+          content: `Message ${i} from ${sessionId}`,
+          workspaceId: sessionId.startsWith("s1") ? "ws-a" : "ws-b",
+        });
+      }
+    });
+
+    await Promise.all(writePromises);
+
+    // Verify no data loss
+    for (const sessionId of sessions) {
+      const thread = await backend.getThread(sessionId);
+      expect(thread).toHaveLength(entriesPerSession);
+      // Verify ordering
+      for (let i = 0; i < thread.length; i++) {
+        expect(thread[i].content).toContain(`from ${sessionId}`);
+      }
+    }
+
+    // Verify total entry count
+    let total = 0;
+    for (const sessionId of sessions) {
+      const thread = await backend.getThread(sessionId);
+      total += thread.length;
+    }
+    expect(total).toBe(sessions.length * entriesPerSession);
+
+    // Verify workspace scoping doesn't interleave
+    const ws_a_sessions = await backend.listSessions("s1");
+    expect(ws_a_sessions).toContain("s1");
+
+    // Concurrent KV writes
+    const kvPromises = sessions.map(async (sessionId) => {
+      await backend.set(`learning:${sessionId}`, { preference: sessionId });
+    });
+    await Promise.all(kvPromises);
+
+    // All KV values intact
+    for (const sessionId of sessions) {
+      const val = await backend.get<{ preference: string }>(`learning:${sessionId}`);
+      expect(val?.preference).toBe(sessionId);
+    }
+  });
 });

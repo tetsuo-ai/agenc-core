@@ -44,6 +44,8 @@ export interface CreateChatExecutorParams {
   learningProvider?: ChatExecutorConfig["learningProvider"];
   /** Optional progress provider. */
   progressProvider?: ChatExecutorConfig["progressProvider"];
+  /** Optional agent identity provider (Phase 5.4). */
+  identityProvider?: ChatExecutorConfig["identityProvider"];
   /** Prompt budget config. */
   promptBudget?: ChatExecutorConfig["promptBudget"];
   /** Max tool rounds per request. */
@@ -117,6 +119,7 @@ export function createChatExecutor(
     memoryRetriever: params.memoryRetriever,
     learningProvider: params.learningProvider,
     progressProvider: params.progressProvider,
+    identityProvider: params.identityProvider,
     promptBudget: params.promptBudget,
     maxToolRounds: params.maxToolRounds,
     plannerEnabled:

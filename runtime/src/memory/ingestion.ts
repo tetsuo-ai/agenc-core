@@ -73,6 +73,8 @@ export interface TurnIngestionMetadata {
   readonly userId?: string;
   readonly worldId?: string;
   readonly channel?: string;
+  /** Background run ID for memory scoping (Phase 2.9). */
+  readonly backgroundRunId?: string;
 }
 
 // ============================================================================
@@ -243,6 +245,10 @@ export class MemoryIngestionEngine {
       ...(metadata?.worldId ? { worldId: metadata.worldId } : {}),
       ...(metadata?.channel ? { channel: metadata.channel } : {}),
     };
+    // Phase 2.9: tag background run entries with runId for foreground exclusion
+    const backgroundRunMeta = metadata?.backgroundRunId
+      ? { backgroundRunId: metadata.backgroundRunId }
+      : {};
     const shouldIndex =
       salience >= this.minTurnSalienceScore || hasOverrideSignal;
     const confidence = roundToTwoDecimals(0.45 + salience * 0.45);
@@ -286,6 +292,7 @@ export class MemoryIngestionEngine {
                 contentHash,
                 originalText: combinedText,
                 ...(metadata?.agentResponseMetadata ?? {}),
+                ...backgroundRunMeta,
               },
             },
             embedding,
@@ -314,6 +321,7 @@ export class MemoryIngestionEngine {
                 contentHash,
                 originalText: combinedText,
                 ...(metadata?.agentResponseMetadata ?? {}),
+                ...backgroundRunMeta,
               },
             },
             embedding,
@@ -636,6 +644,10 @@ export function createIngestionHooks(
         }
 
         // Fire-and-forget — do not block the response pipeline
+        const backgroundRunId = typeof ctx.payload.backgroundRunId === "string"
+          ? ctx.payload.backgroundRunId
+          : undefined;
+
         void engine
           .ingestTurn(sessionId, userMessage, agentResponse, {
             agentResponseMetadata:
@@ -644,6 +656,7 @@ export function createIngestionHooks(
                 !Array.isArray(agentResponseMetadata)
                 ? agentResponseMetadata as Record<string, unknown>
                 : undefined,
+            backgroundRunId,
           })
           .catch((err) => {
             log.error("memory-ingestion-turn: ingestTurn failed", err);

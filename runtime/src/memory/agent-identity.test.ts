@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { AgentIdentityManager } from "./agent-identity.js";
+import { AgentIdentityManager, createAgentIdentityProvider } from "./agent-identity.js";
 import { InMemoryBackend } from "./in-memory/backend.js";
 
 function createManager() {
@@ -172,5 +172,54 @@ describe("AgentIdentityManager", () => {
     expect(identity.agentId).toBe("default");
     expect(identity.personalityVersion).toBe(1);
     // Default agent works exactly like any other — no special overhead
+  });
+
+  describe("createAgentIdentityProvider (Phase 5.4)", () => {
+    it("returns formatted prompt for existing agent identity", async () => {
+      const mgr = createManager();
+      await mgr.upsert({
+        agentId: "agent-1",
+        name: "Alice",
+        corePersonality: "Friendly research assistant",
+        workspaceId: "ws1",
+      });
+
+      const provider = createAgentIdentityProvider(mgr, "agent-1", "ws1");
+      const result = await provider.retrieve("hello", "session-1");
+
+      expect(result).toBeDefined();
+      expect(result).toContain("Agent Identity: Alice");
+      expect(result).toContain("Friendly research assistant");
+    });
+
+    it("returns undefined when agent identity does not exist", async () => {
+      const mgr = createManager();
+      const provider = createAgentIdentityProvider(mgr, "nonexistent");
+      const result = await provider.retrieve("hello", "session-1");
+      expect(result).toBeUndefined();
+    });
+
+    it("includes learned traits and beliefs in prompt", async () => {
+      const mgr = createManager();
+      const identity = await mgr.upsert({
+        agentId: "agent-2",
+        name: "Bob",
+        corePersonality: "Analytical assistant",
+      });
+
+      await mgr.addLearnedTraits("agent-2", ["precise", "detail-oriented"]);
+      await mgr.upsertBelief("agent-2", "testing", {
+        belief: "Tests are essential",
+        confidence: 0.8,
+        evidence: ["entry-1"],
+        formedAt: Date.now(),
+      });
+
+      const provider = createAgentIdentityProvider(mgr, "agent-2");
+      const result = await provider.retrieve("query", "s1");
+
+      expect(result).toContain("precise");
+      expect(result).toContain("Tests are essential");
+    });
   });
 });
