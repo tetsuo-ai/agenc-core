@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { AnchorProvider, type Program } from "@coral-xyz/anchor";
 import { Connection, PublicKey, SystemProgram } from "@solana/web3.js";
 import { parseAgentState } from "../agent/types.js";
-import { findProtocolPda } from "../agent/pda.js";
+import { findAgentPda, findProtocolPda } from "../agent/pda.js";
 import { DisputeOperations } from "../dispute/operations.js";
 import { GovernanceOperations } from "../governance/operations.js";
 import {
@@ -345,7 +345,9 @@ async function resolveSignerAgent(
   );
 
   if (matches.length === 0) {
-    throw new Error("No agent registration found for signer wallet");
+    throw new Error(
+      "No agent found for signer. Run: agenc-runtime agent register",
+    );
   }
   if (matches.length > 1) {
     throw new Error("Multiple agent registrations found for signer wallet");
@@ -356,7 +358,7 @@ async function resolveSignerAgent(
   );
   const agent = parseAgentState(raw as Record<string, unknown>);
   return {
-    agentPda: matches[0].pubkey,
+    agentPda: findAgentPda(agent.agentId, program.programId),
     agentId: agent.agentId,
     authority,
   };
@@ -493,6 +495,10 @@ export async function runMarketTaskCreateCommand(
 
   try {
     const { program } = await createSignerProgramContext(options);
+    const { agentPda: creatorAgentPda } = await resolveSignerAgent(
+      program,
+      options.creatorAgentPda,
+    );
     const tool = createCreateTaskTool(program, silentLogger);
     const result = await tool.execute({
       description: options.description,
@@ -501,7 +507,7 @@ export async function runMarketTaskCreateCommand(
       maxWorkers: options.maxWorkers,
       deadline: options.deadline,
       taskType: options.taskType,
-      creatorAgentPda: options.creatorAgentPda,
+      creatorAgentPda: creatorAgentPda.toBase58(),
     });
     if (result.isError) {
       context.error({
@@ -626,10 +632,14 @@ export async function runMarketTaskClaimCommand(
 
   try {
     const { program } = await createSignerProgramContext(options);
+    const { agentPda: workerAgentPda } = await resolveSignerAgent(
+      program,
+      options.workerAgentPda,
+    );
     const tool = createClaimTaskTool(program, silentLogger);
     const result = await tool.execute({
       taskPda: options.taskPda,
-      workerAgentPda: options.workerAgentPda,
+      workerAgentPda: workerAgentPda.toBase58(),
     });
     if (result.isError) {
       context.error({
@@ -664,6 +674,10 @@ export async function runMarketTaskCompleteCommand(
 
   try {
     const { program } = await createSignerProgramContext(options);
+    const { agentPda: workerAgentPda } = await resolveSignerAgent(
+      program,
+      options.workerAgentPda,
+    );
     const resultData =
       options.resultData?.trim() || "Task completed via agenc-runtime market";
     const proofHash =
@@ -673,7 +687,7 @@ export async function runMarketTaskCompleteCommand(
       taskPda: options.taskPda,
       proofHash,
       resultData,
-      workerAgentPda: options.workerAgentPda,
+      workerAgentPda: workerAgentPda.toBase58(),
     });
     if (result.isError) {
       context.error({
@@ -708,6 +722,10 @@ export async function runMarketTaskDisputeCommand(
 
   try {
     const { program } = await createSignerProgramContext(options);
+    const { agentPda: initiatorAgentPda } = await resolveSignerAgent(
+      program,
+      options.initiatorAgentPda,
+    );
     const tool = createInitiateDisputeTool(program, silentLogger);
     const result = await tool.execute({
       taskPda: options.taskPda,
@@ -715,7 +733,7 @@ export async function runMarketTaskDisputeCommand(
       resolutionType: options.resolutionType ?? "refund",
       workerAgentPda: options.workerAgentPda,
       workerClaimPda: options.workerClaimPda,
-      initiatorAgentPda: options.initiatorAgentPda,
+      initiatorAgentPda: initiatorAgentPda.toBase58(),
     });
     if (result.isError) {
       context.error({
