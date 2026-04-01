@@ -181,12 +181,15 @@ export class HostedChannelPlugin<
   }
 
   async initialize(context: ChannelContext): Promise<void> {
-    const adapterContext: ChannelAdapterContext<TConfig> = {
+    const adapterContext = {
       logger: createAdapterLogger(context.logger, this.manifest),
       config: this.config,
       on_message: async (message) => {
         await context.onMessage(normalizeInboundMessage(this.name, message));
       },
+      host_services: context.hostServices,
+    } as ChannelAdapterContext<TConfig> & {
+      readonly host_services?: Readonly<Record<string, unknown>>;
     };
     await this.adapter.initialize(adapterContext);
   }

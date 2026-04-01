@@ -50,8 +50,9 @@ export function SimulationViewer({
       setLaunching(true);
       setLaunchConfig(config);
       try {
-        // POST to bridge /setup
-        const resp = await fetch(`${bridgeUrl}/setup`, {
+        // POST to bridge /launch. The plugin bridge will spawn the Python
+        // runner, and the runner will call back into bridge /setup.
+        const resp = await fetch(`${bridgeUrl}/launch`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({

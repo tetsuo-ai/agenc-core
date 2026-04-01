@@ -62,6 +62,9 @@ describe("HostedChannelPlugin", () => {
       logger: silentLogger,
       config: {},
       onMessage,
+      hostServices: {
+        concordia_memory: { enabled: true },
+      },
     });
 
     await adapter.context!.on_message({
@@ -136,6 +139,9 @@ describe("HostedChannelPlugin", () => {
         ],
       },
     ]);
+    expect(adapter.context?.host_services).toEqual({
+      concordia_memory: { enabled: true },
+    });
   });
 
   it("rejects invalid inbound payloads from adapters", async () => {

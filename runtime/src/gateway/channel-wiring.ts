@@ -65,6 +65,9 @@ export interface ChannelWiringDeps {
   readonly chatExecutor: ChatExecutor | null;
   readonly memoryBackend: MemoryBackend | null;
   readonly defaultForegroundMaxToolRounds: number;
+  buildChannelHostServices(
+    config: GatewayConfig,
+  ): Readonly<Record<string, unknown>> | undefined;
 
   buildSystemPrompt(
     config: GatewayConfig,
@@ -528,6 +531,7 @@ export async function wireExternalChannel(
     onMessage,
     logger: deps.logger,
     config: channelConfig,
+    hostServices: deps.buildChannelHostServices(config),
   });
   await channel.start();
   deps.logger.info(`${channelName} channel wired`);

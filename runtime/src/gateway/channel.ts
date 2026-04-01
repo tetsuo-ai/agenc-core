@@ -63,6 +63,8 @@ export interface ChannelContext {
   readonly logger: Logger;
   /** Channel-specific config from gateway config. */
   readonly config: Readonly<Record<string, unknown>>;
+  /** Optional host-provided services for hosted channel adapters. */
+  readonly hostServices?: Readonly<Record<string, unknown>>;
   /**
    * Hook dispatcher for lifecycle events.
    * Optional because activate() does not wire hooks yet — will become

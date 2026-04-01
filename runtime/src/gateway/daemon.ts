@@ -221,6 +221,7 @@ import {
   type ChannelWiringDeps,
   type ExternalChannelRegistry,
 } from "./channel-wiring.js";
+import { createChannelHostServices } from "../plugins/channel-host-services.js";
 import type { ProactiveCommunicator } from "./proactive.js";
 import { ToolRouter, type ToolRoutingDecision } from "./tool-routing.js";
 import {
@@ -3244,6 +3245,12 @@ export class DaemonManager {
       chatExecutor: this._chatExecutor,
       memoryBackend: this._memoryBackend,
       defaultForegroundMaxToolRounds: this._defaultForegroundMaxToolRounds,
+      buildChannelHostServices: (config) =>
+        createChannelHostServices({
+          memoryBackend: this._memoryBackend,
+          logger: this.logger,
+          workspacePath: this._resolveActiveHostWorkspacePath(config),
+        }),
       buildSystemPrompt: (config, options) =>
         this._buildSystemPrompt(config, options),
       handleTextChannelApprovalCommand: (params) =>
