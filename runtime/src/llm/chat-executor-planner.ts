@@ -544,8 +544,6 @@ const EXPLANATION_ONLY_REQUEST_RE =
   /\b(?:explain|describe|outline|summarize|brainstorm|compare|review|analy(?:s|z)e|what would|how would|plan(?:\s+out)?|walk me through)\b/i;
 const NODE_PACKAGE_TOOLING_RE =
   /\b(?:node(?:\.js)?|npm|npx|package\.json|package-lock\.json|pnpm|pnpm-workspace\.yaml|yarn|bun|typescript|tsconfig(?:\.[a-z]+)?\.json|tsx|vitest|commander|(?:npm|pnpm|yarn|bun)\s+workspaces?)\b/i;
-const NODE_DECLARED_ECOSYSTEM_STRONG_RE =
-  /\b(?:npm|npx|package\.json|package-lock\.json|pnpm|pnpm-workspace\.yaml|yarn|bun|tsconfig(?:\.[a-z]+)?\.json|node_modules|vite\.config(?:\.[a-z]+)?|vitest\.config(?:\.[a-z]+)?|(?:npm|pnpm|yarn|bun)\s+workspaces?)\b/i;
 const NODE_DECLARED_ECOSYSTEM_COMMAND_RE = /\b(?:npm|npx|pnpm|yarn|bun)\b/i;
 const NODE_PACKAGE_MANIFEST_PATH_RE =
   /(?:^|\/)(?:package\.json|package-lock\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|bun\.lockb|tsconfig(?:\.[a-z]+)?\.json)$/i;
@@ -2790,6 +2788,21 @@ function collectPlannerSubagentStepText(
     .join(" ");
 }
 
+function extractCommandText(args: Record<string, unknown>): string {
+  const parts: string[] = [];
+  if (typeof args.command === "string") {
+    parts.push(args.command);
+  }
+  if (Array.isArray(args.args)) {
+    for (const value of args.args) {
+      if (typeof value === "string") {
+        parts.push(value);
+      }
+    }
+  }
+  return parts.join(" ");
+}
+
 function collectMalformedPlannerSubagentContractFields(
   step: PlannerSubAgentTaskStepIntent,
 ): readonly string[] {
@@ -3019,7 +3032,8 @@ function collectPlannerStepScopedPaths(
     return [...paths];
   }
 
-  const executionContext = step.executionContext;
+  const executionContext =
+    step.stepType === "subagent_task" ? step.executionContext : undefined;
   const candidatePaths = [
     executionContext?.workspaceRoot,
     ...(executionContext?.allowedReadRoots ?? []),
@@ -3028,7 +3042,7 @@ function collectPlannerStepScopedPaths(
     ...(executionContext?.targetArtifacts ?? []),
     ...(executionContext?.inputArtifacts ?? []),
     ...(executionContext?.artifactRelations ?? []).map(
-      (relation) => relation.artifactPath,
+      (relation: WorkflowArtifactRelation) => relation.artifactPath,
     ),
   ];
   for (const value of candidatePaths) {
@@ -3087,9 +3101,10 @@ function collectPlannerStepDeclaredEcosystems(
   }
 
   const combined = stripNegatedNodeEcosystemLanguage(
-    collectPlannerSubagentStepText(step),
+    step.stepType === "subagent_task"
+      ? collectPlannerSubagentStepText(step)
+      : "",
   );
-  const hasStrongNodeText = NODE_DECLARED_ECOSYSTEM_STRONG_RE.test(combined);
   const hasNodeCommandIntent = NODE_DECLARED_ECOSYSTEM_COMMAND_RE.test(combined);
   const hasNativeText = NATIVE_TOOLING_RE.test(combined);
   if (
@@ -4197,7 +4212,9 @@ function plannerPathTargetsRequestedArtifact(
 
 function isPlannerDeterministicFileWriteStep(
   step: PlannerStepIntent,
-): boolean {
+): step is PlannerDeterministicToolStepIntent & {
+  tool: "system.writeFile" | "system.appendFile";
+} {
   return (
     step.stepType === "deterministic_tool" &&
     (step.tool === "system.writeFile" || step.tool === "system.appendFile")

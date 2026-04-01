@@ -556,7 +556,10 @@ function isPlanBackedImplementationOwnerSpec(
   const ownsWorkspaceRoot = targetArtifacts.some((artifactPath) =>
     artifactPath.trim() === workspaceRoot
   );
-  return ownsWorkspaceRoot || spec.task.trim().toLowerCase() === "implement_owner";
+  return (
+    ownsWorkspaceRoot ||
+    spec.task?.trim().toLowerCase() === "implement_owner"
+  );
 }
 
 function isDelegatedFileAuthoringPhaseWithoutVerification(

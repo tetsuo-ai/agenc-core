@@ -15,10 +15,6 @@
 import { InMemoryBackend } from "../in-memory/backend.js";
 import { InMemoryVectorStore } from "../vector-store.js";
 import { NoopEmbeddingProvider } from "../embeddings.js";
-import { SemanticMemoryRetriever } from "../retriever.js";
-import { MemoryIngestionEngine } from "../ingestion.js";
-import { DailyLogManager, CuratedMemoryManager } from "../structured.js";
-import type { MemoryBackend } from "../types.js";
 
 export interface BenchmarkResult {
   readonly name: string;
@@ -63,7 +59,6 @@ export async function runMemoryAgentBench(): Promise<BenchmarkSuite> {
 
 async function benchAccurateRetrieval(): Promise<BenchmarkResult> {
   const start = Date.now();
-  const backend = new InMemoryBackend();
   const vectorStore = new InMemoryVectorStore();
   const embedding = new NoopEmbeddingProvider();
 
@@ -103,7 +98,7 @@ async function benchAccurateRetrieval(): Promise<BenchmarkResult> {
   for (const fact of facts) {
     // Use a distinctive keyword from each fact
     const keyword = fact.split(" ").find((w) => w.length > 4) ?? fact.slice(0, 10);
-    const results = await vectorStore.query({ search: keyword, limit: 10 });
+    const results = await queryEntriesByKeyword(vectorStore, keyword, 10);
     if (results.some((r) => r.content === fact)) {
       found++;
     }
@@ -174,10 +169,7 @@ async function benchLongRangeUnderstanding(): Promise<BenchmarkResult> {
   }
 
   // Can we find the important fact from turn 0 after 100 turns?
-  const results = await vectorStore.query({
-    search: "secret code",
-    limit: 5,
-  });
+  const results = await queryEntriesByKeyword(vectorStore, "secret code", 5);
 
   const found = results.some((r) => r.content.includes("secret code is 42"));
   const score = found ? 1.0 : 0.0;
@@ -236,7 +228,6 @@ async function benchSelectiveForgetting(): Promise<BenchmarkResult> {
 
 async function benchCrossSessionPersistence(): Promise<BenchmarkResult> {
   const start = Date.now();
-  const backend = new InMemoryBackend();
   const vectorStore = new InMemoryVectorStore();
   const embedding = new NoopEmbeddingProvider();
 
@@ -258,10 +249,7 @@ async function benchCrossSessionPersistence(): Promise<BenchmarkResult> {
   );
 
   // Retrieve from session B (different session, same workspace)
-  const results = await vectorStore.query({
-    search: "favorite color",
-    limit: 5,
-  });
+  const results = await queryEntriesByKeyword(vectorStore, "favorite color", 5);
 
   const found = results.some((r) => r.content.includes("favorite color is blue"));
 
@@ -273,4 +261,19 @@ async function benchCrossSessionPersistence(): Promise<BenchmarkResult> {
     details: `Cross-session retrieval: ${found}`,
     durationMs: Date.now() - start,
   };
+}
+
+async function queryEntriesByKeyword(
+  vectorStore: InMemoryVectorStore,
+  keyword: string,
+  limit: number,
+) {
+  const normalizedKeyword = keyword.trim().toLowerCase();
+  const entries = await vectorStore.query({ limit: 200 });
+  return entries
+    .filter((entry) =>
+      normalizedKeyword.length > 0 &&
+      entry.content.toLowerCase().includes(normalizedKeyword)
+    )
+    .slice(0, limit);
 }

@@ -19,6 +19,8 @@ export const PLANNER_DELEGATION_VERIFIER_CLEANUP_MODE = {
 } as const;
 
 export const PLANNER_VERIFIER_LITERAL_ISSUE_CODES = [
+  "planner_verifier_unavailable",
+  "planner_verifier_parse_failed",
   "missing_subagent_result",
   "missing_implementation_output_evidence",
   "malformed_subagent_result_payload",
@@ -141,6 +143,35 @@ export function formatRuntimeVerificationIssueCode(params: {
     );
   }
   return `${params.channel}:${params.code}`;
+}
+
+export function isPlannerVerifierIssueCode(
+  value: string,
+): value is PlannerVerifierIssueCode {
+  if (
+    (PLANNER_VERIFIER_LITERAL_ISSUE_CODES as readonly string[]).includes(value)
+  ) {
+    return true;
+  }
+  if (
+    value.startsWith("contract_violation_") &&
+    (
+      PLANNER_VERIFIER_CONTRACT_VIOLATION_CODES as readonly string[]
+    ).includes(value.slice("contract_violation_".length))
+  ) {
+    return true;
+  }
+
+  const separatorIndex = value.indexOf(":");
+  if (separatorIndex <= 0) {
+    return false;
+  }
+  const channel = value.slice(0, separatorIndex);
+  const code = value.slice(separatorIndex + 1);
+  return (
+    (RUNTIME_VERIFICATION_CHANNEL_NAMES as readonly string[]).includes(channel) &&
+    (DELEGATION_OUTPUT_VALIDATION_CODES as readonly string[]).includes(code)
+  );
 }
 
 function assertNever(value: never): never {

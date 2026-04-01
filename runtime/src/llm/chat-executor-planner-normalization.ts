@@ -15,8 +15,8 @@ import type { PlannerParseResult } from "./chat-executor-types.js";
 import {
   parsePlannerPlan,
   salvagePlannerToolCallsAsPlan,
-  type ExplicitSubagentOrchestrationRequirements,
 } from "./chat-executor-planner.js";
+import type { RequiredSubagentOrchestrationRequirements as ExplicitSubagentOrchestrationRequirements } from "../workflow/subagent-orchestration-requirements.js";
 import { extractStructuredOutputObject } from "./structured-output.js";
 
 export function normalizePlannerResponse(params: {

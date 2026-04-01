@@ -98,7 +98,7 @@ export async function runReflection(params: {
     }
 
     // Update beliefs (per edge case X5: must have evidence)
-    const beliefs: ReflectionResult["beliefs"] = [];
+    const beliefs: Array<ReflectionResult["beliefs"][number]> = [];
     if (parsed.beliefs && typeof parsed.beliefs === "object") {
       for (const [topic, belief] of Object.entries(parsed.beliefs)) {
         if (

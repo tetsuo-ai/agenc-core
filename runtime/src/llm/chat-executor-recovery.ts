@@ -778,6 +778,9 @@ export function preflightStaleCopiedCmakeHarnessInvocation(
   if (!isStaleCopiedCmakeWorkspace(workspaceRoot)) {
     return { args, repairedFields: [] };
   }
+  if (!workspaceRoot) {
+    return { args, repairedFields: [] };
+  }
   const normalizedWorkspaceRoot = resolvePath(workspaceRoot);
   const freshBuildDir = resolvePreferredFreshBuildDirectory(recentCalls);
   const freshBuildPath = buildFreshBuildDirectoryPath(

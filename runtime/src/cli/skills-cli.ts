@@ -21,7 +21,7 @@ import type {
 
 const MAX_INSTALL_SIZE = 1_048_576; // 1 MB
 const BODY_PREVIEW_LENGTH = 500;
-const VALIDATION_DISCOVERY_TIERS: readonly Array<{
+const VALIDATION_DISCOVERY_TIERS: ReadonlyArray<{
   readonly tier: DiscoveryTier;
   readonly key: keyof DiscoveryPaths;
 }> = [

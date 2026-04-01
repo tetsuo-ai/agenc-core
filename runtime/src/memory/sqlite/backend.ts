@@ -34,7 +34,7 @@ function escapeLikePrefix(prefix: string): string {
 }
 
 export class SqliteBackend implements MemoryBackend {
-  readonly name = "sqlite";
+  readonly name: string = "sqlite";
 
   protected db: any = null;
   private readonly config: Required<

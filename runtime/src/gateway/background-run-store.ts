@@ -93,7 +93,8 @@ export type BackgroundRunWorkerPool =
   | "code"
   | "research"
   | "approval"
-  | "remote_mcp";
+  | "remote_mcp"
+  | "remote_session";
 
 export interface BackgroundRunManagedProcessLaunchSpec {
   readonly kind?: "process" | "server";
@@ -2977,6 +2978,7 @@ export class BackgroundRunStore {
       research: 0,
       approval: 0,
       remote_mcp: 0,
+      remote_session: 0,
     } satisfies Record<BackgroundRunWorkerPool, number>;
     const claimedByPool = {
       generic: 0,
@@ -2986,6 +2988,7 @@ export class BackgroundRunStore {
       research: 0,
       approval: 0,
       remote_mcp: 0,
+      remote_session: 0,
     } satisfies Record<BackgroundRunWorkerPool, number>;
     let totalClaimed = 0;
     for (const item of queue.items) {

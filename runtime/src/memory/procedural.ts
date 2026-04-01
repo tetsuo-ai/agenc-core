@@ -73,24 +73,18 @@ export interface ProceduralMemoryConfig {
 }
 
 const DEFAULT_KEY_PREFIX = "procedure:";
-const DEFAULT_MAX_PROCEDURES = 100;
-
 /**
  * Procedural memory manager — records and retrieves tool sequence patterns.
  */
 export class ProceduralMemory {
   private readonly backend: MemoryBackend;
-  private readonly embedding: EmbeddingProvider | undefined;
   private readonly logger: Logger | undefined;
   private readonly keyPrefix: string;
-  private readonly maxProcedures: number;
 
   constructor(config: ProceduralMemoryConfig) {
     this.backend = config.memoryBackend;
-    this.embedding = config.embeddingProvider;
     this.logger = config.logger;
     this.keyPrefix = config.keyPrefix ?? DEFAULT_KEY_PREFIX;
-    this.maxProcedures = config.maxProcedures ?? DEFAULT_MAX_PROCEDURES;
   }
 
   /**

@@ -3250,6 +3250,7 @@ export class DaemonManager {
           memoryBackend: this._memoryBackend,
           logger: this.logger,
           workspacePath: this._resolveActiveHostWorkspacePath(config),
+          llmConfig: config.llm,
         }),
       buildSystemPrompt: (config, options) =>
         this._buildSystemPrompt(config, options),

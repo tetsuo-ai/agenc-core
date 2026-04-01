@@ -29,7 +29,6 @@ import type {
 } from "../vector-store.js";
 import type { SqliteBackendConfig } from "./types.js";
 import { SqliteBackend } from "./backend.js";
-import { MemoryBackendError } from "../errors.js";
 
 const BM25_K1 = 1.5;
 const BM25_B = 0.75;
@@ -277,7 +276,12 @@ export class SqliteVectorBackend
   }
 
   override getDurability(): DurabilityInfo {
-    return { level: "sync" };
+    return {
+      level: "sync",
+      supportsFlush: true,
+      description:
+        "SQLite-backed memory persists synchronously on committed writes.",
+    };
   }
 
   override async deleteThread(sessionId: string): Promise<number> {

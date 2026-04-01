@@ -15,9 +15,8 @@
 import { InMemoryBackend } from "../in-memory/backend.js";
 import { InMemoryVectorStore } from "../vector-store.js";
 import { NoopEmbeddingProvider } from "../embeddings.js";
-import { SemanticMemoryRetriever } from "../retriever.js";
 import { MemoryIngestionEngine } from "../ingestion.js";
-import { DailyLogManager, CuratedMemoryManager } from "../structured.js";
+import { DailyLogManager } from "../structured.js";
 
 export interface LocomoBenchResult {
   readonly name: string;
@@ -65,7 +64,7 @@ export async function runLocomoBench(): Promise<LocomoBenchSuite> {
   const backend = new InMemoryBackend();
   const vectorStore = new InMemoryVectorStore();
   const embedding = new NoopEmbeddingProvider();
-  const logManager = new DailyLogManager(backend);
+  const logManager = new DailyLogManager("/tmp/agenc-locomo-bench-logs");
 
   const engine = new MemoryIngestionEngine({
     embeddingProvider: embedding,
@@ -84,16 +83,16 @@ export async function runLocomoBench(): Promise<LocomoBenchSuite> {
   }
 
   // Evaluate QA accuracy
-  results.push(await evaluateQAAccuracy(vectorStore, embedding, qaPairs));
+  results.push(await evaluateQAAccuracy(vectorStore, qaPairs));
 
   // Evaluate multi-session fact linking
-  results.push(await evaluateMultiSessionReasoning(vectorStore, embedding));
+  results.push(await evaluateMultiSessionReasoning(vectorStore));
 
   // Evaluate session boundary handling
   results.push(await evaluateSessionBoundaries(backend, turns));
 
   // Evaluate temporal ordering
-  results.push(await evaluateTemporalOrdering(vectorStore, embedding));
+  results.push(await evaluateTemporalOrdering(vectorStore));
 
   const passCount = results.filter((r) => r.passed).length;
   const passRate = passCount / results.length;
@@ -167,7 +166,6 @@ function generateLocomoData(): {
 
 async function evaluateQAAccuracy(
   vectorStore: InMemoryVectorStore,
-  embedding: NoopEmbeddingProvider,
   qaPairs: QAPair[],
 ): Promise<LocomoBenchResult> {
   const start = Date.now();
@@ -176,10 +174,7 @@ async function evaluateQAAccuracy(
   for (const qa of qaPairs) {
     // Search for the answer
     const keyword = qa.expectedAnswer.split(" ").find((w) => w.length > 4) ?? "";
-    const results = await vectorStore.query({
-      search: keyword,
-      limit: 5,
-    });
+    const results = await queryEntriesByKeyword(vectorStore, keyword, 5);
 
     // Check if any result contains the expected answer
     const found = results.some((r) =>
@@ -202,7 +197,6 @@ async function evaluateQAAccuracy(
 
 async function evaluateMultiSessionReasoning(
   vectorStore: InMemoryVectorStore,
-  embedding: NoopEmbeddingProvider,
 ): Promise<LocomoBenchResult> {
   const start = Date.now();
 
@@ -214,10 +208,7 @@ async function evaluateMultiSessionReasoning(
   const multiSession = sessionIds.size > 1;
 
   // Search for a cross-session concept
-  const results = await vectorStore.query({
-    search: "TypeScript",
-    limit: 10,
-  });
+  const results = await queryEntriesByKeyword(vectorStore, "TypeScript", 10);
 
   const hasResults = results.length > 0;
   const score = (multiSession ? 0.5 : 0) + (hasResults ? 0.5 : 0);
@@ -262,7 +253,6 @@ async function evaluateSessionBoundaries(
 
 async function evaluateTemporalOrdering(
   vectorStore: InMemoryVectorStore,
-  embedding: NoopEmbeddingProvider,
 ): Promise<LocomoBenchResult> {
   const start = Date.now();
 
@@ -289,4 +279,19 @@ async function evaluateTemporalOrdering(
     details: `${ordered}/${Math.max(0, entries.length - 1)} entries in temporal order`,
     durationMs: Date.now() - start,
   };
+}
+
+async function queryEntriesByKeyword(
+  vectorStore: InMemoryVectorStore,
+  keyword: string,
+  limit: number,
+) {
+  const normalizedKeyword = keyword.trim().toLowerCase();
+  const entries = await vectorStore.query({ limit: 200 });
+  return entries
+    .filter((entry) =>
+      normalizedKeyword.length > 0 &&
+      entry.content.toLowerCase().includes(normalizedKeyword)
+    )
+    .slice(0, limit);
 }

@@ -50,7 +50,10 @@ import {
   normalizeEnvelopePath,
   normalizeEnvelopeRoots,
 } from "../workflow/path-normalization.js";
-import { resolveExecutionEnvelopeArtifactRelations } from "../workflow/execution-envelope.js";
+import {
+  resolveExecutionEnvelopeArtifactRelations,
+  type ExecutionEnvelope,
+} from "../workflow/execution-envelope.js";
 import type { RuntimeIncidentDiagnostics } from "../telemetry/incident-diagnostics.js";
 import {
   FaultInjectionError,
@@ -845,18 +848,7 @@ function getFilesystemToolAccessMode(
 function enforceSubAgentExecutionEnvelope(params: {
   readonly toolName: string;
   readonly args: Record<string, unknown>;
-  readonly executionContext?: {
-    readonly workspaceRoot?: string;
-    readonly allowedReadRoots?: readonly string[];
-    readonly allowedWriteRoots?: readonly string[];
-    readonly inputArtifacts?: readonly string[];
-    readonly requiredSourceArtifacts?: readonly string[];
-    readonly targetArtifacts?: readonly string[];
-    readonly artifactRelations?: readonly {
-      readonly relationType: string;
-      readonly artifactPath: string;
-    }[];
-  };
+  readonly executionContext?: ExecutionEnvelope;
   readonly defaultWorkingDirectory?: string;
 }): string | undefined {
   const { executionContext } = params;

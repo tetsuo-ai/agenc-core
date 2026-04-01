@@ -18,7 +18,6 @@ import type {
   PipelineResult,
   PipelineStep,
 } from "../workflow/pipeline.js";
-import type { WorkflowGraphEdge } from "../workflow/types.js";
 import { canonicalizePipelinePlannerExecutionContexts } from "../workflow/migrations.js";
 import { resolveWorkflowDependencyState } from "../workflow/completion-state.js";
 import type {

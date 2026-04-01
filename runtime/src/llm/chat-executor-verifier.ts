@@ -51,6 +51,7 @@ import { deriveVerificationObligations } from "../workflow/verification-obligati
 import { validateRuntimeVerificationContract } from "../workflow/verification-contract.js";
 import {
   formatRuntimeVerificationIssueCode,
+  isPlannerVerifierIssueCode,
   mapDelegationValidationCodeToPlannerVerifierIssue,
   type PlannerVerifierIssueCode,
 } from "../workflow/cleanup-mode.js";
@@ -65,6 +66,7 @@ import {
   validateDelegatedOutputContract,
 } from "../utils/delegation-validation.js";
 import { parseJsonObjectFromText } from "../utils/delegated-contract-normalization.js";
+import { buildDelegationExecutionContext } from "../utils/delegation-execution-context.js";
 
 const DIRECT_MUTATION_TOOL_NAMES = new Set([
   "desktop.text_editor",
@@ -355,11 +357,13 @@ export function evaluatePlannerDeterministicChecks(
         providerEvidence,
       });
       if (!contractValidation.ok) {
-        issues.push(
-          mapDelegationValidationCodeToPlannerVerifierIssue(
-            contractValidation.code,
-          ),
-        );
+        if (contractValidation.code) {
+          issues.push(
+            mapDelegationValidationCodeToPlannerVerifierIssue(
+              contractValidation.code,
+            ),
+          );
+        }
         verdict = moreSevereVerifierVerdict(verdict, "retry");
       }
     }
@@ -499,12 +503,15 @@ function enforceRequiredReviewerChildren(params: {
   const issueSuffix = missingExactNames.length > 0
     ? `missing=${missingExactNames.join(",")}`
     : `sessions=${distinctSessionIds.size}/${requiredChildren.cardinality}`;
-  const updatedAssessments = params.stepAssessments.map((assessment) => {
+  const updatedAssessments: SubagentVerifierStepAssessment[] =
+    params.stepAssessments.map((assessment) => {
     if (!namesToFail.has(assessment.name)) {
       return assessment;
     }
-    const issues = assessment.issues.includes("missing_required_reviewer_children")
-      ? assessment.issues
+    const issues: PlannerVerifierIssueCode[] = assessment.issues.includes(
+      "missing_required_reviewer_children",
+    )
+      ? [...assessment.issues]
       : [...assessment.issues, "missing_required_reviewer_children"];
     const unresolvedValue = `${assessment.name}:missing_required_reviewer_children:${issueSuffix}`;
     if (!params.unresolvedItems.includes(unresolvedValue)) {
@@ -512,7 +519,7 @@ function enforceRequiredReviewerChildren(params: {
     }
     return {
       ...assessment,
-      verdict: "fail",
+      verdict: "fail" as const,
       retryable: false,
       issues,
       summary:
@@ -544,7 +551,11 @@ function collectHybridVerifierIssues(
     return [...new Set(issues)];
   }
   if (decision.diagnostic?.code) {
-    return [decision.diagnostic.code];
+    return [
+      mapDelegationValidationCodeToPlannerVerifierIssue(
+        decision.diagnostic.code,
+      ),
+    ];
   }
   return [];
 }
@@ -736,7 +747,7 @@ export function parseSubagentVerifierDecision(
       ? obj.issues
           .filter((issue): issue is string => typeof issue === "string")
           .map((issue) => issue.trim())
-          .filter((issue) => issue.length > 0)
+          .filter(isPlannerVerifierIssueCode)
       : [];
     const summary = parsePlannerOptionalString(obj.summary) ??
       (issues.length > 0 ? issues.join("; ") : "verifier assessment");
@@ -1567,29 +1578,19 @@ function buildDeterministicImplementationVerifierWorkItem(
     contextRequirements: [],
     executionContext:
       verificationContract || completionContract
-        ? {
-          ...(verificationContract?.workspaceRoot
-            ? { workspaceRoot: verificationContract.workspaceRoot }
-            : {}),
-          ...(verificationContract?.inputArtifacts
-            ? { inputArtifacts: verificationContract.inputArtifacts }
-            : {}),
-          ...(verificationContract?.requiredSourceArtifacts
-            ? {
-              requiredSourceArtifacts:
-                verificationContract.requiredSourceArtifacts,
-            }
-            : {}),
-          ...(verificationContract?.targetArtifacts
-            ? { targetArtifacts: verificationContract.targetArtifacts }
-            : {}),
+        ? buildDelegationExecutionContext({
+          workspaceRoot: verificationContract?.workspaceRoot,
+          inputArtifacts: verificationContract?.inputArtifacts,
+          requiredSourceArtifacts:
+            verificationContract?.requiredSourceArtifacts,
+          targetArtifacts: verificationContract?.targetArtifacts,
           verificationMode:
             verificationContract?.verificationMode ??
             "deterministic_followup",
           stepKind:
             verificationContract?.stepKind ??
             "delegated_validation",
-          completionContract,
+          role: "validator",
           artifactRelations: canonicalizeWorkflowArtifactRelations({
             workspaceRoot: verificationContract?.workspaceRoot,
             inputArtifacts: verificationContract?.inputArtifacts,
@@ -1604,8 +1605,8 @@ function buildDeterministicImplementationVerifierWorkItem(
               "deterministic_followup",
             role: "validator",
           }),
-          role: "validator",
-        }
+          completionContract,
+        })
         : undefined,
     artifactRelations: canonicalizeWorkflowArtifactRelations({
       workspaceRoot: verificationContract?.workspaceRoot,

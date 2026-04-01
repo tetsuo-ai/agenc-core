@@ -7,7 +7,7 @@
  * @module
  */
 
-import type { Logger } from "../utils/logger.js";
+import { silentLogger, type Logger } from "../utils/logger.js";
 
 /** Memory trace event types. */
 export type MemoryTraceEventType =
@@ -212,13 +212,6 @@ export class MemoryTraceLogger {
   ): void {
     if (!this.enabled) return;
     try {
-      const event: MemoryTraceEvent = {
-        type,
-        sessionId,
-        workspaceId,
-        timestamp: Date.now(),
-        payload,
-      };
       this.logger.debug?.(
         `[${type}]${sessionId ? ` session=${sessionId}` : ""}${workspaceId ? ` ws=${workspaceId}` : ""} ${JSON.stringify(payload)}`,
       );
@@ -234,5 +227,5 @@ function round(n: number): number {
 
 /** Create a no-op trace logger for tests. */
 export function createNoopMemoryTraceLogger(): MemoryTraceLogger {
-  return new MemoryTraceLogger({ debug() {}, info() {}, warn() {}, error() {} } as Logger, false);
+  return new MemoryTraceLogger(silentLogger, false);
 }
