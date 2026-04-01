@@ -22,14 +22,13 @@ export function AgentCard({ agentId, agent }: AgentCardProps) {
   return (
     <div className="border border-green-800 bg-black p-2 mb-2 font-mono text-sm">
       <div className="flex items-center justify-between">
-        <div>
+        <div className="min-w-0 flex-1 pr-2">
           <span className="text-green-300 font-bold">
             {agent.identity?.name ?? agentId}
           </span>
           {agent.lastAction && (
-            <span className="text-green-600 ml-2 text-xs">
-              "{agent.lastAction.slice(0, 40)}
-              {agent.lastAction.length > 40 ? "..." : ""}"
+            <span className="mt-1 block break-words whitespace-pre-wrap text-green-600 text-xs">
+              "{agent.lastAction}"
             </span>
           )}
         </div>
@@ -49,7 +48,7 @@ export function AgentCard({ agentId, agent }: AgentCardProps) {
       </div>
 
       {topBelief && (
-        <div className="text-xs text-green-500 mt-1">
+        <div className="mt-1 break-words whitespace-pre-wrap text-xs text-green-500">
           Top belief: {topBelief[0]} — {topBelief[1].belief} (
           {(topBelief[1].confidence * 100).toFixed(0)}%)
         </div>
@@ -60,7 +59,7 @@ export function AgentCard({ agentId, agent }: AgentCardProps) {
           {agent.identity && (
             <div className="mb-2">
               <div className="text-green-400 font-bold">Personality:</div>
-              <div className="text-green-600 whitespace-pre-wrap">
+              <div className="break-words whitespace-pre-wrap text-green-600">
                 {agent.identity.personality.slice(0, 300)}
               </div>
             </div>
@@ -70,7 +69,12 @@ export function AgentCard({ agentId, agent }: AgentCardProps) {
             <div className="mb-2">
               <div className="text-green-400 font-bold">Learned Traits:</div>
               {agent.identity.learnedTraits.map((t, i) => (
-                <div key={i} className="text-green-600">- {t}</div>
+                <div
+                  key={i}
+                  className="break-words whitespace-pre-wrap text-green-600"
+                >
+                  - {t}
+                </div>
               ))}
             </div>
           )}
@@ -79,7 +83,10 @@ export function AgentCard({ agentId, agent }: AgentCardProps) {
             <div className="mb-2">
               <div className="text-green-400 font-bold">Beliefs:</div>
               {Object.entries(beliefs).map(([topic, b]) => (
-                <div key={topic} className="text-green-600">
+                <div
+                  key={topic}
+                  className="break-words whitespace-pre-wrap text-green-600"
+                >
                   - {topic}: {b.belief} ({(b.confidence * 100).toFixed(0)}%)
                 </div>
               ))}
@@ -90,7 +97,10 @@ export function AgentCard({ agentId, agent }: AgentCardProps) {
             <div className="mb-2">
               <div className="text-green-400 font-bold">Relationships:</div>
               {agent.relationships.map((r) => (
-                <div key={r.otherAgentId} className="text-green-600">
+                <div
+                  key={r.otherAgentId}
+                  className="break-words whitespace-pre-wrap text-green-600"
+                >
                   - {r.otherAgentId}: {r.interactionCount} interactions,
                   sentiment {r.sentiment.toFixed(2)}
                 </div>
@@ -102,7 +112,10 @@ export function AgentCard({ agentId, agent }: AgentCardProps) {
             <div>
               <div className="text-green-400 font-bold">Recent Memories:</div>
               {agent.recentMemories.slice(0, 5).map((m, i) => (
-                <div key={i} className="text-green-600 truncate">
+                <div
+                  key={i}
+                  className="break-words whitespace-pre-wrap text-green-600"
+                >
                   [{m.role}] {m.content}
                 </div>
               ))}

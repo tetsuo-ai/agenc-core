@@ -141,6 +141,8 @@ const GROK_MODELS = [
   { id: "grok-3-mini", label: "Grok 3 Mini (131K ctx)" },
 ] as const;
 
+const MAX_GENERATED_AGENTS = 25;
+
 export function SimulationSetup({ onLaunch, loading, bridgeUrl = "http://localhost:3200" }: SimulationSetupProps) {
   const [config, setConfig] = useState<SimulationSetupConfig>({
     worldId: "",
@@ -318,9 +320,19 @@ export function SimulationSetup({ onLaunch, loading, bridgeUrl = "http://localho
                 <input
                   type="number"
                   min={2}
-                  max={10}
+                  max={MAX_GENERATED_AGENTS}
                   value={agentCount}
-                  onChange={(e) => setAgentCount(Math.max(2, Math.min(10, parseInt(e.target.value) || 3)))}
+                  onChange={(e) =>
+                    setAgentCount(
+                      Math.max(
+                        2,
+                        Math.min(
+                          MAX_GENERATED_AGENTS,
+                          parseInt(e.target.value, 10) || 3,
+                        ),
+                      ),
+                    )
+                  }
                   className="w-16 bg-black border border-green-800 text-green-300 px-2 py-1 focus:border-green-400 outline-none"
                 />
               </div>
@@ -368,6 +380,10 @@ export function SimulationSetup({ onLaunch, loading, bridgeUrl = "http://localho
             {generateError && (
               <div className="text-red-500 text-xs mt-2">{generateError}</div>
             )}
+            <div className="text-green-800 text-xs mt-1">
+              Generated-agent requests are capped at {MAX_GENERATED_AGENTS} to
+              keep the launch prompt and startup latency under control.
+            </div>
             {!config.premise && (
               <div className="text-green-800 text-xs mt-1">Enter a premise above first</div>
             )}
