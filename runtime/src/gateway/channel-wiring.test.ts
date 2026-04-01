@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { GatewayConfig } from "./types.js";
-import { wireExternalChannels } from "./channel-wiring.js";
+import { wireExternalChannel, wireExternalChannels } from "./channel-wiring.js";
+import type { ChannelContext, ChannelPlugin } from "./channel.js";
+import type { GatewayMessage, OutboundMessage } from "./message.js";
 import { silentLogger } from "../utils/logger.js";
 
 function makeConfig(): GatewayConfig {
@@ -36,6 +38,9 @@ describe("wireExternalChannels", () => {
       chatExecutor: null,
       memoryBackend: null,
       defaultForegroundMaxToolRounds: 1,
+      buildChannelHostServices() {
+        return undefined;
+      },
       async buildSystemPrompt() {
         return "system prompt";
       },
@@ -61,5 +66,131 @@ describe("wireExternalChannels", () => {
     expect(plugin?.isHealthy()).toBe(true);
 
     await plugin?.stop();
+  });
+
+  it("ingests observation-only plugin messages without invoking the chat executor", async () => {
+    class FixtureChannel implements ChannelPlugin {
+      readonly name = "fixture-chat";
+      context: ChannelContext | null = null;
+      sent: OutboundMessage[] = [];
+
+      async initialize(context: ChannelContext): Promise<void> {
+        this.context = context;
+      }
+
+      async start(): Promise<void> {
+        return;
+      }
+
+      async stop(): Promise<void> {
+        return;
+      }
+
+      async send(message: OutboundMessage): Promise<void> {
+        this.sent.push(message);
+      }
+
+      isHealthy(): boolean {
+        return this.context !== null;
+      }
+
+      async emit(message: GatewayMessage): Promise<void> {
+        await this.context?.onMessage(message);
+      }
+    }
+
+    const channel = new FixtureChannel();
+    let capturedHistory: Array<{ role: string; content: string }> | undefined;
+    const execute = vi.fn().mockImplementation(async (input: {
+      history?: Array<{ role: string; content: string }>;
+    }) => {
+      capturedHistory = input.history?.map((entry) => ({ ...entry }));
+      return {
+      content: "acknowledged",
+      provider: "grok",
+      model: "grok-4.20-beta-0309-reasoning",
+      usedFallback: false,
+      durationMs: 5,
+      compacted: false,
+      tokenUsage: undefined,
+      callUsage: [],
+      statefulSummary: undefined,
+      plannerSummary: undefined,
+      toolRoutingSummary: undefined,
+      stopReason: "completed",
+      stopReasonDetail: undefined,
+      toolCalls: [],
+      };
+    });
+
+    await wireExternalChannel(
+      channel,
+      "fixture-chat",
+      makeConfig(),
+      { token: "abc" },
+      {
+        gateway: null,
+        logger: silentLogger,
+        chatExecutor: { execute } as never,
+        memoryBackend: null,
+        defaultForegroundMaxToolRounds: 1,
+        buildChannelHostServices() {
+          return undefined;
+        },
+        async buildSystemPrompt() {
+          return "system prompt";
+        },
+        async handleTextChannelApprovalCommand() {
+          return false;
+        },
+        registerTextApprovalDispatcher() {
+          return () => {};
+        },
+        createTextChannelSessionToolHandler() {
+          return vi.fn() as never;
+        },
+        buildToolRoutingDecision() {
+          return undefined;
+        },
+        recordToolRoutingOutcome() {
+          return;
+        },
+      },
+    );
+
+    await channel.emit({
+      id: "msg-1",
+      channel: "fixture-chat",
+      senderId: "alice",
+      senderName: "Alice",
+      sessionId: "fixture:alice",
+      content: "[Observation] A vendor lowers his asking price.",
+      scope: "dm",
+      metadata: { ingest_only: true },
+    });
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(channel.sent).toHaveLength(0);
+
+    await channel.emit({
+      id: "msg-2",
+      channel: "fixture-chat",
+      senderId: "alice",
+      senderName: "Alice",
+      sessionId: "fixture:alice",
+      content: "Respond exactly with ONLY your action text.",
+      scope: "dm",
+    });
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(capturedHistory).toEqual([
+      {
+        role: "user",
+        content: "[Observation] A vendor lowers his asking price.",
+      },
+    ]);
+    expect(channel.sent).toEqual([
+      { sessionId: "fixture:alice", content: "acknowledged" },
+    ]);
   });
 });

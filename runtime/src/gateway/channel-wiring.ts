@@ -26,7 +26,10 @@ import {
 } from "./daemon-trace.js";
 import { summarizeLLMFailureForSurface } from "./daemon-llm-failure.js";
 import type { GatewayMessage } from "./message.js";
-import { SessionManager } from "./session.js";
+import {
+  SessionManager,
+  clearStatefulContinuationMetadata,
+} from "./session.js";
 import type { ChannelPlugin } from "./channel.js";
 import type { Gateway } from "./gateway.js";
 import { TelegramChannel } from "../channels/telegram/plugin.js";
@@ -120,6 +123,13 @@ function isPluginChannelConfig(config: unknown): config is {
   readonly config?: Record<string, unknown>;
 } {
   return isRecord(config) && config.type === "plugin";
+}
+
+function isIngestOnlyChannelMessage(msg: GatewayMessage): boolean {
+  return (
+    msg.metadata?.ingest_only === true ||
+    msg.metadata?.ingestOnly === true
+  );
 }
 
 
@@ -434,6 +444,31 @@ export async function wireExternalChannel(
       scope: msg.scope,
       workspaceId: "default",
     });
+
+    if (isIngestOnlyChannelMessage(msg)) {
+      clearStatefulContinuationMetadata(session.metadata);
+      sessionMgr.appendMessage(session.id, {
+        role: "user",
+        content: msg.content,
+      });
+
+      if (deps.memoryBackend) {
+        try {
+          await deps.memoryBackend.addEntry({
+            sessionId: msg.sessionId,
+            role: "user",
+            content: msg.content,
+            metadata: msg.metadata,
+            workspaceId: session.workspaceId,
+            channel: channelName,
+          });
+        } catch {
+          /* non-critical */
+        }
+      }
+      return;
+    }
+
     const unregisterTextApproval = deps.registerTextApprovalDispatcher(
       msg.sessionId,
       channelName,
