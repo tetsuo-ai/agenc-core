@@ -78,6 +78,12 @@ export class InMemoryBackend implements MemoryBackend {
       timestamp: now,
       taskPda: options.taskPda,
       metadata: options.metadata,
+      // Phase 2: scoping fields
+      workspaceId: options.workspaceId,
+      agentId: options.agentId,
+      userId: options.userId,
+      worldId: options.worldId,
+      channel: options.channel,
     };
 
     // Store with optional expiry marker in metadata (for lazy filtering)

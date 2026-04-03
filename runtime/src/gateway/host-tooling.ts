@@ -33,6 +33,9 @@ export interface HostNpmToolingProfile {
 export interface HostToolingProfile {
   readonly nodeVersion: string;
   readonly npm?: HostNpmToolingProfile;
+  /** The python binary name available on this host (python3 vs python). */
+  readonly pythonBinary?: string;
+  readonly pythonVersion?: string;
 }
 
 export interface PackageManifestWorkspaceProtocolSpecifier {
@@ -275,6 +278,27 @@ export async function probeHostToolingProfile(
     timeoutMs,
     tmpRoot: options.tmpRoot ?? tmpdir(),
   });
+
+  // Probe Python availability — many coding tasks need it.
+  let pythonBinary: string | undefined;
+  let pythonVersion: string | undefined;
+  for (const candidate of ["python3", "python"]) {
+    try {
+      const result = await runCommand({
+        command: candidate,
+        args: ["--version"],
+        timeoutMs: 3000,
+      });
+      if (result.exitCode === 0) {
+        pythonBinary = candidate;
+        pythonVersion = (result.stdout || result.stderr).trim();
+        break;
+      }
+    } catch {
+      // binary not found
+    }
+  }
+
   return {
     ...profile,
     npm: {
@@ -284,5 +308,6 @@ export async function probeHostToolingProfile(
         ? { workspaceProtocolEvidence: workspaceProbe.workspaceProtocolEvidence }
         : {}),
     },
+    ...(pythonBinary ? { pythonBinary, pythonVersion } : {}),
   };
 }

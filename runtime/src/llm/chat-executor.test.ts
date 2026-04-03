@@ -9428,6 +9428,7 @@ describe("ChatExecutor", () => {
     });
 
     it("refines the planner when a delegated step is rejected as overloaded before execution", async () => {
+      const workspaceRoot = "/tmp/refined-decomposition-game";
       const provider = createMockProvider("primary", {
         chat: vi
           .fn()
@@ -9479,6 +9480,13 @@ describe("ChatExecutor", () => {
                     ],
                     required_tool_capabilities: ["system.readFile"],
                     context_requirements: ["repo_context"],
+                    execution_context: plannerReadOnlyExecutionContext(
+                      workspaceRoot,
+                      {
+                        sourceArtifacts: ["docs/framework-choice.md"],
+                        stepKind: "delegated_research",
+                      },
+                    ),
                     max_budget_hint: "2m",
                     can_run_parallel: true,
                   },
@@ -9494,6 +9502,13 @@ describe("ChatExecutor", () => {
                     ],
                     required_tool_capabilities: ["desktop.bash"],
                     context_requirements: ["repo_context", "research_framework"],
+                    execution_context: plannerWriteExecutionContext(
+                      workspaceRoot,
+                      {
+                        sourceArtifacts: ["docs/framework-choice.md"],
+                        targetArtifacts: ["packages/gameplay/src/index.ts"],
+                      },
+                    ),
                     max_budget_hint: "2m",
                     can_run_parallel: false,
                     depends_on: ["research_framework"],
@@ -9521,6 +9536,13 @@ describe("ChatExecutor", () => {
                     ],
                     required_tool_capabilities: ["system.readFile"],
                     context_requirements: ["repo_context"],
+                    execution_context: plannerReadOnlyExecutionContext(
+                      workspaceRoot,
+                      {
+                        sourceArtifacts: ["docs/framework-choice.md"],
+                        stepKind: "delegated_research",
+                      },
+                    ),
                     max_budget_hint: "2m",
                     can_run_parallel: true,
                   },
@@ -9536,6 +9558,13 @@ describe("ChatExecutor", () => {
                     ],
                     required_tool_capabilities: ["desktop.bash"],
                     context_requirements: ["repo_context", "research_framework"],
+                    execution_context: plannerWriteExecutionContext(
+                      workspaceRoot,
+                      {
+                        sourceArtifacts: ["docs/framework-choice.md"],
+                        targetArtifacts: ["packages/gameplay/src/index.ts"],
+                      },
+                    ),
                     max_budget_hint: "2m",
                     can_run_parallel: false,
                     depends_on: ["research_framework"],
@@ -9556,10 +9585,46 @@ describe("ChatExecutor", () => {
           status: "completed",
           context: {
             results: {
-              research_framework:
-                '{"status":"completed","success":true,"output":"Vite chosen","toolCalls":[]}',
-              implement_gameplay:
-                '{"status":"completed","success":true,"output":"Gameplay implemented","toolCalls":[]}',
+              research_framework: completedDelegatedPlannerResult(
+                "Vite chosen",
+                [
+                  {
+                    name: "system.readFile",
+                    args: {
+                      path: `${workspaceRoot}/docs/framework-choice.md`,
+                    },
+                    result: safeJson({
+                      path: `${workspaceRoot}/docs/framework-choice.md`,
+                      content: "# framework choice\n",
+                    }),
+                  },
+                ],
+              ),
+              implement_gameplay: completedDelegatedPlannerResult(
+                "Gameplay implemented",
+                [
+                  {
+                    name: "system.writeFile",
+                    args: {
+                      path: `${workspaceRoot}/packages/gameplay/src/index.ts`,
+                      content: "export const gameplay = true;\n",
+                    },
+                    result: safeJson({
+                      path: `${workspaceRoot}/packages/gameplay/src/index.ts`,
+                      bytesWritten: 30,
+                    }),
+                  },
+                  {
+                    name: "desktop.bash",
+                    args: {
+                      command: "npm",
+                      args: ["run", "build"],
+                      cwd: workspaceRoot,
+                    },
+                    result: safeJson({ exitCode: 0, stdout: "ok" }),
+                  },
+                ],
+              ),
             },
           },
           completedSteps: 2,
@@ -9584,6 +9649,9 @@ describe("ChatExecutor", () => {
           message: createMessage(
             "Build the game, choose the framework, implement it, and validate it end to end.",
           ),
+          runtimeContext: {
+            workspaceRoot,
+          },
         }),
       );
 
@@ -9615,6 +9683,7 @@ describe("ChatExecutor", () => {
     });
 
     it("replans when delegated execution requests parent-side decomposition", async () => {
+      const workspaceRoot = "/tmp/runtime-signal-refinement-game";
       const provider = createMockProvider("primary", {
         chat: vi
           .fn()
@@ -9636,6 +9705,14 @@ describe("ChatExecutor", () => {
                     ],
                     required_tool_capabilities: ["desktop.bash"],
                     context_requirements: ["repo_context"],
+                    execution_context: plannerWriteExecutionContext(
+                      workspaceRoot,
+                      {
+                        targetArtifacts: ["packages/gameplay/package.json"],
+                        effectClass: "filesystem_scaffold",
+                        stepKind: "delegated_scaffold",
+                      },
+                    ),
                     max_budget_hint: "2m",
                     can_run_parallel: true,
                   },
@@ -9651,6 +9728,13 @@ describe("ChatExecutor", () => {
                     ],
                     required_tool_capabilities: ["desktop.bash"],
                     context_requirements: ["repo_context", "delegate_setup"],
+                    execution_context: plannerWriteExecutionContext(
+                      workspaceRoot,
+                      {
+                        inputArtifacts: ["packages/gameplay/package.json"],
+                        targetArtifacts: ["packages/gameplay/src/index.ts"],
+                      },
+                    ),
                     max_budget_hint: "2m",
                     can_run_parallel: false,
                     depends_on: ["delegate_setup"],
@@ -9677,6 +9761,14 @@ describe("ChatExecutor", () => {
                     ],
                     required_tool_capabilities: ["desktop.bash"],
                     context_requirements: ["repo_context"],
+                    execution_context: plannerWriteExecutionContext(
+                      workspaceRoot,
+                      {
+                        targetArtifacts: ["packages/gameplay/package.json"],
+                        effectClass: "filesystem_scaffold",
+                        stepKind: "delegated_scaffold",
+                      },
+                    ),
                     max_budget_hint: "2m",
                     can_run_parallel: true,
                   },
@@ -9692,6 +9784,13 @@ describe("ChatExecutor", () => {
                     ],
                     required_tool_capabilities: ["desktop.bash"],
                     context_requirements: ["repo_context", "delegate_setup"],
+                    execution_context: plannerWriteExecutionContext(
+                      workspaceRoot,
+                      {
+                        inputArtifacts: ["packages/gameplay/package.json"],
+                        targetArtifacts: ["packages/gameplay/src/index.ts"],
+                      },
+                    ),
                     max_budget_hint: "2m",
                     can_run_parallel: false,
                     depends_on: ["delegate_setup"],
@@ -9718,6 +9817,14 @@ describe("ChatExecutor", () => {
                     ],
                     required_tool_capabilities: ["desktop.bash"],
                     context_requirements: ["repo_context"],
+                    execution_context: plannerWriteExecutionContext(
+                      workspaceRoot,
+                      {
+                        targetArtifacts: ["packages/gameplay/package.json"],
+                        effectClass: "filesystem_scaffold",
+                        stepKind: "delegated_scaffold",
+                      },
+                    ),
                     max_budget_hint: "2m",
                     can_run_parallel: true,
                   },
@@ -9733,6 +9840,13 @@ describe("ChatExecutor", () => {
                     ],
                     required_tool_capabilities: ["desktop.bash"],
                     context_requirements: ["repo_context", "delegate_setup"],
+                    execution_context: plannerWriteExecutionContext(
+                      workspaceRoot,
+                      {
+                        inputArtifacts: ["packages/gameplay/package.json"],
+                        targetArtifacts: ["packages/gameplay/src/index.ts"],
+                      },
+                    ),
                     max_budget_hint: "2m",
                     can_run_parallel: false,
                     depends_on: ["delegate_setup"],
@@ -9755,8 +9869,22 @@ describe("ChatExecutor", () => {
             status: "failed",
             context: {
               results: {
-                delegate_setup:
-                  '{"status":"completed","success":true,"output":"Setup complete","toolCalls":[]}',
+                delegate_setup: completedDelegatedPlannerResult(
+                  "Setup complete",
+                  [
+                    {
+                      name: "system.writeFile",
+                      args: {
+                        path: `${workspaceRoot}/packages/gameplay/package.json`,
+                        content: '{"name":"gameplay"}',
+                      },
+                      result: safeJson({
+                        path: `${workspaceRoot}/packages/gameplay/package.json`,
+                        bytesWritten: 19,
+                      }),
+                    },
+                  ],
+                ),
                 delegate_impl:
                   '{"status":"needs_decomposition","success":false,"error":"Implement + validate must be split","decomposition":{"code":"needs_decomposition","phases":["implementation","validation"],"suggestedSteps":[{"name":"implement_core_scope"},{"name":"verify_acceptance"}]}}',
               },
@@ -9788,10 +9916,57 @@ describe("ChatExecutor", () => {
             status: "completed",
             context: {
               results: {
-                delegate_setup:
-                  '{"status":"completed","success":true,"output":"Setup complete","toolCalls":[]}',
-                delegate_impl:
-                  '{"status":"completed","success":true,"output":"Gameplay implemented","toolCalls":[]}',
+                delegate_setup: completedDelegatedPlannerResult(
+                  "Setup complete",
+                  [
+                    {
+                      name: "system.writeFile",
+                      args: {
+                        path: `${workspaceRoot}/packages/gameplay/package.json`,
+                        content: '{"name":"gameplay"}',
+                      },
+                      result: safeJson({
+                        path: `${workspaceRoot}/packages/gameplay/package.json`,
+                        bytesWritten: 19,
+                      }),
+                    },
+                  ],
+                ),
+                delegate_impl: completedDelegatedPlannerResult(
+                  "Gameplay implemented",
+                  [
+                    {
+                      name: "system.readFile",
+                      args: {
+                        path: `${workspaceRoot}/packages/gameplay/package.json`,
+                      },
+                      result: safeJson({
+                        path: `${workspaceRoot}/packages/gameplay/package.json`,
+                        content: '{"name":"gameplay"}',
+                      }),
+                    },
+                    {
+                      name: "system.writeFile",
+                      args: {
+                        path: `${workspaceRoot}/packages/gameplay/src/index.ts`,
+                        content: "export const gameplay = true;\n",
+                      },
+                      result: safeJson({
+                        path: `${workspaceRoot}/packages/gameplay/src/index.ts`,
+                        bytesWritten: 30,
+                      }),
+                    },
+                    {
+                      name: "desktop.bash",
+                      args: {
+                        command: "npm",
+                        args: ["run", "build"],
+                        cwd: workspaceRoot,
+                      },
+                      result: safeJson({ exitCode: 0, stdout: "ok" }),
+                    },
+                  ],
+                ),
               },
             },
             completedSteps: 2,
@@ -9816,6 +9991,9 @@ describe("ChatExecutor", () => {
           message: createMessage(
             "Implement the gameplay flow and make sure it is validated correctly.",
           ),
+          runtimeContext: {
+            workspaceRoot,
+          },
         }),
       );
 

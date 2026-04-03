@@ -26,6 +26,7 @@ import {
   isConcreteExecutableEnvelopeRoot,
   normalizeWorkspaceRoot,
 } from "../workflow/path-normalization.js";
+import { safeStepStringArray } from "../llm/chat-executor-planner.js";
 import {
   type CuratedSection,
   type DependencyArtifactCandidate,
@@ -164,9 +165,9 @@ export function buildRelevanceTerms(
   const aggregate = [
     step.objective,
     step.inputContract,
-    ...step.acceptanceCriteria,
+    ...safeStepStringArray(step.acceptanceCriteria),
     ...sanitizedContextRequirements,
-    ...step.requiredToolCapabilities,
+    ...safeStepStringArray(step.requiredToolCapabilities),
   ].join(" ");
   return new Set(extractTerms(aggregate));
 }
@@ -566,7 +567,7 @@ export function curateToolOutputSection(
   trustedWorkspaceRoots: readonly string[] = [],
 ): CuratedSection {
   const requiredCapabilities = new Set(
-    step.requiredToolCapabilities.map((tool) => tool.toLowerCase()),
+    safeStepStringArray(step.requiredToolCapabilities).map((tool) => tool.toLowerCase()),
   );
   const requirementTermSet = new Set(
     requirementTerms.map((term) => term.toLowerCase()),

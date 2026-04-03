@@ -99,6 +99,8 @@ export interface OutboundMessage {
   readonly isPartial?: boolean;
   /** Whether the message should be spoken via text-to-speech. */
   readonly tts?: boolean;
+  /** Arbitrary channel-specific metadata to preserve on the outbound path. */
+  readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
 // ============================================================================

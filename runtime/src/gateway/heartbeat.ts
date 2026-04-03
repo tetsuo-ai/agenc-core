@@ -289,16 +289,20 @@ export class HeartbeatScheduler {
     context: HeartbeatContext,
   ): Promise<HeartbeatResult> {
     const timeoutMs = this.config.timeoutMs;
+    let timer: ReturnType<typeof setTimeout> | undefined;
 
-    const result = await Promise.race([
-      action.execute(context),
-      new Promise<never>((_resolve, reject) => {
-        setTimeout(() => {
-          reject(new HeartbeatTimeoutError(action.name, timeoutMs));
-        }, timeoutMs);
-      }),
-    ]);
-
-    return result;
+    try {
+      const result = await Promise.race([
+        action.execute(context),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            reject(new HeartbeatTimeoutError(action.name, timeoutMs));
+          }, timeoutMs);
+        }),
+      ]);
+      return result;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 }

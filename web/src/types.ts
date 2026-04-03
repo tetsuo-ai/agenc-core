@@ -428,4 +428,5 @@ export type ViewId =
   | 'activity'
   | 'desktop'
   | 'settings'
-  | 'payment';
+  | 'payment'
+  | 'simulation';

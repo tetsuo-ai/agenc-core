@@ -329,6 +329,16 @@ export function latestSessionSummary(
       return preferred;
     }
   }
+  // When a workspace root is specified, only resume sessions from that
+  // workspace.  Falling back to sessions from other workspaces causes
+  // old session context to bleed into new workspace tasks.
+  if (
+    typeof preferredWorkspaceRoot === "string" &&
+    preferredWorkspaceRoot &&
+    sameWorkspaceSessions.length === 0
+  ) {
+    return null;
+  }
   const candidateSessions =
     sameWorkspaceSessions.length > 0 ? sameWorkspaceSessions : payload;
   return [...candidateSessions].sort((left, right) => {

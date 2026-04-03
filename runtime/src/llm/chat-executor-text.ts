@@ -53,6 +53,11 @@ import {
   sanitizeDelegatedAssistantEnvironmentSummary,
 } from "../utils/delegated-scope-trust.js";
 import { buildWorkflowRecoveryStateLines } from "./chat-executor-recovery.js";
+import {
+  hasConcordiaGenerateAgentsContract,
+  hasConcordiaSimulationTurnContract,
+  looksLikeConcordiaGenerateAgentsPrompt,
+} from "./chat-executor-turn-contracts.js";
 
 // ============================================================================
 // JSON parsing helpers (used by planner + verifier)
@@ -349,7 +354,19 @@ export function reconcileVerifiedFileWorkflowContent(
   return content;
 }
 
-function extractExactResponseLiteral(messageText: string): string | undefined {
+function extractExactResponseLiteral(
+  messageText: string,
+  metadata?: Readonly<Record<string, unknown>>,
+): string | undefined {
+  if (
+    hasConcordiaSimulationTurnContract(metadata) ||
+    hasConcordiaGenerateAgentsContract(metadata) ||
+    /^\[Concordia (?:Action|Speech|Choice|Numeric) Request\]/.test(messageText) ||
+    looksLikeConcordiaGenerateAgentsPrompt(messageText)
+  ) {
+    return undefined;
+  }
+
   const directiveMatch =
     /\b(?:return|reply|respond|output|answer)(?:\s+with)?\s+exactly(?:\s+as)?\s+/i.exec(
       messageText,
@@ -434,11 +451,12 @@ export function reconcileExactResponseContract(
   toolCalls: readonly ToolCallRecord[],
   messageText: string,
   options?: {
+    readonly metadata?: Readonly<Record<string, unknown>>;
     readonly forceLiteralWhenNoToolEvidence?: boolean;
   },
 ): string {
   if (!content) return content;
-  const literal = extractExactResponseLiteral(messageText);
+  const literal = extractExactResponseLiteral(messageText, options?.metadata);
   if (!literal) return content;
 
   const trimmed = content.trim();
@@ -634,7 +652,7 @@ const PLAN_HEADING_RE = /^(?:\*\*)?plan(?:\*\*)?:?/im;
 const FUTURE_EXECUTION_SIGNAL_RE =
   /\b(?:starting execution|begin(?:ning)? execution|i(?:'ll| will)|going to|next(?: up)?|after that|then)\b/i;
 const EXECUTION_DEFERRAL_SIGNAL_RE =
-  /\b(?:let me know|ready for|next (?:feature|module|step)|deepen next|specific feature|specific module|continue next|follow up next)\b/i;
+  /\b(?:let me know|ready for (?:the )?(?:next|follow[- ]?up|another|you to)|next (?:feature|module|step)|deepen next|specific feature|specific module|continue next|follow up next)\b/i;
 const EXECUTION_PROGRESS_SUMMARY_SIGNAL_RE =
   /\b(?:summary of process|current status|compiled|build succeeded|updated\s+`|updated\s+src\/|wrote\s+|fixed\s+|implemented\s+|ready)\b/i;
 const EXECUTION_BLOCKER_SIGNAL_RE =

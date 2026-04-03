@@ -44,7 +44,16 @@ import {
   type EffectTarget,
 } from "../workflow/effects.js";
 import { deriveEffectIdempotencyKey, getCurrentEffectExecutionContext } from "../workflow/idempotency.js";
-import { isPathWithinAnyRoot, normalizeEnvelopePath, normalizeEnvelopeRoots } from "../workflow/path-normalization.js";
+import {
+  isPathWithinAnyRoot,
+  isPathWithinRoot,
+  normalizeEnvelopePath,
+  normalizeEnvelopeRoots,
+} from "../workflow/path-normalization.js";
+import {
+  resolveExecutionEnvelopeArtifactRelations,
+  type ExecutionEnvelope,
+} from "../workflow/execution-envelope.js";
 import type { RuntimeIncidentDiagnostics } from "../telemetry/incident-diagnostics.js";
 import {
   FaultInjectionError,
@@ -839,14 +848,7 @@ function getFilesystemToolAccessMode(
 function enforceSubAgentExecutionEnvelope(params: {
   readonly toolName: string;
   readonly args: Record<string, unknown>;
-  readonly executionContext?: {
-    readonly workspaceRoot?: string;
-    readonly allowedReadRoots?: readonly string[];
-    readonly allowedWriteRoots?: readonly string[];
-    readonly inputArtifacts?: readonly string[];
-    readonly requiredSourceArtifacts?: readonly string[];
-    readonly targetArtifacts?: readonly string[];
-  };
+  readonly executionContext?: ExecutionEnvelope;
   readonly defaultWorkingDirectory?: string;
 }): string | undefined {
   const { executionContext } = params;
@@ -873,6 +875,10 @@ function enforceSubAgentExecutionEnvelope(params: {
       executionContext.inputArtifacts,
     targetArtifacts: executionContext.targetArtifacts,
   });
+  const explicitlyWritableArtifacts = collectExplicitWritableExecutionArtifacts(
+    executionContext,
+    workspaceRoot,
+  );
 
   for (const key of pathKeys) {
     const rawValue = params.args[key];
@@ -899,9 +905,73 @@ function enforceSubAgentExecutionEnvelope(params: {
     ) {
       return `Delegated ${mode} path "${resolvedPath}" is not permitted by the execution envelope target artifacts`;
     }
+    if (
+      mode !== "read" &&
+      isRepoLocalVerificationHarnessPath(resolvedPath, workspaceRoot) &&
+      !explicitlyWritableArtifacts.some((artifactPath) =>
+        artifactPath === resolvedPath || isPathWithinRoot(resolvedPath, artifactPath)
+      )
+    ) {
+      return `Delegated ${mode} path "${resolvedPath}" rewrites a repo-local verification harness without explicitly owning it as a writable target`;
+    }
   }
 
   return undefined;
+}
+
+function collectExplicitWritableExecutionArtifacts(
+  executionContext: NonNullable<
+    Parameters<typeof enforceSubAgentExecutionEnvelope>[0]["executionContext"]
+  >,
+  workspaceRoot?: string,
+): readonly string[] {
+  const normalizedWorkspaceRoot =
+    typeof workspaceRoot === "string" ? normalizeEnvelopePath(workspaceRoot) : "";
+  const explicitArtifacts = new Set<string>();
+  const addArtifact = (value: string | undefined): void => {
+    if (typeof value !== "string" || value.trim().length === 0) {
+      return;
+    }
+    const normalized = normalizeEnvelopePath(value, workspaceRoot);
+    if (!normalized || normalized === normalizedWorkspaceRoot) {
+      return;
+    }
+    explicitArtifacts.add(normalized);
+  };
+
+  for (const artifact of executionContext.targetArtifacts ?? []) {
+    addArtifact(artifact);
+  }
+  for (const relation of resolveExecutionEnvelopeArtifactRelations(
+    executionContext,
+  )) {
+    if (relation.relationType !== "write_owner") {
+      continue;
+    }
+    addArtifact(relation.artifactPath);
+  }
+
+  return [...explicitArtifacts];
+}
+
+function isRepoLocalVerificationHarnessPath(
+  path: string,
+  workspaceRoot?: string,
+): boolean {
+  if (!workspaceRoot || !isPathWithinRoot(path, workspaceRoot)) {
+    return false;
+  }
+  const relativePath = relative(workspaceRoot, path).replace(/\\/gu, "/");
+  if (relativePath.startsWith("../")) {
+    return false;
+  }
+  return (
+    /(?:^|\/)(?:test|tests|spec|specs|__tests__)\/.+\.(?:sh|bash|zsh)$/iu.test(
+      relativePath,
+    ) ||
+    /(?:^|\/)(?:run|verify|smoke|integration|e2e)[-_]?tests?\.(?:sh|bash|zsh)$/iu
+      .test(relativePath)
+  );
 }
 
 function collectMeaningfulLines(value: string): string[] {

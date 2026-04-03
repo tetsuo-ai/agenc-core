@@ -1,7 +1,7 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["src/index.ts", "src/slack.ts"],
+  entry: ["src/index.ts", "src/mock.ts"],
   format: ["cjs", "esm"],
   dts: true,
   sourcemap: true,

@@ -104,23 +104,28 @@ export function createMetaPlannerAction(
                 `Generate up to ${maxGoals} new strategic goals.`,
             },
           ],
-          config.traceProviderPayloads === true
-            ? {
-                trace: {
-                  includeProviderPayloads: true,
-                  onProviderTraceEvent: createProviderTraceEventLogger({
-                    logger: context.logger,
-                    traceLabel: "meta_planner.provider",
-                    traceId: `meta-planner:${Date.now()}`,
-                    staticFields: {
-                      phase: "planning",
-                      activeGoalCount: planningSnapshot.activeGoals.length,
-                      recentOutcomeCount: planningSnapshot.recentOutcomes.length,
-                    },
-                  }),
-                },
-              }
-            : undefined,
+          {
+            toolChoice: "none",
+            toolRouting: { allowedToolNames: [] },
+            parallelToolCalls: false,
+            ...(config.traceProviderPayloads === true
+              ? {
+                  trace: {
+                    includeProviderPayloads: true,
+                    onProviderTraceEvent: createProviderTraceEventLogger({
+                      logger: context.logger,
+                      traceLabel: "meta_planner.provider",
+                      traceId: `meta-planner:${Date.now()}`,
+                      staticFields: {
+                        phase: "planning",
+                        activeGoalCount: planningSnapshot.activeGoals.length,
+                        recentOutcomeCount: planningSnapshot.recentOutcomes.length,
+                      },
+                    }),
+                  },
+                }
+              : {}),
+          },
         );
 
         if (!response.content) {

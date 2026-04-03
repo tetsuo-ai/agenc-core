@@ -31,7 +31,13 @@ export type MemoryEdgeType =
   | "derived_from"
   | "supports"
   | "contradicts"
-  | "supersedes";
+  | "supersedes"
+  | "relates_to"
+  | "has_property"
+  | "depends_on"
+  | "prefers"
+  | "uses"
+  | "creates";
 
 export interface MemoryGraphNode {
   id: string;
@@ -44,6 +50,12 @@ export interface MemoryGraphNode {
   tags?: string[];
   metadata?: Record<string, unknown>;
   provenance: ProvenanceSource[];
+  /** Entity name for knowledge graph nodes (Phase 3). */
+  entityName?: string;
+  /** Entity type classification (Phase 3). */
+  entityType?: string;
+  /** Workspace scope for isolation (Phase 2+3). */
+  workspaceId?: string;
 }
 
 export interface MemoryGraphEdge {
@@ -54,6 +66,10 @@ export interface MemoryGraphEdge {
   createdAt: number;
   weight?: number;
   metadata?: Record<string, unknown>;
+  /** When this relationship became true (Phase 3.6 temporal tracking). */
+  validFrom?: number;
+  /** When this relationship stopped being true (null = still valid). */
+  validUntil?: number;
 }
 
 export interface UpsertMemoryNodeInput {
@@ -63,6 +79,9 @@ export interface UpsertMemoryNodeInput {
   taskPda?: string;
   baseConfidence?: number;
   tags?: string[];
+  entityName?: string;
+  entityType?: string;
+  workspaceId?: string;
   metadata?: Record<string, unknown>;
   provenance: ProvenanceSource[];
 }
@@ -74,6 +93,10 @@ export interface AddMemoryEdgeInput {
   type: MemoryEdgeType;
   weight?: number;
   metadata?: Record<string, unknown>;
+  /** When this relationship became true (Phase 3.6). Default: now. */
+  validFrom?: number;
+  /** When this relationship stopped being true. */
+  validUntil?: number;
 }
 
 export interface MemoryGraphQuery {
@@ -141,6 +164,9 @@ export class MemoryGraph {
             input.provenance,
           ),
           updatedAt: timestamp,
+          entityName: input.entityName ?? existing.entityName,
+          entityType: input.entityType ?? existing.entityType,
+          workspaceId: input.workspaceId ?? existing.workspaceId,
         }
       : {
           id: input.id ?? randomUUID(),
@@ -155,6 +181,9 @@ export class MemoryGraph {
           tags: input.tags,
           metadata: input.metadata,
           provenance: [...input.provenance],
+          entityName: input.entityName,
+          entityType: input.entityType,
+          workspaceId: input.workspaceId,
         };
 
     await this.backend.set(this.nodeKey(node.id), node);
@@ -180,6 +209,8 @@ export class MemoryGraph {
       createdAt: this.now(),
       weight: input.weight,
       metadata: input.metadata,
+      validFrom: input.validFrom ?? this.now(),
+      validUntil: input.validUntil,
     };
     await this.backend.set(this.edgeKey(edge.id), edge);
     return edge;
@@ -193,6 +224,26 @@ export class MemoryGraph {
   async getEdge(id: string): Promise<MemoryGraphEdge | null> {
     const edge = await this.backend.get<MemoryGraphEdge>(this.edgeKey(id));
     return edge ?? null;
+  }
+
+  async updateEdge(
+    id: string,
+    update: Partial<Pick<MemoryGraphEdge, "type" | "weight" | "metadata" | "validFrom" | "validUntil">>,
+  ): Promise<MemoryGraphEdge | null> {
+    const existing = await this.getEdge(id);
+    if (!existing) {
+      return null;
+    }
+    const merged: MemoryGraphEdge = {
+      ...existing,
+      ...update,
+      id: existing.id,
+      fromId: existing.fromId,
+      toId: existing.toId,
+      createdAt: existing.createdAt,
+    };
+    await this.backend.set(this.edgeKey(id), merged);
+    return merged;
   }
 
   async listNodes(sessionId?: string): Promise<MemoryGraphNode[]> {
@@ -291,6 +342,79 @@ export class MemoryGraph {
     if (query.limit !== undefined && query.limit > 0) {
       return results.slice(0, query.limit);
     }
+    return results;
+  }
+
+  /**
+   * Find all nodes and edges related to a named entity within a workspace.
+   * Per Phase 3.4: case-insensitive entity name lookup (edge case X4).
+   */
+  async findByEntity(
+    entityName: string,
+    workspaceId?: string,
+  ): Promise<{ nodes: MemoryGraphNode[]; edges: MemoryGraphEdge[] }> {
+    const normalizedName = entityName.trim().toLowerCase();
+    const allNodes = await this.listNodes();
+    const matchingNodes = allNodes.filter((node) => {
+      const nameMatch =
+        node.entityName?.trim().toLowerCase() === normalizedName;
+      const workspaceMatch =
+        !workspaceId || node.workspaceId === workspaceId;
+      return nameMatch && workspaceMatch;
+    });
+
+    if (matchingNodes.length === 0) {
+      return { nodes: [], edges: [] };
+    }
+
+    const nodeIds = new Set(matchingNodes.map((n) => n.id));
+    const allEdges = await this.listEdges();
+    const matchingEdges = allEdges.filter(
+      (edge) => nodeIds.has(edge.fromId) || nodeIds.has(edge.toId),
+    );
+
+    return { nodes: matchingNodes, edges: matchingEdges };
+  }
+
+  /**
+   * BFS traversal from a node — returns nodes within depth hops.
+   * Per Phase 3.4 + edge case X8: includes visited-set guard for cycle
+   * detection and fan-out limit (maxResults default 50).
+   */
+  async getRelatedEntities(
+    nodeId: string,
+    depth = 2,
+    maxResults = 50,
+  ): Promise<MemoryGraphNode[]> {
+    const allEdges = await this.listEdges();
+    const visited = new Set<string>();
+    const queue: Array<{ id: string; currentDepth: number }> = [
+      { id: nodeId, currentDepth: 0 },
+    ];
+    const results: MemoryGraphNode[] = [];
+
+    while (queue.length > 0 && results.length < maxResults) {
+      const current = queue.shift()!;
+      if (visited.has(current.id)) continue;
+      visited.add(current.id);
+
+      if (current.id !== nodeId) {
+        const node = await this.getNode(current.id);
+        if (node) results.push(node);
+      }
+
+      if (current.currentDepth < depth) {
+        for (const edge of allEdges) {
+          if (edge.fromId === current.id && !visited.has(edge.toId)) {
+            queue.push({ id: edge.toId, currentDepth: current.currentDepth + 1 });
+          }
+          if (edge.toId === current.id && !visited.has(edge.fromId)) {
+            queue.push({ id: edge.fromId, currentDepth: current.currentDepth + 1 });
+          }
+        }
+      }
+    }
+
     return results;
   }
 

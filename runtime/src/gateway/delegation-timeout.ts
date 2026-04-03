@@ -7,8 +7,14 @@
  * @module
  */
 
-export const MIN_DELEGATION_TIMEOUT_MS = 0;
-export const MAX_DELEGATION_TIMEOUT_MS = 3_600_000;
+// Floor: sub-agents always get at least 5 minutes.  The planner's LLM
+// sometimes emits aggressive budgets (e.g. "30s") that starve coding tasks
+// before the first tool call even completes.  Complex multi-file tasks
+// regularly need 3-4 minutes per sub-agent.  0 = unlimited (no timer).
+export const MIN_DELEGATION_TIMEOUT_MS = 300_000;
+// Ceiling: 0 = unlimited.  The runtime should support indefinite sub-agent
+// work for long-running coding tasks.
+export const MAX_DELEGATION_TIMEOUT_MS = 0;
 
 const EXPLICIT_BUDGET_HINT_RE =
   /^(\d+(?:\.\d+)?)\s*(ms|s|sec|m|min|h|hr)$/i;
@@ -101,10 +107,16 @@ export function normalizeDelegationTimeoutMs(
     return undefined;
   }
   const normalized = Math.floor(timeoutMs);
-  if (normalized <= MIN_DELEGATION_TIMEOUT_MS) {
+  if (normalized <= 0) {
+    return 0; // unlimited
+  }
+  if (MIN_DELEGATION_TIMEOUT_MS > 0 && normalized < MIN_DELEGATION_TIMEOUT_MS) {
     return MIN_DELEGATION_TIMEOUT_MS;
   }
-  return Math.min(MAX_DELEGATION_TIMEOUT_MS, normalized);
+  if (MAX_DELEGATION_TIMEOUT_MS > 0) {
+    return Math.min(MAX_DELEGATION_TIMEOUT_MS, normalized);
+  }
+  return normalized;
 }
 
 export function resolveDelegationBudgetHintMs(

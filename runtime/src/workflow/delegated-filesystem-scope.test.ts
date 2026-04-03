@@ -1,6 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { buildCanonicalDelegatedFilesystemScope } from "./delegated-filesystem-scope.js";
+
+const TEMP_DIRS: string[] = [];
+
+afterEach(() => {
+  for (const path of TEMP_DIRS.splice(0, TEMP_DIRS.length)) {
+    rmSync(path, { recursive: true, force: true });
+  }
+});
 
 describe("buildCanonicalDelegatedFilesystemScope", () => {
   it("canonicalizes alias placeholders only when a trusted host root is supplied", () => {
@@ -49,5 +60,22 @@ describe("buildCanonicalDelegatedFilesystemScope", () => {
       requiredSourceArtifacts: [],
       targetArtifacts: [],
     });
+  });
+
+  it("resolves required source artifacts to existing workspace casing", () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-scope-case-"));
+    TEMP_DIRS.push(workspaceRoot);
+    writeFileSync(join(workspaceRoot, "PLAN.md"), "# plan\n", "utf8");
+
+    const scope = buildCanonicalDelegatedFilesystemScope({
+      workspaceRoot,
+      allowedReadRoots: [workspaceRoot],
+      allowedWriteRoots: [workspaceRoot],
+      requiredSourceArtifacts: [`${workspaceRoot}/plan.md`],
+      targetArtifacts: [`${workspaceRoot}/src`],
+    });
+    expect(scope.requiredSourceArtifacts).toEqual([
+      join(workspaceRoot, "PLAN.md"),
+    ]);
   });
 });

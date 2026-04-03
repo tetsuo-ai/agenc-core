@@ -2,7 +2,7 @@
  * External channel wiring — extracted from daemon.ts.
  *
  * Standalone functions that wire Telegram and other external channel plugins
- * (Discord, Slack, WhatsApp, Signal, Matrix, iMessage) into the ChatExecutor
+ * (Discord, WhatsApp, Signal, Matrix, iMessage) into the ChatExecutor
  * pipeline.
  *
  * @module
@@ -26,12 +26,21 @@ import {
 } from "./daemon-trace.js";
 import { summarizeLLMFailureForSurface } from "./daemon-llm-failure.js";
 import type { GatewayMessage } from "./message.js";
-import { SessionManager } from "./session.js";
+import {
+  SessionManager,
+  clearStatefulContinuationMetadata,
+} from "./session.js";
+import {
+  buildDaemonMemoryEntryOptions,
+  getMessageMetadataString,
+  resolveChannelWorkspaceId,
+  resolveIngestHistoryRole,
+  shouldPersistToDaemonMemory,
+} from "./channel-message-memory.js";
 import type { ChannelPlugin } from "./channel.js";
 import type { Gateway } from "./gateway.js";
 import { TelegramChannel } from "../channels/telegram/plugin.js";
 import { DiscordChannel } from "../channels/discord/plugin.js";
-import { SlackChannel } from "../channels/slack/plugin.js";
 import { WhatsAppChannel } from "../channels/whatsapp/plugin.js";
 import { SignalChannel } from "../channels/signal/plugin.js";
 import { MatrixChannel } from "../channels/matrix/plugin.js";
@@ -66,6 +75,9 @@ export interface ChannelWiringDeps {
   readonly chatExecutor: ChatExecutor | null;
   readonly memoryBackend: MemoryBackend | null;
   readonly defaultForegroundMaxToolRounds: number;
+  buildChannelHostServices(
+    config: GatewayConfig,
+  ): Readonly<Record<string, unknown>> | undefined;
 
   buildSystemPrompt(
     config: GatewayConfig,
@@ -120,21 +132,31 @@ function isPluginChannelConfig(config: unknown): config is {
   return isRecord(config) && config.type === "plugin";
 }
 
-async function registerGatewayChannel(
-  gateway: Gateway | null,
-  channel: ChannelPlugin,
-): Promise<void> {
-  if (!gateway) return;
-  try {
-    gateway.registerChannel(channel);
-  } catch (error) {
-    try {
-      await channel.stop();
-    } catch {
-      // Best-effort cleanup after failed registration.
-    }
-    throw error;
+function isIngestOnlyChannelMessage(msg: GatewayMessage): boolean {
+  return (
+    msg.metadata?.ingest_only === true ||
+    msg.metadata?.ingestOnly === true
+  );
+}
+
+function requiresConcordiaRequestCorrelation(msg: GatewayMessage): boolean {
+  return msg.channel === "concordia" && !isIngestOnlyChannelMessage(msg);
+}
+
+function assertConcordiaRequestId(msg: GatewayMessage): void {
+  if (!requiresConcordiaRequestCorrelation(msg)) {
+    return;
   }
+  if (getMessageMetadataString(msg, "request_id")) {
+    return;
+  }
+  throw new Error("Concordia turn missing request_id metadata");
+}
+
+function cloneOutboundMetadata(
+  msg: GatewayMessage,
+): GatewayMessage["metadata"] {
+  return msg.metadata ? { ...msg.metadata } : undefined;
 }
 
 async function stopExternalChannelRegistry(
@@ -270,7 +292,7 @@ export async function wireTelegram(
       channel: "telegram",
       senderId: msg.senderId,
       scope: msg.scope,
-      workspaceId: "default",
+      workspaceId: resolveChannelWorkspaceId(msg),
     });
     const unregisterTextApproval = deps.registerTextApprovalDispatcher(
       msg.sessionId,
@@ -302,6 +324,7 @@ export async function wireTelegram(
         memoryBackend: deps.memoryBackend,
         includeTraceArtifacts: true,
         includePlannerSummaryInTrace: true,
+        persistToDaemonMemory: true,
         buildToolRoutingDecision: (sessionId, content, history) =>
           deps.buildToolRoutingDecision(sessionId, content, history),
         recordToolRoutingOutcome: (sessionId, summary) => {
@@ -323,24 +346,6 @@ export async function wireTelegram(
         deps.logger.debug("Telegram reply sent successfully");
       } catch (sendErr) {
         deps.logger.error("Telegram send failed:", sendErr);
-      }
-
-      // Persist to memory
-      if (deps.memoryBackend) {
-        try {
-          await deps.memoryBackend.addEntry({
-            sessionId: msg.sessionId,
-            role: "user",
-            content: msg.content,
-          });
-          await deps.memoryBackend.addEntry({
-            sessionId: msg.sessionId,
-            role: "assistant",
-            content: result.content,
-          });
-        } catch {
-          // non-critical
-        }
       }
     } catch (error) {
       const failure = summarizeLLMFailureForSurface(error);
@@ -386,7 +391,6 @@ export async function wireTelegram(
     config: telegramConfig as unknown as Record<string, unknown>,
   });
   await telegram.start();
-  await registerGatewayChannel(deps.gateway, telegram);
   deps.logger.info("Telegram channel wired");
   return telegram;
 }
@@ -424,9 +428,16 @@ export async function wireExternalChannel(
     }
     if (!msg.content.trim()) return;
 
+    assertConcordiaRequestId(msg);
+    const outboundMetadata = cloneOutboundMetadata(msg);
+
     const sendChannelText = async (content: string): Promise<void> => {
       const formatted = formatForChannel(content, channelName);
-      await channel.send({ sessionId: msg.sessionId, content: formatted });
+      await channel.send({
+        sessionId: msg.sessionId,
+        content: formatted,
+        metadata: outboundMetadata,
+      });
     };
     if (
       await deps.handleTextChannelApprovalCommand({
@@ -447,8 +458,35 @@ export async function wireExternalChannel(
       channel: channelName,
       senderId: msg.senderId,
       scope: msg.scope,
-      workspaceId: "default",
+      workspaceId: resolveChannelWorkspaceId(msg),
     });
+
+    if (isIngestOnlyChannelMessage(msg)) {
+      clearStatefulContinuationMetadata(session.metadata);
+      sessionMgr.appendMessage(session.id, {
+        role: resolveIngestHistoryRole(msg),
+        content: msg.content,
+      });
+
+      if (deps.memoryBackend && shouldPersistToDaemonMemory(msg)) {
+        try {
+          await deps.memoryBackend.addEntry({
+            sessionId: msg.sessionId,
+            role: "user",
+            content: msg.content,
+            ...buildDaemonMemoryEntryOptions(
+              msg,
+              session.workspaceId,
+              channelName,
+            ),
+          });
+        } catch {
+          /* non-critical */
+        }
+      }
+      return;
+    }
+
     const unregisterTextApproval = deps.registerTextApprovalDispatcher(
       msg.sessionId,
       channelName,
@@ -477,6 +515,7 @@ export async function wireExternalChannel(
         traceConfig,
         turnTraceId,
         memoryBackend: deps.memoryBackend,
+        persistToDaemonMemory: channelName !== "concordia",
         buildToolRoutingDecision: (sessionId, content, history) =>
           deps.buildToolRoutingDecision(sessionId, content, history),
         recordToolRoutingOutcome: (sessionId, summary) => {
@@ -488,24 +527,11 @@ export async function wireExternalChannel(
         result.content || "(no response)",
         channelName,
       );
-      await channel.send({ sessionId: msg.sessionId, content: formatted });
-
-      if (deps.memoryBackend) {
-        try {
-          await deps.memoryBackend.addEntry({
-            sessionId: msg.sessionId,
-            role: "user",
-            content: msg.content,
-          });
-          await deps.memoryBackend.addEntry({
-            sessionId: msg.sessionId,
-            role: "assistant",
-            content: result.content,
-          });
-        } catch {
-          /* non-critical */
-        }
-      }
+      await channel.send({
+        sessionId: msg.sessionId,
+        content: formatted,
+        metadata: outboundMetadata,
+      });
     } catch (error) {
       const failure = summarizeLLMFailureForSurface(error);
       if (traceConfig.enabled) {
@@ -536,7 +562,11 @@ export async function wireExternalChannel(
         error: toErrorMessage(error),
       });
       const errMsg = formatForChannel(failure.userMessage, channelName);
-      await channel.send({ sessionId: msg.sessionId, content: errMsg });
+      await channel.send({
+        sessionId: msg.sessionId,
+        content: errMsg,
+        metadata: outboundMetadata,
+      });
     } finally {
       unregisterTextApproval();
     }
@@ -546,9 +576,9 @@ export async function wireExternalChannel(
     onMessage,
     logger: deps.logger,
     config: channelConfig,
+    hostServices: deps.buildChannelHostServices(config),
   });
   await channel.start();
-  await registerGatewayChannel(deps.gateway, channel);
   deps.logger.info(`${channelName} channel wired`);
 }
 
@@ -557,7 +587,7 @@ export async function wireExternalChannel(
 // ---------------------------------------------------------------------------
 
 /**
- * Wire all enabled external channels (Telegram, Discord, Slack, WhatsApp,
+ * Wire all enabled external channels (Telegram, Discord, WhatsApp,
  * Signal, Matrix, iMessage) into one registry map.
  */
 export async function wireExternalChannels(
@@ -584,14 +614,6 @@ export async function wireExternalChannels(
         create: (cfg) =>
           new DiscordChannel(
             cfg as ConstructorParameters<typeof DiscordChannel>[0],
-          ),
-      },
-      {
-        key: "slack",
-        name: "slack",
-        create: (cfg) =>
-          new SlackChannel(
-            cfg as ConstructorParameters<typeof SlackChannel>[0],
           ),
       },
       {

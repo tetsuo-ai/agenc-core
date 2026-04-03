@@ -23,6 +23,7 @@ import {
   normalizeEnvelopePath,
   normalizeWorkspaceRoot,
 } from "../workflow/path-normalization.js";
+import { textRequiresWorkspaceGroundedArtifactUpdate } from "../workflow/workspace-inspection-evidence.js";
 import type { WorkflowVerificationContract } from "../workflow/verification-obligations.js";
 import { buildBrowserEvidenceRetryGuidance } from "../utils/browser-tool-taxonomy.js";
 import type { ExecutionContext, ToolCallRecord } from "./chat-executor-types.js";
@@ -38,10 +39,12 @@ import {
 } from "./chat-executor-routing-state.js";
 import { didToolCallFail } from "./chat-executor-tool-utils.js";
 import {
+  plannerRequestImplementsFromArtifact,
   plannerRequestNeedsGroundedPlanArtifact,
   plannerRequestNeedsPlanArtifactExecution,
   requestRequiresToolGroundedExecution,
 } from "./chat-executor-planner.js";
+import { hasConcordiaSimulationTurnContract } from "./chat-executor-turn-contracts.js";
 import {
   PROVIDER_NATIVE_GROUNDED_INFORMATION_TOOL_NAMES,
 } from "./provider-native-search.js";
@@ -61,10 +64,14 @@ type ContractFlowContext =
     | "response"
     | "plannerSummaryState"
   > &
+  {
+    readonly messageMetadata?: Readonly<Record<string, unknown>>;
+  } &
   Partial<
     Pick<
       ExecutionContext,
       | "runtimeWorkspaceRoot"
+      | "plannerWorkflowTaskClassification"
       | "plannerVerificationContract"
       | "plannerCompletionContract"
     >
@@ -136,6 +143,7 @@ export function resolveExecutionToolContractGuidance(input: {
   return resolveToolContractGuidance({
     phase: input.phase ?? "tool_followup",
     messageText: input.ctx.messageText,
+    messageMetadata: input.ctx.messageMetadata,
     toolCalls: input.ctx.allToolCalls,
     allowedToolNames: getAllowedToolNamesForContractGuidance({
       override: input.allowedToolNames,
@@ -189,9 +197,30 @@ export function resolveRuntimeWorkflowContext(input: {
 export function resolveLegacyCompletionCompatibility(input: {
   readonly ctx: ContractFlowContext;
 }): LegacyCompletionCompatibilityDecision {
+  if (
+    input.ctx.plannerSummaryState.used &&
+    input.ctx.plannerWorkflowTaskClassification === "docs_research_plan_only"
+  ) {
+    return {
+      allowed: true,
+      compatibilityClass: "plan_only",
+      reason:
+        "Legacy completion remains allowed for planner-owned docs/research/plan-only turns.",
+    };
+  }
   const analysis = analyzeLegacyCompletionTurn(input.ctx);
   const plannerRouteReason = input.ctx.plannerSummaryState.routeReason;
+  if (hasConcordiaSimulationTurnContract(input.ctx.messageMetadata)) {
+    return {
+      allowed: true,
+      compatibilityClass: "plan_only",
+      reason:
+        "Legacy completion remains allowed for Concordia simulation turns outside workflow-owned implementation completion.",
+    };
+  }
   if (
+    plannerRouteReason === "concordia_simulation_turn" ||
+    plannerRouteReason === "concordia_generate_agents_turn" ||
     plannerRouteReason === "exact_response_turn" ||
     plannerRouteReason === "dialogue_memory_turn"
   ) {
@@ -199,7 +228,7 @@ export function resolveLegacyCompletionCompatibility(input: {
       allowed: true,
       compatibilityClass: "plan_only",
       reason:
-        "Legacy completion remains allowed for exact-response and dialogue-memory turns.",
+        "Legacy completion remains allowed for direct Concordia/exact-response/dialogue-memory turns.",
     };
   }
 
@@ -257,6 +286,15 @@ export function resolveLegacyCompletionCompatibility(input: {
 export function requiresWorkflowOwnedImplementationCompletion(input: {
   readonly ctx: ContractFlowContext;
 }): boolean {
+  if (hasConcordiaSimulationTurnContract(input.ctx.messageMetadata)) {
+    return false;
+  }
+  if (
+    input.ctx.plannerSummaryState.used &&
+    input.ctx.plannerWorkflowTaskClassification === "docs_research_plan_only"
+  ) {
+    return false;
+  }
   return analyzeLegacyCompletionTurn(input.ctx).implementationLikeTurn;
 }
 
@@ -485,6 +523,9 @@ function mergeWorkflowVerificationContext(input: {
 function synthesizeDirectImplementationWorkflowContext(
   ctx: ContractFlowContext,
 ): RuntimeWorkflowContextResolution | undefined {
+  if (hasConcordiaSimulationTurnContract(ctx.messageMetadata)) {
+    return undefined;
+  }
   if (
     plannerRequestNeedsGroundedPlanArtifact(ctx.messageText) ||
     plannerRequestNeedsPlanArtifactExecution(ctx.messageText)
@@ -590,6 +631,16 @@ interface LegacyCompletionTurnAnalysis {
 function analyzeLegacyCompletionTurn(
   ctx: ContractFlowContext,
 ): LegacyCompletionTurnAnalysis {
+  if (hasConcordiaSimulationTurnContract(ctx.messageMetadata)) {
+    return {
+      successfulToolCalls: [],
+      mutatedArtifacts: [],
+      hasMutationProgress: false,
+      hasResearchEvidence: false,
+      hasBuildOrBehaviorEvidence: false,
+      implementationLikeTurn: false,
+    };
+  }
   const successfulToolCalls = ctx.allToolCalls.filter(
     (toolCall) => !didToolCallFail(toolCall.isError, toolCall.result),
   );
@@ -619,9 +670,30 @@ function analyzeLegacyCompletionTurn(
   const mutatesSourceLikeArtifacts = mutatedArtifacts.some((artifact) =>
     SOURCE_LIKE_PATH_RE.test(artifact),
   );
+  const implementsFromArtifact = plannerRequestImplementsFromArtifact(
+    ctx.messageText,
+  );
   const likelyImplementationRequest =
-    LIKELY_IMPLEMENTATION_REQUEST_RE.test(ctx.messageText) &&
-    requestRequiresToolGroundedExecution(ctx.messageText);
+    (
+      LIKELY_IMPLEMENTATION_REQUEST_RE.test(ctx.messageText) ||
+      implementsFromArtifact
+    ) &&
+    (
+      requestRequiresToolGroundedExecution(ctx.messageText) ||
+      implementsFromArtifact
+    );
+  const hasExecutionScopedArtifactCue =
+    implementsFromArtifact ||
+    SOURCE_LIKE_PATH_RE.test(ctx.messageText) ||
+    BUILD_REQUIREMENT_RE.test(ctx.messageText) ||
+    BEHAVIOR_REQUIREMENT_RE.test(ctx.messageText);
+  const hasOnlyNonTerminalExecutionEvidence =
+    !hasMutationProgress &&
+    !hasBuildOrBehaviorEvidence;
+  const isReadOnlyWorkspaceInspectionTurn =
+    hasOnlyNonTerminalExecutionEvidence &&
+    successfulToolCalls.length > 0 &&
+    textRequiresWorkspaceGroundedArtifactUpdate(ctx.messageText);
   return {
     successfulToolCalls,
     mutatedArtifacts,
@@ -629,9 +701,21 @@ function analyzeLegacyCompletionTurn(
     hasResearchEvidence,
     hasBuildOrBehaviorEvidence,
     implementationLikeTurn:
-      mutatesSourceLikeArtifacts ||
-      hasBuildOrBehaviorEvidence ||
-      (successfulToolCalls.length === 0 && likelyImplementationRequest),
+      !isReadOnlyWorkspaceInspectionTurn &&
+      (
+        mutatesSourceLikeArtifacts ||
+        hasBuildOrBehaviorEvidence ||
+        (
+          likelyImplementationRequest &&
+          (
+            successfulToolCalls.length === 0 ||
+            (
+              hasExecutionScopedArtifactCue &&
+              hasOnlyNonTerminalExecutionEvidence
+            )
+          )
+        )
+      ),
   };
 }
 

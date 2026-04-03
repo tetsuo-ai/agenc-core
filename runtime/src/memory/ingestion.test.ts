@@ -592,4 +592,91 @@ describe("MemoryIngestionEngine", () => {
       expect(logger.warn).not.toHaveBeenCalled();
     });
   });
+
+  describe("background run memory scoping (Phase 2.9)", () => {
+    it("tags entries with backgroundRunId when provided in metadata", async () => {
+      const embeddingProvider = createMockEmbeddingProvider();
+      const vectorStore = createMockVectorStore();
+      const engine = new MemoryIngestionEngine({
+        embeddingProvider,
+        vectorStore,
+        logManager: createMockLogManager(),
+        curatedMemory: createMockCuratedMemory(),
+        generateSummaries: false,
+        enableDailyLogs: false,
+      });
+
+      await engine.ingestTurn(
+        "sess-1",
+        "user message",
+        "agent response with enough content to be salient and important for indexing purposes",
+        { backgroundRunId: "bg-run-123" },
+      );
+
+      const calls = (vectorStore.storeWithEmbedding as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls.length).toBeGreaterThan(0);
+      for (const [entry] of calls) {
+        expect(entry.metadata.backgroundRunId).toBe("bg-run-123");
+      }
+    });
+
+    it("does not include backgroundRunId when not provided", async () => {
+      const embeddingProvider = createMockEmbeddingProvider();
+      const vectorStore = createMockVectorStore();
+      const engine = new MemoryIngestionEngine({
+        embeddingProvider,
+        vectorStore,
+        logManager: createMockLogManager(),
+        curatedMemory: createMockCuratedMemory(),
+        generateSummaries: false,
+        enableDailyLogs: false,
+      });
+
+      await engine.ingestTurn(
+        "sess-1",
+        "user message",
+        "agent response with enough content to be salient and important for indexing purposes",
+      );
+
+      const calls = (vectorStore.storeWithEmbedding as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls.length).toBeGreaterThan(0);
+      for (const [entry] of calls) {
+        expect(entry.metadata.backgroundRunId).toBeUndefined();
+      }
+    });
+
+    it("hook passes backgroundRunId from payload to engine", async () => {
+      const embeddingProvider = createMockEmbeddingProvider();
+      const vectorStore = createMockVectorStore();
+      const engine = new MemoryIngestionEngine({
+        embeddingProvider,
+        vectorStore,
+        logManager: createMockLogManager(),
+        curatedMemory: createMockCuratedMemory(),
+        generateSummaries: false,
+        enableDailyLogs: false,
+      });
+
+      const ingestSpy = vi.spyOn(engine, "ingestTurn");
+      const hooks = createIngestionHooks(engine);
+      const ctx = createHookContext("message:outbound", {
+        sessionId: "sess-1",
+        userMessage: "hello",
+        agentResponse: "world",
+        backgroundRunId: "bg-42",
+      });
+
+      await hooks[0].handler(ctx);
+
+      // ingestTurn is called fire-and-forget so give it a tick
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(ingestSpy).toHaveBeenCalledWith(
+        "sess-1",
+        "hello",
+        "world",
+        expect.objectContaining({ backgroundRunId: "bg-42" }),
+      );
+    });
+  });
 });

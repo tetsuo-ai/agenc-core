@@ -162,14 +162,14 @@ describe("validateGatewayConfig plugin channel hosting", () => {
         trustedPackages: [
           {
             packageName: "@tetsuo-ai/plugin-kit-channel-fixture",
-            allowedSubpaths: ["slack"],
+            allowedSubpaths: ["mock"],
           },
         ],
       },
       channels: {
-        "fixture-slack": {
+        "fixture-chat": {
           type: "plugin",
-          moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/slack",
+          moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/mock",
           config: {
             token: "abc",
           },
@@ -215,7 +215,7 @@ describe("validateGatewayConfig plugin channel hosting", () => {
       "plugins.trustedPackages[0].packageName must be a bare package name like @scope/name",
     );
     expect(result.errors).toContain(
-      "plugins.trustedPackages[0].allowedSubpaths[0] must be a relative package subpath like channels/slack",
+      "plugins.trustedPackages[0].allowedSubpaths[0] must be a relative package subpath like channels/example",
     );
   });
 
@@ -223,16 +223,16 @@ describe("validateGatewayConfig plugin channel hosting", () => {
     const result = validateGatewayConfig({
       ...makeConfig(),
       channels: {
-        slack: {
+        discord: {
           type: "plugin",
-          moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/slack",
+          moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/mock",
         },
       },
     });
 
     expect(result.valid).toBe(false);
     expect(result.errors).toContain(
-      'channels.slack.type cannot be "plugin" for reserved built-in channel "slack"',
+      'channels.discord.type cannot be "plugin" for reserved built-in channel "discord"',
     );
   });
 });
@@ -339,7 +339,7 @@ describe("validateGatewayConfig plugin host policy", () => {
       "plugins.trustedPackages[0].packageName must be a non-empty string",
     );
     expect(result.errors).toContain(
-      "plugins.trustedPackages[0].allowedSubpaths[0] must be a relative package subpath like channels/slack",
+      "plugins.trustedPackages[0].allowedSubpaths[0] must be a relative package subpath like channels/example",
     );
     expect(result.errors).toContain("channels.custom.enabled must be a boolean");
     expect(result.errors).toContain(
@@ -442,10 +442,10 @@ describe("diffGatewayConfig restart-only channel/plugin surfaces", () => {
         ],
       },
       channels: {
-        "fixture-slack": {
+        "fixture-chat": {
           type: "plugin",
           enabled: true,
-          moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/slack",
+          moduleSpecifier: "@tetsuo-ai/plugin-kit-channel-fixture/mock",
         },
       },
     } as any;
@@ -453,9 +453,9 @@ describe("diffGatewayConfig restart-only channel/plugin surfaces", () => {
     const diff = diffGatewayConfig(oldConfig, newConfig);
 
     expect(diff.unsafe).toContain("plugins.trustedPackages");
-    expect(diff.unsafe).toContain("channels.fixture-slack.type");
-    expect(diff.unsafe).toContain("channels.fixture-slack.enabled");
-    expect(diff.unsafe).toContain("channels.fixture-slack.moduleSpecifier");
+    expect(diff.unsafe).toContain("channels.fixture-chat.type");
+    expect(diff.unsafe).toContain("channels.fixture-chat.enabled");
+    expect(diff.unsafe).toContain("channels.fixture-chat.moduleSpecifier");
   });
 });
 
@@ -538,7 +538,7 @@ describe("validateGatewayConfig autonomy controls", () => {
       "autonomy.notifications.sinks[0].id must be a non-empty string",
     );
     expect(result.errors).toContain(
-      "autonomy.notifications.sinks[0].type must be one of: webhook, slack_webhook, discord_webhook, email_webhook, mobile_push_webhook",
+      "autonomy.notifications.sinks[0].type must be one of: webhook, discord_webhook, email_webhook, mobile_push_webhook",
     );
     expect(result.errors).toContain(
       "autonomy.notifications.sinks[0].url must be a non-empty string",

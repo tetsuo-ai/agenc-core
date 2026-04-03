@@ -3,7 +3,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash, createPublicKey, generateKeyPairSync, sign } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const runtimeDir = path.join(repoRoot, "runtime");
 const wrapperDir = path.join(repoRoot, "packages", "agenc");
+const wrapperGeneratedDir = path.join(wrapperDir, "generated");
 const supportedPlatformArch = new Set(["linux-x64"]);
 
 function parseArgs(argv) {
@@ -75,6 +76,22 @@ function sha256(buffer) {
 
 async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, "utf8"));
+}
+
+async function syncWrapperGeneratedRuntimeMetadata(outDir) {
+  await mkdir(wrapperGeneratedDir, { recursive: true });
+  const files = [
+    "agenc-runtime-manifest.json",
+    "agenc-runtime-manifest.json.sig",
+    "agenc-runtime-public-key.pem",
+    "agenc-runtime-trust-policy.json",
+  ];
+  for (const fileName of files) {
+    await copyFile(
+      path.join(outDir, fileName),
+      path.join(wrapperGeneratedDir, fileName),
+    );
+  }
 }
 
 async function resolveLocalWorkspaceDependencyDirs(runtimePackage) {
@@ -301,10 +318,16 @@ async function main() {
       "utf8",
     );
 
+    // Keep the wrapper's embedded runtime metadata in sync with the freshly
+    // built public artifacts so local `agenc onboard` does not verify against
+    // a stale generated manifest.
+    await syncWrapperGeneratedRuntimeMetadata(options.outDir);
+
     process.stdout.write(
       `${JSON.stringify(
         {
           outDir: options.outDir,
+          generatedDir: wrapperGeneratedDir,
           artifactFilename,
           artifactPath,
           manifestPath: path.join(options.outDir, "agenc-runtime-manifest.json"),

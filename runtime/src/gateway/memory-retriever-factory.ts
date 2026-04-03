@@ -16,12 +16,14 @@ import type { HookDispatcher } from "./hooks.js";
 import type { GatewayConfig } from "./types.js";
 import { createEmbeddingProvider } from "../memory/embeddings.js";
 import { InMemoryVectorStore } from "../memory/vector-store.js";
+import { SqliteVectorBackend } from "../memory/sqlite/vector-backend.js";
 import { SemanticMemoryRetriever } from "../memory/retriever.js";
 import {
   MemoryIngestionEngine,
   createIngestionHooks,
 } from "../memory/ingestion.js";
-import { CuratedMemoryManager, DailyLogManager } from "../memory/structured.js";
+import { CuratedMemoryManager, DailyLogManager, NoopEntityExtractor } from "../memory/structured.js";
+import { LLMEntityExtractor } from "../memory/llm-entity-extractor.js";
 import { sanitizeDelegatedAssistantEnvironmentSummary } from "../utils/delegated-scope-trust.js";
 // ---------------------------------------------------------------------------
 // Constants
@@ -53,11 +55,35 @@ export interface CreateMemoryRetrieversParams {
   /** Resolved host workspace path for semantic memory. */
   workspacePath: string;
   logger: Logger;
+  /** Optional LLM provider for entity extraction (Phase 3). */
+  llmProvider?: import("../llm/types.js").LLMProvider;
 }
 
 export interface MemoryRetrieversResult {
   memoryRetriever: MemoryRetriever;
   learningProvider: MemoryRetriever;
+}
+
+// ---------------------------------------------------------------------------
+// Vector DB path resolution
+// ---------------------------------------------------------------------------
+
+function resolveVectorDbPath(_workspacePath: string): string | undefined {
+  // Use a single global vector DB at ~/.agenc/vectors.db so memories
+  // are accessible across all workspaces.  The daemon serves sessions
+  // from many workspaces but only opens one vector backend, so a
+  // per-workspace DB makes memories invisible to other workspaces.
+  try {
+    const { existsSync, mkdirSync } = require("node:fs");
+    const home = process.env.HOME ?? process.env.USERPROFILE ?? "/tmp";
+    const vectorDir = join(home, ".agenc");
+    if (!existsSync(vectorDir)) {
+      mkdirSync(vectorDir, { recursive: true });
+    }
+    return join(vectorDir, "vectors.db");
+  } catch {
+    return undefined;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -83,7 +109,7 @@ export async function createMemoryRetrievers(
   const isSemanticAvailable = embeddingProvider.name !== "noop";
 
   const memoryRetriever = isSemanticAvailable
-    ? await createSemanticRetriever(embeddingProvider, hooks, workspacePath, logger)
+    ? await createSemanticRetriever(embeddingProvider, hooks, workspacePath, logger, params)
     : createBasicHistoryRetriever(memoryBackend);
 
   if (!isSemanticAvailable) {
@@ -94,7 +120,7 @@ export async function createMemoryRetrievers(
 
   return {
     memoryRetriever,
-    learningProvider: createLearningRetriever(memoryBackend),
+    learningProvider: createLearningRetriever(memoryBackend, workspacePath),
   };
 }
 
@@ -107,24 +133,42 @@ async function createSemanticRetriever(
   hooks: HookDispatcher,
   workspacePath: string,
   logger: Logger,
+  params: CreateMemoryRetrieversParams,
 ): Promise<MemoryRetriever> {
-  const vectorStore = new InMemoryVectorStore({
-    dimension: embeddingProvider.dimension,
-  });
+  // Use SqliteVectorBackend for persistent vector storage.
+  // Per TODO Phase 1: vectors must survive daemon restarts.
+  // The vector DB is stored alongside the memory DB as a sibling file.
+  const vectorDbPath = resolveVectorDbPath(workspacePath);
+  const vectorStore = vectorDbPath
+    ? new SqliteVectorBackend({
+        dbPath: vectorDbPath,
+        dimension: embeddingProvider.dimension,
+      })
+    : new InMemoryVectorStore({
+        dimension: embeddingProvider.dimension,
+      });
 
   const curatedMemoryPath = join(workspacePath, "MEMORY.md");
   const dailyLogPath = join(workspacePath, "logs");
   const curatedMemory = new CuratedMemoryManager(curatedMemoryPath);
   const logManager = new DailyLogManager(dailyLogPath);
 
+  // Phase 3: enable entity extraction when LLM provider is available.
+  // Uses substring grounding + low default confidence (skeptic findings).
+  const entityExtractor = params.llmProvider
+    ? new LLMEntityExtractor({ llmProvider: params.llmProvider, logger })
+    : new NoopEntityExtractor();
+  const enableEntityExtraction = params.llmProvider !== undefined;
+
   const ingestionEngine = new MemoryIngestionEngine({
     embeddingProvider,
     vectorStore,
     logManager,
     curatedMemory,
+    entityExtractor,
     generateSummaries: false,
     enableDailyLogs: true,
-    enableEntityExtraction: false,
+    enableEntityExtraction,
     logger,
   });
 
@@ -147,6 +191,8 @@ async function createSemanticRetriever(
     recencyHalfLifeMs: SEMANTIC_MEMORY_DEFAULTS.RECENCY_HALF_LIFE_MS,
     hybridVectorWeight: SEMANTIC_MEMORY_DEFAULTS.HYBRID_VECTOR_WEIGHT,
     hybridKeywordWeight: SEMANTIC_MEMORY_DEFAULTS.HYBRID_KEYWORD_WEIGHT,
+    // Phase 2: workspace scoping ensures retrieval isolation
+    workspaceId: workspacePath || undefined,
     logger,
   });
 }
@@ -202,7 +248,13 @@ export function createBasicHistoryRetriever(
 
 export function createLearningRetriever(
   memoryBackend: MemoryBackend,
+  workspacePath?: string,
 ): MemoryRetriever {
+  // Phase 2B: scope learning key by workspace to prevent cross-workspace leakage.
+  // Security finding C-1: global learning:latest leaked between workspaces.
+  const learningKey = workspacePath
+    ? `${workspacePath}:learning:latest`
+    : "learning:latest";
   return {
     async retrieve(): Promise<string | undefined> {
       if (!memoryBackend) return undefined;
@@ -220,7 +272,7 @@ export function createLearningRetriever(
             steps: string[];
           }>;
           preferences: Record<string, string>;
-        }>("learning:latest");
+        }>(learningKey);
         if (!learning) return undefined;
 
         const parts: string[] = [];

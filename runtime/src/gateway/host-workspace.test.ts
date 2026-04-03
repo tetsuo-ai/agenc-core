@@ -1,4 +1,11 @@
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -94,11 +101,12 @@ describe("resolveSessionWorkspaceRoot", () => {
     mkdirSync(projectPath, { recursive: true });
 
     try {
+      const canonicalProjectPath = realpathSync.native(projectPath);
       expect(
         resolveSessionWorkspaceRoot(projectPath, {
           homePath,
         }),
-      ).toBe(projectPath);
+      ).toBe(canonicalProjectPath);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -174,11 +182,12 @@ describe("resolveSessionWorkspaceRoot", () => {
     writeFileSync(filePath, "not a directory", "utf8");
 
     try {
+      const canonicalProjectPath = realpathSync.native(realProjectPath);
       expect(
         resolveSessionWorkspaceRoot(linkPath, {
           homePath,
         }),
-      ).toBe(realProjectPath);
+      ).toBe(canonicalProjectPath);
       expect(
         resolveSessionWorkspaceRoot(filePath, {
           homePath,

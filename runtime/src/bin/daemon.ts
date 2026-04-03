@@ -44,6 +44,32 @@ function parseArgs(argv: string[]): {
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Process-level crash guards — keep the daemon alive through stray async
+// errors in deep call stacks (LLM adapters, MCP bridges, channel plugins).
+// Unhandled promise rejections are logged and swallowed because the error
+// originates in an already-dead async scope and crashing would tear down all
+// active sessions.  Uncaught synchronous exceptions are more dangerous
+// (corrupted state) so they log, attempt graceful shutdown, and exit.
+// ---------------------------------------------------------------------------
+
+process.on("unhandledRejection", (reason) => {
+  const message =
+    reason instanceof Error
+      ? `${reason.message}\n${reason.stack ?? ""}`
+      : String(reason);
+  console.error(`[AgenC Daemon] Unhandled promise rejection (swallowed): ${message}`);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error(
+    `[AgenC Daemon] Uncaught exception — shutting down: ${error.message}\n${error.stack ?? ""}`,
+  );
+  process.exitCode = 1;
+  // Allow event loop to flush logs before exit.
+  setTimeout(() => process.exit(1), 500);
+});
+
 void (async () => {
   const args = parseArgs(process.argv.slice(2));
 

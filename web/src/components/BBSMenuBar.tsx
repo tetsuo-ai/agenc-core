@@ -16,6 +16,7 @@ const MENU_ITEMS: Array<{ key: string; label: string; title: string; view: ViewI
   { key: '7', label: 'MEMORY', title: 'Memory', view: 'memory' },
   { key: '8', label: 'DESKTOP', title: 'Desktop', view: 'desktop' },
   { key: '9', label: 'FEED', title: 'Activity', view: 'activity' },
+  { key: '-', label: 'SIM', title: 'Simulation', view: 'simulation' },
   { key: '0', label: 'SETTINGS', title: 'Settings', view: 'settings' },
 ];
 

@@ -45,7 +45,7 @@ import {
   supportsXaiStructuredOutputsWithTools,
 } from "../structured-output.js";
 import { withTimeout } from "../timeout.js";
-import { validateToolTurnSequence } from "../tool-turn-validator.js";
+import { repairToolTurnSequence, validateToolTurnSequence } from "../tool-turn-validator.js";
 import type { GrokProviderConfig } from "./types.js";
 import { resolveContextWindowProfile } from "../../gateway/context-window.js";
 import {
@@ -1727,7 +1727,8 @@ export class GrokProvider implements LLMProvider {
     toolSelection: ToolSelectionDiagnostics;
   } {
     const visionModel = this.config.visionModel ?? DEFAULT_VISION_MODEL;
-    validateToolTurnSequence(messages, {
+    const repairedMessages = repairToolTurnSequence(messages);
+    validateToolTurnSequence(repairedMessages, {
       providerName: this.name,
       allowLeadingToolResults: Boolean(options?.previousResponseId),
     });
@@ -1743,8 +1744,8 @@ export class GrokProvider implements LLMProvider {
       image_url: { url: string };
     }> = [];
 
-    for (let i = 0; i < messages.length; i++) {
-      const m = messages[i];
+    for (let i = 0; i < repairedMessages.length; i++) {
+      const m = repairedMessages[i];
 
       // Collect images from multimodal tool messages
       if (m.role === "tool" && Array.isArray(m.content)) {
@@ -1763,7 +1764,7 @@ export class GrokProvider implements LLMProvider {
       // Flush collected images as a user message after the last tool message
       // in a contiguous tool-result block
       if (pendingImages.length > 0) {
-        const nextMsg = messages[i + 1];
+        const nextMsg = repairedMessages[i + 1];
         if (!nextMsg || nextMsg.role !== "tool") {
           mapped.push({
             role: "user",

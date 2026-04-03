@@ -17,6 +17,7 @@ import type {
   SubagentVerifierStepVerdict,
   SubagentVerifierStepAssessment,
   SubagentVerifierDecision,
+  ToolCallRecord,
 } from "./chat-executor-types.js";
 import type {
   LLMMessage,
@@ -39,18 +40,33 @@ import {
 } from "./chat-executor-constants.js";
 import { truncateText } from "./chat-executor-text.js";
 import {
+  buildPlannerWorkflowContract,
+  buildPlannerWorkflowStepContract,
   parsePlannerRequiredString,
   parsePlannerOptionalString,
+  safeStepStringArray,
 } from "./chat-executor-planner.js";
 import { safeStringify } from "../tools/types.js";
 import { deriveVerificationObligations } from "../workflow/verification-obligations.js";
 import { validateRuntimeVerificationContract } from "../workflow/verification-contract.js";
+import {
+  formatRuntimeVerificationIssueCode,
+  isPlannerVerifierIssueCode,
+  mapDelegationValidationCodeToPlannerVerifierIssue,
+  type PlannerVerifierIssueCode,
+} from "../workflow/cleanup-mode.js";
 import { canonicalizeExecutionStepKind } from "../workflow/execution-intent.js";
+import {
+  canonicalizeWorkflowArtifactRelations,
+  collectWorkflowArtifactRelationPaths,
+  type WorkflowStepRole,
+} from "../workflow/execution-envelope.js";
 import {
   extractDelegationTokens,
   validateDelegatedOutputContract,
 } from "../utils/delegation-validation.js";
 import { parseJsonObjectFromText } from "../utils/delegated-contract-normalization.js";
+import { buildDelegationExecutionContext } from "../utils/delegation-execution-context.js";
 
 const DIRECT_MUTATION_TOOL_NAMES = new Set([
   "desktop.text_editor",
@@ -71,6 +87,7 @@ const SOURCE_LIKE_PATH_RE =
 export function buildPlannerWorkflowAdmission(params: {
   readonly subagentSteps: readonly PlannerSubAgentTaskStepIntent[];
   readonly deterministicSteps: readonly PlannerDeterministicToolStepIntent[];
+  readonly workflowContract?: PlannerPlan["workflowContract"];
   readonly workspaceRoot?: string;
   readonly verificationContract?: WorkflowVerificationContract;
   readonly completionContract?: ImplementationCompletionContract;
@@ -78,6 +95,11 @@ export function buildPlannerWorkflowAdmission(params: {
   readonly requiredSubagentOutputStepNames?: readonly string[];
 }): PlannerWorkflowAdmission {
   const completionContract = resolvePlannerCompletionContract(params);
+  const workflowContract =
+    params.workflowContract ??
+    buildPlannerWorkflowContract({
+      steps: params.subagentSteps,
+    });
   const verificationContract = buildPlannerWorkflowVerificationContract({
     workspaceRoot: params.workspaceRoot,
     subagentSteps: params.subagentSteps,
@@ -92,6 +114,7 @@ export function buildPlannerWorkflowAdmission(params: {
   if (taskClassification === "invalid") {
     return {
       taskClassification,
+      workflowContract,
       verificationContract,
       completionContract,
       verifierWorkItems: [],
@@ -120,6 +143,9 @@ export function buildPlannerWorkflowAdmission(params: {
         inputContract: step.inputContract,
         acceptanceCriteria: step.acceptanceCriteria,
         requiredToolCapabilities: step.requiredToolCapabilities,
+        workflowStep: step.workflowStep ?? buildPlannerWorkflowStepContract(step),
+        workflowContract,
+        verificationContract: buildPlannerStepVerificationContract(step),
         resultStepNames: [step.name],
       }));
   const requiresMandatoryImplementationVerification =
@@ -134,12 +160,14 @@ export function buildPlannerWorkflowAdmission(params: {
         params.subagentSteps,
         params.deterministicSteps,
         verificationContract,
+        workflowContract,
       ),
     );
   }
 
   return {
     taskClassification,
+    workflowContract,
     verificationContract,
     completionContract,
     verifierWorkItems,
@@ -151,6 +179,7 @@ export function buildPlannerWorkflowAdmission(params: {
 export function buildPlannerVerifierAdmission(params: {
   readonly subagentSteps: readonly PlannerSubAgentTaskStepIntent[];
   readonly deterministicSteps: readonly PlannerDeterministicToolStepIntent[];
+  readonly workflowContract?: PlannerPlan["workflowContract"];
   readonly workspaceRoot?: string;
   readonly verificationContract?: WorkflowVerificationContract;
   readonly completionContract?: ImplementationCompletionContract;
@@ -175,10 +204,16 @@ export function evaluatePlannerDeterministicChecks(
   verifierWorkItems: readonly PlannerVerifierWorkItem[],
   pipelineResult: PipelineResult,
   plannerContext: PipelinePlannerContext,
-  plannerToolCalls: readonly import("./chat-executor-types.js").ToolCallRecord[],
+  plannerToolCalls: readonly ToolCallRecord[],
 ): SubagentVerifierDecision {
   const stepAssessments: SubagentVerifierStepAssessment[] = [];
   const unresolvedItems: string[] = [];
+  const childSessionRecords: Array<{
+    readonly name: string;
+    readonly role: WorkflowStepRole;
+    readonly verdict: SubagentVerifierStepVerdict;
+    readonly subagentSessionId?: string;
+  }> = [];
   const artifactCorpus = collectVerifierArtifacts(
     pipelineResult,
     plannerContext,
@@ -187,7 +222,7 @@ export function evaluatePlannerDeterministicChecks(
 
   for (const step of verifierWorkItems) {
     const raw = resolveVerifierWorkItemOutput(step, pipelineResult);
-    const issues: string[] = [];
+    const issues: PlannerVerifierIssueCode[] = [];
     let verdict: SubagentVerifierStepVerdict = "pass";
     let retryable = true;
     let output = "";
@@ -203,6 +238,7 @@ export function evaluatePlannerDeterministicChecks(
       }[]
       | undefined;
     let providerEvidence: LLMProviderEvidence | undefined;
+    let childSessionId: string | undefined;
 
     if (typeof raw !== "string") {
       issues.push("missing_subagent_result");
@@ -257,6 +293,8 @@ export function evaluatePlannerDeterministicChecks(
         output = typeof parsed.output === "string"
           ? parsed.output
           : safeStringify(parsed.output ?? "");
+        childSessionId = parsePlannerOptionalString(parsed.subagentSessionId) ??
+          parsePlannerOptionalString(parsed.childSessionId);
         childToolCalls = Array.isArray(parsed.toolCalls)
           ? parsed.toolCalls
               .filter(
@@ -302,52 +340,41 @@ export function evaluatePlannerDeterministicChecks(
     if (step.verificationKind === "subagent_output") {
       const contractValidation = validateDelegatedOutputContract({
         spec: {
+          task: step.name,
           objective: step.objective,
           inputContract: step.inputContract,
           acceptanceCriteria: step.acceptanceCriteria,
           requiredToolCapabilities: step.requiredToolCapabilities,
+          contextRequirements: step.workflowStep.contextRequirements,
+          executionContext: step.workflowStep.executionContext,
+          ownedArtifacts: collectWorkflowArtifactRelationPaths({
+            relations: step.workflowStep.artifactRelations,
+            relationTypes: ["write_owner"],
+          }),
         },
         output: trimmedOutput,
         toolCalls: childToolCalls,
         providerEvidence,
       });
       if (!contractValidation.ok) {
-        if (contractValidation.code === "empty_output") {
-          issues.push("empty_child_output");
-        } else if (
-          contractValidation.code === "expected_json_object" ||
-          contractValidation.code === "empty_structured_payload"
-        ) {
-          issues.push("contract_violation_expected_json_output");
-        } else if (contractValidation.code === "acceptance_count_mismatch") {
-          issues.push("contract_violation_acceptance_criteria_count");
-        } else if (contractValidation.code === "acceptance_evidence_missing") {
-          issues.push("acceptance_criteria_not_evidenced");
-        } else if (
-          contractValidation.code === "contradictory_completion_claim"
-        ) {
-          issues.push("child_claimed_completion_with_unresolved_work");
-        } else if (contractValidation.code === "low_signal_browser_evidence") {
-          issues.push("low_signal_browser_evidence");
-        } else if (contractValidation.code === "missing_successful_tool_evidence") {
-          issues.push("missing_successful_tool_evidence");
-        } else if (
-          contractValidation.code === "missing_required_source_evidence"
-        ) {
-          issues.push("missing_required_source_evidence");
-        } else if (
-          contractValidation.code === "missing_workspace_inspection_evidence"
-        ) {
-          issues.push("missing_workspace_inspection_evidence");
-        } else if (
-          contractValidation.code === "missing_file_artifact_evidence"
-        ) {
-          issues.push("missing_or_unauthorized_target_artifact_evidence");
-        } else {
-          issues.push(`contract_violation_${contractValidation.code}`);
+        if (contractValidation.code) {
+          issues.push(
+            mapDelegationValidationCodeToPlannerVerifierIssue(
+              contractValidation.code,
+            ),
+          );
         }
         verdict = moreSevereVerifierVerdict(verdict, "retry");
       }
+    }
+
+    if (step.verificationKind === "subagent_output") {
+      childSessionRecords.push({
+        name: step.name,
+        role: step.workflowStep.role,
+        verdict,
+        ...(childSessionId ? { subagentSessionId: childSessionId } : {}),
+      });
     }
 
     const outputLower = trimmedOutput.toLowerCase();
@@ -367,11 +394,11 @@ export function evaluatePlannerDeterministicChecks(
       verdict = moreSevereVerifierVerdict(verdict, "retry");
     }
 
-    if (step.requiredToolCapabilities.length > 0 && toolCallsCount === 0) {
+    if (safeStepStringArray(step.requiredToolCapabilities).length > 0 && toolCallsCount === 0) {
       issues.push("missing_tool_result_consistency_signal");
     }
     if (
-      step.requiredToolCapabilities.length > 0 &&
+      safeStepStringArray(step.requiredToolCapabilities).length > 0 &&
       toolCallsCount > 0 &&
       failedToolCallsCount >= toolCallsCount
     ) {
@@ -398,12 +425,19 @@ export function evaluatePlannerDeterministicChecks(
     });
   }
 
-  const overall = resolveVerifierOverall(stepAssessments);
-  const confidence = stepAssessments.length > 0
+  const finalizedAssessments = enforceRequiredReviewerChildren({
+    verifierWorkItems,
+    stepAssessments,
+    childSessionRecords,
+    unresolvedItems,
+  });
+
+  const overall = resolveVerifierOverall(finalizedAssessments);
+  const confidence = finalizedAssessments.length > 0
     ? Number(
         (
-          stepAssessments.reduce((sum, step) => sum + step.confidence, 0) /
-          stepAssessments.length
+          finalizedAssessments.reduce((sum, step) => sum + step.confidence, 0) /
+          finalizedAssessments.length
         ).toFixed(4),
       )
     : 1;
@@ -411,31 +445,117 @@ export function evaluatePlannerDeterministicChecks(
     overall,
     confidence,
     unresolvedItems,
-    steps: stepAssessments,
+    steps: finalizedAssessments,
     source: "deterministic",
   };
 }
 
+function enforceRequiredReviewerChildren(params: {
+  readonly verifierWorkItems: readonly PlannerVerifierWorkItem[];
+  readonly stepAssessments: readonly SubagentVerifierStepAssessment[];
+  readonly childSessionRecords: readonly {
+    readonly name: string;
+    readonly role: WorkflowStepRole;
+    readonly verdict: SubagentVerifierStepVerdict;
+    readonly subagentSessionId?: string;
+  }[];
+  readonly unresolvedItems: string[];
+}): SubagentVerifierStepAssessment[] {
+  const requiredChildren = params.verifierWorkItems
+    .map((item) => item.workflowContract?.requiredChildren)
+    .find((entry) => entry !== undefined);
+  if (!requiredChildren || requiredChildren.cardinality <= 0) {
+    return [...params.stepAssessments];
+  }
+
+  const relevantRoles = new Set(
+    requiredChildren.roles.length > 0
+      ? requiredChildren.roles
+      : (["reviewer"] as const),
+  );
+  const successfulRequiredChildren = params.childSessionRecords.filter((record) =>
+    relevantRoles.has(record.role) &&
+    record.verdict === "pass" &&
+    typeof record.subagentSessionId === "string" &&
+    record.subagentSessionId.trim().length > 0
+  );
+  const distinctSessionIds = new Set(
+    successfulRequiredChildren.map((record) => record.subagentSessionId!.trim()),
+  );
+  const missingExactNames = (requiredChildren.exactNames ?? []).filter((name) =>
+    !successfulRequiredChildren.some((record) => record.name === name)
+  );
+  if (
+    distinctSessionIds.size >= requiredChildren.cardinality &&
+    missingExactNames.length === 0
+  ) {
+    return [...params.stepAssessments];
+  }
+
+  const targets = params.stepAssessments.filter((assessment) => {
+    const workItem = params.verifierWorkItems.find((item) => item.name === assessment.name);
+    const role = workItem?.workflowStep.role;
+    return role === "writer" || role === "validator" || role === "synthesizer";
+  });
+  const namesToFail = new Set(
+    (targets.length > 0 ? targets : params.stepAssessments).map((assessment) => assessment.name),
+  );
+  const issueSuffix = missingExactNames.length > 0
+    ? `missing=${missingExactNames.join(",")}`
+    : `sessions=${distinctSessionIds.size}/${requiredChildren.cardinality}`;
+  const updatedAssessments: SubagentVerifierStepAssessment[] =
+    params.stepAssessments.map((assessment) => {
+    if (!namesToFail.has(assessment.name)) {
+      return assessment;
+    }
+    const issues: PlannerVerifierIssueCode[] = assessment.issues.includes(
+      "missing_required_reviewer_children",
+    )
+      ? [...assessment.issues]
+      : [...assessment.issues, "missing_required_reviewer_children"];
+    const unresolvedValue = `${assessment.name}:missing_required_reviewer_children:${issueSuffix}`;
+    if (!params.unresolvedItems.includes(unresolvedValue)) {
+      params.unresolvedItems.push(unresolvedValue);
+    }
+    return {
+      ...assessment,
+      verdict: "fail" as const,
+      retryable: false,
+      issues,
+      summary:
+        "Required reviewer child sessions did not complete successfully.",
+    };
+  });
+  return updatedAssessments;
+}
+
 function collectHybridVerifierIssues(
   decision: ReturnType<typeof validateRuntimeVerificationContract>,
-): readonly string[] {
+): readonly PlannerVerifierIssueCode[] {
   if (!decision) {
     return [];
   }
-  const issues: string[] = [];
+  const issues: PlannerVerifierIssueCode[] = [];
   for (const channel of decision.channels) {
     if (channel.ok) {
       continue;
     }
     issues.push(
-      `${channel.channel}:${channel.diagnostic?.code ?? "verification_failed"}`,
+      formatRuntimeVerificationIssueCode({
+        channel: channel.channel,
+        code: channel.diagnostic?.code ?? "acceptance_evidence_missing",
+      }),
     );
   }
   if (issues.length > 0) {
     return [...new Set(issues)];
   }
   if (decision.diagnostic?.code) {
-    return [decision.diagnostic.code];
+    return [
+      mapDelegationValidationCodeToPlannerVerifierIssue(
+        decision.diagnostic.code,
+      ),
+    ];
   }
   return [];
 }
@@ -461,6 +581,9 @@ export function buildSubagentVerifierMessages(
   const verifierBundle = verifierWorkItems.map((step) => ({
     name: step.name,
     verificationKind: step.verificationKind,
+    workflowClass: step.workflowContract?.workflowClass,
+    workflowStep: step.workflowStep,
+    verifierTemplate: describeVerifierTemplate(step),
     objective: step.objective,
     inputContract: step.inputContract,
     acceptanceCriteria: step.acceptanceCriteria,
@@ -476,6 +599,10 @@ export function buildSubagentVerifierMessages(
       role: "system",
       content:
         "You are a strict verifier for delegated outputs and deterministic implementation runs. " +
+        "Grade reviewer steps as reviewer work, writer steps as writer work, and validator steps as validator work. " +
+        "Reviewer steps pass when they produce grounded findings backed by the required reads or workspace inspection; do not require file mutation from reviewers. " +
+        "Writer steps pass only when they mutate owned target artifacts or explicitly report a grounded no-op with current target-artifact evidence; findings alone are insufficient. " +
+        "Validator steps must enforce deterministic implementation completion and required reviewer-child completion before marking the workflow complete. " +
         "Assess contract adherence, evidence quality, hallucination risk against provided artifacts, and whether the work is actually complete enough to count as implemented. " +
         "Return JSON only with schema: " +
         '{"overall":"pass|retry|fail","confidence":0..1,"unresolved":[string],"steps":[{"name":string,"verdict":"pass|retry|fail","confidence":0..1,"retryable":boolean,"issues":[string],"summary":string}]}.',
@@ -493,6 +620,21 @@ export function buildSubagentVerifierMessages(
       }),
     },
   ];
+}
+
+function describeVerifierTemplate(
+  step: PlannerVerifierWorkItem,
+): string {
+  switch (step.workflowStep.role) {
+    case "reviewer":
+      return "Reviewer template: require grounded findings and read-backed evidence; do not require mutation.";
+    case "writer":
+      return "Writer template: require owned-artifact mutation or explicit grounded no-op (`reportedOutcome=already_satisfied`) backed by target reads.";
+    case "validator":
+      return "Validator template: enforce deterministic completion plus required reviewer-child completion.";
+    default:
+      return "General template: enforce the typed workflow contract for this step role.";
+  }
 }
 
 export function buildSubagentVerifierStructuredOutputRequest(): LLMStructuredOutputRequest {
@@ -605,7 +747,7 @@ export function parseSubagentVerifierDecision(
       ? obj.issues
           .filter((issue): issue is string => typeof issue === "string")
           .map((issue) => issue.trim())
-          .filter((issue) => issue.length > 0)
+          .filter(isPlannerVerifierIssueCode)
       : [];
     const summary = parsePlannerOptionalString(obj.summary) ??
       (issues.length > 0 ? issues.join("; ") : "verifier assessment");
@@ -1104,8 +1246,8 @@ function buildPlannerWorkflowVerificationContract(params: {
         ? params.verificationContract.workspaceRoot.trim()
         : undefined;
   const acceptanceCriteria = [
-    ...(params.verificationContract?.acceptanceCriteria ?? []),
-    ...params.subagentSteps.flatMap((step) => step.acceptanceCriteria),
+    ...safeStepStringArray(params.verificationContract?.acceptanceCriteria),
+    ...params.subagentSteps.flatMap((step) => safeStepStringArray(step.acceptanceCriteria)),
   ].filter((criterion) => criterion.trim().length > 0);
   const inputArtifacts = Array.from(
     new Set(
@@ -1153,16 +1295,17 @@ function buildPlannerWorkflowVerificationContract(params: {
       })
       : undefined
     );
+  const hasWorkflowVerificationSemantics =
+    acceptanceCriteria.length > 0 ||
+    inputArtifacts.length > 0 ||
+    requiredSourceArtifacts.length > 0 ||
+    targetArtifacts.length > 0 ||
+    Boolean(verificationMode) ||
+    Boolean(stepKind) ||
+    Boolean(params.completionContract) ||
+    Boolean(requestCompletion);
   if (
-    !workspaceRoot &&
-    acceptanceCriteria.length === 0 &&
-    inputArtifacts.length === 0 &&
-    requiredSourceArtifacts.length === 0 &&
-    targetArtifacts.length === 0 &&
-    !verificationMode &&
-    !stepKind &&
-    !params.completionContract &&
-    !requestCompletion
+    !hasWorkflowVerificationSemantics
   ) {
     return undefined;
   }
@@ -1176,10 +1319,69 @@ function buildPlannerWorkflowVerificationContract(params: {
       : {}),
     ...(verificationMode ? { verificationMode } : {}),
     ...(stepKind ? { stepKind } : {}),
+    ...(params.verificationContract?.role
+      ? { role: params.verificationContract.role }
+      : {}),
     ...(params.completionContract
       ? { completionContract: params.completionContract }
       : {}),
     ...(requestCompletion ? { requestCompletion } : {}),
+  };
+}
+
+function buildPlannerStepVerificationContract(
+  step: PlannerSubAgentTaskStepIntent,
+): WorkflowVerificationContract | undefined {
+  const workflowStep = step.workflowStep ?? buildPlannerWorkflowStepContract(step);
+  const executionContext = workflowStep.executionContext;
+  const requiredSourceArtifacts =
+    executionContext?.requiredSourceArtifacts ??
+    collectWorkflowArtifactRelationPaths({
+      relations: workflowStep.artifactRelations,
+      relationTypes: ["read_dependency", "context_input"],
+    });
+  const inputArtifacts =
+    executionContext?.inputArtifacts ??
+    collectWorkflowArtifactRelationPaths({
+      relations: workflowStep.artifactRelations,
+      relationTypes: ["context_input"],
+    });
+  const targetArtifacts =
+    executionContext?.targetArtifacts ??
+    collectWorkflowArtifactRelationPaths({
+      relations: workflowStep.artifactRelations,
+      relationTypes: ["write_owner", "verification_subject", "handoff_artifact"],
+    });
+  if (
+    !executionContext?.workspaceRoot &&
+    inputArtifacts.length === 0 &&
+    requiredSourceArtifacts.length === 0 &&
+    targetArtifacts.length === 0 &&
+    workflowStep.acceptanceCriteria.length === 0 &&
+    !executionContext?.verificationMode &&
+    !executionContext?.stepKind &&
+    !executionContext?.completionContract
+  ) {
+    return undefined;
+  }
+  return {
+    ...(executionContext?.workspaceRoot
+      ? { workspaceRoot: executionContext.workspaceRoot }
+      : {}),
+    ...(inputArtifacts.length > 0 ? { inputArtifacts } : {}),
+    ...(requiredSourceArtifacts.length > 0 ? { requiredSourceArtifacts } : {}),
+    ...(targetArtifacts.length > 0 ? { targetArtifacts } : {}),
+    ...(workflowStep.acceptanceCriteria.length > 0
+      ? { acceptanceCriteria: workflowStep.acceptanceCriteria }
+      : {}),
+    ...(executionContext?.verificationMode
+      ? { verificationMode: executionContext.verificationMode }
+      : {}),
+    ...(executionContext?.stepKind ? { stepKind: executionContext.stepKind } : {}),
+    role: workflowStep.role,
+    ...(executionContext?.completionContract
+      ? { completionContract: executionContext.completionContract }
+      : {}),
   };
 }
 
@@ -1345,6 +1547,7 @@ function buildDeterministicImplementationVerifierWorkItem(
   subagentSteps: readonly PlannerSubAgentTaskStepIntent[],
   deterministicSteps: readonly PlannerDeterministicToolStepIntent[],
   verificationContract?: WorkflowVerificationContract,
+  workflowContract?: PlannerVerifierWorkItem["workflowContract"],
 ): PlannerVerifierWorkItem {
   const acceptanceCriteria = buildImplementationAcceptanceCriteria(
     completionContract,
@@ -1352,11 +1555,11 @@ function buildDeterministicImplementationVerifierWorkItem(
   );
   const documentationOnly =
     completionContract.placeholderTaxonomy === "documentation";
-  return {
+  const workflowStep = {
     name: documentationOnly
       ? "documentation_completion"
       : "implementation_completion",
-    verificationKind: "deterministic_implementation",
+    role: "validator" as const,
     objective:
       documentationOnly
         ? "Verify that the deterministic documentation or planning artifact rewrite is complete enough to count as finished."
@@ -1372,6 +1575,59 @@ function buildDeterministicImplementationVerifierWorkItem(
         ...deterministicSteps.map((step) => step.tool),
       ]),
     ],
+    contextRequirements: [],
+    executionContext:
+      verificationContract || completionContract
+        ? buildDelegationExecutionContext({
+          workspaceRoot: verificationContract?.workspaceRoot,
+          inputArtifacts: verificationContract?.inputArtifacts,
+          requiredSourceArtifacts:
+            verificationContract?.requiredSourceArtifacts,
+          targetArtifacts: verificationContract?.targetArtifacts,
+          verificationMode:
+            verificationContract?.verificationMode ??
+            "deterministic_followup",
+          stepKind:
+            verificationContract?.stepKind ??
+            "delegated_validation",
+          role: "validator",
+          artifactRelations: canonicalizeWorkflowArtifactRelations({
+            workspaceRoot: verificationContract?.workspaceRoot,
+            inputArtifacts: verificationContract?.inputArtifacts,
+            requiredSourceArtifacts:
+              verificationContract?.requiredSourceArtifacts,
+            targetArtifacts: verificationContract?.targetArtifacts,
+            stepKind:
+              verificationContract?.stepKind ??
+              "delegated_validation",
+            verificationMode:
+              verificationContract?.verificationMode ??
+              "deterministic_followup",
+            role: "validator",
+          }),
+          completionContract,
+        })
+        : undefined,
+    artifactRelations: canonicalizeWorkflowArtifactRelations({
+      workspaceRoot: verificationContract?.workspaceRoot,
+      inputArtifacts: verificationContract?.inputArtifacts,
+      requiredSourceArtifacts: verificationContract?.requiredSourceArtifacts,
+      targetArtifacts: verificationContract?.targetArtifacts,
+      stepKind: verificationContract?.stepKind ?? "delegated_validation",
+      verificationMode:
+        verificationContract?.verificationMode ?? "deterministic_followup",
+      role: "validator",
+    }),
+  };
+  return {
+    name: workflowStep.name,
+    verificationKind: "deterministic_implementation",
+    objective: workflowStep.objective,
+    inputContract: workflowStep.inputContract,
+    acceptanceCriteria: workflowStep.acceptanceCriteria,
+    requiredToolCapabilities: workflowStep.requiredToolCapabilities,
+    workflowStep,
+    workflowContract,
     resultStepNames: [
       ...new Set([
         ...subagentSteps.map((step) => step.name),

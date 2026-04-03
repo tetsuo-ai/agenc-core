@@ -10,7 +10,6 @@ export const RESERVED_CHANNEL_NAMES = Object.freeze(
     "webchat",
     "telegram",
     "discord",
-    "slack",
     "whatsapp",
     "signal",
     "matrix",

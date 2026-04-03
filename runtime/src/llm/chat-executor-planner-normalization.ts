@@ -13,10 +13,11 @@ import type {
 } from "./types.js";
 import type { PlannerParseResult } from "./chat-executor-types.js";
 import {
+  applyRuntimePlannerBudgetClamp,
   parsePlannerPlan,
   salvagePlannerToolCallsAsPlan,
-  type ExplicitSubagentOrchestrationRequirements,
 } from "./chat-executor-planner.js";
+import type { RequiredSubagentOrchestrationRequirements as ExplicitSubagentOrchestrationRequirements } from "../workflow/subagent-orchestration-requirements.js";
 import { extractStructuredOutputObject } from "./structured-output.js";
 
 export function normalizePlannerResponse(params: {
@@ -32,11 +33,11 @@ export function normalizePlannerResponse(params: {
       structuredOutput: params.structuredOutput,
     })
     : undefined;
-  const parsed = parsePlannerPlan(
+  const parsed = applyRuntimePlannerBudgetClamp(parsePlannerPlan(
     structuredPayload ?? params.content,
     params.repairRequirements,
     { plannerWorkspaceRoot: params.plannerWorkspaceRoot },
-  );
+  ));
   if (parsed.plan || params.toolCalls.length === 0) {
     return parsed;
   }

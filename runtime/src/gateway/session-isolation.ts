@@ -11,6 +11,7 @@
 import type { Keypair, PublicKey } from "@solana/web3.js";
 import type { MemoryBackend } from "../memory/types.js";
 import { InMemoryBackend } from "../memory/in-memory/backend.js";
+import { resolveWorldDbPath } from "../memory/world-db-resolver.js";
 import { PolicyEngine } from "../policy/engine.js";
 import type { RuntimePolicyConfig } from "../policy/types.js";
 import { ToolRegistry } from "../tools/registry.js";
@@ -40,6 +41,7 @@ export interface AuthState {
 
 export interface IsolatedSessionContext {
   readonly workspaceId: string;
+  readonly worldId?: string;
   readonly memoryBackend: MemoryBackend;
   readonly policyEngine: PolicyEngine;
   readonly toolRegistry: ToolRegistry;
@@ -51,6 +53,7 @@ export interface IsolatedSessionContext {
 
 export interface SessionContextIdentity {
   readonly workspaceId: string;
+  readonly worldId?: string;
   readonly parentSessionId?: string;
   readonly subagentSessionId?: string;
 }
@@ -64,7 +67,7 @@ type SessionContextRef = string | SessionContextIdentity;
 
 export interface SessionIsolationManagerConfig {
   readonly workspaceManager: WorkspaceManager;
-  readonly createMemoryBackend?: (workspace: AgentWorkspace) => MemoryBackend;
+  readonly createMemoryBackend?: (workspace: AgentWorkspace, worldId?: string) => MemoryBackend;
   readonly createPolicyEngine?: (workspace: AgentWorkspace) => PolicyEngine;
   readonly createLLMProvider?: (workspace: AgentWorkspace) => LLMProvider;
   readonly defaultLLMProvider?: LLMProvider;
@@ -76,6 +79,8 @@ export interface SessionIsolationManagerConfig {
   readonly resolveKeypair?: (workspaceId: string) => Keypair | undefined;
   readonly resolveAuth?: (workspace: AgentWorkspace) => AuthState;
   readonly logger?: Logger;
+  /** Override for ~/.agenc directory, used for per-world DB path resolution. */
+  readonly agencHome?: string;
 }
 
 // ============================================================================
@@ -124,14 +129,15 @@ function normalizeContextIdentity(
 }
 
 function contextIdentityKey(context: SessionContextIdentity): string {
-  if (!context.parentSessionId && !context.subagentSessionId) {
+  if (!context.parentSessionId && !context.subagentSessionId && !context.worldId) {
     return context.workspaceId;
   }
   return [
     `workspace=${context.workspaceId}`,
-    `parent=${context.parentSessionId ?? "-"}`,
-    `subagent=${context.subagentSessionId ?? "-"}`,
-  ].join("|");
+    context.worldId ? `world=${context.worldId}` : null,
+    context.parentSessionId ? `parent=${context.parentSessionId}` : null,
+    context.subagentSessionId ? `subagent=${context.subagentSessionId}` : null,
+  ].filter(Boolean).join("|");
 }
 
 // ============================================================================
@@ -192,9 +198,10 @@ export class SessionIsolationManager {
     cacheKey: string,
   ): Promise<IsolatedSessionContext> {
     const workspaceId = contextIdentity.workspaceId;
+    const worldId = contextIdentity.worldId;
     const workspace = await this.config.workspaceManager.load(workspaceId);
 
-    const memoryBackend = this.createMemory(workspace);
+    const memoryBackend = this.createMemory(workspace, worldId);
     const policyEngine = this.createPolicy(workspace);
     const toolRegistry = this.createTools(workspace, policyEngine);
     const llmProvider = this.createLLM(workspace);
@@ -204,6 +211,7 @@ export class SessionIsolationManager {
 
     const ctx: IsolatedSessionContext = {
       workspaceId,
+      worldId,
       memoryBackend,
       policyEngine,
       toolRegistry,
@@ -220,11 +228,19 @@ export class SessionIsolationManager {
     return ctx;
   }
 
-  private createMemory(workspace: AgentWorkspace): MemoryBackend {
+  private createMemory(workspace: AgentWorkspace, worldId?: string): MemoryBackend {
     if (this.config.createMemoryBackend) {
-      return this.config.createMemoryBackend(workspace);
+      return this.config.createMemoryBackend(workspace, worldId);
     }
     return new InMemoryBackend();
+  }
+
+  /**
+   * Resolve the SQLite DB path for a given world.
+   * Exposed for external callers that need the path without creating a full context.
+   */
+  resolveWorldDbPath(worldId: string): string {
+    return resolveWorldDbPath(worldId, this.config.agencHome);
   }
 
   private createPolicy(workspace: AgentWorkspace): PolicyEngine {

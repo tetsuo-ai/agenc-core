@@ -16,8 +16,6 @@ export {
   type WebChatChannelConfig,
   type WebChatDeps,
 } from "./webchat/index.js";
-
-export { SlackChannel, type SlackChannelConfig } from "./slack/index.js";
 export {
   WhatsAppChannel,
   type WhatsAppChannelConfig,

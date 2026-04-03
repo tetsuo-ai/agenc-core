@@ -159,7 +159,6 @@ const VALID_BACKGROUND_RUN_NOTIFICATION_EVENTS: ReadonlySet<string> = new Set([
 const VALID_BACKGROUND_RUN_NOTIFICATION_SINK_TYPES: ReadonlySet<string> =
   new Set([
     "webhook",
-    "slack_webhook",
     "discord_webhook",
     "email_webhook",
     "mobile_push_webhook",
@@ -211,7 +210,7 @@ function validatePluginsSection(plugins: unknown, errors: string[]): void {
               !isValidTrustedPackageSubpath(subpath.trim())
             ) {
               errors.push(
-                `${path}.allowedSubpaths[${subpathIndex}] must be a relative package subpath like channels/slack`,
+                `${path}.allowedSubpaths[${subpathIndex}] must be a relative package subpath like channels/example`,
               );
             }
           });

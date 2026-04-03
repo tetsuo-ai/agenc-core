@@ -314,9 +314,19 @@ export async function wireAutonomousFeatures(
       goalManager: ctx.goalManager,
       traceProviderPayloads,
     });
+    // Phase 2B: scope learning KV keys by workspace to prevent cross-workspace
+    // information leakage (BUG-2 in TODO: learning records are global).
+    // Security finding C-1: User A's learned preferences were injected into User B's context.
+    const workspacePath = ctx.resolveActiveHostWorkspacePath(
+      ctx.gatewayLogging as unknown as GatewayConfig,
+    );
+    const learningKeyPrefix = workspacePath
+      ? `${workspacePath}:learning:`
+      : "learning:";
     const selfLearningAction = createSelfLearningAction({
       llm,
       memory: ctx.memoryBackend!,
+      keyPrefix: learningKeyPrefix,
       traceProviderPayloads,
     });
     const metaPlannerAction = createMetaPlannerAction({

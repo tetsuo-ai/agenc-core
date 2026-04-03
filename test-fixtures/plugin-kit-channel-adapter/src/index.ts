@@ -2,5 +2,5 @@ export {
   manifest,
   validateConfig,
   createChannelAdapter,
-} from "./slack.js";
-export { default } from "./slack.js";
+} from "./mock.js";
+export { default } from "./mock.js";

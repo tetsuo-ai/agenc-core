@@ -1,7 +1,7 @@
 /**
  * Cross-channel identity linking for the AgenC gateway.
  *
- * Allows the same user across Telegram, Discord, Slack, etc. to be
+ * Allows the same user across Telegram, Discord, Matrix, etc. to be
  * recognized as a single identity. Supports manual linking via shared
  * codes, Solana ed25519 signature verification, and resolution from
  * channel-specific sender IDs to canonical identity IDs.

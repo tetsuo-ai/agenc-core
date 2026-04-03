@@ -21,7 +21,10 @@ import type {
   BashToolInput,
   BashExecutionResult,
 } from "./types.js";
-import { tokenizeShellCommand } from "./command-line.js";
+import {
+  parseDirectCommandLine,
+  tokenizeShellCommand,
+} from "./command-line.js";
 import {
   DEFAULT_DENY_LIST,
   DEFAULT_DENY_PREFIXES,
@@ -60,7 +63,7 @@ const SHELL_BUILTIN_COMMANDS = new Set([
   "builtin",
 ]);
 const SINGLE_EXECUTABLE_RE = /^[A-Za-z0-9_./+-]+$/;
-const SHELL_OPERATOR_RE = /[|&;<>()`$\\\r\n]/;
+const SHELL_OPERATOR_RE = /[|&;<>`$\\\r\n]/;
 const SHELL_COMMAND_SEPARATORS = new Set([
   "|",
   "||",
@@ -142,6 +145,81 @@ function validateShellBuiltin(command: string): string | undefined {
   );
 }
 
+function normalizeDirectInvocation(params: {
+  readonly command: string;
+  readonly args: readonly string[] | undefined;
+}): {
+  readonly command: string;
+  readonly args: string[] | undefined;
+} {
+  if (!params.args || !/\s/.test(params.command)) {
+    return {
+      command: params.command,
+      args: params.args ? [...params.args] : undefined,
+    };
+  }
+
+  const parsed = parseDirectCommandLine(params.command);
+  if (!parsed) {
+    return {
+      command: params.command,
+      args: [...params.args],
+    };
+  }
+
+  return {
+    command: parsed.command,
+    args: [...parsed.args, ...params.args],
+  };
+}
+
+function argsRequireShellSemantics(args: readonly string[]): boolean {
+  return args.some((arg) =>
+    SHELL_COMMAND_SEPARATORS.has(arg) ||
+    SHELL_REDIRECT_OPERATORS.has(arg) ||
+    SHELL_OPERATOR_RE.test(arg)
+  );
+}
+
+function validateDirectArgs(
+  command: string,
+  args: readonly string[],
+): string | undefined {
+  const shellWrapperScript = extractShellWrapperInlineScript(command, args);
+  if (typeof shellWrapperScript === "string") {
+    return undefined;
+  }
+  if (!argsRequireShellSemantics(args)) {
+    return undefined;
+  }
+  return (
+    "Invalid direct-mode args. Shell separators, redirects, or chaining tokens " +
+    "were passed in `args`. Put flags and operands in `args`, or omit `args` and " +
+    "use shell mode with the full shell command in `command`."
+  );
+}
+
+function normalizeBuiltinShellFallback(params: {
+  readonly command: string;
+  readonly args: readonly string[] | undefined;
+  readonly shellModeEnabled: boolean;
+}): string | undefined {
+  if (!params.shellModeEnabled || !params.args || params.args.length === 0) {
+    return undefined;
+  }
+
+  const base = basename(params.command).toLowerCase();
+  if (!SHELL_BUILTIN_COMMANDS.has(base)) {
+    return undefined;
+  }
+
+  if (!argsRequireShellSemantics(params.args)) {
+    return undefined;
+  }
+
+  return [params.command, ...params.args].join(" ");
+}
+
 function truncate(
   text: string,
   maxBytes: number,
@@ -151,6 +229,175 @@ function truncate(
   const buf = Buffer.from(text, "utf-8");
   const truncatedText = buf.subarray(0, maxBytes).toString("utf-8");
   return { text: truncatedText + "\n[truncated]", truncated: true };
+}
+
+function runSpawnedCommand(params: {
+  readonly execCommand: string;
+  readonly execArgs: readonly string[];
+  readonly cwd: string;
+  readonly env: Record<string, string>;
+  readonly timeout: number;
+  readonly maxOutputBytes: number;
+  readonly logCmd: string;
+  readonly logger: Logger;
+  readonly startTime: number;
+  readonly metadataCommand: string;
+  readonly metadataArgs: readonly string[];
+  readonly shellMode: boolean;
+  readonly cleanupPath?: string;
+}): Promise<ToolResult> {
+  return new Promise<ToolResult>((resolve) => {
+    let resolved = false;
+    let stdoutBuf = "";
+    let stderrBuf = "";
+    let timedOut = false;
+    let forceKillTimer: NodeJS.Timeout | null = null;
+
+    const cleanup = (reason: "timeout" | "resolve" | "error") => {
+      if (!params.cleanupPath) return;
+      try {
+        unlinkSync(params.cleanupPath);
+      } catch (error) {
+        params.logger.debug("Bash tool cleanup failed", {
+          reason,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+
+    const child = spawn(params.execCommand, [...params.execArgs], {
+      cwd: params.cwd,
+      env: params.env,
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
+    });
+
+    child.unref();
+
+    child.stdout!.on("data", (chunk: Buffer) => {
+      stdoutBuf += chunk.toString();
+    });
+    child.stderr!.on("data", (chunk: Buffer) => {
+      stderrBuf += chunk.toString();
+    });
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        process.kill(-child.pid!, "SIGTERM");
+      } catch (error) {
+        params.logger.debug(
+          "Bash tool process-group SIGTERM failed; falling back to child.kill",
+          {
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+        child.kill("SIGTERM");
+      }
+      forceKillTimer = setTimeout(() => {
+        try {
+          process.kill(-child.pid!, "SIGKILL");
+        } catch {
+          child.kill("SIGKILL");
+        }
+      }, 500);
+      cleanup("timeout");
+    }, params.timeout);
+
+    const doResolve = (code: number | null) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timer);
+      if (forceKillTimer) {
+        clearTimeout(forceKillTimer);
+      }
+      cleanup("resolve");
+
+      const durationMs = Date.now() - params.startTime;
+      const exitCode = timedOut ? null : (code ?? 1);
+      const isError = timedOut || (exitCode !== null && exitCode !== 0);
+
+      const stdoutResult = truncate(stdoutBuf, params.maxOutputBytes);
+      const stderrResult = truncate(
+        stderrBuf.trim().length > 0
+          ? stderrBuf
+          : isError
+            ? `Command "${params.metadataCommand}" failed`
+            : "",
+        params.maxOutputBytes,
+      );
+
+      if (timedOut) {
+        params.logger.warn(
+          `Bash tool timed out after ${durationMs}ms: ${params.logCmd}`,
+        );
+      } else if (isError) {
+        params.logger.debug(
+          `Bash tool error (exit ${exitCode}): ${params.logCmd}`,
+        );
+      } else {
+        params.logger.debug(
+          `Bash tool success (${durationMs}ms): ${params.logCmd}`,
+        );
+      }
+
+      const result: BashExecutionResult = {
+        exitCode,
+        stdout: stdoutResult.text,
+        stderr: stderrResult.text,
+        timedOut,
+        durationMs,
+        truncated: stdoutResult.truncated || stderrResult.truncated,
+      };
+
+      resolve({
+        content: safeStringify(result),
+        isError: isError || undefined,
+        metadata: {
+          command: params.metadataCommand,
+          args: params.metadataArgs,
+          cwd: params.cwd,
+          shellMode: params.shellMode,
+          timedOut,
+          durationMs,
+        },
+      });
+    };
+
+    child.on("exit", (code) => {
+      setTimeout(() => doResolve(code), 50);
+    });
+
+    child.on("error", (err) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timer);
+      if (forceKillTimer) {
+        clearTimeout(forceKillTimer);
+      }
+      cleanup("error");
+      const durationMs = Date.now() - params.startTime;
+      resolve({
+        content: safeStringify({
+          error: err.message,
+          exitCode: null,
+          stdout: "",
+          stderr: err.message,
+          timedOut: false,
+          durationMs,
+          truncated: false,
+        }),
+        isError: true,
+        metadata: {
+          command: params.metadataCommand,
+          args: params.metadataArgs,
+          cwd: params.cwd,
+          shellMode: params.shellMode,
+          durationMs,
+        },
+      });
+    });
+  });
 }
 
 function buildDenySet(
@@ -488,22 +735,38 @@ export function createBashTool(config?: BashToolConfig): Tool {
       ) {
         return errorResult("command must be a non-empty string");
       }
+      if (input.args !== undefined && !Array.isArray(input.args)) {
+        return errorResult("args must be an array of strings");
+      }
 
-      const command = input.command.trim();
-      const normalizedArgs = Array.isArray(input.args)
+      const directArgs = Array.isArray(input.args)
         ? input.args
         : undefined;
+      const normalizedDirectInvocation = normalizeDirectInvocation({
+        command: input.command.trim(),
+        args: directArgs,
+      });
+      const command = normalizedDirectInvocation.command;
+      const normalizedArgs = normalizedDirectInvocation.args;
+      const builtinShellFallback = normalizeBuiltinShellFallback({
+        command,
+        args: normalizedArgs,
+        shellModeEnabled,
+      });
+      const shellCommand = builtinShellFallback ?? command;
 
       // Determine execution mode: shell vs direct
       const useShellMode =
-        shellModeEnabled && isShellModeCommand(command, normalizedArgs);
+        shellModeEnabled &&
+        (builtinShellFallback !== undefined ||
+          isShellModeCommand(command, normalizedArgs));
 
       let execCommand: string;
       let execArgs: string[];
 
       if (useShellMode) {
         // Shell mode: validate against dangerous patterns, then run via bash -c
-        const shellCheck = validateShellCommand(command);
+        const shellCheck = validateShellCommand(shellCommand);
         if (!shellCheck.allowed) {
           logger.warn(`Bash tool shell-mode denied: ${shellCheck.reason}`);
           return errorResult(shellCheck.reason);
@@ -514,7 +777,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
           const {
             executables: shellExecutables,
             dynamicExecutableReason,
-          } = extractShellExecutables(command);
+          } = extractShellExecutables(shellCommand);
           if (dynamicExecutableReason) {
             logger.warn(`Bash tool shell-mode denied: ${dynamicExecutableReason}`);
             return errorResult(dynamicExecutableReason);
@@ -534,7 +797,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
         }
 
         execCommand = "/bin/bash";
-        execArgs = ["-c", command];
+        execArgs = ["-c", shellCommand];
       } else {
         // Direct mode: validate command shape, builtins, and deny/allow lists
         if (
@@ -575,15 +838,19 @@ export function createBashTool(config?: BashToolConfig): Tool {
 
         // Validate args
         const args: string[] = [];
-        if (input.args !== undefined) {
-          if (!Array.isArray(input.args)) {
+        if (normalizedArgs !== undefined) {
+          if (!Array.isArray(normalizedArgs)) {
             return errorResult("args must be an array of strings");
           }
-          for (const arg of input.args) {
+          for (const arg of normalizedArgs) {
             if (typeof arg !== "string") {
               return errorResult("Each argument must be a string");
             }
             args.push(arg);
+          }
+          const directArgsError = validateDirectArgs(command, args);
+          if (directArgsError) {
+            return errorResult(directArgsError);
           }
         }
 
@@ -638,10 +905,12 @@ export function createBashTool(config?: BashToolConfig): Tool {
       const timeout = Math.min(input.timeoutMs ?? defaultTimeout, maxTimeoutMs);
 
       const logCmd = useShellMode
-        ? `[shell] ${command}`
+        ? `[shell] ${shellCommand}`
         : `${command} ${execArgs.join(" ")}`;
       logger.debug(`Bash tool executing: ${logCmd}`);
       const startTime = Date.now();
+      const useSpawnedWrapperMode =
+        !useShellMode && SHELL_WRAPPER_COMMANDS.has(basename(command).toLowerCase());
 
       // Shell mode uses spawn + exit event to avoid hanging when backgrounded
       // children (e.g. `python3 ... &`) inherit stdout/stderr pipes.
@@ -657,156 +926,43 @@ export function createBashTool(config?: BashToolConfig): Tool {
         const scriptId = randomBytes(4).toString("hex");
         const scriptPath = join(tmpdir(), `agenc-sh-${scriptId}.sh`);
         try {
-          writeFileSync(scriptPath, command, { mode: 0o700 });
+          writeFileSync(scriptPath, shellCommand, { mode: 0o700 });
         } catch (writeErr) {
           return errorResult(
             `Failed to create temp script: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`,
           );
         }
+        return runSpawnedCommand({
+          execCommand: "/bin/bash",
+          execArgs: [scriptPath],
+          cwd,
+          env,
+          timeout,
+          maxOutputBytes,
+          logCmd,
+          logger,
+          startTime,
+          metadataCommand: command,
+          metadataArgs: execArgs,
+          shellMode: true,
+          cleanupPath: scriptPath,
+        });
+      }
 
-        return new Promise<ToolResult>((resolve) => {
-          let resolved = false;
-          let stdoutBuf = "";
-          let stderrBuf = "";
-          let timedOut = false;
-
-          const child = spawn("/bin/bash", [scriptPath], {
-            cwd,
-            env,
-            stdio: ["ignore", "pipe", "pipe"],
-            detached: true, // Own process group for clean timeout kill
-          });
-
-          // Unref so backgrounded grandchildren don't keep Node alive
-          child.unref();
-
-          child.stdout!.on("data", (chunk: Buffer) => {
-            stdoutBuf += chunk.toString();
-          });
-          child.stderr!.on("data", (chunk: Buffer) => {
-            stderrBuf += chunk.toString();
-          });
-
-	          const timer = setTimeout(() => {
-	            timedOut = true;
-	            // Kill entire process group (bash + any backgrounded children)
-	            try {
-	              process.kill(-child.pid!, "SIGTERM");
-	            } catch (error) {
-	              logger.debug("Bash tool process-group SIGTERM failed; falling back to child.kill", {
-	                error: error instanceof Error ? error.message : String(error),
-	              });
-	              child.kill("SIGTERM");
-	            }
-	            try {
-	              unlinkSync(scriptPath);
-	            } catch (error) {
-	              logger.debug("Bash tool script cleanup failed after timeout", {
-	                error: error instanceof Error ? error.message : String(error),
-	              });
-	            }
-	          }, timeout);
-
-	          const doResolve = (code: number | null) => {
-	            if (resolved) return;
-	            resolved = true;
-	            clearTimeout(timer);
-	            try {
-	              unlinkSync(scriptPath);
-	            } catch (error) {
-	              logger.debug("Bash tool script cleanup failed on resolve", {
-	                error: error instanceof Error ? error.message : String(error),
-	              });
-	            }
-
-            const durationMs = Date.now() - startTime;
-            const exitCode = timedOut ? null : (code ?? 1);
-            const isError = timedOut || (exitCode !== null && exitCode !== 0);
-
-            const stdoutResult = truncate(stdoutBuf, maxOutputBytes);
-            const stderrResult = truncate(
-              stderrBuf.trim().length > 0
-                ? stderrBuf
-                : isError
-                  ? `Command "${command}" failed`
-                  : "",
-              maxOutputBytes,
-            );
-
-            if (timedOut) {
-              logger.warn(
-                `Bash tool timed out after ${durationMs}ms: ${logCmd}`,
-              );
-            } else if (isError) {
-              logger.debug(
-                `Bash tool error (exit ${exitCode}): ${logCmd}`,
-              );
-            } else {
-              logger.debug(`Bash tool success (${durationMs}ms): ${logCmd}`);
-            }
-
-            const result: BashExecutionResult = {
-              exitCode,
-              stdout: stdoutResult.text,
-              stderr: stderrResult.text,
-              timedOut,
-              durationMs,
-              truncated: stdoutResult.truncated || stderrResult.truncated,
-            };
-
-            resolve({
-              content: safeStringify(result),
-              isError: isError || undefined,
-              metadata: {
-                command,
-                args: execArgs,
-                cwd,
-                shellMode: true,
-                timedOut,
-                durationMs,
-              },
-            });
-          };
-
-          // Resolve on exit (NOT close) — close waits for pipes,
-          // exit fires when bash process terminates.
-          child.on("exit", (code) => {
-            // Brief delay to flush any remaining pipe data from bash itself
-            setTimeout(() => doResolve(code), 50);
-          });
-
-	          child.on("error", (err) => {
-	            if (resolved) return;
-	            resolved = true;
-	            clearTimeout(timer);
-	            try {
-	              unlinkSync(scriptPath);
-	            } catch (error) {
-	              logger.debug("Bash tool script cleanup failed on child error", {
-	                error: error instanceof Error ? error.message : String(error),
-	              });
-	            }
-	            const durationMs = Date.now() - startTime;
-            resolve({
-              content: safeStringify({
-                error: err.message,
-                exitCode: null,
-                stdout: "",
-                stderr: err.message,
-                timedOut: false,
-                durationMs,
-                truncated: false,
-              }),
-              isError: true,
-              metadata: {
-                command,
-                args: execArgs,
-                cwd,
-                shellMode: true,
-                durationMs,
-              },
-            });
-          });
+      if (useSpawnedWrapperMode) {
+        return runSpawnedCommand({
+          execCommand,
+          execArgs,
+          cwd,
+          env,
+          timeout,
+          maxOutputBytes,
+          logCmd,
+          logger,
+          startTime,
+          metadataCommand: command,
+          metadataArgs: execArgs,
+          shellMode: false,
         });
       }
 

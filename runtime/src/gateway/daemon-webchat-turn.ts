@@ -498,6 +498,7 @@ export async function executeWebChatConversationTurn(
       provider: result.provider,
       userMessage: msg.content,
       agentResponse: result.content,
+      workspaceId: runtimeWorkspaceRoot,
       ...(assistantMemoryMetadata
         ? { agentResponseMetadata: assistantMemoryMetadata }
         : {}),

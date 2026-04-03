@@ -323,6 +323,24 @@ export function createWatchFrameHarness(overrides = {}) {
     renderPanel({ title, lines = [] }) {
       return [title, ...lines];
     },
+    wrapAndLimit(text, width, maxLines = 2) {
+      const source = String(text ?? "");
+      if (source.length <= width) {
+        return [source];
+      }
+      const lines = [];
+      let remaining = source;
+      while (remaining.length > width) {
+        lines.push(remaining.slice(0, width));
+        remaining = remaining.slice(width);
+      }
+      if (remaining.length > 0) {
+        lines.push(remaining);
+      }
+      return maxLines > 0 && lines.length > maxLines
+        ? [...lines.slice(0, maxLines), `+${lines.length - maxLines} more`]
+        : lines;
+    },
     joinColumns(leftLines = [], rightLines = [], leftWidth = 0, _rightWidth = 0, gap = 2) {
       const rows = Math.max(leftLines.length, rightLines.length);
       return Array.from({ length: rows }, (_, index) =>

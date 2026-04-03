@@ -63,6 +63,8 @@ export interface ChannelContext {
   readonly logger: Logger;
   /** Channel-specific config from gateway config. */
   readonly config: Readonly<Record<string, unknown>>;
+  /** Optional host-provided services for hosted channel adapters. */
+  readonly hostServices?: Readonly<Record<string, unknown>>;
   /**
    * Hook dispatcher for lifecycle events.
    * Optional because activate() does not wire hooks yet — will become
@@ -87,7 +89,7 @@ export interface ChannelContext {
  * 3. Report health status via `isHealthy()`
  */
 export interface ChannelPlugin {
-  /** Channel name (e.g. 'telegram', 'discord', 'slack'). */
+  /** Channel name (e.g. 'telegram', 'discord', 'matrix'). */
   readonly name: string;
 
   /** Initialize the channel with gateway context. */

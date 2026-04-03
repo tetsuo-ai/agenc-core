@@ -77,6 +77,12 @@ export function createWatchSurfaceStateController(dependencies = {}) {
       : null;
   }
 
+  function currentSessionLabel() {
+    return typeof resolveSessionLabel === "function"
+      ? resolveSessionLabel(watchState.sessionId)
+      : null;
+  }
+
   function activePlanEntries(limit = 10) {
     return [...subagentPlanSteps.values()]
       .sort((left, right) => left.order - right.order)

@@ -2537,6 +2537,112 @@ describe("createSessionToolHandler", () => {
     });
   });
 
+  it("blocks delegated child rewrites of repo-local verification harnesses unless explicitly writable", async () => {
+    const baseHandler = vi.fn(async () => JSON.stringify({ ok: true }));
+    const subAgentManager = {
+      getInfo: vi.fn(() => ({
+        sessionId: "subagent:child-harness-block",
+        parentSessionId: "session-parent",
+        depth: 1,
+        status: "running",
+        startedAt: Date.now() - 100,
+        task: "Implement the shell",
+      })),
+      getExecutionContext: vi.fn(() => ({
+        version: "v1",
+        workspaceRoot: "/tmp/workspace",
+        allowedReadRoots: ["/tmp/workspace"],
+        allowedWriteRoots: ["/tmp/workspace"],
+        targetArtifacts: ["/tmp/workspace"],
+        artifactRelations: [
+          {
+            relationType: "write_owner",
+            artifactPath: "/tmp/workspace",
+          },
+        ],
+      })),
+    };
+
+    const handler = createSessionToolHandler({
+      sessionId: "subagent:child-harness-block",
+      baseHandler,
+      availableToolNames: ["system.writeFile"],
+      routerId: "router-a",
+      send: vi.fn(),
+      defaultWorkingDirectory: "/tmp/workspace",
+      delegation: () => ({
+        subAgentManager: subAgentManager as any,
+        policyEngine: null,
+        verifier: null,
+        lifecycleEmitter: null,
+      }),
+    });
+
+    const result = await handler("system.writeFile", {
+      path: "tests/run_tests.sh",
+      content: "#!/bin/bash\nrm -rf build\n",
+    });
+
+    expect(baseHandler).not.toHaveBeenCalled();
+    expect(JSON.parse(result)).toEqual({
+      error:
+        'Delegated write path "/tmp/workspace/tests/run_tests.sh" rewrites a repo-local verification harness without explicitly owning it as a writable target',
+    });
+  });
+
+  it("allows delegated verification harness rewrites when the harness is explicitly writable", async () => {
+    const baseHandler = vi.fn(async () => JSON.stringify({ ok: true }));
+    const subAgentManager = {
+      getInfo: vi.fn(() => ({
+        sessionId: "subagent:child-harness-allow",
+        parentSessionId: "session-parent",
+        depth: 1,
+        status: "running",
+        startedAt: Date.now() - 100,
+        task: "Update the test harness",
+      })),
+      getExecutionContext: vi.fn(() => ({
+        version: "v1",
+        workspaceRoot: "/tmp/workspace",
+        allowedReadRoots: ["/tmp/workspace"],
+        allowedWriteRoots: ["/tmp/workspace"],
+        targetArtifacts: ["/tmp/workspace"],
+        artifactRelations: [
+          {
+            relationType: "write_owner",
+            artifactPath: "/tmp/workspace/tests/run_tests.sh",
+          },
+        ],
+      })),
+    };
+
+    const handler = createSessionToolHandler({
+      sessionId: "subagent:child-harness-allow",
+      baseHandler,
+      availableToolNames: ["system.writeFile"],
+      routerId: "router-a",
+      send: vi.fn(),
+      defaultWorkingDirectory: "/tmp/workspace",
+      delegation: () => ({
+        subAgentManager: subAgentManager as any,
+        policyEngine: null,
+        verifier: null,
+        lifecycleEmitter: null,
+      }),
+    });
+
+    await handler("system.writeFile", {
+      path: "tests/run_tests.sh",
+      content: "#!/bin/bash\nbash tests/run_tests.sh\n",
+    });
+
+    expect(baseHandler).toHaveBeenCalledWith("system.writeFile", {
+      path: "/tmp/workspace/tests/run_tests.sh",
+      content: "#!/bin/bash\nbash tests/run_tests.sh\n",
+      [SESSION_ALLOWED_ROOTS_ARG]: ["/tmp/workspace"],
+    });
+  });
+
   it("allows scaffold flows within the execution envelope for mkdir plus relative file writes", async () => {
     const baseHandler = vi.fn(async () => JSON.stringify({ ok: true }));
     const subAgentManager = {

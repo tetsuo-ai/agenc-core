@@ -74,12 +74,12 @@ function mapInternalEventType(
     case "run_retried":
     case "run_retried_from_step":
     case "run_retried_from_trace":
+    case "run_forked":
     case "run_verification_overridden":
       return "run_controlled";
     case "run_recovered":
     case "run_signalled":
     case "run_suspended":
-    case "run_forked":
     case "cycle_started":
     case "cycle_working":
     case "decision":
@@ -286,20 +286,6 @@ export class BackgroundRunNotifier {
   ): Record<string, unknown> {
     const text = buildTextSummary({ eventType, context });
     switch (sink.type) {
-      case "slack_webhook":
-        return {
-          text,
-          blocks: [
-            {
-              type: "section",
-              text: {
-                type: "mrkdwn",
-                text: `*${eventType}*\n${text}`,
-              },
-            },
-          ],
-          metadata: sharedPayload,
-        };
       case "discord_webhook":
         return {
           content: text,

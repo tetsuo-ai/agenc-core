@@ -24,6 +24,7 @@ import { normalizeDependencyArtifactPath, sanitizeExecutionPromptText } from "./
 import type {
   PipelinePlannerDeterministicStep as DeterministicStep,
 } from "../workflow/pipeline.js";
+import { safeStepStringArray } from "../llm/chat-executor-planner.js";
 
 function isNodeInstallPlannerStep(
   step: { stepType: string; tool?: string; args?: Record<string, unknown> },
@@ -260,7 +261,7 @@ export function shouldRunAcceptanceTestProbe(
     step.name,
     step.objective,
     step.inputContract,
-    ...step.acceptanceCriteria,
+    ...safeStepStringArray(step.acceptanceCriteria),
     ...sanitizeDelegationContextRequirements(step.contextRequirements),
   ].join(" ");
   if (/\b(?:test|tests|vitest|jest|spec|coverage)\b/i.test(stepText)) {
@@ -737,11 +738,12 @@ export function buildWorkspaceStateGuidanceLines(
       "The delegated workspace root does not exist yet. Create it before listing directories or writing phase files.",
     ];
   }
+  const staleCmakeCacheGuidance = readStaleCmakeCacheGuidance(workspaceRoot);
   const packageDirectories = collectPromptArtifactPackageDirectories(
     promptArtifactCandidates,
     workspaceRoot,
   );
-  if (packageDirectories.length === 0) {
+  if (packageDirectories.length === 0 && !staleCmakeCacheGuidance) {
     return [];
   }
 
@@ -749,7 +751,7 @@ export function buildWorkspaceStateGuidanceLines(
     step.name,
     step.objective,
     step.inputContract,
-    ...step.acceptanceCriteria,
+    ...safeStepStringArray(step.acceptanceCriteria),
     ...sanitizeDelegationContextRequirements(step.contextRequirements),
   ].join(" ");
   const phaseMentionsTests =
@@ -757,6 +759,9 @@ export function buildWorkspaceStateGuidanceLines(
     /\b(?:test|tests|vitest|jest|coverage|spec)\b/i.test(stepText);
 
   const lines: string[] = [];
+  if (staleCmakeCacheGuidance) {
+    lines.push(staleCmakeCacheGuidance);
+  }
   let missingSourceFiles = false;
   let missingTests = false;
   for (const packageDirectory of packageDirectories.slice(0, 3)) {
@@ -796,4 +801,33 @@ export function buildWorkspaceStateGuidanceLines(
   return lines.filter((line, index, entries) =>
     line.length > 0 && entries.indexOf(line) === index
   );
+}
+
+function readStaleCmakeCacheGuidance(workspaceRoot: string): string | undefined {
+  const cmakeListsPath = resolvePath(workspaceRoot, "CMakeLists.txt");
+  const cmakeCachePath = resolvePath(workspaceRoot, "build", "CMakeCache.txt");
+  if (!existsSync(cmakeListsPath) || !existsSync(cmakeCachePath)) {
+    return undefined;
+  }
+  try {
+    const cache = readFileSync(cmakeCachePath, "utf8");
+    const homeDirectoryMatch = cache.match(
+      /^CMAKE_HOME_DIRECTORY(?::[A-Z]+)?=(.+)$/m,
+    );
+    const cacheHomeDirectory = homeDirectoryMatch?.[1]?.trim();
+    if (!cacheHomeDirectory) {
+      return undefined;
+    }
+    const normalizedWorkspaceRoot = resolvePath(workspaceRoot);
+    const normalizedCacheHomeDirectory = resolvePath(cacheHomeDirectory);
+    if (normalizedCacheHomeDirectory === normalizedWorkspaceRoot) {
+      return undefined;
+    }
+    return (
+      `\`build/CMakeCache.txt\` points at \`${sanitizeExecutionPromptText(normalizedCacheHomeDirectory)}\`, not this delegated workspace.` +
+      " Treat `build/` as stale copied output, do not use it for the first build or verification attempt, and configure a fresh build directory from the current workspace root instead (for example `cmake -S . -B build-agenc-fresh && cmake --build build-agenc-fresh`)."
+    );
+  } catch {
+    return undefined;
+  }
 }

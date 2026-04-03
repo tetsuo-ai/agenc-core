@@ -28,10 +28,15 @@ import { TELEMETRY_METRIC_NAMES } from "../../telemetry/metric-names.js";
 import type { EncryptionProvider } from "../encryption.js";
 import { createAES256GCMProvider } from "../encryption.js";
 
-export class SqliteBackend implements MemoryBackend {
-  readonly name = "sqlite";
+/** Security H-2: escape SQL LIKE wildcards in prefix parameters. */
+function escapeLikePrefix(prefix: string): string {
+  return prefix.replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
 
-  private db: any = null;
+export class SqliteBackend implements MemoryBackend {
+  readonly name: string = "sqlite";
+
+  protected db: any = null;
   private readonly config: Required<
     Pick<SqliteBackendConfig, "dbPath" | "walMode" | "cleanupOnConnect">
   > &
@@ -67,11 +72,29 @@ export class SqliteBackend implements MemoryBackend {
     const ttl = options.ttlMs ?? this.defaultTtlMs;
     const expiresAt = ttl > 0 ? now + ttl : null;
 
+    // Security H-1: per-entry size limits to prevent DoS
+    const MAX_CONTENT_BYTES = 102_400; // 100KB
+    const MAX_METADATA_BYTES = 10_240; // 10KB
+    if (options.content.length > MAX_CONTENT_BYTES) {
+      throw new MemoryBackendError(
+        this.name,
+        `Content exceeds size limit (${options.content.length} > ${MAX_CONTENT_BYTES} bytes)`,
+      );
+    }
+
     let metadataJson: string | null = null;
     if (options.metadata) {
       try {
         metadataJson = JSON.stringify(options.metadata);
+        // Security H-1: metadata size limit
+        if (metadataJson.length > MAX_METADATA_BYTES) {
+          throw new MemoryBackendError(
+            this.name,
+            `Metadata exceeds size limit (${metadataJson.length} > ${MAX_METADATA_BYTES} bytes)`,
+          );
+        }
       } catch (err) {
+        if (err instanceof MemoryBackendError) throw err;
         throw new MemorySerializationError(
           this.name,
           `Failed to serialize metadata: ${(err as Error).message}`,
@@ -80,10 +103,12 @@ export class SqliteBackend implements MemoryBackend {
     }
 
     const storedContent = this.encryptField(options.content);
+    // Security: encrypt metadata alongside content
+    const storedMetadata = metadataJson ? this.encryptField(metadataJson) : null;
 
     db.prepare(
-      `INSERT INTO memory_entries (id, session_id, role, content, tool_call_id, tool_name, task_pda, metadata, timestamp, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO memory_entries (id, session_id, role, content, tool_call_id, tool_name, task_pda, metadata, timestamp, expires_at, workspace_id, agent_id, user_id, world_id, channel)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       id,
       options.sessionId,
@@ -92,9 +117,14 @@ export class SqliteBackend implements MemoryBackend {
       options.toolCallId ?? null,
       options.toolName ?? null,
       options.taskPda ?? null,
-      metadataJson,
+      storedMetadata,
       now,
       expiresAt,
+      options.workspaceId ?? "default",
+      options.agentId ?? null,
+      options.userId ?? null,
+      options.worldId ?? null,
+      options.channel ?? null,
     );
 
     this.logger.debug(`Added entry ${id} to session ${options.sessionId}`);
@@ -110,6 +140,11 @@ export class SqliteBackend implements MemoryBackend {
       timestamp: now,
       taskPda: options.taskPda,
       metadata: options.metadata,
+      workspaceId: options.workspaceId ?? "default",
+      agentId: options.agentId,
+      userId: options.userId,
+      worldId: options.worldId,
+      channel: options.channel,
     };
   }
 
@@ -166,6 +201,22 @@ export class SqliteBackend implements MemoryBackend {
       conditions.push("role = ?");
       params.push(query.role);
     }
+    if (query.workspaceId) {
+      conditions.push("workspace_id = ?");
+      params.push(query.workspaceId);
+    }
+    if (query.agentId) {
+      conditions.push("agent_id = ?");
+      params.push(query.agentId);
+    }
+    if (query.userId) {
+      conditions.push("user_id = ?");
+      params.push(query.userId);
+    }
+    if (query.worldId) {
+      conditions.push("world_id = ?");
+      params.push(query.worldId);
+    }
 
     const validOrders = { asc: "ASC", desc: "DESC" } as const;
     const direction = validOrders[query.order ?? "asc"] ?? "ASC";
@@ -202,7 +253,7 @@ export class SqliteBackend implements MemoryBackend {
           `SELECT DISTINCT session_id FROM memory_entries
          WHERE (expires_at IS NULL OR expires_at > ?) AND session_id LIKE ?`,
         )
-        .all(now, `${prefix}%`);
+        .all(now, `${escapeLikePrefix(prefix)}%`);
       return rows.map((r: any) => r.session_id);
     }
 
@@ -287,7 +338,7 @@ export class SqliteBackend implements MemoryBackend {
         .prepare(
           "SELECT key FROM memory_kv WHERE (expires_at IS NULL OR expires_at > ?) AND key LIKE ?",
         )
-        .all(now, `${prefix}%`);
+        .all(now, `${escapeLikePrefix(prefix)}%`);
       return rows.map((r: any) => r.key);
     }
 
@@ -354,7 +405,7 @@ export class SqliteBackend implements MemoryBackend {
     );
   }
 
-  private async ensureDb(): Promise<any> {
+  protected async ensureDb(): Promise<any> {
     if (this.closed) {
       throw new MemoryBackendError(this.name, "Backend is closed");
     }
@@ -390,12 +441,19 @@ export class SqliteBackend implements MemoryBackend {
         task_pda TEXT,
         metadata TEXT,
         timestamp INTEGER NOT NULL,
-        expires_at INTEGER
+        expires_at INTEGER,
+        workspace_id TEXT NOT NULL DEFAULT 'default',
+        agent_id TEXT,
+        user_id TEXT,
+        world_id TEXT,
+        channel TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_entries_session_id ON memory_entries(session_id);
       CREATE INDEX IF NOT EXISTS idx_entries_timestamp ON memory_entries(timestamp);
       CREATE INDEX IF NOT EXISTS idx_entries_task_pda ON memory_entries(task_pda);
+      CREATE INDEX IF NOT EXISTS idx_entries_workspace_id ON memory_entries(workspace_id);
+      CREATE INDEX IF NOT EXISTS idx_entries_workspace_session ON memory_entries(workspace_id, session_id, timestamp);
 
       CREATE TABLE IF NOT EXISTS memory_kv (
         key TEXT PRIMARY KEY,
@@ -403,6 +461,31 @@ export class SqliteBackend implements MemoryBackend {
         expires_at INTEGER
       );
     `);
+    // Schema migration: add scoping columns to existing DBs
+    this.migrateSchemaIfNeeded();
+  }
+
+  private migrateSchemaIfNeeded(): void {
+    try {
+      // Check if workspace_id column exists
+      const columns = this.db
+        .prepare("PRAGMA table_info(memory_entries)")
+        .all() as Array<{ name: string }>;
+      const hasWorkspaceId = columns.some((c) => c.name === "workspace_id");
+      if (!hasWorkspaceId) {
+        this.db.exec(`
+          ALTER TABLE memory_entries ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default';
+          ALTER TABLE memory_entries ADD COLUMN agent_id TEXT;
+          ALTER TABLE memory_entries ADD COLUMN user_id TEXT;
+          ALTER TABLE memory_entries ADD COLUMN world_id TEXT;
+          ALTER TABLE memory_entries ADD COLUMN channel TEXT;
+          CREATE INDEX IF NOT EXISTS idx_entries_workspace_id ON memory_entries(workspace_id);
+          CREATE INDEX IF NOT EXISTS idx_entries_workspace_session ON memory_entries(workspace_id, session_id, timestamp);
+        `);
+      }
+    } catch {
+      // Migration not needed or already applied
+    }
   }
 
   private cleanupExpired(): void {
@@ -438,11 +521,18 @@ export class SqliteBackend implements MemoryBackend {
     if (row.task_pda) (entry as any).taskPda = row.task_pda;
     if (row.metadata) {
       try {
-        (entry as any).metadata = JSON.parse(row.metadata);
+        const decryptedMetadata = this.decryptField(row.metadata);
+        (entry as any).metadata = JSON.parse(decryptedMetadata);
       } catch {
-        // Ignore corrupt metadata
+        // Ignore corrupt or unencrypted metadata
       }
     }
+    // Scoping fields (Phase 2)
+    if (row.workspace_id) (entry as any).workspaceId = row.workspace_id;
+    if (row.agent_id) (entry as any).agentId = row.agent_id;
+    if (row.user_id) (entry as any).userId = row.user_id;
+    if (row.world_id) (entry as any).worldId = row.world_id;
+    if (row.channel) (entry as any).channel = row.channel;
 
     return entry;
   }

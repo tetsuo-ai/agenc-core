@@ -34,6 +34,8 @@ const DOOM_VALIDATION_FAILURE_RE =
   /^unknown\s+(?:resolution|screen resolution|scenario|map|skill(?:\s+level)?|wad)\b.*\bvalid:/i;
 const DOOM_RUNTIME_FAILURE_RE =
   /^(?:executor not running\b|no game is running\b|game is not running\b)/i;
+const SHELL_EXECUTION_ANOMALY_RE =
+  /(?:^|\n)(?:[^:\n]+:\s+line\s+\d+:\s+)?(?:(?:ba|z|k)?sh|cd|pushd|popd|source|\.)[^:\n]*:\s+.*(?:no such file or directory|command not found|not found|permission denied|not a directory)/i;
 const DOOM_SCREEN_RESOLUTION_RE = /^(?:RES_)?(\d{2,4})[xX](\d{2,4})$/i;
 const NULLISH_STRING_RE = /^(?:null|none|undefined)$/i;
 const DEFAULT_VISIBLE_DOOM_SCREEN_RESOLUTION = "RES_1280X720";
@@ -80,6 +82,12 @@ export function didToolCallFail(isError: boolean, result: string): boolean {
     }
     if (obj.timedOut === true) return true;
     if (typeof obj.exitCode === "number" && obj.exitCode !== 0) return true;
+    if (
+      typeof obj.stderr === "string" &&
+      SHELL_EXECUTION_ANOMALY_RE.test(obj.stderr)
+    ) {
+      return true;
+    }
   } catch {
     // Non-JSON tool output — detect known tool-wrapper failure signatures.
     return isLikelyFailureText(result);
@@ -958,8 +966,6 @@ export function checkToolLoopStuckDetection(
     stuckState.consecutiveAllFailedRounds++;
   } else {
     stuckState.consecutiveAllFailedRounds = 0;
-    stuckState.consecutiveSemanticDuplicateRounds = 0;
-    stuckState.lastRoundSemanticKey = "";
   }
   if (stuckState.consecutiveAllFailedRounds >= MAX_CONSECUTIVE_ALL_FAILED_ROUNDS) {
     return {
@@ -968,30 +974,32 @@ export function checkToolLoopStuckDetection(
     };
   }
 
-  if (roundFailures === roundCalls.length) {
-    const roundSemanticKey = roundCalls
-      .map((call) => buildSemanticToolCallKey(call.name, call.args))
-      .sort()
-      .join("|");
-    if (
-      roundSemanticKey.length > 0 &&
-      roundSemanticKey === stuckState.lastRoundSemanticKey
-    ) {
-      stuckState.consecutiveSemanticDuplicateRounds++;
-    } else {
-      stuckState.consecutiveSemanticDuplicateRounds = 0;
-    }
-    stuckState.lastRoundSemanticKey = roundSemanticKey;
-    if (
-      stuckState.consecutiveSemanticDuplicateRounds >=
-      MAX_CONSECUTIVE_SEMANTIC_DUPLICATE_ROUNDS
-    ) {
-      return {
-        shouldBreak: true,
-        reason:
-          "Detected repeated semantically equivalent tool rounds with no material progress",
-      };
-    }
+  // Semantic duplicate detection — catches loops where the model makes
+  // identical tool calls regardless of success/failure.  Previously this
+  // only fired when every call in the round failed, which let successful
+  // identical writes (same file, same content) loop forever.
+  const roundSemanticKey = roundCalls
+    .map((call) => buildSemanticToolCallKey(call.name, call.args))
+    .sort()
+    .join("|");
+  if (
+    roundSemanticKey.length > 0 &&
+    roundSemanticKey === stuckState.lastRoundSemanticKey
+  ) {
+    stuckState.consecutiveSemanticDuplicateRounds++;
+  } else {
+    stuckState.consecutiveSemanticDuplicateRounds = 0;
+  }
+  stuckState.lastRoundSemanticKey = roundSemanticKey;
+  if (
+    stuckState.consecutiveSemanticDuplicateRounds >
+    MAX_CONSECUTIVE_SEMANTIC_DUPLICATE_ROUNDS
+  ) {
+    return {
+      shouldBreak: true,
+      reason:
+        "Detected repeated semantically equivalent tool rounds with no material progress",
+    };
   }
 
   return { shouldBreak: false };

@@ -44,6 +44,8 @@ export interface CreateChatExecutorParams {
   learningProvider?: ChatExecutorConfig["learningProvider"];
   /** Optional progress provider. */
   progressProvider?: ChatExecutorConfig["progressProvider"];
+  /** Optional agent identity provider (Phase 5.4). */
+  identityProvider?: ChatExecutorConfig["identityProvider"];
   /** Prompt budget config. */
   promptBudget?: ChatExecutorConfig["promptBudget"];
   /** Max tool rounds per request. */
@@ -56,6 +58,8 @@ export interface CreateChatExecutorParams {
   onCompaction?: ChatExecutorConfig["onCompaction"];
   /** Gateway LLM config (for planner, timeout, retry, circuit breaker settings). */
   llmConfig?: GatewayLLMConfig;
+  /** Provider configs aligned 1:1 with the provider chain, including auto-added fallbacks. */
+  providerConfigs?: readonly GatewayLLMConfig[];
   /** Resolved subagent runtime config. */
   subagentConfig: ResolvedSubAgentRuntimeConfig;
   /** Callback to resolve dynamic delegation score threshold. */
@@ -104,6 +108,7 @@ export function createChatExecutor(
     providers: params.providers,
     economicsPolicy,
     llmConfig,
+    providerConfigs: params.providerConfigs,
   });
 
   return new ChatExecutor({
@@ -114,6 +119,7 @@ export function createChatExecutor(
     memoryRetriever: params.memoryRetriever,
     learningProvider: params.learningProvider,
     progressProvider: params.progressProvider,
+    identityProvider: params.identityProvider,
     promptBudget: params.promptBudget,
     maxToolRounds: params.maxToolRounds,
     plannerEnabled:
@@ -134,9 +140,7 @@ export function createChatExecutor(
     },
     resolveDelegationScoreThreshold: params.resolveDelegationScoreThreshold,
     subagentVerifier: {
-      enabled:
-        subagentConfig.enabled &&
-        !subagentConfig.unsafeBenchmarkMode,
+      enabled: subagentConfig.enabled,
       force: subagentConfig.forceVerifier,
     },
     delegationLearning: {

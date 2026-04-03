@@ -424,4 +424,71 @@ describe("SessionIsolationManager", () => {
     expect(ctx.policyEngine).toBe(customEngine);
     expect(factory).toHaveBeenCalledOnce();
   });
+
+  // --- World isolation (Phase 2.7) -----------------------------------------
+
+  it("different worldIds get different contexts", async () => {
+    const mgr = makeManager();
+    const ctxDefault = await mgr.getContext({ workspaceId: "ws-a" });
+    const ctxWorld1 = await mgr.getContext({ workspaceId: "ws-a", worldId: "world-1" });
+    const ctxWorld2 = await mgr.getContext({ workspaceId: "ws-a", worldId: "world-2" });
+    expect(ctxDefault).not.toBe(ctxWorld1);
+    expect(ctxWorld1).not.toBe(ctxWorld2);
+  });
+
+  it("same worldId returns cached context", async () => {
+    const mgr = makeManager();
+    const first = await mgr.getContext({ workspaceId: "ws-a", worldId: "world-1" });
+    const second = await mgr.getContext({ workspaceId: "ws-a", worldId: "world-1" });
+    expect(first).toBe(second);
+  });
+
+  it("world-specific memory is isolated from default", async () => {
+    const mgr = makeManager();
+    const ctxDefault = await mgr.getContext({ workspaceId: "ws-a" });
+    const ctxWorld = await mgr.getContext({ workspaceId: "ws-a", worldId: "world-1" });
+
+    await ctxDefault.memoryBackend.addEntry({
+      sessionId: "s1",
+      role: "user",
+      content: "default world secret",
+    });
+    await ctxWorld.memoryBackend.addEntry({
+      sessionId: "s1",
+      role: "user",
+      content: "world-1 secret",
+    });
+
+    const defaultThread = await ctxDefault.memoryBackend.getThread("s1");
+    const worldThread = await ctxWorld.memoryBackend.getThread("s1");
+
+    expect(defaultThread).toHaveLength(1);
+    expect(defaultThread[0].content).toBe("default world secret");
+    expect(worldThread).toHaveLength(1);
+    expect(worldThread[0].content).toBe("world-1 secret");
+  });
+
+  it("worldId is exposed on IsolatedSessionContext", async () => {
+    const mgr = makeManager();
+    const ctx = await mgr.getContext({ workspaceId: "ws-a", worldId: "test-world" });
+    expect(ctx.worldId).toBe("test-world");
+  });
+
+  it("createMemoryBackend factory receives worldId", async () => {
+    const customBackend = new InMemoryBackend();
+    const factory = vi.fn(() => customBackend);
+    const mgr = makeManager({ createMemoryBackend: factory });
+    await mgr.getContext({ workspaceId: "ws-a", worldId: "w1" });
+    expect(factory).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "ws-a" }),
+      "w1",
+    );
+  });
+
+  it("resolveWorldDbPath returns per-world path", () => {
+    const mgr = makeManager({ agencHome: "/tmp/test-agenc" });
+    const dbPath = mgr.resolveWorldDbPath("my-world");
+    expect(dbPath).toContain("my-world");
+    expect(dbPath).toContain("memory.db");
+  });
 });

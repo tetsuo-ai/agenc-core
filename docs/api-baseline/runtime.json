@@ -1,7 +1,7 @@
 {
   "package": "@tetsuo-ai/runtime",
   "version": "0.1.0",
-  "generatedAt": "2026-03-24T03:09:37.251Z",
+  "generatedAt": "2026-03-31T06:17:31.906Z",
   "entryPoint": "runtime/src/index.ts",
   "exports": [
     {
@@ -371,6 +371,10 @@
     {
       "name": "BenchmarkArtifact",
       "kind": "interface"
+    },
+    {
+      "name": "BenchmarkExecutionMode",
+      "kind": "type"
     },
     {
       "name": "BenchmarkManifest",
@@ -1793,6 +1797,10 @@
       "kind": "interface"
     },
     {
+      "name": "EffectLedgerCompletenessArtifact",
+      "kind": "interface"
+    },
+    {
       "name": "ElevenLabsProvider",
       "kind": "class"
     },
@@ -1898,6 +1906,11 @@
       "kind": "interface"
     },
     {
+      "name": "evaluateEffectLedgerCompleteness",
+      "kind": "function",
+      "signature": "(records: readonly EffectRecord[]): EffectLedgerCompletenessArtifact"
+    },
+    {
       "name": "evaluateMutationRegressionGates",
       "kind": "function",
       "signature": "(artifact: MutationArtifact, thresholds?: Partial<MutationGateThresholds>, manifest?: MutationGatingPolicyManifest): MutationGateEvaluation"
@@ -1906,6 +1919,11 @@
       "name": "evaluatePipelineQualityGates",
       "kind": "function",
       "signature": "(artifact: PipelineQualityArtifact, thresholds?: Partial<PipelineQualityGateThresholds>): PipelineGateEvaluation"
+    },
+    {
+      "name": "evaluateReplayParity",
+      "kind": "function",
+      "signature": "(input: unknown, config?: TrajectoryReplayConfig): ReplayParityArtifact"
     },
     {
       "name": "EvaluationScorecard",
@@ -2435,6 +2453,14 @@
     {
       "name": "GoalStatus",
       "kind": "type"
+    },
+    {
+      "name": "GoalStore",
+      "kind": "class"
+    },
+    {
+      "name": "GoalStoreInput",
+      "kind": "interface"
     },
     {
       "name": "GovernanceAuditConfig",
@@ -3042,7 +3068,7 @@
     },
     {
       "name": "ManagedGoal",
-      "kind": "interface"
+      "kind": "type"
     },
     {
       "name": "mapLLMError",
@@ -3996,6 +4022,34 @@
       "kind": "interface"
     },
     {
+      "name": "PipelineLiveCodingArtifact",
+      "kind": "interface"
+    },
+    {
+      "name": "PipelineLiveCodingRunnerConfig",
+      "kind": "interface"
+    },
+    {
+      "name": "PipelineLiveCodingScenarioArtifact",
+      "kind": "interface"
+    },
+    {
+      "name": "PipelineLongHorizonArtifact",
+      "kind": "interface"
+    },
+    {
+      "name": "PipelineLongHorizonRunnerConfig",
+      "kind": "interface"
+    },
+    {
+      "name": "PipelineLongHorizonScenarioArtifact",
+      "kind": "interface"
+    },
+    {
+      "name": "PipelineLongHorizonScenarioCategory",
+      "kind": "type"
+    },
+    {
       "name": "PipelineOfflineReplayArtifact",
       "kind": "interface"
     },
@@ -4005,6 +4059,22 @@
     },
     {
       "name": "PipelineOfflineReplayInput",
+      "kind": "interface"
+    },
+    {
+      "name": "PipelineOrchestrationBaselineArtifact",
+      "kind": "interface"
+    },
+    {
+      "name": "PipelineOrchestrationBaselineInput",
+      "kind": "interface"
+    },
+    {
+      "name": "PipelineOrchestrationScenarioArtifact",
+      "kind": "interface"
+    },
+    {
+      "name": "PipelineOrchestrationScenarioInput",
       "kind": "interface"
     },
     {
@@ -4069,6 +4139,18 @@
     },
     {
       "name": "PipelineResult",
+      "kind": "interface"
+    },
+    {
+      "name": "PipelineSafetyArtifact",
+      "kind": "interface"
+    },
+    {
+      "name": "PipelineSafetyAttackClass",
+      "kind": "type"
+    },
+    {
+      "name": "PipelineSafetyScenarioArtifact",
       "kind": "interface"
     },
     {
@@ -4617,6 +4699,10 @@
       "kind": "type"
     },
     {
+      "name": "ReplayParityArtifact",
+      "kind": "interface"
+    },
+    {
       "name": "ReplayStorageWriteResult",
       "kind": "interface"
     },
@@ -4901,6 +4987,16 @@
       "kind": "type"
     },
     {
+      "name": "runLiveCodingSuite",
+      "kind": "function",
+      "signature": "(config?: PipelineLiveCodingRunnerConfig): Promise<PipelineLiveCodingArtifact>"
+    },
+    {
+      "name": "runLongHorizonSuite",
+      "kind": "function",
+      "signature": "(config?: PipelineLongHorizonRunnerConfig): Promise<PipelineLongHorizonArtifact>"
+    },
+    {
       "name": "runPipelineHttpRepro",
       "kind": "function",
       "signature": "(options?: PipelineHttpReproOptions): Promise<PipelineHttpReproResult>"
@@ -4909,6 +5005,11 @@
       "name": "runPipelineQualitySuite",
       "kind": "function",
       "signature": "(config?: PipelineQualityRunnerConfig): Promise<PipelineQualityArtifact>"
+    },
+    {
+      "name": "runSafetySuite",
+      "kind": "function",
+      "signature": "(): Promise<PipelineSafetyArtifact>"
     },
     {
       "name": "RuntimeError",
@@ -5321,14 +5422,6 @@
       "kind": "class"
     },
     {
-      "name": "SlackChannel",
-      "kind": "class"
-    },
-    {
-      "name": "SlackChannelConfig",
-      "kind": "interface"
-    },
-    {
       "name": "SlashCommandContext",
       "kind": "interface"
     },
@@ -5409,6 +5502,26 @@
     },
     {
       "name": "StateUpdatedEvent",
+      "kind": "interface"
+    },
+    {
+      "name": "StrategicExecutionSummary",
+      "kind": "interface"
+    },
+    {
+      "name": "StrategicGoalRecord",
+      "kind": "interface"
+    },
+    {
+      "name": "StrategicGoalStatus",
+      "kind": "type"
+    },
+    {
+      "name": "StrategicMemory",
+      "kind": "class"
+    },
+    {
+      "name": "StrategicWorkingNote",
       "kind": "interface"
     },
     {

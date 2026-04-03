@@ -586,7 +586,6 @@ export type GatewayBackgroundRunNotificationEvent =
 
 export type GatewayBackgroundRunNotificationSinkType =
   | "webhook"
-  | "slack_webhook"
   | "discord_webhook"
   | "email_webhook"
   | "mobile_push_webhook";

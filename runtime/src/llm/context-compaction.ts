@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 
 import type { LLMMessage } from "./types.js";
+import { extractToolFailureTextFromResult } from "./chat-executor-tool-utils.js";
+import { findToolTurnValidationIssue } from "./tool-turn-validator.js";
 import type {
   ArtifactCompactionState,
   ContextArtifactKind,
@@ -11,13 +13,26 @@ import type {
 const DEFAULT_KEEP_TAIL_COUNT = 5;
 const DEFAULT_MAX_ARTIFACTS = 8;
 const MAX_ARTIFACT_SUMMARY_CHARS = 120;
+const MAX_COMPILER_ARTIFACT_SUMMARY_CHARS = 360;
 const MAX_OPEN_LOOP_CHARS = 120;
 const FILE_PATH_RE =
   /(?:^|[\s`'"])((?:\/|\.\/|\.\.\/)?[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*\.[A-Za-z0-9_-]{1,12})(?=$|[\s`'"),.;:])/g;
+const COMPILER_DIAGNOSTIC_LINE_RE =
+  /(?:^|\n)([^:\n]+\.(?:c|cc|cpp|cxx|h|hpp|hh|m|mm|rs|go|ts|tsx|js|jsx|py):\d+(?::\d+)?:\s*(?:fatal\s+)?(?:error|warning):[^\n]*)/i;
+const COMPILER_INTERFACE_DRIFT_RE =
+  /\b(?:did you mean|has no member named|unknown type name|incompatible types|undeclared\b|incomplete type|no member named)\b/i;
 const OPEN_LOOP_RE =
-  /\b(?:todo|next step|remaining|follow[- ]?up|blocked|fix|verify|investigate|unresolved|need to)\b/i;
+  /\b(?:todo|next step|remaining|follow[- ]?up|blocked|fix|verify|investigate|unresolved|need to|stub(?:bed)?|not implemented|not started|needs[_ -]?verification|partial|incomplete|placeholder)\b/i;
+const FALSE_CLOSURE_SUMMARY_RE =
+  /\b(?:no unresolved work|nothing unresolved|no remaining work|all work complete|fully complete|fully implemented)\b/i;
+const FALSE_NO_BLOCKER_SUMMARY_RE =
+  /\b(?:no blockers?|no explicit blockers?|none identified|nothing blocking|blockers?\s*:\s*none(?: identified)?)\b/i;
+const NEGATIVE_STATUS_SUMMARY_RE =
+  /\b(?:blocked|blocker|failed|failure|error|invalid command format|file not found|stub(?:bed)?|requires full implementation|full implementation required)\b/i;
 const TEST_SIGNAL_RE =
   /\b(?:test|vitest|jest|pytest|failing|passed|assert|coverage)\b/i;
+const SUCCESSFUL_TEST_RESULT_RE =
+  /\b(?:all tests passed|compilation test passed|tests passed|built target|build succeeded|success(?:fully)? built)\b/i;
 const PLAN_SIGNAL_RE =
   /\b(?:plan|todo|roadmap|design|architecture|milestone|workstream)\b/i;
 const REVIEW_SIGNAL_RE =
@@ -59,6 +74,46 @@ function truncateText(text: string, maxChars: number): string {
   return `${normalized.slice(0, maxChars - 3)}...`;
 }
 
+function looksLikeCompilerDiagnostic(text: string): boolean {
+  return COMPILER_DIAGNOSTIC_LINE_RE.test(text);
+}
+
+function extractCompilerDiagnosticExcerpt(
+  content: string,
+): string | undefined {
+  const failureText = extractToolFailureTextFromResult(content).trim();
+  if (!looksLikeCompilerDiagnostic(failureText)) {
+    return undefined;
+  }
+  const lines = failureText
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) =>
+      line.length > 0 &&
+      (COMPILER_DIAGNOSTIC_LINE_RE.test(line) ||
+        COMPILER_INTERFACE_DRIFT_RE.test(line))
+    );
+  if (lines.length === 0) {
+    return truncateText(failureText, MAX_COMPILER_ARTIFACT_SUMMARY_CHARS);
+  }
+  return truncateText(
+    [...new Set(lines)].slice(0, 4).join(" | "),
+    MAX_COMPILER_ARTIFACT_SUMMARY_CHARS,
+  );
+}
+
+function normalizeArtifactContent(message: LLMMessage): string {
+  const raw = extractText(message).replace(/\s+/g, " ").trim();
+  if (!raw) return "";
+  if (message.role === "tool") {
+    const compilerExcerpt = extractCompilerDiagnosticExcerpt(raw);
+    if (compilerExcerpt) {
+      return compilerExcerpt;
+    }
+  }
+  return raw;
+}
+
 function sha256Hex(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
@@ -70,6 +125,9 @@ function inferKind(message: LLMMessage, content: string): ContextArtifactKind {
   }
   if (lowerToolName?.includes("read") || lowerToolName?.includes("list")) {
     return "repo_snapshot";
+  }
+  if (message.role === "tool" && looksLikeCompilerDiagnostic(content)) {
+    return "compiler_diagnostic";
   }
   if (lowerToolName?.includes("bash") && TEST_SIGNAL_RE.test(content)) {
     return "test_result";
@@ -103,10 +161,14 @@ function extractTags(content: string, kind: ContextArtifactKind): readonly strin
     tags.add(match[1]!.replace(/^[./]+/, ""));
     if (tags.size >= 6) break;
   }
+  if (kind === "compiler_diagnostic" || looksLikeCompilerDiagnostic(content)) {
+    tags.add("compiler");
+  }
   if (TEST_SIGNAL_RE.test(content)) tags.add("test");
   if (PLAN_SIGNAL_RE.test(content)) tags.add("plan");
   if (REVIEW_SIGNAL_RE.test(content)) tags.add("review");
   if (OPEN_LOOP_RE.test(content)) tags.add("open_loop");
+  if (COMPILER_INTERFACE_DRIFT_RE.test(content)) tags.add("interface_drift");
   return [...tags];
 }
 
@@ -126,6 +188,8 @@ function extractTitle(message: LLMMessage, content: string, kind: ContextArtifac
       return "Decision context";
     case "repo_snapshot":
       return "Workspace snapshot";
+    case "compiler_diagnostic":
+      return "Compiler diagnostic";
     case "test_result":
       return "Test result";
     case "file_change":
@@ -152,6 +216,7 @@ function scoreArtifact(
   if (message.role === "assistant") score += 2;
   if (message.role === "user") score += 3;
   if (kind === "file_change") score += 4;
+  if (kind === "compiler_diagnostic") score += 6;
   if (kind === "test_result") score += 5;
   if (kind === "plan") score += 4;
   if (kind === "review") score += 4;
@@ -175,12 +240,16 @@ function buildArtifactRecord(params: {
   const kind = inferKind(params.message, params.content);
   const normalizedContent = params.content.replace(/\s+/g, " ").trim();
   const digest = sha256Hex(`${params.message.role}:${params.message.toolName ?? ""}:${normalizedContent}`);
+  const summaryLimit =
+    kind === "compiler_diagnostic"
+      ? MAX_COMPILER_ARTIFACT_SUMMARY_CHARS
+      : MAX_ARTIFACT_SUMMARY_CHARS;
   return {
     id: `artifact:${digest.slice(0, 16)}`,
     sessionId: params.sessionId,
     kind,
     title: extractTitle(params.message, normalizedContent, kind),
-    summary: truncateText(normalizedContent, MAX_ARTIFACT_SUMMARY_CHARS),
+    summary: truncateText(normalizedContent, summaryLimit),
     content: normalizedContent,
     createdAt: params.createdAt + params.index,
     digest,
@@ -257,6 +326,106 @@ function renderSummaryText(state: ArtifactCompactionState): string {
   return lines.join("\n");
 }
 
+function latestRecordTimestampMatching(
+  records: readonly ContextArtifactRecord[],
+  predicate: (record: ContextArtifactRecord) => boolean,
+): number | undefined {
+  let latest: number | undefined;
+  for (const record of records) {
+    if (!predicate(record)) continue;
+    if (latest === undefined || record.createdAt > latest) {
+      latest = record.createdAt;
+    }
+  }
+  return latest;
+}
+
+function artifactContentLooksBlocking(record: ContextArtifactRecord): boolean {
+  return NEGATIVE_STATUS_SUMMARY_RE.test(record.content) || NEGATIVE_STATUS_SUMMARY_RE.test(record.summary);
+}
+
+function artifactLooksLikeSuccessfulTest(record: ContextArtifactRecord): boolean {
+  return (
+    record.kind === "test_result" &&
+    (SUCCESSFUL_TEST_RESULT_RE.test(record.content) || SUCCESSFUL_TEST_RESULT_RE.test(record.summary))
+  );
+}
+
+function sanitizeNarrativeSummary(
+  narrativeSummary: string | undefined,
+  openLoops: readonly string[],
+  selectedRecords: readonly ContextArtifactRecord[],
+): string | undefined {
+  const normalized = narrativeSummary?.trim();
+  if (!normalized) return undefined;
+  if (
+    openLoops.length > 0 &&
+    (FALSE_CLOSURE_SUMMARY_RE.test(normalized) ||
+      FALSE_NO_BLOCKER_SUMMARY_RE.test(normalized))
+  ) {
+    return "Unresolved work remains; rely on the open loops and artifact refs below instead of treating the task as complete.";
+  }
+  if (NEGATIVE_STATUS_SUMMARY_RE.test(normalized)) {
+    const latestSuccessfulTestAt = latestRecordTimestampMatching(
+      selectedRecords,
+      artifactLooksLikeSuccessfulTest,
+    );
+    const latestBlockingArtifactAt = latestRecordTimestampMatching(
+      selectedRecords,
+      artifactContentLooksBlocking,
+    );
+    const latestFileChangeAt = latestRecordTimestampMatching(
+      selectedRecords,
+      (record) => record.kind === "file_change",
+    );
+    const hasSupersedingGroundedEvidence =
+      latestSuccessfulTestAt !== undefined &&
+      latestFileChangeAt !== undefined &&
+      (latestBlockingArtifactAt === undefined || latestSuccessfulTestAt > latestBlockingArtifactAt);
+    if (hasSupersedingGroundedEvidence) {
+      return "Grounded artifact refs below supersede earlier blockers; rely on the latest file changes, test results, and any open loops instead of stale narrative status.";
+    }
+  }
+  return normalized;
+}
+
+function findSafeRetainedTailStartIndex(
+  history: readonly LLMMessage[],
+  preferredStartIndex: number,
+): number {
+  let startIndex = Math.min(
+    Math.max(0, preferredStartIndex),
+    history.length,
+  );
+
+  while (startIndex > 0) {
+    const issue = findToolTurnValidationIssue(history.slice(startIndex));
+    if (!issue) {
+      return startIndex;
+    }
+    startIndex -= 1;
+  }
+
+  return 0;
+}
+
+function resolveRetainedTailStartIndex(
+  input: ArtifactCompactionInput,
+  keepTailCount: number,
+): number {
+  const preferredTailStartIndex = Math.max(
+    0,
+    input.history.length - keepTailCount,
+  );
+  if (input.source !== "executor_compaction") {
+    return preferredTailStartIndex;
+  }
+  return findSafeRetainedTailStartIndex(
+    input.history,
+    preferredTailStartIndex,
+  );
+}
+
 export function compactHistoryIntoArtifactContext(
   input: ArtifactCompactionInput,
 ): ArtifactCompactionOutput {
@@ -284,26 +453,33 @@ export function compactHistoryIntoArtifactContext(
     };
   }
 
-  const toCompact = input.history.slice(0, Math.max(0, input.history.length - keepTailCount));
-  const toKeep = input.history.slice(-keepTailCount);
+  const retainedTailStartIndex = resolveRetainedTailStartIndex(
+    input,
+    keepTailCount,
+  );
+  const toCompact = input.history.slice(0, retainedTailStartIndex);
+  const toKeep = input.history.slice(retainedTailStartIndex);
   const now = Date.now();
   const records = toCompact
-    .map((message, index) => ({
-      record: buildArtifactRecord({
-        sessionId: input.sessionId,
-        message,
-        content: extractText(message),
-        source: input.source,
-        createdAt: now,
-        index,
-      }),
-      score: scoreArtifact(
-        message,
-        extractText(message),
-        inferKind(message, extractText(message)),
-        index,
-      ),
-    }))
+    .map((message, index) => {
+      const normalizedContent = normalizeArtifactContent(message);
+      return {
+        record: buildArtifactRecord({
+          sessionId: input.sessionId,
+          message,
+          content: normalizedContent,
+          source: input.source,
+          createdAt: now,
+          index,
+        }),
+        score: scoreArtifact(
+          message,
+          normalizedContent,
+          inferKind(message, normalizedContent),
+          index,
+        ),
+      };
+    })
     .sort((left, right) => right.score - left.score)
     .map((entry) => entry.record)
     .filter((record) => record.summary.length > 0)
@@ -326,10 +502,14 @@ export function compactHistoryIntoArtifactContext(
   const historyDigest = sha256Hex(
     toCompact.map((message) => `${message.role}:${extractText(message)}`).join("\n"),
   );
-  const narrativeSummary =
+  const openLoops = collectOpenLoops(toCompact);
+  const narrativeSummary = sanitizeNarrativeSummary(
     input.narrativeSummary && input.narrativeSummary.trim().length > 0
       ? truncateText(input.narrativeSummary, 320)
-      : undefined;
+      : undefined,
+    openLoops,
+    selectedRecords,
+  );
   const state: ArtifactCompactionState = {
     version: 1,
     snapshotId: `snapshot:${historyDigest.slice(0, 16)}`,
@@ -340,7 +520,7 @@ export function compactHistoryIntoArtifactContext(
     sourceMessageCount: toCompact.length,
     retainedTailCount: toKeep.length,
     ...(narrativeSummary ? { narrativeSummary } : {}),
-    openLoops: collectOpenLoops(toCompact),
+    openLoops,
     artifactRefs,
   };
   const summaryText = renderSummaryText(state);

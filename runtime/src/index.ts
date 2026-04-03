@@ -1742,8 +1742,6 @@ export {
   WebChatChannel,
   type WebChatChannelConfig,
   type WebChatDeps,
-  SlackChannel,
-  type SlackChannelConfig,
   WhatsAppChannel,
   type WhatsAppChannelConfig,
   SignalChannel,

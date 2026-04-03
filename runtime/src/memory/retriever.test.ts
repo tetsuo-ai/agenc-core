@@ -201,17 +201,18 @@ describe("SemanticMemoryRetriever", () => {
     expect(result.content).toContain('confidence="0.90"');
 
     expect(backend.searchHybrid).toHaveBeenCalledTimes(2);
+    // Semantic and episodic roles use cross-session retrieval — no sessionId filter.
     expect(backend.searchHybrid).toHaveBeenNthCalledWith(
       1,
       expect.any(String),
       expect.any(Array),
-      expect.objectContaining({ memoryRoles: ["semantic"], sessionId: "sess-1" }),
+      expect.objectContaining({ memoryRoles: ["semantic"], sessionId: undefined }),
     );
     expect(backend.searchHybrid).toHaveBeenNthCalledWith(
       2,
       expect.any(String),
       expect.any(Array),
-      expect.objectContaining({ memoryRoles: ["episodic"], sessionId: "sess-1" }),
+      expect.objectContaining({ memoryRoles: ["episodic"], sessionId: undefined }),
     );
   });
 
@@ -296,18 +297,26 @@ describe("SemanticMemoryRetriever", () => {
     expect(result.content).not.toContain("Subagent cwd: /");
   });
 
-  it("forwards session id for isolation in both thread and vector retrieval", async () => {
+  it("forwards session id for working memory but omits it for semantic/episodic retrieval", async () => {
     const backend = createMockVectorBackend();
     const retriever = createRetriever({ vectorBackend: backend });
 
     await retriever.retrieveDetailed("query", "ws-a:sess-22");
 
+    // Working memory (thread) is always session-scoped.
     expect(backend.getThread).toHaveBeenCalledWith("ws-a:sess-22", expect.any(Number));
-    expect(backend.searchHybrid).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.any(Array),
-      expect.objectContaining({ sessionId: "ws-a:sess-22" }),
-    );
+    // Semantic and episodic roles use cross-session retrieval (no sessionId filter)
+    // so the searchHybrid calls should NOT contain sessionId for those roles.
+    const hybridCalls = (backend.searchHybrid as ReturnType<typeof vi.fn>).mock.calls;
+    // Should have 2 calls: semantic + episodic
+    expect(hybridCalls.length).toBe(2);
+    for (const call of hybridCalls) {
+      const options = call[2] as Record<string, unknown>;
+      // sessionId should be undefined for cross-session roles
+      expect(options.sessionId).toBeUndefined();
+      // But should have an age filter
+      expect(options.after).toBeDefined();
+    }
   });
 
   it("includes curated memory with bounded budget", async () => {

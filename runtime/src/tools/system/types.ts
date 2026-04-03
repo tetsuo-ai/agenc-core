@@ -477,5 +477,7 @@ export const DEFAULT_DENY_PREFIXES: readonly string[] = [
   "node",
 ];
 
+// Default direct bash timeout. Daemon desktop mode lifts this ceiling via
+// resolveBashToolTimeoutConfig(), but the standalone tool stays short by default.
 export const DEFAULT_TIMEOUT_MS = 30_000;
 export const DEFAULT_MAX_OUTPUT_BYTES = 100_000;
