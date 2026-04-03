@@ -123,43 +123,13 @@ function isSharedContextReadOnlyReview(
 function collectPrimaryOwnedArtifacts(
   analysis: DelegationStepAnalysis,
 ): readonly string[] {
+  const targetArtifacts = analysis.step.executionContext?.targetArtifacts ?? [];
+  if (targetArtifacts.length > 0) {
+    return targetArtifacts;
+  }
   return analysis.ownedArtifacts;
 }
 
-function hasSingleWriterReadOnlyReviewerHandoff(
-  analyses: readonly DelegationStepAnalysis[],
-): boolean {
-  const writers = analyses.filter((analysis) => analysis.mutable);
-  if (writers.length !== 1) {
-    return false;
-  }
-  const [writer] = writers;
-  if (!writer || writer.ownedArtifacts.length === 0) {
-    return false;
-  }
-  const writerArtifacts = new Set(writer.ownedArtifacts);
-  let readOnlyReviewerCount = 0;
-  for (const analysis of analyses) {
-    if (analysis.step.name === writer.step.name) {
-      continue;
-    }
-    if (!analysis.readOnly && !analysis.shellObservationOnly) {
-      return false;
-    }
-    if (analysis.ownedArtifacts.length > 0) {
-      return false;
-    }
-    if (
-      !analysis.referencedArtifacts.some((artifact) =>
-        writerArtifacts.has(artifact)
-      )
-    ) {
-      return false;
-    }
-    readOnlyReviewerCount += 1;
-  }
-  return readOnlyReviewerCount > 0;
-}
 function collectSharedReviewArtifacts(
   analysis: DelegationStepAnalysis,
 ): readonly string[] {
@@ -172,6 +142,7 @@ function collectSharedReviewArtifacts(
     ...(context?.targetArtifacts ?? []),
   ].filter((artifact, index, artifacts) => artifacts.indexOf(artifact) === index);
 }
+
 function detectSharedArtifactWriterInline(
   economics: DelegationEconomics,
 ): {
@@ -337,15 +308,6 @@ function detectShape(
     return "test_triage";
   }
   if (
-    input.steps.length >= 2 &&
-    input.steps.length <= 6 &&
-    hasSingleWriterReadOnlyReviewerHandoff(analyses) &&
-    economics.dependencyDepth <= Math.max(3, input.maxDepth * 2) &&
-    economics.dependencyCoupling <= 0.72
-  ) {
-    return "bounded_sequential_handoff";
-  }
-  if (
     parallelizable >= 2 &&
     economics.explicitOwnershipCoverage >= 0.75 &&
     economics.ownershipOverlap <= 0.2 &&
@@ -431,8 +393,6 @@ function buildIsolationReason(
 ): string {
   const ownedArtifacts = analysis.ownedArtifacts.length > 0
     ? analysis.ownedArtifacts.join(", ")
-    : analysis.referencedArtifacts.length > 0
-    ? analysis.referencedArtifacts.join(", ")
     : (analysis.step.executionContext?.workspaceRoot ?? analysis.step.name);
   switch (shape) {
     case "repo_exploration":

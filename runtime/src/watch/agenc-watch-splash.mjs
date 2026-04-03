@@ -1,31 +1,6 @@
-const SPLASH_ART_LARGE = [
-  { tone: "slate", text: "                  ░▒▓████████▓▒░                  " },
-  { tone: "magenta", text: "               ░▓██████████████▓░               " },
-  { tone: "magenta", text: "              ▒██████████████████▒              " },
-  { tone: "softInk", text: "             ▓████████████████████▓             " },
-  { tone: "softInk", text: "             ███████████████████▓██             " },
-  { tone: "ink", text: "             █████████████████▓   ░             " },
-  { tone: "ink", text: "             ████████████████▒                  " },
-  { tone: "ink", text: "             ████████████████                   " },
-];
-
-const SPLASH_ART_SMALL = [
-  { tone: "magenta", text: "          ░▓██████▓░          " },
-  { tone: "softInk", text: "        ░████████████░        " },
-  { tone: "ink", text: "        ████████████▒         " },
-  { tone: "ink", text: "        ███████████           " },
-];
-
-function visibleLength(text) {
-  return String(text ?? "").replace(/\x1b\[[0-9;]*m/g, "").length;
-}
-
-function centerAnsi(text, width, fitAnsi) {
-  const fitted = fitAnsi(text, width);
-  const remaining = Math.max(0, width - visibleLength(fitted));
-  const leftPad = Math.floor(remaining / 2);
-  const rightPad = remaining - leftPad;
-  return `${" ".repeat(leftPad)}${fitted}${" ".repeat(rightPad)}`;
+function insetBlock(lines = [], inset = 2) {
+  const prefix = " ".repeat(Math.max(0, Number(inset) || 0));
+  return (Array.isArray(lines) ? lines : []).map((line) => `${prefix}${line}`);
 }
 
 export function createWatchSplashRenderer(dependencies = {}) {
@@ -46,14 +21,6 @@ export function createWatchSplashRenderer(dependencies = {}) {
     color,
   } = dependencies;
 
-  function splashProgressLevel() {
-    if (watchState.bootstrapReady && transportState.connectionState === "live") return 1;
-    if (watchState.sessionId) return 0.8;
-    if (transportState.isOpen) return 0.58;
-    if (transportState.connectionState === "reconnecting") return 0.34;
-    return 0.2;
-  }
-
   function shouldShowSplash() {
     return shouldShowWatchSplash({
       introDismissed: watchState.introDismissed,
@@ -67,108 +34,122 @@ export function createWatchSplashRenderer(dependencies = {}) {
     });
   }
 
-  function splashArtLines(width) {
-    const source = width >= 96 ? SPLASH_ART_LARGE : SPLASH_ART_SMALL;
-    return source.map((entry) =>
-      centerAnsi(`${toneColor(entry.tone)}${entry.text}${color.reset}`, width, fitAnsi),
+  function statusLabel() {
+    if (watchState.bootstrapReady && transportState.connectionState === "live") {
+      return "Ready";
+    }
+    if (transportState.connectionState === "reconnecting") {
+      return "Reconnecting";
+    }
+    return "Connecting";
+  }
+
+  function splashDetailText() {
+    if (watchState.bootstrapReady) {
+      return sanitizeInlineText(
+        watchState.transientStatus || "Ready to work in this repository.",
+        "Ready to work in this repository.",
+      );
+    }
+    return sanitizeInlineText(
+      watchState.transientStatus ||
+        (watchState.sessionId
+          ? `Restoring session ${String(watchState.sessionId).slice(-8)}.`
+          : "Starting agent runtime."),
+      "Starting agent runtime.",
     );
   }
 
-  function splashProgressBar(width, level, tone = "magenta") {
-    const clamped = Math.max(0, Math.min(1, Number(level) || 0));
-    const fill = Math.max(0, Math.min(width, Math.round(clamped * width)));
-    return `${toneColor(tone)}${"█".repeat(fill)}${color.fog}${"░".repeat(Math.max(0, width - fill))}${color.reset}`;
+  function buildSplashCard(width) {
+    const safeWidth = Math.max(42, Number(width) || 0);
+    const blockWidth = Math.max(32, Math.min(safeWidth - 2, 72));
+    const detailText = truncate(splashDetailText(), Math.max(20, blockWidth - 2));
+    const sessionText = watchState.sessionId
+      ? `session ${String(watchState.sessionId).slice(-8)}`
+      : "fresh session";
+    const title = watchState.sessionId || watchState.bootstrapReady
+      ? "Welcome back"
+      : "Starting agent";
+    const block = insetBlock([
+      fitAnsi(`${color.ink}${title}${color.reset}`, blockWidth),
+      fitAnsi(`${color.softInk}${statusLabel()}${color.reset}`, blockWidth),
+      "",
+      fitAnsi(`${color.ink}${detailText}${color.reset}`, blockWidth),
+      ...(watchState.bootstrapReady
+        ? [
+            "",
+            fitAnsi(`${color.softInk}Try one of these:${color.reset}`, blockWidth),
+            fitAnsi(`${color.fog}- explain this repository${color.reset}`, blockWidth),
+            fitAnsi(`${color.fog}- fix a failing test${color.reset}`, blockWidth),
+            fitAnsi(`${color.fog}- use @path to mention a file${color.reset}`, blockWidth),
+            fitAnsi(`${color.fog}- /help for commands${color.reset}`, blockWidth),
+          ]
+        : [
+            fitAnsi(`${color.softInk}Restoring workspace state and session context.${color.reset}`, blockWidth),
+          ]),
+      "",
+      fitAnsi(`${color.softInk}${sessionText}${color.reset}`, blockWidth),
+    ], 2);
+    if (watchState.bootstrapReady) {
+      block.push("");
+      block.push(`  ${fitAnsi(`${color.fog}Start typing below.${color.reset}`, Math.max(16, safeWidth - 2))}`);
+    }
+    return block;
+  }
+
+  function renderMinimalSplash(width, height) {
+    const block = buildSplashCard(width);
+    return block.slice(0, Math.max(1, height));
+  }
+
+  function renderIdleState(width) {
+    return buildSplashCard(width);
   }
 
   function renderCompactSplash(width, height) {
-    const progress = splashProgressLevel();
-    const tone =
+    const statusLabel = watchState.bootstrapReady
+      ? "Ready"
+      : transportState.connectionState === "reconnecting"
+        ? "Reconnecting..."
+        : "Connecting...";
+    const statusTone =
       watchState.bootstrapReady && transportState.connectionState === "live"
         ? "teal"
-        : "magenta";
-    const statusLabel = watchState.bootstrapReady
-      ? "READY"
-      : transportState.connectionState === "reconnecting"
-        ? "RECONNECTING"
-        : "CONNECTING";
-    const progressWidth = Math.max(14, Math.min(22, width - 22));
-    const hint = watchState.bootstrapReady
-      ? "session restored, console ready"
-      : watchState.transientStatus;
+        : transportState.connectionState === "reconnecting"
+          ? "amber"
+          : "slate";
+    const detailText = watchState.bootstrapReady
+      ? sanitizeInlineText(
+          watchState.transientStatus || "Session restored. Start typing to continue.",
+          "Session restored.",
+        )
+      : sanitizeInlineText(
+          watchState.transientStatus ||
+            (watchState.sessionId
+              ? `Restoring session ${String(watchState.sessionId).slice(-8)}.`
+              : "Starting agent runtime."),
+          "Starting agent runtime.",
+        );
+    const sessionText = watchState.sessionId
+      ? `session ${String(watchState.sessionId).slice(-8)}`
+      : "";
     const content = [
-      centerAnsi(
-        `${color.magenta}${color.bold}A G E N / C${color.reset} ${color.softInk}https://agenc.tech${color.reset}`,
-        width,
-        fitAnsi,
-      ),
-      "",
-      centerAnsi(`${toneColor(tone)}${color.bold}${statusLabel}${color.reset}`, width, fitAnsi),
-      centerAnsi(
-        `${color.softInk}[${color.reset}${splashProgressBar(progressWidth, progress, tone)}${color.softInk}]${color.reset}`,
-        width,
-        fitAnsi,
-      ),
-      centerAnsi(
-        `${color.fog}${truncate(sanitizeInlineText(hint), Math.max(24, width - 6))}${color.reset}`,
-        width,
-        fitAnsi,
-      ),
-    ];
-    const visibleContent = content.slice(0, Math.max(4, height));
-    const topPadding = Math.max(0, Math.floor((height - visibleContent.length) / 2));
-    return [
-      ...Array.from({ length: topPadding }, () => ""),
-      ...visibleContent,
-    ];
+      `${toneColor(statusTone)}${statusLabel}${color.reset}`,
+      `${color.fog}${truncate(detailText, Math.max(16, width - 4))}${color.reset}`,
+      sessionText
+        ? `${color.softInk}${sessionText}${color.reset}`
+        : "",
+    ].filter((line) => line.length > 0);
+    return insetBlock(content, 2).slice(0, Math.max(1, height));
   }
 
   function renderSplash(width, height) {
-    const progress = splashProgressLevel();
-    const tone =
-      watchState.bootstrapReady && transportState.connectionState === "live"
-        ? "teal"
-        : "magenta";
-    const statusLabel = watchState.bootstrapReady
-      ? "READY"
-      : transportState.connectionState === "reconnecting"
-        ? "RECONNECTING"
-        : "CONNECTING TO AGENC";
-    const hint = watchState.bootstrapReady
-      ? "type a prompt to begin"
-      : "initializing agent runtime...";
-    const progressWidth = Math.max(18, Math.min(30, width - 28));
-    const progressLine = centerAnsi(
-      `${color.softInk}[${color.reset}${splashProgressBar(progressWidth, progress, tone)}${color.softInk}] ${String(Math.round(progress * 100)).padStart(3, " ")}%${color.reset}`,
-      width,
-      fitAnsi,
-    );
-    const content = [
-      centerAnsi(
-        `${color.magenta}${color.bold}A G E N / C${color.reset} ${color.softInk}https://agenc.tech${color.reset}`,
-        width,
-        fitAnsi,
-      ),
-      centerAnsi(
-        `${color.fog}clean signal // low clutter // live autonomy${color.reset}`,
-        width,
-        fitAnsi,
-      ),
-      "",
-      ...splashArtLines(width),
-      "",
-      centerAnsi(`${toneColor(tone)}${color.bold}${statusLabel}${color.reset}`, width, fitAnsi),
-      progressLine,
-      centerAnsi(`${color.fog}${hint}${color.reset}`, width, fitAnsi),
-    ];
-    const topPadding = Math.max(0, Math.floor((height - content.length) / 2));
-    return [
-      ...Array.from({ length: topPadding }, () => ""),
-      ...content,
-    ];
+    return renderMinimalSplash(width, height);
   }
 
   return {
     renderCompactSplash,
+    renderIdleState,
     renderSplash,
     shouldShowSplash,
   };

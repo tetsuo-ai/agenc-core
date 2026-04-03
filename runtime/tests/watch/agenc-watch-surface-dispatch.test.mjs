@@ -27,6 +27,7 @@ function createHarness(overrides = {}) {
     configuredModelRoute: null,
     manualStatusRequestPending: false,
     lastStatusFeedFingerprint: null,
+    manualSessionsQuery: null,
     ...overrides.state,
   };
   const api = {
@@ -181,6 +182,90 @@ test("dispatchOperatorSurfaceEvent restores bootstrap history before marking the
     ["restoreTranscriptFromHistory", history],
     ["markBootstrapReady", "history restored: 1 item(s)"],
     ["requestRunInspect", "history restore", { force: true }],
+  ]);
+});
+
+test("dispatchOperatorSurfaceEvent filters manual session lists with the active query", () => {
+  const { api, state, calls } = createHarness({
+    state: {
+      manualSessionsRequestPending: true,
+      manualSessionsQuery: "alpha",
+    },
+  });
+  const sessions = [
+    { sessionId: "session-a", label: "Alpha workspace" },
+    { sessionId: "session-b", label: "Beta workspace" },
+  ];
+
+  dispatchOperatorSurfaceEvent(
+    {
+      family: "session",
+      type: "chat.sessions",
+      payload: sessions,
+      payloadRecord: {},
+      payloadList: sessions,
+      isSessionScoped: false,
+      message: {},
+    },
+    null,
+    api,
+  );
+
+  assert.equal(state.manualSessionsRequestPending, false);
+  assert.equal(state.manualSessionsQuery, null);
+  assert.deepEqual(calls, [
+    [
+      "pushEvent",
+      "session",
+      "Filtered Sessions",
+      JSON.stringify([{ sessionId: "session-a", label: "Alpha workspace" }]),
+      "teal",
+    ],
+    ["status", "session filter loaded: 1 match(es)"],
+  ]);
+});
+
+test("dispatchOperatorSurfaceEvent filters manual session lists using local session labels", () => {
+  const { api, state, calls } = createHarness({
+    state: {
+      manualSessionsRequestPending: true,
+      manualSessionsQuery: "roadmap",
+    },
+    api: {
+      sessionQueryCandidates: (session) =>
+        session.sessionId === "session-b" ? ["Roadmap branch"] : [],
+    },
+  });
+  const sessions = [
+    { sessionId: "session-a", label: "Alpha workspace" },
+    { sessionId: "session-b", label: "Beta workspace" },
+  ];
+
+  dispatchOperatorSurfaceEvent(
+    {
+      family: "session",
+      type: "chat.sessions",
+      payload: sessions,
+      payloadRecord: {},
+      payloadList: sessions,
+      isSessionScoped: false,
+      message: {},
+    },
+    null,
+    api,
+  );
+
+  assert.equal(state.manualSessionsRequestPending, false);
+  assert.equal(state.manualSessionsQuery, null);
+  assert.deepEqual(calls, [
+    [
+      "pushEvent",
+      "session",
+      "Filtered Sessions",
+      JSON.stringify([{ sessionId: "session-b", label: "Beta workspace" }]),
+      "teal",
+    ],
+    ["status", "session filter loaded: 1 match(es)"],
   ]);
 });
 
@@ -597,7 +682,50 @@ test("dispatchOperatorSurfaceEvent emits status updates when the fingerprint cha
   );
 
   assert.deepEqual(state.lastStatus, payload);
-  assert.deepEqual(state.configuredModelRoute, { route: payload });
+  assert.deepEqual(state.configuredModelRoute, {
+    route: { ...payload, source: "status" },
+  });
+  assert.equal(state.lastStatusFeedFingerprint, JSON.stringify(payload));
+  assert.deepEqual(calls, [
+    ["status", "gateway status loaded"],
+    ["pushEvent", "status", "Gateway Status", JSON.stringify(payload), "blue"],
+  ]);
+});
+
+test("dispatchOperatorSurfaceEvent keeps a local model selection when gateway status reports a different default model", () => {
+  const payload = { provider: "grok", model: "grok-4.20" };
+  const { api, state, calls } = createHarness({
+    state: {
+      configuredModelRoute: {
+        provider: "openai",
+        model: "gpt-4.1",
+        source: "local",
+        updatedAt: 200,
+      },
+    },
+  });
+
+  dispatchOperatorSurfaceEvent(
+    {
+      family: "status",
+      type: "status.update",
+      payload,
+      payloadRecord: payload,
+      payloadList: null,
+      isSessionScoped: false,
+      message: {},
+    },
+    null,
+    api,
+  );
+
+  assert.deepEqual(state.lastStatus, payload);
+  assert.deepEqual(state.configuredModelRoute, {
+    provider: "openai",
+    model: "gpt-4.1",
+    source: "local",
+    updatedAt: 200,
+  });
   assert.equal(state.lastStatusFeedFingerprint, JSON.stringify(payload));
   assert.deepEqual(calls, [
     ["status", "gateway status loaded"],

@@ -50,7 +50,6 @@ import {
   collectReachableVerificationCategories,
 } from "./subagent-workspace-probes.js";
 import { classifyDelegatedScopeTrustSignal } from "./subagent-failure-classification.js";
-import { resolveExecutionEnvelopeArtifactRelations, resolveExecutionEnvelopeRole } from "../workflow/execution-envelope.js";
 
 /* ------------------------------------------------------------------ */
 /*  Parent request summarization                                       */
@@ -158,22 +157,6 @@ export function buildArtifactRelevanceTerms(
     ...(step.executionContext?.targetArtifacts ?? []),
   ].join(" ");
   return new Set(extractTerms(aggregate));
-}
-
-export function stepPrefersReviewerHandoffArtifacts(
-  step: PipelinePlannerSubagentStep,
-): boolean {
-  const role = resolveExecutionEnvelopeRole(step.executionContext);
-  if (role === "writer") {
-    return true;
-  }
-  const artifactRelations = resolveExecutionEnvelopeArtifactRelations(
-    step.executionContext,
-  );
-  return artifactRelations.some((relation) =>
-    relation.relationType === "write_owner" ||
-    relation.relationType === "handoff_artifact"
-  );
 }
 
 /* ------------------------------------------------------------------ */

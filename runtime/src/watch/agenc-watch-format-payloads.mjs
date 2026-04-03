@@ -13,6 +13,10 @@ import {
   truncate,
   tryPrettyJson,
 } from "./agenc-watch-text-utils.mjs";
+import {
+  resolveWatchSessionLabel,
+} from "./agenc-watch-session-indexing.mjs";
+import { normalizeSessionValue } from "./agenc-watch-session-utils.mjs";
 
 export function formatCommandPaletteText(command, colorPalette) {
   const aliasSuffix =
@@ -22,23 +26,45 @@ export function formatCommandPaletteText(command, colorPalette) {
   return `${colorPalette.magenta}${command.usage}${colorPalette.reset}${aliasSuffix}\n${colorPalette.softInk}${command.description}${colorPalette.reset}`;
 }
 
-export function formatSessionSummaries(payload) {
+export function formatSessionSummaries(payload, {
+  sessionLabels = null,
+  activeSessionId = null,
+} = {}) {
   if (!Array.isArray(payload) || payload.length === 0) {
     return "No resumable sessions found.";
   }
+  const normalizedActiveSessionId = normalizeSessionValue(activeSessionId);
   return payload
     .map((session) => {
+      const sessionId = session?.sessionId ?? "unknown";
+      const localLabel = resolveWatchSessionLabel(sessionId, sessionLabels);
       const when = session?.lastActiveAt
         ? new Date(session.lastActiveAt).toLocaleString("en-US", {
           hour12: false,
         })
         : "unknown";
-      return [
-        `session: ${session?.sessionId ?? "unknown"}`,
+      const lines = [
+        `session: ${sessionId}${normalizeSessionValue(sessionId) === normalizedActiveSessionId ? " [active]" : ""}`,
         `label: ${session?.label ?? "n/a"}`,
+      ];
+      if (localLabel) {
+        lines.push(`local label: ${localLabel}`);
+      }
+      if (session?.workspaceRoot || session?.cwd) {
+        lines.push(`workspace: ${session?.workspaceRoot ?? session?.cwd}`);
+      }
+      if (session?.model || session?.provider) {
+        lines.push(
+          `model: ${[session?.model, session?.provider ? `via ${session.provider}` : null]
+            .filter(Boolean)
+            .join(" ")}`,
+        );
+      }
+      lines.push(
         `messages: ${session?.messageCount ?? 0}`,
         `last active: ${when}`,
-      ].join("\n");
+      );
+      return lines.join("\n");
     })
     .join("\n\n");
 }
@@ -173,9 +199,11 @@ export function summarizeUsage(payload) {
   const parts = [];
   const prompt = formatCompactNumber(payload.promptTokens);
   const total = formatCompactNumber(payload.totalTokens);
+  const contextWindow = formatCompactNumber(payload.contextWindowTokens);
   const maxOutput = formatCompactNumber(payload.maxOutputTokens);
   if (prompt) parts.push(`${prompt} prompt`);
   if (total) parts.push(`${total} total`);
+  if (contextWindow) parts.push(`${contextWindow} ctx`);
   if (maxOutput) parts.push(`${maxOutput} max out`);
   if (payload.compacted) parts.push("compacted");
   return parts.length > 0 ? parts.join(" / ") : null;
@@ -313,6 +341,14 @@ export function summarizeRunDetail(detail, watchState) {
   add("verified evidence", detail.lastToolEvidence);
   add("carry-forward", detail.carryForwardSummary);
   add("blocker", detail.blockerSummary);
+  add(
+    "run controls",
+    detail.availability?.controlAvailable === false ? "unavailable" : "available",
+  );
+  add(
+    "checkpoint retry",
+    detail.checkpointAvailable === false ? "unavailable" : "available",
+  );
   add("next check", detail.nextCheckAt ? new Date(detail.nextCheckAt).toLocaleTimeString("en-US", { hour12: false }) : undefined);
   add("next heartbeat", detail.nextHeartbeatAt ? new Date(detail.nextHeartbeatAt).toLocaleTimeString("en-US", { hour12: false }) : undefined);
   add("pending signals", detail.pendingSignals);

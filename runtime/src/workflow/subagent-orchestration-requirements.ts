@@ -3,8 +3,6 @@ import type {
   ExecutionEffectClass,
   ExecutionStepKind,
   ExecutionVerificationMode,
-  WorkflowArtifactRelation,
-  WorkflowStepRole,
 } from "./execution-envelope.js";
 
 export interface RequiredSubagentOrchestrationStep {
@@ -26,19 +24,11 @@ export interface RequiredSubagentVerificationCandidate {
   readonly objective?: string;
   readonly inputContract?: string;
   readonly acceptanceCriteria?: readonly string[];
-  readonly role?: WorkflowStepRole;
-  readonly artifactRelations?: readonly WorkflowArtifactRelation[];
-  readonly workflowStep?: {
-    readonly role: WorkflowStepRole;
-    readonly artifactRelations: readonly WorkflowArtifactRelation[];
-  };
   readonly executionContext?: {
     readonly stepKind?: ExecutionStepKind;
     readonly effectClass?: ExecutionEffectClass;
     readonly verificationMode?: ExecutionVerificationMode;
     readonly targetArtifacts?: readonly string[];
-    readonly role?: WorkflowStepRole;
-    readonly artifactRelations?: readonly WorkflowArtifactRelation[];
   };
 }
 
@@ -246,7 +236,6 @@ function joinCandidateRoleText(
 ): string {
   return [
     candidate.name,
-    candidateWorkflowRole(candidate),
     candidate.objective,
     candidate.inputContract,
     ...(candidate.acceptanceCriteria ?? []),
@@ -266,40 +255,9 @@ function candidateExecutionStepKind(
   });
 }
 
-function candidateWorkflowRole(
-  candidate: RequiredSubagentVerificationCandidate,
-): WorkflowStepRole | undefined {
-  return (
-    candidate.workflowStep?.role ??
-    candidate.role ??
-    candidate.executionContext?.role
-  );
-}
-
-function candidateArtifactRelations(
-  candidate: RequiredSubagentVerificationCandidate,
-): readonly WorkflowArtifactRelation[] {
-  return (
-    candidate.workflowStep?.artifactRelations ??
-    candidate.artifactRelations ??
-    candidate.executionContext?.artifactRelations ??
-    []
-  );
-}
-
 function isMutableArtifactOwnerCandidate(
   candidate: RequiredSubagentVerificationCandidate,
 ): boolean {
-  if (candidateWorkflowRole(candidate) === "writer") {
-    return true;
-  }
-  if (
-    candidateArtifactRelations(candidate).some((relation) =>
-      relation.relationType === "write_owner"
-    )
-  ) {
-    return true;
-  }
   const stepKind = candidateExecutionStepKind(candidate);
   return (
     stepKind === "delegated_write" ||
@@ -311,13 +269,6 @@ function isMutableArtifactOwnerCandidate(
 function isReviewPreferredCandidate(
   candidate: RequiredSubagentVerificationCandidate,
 ): boolean {
-  const role = candidateWorkflowRole(candidate);
-  if (role === "reviewer") {
-    return true;
-  }
-  if (role === "writer") {
-    return false;
-  }
   const stepKind = candidateExecutionStepKind(candidate);
   if (stepKind === "delegated_review" || stepKind === "delegated_validation") {
     return true;

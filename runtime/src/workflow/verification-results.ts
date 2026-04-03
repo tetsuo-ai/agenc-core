@@ -3,15 +3,11 @@ import type {
   DelegationOutputValidationResult,
 } from "../utils/delegation-validation.js";
 
-export const RUNTIME_VERIFICATION_CHANNEL_NAMES = [
-  "artifact_state",
-  "placeholder_stub",
-  "executable_outcome",
-  "rubric",
-] as const;
-
 export type RuntimeVerificationChannelName =
-  typeof RUNTIME_VERIFICATION_CHANNEL_NAMES[number];
+  | "artifact_state"
+  | "placeholder_stub"
+  | "executable_outcome"
+  | "rubric";
 
 export interface RuntimeVerificationDiagnostic {
   readonly code: DelegationOutputValidationCode;

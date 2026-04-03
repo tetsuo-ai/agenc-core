@@ -706,8 +706,6 @@ export async function executeToolCallLoop(
         followupContractGuidance.runtimeInstruction,
       );
     }
-    const preservedFollowupRoutedToolNames =
-      followupContractGuidance?.routedToolNames ?? ctx.activeRoutedToolNames;
 
     // Re-call LLM.
     const nextResponse = await callbacks.callModelForPhase(ctx, {
@@ -721,11 +719,15 @@ export async function executeToolCallLoop(
       ...(followupContractGuidance
         ? {
           toolChoice: followupContractGuidance.toolChoice,
+          ...(followupContractGuidance.routedToolNames
+            ? {
+              routedToolNames: followupContractGuidance.routedToolNames,
+              ...(followupContractGuidance.persistRoutedToolNames === false
+                ? { persistRoutedToolNames: false }
+                : {}),
+            }
+            : {}),
         }
-        : {}),
-      routedToolNames: preservedFollowupRoutedToolNames,
-      ...(followupContractGuidance?.persistRoutedToolNames === false
-        ? { persistRoutedToolNames: false }
         : {}),
       budgetReason:
         "Max model recalls exceeded while following up after tool calls",

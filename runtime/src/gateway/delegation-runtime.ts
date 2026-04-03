@@ -51,6 +51,7 @@ export function isSubAgentSessionId(sessionId: string): boolean {
 export function isDelegationToolName(toolName: string): boolean {
   return (
     toolName === "execute_with_agent" ||
+    toolName === "coordinator_mode" ||
     toolName.startsWith("subagent.") ||
     toolName.startsWith("agenc.subagent.")
   );

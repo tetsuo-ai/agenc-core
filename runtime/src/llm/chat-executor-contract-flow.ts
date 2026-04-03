@@ -70,14 +70,10 @@ type ContractFlowContext =
     >
   >;
 
-export const LEGACY_COMPLETION_COMPATIBILITY_CLASSES = [
-  "docs",
-  "research",
-  "plan_only",
-] as const;
-
 export type LegacyCompletionCompatibilityClass =
-  typeof LEGACY_COMPLETION_COMPATIBILITY_CLASSES[number];
+  | "docs"
+  | "research"
+  | "plan_only";
 
 export interface LegacyCompletionCompatibilityDecision {
   readonly allowed: boolean;

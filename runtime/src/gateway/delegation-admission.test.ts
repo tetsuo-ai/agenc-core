@@ -6,151 +6,6 @@ import {
 } from "./delegation-admission.js";
 
 describe("assessDelegationAdmission", () => {
-  it("allows multiple read-only reviewers plus one writer on the same planning artifact when ownership is relation-scoped", () => {
-    const planPath = "/tmp/project/PLAN.md";
-    const decision = assessDelegationAdmission({
-      messageText:
-        "Read PLAN.md from multiple angles, synthesize the findings, then update PLAN.md with the result.",
-      totalSteps: 5,
-      synthesisSteps: 1,
-      explicitDelegationRequested: true,
-      steps: [
-        {
-          name: "architecture_review",
-          objective: "Review PLAN.md for architecture issues",
-          inputContract: "Read PLAN.md and return grounded architecture findings.",
-          acceptanceCriteria: ["Architecture findings are grounded in PLAN.md."],
-          requiredToolCapabilities: ["system.readFile"],
-          contextRequirements: [],
-          executionContext: {
-            version: "v1",
-            workspaceRoot: "/tmp/project",
-            allowedReadRoots: ["/tmp/project"],
-            allowedWriteRoots: ["/tmp/project"],
-            requiredSourceArtifacts: [planPath],
-            effectClass: "read_only",
-            verificationMode: "grounded_read",
-            stepKind: "delegated_review",
-            role: "reviewer",
-            artifactRelations: [
-              {
-                relationType: "read_dependency",
-                artifactPath: planPath,
-              },
-            ],
-          },
-          maxBudgetHint: "2m",
-          canRunParallel: true,
-        },
-        {
-          name: "security_review",
-          objective: "Review PLAN.md for security gaps",
-          inputContract: "Read PLAN.md and return grounded security findings.",
-          acceptanceCriteria: ["Security findings are grounded in PLAN.md."],
-          requiredToolCapabilities: ["system.readFile"],
-          contextRequirements: [],
-          executionContext: {
-            version: "v1",
-            workspaceRoot: "/tmp/project",
-            allowedReadRoots: ["/tmp/project"],
-            allowedWriteRoots: ["/tmp/project"],
-            requiredSourceArtifacts: [planPath],
-            effectClass: "read_only",
-            verificationMode: "grounded_read",
-            stepKind: "delegated_review",
-            role: "reviewer",
-            artifactRelations: [
-              {
-                relationType: "read_dependency",
-                artifactPath: planPath,
-              },
-            ],
-          },
-          maxBudgetHint: "2m",
-          canRunParallel: true,
-        },
-        {
-          name: "qa_review",
-          objective: "Review PLAN.md for QA coverage gaps",
-          inputContract: "Read PLAN.md and return grounded QA findings.",
-          acceptanceCriteria: ["QA findings are grounded in PLAN.md."],
-          requiredToolCapabilities: ["system.readFile"],
-          contextRequirements: [],
-          executionContext: {
-            version: "v1",
-            workspaceRoot: "/tmp/project",
-            allowedReadRoots: ["/tmp/project"],
-            allowedWriteRoots: ["/tmp/project"],
-            requiredSourceArtifacts: [planPath],
-            effectClass: "read_only",
-            verificationMode: "grounded_read",
-            stepKind: "delegated_review",
-            role: "reviewer",
-            artifactRelations: [
-              {
-                relationType: "read_dependency",
-                artifactPath: planPath,
-              },
-            ],
-          },
-          maxBudgetHint: "2m",
-          canRunParallel: true,
-        },
-        {
-          name: "final_writer",
-          objective: "Update PLAN.md with the synthesized reviewer findings",
-          inputContract:
-            "Grounded reviewer findings have been provided; update PLAN.md only.",
-          acceptanceCriteria: ["PLAN.md includes the synthesized reviewer findings."],
-          requiredToolCapabilities: ["system.readFile", "system.writeFile"],
-          contextRequirements: [],
-          executionContext: {
-            version: "v1",
-            workspaceRoot: "/tmp/project",
-            allowedReadRoots: ["/tmp/project"],
-            allowedWriteRoots: ["/tmp/project"],
-            requiredSourceArtifacts: [planPath],
-            targetArtifacts: [planPath],
-            effectClass: "filesystem_write",
-            verificationMode: "mutation_required",
-            stepKind: "delegated_write",
-            role: "writer",
-            artifactRelations: [
-              {
-                relationType: "read_dependency",
-                artifactPath: planPath,
-              },
-              {
-                relationType: "write_owner",
-                artifactPath: planPath,
-              },
-            ],
-          },
-          maxBudgetHint: "3m",
-          canRunParallel: false,
-        },
-      ],
-      edges: [
-        { from: "architecture_review", to: "final_writer" },
-        { from: "security_review", to: "final_writer" },
-        { from: "qa_review", to: "final_writer" },
-      ],
-      threshold: 0,
-      maxFanoutPerTurn: 4,
-      maxDepth: 4,
-    });
-
-    expect(decision.allowed).toBe(true);
-    expect(decision.reason).toBe("approved");
-    expect(decision.shape).toBe("bounded_sequential_handoff");
-    expect(decision.stepAdmissions.map((entry) => entry.ownedArtifacts)).toEqual([
-      [],
-      [],
-      [],
-      [planPath],
-    ]);
-  });
-
   it("denies shared-primary-artifact plans when multiple mutable child steps target the same file", () => {
     const decision = assessDelegationAdmission({
       messageText:
@@ -174,18 +29,7 @@ describe("assessDelegationAdmission", () => {
             targetArtifacts: ["/tmp/project/PLAN.md"],
             effectClass: "filesystem_write",
             verificationMode: "mutation_required",
-            stepKind: "delegated_write",
-            role: "writer",
-            artifactRelations: [
-              {
-                relationType: "read_dependency",
-                artifactPath: "/tmp/project/PLAN.md",
-              },
-              {
-                relationType: "write_owner",
-                artifactPath: "/tmp/project/PLAN.md",
-              },
-            ],
+            stepKind: "delegated_execution",
           },
           maxBudgetHint: "3m",
           canRunParallel: true,
@@ -206,18 +50,7 @@ describe("assessDelegationAdmission", () => {
             targetArtifacts: ["/tmp/project/PLAN.md"],
             effectClass: "filesystem_write",
             verificationMode: "mutation_required",
-            stepKind: "delegated_write",
-            role: "writer",
-            artifactRelations: [
-              {
-                relationType: "read_dependency",
-                artifactPath: "/tmp/project/PLAN.md",
-              },
-              {
-                relationType: "write_owner",
-                artifactPath: "/tmp/project/PLAN.md",
-              },
-            ],
+            stepKind: "delegated_execution",
           },
           maxBudgetHint: "3m",
           canRunParallel: true,

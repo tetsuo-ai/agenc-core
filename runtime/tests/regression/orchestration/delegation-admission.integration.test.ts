@@ -124,11 +124,11 @@ describe("delegation admission integration", () => {
       "initial",
     ]);
     expect(result.plannerSummary?.routeReason).toBe(
-      "delegation_veto_trivial_request",
+      "delegation_veto_shared_context_review",
     );
     expect(result.plannerSummary?.delegationDecision).toMatchObject({
       shouldDelegate: false,
-      reason: "trivial_request",
+      reason: "shared_context_review",
     });
   });
 

@@ -47,10 +47,7 @@ import {
 import { withTimeout } from "../timeout.js";
 import { validateToolTurnSequence } from "../tool-turn-validator.js";
 import type { GrokProviderConfig } from "./types.js";
-import {
-  getGrokModelCapabilities,
-  resolveContextWindowProfile,
-} from "../../gateway/context-window.js";
+import { resolveContextWindowProfile } from "../../gateway/context-window.js";
 import {
   buildIncrementalContinuationMessages,
   buildProviderTraceErrorPayload,
@@ -1459,7 +1456,6 @@ export class GrokProvider implements LLMProvider {
         store: false,
         allowedToolNames: options?.toolRouting?.allowedToolNames,
         toolChoice: options?.toolChoice,
-        parallelToolCalls: options?.parallelToolCalls,
         maxTurns: options?.maxTurns,
         reasoningEffort: options?.reasoningEffort,
         includeEncryptedReasoning: options?.includeEncryptedReasoning,
@@ -1601,7 +1597,6 @@ export class GrokProvider implements LLMProvider {
       previousResponseId: continued ? previousResponseId : undefined,
       allowedToolNames: options?.toolRouting?.allowedToolNames,
       toolChoice: options?.toolChoice,
-      parallelToolCalls: options?.parallelToolCalls,
       maxTurns: options?.maxTurns,
       reasoningEffort: options?.reasoningEffort,
       includeEncryptedReasoning: options?.includeEncryptedReasoning,
@@ -1721,7 +1716,6 @@ export class GrokProvider implements LLMProvider {
       previousResponseId?: string;
       allowedToolNames?: readonly string[];
       toolChoice?: LLMToolChoice;
-      parallelToolCalls?: boolean;
       maxTurns?: number;
       reasoningEffort?: LLMChatOptions["reasoningEffort"];
       includeEncryptedReasoning?: boolean;
@@ -1841,50 +1835,39 @@ export class GrokProvider implements LLMProvider {
     const structuredOutputEnabled =
       options?.structuredOutput?.enabled !== false &&
       structuredOutputSchema !== undefined;
-    const effectiveModel =
-      typeof params.model === "string" ? params.model : this.config.model;
-    this.assertToolSelectionContract(selectedTools, effectiveModel);
-    this.assertStructuredOutputContract({
-      model: effectiveModel,
-      structuredOutputEnabled,
-      toolsRequested: selectedTools.tools.length > 0,
-    });
     // Enable tools unless the vision model is known to not support them.
     if (selectedTools.tools.length > 0) {
       const hasToolResults = messages.some((m) => m.role === "tool");
-      if (hasImages && !VISION_MODELS_WITH_TOOLS.has(visionModel)) {
-        throw new LLMProviderError(
-          this.name,
-          `xAI model ${visionModel} cannot honor the planned tool contract for this multimodal turn.`,
-          400,
-        );
-      }
-      if (hasToolResults && selectedTools.chars > MAX_TOOL_SCHEMA_CHARS_FOLLOWUP) {
-        throw new LLMProviderError(
-          this.name,
-          "xAI follow-up turn cannot preserve the routed tool contract because the tool schema set exceeds the follow-up schema budget.",
-          400,
-        );
-      }
-      params.tools = selectedTools.tools;
-      selectedTools.toolsAttached = true;
-      params.parallel_tool_calls =
-        options?.parallelToolCalls ?? this.config.parallelToolCalls;
-      const toolChoice = resolveResponsesToolChoice(options?.toolChoice);
-      if (toolChoice !== undefined) {
-        params.tool_choice = toolChoice;
+      if (
+        (!hasImages || VISION_MODELS_WITH_TOOLS.has(visionModel)) &&
+        (!hasToolResults || selectedTools.chars <= MAX_TOOL_SCHEMA_CHARS_FOLLOWUP)
+      ) {
+        params.tools = selectedTools.tools;
+        selectedTools.toolsAttached = true;
+        params.parallel_tool_calls = this.config.parallelToolCalls;
+        const toolChoice = resolveResponsesToolChoice(options?.toolChoice);
+        if (toolChoice !== undefined) {
+          params.tool_choice = toolChoice;
+        }
+      } else if (hasImages && !VISION_MODELS_WITH_TOOLS.has(visionModel)) {
+        selectedTools.toolSuppressionReason = "vision_model_without_tool_support";
+      } else if (hasToolResults) {
+        selectedTools.toolSuppressionReason = "followup_tool_schema_limit";
       }
     }
     if (structuredOutputEnabled && structuredOutputSchema) {
       if (
         selectedTools.toolsAttached &&
-        !supportsXaiStructuredOutputsWithTools(effectiveModel)
+        !supportsXaiStructuredOutputsWithTools(
+          typeof params.model === "string" ? params.model : this.config.model,
+        )
       ) {
-        throw new LLMProviderError(
-          this.name,
-          `xAI model ${effectiveModel} does not support structured outputs combined with tools.`,
-          400,
-        );
+        delete params.tools;
+        delete params.tool_choice;
+        delete params.parallel_tool_calls;
+        selectedTools.toolsAttached = false;
+        selectedTools.toolSuppressionReason =
+          "structured_output_with_tools_unsupported_model";
       }
       params.text = {
         format: {
@@ -1997,13 +1980,13 @@ export class GrokProvider implements LLMProvider {
 
     if (selected.length === 0) {
       return {
-        tools: [],
-        chars: 0,
+        tools: fullCatalogTools,
+        chars: this.toolChars,
         requestedToolNames,
-        resolvedToolNames: [],
+        resolvedToolNames: providerCatalogToolNames,
         missingRequestedToolNames: requestedToolNames,
         providerCatalogToolCount,
-        toolResolution: "subset_missing",
+        toolResolution: "fallback_full_catalog_no_matches",
         toolsAttached: false,
       };
     }
@@ -2019,87 +2002,6 @@ export class GrokProvider implements LLMProvider {
         missingRequestedToolNames.length > 0 ? "subset_partial" : "subset_exact",
       toolsAttached: false,
     };
-  }
-
-  private assertToolSelectionContract(
-    selection: ToolSelectionDiagnostics,
-    model: string,
-  ): void {
-    if (selection.missingRequestedToolNames.length > 0) {
-      throw new LLMProviderError(
-        this.name,
-        `xAI routed tool subset could not be realized exactly. Missing requested tools: ${selection.missingRequestedToolNames.join(", ")}`,
-        400,
-      );
-    }
-    const capabilities = getGrokModelCapabilities(model);
-    const resolvedClientToolNames = selection.resolvedToolNames.filter((toolName) =>
-      this.responseToolsByName.has(toolName) || this.rawToolsByName.has(toolName)
-    );
-    const resolvedProviderNativeToolNames = selection.resolvedToolNames.filter((toolName) =>
-      this.providerNativeToolsByName.has(toolName)
-    );
-    const resolvedRemoteMcpToolNames = resolvedProviderNativeToolNames.filter((toolName) =>
-      toolName.startsWith("mcp:")
-    );
-    if (
-      resolvedClientToolNames.length > 0 &&
-      !capabilities.supportsClientTools
-    ) {
-      throw new LLMProviderError(
-        this.name,
-        capabilities.multiAgent
-          ? `xAI multi-agent routes do not support client-side/custom tools: ${resolvedClientToolNames.join(", ")}`
-          : `xAI model ${model} does not support client-side/custom tools: ${resolvedClientToolNames.join(", ")}`,
-        400,
-      );
-    }
-    if (
-      resolvedProviderNativeToolNames.length > 0 &&
-      !capabilities.supportsServerSideTools
-    ) {
-      throw new LLMProviderError(
-        this.name,
-        `xAI model ${model} does not support provider-native tools: ${resolvedProviderNativeToolNames.join(", ")}`,
-        400,
-      );
-    }
-    if (
-      resolvedRemoteMcpToolNames.length > 0 &&
-      !capabilities.supportsRemoteMcpTools
-    ) {
-      throw new LLMProviderError(
-        this.name,
-        `xAI model ${model} does not support remote MCP tools: ${resolvedRemoteMcpToolNames.join(", ")}`,
-        400,
-      );
-    }
-  }
-
-  private assertStructuredOutputContract(params: {
-    readonly model: string;
-    readonly structuredOutputEnabled: boolean;
-    readonly toolsRequested: boolean;
-  }): void {
-    if (!params.structuredOutputEnabled) return;
-    const capabilities = getGrokModelCapabilities(params.model);
-    if (!capabilities.supportsStructuredOutputs) {
-      throw new LLMProviderError(
-        this.name,
-        `xAI model ${params.model} does not support structured outputs.`,
-        400,
-      );
-    }
-    if (
-      params.toolsRequested &&
-      !capabilities.supportsStructuredOutputsWithTools
-    ) {
-      throw new LLMProviderError(
-        this.name,
-        `xAI model ${params.model} does not support structured outputs combined with tools.`,
-        400,
-      );
-    }
   }
 
   private toOpenAIMessage(msg: LLMMessage): Record<string, unknown> {

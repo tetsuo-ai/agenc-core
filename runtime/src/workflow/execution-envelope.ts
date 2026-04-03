@@ -27,27 +27,6 @@ export type ExecutionStepKind =
   | "delegated_write"
   | "delegated_scaffold"
   | "delegated_validation";
-export const WORKFLOW_STEP_ROLES = [
-  "reviewer",
-  "writer",
-  "validator",
-  "researcher",
-  "synthesizer",
-] as const;
-export type WorkflowStepRole = typeof WORKFLOW_STEP_ROLES[number];
-export const WORKFLOW_ARTIFACT_RELATION_TYPES = [
-  "read_dependency",
-  "write_owner",
-  "verification_subject",
-  "context_input",
-  "handoff_artifact",
-] as const;
-export type WorkflowArtifactRelationType =
-  typeof WORKFLOW_ARTIFACT_RELATION_TYPES[number];
-export interface WorkflowArtifactRelation {
-  readonly relationType: WorkflowArtifactRelationType;
-  readonly artifactPath: string;
-}
 export type ExecutionFallbackPolicy =
   | "continue_without_delegation"
   | "fail_request";
@@ -57,12 +36,6 @@ export type ExecutionApprovalProfile =
   | "read_only"
   | "filesystem_write"
   | "shell";
-export const EXECUTION_ENVELOPE_COMPATIBILITY_SOURCES = [
-  "legacy_context_requirements",
-  "legacy_persisted_checkpoint",
-] as const;
-export type ExecutionEnvelopeCompatibilitySource =
-  typeof EXECUTION_ENVELOPE_COMPATIBILITY_SOURCES[number];
 
 export interface ExecutionEnvelope {
   readonly version?: ExecutionEnvelopeVersion;
@@ -76,13 +49,13 @@ export interface ExecutionEnvelope {
   readonly effectClass?: ExecutionEffectClass;
   readonly verificationMode?: ExecutionVerificationMode;
   readonly stepKind?: ExecutionStepKind;
-  readonly role?: WorkflowStepRole;
-  readonly artifactRelations?: readonly WorkflowArtifactRelation[];
   readonly completionContract?: ImplementationCompletionContract;
   readonly fallbackPolicy?: ExecutionFallbackPolicy;
   readonly resumePolicy?: ExecutionResumePolicy;
   readonly approvalProfile?: ExecutionApprovalProfile;
-  readonly compatibilitySource?: ExecutionEnvelopeCompatibilitySource;
+  readonly compatibilitySource?:
+    | "legacy_context_requirements"
+    | "legacy_persisted_checkpoint";
 }
 
 export function isCompatibilityExecutionEnvelope(
@@ -105,16 +78,13 @@ export function createExecutionEnvelope(params: {
   readonly effectClass?: ExecutionEffectClass;
   readonly verificationMode?: ExecutionVerificationMode;
   readonly stepKind?: ExecutionStepKind;
-  readonly role?: WorkflowStepRole;
-  readonly artifactRelations?: readonly {
-    readonly relationType?: string | null;
-    readonly artifactPath?: string | null;
-  }[];
   readonly completionContract?: ImplementationCompletionContract;
   readonly fallbackPolicy?: ExecutionFallbackPolicy;
   readonly resumePolicy?: ExecutionResumePolicy;
   readonly approvalProfile?: ExecutionApprovalProfile;
-  readonly compatibilitySource?: ExecutionEnvelopeCompatibilitySource;
+  readonly compatibilitySource?:
+    | "legacy_context_requirements"
+    | "legacy_persisted_checkpoint";
 }): ExecutionEnvelope | undefined {
   const workspaceRoot = normalizeWorkspaceRoot(params.workspaceRoot);
   const allowedReadRoots = normalizeEnvelopeRoots(
@@ -149,22 +119,6 @@ export function createExecutionEnvelope(params: {
     verificationMode: params.verificationMode,
     targetArtifacts,
   });
-  const role = canonicalizeWorkflowStepRole({
-    role: params.role,
-    stepKind,
-    effectClass: params.effectClass,
-    verificationMode: params.verificationMode,
-  });
-  const artifactRelations = canonicalizeWorkflowArtifactRelations({
-    workspaceRoot,
-    artifactRelations: params.artifactRelations,
-    inputArtifacts,
-    requiredSourceArtifacts,
-    targetArtifacts,
-    stepKind,
-    verificationMode: params.verificationMode,
-    role,
-  });
   const completionContract = canonicalizeExecutionCompletionContract({
     completionContract: params.completionContract,
     stepKind,
@@ -184,8 +138,6 @@ export function createExecutionEnvelope(params: {
     !params.effectClass &&
     !params.verificationMode &&
     !stepKind &&
-    !role &&
-    artifactRelations.length === 0 &&
     !completionContract &&
     !params.fallbackPolicy &&
     !params.resumePolicy &&
@@ -206,8 +158,6 @@ export function createExecutionEnvelope(params: {
     ...(params.effectClass ? { effectClass: params.effectClass } : {}),
     ...(params.verificationMode ? { verificationMode: params.verificationMode } : {}),
     ...(stepKind ? { stepKind } : {}),
-    ...(role ? { role } : {}),
-    ...(artifactRelations.length > 0 ? { artifactRelations } : {}),
     ...(completionContract
       ? {
         completionContract: {
@@ -231,201 +181,4 @@ export function createExecutionEnvelope(params: {
       ? { compatibilitySource: params.compatibilitySource }
       : {}),
   };
-}
-
-export function canonicalizeWorkflowStepRole(params: {
-  readonly role?: string | null;
-  readonly stepKind?: ExecutionStepKind;
-  readonly effectClass?: ExecutionEffectClass;
-  readonly verificationMode?: ExecutionVerificationMode;
-}): WorkflowStepRole | undefined {
-  if (typeof params.role === "string") {
-    const normalized = params.role.trim().toLowerCase();
-    if (
-      (WORKFLOW_STEP_ROLES as readonly string[]).includes(normalized)
-    ) {
-      return normalized as WorkflowStepRole;
-    }
-  }
-
-  if (
-    params.stepKind === "delegated_write" ||
-    params.stepKind === "delegated_scaffold" ||
-    params.verificationMode === "mutation_required" ||
-    params.effectClass === "filesystem_write" ||
-    params.effectClass === "filesystem_scaffold"
-  ) {
-    return "writer";
-  }
-  if (
-    params.stepKind === "delegated_validation" ||
-    params.verificationMode === "deterministic_followup"
-  ) {
-    return "validator";
-  }
-  if (params.stepKind === "delegated_review") {
-    return "reviewer";
-  }
-  if (params.stepKind === "delegated_research") {
-    return "researcher";
-  }
-  return undefined;
-}
-
-function normalizeWorkflowArtifactPath(
-  artifactPath: string | undefined | null,
-  workspaceRoot: string | undefined,
-): string | undefined {
-  if (typeof artifactPath !== "string") {
-    return undefined;
-  }
-  return normalizeArtifactPaths([artifactPath], workspaceRoot)[0];
-}
-
-function dedupeWorkflowArtifactRelations(
-  relations: readonly WorkflowArtifactRelation[],
-): readonly WorkflowArtifactRelation[] {
-  const seen = new Set<string>();
-  const deduped: WorkflowArtifactRelation[] = [];
-  for (const relation of relations) {
-    const key = `${relation.relationType}::${relation.artifactPath}`;
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    deduped.push(relation);
-  }
-  return deduped;
-}
-
-export function canonicalizeWorkflowArtifactRelations(params: {
-  readonly workspaceRoot?: string;
-  readonly artifactRelations?: readonly {
-    readonly relationType?: string | null;
-    readonly artifactPath?: string | null;
-  }[];
-  readonly inputArtifacts?: readonly string[];
-  readonly requiredSourceArtifacts?: readonly string[];
-  readonly targetArtifacts?: readonly string[];
-  readonly stepKind?: ExecutionStepKind;
-  readonly verificationMode?: ExecutionVerificationMode;
-  readonly role?: WorkflowStepRole;
-}): readonly WorkflowArtifactRelation[] {
-  const explicitRelations = (params.artifactRelations ?? [])
-    .map((relation) => {
-      const relationType =
-        typeof relation.relationType === "string"
-          ? relation.relationType.trim().toLowerCase()
-          : "";
-      if (
-        !(WORKFLOW_ARTIFACT_RELATION_TYPES as readonly string[]).includes(
-          relationType,
-        )
-      ) {
-        return undefined;
-      }
-      const artifactPath = normalizeWorkflowArtifactPath(
-        relation.artifactPath,
-        params.workspaceRoot,
-      );
-      if (!artifactPath) {
-        return undefined;
-      }
-      return {
-        relationType: relationType as WorkflowArtifactRelationType,
-        artifactPath,
-      };
-    })
-    .filter(
-      (relation): relation is WorkflowArtifactRelation => relation !== undefined,
-    );
-  if (explicitRelations.length > 0) {
-    return dedupeWorkflowArtifactRelations(explicitRelations);
-  }
-
-  const inferred: WorkflowArtifactRelation[] = [];
-  for (const artifactPath of params.inputArtifacts ?? []) {
-    inferred.push({
-      relationType: "context_input",
-      artifactPath,
-    });
-  }
-  for (const artifactPath of params.requiredSourceArtifacts ?? []) {
-    inferred.push({
-      relationType: "read_dependency",
-      artifactPath,
-    });
-  }
-
-  const targetRelationType: WorkflowArtifactRelationType =
-    params.role === "writer" ||
-      params.stepKind === "delegated_write" ||
-      params.stepKind === "delegated_scaffold" ||
-      params.verificationMode === "mutation_required"
-      ? "write_owner"
-      : params.role === "validator" ||
-          params.stepKind === "delegated_validation" ||
-          params.verificationMode === "deterministic_followup"
-        ? "verification_subject"
-        : "verification_subject";
-  for (const artifactPath of params.targetArtifacts ?? []) {
-    inferred.push({
-      relationType: targetRelationType,
-      artifactPath,
-    });
-  }
-  return dedupeWorkflowArtifactRelations(inferred);
-}
-
-export function resolveExecutionEnvelopeRole(
-  envelope: ExecutionEnvelope | undefined,
-): WorkflowStepRole | undefined {
-  if (!envelope) {
-    return undefined;
-  }
-  return canonicalizeWorkflowStepRole({
-    role: envelope.role,
-    stepKind: envelope.stepKind,
-    effectClass: envelope.effectClass,
-    verificationMode: envelope.verificationMode,
-  });
-}
-
-export function resolveExecutionEnvelopeArtifactRelations(
-  envelope: ExecutionEnvelope | undefined,
-): readonly WorkflowArtifactRelation[] {
-  if (!envelope) {
-    return [];
-  }
-  return canonicalizeWorkflowArtifactRelations({
-    workspaceRoot: envelope.workspaceRoot,
-    artifactRelations: envelope.artifactRelations,
-    inputArtifacts: envelope.inputArtifacts,
-    requiredSourceArtifacts: envelope.requiredSourceArtifacts,
-    targetArtifacts: envelope.targetArtifacts,
-    stepKind: envelope.stepKind,
-    verificationMode: envelope.verificationMode,
-    role: resolveExecutionEnvelopeRole(envelope),
-  });
-}
-
-export function collectWorkflowArtifactRelationPaths(params: {
-  readonly relations?: readonly WorkflowArtifactRelation[];
-  readonly relationTypes?: readonly WorkflowArtifactRelationType[];
-}): readonly string[] {
-  const relationTypeFilter =
-    params.relationTypes && params.relationTypes.length > 0
-      ? new Set(params.relationTypes)
-      : undefined;
-  const artifacts = new Set<string>();
-  for (const relation of params.relations ?? []) {
-    if (
-      relationTypeFilter &&
-      !relationTypeFilter.has(relation.relationType)
-    ) {
-      continue;
-    }
-    artifacts.add(relation.artifactPath);
-  }
-  return [...artifacts];
 }

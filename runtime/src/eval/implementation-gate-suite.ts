@@ -11,11 +11,7 @@ import { LLMTimeoutError } from "../llm/errors.js";
 import type { LLMProvider, LLMResponse } from "../llm/types.js";
 import { runCommand } from "../utils/process.js";
 import type { DelegationValidationToolCall } from "../utils/delegation-validation.js";
-import {
-  resolveWorkflowCompletionState,
-  resolveWorkflowDependencyState,
-  type WorkflowCompletionState,
-} from "../workflow/completion-state.js";
+import { resolveWorkflowCompletionState } from "../workflow/completion-state.js";
 import type { WorkflowProgressSnapshot } from "../workflow/completion-progress.js";
 import type { WorkflowVerificationContract } from "../workflow/verification-obligations.js";
 import { validateRuntimeVerificationContract } from "../workflow/verification-contract.js";
@@ -186,14 +182,6 @@ function resolveVerifiedCompletionState(params: {
   });
 }
 
-function isSatisfiedTerminalCompletion(
-  completionState: string,
-): boolean {
-  return resolveWorkflowDependencyState({
-    completionState: completionState as WorkflowCompletionState,
-  }).kind === "satisfied_terminal";
-}
-
 async function withTempRepo<T>(
   label: string,
   fn: (repoDir: string) => Promise<T>,
@@ -215,15 +203,12 @@ async function runShellStubReplayScenario(
   ]);
   const trace = parseTrajectoryTrace(JSON.parse(rawTrace) as unknown);
   const expected = JSON.parse(rawExpected) as {
-    expectedReplay: {
-      taskPda: string;
-      completionState?: string;
-    };
+    expectedReplay: { taskPda: string; finalStatus: string };
   };
   const replay = new TrajectoryReplayEngine({ strictMode: true }).replay(trace);
   const task = replay.tasks[expected.expectedReplay.taskPda];
-  const falseCompleted = task?.dependencyStateKind === "satisfied_terminal";
-  const observedOutcome = task?.completionState ?? "missing";
+  const falseCompleted = task?.status === "completed";
+  const observedOutcome = task?.status ?? "missing";
   return {
     scenarioId: "shell_stub_false_completion_replay_gate",
     title: "Shell stub incident remains non-complete under deterministic replay",
@@ -233,11 +218,11 @@ async function runShellStubReplayScenario(
     passed:
       replay.errors.length === 0 &&
       replay.warnings.length === 0 &&
-      observedOutcome === (expected.expectedReplay.completionState ?? "blocked") &&
+      observedOutcome === expected.expectedReplay.finalStatus &&
       falseCompleted === false,
     falseCompleted,
     observedOutcome,
-    expectedOutcome: expected.expectedReplay.completionState ?? "blocked",
+    expectedOutcome: expected.expectedReplay.finalStatus,
     notes: `errors=${replay.errors.length} warnings=${replay.warnings.length}`,
   };
 }
@@ -295,8 +280,8 @@ async function runDeterministicImplementationScenario(): Promise<PipelineImpleme
       category: "deterministic_false_completion",
       mandatory: true,
       executionMode: "temp_repo",
-      passed: decision?.ok === false && !isSatisfiedTerminalCompletion(completionState),
-      falseCompleted: isSatisfiedTerminalCompletion(completionState),
+      passed: decision?.ok === false && completionState !== "completed",
+      falseCompleted: completionState === "completed",
       observedOutcome: completionState,
       expectedOutcome: "partial",
       notes: decision?.diagnostic?.code ?? "missing_decision",
@@ -346,7 +331,7 @@ async function runValidScaffoldScenario(): Promise<PipelineImplementationGateSce
       category: "scaffold_placeholder",
       mandatory: true,
       executionMode: "temp_repo",
-      passed: decision?.ok === true && isSatisfiedTerminalCompletion(completionState),
+      passed: decision?.ok === true && completionState === "completed",
       falseCompleted: false,
       observedOutcome: completionState,
       expectedOutcome: "completed",
@@ -401,7 +386,7 @@ async function runImplementationRepairScenario(): Promise<PipelineImplementation
       category: "implementation_repair",
       mandatory: true,
       executionMode: "temp_repo",
-      passed: decision?.ok === true && isSatisfiedTerminalCompletion(completionState),
+      passed: decision?.ok === true && completionState === "completed",
       falseCompleted: false,
       observedOutcome: completionState,
       expectedOutcome: "completed",
@@ -516,7 +501,7 @@ async function runResumeAfterPartialScenario(): Promise<PipelineImplementationGa
           observedOutcome === "needs_verification" &&
           remaining.includes("behavior_verification") &&
           reusedEvidence.some((entry) => entry.requirement === "build_verification"),
-        falseCompleted: isSatisfiedTerminalCompletion(observedOutcome),
+        falseCompleted: observedOutcome === "completed",
         observedOutcome,
         expectedOutcome: "needs_verification",
         notes: `remaining=${remaining.join(",") || "none"}`,
@@ -594,10 +579,8 @@ async function runDegradedProviderRetryScenario(): Promise<PipelineImplementatio
     category: "degraded_provider_retry",
     mandatory: false,
     executionMode: "runtime",
-    passed:
-      result.usedFallback === true &&
-      !isSatisfiedTerminalCompletion(completionState),
-    falseCompleted: isSatisfiedTerminalCompletion(completionState),
+    passed: result.usedFallback === true && completionState !== "completed",
+    falseCompleted: completionState === "completed",
     observedOutcome: completionState,
     expectedOutcome: "needs_verification",
     notes: `fallback=${String(result.usedFallback)}`,
@@ -646,8 +629,8 @@ async function runSafetyIncompleteOutputScenario(): Promise<PipelineImplementati
     category: "safety_incomplete_output",
     mandatory: false,
     executionMode: "policy",
-    passed: blocked && !isSatisfiedTerminalCompletion(completionState),
-    falseCompleted: isSatisfiedTerminalCompletion(completionState),
+    passed: blocked && completionState !== "completed",
+    falseCompleted: completionState === "completed",
     observedOutcome: `${completionState}:${outcome.status}`,
     expectedOutcome: "needs_verification:require_approval_or_deny",
     notes: outcome.reasonCode,

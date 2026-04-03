@@ -60,6 +60,7 @@ export function buildDesktopContext(
       "- system.processStart / system.processStatus / system.processResume / system.processStop / system.processLogs — Manage durable host background processes when the task is not GUI-local.\n" +
       "- system.serverStart / system.serverStatus / system.serverResume / system.serverStop / system.serverLogs — Manage durable host HTTP service handles.\n" +
       "- system.remoteJobStart / system.remoteJobStatus / system.remoteJobResume / system.remoteJobCancel / system.remoteJobArtifacts — Track durable remote MCP jobs.\n" +
+      "- system.remoteSessionStart / system.remoteSessionStatus / system.remoteSessionResume / system.remoteSessionSend / system.remoteSessionStop / system.remoteSessionEvents — Track durable interactive remote session handles with viewer-only policy, message channels, and event history.\n" +
       "- system.researchStart / system.researchStatus / system.researchResume / system.researchUpdate / system.researchComplete / system.researchBlock / system.researchArtifacts / system.researchStop — Track durable research/report work.\n\n" +
       "Desktop tools:\n" +
       "- desktop.bash — Run shell commands inside the CURRENT attached desktop sandbox. THIS IS YOUR PRIMARY TOOL for one-shot scripting, package installation, and command execution inside that sandbox.\n" +
@@ -129,6 +130,7 @@ export function buildDesktopContext(
       "- system.sandboxStart / system.sandboxStatus / system.sandboxResume / system.sandboxStop — Manage durable code-execution sandbox environments with stable workspace and container identity.\n" +
       "- system.sandboxJobStart / system.sandboxJobStatus / system.sandboxJobResume / system.sandboxJobStop / system.sandboxJobLogs — Run durable jobs inside sandbox environments without falling back to raw docker shell heuristics.\n" +
       "- system.remoteJobStart / system.remoteJobStatus / system.remoteJobResume / system.remoteJobCancel / system.remoteJobArtifacts — Track long-running remote MCP jobs with durable callback or polling handles instead of raw callback prose.\n" +
+      "- system.remoteSessionStart / system.remoteSessionStatus / system.remoteSessionResume / system.remoteSessionSend / system.remoteSessionStop / system.remoteSessionEvents — Track long-running interactive remote sessions with durable handles, message channels, viewer-only policy, and durable event logs.\n" +
       "- system.researchStart / system.researchStatus / system.researchResume / system.researchUpdate / system.researchComplete / system.researchBlock / system.researchArtifacts / system.researchStop — Track research/report work with durable progress, verifier state, and artifact handles.\n" +
       "- system.serverStart — Start a durable host server handle with readiness probing and health metadata. USE THIS instead of raw shell for HTTP services you need to monitor.\n" +
       "- system.serverStatus / system.serverResume / system.serverStop / system.serverLogs — Inspect, reattach, stop, and read logs for durable host server handles.\n\n" +
@@ -172,6 +174,7 @@ export function buildDesktopContext(
       "- For local HTTP services on the HOST, prefer system.serverStart/status/resume/stop/logs over system.bash + curl heuristics.\n" +
       "- For long-running/background processes on the HOST, use system.processStart/status/resume/stop/logs instead of system.bash.\n" +
       "- For remote long-running jobs with callbacks or polling, use system.remoteJob* durable handles instead of relying on raw webhook text or ad hoc status prose.\n" +
+      "- For interactive remote viewers, coordinators, or session backends that need resume/send/stop semantics, use system.remoteSession* durable handles instead of keeping session state only in chat.\n" +
       "- For multi-step research/report work you need to resume or audit later, use system.research* durable handles instead of keeping progress only in chat summaries.\n" +
       "- system.processStart is structured exec only: command = one executable token/path, args = flat string array. Do NOT use shell snippets there.\n" +
       "- For long-running/background processes you need to inspect or stop later, use desktop.process_start/status/stop instead of desktop.bash.\n" +

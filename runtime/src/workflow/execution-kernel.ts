@@ -5,10 +5,7 @@ import type {
   PipelineResult,
   PipelineStopReasonHint,
 } from "./pipeline.js";
-import {
-  resolvePipelineCompletionState,
-  resolvePipelineCompletionStateFromDependencyStates,
-} from "./completion-state.js";
+import { resolvePipelineCompletionState } from "./completion-state.js";
 import type { WorkflowGraphEdge } from "./types.js";
 import type {
   ExecutionKernel as ExecutionKernelContract,
@@ -108,7 +105,6 @@ export class CanonicalExecutionKernel implements ExecutionKernelContract {
     const pending = new Set(executionOrder);
     const satisfied = new Set<string>();
     const unsatisfied = new Map<string, ExecutionKernelDependencyState>();
-    const dependencyStates = new Map<string, ExecutionKernelDependencyState>();
     const blockedStepNames: string[] = [];
     const mutableResults: Record<string, string> = { ...pipeline.context.results };
     const running = new Map<string, RunningNode>();
@@ -167,16 +163,10 @@ export class CanonicalExecutionKernel implements ExecutionKernelContract {
             error,
           });
           unsatisfied.set(node.step.name, {
-            kind: "unsatisfied_terminal",
-            completionState: "blocked",
-            dependencySatisfied: false,
-            terminal: true,
-            verifierClosed: false,
-            semantics: "normal",
+            satisfied: false,
             reason: error,
             stopReasonHint,
           });
-          dependencyStates.set(node.step.name, unsatisfied.get(node.step.name)!);
           emitStepStateChange({
             options,
             pipelineId: pipeline.id,
@@ -339,14 +329,39 @@ export class CanonicalExecutionKernel implements ExecutionKernelContract {
         };
       }
 
+      if (
+        completion.outcome.status === "failed" &&
+        completion.outcome.fallback?.satisfied
+      ) {
+        mutableResults[node.step.name] = completion.outcome.fallback.result;
+        satisfied.add(node.step.name);
+        completedSteps++;
+        emitStepStateChange({
+          options,
+          pipelineId: pipeline.id,
+          stepName: node.step.name,
+          stepIndex: node.orderIndex,
+          previousState: nodeState.get(node.step.name),
+          state: "completed",
+          reason: completion.outcome.fallback.reason,
+          ...(this.plannerDelegate.resolveTraceToolName?.(node.step)
+            ? { tool: this.plannerDelegate.resolveTraceToolName?.(node.step) }
+            : {}),
+          ...(this.plannerDelegate.buildTraceArgs?.(node.step)
+            ? { args: this.plannerDelegate.buildTraceArgs?.(node.step) }
+            : {}),
+        });
+        nodeState.set(node.step.name, "completed");
+        continue;
+      }
+
       if (completion.outcome.status === "completed") {
         mutableResults[node.step.name] = completion.outcome.result;
         const dependencyState = this.plannerDelegate.assessDependencySatisfaction(
           node.step,
           completion.outcome.result,
         );
-        dependencyStates.set(node.step.name, dependencyState);
-        if (dependencyState.dependencySatisfied) {
+        if (dependencyState.satisfied) {
           satisfied.add(node.step.name);
           emitStepStateChange({
             options,
@@ -477,9 +492,10 @@ export class CanonicalExecutionKernel implements ExecutionKernelContract {
         : undefined;
       return {
         status: "failed",
-        completionState: resolvePipelineCompletionStateFromDependencyStates(
-          Array.from(dependencyStates.values()),
-        ),
+        completionState: resolvePipelineCompletionState({
+          status: "failed",
+          completedSteps,
+        }),
         context: { results: { ...mutableResults } },
         completedSteps,
         totalSteps,
@@ -492,38 +508,9 @@ export class CanonicalExecutionKernel implements ExecutionKernelContract {
       };
     }
 
-    const aggregateCompletionState = resolvePipelineCompletionStateFromDependencyStates(
-      Array.from(dependencyStates.values()),
-    );
-    if (
-      aggregateCompletionState === "partial" ||
-      aggregateCompletionState === "blocked"
-    ) {
-      const firstUnresolvedStep = executionOrder.find((stepName) =>
-        unsatisfied.has(stepName)
-      );
-      const firstUnresolvedAssessment = firstUnresolvedStep
-        ? unsatisfied.get(firstUnresolvedStep)
-        : undefined;
-      return {
-        status: "failed",
-        completionState: aggregateCompletionState,
-        context: { results: { ...mutableResults } },
-        completedSteps,
-        totalSteps,
-        error:
-          firstUnresolvedAssessment?.reason ??
-          (firstUnresolvedStep
-            ? `Planner step "${firstUnresolvedStep}" finished without satisfying its contract`
-            : "Planner DAG finished with unresolved workflow state"),
-        stopReasonHint:
-          firstUnresolvedAssessment?.stopReasonHint ?? "validation_error",
-      };
-    }
-
     return {
       status: "completed",
-      completionState: aggregateCompletionState,
+      completionState: "completed",
       context: { results: { ...mutableResults } },
       completedSteps,
       totalSteps,
@@ -549,7 +536,7 @@ export class CanonicalExecutionKernel implements ExecutionKernelContract {
     const blocked: BlockedDependencyDetail[] = [];
     for (const dependency of node.dependencies) {
       const state = unsatisfied.get(dependency);
-      if (!state || state.dependencySatisfied) continue;
+      if (!state || state.satisfied) continue;
       blocked.push({
         stepName: dependency,
         reason:

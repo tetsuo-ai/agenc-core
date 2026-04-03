@@ -160,6 +160,7 @@ export type {
   ExecutionKernelStepState,
   ExecutionKernelStepStateChange,
   ExecutionKernelNodeOutcome,
+  ExecutionKernelFallbackResolution,
   ExecutionKernelDependencyState,
 } from "./execution-kernel-types.js";
 

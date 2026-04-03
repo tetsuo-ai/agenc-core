@@ -80,24 +80,6 @@ describe("verification-obligations", () => {
     });
   });
 
-  it("keeps reviewer obligations read-only even when the reviewed artifact is also the verification subject", () => {
-    const obligations = deriveVerificationObligations({
-      workspaceRoot: "/tmp/project",
-      requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
-      targetArtifacts: ["/tmp/project/PLAN.md"],
-      stepKind: "delegated_review",
-      verificationMode: "grounded_read",
-      role: "reviewer",
-    });
-
-    expect(obligations).toMatchObject({
-      role: "reviewer",
-      requiresMutationEvidence: false,
-      requiresReviewVerification: true,
-      allowsGroundedNoop: false,
-    });
-  });
-
   it("treats behavior-like acceptance criteria as behavior verification requirements", () => {
     const obligations = deriveVerificationObligations({
       workspaceRoot: "/tmp/project",

@@ -75,6 +75,30 @@ const TOOLS: LLMTool[] = [
     "List durable artifacts for a remote MCP job handle",
   ),
   makeTool(
+    "system.remoteSessionStart",
+    "Register a durable interactive remote session handle with callback or polling state, viewer-only policy, and send/stop endpoints",
+  ),
+  makeTool(
+    "system.remoteSessionStatus",
+    "Inspect a durable interactive remote session handle",
+  ),
+  makeTool(
+    "system.remoteSessionResume",
+    "Reattach to a durable interactive remote session handle",
+  ),
+  makeTool(
+    "system.remoteSessionSend",
+    "Send a message through a durable interactive remote session handle",
+  ),
+  makeTool(
+    "system.remoteSessionStop",
+    "Stop a durable interactive remote session handle",
+  ),
+  makeTool(
+    "system.remoteSessionEvents",
+    "List durable events and artifacts for an interactive remote session handle",
+  ),
+  makeTool(
     "system.researchStart",
     "Create a durable research handle with source sets, verifier state, and artifact refs",
   ),
@@ -883,6 +907,31 @@ describe("ToolRouter", () => {
         "system.remoteJobArtifacts",
       ]),
     );
+    expect(decision.routedToolNames).not.toContain("system.remoteSessionStart");
+  });
+
+  it("routes durable remote session tools for interactive viewer/message workflows", () => {
+    const router = new ToolRouter(TOOLS, {
+      maxToolsPerTurn: 12,
+      minToolsPerTurn: 4,
+    });
+
+    const decision = router.route({
+      sessionId: "s-remote-session",
+      messageText:
+        "start a remote session handle for an interactive viewer-only coordinator, resume the remote session later, send a follow-up message, and inspect session events",
+      history: [],
+    });
+
+    expect(decision.routedToolNames).toContain("system.remoteSessionStart");
+    expect(decision.expandedToolNames).toEqual(
+      expect.arrayContaining([
+        "system.remoteSessionResume",
+        "system.remoteSessionSend",
+        "system.remoteSessionEvents",
+      ]),
+    );
+    expect(decision.routedToolNames).not.toContain("system.remoteJobStart");
   });
 
   it("routes durable research tools for resumable report workflows", () => {

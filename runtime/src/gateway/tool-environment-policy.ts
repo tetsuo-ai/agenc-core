@@ -20,6 +20,7 @@ const DESKTOP_ALLOWED_HOST_CONTROL_TOOL_PREFIXES = [
   "system.browserSession",
   "system.browserTransfer",
   "system.remoteJob",
+  "system.remoteSession",
   "system.research",
   "system.sandbox",
 ] as const;

@@ -52,6 +52,7 @@ function createCommandHarness(overrides = {}) {
     { name: "/plugins", usage: "/plugins [list|trust <packageName> [subpath ...]|untrust <packageName>]", description: "plugins", aliases: [] },
     { name: "/mcp", usage: "/mcp [list|enable <serverName>|disable <serverName>]", description: "mcp", aliases: [] },
     { name: "/hooks", usage: "/hooks [list|events]", description: "hooks", aliases: [] },
+    { name: "/xai", usage: "/xai [set|status|validate|clear]", description: "xai", aliases: ["/api"] },
     { name: "/input-mode", usage: "/input-mode [show|default|vim]", description: "input mode", aliases: [] },
     { name: "/keybindings", usage: "/keybindings [show|default|vim]", description: "keybindings", aliases: [] },
     { name: "/theme", usage: "/theme [show|default|aurora|ember]", description: "theme", aliases: [] },
@@ -216,6 +217,22 @@ function createCommandHarness(overrides = {}) {
       calls.push({ type: "setMcpServerEnabled", serverName, enabled });
       return { serverName, enabled };
     },
+    showXaiStatus() {
+      calls.push({ type: "showXaiStatus" });
+      return { hasApiKey: false };
+    },
+    validateConfiguredXaiKey() {
+      calls.push({ type: "validateConfiguredXaiKey" });
+      return true;
+    },
+    clearXaiApiKey() {
+      calls.push({ type: "clearXaiApiKey" });
+      return true;
+    },
+    promptForXaiApiKey() {
+      calls.push({ type: "promptForXaiApiKey" });
+      return true;
+    },
     captureCheckpoint(label, options) {
       calls.push({ type: "captureCheckpoint", label, options });
       return {
@@ -288,6 +305,10 @@ function createCommandHarness(overrides = {}) {
     clearPendingAttachments() {
       calls.push({ type: "clearPendingAttachments" });
       return pendingAttachments.splice(0, pendingAttachments.length);
+    },
+    applyOptimisticModelSelection(modelName) {
+      calls.push({ type: "applyOptimisticModelSelection", modelName });
+      return true;
     },
     prepareChatMessagePayload(content, { consumeAttachments = true } = {}) {
       calls.push({ type: "prepareChatMessagePayload", content, consumeAttachments });
@@ -472,6 +493,33 @@ test("command controller shows extensibility sections and mutates local config h
   assert.ok(calls.some((entry) => entry.type === "setMcpServerEnabled" && entry.serverName === "browser" && entry.enabled === true));
   assert.ok(calls.some((entry) => entry.type === "showExtensibility" && entry.section === "hooks"));
   assert.ok(calls.some((entry) => entry.type === "send" && entry.frameType === "hooks.list"));
+});
+
+test("command controller handles local xai credential commands without daemon messages", () => {
+  const { controller, calls } = createCommandHarness();
+
+  assert.equal(controller.dispatchOperatorInput("/xai"), true);
+  assert.equal(controller.dispatchOperatorInput("/xai status"), true);
+  assert.equal(controller.dispatchOperatorInput("/xai validate"), true);
+  assert.equal(controller.dispatchOperatorInput("/xai clear"), true);
+  assert.equal(controller.dispatchOperatorInput("/api set"), true);
+
+  assert.equal(
+    calls.filter((entry) => entry.type === "promptForXaiApiKey").length,
+    2,
+  );
+  assert.ok(calls.some((entry) => entry.type === "showXaiStatus"));
+  assert.ok(calls.some((entry) => entry.type === "validateConfiguredXaiKey"));
+  assert.ok(calls.some((entry) => entry.type === "clearXaiApiKey"));
+  assert.equal(
+    calls.some(
+      (entry) =>
+        entry.type === "send" &&
+        entry.frameType === "chat.message" &&
+        /\/xai|\/api/.test(String(entry.payload?.content ?? "")),
+    ),
+    false,
+  );
 });
 
 test("command controller manages input preferences locally", () => {
@@ -1343,6 +1391,29 @@ test("command controller stores session list filters before requesting chat.sess
       (entry) =>
         entry.type === "send" &&
         entry.frameType === "chat.sessions",
+    ),
+  );
+});
+
+test("command controller applies optimistic model selection only for concrete model switches", () => {
+  const { controller, calls } = createCommandHarness();
+
+  assert.equal(controller.dispatchOperatorInput("/model grok-4-1-fast-reasoning"), true);
+  assert.equal(controller.dispatchOperatorInput("/model current"), true);
+  assert.equal(controller.dispatchOperatorInput("/model list"), true);
+
+  assert.deepEqual(
+    calls
+      .filter((entry) => entry.type === "applyOptimisticModelSelection")
+      .map((entry) => entry.modelName),
+    ["grok-4-1-fast-reasoning"],
+  );
+  assert.ok(
+    calls.some(
+      (entry) =>
+        entry.type === "send" &&
+        entry.frameType === "chat.message" &&
+        entry.payload?.content === "/model grok-4-1-fast-reasoning",
     ),
   );
 });

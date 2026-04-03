@@ -9,6 +9,7 @@
 
 import type { GatewayAuthConfig } from "./remote-types.js";
 import type { BackgroundRunOperatorAvailabilityCode } from "./background-run-operator.js";
+import type { HookConfig } from "./hooks.js";
 import type { DesktopSandboxConfig } from "../desktop/types.js";
 import type { SocialPeerDirectoryEntry } from "../social/types.js";
 import type { LLMXaiCapabilitySurface } from "../llm/types.js";
@@ -671,6 +672,8 @@ export interface GatewayConfig {
   policy?: GatewayPolicyConfig;
   /** Approval engine: SLAs and escalation behavior for gated tool calls. */
   approvals?: GatewayApprovalConfig;
+  /** Runtime lifecycle hook registration and metadata. */
+  hooks?: HookConfig;
   /** Social module: discovery, messaging, feed, reputation, collaboration */
   social?: GatewaySocialConfig;
   /** Runtime autonomy controls, notifications, and rollout policy. */

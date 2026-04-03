@@ -3,12 +3,6 @@
 This document defines the runtime chat/tool pipeline implemented by `ChatExecutor`, `SubAgentOrchestrator`, and provider adapters.
 It is the canonical reference for pipeline states, delegation behavior, budget controls, and fallback logic.
 
-Temporary cleanup guardrails for this path are tracked in
-[../guides/workflow-cleanup-mode.md](../guides/workflow-cleanup-mode.md). That
-guide freezes the currently allowed status families, verifier issue-code
-families, compatibility branches, and must-pass incident fixtures while the
-planner/delegation/verifier cleanup is in progress.
-
 ## Code Anchors
 
 - `runtime/src/llm/chat-executor.ts`

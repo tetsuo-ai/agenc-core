@@ -23,6 +23,16 @@ export function createWatchSurfaceStateController(dependencies = {}) {
   let cachedSurfaceSummaryKey = null;
   let cachedSurfaceSummary = null;
 
+  function defaultWorkingGlyphFrames() {
+    // AgenC_Logo.svg resolves to a diamond / inner-cross silhouette.
+    // The TUI can't animate the SVG directly, so we pulse through a compact
+    // set of Unicode marks that preserve that logo shape in one cell.
+    if (process.env.TERM === "xterm-ghostty") {
+      return ["·", "◇", "◈", "❖", "◈", "◇"];
+    }
+    return ["·", "◇", "◈", "❖", "◈", "◇"];
+  }
+
   function currentSessionElapsedLabel() {
     return formatElapsedMs(nowMs() - watchState.sessionAttachedAtMs);
   }
@@ -36,7 +46,8 @@ export function createWatchSurfaceStateController(dependencies = {}) {
   }
 
   function animatedWorkingGlyph() {
-    const frames = ["\u25d0", "\u25d3", "\u25d1", "\u25d2"];
+    const baseFrames = defaultWorkingGlyphFrames();
+    const frames = [...baseFrames, ...[...baseFrames].reverse()];
     const frameIndex = Math.floor(nowMs() / activityPulseIntervalMs) % frames.length;
     return frames[frameIndex] ?? frames[0];
   }
@@ -46,7 +57,18 @@ export function createWatchSurfaceStateController(dependencies = {}) {
   }
 
   function effectiveModelRoute() {
-    return watchState.liveSessionModelRoute ?? watchState.configuredModelRoute;
+    const liveRoute = watchState.liveSessionModelRoute;
+    const configuredRoute = watchState.configuredModelRoute;
+    if (liveRoute && configuredRoute) {
+      const liveUpdatedAt = Number.isFinite(Number(liveRoute.updatedAt))
+        ? Number(liveRoute.updatedAt)
+        : Number.NEGATIVE_INFINITY;
+      const configuredUpdatedAt = Number.isFinite(Number(configuredRoute.updatedAt))
+        ? Number(configuredRoute.updatedAt)
+        : Number.NEGATIVE_INFINITY;
+      return configuredUpdatedAt >= liveUpdatedAt ? configuredRoute : liveRoute;
+    }
+    return liveRoute ?? configuredRoute;
   }
 
   function currentSessionLabel() {

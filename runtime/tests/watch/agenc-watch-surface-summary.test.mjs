@@ -26,10 +26,10 @@ test("buildWatchLayout disables sidebar for narrow, slash, and detail modes", ()
     {
       width: 140,
       height: 40,
-      bodyHeight: 32,
-      useSidebar: true,
-      sidebarWidth: 42,
-      transcriptWidth: 96,
+      bodyHeight: 35,
+      useSidebar: false,
+      sidebarWidth: 0,
+      transcriptWidth: 140,
     },
   );
 

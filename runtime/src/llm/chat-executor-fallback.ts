@@ -87,7 +87,6 @@ export interface CallWithFallbackOptions {
   reconciliationMessages?: readonly LLMMessage[];
   routedToolNames?: readonly string[];
   toolChoice?: LLMToolChoice;
-  parallelToolCalls?: boolean;
   structuredOutput?: LLMChatOptions["structuredOutput"];
   requestDeadlineAt?: number;
   signal?: AbortSignal;
@@ -130,7 +129,6 @@ export async function callWithFallback(
     hasStatefulSessionId && options?.statefulHistoryCompacted === true;
   const hasRoutedToolNames = options?.routedToolNames !== undefined;
   const hasToolChoice = options?.toolChoice !== undefined;
-  const hasParallelToolCalls = options?.parallelToolCalls !== undefined;
   const hasStructuredOutput = options?.structuredOutput !== undefined;
   const hasAbortSignal = options?.signal !== undefined;
   const hasProviderTrace =
@@ -140,7 +138,6 @@ export async function callWithFallback(
     hasStatefulSessionId ||
       hasRoutedToolNames ||
       hasToolChoice ||
-      hasParallelToolCalls ||
       hasStructuredOutput ||
       hasAbortSignal ||
       hasProviderTrace
@@ -164,9 +161,6 @@ export async function callWithFallback(
           ? { toolRouting: { allowedToolNames: options?.routedToolNames } }
           : {}),
         ...(hasToolChoice ? { toolChoice: options?.toolChoice } : {}),
-        ...(hasParallelToolCalls
-          ? { parallelToolCalls: options?.parallelToolCalls }
-          : {}),
         ...(hasStructuredOutput
           ? { structuredOutput: options?.structuredOutput }
           : {}),

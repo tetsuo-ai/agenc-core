@@ -33,6 +33,11 @@ export function createPolicyGateHook(
     event: "tool:before",
     name: "policy-gate",
     priority: 15,
+    source: "runtime",
+    kind: "policy",
+    handlerType: "runtime",
+    target: "policy-engine",
+    supported: true,
     handler: async (ctx) => {
       const payload = ctx.payload;
       const toolName =

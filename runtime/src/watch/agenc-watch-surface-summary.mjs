@@ -22,8 +22,8 @@ const BADGE_MAP = Object.freeze({
   "subagent tool": { label: "EXEC", tone: "amber" },
   "subagent tool result": { label: "RETURN", tone: "green" },
   "subagent error": { label: "FAULT", tone: "red" },
-  agent: { label: "CORE", tone: "cyan" },
-  you: { label: "YOU", tone: "teal" },
+  agent: { label: "assistant", tone: "slate" },
+  you: { label: "you", tone: "slate" },
   operator: { label: "CTRL", tone: "teal" },
   run: { label: "STATE", tone: "magenta" },
   inspect: { label: "STATE", tone: "magenta" },
@@ -284,15 +284,11 @@ export function buildWatchLayout({
   slashMode,
   detailOpen,
 }) {
-  const footerRows = 4; // separator + status + hint + composer (min 1 line)
+  const footerRows = 1; // composer (min 1 line)
   const bodyHeight = Math.max(4, height - headerRows - footerRows - popupRows);
-  const useSidebar = !detailOpen && !slashMode && width >= 118;
-  const sidebarWidth = useSidebar
-    ? Math.min(48, Math.max(36, Math.floor(width * 0.3)))
-    : 0;
-  const transcriptWidth = useSidebar
-    ? Math.max(60, width - sidebarWidth - 2)
-    : width;
+  const useSidebar = false;
+  const sidebarWidth = 0;
+  const transcriptWidth = width;
   return {
     width,
     height,
@@ -614,9 +610,9 @@ export function buildWatchFooterSummary({
   let hintLeft;
   let hintStatus = hintRight;
   if (detailOpen) {
-    hintLeft = `${enableMouseTracking ? "mouse wheel / " : ""}pgup pgdn scroll  ctrl+o close detail  ctrl+y copy`;
+    hintLeft = `${enableMouseTracking ? "mouse wheel / " : ""}pgup pgdn scroll  ctrl+o close detail  ctrl+y copy  ctrl+q select`;
     if (diffNavigation?.enabled) {
-      hintLeft = `${enableMouseTracking ? "mouse wheel / " : ""}pgup pgdn scroll  ctrl+p prev hunk  ctrl+n next hunk  ctrl+o close detail  ctrl+y copy`;
+      hintLeft = `${enableMouseTracking ? "mouse wheel / " : ""}pgup pgdn scroll  ctrl+p prev hunk  ctrl+n next hunk  ctrl+o close detail  ctrl+y copy  ctrl+q select`;
     }
     hintStatus = linkState;
   } else if (fileTagMode) {
@@ -628,13 +624,13 @@ export function buildWatchFooterSummary({
   } else {
     if (inputModeProfile === "vim") {
       hintLeft = composerMode === "normal"
-        ? `i insert  h/l move  b/w word  j/k scroll  x delete${latestExpandable ? "  ctrl+o detail" : ""}`
-        : `esc normal  enter send  ctrl+k kill${latestExpandable ? "  ctrl+o detail" : ""}  ctrl+y copy`;
+        ? `i insert  h/l move  b/w word  j/k scroll  x delete${latestExpandable ? "  ctrl+o detail" : ""}  ctrl+q select`
+        : `esc normal  enter send  ctrl+k kill${latestExpandable ? "  ctrl+o detail" : ""}  ctrl+y copy  ctrl+q select`;
       hintStatus = composerMode === "normal" ? "vim normal" : "vim insert";
     } else {
       hintLeft = input.trim().length > 0
-        ? `enter send  ctrl+k kill  ctrl+←/→ word${latestExpandable ? "  ctrl+o detail" : ""}  ctrl+y copy  pgup/pgdn scroll`
-        : `/ commands${latestExpandable ? "  ctrl+o detail" : ""}  ctrl+y copy  /export save  pgup/pgdn scroll  ctrl+l clear`;
+        ? `enter send  ctrl+k kill  ctrl+←/→ word${latestExpandable ? "  ctrl+o detail" : ""}  ctrl+y copy  ctrl+q select  pgup/pgdn scroll`
+        : `/ commands${latestExpandable ? "  ctrl+o detail" : ""}  ctrl+y copy  ctrl+q select  /export save  pgup/pgdn scroll  ctrl+l clear`;
     }
   }
   const statuslineSegments = statuslineEnabled

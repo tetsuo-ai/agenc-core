@@ -124,8 +124,6 @@ describe("computeRuntimeSloSnapshot", () => {
           passRate: 0.5,
           promptInjectionBlocks: 1,
           maliciousRepoFileBlocks: 0,
-          maliciousSkillMetadataBlocks: 0,
-          marketplaceTaskPayloadBlocks: 0,
           unsafeShellBlocks: 1,
           unauthorizedArtifactWriteBlocks: 0,
           unsafeMutationAttempts: 1,

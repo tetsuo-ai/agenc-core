@@ -18,7 +18,6 @@ import { silentLogger } from "../../utils/logger.js";
 import { derivePda } from "../../utils/pda.js";
 import { ValidationError } from "../../types/errors.js";
 import type { Wallet } from "../../types/wallet.js";
-import { assessSkillMetadataRisk } from "../../security/untrusted-content.js";
 import {
   parseSkillContent,
   validateSkillMetadata,
@@ -322,26 +321,6 @@ export class OnChainSkillRegistryClient implements SkillRegistryClient {
       );
     }
 
-    const parsed = parseSkillContent(content.toString("utf-8"), targetPath);
-    const errors = validateSkillMetadata(parsed);
-    if (errors.length > 0) {
-      throw new SkillDownloadError(
-        skillId,
-        `Downloaded SKILL.md is invalid: ${errors.map((error) => error.message).join("; ")}`,
-      );
-    }
-    const metadataRisk = assessSkillMetadataRisk({
-      name: parsed.name,
-      description: parsed.description,
-      tags: parsed.metadata.tags,
-    });
-    if (metadataRisk.riskLevel === "high") {
-      throw new SkillDownloadError(
-        skillId,
-        `Downloaded SKILL.md rejected as prompt-injection risk (${metadataRisk.matchedSignals.join(", ") || "high-risk pattern"})`,
-      );
-    }
-
     // Write to filesystem
     await mkdir(dirname(targetPath), { recursive: true });
     await writeFile(targetPath, content);
@@ -385,17 +364,6 @@ export class OnChainSkillRegistryClient implements SkillRegistryClient {
       throw new SkillPublishError(
         skillPath,
         `Invalid SKILL.md: ${errors.map((e) => e.message).join("; ")}`,
-      );
-    }
-    const metadataRisk = assessSkillMetadataRisk({
-      name: parsed.name,
-      description: parsed.description,
-      tags: parsed.metadata.tags,
-    });
-    if (metadataRisk.riskLevel === "high") {
-      throw new SkillPublishError(
-        skillPath,
-        `Suspicious SKILL.md metadata: ${metadataRisk.matchedSignals.join(", ") || "high-risk pattern"}`,
       );
     }
 

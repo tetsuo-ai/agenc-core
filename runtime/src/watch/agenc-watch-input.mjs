@@ -13,20 +13,26 @@ function assertObject(name, value) {
 export function createWatchInputController(dependencies = {}) {
   const {
     watchState,
+    currentInputPreferences = () => watchState.inputPreferences ?? { inputModeProfile: "default" },
     shuttingDown,
     parseMouseWheelSequence,
     scrollCurrentViewBy,
     shutdownWatch,
     toggleExpandedEvent,
+    toggleTerminalSelectionMode,
     currentDiffNavigationState,
     jumpCurrentDiffHunk,
     copyCurrentView,
+    isTerminalSelectionModeActive = () => false,
     clearLiveTranscriptView,
     deleteComposerTail,
     deleteComposerBackward,
     deleteComposerForward,
     autocompleteComposerInput,
+    acceptComposerPaletteSelection = () => false,
     navigateComposer,
+    hasActiveComposerPalette = () => false,
+    navigateComposerPalette = () => false,
     moveComposerCursorByCharacter,
     moveComposerCursorByWord,
     insertComposerTextValue,
@@ -40,20 +46,26 @@ export function createWatchInputController(dependencies = {}) {
   } = dependencies;
 
   assertObject("watchState", watchState);
+  assertFunction("currentInputPreferences", currentInputPreferences);
   assertFunction("shuttingDown", shuttingDown);
   assertFunction("parseMouseWheelSequence", parseMouseWheelSequence);
   assertFunction("scrollCurrentViewBy", scrollCurrentViewBy);
   assertFunction("shutdownWatch", shutdownWatch);
   assertFunction("toggleExpandedEvent", toggleExpandedEvent);
+  assertFunction("toggleTerminalSelectionMode", toggleTerminalSelectionMode);
   assertFunction("currentDiffNavigationState", currentDiffNavigationState);
   assertFunction("jumpCurrentDiffHunk", jumpCurrentDiffHunk);
   assertFunction("copyCurrentView", copyCurrentView);
+  assertFunction("isTerminalSelectionModeActive", isTerminalSelectionModeActive);
   assertFunction("clearLiveTranscriptView", clearLiveTranscriptView);
   assertFunction("deleteComposerTail", deleteComposerTail);
   assertFunction("deleteComposerBackward", deleteComposerBackward);
   assertFunction("deleteComposerForward", deleteComposerForward);
   assertFunction("autocompleteComposerInput", autocompleteComposerInput);
+  assertFunction("acceptComposerPaletteSelection", acceptComposerPaletteSelection);
   assertFunction("navigateComposer", navigateComposer);
+  assertFunction("hasActiveComposerPalette", hasActiveComposerPalette);
+  assertFunction("navigateComposerPalette", navigateComposerPalette);
   assertFunction("moveComposerCursorByCharacter", moveComposerCursorByCharacter);
   assertFunction("moveComposerCursorByWord", moveComposerCursorByWord);
   assertFunction("insertComposerTextValue", insertComposerTextValue);
@@ -98,7 +110,26 @@ export function createWatchInputController(dependencies = {}) {
     return true;
   }
 
-  function consumeBracketedPaste(input, index) {
+  function currentSecretPrompt() {
+    return watchState.secretPrompt && typeof watchState.secretPrompt === "object"
+      ? watchState.secretPrompt
+      : null;
+  }
+
+  function insertSecretPromptText(text) {
+    const prompt = currentSecretPrompt();
+    if (!prompt || prompt.pending) {
+      return false;
+    }
+    const normalized = normalizePastedText(text);
+    if (!normalized) {
+      return false;
+    }
+    prompt.value = `${String(prompt.value ?? "")}${normalized}`;
+    return true;
+  }
+
+  function consumeBracketedPaste(input, index, { insertText = insertPastedText } = {}) {
     const source = String(input ?? "");
     if (
       pendingBracketedPaste === null &&
@@ -123,7 +154,7 @@ export function createWatchInputController(dependencies = {}) {
     }
 
     pendingBracketedPaste += source.slice(scanIndex, endIndex);
-    const didMutate = insertPastedText(pendingBracketedPaste);
+    const didMutate = insertText(pendingBracketedPaste);
     pendingBracketedPaste = null;
     return {
       nextIndex: endIndex + BRACKETED_PASTE_END.length,
@@ -131,7 +162,93 @@ export function createWatchInputController(dependencies = {}) {
     };
   }
 
+  function handleSecretPromptInput(input) {
+    if (shuttingDown() || input.length === 0) {
+      return;
+    }
+
+    let index = 0;
+    let didMutate = false;
+
+    while (index < input.length) {
+      const prompt = currentSecretPrompt();
+      if (!prompt) {
+        break;
+      }
+
+      const bracketedPaste = consumeBracketedPaste(input, index, {
+        insertText: insertSecretPromptText,
+      });
+      if (bracketedPaste) {
+        didMutate = didMutate || bracketedPaste.didMutate;
+        index = bracketedPaste.nextIndex;
+        continue;
+      }
+
+      const char = input[index];
+      if (char === "\x03") {
+        shutdownWatch(0);
+        return;
+      }
+
+      if (prompt.pending) {
+        index += char === "\r" && input[index + 1] === "\n" ? 2 : 1;
+        continue;
+      }
+
+      if (char === "\r" || char === "\n") {
+        const submission = typeof prompt.onSubmit === "function"
+          ? prompt.onSubmit(prompt.value ?? "")
+          : null;
+        Promise.resolve(submission).catch(() => {});
+        didMutate = true;
+        index += char === "\r" && input[index + 1] === "\n" ? 2 : 1;
+        continue;
+      }
+
+      if (char === "\x7f" || char === "\b") {
+        const value = String(prompt.value ?? "");
+        if (value.length > 0) {
+          prompt.value = value.slice(0, -1);
+          didMutate = true;
+        }
+        index += 1;
+        continue;
+      }
+
+      if (char === "\x1b") {
+        const rest = String(input ?? "").slice(index);
+        if (rest === "\x1b") {
+          if (typeof prompt.onCancel === "function") {
+            prompt.onCancel();
+            didMutate = true;
+          }
+          index += 1;
+          continue;
+        }
+        index = consumeUnknownEscapeSequence(input, index);
+        continue;
+      }
+
+      if (char < " ") {
+        index += 1;
+        continue;
+      }
+
+      prompt.value = `${String(prompt.value ?? "")}${char}`;
+      didMutate = true;
+      index += 1;
+    }
+
+    if (didMutate) {
+      scheduleRender();
+    }
+  }
+
   function submitComposerInput() {
+    if (hasActiveComposerPalette()) {
+      acceptComposerPaletteSelection();
+    }
     const value = watchState.composerInput.trim();
     if (!value) {
       scheduleRender();
@@ -141,6 +258,18 @@ export function createWatchInputController(dependencies = {}) {
     resetComposer();
     operatorInputBatcher.push(value);
     scheduleRender();
+  }
+
+  function currentInputModeProfile() {
+    return currentInputPreferences()?.inputModeProfile === "vim" ? "vim" : "default";
+  }
+
+  function currentKeybindingProfile() {
+    return currentInputPreferences()?.keybindingProfile === "vim" ? "vim" : "default";
+  }
+
+  function isVimNormalMode() {
+    return currentInputModeProfile() === "vim" && watchState.composerMode === "normal";
   }
 
   function consumeUnknownEscapeSequence(input, index) {
@@ -177,8 +306,20 @@ export function createWatchInputController(dependencies = {}) {
       { seq: "\x1b[3~", run: () => {
         deleteComposerForward();
       } },
-      { seq: "\x1b[A", run: () => navigateComposer(-1) },
-      { seq: "\x1b[B", run: () => navigateComposer(1) },
+      { seq: "\x1b[A", run: () => {
+        if (hasActiveComposerPalette()) {
+          navigateComposerPalette(-1);
+          return;
+        }
+        navigateComposer(-1);
+      } },
+      { seq: "\x1b[B", run: () => {
+        if (hasActiveComposerPalette()) {
+          navigateComposerPalette(1);
+          return;
+        }
+        navigateComposer(1);
+      } },
       { seq: "\x1b[D", run: () => moveComposerCursorByCharacter(-1) },
       { seq: "\x1b[C", run: () => moveComposerCursorByCharacter(1) },
       { seq: "\x1b[H", run: () => {
@@ -207,6 +348,9 @@ export function createWatchInputController(dependencies = {}) {
         watchState.expandedEventId = null;
         watchState.detailScrollOffset = 0;
         setTransientStatus("detail closed");
+      } else if (currentInputModeProfile() === "vim" && watchState.composerMode !== "normal") {
+        watchState.composerMode = "normal";
+        setTransientStatus("vim normal");
       } else if (typeof cancelActiveChat === "function") {
         cancelActiveChat();
       }
@@ -218,6 +362,23 @@ export function createWatchInputController(dependencies = {}) {
 
   function handleTerminalInput(input) {
     if (shuttingDown() || input.length === 0) {
+      return;
+    }
+
+    if (isTerminalSelectionModeActive()) {
+      if (input.includes("\x03")) {
+        shutdownWatch(0);
+        return;
+      }
+      if (input.includes("\x11")) {
+        toggleTerminalSelectionMode();
+        scheduleRender();
+      }
+      return;
+    }
+
+    if (currentSecretPrompt()) {
+      handleSecretPromptInput(input);
       return;
     }
 
@@ -255,6 +416,12 @@ export function createWatchInputController(dependencies = {}) {
       }
       if (char === "\x19") {
         copyCurrentView();
+        didMutate = true;
+        index += 1;
+        continue;
+      }
+      if (char === "\x11") {
+        toggleTerminalSelectionMode();
         didMutate = true;
         index += 1;
         continue;
@@ -313,6 +480,101 @@ export function createWatchInputController(dependencies = {}) {
       if (char === "\x1b") {
         index = handleTerminalEscapeSequence(input, index);
         didMutate = true;
+        continue;
+      }
+      if (isVimNormalMode()) {
+        if (char === "i") {
+          watchState.composerMode = "insert";
+          setTransientStatus("vim insert");
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "a") {
+          if (watchState.composerCursor < watchState.composerInput.length) {
+            watchState.composerCursor += 1;
+          }
+          watchState.composerMode = "insert";
+          setTransientStatus("vim insert");
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "h") {
+          moveComposerCursorByCharacter(-1);
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "l") {
+          moveComposerCursorByCharacter(1);
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "b") {
+          moveComposerCursorByWord(-1);
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "w") {
+          moveComposerCursorByWord(1);
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "0") {
+          watchState.composerCursor = 0;
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "$") {
+          watchState.composerCursor = watchState.composerInput.length;
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "x") {
+          deleteComposerForward();
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "j") {
+          if (currentKeybindingProfile() === "vim") {
+            scrollCurrentViewBy(-1);
+          } else {
+            navigateComposer(1);
+          }
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "k") {
+          if (currentKeybindingProfile() === "vim") {
+            scrollCurrentViewBy(1);
+          } else {
+            navigateComposer(-1);
+          }
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "p") {
+          navigateComposer(-1);
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (char === "n") {
+          navigateComposer(1);
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        index += 1;
         continue;
       }
       if (char < " ") {

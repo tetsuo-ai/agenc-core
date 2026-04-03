@@ -46,8 +46,6 @@ import type { OnChainTask } from '../../task/types.js';
 import type { AgentState } from '../../agent/types.js';
 import type { ProtocolConfig } from '../../types/protocol.js';
 import type { SerializedTask, SerializedAgent, SerializedProtocolConfig } from './types.js';
-import type { PromptInjectionAssessment } from '../../security/untrusted-content.js';
-import { normalizeTaskDescriptionForStorage } from '../../security/untrusted-content.js';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
@@ -167,39 +165,17 @@ function validateU64(value: bigint, field: string): ToolResult | null {
   return null;
 }
 
-interface ParsedTaskDescription {
-  readonly bytes: Uint8Array;
-  readonly normalizedText: string;
-  readonly assessment: PromptInjectionAssessment;
-}
-
-function parseTaskDescription(input: unknown): [ParsedTaskDescription | null, ToolResult | null] {
+function parseTaskDescription(input: unknown): [Uint8Array | null, ToolResult | null] {
   if (typeof input !== 'string' || input.trim().length === 0) {
     return [null, errorResult('description must be a non-empty string')];
   }
-  const { normalizedText, assessment } = normalizeTaskDescriptionForStorage(input, DESCRIPTION_BYTES);
-  if (normalizedText.length === 0) {
-    return [null, errorResult('description must contain visible text after normalization')];
+  const encoded = new TextEncoder().encode(input);
+  if (encoded.length > DESCRIPTION_BYTES) {
+    return [null, errorResult(`description exceeds ${DESCRIPTION_BYTES} bytes`)];
   }
-  if (assessment.riskLevel === 'high') {
-    return [
-      null,
-      errorResult(
-        `description rejected as prompt-injection risk (${assessment.matchedSignals.join(', ') || 'high-risk pattern'})`,
-      ),
-    ];
-  }
-  const encoded = new TextEncoder().encode(normalizedText);
   const out = new Uint8Array(DESCRIPTION_BYTES);
   out.set(encoded);
-  return [
-    {
-      bytes: out,
-      normalizedText,
-      assessment,
-    },
-    null,
-  ];
+  return [out, null];
 }
 
 function parseTaskId(input: unknown): [Uint8Array | null, ToolResult | null] {
@@ -867,14 +843,8 @@ export function createCreateTaskTool(
         }
         const creator = program.provider.publicKey;
 
-        const [taskId, taskIdErr] = parseTaskId(args.taskId);
-        if (taskIdErr || !taskId) return taskIdErr ?? errorResult('Invalid taskId');
-
-        const [taskDescription, descErr] = parseTaskDescription(args.description);
-        if (descErr || !taskDescription) return descErr ?? errorResult('Invalid description');
-
         // Dedup guard — prevent LLM from calling createTask multiple times
-        const dedupKey = `${creator.toBase58()}|${taskDescription.normalizedText.toLowerCase()}`;
+        const dedupKey = `${creator.toBase58()}|${String(args.description ?? '').trim().toLowerCase()}`;
         const dedupNow = Date.now();
         const lastCall = recentCreateTaskCalls.get(dedupKey);
         if (lastCall && dedupNow - lastCall < CREATE_TASK_DEDUP_TTL_MS) {
@@ -883,6 +853,12 @@ export function createCreateTaskTool(
             'Do NOT call createTask again. Report the previous result to the user.',
           );
         }
+
+        const [taskId, taskIdErr] = parseTaskId(args.taskId);
+        if (taskIdErr || !taskId) return taskIdErr ?? errorResult('Invalid taskId');
+
+        const [descBytes, descErr] = parseTaskDescription(args.description);
+        if (descErr || !descBytes) return descErr ?? errorResult('Invalid description');
 
         const [reward, rewardErr] = parseBigIntInput(args.reward, 'reward');
         if (rewardErr || reward === null) return rewardErr ?? errorResult('Invalid reward');
@@ -947,7 +923,7 @@ export function createCreateTaskTool(
           .createTask(
             toAnchorBytes(taskId),
             new anchor.BN(requiredCapabilities.toString()),
-            toAnchorBytes(taskDescription.bytes),
+            toAnchorBytes(descBytes),
             new anchor.BN(reward.toString()),
             maxWorkers,
             new anchor.BN(deadline),
@@ -983,12 +959,6 @@ export function createCreateTaskTool(
             creatorAgentPda: creatorAgentPda.toBase58(),
             rewardMint: rewardMint?.toBase58() ?? null,
             rewardSymbol: getRewardSymbol(rewardMint),
-            description: taskDescription.normalizedText,
-            descriptionSafeSummary: taskDescription.assessment.safeSummary,
-            descriptionRiskLevel: taskDescription.assessment.riskLevel,
-            descriptionRiskScore: taskDescription.assessment.riskScore,
-            descriptionMatchedSignals: taskDescription.assessment.matchedSignals,
-            agentExecutionEligible: taskDescription.assessment.executionEligible,
             transactionSignature: txSignature,
           }),
         };

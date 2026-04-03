@@ -35,11 +35,11 @@
         "anomalyIds": [],
         "topAnomalies": [],
         "hashes": {
-          "local": "11e5e4683b7897bfb6b79999e11cce8a62c5e1d83fb6a8554641c918e28ed597",
-          "projected": "11e5e4683b7897bfb6b79999e11cce8a62c5e1d83fb6a8554641c918e28ed597"
+          "local": "8475b68cffc8492dbdd1e063ba08770acc8dceb22475a0537ba876dd3799b772",
+          "projected": "8475b68cffc8492dbdd1e063ba08770acc8dceb22475a0537ba876dd3799b772"
         },
         "localSummary": {
-          "deterministicHash": "11e5e4683b7897bfb6b79999e11cce8a62c5e1d83fb6a8554641c918e28ed597",
+          "deterministicHash": "8475b68cffc8492dbdd1e063ba08770acc8dceb22475a0537ba876dd3799b772",
           "errors": [],
           "warnings": [],
           "summary": {
@@ -54,7 +54,7 @@
           }
         },
         "projectedSummary": {
-          "deterministicHash": "11e5e4683b7897bfb6b79999e11cce8a62c5e1d83fb6a8554641c918e28ed597",
+          "deterministicHash": "8475b68cffc8492dbdd1e063ba08770acc8dceb22475a0537ba876dd3799b772",
           "errors": [],
           "warnings": [],
           "summary": {
@@ -72,7 +72,7 @@
     }
   },
   "metadata": {
-    "generatedAt": "2026-03-29T16:38:16.542Z",
+    "generatedAt": "2026-03-25T07:26:23.735Z",
     "generatedBy": "contract-validator"
   }
 }

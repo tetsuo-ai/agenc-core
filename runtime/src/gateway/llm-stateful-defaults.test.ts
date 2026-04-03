@@ -13,7 +13,7 @@ describe("resolveGatewayStatefulResponses", () => {
     expect(resolved.config).toEqual({
       enabled: true,
       store: false,
-      fallbackToStateless: false,
+      fallbackToStateless: true,
       compaction: {
         enabled: true,
         fallbackOnUnsupported: true,
@@ -33,7 +33,7 @@ describe("resolveGatewayStatefulResponses", () => {
     expect(resolved.config).toEqual({
       enabled: true,
       store: false,
-      fallbackToStateless: false,
+      fallbackToStateless: true,
       compaction: {
         enabled: false,
         fallbackOnUnsupported: true,
@@ -51,7 +51,7 @@ describe("resolveGatewayStatefulResponses", () => {
     expect(resolved.config).toEqual({
       enabled: true,
       store: false,
-      fallbackToStateless: false,
+      fallbackToStateless: true,
       compaction: {
         enabled: true,
         fallbackOnUnsupported: true,
@@ -63,7 +63,7 @@ describe("resolveGatewayStatefulResponses", () => {
     const config = {
       enabled: false,
       store: false,
-      fallbackToStateless: false,
+      fallbackToStateless: true,
       compaction: {
         enabled: false,
       },

@@ -793,94 +793,6 @@ describe("SubAgentOrchestrator", () => {
     ]);
   });
 
-  it("records degraded child tool contracts when semantic capabilities are substituted at spawn time", async () => {
-    const fallback = createFallbackExecutor(async (pipeline) => ({
-      status: "completed",
-      context: pipeline.context,
-      completedSteps: pipeline.steps.length,
-      totalSteps: pipeline.steps.length,
-    }));
-    const manager = new FakeSubAgentManager(10, true);
-    const orchestrator = new SubAgentOrchestrator({
-      fallbackExecutor: fallback,
-      resolveSubAgentManager: () => manager,
-      resolveAvailableToolNames: () => [
-        "system.listDir",
-        "system.writeFile",
-        "system.mkdir",
-        "system.bash",
-      ],
-      pollIntervalMs: 5,
-    });
-    const { executionContext } = createTestExecutionContext({
-      prefix: "subagent-tool-contract-degraded-",
-    });
-
-    const result = await orchestrator.execute({
-      id: "planner:session-tool-contract-degraded:123",
-      createdAt: Date.now(),
-      context: { results: {} },
-      steps: [],
-      plannerSteps: [
-        {
-          name: "scaffold_workspace",
-          stepType: "subagent_task",
-          objective: "Create the workspace directory tree and author initial manifests.",
-          inputContract: "Empty target path",
-          acceptanceCriteria: ["Workspace scaffolded"],
-          requiredToolCapabilities: ["file_system"],
-          contextRequirements: ["repo_context"],
-          executionContext,
-          maxBudgetHint: "2m",
-          canRunParallel: false,
-        },
-      ],
-      plannerContext: {
-        parentRequest: "Scaffold the runtime workspace.",
-        history: [],
-        memory: [],
-        toolOutputs: [],
-        parentAllowedTools: [
-          "system.listDir",
-          "system.writeFile",
-          "system.mkdir",
-          "system.bash",
-        ],
-      },
-    });
-
-    expect(result.status).toBe("completed");
-    expect(manager.spawnCalls).toHaveLength(1);
-    expect(manager.spawnCalls[0]?.delegationSpec?.toolContract).toMatchObject({
-      state: "degraded",
-      requestedSemanticCapabilities: ["file system"],
-      requiredSubstitution: [
-        "system.listDir",
-        "system.writeFile",
-        "system.mkdir",
-      ],
-      optionalEnrichment: ["system.bash"],
-    });
-    const payload = JSON.parse(
-      result.context.results.scaffold_workspace ?? "{}",
-    ) as {
-      toolContract?: {
-        state?: string;
-        requiredSubstitution?: string[];
-        optionalEnrichment?: string[];
-      };
-    };
-    expect(payload.toolContract).toMatchObject({
-      state: "degraded",
-      requiredSubstitution: [
-        "system.listDir",
-        "system.writeFile",
-        "system.mkdir",
-      ],
-      optionalEnrichment: ["system.bash"],
-    });
-  });
-
   it("clamps planner-emitted child budget hints to the shared delegation minimum", async () => {
     const fallback = createFallbackExecutor(async (pipeline) => ({
       status: "completed",
@@ -921,7 +833,7 @@ describe("SubAgentOrchestrator", () => {
     });
 
     expect(manager.spawnCalls).toHaveLength(1);
-    expect(manager.spawnCalls[0]?.timeoutMs).toBe(4_800);
+    expect(manager.spawnCalls[0]?.timeoutMs).toBe(0);
   });
 
   it("derives a larger child tool budget for long delegated steps", async () => {
@@ -3249,22 +3161,11 @@ describe("SubAgentOrchestrator", () => {
     );
 
     expect(taskPrompt.length).toBeLessThanOrEqual(8_000);
-    expect(taskPrompt).toContain("Reviewer handoff artifacts:");
-    expect(taskPrompt).toContain('"type":"reviewer_handoff_artifact"');
-    expect(taskPrompt).toContain('"artifactId":"synthesis_feedback:reviewer_handoff"');
     expect(taskPrompt).toContain("Relevant tool outputs:");
-    expect(taskPrompt).toContain('"stepName":"qa_review"');
-    expect(taskPrompt).toContain(
-      '"feedback":"QA reviewer: add exact test commands, expected outputs, and coverage gates for every phase."',
-    );
-    expect(taskPrompt).toContain(
-      '"feedback":"Skeptic reviewer: add timeline buffer, unresolved risks, and explicit blockers before claiming completion."',
-    );
+    expect(taskPrompt).toContain("QA reviewer: add exact test commands");
+    expect(taskPrompt).toContain("Skeptic reviewer: add timeline buffer");
     const toolOutputsIndex = taskPrompt.indexOf("Relevant tool outputs:");
-    const handoffIndex = taskPrompt.indexOf("Reviewer handoff artifacts:");
     const historyIndex = taskPrompt.indexOf("Curated parent history slice:");
-    expect(handoffIndex).toBeGreaterThan(-1);
-    expect(handoffIndex).toBeLessThan(toolOutputsIndex);
     expect(toolOutputsIndex).toBeGreaterThan(-1);
     if (historyIndex >= 0) {
       expect(toolOutputsIndex).toBeLessThan(historyIndex);
@@ -6258,8 +6159,6 @@ describe("SubAgentOrchestrator", () => {
 
     expect(result.status).toBe("completed");
     expect(manager.spawnCalls).toHaveLength(2);
-    expect(manager.spawnCalls[0]?.timeoutMs).toBe(120_000);
-    expect(manager.spawnCalls[1]?.timeoutMs).toBe(120_000);
     const payload = JSON.parse(result.context.results.delegate_timeout ?? "{}") as {
       attempts?: number;
     };
@@ -6897,7 +6796,7 @@ describe("SubAgentOrchestrator", () => {
     expect(manager.spawnCalls).toHaveLength(2);
   });
 
-  it("preserves child needs_verification states through the parent verifier path", async () => {
+  it("fails child outputs that report completed transport but still need workflow verification", async () => {
     const fallback = createFallbackExecutor(async (pipeline) => ({
       status: "completed",
       context: pipeline.context,
@@ -6969,21 +6868,10 @@ describe("SubAgentOrchestrator", () => {
       ],
     });
 
-    expect(result.status).toBe("completed");
-    expect(result.completionState).toBe("needs_verification");
-    expect(result.stopReasonHint).toBeUndefined();
-    const payload = JSON.parse(
-      result.context.results.implement_cli ?? "{}",
-    ) as {
-      status?: string;
-      success?: boolean;
-      completionState?: string;
-      dependencyState?: string;
-    };
-    expect(payload.status).toBe("completed");
-    expect(payload.success).toBe(true);
-    expect(payload.completionState).toBe("needs_verification");
-    expect(payload.dependencyState).toBe("satisfied_nonterminal");
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("did not reach a completed workflow state");
+    expect(result.error).toContain("workflow_verifier_pass");
+    expect(result.stopReasonHint).toBe("validation_error");
   });
 
   it("spawns delegated local-file steps from canonical execution envelopes, not raw cwd hints", async () => {
@@ -7372,7 +7260,7 @@ describe("SubAgentOrchestrator", () => {
     expect(manager.spawnCalls).toHaveLength(0);
   });
 
-  it("blocks dependent DAG nodes when an upstream delegated step falls back locally", async () => {
+  it("allows dependent DAG nodes to continue when an upstream delegated step falls back locally", async () => {
     const fallback = createFallbackExecutor(async (pipeline) => {
       const step = pipeline.steps[0]!;
       return {
@@ -7459,12 +7347,11 @@ describe("SubAgentOrchestrator", () => {
       ],
     });
 
-    expect(result.status).toBe("failed");
-    expect(result.completionState).toBe("blocked");
-    expect(result.completedSteps).toBe(2);
-    expect(result.error).toContain("budget exceeded");
-    expect(result.stopReasonHint).toBe("budget_exceeded");
-    expect(manager.spawnCalls).toHaveLength(2);
+    expect(result.status).toBe("completed");
+    expect(result.completedSteps).toBe(3);
+    expect(result.error).toBeUndefined();
+    expect(result.stopReasonHint).toBeUndefined();
+    expect(manager.spawnCalls).toHaveLength(4);
     expect(fallback.execute).toHaveBeenCalledTimes(1);
 
     const corePayload = JSON.parse(
@@ -7476,7 +7363,16 @@ describe("SubAgentOrchestrator", () => {
     expect(corePayload.status).toBe("delegation_fallback");
     expect(corePayload.stopReasonHint).toBe("budget_exceeded");
     expect((corePayload as { attempts?: number }).attempts).toBe(2);
-    expect(result.context.results.implement_cli).toContain("dependency_blocked");
+
+    const cliPayload = JSON.parse(
+      result.context.results.implement_cli ?? "{}",
+    ) as {
+      status?: string;
+      stopReasonHint?: string;
+    };
+    expect(cliPayload.status).toBe("delegation_fallback");
+    expect(cliPayload.stopReasonHint).toBe("budget_exceeded");
+    expect((cliPayload as { attempts?: number }).attempts).toBe(2);
   });
 
   it("retries delegated budget exhaustion once with an expanded child tool budget", async () => {
@@ -7549,75 +7445,6 @@ describe("SubAgentOrchestrator", () => {
     expect(manager.spawnCalls).toHaveLength(2);
     expect(manager.spawnCalls[0]?.toolBudgetPerRequest).toBe(0);
     expect(manager.spawnCalls[1]?.toolBudgetPerRequest).toBe(0);
-  });
-
-  it("persists request-tree budget trackers across repeated executions of the same planner request tree", async () => {
-    const fallback = createFallbackExecutor(async (pipeline) => ({
-      status: "completed",
-      context: pipeline.context,
-      completedSteps: pipeline.steps.length,
-      totalSteps: pipeline.steps.length,
-    }));
-    const manager = new FakeSubAgentManager(10, true);
-    const orchestrator = new SubAgentOrchestrator({
-      fallbackExecutor: fallback,
-      resolveSubAgentManager: () => manager,
-      maxTotalSubagentsPerRequest: 1,
-      pollIntervalMs: 5,
-      fallbackBehavior: "fail_request",
-    });
-    const { executionContext } = createTestExecutionContext({
-      prefix: "subagent-request-tree-budget-",
-    });
-
-    const first = await orchestrator.execute({
-      id: "planner:session-budget-scope:attempt-1",
-      requestTreeBudgetKey: "planner:session-budget-scope:request",
-      createdAt: Date.now(),
-      context: { results: {} },
-      steps: [],
-      plannerSteps: [
-        {
-          name: "delegate_once",
-          stepType: "subagent_task",
-          objective: "Inspect runtime logs and report findings",
-          inputContract: "Return grounded findings",
-          acceptanceCriteria: ["Include log evidence"],
-          requiredToolCapabilities: ["system.readFile"],
-          contextRequirements: ["runtime_logs"],
-          executionContext,
-          maxBudgetHint: "2m",
-          canRunParallel: false,
-        },
-      ],
-    });
-
-    const second = await orchestrator.execute({
-      id: "planner:session-budget-scope:attempt-2",
-      requestTreeBudgetKey: "planner:session-budget-scope:request",
-      createdAt: Date.now(),
-      context: { results: {} },
-      steps: [],
-      plannerSteps: [
-        {
-          name: "delegate_once",
-          stepType: "subagent_task",
-          objective: "Inspect runtime logs and report findings",
-          inputContract: "Return grounded findings",
-          acceptanceCriteria: ["Include log evidence"],
-          requiredToolCapabilities: ["system.readFile"],
-          contextRequirements: ["runtime_logs"],
-          executionContext,
-          maxBudgetHint: "2m",
-          canRunParallel: false,
-        },
-      ],
-    });
-
-    expect(first.status).toBe("completed");
-    expect(second.status).toBe("failed");
-    expect(second.error).toContain("max spawned children per request exceeded");
-    expect(manager.spawnCalls).toHaveLength(1);
   });
 
   it("retries child validation failures that return non-completed stop reasons without tool evidence", async () => {
@@ -8226,8 +8053,7 @@ describe("SubAgentOrchestrator", () => {
       ],
     });
 
-    expect(result.status).toBe("failed");
-    expect(result.completionState).toBe("blocked");
+    expect(result.status).toBe("completed");
     expect(manager.spawnCalls).toHaveLength(3);
     const payload = JSON.parse(
       result.context.results.delegate_fallback ?? "{}",

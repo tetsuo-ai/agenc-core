@@ -4,43 +4,11 @@ import type { ImplementationCompletionContract } from "./completion-contract.js"
 import { resolveWorkflowRequestCompletionStatus } from "./request-completion.js";
 import { deriveVerificationObligations, type WorkflowVerificationContract } from "./verification-obligations.js";
 
-export const WORKFLOW_COMPLETION_STATES = [
-  "completed",
-  "partial",
-  "blocked",
-  "needs_verification",
-] as const;
-
 export type WorkflowCompletionState =
-  typeof WORKFLOW_COMPLETION_STATES[number];
-
-export const WORKFLOW_DEPENDENCY_STATE_KINDS = [
-  "satisfied_terminal",
-  "satisfied_nonterminal",
-  "unsatisfied_nonterminal",
-  "unsatisfied_terminal",
-] as const;
-
-export type WorkflowDependencyStateKind =
-  typeof WORKFLOW_DEPENDENCY_STATE_KINDS[number];
-
-export const WORKFLOW_RESOLUTION_SEMANTICS = [
-  "normal",
-  "delegation_fallback",
-  "noop_success",
-] as const;
-
-export type WorkflowResolutionSemantics =
-  typeof WORKFLOW_RESOLUTION_SEMANTICS[number];
-
-export interface WorkflowDependencyState {
-  readonly kind: WorkflowDependencyStateKind;
-  readonly completionState: WorkflowCompletionState;
-  readonly dependencySatisfied: boolean;
-  readonly terminal: boolean;
-  readonly verifierClosed: boolean;
-  readonly semantics: WorkflowResolutionSemantics;
-}
+  | "completed"
+  | "partial"
+  | "blocked"
+  | "needs_verification";
 
 export interface PlannerVerificationSnapshot {
   readonly performed: boolean;
@@ -52,102 +20,6 @@ export interface CompletionStateToolCall {
   readonly args: Record<string, unknown>;
   readonly result: string;
   readonly isError: boolean;
-}
-
-export function resolveWorkflowDependencyState(params: {
-  readonly completionState?: WorkflowCompletionState;
-  readonly reportedStatus?: string;
-  readonly reportedOutcome?: string;
-  readonly recoveredViaParentFallback?: boolean;
-}): WorkflowDependencyState {
-  if (
-    params.recoveredViaParentFallback === true ||
-    params.reportedStatus === "delegation_fallback"
-  ) {
-    return {
-      kind: "unsatisfied_terminal",
-      completionState: "blocked",
-      dependencySatisfied: false,
-      terminal: true,
-      verifierClosed: false,
-      semantics: "delegation_fallback",
-    };
-  }
-
-  const semantics =
-    params.reportedOutcome === "already_satisfied"
-      ? "noop_success"
-      : "normal";
-  const completionState = params.completionState ?? "completed";
-  switch (completionState) {
-    case "completed":
-      return {
-        kind: "satisfied_terminal",
-        completionState,
-        dependencySatisfied: true,
-        terminal: true,
-        verifierClosed: true,
-        semantics,
-      };
-    case "needs_verification":
-      return {
-        kind: "satisfied_nonterminal",
-        completionState,
-        dependencySatisfied: true,
-        terminal: false,
-        verifierClosed: false,
-        semantics,
-      };
-    case "partial":
-      return {
-        kind: "unsatisfied_nonterminal",
-        completionState,
-        dependencySatisfied: false,
-        terminal: false,
-        verifierClosed: false,
-        semantics,
-      };
-    case "blocked":
-    default:
-      return {
-        kind: "unsatisfied_terminal",
-        completionState: "blocked",
-        dependencySatisfied: false,
-        terminal: true,
-        verifierClosed: false,
-        semantics,
-      };
-  }
-}
-
-export function resolvePipelineCompletionStateFromDependencyStates(
-  states: readonly Pick<WorkflowDependencyState, "kind" | "completionState">[],
-): WorkflowCompletionState {
-  if (
-    states.some((state) =>
-      state.kind === "unsatisfied_terminal" ||
-      state.completionState === "blocked"
-    )
-  ) {
-    return "blocked";
-  }
-  if (
-    states.some((state) =>
-      state.kind === "unsatisfied_nonterminal" ||
-      state.completionState === "partial"
-    )
-  ) {
-    return "partial";
-  }
-  if (
-    states.some((state) =>
-      state.kind === "satisfied_nonterminal" ||
-      state.completionState === "needs_verification"
-    )
-  ) {
-    return "needs_verification";
-  }
-  return "completed";
 }
 
 export function resolvePipelineCompletionState(input: {

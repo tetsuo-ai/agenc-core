@@ -33,11 +33,13 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         },
         frameExpectation: {
           containsInOrder: [
-            "A G E N / C https://agenc.tech",
-            "READY",
-            "type a prompt to begin",
-            "Awaiting operator prompt  live follow",
+            "Ready",
             "session ready: session-live-1",
+            "Start typing below.",
+          ],
+          notContains: [
+            "A G E N / C https://agenc.tech",
+            "type a prompt to begin",
           ],
         },
       },
@@ -72,11 +74,10 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         },
         frameExpectation: {
           containsInOrder: [
-            "RUN:: starting / queued",
+            "AgenC",
+            "grok · live · starting / queued",
             "show me a linked list in c",
-            "STATUS Gateway Status",
-            "YOU show me a linked list in c",
-            "◒ Working starting / queued 0m 01s  live follow",
+            "\n>",
           ],
         },
       },
@@ -111,12 +112,12 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         },
         frameExpectation: {
           containsInOrder: [
-            "RUN:: starting / queued",
-            "YOU show me a linked list in c",
-            "CORE Linked List in C",
-            "│ code · c",
-            "│ #include <stdio.h>",
-            "streaming: Linked List in C ```c #includ…",
+            "AgenC",
+            "show me a linked list in c",
+            "● Linked List in C",
+            "code · c",
+            "#include <stdio.h>",
+            "\n>",
           ],
         },
       },
@@ -151,12 +152,12 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         },
         frameExpectation: {
           containsInOrder: [
-            "RUN:: starting / queued",
-            "YOU show me a linked list in c",
-            "CORE Linked List in C",
-            "│ int main(void) {",
-            "│   return 0;",
-            "agent reply received",
+            "AgenC",
+            "show me a linked list in c",
+            "● Linked List in C",
+            "int main(void) {",
+            "return 0;",
+            "\n>",
           ],
         },
       },
@@ -196,13 +197,10 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         },
         frameExpectation: {
           containsInOrder: [
-            "RUN:: starting / queued",
+            "AgenC",
+            "grok · live · starting / queued",
             "ship operator console polish",
-            "Inspect runtime",
-            "LIVE DAG             2 nodes",
-            "◉───┼  1A Inspect runtime  live",
-            "┼────○  2T Patch frame      wait",
-            "TOOLS                       0 recent",
+            "\n>",
           ],
         },
       },
@@ -237,12 +235,10 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         },
         frameExpectation: {
           containsInOrder: [
-            "RUN:: starting / queued",
+            "AgenC",
+            "grok · live · starting / queued",
             "ship operator console polish",
-            "elapsed 42s",
-            "LIVE DAG             2 nodes",
-            "◉───┼  1A Inspect runtime  live",
-            "Inspect runtime · :child-1 · working · 42s",
+            "\n>",
           ],
         },
       },
@@ -282,11 +278,13 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         },
         frameExpectation: {
           containsInOrder: [
-            "A G E N / C https://agenc.tech",
-            "READY",
-            "type a prompt to begin",
-            "Awaiting operator prompt  live follow",
+            "Ready",
             "session ready: session-reconnect-1",
+            "Start typing below.",
+          ],
+          notContains: [
+            "A G E N / C https://agenc.tech",
+            "type a prompt to begin",
           ],
         },
       },
@@ -321,10 +319,13 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         },
         frameExpectation: {
           containsInOrder: [
+            "Reconnecting",
+            "websocket disconnected, retrying in 1000ms",
+            "Restoring workspace state and session context.",
+          ],
+          notContains: [
             "A G E N / C https://agenc.tech",
-            "RECONNECTING",
             "initializing agent runtime...",
-            "Link reconnecting  runtime reconnecting  live follow",
           ],
         },
       },
@@ -359,10 +360,11 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         },
         frameExpectation: {
           containsInOrder: [
-            "RUN:: idle  ROUTE:: primary",
-            "STATUS Gateway Status",
-            "Awaiting operator prompt  live follow",
-            "session ready: session-reconnect-1",
+            "AgenC",
+            "grok · live · idle",
+            "Try one of these:",
+            "Start typing below.",
+            "\n>",
           ],
         },
       },

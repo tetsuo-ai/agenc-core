@@ -63,6 +63,21 @@ function preferredRunSurfaceState(payload, priorState) {
   };
 }
 
+function modelRoutesMatch(left, right) {
+  const leftProvider = String(left?.provider ?? "").trim();
+  const leftModel = String(left?.model ?? "").trim();
+  const rightProvider = String(right?.provider ?? "").trim();
+  const rightModel = String(right?.model ?? "").trim();
+  return Boolean(
+    leftProvider &&
+    leftModel &&
+    rightProvider &&
+    rightModel &&
+    leftProvider === rightProvider &&
+    leftModel === rightModel
+  );
+}
+
 function handleSubscriptionSurfaceEvent(surfaceEvent, api) {
   const payload = surfaceEvent.payloadRecord;
   switch (surfaceEvent.type) {
@@ -117,8 +132,38 @@ function handleSessionSurfaceEvent(surfaceEvent, state, api) {
       const sessions = surfaceEvent.payloadList ?? [];
       if (state.manualSessionsRequestPending) {
         state.manualSessionsRequestPending = false;
-        api.eventStore.pushEvent("session", "Sessions", api.formatSessionSummaries(sessions), "teal");
-        api.setTransientStatus("session list loaded");
+        const query = String(state.manualSessionsQuery ?? "").trim().toLowerCase();
+        state.manualSessionsQuery = null;
+        const filteredSessions =
+          query.length > 0
+            ? sessions.filter((session) => {
+                const candidates = [
+                  session?.sessionId,
+                  session?.label,
+                  session?.workspaceRoot,
+                  session?.workspacePath,
+                  session?.cwd,
+                  session?.model,
+                  ...(typeof api.sessionQueryCandidates === "function"
+                    ? api.sessionQueryCandidates(session)
+                    : []),
+                ]
+                  .map((value) => String(value ?? "").trim().toLowerCase())
+                  .filter(Boolean);
+                return candidates.some((value) => value.includes(query));
+              })
+            : sessions;
+        api.eventStore.pushEvent(
+          "session",
+          query.length > 0 ? "Filtered Sessions" : "Sessions",
+          api.formatSessionSummaries(filteredSessions),
+          "teal",
+        );
+        api.setTransientStatus(
+          query.length > 0
+            ? `session filter loaded: ${filteredSessions.length} match(es)`
+            : "session list loaded",
+        );
         return true;
       }
       const target = api.latestSessionSummary(sessions, state.sessionId);
@@ -214,7 +259,7 @@ function handleChatSurfaceEvent(surfaceEvent, state, api) {
     case "chat.usage":
       state.lastUsageSummary = api.summarizeUsage(payload);
       state.liveSessionModelRoute =
-        api.normalizeModelRoute(payload) ?? state.liveSessionModelRoute;
+        api.normalizeModelRoute({ ...(payload ?? {}), source: "live" }) ?? state.liveSessionModelRoute;
       return true;
     default:
       return false;
@@ -393,8 +438,21 @@ function handleStatusSurfaceEvent(surfaceEvent, state, api) {
     return false;
   }
   state.lastStatus = payload ?? state.lastStatus;
-  state.configuredModelRoute =
-    api.normalizeModelRoute(payload) ?? state.configuredModelRoute;
+  const nextConfiguredRoute = api.normalizeModelRoute({
+    ...(payload ?? {}),
+    source: "status",
+  });
+  const currentConfiguredRoute = state.configuredModelRoute;
+  if (
+    nextConfiguredRoute &&
+    (
+      !currentConfiguredRoute ||
+      currentConfiguredRoute.source === "status" ||
+      modelRoutesMatch(currentConfiguredRoute, nextConfiguredRoute)
+    )
+  ) {
+    state.configuredModelRoute = nextConfiguredRoute;
+  }
   const backgroundRuns = payload?.backgroundRuns;
   if (backgroundRuns?.enabled === false) {
     api.setTransientStatus("durable runs disabled");
@@ -464,6 +522,7 @@ function handleErrorSurfaceEvent(surfaceEvent, rawMessage, state, api) {
   state.runInspectPending = false;
   state.manualStatusRequestPending = false;
   state.manualSessionsRequestPending = false;
+  state.manualSessionsQuery = null;
   state.manualHistoryRequestPending = false;
   if (api.isExpectedMissingRunInspect(errorMessage, errorPayload)) {
     state.runDetail = null;

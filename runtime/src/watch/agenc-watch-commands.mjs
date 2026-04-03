@@ -717,6 +717,26 @@ function buildExtensibilityCommand(parsedSlash) {
   return { section };
 }
 
+function buildXaiCommand(parsedSlash) {
+  const args = Array.isArray(parsedSlash?.args) ? parsedSlash.args : [];
+  const subcommand = (args[0] ?? "set").trim().toLowerCase();
+  if (!subcommand || subcommand === "set") {
+    return { mode: "set" };
+  }
+  if (subcommand === "status") {
+    return { mode: "status" };
+  }
+  if (subcommand === "validate") {
+    return { mode: "validate" };
+  }
+  if (subcommand === "clear") {
+    return { mode: "clear" };
+  }
+  return {
+    error: "Usage: /xai [set|status|validate|clear]",
+  };
+}
+
 function buildInputPreferenceCommand(parsedSlash, {
   commandName,
   usage,
@@ -878,6 +898,10 @@ export function createWatchCommandController(dependencies = {}) {
     trustPluginPackage,
     untrustPluginPackage,
     setMcpServerEnabled,
+    showXaiStatus,
+    validateConfiguredXaiKey,
+    clearXaiApiKey,
+    promptForXaiApiKey,
     captureCheckpoint,
     listCheckpoints,
     listPendingAttachments,
@@ -886,6 +910,7 @@ export function createWatchCommandController(dependencies = {}) {
     removePendingAttachment,
     clearPendingAttachments,
     prepareChatMessagePayload,
+    applyOptimisticModelSelection,
     openLatestDiffDetail,
     currentDiffNavigationState,
     jumpCurrentDiffHunk,
@@ -990,6 +1015,12 @@ export function createWatchCommandController(dependencies = {}) {
   if (commandNames.has("/mcp")) {
     assertFunction("setMcpServerEnabled", setMcpServerEnabled);
   }
+  if (commandNames.has("/xai")) {
+    assertFunction("showXaiStatus", showXaiStatus);
+    assertFunction("validateConfiguredXaiKey", validateConfiguredXaiKey);
+    assertFunction("clearXaiApiKey", clearXaiApiKey);
+    assertFunction("promptForXaiApiKey", promptForXaiApiKey);
+  }
   if (commandNames.has("/session-label")) {
     assertFunction("currentSessionLabel", currentSessionLabel);
     assertFunction("setSessionLabel", setSessionLabel);
@@ -1056,6 +1087,7 @@ export function createWatchCommandController(dependencies = {}) {
         "Keyboard",
         "Ctrl+O opens the newest event in a full detail view.",
         "Ctrl+Y copies the current detail view or transcript to tmux/system clipboard.",
+        "Ctrl+Q prints the current detail view or transcript into the normal terminal so you can native-select/copy it, then Ctrl+Q returns to watch.",
         "Ctrl+L clears the visible transcript without leaving the session.",
         "",
         ...WATCH_COMMANDS.map((command) => {
@@ -1240,6 +1272,24 @@ export function createWatchCommandController(dependencies = {}) {
         return true;
       }
 
+      if (canonicalName === "/xai") {
+        const action = buildXaiCommand(parsedSlash);
+        if (action.error) {
+          pushEvent("error", "Usage Error", action.error, "red");
+          return true;
+        }
+        if (action.mode === "status") {
+          showXaiStatus();
+        } else if (action.mode === "validate") {
+          validateConfiguredXaiKey();
+        } else if (action.mode === "clear") {
+          clearXaiApiKey();
+        } else {
+          promptForXaiApiKey();
+        }
+        return true;
+      }
+
       if (
         canonicalName === "/input-mode" ||
         canonicalName === "/keybindings" ||
@@ -1397,6 +1447,13 @@ export function createWatchCommandController(dependencies = {}) {
 
       if (canonicalName === "/model") {
         const modelArg = (firstArg ?? "").trim();
+        if (
+          modelArg &&
+          !/^(current|list)$/i.test(modelArg) &&
+          typeof applyOptimisticModelSelection === "function"
+        ) {
+          applyOptimisticModelSelection(modelArg);
+        }
         pushEvent(
           "operator",
           modelArg ? "Model Switch" : "Model Query",

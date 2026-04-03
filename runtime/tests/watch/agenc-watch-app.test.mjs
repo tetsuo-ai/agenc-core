@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   buildSurfaceSummaryCacheKey,
   latestSessionSummary,
+  resolveWatchMouseTrackingEnabled,
 } from "../../src/watch/agenc-watch-app.mjs";
 import {
   FakeWebSocket,
@@ -193,4 +194,20 @@ test("latestSessionSummary prefers sessions from the current workspace root", ()
   );
 
   assert.equal(selected?.sessionId, "session-same");
+});
+
+test("resolveWatchMouseTrackingEnabled only enables mouse capture explicitly", () => {
+  assert.equal(resolveWatchMouseTrackingEnabled({}), false);
+  assert.equal(
+    resolveWatchMouseTrackingEnabled({ AGENC_WATCH_ENABLE_MOUSE: "1" }),
+    true,
+  );
+  assert.equal(
+    resolveWatchMouseTrackingEnabled({ AGENC_WATCH_ENABLE_MOUSE: "true" }),
+    true,
+  );
+  assert.equal(
+    resolveWatchMouseTrackingEnabled({ AGENC_WATCH_ENABLE_MOUSE: "off" }),
+    false,
+  );
 });

@@ -134,6 +134,26 @@ export interface SystemRemoteJobToolConfig {
 }
 
 /**
+ * Configuration for durable remote session handle tools.
+ */
+export interface SystemRemoteSessionToolConfig {
+  /** Durable registry root for remote session handles. */
+  readonly rootDir?: string;
+  /** Optional externally reachable callback base URL. */
+  readonly callbackBaseUrl?: string;
+  /** Polling timeout in milliseconds for remote status/send/stop HTTP calls. */
+  readonly defaultPollTimeoutMs?: number;
+  /** Optional external allowlist for remote polling/message/stop URLs. */
+  readonly allowedDomains?: readonly string[];
+  /** Optional external blocklist for remote polling/message/stop URLs. */
+  readonly blockedDomains?: readonly string[];
+  /** Logger for lifecycle and failure events. */
+  readonly logger?: Logger;
+  /** Time source override used by tests. */
+  readonly now?: () => number;
+}
+
+/**
  * Configuration for durable research handle tools.
  */
 export interface SystemResearchToolConfig {

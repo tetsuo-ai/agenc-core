@@ -362,6 +362,12 @@ const EXTENSIBILITY_COMMANDS = Object.freeze([
     usage: "/hooks [list|events]",
     description: "Inspect built-in lifecycle hooks and any configured hook handlers.",
   }),
+  Object.freeze({
+    name: "/xai",
+    aliases: ["/api"],
+    usage: "/xai [set|status|validate|clear]",
+    description: "Manage the local xAI API key stored in the runtime config.",
+  }),
 ]);
 
 const INPUT_MODE_COMMANDS = Object.freeze([

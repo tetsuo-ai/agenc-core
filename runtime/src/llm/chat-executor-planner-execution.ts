@@ -201,7 +201,14 @@ function shouldBlockPlannerImplementationFallback(
       artifactPaths.length > 0 &&
       artifactPaths.every((path) => isDocOnlyPlannerArtifact(path));
     const childOwnsDocArtifactWrite =
-      docOnlyArtifacts && stepOwnsWriteArtifacts(step);
+      docOnlyArtifacts &&
+      (
+        executionContext?.stepKind === "delegated_write" ||
+        executionContext?.verificationMode === "mutation_required" ||
+        executionContext?.effectClass === "filesystem_write" ||
+        executionContext?.effectClass === "filesystem_scaffold" ||
+        Boolean(executionContext?.completionContract)
+      );
     if (docOnlyArtifacts && !childOwnsDocArtifactWrite) {
       return false;
     }
@@ -236,8 +243,6 @@ function shouldBlockPlannerImplementationFallback(
     }
 
     return (
-      stepOwnsWriteArtifacts(step) ||
-      step.workflowStep?.role === "validator" ||
       executionContext?.verificationMode === "mutation_required" ||
       executionContext?.verificationMode === "deterministic_followup" ||
       executionContext?.stepKind === "delegated_write" ||
@@ -304,19 +309,19 @@ function canRefinePlannerDelegationVeto(reason: string): boolean {
 function buildPlannerDelegationVetoRefinementHint(reason: string): string {
   if (reason === "shared_artifact_writer_inline") {
     return (
-      "The previous plan gave multiple delegated steps mutable ownership of the same artifact scope. " +
-      "Re-emit a relation-aware execution contract: optional bounded read-only reviewers or grounding steps may share the source artifact, but exactly one delegated step may hold `write_owner` authority for a given artifact scope unless a later delegated step owns disjoint artifacts."
+      "The previous plan gave multiple delegated steps mutable or verification authority over the same workspace root. " +
+      "Re-emit a single-owner execution contract: one mutable implementation owner for the repo root, optional bounded read-only grounding before it, and deterministic verification/build/test steps after it unless a later delegated step owns disjoint artifacts."
     );
   }
   if (reason === "score_below_threshold") {
     return (
       "The previous delegated plan was not strong enough to justify multiple child owners. " +
-      "Re-emit a smaller plan with one `write_owner` implementation step and deterministic verification around it."
+      "Re-emit a smaller plan with one implementation owner and deterministic verification around it."
     );
   }
   return (
     `Runtime delegation admission rejected the previous implementation plan (${reason}). ` +
-    "Re-emit a valid relation-aware execution contract with explicit artifact ownership and deterministic verification around the implementation owner."
+    "Re-emit a valid single-owner execution contract with explicit artifact ownership and deterministic verification around the implementation owner."
   );
 }
 
@@ -425,41 +430,6 @@ function plannerAlreadyMutatesFiles(plannerPlan: PlannerPlan): boolean {
   );
 }
 
-function stepWriteOwnerTargets(
-  step: PlannerSubAgentTaskStepIntent,
-): readonly string[] {
-  const typedTargets = (step.workflowStep?.artifactRelations ?? [])
-    .filter((relation) => relation.relationType === "write_owner")
-    .map((relation) => relation.artifactPath);
-  if (typedTargets.length > 0) {
-    return typedTargets;
-  }
-  return step.executionContext?.targetArtifacts ?? [];
-}
-
-function stepOwnsWriteArtifacts(
-  step: PlannerSubAgentTaskStepIntent,
-): boolean {
-  if (step.workflowStep?.role === "writer") {
-    return stepWriteOwnerTargets(step).length > 0;
-  }
-  if (
-    (step.workflowStep?.artifactRelations ?? []).some((relation) =>
-      relation.relationType === "write_owner"
-    )
-  ) {
-    return true;
-  }
-  const executionContext = step.executionContext;
-  return (
-    executionContext?.verificationMode === "mutation_required" ||
-    executionContext?.stepKind === "delegated_write" ||
-    executionContext?.stepKind === "delegated_scaffold" ||
-    executionContext?.effectClass === "filesystem_write" ||
-    executionContext?.effectClass === "filesystem_scaffold"
-  ) && (executionContext?.targetArtifacts?.length ?? 0) > 0;
-}
-
 function plannerHasChildOwnedWriteTarget(
   plannerPlan: PlannerPlan,
   requestedWriteTarget: string | undefined,
@@ -468,7 +438,8 @@ function plannerHasChildOwnedWriteTarget(
     return plannerPlan.steps.some(
       (step) =>
         step.stepType === "subagent_task" &&
-        stepOwnsWriteArtifacts(step),
+        step.executionContext?.verificationMode === "mutation_required" &&
+        (step.executionContext?.targetArtifacts?.length ?? 0) > 0,
     );
   }
   const normalizedTarget = normalizeToolCallTargetPath(requestedWriteTarget);
@@ -480,11 +451,11 @@ function plannerHasChildOwnedWriteTarget(
   return plannerPlan.steps.some((step) => {
     if (
       step.stepType !== "subagent_task" ||
-      !stepOwnsWriteArtifacts(step)
+      step.executionContext?.verificationMode !== "mutation_required"
     ) {
       return false;
     }
-    return stepWriteOwnerTargets(step).some((artifact) =>
+    return (step.executionContext?.targetArtifacts ?? []).some((artifact) =>
       matchesRequestedArtifactTarget(
         normalizedTarget,
         normalizedRequestedSuffix,
@@ -526,35 +497,6 @@ function normalizeToolCallTargetPath(value: unknown): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-function resolveTypedRequiredSubagentOutputStepNames(params: {
-  readonly plannerPlan: PlannerPlan;
-  readonly requirements: ReturnType<
-    typeof extractExplicitSubagentOrchestrationRequirements
-  >;
-  readonly candidates: readonly PlannerSubAgentTaskStepIntent[];
-}): readonly string[] {
-  const requiredChildren = params.plannerPlan.workflowContract?.requiredChildren;
-  if (!requiredChildren) {
-    return resolveRequiredSubagentVerificationStepNames({
-      requirements: params.requirements,
-      candidates: params.candidates,
-    });
-  }
-  if ((requiredChildren.exactNames?.length ?? 0) > 0) {
-    return requiredChildren.exactNames!;
-  }
-  const typedReviewerNames = params.plannerPlan.workflowContract?.steps
-    .filter((step) => step.role === "reviewer")
-    .map((step) => step.name) ?? [];
-  if (typedReviewerNames.length > 0) {
-    return typedReviewerNames.slice(0, requiredChildren.cardinality);
-  }
-  return resolveRequiredSubagentVerificationStepNames({
-    requirements: params.requirements,
-    candidates: params.candidates,
-  });
 }
 
 // ============================================================================
@@ -1217,8 +1159,7 @@ export async function executePlannerPath(
         step.stepType === "subagent_task",
     );
     const requiredSubagentOutputStepNames =
-      resolveTypedRequiredSubagentOutputStepNames({
-        plannerPlan,
+      resolveRequiredSubagentVerificationStepNames({
         requirements: explicitOrchestrationRequirements,
         candidates: subagentSteps,
       });
@@ -1387,7 +1328,6 @@ export async function executePlannerPath(
 
       const pipeline: Pipeline = {
         id: `planner:${ctx.sessionId}:${Date.now()}`,
-        requestTreeBudgetKey: `planner:${ctx.sessionId}:${ctx.startTime}`,
         createdAt: Date.now(),
         context: { results: {} },
         steps: deterministicSteps.map((step) => ({
@@ -1406,7 +1346,6 @@ export async function executePlannerPath(
       callbacks.emitPlannerTrace(ctx, "planner_pipeline_started", {
         attempt: plannerAttempt,
         pipelineId: pipeline.id,
-        requestTreeBudgetKey: pipeline.requestTreeBudgetKey,
         routeReason: ctx.plannerSummaryState.routeReason,
         deterministicSteps: deterministicSteps.map((step) => ({
           name: step.name,
@@ -1420,7 +1359,6 @@ export async function executePlannerPath(
       const plannerWorkflowAdmission = buildPlannerWorkflowAdmission({
         subagentSteps,
         deterministicSteps,
-        workflowContract: plannerPlan.workflowContract,
         workspaceRoot: plannerExecutionContext.workspaceRoot,
         verificationContract: ctx.requiredToolEvidence?.verificationContract,
         completionContract: ctx.requiredToolEvidence?.completionContract,
@@ -1460,7 +1398,6 @@ export async function executePlannerPath(
       const plannerVerifierAdmission = buildPlannerVerifierAdmission({
         subagentSteps,
         deterministicSteps,
-        workflowContract: plannerPlan.workflowContract,
         workspaceRoot: plannerExecutionContext.workspaceRoot,
         verificationContract: plannerWorkflowAdmission.verificationContract,
         completionContract: plannerWorkflowAdmission.completionContract,

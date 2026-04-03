@@ -36,6 +36,10 @@ export function normalizeModelRoute(input = {}, nowMs) {
       input.llmModel ??
       "",
   );
+  const source = sanitizeInlineText(
+    input.source ??
+      "",
+  );
   if (!provider && !model) {
     return null;
   }
@@ -43,6 +47,7 @@ export function normalizeModelRoute(input = {}, nowMs) {
     provider: provider || "unknown",
     model: model || "unknown",
     usedFallback: input.usedFallback === true,
+    ...(source ? { source } : {}),
     updatedAt: Number.isFinite(Number(input.updatedAt))
       ? Number(input.updatedAt)
       : nowMs(),

@@ -2,9 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  formatSessionSummaries,
   formatStatusPayload,
+  summarizeUsage,
+  summarizeRunDetail,
   statusFeedFingerprint,
 } from "../../src/watch/agenc-watch-format-payloads.mjs";
+import { createWatchSessionLabelMap } from "../../src/watch/agenc-watch-session-indexing.mjs";
 
 test("statusFeedFingerprint changes when connector lifecycle status changes", () => {
   const base = {
@@ -73,4 +77,68 @@ test("formatStatusPayload includes connector lifecycle summary lines", () => {
   });
 
   assert.match(text, /connectors: telegram:configured\/polling,restart/);
+});
+
+test("formatSessionSummaries includes active marker and local session labels", () => {
+  const text = formatSessionSummaries(
+    [
+      {
+        sessionId: "session:alpha",
+        label: "Server label",
+        workspaceRoot: "/tmp/agenc-core",
+        model: "grok-4.20",
+        provider: "grok",
+        messageCount: 4,
+        lastActiveAt: Date.UTC(2026, 2, 29, 12, 0, 0),
+      },
+    ],
+    {
+      sessionLabels: createWatchSessionLabelMap({
+        alpha: "Roadmap branch",
+      }),
+      activeSessionId: "alpha",
+    },
+  );
+
+  assert.match(text, /session: session:alpha \[active\]/);
+  assert.match(text, /local label: Roadmap branch/);
+  assert.match(text, /workspace: \/tmp\/agenc-core/);
+  assert.match(text, /model: grok-4\.20 via grok/);
+});
+
+test("summarizeRunDetail exposes durable run control and checkpoint retry availability", () => {
+  const lines = summarizeRunDetail(
+    {
+      objective: "Ship it",
+      state: "working",
+      currentPhase: "verifying",
+      explanation: "Waiting on verifier output.",
+      availability: {
+        controlAvailable: false,
+      },
+      checkpointAvailable: true,
+      pendingSignals: 2,
+      watchCount: 1,
+    },
+    {
+      currentObjective: null,
+      runPhase: null,
+      runState: null,
+    },
+  );
+
+  assert.ok(lines.some((line) => line === "run controls: unavailable"));
+  assert.ok(lines.some((line) => line === "checkpoint retry: available"));
+});
+
+test("summarizeUsage includes context window when available", () => {
+  assert.equal(
+    summarizeUsage({
+      promptTokens: 12_345,
+      totalTokens: 67_890,
+      contextWindowTokens: 2_000_000,
+      maxOutputTokens: 131_072,
+    }),
+    "12K prompt / 68K total / 2M ctx / 131K max out",
+  );
 });

@@ -35,9 +35,6 @@ import type {
   SubagentVerifierDecision,
   SubagentVerifierStepAssessment,
   ToolCallRecord,
-  WorkflowContract,
-  WorkflowContractClass,
-  WorkflowStepContract,
 } from "./chat-executor-types.js";
 import {
   assessDelegationDecision,
@@ -95,12 +92,6 @@ import {
   isNonExecutableEnvelopePath,
   normalizeWorkspaceRoot,
 } from "../workflow/path-normalization.js";
-import {
-  canonicalizeWorkflowArtifactRelations,
-  canonicalizeWorkflowStepRole,
-  type WorkflowArtifactRelation,
-  type WorkflowStepRole,
-} from "../workflow/execution-envelope.js";
 import { textRequiresWorkspaceGroundedArtifactUpdate } from "../workflow/workspace-inspection-evidence.js";
 import {
   extractRequiredSubagentOrchestrationRequirements,
@@ -752,8 +743,6 @@ export function buildPlannerMessages(
         '        "effectClass": "read_only|filesystem_write|filesystem_scaffold|shell|mixed",\n' +
         '        "verificationMode": "none|grounded_read|mutation_required|deterministic_followup",\n' +
         '        "stepKind": "delegated_research|delegated_review|delegated_write|delegated_scaffold|delegated_validation",\n' +
-        '        "role": "reviewer|writer|validator|researcher|synthesizer",\n' +
-        '        "artifactRelations": [{"relationType":"read_dependency|write_owner|verification_subject|context_input|handoff_artifact","artifactPath":"/absolute/or/workspace-relative/path"}],\n' +
         '        "fallbackPolicy": "continue_without_delegation|fail_request",\n' +
         '        "resumePolicy": "stateless_retry|checkpoint_resume",\n' +
         '        "approvalProfile": "inherit|read_only|filesystem_write|shell"\n' +
@@ -769,8 +758,6 @@ export function buildPlannerMessages(
         "- `can_run_parallel` is optional; omit it when unknown and the runtime will default it to false.\n" +
         "- For subagent_task steps, put workspace, artifact, and tool scope truth inside `execution_context`; do not rely on `context_requirements` for authority.\n" +
         "- `execution_context.workspaceRoot` must be the canonical workspace root when the child touches local files.\n" +
-        "- `execution_context.role` is required whenever reviewer/writer/validator identity matters; do not expect the runtime to infer required reviewer identity from step names.\n" +
-        "- `execution_context.artifactRelations` is the typed source of truth for read dependencies, write ownership, and verification subjects.\n" +
         "- `execution_context.requiredSourceArtifacts` names the exact source artifacts the child must ground on before writing derived files.\n" +
         "- `execution_context.targetArtifacts` names the only files or directories the child may mutate in this phase.\n" +
         "- Never emit placeholder literals like `/abs/path` or `<actual-workspace-root>` in executable steps. Use the real canonical workspace root for this turn.\n" +
@@ -890,9 +877,9 @@ export function buildPlannerMessages(
       role: "system",
       content:
         "This is a plan-artifact execution request over a real workspace. " +
-        "Use exactly one mutable implementation owner for the planning artifact scope. " +
+        "Use exactly one mutable implementation owner for the repo root. " +
         "If you need prior grounding, keep it read-only and bounded to explicit source or analysis artifacts. " +
-        "Do not emit multiple delegated steps that all claim `write_owner` authority over the same artifact scope. " +
+        "Do not emit multiple mutable, validation, or QA subagent_task steps that all re-own the same workspace root. " +
         "Build, test, and verification around the implementation owner should be deterministic_tool steps unless a later delegated step owns disjoint artifacts.",
     });
   }
@@ -1051,35 +1038,6 @@ export function buildPlannerStructuredOutputRequest(): LLMStructuredOutputReques
                             "delegated_scaffold",
                             "delegated_validation",
                           ],
-                        },
-                        role: {
-                          enum: [
-                            "reviewer",
-                            "writer",
-                            "validator",
-                            "researcher",
-                            "synthesizer",
-                          ],
-                        },
-                        artifactRelations: {
-                          type: "array",
-                          items: {
-                            type: "object",
-                            additionalProperties: false,
-                            properties: {
-                              relationType: {
-                                enum: [
-                                  "read_dependency",
-                                  "write_owner",
-                                  "verification_subject",
-                                  "context_input",
-                                  "handoff_artifact",
-                                ],
-                              },
-                              artifactPath: { type: "string" },
-                            },
-                            required: ["relationType", "artifactPath"],
-                          },
                         },
                         fallbackPolicy: {
                           enum: [
@@ -2429,18 +2387,6 @@ export function parsePlannerPlan(
         maxBudgetHint,
         diagnostics,
       });
-      const workflowStep = buildPlannerWorkflowStepContract({
-        name: safeName,
-        stepType,
-        objective,
-        inputContract,
-        acceptanceCriteria,
-        requiredToolCapabilities,
-        contextRequirements,
-        executionContext,
-        maxBudgetHint: normalizedBudgetHint,
-        canRunParallel,
-      });
 
       steps.push({
         name: safeName,
@@ -2451,7 +2397,6 @@ export function parsePlannerPlan(
         requiredToolCapabilities,
         contextRequirements,
         ...(executionContext ? { executionContext } : {}),
-        workflowStep,
         maxBudgetHint: normalizedBudgetHint,
         canRunParallel,
       });
@@ -2537,13 +2482,6 @@ export function parsePlannerPlan(
           : containsSynthesisStep || undefined,
       steps,
       edges,
-      workflowContract: buildPlannerWorkflowContract({
-        steps: steps.filter(
-          (step): step is PlannerSubAgentTaskStepIntent =>
-            step.stepType === "subagent_task",
-        ),
-        requirements: repairRequirements,
-      }),
     },
     diagnostics,
   };
@@ -3758,29 +3696,6 @@ function plannerStepHasMutableImplementationAuthority(
   step: PlannerSubAgentTaskStepIntent,
 ): boolean {
   const executionContext = step.executionContext;
-  const artifactRelations = canonicalizeWorkflowArtifactRelations({
-    workspaceRoot: executionContext?.workspaceRoot,
-    artifactRelations: executionContext?.artifactRelations,
-    inputArtifacts: executionContext?.inputArtifacts,
-    requiredSourceArtifacts: executionContext?.requiredSourceArtifacts,
-    targetArtifacts: executionContext?.targetArtifacts,
-    stepKind: executionContext?.stepKind,
-    verificationMode: executionContext?.verificationMode,
-    role: canonicalizeWorkflowStepRole({
-      role: executionContext?.role,
-      stepKind: executionContext?.stepKind,
-      effectClass: executionContext?.effectClass,
-      verificationMode: executionContext?.verificationMode,
-    }),
-  });
-  const hasExplicitArtifactRelations =
-    (executionContext?.artifactRelations?.length ?? 0) > 0;
-  const ownsMutableArtifacts = artifactRelations.some((relation) =>
-    relation.relationType === "write_owner"
-  );
-  if (hasExplicitArtifactRelations) {
-    return ownsMutableArtifacts;
-  }
   const isBoundedGroundingStep =
     executionContext?.effectClass === "read_only" &&
     executionContext?.verificationMode === "grounded_read" &&
@@ -3820,8 +3735,11 @@ function plannerStepHasMutableImplementationAuthority(
   }
   return (
     executionContext?.verificationMode === "mutation_required" ||
+    executionContext?.verificationMode === "deterministic_followup" ||
     executionContext?.stepKind === "delegated_write" ||
     executionContext?.stepKind === "delegated_scaffold" ||
+    executionContext?.stepKind === "delegated_validation" ||
+    executionContext?.stepKind === "delegated_review" ||
     executionContext?.effectClass === "filesystem_write" ||
     executionContext?.effectClass === "filesystem_scaffold" ||
     executionContext?.effectClass === "shell" ||
@@ -4087,11 +4005,11 @@ export function buildPlannerStepContractRefinementHint(
         diagnostic.code === "planner_plan_artifact_single_write_collapse" ||
         diagnostic.code === "planner_plan_artifact_needs_grounding_step"
       ) {
-        return "for substantial software planning-artifact requests, do not jump straight to the final artifact materialization step; add at least one grounding or decomposition step before the final artifact write";
+        return "for substantial software plan/TODO requests, do not jump straight to the final artifact materialization step; add at least one grounding or decomposition step before the final artifact write";
       }
       if (diagnostic.code === "planner_plan_artifact_missing_workspace_grounding") {
         return (
-          "for workspace-grounded planning-artifact rewrites, preserve explicit current-workspace inspection. " +
+          "for workspace-grounded PLAN.md/TODO rewrites, preserve explicit current-workspace inspection. " +
           "Either add a prior repo/layout inspection step, or make the bounded delegated write step itself explicitly inspect current workspace state and require the artifact to reflect that evidence"
         );
       }
@@ -4103,8 +4021,8 @@ export function buildPlannerStepContractRefinementHint(
           readDiagnosticDetail(diagnostic, "stepNames") ??
           "the delegated implementation steps";
         return (
-          `for planning-artifact execution over ${workspaceRoot}, use exactly one mutable implementation owner; ` +
-          `do not let ${stepNames} all claim mutable ownership of the same artifact scope. Keep read-only review and grounding distinct from write ownership, and move build/test/QA into deterministic verification steps unless a later step owns disjoint artifacts`
+          `for PLAN.md/TODO execution over ${workspaceRoot}, use exactly one mutable implementation owner; ` +
+          `do not let ${stepNames} all re-own the same workspace. Keep plan analysis bounded, and move build/test/QA into deterministic verification steps unless a later step owns disjoint artifacts`
         );
       }
       if (diagnostic.code === "planner_plan_artifact_missing_write_step") {
@@ -4832,129 +4750,6 @@ export function createPlannerDiagnostic(
   return { category, code, message, ...(details ? { details } : {}) };
 }
 
-function inferWorkflowStepRoleFromText(
-  step: Pick<
-    PlannerSubAgentTaskStepIntent,
-    "objective" | "inputContract" | "acceptanceCriteria"
-  >,
-): WorkflowStepRole {
-  const combined = [
-    step.objective,
-    step.inputContract,
-    ...step.acceptanceCriteria,
-  ]
-    .join(" ")
-    .toLowerCase();
-  if (/\b(?:write|rewrite|update|edit|implement|fix|scaffold)\b/.test(combined)) {
-    return "writer";
-  }
-  if (/\b(?:validate|verification|verify|test|typecheck|lint|smoke)\b/.test(combined)) {
-    return "validator";
-  }
-  if (/\b(?:research|investigate|analyze|compare)\b/.test(combined)) {
-    return "researcher";
-  }
-  return "reviewer";
-}
-
-export function buildPlannerWorkflowStepContract(
-  step: PlannerSubAgentTaskStepIntent,
-): WorkflowStepContract {
-  const executionContext = step.executionContext;
-  const role =
-    step.workflowStep?.role ??
-    canonicalizeWorkflowStepRole({
-      role: executionContext?.role,
-      stepKind: executionContext?.stepKind,
-      effectClass: executionContext?.effectClass,
-      verificationMode: executionContext?.verificationMode,
-    }) ??
-    inferWorkflowStepRoleFromText(step);
-  const artifactRelations =
-    step.workflowStep?.artifactRelations ??
-    canonicalizeWorkflowArtifactRelations({
-      workspaceRoot: executionContext?.workspaceRoot,
-      artifactRelations: executionContext?.artifactRelations,
-      inputArtifacts: executionContext?.inputArtifacts,
-      requiredSourceArtifacts: executionContext?.requiredSourceArtifacts,
-      targetArtifacts: executionContext?.targetArtifacts,
-      stepKind: executionContext?.stepKind,
-      verificationMode: executionContext?.verificationMode,
-      role,
-    });
-  return {
-    name: step.name,
-    role,
-    objective: step.objective,
-    inputContract: step.inputContract,
-    acceptanceCriteria: step.acceptanceCriteria,
-    requiredToolCapabilities: step.requiredToolCapabilities,
-    contextRequirements: step.contextRequirements,
-    executionContext: executionContext
-      ? {
-        ...executionContext,
-        role,
-        artifactRelations,
-      }
-      : undefined,
-    artifactRelations,
-  };
-}
-
-function classifyWorkflowContractClass(
-  steps: readonly WorkflowStepContract[],
-): WorkflowContractClass {
-  const roles = new Set(steps.map((step) => step.role));
-  if (roles.has("writer") && roles.has("reviewer")) {
-    return "artifact_review_and_rewrite";
-  }
-  if (roles.has("writer")) {
-    return "implementation_with_verification";
-  }
-  if (roles.has("validator")) {
-    return roles.size === 1
-      ? "validation_only"
-      : "implementation_with_verification";
-  }
-  if (roles.size === 1 && roles.has("reviewer")) {
-    return "read_only_review";
-  }
-  return "research_and_synthesis";
-}
-
-export function buildPlannerWorkflowContract(params: {
-  readonly steps: readonly PlannerSubAgentTaskStepIntent[];
-  readonly requirements?: ExplicitSubagentOrchestrationRequirements;
-}): WorkflowContract | undefined {
-  const workflowSteps = params.steps.map((step) =>
-    buildPlannerWorkflowStepContract(step)
-  );
-  if (workflowSteps.length === 0) {
-    return undefined;
-  }
-  const exactNames =
-    params.requirements?.mode === "exact_steps"
-      ? params.requirements.stepNames.filter((name) =>
-          workflowSteps.some((step) => step.name === name)
-        )
-      : undefined;
-  const requiredChildren =
-    params.requirements
-      ? {
-        cardinality: params.requirements.requiredStepCount,
-        roles: workflowSteps
-          .filter((step) => step.role === "reviewer")
-          .map((step) => step.role),
-        ...(exactNames && exactNames.length > 0 ? { exactNames } : {}),
-      }
-      : undefined;
-  return {
-    workflowClass: classifyWorkflowContractClass(workflowSteps),
-    steps: workflowSteps,
-    ...(requiredChildren ? { requiredChildren } : {}),
-  };
-}
-
 export function isHighRiskSubagentPlan(
   steps: readonly PlannerSubAgentTaskStepIntent[],
 ): boolean {
@@ -5161,44 +4956,6 @@ interface PlannerExecutionContextParseResult {
   readonly errorDetails?: Readonly<Record<string, unknown>>;
 }
 
-function parsePlannerArtifactRelations(
-  value: unknown,
-): readonly WorkflowArtifactRelation[] | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value
-    .map((entry) => {
-      const record = parsePlannerArgsRecord(entry);
-      if (!record) {
-        return undefined;
-      }
-      const relationType = parsePlannerStringFromKeys(record, [
-        "relationType",
-        "relation_type",
-      ]);
-      const artifactPath = parsePlannerStringFromKeys(record, [
-        "artifactPath",
-        "artifact_path",
-        "path",
-      ]);
-      if (!relationType || !artifactPath) {
-        return undefined;
-      }
-      return {
-        relationType:
-          relationType as WorkflowArtifactRelation["relationType"],
-        artifactPath,
-      };
-    })
-    .filter(
-      (relation): relation is WorkflowArtifactRelation => relation !== undefined,
-    );
-}
-
 function parsePlannerExecutionContext(
   source: unknown,
 ): PlannerExecutionContextParseResult {
@@ -5325,10 +5082,6 @@ function parsePlannerExecutionContext(
         "verification_mode",
       ]) as any,
       stepKind: parsePlannerStringFromKeys(record, ["stepKind", "step_kind"]) as any,
-      role: parsePlannerStringFromKeys(record, ["role", "stepRole", "step_role"]) as any,
-      artifactRelations: parsePlannerArtifactRelations(
-        record.artifactRelations ?? record.artifact_relations,
-      ),
       fallbackPolicy: parsePlannerStringFromKeys(record, [
         "fallbackPolicy",
         "fallback_policy",

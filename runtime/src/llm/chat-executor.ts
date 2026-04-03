@@ -45,7 +45,6 @@ import { deriveWorkflowProgressSnapshot } from "../workflow/completion-progress.
 import { isDocumentationArtifactPath } from "../workflow/artifact-paths.js";
 import {
   buildModelRoutingPolicy,
-  resolveParallelToolCallPolicy,
   resolveModelRoute,
   type ModelRoutingPolicy,
 } from "./model-routing-policy.js";
@@ -72,7 +71,6 @@ import {
   buildDefaultExecutionContext,
 } from "./chat-executor-types.js";
 import type {
-  DetailedSkillInjectionResult,
   SkillInjector,
   MemoryRetriever,
   ToolCallRecord,
@@ -178,13 +176,6 @@ interface DetailedMemoryRetriever extends MemoryRetriever {
   ): Promise<DetailedMemoryRetrievalResult>;
 }
 
-interface DetailedSkillInjector extends SkillInjector {
-  injectDetailed(
-    message: string,
-    sessionId: string,
-  ): Promise<DetailedSkillInjectionResult>;
-}
-
 function isDetailedMemoryRetriever(
   provider: SkillInjector | MemoryRetriever | undefined,
 ): provider is DetailedMemoryRetriever {
@@ -192,16 +183,6 @@ function isDetailedMemoryRetriever(
     !!provider &&
     "retrieveDetailed" in provider &&
     typeof provider.retrieveDetailed === "function"
-  );
-}
-
-function isDetailedSkillInjector(
-  provider: SkillInjector | MemoryRetriever | undefined,
-): provider is DetailedSkillInjector {
-  return (
-    !!provider &&
-    "injectDetailed" in provider &&
-    typeof provider.injectDetailed === "function"
   );
 }
 
@@ -947,11 +928,6 @@ export class ChatExecutor {
   private resolveRoutingDecision(
     ctx: ExecutionContext,
     phase: ChatCallUsageRecord["phase"],
-    requirements?: {
-      readonly statefulContinuationRequired?: boolean;
-      readonly structuredOutputRequired?: boolean;
-      readonly routedToolNames?: readonly string[];
-    },
   ) {
     const runClass = this.resolveRunClassForPhase(ctx, phase);
     const pressure = getRuntimeBudgetPressure(
@@ -967,7 +943,6 @@ export class ChatExecutor {
         runClass,
         pressure,
         degradedProviderNames: this.buildDegradedProviderNames(),
-        requirements,
       }),
     };
   }
@@ -1972,36 +1947,11 @@ export class ChatExecutor {
     const effectiveCallSections = groundingMessage && input.callSections
       ? [...input.callSections, "system_runtime" as const]
       : input.callSections;
-    const requestedStructuredOutput =
-      input.structuredOutput?.enabled === false ||
-        input.structuredOutput?.schema === undefined
-        ? undefined
-        : input.structuredOutput;
-    let routingDecision: ReturnType<ChatExecutor["resolveRoutingDecision"]>;
-    try {
-      routingDecision = this.resolveRoutingDecision(ctx, input.phase, {
-        statefulContinuationRequired:
-          allowStatefulContinuation && Boolean(input.statefulSessionId),
-        structuredOutputRequired: requestedStructuredOutput !== undefined,
-        routedToolNames: effectiveRoutedToolNames,
-      });
-    } catch (error) {
-      const annotated = annotateFailureError(
-        error,
-        `${input.phase} routing preflight`,
-      );
-      this.setStopReason(ctx, annotated.stopReason, annotated.stopReasonDetail);
-      throw annotated.error;
-    }
-    const parallelToolCalls = resolveParallelToolCallPolicy({
-      policy: this.modelRoutingPolicy,
-      selectedProviderName: routingDecision.route.selectedProviderName,
-      phase: input.phase,
-    });
+    const routingDecision = this.resolveRoutingDecision(ctx, input.phase);
     const structuredOutput =
-      requestedStructuredOutput &&
-      routingDecision.route.selectedProviderName === "grok"
-        ? requestedStructuredOutput
+      input.structuredOutput &&
+      this.supportsStructuredOutputsForProviders(routingDecision.route.providers)
+        ? input.structuredOutput
         : undefined;
     if (
       this.economicsPolicy.mode === "enforce" &&
@@ -2037,7 +1987,6 @@ export class ChatExecutor {
             : typeof input.toolChoice === "string"
             ? input.toolChoice
             : input.toolChoice.name,
-        parallelToolCalls,
         structuredOutputSchemaName: structuredOutput?.schema?.name,
         messageCount: effectiveCallMessages.length,
         groundingMessageAdded: Boolean(groundingMessage),
@@ -2083,7 +2032,6 @@ export class ChatExecutor {
           ...(input.toolChoice !== undefined
             ? { toolChoice: input.toolChoice }
             : {}),
-          parallelToolCalls,
           ...(structuredOutput !== undefined
             ? { structuredOutput }
             : {}),
@@ -2144,6 +2092,13 @@ export class ChatExecutor {
       }),
     );
     return next.response;
+  }
+
+  private supportsStructuredOutputsForProviders(
+    providers: readonly LLMProvider[],
+  ): boolean {
+    return providers.length > 0 &&
+      providers.every((provider) => provider.name === "grok");
   }
 
   private async runPipelineWithTimeout(
@@ -2859,7 +2814,6 @@ export class ChatExecutor {
       reconciliationMessages?: readonly LLMMessage[];
       routedToolNames?: readonly string[];
       toolChoice?: LLMToolChoice;
-      parallelToolCalls?: boolean;
       requestDeadlineAt?: number;
       signal?: AbortSignal;
       trace?: ChatExecuteParams["trace"];
@@ -2911,56 +2865,19 @@ export class ChatExecutor {
     const isSkillInjector = "inject" in provider;
     const providerKind = isSkillInjector ? "skill" : "memory";
     try {
-      const detailedSkillResult =
-        providerKind === "skill" && isDetailedSkillInjector(provider)
-          ? await provider.injectDetailed(message, sessionId)
-          : undefined;
       const detailedMemoryResult =
         providerKind === "memory" && isDetailedMemoryRetriever(provider)
           ? await provider.retrieveDetailed(message, sessionId)
           : undefined;
-      const sectionMaxChars = this.getContextSectionMaxChars(section);
       const context =
-        providerKind === "skill"
-          ? (detailedSkillResult?.content ??
-            await (provider as SkillInjector).inject(message, sessionId))
+        isSkillInjector
+          ? await provider.inject(message, sessionId)
           : (detailedMemoryResult?.content ??
             await (provider as MemoryRetriever).retrieve(message, sessionId));
-      const hasDetailedSkillSplit =
-        providerKind === "skill" &&
-        (typeof detailedSkillResult?.trustedContent === "string" ||
-          typeof detailedSkillResult?.untrustedContent === "string");
-      const truncatedTrustedContext =
-        providerKind === "skill" &&
-          typeof detailedSkillResult?.trustedContent === "string" &&
-          detailedSkillResult.trustedContent.length > 0
-          ? truncateText(detailedSkillResult.trustedContent, sectionMaxChars)
-          : undefined;
-      const truncatedUntrustedContext =
-        providerKind === "skill" &&
-          typeof detailedSkillResult?.untrustedContent === "string" &&
-          detailedSkillResult.untrustedContent.length > 0
-          ? truncateText(detailedSkillResult.untrustedContent, sectionMaxChars)
-          : undefined;
-      const truncatedContext = (!hasDetailedSkillSplit) &&
-          typeof context === "string" &&
-          context.length > 0
+      const sectionMaxChars = this.getContextSectionMaxChars(section);
+      const truncatedContext = typeof context === "string" && context.length > 0
         ? truncateText(context, sectionMaxChars)
         : undefined;
-      if (truncatedTrustedContext) {
-        messages.push({
-          role: "system",
-          content: truncatedTrustedContext,
-        });
-        sections.push(section);
-      }
-      if (truncatedUntrustedContext) {
-        messages.push({
-          role: "user",
-          content: truncatedUntrustedContext,
-        });
-        sections.push("user");
-      }
       if (truncatedContext) {
         messages.push({
           role: "system",
@@ -2968,10 +2885,6 @@ export class ChatExecutor {
         });
         sections.push(section);
       }
-      const injectedChars =
-        (truncatedTrustedContext?.length ?? 0) +
-        (truncatedUntrustedContext?.length ?? 0) +
-        (truncatedContext?.length ?? 0);
       this.emitExecutionTrace(ctx, {
         type: "context_injected",
         phase: "initial",
@@ -2979,25 +2892,11 @@ export class ChatExecutor {
         payload: {
           providerKind,
           section,
-          injected: Boolean(
-            truncatedTrustedContext ||
-              truncatedUntrustedContext ||
-              truncatedContext,
-          ),
+          injected: Boolean(truncatedContext),
           originalChars: typeof context === "string" ? context.length : 0,
-          injectedChars,
-          ...(detailedSkillResult
-            ? {
-                trustedOriginalChars:
-                  detailedSkillResult.trustedContent?.length ?? 0,
-                trustedInjectedChars:
-                  truncatedTrustedContext?.length ?? 0,
-                untrustedOriginalChars:
-                  detailedSkillResult.untrustedContent?.length ?? 0,
-                untrustedInjectedChars:
-                  truncatedUntrustedContext?.length ?? 0,
-              }
-            : {}),
+          injectedChars: typeof truncatedContext === "string"
+            ? truncatedContext.length
+            : 0,
           ...(detailedMemoryResult
             ? {
                 curatedIncluded: detailedMemoryResult.curatedIncluded ?? false,

@@ -177,6 +177,17 @@ export interface ApprovalSimulationDecision {
   readonly denyReason?: string;
 }
 
+export interface SessionPolicyMutationState {
+  readonly elevatedPatterns: readonly string[];
+  readonly deniedPatterns: readonly string[];
+}
+
+export type SessionPolicyMutationOperation =
+  | "allow"
+  | "deny"
+  | "clear"
+  | "reset";
+
 /** Configuration for the ApprovalEngine (with injectable deps for testing). */
 export interface ApprovalEngineConfig {
   /** Approval rules. */
@@ -1013,6 +1024,53 @@ export class ApprovalEngine {
     this.elevations.delete(sessionId);
   }
 
+  getSessionPolicyState(sessionId: string): SessionPolicyMutationState {
+    const normalizedSession = sessionId.trim();
+    if (normalizedSession.length === 0) {
+      return {
+        elevatedPatterns: [],
+        deniedPatterns: [],
+      };
+    }
+    return {
+      elevatedPatterns: [...(this.elevations.get(normalizedSession) ?? [])].sort(),
+      deniedPatterns: [...(this.denials.get(normalizedSession) ?? [])].sort(),
+    };
+  }
+
+  applySessionPolicyMutation(params: {
+    sessionId: string;
+    operation: SessionPolicyMutationOperation;
+    pattern?: string;
+  }): SessionPolicyMutationState {
+    const sessionId = params.sessionId.trim();
+    if (sessionId.length === 0) {
+      return this.getSessionPolicyState(sessionId);
+    }
+    const pattern = params.pattern?.trim();
+    if (params.operation === "reset") {
+      this.revokeElevation(sessionId);
+      this.denials.delete(sessionId);
+      return this.getSessionPolicyState(sessionId);
+    }
+    if (!pattern) {
+      return this.getSessionPolicyState(sessionId);
+    }
+    if (params.operation === "allow") {
+      this.elevate(sessionId, pattern);
+      this.clearDeniedPattern(sessionId, pattern);
+      return this.getSessionPolicyState(sessionId);
+    }
+    if (params.operation === "deny") {
+      this.deny(sessionId, pattern);
+      this.clearElevatedPattern(sessionId, pattern);
+      return this.getSessionPolicyState(sessionId);
+    }
+    this.clearDeniedPattern(sessionId, pattern);
+    this.clearElevatedPattern(sessionId, pattern);
+    return this.getSessionPolicyState(sessionId);
+  }
+
   /**
    * Check whether a tool was explicitly denied for this request tree.
    * When `parentSessionId` is provided, denials on the parent also apply.
@@ -1190,6 +1248,17 @@ export class ApprovalEngine {
     }
   }
 
+  private clearElevatedPattern(sessionId: string, toolPattern: string): void {
+    const normalizedSession = sessionId.trim();
+    if (normalizedSession.length === 0) return;
+    const patterns = this.elevations.get(normalizedSession);
+    if (!patterns) return;
+    patterns.delete(toolPattern);
+    if (patterns.size === 0) {
+      this.elevations.delete(normalizedSession);
+    }
+  }
+
   private clearDeniedScope(sessionId: string, approvalScopeKey: string): void {
     this.clearDeniedPattern(
       sessionId,
@@ -1214,6 +1283,11 @@ export function createApprovalGateHook(engine: ApprovalEngine): HookHandler {
     event: "tool:before",
     name: "approval-gate",
     priority: 5,
+    source: "runtime",
+    kind: "approval",
+    handlerType: "runtime",
+    target: "approval-engine",
+    supported: true,
     handler: async (ctx: HookContext): Promise<HookResult> => {
       const toolName = ctx.payload.toolName as string | undefined;
       const args = (ctx.payload.args as Record<string, unknown>) ?? {};

@@ -1,9 +1,4 @@
 import { stableStringifyJson, type JsonValue } from "./types.js";
-import type {
-  WorkflowCompletionState,
-  WorkflowDependencyStateKind,
-  WorkflowResolutionSemantics,
-} from "../workflow/completion-state.js";
 
 export const BACKGROUND_RUN_QUALITY_ARTIFACT_SCHEMA_VERSION = 1 as const;
 
@@ -18,11 +13,6 @@ export interface BackgroundRunScenarioArtifact {
   readonly category: BackgroundRunScenarioCategory;
   readonly ok: boolean;
   readonly finalState: string;
-  readonly completionState: WorkflowCompletionState;
-  readonly dependencyStateKind: WorkflowDependencyStateKind;
-  readonly dependencySatisfied: boolean;
-  readonly verifierClosed: boolean;
-  readonly resolutionSemantics: WorkflowResolutionSemantics;
   readonly latencyMs: number;
   readonly timeToFirstAckMs?: number;
   readonly timeToFirstVerifiedUpdateMs?: number;
@@ -222,26 +212,6 @@ export function parseBackgroundRunQualityArtifact(
       category: asString(scenario.category, `scenarios[${index}].category`) as BackgroundRunScenarioCategory,
       ok: asBoolean(scenario.ok, `scenarios[${index}].ok`),
       finalState: asString(scenario.finalState, `scenarios[${index}].finalState`),
-      completionState: asString(
-        scenario.completionState,
-        `scenarios[${index}].completionState`,
-      ) as WorkflowCompletionState,
-      dependencyStateKind: asString(
-        scenario.dependencyStateKind,
-        `scenarios[${index}].dependencyStateKind`,
-      ) as WorkflowDependencyStateKind,
-      dependencySatisfied: asBoolean(
-        scenario.dependencySatisfied,
-        `scenarios[${index}].dependencySatisfied`,
-      ),
-      verifierClosed: asBoolean(
-        scenario.verifierClosed,
-        `scenarios[${index}].verifierClosed`,
-      ),
-      resolutionSemantics: asString(
-        scenario.resolutionSemantics,
-        `scenarios[${index}].resolutionSemantics`,
-      ) as WorkflowResolutionSemantics,
       latencyMs: asFiniteNumber(scenario.latencyMs, `scenarios[${index}].latencyMs`),
       timeToFirstAckMs:
         scenario.timeToFirstAckMs === undefined
