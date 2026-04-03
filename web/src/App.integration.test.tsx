@@ -270,6 +270,34 @@ describe('App websocket integration', () => {
     expect(composer.selectionStart).toBe(6);
     expect(composer.selectionEnd).toBe(6);
   });
+  it('keeps the selected simulation route when leaving and re-entering the SIM tab', async () => {
+    window.history.replaceState(null, '', '/?view=simulation&simMode=detail&simulationId=sim-42');
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(simulationWorkspaceProps?.active).toBe(true);
+      expect(simulationWorkspaceProps?.route).toEqual({ mode: 'detail', simulationId: 'sim-42' });
+    });
+
+    fireEvent.click(screen.getByText('CHAT'));
+
+    await waitFor(() => {
+      expect(simulationWorkspaceProps?.active).toBe(false);
+      expect(simulationWorkspaceProps?.route).toEqual({ mode: 'detail', simulationId: 'sim-42' });
+    });
+
+    fireEvent.click(screen.getByText('SIM'));
+
+    await waitFor(() => {
+      expect(simulationWorkspaceProps?.active).toBe(true);
+      expect(simulationWorkspaceProps?.route).toEqual({ mode: 'detail', simulationId: 'sim-42' });
+    });
+
+    expect(window.location.search).toContain('view=simulation');
+    expect(window.location.search).toContain('simulationId=sim-42');
+  });
+
   it('hydrates simulation route state from the URL and responds to history changes', async () => {
     window.history.replaceState(null, '', '/?view=simulation&simMode=detail&simulationId=sim-42');
 

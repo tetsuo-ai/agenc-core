@@ -118,6 +118,38 @@ describe('SimulationWorkspace', () => {
     await screen.findByText('No sims yet. Launch one to populate the dashboard.');
   });
 
+  it('re-discovers active simulations after a workspace remount', async () => {
+    fetchMock.mockImplementation(async () => (
+      new Response(JSON.stringify({
+        simulations: [makeSummary()],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    ));
+
+    const first = render(
+      <SimulationWorkspace
+        active
+        bridgeUrl="http://localhost:3200"
+        route={{ mode: 'dashboard', simulationId: null }}
+        onRouteChange={() => {}}
+      />,
+    );
+
+    expect((await screen.findAllByText('world-running')).length).toBeGreaterThan(0);
+    first.unmount();
+
+    render(
+      <SimulationWorkspace
+        active
+        bridgeUrl="http://localhost:3200"
+        route={{ mode: 'dashboard', simulationId: null }}
+        onRouteChange={() => {}}
+      />,
+    );
+
+    expect((await screen.findAllByText('world-running')).length).toBeGreaterThan(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('hydrates detail mode from the selected simulation record and lists active/recent cards', async () => {
     fetchMock.mockImplementation(async (input) => {
       const url = String(input);
