@@ -44,7 +44,14 @@ import { RunDashboardView } from './components/runs/RunDashboardView';
 import { SettingsView } from './components/settings/SettingsView';
 import { PaymentView } from './components/payment/PaymentView';
 import { DesktopView } from './components/desktop/DesktopView';
-import { SimulationViewer } from './components/simulation';
+import { SimulationWorkspace } from './components/simulation';
+import {
+  DEFAULT_SIMULATION_ROUTE,
+  readSimulationRouteFromUrl,
+  readViewFromUrl,
+  writeAppNavigationToUrl,
+  type SimulationWorkspaceRoute,
+} from './components/simulation/navigation';
 
 const CHAT_COMPOSER_SELECTOR = 'textarea[data-chat-composer="true"]';
 
@@ -98,10 +105,66 @@ function restoreComposerFocus(snapshot: ComposerFocusSnapshot) {
   setTimeout(restore, 0);
 }
 
+function readInitialView(): ViewId {
+  return typeof window === 'undefined' ? 'chat' : readViewFromUrl(window.location);
+}
+
+function readInitialSimulationRoute(): SimulationWorkspaceRoute {
+  return typeof window === 'undefined'
+    ? DEFAULT_SIMULATION_ROUTE
+    : readSimulationRouteFromUrl(window.location);
+}
+
+function writeNavigationState(
+  view: ViewId,
+  simulationRoute: SimulationWorkspaceRoute,
+  replace = false,
+) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  const url = new URL(window.location.href);
+  writeAppNavigationToUrl(url, view, simulationRoute);
+  if (replace) {
+    window.history.replaceState(null, '', url);
+    return;
+  }
+  window.history.pushState(null, '', url);
+}
+
 export default function App() {
-  const [currentView, setCurrentView] = useState<ViewId>('chat');
+  const [currentView, setCurrentView] = useState<ViewId>(() => readInitialView());
+  const [simulationRoute, setSimulationRoute] = useState<SimulationWorkspaceRoute>(() => readInitialSimulationRoute());
   const [selectedApproval, setSelectedApproval] = useState<ApprovalRequest | null>(null);
   const { theme } = useTheme();
+
+  const handleViewChange = useCallback((view: ViewId) => {
+    setCurrentView(view);
+    writeNavigationState(view, simulationRoute);
+  }, [simulationRoute]);
+
+  const handleSimulationRouteChange = useCallback((
+    route: SimulationWorkspaceRoute,
+    options?: { replace?: boolean },
+  ) => {
+    setSimulationRoute(route);
+    setCurrentView('simulation');
+    writeNavigationState('simulation', route, options?.replace ?? false);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+
+    const onPopState = () => {
+      setCurrentView(readViewFromUrl(window.location));
+      setSimulationRoute(readSimulationRouteFromUrl(window.location));
+    };
+
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
 
   // WebSocket connection
   const { state: connectionState, send } = useWebSocket({
@@ -259,7 +322,7 @@ export default function App() {
         />
         <BBSMenuBar
           currentView={currentView}
-          onViewChange={setCurrentView}
+          onViewChange={handleViewChange}
         />
 
         <ApprovalBanner
@@ -412,13 +475,14 @@ export default function App() {
           {currentView === 'payment' && (
             <PaymentView wallet={walletInfo} />
           )}
-          {currentView === 'simulation' && (
-            <SimulationViewer
-              eventWsUrl="ws://localhost:3201"
+          <div className={currentView === 'simulation' ? 'flex-1 min-h-0' : 'hidden'}>
+            <SimulationWorkspace
+              active={currentView === 'simulation'}
               bridgeUrl="http://localhost:3200"
-              controlUrl="http://localhost:3202"
+              route={simulationRoute}
+              onRouteChange={handleSimulationRouteChange}
             />
-          )}
+          </div>
         </main>
 
         <BBSStatusBar

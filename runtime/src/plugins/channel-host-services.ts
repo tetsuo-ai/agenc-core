@@ -116,17 +116,107 @@ export interface ConcordiaWorldMemoryHostServices {
   };
   readonly sharedMemory: {
     writeFact(params: {
-      scope: string;
+      scope: "user" | "organization" | "capability";
       content: string;
       author: string;
       userId?: string;
-    }): Promise<unknown>;
-    getFacts(
-      scope: string,
-      userId?: string,
-    ): Promise<Array<{
+      visibility?: "private" | "shared" | "world-visible" | "lineage-shared";
+      lineageId?: string | null;
+      trustSource?: "system" | "agent" | "user" | "external";
+      confidence?: number;
+      provenance?: readonly {
+        type: string;
+        source: "system" | "agent" | "user" | "external";
+        source_id: string;
+        simulation_id?: string | null;
+        lineage_id?: string | null;
+        parent_simulation_id?: string | null;
+        world_id?: string | null;
+        workspace_id?: string | null;
+        event_id?: string | null;
+        timestamp: number;
+        metadata?: Record<string, unknown> | null;
+      }[];
+      authorization?: {
+        mode: "auto" | "requires-user-authorization" | "requires-system-authorization";
+        approved: boolean;
+        approved_by?: string | null;
+        approved_at?: number | null;
+        reason?: string | null;
+      };
+    }): Promise<{
+      id?: string;
       content: string;
       author: string;
+      userId?: string;
+      visibility?: "private" | "shared" | "world-visible" | "lineage-shared";
+      trust?: {
+        source: "system" | "agent" | "user" | "external";
+        score: number;
+        confidence: number;
+        threshold: number;
+      } | null;
+      provenance?: readonly {
+        type: string;
+        source: "system" | "agent" | "user" | "external";
+        source_id: string;
+        simulation_id?: string | null;
+        lineage_id?: string | null;
+        parent_simulation_id?: string | null;
+        world_id?: string | null;
+        workspace_id?: string | null;
+        event_id?: string | null;
+        timestamp: number;
+        metadata?: Record<string, unknown> | null;
+      }[];
+      authorization?: {
+        mode: "auto" | "requires-user-authorization" | "requires-system-authorization";
+        approved: boolean;
+        approved_by?: string | null;
+        approved_at?: number | null;
+        reason?: string | null;
+      } | null;
+    }>;
+    getFacts(
+      scope: "user" | "organization" | "capability",
+      userId?: string,
+      options?: {
+        readonly lineageId?: string | null;
+        readonly minTrustScore?: number;
+        readonly allowedVisibilities?: readonly ("private" | "shared" | "world-visible" | "lineage-shared")[];
+      },
+    ): Promise<Array<{
+      id?: string;
+      content: string;
+      author: string;
+      userId?: string;
+      visibility?: "private" | "shared" | "world-visible" | "lineage-shared";
+      trust?: {
+        source: "system" | "agent" | "user" | "external";
+        score: number;
+        confidence: number;
+        threshold: number;
+      } | null;
+      provenance?: readonly {
+        type: string;
+        source: "system" | "agent" | "user" | "external";
+        source_id: string;
+        simulation_id?: string | null;
+        lineage_id?: string | null;
+        parent_simulation_id?: string | null;
+        world_id?: string | null;
+        workspace_id?: string | null;
+        event_id?: string | null;
+        timestamp: number;
+        metadata?: Record<string, unknown> | null;
+      }[];
+      authorization?: {
+        mode: "auto" | "requires-user-authorization" | "requires-system-authorization";
+        approved: boolean;
+        approved_by?: string | null;
+        approved_at?: number | null;
+        reason?: string | null;
+      } | null;
     }>>;
   };
   readonly traceLogger: MemoryTraceLogger;
@@ -176,10 +266,92 @@ export interface ConcordiaWorldMemoryHostServices {
   readonly vectorDbPath?: string;
 }
 
+export interface ConcordiaCheckpointSceneCursorMetadata {
+  readonly scene_index: number;
+  readonly scene_round: number;
+  readonly current_scene_name?: string | null;
+}
+
+export interface ConcordiaCheckpointRuntimeCursorMetadata {
+  readonly current_step: number;
+  readonly start_step: number;
+  readonly max_steps: number;
+  readonly last_acting_agent?: string | null;
+  readonly last_step_outcome?: string | null;
+  readonly engine_type?: string | null;
+}
+
+export interface ConcordiaCheckpointReplayCursorMetadata {
+  readonly replay_cursor: number;
+  readonly replay_event_count: number;
+  readonly last_event_id?: string | null;
+  readonly resume_behavior?: string | null;
+  readonly source_step?: number;
+}
+
+export interface ConcordiaCheckpointWorldStateRefsMetadata {
+  readonly source: string;
+  readonly gm_state_key?: string | null;
+  readonly entity_state_keys: readonly string[];
+  readonly authoritative_snapshot_ref?: string | null;
+}
+
+export interface ConcordiaCheckpointSubsystemStateMetadata {
+  readonly resumed: readonly string[];
+  readonly reset: readonly string[];
+}
+
+export interface ConcordiaCheckpointStatusMetadata {
+  readonly checkpoint_id: string;
+  readonly checkpoint_path: string;
+  readonly schema_version: number;
+  readonly world_id: string;
+  readonly workspace_id: string;
+  readonly simulation_id: string;
+  readonly lineage_id?: string | null;
+  readonly parent_simulation_id?: string | null;
+  readonly step: number;
+  readonly timestamp: number;
+  readonly max_steps: number;
+  readonly scene_cursor: ConcordiaCheckpointSceneCursorMetadata | null;
+  readonly runtime_cursor: ConcordiaCheckpointRuntimeCursorMetadata;
+  readonly replay_cursor: ConcordiaCheckpointReplayCursorMetadata;
+  readonly world_state_refs: ConcordiaCheckpointWorldStateRefsMetadata;
+  readonly memory_namespace_refs?: Record<string, unknown>;
+  readonly subsystem_state: ConcordiaCheckpointSubsystemStateMetadata;
+}
+
+export interface ConcordiaCheckpointMetadata {
+  readonly checkpointId?: string | null;
+  readonly checkpointPath?: string | null;
+  readonly checkpointSchemaVersion?: number | null;
+  readonly checkpointSimulationId?: string | null;
+  readonly checkpointLineageId?: string | null;
+  readonly checkpointParentSimulationId?: string | null;
+  readonly checkpointWorldId?: string | null;
+  readonly checkpointWorkspaceId?: string | null;
+  readonly resumedFromStep?: number | null;
+  readonly sceneCursor?: ConcordiaCheckpointSceneCursorMetadata | null;
+  readonly runtimeCursor?: ConcordiaCheckpointRuntimeCursorMetadata | null;
+  readonly replayCursor?: ConcordiaCheckpointReplayCursorMetadata | null;
+  readonly worldStateRefs?: ConcordiaCheckpointWorldStateRefsMetadata | null;
+  readonly subsystemRestore?: ConcordiaCheckpointSubsystemStateMetadata | null;
+  readonly checkpointStatus?: ConcordiaCheckpointStatusMetadata | null;
+  readonly checkpointManifest?: Record<string, unknown> | null;
+}
+
 export interface ConcordiaMemoryHostServices {
   resolveWorldContext(input: {
     worldId: string;
     workspaceId: string;
+    simulationId?: string;
+    lineageId?: string | null;
+    parentSimulationId?: string | null;
+    effectiveStorageKey?: string;
+    logStorageKey?: string;
+    scopedWorkspaceId?: string;
+    continuityMode?: "isolated" | "lineage_resume";
+    checkpointMetadata?: ConcordiaCheckpointMetadata | null;
   }): Promise<ConcordiaWorldMemoryHostServices>;
 }
 
@@ -252,7 +424,10 @@ function createConcordiaMemoryHostServices(params: {
 
   return {
     async resolveWorldContext(input) {
-      const cacheKey = `${input.workspaceId}::${input.worldId}`;
+      const effectiveStorageKey = input.effectiveStorageKey ?? input.worldId;
+      const logStorageKey = input.logStorageKey ?? effectiveStorageKey;
+      const scopedWorkspaceId = input.scopedWorkspaceId ?? input.workspaceId;
+      const cacheKey = `${scopedWorkspaceId}::${effectiveStorageKey}::${logStorageKey}`;
       const existing = worldContexts.get(cacheKey);
       if (existing) {
         return existing;
@@ -261,7 +436,10 @@ function createConcordiaMemoryHostServices(params: {
       const created = createConcordiaWorldContext({
         ...params,
         worldId: input.worldId,
+        effectiveStorageKey,
+        logStorageKey,
         workspaceId: input.workspaceId,
+        scopedWorkspaceId,
         getSharedBackend,
       }).catch((error) => {
         worldContexts.delete(cacheKey);
@@ -277,13 +455,16 @@ async function createConcordiaWorldContext(params: {
   readonly config: GatewayConfig;
   readonly logger: Logger;
   readonly worldId: string;
+  readonly effectiveStorageKey: string;
+  readonly logStorageKey: string;
   readonly workspaceId: string;
+  readonly scopedWorkspaceId: string;
   readonly getSharedBackend: () => Promise<MemoryBackend>;
 }): Promise<ConcordiaWorldMemoryHostServices> {
   const worldBackend = await createMemoryBackend({
     config: params.config,
     logger: params.logger,
-    worldId: params.worldId,
+    worldId: params.effectiveStorageKey,
   });
   const sharedBackend = await params.getSharedBackend();
 
@@ -306,10 +487,11 @@ async function createConcordiaWorldContext(params: {
     logger: params.logger,
   });
 
-  const vectorDbPath = resolveWorldVectorDbPath(params.worldId);
+  const vectorDbPath = resolveWorldVectorDbPath(params.effectiveStorageKey);
   const worldDir = dirname(vectorDbPath);
+  const logDir = dirname(resolveWorldVectorDbPath(params.logStorageKey));
   const curatedMemory = new CuratedMemoryManager(join(worldDir, "MEMORY.md"));
-  const runtimeDailyLogManager = new DailyLogManager(join(worldDir, "logs"));
+  const runtimeDailyLogManager = new DailyLogManager(join(logDir, "logs"));
 
   const embeddingProvider = await createEmbeddingProvider({
     preferred: params.config.memory?.embeddingProvider,
@@ -335,7 +517,7 @@ async function createConcordiaWorldContext(params: {
       vectorBackend: vectorStore,
       embeddingProvider,
       curatedMemory,
-      workspaceId: params.workspaceId,
+      workspaceId: params.scopedWorkspaceId,
       logger: params.logger,
     });
     const engine = new MemoryIngestionEngine({
@@ -392,7 +574,7 @@ async function createConcordiaWorldContext(params: {
         llmProvider,
         identityManager,
         agentId: input.agentId,
-        workspaceId: input.workspaceId ?? params.workspaceId,
+        workspaceId: input.workspaceId ?? params.scopedWorkspaceId,
         recentHistory: recentHistory.map((entry) => ({
           role: entry.role,
           content: entry.content,
@@ -410,7 +592,7 @@ async function createConcordiaWorldContext(params: {
           graph,
           logger: params.logger,
         },
-        input?.workspaceId ?? params.workspaceId,
+        input?.workspaceId ?? params.scopedWorkspaceId,
       );
     },
     retain() {
@@ -429,20 +611,110 @@ async function createConcordiaWorldContext(params: {
     proceduralMemory: createProceduralMemoryAdapter(runtimeProceduralMemory),
     graph: createGraphAdapter(graph),
     sharedMemory: {
-      writeFact(input) {
-        return sharedMemory.writeFact({
+      async writeFact(input) {
+        const fact = await sharedMemory.writeFact({
           scope: toSharedScope(input.scope),
           content: input.content,
           author: input.author,
           userId: input.userId,
-          sourceWorldId: params.worldId,
+          visibility: input.visibility,
+          lineageId: input.lineageId ?? undefined,
+          trustSource: input.trustSource,
+          confidence: input.confidence,
+          provenance: input.provenance?.map((source) => ({
+            type: source.type,
+            source: toConcordiaTrustSource(source.source),
+            sourceId: source.source_id,
+            simulationId: source.simulation_id,
+            lineageId: source.lineage_id,
+            parentSimulationId: source.parent_simulation_id,
+            worldId: source.world_id,
+            workspaceId: source.workspace_id,
+            eventId: source.event_id,
+            timestamp: source.timestamp,
+            metadata: source.metadata ?? undefined,
+          })),
+          authorization: input.authorization ? {
+            mode: input.authorization.mode,
+            approved: input.authorization.approved,
+            approvedBy: input.authorization.approved_by ?? undefined,
+            approvedAt: input.authorization.approved_at ?? undefined,
+            reason: input.authorization.reason ?? undefined,
+          } : undefined,
+          sourceWorldId: params.effectiveStorageKey,
         });
-      },
-      async getFacts(scope, userId) {
-        const facts = await sharedMemory.getFacts(toSharedScope(scope), userId);
-        return facts.map((fact) => ({
+        return {
+          id: fact.id,
           content: fact.content,
           author: fact.author,
+          userId: fact.userId,
+          visibility: fact.visibility,
+          trust: {
+            source: toConcordiaTrustSource(fact.trustSource),
+            score: fact.trustScore,
+            confidence: fact.confidence,
+            threshold: 0.7,
+          },
+          provenance: fact.provenance.map((source) => ({
+            type: source.type,
+            source: toConcordiaTrustSource(source.source),
+            source_id: source.sourceId,
+            simulation_id: source.simulationId ?? null,
+            lineage_id: source.lineageId ?? null,
+            parent_simulation_id: source.parentSimulationId ?? null,
+            world_id: source.worldId ?? null,
+            workspace_id: source.workspaceId ?? null,
+            event_id: source.eventId ?? null,
+            timestamp: source.timestamp,
+            metadata: source.metadata ?? null,
+          })),
+          authorization: {
+            mode: fact.authorization.mode,
+            approved: fact.authorization.approved,
+            approved_by: fact.authorization.approvedBy ?? null,
+            approved_at: fact.authorization.approvedAt ?? null,
+            reason: fact.authorization.reason ?? null,
+          },
+        };
+      },
+      async getFacts(scope, userId, options) {
+        const facts = await sharedMemory.getFacts(toSharedScope(scope), userId, 50, {
+          lineageId: options?.lineageId,
+          minTrustScore: options?.minTrustScore,
+          allowedVisibilities: options?.allowedVisibilities,
+        });
+        return facts.map((fact) => ({
+          id: fact.id,
+          content: fact.content,
+          author: fact.author,
+          userId: fact.userId,
+          visibility: fact.visibility,
+          trust: {
+            source: toConcordiaTrustSource(fact.trustSource),
+            score: fact.trustScore,
+            confidence: fact.confidence,
+            threshold: 0.7,
+          },
+          provenance: fact.provenance.map((source) => ({
+            type: source.type,
+            source: toConcordiaTrustSource(source.source),
+            source_id: source.sourceId,
+            simulation_id: source.simulationId ?? null,
+            lineage_id: source.lineageId ?? null,
+            parent_simulation_id: source.parentSimulationId ?? null,
+            world_id: source.worldId ?? null,
+            workspace_id: source.workspaceId ?? null,
+            event_id: source.eventId ?? null,
+            timestamp: source.timestamp,
+            metadata: source.metadata ?? null,
+          })),
+          authorization: {
+            mode: fact.authorization.mode,
+            approved: fact.authorization.approved,
+            approved_by: fact.authorization.approvedBy ?? null,
+            approved_at: fact.authorization.approvedAt ?? null,
+            reason: fact.authorization.reason ?? null,
+          },
         }));
       },
     },
@@ -595,4 +867,18 @@ function toSharedScope(scope: string): "user" | "organization" | "capability" {
     return scope;
   }
   return "user";
+}
+
+function toConcordiaTrustSource(source: string): "system" | "agent" | "user" | "external" {
+  switch (source) {
+    case "system":
+    case "agent":
+    case "user":
+    case "external":
+      return source;
+    case "tool":
+    case "unknown":
+    default:
+      return "external";
+  }
 }

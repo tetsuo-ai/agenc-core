@@ -1,192 +1,122 @@
 /**
- * Main simulation viewer — setup → running → inspect flow.
- *
- * States:
- * 1. SETUP: Configure world, agents, GM — pick preset or build custom
- * 2. RUNNING: Live event timeline, agent cards, controls, world state
- * 3. INSPECT: Click an agent card to deep-dive into memory/beliefs
+ * Simulation detail view — one bridge-backed simulation record.
  */
 
-import { useState, useCallback, useEffect } from "react";
-import { useSimulation } from "./useSimulation";
-import { SimulationSetup, type SimulationSetupConfig } from "./SimulationSetup";
-import { SimulationControls } from "./SimulationControls";
-import { AgentCard } from "./AgentCard";
-import { EventTimeline } from "./EventTimeline";
-import { WorldStatePanel } from "./WorldStatePanel";
-import { AgentInspector } from "./AgentInspector";
-
-type SimPhase = "setup" | "running" | "finished";
+import { useMemo, useState } from 'react';
+import { useSimulation, type SimulationRecord, type SimulationStatus } from './useSimulation';
+import { SimulationControls } from './SimulationControls';
+import { AgentCard } from './AgentCard';
+import { EventTimeline } from './EventTimeline';
+import { WorldStatePanel } from './WorldStatePanel';
+import { AgentInspector } from './AgentInspector';
 
 interface SimulationViewerProps {
-  eventWsUrl?: string;
   bridgeUrl?: string;
-  controlUrl?: string;
-  agentIds?: string[];
+  simulation: SimulationRecord;
+  active?: boolean;
+  onBackToDashboard?: () => void;
 }
 
-export function SimulationViewer({
-  eventWsUrl = "ws://localhost:3201",
-  bridgeUrl = "http://localhost:3200",
-  controlUrl = "http://localhost:3202",
-  agentIds: initialAgentIds = [],
-}: SimulationViewerProps) {
-  const [phase, setPhase] = useState<SimPhase>("setup");
-  const [agentIds, setAgentIds] = useState<string[]>(initialAgentIds);
-  const [launching, setLaunching] = useState(false);
-  const [inspectedAgent, setInspectedAgent] = useState<string | null>(null);
-  const [launchConfig, setLaunchConfig] = useState<SimulationSetupConfig | null>(null);
+const TERMINAL_STATUSES = new Set(['stopped', 'finished', 'failed', 'archived', 'deleted']);
 
+export function SimulationViewer({
+  bridgeUrl = 'http://localhost:3200',
+  simulation,
+  active = true,
+  onBackToDashboard,
+}: SimulationViewerProps) {
+  const [inspectedAgent, setInspectedAgent] = useState<string | null>(null);
+  const initialStatus = useMemo(() => buildSimulationStatus(simulation), [simulation]);
   const { state, play, pause, step, stop } = useSimulation({
-    eventWsUrl,
+    simulationId: simulation.simulation_id,
     bridgeUrl,
-    controlUrl,
-    agentIds,
-    pollIntervalMs: phase === "running" ? 750 : 3000,
+    agentIds: simulation.agent_ids,
+    pollIntervalMs: active ? 750 : 3000,
+    active,
+    initialStatus,
   });
 
-  const handleLaunch = useCallback(
-    async (config: SimulationSetupConfig) => {
-      setLaunching(true);
-      setLaunchConfig(config);
-      try {
-        // POST to bridge /launch. The plugin bridge will spawn the Python
-        // runner, and the runner will call back into bridge /setup.
-        const resp = await fetch(`${bridgeUrl}/launch`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            world_id: config.worldId,
-            workspace_id: "concordia-sim",
-            agents: config.agents.map((a) => ({
-              agent_id: a.id,
-              agent_name: a.name,
-              personality: a.personality,
-              goal: a.goal,
-            })),
-            premise: config.premise,
-            max_steps: config.maxSteps,
-            gm_model: config.gmModel,
-            gm_provider: config.gmProvider,
-            engine_type: config.engineType,
-          }),
-        });
-
-        if (!resp.ok) {
-          throw new Error(`Setup failed: ${resp.status}`);
-        }
-
-        setAgentIds(config.agents.map((a) => a.id));
-        setPhase("running");
-
-        // Auto-play
-        await fetch(`${controlUrl}/simulation/play`, { method: "POST" }).catch(
-          () => {},
-        );
-      } catch (err) {
-        console.error("Launch failed:", err);
-        alert(`Failed to launch simulation: ${err}`);
-      } finally {
-        setLaunching(false);
-      }
-    },
-    [bridgeUrl, controlUrl],
+  const displayStatus = useMemo(
+    () => buildDisplayStatus(simulation, state.status),
+    [simulation, state.status],
   );
-
-  const handleStop = useCallback(async () => {
-    await stop();
-    setPhase("finished");
-  }, [stop]);
-
-  // Auto-finish detection: when simulation stops running after having started
-  useEffect(() => {
-    if (phase === "running" && !state.status.running && state.status.step > 0) {
-      setPhase("finished");
-    }
-  }, [phase, state.status.running, state.status.step]);
-
-  const handleNewSimulation = useCallback(() => {
-    setPhase("setup");
-    setAgentIds([]);
-    setLaunchConfig(null);
-    setInspectedAgent(null);
-  }, []);
-
-  // ========================================================================
-  // SETUP phase
-  // ========================================================================
-  if (phase === "setup") {
-    return <SimulationSetup onLaunch={handleLaunch} loading={launching} bridgeUrl={bridgeUrl} />;
-  }
-
-  // ========================================================================
-  // RUNNING / FINISHED phase
-  // ========================================================================
-  const inspected =
-    inspectedAgent && state.agentStates[inspectedAgent]
-      ? state.agentStates[inspectedAgent]
-      : null;
+  const historicalMode = TERMINAL_STATUSES.has(displayStatus.status);
+  const inspected = inspectedAgent && state.agentStates[inspectedAgent]
+    ? state.agentStates[inspectedAgent]
+    : null;
+  const identityLabel = simulation.lineage_id
+    ? 'Lineage ' + simulation.lineage_id.slice(0, 8)
+    : 'Standalone run';
 
   return (
-    <div className="flex flex-col h-full bg-black text-green-400 font-mono">
-      {/* Controls */}
+    <div className="flex h-full flex-col bg-black text-green-400 font-mono">
       <SimulationControls
-        status={state.status}
+        status={displayStatus}
         onPlay={play}
         onPause={pause}
         onStep={step}
-        onStop={handleStop}
+        onStop={stop}
       />
 
-      {/* Connection + phase status */}
-      <div className="flex items-center gap-2 px-2 py-0.5 text-xs border-b border-green-900">
-        <span
-          className={`w-2 h-2 rounded-full ${
-            state.connected ? "bg-green-500" : "bg-red-500"
-          }`}
-        />
-        <span className="text-green-600">
-          {state.connected ? "Connected" : "Disconnected"}
-        </span>
-        {launchConfig && (
+      <div className="flex flex-wrap items-center gap-2 border-b border-green-900 px-3 py-1 text-xs text-green-600">
+        <span className="text-green-300">{simulation.world_id}</span>
+        <span className="text-green-800">|</span>
+        <span>{simulation.agents.length} agents</span>
+        <span className="text-green-800">|</span>
+        <span>{identityLabel}</span>
+        {simulation.gm_model && (
           <>
             <span className="text-green-800">|</span>
-            <span className="text-green-600">
-              World: {launchConfig.worldId}
-            </span>
-            <span className="text-green-800">|</span>
-            <span className="text-green-600">
-              {launchConfig.agents.length} agents
-            </span>
-            <span className="text-green-800">|</span>
-            <span className="text-green-600">
-              Engine: {launchConfig.engineType}
-            </span>
+            <span>GM {simulation.gm_model}</span>
           </>
         )}
-        {phase === "finished" && (
+        {simulation.gm_provider && (
           <>
             <span className="text-green-800">|</span>
-            <span className="text-yellow-500">FINISHED</span>
-            <button
-              onClick={handleNewSimulation}
-              className="ml-auto text-green-400 border border-green-700 px-2 hover:bg-green-950"
-            >
-              New Simulation
-            </button>
+            <span>{simulation.gm_provider}</span>
           </>
         )}
-        {state.error && (
-          <span className="text-red-500 ml-2">{state.error}</span>
+        {simulation.max_steps !== null && (
+          <>
+            <span className="text-green-800">|</span>
+            <span>Max {simulation.max_steps}</span>
+          </>
+        )}
+        {onBackToDashboard && (
+          <button
+            onClick={onBackToDashboard}
+            className="ml-auto border border-green-800 px-2 py-0.5 text-green-300 hover:bg-green-950"
+            type="button"
+          >
+            Back to Dashboard
+          </button>
         )}
       </div>
 
-      {/* Main content */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left: Agent cards */}
-        <div className="w-64 xl:w-72 shrink-0 border-r border-green-800 overflow-y-auto p-2">
-          <div className="text-green-600 text-xs mb-2 font-bold tracking-wider">
-            AGENTS ({Object.keys(state.agentStates).length})
+      <div className="flex flex-wrap items-center gap-2 border-b border-green-950 px-3 py-1 text-xs">
+        <StatePill label={displayStatus.status.toUpperCase()} tone={historicalMode ? 'muted' : 'live'} />
+        {displayStatus.status === 'launching' && <StatePill label="launching" tone="warn" />}
+        {state.transportState === 'replay-hydrating' && <StatePill label="replay-hydrating" tone="warn" />}
+        {state.transportState === 'reconnecting' && <StatePill label="reconnecting" tone="warn" />}
+        {state.transportState === 'disconnected' && !historicalMode && <StatePill label="disconnected" tone="error" />}
+        {state.notFound && <StatePill label="sim not found" tone="error" />}
+        {displayStatus.status === 'failed' && <StatePill label="failed sim" tone="error" />}
+        {historicalMode && <StatePill label="historical detail" tone="muted" />}
+        {displayStatus.checkpoint && (
+          <StatePill
+            label={'checkpoint ' + String(displayStatus.checkpoint.runtime_cursor.current_step)}
+            tone="muted"
+          />
+        )}
+        {state.error && (
+          <span className="text-red-400">control failure: {state.error}</span>
+        )}
+      </div>
+
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <div className="w-64 shrink-0 overflow-y-auto border-r border-green-800 p-2 xl:w-72">
+          <div className="mb-2 text-xs font-bold tracking-wider text-green-600">
+            AGENTS ({Object.keys(state.agentStates).length || simulation.agent_ids.length})
           </div>
           {Object.entries(state.agentStates).map(([id, agentState]) => (
             <div
@@ -197,34 +127,26 @@ export function SimulationViewer({
               <AgentCard agentId={id} agent={agentState} />
             </div>
           ))}
-          {Object.keys(state.agentStates).length === 0 && agentIds.length > 0 && (
-            <div className="text-green-800 text-xs p-2">
-              Waiting for agent data...
-              <div className="text-green-900 mt-1">
-                Polling: {agentIds.join(", ")}
+          {Object.keys(state.agentStates).length === 0 && simulation.agent_ids.length > 0 && (
+            <div className="p-2 text-xs text-green-800">
+              {state.transportState === 'replay-hydrating' ? 'Hydrating agent state...' : 'Waiting for agent data...'}
+              <div className="mt-1 text-green-900">
+                Agents: {simulation.agent_ids.join(', ')}
               </div>
-            </div>
-          )}
-          {agentIds.length === 0 && (
-            <div className="text-green-800 text-xs p-2">
-              No agents configured.
             </div>
           )}
         </div>
 
-        {/* Right: Event timeline */}
-        <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+        <div className="flex-1 min-w-0 overflow-hidden">
           <EventTimeline events={state.events} />
         </div>
       </div>
 
-      {/* Bottom: World state */}
       <WorldStatePanel
         agentStates={state.agentStates}
-        worldId={state.status.world_id || launchConfig?.worldId || ""}
+        worldId={displayStatus.world_id || simulation.world_id}
       />
 
-      {/* Agent inspector overlay */}
       {inspected && inspectedAgent && (
         <AgentInspector
           agentId={inspectedAgent}
@@ -234,4 +156,53 @@ export function SimulationViewer({
       )}
     </div>
   );
+}
+
+function buildDisplayStatus(
+  simulation: SimulationRecord,
+  liveStatus: SimulationStatus,
+): SimulationStatus {
+  if (liveStatus.simulation_id === simulation.simulation_id) {
+    return liveStatus;
+  }
+  return buildSimulationStatus(simulation);
+}
+
+function buildSimulationStatus(simulation: SimulationRecord): SimulationStatus {
+  return {
+    simulation_id: simulation.simulation_id,
+    world_id: simulation.world_id,
+    workspace_id: simulation.workspace_id,
+    status: simulation.status,
+    reason: simulation.reason,
+    error: simulation.error,
+    step: simulation.last_completed_step,
+    max_steps: simulation.max_steps,
+    running: simulation.status === 'running',
+    paused: simulation.status === 'paused',
+    agent_count: simulation.agent_ids.length,
+    started_at: simulation.started_at,
+    ended_at: simulation.ended_at,
+    updated_at: simulation.updated_at,
+    last_step_outcome: simulation.last_step_outcome,
+    terminal_reason: simulation.reason,
+    checkpoint: simulation.checkpoint,
+  };
+}
+
+function StatePill({
+  label,
+  tone,
+}: {
+  label: string;
+  tone: 'live' | 'warn' | 'error' | 'muted';
+}) {
+  const className = {
+    live: 'border-green-700 text-green-300',
+    warn: 'border-yellow-700 text-yellow-300',
+    error: 'border-red-700 text-red-300',
+    muted: 'border-green-900 text-green-600',
+  }[tone];
+
+  return <span className={'border px-2 py-0.5 uppercase ' + className}>{label}</span>;
 }

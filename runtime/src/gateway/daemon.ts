@@ -366,6 +366,7 @@ export {
 
 // DEFAULT_GROK_MODEL imported from ./llm-provider-manager.js (DEFAULT_GROK_FALLBACK_MODEL moved to system-prompt-builder.ts)
 const DEFAULT_DOOM_FIT_RESOLUTION = "RES_1024X768";
+const SIGNAL_SHUTDOWN_FORCE_EXIT_MS = 8_000;
 // STATIC_SUBAGENT_DESKTOP_TOOLS moved to ./subagent-infrastructure.ts
 
 function chooseDoomResolutionForDisplay(width: number, height: number): string {
@@ -6168,11 +6169,31 @@ export class DaemonManager {
       return [];
     }
   }
+  private stopRecurringWorkForShutdown(): void {
+    if (this._heartbeatScheduler !== null) {
+      this._heartbeatScheduler.stop();
+      this._heartbeatScheduler = null;
+    }
+    if (this._cronScheduler !== null) {
+      this._cronScheduler.stop();
+      this._cronScheduler = null;
+    }
+    if (this._heartbeatTimer !== null) {
+      clearInterval(this._heartbeatTimer);
+      this._heartbeatTimer = null;
+    }
+    if (this._desktopExecutor !== null) {
+      this._desktopExecutor.cancel();
+      this._desktopExecutor = null;
+    }
+  }
+
   async stop(): Promise<void> {
     if (this.shutdownInProgress) {
       return;
     }
     this.shutdownInProgress = true;
+    this.stopRecurringWorkForShutdown();
 
     try {
       // Dispatch shutdown hook (best-effort)
@@ -6403,9 +6424,30 @@ export class DaemonManager {
     this.signalHandlersRegistered = true;
 
     const shutdown = () => {
+      if (this.shutdownInProgress) {
+        return;
+      }
+
+      const forceExitTimer = setTimeout(() => {
+        this.logger.warn(
+          `Daemon shutdown exceeded ${SIGNAL_SHUTDOWN_FORCE_EXIT_MS}ms; forcing process exit.`,
+        );
+        process.exit(0);
+      }, SIGNAL_SHUTDOWN_FORCE_EXIT_MS);
+      forceExitTimer.unref?.();
+
       void this.stop()
-        .then(() => process.exit(0))
-        .catch(() => process.exit(1));
+        .then(() => {
+          clearTimeout(forceExitTimer);
+          process.exit(0);
+        })
+        .catch((error) => {
+          clearTimeout(forceExitTimer);
+          this.logger.error(
+            `Daemon shutdown failed: ${toErrorMessage(error)}`,
+          );
+          process.exit(1);
+        });
     };
 
     const reload = () => {

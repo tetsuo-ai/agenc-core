@@ -30,39 +30,33 @@ export function SimulationControls({
         Step {status.step}/{status.max_steps}
       </span>
       <span className="text-green-600">|</span>
-      <span>
-        {status.running
-          ? status.paused
-            ? "PAUSED"
-            : "RUNNING"
-          : "STOPPED"}
-      </span>
+      <span>{status.status.toUpperCase()}</span>
 
       <div className="flex gap-1 ml-auto">
         <button
           onClick={onPlay}
-          disabled={!status.running || !status.paused}
+          disabled={status.status !== "paused"}
           className="px-2 py-0.5 border border-green-700 hover:bg-green-900 disabled:opacity-30"
         >
           Play
         </button>
         <button
           onClick={onPause}
-          disabled={!status.running || status.paused}
+          disabled={status.status !== "running"}
           className="px-2 py-0.5 border border-green-700 hover:bg-green-900 disabled:opacity-30"
         >
           Pause
         </button>
         <button
           onClick={onStep}
-          disabled={!status.running}
+          disabled={status.status !== "running" && status.status !== "paused"}
           className="px-2 py-0.5 border border-green-700 hover:bg-green-900 disabled:opacity-30"
         >
           Step
         </button>
         <button
           onClick={onStop}
-          disabled={!status.running}
+          disabled={status.status === "stopped" || status.status === "finished" || status.status === "failed" || status.status === "archived" || status.status === "deleted"}
           className="px-2 py-0.5 border border-red-700 hover:bg-red-900 disabled:opacity-30"
         >
           Stop

@@ -32,6 +32,7 @@ import {
 } from "./session.js";
 import {
   buildDaemonMemoryEntryOptions,
+  getMessageMetadataString,
   resolveChannelWorkspaceId,
   resolveIngestHistoryRole,
   shouldPersistToDaemonMemory,
@@ -136,6 +137,26 @@ function isIngestOnlyChannelMessage(msg: GatewayMessage): boolean {
     msg.metadata?.ingest_only === true ||
     msg.metadata?.ingestOnly === true
   );
+}
+
+function requiresConcordiaRequestCorrelation(msg: GatewayMessage): boolean {
+  return msg.channel === "concordia" && !isIngestOnlyChannelMessage(msg);
+}
+
+function assertConcordiaRequestId(msg: GatewayMessage): void {
+  if (!requiresConcordiaRequestCorrelation(msg)) {
+    return;
+  }
+  if (getMessageMetadataString(msg, "request_id")) {
+    return;
+  }
+  throw new Error("Concordia turn missing request_id metadata");
+}
+
+function cloneOutboundMetadata(
+  msg: GatewayMessage,
+): GatewayMessage["metadata"] {
+  return msg.metadata ? { ...msg.metadata } : undefined;
 }
 
 async function stopExternalChannelRegistry(
@@ -407,12 +428,15 @@ export async function wireExternalChannel(
     }
     if (!msg.content.trim()) return;
 
+    assertConcordiaRequestId(msg);
+    const outboundMetadata = cloneOutboundMetadata(msg);
+
     const sendChannelText = async (content: string): Promise<void> => {
       const formatted = formatForChannel(content, channelName);
       await channel.send({
         sessionId: msg.sessionId,
         content: formatted,
-        metadata: msg.metadata,
+        metadata: outboundMetadata,
       });
     };
     if (
@@ -506,7 +530,7 @@ export async function wireExternalChannel(
       await channel.send({
         sessionId: msg.sessionId,
         content: formatted,
-        metadata: msg.metadata,
+        metadata: outboundMetadata,
       });
     } catch (error) {
       const failure = summarizeLLMFailureForSurface(error);
@@ -541,7 +565,7 @@ export async function wireExternalChannel(
       await channel.send({
         sessionId: msg.sessionId,
         content: errMsg,
-        metadata: msg.metadata,
+        metadata: outboundMetadata,
       });
     } finally {
       unregisterTextApproval();

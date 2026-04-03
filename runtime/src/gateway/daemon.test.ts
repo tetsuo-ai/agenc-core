@@ -3559,6 +3559,45 @@ describe("DaemonManager", () => {
     onSpy.mockRestore();
   });
 
+  it("forces process exit if signal shutdown exceeds the grace window", async () => {
+    vi.useFakeTimers();
+    const handlers = new Map<string, () => void>();
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      setLevel: vi.fn(),
+    };
+    const dm = new DaemonManager({ configPath: "/tmp/c.json", logger: logger as any });
+    const onSpy = vi.spyOn(process, "on").mockImplementation(((signal, handler) => {
+      handlers.set(String(signal), handler as () => void);
+      return process;
+    }) as typeof process.on);
+    const removeListenerSpy = vi.spyOn(process, "removeListener").mockImplementation(((..._args: unknown[]) => process) as typeof process.removeListener);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((..._args: unknown[]) => undefined as never) as typeof process.exit);
+    vi.spyOn(dm, "stop").mockReturnValue(new Promise<void>(() => {}));
+
+    try {
+      dm.setupSignalHandlers();
+      handlers.get("SIGTERM")?.();
+
+      await vi.advanceTimersByTimeAsync(7_999);
+      expect(exitSpy).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(exitSpy).toHaveBeenCalledWith(0);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("Daemon shutdown exceeded 8000ms"),
+      );
+    } finally {
+      onSpy.mockRestore();
+      removeListenerSpy.mockRestore();
+      exitSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("logs sub-agent startup diagnostics with hard caps", async () => {
     const logger = {
       debug: vi.fn(),

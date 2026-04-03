@@ -314,6 +314,7 @@ describe("wireExternalChannels", () => {
       scope: "dm",
       metadata: {
         turn_contract: "concordia_simulation_turn",
+        request_id: "req-world-1",
         workspace_id: "concordia-sim",
         world_id: "world-1",
         agent_id: "alex",
@@ -330,6 +331,7 @@ describe("wireExternalChannels", () => {
       scope: "dm",
       metadata: {
         turn_contract: "concordia_simulation_turn",
+        request_id: "req-world-2",
         workspace_id: "concordia-sim",
         world_id: "world-2",
         agent_id: "alex",
@@ -340,6 +342,97 @@ describe("wireExternalChannels", () => {
       [{ role: "system", content: "[Observation] World 1 only" }],
       [],
     ]);
+    expect(channel.sent.map((message) => message.metadata?.request_id)).toEqual([
+      "req-world-1",
+      "req-world-2",
+    ]);
     expect(addEntry).not.toHaveBeenCalled();
+  });
+
+  it("rejects actionable Concordia messages that lack request correlation", async () => {
+    class FixtureChannel implements ChannelPlugin {
+      readonly name = "concordia";
+      context: ChannelContext | null = null;
+      sent: OutboundMessage[] = [];
+
+      async initialize(context: ChannelContext): Promise<void> {
+        this.context = context;
+      }
+
+      async start(): Promise<void> {
+        return;
+      }
+
+      async stop(): Promise<void> {
+        return;
+      }
+
+      async send(message: OutboundMessage): Promise<void> {
+        this.sent.push(message);
+      }
+
+      isHealthy(): boolean {
+        return this.context !== null;
+      }
+
+      async emit(message: GatewayMessage): Promise<void> {
+        await this.context?.onMessage(message);
+      }
+    }
+
+    const channel = new FixtureChannel();
+
+    await wireExternalChannel(
+      channel,
+      "concordia",
+      makeConfig(),
+      { token: "abc" },
+      {
+        gateway: null,
+        logger: silentLogger,
+        chatExecutor: { execute: vi.fn() } as never,
+        memoryBackend: null,
+        defaultForegroundMaxToolRounds: 1,
+        buildChannelHostServices() {
+          return undefined;
+        },
+        async buildSystemPrompt() {
+          return "system prompt";
+        },
+        async handleTextChannelApprovalCommand() {
+          return false;
+        },
+        registerTextApprovalDispatcher() {
+          return () => {};
+        },
+        createTextChannelSessionToolHandler() {
+          return vi.fn() as never;
+        },
+        buildToolRoutingDecision() {
+          return undefined;
+        },
+        recordToolRoutingOutcome() {
+          return;
+        },
+      },
+    );
+
+    await expect(
+      channel.emit({
+        id: "act-missing-request",
+        channel: "concordia",
+        senderId: "alex",
+        senderName: "Alex",
+        sessionId: "concordia:world-1:alex",
+        content: "Take your next action.",
+        scope: "dm",
+        metadata: {
+          turn_contract: "concordia_simulation_turn",
+          workspace_id: "concordia-sim",
+          world_id: "world-1",
+          agent_id: "alex",
+        },
+      }),
+    ).rejects.toThrow("Concordia turn missing request_id metadata");
   });
 });

@@ -108,7 +108,10 @@ function EventCard({ event }: { event: SimulationEvent }) {
   const [expanded, setExpanded] = useState(false);
   const color = EVENT_COLORS[event.type] ?? "text-green-600";
   const label = EVENT_LABELS[event.type] ?? event.type.slice(0, 3).toUpperCase();
-  const time = new Date(event.timestamp * 1000).toLocaleTimeString();
+  const time =
+    typeof event.timestamp === "number"
+      ? new Date(event.timestamp * 1000).toLocaleTimeString()
+      : "--:--:--";
   const content = event.content ?? event.resolved_event ?? "";
 
   return (

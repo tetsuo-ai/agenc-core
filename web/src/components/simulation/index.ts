@@ -1,3 +1,4 @@
+export { SimulationWorkspace } from "./SimulationWorkspace";
 export { SimulationViewer } from "./SimulationViewer";
 export { SimulationSetup } from "./SimulationSetup";
 export { SimulationControls } from "./SimulationControls";
@@ -11,5 +12,17 @@ export type {
   AgentState,
   SimulationStatus,
   SimulationState,
+  SimulationSummary,
+  SimulationRecord,
+  SimulationTransportState,
+  SimulationCheckpointStatus,
 } from "./useSimulation";
 export type { SimulationSetupConfig, AgentFormData } from "./SimulationSetup";
+export {
+  DEFAULT_SIMULATION_ROUTE,
+  normalizeSimulationRoute,
+  readSimulationRouteFromUrl,
+  readViewFromUrl,
+  writeAppNavigationToUrl,
+} from './navigation';
+export type { SimulationWorkspaceMode, SimulationWorkspaceRoute } from './navigation';
