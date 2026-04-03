@@ -8650,6 +8650,56 @@ describe("ChatExecutor", () => {
       });
     });
 
+    it("keeps concordia turns on the direct no-tool path even when the prompt contains schedule language", async () => {
+      const provider = createMockProvider("primary", {
+        chat: vi.fn().mockResolvedValue(
+          mockResponse({
+            content:
+              "{\"action\":\"steps toward Elena and answers the sergeant calmly\",\"narration\":null,\"intent\":{\"summary\":\"Defuse suspicion while staying in character\",\"mode\":\"speech\",\"destination\":null,\"target_agent_ids\":[\"elena\"],\"target_object_ids\":[],\"task\":{\"title\":\"Deflect scrutiny\",\"status\":\"active\",\"note\":null},\"inventory_add\":[],\"inventory_remove\":[],\"world_object_updates\":[],\"relationship_updates\":[],\"notes\":[]}}",
+          }),
+        ),
+      });
+      const executor = new ChatExecutor({
+        providers: [provider],
+        toolHandler: vi.fn().mockResolvedValue("unused"),
+        plannerEnabled: true,
+        allowedTools: ["system.calendarInfo", "system.calendarRead", "system.bash"],
+      });
+
+      const result = await executor.execute(
+        createParams({
+          message: {
+            ...createMessage(
+              [
+                "[Concordia Action Request]",
+                "Agent: Marcus",
+                "Use the structured world projection below as authoritative state for what you can perceive right now.",
+                "",
+                "[World Projection]",
+                "{\"self\":{\"schedule\":[{\"title\":\"Guard meeting at dawn\"}]}}",
+                "",
+                "Return valid JSON with a short visible action and structured intent.",
+              ].join("\n"),
+            ),
+            channel: "concordia",
+            metadata: {
+              turn_contract: "concordia_simulation_turn",
+              concordia_turn_contract: "concordia_simulation_turn",
+              type: "concordia_agent_turn",
+            },
+          },
+        }),
+      );
+
+      expect(result.plannerSummary?.routeReason).toBe("concordia_simulation_turn");
+      expect(result.toolCalls).toHaveLength(0);
+      expect(provider.chat).toHaveBeenCalledTimes(1);
+      expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls[0]?.[1]).toMatchObject({
+        toolChoice: "none",
+        toolRouting: { allowedToolNames: [] },
+      });
+    });
+
     it("does not suppress tools for delegated child-memory turns that explicitly require execute_with_agent", async () => {
       const provider = createMockProvider("primary", {
         chat: vi.fn().mockResolvedValue(

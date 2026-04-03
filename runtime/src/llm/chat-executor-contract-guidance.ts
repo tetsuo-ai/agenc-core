@@ -10,6 +10,7 @@
 
 import type { ToolCallRecord } from "./chat-executor-types.js";
 import type { LLMToolChoice } from "./types.js";
+import { hasConcordiaSimulationTurnContract } from "./chat-executor-turn-contracts.js";
 import type {
   DelegationContractSpec,
   DelegationOutputValidationCode,
@@ -52,6 +53,7 @@ export type ToolContractGuidancePhase =
 export interface ToolContractGuidanceContext {
   readonly phase: ToolContractGuidancePhase;
   readonly messageText: string;
+  readonly messageMetadata?: Readonly<Record<string, unknown>>;
   readonly toolCalls: readonly ToolCallRecord[];
   readonly allowedToolNames: readonly string[];
   readonly requiredToolEvidence?: {
@@ -122,6 +124,9 @@ const TOOL_CONTRACT_GUIDANCE_RESOLVERS: readonly ToolContractGuidanceResolver[] 
 export function resolveToolContractGuidance(
   input: ToolContractGuidanceContext,
 ): ToolContractGuidance | undefined {
+  if (hasConcordiaSimulationTurnContract(input.messageMetadata)) {
+    return undefined;
+  }
   for (const resolver of TOOL_CONTRACT_GUIDANCE_RESOLVERS) {
     const guidance = resolver.resolve(input);
     if (guidance) return guidance;

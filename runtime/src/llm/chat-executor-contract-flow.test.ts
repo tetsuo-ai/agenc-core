@@ -37,6 +37,32 @@ describe("chat-executor-contract-flow", () => {
     expect(guidance?.toolChoice).toBe("required");
   });
 
+  it("does not resolve execution guidance for concordia simulation turns", () => {
+    const guidance = resolveExecutionToolContractGuidance({
+      ctx: {
+        messageText:
+          "[Concordia Action Request]\nUse the world projection below as authoritative state.\n" +
+          "{\"self\":{\"schedule\":[{\"title\":\"Guard meeting\"}]}}",
+        messageMetadata: {
+          turn_contract: "concordia_simulation_turn",
+        },
+        allToolCalls: [],
+        activeRoutedToolNames: ["system.calendarInfo"],
+        initialRoutedToolNames: ["system.calendarInfo"],
+        expandedRoutedToolNames: ["system.calendarRead"],
+        requiredToolEvidence: undefined,
+        providerEvidence: undefined,
+        response: undefined,
+        plannerSummaryState: {
+          routeReason: "concordia_simulation_turn",
+        },
+      } as any,
+      allowedTools: ["system.calendarInfo", "system.calendarRead"],
+    });
+
+    expect(guidance).toBeUndefined();
+  });
+
   it("prefers the full allowed tool collection for correction retries", () => {
     expect(
       resolveCorrectionAllowedToolNames(

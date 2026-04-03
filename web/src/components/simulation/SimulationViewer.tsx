@@ -49,7 +49,7 @@ export function SimulationViewer({
     : 'Standalone run';
 
   return (
-    <div className="flex h-full flex-col bg-black text-green-400 font-mono">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-black text-green-400 font-mono">
       <SimulationControls
         status={displayStatus}
         onPlay={play}
@@ -114,7 +114,7 @@ export function SimulationViewer({
       </div>
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        <div className="w-64 shrink-0 overflow-y-auto border-r border-green-800 p-2 xl:w-72">
+        <div className="min-h-0 w-64 shrink-0 overflow-y-auto border-r border-green-800 p-2 xl:w-72">
           <div className="mb-2 text-xs font-bold tracking-wider text-green-600">
             AGENTS ({Object.keys(state.agentStates).length || simulation.agent_ids.length})
           </div>
@@ -137,7 +137,7 @@ export function SimulationViewer({
           )}
         </div>
 
-        <div className="flex-1 min-w-0 overflow-hidden">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <EventTimeline events={state.events} />
         </div>
       </div>

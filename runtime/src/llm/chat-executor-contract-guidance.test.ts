@@ -447,6 +447,37 @@ describe("chat-executor-contract-guidance", () => {
     );
   });
 
+  it("does not apply typed calendar guidance to concordia simulation turns", () => {
+    const messageText =
+      "[Concordia Action Request]\n" +
+      "Use the world projection below as authoritative state.\n" +
+      "{\"self\":{\"schedule\":[{\"title\":\"Guard meeting\"}]}}\n" +
+      "Respond in character and stay entirely inside the simulated world.";
+
+    const guidance = resolveToolContractGuidance({
+      phase: "initial",
+      messageText,
+      messageMetadata: {
+        turn_contract: "concordia_simulation_turn",
+      },
+      toolCalls: [],
+      allowedToolNames: ["system.calendarInfo", "system.calendarRead"],
+    });
+    const block = resolveToolContractExecutionBlock({
+      phase: "initial",
+      messageText,
+      messageMetadata: {
+        turn_contract: "concordia_simulation_turn",
+      },
+      toolCalls: [],
+      allowedToolNames: ["system.calendarInfo", "system.calendarRead"],
+      candidateToolName: "system.calendarInfo",
+    });
+
+    expect(guidance).toBeUndefined();
+    expect(block).toBeUndefined();
+  });
+
   it("does not misclassify coding turns that mention metrics as typed calendar inspection", () => {
     const messageText =
       "Create a TypeScript monorepo for a deterministic hex-grid routing simulator. " +

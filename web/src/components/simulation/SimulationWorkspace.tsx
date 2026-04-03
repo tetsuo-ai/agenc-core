@@ -208,7 +208,7 @@ export function SimulationWorkspace({
   }, [onRouteChange]);
 
   return (
-    <div className="flex h-full flex-col bg-black text-green-400 font-mono">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-black text-green-400 font-mono">
       <div className="flex items-center gap-2 border-b border-green-800 px-3 py-2 text-sm">
         <span className="font-bold tracking-wider text-green-200">SIM WORKSPACE</span>
         <span className="text-green-800">|</span>

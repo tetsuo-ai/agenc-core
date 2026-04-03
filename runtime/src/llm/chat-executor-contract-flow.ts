@@ -63,6 +63,9 @@ type ContractFlowContext =
     | "response"
     | "plannerSummaryState"
   > &
+  {
+    readonly messageMetadata?: Readonly<Record<string, unknown>>;
+  } &
   Partial<
     Pick<
       ExecutionContext,
@@ -142,6 +145,7 @@ export function resolveExecutionToolContractGuidance(input: {
   return resolveToolContractGuidance({
     phase: input.phase ?? "tool_followup",
     messageText: input.ctx.messageText,
+    messageMetadata: input.ctx.messageMetadata,
     toolCalls: input.ctx.allToolCalls,
     allowedToolNames: getAllowedToolNamesForContractGuidance({
       override: input.allowedToolNames,

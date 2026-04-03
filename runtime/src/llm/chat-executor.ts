@@ -1185,7 +1185,10 @@ export class ChatExecutor {
     },
   ): ToolContractGuidance | undefined {
     return resolveExecutionToolContractGuidance({
-      ctx,
+      ctx: {
+        ...ctx,
+        messageMetadata: ctx.message.metadata,
+      },
       allowedTools: this.allowedTools ?? undefined,
       phase: input?.phase,
       allowedToolNames: input?.allowedToolNames,
@@ -2293,7 +2296,9 @@ export class ChatExecutor {
       );
     const explicitSubagentOrchestrationRequirements =
       extractExplicitSubagentOrchestrationRequirements(messageText);
+    const isConcordiaTurnMessage = isConcordiaSimulationTurnMessage(message);
     const groundedExecutionRequested =
+      !isConcordiaTurnMessage &&
       requestRequiresToolGroundedExecution(messageText);
     let plannerDecision = assessPlannerDecision(
       this.plannerEnabled,
@@ -2312,6 +2317,7 @@ export class ChatExecutor {
       };
     }
     if (
+      !isConcordiaTurnMessage &&
       explicitDeterministicToolRequirements?.forcePlanner &&
       !plannerDecision.shouldPlan
     ) {
@@ -2322,6 +2328,7 @@ export class ChatExecutor {
       };
     }
     if (
+      !isConcordiaTurnMessage &&
       !plannerDecision.shouldPlan &&
       explicitSubagentOrchestrationRequirements
     ) {
@@ -2434,7 +2441,7 @@ export class ChatExecutor {
     // Build messages array with explicit section tags for prompt budgeting.
     this.pushMessage(ctx, { role: "system", content: ctx.systemPrompt }, "system_anchor");
 
-    const isConcordiaTurn = isConcordiaSimulationTurnMessage(ctx.message);
+    const isConcordiaTurn = isConcordiaTurnMessage;
     const enableSkillContext =
       params.contextInjection?.skills !== false && !isConcordiaTurn;
     const enableIdentityContext = !isConcordiaTurn;

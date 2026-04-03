@@ -40,7 +40,7 @@ export function WorldStatePanel({ agentStates, worldId }: WorldStatePanelProps) 
   const totalMemories = agents.reduce((sum, [, s]) => sum + s.memoryCount, 0);
 
   return (
-    <div className="border-t border-green-800 p-2 bg-black font-mono text-xs text-green-500">
+    <div className="shrink-0 border-t border-green-800 bg-black p-2 font-mono text-xs text-green-500">
       <div className="flex gap-4 flex-wrap">
         <span>
           World: <span className="text-green-300">{worldId}</span>

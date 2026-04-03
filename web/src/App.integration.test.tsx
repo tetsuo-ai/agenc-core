@@ -279,6 +279,9 @@ describe('App websocket integration', () => {
       expect(simulationWorkspaceProps?.active).toBe(true);
       expect(simulationWorkspaceProps?.route).toEqual({ mode: 'detail', simulationId: 'sim-42' });
     });
+    const simulationWrapper = screen.getByTestId('simulation-workspace').parentElement;
+    expect(simulationWrapper?.className).toContain('h-full');
+    expect(simulationWrapper?.className).toContain('min-h-0');
 
     fireEvent.click(screen.getByText('CHAT'));
 

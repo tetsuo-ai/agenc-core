@@ -330,7 +330,7 @@ export default function App() {
           onSelect={setSelectedApproval}
         />
 
-        <main className="flex-1 min-h-0">
+        <main className="flex-1 min-h-0 overflow-hidden">
           {currentView === 'chat' && (
             <ChatView
               messages={chat.messages}
@@ -475,7 +475,7 @@ export default function App() {
           {currentView === 'payment' && (
             <PaymentView wallet={walletInfo} />
           )}
-          <div className={currentView === 'simulation' ? 'flex-1 min-h-0' : 'hidden'}>
+          <div className={currentView === 'simulation' ? 'flex h-full min-h-0 flex-col' : 'hidden'}>
             <SimulationWorkspace
               active={currentView === 'simulation'}
               bridgeUrl="http://localhost:3200"

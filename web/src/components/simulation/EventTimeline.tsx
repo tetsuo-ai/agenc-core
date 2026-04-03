@@ -3,7 +3,7 @@
  * Phase 4 of CONCORDIA_TODO.MD.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { SimulationEvent } from "./useSimulation";
 
 interface EventTimelineProps {
@@ -32,29 +32,54 @@ const EVENT_LABELS: Record<string, string> = {
   error: "ERR",
 };
 
+const AUTO_SCROLL_THRESHOLD_PX = 96;
+
 export function EventTimeline({ events }: EventTimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const endRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
   const [filter, setFilter] = useState<string>("all");
-  const [autoScroll, setAutoScroll] = useState(true);
+  const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
 
   const filtered =
     filter === "all"
       ? events
       : events.filter((e) => e.type === filter || e.agent_name === filter);
 
+  const updateStickToBottom = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const distanceFromBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+    stickToBottomRef.current = distanceFromBottom <= AUTO_SCROLL_THRESHOLD_PX;
+  }, []);
+
   useEffect(() => {
-    if (autoScroll && containerRef.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+    updateStickToBottom();
+  }, [updateStickToBottom]);
+
+  useEffect(() => {
+    if (!autoScrollEnabled || !stickToBottomRef.current) {
+      return;
     }
-  }, [filtered.length, autoScroll]);
+    endRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
+  }, [autoScrollEnabled, filtered]);
 
   const uniqueAgents = [...new Set(events.map((e) => e.agent_name).filter(Boolean))];
   const uniqueTypes = [...new Set(events.map((e) => e.type))];
 
+  const handleToggleAutoScroll = () => {
+    const next = !autoScrollEnabled;
+    setAutoScrollEnabled(next);
+    if (next) {
+      stickToBottomRef.current = true;
+      endRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
+    }
+  };
+
   return (
-    <div className="flex flex-col h-full border border-green-800 bg-black font-mono text-xs">
-      {/* Filter bar */}
-      <div className="flex gap-1 p-1 border-b border-green-900 flex-wrap">
+    <div className="flex h-full min-h-0 flex-col border border-green-800 bg-black font-mono text-xs">
+      <div className="flex gap-1 border-b border-green-900 p-1 flex-wrap">
         <button
           onClick={() => setFilter("all")}
           className={`px-1 ${filter === "all" ? "text-green-300 underline" : "text-green-700"}`}
@@ -81,24 +106,26 @@ export function EventTimeline({ events }: EventTimelineProps) {
           </button>
         ))}
         <button
-          onClick={() => setAutoScroll(!autoScroll)}
-          className={`ml-auto px-1 ${autoScroll ? "text-green-400" : "text-green-800"}`}
+          onClick={handleToggleAutoScroll}
+          className={`ml-auto px-1 ${autoScrollEnabled ? "text-green-400" : "text-green-800"}`}
         >
-          {autoScroll ? "[auto-scroll ON]" : "[auto-scroll OFF]"}
+          {autoScrollEnabled ? "[auto-scroll ON]" : "[auto-scroll OFF]"}
         </button>
       </div>
 
-      {/* Event list */}
       <div
         ref={containerRef}
-        className="flex-1 overflow-x-hidden overflow-y-auto p-1 space-y-0.5"
+        data-testid="simulation-event-timeline-scroll-container"
+        className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1 space-y-0.5"
+        onScroll={updateStickToBottom}
       >
         {filtered.map((event, i) => (
-          <EventCard key={i} event={event} />
+          <EventCard key={event.event_id ?? `${event.type}:${event.step}:${i}`} event={event} />
         ))}
         {filtered.length === 0 && (
-          <div className="text-green-800 p-2">Waiting for events...</div>
+          <div className="p-2 text-green-800">Waiting for events...</div>
         )}
+        <div ref={endRef} />
       </div>
     </div>
   );
@@ -116,15 +143,15 @@ function EventCard({ event }: { event: SimulationEvent }) {
 
   return (
     <div
-      className="min-w-0 w-full hover:bg-green-950 cursor-pointer px-1"
+      className="min-w-0 w-full cursor-pointer px-1 hover:bg-green-950"
       onClick={() => setExpanded(!expanded)}
     >
       <div className="grid w-full grid-cols-[4.5rem_2.5rem_2.75rem_auto_minmax(0,1fr)] items-start gap-x-2 gap-y-0.5">
-        <span className="text-green-800 w-16 shrink-0">{time}</span>
+        <span className="w-16 shrink-0 text-green-800">{time}</span>
         <span className={`${color} w-6 shrink-0 font-bold`}>{label}</span>
-        <span className="text-green-500 w-4 shrink-0">#{event.step}</span>
+        <span className="w-4 shrink-0 text-green-500">#{event.step}</span>
         {event.agent_name && (
-          <span className="text-green-300 shrink-0">{event.agent_name}:</span>
+          <span className="shrink-0 text-green-300">{event.agent_name}:</span>
         )}
         {!event.agent_name && <span className="shrink-0" />}
         <span className="min-w-0 whitespace-pre-wrap break-words text-green-500">
