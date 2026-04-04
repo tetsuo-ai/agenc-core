@@ -40,6 +40,7 @@ function createCommandHarness(overrides = {}) {
   const pendingAttachments = watchState.pendingAttachments;
   const calls = [];
   let statuslineEnabled = overrides.initialStatuslineEnabled ?? false;
+  let nextEventId = 1;
   const watchCommands = overrides.WATCH_COMMANDS ?? [
     { name: "/help", usage: "/help", description: "show help", aliases: [] },
     { name: "/clear", usage: "/clear", description: "clear console", aliases: [] },
@@ -379,7 +380,16 @@ function createCommandHarness(overrides = {}) {
       calls.push({ type: "clearBootstrapTimer" });
     },
     pushEvent(kind, title, body, tone) {
-      calls.push({ type: "event", kind, title, body, tone });
+      const event = {
+        id: `evt-${nextEventId}`,
+        kind,
+        title,
+        body,
+        tone,
+      };
+      nextEventId += 1;
+      calls.push({ type: "event", ...event });
+      return event;
     },
     setTransientStatus(status) {
       calls.push({ type: "status", status });
@@ -439,6 +449,21 @@ test("command controller exports a local watch bundle through /bundle", () => {
       (entry) => entry.type === "exportBundle" && entry.options?.announce === true,
     ),
   );
+});
+
+test("command controller opens the full help detail through /help", () => {
+  const { controller, calls, watchState } = createCommandHarness();
+
+  assert.equal(controller.dispatchOperatorInput("/help"), true);
+
+  const helpEvent = calls.find(
+    (entry) => entry.type === "event" && entry.kind === "help" && entry.title === "Command Help",
+  );
+  assert.ok(helpEvent);
+  assert.equal(watchState.expandedEventId, helpEvent.id);
+  assert.equal(watchState.detailScrollOffset, 0);
+  assert.match(String(helpEvent.body), /Ctrl\+O opens the newest event/);
+  assert.match(String(helpEvent.body), /\/help/);
 });
 
 test("command controller shows local watch insights through /insights", () => {
