@@ -239,9 +239,7 @@ export function resolveWatchFeatureFlags({ env = process.env } = {}) {
     remoteTools = explicitRemoteTools;
   }
 
-  let extensibilityHub =
-    featureEnabled(enabled, "extensibility_hub") ||
-    featureEnabled(enabled, "extensibilityhub");
+  let extensibilityHub = true;
   if (
     featureEnabled(disabled, "extensibility_hub") ||
     featureEnabled(disabled, "extensibilityhub")
@@ -252,9 +250,7 @@ export function resolveWatchFeatureFlags({ env = process.env } = {}) {
     extensibilityHub = explicitExtensibilityHub;
   }
 
-  let inputModes =
-    featureEnabled(enabled, "input_modes") ||
-    featureEnabled(enabled, "inputmodes");
+  let inputModes = true;
   if (
     featureEnabled(disabled, "input_modes") ||
     featureEnabled(disabled, "inputmodes")

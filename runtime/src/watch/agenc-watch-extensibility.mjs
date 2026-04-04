@@ -68,11 +68,51 @@ function readJsonFile(fs, filePath) {
   return JSON.parse(raw);
 }
 
+function inspectWatchDaemonState(fs, pidPath, processModule = process) {
+  try {
+    const pidInfo = readJsonFile(fs, pidPath);
+    const daemonPid = Number(pidInfo?.pid);
+    const daemonConfigPath =
+      typeof pidInfo?.configPath === "string" && pidInfo.configPath.trim()
+        ? pidInfo.configPath.trim()
+        : null;
+    const hasValidPid = Number.isInteger(daemonPid) && daemonPid > 0;
+    if (!hasValidPid) {
+      return {
+        daemonState: daemonConfigPath ? "stale" : "missing",
+        daemonPid: null,
+        daemonConfigPath,
+      };
+    }
+    try {
+      processModule.kill(daemonPid, 0);
+      return {
+        daemonState: "running",
+        daemonPid,
+        daemonConfigPath,
+      };
+    } catch {
+      return {
+        daemonState: "stale",
+        daemonPid,
+        daemonConfigPath,
+      };
+    }
+  } catch {
+    return {
+      daemonState: "missing",
+      daemonPid: null,
+      daemonConfigPath: null,
+    };
+  }
+}
+
 export function readWatchRuntimeConfig({
   fs,
   env = process.env,
   osModule = os,
   pathModule = path,
+  processModule = process,
 } = {}) {
   if (!fs || typeof fs.readFileSync !== "function") {
     throw new TypeError("readWatchRuntimeConfig requires an fs object with readFileSync()");
@@ -80,18 +120,20 @@ export function readWatchRuntimeConfig({
   const paths = resolveWatchRuntimeConfigPaths({ env, osModule, pathModule });
   let resolvedConfigPath = paths.configPath;
   let source = "default";
-  try {
-    const pidInfo = readJsonFile(fs, paths.pidPath);
-    if (typeof pidInfo?.configPath === "string" && pidInfo.configPath.trim()) {
-      resolvedConfigPath = pidInfo.configPath.trim();
-      source = "pid";
-    }
-  } catch {}
+  const daemonState = inspectWatchDaemonState(fs, paths.pidPath, processModule);
+  if (daemonState.daemonState === "running" && daemonState.daemonConfigPath) {
+    resolvedConfigPath = daemonState.daemonConfigPath;
+    source = "pid";
+  }
 
   try {
     return {
       configPath: resolvedConfigPath,
       source,
+      daemonState: daemonState.daemonState,
+      daemonPid: daemonState.daemonPid,
+      daemonConfigPath: daemonState.daemonConfigPath,
+      pidPath: paths.pidPath,
       config: normalizeConfigObject(readJsonFile(fs, resolvedConfigPath)),
       error: null,
     };
@@ -99,6 +141,10 @@ export function readWatchRuntimeConfig({
     return {
       configPath: resolvedConfigPath,
       source,
+      daemonState: daemonState.daemonState,
+      daemonPid: daemonState.daemonPid,
+      daemonConfigPath: daemonState.daemonConfigPath,
+      pidPath: paths.pidPath,
       config: {},
       error: error instanceof Error ? error.message : String(error),
     };

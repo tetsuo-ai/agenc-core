@@ -8,6 +8,7 @@ const REQUIRED_STATE_KEYS = Object.freeze([
   "bootstrapReady",
   "manualSessionsRequestPending",
   "manualHistoryRequestPending",
+  "pendingResumeHistoryRestore",
   "currentObjective",
   "activeRunStartedAtMs",
   "latestAgentSummary",

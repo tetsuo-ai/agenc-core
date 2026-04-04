@@ -15,6 +15,7 @@ function createHarness(overrides = {}) {
     bootstrapReady: false,
     manualSessionsRequestPending: false,
     manualHistoryRequestPending: false,
+    pendingResumeHistoryRestore: false,
     currentObjective: "watch it",
     activeRunStartedAtMs: null,
     latestAgentSummary: null,
@@ -147,14 +148,14 @@ test("dispatchOperatorSurfaceEvent resumes sessions by restoring history and ins
 
   assert.equal(state.sessionId, "session-2");
   assert.equal(state.sessionAttachedAtMs, 123);
-  assert.equal(state.bootstrapReady, false);
+  assert.equal(state.bootstrapReady, true);
+  assert.equal(state.pendingResumeHistoryRestore, true);
   assert.deepEqual(calls, [
     ["persistSessionId", "session-2"],
-    ["clearBootstrapTimer"],
     ["resetLiveRunSurface"],
-    ["status", "session resumed: session-2; restoring history"],
     ["send", "chat.history", { auth: true, limit: 50 }],
     ["requestRunInspect", "resume", { force: true }],
+    ["markBootstrapReady", "session resumed: session-2; restoring history"],
   ]);
 });
 
@@ -182,6 +183,37 @@ test("dispatchOperatorSurfaceEvent restores bootstrap history before marking the
     ["restoreTranscriptFromHistory", history],
     ["markBootstrapReady", "history restored: 1 item(s)"],
     ["requestRunInspect", "history restore", { force: true }],
+  ]);
+});
+
+test("dispatchOperatorSurfaceEvent restores resumed history without blocking session input", () => {
+  const history = [{ role: "assistant", content: "welcome back" }];
+  const { api, state, calls } = createHarness({
+    state: {
+      sessionId: "session-4",
+      bootstrapReady: true,
+      pendingResumeHistoryRestore: true,
+    },
+  });
+
+  dispatchOperatorSurfaceEvent(
+    {
+      family: "session",
+      type: "chat.history",
+      payload: history,
+      payloadRecord: {},
+      payloadList: history,
+      isSessionScoped: true,
+      message: {},
+    },
+    null,
+    api,
+  );
+
+  assert.equal(state.pendingResumeHistoryRestore, false);
+  assert.deepEqual(calls, [
+    ["restoreTranscriptFromHistory", history],
+    ["status", "history restored: 1 item(s)"],
   ]);
 });
 
