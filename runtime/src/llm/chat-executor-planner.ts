@@ -108,6 +108,7 @@ import {
   isNonExecutableEnvelopePath,
   normalizeWorkspaceRoot,
 } from "../workflow/path-normalization.js";
+import { areDocumentationOnlyArtifacts } from "../workflow/artifact-paths.js";
 import {
   canonicalizeWorkflowArtifactRelations,
   canonicalizeWorkflowStepRole,
@@ -814,13 +815,11 @@ export function buildPlannerMessages(
     normalizeWorkspaceRoot(plannerWorkspaceRoot);
   const schemaWorkspaceRoot =
     canonicalPlannerWorkspaceRoot ?? "<actual-workspace-root>";
-  const schemaPrimaryArtifact =
-    currentArtifactTargets[0] ??
-    (groundedPlanArtifactRequest || planArtifactExecutionRequest || implementFromArtifactRequest
-      ? "PLAN.md"
-      : "output.md");
+  const schemaPrimaryArtifact = currentArtifactTargets[0] ?? "<artifact-path>";
   const schemaPlanArtifact =
-    canonicalPlannerWorkspaceRoot
+    schemaPrimaryArtifact.startsWith("/") || schemaPrimaryArtifact.startsWith("<")
+      ? schemaPrimaryArtifact
+      : canonicalPlannerWorkspaceRoot
       ? `${canonicalPlannerWorkspaceRoot}/${schemaPrimaryArtifact}`
       : `<actual-workspace-root>/${schemaPrimaryArtifact}`;
   const schemaTargetArtifact =
@@ -1273,11 +1272,15 @@ export type PlannerVerificationRequirementCategory =
   | "browser";
 
 const PLANNER_PLAN_ARTIFACT_REQUEST_RE =
-  /\b(?:write|create|draft|generate|produce|make)\b[\s\S]{0,120}\b(?:todo(?:\.md)?|implementation plan|project plan|plan doc(?:ument)?|roadmap|checklist|spec(?:ification)?)\b/i;
-const PLANNER_PLAN_ARTIFACT_FILE_RE =
-  /\b(?:todo(?:\.md)?|plan\.(?:md|txt|rst)|implementation[-_ ]plan(?:\.md)?|project[-_ ]plan(?:\.md)?|roadmap(?:\.md)?|checklist(?:\.md)?|spec(?:ification)?(?:\.md)?)\b/i;
-const PLANNER_PLAN_ARTIFACT_FILE_CAPTURE_RE =
-  /\b(?:todo(?:\.md)?|plan\.(?:md|txt|rst)|implementation[-_ ]plan(?:\.md)?|project[-_ ]plan(?:\.md)?|roadmap(?:\.md)?|checklist(?:\.md)?|spec(?:ification)?(?:\.md)?)\b/gi;
+  /\b(?:write|create|draft|generate|produce|make|turn|convert|rewrite|expand|flesh\s+out|promote)\b[\s\S]{0,120}\b(?:implementation plan|project plan|plan doc(?:ument)?|roadmap|checklist|spec(?:ification)?)\b/i;
+const PLANNER_EXPLICIT_ARTIFACT_AT_REF_RE =
+  /(?:^|[\s(])@((?:\.{0,2}\/|\/)?[A-Za-z0-9._\/-]+(?:\.[A-Za-z0-9._-]+)?)/g;
+const PLANNER_EXPLICIT_ARTIFACT_QUOTED_RE =
+  /[`'"]((?:\/{1}|\.\/?|\.\.\/)?[A-Za-z0-9._\/-]+(?:\.[A-Za-z0-9._-]+)?|(?:Makefile|Dockerfile|CMakeLists\.txt|README(?:\.[A-Za-z0-9._-]+)?|CHANGELOG(?:\.[A-Za-z0-9._-]+)?|CONTRIBUTING(?:\.[A-Za-z0-9._-]+)?|LICENSE(?:\.[A-Za-z0-9._-]+)?|COPYING(?:\.[A-Za-z0-9._-]+)?|AGENTS\.md|CLAUDE\.md|TODO(?:\.[A-Za-z0-9._-]+)?))[`'"]/gi;
+const PLANNER_EXPLICIT_ARTIFACT_BARE_RE =
+  /\b((?:\/{1}|\.\/?|\.\.\/)?[A-Za-z0-9._\/-]+\.[A-Za-z0-9._-]+|(?:Makefile|Dockerfile|CMakeLists\.txt|README(?:\.[A-Za-z0-9._-]+)?|CHANGELOG(?:\.[A-Za-z0-9._-]+)?|CONTRIBUTING(?:\.[A-Za-z0-9._-]+)?|LICENSE(?:\.[A-Za-z0-9._-]+)?|COPYING(?:\.[A-Za-z0-9._-]+)?|AGENTS\.md|CLAUDE\.md|TODO(?:\.[A-Za-z0-9._-]+)?))\b/gi;
+const PLANNER_EXPLICIT_ARTIFACT_SPECIAL_BASENAME_RE =
+  /^(?:Makefile|Dockerfile|CMakeLists\.txt|README(?:\.[A-Za-z0-9._-]+)?|CHANGELOG(?:\.[A-Za-z0-9._-]+)?|CONTRIBUTING(?:\.[A-Za-z0-9._-]+)?|LICENSE(?:\.[A-Za-z0-9._-]+)?|COPYING(?:\.[A-Za-z0-9._-]+)?|AGENTS\.md|CLAUDE\.md|TODO(?:\.[A-Za-z0-9._-]+)?)$/i;
 const PLANNER_PLAN_ARTIFACT_SOURCE_CUE_RE =
   /\b(?:read|review|inspect|use|follow|based on|source of truth|go through)\b/i;
 const PLANNER_PLAN_ARTIFACT_EXECUTION_CUE_RE =
@@ -3941,6 +3944,7 @@ export function validatePlannerStepContracts(
   const diagnostics: PlannerDiagnostic[] = [];
 
   if (typeof messageText === "string") {
+    diagnostics.push(...validatePlannerArtifactAuthority(plannerPlan, messageText));
     const artifactIntent = classifyPlannerPlanArtifactIntent(messageText);
     if (
       artifactIntent === "grounded_plan_generation" ||
@@ -4074,6 +4078,21 @@ export function validatePlannerStepContracts(
   return diagnostics;
 }
 
+function isExplicitPlannerArtifactCandidate(target: string): boolean {
+  const normalized = normalizePlannerArtifactTarget(target);
+  if (normalized.length === 0) {
+    return false;
+  }
+  return (
+    normalized.startsWith("/") ||
+    normalized.startsWith("./") ||
+    normalized.startsWith("../") ||
+    normalized.includes("/") ||
+    /\.[a-z0-9._-]+$/i.test(pathBasename(normalized)) ||
+    PLANNER_EXPLICIT_ARTIFACT_SPECIAL_BASENAME_RE.test(pathBasename(normalized))
+  );
+}
+
 export function extractPlannerArtifactTargets(
   messageText: string,
 ): readonly string[] {
@@ -4081,21 +4100,44 @@ export function extractPlannerArtifactTargets(
   if (sourceText.length === 0) {
     return [];
   }
-  PLANNER_PLAN_ARTIFACT_FILE_CAPTURE_RE.lastIndex = 0;
+
   const targets = new Set<string>();
-  let match: RegExpExecArray | null;
-  while ((match = PLANNER_PLAN_ARTIFACT_FILE_CAPTURE_RE.exec(sourceText)) !== null) {
-    const value = (match[0] ?? "").trim();
-    if (value.length > 0) {
-      targets.add(value);
+  const addTarget = (value: string | undefined): void => {
+    if (typeof value !== "string") {
+      return;
     }
+    const sanitized = sanitizePlannerArtifactTarget(value);
+    if (!isExplicitPlannerArtifactCandidate(sanitized)) {
+      return;
+    }
+    targets.add(sanitized);
+  };
+
+  PLANNER_EXPLICIT_ARTIFACT_AT_REF_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = PLANNER_EXPLICIT_ARTIFACT_AT_REF_RE.exec(sourceText)) !== null) {
+    addTarget(match[1]);
   }
+
+  PLANNER_EXPLICIT_ARTIFACT_QUOTED_RE.lastIndex = 0;
+  while ((match = PLANNER_EXPLICIT_ARTIFACT_QUOTED_RE.exec(sourceText)) !== null) {
+    addTarget(match[1]);
+  }
+
+  PLANNER_EXPLICIT_ARTIFACT_BARE_RE.lastIndex = 0;
+  while ((match = PLANNER_EXPLICIT_ARTIFACT_BARE_RE.exec(sourceText)) !== null) {
+    addTarget(match[1]);
+  }
+
   return [...targets];
 }
 
-function plannerRequestGroundedPlanArtifactIntent(messageText: string): boolean {
+function plannerRequestGroundedPlanArtifactIntent(
+  messageText: string,
+  explicitArtifactTargets: readonly string[],
+): boolean {
   const normalized = messageText.trim();
-  if (normalized.length === 0) {
+  if (normalized.length === 0 || explicitArtifactTargets.length === 0) {
     return false;
   }
   const signals = collectPlannerRequestSignals(normalized, []);
@@ -4103,23 +4145,28 @@ function plannerRequestGroundedPlanArtifactIntent(messageText: string): boolean 
     /\b(?:read|expand|turn|convert|rewrite|flesh\s+out|promote)\b[\s\S]{0,80}\b(?:into|to)\b[\s\S]{0,80}\b(?:complete|full|detailed)?\s*(?:implementation\s+)?plan\b/i.test(
       normalized,
     );
+  const hasPlainPlanGenerationCue =
+    /\b(?:write|create|draft|generate|produce|make)\b/i.test(normalized) &&
+    /\b(?:complete|full|detailed)\s+(?:implementation\s+)?plan\b/i.test(
+      normalized,
+    );
   const hasGenerationCue =
     PLANNER_PLAN_ARTIFACT_REQUEST_RE.test(normalized) ||
-    explicitPlanExpansionCue;
+    explicitPlanExpansionCue ||
+    hasPlainPlanGenerationCue;
   if (!hasGenerationCue) {
     return false;
   }
   return (
-    (signals.hasImplementationScopeCue || explicitPlanExpansionCue) &&
-    (
-      PLANNER_PLAN_ARTIFACT_FILE_RE.test(normalized) ||
-      signals.hasDocumentationCue ||
-      signals.hasMultiStepCue ||
-      signals.longTask ||
-      signals.hasVerificationCue ||
-      /\b(?:complete|full|detailed)\s+plan\b/i.test(normalized) ||
-      explicitPlanExpansionCue
-    )
+    signals.hasImplementationScopeCue ||
+    explicitPlanExpansionCue ||
+    hasPlainPlanGenerationCue ||
+    signals.hasDocumentationCue ||
+    signals.hasVerificationCue ||
+    signals.hasMultiStepCue ||
+    signals.longTask ||
+    areDocumentationOnlyArtifacts(explicitArtifactTargets) ||
+    /\b(?:complete|full|detailed)\s+plan\b/i.test(normalized)
   );
 }
 
@@ -4131,32 +4178,38 @@ export function classifyPlannerPlanArtifactIntent(
     return "none";
   }
 
-  if (plannerRequestGroundedPlanArtifactIntent(normalized)) {
+  const explicitArtifactTargets = extractPlannerArtifactTargets(normalized);
+  if (explicitArtifactTargets.length === 0) {
+    return "none";
+  }
+
+  if (plannerRequestGroundedPlanArtifactIntent(normalized, explicitArtifactTargets)) {
     return "grounded_plan_generation";
   }
 
-  if (!PLANNER_PLAN_ARTIFACT_FILE_RE.test(normalized)) {
-    return "none";
-  }
-  // Review/question intent — the user is asking ABOUT the plan, not
-  // asking to implement or edit it.  These should still go through
-  // normal tool routing (readFile) but must NOT trigger the
-  // implement_from_artifact or edit_artifact forced-implementation paths.
   const isReviewQuestion =
     /\b(?:are there|is there|is it|does it|do we|can you review|read through|look at|check|analyze|evaluate|assess)\b/i.test(normalized) &&
     /\?/.test(normalized);
+  if (isReviewQuestion) {
+    return "none";
+  }
+
   const signals = collectPlannerRequestSignals(normalized, []);
-  const hasDirectArtifactEditCue =
-    /\b(?:todo(?:\.md)?|plan\.(?:md|txt|rst)|implementation[-_ ]plan(?:\.md)?|project[-_ ]plan(?:\.md)?|roadmap(?:\.md)?|checklist(?:\.md)?|spec(?:ification)?(?:\.md)?)\b[\s\S]{0,80}\b(?:update|rewrite|improve|perfect|polish|edit|revise|expand|flesh\s+out|address\s+gaps?|fix\s+gaps?|tighten|correct)\b/i.test(
+  const hasImplementationExecutionVerb =
+    /\b(?:implement|execute|finish|carry\s+out|apply|fix|repair|refactor|ship)\b/i.test(
       normalized,
     ) ||
-    /\b(?:update|rewrite|improve|perfect|polish|edit|revise|expand|flesh\s+out|address\s+gaps?|fix\s+gaps?|tighten|correct)\b[\s\S]{0,80}\b(?:todo(?:\.md)?|plan\.(?:md|txt|rst)|implementation[-_ ]plan(?:\.md)?|project[-_ ]plan(?:\.md)?|roadmap(?:\.md)?|checklist(?:\.md)?|spec(?:ification)?(?:\.md)?)\b/i.test(
-      normalized,
-    );
+    (/\bcomplete\b/i.test(normalized) &&
+      (
+        PLANNER_PLAN_ARTIFACT_PHASE_CUE_RE.test(normalized) ||
+        PLANNER_PLAN_ARTIFACT_IMPLEMENTATION_CUE_RE.test(normalized) ||
+        /\bevery\s+single\s+phase\b/i.test(normalized)
+      ));
+  const hasArtifactSourceCue = PLANNER_PLAN_ARTIFACT_SOURCE_CUE_RE.test(normalized);
   const hasImplementationFromArtifactCue =
-    PLANNER_PLAN_ARTIFACT_EXECUTION_CUE_RE.test(normalized) &&
+    hasImplementationExecutionVerb &&
     (
-      PLANNER_PLAN_ARTIFACT_SOURCE_CUE_RE.test(normalized) ||
+      hasArtifactSourceCue ||
       PLANNER_PLAN_ARTIFACT_PHASE_CUE_RE.test(normalized) ||
       PLANNER_PLAN_ARTIFACT_IMPLEMENTATION_CUE_RE.test(normalized) ||
       signals.hasImplementationScopeCue ||
@@ -4164,8 +4217,11 @@ export function classifyPlannerPlanArtifactIntent(
       signals.hasMultiStepCue ||
       signals.longTask
     );
+  if (hasImplementationFromArtifactCue) {
+    return "implement_from_artifact";
+  }
+
   const hasArtifactEditCue =
-    hasDirectArtifactEditCue ||
     PLANNER_PLAN_ARTIFACT_EDIT_CUE_RE.test(normalized) ||
     /\b(?:fill|add)\b[\s\S]{0,80}\b(?:gaps?|missing sections?|missing items?)\b/i.test(
       normalized,
@@ -4173,21 +4229,15 @@ export function classifyPlannerPlanArtifactIntent(
     /\b(?:make|keep)\b[\s\S]{0,80}\b(?:perfect|complete|consistent|correct)\b/i.test(
       normalized,
     );
-  if (hasArtifactEditCue && !isReviewQuestion) {
+  if (hasArtifactEditCue) {
     return "edit_artifact";
-  }
-  if (hasImplementationFromArtifactCue && !isReviewQuestion) {
-    return "implement_from_artifact";
   }
 
   return "none";
 }
 
 export function plannerRequestNeedsGroundedPlanArtifact(messageText: string): boolean {
-  return (
-    classifyPlannerPlanArtifactIntent(messageText) ===
-    "grounded_plan_generation"
-  );
+  return classifyPlannerPlanArtifactIntent(messageText) === "grounded_plan_generation";
 }
 
 export function plannerRequestNeedsPlanArtifactExecution(messageText: string): boolean {
@@ -4206,14 +4256,28 @@ export function plannerRequestNeedsWorkspaceGroundedArtifactUpdate(
 export function plannerRequestImplementsFromArtifact(
   messageText: string,
 ): boolean {
-  return (
-    classifyPlannerPlanArtifactIntent(messageText) ===
-    "implement_from_artifact"
-  );
+  return classifyPlannerPlanArtifactIntent(messageText) === "implement_from_artifact";
+}
+
+function sanitizePlannerArtifactTarget(target: string): string {
+  return target
+    .trim()
+    .replace(/^@+/, "")
+    .replace(/^[`'"]+|[`'"]+$/g, "")
+    .replace(/[),.;:!?]+$/g, "")
+    .replace(/\\/g, "/");
 }
 
 function normalizePlannerArtifactTarget(target: string): string {
-  return target.trim().toLowerCase();
+  return sanitizePlannerArtifactTarget(target).toLowerCase();
+}
+
+function normalizePlannerArtifactIdentity(target: string): string {
+  const normalized = normalizePlannerArtifactTarget(target);
+  if (normalized.length === 0) {
+    return "";
+  }
+  return pathBasename(normalized);
 }
 
 function plannerStepTextRequiresWorkspaceGrounding(value: string): boolean {
@@ -4227,10 +4291,16 @@ function plannerArtifactTargetsOverlap(
   if (left.length === 0 || right.length === 0) {
     return false;
   }
-  const rightSet = new Set(right.map(normalizePlannerArtifactTarget));
-  return left
-    .map(normalizePlannerArtifactTarget)
-    .some((target) => rightSet.has(target));
+  const rightTargets = new Set(right.map(normalizePlannerArtifactTarget));
+  const rightIdentities = new Set(right.map(normalizePlannerArtifactIdentity));
+  return left.some((target) => {
+    const normalizedTarget = normalizePlannerArtifactTarget(target);
+    const normalizedIdentity = normalizePlannerArtifactIdentity(target);
+    return (
+      rightTargets.has(normalizedTarget) ||
+      (normalizedIdentity.length > 0 && rightIdentities.has(normalizedIdentity))
+    );
+  });
 }
 
 function plannerPathTargetsRequestedArtifact(
@@ -4240,15 +4310,18 @@ function plannerPathTargetsRequestedArtifact(
   if (typeof rawPath !== "string" || requestedArtifactTargets.length === 0) {
     return false;
   }
-  const normalizedPath = rawPath.trim().toLowerCase();
+  const normalizedPath = normalizePlannerArtifactTarget(rawPath);
   if (normalizedPath.length === 0) {
     return false;
   }
+  const normalizedIdentity = normalizePlannerArtifactIdentity(rawPath);
   return requestedArtifactTargets.some((target) => {
     const normalizedTarget = normalizePlannerArtifactTarget(target);
+    const requestedIdentity = normalizePlannerArtifactIdentity(target);
     return (
       normalizedPath === normalizedTarget ||
-      normalizedPath.endsWith(`/${normalizedTarget}`)
+      normalizedPath.endsWith(`/${normalizedTarget}`) ||
+      (normalizedIdentity.length > 0 && normalizedIdentity === requestedIdentity)
     );
   });
 }
@@ -4443,6 +4516,144 @@ function isPlannerWorkspaceGroundingStep(
   );
 }
 
+function collectPlannerReferencedArtifacts(
+  plannerPlan: PlannerPlan,
+  scope: "all" | "source" = "all",
+): readonly string[] {
+  const artifacts = new Set<string>();
+  const addArtifact = (value: string | undefined): void => {
+    if (typeof value !== "string") {
+      return;
+    }
+    const normalized = normalizePlannerArtifactTarget(value);
+    if (!isExplicitPlannerArtifactCandidate(normalized)) {
+      return;
+    }
+    artifacts.add(normalized);
+  };
+
+  for (const step of plannerPlan.steps) {
+    if (step.stepType === "deterministic_tool") {
+      const candidateValues = scope === "source"
+        ? [step.args.path, step.args.sourcePath]
+        : [step.args.path, step.args.sourcePath, step.args.destinationPath];
+      for (const value of candidateValues) {
+        if (typeof value === "string") {
+          addArtifact(value);
+        }
+      }
+      continue;
+    }
+
+    if (step.stepType !== "subagent_task") {
+      continue;
+    }
+
+    const executionContext = step.executionContext;
+    const artifactValues = scope === "source"
+      ? [
+          ...(executionContext?.requiredSourceArtifacts ?? []),
+          ...(executionContext?.inputArtifacts ?? []),
+          ...(
+            executionContext?.artifactRelations ?? []
+          )
+            .filter((relation) =>
+              relation.relationType === "read_dependency" ||
+              relation.relationType === "context_input" ||
+              relation.relationType === "handoff_artifact"
+            )
+            .map((relation) => relation.artifactPath),
+        ]
+      : [
+          ...(executionContext?.requiredSourceArtifacts ?? []),
+          ...(executionContext?.inputArtifacts ?? []),
+          ...(executionContext?.targetArtifacts ?? []),
+          ...(
+            executionContext?.artifactRelations ?? []
+          ).map((relation) => relation.artifactPath),
+        ];
+    for (const value of artifactValues) {
+      if (typeof value === "string") {
+        addArtifact(value);
+      }
+    }
+  }
+
+  return [...artifacts];
+}
+
+function validatePlannerArtifactAuthority(
+  plannerPlan: PlannerPlan,
+  messageText: string,
+): readonly PlannerDiagnostic[] {
+  const requestedArtifactTargets = extractPlannerArtifactTargets(messageText);
+  const referencedArtifacts = collectPlannerReferencedArtifacts(plannerPlan);
+  const referencedDocumentationArtifacts = referencedArtifacts.filter((artifact) =>
+    areDocumentationOnlyArtifacts([artifact])
+  );
+  if (
+    requestedArtifactTargets.length === 0 &&
+    referencedDocumentationArtifacts.length > 0
+  ) {
+    return [
+      createPlannerDiagnostic(
+        "validation",
+        "planner_unrequested_artifact_route",
+        "Planner emitted documentation-artifact routing without any explicit artifact reference in the user request",
+        {
+          plannerArtifacts: referencedDocumentationArtifacts.join(","),
+        },
+      ),
+    ];
+  }
+
+  const artifactIntent = classifyPlannerPlanArtifactIntent(messageText);
+  if (requestedArtifactTargets.length === 0 || artifactIntent === "none") {
+    return [];
+  }
+
+  if (
+    (artifactIntent === "grounded_plan_generation" ||
+      artifactIntent === "edit_artifact") &&
+    referencedArtifacts.length > 0 &&
+    !plannerArtifactTargetsOverlap(requestedArtifactTargets, referencedArtifacts)
+  ) {
+    return [
+      createPlannerDiagnostic(
+        "validation",
+        "planner_artifact_targets_do_not_match_request",
+        "Planner referenced artifact targets that do not match the explicit artifact refs in the user request",
+        {
+          requestedArtifacts: requestedArtifactTargets.join(","),
+          plannerArtifacts: referencedArtifacts.join(","),
+        },
+      ),
+    ];
+  }
+
+  if (artifactIntent === "implement_from_artifact") {
+    const sourceArtifacts = collectPlannerReferencedArtifacts(plannerPlan, "source");
+    if (
+      sourceArtifacts.length === 0 ||
+      !plannerArtifactTargetsOverlap(requestedArtifactTargets, sourceArtifacts)
+    ) {
+      return [
+        createPlannerDiagnostic(
+          "validation",
+          "planner_artifact_source_does_not_match_request",
+          "Implement-from-artifact plan must ground on the explicit source artifact requested by the user before mutating other artifacts",
+          {
+            requestedArtifacts: requestedArtifactTargets.join(","),
+            plannerSourceArtifacts: sourceArtifacts.join(","),
+          },
+        ),
+      ];
+    }
+  }
+
+  return [];
+}
+
 function validatePlannerPlanArtifactExecutionOwnership(
   plannerPlan: PlannerPlan,
 ): readonly PlannerDiagnostic[] {
@@ -4615,6 +4826,24 @@ export function buildPlannerStepContractRefinementHint(
         diagnostic.code === "planner_subagent_budget_hint_too_small"
       ) {
         return `give subagent steps at least ${readDiagnosticDetail(diagnostic, "minimumSeconds") ?? "60"}s with an explicit unit`;
+      }
+      if (diagnostic.code === "planner_unrequested_artifact_route") {
+        return (
+          "do not introduce documentation-artifact routing unless the user explicitly referenced the artifact. " +
+          "Keep general coding requests on workspace/code execution paths instead of inventing README/PLAN/TODO-style artifacts"
+        );
+      }
+      if (diagnostic.code === "planner_artifact_targets_do_not_match_request") {
+        return (
+          "when the user explicitly references artifacts, keep planner-owned artifact work bound to those same refs. " +
+          "Do not substitute a different document or write to a planner-invented artifact"
+        );
+      }
+      if (diagnostic.code === "planner_artifact_source_does_not_match_request") {
+        return (
+          "implement-from-artifact plans must ground on the exact source artifact the user named before mutating other files. " +
+          "Do not treat an invented PLAN/README/spec file as the source of truth"
+        );
       }
       if (
         diagnostic.code === "planner_implementation_missing_mutation_path"

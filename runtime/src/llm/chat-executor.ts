@@ -2308,16 +2308,6 @@ export class ChatExecutor {
       history,
       params.message.metadata,
     );
-    const plannerArtifactDirectPath =
-      plannerDecision.reason === "plan_generation_direct_path" ||
-      plannerDecision.reason === "edit_artifact_direct_path";
-    if (!plannerDecision.shouldPlan && plannerArtifactDirectPath) {
-      plannerDecision = {
-        score: Math.max(plannerDecision.score, 4),
-        shouldPlan: true,
-        reason: "planner_artifact_execution_request",
-      };
-    }
     if (
       !isConcordiaTurnMessage &&
       explicitDeterministicToolRequirements?.forcePlanner &&

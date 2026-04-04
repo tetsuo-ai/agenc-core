@@ -11,6 +11,7 @@ import type {
 import type { MemoryBackend } from "../memory/types.js";
 import type { Logger } from "../utils/logger.js";
 import type { ChatExecutionTraceEvent } from "../llm/chat-executor-types.js";
+import { hasActionableStatefulFallback } from "../llm/chat-executor-recovery.js";
 import type { GatewayMessage } from "./message.js";
 import type { Session, SessionManager } from "./session.js";
 import type { ToolRoutingDecision } from "./tool-routing.js";
@@ -365,7 +366,7 @@ export async function executeTextChannelTurn(
     );
   }
 
-  if ((result.statefulSummary?.fallbackCalls ?? 0) > 0) {
+  if (hasActionableStatefulFallback(result.statefulSummary)) {
     logger.warn(`[stateful] ${channelName} fallback_to_stateless`, {
       traceId: turnTraceId,
       sessionId: msg.sessionId,

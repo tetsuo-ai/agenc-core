@@ -527,13 +527,9 @@ function resolveDelegationInitialContractGuidance(
           ? `${planBackedWorkspaceInspectionInstruction} `
           : "") +
         "and use shell verification when build/test/install evidence is part of acceptance."
-    : preferredToolName === "system.writeFile" ||
-        preferredToolName === "system.appendFile"
-      ? workspaceBootstrap
-        ? "Begin by creating or updating files under the delegated workspace root. " +
-          "If the delegated cwd does not exist yet, target that workspace via absolute paths instead of starting with shell inspection."
-        : "Begin by creating or updating the required files from the delegated contract. " +
-          "Do not spend the first tool round rediscovering the workspace with shell inspection."
+    : workspaceBootstrap
+      ? "Begin by creating or updating files under the delegated workspace root. " +
+        "If the delegated cwd does not exist yet, target that workspace via absolute paths instead of starting with shell inspection."
       : undefined;
 
   return {

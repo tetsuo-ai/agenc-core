@@ -560,6 +560,7 @@ export interface PlannerDecision {
   score: number;
   shouldPlan: boolean;
   reason: string;
+  artifactTargets?: readonly string[];
 }
 
 export type PlannerStepType = "deterministic_tool" | "subagent_task" | "synthesis";

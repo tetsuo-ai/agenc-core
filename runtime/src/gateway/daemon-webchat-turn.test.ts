@@ -196,6 +196,90 @@ You have broad access to this machine via the system.bash tool.`,
     );
   });
 
+  it("does not warn for store-disabled stateful continuation summaries", async () => {
+    const logger = createLoggerStub();
+    const memoryBackend = createMemoryBackendStub();
+    const session = createSession();
+    const sessionMgr = {
+      getOrCreate: vi.fn(() => session),
+      appendMessage: vi.fn(),
+      compact: vi.fn(async () => undefined),
+    } as any;
+    const webChat = {
+      createAbortController: vi.fn(() => new AbortController()),
+      clearAbortController: vi.fn(),
+      send: vi.fn(async () => undefined),
+      pushToSession: vi.fn(),
+      broadcastEvent: vi.fn(),
+    } as any;
+    const hooks = {
+      dispatch: vi.fn(async () => ({ completed: true, payload: {} })),
+    } as any;
+    const signals = {
+      signalThinking: vi.fn(),
+      signalIdle: vi.fn(),
+    };
+    const execute = vi.fn(async () =>
+      createResult({
+        statefulSummary: {
+          enabled: true,
+          attemptedCalls: 0,
+          continuedCalls: 0,
+          fallbackCalls: 1,
+          fallbackReasons: {
+            missing_previous_response_id: 0,
+            store_disabled: 1,
+            provider_retrieval_failure: 0,
+            state_reconciliation_mismatch: 0,
+            unsupported: 0,
+          },
+        },
+      })
+    );
+
+    await executeWebChatConversationTurn({
+      logger,
+      msg: {
+        sessionId: "session:test",
+        senderId: "operator-1",
+        channel: "webchat",
+        content: "hello",
+      },
+      turnTraceId: "trace-store-disabled",
+      webChat,
+      chatExecutor: { execute } as any,
+      sessionMgr,
+      getSystemPrompt: () => "system",
+      sessionToolHandler: vi.fn() as any,
+      sessionStreamCallback: vi.fn(),
+      buildToolRoutingDecision: () => undefined,
+      recordToolRoutingOutcome: vi.fn(),
+      memoryBackend,
+      sessionTokenBudget: 4000,
+      defaultMaxToolRounds: 3,
+      contextWindowTokens: 128000,
+      traceConfig: {
+        enabled: false,
+        includeHistory: false,
+        includeSystemPrompt: false,
+        includeToolArgs: false,
+        includeToolResults: false,
+        includeProviderPayloads: false,
+        maxChars: 20000,
+      },
+      hooks,
+      signals,
+      getSessionTokenUsage: () => 0,
+      onModelInfo: vi.fn(),
+      onSubagentSynthesis: vi.fn(),
+    });
+
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      "[stateful] webchat fallback_to_stateless",
+      expect.anything(),
+    );
+  });
+
   it("runs the shared webchat turn flow and persists stateful continuity", async () => {
     const logger = createLoggerStub();
     const memoryBackend = createMemoryBackendStub();

@@ -63,6 +63,25 @@ describe("chat-executor-contract-flow", () => {
     expect(guidance).toBeUndefined();
   });
 
+  it("does not resolve typed calendar guidance for generic scheduling implementation turns", () => {
+    const guidance = resolveExecutionToolContractGuidance({
+      ctx: {
+        messageText:
+          "Implement recurring scheduling for the daemon and keep day/night transitions in sync.",
+        allToolCalls: [],
+        activeRoutedToolNames: ["system.calendarInfo"],
+        initialRoutedToolNames: ["system.calendarInfo"],
+        expandedRoutedToolNames: ["system.calendarRead"],
+        requiredToolEvidence: undefined,
+        providerEvidence: undefined,
+        response: undefined,
+      } as any,
+      allowedTools: ["system.calendarInfo", "system.calendarRead"],
+    });
+
+    expect(guidance).toBeUndefined();
+  });
+
   it("prefers the full allowed tool collection for correction retries", () => {
     expect(
       resolveCorrectionAllowedToolNames(

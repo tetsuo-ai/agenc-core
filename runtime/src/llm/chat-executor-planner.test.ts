@@ -812,6 +812,19 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
     expect(decision.reason).toContain("artifact_spec_execution_request");
   });
 
+  it("does not treat generic planning requests without explicit artifact refs as artifact-backed routes", () => {
+    const messageText =
+      "Turn this into a complete implementation plan for building a shell in the C programming language.";
+
+    expect(classifyPlannerPlanArtifactIntent(messageText)).toBe("none");
+
+    const decision = assessPlannerDecision(true, messageText, []);
+
+    expect(decision.reason).not.toContain("plan_artifact_request");
+    expect(decision.reason).not.toContain("plan_artifact_execution_request");
+    expect(decision.reason).not.toContain("artifact_spec_execution_request");
+  });
+
   it("extracts required subagent steps from the compact 'plan required' prompt shape", () => {
     const requirements = extractExplicitSubagentOrchestrationRequirements(
       "Subagent context audit SG3. Sub-agent orchestration plan required: " +
@@ -3186,4 +3199,88 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
       ]),
     );
   });
+  it("rejects planner-emitted documentation artifact routes when the user never named an artifact", () => {
+    const diagnostics = validatePlannerStepContracts(
+      {
+        reason: "invented_plan_artifact",
+        requiresSynthesis: true,
+        confidence: 0.8,
+        steps: [
+          {
+            name: "review_and_update",
+            stepType: "subagent_task",
+            dependsOn: [],
+            objective: "Review and update the planning document",
+            inputContract: "Current workspace state",
+            acceptanceCriteria: ["Planning document updated"],
+            requiredToolCapabilities: ["system.writeFile", "system.readFile"],
+            contextRequirements: ["repo_context"],
+            executionContext: {
+              workspaceRoot: "/tmp/project",
+              requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+              targetArtifacts: ["/tmp/project/PLAN.md"],
+              effectClass: "filesystem_write",
+              verificationMode: "mutation_required",
+              stepKind: "delegated_write",
+            },
+            maxBudgetHint: "2m",
+            canRunParallel: false,
+          },
+        ],
+        edges: [],
+      },
+      "Build the shell in full and verify it before returning.",
+    );
+
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "planner_unrequested_artifact_route",
+        }),
+      ]),
+    );
+  });
+
+  it("rejects implement-from-artifact plans that ground on a different source artifact than the user requested", () => {
+    const diagnostics = validatePlannerStepContracts(
+      {
+        reason: "wrong_source_artifact",
+        requiresSynthesis: true,
+        confidence: 0.8,
+        steps: [
+          {
+            name: "implement_phase",
+            stepType: "subagent_task",
+            dependsOn: [],
+            objective: "Implement the project from the spec",
+            inputContract: "Spec and workspace are available",
+            acceptanceCriteria: ["Implementation updated"],
+            requiredToolCapabilities: ["system.writeFile", "system.readFile"],
+            contextRequirements: ["repo_context"],
+            executionContext: {
+              workspaceRoot: "/tmp/project",
+              requiredSourceArtifacts: ["/tmp/project/README.md"],
+              targetArtifacts: ["/tmp/project/src/main.ts"],
+              effectClass: "filesystem_write",
+              verificationMode: "mutation_required",
+              stepKind: "delegated_write",
+            },
+            maxBudgetHint: "2m",
+            canRunParallel: false,
+          },
+        ],
+        edges: [],
+      },
+      "Read all of @PLAN.md and complete every single phase in full.",
+    );
+
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "planner_artifact_source_does_not_match_request",
+        }),
+      ]),
+    );
+  });
+
 });

@@ -1179,4 +1179,28 @@ describe("chat-executor-contract-guidance", () => {
       toolChoice: "required",
     });
   });
+  it("does not inject write-first bootstrap guidance just because writeFile is the only initial tool", () => {
+    const guidance = resolveToolContractGuidance({
+      phase: "initial",
+      messageText: "Implement the core module in the existing workspace.",
+      toolCalls: [],
+      allowedToolNames: ["system.writeFile"],
+      requiredToolEvidence: {
+        delegationSpec: {
+          task: "implement_core",
+          objective: "Implement the core module inside the existing workspace",
+          inputContract: "Existing workspace and sources are already present",
+          acceptanceCriteria: ["Core module updated"],
+        },
+      },
+    });
+
+    expect(guidance).toEqual({
+      source: "delegation-initial",
+      routedToolNames: ["system.writeFile"],
+      persistRoutedToolNames: false,
+      toolChoice: "required",
+    });
+  });
+
 });
