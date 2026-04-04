@@ -35,6 +35,7 @@ export const WATCH_STATE_PRIMITIVE_KEYS = Object.freeze([
   "manualSessionsRequestPending",
   "manualSessionsQuery",
   "manualHistoryRequestPending",
+  "pendingResumeHistoryRestore",
   "attachmentSequence",
   "expandedEventId",
   "composerInput",
@@ -101,6 +102,7 @@ const DEFAULT_BOUND_STATE_KEYS = Object.freeze([
   "manualSessionsRequestPending",
   "manualSessionsQuery",
   "manualHistoryRequestPending",
+  "pendingResumeHistoryRestore",
   "currentObjective",
   "activeRunStartedAtMs",
   "latestAgentSummary",
@@ -539,6 +541,7 @@ export function createWatchState({
     manualSessionsRequestPending: false,
     manualSessionsQuery: null,
     manualHistoryRequestPending: false,
+    pendingResumeHistoryRestore: false,
     maintenanceSnapshot: null,
     maintenanceRequestPending: false,
     checkpoints: Array.isArray(persistedWatchState.checkpoints)

@@ -118,7 +118,7 @@ test("readWatchXaiConfigStatus reports masked local credentials", () => {
   const fs = {
     readFileSync(filePath) {
       if (filePath === "/tmp/agenc.pid") {
-        return JSON.stringify({ configPath: "/tmp/agenc.json" });
+        return JSON.stringify({ pid: 4242, configPath: "/tmp/agenc.json" });
       }
       return JSON.stringify({
         llm: {
@@ -137,12 +137,60 @@ test("readWatchXaiConfigStatus reports masked local credentials", () => {
       AGENC_PID_PATH: "/tmp/agenc.pid",
       AGENC_CONFIG_PATH: "/tmp/fallback.json",
     },
+    processModule: {
+      kill(pid, signal) {
+        assert.equal(pid, 4242);
+        assert.equal(signal, 0);
+      },
+    },
   });
 
   assert.equal(status.hasApiKey, true);
+  assert.equal(status.source, "pid");
+  assert.equal(status.daemonState, "running");
+  assert.equal(status.daemonPid, 4242);
   assert.equal(status.provider, "grok");
   assert.equal(status.model, "grok-4-1212");
   assert.match(status.maskedApiKey, /^\*+cret$/);
+});
+
+test("readWatchXaiConfigStatus ignores stale daemon pid files", () => {
+  const fs = {
+    readFileSync(filePath) {
+      if (filePath === "/tmp/agenc.pid") {
+        return JSON.stringify({ pid: 9999, configPath: "/tmp/stale.json" });
+      }
+      if (filePath === "/tmp/fallback.json") {
+        return JSON.stringify({
+          llm: {
+            provider: "grok",
+            model: "grok-4-fallback",
+            apiKey: "xai-fallback-secret",
+          },
+        });
+      }
+      throw new Error(`unexpected read: ${filePath}`);
+    },
+  };
+
+  const status = readWatchXaiConfigStatus({
+    fs,
+    env: {
+      AGENC_PID_PATH: "/tmp/agenc.pid",
+      AGENC_CONFIG_PATH: "/tmp/fallback.json",
+    },
+    processModule: {
+      kill() {
+        throw new Error("ESRCH");
+      },
+    },
+  });
+
+  assert.equal(status.source, "default");
+  assert.equal(status.configPath, "/tmp/fallback.json");
+  assert.equal(status.daemonState, "stale");
+  assert.equal(status.daemonPid, 9999);
+  assert.equal(status.model, "grok-4-fallback");
 });
 
 test("updateWatchXaiApiKey writes the local grok provider and api key", () => {

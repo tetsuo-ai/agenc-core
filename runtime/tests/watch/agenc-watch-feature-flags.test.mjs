@@ -223,6 +223,14 @@ test("resolveWatchFeatureFlags honors the explicit thread switcher override", ()
   assert.equal(flags.threadSwitcher, false);
 });
 
+test("resolveWatchFeatureFlags enables extensibility hub by default", () => {
+  const flags = resolveWatchFeatureFlags({
+    env: {},
+  });
+
+  assert.equal(flags.extensibilityHub, true);
+});
+
 test("resolveWatchFeatureFlags enables extensibility hub from feature lists", () => {
   const flags = resolveWatchFeatureFlags({
     env: {
@@ -242,6 +250,14 @@ test("resolveWatchFeatureFlags honors the explicit extensibility hub override", 
   });
 
   assert.equal(flags.extensibilityHub, false);
+});
+
+test("resolveWatchFeatureFlags enables input modes by default", () => {
+  const flags = resolveWatchFeatureFlags({
+    env: {},
+  });
+
+  assert.equal(flags.inputModes, true);
 });
 
 test("resolveWatchFeatureFlags enables input modes from feature lists", () => {

@@ -754,9 +754,16 @@ function showXaiStatus() {
     osModule: os,
     pathModule: path,
   });
+  const daemonSummary =
+    status.daemonState === "running"
+      ? `running (pid ${status.daemonPid})`
+      : status.daemonState === "stale"
+        ? `not running (stale pid ${status.daemonPid ?? "unknown"} ignored)`
+        : "not detected";
   const body = [
     `Config: ${status.configPath}`,
     `Config source: ${status.source}`,
+    `Daemon: ${daemonSummary}`,
     `Provider: ${status.provider ?? "unset"}`,
     `Base URL: ${status.baseUrl}`,
     `Model: ${status.model ?? "unset"}`,

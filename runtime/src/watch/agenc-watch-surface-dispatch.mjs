@@ -103,6 +103,7 @@ function handleSessionSurfaceEvent(surfaceEvent, state, api) {
       state.sessionId = payload.sessionId ?? state.sessionId;
       api.persistSessionId(state.sessionId);
       state.sessionAttachedAtMs = api.now();
+      state.pendingResumeHistoryRestore = false;
       api.resetLiveRunSurface();
       state.runDetail = null;
       state.runState = "idle";
@@ -121,12 +122,11 @@ function handleSessionSurfaceEvent(surfaceEvent, state, api) {
       state.sessionAttachedAtMs = api.now();
       state.runState = "idle";
       state.runPhase = null;
-      state.bootstrapReady = false;
-      api.clearBootstrapTimer();
+      state.pendingResumeHistoryRestore = true;
       api.resetLiveRunSurface();
-      api.setTransientStatus(`session resumed: ${state.sessionId}; restoring history`);
       api.send("chat.history", api.authPayload({ limit: 50 }));
       api.requestRunInspect("resume", { force: true });
+      api.markBootstrapReady(`session resumed: ${state.sessionId}; restoring history`);
       return true;
     case "chat.sessions": {
       const sessions = surfaceEvent.payloadList ?? [];
@@ -184,6 +184,10 @@ function handleSessionSurfaceEvent(surfaceEvent, state, api) {
         state.manualHistoryRequestPending = false;
         api.eventStore.pushEvent("history", "Chat History", api.formatHistoryPayload(history), "slate");
         api.setTransientStatus(`history loaded: ${history.length} item(s)`);
+      } else if (state.pendingResumeHistoryRestore && state.sessionId) {
+        state.pendingResumeHistoryRestore = false;
+        api.eventStore.restoreTranscriptFromHistory(history);
+        api.setTransientStatus(`history restored: ${history.length} item(s)`);
       } else if (!state.bootstrapReady && state.sessionId) {
         api.eventStore.restoreTranscriptFromHistory(history);
         api.markBootstrapReady(`history restored: ${history.length} item(s)`);
@@ -524,6 +528,7 @@ function handleErrorSurfaceEvent(surfaceEvent, rawMessage, state, api) {
   state.manualSessionsRequestPending = false;
   state.manualSessionsQuery = null;
   state.manualHistoryRequestPending = false;
+  state.pendingResumeHistoryRestore = false;
   if (api.isExpectedMissingRunInspect(errorMessage, errorPayload)) {
     state.runDetail = null;
     state.runState = "idle";

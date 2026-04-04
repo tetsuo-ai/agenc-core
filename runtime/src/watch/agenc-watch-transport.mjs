@@ -143,6 +143,7 @@ export function createWatchTransportController(dependencies = {}) {
       return;
     }
     watchState.bootstrapReady = false;
+    watchState.pendingResumeHistoryRestore = false;
     clearBootstrapTimer();
     const delayMs = Math.min(2_000, Math.max(250, watchState.bootstrapAttempts * 250));
     transportState.bootstrapTimer = setTimeoutFn(() => {
@@ -174,6 +175,7 @@ export function createWatchTransportController(dependencies = {}) {
     transportState.reconnectAttempts = 0;
     watchState.bootstrapAttempts = 0;
     watchState.bootstrapReady = false;
+    watchState.pendingResumeHistoryRestore = false;
     transportState.connectionState = "live";
     setTransientStatus(connectedStatusText);
     while (pendingFrames.length > 0) {
@@ -207,6 +209,7 @@ export function createWatchTransportController(dependencies = {}) {
     transportState.isOpen = false;
     transportState.ws = null;
     watchState.bootstrapReady = false;
+    watchState.pendingResumeHistoryRestore = false;
     watchState.runInspectPending = false;
     watchState.manualSessionsRequestPending = false;
     watchState.manualHistoryRequestPending = false;
