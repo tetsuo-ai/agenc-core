@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   formatSessionSummaries,
   formatStatusPayload,
+  summarizeUsage,
   summarizeRunDetail,
   statusFeedFingerprint,
 } from "../../src/watch/agenc-watch-format-payloads.mjs";
@@ -128,4 +129,16 @@ test("summarizeRunDetail exposes durable run control and checkpoint retry availa
 
   assert.ok(lines.some((line) => line === "run controls: unavailable"));
   assert.ok(lines.some((line) => line === "checkpoint retry: available"));
+});
+
+test("summarizeUsage includes context window when available", () => {
+  assert.equal(
+    summarizeUsage({
+      promptTokens: 12_345,
+      totalTokens: 67_890,
+      contextWindowTokens: 2_000_000,
+      maxOutputTokens: 131_072,
+    }),
+    "12K prompt / 68K total / 2M ctx / 131K max out",
+  );
 });

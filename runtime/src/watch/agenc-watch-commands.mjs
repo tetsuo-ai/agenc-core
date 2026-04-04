@@ -717,6 +717,26 @@ function buildExtensibilityCommand(parsedSlash) {
   return { section };
 }
 
+function buildXaiCommand(parsedSlash) {
+  const args = Array.isArray(parsedSlash?.args) ? parsedSlash.args : [];
+  const subcommand = (args[0] ?? "set").trim().toLowerCase();
+  if (!subcommand || subcommand === "set") {
+    return { mode: "set" };
+  }
+  if (subcommand === "status") {
+    return { mode: "status" };
+  }
+  if (subcommand === "validate") {
+    return { mode: "validate" };
+  }
+  if (subcommand === "clear") {
+    return { mode: "clear" };
+  }
+  return {
+    error: "Usage: /xai [set|status|validate|clear]",
+  };
+}
+
 function buildInputPreferenceCommand(parsedSlash, {
   commandName,
   usage,
@@ -739,64 +759,6 @@ function buildInputPreferenceCommand(parsedSlash, {
   }
   return {
     error: `Usage: ${usage}`,
-  };
-}
-
-function isVimPreferenceEnabled(preferences = {}) {
-  return preferences?.inputModeProfile === "vim" || preferences?.keybindingProfile === "vim";
-}
-
-function buildConfigCommand(parsedSlash) {
-  const args = Array.isArray(parsedSlash?.args) ? parsedSlash.args : [];
-  const token = (args[0] ?? "show").trim().toLowerCase();
-  if (!token || ["show", "status", "ui", "local"].includes(token)) {
-    return { mode: "show" };
-  }
-  return {
-    error: "Usage: /config [show]",
-  };
-}
-
-function buildStatuslineCommand(parsedSlash) {
-  const args = Array.isArray(parsedSlash?.args) ? parsedSlash.args : [];
-  const token = (args[0] ?? "show").trim().toLowerCase();
-  if (!token || token === "show" || token === "status") {
-    return { mode: "show" };
-  }
-  if (["on", "enable", "enabled"].includes(token)) {
-    return { mode: "set", enabled: true };
-  }
-  if (["off", "disable", "disabled"].includes(token)) {
-    return { mode: "set", enabled: false };
-  }
-  if (token === "toggle") {
-    return { mode: "toggle" };
-  }
-  return {
-    error: "Usage: /statusline [show|on|off|toggle]",
-  };
-}
-
-function buildVimCommand(parsedSlash, { currentInputPreferences } = {}) {
-  const args = Array.isArray(parsedSlash?.args) ? parsedSlash.args : [];
-  const token = (args[0] ?? "toggle").trim().toLowerCase();
-  if (token === "show" || token === "status") {
-    return { mode: "show" };
-  }
-  if (!token || token === "toggle") {
-    return {
-      mode: "set",
-      enabled: !isVimPreferenceEnabled(currentInputPreferences?.() ?? {}),
-    };
-  }
-  if (["on", "enable", "enabled"].includes(token)) {
-    return { mode: "set", enabled: true };
-  }
-  if (["off", "disable", "disabled"].includes(token)) {
-    return { mode: "set", enabled: false };
-  }
-  return {
-    error: "Usage: /vim [show|on|off|toggle]",
   };
 }
 
@@ -923,7 +885,6 @@ export function createWatchCommandController(dependencies = {}) {
     showAgents,
     showExtensibility,
     showInputModes,
-    showConfig,
     resetLiveRunSurface,
     resetDelegationState,
     persistSessionId,
@@ -934,20 +895,22 @@ export function createWatchCommandController(dependencies = {}) {
     setInputModeProfile,
     setKeybindingProfile,
     setThemeName,
-    currentStatuslineEnabled,
-    setStatuslineEnabled,
     trustPluginPackage,
     untrustPluginPackage,
     setMcpServerEnabled,
+    showXaiStatus,
+    validateConfiguredXaiKey,
+    clearXaiApiKey,
+    promptForXaiApiKey,
     captureCheckpoint,
     listCheckpoints,
     listPendingAttachments,
     formatPendingAttachments,
     queuePendingAttachment,
-    resolveImplicitAttachmentInput,
     removePendingAttachment,
     clearPendingAttachments,
     prepareChatMessagePayload,
+    applyOptimisticModelSelection,
     openLatestDiffDetail,
     currentDiffNavigationState,
     jumpCurrentDiffHunk,
@@ -1045,24 +1008,18 @@ export function createWatchCommandController(dependencies = {}) {
     assertFunction("setKeybindingProfile", setKeybindingProfile);
     assertFunction("setThemeName", setThemeName);
   }
-  if (
-    commandNames.has("/config") ||
-    commandNames.has("/statusline") ||
-    commandNames.has("/vim")
-  ) {
-    assertFunction("showConfig", showConfig);
-    assertFunction("currentInputPreferences", currentInputPreferences);
-    assertFunction("setInputModeProfile", setInputModeProfile);
-    assertFunction("setKeybindingProfile", setKeybindingProfile);
-    assertFunction("currentStatuslineEnabled", currentStatuslineEnabled);
-    assertFunction("setStatuslineEnabled", setStatuslineEnabled);
-  }
   if (commandNames.has("/plugins")) {
     assertFunction("trustPluginPackage", trustPluginPackage);
     assertFunction("untrustPluginPackage", untrustPluginPackage);
   }
   if (commandNames.has("/mcp")) {
     assertFunction("setMcpServerEnabled", setMcpServerEnabled);
+  }
+  if (commandNames.has("/xai")) {
+    assertFunction("showXaiStatus", showXaiStatus);
+    assertFunction("validateConfiguredXaiKey", validateConfiguredXaiKey);
+    assertFunction("clearXaiApiKey", clearXaiApiKey);
+    assertFunction("promptForXaiApiKey", promptForXaiApiKey);
   }
   if (commandNames.has("/session-label")) {
     assertFunction("currentSessionLabel", currentSessionLabel);
@@ -1130,6 +1087,7 @@ export function createWatchCommandController(dependencies = {}) {
         "Keyboard",
         "Ctrl+O opens the newest event in a full detail view.",
         "Ctrl+Y copies the current detail view or transcript to tmux/system clipboard.",
+        "Ctrl+Q prints the current detail view or transcript into the normal terminal so you can native-select/copy it, then Ctrl+Q returns to watch.",
         "Ctrl+L clears the visible transcript without leaving the session.",
         "",
         ...WATCH_COMMANDS.map((command) => {
@@ -1169,38 +1127,6 @@ export function createWatchCommandController(dependencies = {}) {
 
   function shouldQueueOperatorInput() {
     return !isOpen() || bootstrapPending();
-  }
-
-  function queueLocalAttachment(inputPath, { implicit = false } = {}) {
-    try {
-      const result = queuePendingAttachment(inputPath, {
-        allowMissing: implicit === true,
-      });
-      setTransientStatus(
-        result.duplicate === true
-          ? `attachment already queued: ${result.attachment.filename}`
-          : `attachment queued: ${result.attachment.filename}`,
-      );
-      pushEvent(
-        "operator",
-        result.duplicate === true
-          ? "Attachment Already Queued"
-          : implicit === true
-            ? "Attachment Queued From Path"
-            : "Attachment Queued",
-        formatPendingAttachmentsImpl(),
-        result.duplicate === true ? "amber" : "teal",
-      );
-    } catch (error) {
-      setTransientStatus("attachment error");
-      pushEvent(
-        "error",
-        "Attachment Error",
-        error instanceof Error ? error.message : String(error),
-        "red",
-      );
-    }
-    return true;
   }
 
   function dispatchOperatorInput(value, { replayed = false } = {}) {
@@ -1350,14 +1276,21 @@ export function createWatchCommandController(dependencies = {}) {
         return true;
       }
 
-      if (canonicalName === "/config") {
-        const action = buildConfigCommand(parsedSlash);
+      if (canonicalName === "/xai") {
+        const action = buildXaiCommand(parsedSlash);
         if (action.error) {
           pushEvent("error", "Usage Error", action.error, "red");
           return true;
         }
-        setTransientStatus("local config ready");
-        showConfig();
+        if (action.mode === "status") {
+          showXaiStatus();
+        } else if (action.mode === "validate") {
+          validateConfiguredXaiKey();
+        } else if (action.mode === "clear") {
+          clearXaiApiKey();
+        } else {
+          promptForXaiApiKey();
+        }
         return true;
       }
 
@@ -1383,9 +1316,9 @@ export function createWatchCommandController(dependencies = {}) {
               })
               : buildInputPreferenceCommand(parsedSlash, {
                 commandName: canonicalName,
-                usage: "/theme [show|default|aurora|ember|matrix]",
+                usage: "/theme [show|default|aurora|ember]",
                 defaultValue: "default",
-                allowedValues: ["default", "aurora", "ember", "matrix"],
+                allowedValues: ["default", "aurora", "ember"],
               });
         if (action.error) {
           pushEvent("error", "Usage Error", action.error, "red");
@@ -1412,53 +1345,35 @@ export function createWatchCommandController(dependencies = {}) {
         return true;
       }
 
-      if (canonicalName === "/statusline") {
-        const action = buildStatuslineCommand(parsedSlash);
-        if (action.error) {
-          pushEvent("error", "Usage Error", action.error, "red");
-          return true;
-        }
-        if (action.mode === "show") {
-          setTransientStatus("local config ready");
-          showConfig();
-          return true;
-        }
-        const enabled =
-          action.mode === "toggle"
-            ? currentStatuslineEnabled() !== true
-            : action.enabled === true;
-        setStatuslineEnabled(enabled);
-        setTransientStatus(`statusline: ${enabled ? "on" : "off"}`);
-        showConfig();
-        return true;
-      }
-
-      if (canonicalName === "/vim") {
-        const action = buildVimCommand(parsedSlash, { currentInputPreferences });
-        if (action.error) {
-          pushEvent("error", "Usage Error", action.error, "red");
-          return true;
-        }
-        if (action.mode === "show") {
-          setTransientStatus("local config ready");
-          showConfig();
-          return true;
-        }
-        setInputModeProfile(action.enabled === true ? "vim" : "default");
-        setKeybindingProfile(action.enabled === true ? "vim" : "default");
-        watchState.composerMode = "insert";
-        setTransientStatus(`vim mode: ${action.enabled === true ? "on" : "off"}`);
-        showConfig();
-        return true;
-      }
-
       if (canonicalName === "/attach") {
         const inputPath = parsedSlash.args.join(" ").trim();
         if (!inputPath) {
           pushEvent("error", "Usage Error", "Usage: /attach <path>", "red");
           return true;
         }
-        return queueLocalAttachment(inputPath);
+        try {
+          const result = queuePendingAttachment(inputPath);
+          setTransientStatus(
+            result.duplicate === true
+              ? `attachment already queued: ${result.attachment.filename}`
+              : `attachment queued: ${result.attachment.filename}`,
+          );
+          pushEvent(
+            "operator",
+            result.duplicate === true ? "Attachment Already Queued" : "Attachment Queued",
+            formatPendingAttachmentsImpl(),
+            result.duplicate === true ? "amber" : "teal",
+          );
+        } catch (error) {
+          setTransientStatus("attachment error");
+          pushEvent(
+            "error",
+            "Attachment Error",
+            error instanceof Error ? error.message : String(error),
+            "red",
+          );
+        }
+        return true;
       }
 
       if (canonicalName === "/attachments") {
@@ -1504,12 +1419,6 @@ export function createWatchCommandController(dependencies = {}) {
       }
 
       if (!canonicalName) {
-        if (attachmentCommandsEnabled && typeof resolveImplicitAttachmentInput === "function") {
-          const implicitAttachmentInput = resolveImplicitAttachmentInput(value);
-          if (implicitAttachmentInput) {
-            return queueLocalAttachment(implicitAttachmentInput, { implicit: true });
-          }
-        }
         pushEvent(
           "error",
           "Unknown Command",
@@ -1542,6 +1451,13 @@ export function createWatchCommandController(dependencies = {}) {
 
       if (canonicalName === "/model") {
         const modelArg = (firstArg ?? "").trim();
+        if (
+          modelArg &&
+          !/^(current|list)$/i.test(modelArg) &&
+          typeof applyOptimisticModelSelection === "function"
+        ) {
+          applyOptimisticModelSelection(modelArg);
+        }
         pushEvent(
           "operator",
           modelArg ? "Model Switch" : "Model Query",

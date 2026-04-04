@@ -199,9 +199,11 @@ export function summarizeUsage(payload) {
   const parts = [];
   const prompt = formatCompactNumber(payload.promptTokens);
   const total = formatCompactNumber(payload.totalTokens);
+  const contextWindow = formatCompactNumber(payload.contextWindowTokens);
   const maxOutput = formatCompactNumber(payload.maxOutputTokens);
   if (prompt) parts.push(`${prompt} prompt`);
   if (total) parts.push(`${total} total`);
+  if (contextWindow) parts.push(`${contextWindow} ctx`);
   if (maxOutput) parts.push(`${maxOutput} max out`);
   if (payload.compacted) parts.push("compacted");
   return parts.length > 0 ? parts.join(" / ") : null;

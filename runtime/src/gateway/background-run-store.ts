@@ -472,8 +472,8 @@ export type BackgroundRunEventType =
   | "run_retried"
   | "run_retried_from_step"
   | "run_retried_from_trace"
-  | "run_forked"
   | "run_verification_overridden"
+  | "run_forked"
   | "cycle_started"
   | "cycle_working"
   | "decision"
@@ -735,7 +735,8 @@ function isBackgroundRunWorkerPool(value: unknown): value is BackgroundRunWorker
     value === "code" ||
     value === "research" ||
     value === "approval" ||
-    value === "remote_mcp"
+    value === "remote_mcp" ||
+    value === "remote_session"
   );
 }
 

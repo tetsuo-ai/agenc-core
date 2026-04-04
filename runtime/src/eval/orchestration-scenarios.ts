@@ -9,11 +9,6 @@
  */
 
 import type { ReplayTaskStatus } from "./replay.js";
-import type {
-  WorkflowCompletionState,
-  WorkflowDependencyStateKind,
-  WorkflowResolutionSemantics,
-} from "../workflow/completion-state.js";
 
 export const ORCHESTRATION_EXPECTATION_SCHEMA_VERSION = 1 as const;
 
@@ -27,11 +22,7 @@ export interface OrchestrationRegressionCatalogEntry {
     | "overdelegation"
     | "validation_false_positive"
     | "ungrounded_write"
-    | "false_completion"
-    | "workflow_contract"
-    | "verification_state"
-    | "provider_capability"
-    | "retry_budget";
+    | "false_completion";
   fixtureBaseName: string;
   summary: string;
 }
@@ -39,9 +30,6 @@ export interface OrchestrationRegressionCatalogEntry {
 export interface OrchestrationExpectedReplay {
   taskPda: string;
   finalStatus: ReplayTaskStatus;
-  completionState: WorkflowCompletionState;
-  dependencyStateKind: WorkflowDependencyStateKind;
-  resolutionSemantics: WorkflowResolutionSemantics;
   replayErrors: number;
   replayWarnings: number;
   policyViolations: number;
@@ -131,45 +119,5 @@ export const ORCHESTRATION_REGRESSION_SCENARIOS: readonly OrchestrationRegressio
     fixtureBaseName: "shell-stub-false-completion",
     summary:
       "Implementation wrote explicit stub markers into required shell files, then the weak plan_only_execution gate still accepted the run as completed.",
-  },
-  {
-    scenarioId: "reviewer_writer_contract_collapse",
-    title: "Six reviewers collapse into one reviewer-writer hybrid step",
-    category: "workflow_contract",
-    fixtureBaseName: "reviewer-writer-contract-collapse",
-    summary:
-      "Required reviewer cardinality collapsed into a single mixed-role child, so the writer no longer consumed distinct reviewer artifacts.",
-  },
-  {
-    scenarioId: "needs_verification_child_survives_parent",
-    title: "Child needs_verification state survives to the parent verifier",
-    category: "verification_state",
-    fixtureBaseName: "needs-verification-child-survives-parent",
-    summary:
-      "A child completed enough work to satisfy dependencies but still required verifier closure, and the parent preserved that nonterminal state instead of coercing it to failure.",
-  },
-  {
-    scenarioId: "followup_tool_contract_suppressed",
-    title: "Follow-up routed tool contract is silently stripped on xAI",
-    category: "provider_capability",
-    fixtureBaseName: "followup-tool-contract-suppressed",
-    summary:
-      "A follow-up turn dropped required routed tools instead of failing closed when the preserved tool contract could not be honored.",
-  },
-  {
-    scenarioId: "xai_route_mismatch_fail_open",
-    title: "xAI multi-agent route accepts incompatible custom tools",
-    category: "provider_capability",
-    fixtureBaseName: "xai-route-mismatch-fail-open",
-    summary:
-      "Provider/tool/model incompatibility was allowed to execute instead of failing closed before the request was shaped.",
-  },
-  {
-    scenarioId: "request_tree_budget_retry_reset",
-    title: "Planner retries reset request-tree child budgets",
-    category: "retry_budget",
-    fixtureBaseName: "request-tree-budget-retry-reset",
-    summary:
-      "Planner/verifier retries recreated child-budget trackers and let the same request tree exceed its intended total child budget.",
   },
 ] as const;

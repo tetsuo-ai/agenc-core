@@ -52,10 +52,6 @@ describe("TrajectoryReplayEngine", () => {
     expect(first.deterministicHash).toBe(second.deterministicHash);
     expect(first.summary.completedTasks).toBe(1);
     expect(first.tasks["task-a"].status).toBe("completed");
-    expect(first.tasks["task-a"].completionState).toBe("completed");
-    expect(first.tasks["task-a"].dependencyStateKind).toBe(
-      "satisfied_terminal",
-    );
   });
 
   it("reports invalid transitions in strict mode", () => {
@@ -122,60 +118,6 @@ describe("TrajectoryReplayEngine", () => {
     expect(result.summary.speculationAborts).toBe(1);
     expect(result.summary.escalatedTasks).toBe(1);
     expect(result.tasks["task-c"].status).toBe("escalated");
-    expect(result.tasks["task-c"].completionState).toBe("blocked");
-    expect(result.tasks["task-c"].dependencyStateKind).toBe(
-      "unsatisfied_terminal",
-    );
-  });
-
-  it("preserves explicit nonterminal completion states from replay payloads", () => {
-    const trace = baseTrace([
-      {
-        seq: 1,
-        type: "discovered",
-        taskPda: "task-nonterminal",
-        timestampMs: 101,
-        payload: {},
-      },
-      {
-        seq: 2,
-        type: "claimed",
-        taskPda: "task-nonterminal",
-        timestampMs: 102,
-        payload: {},
-      },
-      {
-        seq: 3,
-        type: "executed",
-        taskPda: "task-nonterminal",
-        timestampMs: 103,
-        payload: {
-          completionState: "needs_verification",
-          reportedStatus: "completed",
-        },
-      },
-      {
-        seq: 4,
-        type: "completed",
-        taskPda: "task-nonterminal",
-        timestampMs: 104,
-        payload: {
-          completionState: "needs_verification",
-        },
-      },
-    ]);
-
-    const result = new TrajectoryReplayEngine({ strictMode: true }).replay(
-      trace,
-    );
-
-    expect(result.tasks["task-nonterminal"]).toMatchObject({
-      status: "completed",
-      completionState: "needs_verification",
-      dependencyStateKind: "satisfied_nonterminal",
-      dependencySatisfied: true,
-      verifierClosed: false,
-    });
   });
 
   it("migrates legacy traces during replay", () => {

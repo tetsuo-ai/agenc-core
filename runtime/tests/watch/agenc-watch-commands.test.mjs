@@ -14,6 +14,8 @@ function createCommandHarness(overrides = {}) {
     manualSessionsRequestPending: false,
     manualHistoryRequestPending: false,
     manualStatusRequestPending: false,
+    maintenanceSnapshot: null,
+    maintenanceRequestPending: false,
     runInspectPending: false,
     transcriptScrollOffset: 7,
     transcriptFollowMode: false,
@@ -33,8 +35,6 @@ function createCommandHarness(overrides = {}) {
     skillCatalog: [],
     hookCatalog: [],
     voiceCompanion: null,
-    maintenanceSnapshot: null,
-    maintenanceRequestPending: false,
   };
   const queuedOperatorInputs = [];
   const pendingAttachments = watchState.pendingAttachments;
@@ -54,13 +54,12 @@ function createCommandHarness(overrides = {}) {
     { name: "/plugins", usage: "/plugins [list|trust <packageName> [subpath ...]|untrust <packageName>]", description: "plugins", aliases: [] },
     { name: "/mcp", usage: "/mcp [list|enable <serverName>|disable <serverName>]", description: "mcp", aliases: [] },
     { name: "/hooks", usage: "/hooks [list|events]", description: "hooks", aliases: [] },
-    { name: "/config", usage: "/config [show]", description: "config", aliases: [] },
+    { name: "/xai", usage: "/xai [set|status|validate|clear]", description: "xai", aliases: ["/api"] },
     { name: "/input-mode", usage: "/input-mode [show|default|vim]", description: "input mode", aliases: [] },
     { name: "/keybindings", usage: "/keybindings [show|default|vim]", description: "keybindings", aliases: [] },
-    { name: "/theme", usage: "/theme [show|default|aurora|ember|matrix]", description: "theme", aliases: [] },
-    { name: "/statusline", usage: "/statusline [show|on|off|toggle]", description: "statusline", aliases: [] },
-    { name: "/vim", usage: "/vim [show|on|off|toggle]", description: "vim", aliases: [] },
+    { name: "/theme", usage: "/theme [show|default|aurora|ember]", description: "theme", aliases: [] },
     { name: "/init", usage: "/init", description: "init guide", aliases: [] },
+    { name: "/voice", usage: "/voice [start|stop|status]", description: "voice", aliases: [] },
     { name: "/logs", usage: "/logs [lines]", description: "logs", aliases: [] },
     { name: "/status", usage: "/status", description: "status", aliases: [] },
     { name: "/new", usage: "/new", description: "new session", aliases: [] },
@@ -92,7 +91,6 @@ function createCommandHarness(overrides = {}) {
     { name: "/history", usage: "/history", description: "history", aliases: [] },
     { name: "/model", usage: "/model", description: "model", aliases: ["/models"] },
     { name: "/memory", usage: "/memory", description: "memory", aliases: [] },
-    { name: "/voice", usage: "/voice [start|stop|status|<persona>]", description: "voice", aliases: [] },
     { name: "/attach", usage: "/attach <path>", description: "attach", aliases: [] },
     { name: "/attachments", usage: "/attachments", description: "attachments", aliases: [] },
     { name: "/unattach", usage: "/unattach [ref]", description: "unattach", aliases: ["/detach"] },
@@ -146,7 +144,7 @@ function createCommandHarness(overrides = {}) {
     },
     showMaintenance() {
       calls.push({ type: "showMaintenance" });
-      return "Maintenance Status\n- ok";
+      return "Watch Maintenance\n- ok";
     },
     showAgents({ query = null } = {}) {
       calls.push({ type: "showAgents", query });
@@ -159,10 +157,6 @@ function createCommandHarness(overrides = {}) {
     showInputModes() {
       calls.push({ type: "showInputModes" });
       return "Input Preferences\n- ok";
-    },
-    showConfig() {
-      calls.push({ type: "showConfig" });
-      return "Local Config\n- ok";
     },
     resetLiveRunSurface() {
       calls.push({ type: "resetLiveRunSurface" });
@@ -213,15 +207,6 @@ function createCommandHarness(overrides = {}) {
       watchState.inputPreferences.themeName = themeName;
       return watchState.inputPreferences;
     },
-    currentStatuslineEnabled() {
-      calls.push({ type: "currentStatuslineEnabled" });
-      return statuslineEnabled;
-    },
-    setStatuslineEnabled(enabled) {
-      calls.push({ type: "setStatuslineEnabled", enabled });
-      statuslineEnabled = enabled === true;
-      return statuslineEnabled;
-    },
     trustPluginPackage(packageName, allowedSubpaths = []) {
       calls.push({ type: "trustPluginPackage", packageName, allowedSubpaths });
       return { packageName, allowedSubpaths };
@@ -233,6 +218,22 @@ function createCommandHarness(overrides = {}) {
     setMcpServerEnabled(serverName, enabled) {
       calls.push({ type: "setMcpServerEnabled", serverName, enabled });
       return { serverName, enabled };
+    },
+    showXaiStatus() {
+      calls.push({ type: "showXaiStatus" });
+      return { hasApiKey: false };
+    },
+    validateConfiguredXaiKey() {
+      calls.push({ type: "validateConfiguredXaiKey" });
+      return true;
+    },
+    clearXaiApiKey() {
+      calls.push({ type: "clearXaiApiKey" });
+      return true;
+    },
+    promptForXaiApiKey() {
+      calls.push({ type: "promptForXaiApiKey" });
+      return true;
     },
     captureCheckpoint(label, options) {
       calls.push({ type: "captureCheckpoint", label, options });
@@ -278,8 +279,8 @@ function createCommandHarness(overrides = {}) {
         .map((attachment, index) => `${index + 1}. ${attachment.filename ?? attachment.id ?? "attachment"}`)
         .join("\n");
     },
-    queuePendingAttachment(inputPath, options = {}) {
-      calls.push({ type: "queuePendingAttachment", inputPath, options });
+    queuePendingAttachment(inputPath) {
+      calls.push({ type: "queuePendingAttachment", inputPath });
       const attachment = {
         id: `att-${pendingAttachments.length + 1}`,
         path: inputPath,
@@ -291,12 +292,6 @@ function createCommandHarness(overrides = {}) {
       };
       pendingAttachments.push(attachment);
       return { attachment, duplicate: false };
-    },
-    resolveImplicitAttachmentInput(inputPath) {
-      calls.push({ type: "resolveImplicitAttachmentInput", inputPath });
-      return overrides.resolveImplicitAttachmentInput
-        ? overrides.resolveImplicitAttachmentInput(inputPath)
-        : null;
     },
     removePendingAttachment(reference) {
       calls.push({ type: "removePendingAttachment", reference });
@@ -312,6 +307,10 @@ function createCommandHarness(overrides = {}) {
     clearPendingAttachments() {
       calls.push({ type: "clearPendingAttachments" });
       return pendingAttachments.splice(0, pendingAttachments.length);
+    },
+    applyOptimisticModelSelection(modelName) {
+      calls.push({ type: "applyOptimisticModelSelection", modelName });
+      return true;
     },
     prepareChatMessagePayload(content, { consumeAttachments = true } = {}) {
       calls.push({ type: "prepareChatMessagePayload", content, consumeAttachments });
@@ -410,7 +409,7 @@ function createCommandHarness(overrides = {}) {
     bootstrapPending() {
       return false;
     },
-    voiceController: overrides.voiceController ?? {
+    voiceController: {
       startVoice() {
         calls.push({ type: "startVoice" });
       },
@@ -418,8 +417,13 @@ function createCommandHarness(overrides = {}) {
         calls.push({ type: "stopVoice" });
       },
       formatStatusReport() {
-        calls.push({ type: "formatStatusReport" });
-        return "Voice Companion\n- ok";
+        calls.push({ type: "voiceStatusReport" });
+        return [
+          "Voice Companion",
+          "- Active: yes",
+          "- State: listening",
+          "- Connection: connected",
+        ].join("\n");
       },
     },
     ...overrides,
@@ -474,6 +478,23 @@ test("command controller shows local watch insights through /insights", () => {
   assert.ok(calls.some((entry) => entry.type === "showInsights"));
 });
 
+test("command controller refreshes maintenance snapshots through /maintenance", () => {
+  const { controller, calls, watchState } = createCommandHarness();
+
+  assert.equal(controller.dispatchOperatorInput("/maintenance"), true);
+
+  assert.equal(watchState.maintenanceRequestPending, true);
+  assert.ok(
+    calls.some(
+      (entry) =>
+        entry.type === "send" &&
+        entry.frameType === "maintenance.status" &&
+        entry.payload?.limit === 8,
+    ),
+  );
+  assert.ok(calls.some((entry) => entry.type === "event" && entry.title === "Maintenance"));
+});
+
 test("command controller shows agent threads through /agents", () => {
   const { controller, calls } = createCommandHarness();
 
@@ -493,13 +514,37 @@ test("command controller shows extensibility sections and mutates local config h
   assert.equal(controller.dispatchOperatorInput("/hooks"), true);
 
   assert.ok(calls.some((entry) => entry.type === "showExtensibility" && entry.section === "mcp"));
-  assert.ok(calls.some((entry) => entry.type === "showExtensibility" && entry.section === "hooks"));
   assert.ok(calls.some((entry) => entry.type === "trustPluginPackage" && entry.packageName === "@demo/plugin"));
   assert.ok(calls.some((entry) => entry.type === "untrustPluginPackage" && entry.packageName === "@demo/plugin"));
   assert.ok(calls.some((entry) => entry.type === "setMcpServerEnabled" && entry.serverName === "browser" && entry.enabled === true));
+  assert.ok(calls.some((entry) => entry.type === "showExtensibility" && entry.section === "hooks"));
+  assert.ok(calls.some((entry) => entry.type === "send" && entry.frameType === "hooks.list"));
+});
+
+test("command controller handles local xai credential commands without daemon messages", () => {
+  const { controller, calls } = createCommandHarness();
+
+  assert.equal(controller.dispatchOperatorInput("/xai"), true);
+  assert.equal(controller.dispatchOperatorInput("/xai status"), true);
+  assert.equal(controller.dispatchOperatorInput("/xai validate"), true);
+  assert.equal(controller.dispatchOperatorInput("/xai clear"), true);
+  assert.equal(controller.dispatchOperatorInput("/api set"), true);
+
   assert.equal(
-    calls.filter((entry) => entry.type === "send" && entry.frameType === "hooks.list").length,
+    calls.filter((entry) => entry.type === "promptForXaiApiKey").length,
     2,
+  );
+  assert.ok(calls.some((entry) => entry.type === "showXaiStatus"));
+  assert.ok(calls.some((entry) => entry.type === "validateConfiguredXaiKey"));
+  assert.ok(calls.some((entry) => entry.type === "clearXaiApiKey"));
+  assert.equal(
+    calls.some(
+      (entry) =>
+        entry.type === "send" &&
+        entry.frameType === "chat.message" &&
+        /\/xai|\/api/.test(String(entry.payload?.content ?? "")),
+    ),
+    false,
   );
 });
 
@@ -514,67 +559,6 @@ test("command controller manages input preferences locally", () => {
   assert.equal(watchState.inputPreferences.keybindingProfile, "vim");
   assert.equal(watchState.inputPreferences.themeName, "aurora");
   assert.ok(calls.some((entry) => entry.type === "showInputModes"));
-});
-
-test("command controller serves local config, statusline, and vim toggles", () => {
-  const { controller, watchState, calls } = createCommandHarness();
-
-  assert.equal(controller.dispatchOperatorInput("/config"), true);
-  assert.equal(controller.dispatchOperatorInput("/statusline on"), true);
-  assert.equal(controller.dispatchOperatorInput("/vim on"), true);
-  assert.equal(controller.dispatchOperatorInput("/vim off"), true);
-
-  assert.ok(calls.some((entry) => entry.type === "showConfig"));
-  assert.ok(calls.some((entry) => entry.type === "setStatuslineEnabled" && entry.enabled === true));
-  assert.ok(calls.some((entry) => entry.type === "setInputModeProfile" && entry.profile === "vim"));
-  assert.ok(calls.some((entry) => entry.type === "setKeybindingProfile" && entry.profile === "vim"));
-  assert.ok(calls.some((entry) => entry.type === "setInputModeProfile" && entry.profile === "default"));
-  assert.ok(calls.some((entry) => entry.type === "setKeybindingProfile" && entry.profile === "default"));
-  assert.equal(watchState.composerMode, "insert");
-});
-
-test("command controller requests maintenance snapshots through /maintenance", () => {
-  const { controller, watchState, calls } = createCommandHarness();
-
-  assert.equal(controller.dispatchOperatorInput("/maintenance"), true);
-
-  assert.equal(watchState.maintenanceRequestPending, true);
-  assert.ok(
-    calls.some(
-      (entry) =>
-        entry.type === "send" &&
-        entry.frameType === "maintenance.status" &&
-        entry.payload?.auth === true &&
-        entry.payload?.limit === 8,
-    ),
-  );
-  assert.ok(
-    calls.some(
-      (entry) =>
-        entry.type === "status" &&
-        entry.status === "refreshing maintenance",
-    ),
-  );
-});
-
-test("command controller routes voice companion controls locally", () => {
-  const { controller, calls } = createCommandHarness();
-
-  assert.equal(controller.dispatchOperatorInput("/voice"), true);
-  assert.equal(controller.dispatchOperatorInput("/voice stop"), true);
-  assert.equal(controller.dispatchOperatorInput("/voice status"), true);
-
-  assert.ok(calls.some((entry) => entry.type === "startVoice"));
-  assert.ok(calls.some((entry) => entry.type === "stopVoice"));
-  assert.ok(calls.some((entry) => entry.type === "formatStatusReport"));
-  assert.ok(
-    calls.some(
-      (entry) =>
-        entry.type === "event" &&
-        entry.kind === "voice" &&
-        entry.title === "Voice Companion",
-    ),
-  );
 });
 
 test("command controller uses the typed skill catalog messages", () => {
@@ -668,14 +652,6 @@ test("command controller manages local attachment queue commands without daemon 
   const sendCalls = calls.filter((entry) => entry.type === "send");
   assert.equal(sendCalls.length, 0);
   assert.ok(calls.some((entry) => entry.type === "queuePendingAttachment"));
-  assert.ok(
-    calls.some(
-      (entry) =>
-        entry.type === "queuePendingAttachment" &&
-        entry.inputPath === "./assets/diagram.png" &&
-        entry.options?.allowMissing === false,
-    ),
-  );
   assert.ok(calls.some((entry) => entry.type === "removePendingAttachment"));
   assert.ok(
     calls.some(
@@ -683,40 +659,6 @@ test("command controller manages local attachment queue commands without daemon 
         entry.type === "event" &&
         entry.title === "Queued Attachments",
     ),
-  );
-});
-
-test("command controller treats a dragged local file path as an implicit attachment", () => {
-  const screenshotPath = "/var/folders/demo/NSIRD_screencaptureui_RE96fZ/Screen Shot 2026-03-30 at 18.14.38.png";
-  let resolvedInput = null;
-  const { controller, pendingAttachments, calls } = createCommandHarness({
-    resolveImplicitAttachmentInput(inputPath) {
-      resolvedInput = inputPath;
-      return inputPath === screenshotPath ? screenshotPath : null;
-    },
-  });
-
-  assert.equal(controller.dispatchOperatorInput(screenshotPath), true);
-  assert.equal(pendingAttachments.length, 1);
-  assert.equal(resolvedInput, screenshotPath);
-  assert.ok(
-    calls.some(
-      (entry) =>
-        entry.type === "queuePendingAttachment" &&
-        entry.inputPath === screenshotPath &&
-        entry.options?.allowMissing === true,
-    ),
-  );
-  assert.ok(
-    calls.some(
-      (entry) =>
-        entry.type === "event" &&
-        entry.title === "Attachment Queued From Path",
-    ),
-  );
-  assert.equal(
-    calls.some((entry) => entry.type === "event" && entry.title === "Unknown Command"),
-    false,
   );
 });
 
@@ -747,6 +689,35 @@ test("command controller forwards /init to the daemon chat surface", () => {
       (entry) =>
         entry.type === "event" && entry.title === "Project Guide Init",
     ),
+  );
+});
+
+test("command controller handles local voice controls without daemon round-trips", () => {
+  const { controller, calls } = createCommandHarness();
+
+  assert.equal(controller.dispatchOperatorInput("/voice"), true);
+  assert.equal(controller.dispatchOperatorInput("/voice stop"), true);
+  assert.equal(controller.dispatchOperatorInput("/voice status"), true);
+
+  assert.ok(calls.some((entry) => entry.type === "startVoice"));
+  assert.ok(calls.some((entry) => entry.type === "stopVoice"));
+  assert.ok(calls.some((entry) => entry.type === "voiceStatusReport"));
+  assert.ok(
+    calls.some(
+      (entry) =>
+        entry.type === "event" &&
+        entry.kind === "voice" &&
+        entry.title === "Voice Companion",
+    ),
+  );
+  assert.equal(
+    calls.some(
+      (entry) =>
+        entry.type === "send" &&
+        entry.frameType === "chat.message" &&
+        String(entry.payload?.content ?? "").startsWith("/voice"),
+    ),
+    false,
   );
 });
 
@@ -1446,6 +1417,29 @@ test("command controller stores session list filters before requesting chat.sess
       (entry) =>
         entry.type === "send" &&
         entry.frameType === "chat.sessions",
+    ),
+  );
+});
+
+test("command controller applies optimistic model selection only for concrete model switches", () => {
+  const { controller, calls } = createCommandHarness();
+
+  assert.equal(controller.dispatchOperatorInput("/model grok-4-1-fast-reasoning"), true);
+  assert.equal(controller.dispatchOperatorInput("/model current"), true);
+  assert.equal(controller.dispatchOperatorInput("/model list"), true);
+
+  assert.deepEqual(
+    calls
+      .filter((entry) => entry.type === "applyOptimisticModelSelection")
+      .map((entry) => entry.modelName),
+    ["grok-4-1-fast-reasoning"],
+  );
+  assert.ok(
+    calls.some(
+      (entry) =>
+        entry.type === "send" &&
+        entry.frameType === "chat.message" &&
+        entry.payload?.content === "/model grok-4-1-fast-reasoning",
     ),
   );
 });

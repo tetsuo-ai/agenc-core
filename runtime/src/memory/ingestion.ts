@@ -624,6 +624,11 @@ export function createIngestionHooks(
     event: "message:outbound",
     name: "memory-ingestion-turn",
     priority: 200,
+    source: "runtime",
+    kind: "memory",
+    handlerType: "runtime",
+    target: "memory-ingestion",
+    supported: true,
     handler: async (ctx: HookContext): Promise<HookResult> => {
       try {
         const {
@@ -677,6 +682,11 @@ export function createIngestionHooks(
     event: "session:end",
     name: "memory-ingestion-session-end",
     priority: 200,
+    source: "runtime",
+    kind: "memory",
+    handlerType: "runtime",
+    target: "memory-ingestion",
+    supported: true,
     handler: async (ctx: HookContext): Promise<HookResult> => {
       try {
         const { sessionId, history } = ctx.payload;
@@ -706,6 +716,11 @@ export function createIngestionHooks(
     event: "session:compact",
     name: "memory-ingestion-compact",
     priority: 200,
+    source: "runtime",
+    kind: "memory",
+    handlerType: "runtime",
+    target: "memory-ingestion",
+    supported: true,
     handler: async (ctx: HookContext): Promise<HookResult> => {
       try {
         const phase = typeof ctx.payload.phase === "string"

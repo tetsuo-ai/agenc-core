@@ -31,7 +31,6 @@ import {
   type CuratedSection,
   type DependencyArtifactCandidate,
   type DependencyContextEntry,
-  type ReviewerHandoffArtifact,
   type SubagentPromptBudgetCaps,
   CONTEXT_TERM_MIN_LENGTH,
   CONTEXT_HISTORY_TAIL_PIN,
@@ -64,10 +63,8 @@ import {
   WORKSPACE_CONTEXT_MIN_CANDIDATES,
   WORKSPACE_CONTEXT_MAX_CANDIDATES,
   RUST_GENERATED_ARTIFACT_PATH_RE,
-  extractReviewerHandoffArtifactFromResult,
   resolveAllowedMemorySources,
 } from "./subagent-orchestrator-types.js";
-import { safeStringify } from "../tools/types.js";
 
 /* ------------------------------------------------------------------ */
 /*  Sensitive-data redaction                                            */
@@ -668,10 +665,7 @@ export function curateDependencyArtifactSection(
     remainder -= 1;
   }
   const lines = artifacts.map((artifact, index) => {
-    const prefixLabel = artifact.artifactKind === "reviewer_handoff"
-      ? "handoff"
-      : "artifact";
-    const prefix = `[${prefixLabel}:${artifact.dependencyName}:${artifact.path}]`;
+    const prefix = `[artifact:${artifact.dependencyName}:${artifact.path}]`;
     const normalizedContent = artifact.content.trim().replace(/\s+/g, " ");
     const previewChars = previewAllocations[index] ?? 0;
     if (previewChars <= 0 || normalizedContent.length === 0) {
@@ -885,17 +879,6 @@ export function collectDependencyArtifactCandidates(
   let order = 0;
 
   dependencies.forEach(({ dependencyName, result, depth }) => {
-    const handoffArtifact = extractReviewerHandoffArtifactFromResult(result);
-    if (handoffArtifact) {
-      const handoffCandidate = buildReviewerHandoffCandidate({
-        dependencyName,
-        depth,
-        order,
-        handoffArtifact,
-      });
-      order += 1;
-      candidates.set(handoffCandidate.path, handoffCandidate);
-    }
     if (typeof result !== "string" || result.trim().length === 0) {
       return;
     }
@@ -930,7 +913,6 @@ export function collectDependencyArtifactCandidates(
           score: 0,
           order,
           depth,
-          artifactKind: "workspace_artifact",
         };
         order += 1;
         const previous = candidates.get(normalizedPath);
@@ -964,40 +946,13 @@ export function collectDependencyArtifactCandidates(
   return uniqueCandidates
     .map((candidate) => ({
       ...candidate,
-      score:
-        candidate.artifactKind === "reviewer_handoff"
-          ? Math.max(100, bm25Scores.get(candidate.path) ?? 0)
-          : bm25Scores.get(candidate.path) ?? 0,
+      score: bm25Scores.get(candidate.path) ?? 0,
     }))
     .sort((a, b) => {
-      if (a.artifactKind === "reviewer_handoff" && b.artifactKind !== "reviewer_handoff") {
-        return -1;
-      }
-      if (b.artifactKind === "reviewer_handoff" && a.artifactKind !== "reviewer_handoff") {
-        return 1;
-      }
       if (b.score !== a.score) return b.score - a.score;
       if (a.depth !== b.depth) return a.depth - b.depth;
       return a.order - b.order;
     });
-}
-
-function buildReviewerHandoffCandidate(params: {
-  readonly dependencyName: string;
-  readonly depth: number;
-  readonly order: number;
-  readonly handoffArtifact: ReviewerHandoffArtifact;
-}): DependencyArtifactCandidate {
-  return {
-    dependencyName: params.dependencyName,
-    path: `__reviewer_handoff__/${params.handoffArtifact.producerStep}.json`,
-    content: safeStringify(params.handoffArtifact),
-    score: 0,
-    order: params.order,
-    depth: params.depth,
-    artifactKind: "reviewer_handoff",
-    artifactType: "reviewer_handoff_artifact",
-  };
 }
 
 /* ------------------------------------------------------------------ */

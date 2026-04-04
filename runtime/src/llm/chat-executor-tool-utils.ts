@@ -992,7 +992,7 @@ export function checkToolLoopStuckDetection(
   }
   stuckState.lastRoundSemanticKey = roundSemanticKey;
   if (
-    stuckState.consecutiveSemanticDuplicateRounds >=
+    stuckState.consecutiveSemanticDuplicateRounds >
     MAX_CONSECUTIVE_SEMANTIC_DUPLICATE_ROUNDS
   ) {
     return {

@@ -542,7 +542,7 @@ describe("chat-executor-contract-guidance", () => {
     expect(guidance).toEqual({
       source: "delegation-initial",
       routedToolNames: ["desktop.text_editor"],
-      persistRoutedToolNames: true,
+      persistRoutedToolNames: false,
       toolChoice: "required",
     });
   });
@@ -574,7 +574,7 @@ describe("chat-executor-contract-guidance", () => {
         "Inspect the existing workspace state before mutating files when that will prevent avoidable rework, " +
         "then create or update the required files directly. Do not spend shell rounds on speculative build/test/runtime verification unless acceptance explicitly requires that evidence.",
       routedToolNames: ["system.readFile", "system.writeFile"],
-      persistRoutedToolNames: true,
+      persistRoutedToolNames: false,
       toolChoice: "required",
     });
   });
@@ -623,7 +623,7 @@ describe("chat-executor-contract-guidance", () => {
         "system.writeFile",
         "system.bash",
       ],
-      persistRoutedToolNames: true,
+      persistRoutedToolNames: false,
       toolChoice: "required",
     });
   });
@@ -658,7 +658,7 @@ describe("chat-executor-contract-guidance", () => {
         "Inspect the existing workspace state before mutating files when that will prevent avoidable rework, " +
         "and use shell verification when build/test/install evidence is part of acceptance.",
       routedToolNames: ["system.readFile", "system.listDir"],
-      persistRoutedToolNames: true,
+      persistRoutedToolNames: false,
       toolChoice: "required",
     });
   });
@@ -694,7 +694,7 @@ describe("chat-executor-contract-guidance", () => {
         "Inspect the existing workspace state before mutating files when that will prevent avoidable rework, " +
         "then create or update the required files directly. Do not spend shell rounds on speculative build/test/runtime verification unless acceptance explicitly requires that evidence.",
       routedToolNames: ["system.readFile", "system.writeFile"],
-      persistRoutedToolNames: true,
+      persistRoutedToolNames: false,
       toolChoice: "required",
     });
   });
@@ -760,7 +760,7 @@ describe("chat-executor-contract-guidance", () => {
         "Confirm directories or files under the owned workspace before reading them or presenting them as present. " +
         "and use shell verification when build/test/install evidence is part of acceptance.",
       routedToolNames: ["system.readFile", "system.writeFile", "system.bash"],
-      persistRoutedToolNames: true,
+      persistRoutedToolNames: false,
       toolChoice: "required",
     });
   });
@@ -794,7 +794,7 @@ describe("chat-executor-contract-guidance", () => {
         "Begin by creating or updating files under the delegated workspace root. " +
         "If the delegated cwd does not exist yet, target that workspace via absolute paths instead of starting with shell inspection.",
       routedToolNames: ["system.writeFile"],
-      persistRoutedToolNames: true,
+      persistRoutedToolNames: false,
       toolChoice: "required",
     });
   });
@@ -830,7 +830,7 @@ describe("chat-executor-contract-guidance", () => {
         "Begin by creating or updating files under the delegated workspace root. " +
         "If the delegated cwd does not exist yet, target that workspace via absolute paths instead of starting with shell inspection.",
       routedToolNames: ["system.writeFile"],
-      persistRoutedToolNames: true,
+      persistRoutedToolNames: false,
       toolChoice: "required",
     });
   });
@@ -867,7 +867,7 @@ describe("chat-executor-contract-guidance", () => {
         "Inspect the existing workspace state before mutating files when that will prevent avoidable rework, " +
         "and use shell verification when build/test/install evidence is part of acceptance.",
       routedToolNames: ["system.readFile", "system.writeFile", "system.bash"],
-      persistRoutedToolNames: true,
+      persistRoutedToolNames: false,
       toolChoice: "required",
     });
   });
@@ -903,7 +903,7 @@ describe("chat-executor-contract-guidance", () => {
     expect(guidance).toEqual({
       source: "delegation-initial",
       routedToolNames: ["desktop.text_editor"],
-      persistRoutedToolNames: true,
+      persistRoutedToolNames: false,
       toolChoice: "required",
     });
   });
@@ -1175,7 +1175,7 @@ describe("chat-executor-contract-guidance", () => {
         "Inspect the existing workspace state before mutating files when that will prevent avoidable rework, " +
         "and use shell verification when build/test/install evidence is part of acceptance.",
       routedToolNames: ["system.bash", "system.writeFile"],
-      persistRoutedToolNames: true,
+      persistRoutedToolNames: false,
       toolChoice: "required",
     });
   });

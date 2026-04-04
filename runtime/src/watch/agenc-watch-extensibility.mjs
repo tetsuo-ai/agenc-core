@@ -20,6 +20,8 @@ const WATCH_HOOK_EVENTS = Object.freeze([
   "config:reload",
 ]);
 
+const DEFAULT_WATCH_XAI_BASE_URL = "https://api.x.ai/v1";
+
 function sanitizeText(value, fallback = "n/a") {
   const text = String(value ?? "").replace(/\s+/g, " ").trim();
   return text.length > 0 ? text : fallback;
@@ -31,6 +33,19 @@ function normalizeConfigObject(config) {
 
 function stableSortStrings(values = []) {
   return [...values].sort((left, right) => left.localeCompare(right));
+}
+
+export function maskWatchSecret(value) {
+  const secret = String(value ?? "").trim();
+  if (!secret) {
+    return "";
+  }
+  if (secret.length <= 4) {
+    return "*".repeat(secret.length);
+  }
+  const visibleSuffix = secret.slice(-4);
+  const maskedLength = Math.max(4, secret.length - 4);
+  return `${"*".repeat(maskedLength)}${visibleSuffix}`;
 }
 
 export function resolveWatchRuntimeConfigPaths({
@@ -88,6 +103,20 @@ export function readWatchRuntimeConfig({
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+export function readWatchXaiConfigStatus(options = {}) {
+  const snapshot = readWatchRuntimeConfig(options);
+  const llm = normalizeConfigObject(snapshot.config?.llm);
+  const apiKey = String(llm.apiKey ?? "").trim();
+  return {
+    ...snapshot,
+    provider: String(llm.provider ?? "").trim() || null,
+    model: String(llm.model ?? "").trim() || null,
+    baseUrl: String(llm.baseUrl ?? "").trim() || DEFAULT_WATCH_XAI_BASE_URL,
+    hasApiKey: apiKey.length > 0,
+    maskedApiKey: maskWatchSecret(apiKey),
+  };
 }
 
 export function listWatchUserSkills({
@@ -426,5 +455,65 @@ export function updateWatchMcpServerState({
     serverName: normalizedServerName,
     enabled,
     servers,
+  };
+}
+
+export function updateWatchXaiApiKey({
+  fs,
+  configPath,
+  apiKey,
+  provider = "grok",
+  baseUrl = DEFAULT_WATCH_XAI_BASE_URL,
+} = {}) {
+  if (!fs || typeof fs.readFileSync !== "function" || typeof fs.writeFileSync !== "function") {
+    throw new TypeError("updateWatchXaiApiKey requires fs read/write support");
+  }
+  const normalizedApiKey = String(apiKey ?? "").trim();
+  if (!normalizedApiKey) {
+    throw new TypeError("updateWatchXaiApiKey requires a non-empty apiKey");
+  }
+  const current = loadMutableConfig(fs, configPath);
+  const config = {
+    ...current,
+    llm: normalizeConfigObject(current.llm),
+  };
+  config.llm.provider = String(provider ?? "grok").trim() || "grok";
+  config.llm.apiKey = normalizedApiKey;
+  if (!String(config.llm.baseUrl ?? "").trim()) {
+    config.llm.baseUrl = String(baseUrl ?? DEFAULT_WATCH_XAI_BASE_URL).trim() || DEFAULT_WATCH_XAI_BASE_URL;
+  }
+  writeJsonFile(fs, configPath, config);
+  return {
+    configPath,
+    provider: config.llm.provider,
+    baseUrl: config.llm.baseUrl,
+    model: String(config.llm.model ?? "").trim() || null,
+    hasApiKey: true,
+    maskedApiKey: maskWatchSecret(normalizedApiKey),
+  };
+}
+
+export function clearWatchXaiApiKey({
+  fs,
+  configPath,
+} = {}) {
+  if (!fs || typeof fs.readFileSync !== "function" || typeof fs.writeFileSync !== "function") {
+    throw new TypeError("clearWatchXaiApiKey requires fs read/write support");
+  }
+  const current = loadMutableConfig(fs, configPath);
+  const config = {
+    ...current,
+    llm: normalizeConfigObject(current.llm),
+  };
+  const previousApiKey = String(config.llm.apiKey ?? "").trim();
+  delete config.llm.apiKey;
+  writeJsonFile(fs, configPath, config);
+  return {
+    configPath,
+    provider: String(config.llm.provider ?? "").trim() || null,
+    model: String(config.llm.model ?? "").trim() || null,
+    baseUrl: String(config.llm.baseUrl ?? "").trim() || DEFAULT_WATCH_XAI_BASE_URL,
+    hadApiKey: previousApiKey.length > 0,
+    maskedApiKey: maskWatchSecret(previousApiKey),
   };
 }

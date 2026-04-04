@@ -162,37 +162,4 @@ describe("eval/metrics", () => {
     expect(run.verifierDisagreements).toBe(1);
     expect(run.latencyMs).toBe(42);
   });
-
-  it("treats nonterminal satisfied replay states as not yet passed", () => {
-    const recorder = new TrajectoryRecorder({
-      traceId: "metrics-nonterminal",
-      seed: 23,
-    });
-    recorder.record({ type: "discovered", taskPda: "task-nonterminal" });
-    recorder.record({ type: "claimed", taskPda: "task-nonterminal" });
-    recorder.record({
-      type: "executed",
-      taskPda: "task-nonterminal",
-      payload: {
-        completionState: "needs_verification",
-        reportedStatus: "completed",
-      },
-    });
-    recorder.record({
-      type: "completed",
-      taskPda: "task-nonterminal",
-      payload: { completionState: "needs_verification" },
-    });
-
-    const replay = new TrajectoryReplayEngine().replay(recorder.createTrace());
-    const run = evalRunFromReplayResult(replay, {
-      taskType: "qa",
-      verifierGated: true,
-    });
-
-    expect(replay.tasks["task-nonterminal"].dependencyStateKind).toBe(
-      "satisfied_nonterminal",
-    );
-    expect(run.passed).toBe(false);
-  });
 });

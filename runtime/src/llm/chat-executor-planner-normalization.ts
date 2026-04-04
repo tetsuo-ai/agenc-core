@@ -13,6 +13,7 @@ import type {
 } from "./types.js";
 import type { PlannerParseResult } from "./chat-executor-types.js";
 import {
+  applyRuntimePlannerBudgetClamp,
   parsePlannerPlan,
   salvagePlannerToolCallsAsPlan,
 } from "./chat-executor-planner.js";
@@ -32,11 +33,11 @@ export function normalizePlannerResponse(params: {
       structuredOutput: params.structuredOutput,
     })
     : undefined;
-  const parsed = parsePlannerPlan(
+  const parsed = applyRuntimePlannerBudgetClamp(parsePlannerPlan(
     structuredPayload ?? params.content,
     params.repairRequirements,
     { plannerWorkspaceRoot: params.plannerWorkspaceRoot },
-  );
+  ));
   if (parsed.plan || params.toolCalls.length === 0) {
     return parsed;
   }

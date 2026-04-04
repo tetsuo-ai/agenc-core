@@ -147,47 +147,6 @@ describe("coordinator_mode", () => {
     expect(parsed.value.request?.task).toBe("Continue with the next fix");
   });
 
-  it("drops public executionContext root authority when parsing delegated coordinator requests", () => {
-    const parsed = parseCoordinatorModeInput({
-      action: "spawn",
-      task: "Inspect the source tree",
-      executionContext: {
-        workspaceRoot: "/",
-        allowedReadRoots: ["/"],
-        allowedWriteRoots: ["/"],
-        allowedTools: ["system.readFile"],
-        requiredSourceArtifacts: ["/tmp/project/src/index.ts"],
-      },
-    });
-
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) {
-      expect.unreachable("expected spawn action to parse");
-    }
-
-    expect(parsed.value.request?.executionContext).toEqual({
-      allowedTools: ["system.readFile"],
-      requiredSourceArtifacts: ["/tmp/project/src/index.ts"],
-    });
-  });
-
-  it("ignores workerSessionId on spawn for backwards compatibility", () => {
-    const parsed = parseCoordinatorModeInput({
-      action: "spawn",
-      workerSessionId: "raycasting_renderer",
-      task: "Do the work",
-    });
-
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) {
-      expect.unreachable("expected spawn action to parse");
-    }
-
-    expect(parsed.value.action).toBe("spawn");
-    expect(parsed.value.workerSessionId).toBeUndefined();
-    expect(parsed.value.request?.task).toBe("Do the work");
-  });
-
   it("rejects invalid coordinator inputs", () => {
     expect(parseCoordinatorModeInput({})).toEqual({
       ok: false,
@@ -203,6 +162,18 @@ describe("coordinator_mode", () => {
       ok: false,
       error:
         'coordinator_mode action "stop" requires a non-empty "workerSessionId"',
+    });
+
+    expect(
+      parseCoordinatorModeInput({
+        action: "spawn",
+        workerSessionId: "subagent:123",
+        task: "Do the work",
+      }),
+    ).toEqual({
+      ok: false,
+      error:
+        'coordinator_mode action "spawn" does not accept "workerSessionId"; use "reuse" or "follow_up" instead',
     });
   });
 
@@ -324,72 +295,6 @@ describe("coordinator_mode", () => {
       expect(parsed.success).toBe(true);
       expect(parsed.subagentSessionId).toBe(initialWorker);
       expect(parsed.status).toBe("completed");
-    } finally {
-      executeSpy.mockRestore();
-    }
-  });
-
-  it("ignores public executionContext root authority on coordinator spawn", async () => {
-    const executeSpy = vi
-      .spyOn(ChatExecutor.prototype, "execute")
-      .mockResolvedValue({
-        content: "spawned output",
-        toolCalls: [],
-        providerEvidence: undefined,
-        tokenUsage: undefined,
-        stopReason: "completed",
-        stopReasonDetail: undefined,
-        callUsage: [],
-        finalPromptShape: undefined,
-        statefulSummary: undefined,
-        toolRoutingSummary: undefined,
-        plannerSummary: undefined,
-        model: "mock",
-        completionState: "completed",
-      } as any);
-
-    const manager = new SubAgentManager(
-      makeManagerConfig({
-        createContext: vi.fn(async () => makeMockContext()),
-      }),
-    );
-
-    try {
-      const result = await executeCoordinatorModeTool({
-        toolArgs: {
-          action: "spawn",
-          task: "Inspect the project files",
-          tools: ["system.readFile"],
-          executionContext: {
-            workspaceRoot: "/",
-            allowedReadRoots: ["/"],
-            allowedWriteRoots: ["/"],
-            allowedTools: ["system.readFile"],
-          },
-        },
-        name: COORDINATOR_MODE_TOOL_NAME,
-        sessionId: "session-a",
-        toolCallId: "tool-call-3",
-        subAgentManager: manager,
-        lifecycleEmitter: null,
-        verifier: null as any,
-        availableToolNames: ["system.readFile"],
-        defaultWorkingDirectory: "/tmp/agenc-coordinator",
-        parentAllowedReadRoots: ["/tmp/agenc-coordinator"],
-        parentAllowedWriteRoots: ["/tmp/agenc-coordinator"],
-      });
-
-      const parsed = JSON.parse(result) as {
-        success?: boolean;
-        status?: string;
-        subagentSessionId?: string;
-        error?: string;
-      };
-
-      expect(parsed.error).toBeUndefined();
-      expect(parsed.success).toBe(true);
-      expect(parsed.status).toBe("completed");
-      expect(parsed.subagentSessionId).toMatch(/^subagent:/);
     } finally {
       executeSpy.mockRestore();
     }

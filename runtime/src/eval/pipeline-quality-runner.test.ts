@@ -43,16 +43,16 @@ describe("pipeline-quality runner", () => {
     expect(artifact.offlineReplay.fixtureCount).toBeGreaterThanOrEqual(2);
     expect(artifact.offlineReplay.parseFailures).toBe(0);
     expect(artifact.offlineReplay.replayFailures).toBe(0);
-    expect(artifact.orchestrationBaseline.scenarioCount).toBe(13);
-    expect(artifact.orchestrationBaseline.passingScenarios).toBe(13);
+    expect(artifact.orchestrationBaseline.scenarioCount).toBe(8);
+    expect(artifact.orchestrationBaseline.passingScenarios).toBe(8);
     expect(artifact.orchestrationBaseline.passRate).toBe(1);
     expect(artifact.orchestrationBaseline.averageTurns).toBeCloseTo(1, 8);
     expect(artifact.orchestrationBaseline.averageToolCalls).toBeCloseTo(
-      23 / 13,
+      17 / 8,
       8,
     );
     expect(artifact.orchestrationBaseline.fallbackCount).toBe(5);
-    expect(artifact.orchestrationBaseline.spuriousSubagentCount).toBe(12);
+    expect(artifact.orchestrationBaseline.spuriousSubagentCount).toBe(11);
     expect(artifact.delegation.totalCases).toBeGreaterThan(0);
     expect(artifact.delegation.delegatedCases).toBeGreaterThan(0);
     expect(artifact.delegation.delegationAttemptRate).toBeGreaterThan(0);
@@ -62,7 +62,7 @@ describe("pipeline-quality runner", () => {
     expect(artifact.liveCoding.scenarioCount).toBe(3);
     expect(artifact.liveCoding.passRate).toBe(1);
     expect(artifact.liveCoding.effectLedgerCompletenessRate).toBe(1);
-    expect(artifact.safety.scenarioCount).toBe(6);
+    expect(artifact.safety.scenarioCount).toBe(4);
     expect(artifact.safety.passRate).toBe(1);
     expect(artifact.longHorizon.scenarioCount).toBe(4);
     expect(artifact.longHorizon.passRate).toBe(1);

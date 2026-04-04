@@ -2180,70 +2180,6 @@ describe("delegation-validation", () => {
     expect(result.ok).toBe(true);
   });
 
-  it("accepts grounded reviewer findings as reviewer work without requiring mutation", () => {
-    const result = validateDelegatedOutputContract({
-      spec: {
-        objective: "Review PLAN.md and report grounded findings only.",
-        inputContract: "Return grounded findings.",
-        acceptanceCriteria: ["Ground findings on the current PLAN.md before reporting them."],
-        executionContext: {
-          version: "v1",
-          workspaceRoot: "/tmp/project",
-          requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
-          verificationMode: "grounded_read",
-          stepKind: "delegated_review",
-          role: "reviewer",
-        },
-      },
-      output: "Grounded findings: PLAN.md is missing the ownership section.",
-      toolCalls: [
-        {
-          name: "system.readFile",
-          args: { path: "/tmp/project/PLAN.md" },
-          result: JSON.stringify({
-            path: "/tmp/project/PLAN.md",
-            content: "# PLAN\n",
-          }),
-        },
-      ],
-    });
-
-    expect(result.ok).toBe(true);
-  });
-
-  it("keeps writer validation distinct from reviewer findings-only output", () => {
-    const result = validateDelegatedOutputContract({
-      spec: {
-        objective: "Update PLAN.md with the integrated reviewer findings.",
-        inputContract: "Read PLAN.md, then update it or report a grounded no-op.",
-        acceptanceCriteria: ["PLAN.md is updated with the integrated reviewer findings."],
-        executionContext: {
-          version: "v1",
-          workspaceRoot: "/tmp/project",
-          requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
-          targetArtifacts: ["/tmp/project/PLAN.md"],
-          verificationMode: "mutation_required",
-          stepKind: "delegated_write",
-          role: "writer",
-        },
-      },
-      output: "Grounded review findings: PLAN.md still needs the ownership section.",
-      toolCalls: [
-        {
-          name: "system.readFile",
-          args: { path: "/tmp/project/PLAN.md" },
-          result: JSON.stringify({
-            path: "/tmp/project/PLAN.md",
-            content: "# PLAN\n",
-          }),
-        },
-      ],
-    });
-
-    expect(result.ok).toBe(false);
-    expect(result.code).toBe("missing_file_mutation_evidence");
-  });
-
   it("rejects tool-grounded research output when every child tool call failed", () => {
     const result = validateDelegatedOutputContract({
       spec: {
@@ -2691,17 +2627,6 @@ describe("delegation-validation", () => {
       "system.writeFile",
     ]);
     expect(resolved.blockedReason).toBeUndefined();
-    expect(resolved.toolContract).toMatchObject({
-      state: "degraded",
-      requestedSemanticCapabilities: ["file system"],
-      requiredSubstitution: [
-        "system.listDir",
-        "system.writeFile",
-        "system.mkdir",
-      ],
-      optionalEnrichment: ["system.bash"],
-      missingRequestedTools: [],
-    });
   });
 
   it("still keeps browser session tools when validation scope explicitly requests them", () => {
@@ -3361,32 +3286,6 @@ Project is functional for core/pathfinding; CLI/web assumed usable per authored 
     expect(resolved.allowsToollessExecution).toBe(true);
     expect(resolved.blockedReason).toBeUndefined();
     expect(resolved.semanticFallback).toEqual([]);
-  });
-
-  it("fails closed instead of allowing toolless execution when an explicit concrete child tool contract is removed", () => {
-    const resolved = resolveDelegatedChildToolScope({
-      spec: {
-        task: "summarize_logs",
-        objective: "Summarize the current CI log findings",
-        inputContract: "Return one short paragraph",
-      },
-      requestedTools: ["system.readFile"],
-      parentAllowedTools: ["desktop.text_editor"],
-      availableTools: ["desktop.text_editor"],
-      enforceParentIntersection: true,
-    });
-
-    expect(resolved.allowedTools).toEqual([]);
-    expect(resolved.allowsToollessExecution).toBe(false);
-    expect(resolved.blockedReason).toContain("No permitted child tools remain");
-    expect(resolved.toolContract).toMatchObject({
-      state: "degraded",
-      requestedConcreteTools: ["system.readFile"],
-      missingRequestedTools: ["system.readFile"],
-      resolvedTools: [],
-      optionalEnrichment: [],
-      requiredSubstitution: [],
-    });
   });
 
   it("adds provider-native web search without stripping explicit browser tools for research child scope", () => {

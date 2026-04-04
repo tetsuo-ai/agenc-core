@@ -13,13 +13,6 @@ import {
   type TrajectoryEvent,
   type TrajectoryTrace,
 } from "./types.js";
-import {
-  resolveWorkflowDependencyState,
-  type WorkflowCompletionState,
-  type WorkflowDependencyState,
-  type WorkflowDependencyStateKind,
-  type WorkflowResolutionSemantics,
-} from "../workflow/completion-state.js";
 
 export type ReplayTaskStatus =
   | "unknown"
@@ -39,11 +32,6 @@ export interface ReplayTaskState {
   speculationAborts: number;
   lastEventType: string;
   lastTimestampMs: number;
-  completionState: WorkflowCompletionState;
-  dependencyStateKind: WorkflowDependencyStateKind;
-  dependencySatisfied: boolean;
-  verifierClosed: boolean;
-  resolutionSemantics: WorkflowResolutionSemantics;
 }
 
 export interface ReplaySummary {
@@ -81,10 +69,6 @@ export interface ReplayParityArtifact {
 
 interface MutableReplayTaskState extends ReplayTaskState {
   terminal: boolean;
-  reportedCompletionState?: WorkflowCompletionState;
-  reportedStatus?: string;
-  reportedOutcome?: string;
-  recoveredViaParentFallback?: boolean;
 }
 
 const TASK_REQUIRED_EVENTS = new Set<string>([
@@ -111,48 +95,6 @@ function isLifecycleStatus(status: ReplayTaskStatus): boolean {
     status === "failed" ||
     status === "escalated"
   );
-}
-
-function isWorkflowCompletionState(
-  value: unknown,
-): value is WorkflowCompletionState {
-  return (
-    value === "completed" ||
-    value === "partial" ||
-    value === "blocked" ||
-    value === "needs_verification"
-  );
-}
-
-function inferCompletionStateFromReplayStatus(
-  status: ReplayTaskStatus,
-): WorkflowCompletionState {
-  switch (status) {
-    case "completed":
-      return "completed";
-    case "discovered":
-    case "claimed":
-    case "executed":
-      return "partial";
-    case "failed":
-    case "escalated":
-    case "unknown":
-    default:
-      return "blocked";
-  }
-}
-
-function deriveReplayTaskDependencyState(
-  task: MutableReplayTaskState,
-): WorkflowDependencyState {
-  return resolveWorkflowDependencyState({
-    completionState:
-      task.reportedCompletionState ??
-      inferCompletionStateFromReplayStatus(task.status),
-    reportedStatus: task.reportedStatus,
-    reportedOutcome: task.reportedOutcome,
-    recoveredViaParentFallback: task.recoveredViaParentFallback,
-  });
 }
 
 /**
@@ -186,7 +128,6 @@ export class TrajectoryReplayEngine {
 
     const finalizedTasks: Record<string, ReplayTaskState> = {};
     for (const [taskPda, taskState] of tasks) {
-      const dependencyState = deriveReplayTaskDependencyState(taskState);
       finalizedTasks[taskPda] = {
         taskPda: taskState.taskPda,
         status: taskState.status,
@@ -196,11 +137,6 @@ export class TrajectoryReplayEngine {
         speculationAborts: taskState.speculationAborts,
         lastEventType: taskState.lastEventType,
         lastTimestampMs: taskState.lastTimestampMs,
-        completionState: dependencyState.completionState,
-        dependencyStateKind: dependencyState.kind,
-        dependencySatisfied: dependencyState.dependencySatisfied,
-        verifierClosed: dependencyState.verifierClosed,
-        resolutionSemantics: dependencyState.semantics,
       };
     }
 
@@ -250,7 +186,6 @@ export class TrajectoryReplayEngine {
     task.eventCount++;
     task.lastEventType = event.type;
     task.lastTimestampMs = event.timestampMs;
-    this.captureWorkflowState(task, event);
 
     if (event.type === "verifier_verdict") {
       task.verifierVerdicts++;
@@ -333,41 +268,6 @@ export class TrajectoryReplayEngine {
     );
   }
 
-  private captureWorkflowState(
-    task: MutableReplayTaskState,
-    event: TrajectoryEvent,
-  ): void {
-    const payload =
-      typeof event.payload === "object" && event.payload !== null
-        ? (event.payload as Record<string, unknown>)
-        : undefined;
-    if (!payload) {
-      return;
-    }
-
-    if (isWorkflowCompletionState(payload.completionState)) {
-      task.reportedCompletionState = payload.completionState;
-    }
-    if (typeof payload.status === "string" && payload.status.length > 0) {
-      task.reportedStatus = payload.status;
-    }
-    if (
-      typeof payload.reportedStatus === "string" &&
-      payload.reportedStatus.length > 0
-    ) {
-      task.reportedStatus = payload.reportedStatus;
-    }
-    if (
-      typeof payload.reportedOutcome === "string" &&
-      payload.reportedOutcome.length > 0
-    ) {
-      task.reportedOutcome = payload.reportedOutcome;
-    }
-    if (payload.recoveredViaParentFallback === true) {
-      task.recoveredViaParentFallback = true;
-    }
-  }
-
   private validateTransition(
     previous: ReplayTaskStatus,
     next: ReplayTaskStatus,
@@ -430,11 +330,6 @@ export class TrajectoryReplayEngine {
       speculationAborts: 0,
       lastEventType: event.type,
       lastTimestampMs: event.timestampMs,
-      completionState: "blocked",
-      dependencyStateKind: "unsatisfied_terminal",
-      dependencySatisfied: false,
-      verifierClosed: false,
-      resolutionSemantics: "normal",
       terminal: false,
     };
     tasks.set(taskPda, created);

@@ -19,15 +19,20 @@ export function createWatchInputController(dependencies = {}) {
     scrollCurrentViewBy,
     shutdownWatch,
     toggleExpandedEvent,
+    toggleTerminalSelectionMode,
     currentDiffNavigationState,
     jumpCurrentDiffHunk,
     copyCurrentView,
+    isTerminalSelectionModeActive = () => false,
     clearLiveTranscriptView,
     deleteComposerTail,
     deleteComposerBackward,
     deleteComposerForward,
     autocompleteComposerInput,
+    acceptComposerPaletteSelection = () => false,
     navigateComposer,
+    hasActiveComposerPalette = () => false,
+    navigateComposerPalette = () => false,
     moveComposerCursorByCharacter,
     moveComposerCursorByWord,
     insertComposerTextValue,
@@ -47,15 +52,20 @@ export function createWatchInputController(dependencies = {}) {
   assertFunction("scrollCurrentViewBy", scrollCurrentViewBy);
   assertFunction("shutdownWatch", shutdownWatch);
   assertFunction("toggleExpandedEvent", toggleExpandedEvent);
+  assertFunction("toggleTerminalSelectionMode", toggleTerminalSelectionMode);
   assertFunction("currentDiffNavigationState", currentDiffNavigationState);
   assertFunction("jumpCurrentDiffHunk", jumpCurrentDiffHunk);
   assertFunction("copyCurrentView", copyCurrentView);
+  assertFunction("isTerminalSelectionModeActive", isTerminalSelectionModeActive);
   assertFunction("clearLiveTranscriptView", clearLiveTranscriptView);
   assertFunction("deleteComposerTail", deleteComposerTail);
   assertFunction("deleteComposerBackward", deleteComposerBackward);
   assertFunction("deleteComposerForward", deleteComposerForward);
   assertFunction("autocompleteComposerInput", autocompleteComposerInput);
+  assertFunction("acceptComposerPaletteSelection", acceptComposerPaletteSelection);
   assertFunction("navigateComposer", navigateComposer);
+  assertFunction("hasActiveComposerPalette", hasActiveComposerPalette);
+  assertFunction("navigateComposerPalette", navigateComposerPalette);
   assertFunction("moveComposerCursorByCharacter", moveComposerCursorByCharacter);
   assertFunction("moveComposerCursorByWord", moveComposerCursorByWord);
   assertFunction("insertComposerTextValue", insertComposerTextValue);
@@ -100,7 +110,26 @@ export function createWatchInputController(dependencies = {}) {
     return true;
   }
 
-  function consumeBracketedPaste(input, index) {
+  function currentSecretPrompt() {
+    return watchState.secretPrompt && typeof watchState.secretPrompt === "object"
+      ? watchState.secretPrompt
+      : null;
+  }
+
+  function insertSecretPromptText(text) {
+    const prompt = currentSecretPrompt();
+    if (!prompt || prompt.pending) {
+      return false;
+    }
+    const normalized = normalizePastedText(text);
+    if (!normalized) {
+      return false;
+    }
+    prompt.value = `${String(prompt.value ?? "")}${normalized}`;
+    return true;
+  }
+
+  function consumeBracketedPaste(input, index, { insertText = insertPastedText } = {}) {
     const source = String(input ?? "");
     if (
       pendingBracketedPaste === null &&
@@ -125,7 +154,7 @@ export function createWatchInputController(dependencies = {}) {
     }
 
     pendingBracketedPaste += source.slice(scanIndex, endIndex);
-    const didMutate = insertPastedText(pendingBracketedPaste);
+    const didMutate = insertText(pendingBracketedPaste);
     pendingBracketedPaste = null;
     return {
       nextIndex: endIndex + BRACKETED_PASTE_END.length,
@@ -133,7 +162,93 @@ export function createWatchInputController(dependencies = {}) {
     };
   }
 
+  function handleSecretPromptInput(input) {
+    if (shuttingDown() || input.length === 0) {
+      return;
+    }
+
+    let index = 0;
+    let didMutate = false;
+
+    while (index < input.length) {
+      const prompt = currentSecretPrompt();
+      if (!prompt) {
+        break;
+      }
+
+      const bracketedPaste = consumeBracketedPaste(input, index, {
+        insertText: insertSecretPromptText,
+      });
+      if (bracketedPaste) {
+        didMutate = didMutate || bracketedPaste.didMutate;
+        index = bracketedPaste.nextIndex;
+        continue;
+      }
+
+      const char = input[index];
+      if (char === "\x03") {
+        shutdownWatch(0);
+        return;
+      }
+
+      if (prompt.pending) {
+        index += char === "\r" && input[index + 1] === "\n" ? 2 : 1;
+        continue;
+      }
+
+      if (char === "\r" || char === "\n") {
+        const submission = typeof prompt.onSubmit === "function"
+          ? prompt.onSubmit(prompt.value ?? "")
+          : null;
+        Promise.resolve(submission).catch(() => {});
+        didMutate = true;
+        index += char === "\r" && input[index + 1] === "\n" ? 2 : 1;
+        continue;
+      }
+
+      if (char === "\x7f" || char === "\b") {
+        const value = String(prompt.value ?? "");
+        if (value.length > 0) {
+          prompt.value = value.slice(0, -1);
+          didMutate = true;
+        }
+        index += 1;
+        continue;
+      }
+
+      if (char === "\x1b") {
+        const rest = String(input ?? "").slice(index);
+        if (rest === "\x1b") {
+          if (typeof prompt.onCancel === "function") {
+            prompt.onCancel();
+            didMutate = true;
+          }
+          index += 1;
+          continue;
+        }
+        index = consumeUnknownEscapeSequence(input, index);
+        continue;
+      }
+
+      if (char < " ") {
+        index += 1;
+        continue;
+      }
+
+      prompt.value = `${String(prompt.value ?? "")}${char}`;
+      didMutate = true;
+      index += 1;
+    }
+
+    if (didMutate) {
+      scheduleRender();
+    }
+  }
+
   function submitComposerInput() {
+    if (hasActiveComposerPalette()) {
+      acceptComposerPaletteSelection();
+    }
     const value = watchState.composerInput.trim();
     if (!value) {
       scheduleRender();
@@ -191,8 +306,20 @@ export function createWatchInputController(dependencies = {}) {
       { seq: "\x1b[3~", run: () => {
         deleteComposerForward();
       } },
-      { seq: "\x1b[A", run: () => navigateComposer(-1) },
-      { seq: "\x1b[B", run: () => navigateComposer(1) },
+      { seq: "\x1b[A", run: () => {
+        if (hasActiveComposerPalette()) {
+          navigateComposerPalette(-1);
+          return;
+        }
+        navigateComposer(-1);
+      } },
+      { seq: "\x1b[B", run: () => {
+        if (hasActiveComposerPalette()) {
+          navigateComposerPalette(1);
+          return;
+        }
+        navigateComposer(1);
+      } },
       { seq: "\x1b[D", run: () => moveComposerCursorByCharacter(-1) },
       { seq: "\x1b[C", run: () => moveComposerCursorByCharacter(1) },
       { seq: "\x1b[H", run: () => {
@@ -238,6 +365,23 @@ export function createWatchInputController(dependencies = {}) {
       return;
     }
 
+    if (isTerminalSelectionModeActive()) {
+      if (input.includes("\x03")) {
+        shutdownWatch(0);
+        return;
+      }
+      if (input.includes("\x11")) {
+        toggleTerminalSelectionMode();
+        scheduleRender();
+      }
+      return;
+    }
+
+    if (currentSecretPrompt()) {
+      handleSecretPromptInput(input);
+      return;
+    }
+
     let index = 0;
     let didMutate = false;
 
@@ -272,6 +416,12 @@ export function createWatchInputController(dependencies = {}) {
       }
       if (char === "\x19") {
         copyCurrentView();
+        didMutate = true;
+        index += 1;
+        continue;
+      }
+      if (char === "\x11") {
+        toggleTerminalSelectionMode();
         didMutate = true;
         index += 1;
         continue;

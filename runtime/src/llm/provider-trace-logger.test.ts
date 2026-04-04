@@ -99,7 +99,7 @@ describe("createProviderTraceEventLogger", () => {
         requestedToolNames: shared,
         resolvedToolNames: [],
         missingRequestedToolNames: shared,
-        toolResolution: "subset_missing",
+        toolResolution: "fallback_full_catalog_no_matches",
       },
     });
 

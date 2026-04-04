@@ -71,19 +71,16 @@ type ContractFlowContext =
     Pick<
       ExecutionContext,
       | "runtimeWorkspaceRoot"
+      | "plannerWorkflowTaskClassification"
       | "plannerVerificationContract"
       | "plannerCompletionContract"
     >
   >;
 
-export const LEGACY_COMPLETION_COMPATIBILITY_CLASSES = [
-  "docs",
-  "research",
-  "plan_only",
-] as const;
-
 export type LegacyCompletionCompatibilityClass =
-  typeof LEGACY_COMPLETION_COMPATIBILITY_CLASSES[number];
+  | "docs"
+  | "research"
+  | "plan_only";
 
 export interface LegacyCompletionCompatibilityDecision {
   readonly allowed: boolean;
@@ -200,6 +197,17 @@ export function resolveRuntimeWorkflowContext(input: {
 export function resolveLegacyCompletionCompatibility(input: {
   readonly ctx: ContractFlowContext;
 }): LegacyCompletionCompatibilityDecision {
+  if (
+    input.ctx.plannerSummaryState.used &&
+    input.ctx.plannerWorkflowTaskClassification === "docs_research_plan_only"
+  ) {
+    return {
+      allowed: true,
+      compatibilityClass: "plan_only",
+      reason:
+        "Legacy completion remains allowed for planner-owned docs/research/plan-only turns.",
+    };
+  }
   const analysis = analyzeLegacyCompletionTurn(input.ctx);
   const plannerRouteReason = input.ctx.plannerSummaryState.routeReason;
   if (hasConcordiaSimulationTurnContract(input.ctx.messageMetadata)) {
@@ -279,6 +287,12 @@ export function requiresWorkflowOwnedImplementationCompletion(input: {
   readonly ctx: ContractFlowContext;
 }): boolean {
   if (hasConcordiaSimulationTurnContract(input.ctx.messageMetadata)) {
+    return false;
+  }
+  if (
+    input.ctx.plannerSummaryState.used &&
+    input.ctx.plannerWorkflowTaskClassification === "docs_research_plan_only"
+  ) {
     return false;
   }
   return analyzeLegacyCompletionTurn(input.ctx).implementationLikeTurn;

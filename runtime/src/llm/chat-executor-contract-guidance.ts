@@ -540,7 +540,10 @@ function resolveDelegationInitialContractGuidance(
     source: "delegation-initial",
     runtimeInstruction,
     routedToolNames: effectiveRoutedToolNames,
-    persistRoutedToolNames: true,
+    // The initial delegated subset is only a bootstrapping hint. Persisting it
+    // across later recalls can strand the model on an overly narrow tool slice
+    // after it has already inspected the workspace and needs the broader set.
+    persistRoutedToolNames: false,
     toolChoice: "required",
   };
 }

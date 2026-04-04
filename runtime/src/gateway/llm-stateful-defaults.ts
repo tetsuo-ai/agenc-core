@@ -51,7 +51,7 @@ export function resolveGatewayStatefulResponses(
   const store = statefulResponses?.store ?? false;
   if (statefulResponses?.store === undefined) usedDefaults = true;
 
-  const fallbackToStateless = statefulResponses?.fallbackToStateless ?? false;
+  const fallbackToStateless = statefulResponses?.fallbackToStateless ?? true;
   if (statefulResponses?.fallbackToStateless === undefined) usedDefaults = true;
 
   const compactionEnabled = statefulResponses?.compaction?.enabled ?? true;

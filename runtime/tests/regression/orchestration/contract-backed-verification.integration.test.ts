@@ -217,46 +217,6 @@ describe("contract-backed verification integration", () => {
     }
   });
 
-  it("accepts grounded PLAN.md no-op success for the final writer when reviewer findings are already incorporated", () => {
-    const workspace = "/tmp/agenc-verification-plan-noop";
-    const targetPath = `${workspace}/PLAN.md`;
-    const result = validateDelegatedOutputContract({
-      spec: {
-        task: "update_plan_md",
-        objective: "Update PLAN.md with integrated reviewer findings when needed.",
-        inputContract:
-          "Consume the concrete reviewer handoff artifact, inspect PLAN.md, and either update it or report a grounded no-op.",
-        acceptanceCriteria: [
-          "State that PLAN.md already contains the integrated reviewer findings if no mutation is needed.",
-        ],
-        executionContext: {
-          version: "v1",
-          workspaceRoot: workspace,
-          requiredSourceArtifacts: [targetPath],
-          targetArtifacts: [targetPath],
-          stepKind: "delegated_write",
-          verificationMode: "mutation_required",
-          role: "writer",
-        },
-      },
-      output:
-        "PLAN.md already contains the integrated reviewer findings. No mutation needed.",
-      toolCalls: [
-        {
-          name: "system.readFile",
-          args: { path: targetPath },
-          result: JSON.stringify({
-            path: targetPath,
-            content: "# PLAN\nIntegrated reviewer findings already present.\n",
-          }),
-          isError: false,
-        },
-      ],
-    });
-
-    expect(result.ok).toBe(true);
-  });
-
   it("accepts shell-based mutation evidence when effect records prove the target artifact changed", async () => {
     const workspace = createTempDir("agenc-verification-shell-");
     const targetPath = join(workspace, "AGENC.md");

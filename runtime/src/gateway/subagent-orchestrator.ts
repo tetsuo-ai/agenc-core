@@ -18,8 +18,8 @@ import type {
   PipelineResult,
   PipelineStep,
 } from "../workflow/pipeline.js";
+import type { WorkflowGraphEdge } from "../workflow/types.js";
 import { canonicalizePipelinePlannerExecutionContexts } from "../workflow/migrations.js";
-import { resolveWorkflowDependencyState } from "../workflow/completion-state.js";
 import type {
   SubAgentConfig,
   SubAgentResult,
@@ -47,7 +47,6 @@ import {
 } from "./delegation-scope.js";
 import { sleep } from "../utils/async.js";
 import {
-  type DelegatedToolContractResolution,
   type DelegationOutputValidationCode,
   resolveDelegatedChildToolScope,
   specRequiresSuccessfulToolEvidence,
@@ -108,7 +107,6 @@ import {
 } from "./subagent-workspace-probes.js";
 import {
   summarizeParentRequestForSubagent,
-  isFullRequestOwnerStep,
   collectDependencyContexts,
   buildArtifactRelevanceTerms,
   buildDownstreamRequirementLines,
@@ -118,7 +116,6 @@ import {
   buildRetryTaskPrompt as buildRetryTaskPromptFn,
   buildHostToolingPromptSection as buildHostToolingPromptSectionFn,
   resolveParentPolicyAllowlist as resolveParentPolicyAllowlistFn,
-  stepPrefersReviewerHandoffArtifacts,
 } from "./subagent-prompt-builder.js";
 import {
   assessDelegationAdmission,
@@ -140,8 +137,6 @@ import {
   mapDeterministicPipelineResultToNodeOutcome,
 } from "../workflow/execution-kernel-policy.js";
 import type { ExecutionKernelNodeOutcome } from "../workflow/execution-kernel-types.js";
-import { areDocumentationOnlyArtifacts } from "../workflow/artifact-paths.js";
-import { safeStepStringArray } from "../llm/chat-executor-planner.js";
 
 interface ExecuteSubagentAttemptParams {
   readonly subAgentManager: SubAgentExecutionManager;
@@ -155,7 +150,6 @@ interface ExecuteSubagentAttemptParams {
   readonly taskPrompt: string;
   readonly diagnostics: SubagentContextDiagnostics;
   readonly tools: readonly string[];
-  readonly toolContract: DelegatedToolContractResolution;
   readonly stepAdmission?: DelegationStepAdmission;
   readonly delegatedWorkingDirectory?: PreparedPlannerDelegatedWorkingDirectory;
   readonly lifecycleEmitter: SubAgentLifecycleEmitter | null;
@@ -202,7 +196,6 @@ const DEFAULT_MAX_SUBAGENT_FANOUT_PER_TURN = 8;
 const DEFAULT_MAX_TOTAL_SUBAGENTS_PER_REQUEST = 32;
 const DEFAULT_MAX_CUMULATIVE_TOOL_CALLS_PER_REQUEST_TREE = 256;
 const DEFAULT_MAX_CUMULATIVE_TOKENS_PER_REQUEST_TREE = 0;
-const REQUEST_TREE_BUDGET_TRACKER_RETENTION_MS = 10 * 60 * 1_000;
 const DEFAULT_MIN_TOKENS_PER_PLANNED_SUBAGENT_STEP = 150_000;
 const DEFAULT_PLANNED_SUBAGENT_TOKENS_PER_MS =
   DEFAULT_MIN_TOKENS_PER_PLANNED_SUBAGENT_STEP /
@@ -232,22 +225,11 @@ function shouldRejectPlannedDelegationAtExecutionTime(
 }
 
 function didSubagentReachCompletedState(result: SubAgentResult): boolean {
-  if (!result.completionState || result.success !== true) {
-    return false;
-  }
-  return resolveWorkflowDependencyState({
-    completionState: result.completionState,
-  }).dependencySatisfied;
+  return result.completionState === "completed";
 }
 
 function buildNonCompletedSubagentMessage(result: SubAgentResult): string | undefined {
-  if (!result.completionState) {
-    return undefined;
-  }
-  const dependencyState = resolveWorkflowDependencyState({
-    completionState: result.completionState,
-  });
-  if (dependencyState.dependencySatisfied) {
+  if (!result.completionState || result.completionState === "completed") {
     return undefined;
   }
   const remainingRequirements =
@@ -263,7 +245,7 @@ function buildNonCompletedSubagentMessage(result: SubAgentResult): string | unde
       ? ` ${result.stopReasonDetail.trim()}`
       : "";
   return (
-    `Sub-agent did not satisfy its workflow dependency contract (${result.completionState}).` +
+    `Sub-agent did not reach a completed workflow state (${result.completionState}).` +
     remainingSuffix +
     detailSuffix
   ).trim();
@@ -278,20 +260,6 @@ interface SubAgentExecutionManager {
 interface ResolvedChildPromptBudget {
   readonly promptBudget?: PromptBudgetConfig;
   readonly providerProfile?: LLMProviderExecutionProfile;
-}
-
-function resolveStepFallbackBehavior(
-  step: PipelinePlannerSubagentStep,
-  orchestratorFallbackBehavior: "continue_without_delegation" | "fail_request",
-): "continue_without_delegation" | "fail_request" {
-  const stepPolicy = step.executionContext?.fallbackPolicy;
-  if (
-    stepPolicy === "continue_without_delegation" ||
-    stepPolicy === "fail_request"
-  ) {
-    return stepPolicy;
-  }
-  return orchestratorFallbackBehavior;
 }
 
 export interface SubAgentOrchestratorConfig {
@@ -469,16 +437,10 @@ type RequestTreeBudgetBreach =
     readonly state: RequestTreeBudgetSnapshot;
   };
 
-interface RequestTreeBudgetTrackerEntry {
-  readonly tracker: RequestTreeBudgetTracker;
-  lastTouchedAt: number;
-  activeExecutions: number;
-}
-
 export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
   private readonly fallbackExecutor: DeterministicPipelineExecutor;
   private readonly kernel: CanonicalExecutionKernel;
-  private readonly requestTreeBudgetTrackers = new Map<string, RequestTreeBudgetTrackerEntry>();
+  private readonly requestTreeBudgetTrackers = new Map<string, RequestTreeBudgetTracker>();
   private readonly resolveSubAgentManager: () => SubAgentExecutionManager | null;
   private readonly resolveLifecycleEmitter: () => SubAgentLifecycleEmitter | null;
   private readonly resolveTrajectorySink: () => DelegationTrajectorySink | null;
@@ -613,68 +575,19 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
     const normalizedPipeline = canonicalizePipelinePlannerExecutionContexts(
       pipeline,
     );
-    this.cleanupStaleRequestTreeBudgetTrackers();
     const plannerSteps = normalizedPipeline.plannerSteps ?? [];
     const effectiveMaxCumulativeTokensPerRequestTree =
       this.resolveEffectiveMaxCumulativeTokensPerRequestTree(plannerSteps);
-    const requestTreeBudgetKey = this.resolveRequestTreeBudgetKey(normalizedPipeline);
-    const budgetTrackerEntry = this.acquireRequestTreeBudgetTracker({
-      key: requestTreeBudgetKey,
-      maxCumulativeTokensPerRequestTree:
-        effectiveMaxCumulativeTokensPerRequestTree,
-    });
+    const budgetTracker = new RequestTreeBudgetTracker(
+      this.maxTotalSubagentsPerRequest,
+      this.maxCumulativeToolCallsPerRequestTree,
+      effectiveMaxCumulativeTokensPerRequestTree,
+    );
+    this.requestTreeBudgetTrackers.set(normalizedPipeline.id, budgetTracker);
     try {
       return await this.kernel.execute(normalizedPipeline, startFrom, options);
     } finally {
-      budgetTrackerEntry.activeExecutions = Math.max(
-        0,
-        budgetTrackerEntry.activeExecutions - 1,
-      );
-      budgetTrackerEntry.lastTouchedAt = Date.now();
-      this.cleanupStaleRequestTreeBudgetTrackers();
-    }
-  }
-
-  private resolveRequestTreeBudgetKey(pipeline: Pipeline): string {
-    const explicitKey = pipeline.requestTreeBudgetKey?.trim();
-    if (explicitKey) {
-      return explicitKey;
-    }
-    return pipeline.id;
-  }
-
-  private acquireRequestTreeBudgetTracker(params: {
-    readonly key: string;
-    readonly maxCumulativeTokensPerRequestTree: number;
-  }): RequestTreeBudgetTrackerEntry {
-    const existing = this.requestTreeBudgetTrackers.get(params.key);
-    if (existing) {
-      existing.activeExecutions += 1;
-      existing.lastTouchedAt = Date.now();
-      return existing;
-    }
-    const created: RequestTreeBudgetTrackerEntry = {
-      tracker: new RequestTreeBudgetTracker(
-        this.maxTotalSubagentsPerRequest,
-        this.maxCumulativeToolCallsPerRequestTree,
-        params.maxCumulativeTokensPerRequestTree,
-      ),
-      activeExecutions: 1,
-      lastTouchedAt: Date.now(),
-    };
-    this.requestTreeBudgetTrackers.set(params.key, created);
-    return created;
-  }
-
-  private cleanupStaleRequestTreeBudgetTrackers(now = Date.now()): void {
-    for (const [key, entry] of this.requestTreeBudgetTrackers.entries()) {
-      if (entry.activeExecutions > 0) {
-        continue;
-      }
-      if (now - entry.lastTouchedAt < REQUEST_TREE_BUDGET_TRACKER_RETENTION_MS) {
-        continue;
-      }
-      this.requestTreeBudgetTrackers.delete(key);
+      this.requestTreeBudgetTrackers.delete(normalizedPipeline.id);
     }
   }
 
@@ -785,8 +698,8 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
     return {
       objective: step.objective,
       inputContract: step.inputContract,
-      acceptanceCriteria: [...safeStepStringArray(step.acceptanceCriteria)],
-      requiredToolCapabilities: [...safeStepStringArray(step.requiredToolCapabilities)],
+      acceptanceCriteria: [...step.acceptanceCriteria],
+      requiredToolCapabilities: [...step.requiredToolCapabilities],
       contextRequirements: [...effectiveContextRequirements],
       ...(step.executionContext ? { executionContext: step.executionContext } : {}),
       maxBudgetHint: step.maxBudgetHint,
@@ -836,10 +749,8 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
     options?: PipelineExecutionOptions,
     signal?: AbortSignal,
   ): Promise<ExecutionKernelNodeOutcome> {
-    const budgetTrackerEntry = this.requestTreeBudgetTrackers.get(
-      this.resolveRequestTreeBudgetKey(pipeline),
-    );
-    if (!budgetTrackerEntry) {
+    const budgetTracker = this.requestTreeBudgetTrackers.get(pipeline.id);
+    if (!budgetTracker) {
       return {
         status: "failed",
         error: `Execution budget tracker missing for planner pipeline "${pipeline.id}"`,
@@ -853,13 +764,7 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
       return this.executeDeterministicStep(step, pipeline, results, options);
     }
     if (step.stepType === "subagent_task") {
-      return this.executeSubagentStep(
-        step,
-        pipeline,
-        results,
-        budgetTrackerEntry.tracker,
-        signal,
-      );
+      return this.executeSubagentStep(step, pipeline, results, budgetTracker, signal);
     }
     // Synthesis nodes materialize explicit handoff artifacts for downstream
     // child phases instead of relying on transcript-only context.
@@ -1018,7 +923,6 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
           stepName: preparedStep.name,
           stage: "validation",
           reason: toolScope.blockedReason,
-          toolContract: toolScope.toolContract,
           removedLowSignalBrowserTools: toolScope.removedLowSignalBrowserTools,
           removedByPolicy: toolScope.removedByPolicy,
           removedAsDelegationTools: toolScope.removedAsDelegationTools,
@@ -1045,7 +949,6 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
           stepName: preparedStep.name,
           stage: "validation",
           reason: error,
-          toolContract: toolScope.toolContract,
           removedLowSignalBrowserTools: toolScope.removedLowSignalBrowserTools,
           removedByPolicy: toolScope.removedByPolicy,
           removedAsDelegationTools: toolScope.removedAsDelegationTools,
@@ -1137,7 +1040,7 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
         parentSessionId,
         parentRequest: pipeline.plannerContext?.parentRequest,
         lastValidationCode: lastFailure?.validationCode,
-        timeoutMs: budgetHintTimeoutMs,
+        timeoutMs: 0,
         toolBudgetPerRequest: resolveSubagentToolBudgetPerRequestFn({
           timeoutMs: budgetHintTimeoutMs,
           priorFailureClass: lastFailure?.failureClass,
@@ -1146,7 +1049,6 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
         taskPrompt,
         diagnostics: subagentTask.diagnostics,
         tools: toolScope.allowedTools,
-        toolContract: toolScope.toolContract,
         stepAdmission,
         delegatedWorkingDirectory: preparedStepContext.delegatedWorkingDirectory,
         lifecycleEmitter,
@@ -1178,9 +1080,6 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
           : Boolean(attemptOutcome.failure.childSessionId);
       budgetTracker.commitSpawnResult(spawnedChild);
       if (attemptOutcome.status === "completed") {
-        const dependencyState = resolveWorkflowDependencyState({
-          completionState: attemptOutcome.completionState ?? "completed",
-        });
         this.recordSubagentTrajectory({
           traceId: trajectoryTraceId,
           turnId:
@@ -1201,7 +1100,7 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
           ),
           fanout: Math.max(1, subagentStepCount),
           tools: toolScope.allowedTools,
-          timeoutMs: budgetHintTimeoutMs,
+          timeoutMs: 0,
           delegated: true,
           strategyArmId: "balanced",
           qualityProxy: 0.9,
@@ -1243,7 +1142,7 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
             ),
             fanout: Math.max(1, subagentStepCount),
             tools: toolScope.allowedTools,
-            timeoutMs: budgetHintTimeoutMs,
+            timeoutMs: 0,
             delegated: true,
             strategyArmId: "balanced",
             qualityProxy: 0.2,
@@ -1301,10 +1200,7 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
             output: attemptOutcome.output,
             success: true,
             completionState: attemptOutcome.completionState ?? "completed",
-            dependencyState: dependencyState.kind,
-            resolutionSemantics: dependencyState.semantics,
             completionProgress: attemptOutcome.completionProgress ?? null,
-            toolContract: toolScope.toolContract,
             durationMs: attemptOutcome.durationMs,
             toolCalls: attemptOutcome.toolCalls,
             tokenUsage: attemptOutcome.tokenUsage ?? null,
@@ -1347,7 +1243,7 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
             ),
             fanout: Math.max(1, subagentStepCount),
             tools: toolScope.allowedTools,
-            timeoutMs: budgetHintTimeoutMs,
+            timeoutMs: 0,
             delegated: true,
             strategyArmId: "balanced",
             qualityProxy: 0.1,
@@ -1386,37 +1282,8 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
       }
       const retryRule = SUBAGENT_RETRY_POLICY[lastFailure.failureClass];
       const retriesUsed = retryAttempts[lastFailure.failureClass];
-      const stepLooksLikeLocalWriter =
-        preparedStep.executionContext?.verificationMode ===
-          "mutation_required" ||
-        (preparedStep.executionContext?.allowedWriteRoots?.length ?? 0) > 0 ||
-        preparedStep.requiredToolCapabilities.some((capability) =>
-          capability === "system.writeFile" ||
-          capability === "system.appendFile" ||
-          capability === "desktop.text_editor" ||
-          capability === "mcp.neovim.vim_edit" ||
-          capability === "mcp.neovim.vim_buffer_save" ||
-          capability === "mcp.neovim.vim_search_replace"
-        );
-      const allowResultContractRepairRetry =
-        lastFailure.failureClass === "malformed_result_contract" &&
-        (
-          (
-            lastFailure.validationCode === "blocked_phase_output" &&
-            isFullRequestOwnerStep(preparedStep)
-          ) ||
-          (
-            lastFailure.validationCode === "contradictory_completion_claim" &&
-            (
-              isFullRequestOwnerStep(preparedStep) ||
-              stepLooksLikeLocalWriter
-            )
-          )
-        );
       const shouldRetry =
-        ((lastFailure.validationCode !== "blocked_phase_output" &&
-          lastFailure.validationCode !== "contradictory_completion_claim") ||
-          allowResultContractRepairRetry) &&
+        lastFailure.validationCode !== "blocked_phase_output" &&
         retriesUsed < retryRule.maxRetries;
       const retryAttempt = retriesUsed + 1;
       const retryDelayMs = shouldRetry
@@ -1443,7 +1310,7 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
         ),
         fanout: Math.max(1, subagentStepCount),
         tools: toolScope.allowedTools,
-        timeoutMs: budgetHintTimeoutMs,
+        timeoutMs: 0,
         delegated: true,
         strategyArmId: "balanced",
         qualityProxy: shouldRetry ? 0.3 : 0.15,
@@ -1546,7 +1413,6 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
               validationCode: failure.validationCode ?? null,
               message: failure.message,
             })),
-            toolContract: toolScope.toolContract,
             decomposition: lastFailure.decomposition,
             attempts: attempt,
             retryPolicy: retryAttempts,
@@ -1555,33 +1421,34 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
         };
       }
 
-      if (
-        resolveStepFallbackBehavior(preparedStep, this.fallbackBehavior) ===
-          "continue_without_delegation"
-      ) {
+      if (this.fallbackBehavior === "continue_without_delegation") {
         return {
-          status: "completed",
-          result: safeStringify({
-            status: "delegation_fallback",
-            success: false,
-            delegated: false,
-            recoveredViaParentFallback: true,
-            failureClass: lastFailure.failureClass,
-            error: lastFailure.message,
+          status: "failed",
+          error: lastFailure.message,
+          stopReasonHint: lastFailure.stopReasonHint,
+          fallback: {
+            satisfied: true,
+            reason:
+              `Recovered via parent fallback after delegated failure (${lastFailure.failureClass})`,
             stopReasonHint: lastFailure.stopReasonHint,
-            completionState: "blocked",
-            dependencyState: "unsatisfied_terminal",
-            resolutionSemantics: "delegation_fallback",
-            failureHistory: failureHistory.map((failure) => ({
-              failureClass: failure.failureClass,
-              validationCode: failure.validationCode ?? null,
-              message: failure.message,
-            })),
-            toolContract: toolScope.toolContract,
-            attempts: attempt,
-            retryPolicy: retryAttempts,
-            subagentSessionId: lastFailure.childSessionId ?? null,
-          }),
+            result: safeStringify({
+              status: "delegation_fallback",
+              success: false,
+              delegated: false,
+              recoveredViaParentFallback: true,
+              failureClass: lastFailure.failureClass,
+              error: lastFailure.message,
+              stopReasonHint: lastFailure.stopReasonHint,
+              failureHistory: failureHistory.map((failure) => ({
+                failureClass: failure.failureClass,
+                validationCode: failure.validationCode ?? null,
+                message: failure.message,
+              })),
+              attempts: attempt,
+              retryPolicy: retryAttempts,
+              subagentSessionId: lastFailure.childSessionId ?? null,
+            }),
+          },
         };
       }
 
@@ -1680,8 +1547,8 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
     const scopeAssessment = assessDelegationScope({
       objective: input.step.objective,
       inputContract: input.step.inputContract,
-      acceptanceCriteria: safeStepStringArray(input.step.acceptanceCriteria),
-      requiredToolCapabilities: safeStepStringArray(input.step.requiredToolCapabilities),
+      acceptanceCriteria: input.step.acceptanceCriteria,
+      requiredToolCapabilities: input.step.requiredToolCapabilities,
     });
     if (!scopeAssessment.ok) {
       return {
@@ -1742,21 +1609,18 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
         },
       };
     }
-    const effectiveDelegationSpec = {
-      ...buildEffectiveDelegationSpec(
-        input.step,
-        input.pipeline,
-        {
-          parentRequest: input.parentRequest,
-          lastValidationCode: input.lastValidationCode,
-          delegatedWorkingDirectory: delegatedWorkingDirectory?.path,
-          admission: input.stepAdmission,
-          results: input.pipeline.context.results,
-          resolveHostToolingProfile: this.resolveHostToolingProfile,
-        },
-      ),
-      toolContract: input.toolContract,
-    };
+    const effectiveDelegationSpec = buildEffectiveDelegationSpec(
+      input.step,
+      input.pipeline,
+      {
+        parentRequest: input.parentRequest,
+        lastValidationCode: input.lastValidationCode,
+        delegatedWorkingDirectory: delegatedWorkingDirectory?.path,
+        admission: input.stepAdmission,
+        results: input.pipeline.context.results,
+        resolveHostToolingProfile: this.resolveHostToolingProfile,
+      },
+    );
     let childSessionId: string;
     try {
       const workingDirectory = delegatedWorkingDirectory?.path;
@@ -1770,13 +1634,13 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
           ? { workingDirectorySource: delegatedWorkingDirectory.source }
           : {}),
         tools: input.tools,
-        requiredCapabilities: safeStepStringArray(input.step.requiredToolCapabilities),
+        requiredCapabilities: input.step.requiredToolCapabilities,
         requireToolCall: specRequiresSuccessfulToolEvidence({
             objective: input.step.objective,
             inputContract: input.step.inputContract,
             acceptanceCriteria:
               effectiveDelegationSpec.acceptanceCriteria,
-            requiredToolCapabilities: safeStepStringArray(input.step.requiredToolCapabilities),
+            requiredToolCapabilities: input.step.requiredToolCapabilities,
             tools: input.tools,
           }),
         delegationSpec: effectiveDelegationSpec,
@@ -1803,13 +1667,12 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
       parentSessionId: input.parentSessionId,
       subagentSessionId: childSessionId,
       toolName: "execute_with_agent",
-        payload: {
-          stepName: input.step.name,
-          timeoutMs: input.timeoutMs,
-          toolBudgetPerRequest: input.toolBudgetPerRequest,
-          toolContract: input.toolContract,
-          contextCuration: input.diagnostics,
-          ...(this.unsafeBenchmarkMode ? { unsafeBenchmarkMode: true } : {}),
+      payload: {
+        stepName: input.step.name,
+        timeoutMs: input.timeoutMs,
+        toolBudgetPerRequest: input.toolBudgetPerRequest,
+        contextCuration: input.diagnostics,
+        ...(this.unsafeBenchmarkMode ? { unsafeBenchmarkMode: true } : {}),
         ...(delegatedWorkingDirectory
           ? {
             workingDirectory: delegatedWorkingDirectory.path,
@@ -1887,7 +1750,7 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
           : initialFailureClass;
       const inheritedStopReasonHint = toPipelineStopReasonHint(result.stopReason);
       const completionStateStopReasonHint =
-        result.completionState && !didSubagentReachCompletedState(result)
+        result.completionState && result.completionState !== "completed"
           ? "validation_error"
           : undefined;
       return {
@@ -2032,7 +1895,6 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
       allowedTools: readonly string[];
       allowsToollessExecution: boolean;
       semanticFallback: readonly string[];
-      toolContract: DelegatedToolContractResolution;
       removedLowSignalBrowserTools: readonly string[];
       removedByPolicy: readonly string[];
       removedAsDelegationTools: readonly string[];
@@ -2090,14 +1952,8 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
       artifactRelevanceTerms,
       delegatedWorkingDirectory?.path,
     );
-    const reviewerHandoffCandidates = dependencyArtifactCandidates.filter(
-      (candidate) => candidate.artifactKind === "reviewer_handoff",
-    );
-    const dependencyWorkspaceArtifactCandidates = dependencyArtifactCandidates.filter(
-      (candidate) => candidate.artifactKind !== "reviewer_handoff",
-    );
     const workspaceArtifactCandidates =
-      dependencyWorkspaceArtifactCandidates.length === 0 &&
+      dependencyArtifactCandidates.length === 0 &&
         delegatedWorkingDirectory?.path
         ? collectWorkspaceArtifactCandidates(
           delegatedWorkingDirectory.path,
@@ -2106,22 +1962,13 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
         )
         : [];
     const promptArtifactCandidates =
-      dependencyWorkspaceArtifactCandidates.length > 0
-        ? dependencyWorkspaceArtifactCandidates
+      dependencyArtifactCandidates.length > 0
+        ? dependencyArtifactCandidates
         : workspaceArtifactCandidates;
-    const reviewerHandoffArtifactCandidates =
-      stepPrefersReviewerHandoffArtifacts(effectiveStep) ||
-        reviewerHandoffCandidates.length > 0
-        ? reviewerHandoffCandidates
-        : [];
     const plannerArtifactContext = pipeline.plannerContext?.artifactContext ?? [];
     const toolContextBudgets = allocateContextGroupBudgets(
       promptBudgetCaps.toolOutputChars,
       [
-        {
-          key: "reviewerHandoffs",
-          active: reviewerHandoffArtifactCandidates.length > 0,
-        },
         {
           key: "toolOutputs",
           active:
@@ -2160,11 +2007,6 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
       requirementTerms,
       toolContextBudgets.toolOutputs ?? 0,
       summarizeDependencyResultForPrompt,
-      trustedExecutionRoots,
-    );
-    const reviewerHandoffSection = curateDependencyArtifactSection(
-      reviewerHandoffArtifactCandidates,
-      toolContextBudgets.reviewerHandoffs ?? 0,
       trustedExecutionRoots,
     );
     const dependencyArtifactSection = curateDependencyArtifactSection(
@@ -2217,29 +2059,8 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
         toolName === "system.appendFile" ||
         toolName === "desktop.text_editor"
       );
-      const fullRequestOwner = isFullRequestOwnerStep(effectiveStep);
-      const planBackedFullRequestOwner =
-        fullRequestOwner &&
-        areDocumentationOnlyArtifacts(
-          effectiveStep.executionContext?.requiredSourceArtifacts ?? [],
-        );
       sections.push(
-        fullRequestOwner
-          ? `Execution rules:
-- You own the assigned implementation contract end to end inside the approved workspace.
-- Complete the remaining requested phases sequentially; do not stop after a single named phase from the planning artifact.
-- You may organize the work phase by phase internally, but do not hand back an intermediate phase completion as the final result.
-- Do not delegate unless the task explicitly grants that authority.
-- If the task requires tool-grounded evidence, you must use one or more allowed tools before answering.
-- If the input contract or context requirements name source files or current workspace artifacts, inspect those sources before writing derived files.
-- If a source artifact describes intended or planned structure, label it as intended/planned unless you directly confirmed the files currently exist.
-- When the planning artifact is the source specification, inspect the current workspace before assuming plan-listed files already exist.${planBackedFullRequestOwner ? " Confirm relevant directories or files under the owned workspace before reading them or presenting them as present." : ""}
--${planBackedFullRequestOwner
-            ? " Treat generated artifacts such as copied build/output directories as provisional state, not trusted source inputs. If verification shows a generated directory is stale or unconfigured, do not delete it with `rm`; create a fresh generated directory/path for the current workspace and verify against that instead."
-            : " Treat generated artifacts and build outputs as provisional state. If verification shows they are stale or unconfigured, regenerate them in a fresh location for the current workspace instead of assuming they are reusable."}
-- The per-call tool JSON is authoritative for the current recall. The phase allowlist below is broader policy scope, and the runtime may attach only a routed subset on a given turn.
-- If you cannot complete the remaining request with the currently attached tools, state the concrete blocker and the unfinished phase instead of claiming success.`
-          : `Execution rules:
+        `Execution rules:
 - Execute only the assigned phase \`${effectiveStep.name}\`.
 - Do not create a new multi-step plan for the broader parent request.
 - Do not attempt sibling phases or synthesize the final deliverable.
@@ -2315,27 +2136,6 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
           toolUsageRules.push(
             "- Verification commands must be non-interactive and exit on their own. Do not use watch/dev mode for tests or validation. Prefer runner-native single-run invocations. For Vitest use `vitest run`/`vitest --run`. For Jest use `CI=1 npm test` or `jest --runInBand`. Only pass extra npm `--` flags when the underlying runner supports them.",
           );
-          toolUsageRules.push(
-            "- For interactive CLIs or REPL-style binaries under test, do not treat exit code 0, banners, or prompt text as proof the command worked. Capture stdout, strip fixed prompt markers, and verify the semantic payload line for the command under test.",
-          );
-          toolUsageRules.push(
-            "- For prompt-based CLIs, feed the probe command and an explicit `exit` into stdin, then normalize stdout by removing banners and prompt prefixes. Do not use brittle positional slicing with `tail`, `head`, `sed -n`, or `awk NR==...` to guess which line contains the result.",
-          );
-          toolUsageRules.push(
-            "- When running repository scripts that rely on relative paths, invoke them from the workspace root (for example `bash tests/run_tests.sh`) unless the script explicitly documents a different required cwd.",
-          );
-          toolUsageRules.push(
-            "- Treat existing repo-local verification scripts and harnesses as read-only grader infrastructure unless the contract explicitly names them as writable targets. Do not rewrite them just to make verification pass.",
-          );
-          toolUsageRules.push(
-            "- Do not create alternate copies or wrapper variants of repo-local verification harnesses (for example `run_tests_fresh.sh`) to work around that read-only restriction. Use equivalent bounded verification commands directly from the workspace root instead.",
-          );
-          toolUsageRules.push(
-            "- If a repo-local verification script contains a command that can block indefinitely without its own one-shot flag or timeout, do not invoke the script raw. Wrap the script in an outer timeout or run the equivalent bounded verification commands directly and report that grounded result.",
-          );
-          toolUsageRules.push(
-            "- Prefer non-destructive rebuild or verification commands. Do not delete binaries or build artifacts with commands like `rm` just to prove a rebuild; use build-system-native clean rebuild commands instead.",
-          );
         }
         if (allowsDirectFileWrite) {
           toolUsageRules.push(
@@ -2349,14 +2149,6 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
           "Output contract:\n" +
             "- If this phase needs a design document, summary, JSON payload, notes, or other textual artifact and no file-write tools are allowed, return that artifact inline in your response.\n" +
             "- Do not block solely because you cannot persist a workspace file unless the acceptance criteria explicitly require a file on disk.",
-        );
-      }
-      if (reviewerHandoffSection.lines.length > 0) {
-        sections.push(
-          "Reviewer handoff artifacts:\n" +
-            "- Consume these synthesized reviewer artifacts before falling back to generic dependency summaries.\n" +
-            "- Preserve reviewer provenance and evidence when applying edits or resolving findings.\n" +
-            reviewerHandoffSection.lines.map((line) => `- ${line}`).join("\n"),
         );
       }
       if (toolOutputSection.lines.length > 0) {
@@ -2461,22 +2253,13 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
         truncated: toolOutputSection.truncated,
       },
       dependencyArtifacts: {
-        selected:
-          dependencyArtifactSection.selected +
-          reviewerHandoffSection.selected,
-        available:
-          promptArtifactCandidates.length +
-          reviewerHandoffArtifactCandidates.length,
+        selected: dependencyArtifactSection.selected,
+        available: promptArtifactCandidates.length,
         omitted: Math.max(
           0,
-          promptArtifactCandidates.length +
-            reviewerHandoffArtifactCandidates.length -
-            dependencyArtifactSection.selected -
-            reviewerHandoffSection.selected,
+          promptArtifactCandidates.length - dependencyArtifactSection.selected,
         ),
-        truncated:
-          dependencyArtifactSection.truncated ||
-          reviewerHandoffSection.truncated,
+        truncated: dependencyArtifactSection.truncated,
       },
       artifactContext: {
         selected: artifactContextSection.selected,
@@ -2489,22 +2272,18 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
       },
       hostTooling: hostToolingSection.diagnostics,
       promptTruncated: false,
-        toolScope: {
-          strategy: this.childToolAllowlistStrategy,
-          unsafeBenchmarkMode: this.unsafeBenchmarkMode,
-          required: [...safeStepStringArray(step.requiredToolCapabilities)],
-          parentPolicyAllowed: [...toolScope.parentPolicyAllowed],
-          parentPolicyForbidden: [...this.forbiddenParentTools],
-          resolved: [...toolScope.allowedTools],
-          allowsToollessExecution: toolScope.allowsToollessExecution,
-          semanticFallback: [...toolScope.semanticFallback],
-          contractState: toolScope.toolContract.state,
-          missingRequestedTools: [...toolScope.toolContract.missingRequestedTools],
-          optionalEnrichment: [...toolScope.toolContract.optionalEnrichment],
-          requiredSubstitution: [...toolScope.toolContract.requiredSubstitution],
-          removedLowSignalBrowserTools: [
-            ...toolScope.removedLowSignalBrowserTools,
-          ],
+      toolScope: {
+        strategy: this.childToolAllowlistStrategy,
+        unsafeBenchmarkMode: this.unsafeBenchmarkMode,
+        required: [...step.requiredToolCapabilities],
+        parentPolicyAllowed: [...toolScope.parentPolicyAllowed],
+        parentPolicyForbidden: [...this.forbiddenParentTools],
+        resolved: [...toolScope.allowedTools],
+        allowsToollessExecution: toolScope.allowsToollessExecution,
+        semanticFallback: [...toolScope.semanticFallback],
+        removedLowSignalBrowserTools: [
+          ...toolScope.removedLowSignalBrowserTools,
+        ],
         removedByPolicy: [...toolScope.removedByPolicy],
         removedAsDelegationTools: [...toolScope.removedAsDelegationTools],
         removedAsUnknownTools: [...toolScope.removedAsUnknownTools],
@@ -2533,7 +2312,6 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
     allowedTools: readonly string[];
     allowsToollessExecution: boolean;
     semanticFallback: readonly string[];
-    toolContract: DelegatedToolContractResolution;
     removedLowSignalBrowserTools: readonly string[];
     blockedReason?: string;
     removedByPolicy: readonly string[];
@@ -2543,48 +2321,19 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
   } {
     const parentPolicyAllowed = resolveParentPolicyAllowlistFn(pipeline, this.allowedParentTools);
     const availableTools = this.resolveAvailableToolNames();
-    const baseRequestedTools =
+    const requestedTools =
       step.executionContext?.allowedTools &&
         step.executionContext.allowedTools.length > 0
         ? step.executionContext.allowedTools
-        : safeStepStringArray(step.requiredToolCapabilities);
-    // Enrich tool set based on execution context requirements.
-    // Sub-agents with verificationMode need read/bash tools to satisfy
-    // their verification contract; the planner often under-specifies
-    // requiredToolCapabilities to only include write tools.
-    const verificationEnrichment: string[] = [];
-    const verificationMode = step.executionContext?.verificationMode;
-    const stepKind = step.executionContext?.stepKind;
-    if (verificationMode && verificationMode !== "none") {
-      const has = (name: string) =>
-        baseRequestedTools.some((t) => t === name);
-      if (!has("system.readFile")) {
-        verificationEnrichment.push("system.readFile");
-      }
-      // Coding sub-agents (write/scaffold) always need bash to verify
-      // their work — running tests, checking syntax, building.  The
-      // planner often sets grounded_read but acceptance criteria
-      // require execution evidence.
-      const isCodingStep =
-        stepKind === "delegated_write" ||
-        stepKind === "delegated_scaffold" ||
-        stepKind === "delegated_validation";
-      if (!has("system.bash") && (isCodingStep || verificationMode !== "grounded_read")) {
-        verificationEnrichment.push("system.bash");
-      }
-    }
-    const requestedTools = verificationEnrichment.length > 0
-      ? [...baseRequestedTools, ...verificationEnrichment]
-      : baseRequestedTools;
+        : step.requiredToolCapabilities;
     const resolvedScope = resolveDelegatedChildToolScope({
       spec: {
         task: step.name,
         objective: step.objective,
         parentRequest: pipeline.plannerContext?.parentRequest,
         inputContract: step.inputContract,
-        acceptanceCriteria: safeStepStringArray(step.acceptanceCriteria),
-        requiredToolCapabilities: safeStepStringArray(step.requiredToolCapabilities),
-        executionContext: step.executionContext,
+        acceptanceCriteria: step.acceptanceCriteria,
+        requiredToolCapabilities: step.requiredToolCapabilities,
       },
       requestedTools,
       parentAllowedTools: parentPolicyAllowed,
@@ -2592,8 +2341,6 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
       forbiddenTools: [...this.forbiddenParentTools],
       enforceParentIntersection:
         this.childToolAllowlistStrategy === "inherit_intersection",
-      strictExplicitToolAllowlist:
-        (step.executionContext?.allowedTools?.length ?? 0) > 0,
       unsafeBenchmarkMode: this.unsafeBenchmarkMode,
     });
     const strippedDelegationTools = resolvedScope.allowedTools.filter(
@@ -2615,10 +2362,6 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
       allowedTools,
       allowsToollessExecution: resolvedScope.allowsToollessExecution,
       semanticFallback: resolvedScope.semanticFallback,
-      toolContract: {
-        ...resolvedScope.toolContract,
-        resolvedTools: allowedTools,
-      },
       removedLowSignalBrowserTools: resolvedScope.removedLowSignalBrowserTools,
       blockedReason:
         resolvedScope.blockedReason ??

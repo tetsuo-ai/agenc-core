@@ -373,20 +373,23 @@ export function compactBodyLines(value, maxLines = 4, maxInlineChars = 220) {
   return lines.slice(0, maxLines).map((line) => truncate(line, maxInlineChars));
 }
 
-export function renderEventBodyLine(event, line, { inline = false, color: colorPalette, cwd, enableHyperlinks, isSourcePreview }) {
+export function renderEventBodyLine(
+  event,
+  line,
+  { inline = false, prefix = null, color: colorPalette, cwd, enableHyperlinks, isSourcePreview },
+) {
   const lineText = displayLineText(line);
   if (!lineText || lineText.length === 0) {
     return "";
   }
-  const guide = inline
-    ? `${colorPalette.borderStrong}\u2502${colorPalette.reset} `
-    : `${colorPalette.border}\u2502${colorPalette.reset} `;
-  const prefix = `${inline ? "  " : ""}${guide}`;
+  const guide = prefix ?? (inline
+    ? `  ${colorPalette.borderStrong}\u2502${colorPalette.reset} `
+    : `${colorPalette.border}\u2502${colorPalette.reset} `);
   const entry =
     typeof line === "string"
       ? createDisplayLine(line, isSourcePreview ? "code" : "plain")
       : line;
-  return `${prefix}${renderDisplayLine(entry, {
+  return `${guide}${renderDisplayLine(entry, {
     color: colorPalette,
     cwd,
     enableHyperlinks,

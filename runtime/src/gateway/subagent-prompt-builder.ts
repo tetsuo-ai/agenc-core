@@ -50,8 +50,6 @@ import {
   collectReachableVerificationCategories,
 } from "./subagent-workspace-probes.js";
 import { classifyDelegatedScopeTrustSignal } from "./subagent-failure-classification.js";
-import { resolveExecutionEnvelopeArtifactRelations, resolveExecutionEnvelopeRole } from "../workflow/execution-envelope.js";
-import { safeStepStringArray } from "../llm/chat-executor-planner.js";
 
 /* ------------------------------------------------------------------ */
 /*  Parent request summarization                                       */
@@ -74,51 +72,9 @@ export function summarizeParentRequestForSubagent(
       : stripped.length > 0
         ? stripped
       : `Complete only the assigned ${step.name} phase of the parent request.`;
-  if (isFullRequestOwnerStep(step)) {
-    return truncateText(
-      `${base} This child owns the remaining implementation request end to end inside the approved workspace. Do not stop after a single named phase from the planning artifact.`,
-      600,
-    );
-  }
   return truncateText(
     `${base} Assigned phase only: ${step.name}. Ignore broader orchestration instructions and other phases.`,
     600,
-  );
-}
-
-export function isFullRequestOwnerStep(
-  step: PipelinePlannerSubagentStep,
-): boolean {
-  const executionContext = step.executionContext;
-  const workspaceRoot = executionContext?.workspaceRoot?.trim();
-  const role = resolveExecutionEnvelopeRole(executionContext);
-  if (role !== "writer" || !workspaceRoot) {
-    return false;
-  }
-  const artifactRelations = resolveExecutionEnvelopeArtifactRelations(
-    executionContext,
-  );
-  const ownsWorkspaceRoot = artifactRelations.some((relation) =>
-    relation.relationType === "write_owner" &&
-    relation.artifactPath.trim() === workspaceRoot
-  ) || (executionContext?.targetArtifacts ?? []).some((artifactPath) =>
-    artifactPath.trim() === workspaceRoot
-  );
-  if (!ownsWorkspaceRoot) {
-    return false;
-  }
-  const combinedText = [
-    step.name,
-    step.objective,
-    step.inputContract,
-    ...safeStepStringArray(step.acceptanceCriteria),
-  ]
-    .join(" ")
-    .toLowerCase();
-  return (
-    step.name.trim().toLowerCase() === "implement_owner" ||
-    /\b(?:end to end|every phase|all phases|sequentially in full|requested implementation phases|full request)\b/i
-      .test(combinedText)
   );
 }
 
@@ -194,29 +150,13 @@ export function buildArtifactRelevanceTerms(
   const aggregate = [
     step.objective,
     step.inputContract,
-    ...safeStepStringArray(step.acceptanceCriteria),
+    ...step.acceptanceCriteria,
     ...sanitizedContextRequirements,
-    ...safeStepStringArray(step.requiredToolCapabilities),
+    ...step.requiredToolCapabilities,
     ...(step.executionContext?.requiredSourceArtifacts ?? []),
     ...(step.executionContext?.targetArtifacts ?? []),
   ].join(" ");
   return new Set(extractTerms(aggregate));
-}
-
-export function stepPrefersReviewerHandoffArtifacts(
-  step: PipelinePlannerSubagentStep,
-): boolean {
-  const role = resolveExecutionEnvelopeRole(step.executionContext);
-  if (role === "writer") {
-    return true;
-  }
-  const artifactRelations = resolveExecutionEnvelopeArtifactRelations(
-    step.executionContext,
-  );
-  return artifactRelations.some((relation) =>
-    relation.relationType === "write_owner" ||
-    relation.relationType === "handoff_artifact"
-  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -351,7 +291,7 @@ export function buildWorkspaceVerificationContractLines(
     step.name,
     step.objective,
     step.inputContract,
-    ...safeStepStringArray(step.acceptanceCriteria),
+    ...step.acceptanceCriteria,
     ...sanitizeDelegationContextRequirements(step.contextRequirements),
     pipeline.plannerContext?.parentRequest ?? "",
     ...downstreamRootScripts.map((script) => `npm run ${script}`),
@@ -422,7 +362,7 @@ export function buildEffectiveDelegationSpec(
       options.delegatedWorkingDirectory,
       options.resolveHostToolingProfile,
     ),
-    requiredToolCapabilities: safeStepStringArray(step.requiredToolCapabilities),
+    requiredToolCapabilities: step.requiredToolCapabilities,
     contextRequirements: sanitizedContextRequirements,
     executionContext:
       effectiveExecutionContext &&
@@ -529,7 +469,7 @@ function dependencyProvidesWorkspaceInspectionEvidence(params: {
 function collectDependencyWorkspaceInspectionToolCalls(params: {
   readonly dependencyStep: PipelinePlannerStep | undefined;
   readonly result: string | null;
-}): ReadonlyArray<{
+}): readonly Array<{
   readonly name?: string;
   readonly args?: unknown;
   readonly result?: string;
@@ -590,7 +530,7 @@ export function buildEffectiveAcceptanceCriteria(
   resolveHostToolingProfile?: () => HostToolingProfile | null,
 ): readonly string[] {
   return [
-    ...safeStepStringArray(step.acceptanceCriteria),
+    ...step.acceptanceCriteria,
     ...buildDerivedWorkspaceAcceptanceCriteria(
       step,
       pipeline,
@@ -619,7 +559,7 @@ export function buildDerivedWorkspaceAcceptanceCriteria(
     step.name,
     step.objective,
     step.inputContract,
-    ...safeStepStringArray(step.acceptanceCriteria),
+    ...step.acceptanceCriteria,
     ...sanitizeDelegationContextRequirements(step.contextRequirements),
     pipeline.plannerContext?.parentRequest ?? "",
     ...downstreamRootScripts.map((script) => `npm run ${script}`),
@@ -675,7 +615,7 @@ export function stepAuthorsNodeWorkspaceManifestOrConfig(
     step.name,
     step.objective,
     step.inputContract,
-    ...safeStepStringArray(step.acceptanceCriteria),
+    ...step.acceptanceCriteria,
     ...sanitizedContextRequirements,
   ].join(" ");
   const hasNodeWorkspaceCue = isNodeWorkspaceRelevant([
@@ -705,7 +645,7 @@ export function isPreInstallNodeWorkspaceStep(
     step.name,
     step.objective,
     step.inputContract,
-    ...safeStepStringArray(step.acceptanceCriteria),
+    ...step.acceptanceCriteria,
     ...sanitizeDelegationContextRequirements(step.contextRequirements),
   ].join(" ");
   return isNodeWorkspaceRelevant([combined]);
@@ -972,7 +912,6 @@ export function buildRetryTaskPrompt(
       return currentTaskPrompt;
     }
 
-    const fullRequestOwner = isFullRequestOwnerStep(step);
     const corrections: string[] = [];
     if (failure.validationCode === "expected_json_object") {
       corrections.push(
@@ -996,8 +935,8 @@ export function buildRetryTaskPrompt(
           task: step.name,
           objective: step.objective,
           inputContract: step.inputContract,
-          acceptanceCriteria: safeStepStringArray(step.acceptanceCriteria),
-          requiredToolCapabilities: safeStepStringArray(step.requiredToolCapabilities),
+          acceptanceCriteria: step.acceptanceCriteria,
+          requiredToolCapabilities: step.requiredToolCapabilities,
           contextRequirements: sanitizeDelegationContextRequirements(
             step.contextRequirements,
           ),
@@ -1010,7 +949,7 @@ export function buildRetryTaskPrompt(
           [
             step.objective,
             step.inputContract,
-            ...safeStepStringArray(step.acceptanceCriteria),
+            ...(step.acceptanceCriteria ?? []),
           ]
             .filter((value): value is string =>
               typeof value === "string" && value.length > 0
@@ -1061,7 +1000,7 @@ export function buildRetryTaskPrompt(
         `Probe failure details: ${sanitizeExecutionPromptText(failure.message)}`,
       );
       if (
-        safeStepStringArray(step.acceptanceCriteria).some((criterion) =>
+        step.acceptanceCriteria.some((criterion) =>
           /\bno npm install\/build\/test\/typecheck\/lint commands executed or claimed in this phase\b/i
             .test(criterion)
         )
@@ -1078,14 +1017,6 @@ export function buildRetryTaskPrompt(
       corrections.push(
         "Only return a completed phase after fixing and verifying the blocking issue with the allowed tools.",
       );
-      if (fullRequestOwner) {
-        corrections.push(
-          "This delegated contract owns the remaining request end to end. Do not stop at a phase-progress summary because one later phase is failing.",
-        );
-        corrections.push(
-          "Continue repairing the current blocker with the allowed tools until the full request is complete, or emit a strictly blocked result only when you can name the final unresolved blocker and why no further allowed action in this attempt can clear it.",
-        );
-      }
     }
     if (failure.validationCode === "contradictory_completion_claim") {
       corrections.push(
@@ -1094,11 +1025,6 @@ export function buildRetryTaskPrompt(
       corrections.push(
         "Fix and verify the issue with the allowed tools first. If the issue remains unresolved, report the phase as blocked instead of successful.",
       );
-      if (fullRequestOwner) {
-        corrections.push(
-          "For an end-to-end owner contract, do not return a mixed phase-progress/completion summary. Either keep working until the remaining phases are complete and verified, or emit a strictly blocked result with the concrete unresolved failure.",
-        );
-      }
       if (
         /documentation completion|shorthand placeholders|todo markers/i.test(
           failure.message,
@@ -1134,7 +1060,7 @@ export function buildRetryTaskPrompt(
       );
     }
     if (
-      safeStepStringArray(step.requiredToolCapabilities).length > 0 ||
+      step.requiredToolCapabilities.length > 0 ||
       /tool-grounded evidence|no tool calls|all child tool calls failed/i.test(
         failure.message,
       )
@@ -1180,7 +1106,7 @@ export function buildHostToolingPromptSection(
     step.name,
     step.objective,
     step.inputContract,
-    ...safeStepStringArray(step.acceptanceCriteria),
+    ...step.acceptanceCriteria,
     ...sanitizeDelegationContextRequirements(step.contextRequirements),
     pipeline.plannerContext?.parentRequest ?? "",
     ...dependencyArtifactCandidates.map((candidate) => candidate.path),

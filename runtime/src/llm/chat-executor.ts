@@ -2480,7 +2480,7 @@ export class ChatExecutor {
     // injected — it provides facts learned in prior sessions (e.g. user's name).
     // The retriever handles its own scoping: working memory is session-scoped,
     // semantic/episodic memory is workspace-scoped with maxAge filtering.
-    if (enableMemoryContext) {
+    if (enableMemoryContext && ctx.hasHistory) {
       await this.injectContext(
         ctx,
         this.memoryRetriever,

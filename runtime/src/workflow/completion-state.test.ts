@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  resolvePipelineCompletionStateFromDependencyStates,
-  resolveWorkflowDependencyState,
   resolvePipelineCompletionState,
   resolveWorkflowCompletionState,
 } from "./completion-state.js";
@@ -23,57 +21,6 @@ describe("completion-state", () => {
         status: "halted",
         completedSteps: 1,
       }),
-    ).toBe("blocked");
-  });
-
-  it("treats needs_verification as dependency-satisfied but nonterminal", () => {
-    expect(
-      resolveWorkflowDependencyState({
-        completionState: "needs_verification",
-      }),
-    ).toEqual({
-      kind: "satisfied_nonterminal",
-      completionState: "needs_verification",
-      dependencySatisfied: true,
-      terminal: false,
-      verifierClosed: false,
-      semantics: "normal",
-    });
-  });
-
-  it("treats parent fallback as explicitly blocked and unsatisfied", () => {
-    expect(
-      resolveWorkflowDependencyState({
-        reportedStatus: "delegation_fallback",
-        recoveredViaParentFallback: true,
-      }),
-    ).toEqual({
-      kind: "unsatisfied_terminal",
-      completionState: "blocked",
-      dependencySatisfied: false,
-      terminal: true,
-      verifierClosed: false,
-      semantics: "delegation_fallback",
-    });
-  });
-
-  it("aggregates dependency states into a single pipeline completion lattice", () => {
-    expect(
-      resolvePipelineCompletionStateFromDependencyStates([
-        resolveWorkflowDependencyState({ completionState: "completed" }),
-        resolveWorkflowDependencyState({
-          completionState: "needs_verification",
-        }),
-      ]),
-    ).toBe("needs_verification");
-    expect(
-      resolvePipelineCompletionStateFromDependencyStates([
-        resolveWorkflowDependencyState({ completionState: "completed" }),
-        resolveWorkflowDependencyState({
-          reportedStatus: "delegation_fallback",
-          recoveredViaParentFallback: true,
-        }),
-      ]),
     ).toBe("blocked");
   });
 

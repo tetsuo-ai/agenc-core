@@ -682,7 +682,50 @@ test("dispatchOperatorSurfaceEvent emits status updates when the fingerprint cha
   );
 
   assert.deepEqual(state.lastStatus, payload);
-  assert.deepEqual(state.configuredModelRoute, { route: payload });
+  assert.deepEqual(state.configuredModelRoute, {
+    route: { ...payload, source: "status" },
+  });
+  assert.equal(state.lastStatusFeedFingerprint, JSON.stringify(payload));
+  assert.deepEqual(calls, [
+    ["status", "gateway status loaded"],
+    ["pushEvent", "status", "Gateway Status", JSON.stringify(payload), "blue"],
+  ]);
+});
+
+test("dispatchOperatorSurfaceEvent keeps a local model selection when gateway status reports a different default model", () => {
+  const payload = { provider: "grok", model: "grok-4.20" };
+  const { api, state, calls } = createHarness({
+    state: {
+      configuredModelRoute: {
+        provider: "openai",
+        model: "gpt-4.1",
+        source: "local",
+        updatedAt: 200,
+      },
+    },
+  });
+
+  dispatchOperatorSurfaceEvent(
+    {
+      family: "status",
+      type: "status.update",
+      payload,
+      payloadRecord: payload,
+      payloadList: null,
+      isSessionScoped: false,
+      message: {},
+    },
+    null,
+    api,
+  );
+
+  assert.deepEqual(state.lastStatus, payload);
+  assert.deepEqual(state.configuredModelRoute, {
+    provider: "openai",
+    model: "gpt-4.1",
+    source: "local",
+    updatedAt: 200,
+  });
   assert.equal(state.lastStatusFeedFingerprint, JSON.stringify(payload));
   assert.deepEqual(calls, [
     ["status", "gateway status loaded"],

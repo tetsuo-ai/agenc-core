@@ -1283,6 +1283,11 @@ export function createApprovalGateHook(engine: ApprovalEngine): HookHandler {
     event: "tool:before",
     name: "approval-gate",
     priority: 5,
+    source: "runtime",
+    kind: "approval",
+    handlerType: "runtime",
+    target: "approval-engine",
+    supported: true,
     handler: async (ctx: HookContext): Promise<HookResult> => {
       const toolName = ctx.payload.toolName as string | undefined;
       const args = (ctx.payload.args as Record<string, unknown>) ?? {};

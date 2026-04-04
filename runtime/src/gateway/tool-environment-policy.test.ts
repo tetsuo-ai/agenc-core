@@ -35,6 +35,7 @@ describe("tool-environment-policy", () => {
       "system.serverStart",
       "system.browserSessionStart",
       "system.remoteJobStart",
+      "system.remoteSessionStart",
       "system.researchStart",
       "system.sandboxStart",
       "execute_with_agent",
@@ -75,6 +76,7 @@ describe("tool-environment-policy", () => {
     const filtered = filterLlmToolsByEnvironment([
       makeLlmTool("system.bash"),
       makeLlmTool("system.sandboxStart"),
+      makeLlmTool("system.remoteSessionStart"),
       makeLlmTool("system.sqliteSchema"),
       makeLlmTool("system.pdfInfo"),
       makeLlmTool("system.spreadsheetInfo"),
@@ -88,6 +90,7 @@ describe("tool-environment-policy", () => {
 
     expect(filtered.map((tool) => tool.function.name)).toEqual([
       "system.sandboxStart",
+      "system.remoteSessionStart",
       "desktop.bash",
       "playwright.browser_navigate",
       "execute_with_agent",
@@ -113,6 +116,7 @@ describe("tool-environment-policy", () => {
       filterToolNamesByEnvironment([
         "system.bash",
         "system.sandboxStart",
+        "system.remoteSessionStart",
         "system.sqliteSchema",
         "system.pdfInfo",
         "system.spreadsheetInfo",
@@ -125,6 +129,7 @@ describe("tool-environment-policy", () => {
       ], "desktop"),
     ).toEqual([
       "system.sandboxStart",
+      "system.remoteSessionStart",
       "desktop.bash",
       "mcp.browser.browser_snapshot",
       "execute_with_agent",

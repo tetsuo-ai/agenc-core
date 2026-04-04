@@ -421,30 +421,24 @@ export function assessPlannerDecision(
   const artifactIntent = classifyPlannerPlanArtifactIntent(messageText);
 
   if (artifactIntent === "grounded_plan_generation") {
-    // Plan/document creation is best handled by the direct tool loop.
-    // The LLM can reason about the plan structure and write the file
-    // directly.  The planner's validator rejects single-write plans
-    // and demands "grounding research" that isn't needed for document
-    // generation from the LLM's existing knowledge.
     return {
-      score,
-      shouldPlan: false,
-      reason: "plan_generation_direct_path",
+      score: Math.max(score, 4),
+      shouldPlan: true,
+      reason:
+        reasons.length > 0
+          ? `${reasons.join("+")}+plan_artifact_request`
+          : "plan_artifact_request",
     };
   }
 
   if (artifactIntent === "edit_artifact") {
-    // Edit-artifact requests (read file → analyze → rewrite) are best
-    // handled by the direct tool loop where the LLM can read the file,
-    // reason about edits, and write the updated version.  The planner
-    // can't express this as deterministic steps because the edit content
-    // requires LLM reasoning.  Sending through the planner causes either:
-    // (a) read-only plans that fail validation, or
-    // (b) implementation sub-agents that build code instead of editing.
     return {
-      score,
-      shouldPlan: false,
-      reason: "edit_artifact_direct_path",
+      score: Math.max(score, 4),
+      shouldPlan: true,
+      reason:
+        reasons.length > 0
+          ? `${reasons.join("+")}+plan_artifact_execution_request`
+          : "plan_artifact_execution_request",
     };
   }
 
@@ -2020,33 +2014,68 @@ function buildDefaultPlannerContextRequirements(
   ].filter((value) => value.length > 0);
 }
 
-function normalizePlannerSubagentBudgetHint(params: {
-  readonly stepName: string;
-  readonly maxBudgetHint: string;
-  readonly diagnostics: PlannerDiagnostic[];
-}): string {
-  const inspection = inspectDelegationBudgetHint(params.maxBudgetHint);
-  if (
-    inspection.kind === "explicit" &&
-    inspection.durationMs < MIN_DELEGATION_TIMEOUT_MS
-  ) {
+export function applyRuntimePlannerBudgetClamp(
+  parsed: PlannerParseResult,
+): PlannerParseResult {
+  if (!parsed.plan) {
+    return parsed;
+  }
+
+  const diagnostics = [...parsed.diagnostics];
+  let changed = false;
+  const repairedSteps = parsed.plan.steps.map((step) => {
+    if (step.stepType !== "subagent_task") {
+      return step;
+    }
+    const inspection = inspectDelegationBudgetHint(step.maxBudgetHint);
+    if (
+      inspection.kind !== "explicit" ||
+      inspection.durationMs >= MIN_DELEGATION_TIMEOUT_MS
+    ) {
+      return step;
+    }
+
+    changed = true;
     const repairedHint = `${Math.ceil(MIN_DELEGATION_TIMEOUT_MS / 1000)}s`;
-    params.diagnostics.push(
+    diagnostics.push(
       createPlannerDiagnostic(
         "policy",
         "planner_subagent_budget_hint_clamped",
-        `Planner subagent step "${params.stepName}" used a max_budget_hint below the runtime minimum; clamping to ${repairedHint}`,
+        `Planner subagent step "${step.name}" used a max_budget_hint below the runtime minimum; clamping to ${repairedHint}`,
         {
-          stepName: params.stepName,
-          originalMaxBudgetHint: params.maxBudgetHint,
+          stepName: step.name,
+          originalMaxBudgetHint: step.maxBudgetHint,
           repairedMaxBudgetHint: repairedHint,
           minimumSeconds: Math.floor(MIN_DELEGATION_TIMEOUT_MS / 1000),
         },
       ),
     );
-    return repairedHint;
+
+    const workflowStep =
+      "workflowStep" in step &&
+      typeof step.workflowStep === "object" &&
+      step.workflowStep !== null
+        ? { ...step.workflowStep, maxBudgetHint: repairedHint }
+        : undefined;
+
+    return {
+      ...step,
+      maxBudgetHint: repairedHint,
+      ...(workflowStep ? { workflowStep } : {}),
+    } as typeof step;
+  });
+
+  if (!changed) {
+    return parsed;
   }
-  return params.maxBudgetHint;
+
+  return {
+    plan: {
+      ...parsed.plan,
+      steps: repairedSteps,
+    },
+    diagnostics,
+  };
 }
 
 function normalizeDeterministicPlannerToolArgs(params: {
@@ -2557,11 +2586,6 @@ export function parsePlannerPlan(
         );
         return { diagnostics };
       }
-      const normalizedBudgetHint = normalizePlannerSubagentBudgetHint({
-        stepName: safeName,
-        maxBudgetHint,
-        diagnostics,
-      });
       const workflowStep = buildPlannerWorkflowStepContract({
         name: safeName,
         stepType,
@@ -2571,7 +2595,7 @@ export function parsePlannerPlan(
         requiredToolCapabilities,
         contextRequirements,
         executionContext,
-        maxBudgetHint: normalizedBudgetHint,
+        maxBudgetHint,
         canRunParallel,
       });
 
@@ -2585,7 +2609,7 @@ export function parsePlannerPlan(
         contextRequirements,
         ...(executionContext ? { executionContext } : {}),
         workflowStep,
-        maxBudgetHint: normalizedBudgetHint,
+        maxBudgetHint,
         canRunParallel,
       });
       continue;
@@ -4044,23 +4068,6 @@ export function validatePlannerStepContracts(
         ),
       );
       continue;
-    }
-    if (
-      budgetHint.kind === "explicit" &&
-      budgetHint.durationMs < MIN_DELEGATION_TIMEOUT_MS
-    ) {
-      diagnostics.push(
-        createPlannerDiagnostic(
-          "validation",
-          "planner_subagent_budget_hint_too_small",
-          `Planner subagent step "${step.name}" uses a max_budget_hint below the delegation minimum`,
-          {
-            stepName: step.name,
-            maxBudgetHint: step.maxBudgetHint,
-            minimumSeconds: Math.floor(MIN_DELEGATION_TIMEOUT_MS / 1000),
-          },
-        ),
-      );
     }
   }
 

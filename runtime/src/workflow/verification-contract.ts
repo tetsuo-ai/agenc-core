@@ -491,8 +491,6 @@ function evaluateExecutableOutcomeChannel(params: {
     params.obligations.requiresReviewVerification &&
     !(
       params.evidence.executableOutcomes.review ||
-      params.evidence.executableAttempts.review ||
-      params.evidence.inspectedWorkspaceArtifacts.size > 0 ||
       params.evidence.readArtifacts.size > 0
     )
   ) {
@@ -1077,12 +1075,6 @@ function hasGroundedNoopCompletion(
   output: string,
   parsedOutput?: Record<string, unknown>,
 ): boolean {
-  if (
-    typeof parsedOutput?.reportedOutcome === "string" &&
-    parsedOutput.reportedOutcome.trim().toLowerCase() === "already_satisfied"
-  ) {
-    return true;
-  }
   const values = [
     output,
     ...collectStringValues(parsedOutput),

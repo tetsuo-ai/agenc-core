@@ -46,6 +46,7 @@ function isDenied(script: string): string | null {
 
 const MAX_OUTPUT_LENGTH = 8192;
 const EXEC_TIMEOUT_MS = 30_000;
+const MAX_ERROR_DETAIL_LENGTH = 2048;
 
 function errorResult(message: string): ToolResult {
   return { content: JSON.stringify({ error: message }), isError: true };
@@ -53,6 +54,35 @@ function errorResult(message: string): ToolResult {
 
 function successResult(data: Record<string, unknown>): ToolResult {
   return { content: JSON.stringify(data) };
+}
+
+function normalizeExecDetail(
+  value: string | Buffer | NodeJS.ArrayBufferView | null | undefined,
+): string {
+  if (!value) return "";
+  const text = typeof value === "string" ? value : Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString("utf8");
+  return text.trim().slice(0, MAX_ERROR_DETAIL_LENGTH);
+}
+
+function getExecErrorMessage(error: unknown): string {
+  const fallback = error instanceof Error ? error.message : String(error);
+  if (!error || typeof error !== "object") return fallback;
+
+  const detailSource = error as {
+    stderr?: string | Buffer | NodeJS.ArrayBufferView | null;
+    stdout?: string | Buffer | NodeJS.ArrayBufferView | null;
+  };
+
+  const detail =
+    normalizeExecDetail(detailSource.stderr) ||
+    normalizeExecDetail(detailSource.stdout) ||
+    fallback;
+
+  if (/not allowed to send keystrokes/i.test(detail)) {
+    return `${detail} Grant Accessibility permission to the app running AgenC and allow it to control System Events/Telegram, then retry.`;
+  }
+
+  return detail;
 }
 
 // ============================================================================
@@ -104,7 +134,7 @@ function createAppleScriptTool(timeout: number): Tool {
         const err = (stderr || "").slice(0, 1024);
         return successResult({ output: out, ...(err ? { stderr: err } : {}) });
       } catch (error) {
-        return errorResult((error as Error).message);
+        return errorResult(getExecErrorMessage(error));
       }
     },
   };
@@ -140,7 +170,7 @@ function createJXATool(timeout: number): Tool {
         const err = (stderr || "").slice(0, 1024);
         return successResult({ output: out, ...(err ? { stderr: err } : {}) });
       } catch (error) {
-        return errorResult((error as Error).message);
+        return errorResult(getExecErrorMessage(error));
       }
     },
   };
@@ -173,7 +203,7 @@ function createOpenTool(timeout: number): Tool {
         const { stdout } = await execFileAsync("open", execArgs, { timeout });
         return successResult({ success: true, output: stdout || "" });
       } catch (error) {
-        return errorResult((error as Error).message);
+        return errorResult(getExecErrorMessage(error));
       }
     },
   };
@@ -207,7 +237,7 @@ function createNotificationTool(): Tool {
         await execFileAsync("osascript", ["-e", script], { timeout: 10_000 });
         return successResult({ success: true });
       } catch (error) {
-        return errorResult((error as Error).message);
+        return errorResult(getExecErrorMessage(error));
       }
     },
   };

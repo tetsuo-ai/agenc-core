@@ -78,6 +78,12 @@ interface SystemProcessRuntime {
   exited: boolean;
 }
 
+function getFsErrorCode(error: unknown): string {
+  return typeof error === "object" && error && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : "";
+}
+
 const SYSTEM_PROCESS_FAMILY = "system_process";
 
 function cloneRecord(record: SystemProcessRecord): SystemProcessRecord {
@@ -92,15 +98,6 @@ function normalizePersistedState(value: unknown): SystemProcessState | undefined
     return "exited";
   }
   return undefined;
-}
-
-function isMissingPathError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as NodeJS.ErrnoException).code === "ENOENT"
-  );
 }
 
 function validateCommand(commandValue: unknown): string | ToolResult {
@@ -373,8 +370,7 @@ export class SystemProcessManager {
       processes: [...this.records.values()].map((record) => cloneRecord(record)),
     };
     const serializedSnapshot = JSON.stringify(snapshot, null, 2);
-    const previousPersist = this.persistChain.catch(() => undefined);
-    this.persistChain = previousPersist.then(async () => {
+    this.persistChain = this.persistChain.then(async () => {
       if (this.disposed) {
         return;
       }
@@ -388,12 +384,12 @@ export class SystemProcessManager {
             await handle.writeFile(serializedSnapshot, "utf8");
             await handle.sync();
           } finally {
-            await handle.close().catch(() => undefined);
+            await handle.close();
           }
           try {
             await rename(tempPath, this.registryPath);
           } catch (error) {
-            if (!isMissingPathError(error)) {
+            if (getFsErrorCode(error) !== "ENOENT") {
               throw error;
             }
             if (this.disposed) {
@@ -401,43 +397,20 @@ export class SystemProcessManager {
             }
             await mkdir(this.rootDir, { recursive: true });
             await writeFile(this.registryPath, serializedSnapshot, "utf8");
-            if (tempPath) {
-              await rm(tempPath, { force: true }).catch(() => undefined);
-            }
+            await rm(tempPath, { force: true }).catch(() => undefined);
           }
           return;
         } catch (error) {
           if (tempPath) {
             await rm(tempPath, { force: true }).catch(() => undefined);
           }
-          if (this.disposed && isMissingPathError(error)) {
-            return;
-          }
-          if (!isMissingPathError(error) || attempt === 1) {
+          if (getFsErrorCode(error) !== "ENOENT" || attempt === 1) {
             throw error;
           }
         }
       }
     });
     await this.persistChain;
-  }
-
-  private persistLifecycleTransition(
-    record: SystemProcessRecord,
-    cause: SystemProcessLifecycleEvent["cause"],
-  ): void {
-    void this.persist().then(() => {
-      this.emitLifecycleEvent(record, cause);
-    }).catch((error) => {
-      if (this.disposed && isMissingPathError(error)) {
-        return;
-      }
-      this.logger.debug("Failed to persist system process lifecycle transition", {
-        processId: record.processId,
-        cause,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
   }
 
   private findByLabel(label: string): SystemProcessRecord | undefined {
@@ -761,7 +734,9 @@ export class SystemProcessManager {
         current.lastExitAt = this.now();
         current.updatedAt = current.lastExitAt;
         this.runtimes.delete(processId);
-        this.persistLifecycleTransition(current, "child_exit");
+        void this.persist().then(() => {
+          this.emitLifecycleEvent(current, "child_exit");
+        });
       });
       child.once("error", (error) => {
         if (this.disposed) return;
@@ -782,7 +757,9 @@ export class SystemProcessManager {
         current.lastExitAt = this.now();
         current.updatedAt = current.lastExitAt;
         this.runtimes.delete(processId);
-        this.persistLifecycleTransition(current, "child_error");
+        void this.persist().then(() => {
+          this.emitLifecycleEvent(current, "child_error");
+        });
       });
       this.records.set(processId, record);
       this.runtimes.set(processId, {

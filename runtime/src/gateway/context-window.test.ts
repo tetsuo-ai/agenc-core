@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearDynamicContextWindowCache,
-  getGrokModelCapabilities,
   inferContextWindowTokens,
   inferGrokContextWindowTokens,
   listKnownGrokModels,
@@ -46,33 +45,6 @@ describe("inferGrokContextWindowTokens", () => {
     expect(inferGrokContextWindowTokens("grok-code-fast-1")).toBe(256_000);
     expect(inferGrokContextWindowTokens("grok-3")).toBe(131_072);
     expect(inferGrokContextWindowTokens("grok-3-mini")).toBe(131_072);
-  });
-});
-
-describe("getGrokModelCapabilities", () => {
-  it("exposes explicit capability differences between Grok model families", () => {
-    expect(getGrokModelCapabilities("grok-4-1-fast-reasoning")).toMatchObject({
-      family: "grok_4_general",
-      supportsClientTools: true,
-      supportsServerSideTools: true,
-      supportsStructuredOutputsWithTools: true,
-      supportsPreviousResponseId: true,
-    });
-    expect(
-      getGrokModelCapabilities("grok-4.20-multi-agent-beta-0309"),
-    ).toMatchObject({
-      family: "grok_4_multi_agent",
-      multiAgent: true,
-      supportsClientTools: false,
-      supportsServerSideTools: true,
-      supportsRemoteMcpTools: true,
-    });
-    expect(getGrokModelCapabilities("grok-code-fast-1")).toMatchObject({
-      family: "grok_code",
-      supportsClientTools: true,
-      supportsServerSideTools: false,
-      supportsStructuredOutputsWithTools: false,
-    });
   });
 });
 

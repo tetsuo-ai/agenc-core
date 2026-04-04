@@ -163,8 +163,6 @@ export interface PipelineContext {
 
 export interface Pipeline {
   readonly id: string;
-  /** Stable request-tree budget scope key used to preserve child budgets across planner retries/verifier reruns. */
-  readonly requestTreeBudgetKey?: string;
   readonly steps: readonly PipelineStep[];
   /** Optional planner-emitted step graph for DAG orchestration. */
   readonly plannerSteps?: readonly PipelinePlannerStep[];

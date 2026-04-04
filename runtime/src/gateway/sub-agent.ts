@@ -48,7 +48,6 @@ import {
   isRuntimeLimitReached,
   normalizeRuntimeLimit,
 } from "../llm/runtime-limit-policy.js";
-import { resolveWorkflowDependencyState } from "../workflow/completion-state.js";
 import type {
   DelegationContractSpec,
   DelegationOutputValidationCode,
@@ -134,9 +133,6 @@ function raceAbortOrTimeout<T>(
 export type SubAgentStatus =
   | "running"
   | "completed"
-  | "needs_verification"
-  | "partial"
-  | "blocked"
   | "cancelled"
   | "timed_out"
   | "failed";
@@ -277,11 +273,6 @@ function mapChatCompletionToSubAgentStatus(input: {
   if (input.stopReason === "timeout") return "timed_out";
   if (input.stopReason === "cancelled") return "cancelled";
   if (input.completionState === "completed") return "completed";
-  if (input.completionState === "needs_verification") {
-    return "needs_verification";
-  }
-  if (input.completionState === "partial") return "partial";
-  if (input.completionState === "blocked") return "blocked";
   return "failed";
 }
 
@@ -870,12 +861,7 @@ export class SubAgentManager {
         completionState: resultOrAbort.completionState,
         stopReason: resultOrAbort.stopReason,
       });
-      const dependencyState = resultOrAbort.completionState
-        ? resolveWorkflowDependencyState({
-          completionState: resultOrAbort.completionState,
-        })
-        : undefined;
-      const success = dependencyState?.dependencySatisfied ?? false;
+      const success = resultOrAbort.completionState === "completed";
       const output =
         success || !resultOrAbort.stopReasonDetail
           ? resultOrAbort.content

@@ -63,6 +63,21 @@ function preferredRunSurfaceState(payload, priorState) {
   };
 }
 
+function modelRoutesMatch(left, right) {
+  const leftProvider = String(left?.provider ?? "").trim();
+  const leftModel = String(left?.model ?? "").trim();
+  const rightProvider = String(right?.provider ?? "").trim();
+  const rightModel = String(right?.model ?? "").trim();
+  return Boolean(
+    leftProvider &&
+    leftModel &&
+    rightProvider &&
+    rightModel &&
+    leftProvider === rightProvider &&
+    leftModel === rightModel
+  );
+}
+
 function handleSubscriptionSurfaceEvent(surfaceEvent, api) {
   const payload = surfaceEvent.payloadRecord;
   switch (surfaceEvent.type) {
@@ -244,7 +259,7 @@ function handleChatSurfaceEvent(surfaceEvent, state, api) {
     case "chat.usage":
       state.lastUsageSummary = api.summarizeUsage(payload);
       state.liveSessionModelRoute =
-        api.normalizeModelRoute(payload) ?? state.liveSessionModelRoute;
+        api.normalizeModelRoute({ ...(payload ?? {}), source: "live" }) ?? state.liveSessionModelRoute;
       return true;
     default:
       return false;
@@ -423,8 +438,21 @@ function handleStatusSurfaceEvent(surfaceEvent, state, api) {
     return false;
   }
   state.lastStatus = payload ?? state.lastStatus;
-  state.configuredModelRoute =
-    api.normalizeModelRoute(payload) ?? state.configuredModelRoute;
+  const nextConfiguredRoute = api.normalizeModelRoute({
+    ...(payload ?? {}),
+    source: "status",
+  });
+  const currentConfiguredRoute = state.configuredModelRoute;
+  if (
+    nextConfiguredRoute &&
+    (
+      !currentConfiguredRoute ||
+      currentConfiguredRoute.source === "status" ||
+      modelRoutesMatch(currentConfiguredRoute, nextConfiguredRoute)
+    )
+  ) {
+    state.configuredModelRoute = nextConfiguredRoute;
+  }
   const backgroundRuns = payload?.backgroundRuns;
   if (backgroundRuns?.enabled === false) {
     api.setTransientStatus("durable runs disabled");

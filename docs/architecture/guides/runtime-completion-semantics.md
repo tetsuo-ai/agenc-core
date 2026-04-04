@@ -2,12 +2,6 @@
 
 This guide defines the final completion rules for `runtime/` implementation-class work after the false-completion cleanup.
 
-Phase 0 cleanup guardrails for the planner/delegation/verifier path are tracked
-separately in [workflow-cleanup-mode.md](workflow-cleanup-mode.md). That guide
-is the temporary freeze for status families, verifier issue codes, compatibility
-overrides, and must-pass incident fixtures while the architectural cleanup is
-in progress.
-
 ## Authoritative rule
 
 The workflow verification layer is the only authority for implementation completion.

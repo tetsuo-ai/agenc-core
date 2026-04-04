@@ -58,6 +58,9 @@ import {
   splitTranscriptPreviewForHeadline,
 } from "./agenc-watch-transcript-cards.mjs";
 import {
+  applyComposerFileTagSuggestion,
+  applySlashCommandCompletion,
+  applySlashModelCompletion,
   autocompleteComposerFileTag,
   autocompleteSlashComposerInput,
   buildComposerRenderLine,
@@ -102,30 +105,30 @@ import { createWatchSurfaceStateController } from "./agenc-watch-surface-state.m
 import { resolveWatchFeatureFlags } from "./agenc-watch-feature-flags.mjs";
 import {
   buildWatchExtensibilityReport,
+  clearWatchXaiApiKey,
   listWatchUserSkills,
+  readWatchXaiConfigStatus,
   readWatchRuntimeConfig,
   updateWatchMcpServerState,
   updateWatchTrustedPluginPackage,
+  updateWatchXaiApiKey,
 } from "./agenc-watch-extensibility.mjs";
 import {
   createQueuedWatchAttachment,
   formatQueuedWatchAttachments,
-  resolveWatchAttachmentInputPath,
   resolveQueuedWatchAttachmentPayloads,
 } from "./agenc-watch-attachments.mjs";
 import {
   buildWatchExportBundle,
   writeWatchExportBundle,
 } from "./agenc-watch-export-bundle.mjs";
+import { validateXaiApiKey } from "../onboarding/xai-validation.js";
 import {
   buildWatchInsightsReport,
   buildWatchMaintenanceReport,
 } from "./agenc-watch-insights.mjs";
 import { buildWatchAgentsReport } from "./agenc-watch-agents.mjs";
-import {
-  buildWatchLocalConfigReport,
-  buildWatchUiPreferencesReport,
-} from "./agenc-watch-ui-preferences.mjs";
+import { buildWatchUiPreferencesReport } from "./agenc-watch-ui-preferences.mjs";
 import {
   buildWatchSessionQueryCandidates,
   clearWatchSessionLabel,
@@ -263,6 +266,11 @@ import {
 // Re-export for external consumers (tests, harness)
 export { buildSurfaceSummaryCacheKey, latestSessionSummary };
 
+export function resolveWatchMouseTrackingEnabled(env = globalThis.process?.env ?? {}) {
+  const rawValue = String(env.AGENC_WATCH_ENABLE_MOUSE ?? "").trim();
+  return /^(1|true|yes|on)$/i.test(rawValue);
+}
+
 export async function createWatchApp(runtime = {}) {
 const process = runtime.processLike ?? globalThis.process;
 const nowMs = runtime.nowMs ?? Date.now;
@@ -301,9 +309,7 @@ const startupSplashMinMs = 1_500;
 const maxEvents = 140;
 const maxInlineChars = 220;
 const maxStoredBodyChars = 96_000;
-const enableMouseTracking = /^(1|true|yes|on)$/i.test(
-  String(process.env.AGENC_WATCH_ENABLE_MOUSE ?? ""),
-);
+const enableMouseTracking = resolveWatchMouseTrackingEnabled(process.env);
 const watchFeatureFlags = resolveWatchFeatureFlags({ env: process.env });
 const watchCommands = buildWatchCommands({ featureFlags: watchFeatureFlags });
 const maxFeedPreviewLines = 3;
@@ -488,26 +494,6 @@ function showInputModes() {
   return report;
 }
 
-function currentStatuslineEnabled() {
-  return watchFeatureFlags.statusline === true;
-}
-
-function setStatuslineEnabled(enabled) {
-  watchFeatureFlags.statusline = enabled === true;
-  scheduleRender();
-  return watchFeatureFlags.statusline;
-}
-
-function showConfig() {
-  const report = buildWatchLocalConfigReport({
-    preferences: watchState.inputPreferences,
-    composerMode: watchState.composerMode,
-    statuslineEnabled: currentStatuslineEnabled(),
-  });
-  pushEvent("operator", "Local Config", report, "slate");
-  return report;
-}
-
 function setInputModeProfile(profile) {
   watchState.inputPreferences = {
     ...watchState.inputPreferences,
@@ -599,14 +585,13 @@ function formatPendingAttachments() {
   return formatQueuedWatchAttachments(currentPendingAttachments());
 }
 
-function queuePendingAttachment(inputPath, { allowMissing = false } = {}) {
+function queuePendingAttachment(inputPath) {
   const attachment = createQueuedWatchAttachment({
     fs,
     pathModule: path,
     inputPath,
     projectRoot,
     id: nextAttachmentId(),
-    allowMissing,
   });
   const existing = pendingAttachments.find((entry) => entry.path === attachment.path);
   if (existing) {
@@ -744,6 +729,202 @@ function showExtensibility({
   setTransientStatus(`extensibility: ${section}`);
   pushEvent("operator", "Extensibility", report, "slate");
   return report;
+}
+
+function currentSecretPrompt() {
+  return watchState.secretPrompt && typeof watchState.secretPrompt === "object"
+    ? watchState.secretPrompt
+    : null;
+}
+
+function formatXaiModelList(models = []) {
+  if (!Array.isArray(models) || models.length === 0) {
+    return "none reported";
+  }
+  const visibleModels = models.slice(0, 5);
+  return visibleModels.length === models.length
+    ? visibleModels.join(", ")
+    : `${visibleModels.join(", ")} (+${models.length - visibleModels.length} more)`;
+}
+
+function showXaiStatus() {
+  const status = readWatchXaiConfigStatus({
+    fs,
+    env: process.env,
+    osModule: os,
+    pathModule: path,
+  });
+  const body = [
+    `Config: ${status.configPath}`,
+    `Config source: ${status.source}`,
+    `Provider: ${status.provider ?? "unset"}`,
+    `Base URL: ${status.baseUrl}`,
+    `Model: ${status.model ?? "unset"}`,
+    `API key: ${status.hasApiKey ? `configured (${status.maskedApiKey})` : "not configured"}`,
+    ...(status.error ? [`Config load: ${status.error}`] : []),
+  ].join("\n");
+  setTransientStatus(status.hasApiKey ? "xai credentials configured" : "xai credentials missing");
+  pushEvent("operator", "xAI Credentials", body, "slate");
+  return status;
+}
+
+async function validateAndPersistXaiApiKey(apiKey, {
+  existingBaseUrl = null,
+  completionLabel = "xAI Credentials Updated",
+} = {}) {
+  const trimmedApiKey = String(apiKey ?? "").trim();
+  if (!trimmedApiKey) {
+    setTransientStatus("xai api key required");
+    pushEvent("error", "xAI Validation Failed", "xAI API key cannot be empty.", "red");
+    return false;
+  }
+
+  const { configSnapshot } = readExtensibilityContext();
+  const llmConfig =
+    configSnapshot.config?.llm && typeof configSnapshot.config.llm === "object"
+      ? configSnapshot.config.llm
+      : {};
+  const baseUrl = String(existingBaseUrl ?? llmConfig.baseUrl ?? "").trim() || "https://api.x.ai/v1";
+
+  setTransientStatus("validating xai key");
+  const validation = await validateXaiApiKey({
+    apiKey: trimmedApiKey,
+    baseUrl,
+  });
+  if (!validation.ok) {
+    setTransientStatus("xai validation failed");
+    pushEvent("error", "xAI Validation Failed", validation.message, "red");
+    return false;
+  }
+
+  const result = updateWatchXaiApiKey({
+    fs,
+    configPath: configSnapshot.configPath,
+    apiKey: trimmedApiKey,
+    provider: "grok",
+    baseUrl,
+  });
+  setTransientStatus("xai key saved");
+  pushEvent(
+    "operator",
+    completionLabel,
+    [
+      `Config: ${result.configPath}`,
+      `Provider: ${result.provider}`,
+      `Base URL: ${result.baseUrl}`,
+      `API key: ${result.maskedApiKey}`,
+      `Available models: ${formatXaiModelList(validation.availableModels)}`,
+      "Config watcher should pick up the change automatically if the daemon is live.",
+    ].join("\n"),
+    "teal",
+  );
+  return true;
+}
+
+async function validateConfiguredXaiKey() {
+  const { configSnapshot } = readExtensibilityContext();
+  const llmConfig =
+    configSnapshot.config?.llm && typeof configSnapshot.config.llm === "object"
+      ? configSnapshot.config.llm
+      : {};
+  const apiKey = String(llmConfig.apiKey ?? "").trim();
+  if (!apiKey) {
+    setTransientStatus("xai api key missing");
+    pushEvent(
+      "error",
+      "xAI Validation Failed",
+      "No local xAI API key is configured. Use /xai set first.",
+      "red",
+    );
+    return false;
+  }
+  return validateAndPersistXaiApiKey(apiKey, {
+    existingBaseUrl: llmConfig.baseUrl,
+    completionLabel: "xAI Credentials Validated",
+  });
+}
+
+function clearXaiApiKey() {
+  const status = readWatchXaiConfigStatus({
+    fs,
+    env: process.env,
+    osModule: os,
+    pathModule: path,
+  });
+  if (!status.hasApiKey) {
+    setTransientStatus("xai api key not configured");
+    pushEvent(
+      "operator",
+      "xAI Credentials",
+      "No local xAI API key is configured.",
+      "slate",
+    );
+    return null;
+  }
+  const result = clearWatchXaiApiKey({
+    fs,
+    configPath: status.configPath,
+  });
+  setTransientStatus("xai key cleared");
+  pushEvent(
+    "operator",
+    "xAI Credentials Cleared",
+    [
+      `Config: ${result.configPath}`,
+      `Provider: ${result.provider ?? "unset"}`,
+      `Base URL: ${result.baseUrl}`,
+      `Removed key: ${result.maskedApiKey}`,
+      "Config watcher should pick up the change automatically if the daemon is live.",
+    ].join("\n"),
+    "amber",
+  );
+  return result;
+}
+
+function promptForXaiApiKey() {
+  watchState.secretPrompt = {
+    kind: "xai-api-key",
+    label: "xai key",
+    value: "",
+    pending: false,
+    onSubmit: async (rawValue) => {
+      const prompt = currentSecretPrompt();
+      if (!prompt || prompt.kind !== "xai-api-key" || prompt.pending) {
+        return false;
+      }
+      prompt.pending = true;
+      scheduleRender();
+      const saved = await validateAndPersistXaiApiKey(rawValue);
+      const nextPrompt = currentSecretPrompt();
+      if (!saved) {
+        if (nextPrompt && nextPrompt.kind === "xai-api-key") {
+          nextPrompt.pending = false;
+          nextPrompt.value = "";
+        }
+        scheduleRender();
+        return false;
+      }
+      watchState.secretPrompt = null;
+      scheduleRender();
+      return true;
+    },
+    onCancel: () => {
+      watchState.secretPrompt = null;
+      setTransientStatus("xai prompt cancelled");
+      scheduleRender();
+    },
+  };
+  setTransientStatus("enter xai api key");
+  pushEvent(
+    "operator",
+    "xAI Credentials",
+    [
+      "Enter your xAI API key in the masked prompt below.",
+      "The key stays local to this machine until validation succeeds and the runtime config is updated.",
+    ].join("\n\n"),
+    "teal",
+  );
+  scheduleRender();
 }
 
 function trustPluginPackage(packageName, allowedSubpaths = []) {
@@ -888,9 +1069,11 @@ function compactBodyLines(value, maxLines = 4) {
   return _compactBodyLines(value, maxLines, maxInlineChars);
 }
 
-function renderEventBodyLine(event, line, { inline = false } = {}) {
+function renderEventBodyLine(event, line, options = {}) {
+  const { inline = false, ...rest } = options;
   return _renderEventBodyLine(event, line, {
     inline,
+    ...rest,
     color,
     cwd: process.cwd(),
     enableHyperlinks: enableWatchHyperlinks,
@@ -1033,6 +1216,9 @@ function authPayload(extra = {}) {
 }
 
 function currentInputValue() {
+  if (currentSecretPrompt()) {
+    return "";
+  }
   return currentComposerInput(watchState);
 }
 
@@ -1045,6 +1231,26 @@ function currentModelSuggestions(limit = 6) {
   const match = input.match(/^\/models?\s+(.*)/i);
   if (!match) return [];
   return matchModelNames(match[1].trim(), { limit });
+}
+
+function inferModelProvider(modelName) {
+  const normalized = String(modelName ?? "").trim().toLowerCase();
+  if (!normalized) {
+    return effectiveModelRoute()?.provider ?? "unknown";
+  }
+  if (normalized.startsWith("grok")) return "grok";
+  if (
+    normalized.startsWith("gpt") ||
+    normalized.startsWith("o1") ||
+    normalized.startsWith("o3") ||
+    normalized.startsWith("o4")
+  ) {
+    return "openai";
+  }
+  if (normalized.startsWith("claude")) return "anthropic";
+  if (normalized.startsWith("gemini")) return "google";
+  if (normalized.startsWith("llama")) return "meta";
+  return effectiveModelRoute()?.provider ?? "unknown";
 }
 
 function currentFileTagQuery() {
@@ -1079,12 +1285,121 @@ function currentFileTagPalette(limit = 8) {
   };
 }
 
+const MAX_COMPOSER_PALETTE_ENTRIES = 64;
+
+function resetComposerPaletteSelection() {
+  watchState.composerPaletteIndex = 0;
+}
+
+function normalizeComposerPaletteIndex(entryCount) {
+  if (!Number.isInteger(entryCount) || entryCount <= 0) {
+    watchState.composerPaletteIndex = 0;
+    return -1;
+  }
+  const nextIndex = Number.isInteger(watchState.composerPaletteIndex)
+    ? watchState.composerPaletteIndex
+    : 0;
+  const clampedIndex = Math.max(0, Math.min(entryCount - 1, nextIndex));
+  watchState.composerPaletteIndex = clampedIndex;
+  return clampedIndex;
+}
+
+function currentComposerPalette(limit = MAX_COMPOSER_PALETTE_ENTRIES) {
+  if (watchState.expandedEventId || currentSecretPrompt()) {
+    resetComposerPaletteSelection();
+    return { mode: "none", entries: [], activeIndex: -1, summary: null };
+  }
+
+  const fileTagPalette = currentFileTagPalette(limit);
+  if (fileTagPalette.activeTag) {
+    const entries = fileTagPalette.suggestions.map((entry) => ({
+      kind: "file",
+      path: entry.path,
+      label: entry.label,
+      detail: entry.directory,
+      raw: entry,
+    }));
+    return {
+      mode: "file",
+      entries,
+      activeIndex: normalizeComposerPaletteIndex(entries.length),
+      summary: fileTagPalette.summary,
+    };
+  }
+
+  const input = currentInputValue();
+  if (!isSlashComposerInput(input)) {
+    resetComposerPaletteSelection();
+    return { mode: "none", entries: [], activeIndex: -1, summary: null };
+  }
+
+  const modelSuggestions = currentModelSuggestions(limit);
+  if (input.trimStart().match(/^\/models?\s+/i)) {
+    const entries = modelSuggestions.map((model) => ({
+      kind: "model",
+      label: model,
+      value: model,
+    }));
+    return {
+      mode: "model",
+      entries,
+      activeIndex: normalizeComposerPaletteIndex(entries.length),
+      summary: {
+        title: "Models",
+        empty: entries.length === 0,
+      },
+    };
+  }
+
+  const suggestions = currentSlashSuggestions(limit);
+  const entries = suggestions.map((command) => ({
+    kind: "command",
+    label: command.usage,
+    detail: command.description,
+    value: command.name,
+    raw: command,
+  }));
+  return {
+    mode: "command",
+    entries,
+    activeIndex: normalizeComposerPaletteIndex(entries.length),
+    summary: buildCommandPaletteSummary({
+      inputValue: input,
+      suggestions,
+      modelSuggestions: [],
+    }),
+  };
+}
+
+function hasActiveComposerPalette() {
+  return currentComposerPalette().mode !== "none";
+}
+
+function navigateComposerPalette(direction) {
+  const palette = currentComposerPalette();
+  if (palette.entries.length === 0) {
+    return false;
+  }
+  const delta = direction < 0 ? -1 : 1;
+  const nextIndex = Math.max(
+    0,
+    Math.min(palette.entries.length - 1, palette.activeIndex + delta),
+  );
+  if (nextIndex === palette.activeIndex) {
+    return false;
+  }
+  watchState.composerPaletteIndex = nextIndex;
+  return true;
+}
+
 function resetComposer() {
   resetComposerState(watchState);
+  resetComposerPaletteSelection();
 }
 
 function insertComposerTextValue(text, options) {
   insertComposerText(watchState, text, options);
+  resetComposerPaletteSelection();
 }
 
 function moveComposerCursor(direction) {
@@ -1096,32 +1411,116 @@ function moveComposerCursorHorizontally(direction) {
 }
 
 function deleteComposerCharacterBackward() {
-  return deleteComposerBackward(watchState);
+  const deleted = deleteComposerBackward(watchState);
+  if (deleted) {
+    resetComposerPaletteSelection();
+  }
+  return deleted;
 }
 
 function deleteComposerCharacterForward() {
-  return deleteComposerForward(watchState);
+  const deleted = deleteComposerForward(watchState);
+  if (deleted) {
+    resetComposerPaletteSelection();
+  }
+  return deleted;
 }
 
 function deleteComposerTail() {
+  const previousInput = watchState.composerInput;
   deleteComposerToLineEnd(watchState);
+  if (watchState.composerInput !== previousInput) {
+    resetComposerPaletteSelection();
+  }
 }
 
 function navigateComposer(direction) {
   navigateComposerHistory(watchState, direction);
+  resetComposerPaletteSelection();
 }
 
 function autocompleteComposerInput() {
+  const palette = currentComposerPalette();
+  const selectedEntry =
+    palette.activeIndex >= 0
+      ? palette.entries[palette.activeIndex] ?? palette.entries[0]
+      : palette.entries[0];
+  if (selectedEntry) {
+    const applied = palette.mode === "file"
+      ? applyComposerFileTagSuggestion(watchState, selectedEntry.raw)
+      : palette.mode === "model"
+        ? applySlashModelCompletion(watchState, selectedEntry.value)
+        : applySlashCommandCompletion(watchState, selectedEntry.value);
+    if (applied) {
+      resetComposerPaletteSelection();
+      return true;
+    }
+  }
   if (autocompleteComposerFileTag(watchState, workspaceFileIndex, { limit: 8 })) {
+    resetComposerPaletteSelection();
     return true;
   }
-  return autocompleteSlashComposerInput(
+  const completed = autocompleteSlashComposerInput(
     watchState,
     (input, options = {}) => matchWatchCommands(input, { ...options, commands: watchCommands }),
   );
+  if (completed) {
+    resetComposerPaletteSelection();
+  }
+  return completed;
+}
+
+function acceptComposerPaletteSelection() {
+  const palette = currentComposerPalette();
+  if (palette.mode === "none" || palette.entries.length === 0) {
+    return false;
+  }
+  const selectedEntry =
+    palette.activeIndex >= 0
+      ? palette.entries[palette.activeIndex] ?? palette.entries[0]
+      : palette.entries[0];
+  if (!selectedEntry) {
+    return false;
+  }
+  const applied = palette.mode === "file"
+    ? applyComposerFileTagSuggestion(watchState, selectedEntry.raw)
+    : palette.mode === "model"
+      ? applySlashModelCompletion(watchState, selectedEntry.value)
+      : applySlashCommandCompletion(watchState, selectedEntry.value);
+  if (applied) {
+    resetComposerPaletteSelection();
+  }
+  return applied;
+}
+
+function applyOptimisticModelSelection(modelName) {
+  const normalizedModel = String(modelName ?? "").trim();
+  if (!normalizedModel || /^(current|list)$/i.test(normalizedModel)) {
+    return false;
+  }
+  watchState.configuredModelRoute = normalizeModelRoute({
+    provider: inferModelProvider(normalizedModel),
+    model: normalizedModel,
+    source: "local",
+    updatedAt: nowMs(),
+  });
+  scheduleRender();
+  return true;
 }
 
 function composerRenderLine(width) {
+  const secretPrompt = currentSecretPrompt();
+  if (secretPrompt) {
+    const maskedValue = "*".repeat(String(secretPrompt.value ?? "").length);
+    return buildComposerRenderLine({
+      input: maskedValue,
+      cursor: maskedValue.length,
+      prompt: `${color.softInk}${secretPrompt.pending ? "xai key (validating)" : secretPrompt.label}>${color.reset} `,
+      width,
+      visibleLength,
+      pastedRanges: [],
+    });
+  }
   return buildComposerRenderLine({
     input: currentInputValue(),
     cursor: watchState.composerCursor,
@@ -1251,7 +1650,6 @@ watchCommandController = createWatchCommandController({
   showAgents,
   showExtensibility,
   showInputModes,
-  showConfig,
   resetLiveRunSurface,
   resetDelegationState,
   persistSessionId,
@@ -1262,25 +1660,22 @@ watchCommandController = createWatchCommandController({
   setInputModeProfile,
   setKeybindingProfile,
   setThemeName,
-  currentStatuslineEnabled,
-  setStatuslineEnabled,
   trustPluginPackage,
   untrustPluginPackage,
   setMcpServerEnabled,
+  showXaiStatus,
+  validateConfiguredXaiKey,
+  clearXaiApiKey,
+  promptForXaiApiKey,
   captureCheckpoint,
   listCheckpoints,
   listPendingAttachments: currentPendingAttachments,
   formatPendingAttachments,
   queuePendingAttachment,
-  resolveImplicitAttachmentInput: (value) => resolveWatchAttachmentInputPath({
-    fs,
-    pathModule: path,
-    inputPath: value,
-    projectRoot,
-  }),
   removePendingAttachment,
   clearPendingAttachments,
   prepareChatMessagePayload,
+  applyOptimisticModelSelection,
   openLatestDiffDetail,
   currentDiffNavigationState: () =>
     watchFrameController?.currentDiffNavigationState() ?? {
@@ -1470,6 +1865,14 @@ function copyCurrentView() {
   watchFrameController?.copyCurrentView();
 }
 
+function toggleTerminalSelectionMode() {
+  watchFrameController?.toggleTerminalSelectionMode();
+}
+
+function isTerminalSelectionModeActive() {
+  return watchFrameController?.isTerminalSelectionModeActive() ?? false;
+}
+
 function scrollCurrentViewBy(delta) {
   watchFrameController?.scrollCurrentViewBy(delta);
 }
@@ -1479,9 +1882,7 @@ function leaveAltScreen() {
 }
 
 function promptLabel() {
-  const slashMode = isSlashComposerInput(currentInputValue());
-  const promptTone = slashMode ? color.teal : color.magenta;
-  return `${promptTone}${color.bold}>${color.reset} `;
+  return `${color.softInk}>${color.reset} `;
 }
 
 function render() {
@@ -1890,6 +2291,7 @@ watchFrameController = createWatchFrameController({
   fs,
   watchState,
   transportState,
+  workspaceRoot: projectRoot,
   events,
   queuedOperatorInputs,
   subagentPlanSteps,
@@ -1952,7 +2354,6 @@ watchFrameController = createWatchFrameController({
   chip,
   row,
   renderPanel,
-  wrapAndLimit,
   joinColumns,
   blankRow,
   paintSurface,
@@ -1992,15 +2393,20 @@ watchInputController = createWatchInputController({
   scrollCurrentViewBy,
   shutdownWatch,
   toggleExpandedEvent,
+  toggleTerminalSelectionMode,
   currentDiffNavigationState: () => watchFrameController?.currentDiffNavigationState() ?? { enabled: false },
   jumpCurrentDiffHunk: (direction) => watchFrameController?.jumpCurrentDiffHunk(direction) ?? false,
   copyCurrentView,
+  isTerminalSelectionModeActive,
   clearLiveTranscriptView,
   deleteComposerTail,
   deleteComposerBackward: deleteComposerCharacterBackward,
   deleteComposerForward: deleteComposerCharacterForward,
   autocompleteComposerInput,
+  acceptComposerPaletteSelection,
   navigateComposer,
+  hasActiveComposerPalette,
+  navigateComposerPalette,
   moveComposerCursorByCharacter: moveComposerCursorHorizontally,
   moveComposerCursorByWord: moveComposerCursor,
   insertComposerTextValue,

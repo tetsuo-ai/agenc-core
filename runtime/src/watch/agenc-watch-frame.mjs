@@ -2,13 +2,14 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createWatchSplashRenderer } from "./agenc-watch-splash.mjs";
-import { visibleLength } from "./agenc-watch-text-utils.mjs";
+import { visibleLength, wrapBlock } from "./agenc-watch-text-utils.mjs";
 
 export function createWatchFrameController(dependencies = {}) {
   const {
     fs,
     watchState,
     transportState,
+    workspaceRoot,
     events,
     queuedOperatorInputs,
     subagentPlanSteps,
@@ -71,7 +72,6 @@ export function createWatchFrameController(dependencies = {}) {
     chip,
     row,
     renderPanel,
-    wrapAndLimit,
     joinColumns,
     blankRow,
     paintSurface,
@@ -105,6 +105,7 @@ export function createWatchFrameController(dependencies = {}) {
 
   const frameState = {
     enteredAltScreen: false,
+    selectionModeActive: false,
     renderPending: false,
     lastRenderedFrameLines: [],
     lastRenderedFrameWidth: 0,
@@ -125,7 +126,548 @@ export function createWatchFrameController(dependencies = {}) {
     truncate,
     sanitizeInlineText,
     color,
+    renderPanel,
+    row,
   });
+  const hiddenTranscriptKinds = new Set(["status"]);
+  const transcriptBlockInset = "  ";
+  const transcriptBodyInset = "    ";
+  const transcriptUserBg = color.panelMessageBg ?? color.panelHiBg;
+  const transcriptQueuedBg = color.panelAltBg;
+  const thinkingVerbs = Object.freeze([
+    "Grokking",
+    "Launching",
+    "Orbiting",
+    "Compiling",
+    "Patching",
+    "Routing",
+    "Boosting",
+    "Shipping",
+  ]);
+  const thinkingTips = Object.freeze([
+    "Use /status to inspect the live run without leaving the terminal.",
+    "Type @ to pull a workspace file into the prompt.",
+    "Use /compact now when the transcript gets noisy.",
+    "Open detail mode with ctrl+o to inspect the latest rich event.",
+  ]);
+  // Compact 4x4 pixel square rendered as a 2x1 braille badge so it matches text height.
+  const thinkingPixelGrid = Object.freeze({
+    width: 4,
+    height: 4,
+    cellWidth: 2,
+    cellHeight: 4,
+  });
+  const brailleDotMaskByPixel = Object.freeze([
+    Object.freeze([0x01, 0x08]),
+    Object.freeze([0x02, 0x10]),
+    Object.freeze([0x04, 0x20]),
+    Object.freeze([0x40, 0x80]),
+  ]);
+  const agencHeaderLogoBoxLines = Object.freeze([
+    "⣞⠙⠙⢦⡴⠋⠋⣳",
+    "⠳⣄⡴⠋⠙⢦⣠⠞",
+    "⡴⠋⠳⣄⣠⠞⠙⢦",
+    "⢯⣠⣠⠞⠳⣄⣄⡽",
+  ]);
+  const gitBranchCache = {
+    root: "",
+    value: "",
+    updatedAtMs: 0,
+    retryAfterMs: 0,
+  };
+
+  function stableFrameHash(value = "") {
+    let hash = 0;
+    const text = String(value ?? "");
+    for (let index = 0; index < text.length; index += 1) {
+      hash = (hash * 31 + text.charCodeAt(index)) >>> 0;
+    }
+    return hash >>> 0;
+  }
+
+  function currentThinkingSeed(summary) {
+    return [
+      String(Number(watchState.activeRunStartedAtMs) || 0),
+      sanitizeInlineText(summary?.objective ?? "", ""),
+      sanitizeInlineText(summary?.overview?.activeLine ?? "", ""),
+      sanitizeInlineText(summary?.overview?.phaseLabel ?? "", ""),
+      sanitizeInlineText(summary?.providerLabel ?? "", ""),
+    ].join("|");
+  }
+
+  function currentThinkingVerb(summary) {
+    const seed = currentThinkingSeed(summary);
+    return thinkingVerbs[stableFrameHash(seed) % thinkingVerbs.length] ?? "Thinking";
+  }
+
+  function currentThinkingTip(summary) {
+    const seed = `${currentThinkingSeed(summary)}|tip`;
+    return thinkingTips[stableFrameHash(seed) % thinkingTips.length] ?? thinkingTips[0];
+  }
+
+  function currentThinkingPrompt(summary) {
+    return (
+      sanitizeInlineText(summary?.objective ?? "", "") ||
+      sanitizeInlineText(summary?.overview?.activeLine ?? "", "") ||
+      sanitizeInlineText(summary?.runtimeLabel ?? "", "") ||
+      "Working"
+    );
+  }
+
+  function currentThinkingInlineGlyph() {
+    const pulseGlyph = typeof animatedWorkingGlyph === "function"
+      ? animatedWorkingGlyph()
+      : "◈";
+    const frameMap = {
+      "·": "·",
+      "◇": "◇",
+      "◈": "◈",
+      "❖": "❖",
+    };
+    return frameMap[pulseGlyph] ?? "◈";
+  }
+
+  function currentThinkingFooterFrameIndex() {
+    const pulseGlyph = currentThinkingInlineGlyph();
+    switch (pulseGlyph) {
+      case "·":
+      case "◐":
+        return 0;
+      case "◇":
+      case "◓":
+        return 1;
+      case "❖":
+      case "◒":
+        return 2;
+      case "◈":
+      case "◑":
+      default:
+        return 3;
+    }
+  }
+
+  function brailleCharFromMask(mask) {
+    return String.fromCodePoint(0x2800 + (mask & 0xff));
+  }
+
+  function thinkingPixelIsBorder(x, y) {
+    return (
+      x === 0 ||
+      y === 0 ||
+      x === thinkingPixelGrid.width - 1 ||
+      y === thinkingPixelGrid.height - 1
+    );
+  }
+
+  function thinkingPixelMaskForCell(cellX, cellY, frameIndex) {
+    let mask = 0;
+    const sweepColumn = frameIndex % thinkingPixelGrid.width;
+    const sweepRow = (frameIndex + 1) % thinkingPixelGrid.height;
+    for (let localY = 0; localY < thinkingPixelGrid.cellHeight; localY += 1) {
+      for (let localX = 0; localX < thinkingPixelGrid.cellWidth; localX += 1) {
+        const x = cellX * thinkingPixelGrid.cellWidth + localX;
+        const y = cellY * thinkingPixelGrid.cellHeight + localY;
+        const isBorder = thinkingPixelIsBorder(x, y);
+        const isSweepPixel = !isBorder && (
+          x === sweepColumn ||
+          x === sweepColumn + 1 ||
+          y === sweepRow
+        );
+        const isSparklePixel = !isBorder && ((x + y + frameIndex) % 4 === 0);
+        if (isBorder || isSweepPixel || isSparklePixel) {
+          mask |= brailleDotMaskByPixel[localY]?.[localX] ?? 0;
+        }
+      }
+    }
+    return mask;
+  }
+
+  function thinkingPixelToneForCell(cellX, cellY, frameIndex) {
+    const rows = thinkingPixelGrid.height / thinkingPixelGrid.cellHeight;
+    const sweepCellX = Math.floor((frameIndex % thinkingPixelGrid.width) / thinkingPixelGrid.cellWidth);
+    const sweepCellY = Math.floor(((frameIndex + 1) % thinkingPixelGrid.height) / thinkingPixelGrid.cellHeight);
+    if (cellX === sweepCellX || (rows > 1 && cellY === sweepCellY)) {
+      return frameIndex === 2 ? "yellow" : (frameIndex % 2 === 0 ? "cyan" : "teal");
+    }
+    const toneCycle = ["ink", "cyan", "teal", "ink"];
+    return toneCycle[(cellX + cellY + frameIndex) % toneCycle.length] ?? "ink";
+  }
+
+  function currentThinkingPixelLines() {
+    const frameIndex = currentThinkingFooterFrameIndex();
+    const columns = thinkingPixelGrid.width / thinkingPixelGrid.cellWidth;
+    const rows = thinkingPixelGrid.height / thinkingPixelGrid.cellHeight;
+    const sweepCellX = Math.floor((frameIndex % thinkingPixelGrid.width) / thinkingPixelGrid.cellWidth);
+    const sweepCellY = Math.floor(((frameIndex + 1) % thinkingPixelGrid.height) / thinkingPixelGrid.cellHeight);
+    return Array.from({ length: rows }, (_, cellY) => Array.from({ length: columns }, (_, cellX) => {
+      const mask = thinkingPixelMaskForCell(cellX, cellY, frameIndex);
+      const tone = thinkingPixelToneForCell(cellX, cellY, frameIndex);
+      const char = brailleCharFromMask(mask);
+      const isPulseCell = cellX === sweepCellX || (rows > 1 && cellY === sweepCellY);
+      return `${toneColor(tone)}${isPulseCell ? color.bold : ""}${char}${color.reset}`;
+    }).join(""));
+  }
+
+  function currentThinkingVerbTone() {
+    const frameIndex = currentThinkingFooterFrameIndex();
+    return ["cyan", "teal", "yellow", "cyan"][frameIndex] ?? "cyan";
+  }
+
+  function currentThinkingFooterBrand(summary) {
+    return {
+      logoLines: currentThinkingPixelLines(),
+      verb: currentThinkingVerb(summary).toLowerCase(),
+      verbTone: currentThinkingVerbTone(),
+    };
+  }
+
+  function formatComposerPathLabel(width) {
+    const root = sanitizeInlineText(workspaceRoot || process.cwd() || "", "");
+    if (!root) {
+      return "";
+    }
+    const home = os.homedir();
+    const displayRoot = root.startsWith(home)
+      ? `~${root.slice(home.length) || "/"}`
+      : root;
+    return truncate(displayRoot, Math.max(12, Math.floor(width * 0.34)));
+  }
+
+  function currentWorkspaceName() {
+    const root = sanitizeInlineText(workspaceRoot || process.cwd() || "", "");
+    if (!root) {
+      return "";
+    }
+    return path.basename(root) || root;
+  }
+
+  function currentGitBranchLabel() {
+    const root = sanitizeInlineText(workspaceRoot || "", "");
+    if (!root) {
+      return "";
+    }
+    const now = Number(nowMs()) || Date.now();
+    if (
+      gitBranchCache.root === root &&
+      gitBranchCache.updatedAtMs > 0 &&
+      now - gitBranchCache.updatedAtMs < 15000
+    ) {
+      return gitBranchCache.value;
+    }
+    if (gitBranchCache.root === root && gitBranchCache.retryAfterMs > now) {
+      return gitBranchCache.value;
+    }
+
+    let branch = "";
+    try {
+      branch = sanitizeInlineText(
+        execFileSync("git", ["-C", root, "branch", "--show-current"], {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+        }),
+        "",
+      );
+      if (!branch) {
+        branch = sanitizeInlineText(
+          execFileSync("git", ["-C", root, "rev-parse", "--short", "HEAD"], {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "ignore"],
+          }),
+          "",
+        );
+      }
+      gitBranchCache.root = root;
+      gitBranchCache.value = branch;
+      gitBranchCache.updatedAtMs = now;
+      gitBranchCache.retryAfterMs = 0;
+      return branch;
+    } catch {
+      gitBranchCache.root = root;
+      gitBranchCache.value = "";
+      gitBranchCache.updatedAtMs = 0;
+      gitBranchCache.retryAfterMs = now + 15000;
+      return "";
+    }
+  }
+
+  function currentHeaderLogoLines({ compact = false } = {}) {
+    const active = hasActiveSurfaceRun();
+    const artTone = active ? color.ink : color.softInk;
+    return agencHeaderLogoBoxLines.map((line, index) => {
+      const weight = index === 0 || index === agencHeaderLogoBoxLines.length - 1
+        ? color.bold
+        : "";
+      return `${artTone}${weight}${line}${color.reset}`;
+    });
+  }
+
+  function currentHeaderPrimaryText(summary, width) {
+    const activeText =
+      summary?.objective && summary.objective !== "No active objective"
+        ? summary.objective
+        : summary?.overview?.activeLine &&
+            summary.overview.activeLine !== "Awaiting operator prompt"
+          ? summary.overview.activeLine
+          : summary?.runtimeLabel || "Awaiting operator prompt";
+    return truncate(
+      sanitizeInlineText(activeText, "Awaiting operator prompt"),
+      Math.max(18, width),
+    );
+  }
+
+  function currentHeaderRouteText(summary) {
+    const model = sanitizeInlineText(
+      summary?.modelLabel ?? summary?.overview?.modelLabel ?? "",
+      "",
+    );
+    if (model && model !== "pending") {
+      return model;
+    }
+    return sanitizeInlineText(summary?.routeLabel ?? "", "routing pending");
+  }
+
+  function currentHeaderWorkspaceText(width) {
+    const separatorTone = color.slate || color.fog || "";
+    const separator = `${separatorTone} · ${color.reset}`;
+    const workspaceName = currentWorkspaceName();
+    const branch = currentGitBranchLabel();
+    const parts = [];
+    if (workspaceName) {
+      parts.push(
+        `${color.fog}ws${color.reset} ${color.ink}${truncate(workspaceName, 24)}${color.reset}`,
+      );
+    }
+    if (branch) {
+      parts.push(
+        `${color.fog}git${color.reset} ${color.softInk}${truncate(branch, Math.max(16, Math.floor(width * 0.42)))}${color.reset}`,
+      );
+    }
+    return parts.join(separator);
+  }
+
+  function currentHeaderContextText(summary, width) {
+    const separatorTone = color.slate || color.fog || "";
+    const separator = `${separatorTone} · ${color.reset}`;
+    const overview = summary?.overview ?? {};
+    const parts = [
+      `${color.fog}phase${color.reset} ${color.ink}${truncate(sanitizeInlineText(overview.phaseLabel, "idle"), 22)}${color.reset}`,
+    ];
+    const latestTool = sanitizeInlineText(overview.latestTool, "");
+    if (latestTool && latestTool !== "idle") {
+      parts.push(
+        `${color.fog}tool${color.reset} ${color.softInk}${truncate(latestTool, 26)}${color.reset}`,
+      );
+    }
+    const activeAgents = Number(overview.activeAgentCount ?? 0);
+    if (activeAgents > 0) {
+      parts.push(
+        `${color.fog}agents${color.reset} ${color.softInk}${activeAgents}${color.reset}`,
+      );
+    }
+    const queuedInputs = Number(overview.queuedInputCount ?? 0);
+    if (queuedInputs > 0) {
+      parts.push(
+        `${color.fog}queue${color.reset} ${color.softInk}${queuedInputs}${color.reset}`,
+      );
+    }
+    return parts.join(separator);
+  }
+
+  function currentHeaderRunChip(summary, elapsed) {
+    const phaseLabel = sanitizeInlineText(summary?.overview?.phaseLabel ?? "", hasActiveSurfaceRun() ? "running" : "idle");
+    const runTone = hasActiveSurfaceRun() ? "cyan" : stateTone(phaseLabel);
+    const runLabel = hasActiveSurfaceRun() ? phaseLabel || "running" : phaseLabel || "idle";
+    return `${chip("RUN", runLabel, runTone)} ${color.fog}${elapsed}${color.reset}`;
+  }
+
+  function currentHeaderStatusChip(summary) {
+    const overview = summary?.overview ?? {};
+    const attention = summary?.attention ?? {};
+    const connectionState = sanitizeInlineText(overview.connectionState, "unknown");
+    if (connectionState && !["live", "connected"].includes(connectionState.toLowerCase())) {
+      return chip("STATUS", `link ${connectionState}`, stateTone(connectionState));
+    }
+    const approvals = Number(attention.approvalAlertCount ?? 0);
+    if (approvals > 0) {
+      return chip(
+        "STATUS",
+        `${approvals} approval${approvals === 1 ? "" : "s"}`,
+        "red",
+      );
+    }
+    const errors = Number(attention.errorAlertCount ?? 0);
+    if (errors > 0) {
+      return chip(
+        "STATUS",
+        `${errors} error${errors === 1 ? "" : "s"}`,
+        "red",
+      );
+    }
+    if (sanitizeInlineText(overview.fallbackState, "") === "active") {
+      return chip("STATUS", "fallback active", "amber");
+    }
+    const runtimeState = sanitizeInlineText(overview.runtimeState, "");
+    if (runtimeState && !["healthy", "ready", "ok", "idle"].includes(runtimeState.toLowerCase())) {
+      return chip("STATUS", `runtime ${runtimeState}`, stateTone(runtimeState));
+    }
+    return chip("STATUS", "ready", "green");
+  }
+
+  function headerDataRow(logoLine, leftText, rightText, width) {
+    const rightWidth = visibleLength(rightText);
+    const gap = rightWidth > 0 ? 1 : 0;
+    const leftWidth = Math.max(18, width - rightWidth - gap);
+    const logoPrefix = visibleLength(logoLine) > 0 ? `${logoLine} ` : "";
+    const left = fitAnsi(`${logoPrefix}${leftText}`, leftWidth);
+    return fitAnsi(flexBetween(left, rightText, width), width);
+  }
+
+  function headerPanelInnerWidth(width, padding = 1) {
+    return Math.max(0, width - 2 - (padding * 2));
+  }
+
+  function headerPanelTop(width) {
+    const borderTone = color.borderStrong || color.border || "";
+    return `${borderTone}┌${"─".repeat(Math.max(0, width - 2))}┐${color.reset}`;
+  }
+
+  function headerPanelBottom(width) {
+    const borderTone = color.borderStrong || color.border || "";
+    return `${borderTone}└${"─".repeat(Math.max(0, width - 2))}┘${color.reset}`;
+  }
+
+  function headerPanelRow(text, width, background, { padding = 1 } = {}) {
+    const borderTone = color.borderStrong || color.border || "";
+    const inner = Math.max(0, width - 2);
+    const contentWidth = headerPanelInnerWidth(width, padding);
+    const content = fitAnsi(String(text ?? ""), contentWidth);
+    const padded = `${" ".repeat(padding)}${content}${" ".repeat(padding)}`;
+    return `${borderTone}│${color.reset}${paintSurface(padded, inner, background)}${borderTone}│${color.reset}`;
+  }
+
+  function headerPanelSpacerRow(width, background, { padding = 1 } = {}) {
+    return headerPanelRow("", width, background, { padding });
+  }
+
+  function wrapHeaderText(plainText, firstWidth, restWidth) {
+    const safeText = sanitizeInlineText(plainText, "");
+    if (!safeText) {
+      return [];
+    }
+    if (safeText.length <= firstWidth) {
+      return [safeText];
+    }
+    const [firstLine = safeText] = wrapBlock(safeText, firstWidth);
+    const remaining = safeText.slice(firstLine.length).trimStart();
+    if (!remaining) {
+      return [firstLine];
+    }
+    return [firstLine, ...wrapBlock(remaining, restWidth)];
+  }
+
+  function currentHeaderUsageRows(summary, logoLine, width) {
+    const usage = sanitizeInlineText(summary?.overview?.usage, "");
+    if (!usage || usage === "n/a") {
+      return [];
+    }
+    const logoPrefix = visibleLength(logoLine) > 0 ? `${logoLine} ` : "";
+    const continuationPrefix = " ".repeat(visibleLength(logoPrefix));
+    const labelWidth = visibleLength("usage ");
+    const firstWidth = Math.max(12, width - visibleLength(logoPrefix) - labelWidth);
+    const restWidth = Math.max(12, width - visibleLength(continuationPrefix));
+    const wrappedUsage = wrapHeaderText(usage, firstWidth, restWidth);
+    return wrappedUsage.map((line, index) => {
+      if (index === 0) {
+        return fitAnsi(
+          `${logoPrefix}${color.fog}usage${color.reset} ${color.ink}${line}${color.reset}`,
+          width,
+        );
+      }
+      return fitAnsi(
+        `${continuationPrefix}${color.ink}${line}${color.reset}`,
+        width,
+      );
+    });
+  }
+
+  function composerDividerLine(width, { label = "" } = {}) {
+    const safeLabel = sanitizeInlineText(label, "");
+    if (!safeLabel) {
+      return `${color.borderStrong}${"─".repeat(Math.max(0, width))}${color.reset}`;
+    }
+    const labelText = `${color.green}${safeLabel}${color.reset}`;
+    const labelWidth = visibleLength(safeLabel);
+    const ruleWidth = Math.max(0, width - labelWidth - 1);
+    return `${color.borderStrong}${"─".repeat(ruleWidth)}${color.reset} ${labelText}`;
+  }
+
+  function composerBandLines(
+    width,
+    composerLines = [],
+    diffNavigation = null,
+    { bottomGapRows = 1 } = {},
+  ) {
+    const statusLines = footerStatusLines(width, diffNavigation);
+    return [
+      ...statusLines,
+      composerDividerLine(width, { label: formatComposerPathLabel(width) }),
+      ...composerLines,
+      composerDividerLine(width),
+      ...Array.from({ length: Math.max(0, bottomGapRows) }, () => ""),
+    ];
+  }
+
+  function transcriptInputBlock(lines, width, {
+    tone = color.softInk,
+    background = transcriptUserBg,
+    marker = ">",
+    markerTone = color.ink,
+  } = {}) {
+    const blockLines = Array.isArray(lines) ? lines : [lines];
+    return blockLines.map((line, index) => {
+      const safeText = sanitizeDisplayText(
+        typeof line === "string" ? line : displayLinePlainText(line),
+      ) || "";
+      const prefix = index === 0
+        ? `${transcriptBlockInset}${markerTone}${color.bold}${marker}${color.reset} `
+        : transcriptBodyInset;
+      const truncated = truncate(
+        safeText,
+        Math.max(4, width - visibleLength(prefix) - 1),
+      );
+      const content = `${prefix}${tone}${truncated}${color.reset}`;
+      return paintSurface(content, width, background);
+    });
+  }
+
+  function transcriptInputBar(text, width, options = {}) {
+    return transcriptInputBlock([text], width, options)[0];
+  }
+
+  function transcriptChatRows(lines, width, {
+    marker = "●",
+    markerTone = color.ink,
+    textTone = color.ink,
+  } = {}) {
+    const safeLines = (Array.isArray(lines) ? lines : [lines])
+      .map((line) => sanitizeDisplayText(
+        typeof line === "string" ? line : displayLinePlainText(line),
+      ))
+      .filter((line) => line.length > 0);
+    const rows = [];
+    safeLines.forEach((line, index) => {
+      const markerPrefix = index === 0
+        ? `${transcriptBlockInset}${markerTone}${color.bold}${marker}${color.reset} `
+        : transcriptBodyInset;
+      const availableWidth = Math.max(
+        8,
+        width - visibleLength(markerPrefix),
+      );
+      const leftText = `${markerPrefix}${textTone}${truncate(line, availableWidth)}${color.reset}`;
+      rows.push(fitAnsi(leftText, width));
+    });
+    return rows;
+  }
 
   function activePlanEntries(limit = 10) {
     return [...subagentPlanSteps.values()]
@@ -139,182 +681,251 @@ export function createWatchFrameController(dependencies = {}) {
     );
   }
 
-  function headerLines(width, summary = currentSurfaceSummary()) {
-    const elapsed = currentSessionElapsedLabel();
-    const sessionDescriptor = summary.overview.sessionLabel
-      ? `${summary.overview.sessionLabel} · ${summary.overview.sessionToken}`
-      : summary.overview.sessionToken;
-    const connectionLabel = `${summary.overview.connectionState} ${sessionDescriptor} ${elapsed}`;
-    const chipLines = [[]];
-    for (const item of summary.chips) {
-      const rendered = chip(item.label, item.value, item.tone);
-      const currentLine = chipLines[chipLines.length - 1];
-      const nextLine = currentLine.length > 0
-        ? `${currentLine.join("  ")}  ${rendered}`
-        : rendered;
-      if (visibleLength(nextLine) <= width) {
-        currentLine.push(rendered);
-        continue;
-      }
-      if (chipLines.length >= 2) {
-        break;
-      }
-      chipLines.push([rendered]);
-    }
+  function visibleTranscriptEvents() {
+    return events.filter((event) => event && !hiddenTranscriptKinds.has(event.kind));
+  }
 
-    const lines = [
-      flexBetween(
-        `${color.magenta}${color.bold}A G E N / C${color.reset} ${color.fog}https://agenc.tech${color.reset}`,
-        `${toneColor(stateTone(summary.overview.connectionState))}${connectionLabel}${color.reset}`,
-        width,
+  function shouldShowIdleTranscript() {
+    return visibleTranscriptEvents().length === 0 &&
+      sanitizeInlineText(currentInputValue(), "").length === 0;
+  }
+
+  function headerLines(width) {
+    const safeWidth = Math.max(28, Number(width) || 0);
+    const headerPanelPadding = 1;
+    const innerWidth = Math.max(20, headerPanelInnerWidth(safeWidth, headerPanelPadding));
+    const summary = currentSurfaceSummary();
+    const elapsed = hasActiveSurfaceRun()
+      ? currentRunElapsedLabel()
+      : currentSessionElapsedLabel();
+    const compact = safeWidth < 88 || termHeight() < 28;
+    const headerPanelBg = color.panelMessageBg ?? color.panelAltBg ?? color.panelHiBg;
+    const logoLines = currentHeaderLogoLines({ compact });
+    const brandLabel = `${color.ink}${color.bold}AgenC${color.reset}`;
+    const primaryText = `${brandLabel} ${color.softInk}${currentHeaderPrimaryText(summary, Math.max(18, Math.floor(innerWidth * 0.5)))}${color.reset}`;
+    const workspaceText = currentHeaderWorkspaceText(innerWidth);
+    const contextText = currentHeaderContextText(summary, innerWidth);
+    const routeChip = chip(
+      "MODEL",
+      currentHeaderRouteText(summary),
+      summary?.providerLabel && summary.providerLabel !== "pending" ? "teal" : "slate",
+    );
+    const runChip = currentHeaderRunChip(summary, elapsed);
+    const statusChip = currentHeaderStatusChip(summary);
+    const detailText = `${color.softInk}${truncate(
+      sanitizeInlineText(
+        summary?.runtimeLabel || currentThinkingTip(summary),
+        "ready",
       ),
-      `${color.softInk}${truncate(summary.routeLabel, Math.max(26, width))}${color.reset}`,
+      Math.max(16, Math.floor(innerWidth * 0.48)),
+    )}${color.reset}`;
+
+    const bodyRows = [
+      headerDataRow(
+        logoLines[0] ?? "",
+        primaryText,
+        runChip,
+        innerWidth,
+      ),
+      headerDataRow(
+        logoLines[1] ?? "",
+        workspaceText || `${color.softInk}${truncate(summary.runtimeLabel || "routing pending", Math.max(16, Math.floor(innerWidth * 0.5)))}${color.reset}`,
+        routeChip,
+        innerWidth,
+      ),
+      headerDataRow(
+        logoLines[2] ?? "",
+        contextText || `${color.softInk}${truncate(currentThinkingTip(summary), Math.max(18, Math.floor(innerWidth * 0.5)))}${color.reset}`,
+        statusChip,
+        innerWidth,
+      ),
     ];
-
-    for (const chipLine of chipLines) {
-      if (chipLine.length > 0) {
-        lines.push(fitAnsi(chipLine.join("  "), width));
-      }
+    const footerRows = currentHeaderUsageRows(summary, logoLines[3] ?? "", innerWidth);
+    if (footerRows.length === 0) {
+      footerRows.push(headerDataRow(logoLines[3] ?? "", detailText, "", innerWidth));
     }
 
-    if (
-      hasActiveSurfaceRun() &&
-      summary.objective &&
-      summary.objective !== "No active objective" &&
-      !/^awaiting operator prompt$/i.test(summary.objective)
-    ) {
-      lines.push(`${color.ink}${truncate(summary.objective, Math.max(28, width))}${color.reset}`);
+    return [
+      headerPanelTop(safeWidth),
+      headerPanelSpacerRow(safeWidth, headerPanelBg, { padding: headerPanelPadding }),
+      ...bodyRows.map((line) => headerPanelRow(line, safeWidth, headerPanelBg, { padding: headerPanelPadding })),
+      ...footerRows.map((line) => headerPanelRow(line, safeWidth, headerPanelBg, { padding: headerPanelPadding })),
+      headerPanelSpacerRow(safeWidth, headerPanelBg, { padding: headerPanelPadding }),
+      headerPanelBottom(safeWidth),
+    ];
+  }
+
+  function normalizePaletteSelectionIndex(entryCount) {
+    if (!Number.isInteger(entryCount) || entryCount <= 0) {
+      return -1;
     }
-    if (summary.overview.activeLine && summary.overview.activeLine !== summary.objective) {
-      lines.push(`${color.softInk}${truncate(summary.overview.activeLine, Math.max(24, width))}${color.reset}`);
+    const nextIndex = Number.isInteger(watchState.composerPaletteIndex)
+      ? watchState.composerPaletteIndex
+      : 0;
+    return Math.max(0, Math.min(entryCount - 1, nextIndex));
+  }
+
+  function paletteVisibleEntryLimit(height) {
+    const safeHeight = Math.max(0, Number(height) || 0);
+    if (safeHeight >= 30) return 8;
+    if (safeHeight >= 24) return 6;
+    if (safeHeight >= 20) return 5;
+    if (safeHeight >= 18) return 4;
+    return 3;
+  }
+
+  function currentComposerPaletteState(limit = 64) {
+    if (watchState.expandedEventId) {
+      return { mode: "none", entries: [], activeIndex: -1, summary: null };
     }
 
-    lines.push("");
+    const fileTagPalette = currentFileTagPalette(limit);
+    if (fileTagPalette.activeTag) {
+      const entries = (fileTagPalette.suggestions ?? []).map((entry) => ({
+        kind: "file",
+        label: entry.label,
+        detail: entry.directory,
+      }));
+      return {
+        mode: "file",
+        entries,
+        activeIndex: normalizePaletteSelectionIndex(entries.length),
+        summary: fileTagPalette.summary,
+      };
+    }
+
+    const inputValue = currentInputValue();
+    if (!isSlashComposerInput(inputValue)) {
+      return { mode: "none", entries: [], activeIndex: -1, summary: null };
+    }
+
+    const modelSuggestions = typeof currentModelSuggestions === "function"
+      ? currentModelSuggestions(limit)
+      : [];
+    if (inputValue.trimStart().match(/^\/models?\s+/i)) {
+      const entries = modelSuggestions.map((model) => ({
+        kind: "model",
+        label: model,
+        detail: "",
+      }));
+      return {
+        mode: "model",
+        entries,
+        activeIndex: normalizePaletteSelectionIndex(entries.length),
+        summary: {
+          title: "Models",
+          empty: entries.length === 0,
+        },
+      };
+    }
+
+    const suggestions = currentSlashSuggestions(limit);
+    const entries = suggestions.map((command) => ({
+      kind: "command",
+      label: command.usage,
+      detail: command.description ?? "",
+    }));
+    return {
+      mode: "command",
+      entries,
+      activeIndex: normalizePaletteSelectionIndex(entries.length),
+      summary: buildCommandPaletteSummary({
+        inputValue,
+        suggestions,
+        modelSuggestions: [],
+      }),
+    };
+  }
+
+  function composerPaletteWindow(entries, activeIndex, visibleCount) {
+    const count = Math.max(1, Math.min(entries.length, visibleCount));
+    const selectedIndex = activeIndex >= 0 ? activeIndex : 0;
+    const maxStart = Math.max(0, entries.length - count);
+    const start = Math.min(
+      maxStart,
+      Math.max(0, selectedIndex - count + 1),
+    );
+    return {
+      start,
+      end: Math.min(entries.length, start + count),
+      entries: entries.slice(start, Math.min(entries.length, start + count)),
+    };
+  }
+
+  function composerPaletteEntryLine(entry, width, { selected = false } = {}) {
+    const marker = selected
+      ? `${color.magenta}${color.bold}›${color.reset}`
+      : `${color.fog}·${color.reset}`;
+    const labelTone = selected ? color.magenta : color.softInk;
+    const detail = entry.detail
+      ? ` ${color.fog}· ${entry.detail}${color.reset}`
+      : "";
+    return fitAnsi(
+      `${marker} ${labelTone}${entry.label}${color.reset}${detail}`,
+      width,
+    );
+  }
+
+  function composerPaletteEmptyMessage(paletteState) {
+    if (paletteState.mode === "file") {
+      return workspaceFileIndex.ready
+        ? "No matching file tag."
+        : paletteState.summary?.suggestionHint || "Workspace index unavailable.";
+    }
+    if (paletteState.mode === "model") {
+      return "No matching model.";
+    }
+    return "No matching slash command.";
+  }
+
+  function composerPaletteLines(width, paletteState, height = termHeight()) {
+    if (paletteState.mode === "none") {
+      return [];
+    }
+    const visibleEntries = composerPaletteWindow(
+      paletteState.entries,
+      paletteState.activeIndex,
+      paletteVisibleEntryLimit(height),
+    );
+    if (visibleEntries.entries.length === 0) {
+      return [
+        fitAnsi(
+          `${color.red}${composerPaletteEmptyMessage(paletteState)}${color.reset}`,
+          width,
+        ),
+      ];
+    }
+    const lines = [];
+    visibleEntries.entries.forEach((entry, index) => {
+      lines.push(
+        composerPaletteEntryLine(entry, width, {
+          selected: visibleEntries.start + index === paletteState.activeIndex,
+        }),
+      );
+    });
     return lines;
   }
 
-  function commandPaletteLines(width, limit = 7) {
-    const inner = width - 2;
-    const suggestions = currentSlashSuggestions(limit);
-    const palette = buildCommandPaletteSummary({
-      inputValue: currentInputValue(),
-      suggestions,
-      modelSuggestions: typeof currentModelSuggestions === "function" ? currentModelSuggestions(limit) : [],
-    });
-    const lines = [];
-    if (palette.empty) {
-      lines.push(row(`${color.red}No matching slash command.${color.reset}`, color.panelBg));
-      lines.push(row(`${color.softInk}Use /help for the full command reference.${color.reset}`, color.panelBg));
-    } else {
-      for (const command of suggestions) {
-        const usageText = String(command.usage ?? "");
-        const aliasText = Array.isArray(command.aliases) && command.aliases.length > 0
-          ? command.aliases.join(", ")
-          : "";
-        const usageLines = wrapAndLimit(usageText, inner, 3);
-        const canInlineAlias = usageLines.length === 1 && aliasText.length > 0
-          ? visibleLength(`${usageLines[0]}  ${aliasText}`) <= inner
-          : false;
-
-        for (const usageLine of usageLines) {
-          lines.push(row(fitAnsi(`${color.magenta}${usageLine}${color.reset}`, inner), color.panelBg));
-        }
-        if (aliasText) {
-          if (canInlineAlias) {
-            const aliasLine = `${color.magenta}${usageLines[0]}${color.reset}  ${color.fog}${aliasText}${color.reset}`;
-            lines[lines.length - 1] = row(fitAnsi(aliasLine, inner), color.panelBg);
-          } else {
-            const aliasLines = wrapAndLimit(aliasText, Math.max(8, inner - 2), 2);
-            for (const aliasLine of aliasLines) {
-              lines.push(row(fitAnsi(`  ${color.fog}${aliasLine}${color.reset}`, inner), color.panelBg));
-            }
-          }
-        }
-        if (command.description) {
-          const descriptionLines = wrapAndLimit(String(command.description), inner, 2);
-          for (const descriptionLine of descriptionLines) {
-            lines.push(row(
-              fitAnsi(`${color.softInk}${descriptionLine}${color.reset}`, inner),
-              color.panelBg,
-            ));
-          }
-        }
-      }
-    }
-    return renderPanel({
-      title: truncate(palette.title, 22),
-      tone: "teal",
-      width,
-      bg: color.panelBg,
-      lines,
-    });
-  }
-
-  function fileTagPaletteLines(width, limit = 7, paletteState = currentFileTagPalette(limit)) {
-    const inner = width - 2;
-    const { suggestions = [], summary } = paletteState ?? {};
-    const palette = summary ?? buildFileTagPaletteSummary({
-      inputValue: currentInputValue(),
-      query: null,
-      suggestions: [],
-      indexReady: workspaceFileIndex.ready,
-      indexError: workspaceFileIndex.error,
-    });
-    const lines = [];
-    if (!workspaceFileIndex.ready) {
-      lines.push(row(`${color.red}${palette.suggestionHint}${color.reset}`, color.panelBg));
-    } else if (palette.mode === "idle" && suggestions.length === 0) {
-      lines.push(row(`${color.softInk}Type a path or filename after @.${color.reset}`, color.panelBg));
-      lines.push(row(`${color.fog}Example: @runtime/src/channels/webchat/types.ts${color.reset}`, color.panelBg));
-    } else if (palette.empty) {
-      lines.push(row(`${color.red}No matching file tag.${color.reset}`, color.panelBg));
-      lines.push(row(`${color.softInk}Keep typing a filename or repo-relative path.${color.reset}`, color.panelBg));
-    } else {
-      for (const entry of suggestions) {
-        const labelLine = fitAnsi(
-          `${color.magenta}${color.bold}${entry.label}${color.reset}`,
-          inner,
-        );
-        lines.push(row(labelLine, color.panelBg));
-        if (entry.directory) {
-          const directory = fitAnsi(`  ${color.fog}${entry.directory}${color.reset}`, inner);
-          lines.push(row(directory, color.panelBg));
-        }
-      }
-    }
-    return renderPanel({
-      title: truncate(palette.title, 22),
-      tone: "magenta",
-      width,
-      bg: color.panelBg,
-      lines,
-    });
+  function currentBottomPopupLayout(width = termWidth(), height = termHeight()) {
+    const paletteState = currentComposerPaletteState(64);
+    return {
+      paletteState,
+      popup: composerPaletteLines(width, paletteState, height),
+    };
   }
 
   function currentTranscriptLayout() {
     const width = termWidth();
     const height = termHeight();
-    const slashMode = !watchState.expandedEventId && isSlashComposerInput(currentInputValue());
-    const fileTagPalette = !watchState.expandedEventId
-      ? currentFileTagPalette(Math.max(4, Math.min(8, height - 12)))
-      : { activeTag: null, suggestions: [], summary: null };
-    const popupWidth = Math.min(68, Math.max(38, width - 4));
-    const popupLimit = Math.max(4, Math.min(8, height - 12));
-    const popup = watchState.expandedEventId
-      ? []
-      : fileTagPalette.activeTag
-        ? fileTagPaletteLines(popupWidth, popupLimit, fileTagPalette)
-        : slashMode
-          ? commandPaletteLines(popupWidth, popupLimit)
-          : [];
-    const popupRows = popup.length > 0 ? popup.length + 1 : 0;
-    const headerRows = headerLines(width, currentSurfaceSummary()).length;
+    const { paletteState, popup } = currentBottomPopupLayout(width, height);
+    const popupRows = popup.length;
+    const headerRows = headerLines(width).length;
     return buildWatchLayout({
       width,
       height,
       headerRows,
       popupRows,
-      slashMode: slashMode || Boolean(fileTagPalette.activeTag),
+      slashMode: paletteState.mode !== "none",
       detailOpen: Boolean(watchState.expandedEventId),
     });
   }
@@ -1138,9 +1749,17 @@ export function createWatchFrameController(dependencies = {}) {
 
   function eventHasHiddenPreview(event, width) {
     const sourcePreview = isSourcePreviewEvent(event);
+    const markdownPreview = isMarkdownRenderableEvent(event);
+    const displayLinePreview =
+      sourcePreview ||
+      markdownPreview ||
+      event?.kind === "you" ||
+      event?.kind === "subagent";
     const wrapped =
-      sourcePreview || isMarkdownRenderableEvent(event)
+      sourcePreview || markdownPreview
         ? wrapEventDisplayLines(event, width, maxPreviewSourceLines * 8)
+        : displayLinePreview
+          ? wrapDisplayLines(buildEventDisplayLines(event, maxPreviewSourceLines * 8), width)
         : wrapDisplayLines(
           compactBodyLines(event.body, maxPreviewSourceLines * 2).map((line) => createDisplayLine(line)),
           width,
@@ -1151,9 +1770,9 @@ export function createWatchFrameController(dependencies = {}) {
   function latestExpandableEvent() {
     const { transcriptWidth } = currentTranscriptLayout();
     const previewWidth = Math.max(12, transcriptWidth - 4);
-    for (let index = events.length - 1; index >= Math.max(0, events.length - 10); index -= 1) {
+    for (let index = events.length - 1; index >= Math.max(0, events.length - 20); index -= 1) {
       const candidate = events[index];
-      if (!candidate || !isMutationPreviewEvent(candidate)) {
+      if (!candidate) {
         continue;
       }
       if (eventHasHiddenPreview(candidate, previewWidth)) {
@@ -1230,61 +1849,91 @@ export function createWatchFrameController(dependencies = {}) {
       previewLines.map((line) => displayLinePlainText(line)),
     );
     const badgeTone = toneColor(summary.badge.tone);
-    const badgeText = `${badgeTone}${color.bold}${summary.badge.label}${color.reset}`;
+    const badgeText = `${badgeTone}${summary.badge.label}${color.reset}`;
     const headline = previewSplit.headline || eventHeadline(event, previewLines);
+    if (event.kind === "you" || event.kind === "queued") {
+      const blockLines = [headline, ...previewSplit.bodyLines]
+        .map((line) => sanitizeDisplayText(
+          typeof line === "string" ? line : displayLinePlainText(line),
+        ))
+        .filter((line) => line.length > 0);
+      rows.push(
+        ...transcriptInputBlock(
+          blockLines.length > 0 ? blockLines : [sanitizeDisplayText(event.title)],
+          width,
+          event.kind === "queued"
+            ? { tone: color.fog, background: transcriptQueuedBg, marker: ">", markerTone: color.fog }
+            : undefined,
+        ),
+      );
+      return rows;
+    }
+    if (event.kind === "agent") {
+      rows.push(
+        ...transcriptChatRows([headline, ...previewSplit.bodyLines], width, {
+          marker: "●",
+          markerTone: color.ink,
+          textTone: color.ink,
+        }),
+      );
+      return rows;
+    }
     rows.push(
-      flexBetween(
-        `${badgeText} ${color.ink}${truncate(sanitizeDisplayText(headline), Math.max(12, width - 18))}${color.reset}`,
-        `${color.fog}${summary.timestamp}${color.reset}`,
+      fitAnsi(
+        `${transcriptBlockInset}${badgeText} ${color.ink}${sanitizeDisplayText(headline)}${color.reset}`,
         width,
       ),
     );
     if (summary.meta && summary.meta !== sanitizeDisplayText(headline)) {
       rows.push(
-        `${color.border}│${color.reset} ${color.softInk}${truncate(summary.meta, Math.max(10, width - 3))}${color.reset}`,
+        `${transcriptBodyInset}${color.softInk}${truncate(summary.meta, Math.max(10, width - visibleLength(transcriptBodyInset)))}${color.reset}`,
       );
     }
 
     if (shouldShowEventBody(event, { showBody })) {
       previewSplit.bodyLines.forEach((line) => {
-        rows.push(renderEventBodyLine(event, line, { inline: true }));
+        rows.push(renderEventBodyLine(event, line, { inline: true, prefix: transcriptBodyInset }));
       });
     }
     return rows;
   }
 
   function flattenTranscriptView(width) {
-    if (events.length === 0) {
+    const transcriptEvents = visibleTranscriptEvents();
+    if (transcriptEvents.length === 0) {
+      if (shouldShowIdleTranscript()) {
+        return {
+          rows: splashRenderer.renderIdleState(width),
+          ranges: new Map(),
+        };
+      }
       return {
-        rows: [
-          `${color.softInk}No activity yet.${color.reset}`,
-          `${color.fog}Prompts, tool runs, and agent replies will appear here.${color.reset}`,
-        ],
+        rows: [],
         ranges: new Map(),
       };
     }
 
     const rows = [];
     const ranges = new Map();
-    const latestEvent = events[events.length - 1] ?? null;
+    const latestEvent = transcriptEvents[transcriptEvents.length - 1] ?? null;
     const richBodyWindow =
       isSourcePreviewEvent(latestEvent) || isMarkdownRenderableEvent(latestEvent) ? 8 : 6;
     const recentSourcePreviewIds = new Set(
-      events
+      transcriptEvents
         .filter((event) => isSourcePreviewEvent(event))
         .slice(-8)
         .map((event) => event.id),
     );
-    events.forEach((event, index) => {
+    transcriptEvents.forEach((event, index) => {
       const showBody =
         recentSourcePreviewIds.has(event.id) ||
-        index >= Math.max(0, events.length - richBodyWindow) ||
+        index >= Math.max(0, transcriptEvents.length - richBodyWindow) ||
         event.id === latestEvent?.id;
-      const start = rows.length + (index > 0 ? 1 : 0);
-      const block = renderEventBlock(event, width, { showBody });
       if (index > 0) {
-        rows.push(`${color.border}${"─".repeat(Math.max(12, width))}${color.reset}`);
+        rows.push(blankRow(width));
       }
+      const start = rows.length;
+      const block = renderEventBlock(event, width, { showBody });
       rows.push(...block);
       ranges.set(event.id, { start, end: rows.length });
     });
@@ -1333,9 +1982,8 @@ export function createWatchFrameController(dependencies = {}) {
       watchState.transcriptScrollOffset,
     );
     watchState.transcriptScrollOffset = sliced.normalizedOffset;
-    const lines = bottomAlignViewportRows([...sliced.rows], targetHeight);
     return {
-      lines,
+      lines: [...sliced.rows],
       hiddenAbove: sliced.hiddenAbove,
       hiddenBelow: sliced.hiddenBelow,
     };
@@ -1459,9 +2107,8 @@ export function createWatchFrameController(dependencies = {}) {
       diffNavigation,
     } = detail;
     const rows = [
-      flexBetween(
-        `${toneColor(detailSummary.badge.tone)}${color.bold}${detailSummary.badge.label}${color.reset} ${color.ink}${truncate(sanitizeDisplayText(detailSummary.title), Math.max(20, width - 18))}${color.reset}`,
-        `${color.fog}${detailSummary.timestamp}${color.reset}`,
+      fitAnsi(
+        `${toneColor(detailSummary.badge.tone)}${detailSummary.badge.label}${color.reset} ${color.ink}${sanitizeDisplayText(detailSummary.title)}${color.reset}`,
         width,
       ),
       `${color.fog}${detailSummary.hint}${color.reset}`,
@@ -1605,6 +2252,48 @@ export function createWatchFrameController(dependencies = {}) {
     return exportPath;
   }
 
+  function isTerminalSelectionModeActive() {
+    return frameState.selectionModeActive;
+  }
+
+  function selectionModeTextBlock(viewLabel, text) {
+    const divider = "=".repeat(42);
+    return [
+      "",
+      divider,
+      "agenc watch: terminal selection mode",
+      `native terminal copy/select is enabled for the current ${viewLabel}.`,
+      "press ctrl+q to return to the live watch interface.",
+      divider,
+      "",
+      text,
+      "",
+    ].join("\n");
+  }
+
+  function toggleTerminalSelectionMode() {
+    if (frameState.selectionModeActive) {
+      frameState.selectionModeActive = false;
+      setTransientStatus("watch resumed");
+      scheduleRender();
+      return true;
+    }
+
+    const text = copyableTranscriptText();
+    if (!text) {
+      setTransientStatus("nothing to show");
+      scheduleRender();
+      return false;
+    }
+
+    const viewLabel = watchState.expandedEventId ? "detail" : "transcript";
+    leaveAltScreen();
+    frameState.selectionModeActive = true;
+    stdout.write(selectionModeTextBlock(viewLabel, text));
+    setTransientStatus(`${viewLabel} in terminal; ctrl+q returns`);
+    return true;
+  }
+
   function copyCurrentView() {
     const text = copyableTranscriptText();
     if (!text) {
@@ -1734,11 +2423,12 @@ export function createWatchFrameController(dependencies = {}) {
     );
   }
 
-  function footerStatusLine(width, diffNavigation = null) {
+  function footerStatusLines(width, diffNavigation = null) {
     const summary = currentSurfaceSummary();
     const activeRun = hasActiveSurfaceRun();
     const elapsedLabel = activeRun ? currentRunElapsedLabel() : currentSessionElapsedLabel();
     const fileTagPalette = currentFileTagPalette(6);
+    const modelSuggestions = typeof currentModelSuggestions === "function" ? currentModelSuggestions(6) : [];
     const inputPreferences = typeof currentInputPreferences === "function"
       ? currentInputPreferences() ?? {}
       : {};
@@ -1746,7 +2436,7 @@ export function createWatchFrameController(dependencies = {}) {
       summary,
       inputValue: currentInputValue(),
       suggestions: currentSlashSuggestions(6),
-      modelSuggestions: typeof currentModelSuggestions === "function" ? currentModelSuggestions(6) : [],
+      modelSuggestions,
       fileTagQuery: fileTagPalette.activeTag?.query ?? null,
       fileTagSuggestions: fileTagPalette.suggestions,
       fileTagIndexReady: workspaceFileIndex.ready,
@@ -1772,53 +2462,108 @@ export function createWatchFrameController(dependencies = {}) {
       themeName: inputPreferences.themeName,
       featureFlags: watchFeatureFlags,
     });
-    const workingPrefix =
-      activeRun && transportState.connectionState === "live"
-        ? `${animatedWorkingGlyph()} `
-        : "";
-    const statusDetails = footer.statuslineEnabled === true
-      ? footer.statuslineText
-      : footer.leftDetails.join("  ");
-    const left = statusDetails.length > 0
-      ? `${toneColor(footer.statusTone)}${color.bold}${workingPrefix}${footer.statusLabel}${color.reset}${color.softInk}  ${statusDetails}${color.reset}`
-      : `${toneColor(footer.statusTone)}${color.bold}${workingPrefix}${footer.statusLabel}${color.reset}`;
+    const transcriptMode = sanitizeInlineText(summary?.overview?.transcriptMode ?? "follow", "follow");
+    const slashMode = isSlashComposerInput(currentInputValue());
+    const fileTagMode = Boolean(fileTagPalette.activeTag);
+    const detailMode = transcriptMode === "detail";
+    const normalizeFooterStatusText = (value) => {
+      const text = sanitizeInlineText(value, "");
+      if (!text) {
+        return "";
+      }
+      if (text === "no active background run for this session") {
+        return "";
+      }
+      if (text.startsWith("session resumed:")) {
+        return "restoring session";
+      }
+      if (text.startsWith("no existing session")) {
+        return "starting session";
+      }
+      if (text.startsWith("history loaded:") || text.startsWith("history restored:")) {
+        return "history restored";
+      }
+      if (text === "agent is typing…" || text === "agent streaming…" || text.startsWith("streaming:")) {
+        return "responding";
+      }
+      if (text === "agent reply received" || text === "agent stream complete") {
+        return "";
+      }
+      return text;
+    };
+    let leftText = "";
+    if (detailMode) {
+      leftText = "detail";
+    } else if (fileTagMode) {
+      leftText = "@ file";
+    } else if (slashMode) {
+      leftText = Array.isArray(modelSuggestions) && modelSuggestions.length > 0
+        ? "/ model"
+        : "/ command";
+    } else if (activeRun) {
+      const footerBrand = currentThinkingFooterBrand(summary);
+      leftText = `${footerBrand.verb}`;
+    }
+    let rightText = normalizeFooterStatusText(watchState.transientStatus || "");
+    if (!rightText && activeRun) {
+      rightText = normalizeFooterStatusText(footer.rightStatus || "");
+    }
+    if (!rightText && !transportState.isOpen) {
+      rightText = "reconnecting";
+    }
+    if (!rightText && bootstrapPending()) {
+      rightText = "restoring session";
+    }
 
-    return flexBetween(
-      left,
-      `${color.fog}${truncate(footer.rightStatus || "idle", Math.max(18, Math.floor(width * 0.38)))}${color.reset}`,
-      width,
-    );
+    if (activeRun) {
+      const footerBrand = currentThinkingFooterBrand(summary);
+      const rightStatusText = `${color.fog}${truncate(rightText, Math.max(18, Math.floor(width * 0.32)))}${color.reset}`;
+      const logoLineOne = fitAnsi(
+        `${footerBrand.logoLines[0]} ${toneColor(footerBrand.verbTone)}${color.bold}${footerBrand.verb}${color.reset}`,
+        Math.max(10, width - Math.max(18, Math.floor(width * 0.32)) - 1),
+      );
+      return [
+        "",
+        flexBetween(logoLineOne, rightStatusText, width),
+        "",
+      ];
+    }
+
+    return [
+      flexBetween(
+        `${color.fog}${truncate(leftText, Math.max(18, width - 22))}${color.reset}`,
+        `${color.fog}${truncate(rightText, Math.max(18, Math.floor(width * 0.32)))}${color.reset}`,
+        width,
+      ),
+    ];
   }
 
   function buildVisibleFrameSnapshot({ width = termWidth(), height = termHeight() } = {}) {
-    const footerRows = 4;
-    let frame;
+    let frame = [];
     let diffNavigation = null;
-    const slashMode = isSlashComposerInput(currentInputValue());
-    const fileTagPalette = currentFileTagPalette(Math.max(4, Math.min(8, height - 12)));
+    const { popup } = currentBottomPopupLayout(width, height);
+    const composer = composerRenderLine(width);
+    const composerLines = composer.lines ?? [composer.line];
+    let composerBand = composerBandLines(width, composerLines, diffNavigation);
+    const composerBandRows = composerBand.length;
+    const contentRows = Math.max(4, height - popup.length - composerBandRows);
 
     if (splashRenderer.shouldShowSplash()) {
-      const splashHeight = Math.max(8, height - footerRows);
-      frame = splashHeight >= 16
-        ? splashRenderer.renderSplash(width, splashHeight)
-        : splashRenderer.renderCompactSplash(width, splashHeight);
+      frame = contentRows >= 14
+        ? splashRenderer.renderSplash(width, contentRows)
+        : splashRenderer.renderCompactSplash(width, contentRows);
     } else {
       const header = headerLines(width);
-      const popup = watchState.expandedEventId
-        ? []
-        : fileTagPalette.activeTag
-          ? fileTagPaletteLines(
-            Math.min(68, Math.max(38, width - 4)),
-            Math.max(4, Math.min(8, height - 12)),
-            fileTagPalette,
-          )
-          : slashMode
-            ? commandPaletteLines(Math.min(68, Math.max(38, width - 4)), Math.max(4, Math.min(8, height - 12)))
-            : [];
-      const { bodyHeight, useSidebar, sidebarWidth, transcriptWidth } = currentTranscriptLayout();
+      const {
+        useSidebar,
+        sidebarWidth,
+        transcriptWidth,
+        bodyHeight,
+      } = currentTranscriptLayout();
+      const transcriptHeight = Math.max(4, contentRows - header.length);
       const transcriptView = watchState.expandedEventId
-        ? expandedDetailLines(transcriptWidth, bodyHeight)
-        : activityPanelLines(transcriptWidth, bodyHeight);
+        ? expandedDetailLines(transcriptWidth, transcriptHeight)
+        : activityPanelLines(transcriptWidth, transcriptHeight);
       diffNavigation = transcriptView.diffNavigation ?? null;
       const transcriptLines = [...transcriptView.lines];
       if (!watchState.expandedEventId && transcriptLines.length > 0) {
@@ -1843,25 +2588,29 @@ export function createWatchFrameController(dependencies = {}) {
       frame = [
         ...header,
         ...transcript,
-        ...(popup.length > 0 ? ["", ...popup.map((line) => `  ${line}`)] : []),
       ];
     }
-    const composer = composerRenderLine(width);
-    const composerLines = composer.lines ?? [composer.line];
-    const composerExtraRows = composerLines.length - 1;
-    const bodyRows = Math.max(0, height - footerRows - composerExtraRows);
+    const statusLines = footerStatusLines(width, diffNavigation);
+    composerBand = composerBandLines(width, composerLines, diffNavigation);
     const nextFrameLines = [];
-    for (let rowIndex = 0; rowIndex < bodyRows; rowIndex += 1) {
-      nextFrameLines.push(paintSurface(frame[rowIndex] ?? "", width, color.panelBg));
+    for (const line of frame.slice(0, contentRows)) {
+      nextFrameLines.push(paintSurface(line ?? "", width, color.panelBg));
     }
-    nextFrameLines.push(paintSurface(`${color.border}${"─".repeat(width)}${color.reset}`, width, color.panelBg));
-    nextFrameLines.push(paintSurface(footerStatusLine(width, diffNavigation), width, color.panelBg));
-    nextFrameLines.push(paintSurface(footerHintLine(width, diffNavigation), width, color.panelBg));
-    for (const cLine of composerLines) {
+    const composerStartRow = nextFrameLines.length + 1;
+    const composerInputOffsetRows = statusLines.length + 1;
+    for (const cLine of composerBand) {
       nextFrameLines.push(paintSurface(cLine, width, color.panelBg));
     }
-    // Cursor row accounts for wrapped composer lines (1-indexed for ANSI positioning)
-    const cursorAbsoluteRow = height - composerLines.length + (composer.cursorRow ?? 0) + 1;
+    for (const popupLine of popup) {
+      nextFrameLines.push(paintSurface(popupLine, width, color.panelBg));
+    }
+    while (nextFrameLines.length < height) {
+      nextFrameLines.push(paintSurface("", width, color.panelBg));
+    }
+    const cursorAbsoluteRow = Math.max(
+      1,
+      Math.min(height, composerStartRow + composerInputOffsetRows + (composer.cursorRow ?? 0)),
+    );
     return {
       lines: nextFrameLines,
       width,
@@ -1877,6 +2626,9 @@ export function createWatchFrameController(dependencies = {}) {
 
   function render() {
     frameState.renderPending = false;
+    if (frameState.selectionModeActive) {
+      return;
+    }
     enterAltScreen();
     const snapshot = buildVisibleFrameSnapshot();
     const { lines: nextFrameLines, width, height, composer } = snapshot;
@@ -1928,6 +2680,8 @@ export function createWatchFrameController(dependencies = {}) {
     withPreservedManualTranscriptViewport,
     exportCurrentView,
     copyCurrentView,
+    isTerminalSelectionModeActive,
+    toggleTerminalSelectionMode,
     scrollCurrentViewBy,
     buildVisibleFrameSnapshot,
     leaveAltScreen,

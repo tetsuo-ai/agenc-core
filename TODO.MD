@@ -17,13 +17,9 @@ This is not a single bug. It is a cross-layer contract failure spanning:
 
 - planner prompting and graph validation
 - delegation admission and artifact economics
-- direct `execute_with_agent` delegation flow
 - subagent orchestration and execution kernel semantics
-- durable subrun orchestration and subrun contract semantics
 - dependency summarization and synthesis handoff
 - deterministic and model-based verification
-- background-run persistence and operator recovery surfaces
-- watch/observer rendering of planner and subagent state
 - Grok/xAI provider capability routing
 
 ## Sources Used
@@ -41,8 +37,6 @@ Runtime and repo sources:
 - `runtime/src/gateway/delegation-economics.ts`
 - `runtime/src/gateway/subagent-prompt-builder.ts`
 - `runtime/src/gateway/subagent-dependency-summarization.ts`
-- `runtime/src/gateway/durable-subrun-orchestrator.ts`
-- `runtime/src/gateway/subrun-contract.ts`
 - `runtime/src/workflow/execution-intent.ts`
 - `runtime/src/workflow/execution-envelope.ts`
 - `runtime/src/workflow/execution-kernel.ts`
@@ -68,10 +62,6 @@ Research used for architecture direction:
 
 - OSWorld: execution-based evaluation matters for agent reliability
 - SWE-Gym: explicit state and verifier correctness matter more than prose self-report
-- R2E-Gym: hybrid verifier stacks need explicit state and careful separation of
-  execution-based vs execution-free judgment
-- Proxy State-Based Evaluation for Multi-turn Tool-Calling Agents: scalable
-  agent evaluation still depends on structured state tracking, not prose alone
 
 ## Executive Diagnosis
 
@@ -272,95 +262,6 @@ Required fix:
 
 - workflow-level classification must not erase per-step role contracts
 
-#### A5. Legacy workflow context can still be synthesized heuristically
-
-Symptoms:
-
-- when planner-owned workflow context is missing, runtime can synthesize
-  mutation-required workflow ownership from successful tool calls
-- legacy completion compatibility can then allow acceptance based on heuristic
-  turn classification instead of a canonical workflow contract
-
-Key files:
-
-- `runtime/src/llm/chat-executor-contract-flow.ts`
-- `runtime/src/llm/chat-executor.ts`
-- `runtime/src/workflow/verification-results.ts`
-- `runtime/src/utils/delegation-validation.ts`
-
-Required fix:
-
-- remove heuristic workflow-context synthesis as a source of execution truth
-- make missing workflow context fail closed for implementation-class work
-- eliminate compatibility-success defaults when runtime verification context is absent
-
-#### A6. Delegation admission still has compatibility overrides that force allow
-
-Symptoms:
-
-- explicit delegation requests can be force-mapped onto compatibility shapes
-  even after `no_safe_delegation_shape`, `score_below_threshold`, or similar
-  veto reasons
-- direct delegation admission can bypass the base decision for a narrow set of
-  “compatibility” reasons
-
-Key files:
-
-- `runtime/src/gateway/delegation-admission.ts`
-
-Required fix:
-
-- remove force-allow compatibility overrides from admission
-- require all compatibility paths to pass through the same typed shape and
-  safety checks as normal delegation
-
-#### A7. Required reviewer-step selection is still heuristic
-
-Symptoms:
-
-- required reviewer children are selected from candidate steps by fuzzy role
-  hints and step text
-- planner name drift or prompt variation can change which child steps become
-  mandatory without any typed role mismatch being detected
-
-Key files:
-
-- `runtime/src/workflow/subagent-orchestration-requirements.ts`
-- `runtime/src/llm/chat-executor-planner.ts`
-- `runtime/src/llm/chat-executor-verifier.ts`
-
-Required fix:
-
-- required reviewer identity must come from typed planner step roles and
-  explicit orchestration contract metadata, not string matching over names and
-  objectives
-
-#### A8. Legacy migration adapters can reintroduce deprecated compatibility semantics
-
-Symptoms:
-
-- migrated execution envelopes can still carry `compatibilitySource` markers like
-  `legacy_context_requirements` or `legacy_persisted_checkpoint`
-- replay, recovery, or delegated-context hydration can re-enter the live runtime
-  with legacy compatibility semantics instead of a fully normalized canonical
-  workflow contract
-
-Key files:
-
-- `runtime/src/workflow/migrations.ts`
-- `runtime/src/workflow/execution-envelope.ts`
-- `runtime/src/utils/delegation-execution-context.ts`
-- `runtime/src/gateway/background-run-store.ts`
-- `runtime/src/gateway/state-migrations.ts`
-
-Required fix:
-
-- quarantine legacy compatibility markers to ingest/migration boundaries only
-- normalize migrated state into the canonical workflow contract before any live
-  planner/admission/verifier decisions
-- reject live planner/runtime envelopes that still depend on legacy
-  compatibility semantics
-
 ### B. Dependency and Completion-State Failures
 
 #### B1. `delegation_fallback` has dual truth
@@ -422,24 +323,6 @@ Key files:
 Required fix:
 
 - split `verified`, `deterministically_admitted`, and `accepted_without_verifier`
-
-#### B4. Fallback summaries can claim completion after failed child-owned paths
-
-Symptoms:
-
-- fallback and synthesis helpers can emit completed-workflow wording even when
-  the underlying delegated path failed or remained unresolved
-
-Key files:
-
-- `runtime/src/llm/chat-executor-planner-execution.ts`
-- `runtime/src/llm/chat-executor-planner.ts`
-
-Required fix:
-
-- separate status narration from synthesized user content
-- never emit success-language from fallback helpers unless the underlying
-  workflow state is terminally successful
 
 ### C. Evidence and Verification Failures
 
@@ -623,48 +506,6 @@ Required fix:
 
 - persist budget tracker identity across the whole parent request lifecycle
 
-#### E5. Planner logic still hardcodes `PLAN.md` / `TODO` artifact families
-
-Symptoms:
-
-- core planner validation and refinement logic contains explicit `PLAN.md` and
-  `TODO` branches
-- artifact behavior depends on filename family instead of generalized artifact
-  class and workflow contract
-
-Key files:
-
-- `runtime/src/llm/chat-executor-planner.ts`
-- `docs/architecture/guides/delegated-workspace-semantics.md`
-
-Required fix:
-
-- replace planning-artifact filename special cases with generic artifact-class
-  contracts, then keep only tests and examples artifact-specific
-
-#### E6. Child tool contracts can be silently rewritten through semantic fallback
-
-Symptoms:
-
-- planner or direct delegation asks for one tool or capability contract
-- child scope resolution swaps in semantically similar tools or allows toolless
-  execution instead of failing closed
-- executed child contract diverges from the planned child contract without an
-  explicit repair step
-
-Key files:
-
-- `runtime/src/utils/delegation-validation.ts`
-- `runtime/src/gateway/subagent-orchestrator.ts`
-- `runtime/src/gateway/tool-handler-factory-delegation.ts`
-
-Required fix:
-
-- treat semantic fallback as an explicit degraded-contract state, not an
-  invisible substitution
-- for required tool contracts, fail closed or force planner repair instead of
-  silently mutating the child tool shape
-
 ### F. Provider and Model-Capability Failures
 
 Provider rule for this cleanup:
@@ -763,34 +604,6 @@ Required fix:
 - make local defaults explicit and intentional by workflow class
 - do not masquerade local policy as provider behavior
 
-#### F6. Stateful continuation can silently degrade to stateless execution
-
-Symptoms:
-
-- xAI client-side tool and multi-turn state preservation depend on
-  `previous_response_id` or encrypted-content continuation
-- local runtime silently retries or continues stateless on provider restart,
-  retrieval failure, missing anchor, or reconciliation mismatch
-- effective conversation/state semantics change mid-workflow without the
-  planner, verifier, or operator surfaces treating that as degraded execution
-
-Key files:
-
-- `runtime/src/llm/grok/adapter.ts`
-- `runtime/src/llm/grok/adapter-utils.ts`
-- `runtime/src/llm/chat-executor.ts`
-- `runtime/src/llm/chat-executor-tool-loop.ts`
-- `runtime/src/gateway/llm-stateful-defaults.ts`
-
-Required fix:
-
-- treat stateful-to-stateless degradation as an explicit provider-contract
-  state, not a transparent retry
-- fail closed for workflow classes that depend on preserved agentic/tool state,
-  or force explicit repair/reroute before continuing
-- surface degradation in operator, verifier, and incident reporting so replay
-  and completion decisions can distinguish preserved vs degraded continuation
-
 ### G. Documentation, Fixtures, and Test Drift
 
 #### G1. Architecture docs describe rules the runtime violates
@@ -830,250 +643,6 @@ Required fix:
   - tool-routing fail-open
   - follow-up tool-schema suppression
   - request-tree budget reset across retries
-
-#### G3. Parts of the current test suite bless broken semantics
-
-Symptoms:
-
-- execution-kernel tests explicitly assert that parent fallback satisfies
-  downstream dependencies
-- subagent-orchestrator and delegation-validation tests explicitly assert
-  semantic-fallback tool substitution as normal behavior
-
-Key files:
-
-- `runtime/src/workflow/execution-kernel.test.ts`
-- `runtime/src/gateway/subagent-orchestrator.test.ts`
-- `runtime/src/utils/delegation-validation.test.ts`
-
-Required fix:
-
-- replace tests that encode today’s broken semantics
-- split legacy-behavior snapshots from target-architecture expectations
-- make cleanup phases remove or invert these expectations as the model changes
-
-#### G4. Evaluation and gate suites still encode the old state lattice
-
-Symptoms:
-
-- benchmark runners and gate suites still score success, replay parity, and
-  recovery against the current completion-state and verifier model
-- cleanup work can look green or red for the wrong reasons because the
-  evaluation harness is still grading the deprecated architecture
-
-Key files:
-
-- `runtime/src/eval/pipeline-quality-runner.ts`
-- `runtime/src/eval/background-run-quality-runner.ts`
-- `runtime/src/eval/background-run-quality.ts`
-- `runtime/src/eval/background-run-replay.ts`
-- `runtime/src/eval/replay.ts`
-- `runtime/src/eval/background-run-gates.ts`
-- `runtime/src/eval/delegated-workspace-gate-suite.ts`
-- `runtime/src/eval/implementation-gate-suite.ts`
-- `runtime/src/eval/long-horizon-suite.ts`
-- `runtime/src/eval/pipeline-gates.ts`
-- `runtime/src/eval/replay-comparison.ts`
-- `runtime/src/eval/benchmark-runner.ts`
-- `runtime/src/eval/benchmark-manifest.ts`
-- `runtime/src/eval/calibration.ts`
-- `runtime/src/eval/metrics.ts`
-- `runtime/src/eval/mutation-engine.ts`
-- `runtime/src/eval/mutation-gates.ts`
-- `runtime/src/eval/mutation-runner.ts`
-- `runtime/src/eval/live-coding-runner.ts`
-- `runtime/src/eval/safety-suite.ts`
-- `runtime/src/eval/effect-ledger-checks.ts`
-- `runtime/src/eval/projector.ts`
-- `runtime/src/eval/recorder.ts`
-- `runtime/src/eval/runner-shared.ts`
-- `runtime/src/eval/transition-validator.ts`
-- `runtime/src/eval/evidence-pack.ts`
-
-Required fix:
-
-- migrate eval artifacts, benchmark gates, and replay scoring to the canonical
-  workflow contract and state lattice
-- add explicit grading for reviewer cardinality, nonterminal child states, and
-  fail-closed provider incompatibility paths
-
-### H. Operational Surface Drift
-
-#### H1. Direct delegation tool flow still hardcodes the old completion model
-
-Symptoms:
-
-- direct `execute_with_agent` parses only the current narrow completion-state set
-- child nonterminal and remaining-requirement semantics are turned into fixed
-  terminal messages before the canonical workflow contract can evolve
-
-Key files:
-
-- `runtime/src/gateway/tool-handler-factory-delegation.ts`
-- `runtime/src/gateway/sub-agent.ts`
-
-Required fix:
-
-- migrate direct delegation flow onto the same canonical step/workflow contract
-- remove hardcoded assumptions that only `completed` is acceptable terminal child success
-
-#### H2. Background-run persistence and recovery encode the current state lattice
-
-Symptoms:
-
-- persisted snapshots only understand the current completion-state enum and
-  requirement set
-- recovery/operator prompts will drift if the new workflow contract is added
-  only in the planner path
-
-Key files:
-
-- `runtime/src/gateway/background-run-store.ts`
-- `runtime/src/gateway/agent-run-contract.ts`
-- `runtime/src/gateway/state-migrations.ts`
-- `runtime/src/gateway/background-run-supervisor.ts`
-- `runtime/src/gateway/background-run-supervisor-managed-process.ts`
-- `runtime/src/gateway/background-run-supervisor-helpers.ts`
-- `runtime/src/gateway/background-run-control.ts`
-- `runtime/src/gateway/background-run-supervisor-types.ts`
-- `runtime/src/gateway/background-run-operator.ts`
-- `runtime/src/gateway/background-run-wake-bus.ts`
-- `runtime/src/gateway/background-run-wake-adapters.ts`
-
-Required fix:
-
-- version the persisted workflow/progress schema
-- migrate recovery and operator messaging to the new state lattice
-
-#### H3. Watch and operator surfaces render the old planner/subagent states
-
-Symptoms:
-
-- watch UI and surface dispatch code hardcode `needs_verification`,
-  planner DAG status ordering, and remaining-requirement rendering
-- operator observability can disagree with the corrected runtime state model
-
-Key files:
-
-- `runtime/src/watch/agenc-watch-app.mjs`
-- `runtime/src/watch/agenc-watch-agent-stream.mjs`
-- `runtime/src/watch/agenc-watch-commands.mjs`
-- `runtime/src/watch/agenc-watch-composer.mjs`
-- `runtime/src/watch/agenc-watch-event-store.mjs`
-- `runtime/src/watch/agenc-watch-planner-dag.mjs`
-- `runtime/src/watch/agenc-watch-planner.mjs`
-- `runtime/src/watch/agenc-watch-runtime.mjs`
-- `runtime/src/watch/agenc-watch-session-utils.mjs`
-- `runtime/src/watch/agenc-watch-surface-bridge.mjs`
-- `runtime/src/watch/agenc-watch-frame.mjs`
-- `runtime/src/watch/agenc-watch-surface-dispatch.mjs`
-- `runtime/src/watch/agenc-watch-format-payloads.mjs`
-- `runtime/src/watch/agenc-watch-surface-state.mjs`
-- `runtime/src/watch/agenc-watch-surface-summary.mjs`
-- `runtime/src/watch/agenc-watch-subagents.mjs`
-- `runtime/src/watch/agenc-watch-state.mjs`
-- `runtime/src/watch/agenc-watch-transport.mjs`
-- `runtime/src/watch/agenc-watch-workspace-index.mjs`
-- `runtime/src/watch/agenc-watch-helpers.mjs`
-- `runtime/src/watch/agenc-watch-ui-primitives.mjs`
-- `runtime/src/watch/agenc-websocket.mjs`
-
-Required fix:
-
-- migrate watch surfaces to the same canonical status/requirement model
-- ensure planner/subagent/operator views derive from the same runtime truth
-
-#### H4. Interactive session persistence and compaction still encode the old continuation model
-
-Symptoms:
-
-- resumed web/text sessions persist only `previous_response_id`, history
-  compaction, and artifact snapshot state
-- session hydration can restore artifact context without restoring the canonical
-  workflow contract, artifact graph, required child set, or verifier obligations
-- restart/compaction can therefore re-enter the planner/executor path with
-  stale compatibility semantics even after the main workflow contract is fixed
-
-Key files:
-
-- `runtime/src/gateway/session.ts`
-- `runtime/src/gateway/session-isolation.ts`
-- `runtime/src/gateway/daemon-session-state.ts`
-- `runtime/src/gateway/daemon-webchat-turn.ts`
-- `runtime/src/gateway/daemon-text-channel-turn.ts`
-
-Required fix:
-
-- version session continuation state around the canonical workflow contract, not
-  just provider resume anchors and compacted artifact context
-- persist and hydrate workflow contract, artifact relations, and resume lineage
-  through the same typed path used by planner and background-run recovery
-
-#### H5. Observability and SLO reporting still infer success from old terminal heuristics
-
-Symptoms:
-
-- observability rollups mark traces as completed from `chat.response`,
-  `command.handled`, or background-run cycle markers without consulting the
-  canonical workflow completion state
-- telemetry/SLO reporting counts completion and recovery from legacy counters,
-  which can over-report success when runs terminate with fallback, unresolved
-  verifier obligations, or `completed_unverified` states
-- operator summaries can therefore disagree with the corrected runtime truth
-  even after planner/verifier cleanup lands
-
-Key files:
-
-- `runtime/src/observability/sqlite-store.ts`
-- `runtime/src/observability/observability.ts`
-- `runtime/src/telemetry/slo.ts`
-- `runtime/src/telemetry/metric-names.ts`
-- `runtime/src/gateway/daemon.ts`
-- `runtime/src/gateway/daemon-trace.ts`
-
-Required fix:
-
-- derive observability status and summary rollups from canonical workflow state
-  transitions rather than event-name heuristics
-- version telemetry/SLO semantics so `completed_verified`,
-  `completed_unverified`, `fallback_applied`, `blocked`, and `failed` are
-  counted explicitly and consistently
-
-#### H6. Durable subrun orchestration duplicates the broken contract model
-
-Symptoms:
-
-- the runtime-owned durable multi-agent path maintains a separate scope,
-  artifact, budget, role, and join model instead of reusing the canonical
-  workflow contract
-- join success is still inferred from child run summaries and ad hoc artifact
-  contract checks, which can drift from the planner/delegation/verifier truth
-- daemon/background-run multi-agent execution can therefore regress into a
-  parallel state machine that is “typed” differently from the main planner path
-  even after the planner cleanup lands
-
-Key files:
-
-- `runtime/src/gateway/durable-subrun-orchestrator.ts`
-- `runtime/src/gateway/subrun-contract.ts`
-- `runtime/src/gateway/agent-run-contract.ts`
-- `runtime/src/gateway/background-run-supervisor.ts`
-- `runtime/src/gateway/background-run-supervisor-managed-process.ts`
-- `runtime/src/gateway/background-run-notifier.ts`
-- `runtime/src/gateway/background-run-wake-bus.ts`
-- `runtime/src/gateway/background-run-wake-adapters.ts`
-- `runtime/src/gateway/daemon.ts`
-- `runtime/src/gateway/durable-subrun-orchestrator.test.ts`
-- `runtime/src/gateway/subrun-contract.test.ts`
-
-Required fix:
-
-- migrate durable subruns onto the same canonical workflow contract,
-  artifact-relation model, and completion lattice as planner-driven delegation
-- remove summary-string and join-strategy heuristics as an independent source
-  of orchestration truth
-- make background-run subrun admission, join, and operator events derive from
-  the same typed state used by the main runtime path
 
 ## Target Architecture
 
@@ -1217,8 +786,6 @@ Tasks:
 
 - add `WorkflowContract` and `WorkflowStepContract`
 - carry full execution/verification context in planner work items
-- add explicit planner step roles so required reviewer identity is typed instead
-  of inferred from step names/objectives
 - deprecate text-only verifier reconstruction paths
 - add explicit `role` and `artifactRelations`
 
@@ -1246,8 +813,6 @@ Tasks:
 - add typed artifact-relation model
 - migrate admission and economics to relation-aware decisions
 - eliminate inference that “mentions target artifact” implies ownership
-- remove `PLAN.md` / `TODO` filename-family special cases from admission-shaped
-  planner decisions in favor of generic artifact classes
 
 Files:
 
@@ -1329,8 +894,6 @@ Tasks:
 - store reviewer findings with provenance and evidence refs
 - feed writer from handoff artifacts first, transcript second
 - block parent inline write fallback after child ownership begins
-- stop deriving mandatory reviewer identity from role-hint string matching once
-  typed role metadata is available
 
 Files:
 
@@ -1367,31 +930,6 @@ Exit criteria:
 - long loops cannot reset budgets by retrying
 - per-step timeout budgets are honored
 
-### Phase 6.5: Remove Silent Tool-Contract Mutation
-
-Goal:
-
-- child tool scopes must either honor the planned contract or fail explicitly
-
-Tasks:
-
-- classify semantic fallback as degraded contract state
-- distinguish optional capability enrichment from required capability
-  substitution
-- fail closed for strict tool contracts instead of allowing invisible fallback
-  or toolless execution
-
-Files:
-
-- `runtime/src/utils/delegation-validation.ts`
-- `runtime/src/gateway/subagent-orchestrator.ts`
-- `runtime/src/gateway/tool-handler-factory-delegation.ts`
-
-Exit criteria:
-
-- no delegated child runs with a materially different tool contract unless the
-  planner/runtime explicitly records that degraded state
-
 ### Phase 7: Harden xAI/Grok Capability Routing
 
 Goal:
@@ -1407,14 +945,10 @@ Tasks:
   deterministic shrink strategy
 - perform structured-output/tool compatibility checks before request shaping
 - make parallel tool-call policy explicit per workflow type
-- make stateful continuation requirements explicit and fail closed when
-  `previous_response_id` or equivalent preserved-state guarantees cannot be
-  honored for workflow-critical turns
 
 Files:
 
 - `runtime/src/llm/grok/adapter.ts`
-- `runtime/src/llm/grok/adapter-utils.ts`
 - `runtime/src/llm/provider-native-search.ts`
 - `runtime/src/llm/structured-output.ts`
 - `runtime/src/llm/model-routing-policy.ts`
@@ -1427,7 +961,6 @@ Exit criteria:
 - no fail-open routed-tool widening
 - no custom-tool path on xAI multi-agent models
 - no follow-up tool-loop schema suppression without explicit failure handling
-- no silent stateful-to-stateless retry on workflow-critical continuation turns
 
 ### Phase 8: Rebuild the Regression and Evaluation Suite
 
@@ -1451,24 +984,6 @@ Tasks:
 Files:
 
 - `runtime/src/eval/orchestration-scenarios.ts`
-- `runtime/src/eval/pipeline-quality-runner.ts`
-- `runtime/src/eval/background-run-quality-runner.ts`
-- `runtime/src/eval/background-run-quality.ts`
-- `runtime/src/eval/background-run-replay.ts`
-- `runtime/src/eval/replay.ts`
-- `runtime/src/eval/background-run-gates.ts`
-- `runtime/src/eval/delegated-workspace-gate-suite.ts`
-- `runtime/src/eval/implementation-gate-suite.ts`
-- `runtime/src/eval/long-horizon-suite.ts`
-- `runtime/src/eval/replay-comparison.ts`
-- `runtime/src/eval/benchmark-runner.ts`
-- `runtime/src/eval/benchmark-manifest.ts`
-- `runtime/src/eval/calibration.ts`
-- `runtime/src/eval/mutation-engine.ts`
-- `runtime/src/eval/transition-validator.ts`
-- `runtime/src/eval/evidence-pack.ts`
-- `runtime/src/gateway/durable-subrun-orchestrator.test.ts`
-- `runtime/src/gateway/subrun-contract.test.ts`
 - `runtime/benchmarks/v1/incidents/*`
 - `runtime/tests/regression/orchestration/*`
 - `runtime/src/llm/*.test.ts`
@@ -1487,10 +1002,7 @@ Exit criteria:
 - `runtime/src/workflow/execution-envelope.ts`
 - `runtime/src/workflow/execution-intent.ts`
 - `runtime/src/workflow/completion-state.ts`
-- `runtime/src/workflow/migrations.ts`
 - `runtime/src/workflow/subagent-orchestration-requirements.ts`
-- `runtime/src/utils/delegation-execution-context.ts`
-- `runtime/src/gateway/state-migrations.ts`
 
 ### Planner and runtime execution
 
@@ -1504,24 +1016,11 @@ Exit criteria:
 
 - `runtime/src/gateway/delegation-admission.ts`
 - `runtime/src/gateway/delegation-economics.ts`
-- `runtime/src/gateway/delegation-runtime.ts`
-- `runtime/src/gateway/delegation-scope.ts`
-- `runtime/src/gateway/delegation-timeout.ts`
-- `runtime/src/gateway/delegation-tool.ts`
 - `runtime/src/gateway/sub-agent.ts`
 - `runtime/src/gateway/subagent-orchestrator.ts`
-- `runtime/src/gateway/subagent-orchestrator-types.ts`
-- `runtime/src/gateway/tool-handler-factory-delegation.ts`
 - `runtime/src/gateway/subagent-prompt-builder.ts`
 - `runtime/src/gateway/subagent-context-curation.ts`
 - `runtime/src/gateway/subagent-dependency-summarization.ts`
-- `runtime/src/gateway/subagent-failure-classification.ts`
-- `runtime/src/gateway/subagent-infrastructure.ts`
-- `runtime/src/gateway/subagent-workspace-probes.ts`
-- `runtime/src/gateway/durable-subrun-orchestrator.ts`
-- `runtime/src/gateway/subrun-contract.ts`
-- `runtime/src/gateway/agent-run-contract.ts`
-- `runtime/src/gateway/background-run-wake-bus.ts`
 
 ### Verification
 
@@ -1538,7 +1037,6 @@ Exit criteria:
 - `runtime/src/llm/structured-output.ts`
 - `runtime/src/llm/model-routing-policy.ts`
 - `runtime/src/llm/chat-executor-tool-loop.ts`
-- `runtime/src/gateway/llm-stateful-defaults.ts`
 - `runtime/src/gateway/context-window.ts`
 
 ### Docs and incidents
@@ -1547,88 +1045,6 @@ Exit criteria:
 - `docs/architecture/guides/delegated-workspace-semantics.md`
 - `runtime/src/eval/orchestration-scenarios.ts`
 - `runtime/benchmarks/v1/incidents/*`
-
-### Evaluation and gates
-
-- `runtime/src/eval/pipeline-quality-runner.ts`
-- `runtime/src/eval/background-run-quality-runner.ts`
-- `runtime/src/eval/background-run-quality.ts`
-- `runtime/src/eval/background-run-replay.ts`
-- `runtime/src/eval/background-run-gates.ts`
-- `runtime/src/eval/delegated-workspace-gate-suite.ts`
-- `runtime/src/eval/implementation-gate-suite.ts`
-- `runtime/src/eval/long-horizon-suite.ts`
-- `runtime/src/eval/pipeline-gates.ts`
-- `runtime/src/eval/replay-comparison.ts`
-- `runtime/src/eval/replay.ts`
-- `runtime/src/eval/benchmark-runner.ts`
-- `runtime/src/eval/benchmark-manifest.ts`
-- `runtime/src/eval/calibration.ts`
-- `runtime/src/eval/metrics.ts`
-- `runtime/src/eval/mutation-engine.ts`
-- `runtime/src/eval/mutation-gates.ts`
-- `runtime/src/eval/mutation-runner.ts`
-- `runtime/src/eval/live-coding-runner.ts`
-- `runtime/src/eval/safety-suite.ts`
-- `runtime/src/eval/effect-ledger-checks.ts`
-- `runtime/src/eval/projector.ts`
-- `runtime/src/eval/recorder.ts`
-- `runtime/src/eval/runner-shared.ts`
-- `runtime/src/eval/transition-validator.ts`
-- `runtime/src/eval/evidence-pack.ts`
-
-### Persistence and operator surfaces
-
-- `runtime/src/gateway/session.ts`
-- `runtime/src/gateway/session-isolation.ts`
-- `runtime/src/gateway/daemon-session-state.ts`
-- `runtime/src/gateway/daemon-webchat-turn.ts`
-- `runtime/src/gateway/daemon-text-channel-turn.ts`
-- `runtime/src/gateway/daemon-feature-wiring.ts`
-- `runtime/src/gateway/daemon-policy-mapping.ts`
-- `runtime/src/gateway/daemon-command-registry.ts`
-- `runtime/src/gateway/daemon-tool-registry.ts`
-- `runtime/src/gateway/daemon-trace.ts`
-- `runtime/src/gateway/background-run-store.ts`
-- `runtime/src/gateway/agent-run-contract.ts`
-- `runtime/src/gateway/state-migrations.ts`
-- `runtime/src/gateway/background-run-supervisor.ts`
-- `runtime/src/gateway/background-run-supervisor-managed-process.ts`
-- `runtime/src/gateway/background-run-supervisor-helpers.ts`
-- `runtime/src/gateway/background-run-supervisor-types.ts`
-- `runtime/src/gateway/background-run-control.ts`
-- `runtime/src/gateway/background-run-operator.ts`
-- `runtime/src/gateway/background-run-notifier.ts`
-- `runtime/src/gateway/background-run-wake-bus.ts`
-- `runtime/src/gateway/background-run-wake-adapters.ts`
-- `runtime/src/gateway/durable-subrun-orchestrator.ts`
-- `runtime/src/gateway/subrun-contract.ts`
-- `runtime/src/observability/sqlite-store.ts`
-- `runtime/src/observability/observability.ts`
-- `runtime/src/telemetry/slo.ts`
-- `runtime/src/telemetry/metric-names.ts`
-- `runtime/src/watch/agenc-watch-agent-stream.mjs`
-- `runtime/src/watch/agenc-watch-app.mjs`
-- `runtime/src/watch/agenc-watch-commands.mjs`
-- `runtime/src/watch/agenc-watch-composer.mjs`
-- `runtime/src/watch/agenc-watch-event-store.mjs`
-- `runtime/src/watch/agenc-watch-planner-dag.mjs`
-- `runtime/src/watch/agenc-watch-planner.mjs`
-- `runtime/src/watch/agenc-watch-runtime.mjs`
-- `runtime/src/watch/agenc-watch-session-utils.mjs`
-- `runtime/src/watch/agenc-watch-surface-bridge.mjs`
-- `runtime/src/watch/agenc-watch-frame.mjs`
-- `runtime/src/watch/agenc-watch-surface-dispatch.mjs`
-- `runtime/src/watch/agenc-watch-format-payloads.mjs`
-- `runtime/src/watch/agenc-watch-surface-state.mjs`
-- `runtime/src/watch/agenc-watch-surface-summary.mjs`
-- `runtime/src/watch/agenc-watch-subagents.mjs`
-- `runtime/src/watch/agenc-watch-state.mjs`
-- `runtime/src/watch/agenc-watch-transport.mjs`
-- `runtime/src/watch/agenc-watch-workspace-index.mjs`
-- `runtime/src/watch/agenc-watch-helpers.mjs`
-- `runtime/src/watch/agenc-watch-ui-primitives.mjs`
-- `runtime/src/watch/agenc-websocket.mjs`
 
 ## Rollout Strategy
 
@@ -1647,8 +1063,6 @@ Exit criteria:
 
 - replace dual-truth status handling
 - preserve replay compatibility adapters temporarily
-- migrate persistence and watch schemas in lockstep so background-run and watch
-  consumers do not drift from the runtime truth
 
 ### Stage 4: Provider fail-closed migration
 
@@ -1660,8 +1074,6 @@ Exit criteria:
 
 - delete text-based verifier reconstruction
 - delete ownership heuristics based on artifact name presence
-- delete heuristic workflow-context synthesis from successful tool calls
-- delete compatibility-success defaults when runtime verification context is missing
 - delete silent adapter mutation paths that mask incompatibility
 
 ## Validation Plan
@@ -1672,8 +1084,6 @@ Exit criteria:
 - new incident fixtures added for all open issue classes
 - unit tests for canonical workflow contract and artifact relations
 - request-tree budget tests spanning retries
-- existing tests that assert broken fallback or silent tool-substitution
-  behavior removed or flipped to the new expected model
 
 ### Integration validation
 
@@ -1690,9 +1100,6 @@ Exit criteria:
 - negative tests for xAI multi-agent + custom tools
 - routed-tool mismatch must fail closed
 - follow-up tool-loop requests must preserve required tools or error explicitly
-- `previous_response_id` retrieval failure, provider restart, or reconciliation
-  mismatch must produce explicit degraded-state handling instead of transparent
-  stateless continuation for workflow-critical paths
 
 ### Replay validation
 
@@ -1721,8 +1128,6 @@ Exit criteria:
 - any parent inline recovery write against child-owned artifact
 - any adapter path that widens tool scope when routed tools cannot be honored
 - any adapter path that silently strips required follow-up tools
-- any adapter path that silently converts required stateful continuation into
-  stateless execution without elevating degraded-contract state
 
 ## Immediate Work Queue
 

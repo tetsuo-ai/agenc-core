@@ -18,7 +18,6 @@ export interface BackgroundRunQualityGateThresholds {
   maxMeanTokensPerRun: number;
   maxReplayInconsistencies: number;
   maxChaosFailures: number;
-  maxOpenSatisfiedRuns: number;
 }
 
 export interface BackgroundRunGateViolation {
@@ -52,7 +51,6 @@ export const DEFAULT_BACKGROUND_RUN_QUALITY_GATE_THRESHOLDS: BackgroundRunQualit
     maxMeanTokensPerRun: 1_000,
     maxReplayInconsistencies: 0,
     maxChaosFailures: 0,
-    maxOpenSatisfiedRuns: 0,
   };
 
 export function evaluateBackgroundRunQualityGates(
@@ -156,14 +154,6 @@ export function evaluateBackgroundRunQualityGates(
     thresholds.maxReplayInconsistencies,
   );
   checkMax("chaos_failures", artifact.chaosFailures, thresholds.maxChaosFailures);
-  checkMax(
-    "open_satisfied_runs",
-    artifact.scenarios.filter(
-      (scenario) =>
-        scenario.dependencySatisfied === true && scenario.verifierClosed === false,
-    ).length,
-    thresholds.maxOpenSatisfiedRuns,
-  );
 
   return {
     passed: violations.length === 0,

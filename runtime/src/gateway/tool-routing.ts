@@ -71,12 +71,14 @@ const DEFAULT_MANDATORY_TOOLS = [
   "system.readFile",
   "system.writeFile",
   "system.listDir",
+  "coordinator_mode",
   // Keep delegation entrypoint always available so routed subsets
   // can still spawn child agents when the user asks for parallel delegation.
   "execute_with_agent",
 ];
 
 const HOST_CODING_TOOL_NAMES = new Set([
+  "coordinator_mode",
   "system.bash",
   "system.readFile",
   "system.writeFile",
@@ -193,6 +195,15 @@ const REMOTE_JOB_TOOL_NAMES = new Set([
   "system.remoteJobArtifacts",
 ]);
 
+const REMOTE_SESSION_TOOL_NAMES = new Set([
+  "system.remoteSessionStart",
+  "system.remoteSessionStatus",
+  "system.remoteSessionResume",
+  "system.remoteSessionSend",
+  "system.remoteSessionStop",
+  "system.remoteSessionEvents",
+]);
+
 const RESEARCH_TOOL_NAMES = new Set([
   "system.researchStart",
   "system.researchStatus",
@@ -250,6 +261,17 @@ const REMOTE_JOB_TERMS = new Set([
   "server",
   "webhook",
 ]);
+
+const REMOTE_SESSION_TERMS = new Set([
+  "followup",
+  "interactive",
+  "reuse",
+  "viewer",
+  "vieweronly",
+]);
+
+const REMOTE_SESSION_INTENT_RE =
+  /\b(?:remote\s+session|interactive\s+remote|viewer[-\s]?only|session\s+handle|resume\s+(?:the\s+)?remote\s+session|send\s+(?:a\s+)?message\s+to\s+(?:the\s+)?remote\s+session|reply\s+to\s+(?:the\s+)?remote\s+session|follow[-\s]?up(?:\s+message)?\s+(?:for|to)\s+(?:the\s+)?remote\s+session)\b/i;
 
 const RESEARCH_TERMS = new Set([
   "analysis",
@@ -750,6 +772,7 @@ function hasStrongCurrentIntent(terms: readonly string[]): boolean {
   return terms.some((term) =>
     PROCESS_TERMS.has(term) ||
     REMOTE_JOB_TERMS.has(term) ||
+    REMOTE_SESSION_TERMS.has(term) ||
     RESEARCH_TERMS.has(term) ||
     SANDBOX_TERMS.has(term) ||
     SQLITE_TERMS.has(term) ||
@@ -1209,7 +1232,20 @@ export class ToolRouter {
     const wantsProcessStatus = intentTerms.some((term) => PROCESS_STATUS_TERMS.has(term));
     const wantsProcessStop = intentTerms.some((term) => PROCESS_STOP_TERMS.has(term));
     const wantsBackgroundWorkflow = intentTerms.includes("background");
-    const hasRemoteJobIntent = intentTerms.some((term) => REMOTE_JOB_TERMS.has(term));
+    const hasExplicitRemoteSessionHandleMention = Array.from(
+      explicitToolMentions,
+    ).some((toolName) => REMOTE_SESSION_TOOL_NAMES.has(toolName));
+    const hasExplicitRemoteJobHandleMention = Array.from(
+      explicitToolMentions,
+    ).some((toolName) => REMOTE_JOB_TOOL_NAMES.has(toolName));
+    const hasRemoteSessionIntent =
+      hasExplicitRemoteSessionHandleMention ||
+      REMOTE_SESSION_INTENT_RE.test(messageText) ||
+      intentTerms.some((term) => REMOTE_SESSION_TERMS.has(term));
+    const hasRemoteJobIntent =
+      hasExplicitRemoteJobHandleMention ||
+      (!hasRemoteSessionIntent &&
+        intentTerms.some((term) => REMOTE_JOB_TERMS.has(term)));
     const hasResearchIntent = intentTerms.some((term) => RESEARCH_TERMS.has(term));
     const hasSandboxIntent = intentTerms.some((term) => SANDBOX_TERMS.has(term));
     const hasSqliteIntent = inferTypedArtifactInspectionIntent(
@@ -1336,6 +1372,9 @@ export class ToolRouter {
         if (REMOTE_JOB_TOOL_NAMES.has(tool.name) && !hasRemoteJobIntent) {
           return { tool, score: Number.NEGATIVE_INFINITY };
         }
+        if (REMOTE_SESSION_TOOL_NAMES.has(tool.name) && !hasRemoteSessionIntent) {
+          return { tool, score: Number.NEGATIVE_INFINITY };
+        }
         if (RESEARCH_TOOL_NAMES.has(tool.name) && !wantsResearchHandles) {
           return { tool, score: Number.NEGATIVE_INFINITY };
         }
@@ -1386,6 +1425,15 @@ export class ToolRouter {
       }
       if (hasRemoteJobIntent && REMOTE_JOB_TOOL_NAMES.has(tool.name)) {
         score += 14;
+      }
+      if (hasRemoteSessionIntent && REMOTE_SESSION_TOOL_NAMES.has(tool.name)) {
+        score += 16;
+      }
+      if (hasRemoteSessionIntent && REMOTE_JOB_TOOL_NAMES.has(tool.name)) {
+        score -= 8;
+      }
+      if (hasRemoteJobIntent && REMOTE_SESSION_TOOL_NAMES.has(tool.name)) {
+        score -= 8;
       }
       if (wantsResearchHandles && RESEARCH_TOOL_NAMES.has(tool.name)) {
         score += 14;

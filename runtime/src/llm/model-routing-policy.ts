@@ -5,8 +5,6 @@ import type {
   RuntimeEconomicsPolicy,
   RuntimeRunClass,
 } from "./run-budget.js";
-import { getGrokModelCapabilities } from "../gateway/context-window.js";
-import { summarizeRequestedToolKinds } from "./provider-native-search.js";
 
 export interface ProviderRouteDescriptor {
   readonly index: number;
@@ -187,91 +185,6 @@ function chooseDowngradedCandidate(
   )[0];
 }
 
-function providerSupportsRouteRequirements(
-  candidate: ProviderRouteDescriptor,
-  requirements: ModelRouteRequirements | undefined,
-): boolean {
-  if (!requirements) return true;
-  if (
-    requirements.statefulContinuationRequired &&
-    candidate.provider.getCapabilities &&
-    candidate.provider.getCapabilities().stateful.previousResponseId !== true
-  ) {
-    return false;
-  }
-  if (candidate.providerName !== "grok") {
-    if (
-      requirements.structuredOutputRequired &&
-      candidate.providerName === "ollama"
-    ) {
-      return false;
-    }
-    return true;
-  }
-  const grokCapabilities = getGrokModelCapabilities(candidate.model);
-  if (
-    requirements.structuredOutputRequired &&
-    !grokCapabilities.supportsStructuredOutputs
-  ) {
-    return false;
-  }
-  const requestedToolKinds = summarizeRequestedToolKinds(
-    requirements.routedToolNames,
-  );
-  if (
-    requestedToolKinds.clientToolNames.length > 0 &&
-    !grokCapabilities.supportsClientTools
-  ) {
-    return false;
-  }
-  if (
-    requestedToolKinds.providerNativeToolNames.length > 0 &&
-    !grokCapabilities.supportsServerSideTools
-  ) {
-    return false;
-  }
-  if (
-    requestedToolKinds.remoteMcpToolNames.length > 0 &&
-    !grokCapabilities.supportsRemoteMcpTools
-  ) {
-    return false;
-  }
-  if (
-    requirements.structuredOutputRequired &&
-    requestedToolKinds.requestedToolNames.length > 0 &&
-    !grokCapabilities.supportsStructuredOutputsWithTools
-  ) {
-    return false;
-  }
-  return true;
-}
-
-function describeRouteRequirements(
-  requirements: ModelRouteRequirements | undefined,
-): string[] {
-  if (!requirements) return [];
-  const descriptions: string[] = [];
-  if (requirements.statefulContinuationRequired) {
-    descriptions.push("stateful continuation");
-  }
-  if (requirements.structuredOutputRequired) {
-    descriptions.push("structured output");
-  }
-  const requestedToolKinds = summarizeRequestedToolKinds(
-    requirements.routedToolNames,
-  );
-  if (requestedToolKinds.clientToolNames.length > 0) {
-    descriptions.push("client-side/custom tools");
-  }
-  if (requestedToolKinds.providerNativeToolNames.length > 0) {
-    descriptions.push("provider-native tools");
-  }
-  if (requestedToolKinds.remoteMcpToolNames.length > 0) {
-    descriptions.push("remote MCP tools");
-  }
-  return descriptions;
-}
-
 export function resolveParallelToolCallPolicy(params: {
   readonly policy: ModelRoutingPolicy;
   readonly selectedProviderName: string;
@@ -310,38 +223,17 @@ export function resolveModelRoute(params: {
   readonly requiredCapabilities?: readonly string[];
   readonly requirements?: ModelRouteRequirements;
 }): ModelRouteDecision {
+  void params.requirements;
   const degraded = new Set(
     (params.degradedProviderNames ?? []).map((entry) => entry.toLowerCase()),
   );
   const healthyCandidates = params.policy.providers.filter((candidate) =>
-    !degraded.has(candidate.routeKey.toLowerCase())
+    !degraded.has(candidate.routeKey.toLowerCase()) &&
+      !degraded.has(candidate.providerName.toLowerCase())
   );
-  const compatibleHealthyCandidates = healthyCandidates.filter((candidate) =>
-    providerSupportsRouteRequirements(candidate, params.requirements)
-  );
-  const compatibleAllCandidates = params.policy.providers.filter((candidate) =>
-    providerSupportsRouteRequirements(candidate, params.requirements)
-  );
-  const routePool = compatibleHealthyCandidates.length > 0
-    ? compatibleHealthyCandidates
-    : compatibleAllCandidates.length > 0
-    ? compatibleAllCandidates
-    : healthyCandidates.length > 0
+  const routePool = healthyCandidates.length > 0
     ? healthyCandidates
     : params.policy.providers;
-  if (
-    routePool.length === 0 ||
-    !routePool.some((candidate) =>
-      providerSupportsRouteRequirements(candidate, params.requirements)
-    )
-  ) {
-    const required = describeRouteRequirements(params.requirements);
-    throw new Error(
-      required.length > 0
-        ? `No configured provider route can honor ${required.join(", ")}.`
-        : "No configured provider route can honor the requested model contract.",
-    );
-  }
   const defaultCandidate = chooseDefaultCandidate(
     params.runClass,
     routePool,
@@ -356,8 +248,11 @@ export function resolveModelRoute(params: {
     throw new Error("Model routing policy requires at least one provider");
   }
 
+  const firstProvider = params.policy.providers[0];
   const rerouted =
-    chosen.index !== 0 || degraded.has(params.policy.providers[0]?.providerName.toLowerCase() ?? "");
+    chosen.index !== 0 ||
+    degraded.has(firstProvider?.routeKey.toLowerCase() ?? "") ||
+    degraded.has(firstProvider?.providerName.toLowerCase() ?? "");
   const downgraded = Boolean(
     downgradedCandidate &&
       (downgradedCandidate.index !== defaultCandidate?.index ||
@@ -368,13 +263,9 @@ export function resolveModelRoute(params: {
     : rerouted
     ? "degraded_provider_reroute"
     : "default_route";
-  const compatibleRouteCandidates =
-    compatibleAllCandidates.length > 0
-      ? compatibleAllCandidates
-      : routePool;
   const orderedFallbacks = [
     chosen,
-    ...compatibleRouteCandidates.filter((candidate) => candidate.index !== chosen.index),
+    ...params.policy.providers.filter((candidate) => candidate.index !== chosen.index),
   ];
 
   return {

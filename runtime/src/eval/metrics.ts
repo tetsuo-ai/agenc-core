@@ -264,13 +264,10 @@ export function evalRunFromReplayResult(
   replay: TrajectoryReplayResult,
   overrides: Partial<EvalRunRecord> = {},
 ): EvalRunRecord {
-  const taskStates = Object.values(replay.tasks);
   const passed =
-    taskStates.length > 0 &&
-    replay.errors.length === 0 &&
-    taskStates.every(
-      (task) => task.dependencySatisfied === true && task.verifierClosed === true,
-    );
+    replay.summary.completedTasks > 0 &&
+    replay.summary.failedTasks === 0 &&
+    replay.summary.escalatedTasks === 0;
 
   return {
     id: overrides.id ?? replay.trace.traceId,

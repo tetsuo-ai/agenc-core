@@ -20,6 +20,7 @@ function createInputHarness(overrides = {}) {
     introDismissed: false,
     composerPastedRanges: [],
     composerPasteSequence: 0,
+    secretPrompt: overrides.secretPrompt ?? null,
     inputPreferences: overrides.inputPreferences ?? {
       inputModeProfile: "default",
       keybindingProfile: "default",
@@ -42,6 +43,9 @@ function createInputHarness(overrides = {}) {
     toggleExpandedEvent() {
       calls.push({ type: "toggleExpandedEvent" });
     },
+    toggleTerminalSelectionMode() {
+      calls.push({ type: "toggleSelectionMode" });
+    },
     currentDiffNavigationState() {
       return overrides.currentDiffNavigationState ?? { enabled: false };
     },
@@ -52,6 +56,7 @@ function createInputHarness(overrides = {}) {
     copyCurrentView() {
       calls.push({ type: "copy" });
     },
+    isTerminalSelectionModeActive: overrides.isTerminalSelectionModeActive ?? (() => false),
     clearLiveTranscriptView() {
       calls.push({ type: "clear" });
     },
@@ -70,8 +75,14 @@ function createInputHarness(overrides = {}) {
     autocompleteComposerInput() {
       calls.push({ type: "autocomplete" });
     },
+    acceptComposerPaletteSelection: overrides.acceptComposerPaletteSelection ?? (() => false),
     navigateComposer(direction) {
       calls.push({ type: "navigate", direction });
+    },
+    hasActiveComposerPalette: overrides.hasActiveComposerPalette ?? (() => false),
+    navigateComposerPalette(direction) {
+      calls.push({ type: "navigatePalette", direction });
+      return true;
     },
     moveComposerCursorByCharacter(direction) {
       moveComposerCursorByCharacterState(watchState, direction);
@@ -132,7 +143,7 @@ test("input controller handles enter, tab, and ctrl shortcuts", () => {
   watchState.composerInput = "show status";
   watchState.composerCursor = watchState.composerInput.length;
 
-  controller.handleTerminalInput("\t\r\x0f\x19\x0c");
+  controller.handleTerminalInput("\t\r\x0f\x19\x11\x0c");
 
   assert.ok(calls.some((entry) => entry.type === "autocomplete"));
   assert.ok(calls.some((entry) => entry.type === "submit" && entry.value === "show status"));
@@ -140,7 +151,54 @@ test("input controller handles enter, tab, and ctrl shortcuts", () => {
   assert.ok(calls.some((entry) => entry.type === "resetComposer"));
   assert.ok(calls.some((entry) => entry.type === "toggleExpandedEvent"));
   assert.ok(calls.some((entry) => entry.type === "copy"));
+  assert.ok(calls.some((entry) => entry.type === "toggleSelectionMode"));
   assert.ok(calls.some((entry) => entry.type === "clear"));
+});
+
+test("input controller limits input while terminal selection mode is active", () => {
+  const { controller, watchState, calls } = createInputHarness({
+    isTerminalSelectionModeActive: () => true,
+  });
+  watchState.composerInput = "keep me";
+  watchState.composerCursor = watchState.composerInput.length;
+
+  controller.handleTerminalInput("abc\x11");
+
+  assert.equal(watchState.composerInput, "keep me");
+  assert.ok(calls.some((entry) => entry.type === "toggleSelectionMode"));
+  assert.equal(calls.some((entry) => entry.type === "insert"), false);
+});
+
+test("input controller applies the active palette selection before submitting on enter", () => {
+  const { controller, watchState, calls } = createInputHarness({
+    hasActiveComposerPalette: () => true,
+    acceptComposerPaletteSelection() {
+      watchState.composerInput = "/model grok-4-1-fast-reasoning";
+      watchState.composerCursor = watchState.composerInput.length;
+      calls.push({ type: "acceptPaletteSelection" });
+      return true;
+    },
+  });
+  watchState.composerInput = "/model gro";
+  watchState.composerCursor = watchState.composerInput.length;
+
+  controller.handleTerminalInput("\r");
+
+  assert.ok(calls.some((entry) => entry.type === "acceptPaletteSelection"));
+  assert.ok(
+    calls.some(
+      (entry) =>
+        entry.type === "submit" &&
+        entry.value === "/model grok-4-1-fast-reasoning",
+    ),
+  );
+  assert.ok(
+    calls.some(
+      (entry) =>
+        entry.type === "recordHistory" &&
+        entry.value === "/model grok-4-1-fast-reasoning",
+    ),
+  );
 });
 
 test("input controller routes mouse-wheel packets to viewport scrolling", () => {
@@ -179,6 +237,23 @@ test("input controller ignores unknown escape sequences without cancelling or le
 
   assert.equal(watchState.composerInput, "hello");
   assert.equal(calls.some((entry) => entry.type === "cancelActiveChat"), false);
+});
+
+test("input controller routes arrow keys to palette navigation while the composer palette is open", () => {
+  const { controller, calls } = createInputHarness({
+    hasActiveComposerPalette: () => true,
+  });
+
+  controller.handleTerminalInput("\x1b[A\x1b[B");
+
+  assert.deepEqual(
+    calls.filter((entry) => entry.type === "navigatePalette"),
+    [
+      { type: "navigatePalette", direction: -1 },
+      { type: "navigatePalette", direction: 1 },
+    ],
+  );
+  assert.equal(calls.some((entry) => entry.type === "navigate"), false);
 });
 
 test("input controller routes ctrl+p and ctrl+n to diff hunk navigation only in diff detail mode", () => {
@@ -221,6 +296,66 @@ test("input controller inserts bracketed paste text without auto-submitting it",
   assert.ok(
     calls.some((entry) => entry.type === "insert" && entry.options?.markPasted === true),
   );
+});
+
+test("input controller captures secret prompt text locally without mutating composer state", () => {
+  const { controller, watchState, calls } = createInputHarness({
+    secretPrompt: {
+      kind: "xai-api-key",
+      label: "xai key",
+      value: "",
+      pending: false,
+      onSubmit() {},
+      onCancel() {},
+    },
+  });
+
+  controller.handleTerminalInput("ab");
+  controller.handleTerminalInput("\x1b[200~12\r\n34\x1b[201~");
+  controller.handleTerminalInput("\x7f");
+
+  assert.equal(watchState.secretPrompt?.value, "ab12\n3");
+  assert.equal(watchState.composerInput, "");
+  assert.equal(
+    calls.some((entry) => entry.type === "insert"),
+    false,
+  );
+  assert.equal(
+    calls.some((entry) => entry.type === "submit"),
+    false,
+  );
+});
+
+test("input controller submits and cancels secret prompts locally", () => {
+  const submissions = [];
+  const { controller, watchState, calls } = createInputHarness();
+  watchState.secretPrompt = {
+    kind: "xai-api-key",
+    label: "xai key",
+    value: "",
+    pending: false,
+    onSubmit(value) {
+      submissions.push(value);
+      watchState.secretPrompt.pending = true;
+    },
+    onCancel() {
+      calls.push({ type: "cancelSecretPrompt" });
+      watchState.secretPrompt = null;
+    },
+  };
+
+  controller.handleTerminalInput("key\r");
+  controller.handleTerminalInput("ignored");
+
+  assert.deepEqual(submissions, ["key"]);
+  assert.equal(watchState.secretPrompt?.value, "key");
+  assert.equal(watchState.composerInput, "");
+
+  watchState.secretPrompt.pending = false;
+  controller.handleTerminalInput("\x1b");
+
+  assert.equal(watchState.secretPrompt, null);
+  assert.ok(calls.some((entry) => entry.type === "cancelSecretPrompt"));
 });
 
 test("input controller backspace deletes an entire pasted placeholder block", () => {

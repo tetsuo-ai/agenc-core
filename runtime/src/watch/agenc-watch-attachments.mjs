@@ -1,8 +1,6 @@
 import path from "node:path";
 
 export const DEFAULT_WATCH_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024;
-export const DEFAULT_WATCH_ATTACHMENT_WAIT_FOR_FILE_MS = 1500;
-export const DEFAULT_WATCH_ATTACHMENT_WAIT_INTERVAL_MS = 50;
 
 const EXTENSION_TO_MIME = Object.freeze({
   ".aac": "audio/aac",
@@ -35,233 +33,13 @@ const EXTENSION_TO_MIME = Object.freeze({
   ".zip": "application/zip",
 });
 
-const WATCH_ATTACHMENT_TRAILING_STATUS_SUFFIXES = Object.freeze([
-  "read",
-]);
-
 function sanitizeAttachmentText(value, fallback = "") {
   const text = String(value ?? "").replace(/\s+/g, " ").trim();
   return text.length > 0 ? text : fallback;
 }
 
-function sanitizeAttachmentPathInput(value) {
-  return String(value ?? "").trim();
-}
-
 function compactAttachmentPath(value) {
   return String(value ?? "").replace(/\\/g, "/");
-}
-
-function stripWatchAttachmentTrailingStatusSuffix(value, { pathModule = path } = {}) {
-  const normalizedValue = sanitizeAttachmentPathInput(value);
-  if (!normalizedValue) {
-    return "";
-  }
-
-  const compactPath = compactAttachmentPath(normalizedValue);
-  const looksLikeLocalPath =
-    compactPath.startsWith("./") ||
-    compactPath.startsWith("../") ||
-    compactPath.startsWith("~/") ||
-    /^[A-Za-z]:[\\/]/.test(normalizedValue) ||
-    pathModule.isAbsolute(normalizedValue);
-  if (!looksLikeLocalPath) {
-    return normalizedValue;
-  }
-
-  for (const suffix of WATCH_ATTACHMENT_TRAILING_STATUS_SUFFIXES) {
-    const marker = ` ${suffix}`;
-    if (!normalizedValue.endsWith(marker)) {
-      continue;
-    }
-
-    const candidatePath = normalizedValue.slice(0, -marker.length).trimEnd();
-    const basename = pathModule.basename(candidatePath);
-    const extension = pathModule.extname(basename);
-    const looksLikeNamedFile = extension.length > 1 && basename.length > extension.length;
-    const looksLikeMacScreenshotPromisePath =
-      compactAttachmentPath(candidatePath).includes("/NSIRD_screencaptureui_") &&
-      /^Screenshot(?:\s|$)/.test(basename);
-
-    if (looksLikeNamedFile || looksLikeMacScreenshotPromisePath) {
-      return candidatePath;
-    }
-  }
-
-  return normalizedValue;
-}
-
-function isMissingAttachmentError(error) {
-  const code = error && typeof error === "object" ? error.code : null;
-  return code === "ENOENT" || code === "ENOTDIR";
-}
-
-const WATCH_ATTACHMENT_SLEEP_VIEW =
-  typeof SharedArrayBuffer === "function"
-    ? new Int32Array(new SharedArrayBuffer(4))
-    : null;
-
-function sleepWatchAttachment(ms) {
-  const durationMs = Number(ms);
-  if (
-    !Number.isFinite(durationMs) ||
-    durationMs <= 0 ||
-    WATCH_ATTACHMENT_SLEEP_VIEW === null ||
-    typeof Atomics?.wait !== "function"
-  ) {
-    return;
-  }
-  Atomics.wait(WATCH_ATTACHMENT_SLEEP_VIEW, 0, 0, durationMs);
-}
-
-function resolveWatchAttachmentDisplayPath(pathModule, projectRoot, resolvedPath) {
-  const relativePath = pathModule.relative(projectRoot, resolvedPath);
-  return relativePath && !relativePath.startsWith("..") && !pathModule.isAbsolute(relativePath)
-    ? compactAttachmentPath(relativePath)
-    : compactAttachmentPath(resolvedPath);
-}
-
-function isLikelyWatchAttachmentInputPath(inputPath, { pathModule = path } = {}) {
-  const normalizedPath = normalizeWatchAttachmentInputPath(inputPath);
-  if (!normalizedPath) {
-    return false;
-  }
-  const compactPath = compactAttachmentPath(normalizedPath);
-  if (
-    compactPath.startsWith("./") ||
-    compactPath.startsWith("../") ||
-    compactPath.startsWith("~/")
-  ) {
-    return true;
-  }
-  if (/^[A-Za-z]:[\\/]/.test(normalizedPath)) {
-    return compactPath.includes("/");
-  }
-  return pathModule.isAbsolute(normalizedPath) && compactPath.slice(1).includes("/");
-}
-
-function statWatchAttachmentPath(fs, sourcePath) {
-  let realPath;
-  try {
-    realPath =
-      typeof fs.realpathSync?.native === "function"
-        ? fs.realpathSync.native(sourcePath)
-        : fs.realpathSync(sourcePath);
-  } catch {
-    realPath = sourcePath;
-  }
-  let stat;
-  try {
-    stat = fs.statSync(realPath);
-  } catch (error) {
-    return {
-      realPath,
-      stat: null,
-      error,
-    };
-  }
-  if (typeof stat?.isFile === "function" && stat.isFile() !== true) {
-    return {
-      realPath,
-      stat: null,
-      error: new Error(`Could not attach ${sourcePath}: not a regular file`),
-    };
-  }
-  return {
-    realPath,
-    stat,
-    error: null,
-  };
-}
-
-function waitForWatchAttachmentPath(
-  fs,
-  sourcePath,
-  {
-    waitForFileMs = DEFAULT_WATCH_ATTACHMENT_WAIT_FOR_FILE_MS,
-    waitForFileIntervalMs = DEFAULT_WATCH_ATTACHMENT_WAIT_INTERVAL_MS,
-  } = {},
-) {
-  const timeoutMs = Math.max(0, Number(waitForFileMs) || 0);
-  const intervalMs = Math.max(1, Number(waitForFileIntervalMs) || 1);
-  const deadline = Date.now() + timeoutMs;
-  let lastAttempt = statWatchAttachmentPath(fs, sourcePath);
-  while (lastAttempt.stat === null && isMissingAttachmentError(lastAttempt.error) && Date.now() < deadline) {
-    sleepWatchAttachment(Math.min(intervalMs, Math.max(0, deadline - Date.now())));
-    lastAttempt = statWatchAttachmentPath(fs, sourcePath);
-  }
-  return lastAttempt;
-}
-
-export function normalizeWatchAttachmentInputPath(inputPath) {
-  let rawPath = sanitizeAttachmentPathInput(inputPath);
-  if (!rawPath) {
-    return "";
-  }
-
-  if (
-    (rawPath.startsWith('"') && rawPath.endsWith('"')) ||
-    (rawPath.startsWith("'") && rawPath.endsWith("'"))
-  ) {
-    rawPath = rawPath.slice(1, -1);
-  }
-
-  if (rawPath.startsWith("file://")) {
-    try {
-      rawPath = decodeURI(new URL(rawPath).pathname);
-    } catch {
-      // Keep the original string if it is not a valid file URL.
-    }
-  }
-
-  let normalized = "";
-  for (let index = 0; index < rawPath.length; index += 1) {
-    if (rawPath[index] === "\\" && index + 1 < rawPath.length) {
-      normalized += rawPath[index + 1];
-      index += 1;
-      continue;
-    }
-    normalized += rawPath[index];
-  }
-
-  return stripWatchAttachmentTrailingStatusSuffix(normalized.trim());
-}
-
-export function resolveWatchAttachmentInputPath({
-  fs,
-  pathModule = path,
-  inputPath,
-  projectRoot = process.cwd(),
-} = {}) {
-  const normalizedPath = normalizeWatchAttachmentInputPath(inputPath);
-  if (!normalizedPath) {
-    return null;
-  }
-
-  const resolvedPath = pathModule.resolve(projectRoot, normalizedPath);
-  let realPath;
-  try {
-    realPath =
-      typeof fs.realpathSync?.native === "function"
-        ? fs.realpathSync.native(resolvedPath)
-        : fs.realpathSync(resolvedPath);
-  } catch {
-    realPath = resolvedPath;
-  }
-
-  let stat;
-  try {
-    stat = fs.statSync(realPath);
-  } catch {
-    return isLikelyWatchAttachmentInputPath(normalizedPath, { pathModule })
-      ? normalizedPath
-      : null;
-  }
-  if (typeof stat?.isFile === "function" && stat.isFile() !== true) {
-    return null;
-  }
-
-  return normalizedPath;
 }
 
 function formatAttachmentBytes(sizeBytes) {
@@ -330,41 +108,53 @@ export function createQueuedWatchAttachment({
   projectRoot = process.cwd(),
   id,
   maxBytes = DEFAULT_WATCH_ATTACHMENT_MAX_BYTES,
-  allowMissing = false,
 } = {}) {
-  const rawPath = normalizeWatchAttachmentInputPath(inputPath);
+  const resolveRealPath = (targetPath) => {
+    try {
+      return typeof fs.realpathSync?.native === "function"
+        ? fs.realpathSync.native(targetPath)
+        : fs.realpathSync(targetPath);
+    } catch {
+      return targetPath;
+    }
+  };
+  const rawPath = sanitizeAttachmentText(inputPath);
   if (!rawPath) {
     throw new Error("Usage: /attach <path>");
   }
   const resolvedPath = pathModule.resolve(projectRoot, rawPath);
-  const attachmentPathState = statWatchAttachmentPath(fs, resolvedPath);
-  if (attachmentPathState.stat === null) {
-    if (allowMissing !== true || isLikelyWatchAttachmentInputPath(rawPath, { pathModule }) !== true) {
-      const detail =
-        attachmentPathState.error instanceof Error
-          ? attachmentPathState.error.message
-          : String(attachmentPathState.error);
-      throw new Error(`Could not attach ${rawPath}: ${detail}`);
-    }
+  const canonicalProjectRoot = resolveRealPath(pathModule.resolve(projectRoot));
+  const realPath = resolveRealPath(resolvedPath);
+  let stat;
+  try {
+    stat = fs.statSync(realPath);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Could not attach ${rawPath}: ${detail}`);
   }
-  const sizeBytes = Number.isFinite(Number(attachmentPathState.stat?.size))
-    ? Number(attachmentPathState.stat.size)
-    : null;
-  if (sizeBytes !== null && sizeBytes > maxBytes) {
-    throw new Error(`Could not attach ${rawPath}: file exceeds ${formatAttachmentBytes(maxBytes)}`);
+  if (typeof stat?.isFile === "function" && stat.isFile() !== true) {
+    throw new Error(`Could not attach ${rawPath}: not a regular file`);
   }
-  const displayPath = resolveWatchAttachmentDisplayPath(pathModule, projectRoot, resolvedPath);
-  const effectivePath = attachmentPathState.stat ? attachmentPathState.realPath : resolvedPath;
-  const mimeType = detectWatchAttachmentMimeType(effectivePath);
+  const sizeBytes = Number.isFinite(Number(stat?.size)) ? Number(stat.size) : 0;
+  if (sizeBytes > maxBytes) {
+    throw new Error(
+      `Could not attach ${rawPath}: file exceeds ${formatAttachmentBytes(maxBytes)}`,
+    );
+  }
+  const relativePath = pathModule.relative(canonicalProjectRoot, realPath);
+  const displayPath =
+    relativePath && !relativePath.startsWith("..") && !pathModule.isAbsolute(relativePath)
+      ? compactAttachmentPath(relativePath)
+      : compactAttachmentPath(realPath);
+  const mimeType = detectWatchAttachmentMimeType(realPath);
   return {
     id: sanitizeAttachmentText(id, null),
-    path: effectivePath,
+    path: realPath,
     displayPath,
-    filename: pathModule.basename(resolvedPath),
+    filename: pathModule.basename(realPath),
     mimeType,
     type: attachmentTypeFromMime(mimeType),
     sizeBytes,
-    missing: attachmentPathState.stat === null,
   };
 }
 
@@ -373,8 +163,6 @@ export function resolveQueuedWatchAttachmentPayloads(
   {
     fs,
     maxBytes = DEFAULT_WATCH_ATTACHMENT_MAX_BYTES,
-    waitForFileMs = DEFAULT_WATCH_ATTACHMENT_WAIT_FOR_FILE_MS,
-    waitForFileIntervalMs = DEFAULT_WATCH_ATTACHMENT_WAIT_INTERVAL_MS,
   } = {},
 ) {
   if (!Array.isArray(attachments) || attachments.length === 0) {
@@ -385,34 +173,16 @@ export function resolveQueuedWatchAttachmentPayloads(
     if (!sourcePath) {
       throw new Error("Attachment is missing a source path");
     }
-    let effectivePath = sourcePath;
-    let effectiveStat = null;
-    if (attachment?.missing === true) {
-      const waited = waitForWatchAttachmentPath(fs, sourcePath, {
-        waitForFileMs,
-        waitForFileIntervalMs,
-      });
-      if (waited.stat === null) {
-        const detail =
-          waited.error instanceof Error ? waited.error.message : String(waited.error);
-        throw new Error(`Could not read attachment ${sourcePath}: ${detail}`);
-      }
-      effectivePath = waited.realPath;
-      effectiveStat = waited.stat;
-    }
     let buffer;
     try {
-      buffer = fs.readFileSync(effectivePath);
+      buffer = fs.readFileSync(sourcePath);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      throw new Error(`Could not read attachment ${effectivePath}: ${detail}`);
+      throw new Error(`Could not read attachment ${sourcePath}: ${detail}`);
     }
-    const sizeBytes =
-      Number.isFinite(Number(attachment?.sizeBytes)) && Number(attachment.sizeBytes) >= 0
+    const sizeBytes = Number.isFinite(Number(attachment?.sizeBytes))
       ? Number(attachment.sizeBytes)
-      : Number.isFinite(Number(effectiveStat?.size))
-        ? Number(effectiveStat.size)
-        : buffer.byteLength;
+      : buffer.byteLength;
     if (sizeBytes > maxBytes || buffer.byteLength > maxBytes) {
       throw new Error(
         `Could not attach ${sanitizeAttachmentText(attachment?.filename, sourcePath)}: file exceeds ${formatAttachmentBytes(maxBytes)}`,

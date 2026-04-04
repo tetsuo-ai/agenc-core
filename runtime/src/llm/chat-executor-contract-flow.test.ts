@@ -310,6 +310,43 @@ describe("chat-executor-contract-flow", () => {
     ).toBe(false);
   });
 
+  it("does not require workflow-owned completion for planner-only deterministic turns", () => {
+    expect(
+      requiresWorkflowOwnedImplementationCompletion({
+        ctx: {
+          messageText: "Print the workspace status summary.",
+          allToolCalls: [
+            {
+              name: "system.bash",
+              args: {
+                command: "printf",
+                args: ["status ok\\n"],
+              },
+              result: JSON.stringify({
+                stdout: "status ok\n",
+                stderr: "",
+                exitCode: 0,
+              }),
+              isError: false,
+              durationMs: 2,
+            },
+          ],
+          activeRoutedToolNames: ["system.bash"],
+          initialRoutedToolNames: ["system.bash"],
+          expandedRoutedToolNames: [],
+          requiredToolEvidence: undefined,
+          providerEvidence: undefined,
+          response: undefined,
+          plannerWorkflowTaskClassification: "docs_research_plan_only",
+          plannerSummaryState: {
+            used: true,
+            routeReason: "planner_tool_call_salvaged",
+          },
+        } as any,
+      }),
+    ).toBe(false);
+  });
+
   it("limits legacy completion compatibility to docs, research, and plan-only turns", () => {
     const docsDecision = resolveLegacyCompletionCompatibility({
       ctx: {
@@ -367,6 +404,46 @@ describe("chat-executor-contract-flow", () => {
     expect(researchDecision).toMatchObject({
       allowed: true,
       compatibilityClass: "research",
+    });
+  });
+
+  it("allows legacy completion compatibility for planner-owned plan-only turns", () => {
+    const decision = resolveLegacyCompletionCompatibility({
+      ctx: {
+        messageText: "Print the workspace status summary.",
+        allToolCalls: [
+          {
+            name: "system.bash",
+            args: {
+              command: "printf",
+              args: ["status ok\\n"],
+            },
+            result: JSON.stringify({
+              stdout: "status ok\n",
+              stderr: "",
+              exitCode: 0,
+            }),
+            isError: false,
+            durationMs: 2,
+          },
+        ],
+        activeRoutedToolNames: ["system.bash"],
+        initialRoutedToolNames: ["system.bash"],
+        expandedRoutedToolNames: [],
+        requiredToolEvidence: undefined,
+        providerEvidence: undefined,
+        response: undefined,
+        plannerWorkflowTaskClassification: "docs_research_plan_only",
+        plannerSummaryState: {
+          used: true,
+          routeReason: "planner_tool_call_salvaged",
+        },
+      } as any,
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      compatibilityClass: "plan_only",
     });
   });
 

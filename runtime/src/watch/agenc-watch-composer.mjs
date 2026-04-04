@@ -466,6 +466,35 @@ export function autocompleteSlashComposerInput(state, matchCommands) {
   return true;
 }
 
+export function applySlashCommandCompletion(state, commandName) {
+  if (!isSlashComposerInput(currentComposerInput(state)) || !commandName) {
+    return false;
+  }
+  const completed = completeSlashToken(currentComposerInput(state), commandName);
+  state.composerInput = completed.input;
+  state.composerCursor = completed.cursor;
+  state.composerHistoryIndex = -1;
+  clearComposerPastedRanges(state);
+  return true;
+}
+
+export function applySlashModelCompletion(state, modelName) {
+  const input = currentComposerInput(state);
+  const trimmed = input.trimStart();
+  const match = trimmed.match(/^(\/models?)\s*(.*)$/i);
+  if (!match || !modelName) {
+    return false;
+  }
+  const commandToken = match[1];
+  const leadingWhitespace = input.match(/^\s*/)?.[0] ?? "";
+  const completed = `${leadingWhitespace}${commandToken} ${modelName}`;
+  state.composerInput = completed;
+  state.composerCursor = completed.length;
+  state.composerHistoryIndex = -1;
+  clearComposerPastedRanges(state);
+  return true;
+}
+
 export function buildComposerRenderLine({
   input,
   cursor,
@@ -580,6 +609,27 @@ export function autocompleteComposerFileTag(state, fileIndex, { limit = 8 } = {}
     input,
     activeTag,
     `@${match.path}`,
+  );
+  state.composerInput = completed.input;
+  state.composerCursor = completed.cursor;
+  state.composerHistoryIndex = -1;
+  clearComposerPastedRanges(state);
+  return true;
+}
+
+export function applyComposerFileTagSuggestion(state, suggestion) {
+  const input = currentComposerInput(state);
+  const activeTag = getActiveFileTagQuery({
+    input,
+    cursor: state?.composerCursor,
+  });
+  if (!activeTag || !suggestion?.path) {
+    return false;
+  }
+  const completed = applyTokenReplacement(
+    input,
+    activeTag,
+    `@${suggestion.path}`,
   );
   state.composerInput = completed.input;
   state.composerCursor = completed.cursor;

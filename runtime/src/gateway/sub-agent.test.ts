@@ -1107,14 +1107,14 @@ describe("SubAgentManager", () => {
         const result = manager.getResult(sessionId);
         const info = manager.getInfo(sessionId);
         expect(result).not.toBeNull();
-        expect(result!.success).toBe(true);
+        expect(result!.success).toBe(false);
         expect(result!.completionState).toBe("needs_verification");
         expect(result!.completionProgress?.remainingRequirements).toEqual([
           "workflow_verifier_pass",
           "build_verification",
         ]);
         expect(result!.stopReason).toBe("completed");
-        expect(info?.status).toBe("needs_verification");
+        expect(info?.status).toBe("failed");
       } finally {
         executeSpy.mockRestore();
       }

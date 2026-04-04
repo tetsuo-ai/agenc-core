@@ -4,6 +4,7 @@ import { hasRuntimeLimit } from "../llm/runtime-limit-policy.js";
 export const COMPLEX_TURN_MAX_TOOL_ROUNDS = 2_048;
 
 const HIGH_ITERATION_TOOL_NAMES = new Set<string>([
+  "coordinator_mode",
   "desktop.text_editor",
   "execute_with_agent",
   "system.appendFile",

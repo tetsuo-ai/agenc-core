@@ -16,7 +16,6 @@ import { TaskOperations } from "../task/operations.js";
 import { taskStatusToString } from "../task/types.js";
 import { lamportsToSol } from "../utils/encoding.js";
 import { silentLogger } from "../utils/logger.js";
-import { assessPromptInjectionRisk } from "../security/untrusted-content.js";
 
 type TaskListEntry = Awaited<ReturnType<TaskOperations["fetchAllTasks"]>>[number];
 type TaskRecord = NonNullable<Awaited<ReturnType<TaskOperations["fetchTask"]>>>;
@@ -38,10 +37,6 @@ export interface SerializedMarketplaceTask {
   status: string;
   creator: string;
   description: string;
-  descriptionSafeSummary: string;
-  descriptionRiskLevel: "low" | "medium" | "high";
-  descriptionRiskScore: number;
-  agentExecutionEligible: boolean;
   constraintHash: string;
   rewardLamports: string;
   rewardSol: string | undefined;
@@ -274,18 +269,12 @@ export function serializeMarketplaceTask(
   taskPda: PublicKey,
   task: TaskRecord,
 ): SerializedMarketplaceTask {
-  const description = decodeTaskBytes(task.description) || "untitled task";
-  const descriptionRisk = assessPromptInjectionRisk(description);
   return {
     taskPda: taskPda.toBase58(),
     taskId: encodeHex(task.taskId),
     status: normalizeTaskStatus(taskStatusToString(task.status)),
     creator: task.creator.toBase58(),
-    description,
-    descriptionSafeSummary: descriptionRisk.safeSummary,
-    descriptionRiskLevel: descriptionRisk.riskLevel,
-    descriptionRiskScore: descriptionRisk.riskScore,
-    agentExecutionEligible: descriptionRisk.executionEligible,
+    description: decodeTaskBytes(task.description) || "untitled task",
     constraintHash: encodeHex(task.constraintHash),
     rewardLamports: task.rewardAmount.toString(),
     rewardSol: task.rewardMint ? undefined : lamportsToSol(task.rewardAmount),

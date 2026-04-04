@@ -61,22 +61,6 @@ function createWorkspace(): string {
   return workspace;
 }
 
-function writeGatewayConfig(directory: string): string {
-  const configPath = join(directory, 'config.json');
-  writeFileSync(
-    configPath,
-    JSON.stringify({
-      gateway: { port: 3100 },
-      agent: { name: 'cli-contract-agent' },
-      connection: { rpcUrl: 'https://example.com' },
-      replay: { store: { type: 'memory' } },
-      cli: { outputFormat: 'json' },
-    }),
-    'utf8',
-  );
-  return configPath;
-}
-
 function createReplayRecords(
   events: OnChainFixtureEvent[],
   traceId: string,
@@ -186,7 +170,7 @@ describe('CLI output contract tests', () => {
     workspace = createWorkspace();
     originalAgencConfig = process.env.AGENC_CONFIG;
     originalRuntimeConfig = process.env.AGENC_RUNTIME_CONFIG;
-    process.env.AGENC_CONFIG = writeGatewayConfig(workspace);
+    process.env.AGENC_CONFIG = join(workspace, 'missing-canonical-config.json');
     delete process.env.AGENC_RUNTIME_CONFIG;
   });
 
@@ -349,7 +333,7 @@ describe('CLI output contract tests', () => {
           status: parsed.status,
           code: parsed.code,
           message: parsed.message.replace(
-            /(?:\/tmp|\/private\/tmp|\/var\/folders\/[^/]+\/[^/]+\/T)\/agenc-cli-contract-[^/]+\/empty-cli-config\.json/g,
+            /\/(?:var\/folders\/[^/]+\/[^/]+\/T|tmp)\/agenc-cli-contract-[^/]+\/empty-cli-config\.json/g,
             '/tmp/agenc-cli-contract-<fixture>/empty-cli-config.json',
           ).replace(
             /(?:\/Users\/[^/]+|\/home\/[^/]+)\/\.agenc\/config\.json/g,

@@ -362,15 +362,15 @@ const EXTENSIBILITY_COMMANDS = Object.freeze([
     usage: "/hooks [list|events]",
     description: "Inspect built-in lifecycle hooks and any configured hook handlers.",
   }),
+  Object.freeze({
+    name: "/xai",
+    aliases: ["/api"],
+    usage: "/xai [set|status|validate|clear]",
+    description: "Manage the local xAI API key stored in the runtime config.",
+  }),
 ]);
 
 const INPUT_MODE_COMMANDS = Object.freeze([
-  Object.freeze({
-    name: "/config",
-    aliases: ["/settings"],
-    usage: "/config [show]",
-    description: "Show the local watch UI config and quick toggles.",
-  }),
   Object.freeze({
     name: "/input-mode",
     usage: "/input-mode [show|default|vim]",
@@ -383,67 +383,53 @@ const INPUT_MODE_COMMANDS = Object.freeze([
   }),
   Object.freeze({
     name: "/theme",
-    usage: "/theme [show|default|aurora|ember|matrix]",
+    usage: "/theme [show|default|aurora|ember]",
     description: "Show or switch the local watch color theme.",
-  }),
-  Object.freeze({
-    name: "/statusline",
-    usage: "/statusline [show|on|off|toggle]",
-    description: "Show or toggle the structured footer statusline locally.",
-  }),
-  Object.freeze({
-    name: "/vim",
-    usage: "/vim [show|on|off|toggle]",
-    description: "Toggle the local watch composer between default and vim mode.",
   }),
 ]);
 
 export function buildWatchCommands({ featureFlags = {} } = {}) {
-  const resolvedFeatureFlags = {
-    inputModes: true,
-    ...(featureFlags ?? {}),
-  };
   const commands = [...CORE_WATCH_COMMANDS];
-  if (resolvedFeatureFlags?.reviewModes === true) {
+  if (featureFlags?.reviewModes === true) {
     commands.push(...REVIEW_MODE_COMMANDS);
   }
-  if (resolvedFeatureFlags?.checkpoints === true) {
+  if (featureFlags?.checkpoints === true) {
     commands.push(...CHECKPOINT_COMMANDS);
   }
-  if (resolvedFeatureFlags?.diffReview === true) {
+  if (featureFlags?.diffReview === true) {
     commands.push(...DIFF_REVIEW_COMMANDS);
   }
-  if (resolvedFeatureFlags?.compactionControls === true) {
+  if (featureFlags?.compactionControls === true) {
     commands.push(...COMPACTION_COMMANDS);
   }
-  if (resolvedFeatureFlags?.permissionsControls === true) {
+  if (featureFlags?.permissionsControls === true) {
     commands.push(...PERMISSIONS_COMMANDS);
   }
-  if (resolvedFeatureFlags?.attachments === true) {
+  if (featureFlags?.attachments === true) {
     commands.push(...ATTACHMENT_COMMANDS);
   }
-  if (resolvedFeatureFlags?.exportBundles === true) {
+  if (featureFlags?.exportBundles === true) {
     commands.push(...EXPORT_BUNDLE_COMMANDS);
   }
-  if (resolvedFeatureFlags?.insights === true) {
+  if (featureFlags?.insights === true) {
     commands.push(...INSIGHTS_COMMANDS);
   }
-  if (resolvedFeatureFlags?.threadSwitcher === true) {
+  if (featureFlags?.threadSwitcher === true) {
     commands.push(...THREAD_SWITCHER_COMMANDS);
   }
-  if (resolvedFeatureFlags?.sessionIndexing === true) {
+  if (featureFlags?.sessionIndexing === true) {
     commands.push(...SESSION_INDEXING_COMMANDS);
   }
-  if (resolvedFeatureFlags?.rerunFromTrace === true) {
+  if (featureFlags?.rerunFromTrace === true) {
     commands.push(...RUN_CONTROL_COMMANDS);
   }
-  if (resolvedFeatureFlags?.remoteTools === true) {
+  if (featureFlags?.remoteTools === true) {
     commands.push(...REMOTE_TOOL_COMMANDS);
   }
-  if (resolvedFeatureFlags?.extensibilityHub === true) {
+  if (featureFlags?.extensibilityHub === true) {
     commands.push(...EXTENSIBILITY_COMMANDS);
   }
-  if (resolvedFeatureFlags?.inputModes === true) {
+  if (featureFlags?.inputModes === true) {
     commands.push(...INPUT_MODE_COMMANDS);
   }
   return Object.freeze(commands.map((command) => Object.freeze({
@@ -498,23 +484,11 @@ export function createOperatorInputBatcher({
     }
   };
 
-  const looksLikeSlashCommand = (value) => String(value ?? "").trim().startsWith("/");
-
   const flush = () => {
     clearPendingTimer();
     if (pendingLines.length === 0) return;
-    const batch = pendingLines;
+    const value = pendingLines.join("\n").trim();
     pendingLines = [];
-    if (batch.length > 1 && batch.some((entry) => looksLikeSlashCommand(entry))) {
-      for (const entry of batch) {
-        const value = String(entry ?? "").trim();
-        if (value) {
-          onDispatch(value);
-        }
-      }
-      return;
-    }
-    const value = batch.join("\n").trim();
     if (value) {
       onDispatch(value);
     }

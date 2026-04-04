@@ -33,11 +33,16 @@ test("frame controller computes slash-mode layout through the extracted boundary
 
   assert.equal(layout.width, 140);
   assert.equal(layout.height, 40);
-  assert.equal(layout.bodyHeight, 29);
+  assert.equal(layout.bodyHeight, 28);
   assert.equal(harness.layoutCalls.length, 1);
   assert.equal(harness.layoutCalls[0].slashMode, true);
   assert.equal(harness.layoutCalls[0].detailOpen, false);
   assert.ok(harness.layoutCalls[0].popupRows > 0);
+
+  const snapshot = harness.controller.buildVisibleFrameSnapshot();
+  const paletteRow = snapshot.lines.findIndex((line) => String(line).includes("Show runtime status"));
+  assert.notEqual(paletteRow, -1);
+  assert.ok(paletteRow + 1 > snapshot.composer.absoluteRow);
 });
 
 test("frame controller toggles detail mode using the newest expandable event", async () => {
@@ -74,6 +79,33 @@ test("frame controller toggles detail mode using the newest expandable event", a
     assert.equal(harness.watchState.expandedEventId, null);
     assert.ok(harness.statusCalls.includes("detail closed"));
   });
+});
+
+test("frame controller prefers the newest truncated event when opening detail mode", () => {
+  const harness = createWatchFrameHarness({
+    events: [
+      {
+        id: "evt-1",
+        kind: "you",
+        title: "Prompt",
+        body: "first line\nsecond line",
+        bodyTruncated: true,
+        timestamp: "12:00:00",
+      },
+      {
+        id: "evt-2",
+        kind: "agent",
+        title: "Agent Reply",
+        body: "short",
+        timestamp: "12:00:01",
+      },
+    ],
+  });
+
+  harness.controller.toggleExpandedEvent();
+
+  assert.equal(harness.watchState.expandedEventId, "evt-1");
+  assert.ok(harness.statusCalls.includes("detail open: Prompt"));
 });
 
 test("frame controller exports transcript view through the extracted seam", () => {
@@ -136,6 +168,27 @@ test("frame controller exports the rendered detail view instead of raw event bod
   );
 });
 
+test("frame controller can print the current view into the normal terminal for native selection", () => {
+  const harness = createWatchFrameHarness({
+    events: [
+      {
+        id: "evt-1",
+        kind: "agent",
+        title: "Agent Reply",
+        body: "hello world",
+        timestamp: "12:00:00",
+      },
+    ],
+  });
+
+  const enteredSelectionMode = harness.controller.toggleTerminalSelectionMode();
+
+  assert.equal(enteredSelectionMode, true);
+  assert.equal(harness.controller.isTerminalSelectionModeActive(), true);
+  assert.match(harness.stdoutWrites.join(""), /terminal selection mode/);
+  assert.match(harness.stdoutWrites.join(""), /hello world/);
+});
+
 test("frame controller scrolls transcript and detail view independently", async () => {
   const harness = createWatchFrameHarness();
 
@@ -150,15 +203,14 @@ test("frame controller scrolls transcript and detail view independently", async 
   });
 });
 
-test("frame controller wraps long slash palette usage lines instead of truncating them", () => {
+test("frame controller routes slash palette rows through ansi-aware fitting", () => {
   const fitCalls = [];
-  const wrapCalls = [];
   const harness = createWatchFrameHarness({
-    inputValue: "/pe",
+    inputValue: "/",
     suggestions: [{
-      usage: "/permissions [status|simulate <toolName> [jsonArgs]|credentials|requests|approve <requestId>|deny <requestId>]",
-      description: "Inspect policy state or simulate approval and policy decisions.",
-      aliases: [],
+      usage: "/export",
+      description: "Write the current detail view or transcript to a temp file.",
+      aliases: ["/copy"],
     }],
     width: 40,
     height: 18,
@@ -185,18 +237,6 @@ test("frame controller wraps long slash palette usage lines instead of truncatin
         fitCalls.push({ text: String(text ?? ""), width });
         return String(text ?? "");
       },
-      wrapAndLimit(text, width, maxLines = 2) {
-        const value = String(text ?? "");
-        wrapCalls.push({ text: value, width, maxLines });
-        if (value.startsWith("/permissions")) {
-          return [
-            "/permissions [status|simulate",
-            "<toolName> [jsonArgs]|credentials|",
-            "requests|approve <requestId>|deny <requestId>]",
-          ];
-        }
-        return [value];
-      },
       truncate(value, maxChars = 220) {
         const text = String(value ?? "");
         assert.equal(
@@ -212,24 +252,10 @@ test("frame controller wraps long slash palette usage lines instead of truncatin
   harness.controller.buildVisibleFrameSnapshot();
 
   assert.ok(
-    wrapCalls.some((call) => call.width === 36 && call.maxLines === 3 && call.text.startsWith("/permissions")),
-  );
-  assert.ok(
     fitCalls.some((call) =>
-      call.width === 36 &&
-      call.text.includes("/permissions [status|simulate"),
-    ),
-  );
-  assert.ok(
-    fitCalls.some((call) =>
-      call.width === 36 &&
-      call.text.includes("<toolName> [jsonArgs]|credentials|"),
-    ),
-  );
-  assert.ok(
-    fitCalls.some((call) =>
-      call.width === 36 &&
-      call.text.includes("requests|approve <requestId>|deny <requestId>]"),
+      call.width === 40 &&
+      call.text.includes("/export") &&
+      call.text.includes("Write the current detail view or transcript to a temp file."),
     ),
   );
 });
@@ -293,14 +319,86 @@ test("frame controller routes file tag palette rows through ansi-aware fitting",
   harness.controller.buildVisibleFrameSnapshot();
 
   assert.ok(
-    fitCalls.some((call) => call.width === 36 && call.text.includes("types.ts")),
+    fitCalls.some((call) => call.width === 40 && call.text.includes("types.ts")),
   );
   assert.ok(
-    fitCalls.some((call) => call.width === 36 && call.text.includes("runtime/src/channels/webchat")),
+    fitCalls.some((call) => call.width === 40 && call.text.includes("runtime/src/channels/webchat")),
   );
 });
 
-test("frame controller renders the structured statusline when enabled", () => {
+test("frame controller keeps the full usage summary visible in the header", () => {
+  const usage = "80k in · 12k out · 3 cached · 41% window";
+  const harness = createWatchFrameHarness({
+    width: 140,
+    height: 40,
+    dependencies: {
+      currentSurfaceSummary() {
+        return {
+          overview: {
+            connectionState: "live",
+            sessionToken: "12345678",
+            phaseLabel: "running",
+            queuedInputCount: 0,
+            latestTool: "system.exec",
+            latestToolState: "running",
+            usage,
+            lastActivityAt: "00:00:00",
+            activeAgentCount: 1,
+            planCount: 1,
+            transcriptMode: "follow",
+            fallbackState: "standby",
+            runtimeState: "healthy",
+            runtimeLabel: "live · durable ready",
+            activeLine: "Awaiting operator prompt",
+            durableActiveTotal: 0,
+            durableQueuedSignalsTotal: 0,
+            durableRunsState: "ready",
+          },
+          routeLabel: "grok-4 via grok",
+          providerLabel: "grok",
+          objective: "No active objective",
+          routeState: "primary",
+          routeTone: "teal",
+          recentTools: [],
+          attention: {
+            approvalAlertCount: 0,
+            errorAlertCount: 0,
+            queuedInputCount: 0,
+            items: [],
+          },
+        };
+      },
+    },
+  });
+
+  const snapshot = harness.controller.buildVisibleFrameSnapshot();
+  assert.ok(snapshot.lines.some((line) => String(line).includes(usage)));
+  assert.ok(snapshot.lines.some((line) => String(line).includes("│")));
+});
+
+test("frame controller hides transcript timestamps in the visible watch ui", () => {
+  const harness = createWatchFrameHarness({
+    width: 100,
+    height: 22,
+    watchState: {
+      expandedEventId: "evt-1",
+    },
+    events: [
+      {
+        id: "evt-1",
+        kind: "tool result",
+        title: "Edited runtime/src/index.ts",
+        body: "done",
+        timestamp: "15:15:01",
+      },
+    ],
+  });
+
+  const lines = harness.controller.buildVisibleFrameSnapshot().lines.map((line) => String(line));
+  assert.equal(lines.some((line) => line.includes("15:15:01")), false);
+});
+
+test("frame controller keeps footer minimal while surfacing run context in the frame", () => {
   const harness = createWatchFrameHarness({
     activeRun: true,
     latestTool: "system.bash",
@@ -345,9 +443,104 @@ test("frame controller renders the structured statusline when enabled", () => {
   });
   const frameText = snapshot.lines.join("\n");
 
-  assert.match(frameText, /PROV grok/);
-  assert.match(frameText, /MODEL grok-4\.20/);
-  assert.match(frameText, /SESS 12345678/);
-  assert.match(frameText, /USAGE 3\.4K total/);
-  assert.match(frameText, /CKPT cp-9/);
+  assert.match(frameText, /Shipping statusline controls/);
+  assert.match(frameText, /LATEST:system\.bash/);
+  assert.match(frameText, /PLAN:2/);
+  assert.match(frameText, /session 12345678/);
+  assert.match(frameText, /~\/(?:agenc-core(?:\/runtime)?)?\n>/);
+  assert.equal(/\nlive\s+idle\n>/.test(frameText), false);
+});
+
+test("frame controller renders the header model chip without repeating the provider", () => {
+  const harness = createWatchFrameHarness({
+    activeRun: true,
+    surfaceSummary: {
+      modelLabel: "gpt-4.1",
+      providerLabel: "openai",
+      routeLabel: "gpt-4.1 via openai",
+      overview: {
+        phaseLabel: "running",
+        activeLine: "Testing model header",
+        modelLabel: "gpt-4.1",
+      },
+    },
+  });
+
+  const frameText = harness.controller.buildVisibleFrameSnapshot({
+    width: 120,
+    height: 22,
+  }).lines.join("\n");
+
+  assert.match(frameText, /MODEL:gpt-4\.1/);
+  assert.doesNotMatch(frameText, /MODEL:openai\/gpt-4\.1/);
+});
+
+test("frame controller renders user transcript rows as shaded blocks without divider rules", () => {
+  const harness = createWatchFrameHarness({
+    width: 60,
+    height: 18,
+    events: [
+      {
+        id: "evt-you",
+        kind: "you",
+        title: "You",
+        body: "hola\notra linea",
+        timestamp: "15:15:00",
+      },
+      {
+        id: "evt-agent",
+        kind: "agent",
+        title: "Agent Reply",
+        body: "respuesta corta",
+        timestamp: "15:15:01",
+      },
+    ],
+    dependencies: {
+      color: {
+        reset: "<reset>",
+        bold: "",
+        border: "",
+        borderStrong: "",
+        softInk: "<soft>",
+        fog: "<fog>",
+        magenta: "",
+        teal: "",
+        cyan: "",
+        red: "",
+        green: "",
+        yellow: "",
+        panelBg: "",
+        panelAltBg: "<altbg>",
+        panelHiBg: "<bg>",
+        ink: "",
+      },
+      paintSurface(text, width, background = "") {
+        return `${background}${String(text ?? "").padEnd(width)}`;
+      },
+      buildEventDisplayLines(event) {
+        return String(event.body ?? "")
+          .split("\n")
+          .map((line) => createDisplayLine(line, "plain"));
+      },
+      wrapDisplayLines(lines) {
+        return lines;
+      },
+    },
+  });
+
+  const lines = harness.controller.buildVisibleFrameSnapshot().lines.map((line) => String(line));
+  const firstUserRow = lines.findIndex((line) =>
+    line.includes("<bg>") && line.includes("><reset> <soft>hola<reset>")
+  );
+  assert.notEqual(firstUserRow, -1);
+  assert.match(lines[firstUserRow + 1] ?? "", /<bg>\s+<soft>otra linea<reset>/);
+
+  const assistantRow = lines.findIndex((line, index) =>
+    index > firstUserRow && line.includes("respuesta corta")
+  );
+  assert.notEqual(assistantRow, -1);
+  assert.equal(
+    lines.slice(firstUserRow + 2, assistantRow).some((line) => /^─+$/.test(line)),
+    false,
+  );
 });

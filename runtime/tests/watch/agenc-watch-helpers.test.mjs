@@ -83,7 +83,7 @@ test("matchWatchCommands returns the full command palette for slash-only input",
 test("matchWatchCommands filters by prefix and aliases", () => {
   assert.deepEqual(
     matchWatchCommands("/se").map((command) => command.name),
-    ["/config", "/session", "/sessions"],
+    ["/session", "/sessions"],
   );
   assert.equal(findWatchCommandDefinition("/init")?.name, "/init");
   assert.equal(findWatchCommandDefinition("/commands")?.name, "/help");
@@ -433,36 +433,40 @@ test("buildWatchCommands adds extensibility commands only when enabled", () => {
   assert.deepEqual(
     extensibilityCommands
       .filter((command) =>
-        ["/extensibility", "/skills", "/plugins", "/mcp", "/hooks"].includes(command.name)
+        ["/extensibility", "/skills", "/plugins", "/mcp", "/hooks", "/xai"].includes(command.name)
       )
       .map((command) => command.name),
-    ["/extensibility", "/skills", "/plugins", "/mcp", "/hooks"],
+    ["/extensibility", "/skills", "/plugins", "/mcp", "/hooks", "/xai"],
+  );
+  assert.equal(
+    findWatchCommandDefinition("/api", { commands: extensibilityCommands })?.name,
+    "/xai",
+  );
+  assert.equal(
+    parseWatchSlashCommand("/api validate", { commands: extensibilityCommands })?.command?.name,
+    "/xai",
   );
 });
 
-test("buildWatchCommands enables input-mode commands by default and allows opt-out", () => {
+test("buildWatchCommands adds input-mode commands only when enabled", () => {
   const defaultCommands = buildWatchCommands();
   const inputModeCommands = buildWatchCommands({
     featureFlags: {
-      inputModes: false,
+      inputModes: true,
     },
   });
 
   assert.equal(
     defaultCommands.some((command) => command.name === "/input-mode"),
-    true,
+    false,
   );
   assert.deepEqual(
-    defaultCommands
+    inputModeCommands
       .filter((command) =>
-        ["/config", "/input-mode", "/keybindings", "/theme", "/statusline", "/vim"].includes(command.name)
+        ["/input-mode", "/keybindings", "/theme"].includes(command.name)
       )
       .map((command) => command.name),
-    ["/config", "/input-mode", "/keybindings", "/theme", "/statusline", "/vim"],
-  );
-  assert.equal(
-    inputModeCommands.some((command) => command.name === "/input-mode"),
-    false,
+    ["/input-mode", "/keybindings", "/theme"],
   );
 });
 
