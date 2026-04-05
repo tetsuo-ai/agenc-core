@@ -32,6 +32,7 @@ export interface WorkflowProgressSnapshot {
   readonly stopReason: LLMPipelineStopReason;
   readonly stopReasonDetail?: string;
   readonly validationCode?: DelegationOutputValidationCode;
+  readonly contractFingerprint?: string;
   readonly verificationContract?: WorkflowVerificationContract;
   readonly completionContract?: ImplementationCompletionContract;
   readonly requiredRequirements: readonly WorkflowProgressRequirement[];
@@ -141,6 +142,10 @@ export function deriveWorkflowProgressSnapshot(params: {
     stopReason: params.stopReason,
     stopReasonDetail: params.stopReasonDetail,
     validationCode: params.validationCode,
+    contractFingerprint: buildProgressContractFingerprint({
+      verificationContract: mergedContract,
+      completionContract: mergedContract?.completionContract,
+    }),
     verificationContract: mergedContract,
     completionContract: mergedContract?.completionContract,
     requiredRequirements: [...requiredRequirements],
@@ -215,6 +220,8 @@ export function mergeWorkflowProgressSnapshots(params: {
     stopReason: next.stopReason,
     stopReasonDetail: next.stopReasonDetail,
     validationCode: next.validationCode,
+    contractFingerprint:
+      next.contractFingerprint ?? prior?.contractFingerprint,
     verificationContract:
       next.verificationContract ?? prior?.verificationContract,
     completionContract:
@@ -285,23 +292,43 @@ function canReuseProgress(
   previous: WorkflowProgressSnapshot,
   next: WorkflowProgressSnapshot,
 ): boolean {
-  const previousSignature = buildProgressContractSignature(previous);
-  const nextSignature = buildProgressContractSignature(next);
+  const previousSignature =
+    previous.contractFingerprint ?? buildProgressContractFingerprint(previous);
+  const nextSignature =
+    next.contractFingerprint ?? buildProgressContractFingerprint(next);
   if (!previousSignature || !nextSignature) {
     return true;
   }
   return previousSignature === nextSignature;
 }
 
-function buildProgressContractSignature(
-  snapshot: WorkflowProgressSnapshot,
+function buildProgressContractFingerprint(
+  snapshot: Pick<
+    WorkflowProgressSnapshot,
+    "verificationContract" | "completionContract"
+  >,
 ): string | undefined {
   if (!snapshot.verificationContract && !snapshot.completionContract) {
     return undefined;
   }
+  const requestCompletion = snapshot.verificationContract?.requestCompletion;
   return JSON.stringify({
-    verificationContract: snapshot.verificationContract,
+    workspaceRoot: snapshot.verificationContract?.workspaceRoot,
+    inputArtifacts: snapshot.verificationContract?.inputArtifacts ?? [],
+    requiredSourceArtifacts:
+      snapshot.verificationContract?.requiredSourceArtifacts ?? [],
+    targetArtifacts: snapshot.verificationContract?.targetArtifacts ?? [],
+    acceptanceCriteria: snapshot.verificationContract?.acceptanceCriteria ?? [],
+    verificationMode: snapshot.verificationContract?.verificationMode,
     completionContract: snapshot.completionContract,
+    requestCompletion: requestCompletion
+      ? {
+        requiredMilestones: requestCompletion.requiredMilestones.map((milestone) => ({
+          id: milestone.id,
+          description: milestone.description,
+        })),
+      }
+      : undefined,
   });
 }
 

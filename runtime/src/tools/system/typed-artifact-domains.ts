@@ -53,6 +53,36 @@ const SOFTWARE_AUTHORING_TARGET_TERMS = new Set([
 const SOFTWARE_AUTHORING_PHRASE_RE =
   /\b(?:codebase|monorepo|package\.json|tsconfig|vitest|readme|self-contained|workspace|project files?)\b/i;
 
+const TYPED_ARTIFACT_EXPLICIT_ANCHOR_PATTERNS: Readonly<
+  Record<string, readonly RegExp[]>
+> = {
+  sqlite: [
+    /\bsqlite\b/i,
+    /\b(?:database|db)\s+file\b/i,
+    /\.(?:sqlite|sqlite3|db)\b/i,
+  ],
+  pdf: [
+    /\b(?:this|that|the)\s+pdf\b/i,
+    /\.pdf\b/i,
+  ],
+  spreadsheet: [
+    /\b(?:this|that|the)\s+(?:spreadsheet|workbook|csv|tsv|xlsx|xls)\b/i,
+    /\.(?:csv|tsv|xlsx|xls)\b/i,
+  ],
+  "office-document": [
+    /\b(?:this|that|the)\s+(?:docx|odt|word\s+document|office\s+document)\b/i,
+    /\.(?:docx|odt)\b/i,
+  ],
+  "email-message": [
+    /\b(?:this|that|the)\s+(?:eml|email\s+message|mail\s+message)\b/i,
+    /\.(?:eml|msg)\b/i,
+  ],
+  calendar: [
+    /\b(?:this|that|the)\s+(?:ics|calendar\s+invite|meeting\s+invite|calendar\s+file)\b/i,
+    /\.ics\b/i,
+  ],
+};
+
 export const TYPED_ARTIFACT_DOMAINS: readonly TypedArtifactDomain[] = [
   {
     id: "sqlite",
@@ -199,6 +229,14 @@ export function hasSoftwareAuthoringIntent(messageText: string): boolean {
   return hasAction && hasTarget;
 }
 
+function hasExplicitTypedArtifactAnchor(
+  messageText: string,
+  domain: TypedArtifactDomain,
+): boolean {
+  const patterns = TYPED_ARTIFACT_EXPLICIT_ANCHOR_PATTERNS[domain.id] ?? [];
+  return patterns.some((pattern) => pattern.test(messageText));
+}
+
 export function inferTypedArtifactInspectionIntent(
   messageText: string,
   domain: TypedArtifactDomain,
@@ -214,6 +252,10 @@ export function inferTypedArtifactInspectionIntent(
   }
 
   if (hasSoftwareAuthoringIntent(messageText)) {
+    return false;
+  }
+
+  if (!hasExplicitTypedArtifactAnchor(messageText, domain)) {
     return false;
   }
 

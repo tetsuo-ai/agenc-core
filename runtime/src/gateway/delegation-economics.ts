@@ -3,6 +3,7 @@ import type { DelegationExecutionContext } from "../utils/delegation-execution-c
 import { sanitizeDelegationContextRequirements } from "../utils/delegation-execution-context.js";
 import {
   collectWorkflowArtifactRelationPaths,
+  isMutationLikeVerificationMode,
   resolveExecutionEnvelopeArtifactRelations,
   type WorkflowArtifactRelation,
 } from "../workflow/execution-envelope.js";
@@ -394,7 +395,7 @@ function computeVerifierCost(analyses: readonly DelegationStepAnalysis[]): numbe
     const modeWeight =
       verificationMode === "deterministic_followup"
         ? 0.45
-        : verificationMode === "mutation_required"
+        : isMutationLikeVerificationMode(verificationMode)
         ? 0.32
         : verificationMode === "grounded_read"
         ? 0.18

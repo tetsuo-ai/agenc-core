@@ -408,8 +408,11 @@ import {
 } from "./chat-executor-recovery.js";
 import {
   assessPlannerDecision,
+  classifyPlannerPlanArtifactIntent,
   extractExplicitDeterministicToolRequirements,
   extractExplicitSubagentOrchestrationRequirements,
+  extractPlannerArtifactTargets,
+  requestExplicitlyRequestsDelegation,
   requestRequiresToolGroundedExecution,
 } from "./chat-executor-planner.js";
 import {
@@ -421,6 +424,10 @@ import {
 import {
   executePlannerPath as executePlannerPathFn,
 } from "./chat-executor-planner-execution.js";
+import {
+  mergeArtifactTaskRequiredToolEvidence,
+  resolveDirectArtifactTaskContract,
+} from "./chat-executor-artifact-task.js";
 import {
   executeToolCallLoop as executeToolCallLoopFn,
 } from "./chat-executor-tool-loop.js";
@@ -674,7 +681,8 @@ export class ChatExecutor {
 
     // Direct path: initial LLM call + tool loop
     if (!ctx.plannerHandled) {
-      if (this.shouldBlockToolLoopAfterPlannerVeto(ctx)) {
+      const plannerFallbackBarrier = this.resolvePlannerFallbackBarrier(ctx);
+      if (plannerFallbackBarrier) {
         this.emitExecutionTrace(ctx, {
           type: "planner_path_finished",
           phase: "planner",
@@ -682,22 +690,18 @@ export class ChatExecutor {
           payload: {
             routeReason: ctx.plannerSummaryState.routeReason,
             stopReason: "validation_error",
-            stopReasonDetail:
-              "Planner produced an implementation-scoped delegated plan, but runtime delegation admission rejected it. Inline legacy fallback is disabled for this task class.",
+            stopReasonDetail: plannerFallbackBarrier.stopReasonDetail,
             diagnostics: ctx.plannerSummaryState.diagnostics,
             handled: true,
-            enforcement: "executor_level_planner_veto_barrier",
+            enforcement: plannerFallbackBarrier.enforcement,
           },
         });
         this.setStopReason(
           ctx,
           "validation_error",
-          "Planner produced an implementation-scoped delegated plan, but runtime delegation admission rejected it. Inline legacy fallback is disabled for this task class.",
+          plannerFallbackBarrier.stopReasonDetail,
         );
-        ctx.finalContent =
-          "Planner produced an implementation-scoped delegated plan, " +
-          `but runtime delegation admission rejected it (${ctx.plannerSummaryState.delegationDecision?.reason ?? "delegation_veto"}). ` +
-          "Inline legacy fallback is disabled for this task class; re-plan the work with a single-owner execution contract or provide an explicit workflow verification contract.";
+        ctx.finalContent = plannerFallbackBarrier.finalContent;
         ctx.plannerHandled = true;
       } else {
         await this.executeToolCallLoop(ctx);
@@ -893,20 +897,50 @@ export class ChatExecutor {
     });
   }
 
-  private shouldBlockToolLoopAfterPlannerVeto(
+  private resolvePlannerFallbackBarrier(
     ctx: ExecutionContext,
-  ): boolean {
-    if (!ctx.plannerImplementationFallbackBlocked) {
-      return false;
+  ):
+    | {
+      readonly stopReasonDetail: string;
+      readonly finalContent: string;
+      readonly enforcement:
+        | "executor_level_planner_veto_barrier"
+        | "executor_level_planner_parse_barrier";
     }
-    if (ctx.plannerHandled) {
-      return false;
+    | undefined {
+    if (!ctx.plannerImplementationFallbackBlocked || ctx.plannerHandled) {
+      return undefined;
     }
     const delegationDecision = ctx.plannerSummaryState.delegationDecision;
-    if (!delegationDecision || delegationDecision.shouldDelegate !== false) {
-      return false;
+    if (delegationDecision && delegationDecision.shouldDelegate === false && ctx.plannedSubagentSteps > 0) {
+      return {
+        stopReasonDetail:
+          "Planner produced an implementation-scoped delegated plan, but runtime delegation admission rejected it. Inline legacy fallback is disabled for this task class.",
+        finalContent:
+          "Planner produced an implementation-scoped delegated plan, " +
+          `but runtime delegation admission rejected it (${ctx.plannerSummaryState.delegationDecision?.reason ?? "delegation_veto"}). ` +
+          "Inline legacy fallback is disabled for this task class; re-plan the work with a single-owner execution contract or provide an explicit workflow verification contract.",
+        enforcement: "executor_level_planner_veto_barrier",
+      };
     }
-    return ctx.plannedSubagentSteps > 0;
+    if (
+      ctx.plannerSummaryState.routeReason === "planner_parse_failed" &&
+      ctx.plannerSummaryState.diagnostics.some((diagnostic) =>
+        diagnostic.code === "planner_step_contract_retry" ||
+        diagnostic.code === "planner_required_orchestration_retry" ||
+        diagnostic.code === "planner_parse_contract_retry"
+      )
+    ) {
+      return {
+        stopReasonDetail:
+          "Planner could not produce a valid delegated execution plan after runtime validation retries. Inline legacy fallback is disabled for this task class.",
+        finalContent:
+          "Planner could not produce a valid delegated execution plan after runtime validation retries. " +
+          "Inline legacy fallback is disabled for this task class; re-plan the work with a single-owner execution contract or provide an explicit workflow verification contract.",
+        enforcement: "executor_level_planner_parse_barrier",
+      };
+    }
+    return undefined;
   }
 
   private timeoutDetail(
@@ -1098,6 +1132,28 @@ export class ChatExecutor {
       return;
     }
     if (event.type === "step_finished") {
+      if (typeof event.error === "string") {
+        ctx.plannerFailedStep = {
+          stepName: event.stepName,
+          stepIndex: event.stepIndex,
+          tool: event.tool,
+          error: event.error,
+        };
+      } else if (
+        ctx.plannerFailedStep &&
+        (
+          (
+            typeof ctx.plannerFailedStep.stepName === "string" &&
+            ctx.plannerFailedStep.stepName === event.stepName
+          ) ||
+          (
+            typeof ctx.plannerFailedStep.stepIndex === "number" &&
+            ctx.plannerFailedStep.stepIndex === event.stepIndex
+          )
+        )
+      ) {
+        ctx.plannerFailedStep = undefined;
+      }
       this.emitExecutionTrace(ctx, {
         type: "tool_dispatch_finished",
         phase: "planner",
@@ -1184,6 +1240,14 @@ export class ChatExecutor {
       readonly validationCode?: DelegationOutputValidationCode;
     },
   ): ToolContractGuidance | undefined {
+    const artifactTaskAllowedToolOverride =
+      !input?.allowedToolNames && ctx.requiredToolEvidence?.artifactTaskContract
+        ? this.allowedTools
+          ? [...this.allowedTools]
+          : ctx.expandedRoutedToolNames.length > 0
+            ? [...ctx.expandedRoutedToolNames]
+            : [...ctx.initialRoutedToolNames]
+        : input?.allowedToolNames;
     return resolveExecutionToolContractGuidance({
       ctx: {
         ...ctx,
@@ -1191,7 +1255,7 @@ export class ChatExecutor {
       },
       allowedTools: this.allowedTools ?? undefined,
       phase: input?.phase,
-      allowedToolNames: input?.allowedToolNames,
+      allowedToolNames: artifactTaskAllowedToolOverride,
       validationCode: input?.validationCode,
     });
   }
@@ -1200,7 +1264,15 @@ export class ChatExecutor {
     ctx: ExecutionContext,
     phase: "initial" | "tool_followup",
   ): Promise<"continue" | "failed" | "not_required"> {
-    if (!ctx.requiredToolEvidence) {
+    const hasRequiredEvidenceContract = Boolean(
+      ctx.requiredToolEvidence?.delegationSpec ||
+        ctx.requiredToolEvidence?.verificationContract ||
+        ctx.requiredToolEvidence?.completionContract,
+    );
+    const artifactEnvelopeOnly = Boolean(
+      ctx.requiredToolEvidence?.artifactTaskContract && !hasRequiredEvidenceContract,
+    );
+    if (!ctx.requiredToolEvidence || artifactEnvelopeOnly) {
       this.emitExecutionTrace(ctx, {
         type: "completion_gate_checked",
         phase,
@@ -1208,6 +1280,9 @@ export class ChatExecutor {
         payload: {
           decision: "not_required",
           finishReason: ctx.response?.finishReason,
+          ...(artifactEnvelopeOnly
+            ? { reason: "artifact_task_execution_envelope_only" }
+            : {}),
         },
       });
       return "not_required";
@@ -1868,6 +1943,21 @@ export class ChatExecutor {
       });
       return;
     }
+    if (ctx.plannerTerminalFallback) {
+      this.emitExecutionTrace(ctx, {
+        type: "completion_gate_checked",
+        phase: "tool_followup",
+        callIndex: ctx.callIndex,
+        payload: {
+          gate: "workflow_completion_truth",
+          decision: "not_required",
+          completionState: ctx.completionState,
+          reason: ctx.plannerTerminalFallback.reason,
+          enforcement: ctx.plannerTerminalFallback.kind,
+        },
+      });
+      return;
+    }
     if (
       ctx.plannerSummaryState.subagentVerification.performed === true &&
       ctx.plannerSummaryState.subagentVerification.overall === "pass"
@@ -2189,6 +2279,7 @@ export class ChatExecutor {
     ctx: ExecutionContext,
     pipeline: Pipeline,
   ): Promise<PipelineResult | undefined> {
+    ctx.plannerFailedStep = undefined;
     const remainingMs = this.getRemainingRequestMs(ctx);
     if (!Number.isFinite(remainingMs)) {
       return this.pipelineExecutor!.execute(
@@ -2299,27 +2390,47 @@ export class ChatExecutor {
     const explicitSubagentOrchestrationRequirements =
       extractExplicitSubagentOrchestrationRequirements(messageText);
     const isConcordiaTurnMessage = isConcordiaSimulationTurnMessage(message);
+    const explicitArtifactTargets = extractPlannerArtifactTargets(messageText);
+    const artifactIntent = classifyPlannerPlanArtifactIntent(messageText);
+    const explicitDelegationRequested =
+      Boolean(explicitSubagentOrchestrationRequirements) ||
+      requestExplicitlyRequestsDelegation(messageText);
+    const explicitArtifactTaskContract = !isConcordiaTurnMessage
+      ? resolveDirectArtifactTaskContract({
+          messageText,
+          workspaceRoot:
+            params.runtimeContext?.workspaceRoot ??
+            this.resolveHostWorkspaceRoot?.() ??
+            undefined,
+          explicitArtifactTargets,
+          artifactIntent,
+          explicitDelegationRequested,
+          hasBlockingRuntimeContract: Boolean(
+            params.requiredToolEvidence?.delegationSpec ||
+              params.requiredToolEvidence?.artifactTaskContract,
+          ),
+        })
+      : undefined;
     const groundedExecutionRequested =
       !isConcordiaTurnMessage &&
+      !explicitArtifactTaskContract &&
       requestRequiresToolGroundedExecution(messageText);
-    let plannerDecision = assessPlannerDecision(
-      this.plannerEnabled,
-      messageText,
-      history,
-      params.message.metadata,
-    );
-    const plannerArtifactDirectPath =
-      plannerDecision.reason === "plan_generation_direct_path" ||
-      plannerDecision.reason === "edit_artifact_direct_path";
-    if (!plannerDecision.shouldPlan && plannerArtifactDirectPath) {
-      plannerDecision = {
-        score: Math.max(plannerDecision.score, 4),
-        shouldPlan: true,
-        reason: "planner_artifact_execution_request",
-      };
-    }
+    let plannerDecision = explicitArtifactTaskContract
+      ? {
+          score: 4,
+          shouldPlan: false,
+          reason: "direct_artifact_owner_update",
+          artifactTargets: explicitArtifactTaskContract.targetArtifacts,
+        }
+      : assessPlannerDecision(
+          this.plannerEnabled,
+          messageText,
+          history,
+          params.message.metadata,
+        );
     if (
       !isConcordiaTurnMessage &&
+      !explicitArtifactTaskContract &&
       explicitDeterministicToolRequirements?.forcePlanner &&
       !plannerDecision.shouldPlan
     ) {
@@ -2331,6 +2442,7 @@ export class ChatExecutor {
     }
     if (
       !isConcordiaTurnMessage &&
+      !explicitArtifactTaskContract &&
       !plannerDecision.shouldPlan &&
       explicitSubagentOrchestrationRequirements
     ) {
@@ -2392,6 +2504,16 @@ export class ChatExecutor {
       }
     }
 
+    const resolvedRequiredToolEvidence =
+      explicitArtifactTaskContract &&
+      !plannerDecision.shouldPlan &&
+      plannerDecision.reason === "direct_artifact_owner_update"
+        ? mergeArtifactTaskRequiredToolEvidence({
+            base: params.requiredToolEvidence,
+            artifactTaskContract: explicitArtifactTaskContract,
+          })
+        : params.requiredToolEvidence;
+
     const ctx = buildDefaultExecutionContext(
       {
         message,
@@ -2417,7 +2539,7 @@ export class ChatExecutor {
               }
             : undefined,
         trace: params.trace,
-        requiredToolEvidence: params.requiredToolEvidence,
+        requiredToolEvidence: resolvedRequiredToolEvidence,
         initialRoutedToolNames,
         expandedRoutedToolNames,
         baseDelegationThreshold,

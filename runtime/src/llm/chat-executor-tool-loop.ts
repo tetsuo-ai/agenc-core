@@ -15,6 +15,14 @@ import type { PromptBudgetSection } from "./prompt-budget.js";
 import type { LLMRetryPolicyMatrix, LLMPipelineStopReason } from "./policy.js";
 import type { DelegationOutputValidationCode } from "../utils/delegation-validation.js";
 import type { ToolContractGuidance } from "./chat-executor-contract-guidance.js";
+import { buildArtifactContract, isArtifactAccessAllowed, type ArtifactAccessMode } from "../workflow/artifact-contract.js";
+import type { ExecutionEnvelope } from "../workflow/execution-envelope.js";
+import {
+  isPathWithinAnyRoot,
+  normalizeEnvelopePath,
+  normalizeEnvelopeRoots,
+  resolveExplicitArtifactReferencePath,
+} from "../workflow/path-normalization.js";
 import type {
   ToolCallRecord,
   ChatExecutionTraceEvent,
@@ -158,6 +166,138 @@ export interface ToolLoopConfig {
 // executeSingleToolCall (standalone)
 // ============================================================================
 
+const READ_ONLY_ENVELOPE_TOOL_NAMES = new Set([
+  "system.readFile",
+  "system.listDir",
+  "system.stat",
+]);
+const WRITE_ENVELOPE_TOOL_MODES: Readonly<Record<string, ArtifactAccessMode>> = {
+  "desktop.text_editor": "write",
+  "system.writeFile": "write",
+  "system.appendFile": "write",
+  "system.delete": "write",
+  "system.mkdir": "write",
+  "system.move": "write",
+};
+const ENVELOPE_TOOL_PATH_ARG_KEYS: Readonly<Record<string, readonly string[]>> = {
+  "desktop.text_editor": ["path"],
+  "system.readFile": ["path"],
+  "system.writeFile": ["path"],
+  "system.appendFile": ["path"],
+  "system.listDir": ["path"],
+  "system.stat": ["path"],
+  "system.mkdir": ["path"],
+  "system.delete": ["path"],
+  "system.move": ["source", "destination"],
+};
+
+function getExecutionEnvelopeFilesystemAccessMode(
+  toolName: string,
+): ArtifactAccessMode | undefined {
+  if (READ_ONLY_ENVELOPE_TOOL_NAMES.has(toolName)) {
+    return "read";
+  }
+  return WRITE_ENVELOPE_TOOL_MODES[toolName];
+}
+
+function canonicalizeExplicitArtifactReferenceArgs(params: {
+  readonly toolName: string;
+  readonly args: Record<string, unknown>;
+  readonly workspaceRoot?: string;
+  readonly declaredArtifacts?: readonly string[];
+}): { readonly args: Record<string, unknown>; readonly canonicalizedFields: readonly string[] } {
+  const pathKeys = ENVELOPE_TOOL_PATH_ARG_KEYS[params.toolName] ?? [];
+  if (pathKeys.length === 0) {
+    return { args: params.args, canonicalizedFields: [] };
+  }
+
+  let nextArgs = params.args;
+  const canonicalizedFields: string[] = [];
+  for (const key of pathKeys) {
+    const rawValue = nextArgs[key];
+    if (typeof rawValue !== "string" || rawValue.trim().length === 0) {
+      continue;
+    }
+    const canonicalPath = resolveExplicitArtifactReferencePath({
+      rawPath: rawValue,
+      workspaceRoot: params.workspaceRoot,
+      declaredArtifacts: params.declaredArtifacts,
+    });
+    if (!canonicalPath || canonicalPath === rawValue) {
+      continue;
+    }
+    if (nextArgs === params.args) {
+      nextArgs = { ...params.args };
+    }
+    nextArgs[key] = canonicalPath;
+    canonicalizedFields.push(`${key}:artifact_ref`);
+  }
+
+  return { args: nextArgs, canonicalizedFields };
+}
+
+function enforceTopLevelExecutionEnvelope(params: {
+  readonly toolName: string;
+  readonly args: Record<string, unknown>;
+  readonly executionEnvelope?: ExecutionEnvelope;
+  readonly defaultWorkingDirectory?: string;
+}): string | undefined {
+  const envelope = params.executionEnvelope;
+  if (!envelope) return undefined;
+
+  if (
+    envelope.allowedTools?.length &&
+    !envelope.allowedTools.includes(params.toolName)
+  ) {
+    return `Tool ${params.toolName} is outside the execution envelope for this turn`;
+  }
+
+  const mode = getExecutionEnvelopeFilesystemAccessMode(params.toolName);
+  if (!mode) {
+    return undefined;
+  }
+
+  const pathKeys = ENVELOPE_TOOL_PATH_ARG_KEYS[params.toolName] ?? [];
+  if (pathKeys.length === 0) {
+    return undefined;
+  }
+
+  const workspaceRoot = envelope.workspaceRoot?.trim() || params.defaultWorkingDirectory;
+  const allowedRoots = normalizeEnvelopeRoots(
+    mode === "read" ? envelope.allowedReadRoots ?? [] : envelope.allowedWriteRoots ?? [],
+    workspaceRoot,
+  );
+  const artifactContract = buildArtifactContract({
+    requiredSourceArtifacts:
+      envelope.requiredSourceArtifacts ?? envelope.inputArtifacts,
+    targetArtifacts: envelope.targetArtifacts,
+  });
+
+  for (const key of pathKeys) {
+    const rawValue = params.args[key];
+    if (typeof rawValue !== "string" || rawValue.trim().length === 0) {
+      continue;
+    }
+    const normalizedPath = normalizeEnvelopePath(rawValue, workspaceRoot);
+    if (allowedRoots.length > 0 && !isPathWithinAnyRoot(normalizedPath, allowedRoots)) {
+      return `Path ${normalizedPath} is outside the execution envelope roots for this turn`;
+    }
+    if (
+      mode !== "read" &&
+      artifactContract.targetArtifacts.length > 0 &&
+      !isArtifactAccessAllowed({
+        contract: artifactContract,
+        path: normalizedPath,
+        mode,
+      })
+    ) {
+      return `Write path ${normalizedPath} is not permitted by the execution envelope target artifacts`;
+    }
+  }
+
+  return undefined;
+}
+
 export async function executeSingleToolCall(
   ctx: ExecutionContext,
   toolCall: LLMToolCall,
@@ -269,6 +409,19 @@ export async function executeSingleToolCall(
     ctx.allToolCalls,
   );
   args = staleHarnessPreflight.args;
+  const artifactReferenceCanonicalization =
+    canonicalizeExplicitArtifactReferenceArgs({
+      toolName: toolCall.name,
+      args,
+      workspaceRoot: ctx.runtimeWorkspaceRoot,
+      declaredArtifacts: [
+        ...(ctx.requiredToolEvidence?.executionEnvelope?.requiredSourceArtifacts ??
+          ctx.requiredToolEvidence?.executionEnvelope?.inputArtifacts ??
+          []),
+        ...(ctx.requiredToolEvidence?.executionEnvelope?.targetArtifacts ?? []),
+      ],
+    });
+  args = artifactReferenceCanonicalization.args;
   const contractAdjustedFields: string[] = [];
   if (toolCall.name === "mcp.doom.start_game") {
     const doomTurnContract = inferDoomTurnContract(ctx.messageText);
@@ -293,11 +446,53 @@ export async function executeSingleToolCall(
     argumentDiagnostics.workspaceAdjustedFields =
       staleHarnessPreflight.repairedFields;
   }
+  if (artifactReferenceCanonicalization.canonicalizedFields.length > 0) {
+    argumentDiagnostics.artifactReferenceCanonicalizedFields =
+      artifactReferenceCanonicalization.canonicalizedFields;
+  }
   if (contractAdjustedFields.length > 0) {
     argumentDiagnostics.contractAdjustedFields = contractAdjustedFields;
   }
   if (Object.keys(argumentDiagnostics).length > 0) {
     argumentDiagnostics.rawArgs = rawArgs;
+  }
+  const executionEnvelopeError = enforceTopLevelExecutionEnvelope({
+    toolName: toolCall.name,
+    args,
+    executionEnvelope: ctx.requiredToolEvidence?.executionEnvelope,
+    defaultWorkingDirectory: ctx.runtimeWorkspaceRoot,
+  });
+  if (executionEnvelopeError) {
+    callbacks.emitExecutionTrace(ctx, {
+      type: "tool_rejected",
+      phase: "tool_followup",
+      callIndex: ctx.callIndex,
+      payload: {
+        tool: toolCall.name,
+        args,
+        originalArgs: rawArgs,
+        reason: "execution_envelope",
+        error: executionEnvelopeError,
+      },
+    });
+    callbacks.pushMessage(
+      ctx,
+      {
+        role: "tool",
+        content: executionEnvelopeError,
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+      },
+      "tools",
+    );
+    callbacks.appendToolRecord(ctx, {
+      name: toolCall.name,
+      args,
+      result: executionEnvelopeError,
+      isError: true,
+      durationMs: 0,
+    });
+    return "skip";
   }
   if (staleHarnessPreflight.rejectionError) {
     callbacks.emitExecutionTrace(ctx, {

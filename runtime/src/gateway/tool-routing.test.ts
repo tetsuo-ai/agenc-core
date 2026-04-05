@@ -504,6 +504,40 @@ describe("ToolRouter", () => {
     expect(decision.routedToolNames).toContain("system.calendarRead");
   });
 
+  it("does not prioritize typed calendar tools for generic scheduling prompts without an invite artifact", () => {
+    const router = new ToolRouter(TOOLS, {
+      maxToolsPerTurn: 8,
+      minToolsPerTurn: 4,
+    });
+
+    const decision = router.route({
+      sessionId: "s-calendar-generic",
+      messageText:
+        "Implement recurring job scheduling for the daemon and make sure day/night events advance correctly.",
+      history: [],
+    });
+
+    expect(decision.routedToolNames).not.toContain("system.calendarInfo");
+    expect(decision.routedToolNames).not.toContain("system.calendarRead");
+  });
+
+  it("does not prioritize typed office document tools for generic project brief prompts without a doc artifact", () => {
+    const router = new ToolRouter(TOOLS, {
+      maxToolsPerTurn: 8,
+      minToolsPerTurn: 4,
+    });
+
+    const decision = router.route({
+      sessionId: "s-office-generic",
+      messageText:
+        "Implement the office workflow and polish the project brief in the CLI before release.",
+      history: [],
+    });
+
+    expect(decision.routedToolNames).not.toContain("system.officeDocumentInfo");
+    expect(decision.routedToolNames).not.toContain("system.officeDocumentExtractText");
+  });
+
   it("does not route protocol or Solana audit tools for generic coding prompts", () => {
     const router = new ToolRouter(TOOLS, {
       maxToolsPerTurn: 18,

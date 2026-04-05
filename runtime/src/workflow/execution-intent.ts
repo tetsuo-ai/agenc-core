@@ -5,6 +5,7 @@ import type {
   ExecutionStepKind,
   ExecutionVerificationMode,
 } from "./execution-envelope.js";
+import { isMutationLikeVerificationMode } from "./execution-envelope.js";
 
 export function canonicalizeExecutionStepKind(params: {
   readonly stepKind?: ExecutionStepKind;
@@ -20,7 +21,9 @@ export function canonicalizeExecutionStepKind(params: {
   if (!ownsTargetArtifacts) {
     return stepKind;
   }
-  const mutationLikeVerification = params.verificationMode === "mutation_required";
+  const mutationLikeVerification = isMutationLikeVerificationMode(
+    params.verificationMode,
+  );
   const writeLikeEffect =
     params.effectClass === "filesystem_write" ||
     params.effectClass === "mixed" ||
@@ -63,7 +66,7 @@ export function inferCompatibilityCompletionContract(params: {
   }
   if (
     stepKind === "delegated_write" ||
-    (params.verificationMode === "mutation_required" &&
+    (isMutationLikeVerificationMode(params.verificationMode) &&
       params.targetArtifacts.length > 0)
   ) {
     const placeholderTaxonomy = areDocumentationOnlyArtifacts(

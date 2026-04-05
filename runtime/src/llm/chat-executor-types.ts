@@ -40,6 +40,11 @@ import type {
 import type { ArtifactCompactionState } from "../memory/artifact-store.js";
 import type { WorkflowGraphEdge } from "../workflow/types.js";
 import type { ImplementationCompletionContract } from "../workflow/completion-contract.js";
+import type {
+  ExecutionEnvelope,
+  WorkflowArtifactRelation,
+  WorkflowStepRole,
+} from "../workflow/execution-envelope.js";
 import type { WorkflowCompletionState } from "../workflow/completion-state.js";
 import type { WorkflowProgressSnapshot } from "../workflow/completion-progress.js";
 import type {
@@ -64,6 +69,7 @@ import type {
   DelegationOutputValidationCode,
 } from "../utils/delegation-validation.js";
 import type { HostToolingProfile } from "../gateway/host-tooling.js";
+import type { ArtifactTaskContract } from "./chat-executor-artifact-task.js";
 import type {
   DelegationBanditPolicyTuner,
   DelegationBanditSelection,
@@ -218,6 +224,10 @@ export interface ChatExecuteParams {
     readonly verificationContract?: WorkflowVerificationContract;
     /** Optional completion contract for implementation-class tasks. */
     readonly completionContract?: ImplementationCompletionContract;
+    /** Optional direct-owner artifact update contract for explicit artifact tasks. */
+    readonly artifactTaskContract?: ArtifactTaskContract;
+    /** Optional execution envelope used to bound top-level tool access for explicit artifact tasks. */
+    readonly executionEnvelope?: ExecutionEnvelope;
   };
   /** Optional provider-managed continuation hints restored by the runtime. */
   readonly stateful?: {
@@ -560,6 +570,7 @@ export interface PlannerDecision {
   score: number;
   shouldPlan: boolean;
   reason: string;
+  artifactTargets?: readonly string[];
 }
 
 export type PlannerStepType = "deterministic_tool" | "subagent_task" | "synthesis";
@@ -568,6 +579,35 @@ export interface PlannerStepBaseIntent {
   name: string;
   stepType: PlannerStepType;
   dependsOn?: readonly string[];
+}
+
+export type WorkflowContractClass =
+  | "artifact_review_and_rewrite"
+  | "implementation_with_verification"
+  | "validation_only"
+  | "read_only_review"
+  | "research_and_synthesis";
+
+export interface WorkflowStepContract {
+  readonly name: string;
+  readonly role: WorkflowStepRole;
+  readonly objective: string;
+  readonly inputContract: string;
+  readonly acceptanceCriteria: readonly string[];
+  readonly requiredToolCapabilities: readonly string[];
+  readonly contextRequirements: readonly string[];
+  readonly executionContext?: ExecutionEnvelope;
+  readonly artifactRelations: readonly WorkflowArtifactRelation[];
+}
+
+export interface WorkflowContract {
+  readonly workflowClass: WorkflowContractClass;
+  readonly steps: readonly WorkflowStepContract[];
+  readonly requiredChildren?: {
+    readonly cardinality?: number;
+    readonly roles?: readonly WorkflowStepRole[];
+    readonly exactNames?: readonly string[];
+  };
 }
 
 export interface PlannerDeterministicToolStepIntent extends PlannerStepBaseIntent {
@@ -586,6 +626,7 @@ export interface PlannerSubAgentTaskStepIntent extends PlannerStepBaseIntent {
   requiredToolCapabilities: readonly string[];
   contextRequirements: readonly string[];
   executionContext?: DelegationExecutionContext;
+  workflowStep?: WorkflowStepContract;
   maxBudgetHint: string;
   canRunParallel: boolean;
 }
@@ -632,6 +673,7 @@ export interface PlannerPlan {
   confidence?: number;
   steps: PlannerStepIntent[];
   edges: readonly WorkflowGraphEdge[];
+  workflowContract?: WorkflowContract;
 }
 
 export interface PlannerParseResult {
@@ -813,6 +855,8 @@ export interface ExecutionContext {
     readonly unsafeBenchmarkMode?: boolean;
     readonly verificationContract?: WorkflowVerificationContract;
     readonly completionContract?: ImplementationCompletionContract;
+    readonly artifactTaskContract?: ArtifactTaskContract;
+    readonly executionEnvelope?: ExecutionEnvelope;
   };
   readonly trace?: ChatExecuteParams["trace"];
   readonly defaultRunClass?: RuntimeRunClass;
@@ -851,6 +895,16 @@ export interface ExecutionContext {
   plannerWorkflowTaskClassification?: PlannerWorkflowTaskClassification;
   plannerVerificationContract?: WorkflowVerificationContract;
   plannerCompletionContract?: ImplementationCompletionContract;
+  plannerFailedStep?: {
+    readonly stepName?: string;
+    readonly stepIndex?: number;
+    readonly tool?: string;
+    readonly error?: string;
+  };
+  plannerTerminalFallback?: {
+    readonly kind: "planner_synthesis_fallback";
+    readonly reason: string;
+  };
   plannerSummaryState: FullPlannerSummaryState;
   trajectoryContextClusterId: string;
   selectedBanditArm?: DelegationBanditSelection;
@@ -962,6 +1016,8 @@ export function buildDefaultExecutionContext(
         unsafeBenchmarkMode: params.requiredToolEvidence.unsafeBenchmarkMode,
         verificationContract: params.requiredToolEvidence.verificationContract,
         completionContract: params.requiredToolEvidence.completionContract,
+        artifactTaskContract: params.requiredToolEvidence.artifactTaskContract,
+        executionEnvelope: params.requiredToolEvidence.executionEnvelope,
       }
       : undefined,
 
@@ -1003,6 +1059,8 @@ export function buildDefaultExecutionContext(
     plannerWorkflowTaskClassification: undefined,
     plannerVerificationContract: undefined,
     plannerCompletionContract: undefined,
+    plannerFailedStep: undefined,
+    plannerTerminalFallback: undefined,
     plannerSummaryState: {
       enabled: config.plannerEnabled,
       used: false,

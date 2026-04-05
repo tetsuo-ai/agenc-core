@@ -14,6 +14,7 @@ import {
   type DelegationStepAnalysis,
 } from "./delegation-economics.js";
 import {
+  isMutationLikeVerificationMode,
   resolveExecutionEnvelopeArtifactRelations,
   resolveExecutionEnvelopeRole,
 } from "../workflow/execution-envelope.js";
@@ -479,8 +480,12 @@ function buildVerifierObligations(
   if (context?.verificationMode === "grounded_read") {
     obligations.push("Cite grounded read evidence from the inspected artifacts.");
   }
-  if (context?.verificationMode === "mutation_required") {
-    obligations.push("Return concrete mutation evidence for the owned target artifacts.");
+  if (isMutationLikeVerificationMode(context?.verificationMode)) {
+    obligations.push(
+      context?.verificationMode === "conditional_mutation"
+        ? "Return either concrete mutation evidence for the owned target artifacts or a grounded explicit no-op conclusion after reading the target and relevant workspace evidence."
+        : "Return concrete mutation evidence for the owned target artifacts.",
+    );
   }
   if (context?.verificationMode === "deterministic_followup") {
     obligations.push("Run or cite deterministic follow-up verification for the owned artifacts.");

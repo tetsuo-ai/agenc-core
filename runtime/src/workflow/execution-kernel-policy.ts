@@ -12,6 +12,7 @@ import {
   didToolCallFail,
   extractToolFailureTextFromResult,
 } from "../llm/chat-executor-tool-utils.js";
+import { isMutationLikeVerificationMode } from "./execution-envelope.js";
 
 export function assessPlannerDependencySatisfaction(
   step: PipelinePlannerStep,
@@ -49,6 +50,43 @@ export function assessPlannerDependencySatisfaction(
   return { satisfied: true };
 }
 
+function subagentStepAllowsDelegationFallback(
+  step: PipelinePlannerSubagentStep,
+): boolean {
+  const executionContext = step.executionContext;
+  if (executionContext?.fallbackPolicy === "fail_request") {
+    return false;
+  }
+  if (
+    executionContext?.stepKind === "delegated_write" ||
+    executionContext?.stepKind === "delegated_scaffold" ||
+    executionContext?.stepKind === "delegated_validation" ||
+    isMutationLikeVerificationMode(executionContext?.verificationMode) ||
+    executionContext?.verificationMode === "deterministic_followup" ||
+    executionContext?.effectClass === "filesystem_write" ||
+    executionContext?.effectClass === "filesystem_scaffold" ||
+    executionContext?.effectClass === "shell" ||
+    executionContext?.effectClass === "mixed" ||
+    (executionContext?.targetArtifacts?.length ?? 0) > 0 ||
+    Boolean(executionContext?.completionContract)
+  ) {
+    return false;
+  }
+  return !step.requiredToolCapabilities.some((capability) => {
+    const normalized = capability.trim().toLowerCase();
+    return (
+      normalized.includes("write") ||
+      normalized.includes("append") ||
+      normalized.includes("delete") ||
+      normalized.includes("move") ||
+      normalized.includes("mkdir") ||
+      normalized.includes("rename") ||
+      normalized.includes("bash") ||
+      normalized.includes("shell")
+    );
+  });
+}
+
 function assessSubagentDependencySatisfaction(
   step: PipelinePlannerSubagentStep,
   result: string,
@@ -72,13 +110,23 @@ function assessSubagentDependencySatisfaction(
     }
     const obj = parsed as Record<string, unknown>;
     const status = typeof obj.status === "string" ? obj.status : undefined;
-    if (status === "delegation_fallback") {
-      return { satisfied: true };
-    }
     const error =
       typeof obj.error === "string" && obj.error.trim().length > 0
         ? obj.error.trim()
         : undefined;
+    if (status === "delegation_fallback") {
+      if (subagentStepAllowsDelegationFallback(step)) {
+        return { satisfied: true };
+      }
+      return {
+        satisfied: false,
+        reason:
+          error ??
+          `Sub-agent step "${step.name}" used parent fallback for work that must stay child-owned`,
+        stopReasonHint:
+          toPipelineStopReasonHint(obj.stopReasonHint) ?? "validation_error",
+      };
+    }
     if (
       obj.success === false ||
       status === "failed" ||

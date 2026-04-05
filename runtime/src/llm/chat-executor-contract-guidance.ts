@@ -8,6 +8,7 @@
  * @module
  */
 
+import type { ArtifactTaskContract } from "./chat-executor-artifact-task.js";
 import type { ToolCallRecord } from "./chat-executor-types.js";
 import type { LLMToolChoice } from "./types.js";
 import { hasConcordiaSimulationTurnContract } from "./chat-executor-turn-contracts.js";
@@ -44,6 +45,8 @@ import {
 import { extractExplicitImperativeToolNames } from "./chat-executor-explicit-tools.js";
 import { getAcceptanceVerificationCategories } from "../utils/delegation-validation.js";
 import { areDocumentationOnlyArtifacts } from "../workflow/artifact-paths.js";
+import { normalizeEnvelopePath } from "../workflow/path-normalization.js";
+import { isMeaningfulWorkspaceInspectionToolCall } from "../workflow/workspace-inspection-evidence.js";
 
 export type ToolContractGuidancePhase =
   | "initial"
@@ -60,6 +63,7 @@ export interface ToolContractGuidanceContext {
     readonly delegationSpec?: DelegationContractSpec;
     readonly verificationContract?: WorkflowVerificationContract;
     readonly completionContract?: ImplementationCompletionContract;
+    readonly artifactTaskContract?: ArtifactTaskContract;
   };
   readonly validationCode?: DelegationOutputValidationCode;
 }
@@ -98,6 +102,11 @@ const TOOL_CONTRACT_GUIDANCE_RESOLVERS: readonly ToolContractGuidanceResolver[] 
     name: "server-handle",
     priority: 250,
     resolve: resolveServerHandleContractGuidance,
+  },
+  {
+    name: "artifact-task",
+    priority: 240,
+    resolve: resolveArtifactTaskContractGuidance,
   },
   {
     name: "typed-artifact",
@@ -214,6 +223,161 @@ function resolveServerHandleContractGuidance(
   }
 
   return undefined;
+}
+
+const ARTIFACT_TASK_READ_TOOL_NAMES = ["system.readFile"] as const;
+const ARTIFACT_TASK_WORKSPACE_GROUNDING_TOOL_NAMES = [
+  "system.listDir",
+  "system.stat",
+  "system.readFile",
+] as const;
+const ARTIFACT_TASK_WRITE_TOOL_NAMES = [
+  "desktop.text_editor",
+  "system.writeFile",
+  "system.appendFile",
+] as const;
+const ARTIFACT_TASK_MUTATION_TOOL_NAMES = new Set(ARTIFACT_TASK_WRITE_TOOL_NAMES);
+
+function resolveArtifactTaskContractGuidance(
+  input: ToolContractGuidanceContext,
+): ToolContractGuidance | undefined {
+  const contract = input.requiredToolEvidence?.artifactTaskContract;
+  if (!contract || contract.delegationPolicy !== "direct_owner") {
+    return undefined;
+  }
+
+  const hasTargetRead = artifactTaskHasTargetReadEvidence(input.toolCalls, contract);
+  const needsWorkspaceGrounding = contract.groundingMode === "artifact_plus_workspace";
+  const hasWorkspaceGrounding = !needsWorkspaceGrounding ||
+    artifactTaskHasWorkspaceGroundingEvidence(input.toolCalls, contract);
+  const hasTargetMutation = artifactTaskHasTargetMutationEvidence(input.toolCalls, contract);
+
+  const readToolNames = filterAllowedArtifactTaskToolNames(
+    input.allowedToolNames,
+    ARTIFACT_TASK_READ_TOOL_NAMES,
+  );
+  const groundingToolNames = filterAllowedArtifactTaskToolNames(
+    input.allowedToolNames,
+    ARTIFACT_TASK_WORKSPACE_GROUNDING_TOOL_NAMES,
+  );
+  const writeToolNames = filterAllowedArtifactTaskToolNames(
+    input.allowedToolNames,
+    ARTIFACT_TASK_WRITE_TOOL_NAMES,
+  );
+
+  if (!hasTargetRead && readToolNames.length > 0) {
+    return {
+      source: "artifact-task",
+      runtimeInstruction:
+        `This is an explicit in-place artifact update for ${contract.displayTargetArtifact}. Start by reading that target artifact. ` +
+        "Do not create sidecar analysis files, and do not implement what the document describes.",
+      routedToolNames: readToolNames,
+      persistRoutedToolNames: false,
+      toolChoice: "required",
+      enforcement: {
+        mode: "block_other_tools",
+        message:
+          `Read ${contract.displayTargetArtifact} first before using other tools for this artifact update.`,
+      },
+    };
+  }
+
+  if (needsWorkspaceGrounding && !hasWorkspaceGrounding && groundingToolNames.length > 0) {
+    return {
+      source: "artifact-task",
+      runtimeInstruction:
+        `Ground the requested update for ${contract.displayTargetArtifact} against the current workspace before editing it. ` +
+        "Inspect the actual workspace structure and referenced source-of-truth files. Do not invent sidecar artifacts or implementation work.",
+      routedToolNames: groundingToolNames,
+      persistRoutedToolNames: false,
+      toolChoice: "required",
+      enforcement: {
+        mode: "block_other_tools",
+        message:
+          "Complete a bounded workspace inspection before mutating the requested artifact.",
+      },
+    };
+  }
+
+  if (!hasTargetMutation && writeToolNames.length > 0) {
+    return {
+      source: "artifact-task",
+      runtimeInstruction:
+        `Apply any needed updates directly to ${contract.displayTargetArtifact}. ` +
+        "Only mutate that named artifact. Do not create scratch files or implement the document contents. If grounded inspection proves the artifact is already correct, report that explicitly instead of fabricating edits.",
+      routedToolNames: writeToolNames,
+      persistRoutedToolNames: false,
+      toolChoice: input.phase === "correction" ? "required" : "auto",
+    };
+  }
+
+  return undefined;
+}
+
+function filterAllowedArtifactTaskToolNames(
+  allowedToolNames: readonly string[],
+  preferredToolNames: readonly string[],
+): readonly string[] {
+  return preferredToolNames.filter((toolName) =>
+    allowedToolNames.length === 0 || allowedToolNames.includes(toolName)
+  );
+}
+
+function artifactTaskHasTargetReadEvidence(
+  toolCalls: readonly ToolCallRecord[],
+  contract: ArtifactTaskContract,
+): boolean {
+  return toolCalls.some((toolCall) =>
+    toolCall.isError !== true &&
+    (toolCall.name === "system.readFile" || toolCall.name === "desktop.text_editor") &&
+    artifactTaskToolCallTargetsArtifact(toolCall, contract.targetArtifacts, contract.workspaceRoot)
+  );
+}
+
+function artifactTaskHasWorkspaceGroundingEvidence(
+  toolCalls: readonly ToolCallRecord[],
+  contract: ArtifactTaskContract,
+): boolean {
+  return toolCalls.some((toolCall) =>
+    isMeaningfulWorkspaceInspectionToolCall({
+      toolCall,
+      workspaceRoot: contract.workspaceRoot,
+      targetArtifacts: contract.targetArtifacts,
+      requiredSourceArtifacts: contract.sourceArtifacts,
+    })
+  );
+}
+
+function artifactTaskHasTargetMutationEvidence(
+  toolCalls: readonly ToolCallRecord[],
+  contract: ArtifactTaskContract,
+): boolean {
+  return toolCalls.some((toolCall) =>
+    toolCall.isError !== true &&
+    ARTIFACT_TASK_MUTATION_TOOL_NAMES.has(toolCall.name) &&
+    artifactTaskToolCallTargetsArtifact(toolCall, contract.targetArtifacts, contract.workspaceRoot)
+  );
+}
+
+function artifactTaskToolCallTargetsArtifact(
+  toolCall: ToolCallRecord,
+  targetArtifacts: readonly string[],
+  workspaceRoot?: string,
+): boolean {
+  const args = toolCall.args && typeof toolCall.args === "object"
+    ? (toolCall.args as Record<string, unknown>)
+    : {};
+  for (const key of ["path", "source", "destination"]) {
+    const rawValue = args[key];
+    if (typeof rawValue !== "string" || rawValue.trim().length === 0) {
+      continue;
+    }
+    const normalizedPath = normalizeEnvelopePath(rawValue, workspaceRoot);
+    if (targetArtifacts.some((artifactPath) => artifactPath === normalizedPath)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function inferServerHandleTurn(messageText: string): boolean {
@@ -527,13 +691,9 @@ function resolveDelegationInitialContractGuidance(
           ? `${planBackedWorkspaceInspectionInstruction} `
           : "") +
         "and use shell verification when build/test/install evidence is part of acceptance."
-    : preferredToolName === "system.writeFile" ||
-        preferredToolName === "system.appendFile"
-      ? workspaceBootstrap
-        ? "Begin by creating or updating files under the delegated workspace root. " +
-          "If the delegated cwd does not exist yet, target that workspace via absolute paths instead of starting with shell inspection."
-        : "Begin by creating or updating the required files from the delegated contract. " +
-          "Do not spend the first tool round rediscovering the workspace with shell inspection."
+    : workspaceBootstrap
+      ? "Begin by creating or updating files under the delegated workspace root. " +
+        "If the delegated cwd does not exist yet, target that workspace via absolute paths instead of starting with shell inspection."
       : undefined;
 
   return {

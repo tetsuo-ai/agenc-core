@@ -334,24 +334,51 @@ export class CanonicalExecutionKernel implements ExecutionKernelContract {
         completion.outcome.fallback?.satisfied
       ) {
         mutableResults[node.step.name] = completion.outcome.fallback.result;
-        satisfied.add(node.step.name);
+        const dependencyState = this.plannerDelegate.assessDependencySatisfaction(
+          node.step,
+          completion.outcome.fallback.result,
+        );
+        if (dependencyState.satisfied) {
+          satisfied.add(node.step.name);
+          emitStepStateChange({
+            options,
+            pipelineId: pipeline.id,
+            stepName: node.step.name,
+            stepIndex: node.orderIndex,
+            previousState: nodeState.get(node.step.name),
+            state: "completed",
+            reason: completion.outcome.fallback.reason,
+            ...(this.plannerDelegate.resolveTraceToolName?.(node.step)
+              ? { tool: this.plannerDelegate.resolveTraceToolName?.(node.step) }
+              : {}),
+            ...(this.plannerDelegate.buildTraceArgs?.(node.step)
+              ? { args: this.plannerDelegate.buildTraceArgs?.(node.step) }
+              : {}),
+          });
+          nodeState.set(node.step.name, "completed");
+        } else {
+          unsatisfied.set(node.step.name, dependencyState);
+          emitStepStateChange({
+            options,
+            pipelineId: pipeline.id,
+            stepName: node.step.name,
+            stepIndex: node.orderIndex,
+            previousState: nodeState.get(node.step.name),
+            state: "failed",
+            reason:
+              dependencyState.reason ??
+              completion.outcome.fallback.reason ??
+              `Planner step "${node.step.name}" finished without satisfying its contract`,
+            ...(this.plannerDelegate.resolveTraceToolName?.(node.step)
+              ? { tool: this.plannerDelegate.resolveTraceToolName?.(node.step) }
+              : {}),
+            ...(this.plannerDelegate.buildTraceArgs?.(node.step)
+              ? { args: this.plannerDelegate.buildTraceArgs?.(node.step) }
+              : {}),
+          });
+          nodeState.set(node.step.name, "failed");
+        }
         completedSteps++;
-        emitStepStateChange({
-          options,
-          pipelineId: pipeline.id,
-          stepName: node.step.name,
-          stepIndex: node.orderIndex,
-          previousState: nodeState.get(node.step.name),
-          state: "completed",
-          reason: completion.outcome.fallback.reason,
-          ...(this.plannerDelegate.resolveTraceToolName?.(node.step)
-            ? { tool: this.plannerDelegate.resolveTraceToolName?.(node.step) }
-            : {}),
-          ...(this.plannerDelegate.buildTraceArgs?.(node.step)
-            ? { args: this.plannerDelegate.buildTraceArgs?.(node.step) }
-            : {}),
-        });
-        nodeState.set(node.step.name, "completed");
         continue;
       }
 

@@ -33,6 +33,8 @@ import {
 } from "./chat-executor-tool-utils.js";
 import { assessExecuteWithAgentResult } from "../utils/delegated-scope-trust.js";
 
+const NON_ACTIONABLE_STATEFUL_FALLBACK_REASONS = new Set<LLMStatefulFallbackReason>(["store_disabled"]);
+
 const DESKTOP_BIASED_SYSTEM_COMMANDS = new Set([
   "chromium",
   "chromium-browser",
@@ -1150,6 +1152,20 @@ export function summarizeStateful(
     fallbackCalls,
     fallbackReasons,
   };
+}
+
+export function hasActionableStatefulFallback(
+  summary: ChatStatefulSummary | undefined,
+): boolean {
+  if (!summary || summary.fallbackCalls <= 0) {
+    return false;
+  }
+  return Object.entries(summary.fallbackReasons).some(([reason, count]) =>
+    count > 0 &&
+    !NON_ACTIONABLE_STATEFUL_FALLBACK_REASONS.has(
+      reason as LLMStatefulFallbackReason,
+    )
+  );
 }
 
 export function buildRecoveryHints(

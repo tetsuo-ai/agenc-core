@@ -73,6 +73,69 @@ function createResult(
 }
 
 describe("executeTextChannelTurn", () => {
+  it("warns when stateful continuation falls back for an actionable reason", async () => {
+    const logger = createLoggerStub();
+    const memoryBackend = createMemoryBackendStub();
+    const session = createSession();
+    const sessionMgr = {
+      appendMessage: vi.fn(),
+    } as any;
+    const execute = vi.fn(async () =>
+      createResult({
+        statefulSummary: {
+          enabled: true,
+          attemptedCalls: 1,
+          continuedCalls: 0,
+          fallbackCalls: 1,
+          fallbackReasons: {
+            missing_previous_response_id: 0,
+            store_disabled: 0,
+            provider_retrieval_failure: 0,
+            state_reconciliation_mismatch: 1,
+            unsupported: 0,
+          },
+        },
+      })
+    );
+
+    await executeTextChannelTurn({
+      logger,
+      channelName: "telegram",
+      msg: {
+        sessionId: "session:test",
+        senderId: "user-1",
+        channel: "telegram",
+        content: "hello",
+      },
+      session,
+      sessionMgr,
+      systemPrompt: "system",
+      chatExecutor: { execute } as any,
+      toolHandler: vi.fn() as any,
+      defaultMaxToolRounds: 3,
+      traceConfig: {
+        enabled: false,
+        includeHistory: true,
+        includeSystemPrompt: true,
+        includeToolArgs: true,
+        includeToolResults: true,
+        includeProviderPayloads: false,
+        maxChars: 20_000,
+      },
+      turnTraceId: "trace-1",
+      memoryBackend,
+      buildToolRoutingDecision: () => undefined,
+      recordToolRoutingOutcome: vi.fn(),
+    });
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "[stateful] telegram fallback_to_stateless",
+      expect.objectContaining({
+        sessionId: "session:test",
+      }),
+    );
+  });
+
   it("runs the shared text-channel turn path and persists session continuity", async () => {
     const logger = createLoggerStub();
     const memoryBackend = createMemoryBackendStub();

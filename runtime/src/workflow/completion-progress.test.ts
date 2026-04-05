@@ -181,6 +181,141 @@ describe("completion-progress", () => {
     });
   });
 
+  it("reuses progress across equivalent direct and planner contracts even when step metadata differs", () => {
+    const previous = deriveWorkflowProgressSnapshot({
+      stopReason: "completed",
+      completionState: "needs_verification",
+      toolCalls: [
+        {
+          name: "system.bash",
+          args: { command: "npm test" },
+          result: JSON.stringify({
+            stdout: "ok",
+            stderr: "",
+            exitCode: 0,
+            __agencVerification: {
+              category: "build",
+              repoLocal: true,
+              command: "npm test",
+            },
+          }),
+          isError: false,
+        },
+      ],
+      verificationContract: {
+        workspaceRoot: "/workspace",
+        targetArtifacts: ["/workspace/PLAN.md"],
+        verificationMode: "mutation_required",
+        completionContract: {
+          taskClass: "artifact_only",
+          placeholdersAllowed: false,
+          partialCompletionAllowed: false,
+          placeholderTaxonomy: "documentation",
+        },
+      },
+      updatedAt: 10,
+    });
+    const next = deriveWorkflowProgressSnapshot({
+      stopReason: "completed",
+      completionState: "completed",
+      toolCalls: [],
+      verificationContract: {
+        workspaceRoot: "/workspace",
+        targetArtifacts: ["/workspace/PLAN.md"],
+        verificationMode: "mutation_required",
+        stepKind: "delegated_write",
+        completionContract: {
+          taskClass: "artifact_only",
+          placeholdersAllowed: false,
+          partialCompletionAllowed: false,
+          placeholderTaxonomy: "documentation",
+        },
+      },
+      updatedAt: 20,
+    });
+
+    const merged = mergeWorkflowProgressSnapshots({ previous, next });
+
+    expect(merged).toMatchObject({
+      completionState: "completed",
+      satisfiedRequirements: expect.arrayContaining([
+        "build_verification",
+        "workflow_verifier_pass",
+      ]),
+      remainingRequirements: [],
+    });
+  });
+
+  it("drops prior verifier evidence when a new contract fingerprint targets a different task family", () => {
+    const previous = deriveWorkflowProgressSnapshot({
+      stopReason: "completed",
+      completionState: "needs_verification",
+      toolCalls: [
+        {
+          name: "system.bash",
+          args: { command: "npm test" },
+          result: JSON.stringify({
+            stdout: "ok",
+            stderr: "",
+            exitCode: 0,
+            __agencVerification: {
+              category: "build",
+              repoLocal: true,
+              command: "npm test",
+            },
+          }),
+          isError: false,
+        },
+      ],
+      verificationContract: {
+        workspaceRoot: "/workspace",
+        targetArtifacts: ["/workspace/src/main.c"],
+        verificationMode: "mutation_required",
+        completionContract: {
+          taskClass: "build_required",
+          placeholdersAllowed: false,
+          partialCompletionAllowed: false,
+          placeholderTaxonomy: "implementation",
+        },
+      },
+      updatedAt: 10,
+    });
+    const next = deriveWorkflowProgressSnapshot({
+      stopReason: "completed",
+      completionState: "completed",
+      toolCalls: [
+        {
+          name: "system.writeFile",
+          args: { path: "/workspace/PLAN.md" },
+          result: JSON.stringify({ ok: true }),
+          isError: false,
+        },
+      ],
+      verificationContract: {
+        workspaceRoot: "/workspace",
+        targetArtifacts: ["/workspace/PLAN.md"],
+        verificationMode: "mutation_required",
+        completionContract: {
+          taskClass: "artifact_only",
+          placeholdersAllowed: false,
+          partialCompletionAllowed: false,
+          placeholderTaxonomy: "documentation",
+        },
+      },
+      updatedAt: 20,
+    });
+
+    const merged = mergeWorkflowProgressSnapshots({ previous, next });
+
+    expect(merged).toMatchObject({
+      completionState: "completed",
+      requiredRequirements: [],
+      satisfiedRequirements: ["workflow_verifier_pass"],
+      remainingRequirements: [],
+    });
+    expect(merged?.reusableEvidence).toEqual([]);
+  });
+
   it("preserves needs-verification carryover when a later snapshot blocks before verifier closure", () => {
     const previous = deriveWorkflowProgressSnapshot({
       stopReason: "completed",

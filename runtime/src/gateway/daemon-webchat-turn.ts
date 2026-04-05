@@ -5,6 +5,7 @@ import type {
   ChatToolRoutingSummary,
 } from "../llm/chat-executor.js";
 import type { ChatExecutionTraceEvent } from "../llm/chat-executor-types.js";
+import { hasActionableStatefulFallback } from "../llm/chat-executor-recovery.js";
 import type {
   LLMProviderTraceEvent,
   StreamProgressCallback,
@@ -434,7 +435,7 @@ export async function executeWebChatConversationTurn(
         },
       );
     }
-    if ((result.statefulSummary?.fallbackCalls ?? 0) > 0) {
+    if (hasActionableStatefulFallback(result.statefulSummary)) {
       logger.warn("[stateful] webchat fallback_to_stateless", {
         traceId: turnTraceId,
         sessionId: msg.sessionId,

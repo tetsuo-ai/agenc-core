@@ -189,6 +189,22 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
     expect(finalUserMessage?.content).toContain("perfect ROADMAP.md");
   });
 
+  it("classifies imperative single-artifact issue-and-gap fixes as edit_artifact", () => {
+    expect(
+      classifyPlannerPlanArtifactIntent(
+        "I want you to go through @PLAN.md find any issues and gaps and fix them.",
+      ),
+    ).toBe("edit_artifact");
+  });
+
+  it("classifies explicit artifact completeness repair requests as edit_artifact", () => {
+    expect(
+      classifyPlannerPlanArtifactIntent(
+        "i want you to go through @PLAN.md and make sure that it is a complete plan for a linux shell if there are any gaps in the spec please fix it",
+      ),
+    ).toBe("edit_artifact");
+  });
+
   it("treats plain-language delegation research requests as explicit delegation", () => {
     expect(
       requestExplicitlyRequestsDelegation(
@@ -812,6 +828,19 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
     expect(decision.reason).toContain("artifact_spec_execution_request");
   });
 
+  it("does not treat generic planning requests without explicit artifact refs as artifact-backed routes", () => {
+    const messageText =
+      "Turn this into a complete implementation plan for building a shell in the C programming language.";
+
+    expect(classifyPlannerPlanArtifactIntent(messageText)).toBe("none");
+
+    const decision = assessPlannerDecision(true, messageText, []);
+
+    expect(decision.reason).not.toContain("plan_artifact_request");
+    expect(decision.reason).not.toContain("plan_artifact_execution_request");
+    expect(decision.reason).not.toContain("artifact_spec_execution_request");
+  });
+
   it("extracts required subagent steps from the compact 'plan required' prompt shape", () => {
     const requirements = extractExplicitSubagentOrchestrationRequirements(
       "Subagent context audit SG3. Sub-agent orchestration plan required: " +
@@ -1088,6 +1117,38 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
       forcePlanner: true,
       exactResponseLiteral: "A1_R1_DONE",
     });
+  });
+
+  it("reports incomplete planner workflows in synthesis fallback content when execution fails", () => {
+    const content = buildPlannerSynthesisFallbackContent(
+      {
+        reason: "review_and_update_plan",
+        requiresSynthesis: true,
+        steps: [
+          {
+            name: "read_plan",
+            stepType: "deterministic_tool",
+            tool: "system.readFile",
+          },
+        ],
+      } as any,
+      {
+        status: "failed",
+        context: {
+          results: {},
+        },
+        completedSteps: 0,
+        totalSteps: 2,
+        error: "path must be a non-empty string",
+      } as any,
+      undefined,
+      undefined,
+      "path must be a non-empty string",
+    );
+
+    expect(content).toContain("The requested workflow did not complete.");
+    expect(content).toContain("Fallback reason: path must be a non-empty string");
+    expect(content).not.toContain("Completed the requested workflow");
   });
 
   it("renders verifier rounds in planner synthesis fallback content from the summary state", () => {
@@ -1657,6 +1718,111 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
     ).toBe(false);
   });
 
+
+  it("canonicalizes aliased filesystem arguments in parsed deterministic planner steps", () => {
+    const result = parsePlannerPlan(
+      JSON.stringify({
+        reason: "review_plan",
+        requiresSynthesis: false,
+        steps: [
+          {
+            name: "read_plan",
+            step_type: "deterministic_tool",
+            tool: "system.readFile",
+            args: {
+              filePath: "/tmp/project/PLAN.md",
+            },
+          },
+        ],
+      }),
+    );
+
+    expect(result.plan?.steps).toEqual([
+      expect.objectContaining({
+        stepType: "deterministic_tool",
+        tool: "system.readFile",
+        args: {
+          path: "/tmp/project/PLAN.md",
+        },
+      }),
+    ]);
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "parse",
+          code: "planner_tool_args_canonicalized",
+          details: expect.objectContaining({
+            canonicalizedFields: "filePath->path",
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("rejects conflicting deterministic planner arg aliases instead of guessing", () => {
+    const result = parsePlannerPlan(
+      JSON.stringify({
+        reason: "review_plan",
+        requiresSynthesis: false,
+        steps: [
+          {
+            name: "read_plan",
+            step_type: "deterministic_tool",
+            tool: "system.readFile",
+            args: {
+              path: "/tmp/project/PLAN.md",
+              filePath: "/tmp/project/OTHER.md",
+            },
+          },
+        ],
+      }),
+    );
+
+    expect(result.plan).toBeUndefined();
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "parse",
+          code: "planner_tool_arg_alias_conflict",
+        }),
+      ]),
+    );
+  });
+
+  it("canonicalizes salvaged planner tool calls before building deterministic steps", () => {
+    const result = salvagePlannerToolCallsAsPlan([
+      {
+        id: "tc-1",
+        name: "system.listDirectory",
+        arguments: JSON.stringify({
+          directoryPath: "/tmp/project/src",
+        }),
+      },
+    ]);
+
+    expect(result.plan?.steps).toEqual([
+      expect.objectContaining({
+        stepType: "deterministic_tool",
+        tool: "system.listDir",
+        args: {
+          path: "/tmp/project/src",
+        },
+      }),
+    ]);
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "parse",
+          code: "planner_tool_name_canonicalized",
+        }),
+        expect.objectContaining({
+          category: "parse",
+          code: "planner_tool_args_canonicalized",
+        }),
+      ]),
+    );
+  });
+
   it("salvages direct planner tool calls into deterministic steps", () => {
     const result = salvagePlannerToolCallsAsPlan([
       {
@@ -2169,6 +2335,11 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
     expect(
       plannerRequestNeedsWorkspaceGroundedArtifactUpdate(
         "Review the codebase layout against Phase1 in PLAN.md and update PLAN.md so it reflects the current workspace state.",
+      ),
+    ).toBe(true);
+    expect(
+      plannerRequestNeedsWorkspaceGroundedArtifactUpdate(
+        "i want you to go through @PLAN.md and make sure that it is a complete plan for a linux shell if there are any gaps in the spec please fix it",
       ),
     ).toBe(true);
     expect(
@@ -3186,4 +3357,153 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
       ]),
     );
   });
+  it("rejects planner-emitted documentation artifact routes when the user never named an artifact", () => {
+    const diagnostics = validatePlannerStepContracts(
+      {
+        reason: "invented_plan_artifact",
+        requiresSynthesis: true,
+        confidence: 0.8,
+        steps: [
+          {
+            name: "review_and_update",
+            stepType: "subagent_task",
+            dependsOn: [],
+            objective: "Review and update the planning document",
+            inputContract: "Current workspace state",
+            acceptanceCriteria: ["Planning document updated"],
+            requiredToolCapabilities: ["system.writeFile", "system.readFile"],
+            contextRequirements: ["repo_context"],
+            executionContext: {
+              workspaceRoot: "/tmp/project",
+              requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+              targetArtifacts: ["/tmp/project/PLAN.md"],
+              effectClass: "filesystem_write",
+              verificationMode: "mutation_required",
+              stepKind: "delegated_write",
+            },
+            maxBudgetHint: "2m",
+            canRunParallel: false,
+          },
+        ],
+        edges: [],
+      },
+      "Build the shell in full and verify it before returning.",
+    );
+
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "planner_unrequested_artifact_route",
+        }),
+      ]),
+    );
+  });
+
+  it("rejects implement-from-artifact plans that ground on a different source artifact than the user requested", () => {
+    const diagnostics = validatePlannerStepContracts(
+      {
+        reason: "wrong_source_artifact",
+        requiresSynthesis: true,
+        confidence: 0.8,
+        steps: [
+          {
+            name: "implement_phase",
+            stepType: "subagent_task",
+            dependsOn: [],
+            objective: "Implement the project from the spec",
+            inputContract: "Spec and workspace are available",
+            acceptanceCriteria: ["Implementation updated"],
+            requiredToolCapabilities: ["system.writeFile", "system.readFile"],
+            contextRequirements: ["repo_context"],
+            executionContext: {
+              workspaceRoot: "/tmp/project",
+              requiredSourceArtifacts: ["/tmp/project/README.md"],
+              targetArtifacts: ["/tmp/project/src/main.ts"],
+              effectClass: "filesystem_write",
+              verificationMode: "mutation_required",
+              stepKind: "delegated_write",
+            },
+            maxBudgetHint: "2m",
+            canRunParallel: false,
+          },
+        ],
+        edges: [],
+      },
+      "Read all of @PLAN.md and complete every single phase in full.",
+    );
+
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "planner_artifact_source_does_not_match_request",
+        }),
+      ]),
+    );
+  });
+
+  it("rejects delegated sidecar artifact plans for explicit single-artifact documentation updates", () => {
+    const workspaceRoot = "/tmp/project";
+    const diagnostics = validatePlannerStepContracts(
+      {
+        reason: "fill_plan_gaps",
+        requiresSynthesis: true,
+        confidence: 0.8,
+        steps: [
+          {
+            name: "read_plan",
+            stepType: "deterministic_tool",
+            tool: "system.readFile",
+            args: {
+              path: `${workspaceRoot}/PLAN.md`,
+            },
+          },
+          {
+            name: "analyze_plan_gaps",
+            stepType: "subagent_task",
+            dependsOn: ["read_plan"],
+            objective: "Analyze PLAN.md and write a findings artifact.",
+            inputContract: "Use PLAN.md as the source of truth.",
+            acceptanceCriteria: ["plan_gaps.md lists the missing sections"],
+            requiredToolCapabilities: ["system.readFile", "system.writeFile"],
+            contextRequirements: ["repo_context"],
+            executionContext: {
+              workspaceRoot,
+              requiredSourceArtifacts: [`${workspaceRoot}/PLAN.md`],
+              targetArtifacts: [`${workspaceRoot}/plan_gaps.md`],
+              effectClass: "filesystem_write",
+              verificationMode: "mutation_required",
+              stepKind: "delegated_write",
+            },
+            maxBudgetHint: "2m",
+            canRunParallel: false,
+          },
+          {
+            name: "fill_plan_gaps",
+            stepType: "deterministic_tool",
+            dependsOn: ["analyze_plan_gaps"],
+            tool: "system.writeFile",
+            args: {
+              path: `${workspaceRoot}/PLAN.md`,
+              content: "updated plan",
+            },
+          },
+        ],
+        edges: [],
+      },
+      "Read @PLAN.md, find any gaps, and fill them.",
+    );
+
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "planner_plan_artifact_direct_owner_required",
+        }),
+        expect.objectContaining({
+          code: "planner_plan_artifact_sidecar_write_forbidden",
+        }),
+      ]),
+    );
+  });
+
+
 });
