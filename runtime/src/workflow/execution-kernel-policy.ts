@@ -72,19 +72,7 @@ function subagentStepAllowsDelegationFallback(
   ) {
     return false;
   }
-  return !step.requiredToolCapabilities.some((capability) => {
-    const normalized = capability.trim().toLowerCase();
-    return (
-      normalized.includes("write") ||
-      normalized.includes("append") ||
-      normalized.includes("delete") ||
-      normalized.includes("move") ||
-      normalized.includes("mkdir") ||
-      normalized.includes("rename") ||
-      normalized.includes("bash") ||
-      normalized.includes("shell")
-    );
-  });
+  return true;
 }
 
 function assessSubagentDependencySatisfaction(

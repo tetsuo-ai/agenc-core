@@ -158,6 +158,12 @@ export function deriveVerificationObligations(
       stepKind,
       targetArtifacts,
     });
+  const allowsGroundedNoop =
+    verificationMode === "conditional_mutation" ||
+    requiredSourceArtifactsCoveredByTargetReads(
+      requiredSourceArtifacts,
+      targetArtifacts,
+    );
 
   return {
     workspaceRoot,
@@ -182,7 +188,7 @@ export function deriveVerificationObligations(
       requiresMutationEvidence ||
       requiredSourceArtifacts.length > 0,
     requiresTargetAuthorization: targetArtifacts.length > 0,
-    allowsGroundedNoop: verificationMode === "conditional_mutation",
+    allowsGroundedNoop,
     placeholdersAllowed,
     partialCompletionAllowed,
   };
@@ -247,6 +253,17 @@ function inferVerificationMode(
     return "grounded_read";
   }
   return "none";
+}
+
+function requiredSourceArtifactsCoveredByTargetReads(
+  requiredSourceArtifacts: readonly string[],
+  targetArtifacts: readonly string[],
+): boolean {
+  if (requiredSourceArtifacts.length === 0 || targetArtifacts.length === 0) {
+    return false;
+  }
+  const targetArtifactSet = new Set(targetArtifacts);
+  return requiredSourceArtifacts.every((artifact) => targetArtifactSet.has(artifact));
 }
 
 function inferPlaceholderTaxonomy(params: {
