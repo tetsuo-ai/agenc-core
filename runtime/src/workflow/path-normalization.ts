@@ -168,6 +168,66 @@ export function normalizeArtifactPaths(
   return normalized;
 }
 
+function isLikelyExplicitArtifactReference(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("@") || trimmed.startsWith("@@")) {
+    return false;
+  }
+  const remainder = trimmed.slice(1).trim();
+  if (remainder.length === 0) {
+    return false;
+  }
+  return remainder.includes("/") || remainder.includes("\\") || remainder.includes(".");
+}
+
+export function resolveExplicitArtifactReferencePath(params: {
+  readonly rawPath: string;
+  readonly workspaceRoot?: string;
+  readonly declaredArtifacts?: readonly string[];
+}): string | undefined {
+  const trimmed = trimPath(params.rawPath);
+  if (!trimmed || !isLikelyExplicitArtifactReference(trimmed)) {
+    return undefined;
+  }
+  const normalizedWorkspaceRoot = normalizeWorkspaceRoot(params.workspaceRoot);
+  if (!normalizedWorkspaceRoot) {
+    return undefined;
+  }
+
+  const remainder = trimmed.slice(1).trim();
+  if (remainder.length === 0) {
+    return undefined;
+  }
+
+  const normalizedCandidate = normalizeArtifactPaths(
+    [remainder],
+    normalizedWorkspaceRoot,
+  )[0];
+  if (!normalizedCandidate) {
+    return undefined;
+  }
+
+  const declaredArtifacts = normalizeArtifactPaths(
+    params.declaredArtifacts ?? [],
+    normalizedWorkspaceRoot,
+  );
+  if (declaredArtifacts.includes(normalizedCandidate)) {
+    return normalizedCandidate;
+  }
+
+  if (
+    isPathWithinRoot(normalizedCandidate, normalizedWorkspaceRoot) &&
+    existsSync(normalizedCandidate)
+  ) {
+    return resolveWorkspaceArtifactPathCase(
+      normalizedCandidate,
+      normalizedWorkspaceRoot,
+    );
+  }
+
+  return undefined;
+}
+
 function resolveWorkspaceArtifactPathCase(
   artifactPath: string,
   workspaceRoot?: string,

@@ -10,6 +10,7 @@ import type {
   ExecutionStepKind,
   ExecutionVerificationMode,
 } from "./execution-envelope.js";
+import { isMutationLikeVerificationMode } from "./execution-envelope.js";
 import { inferCompatibilityCompletionContract } from "./execution-intent.js";
 import { criterionRequiresWorkspaceInspectionVerification } from "./workspace-inspection-evidence.js";
 
@@ -140,11 +141,11 @@ export function deriveVerificationObligations(
     completionContract?.taskClass === "review_required"
       ? false
       : completionContract
-        ? verificationMode === "mutation_required" ||
+        ? isMutationLikeVerificationMode(verificationMode) ||
           stepKind === "delegated_write" ||
           stepKind === "delegated_scaffold" ||
           targetArtifacts.length > 0
-        : verificationMode === "mutation_required" ||
+        : isMutationLikeVerificationMode(verificationMode) ||
           stepKind === "delegated_write" ||
           stepKind === "delegated_scaffold";
   const placeholdersAllowed = completionContract?.placeholdersAllowed ?? false;
@@ -181,7 +182,7 @@ export function deriveVerificationObligations(
       requiresMutationEvidence ||
       requiredSourceArtifacts.length > 0,
     requiresTargetAuthorization: targetArtifacts.length > 0,
-    allowsGroundedNoop: targetArtifacts.length > 0,
+    allowsGroundedNoop: verificationMode === "conditional_mutation",
     placeholdersAllowed,
     partialCompletionAllowed,
   };

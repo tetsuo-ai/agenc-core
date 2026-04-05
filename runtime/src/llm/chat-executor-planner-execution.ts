@@ -12,6 +12,7 @@ import type {
   PipelineResult,
 } from "../workflow/pipeline.js";
 import type { HostToolingProfile } from "../gateway/host-tooling.js";
+import { isMutationLikeVerificationMode } from "../workflow/execution-envelope.js";
 import type { ResolvedDelegationDecisionConfig } from "./delegation-decision.js";
 import {
   computePlannerGraphDepth,
@@ -204,7 +205,7 @@ function shouldBlockPlannerImplementationFallback(
       docOnlyArtifacts &&
       (
         executionContext?.stepKind === "delegated_write" ||
-        executionContext?.verificationMode === "mutation_required" ||
+        isMutationLikeVerificationMode(executionContext?.verificationMode) ||
         executionContext?.effectClass === "filesystem_write" ||
         executionContext?.effectClass === "filesystem_scaffold" ||
         Boolean(executionContext?.completionContract)
@@ -243,7 +244,7 @@ function shouldBlockPlannerImplementationFallback(
     }
 
     return (
-      executionContext?.verificationMode === "mutation_required" ||
+      isMutationLikeVerificationMode(executionContext?.verificationMode) ||
       executionContext?.verificationMode === "deterministic_followup" ||
       executionContext?.stepKind === "delegated_write" ||
       executionContext?.stepKind === "delegated_scaffold" ||
@@ -438,7 +439,7 @@ function plannerHasChildOwnedWriteTarget(
     return plannerPlan.steps.some(
       (step) =>
         step.stepType === "subagent_task" &&
-        step.executionContext?.verificationMode === "mutation_required" &&
+        isMutationLikeVerificationMode(step.executionContext?.verificationMode) &&
         (step.executionContext?.targetArtifacts?.length ?? 0) > 0,
     );
   }
@@ -451,7 +452,7 @@ function plannerHasChildOwnedWriteTarget(
   return plannerPlan.steps.some((step) => {
     if (
       step.stepType !== "subagent_task" ||
-      step.executionContext?.verificationMode !== "mutation_required"
+      !isMutationLikeVerificationMode(step.executionContext?.verificationMode)
     ) {
       return false;
     }
@@ -464,6 +465,53 @@ function plannerHasChildOwnedWriteTarget(
       )
     );
   });
+}
+
+function resolveFailedPlannerStep(
+  plannerPlan: PlannerPlan,
+  failedStep: ExecutionContext["plannerFailedStep"],
+): PlannerPlan["steps"][number] | undefined {
+  if (!failedStep) return undefined;
+  if (typeof failedStep.stepName === "string" && failedStep.stepName.trim().length > 0) {
+    const byName = plannerPlan.steps.find((step) => step.name === failedStep.stepName);
+    if (byName) return byName;
+  }
+  if (typeof failedStep.stepIndex === "number") {
+    return plannerPlan.steps[failedStep.stepIndex];
+  }
+  return undefined;
+}
+
+function failedPlannerStepTargetsChildOwnedWrite(
+  plannerPlan: PlannerPlan,
+  failedStep: ExecutionContext["plannerFailedStep"],
+  requestedWriteTarget: string | undefined,
+): boolean {
+  const step = resolveFailedPlannerStep(plannerPlan, failedStep);
+  if (
+    !step ||
+    step.stepType !== "subagent_task" ||
+    !isMutationLikeVerificationMode(step.executionContext?.verificationMode)
+  ) {
+    return false;
+  }
+  if (!requestedWriteTarget) {
+    return (step.executionContext?.targetArtifacts?.length ?? 0) > 0;
+  }
+  const normalizedTarget = normalizeToolCallTargetPath(requestedWriteTarget);
+  const normalizedRequestedSuffix = requestedWriteTarget
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^[.][/\\]/, "");
+  const requestedBasename = pathBasename(normalizedRequestedSuffix);
+  return (step.executionContext?.targetArtifacts ?? []).some((artifact) =>
+    matchesRequestedArtifactTarget(
+      normalizedTarget,
+      normalizedRequestedSuffix,
+      requestedBasename,
+      artifact,
+    )
+  );
 }
 
 function matchesRequestedArtifactTarget(
@@ -1020,6 +1068,23 @@ export async function executePlannerPath(
               decompositionRetry: canUseDecompositionRetry ? "true" : "false",
             },
           });
+        const retrySubagentSteps = plannerPlan.steps.filter(
+          (step): step is PlannerSubAgentTaskStepIntent =>
+            step.stepType === "subagent_task",
+        );
+        const retryDeterministicSteps = plannerPlan.steps.filter(
+          (step): step is PlannerDeterministicToolStepIntent =>
+            step.stepType === "deterministic_tool",
+        );
+        if (
+          retrySubagentSteps.length > 0 &&
+          shouldBlockPlannerImplementationFallback(
+            retrySubagentSteps,
+            retryDeterministicSteps,
+          )
+        ) {
+          ctx.plannerImplementationFallbackBlocked = true;
+        }
         callbacks.emitPlannerTrace(ctx, "planner_refinement_requested", {
           attempt: plannerAttempt,
           nextAttempt: plannerAttempt + 1,
@@ -1717,32 +1782,59 @@ export async function executePlannerPath(
           plannerPlan,
           requestedWriteTarget,
         );
-        if (
+        const failedChildOwnedWriteTarget =
           childOwnedWriteTarget &&
+          failedPlannerStepTargetsChildOwnedWrite(
+            plannerPlan,
+            ctx.plannerFailedStep,
+            requestedWriteTarget,
+          );
+        const plannerFailureDetail =
+          ctx.plannerFailedStep?.error ??
+          ctx.stopReasonDetail ??
+          pipelineResult.error;
+        if (
+          failedChildOwnedWriteTarget &&
           pipelineResult.status !== "completed" &&
           ctx.stopReason !== "completed"
         ) {
+          const failureDetail =
+            typeof plannerFailureDetail === "string" &&
+            plannerFailureDetail.trim().length > 0
+              ? `Child-owned artifact write failed: ${plannerFailureDetail.trim()}`
+              : "Child-owned artifact write failed verification; inline planner synthesis is disabled for that target.";
           ctx.plannerSummaryState.diagnostics.push({
             category: "runtime",
             code: "planner_synthesis_skipped_child_owned_artifact_failure",
             message:
-              "Planner synthesis was skipped because a child-owned artifact write failed and inline materialization is not authoritative for that target",
+              "Planner synthesis was skipped because the terminal failed step was a child-owned artifact write and inline materialization is not authoritative for that target",
             details: {
-              targetPath: requestedWriteTarget,
+              ...(typeof requestedWriteTarget === "string"
+                ? { targetPath: requestedWriteTarget }
+                : {}),
               pipelineStatus: pipelineResult.status,
               stopReason: ctx.stopReason,
+              ...(typeof ctx.plannerFailedStep?.stepName === "string"
+                ? { failedStepName: ctx.plannerFailedStep.stepName }
+                : {}),
+              ...(typeof ctx.plannerFailedStep?.tool === "string"
+                ? { failedStepTool: ctx.plannerFailedStep.tool }
+                : {}),
             },
           });
+          ctx.plannerTerminalFallback = {
+            kind: "planner_synthesis_fallback",
+            reason: failureDetail,
+          };
           ctx.finalContent = buildPlannerSynthesisFallbackContent(
             plannerPlan,
             pipelineResult,
             verificationDecision,
             verifierRounds,
-            "Child-owned artifact write failed verification; inline planner synthesis is disabled for that target.",
+            failureDetail,
           );
           callbacks.emitPlannerTrace(ctx, "planner_synthesis_fallback_applied", {
-            failureDetail:
-              "Child-owned artifact write failed verification; inline planner synthesis is disabled for that target.",
+            failureDetail,
             completedSteps: pipelineResult.completedSteps,
             totalSteps: pipelineResult.totalSteps,
           });
@@ -1880,6 +1972,10 @@ export async function executePlannerPath(
               completedSteps: pipelineResult.completedSteps,
               totalSteps: pipelineResult.totalSteps,
             });
+            ctx.plannerTerminalFallback = {
+              kind: "planner_synthesis_fallback",
+              reason: failureDetail,
+            };
             ctx.finalContent = buildPlannerSynthesisFallbackContent(
               plannerPlan,
               pipelineResult,

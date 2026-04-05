@@ -32,6 +32,10 @@ const WORKSPACE_ALIGNMENT_RE = new RegExp(
   String.raw`\b(?:reflect(?:s)?|align(?:s)?|match(?:es)?|correspond(?:s)?)\b[\s\S]{0,96}(?:\b(?:current|existing|actual|live|recent)\b[\s\S]{0,48})?(?:${WORKSPACE_TARGET_NOUN_RE.source}|${WORKSPACE_CHANGE_PHRASE_RE.source}|${WORKSPACE_STATE_PHRASE_RE.source})`,
   "i",
 );
+const ARTIFACT_GAP_DISCOVERY_RE =
+  /\b(?:find|identify|review|inspect|analy[sz]e|check|look\s+for|spot|go\s+through|read\s+through)\b[\s\S]{0,140}\b(?:gaps?|missing sections?|missing items?|outdated sections?|outdated items?|inconsistencies)\b|\b(?:if|whether)\s+there\s+(?:are|is)\s+(?:any\s+)?(?:gaps?|missing sections?|missing items?|outdated sections?|outdated items?|inconsistencies)\b/i;
+const ARTIFACT_GAP_REPAIR_RE =
+  /\b(?:fill|add|address|fix|close|resolve|cover|update|correct)\b[\s\S]{0,80}\b(?:them|those|it|the artifact|the file|the document|the plan|the spec|the gaps?|the missing sections?|the missing items?)\b/i;
 const SHELL_WORKSPACE_INSPECTION_COMMAND_RE =
   /\b(?:ls|find|tree|rg|ripgrep|git\s+(?:status|diff|ls-files)|stat)\b/i;
 const DIRECT_WORKSPACE_INSPECTION_TOOL_NAMES = new Set([
@@ -59,7 +63,9 @@ export function textRequiresWorkspaceGroundedArtifactUpdate(
     (WORKSPACE_AUDIT_VERB_RE.test(normalized) &&
       WORKSPACE_AUDIT_TARGET_RE.test(normalized)) ||
     CURRENT_WORKSPACE_STATE_RE.test(normalized) ||
-    WORKSPACE_ALIGNMENT_RE.test(normalized)
+    WORKSPACE_ALIGNMENT_RE.test(normalized) ||
+    (ARTIFACT_GAP_DISCOVERY_RE.test(normalized) &&
+      ARTIFACT_GAP_REPAIR_RE.test(normalized))
   );
 }
 
@@ -145,7 +151,7 @@ function pathExcludedFromWorkspaceInspection(params: {
     );
 }
 
-function collectWorkspaceInspectionPathCandidates(params: {
+export function collectWorkspaceInspectionPathCandidates(params: {
   readonly toolCall: ToolCallLike;
   readonly workspaceRoot?: string;
 }): readonly string[] {
@@ -157,7 +163,52 @@ function collectWorkspaceInspectionPathCandidates(params: {
   pushPathCandidate(candidates, args.destination, params.workspaceRoot);
   pushPathCandidate(candidates, args.cwd, params.workspaceRoot);
   pushPathCandidate(candidates, parsedResult?.path, params.workspaceRoot);
+  if (
+    SHELL_WORKSPACE_INSPECTION_TOOL_NAMES.has(params.toolCall.name?.trim() ?? "")
+  ) {
+    for (const pathCandidate of extractShellWorkspaceInspectionPathCandidates(args)) {
+      pushPathCandidate(candidates, pathCandidate, params.workspaceRoot);
+    }
+  }
   return [...candidates];
+}
+
+function extractShellWorkspaceInspectionPathCandidates(
+  args: Record<string, unknown>,
+): readonly string[] {
+  const command =
+    typeof args.command === "string" ? args.command.trim().toLowerCase() : "";
+  const argv = Array.isArray(args.args)
+    ? args.args.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  if (argv.length === 0) {
+    return [];
+  }
+
+  if (command === "ls" || command === "tree" || command === "stat") {
+    return argv.filter((entry) => isShellPathOperand(entry));
+  }
+
+  if (command === "find") {
+    const firstPathOperand = argv.find((entry) => isShellPathOperand(entry));
+    return firstPathOperand ? [firstPathOperand] : [];
+  }
+
+  return [];
+}
+
+function isShellPathOperand(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return false;
+  }
+  if (trimmed.startsWith("-")) {
+    return false;
+  }
+  if (/[|&;<>(){}\[\]*?=]/.test(trimmed)) {
+    return false;
+  }
+  return true;
 }
 
 function isMeaningfulInspectionPath(params: {

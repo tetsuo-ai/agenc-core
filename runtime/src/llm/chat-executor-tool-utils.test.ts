@@ -153,6 +153,25 @@ describe("chat-executor-tool-utils", () => {
   });
 
   describe("normalizeToolCallArguments", () => {
+    it("canonicalizes aliased filesystem argument names before execution", () => {
+      expect(
+        normalizeToolCallArguments("system.readFile", {
+          filePath: "/workspace/PLAN.md",
+        }),
+      ).toEqual({
+        path: "/workspace/PLAN.md",
+      });
+      expect(
+        normalizeToolCallArguments("system.writeFile", {
+          filePath: "/workspace/PLAN.md",
+          text: "updated",
+        }),
+      ).toEqual({
+        path: "/workspace/PLAN.md",
+        content: "updated",
+      });
+    });
+
     it("normalizes Doom launch args before execution", () => {
       expect(
         normalizeToolCallArguments("mcp.doom.start_game", {

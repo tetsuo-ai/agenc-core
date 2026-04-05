@@ -170,6 +170,58 @@ describe("verification-contract", () => {
     });
   });
 
+  it("accepts conditional documentation updates as grounded no-ops after shell workspace inspection", () => {
+    const decision = validateRuntimeVerificationContract({
+      verificationContract: {
+        workspaceRoot: "/tmp/project",
+        requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+        targetArtifacts: ["/tmp/project/PLAN.md"],
+        verificationMode: "conditional_mutation",
+        acceptanceCriteria: [
+          "PLAN.md reflects the current workspace layout and recent directory changes accurately.",
+        ],
+        completionContract: {
+          taskClass: "artifact_only",
+          placeholdersAllowed: false,
+          partialCompletionAllowed: false,
+          placeholderTaxonomy: "documentation",
+        },
+      },
+      output:
+        "No updates to /tmp/project/PLAN.md are required; it already reflects the current workspace layout accurately.",
+      toolCalls: [
+        {
+          name: "system.readFile",
+          args: { path: "/tmp/project/PLAN.md" },
+          result: JSON.stringify({
+            path: "/tmp/project/PLAN.md",
+            content: "# PLAN\n",
+          }),
+          isError: false,
+        },
+        {
+          name: "system.bash",
+          args: {
+            command: "ls",
+            args: ["-la", "/tmp/project/src"],
+          },
+          result: JSON.stringify({ stdout: "shell.c\nparser.c\n" }),
+          isError: false,
+        },
+      ],
+    });
+
+    expect(decision).toMatchObject({
+      ok: true,
+      channels: expect.arrayContaining([
+        expect.objectContaining({
+          channel: "artifact_state",
+          ok: true,
+        }),
+      ]),
+    });
+  });
+
   it("accepts documentation rewrites that inherit verified workspace grounding from upstream dependencies", () => {
     const decision = validateRuntimeVerificationContract({
       verificationContract: {

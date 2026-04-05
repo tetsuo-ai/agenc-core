@@ -112,6 +112,7 @@ import { areDocumentationOnlyArtifacts } from "../workflow/artifact-paths.js";
 import {
   canonicalizeWorkflowArtifactRelations,
   canonicalizeWorkflowStepRole,
+  isMutationLikeVerificationMode,
   type WorkflowArtifactRelation,
   type WorkflowStepRole,
 } from "../workflow/execution-envelope.js";
@@ -862,7 +863,7 @@ export function buildPlannerMessages(
         `        "requiredSourceArtifacts": ["${schemaPlanArtifact}"],\n` +
         `        "targetArtifacts": ["${schemaTargetArtifact}"],\n` +
         '        "effectClass": "read_only|filesystem_write|filesystem_scaffold|shell|mixed",\n' +
-        '        "verificationMode": "none|grounded_read|mutation_required|deterministic_followup",\n' +
+        '        "verificationMode": "none|grounded_read|conditional_mutation|mutation_required|deterministic_followup",\n' +
         '        "stepKind": "delegated_research|delegated_review|delegated_write|delegated_scaffold|delegated_validation",\n' +
         '        "role": "reviewer|writer|validator|researcher|synthesizer",\n' +
         '        "artifactRelations": [{"relationType":"read_dependency|write_owner|verification_subject|context_input|handoff_artifact","artifactPath":"/absolute/or/workspace-relative/path"}],\n' +
@@ -1154,6 +1155,7 @@ export function buildPlannerStructuredOutputRequest(): LLMStructuredOutputReques
                           enum: [
                             "none",
                             "grounded_read",
+                            "conditional_mutation",
                             "mutation_required",
                             "deterministic_followup",
                           ],
@@ -1281,10 +1283,8 @@ const PLANNER_EXPLICIT_ARTIFACT_BARE_RE =
   /\b((?:\/{1}|\.\/?|\.\.\/)?[A-Za-z0-9._\/-]+\.[A-Za-z0-9._-]+|(?:Makefile|Dockerfile|CMakeLists\.txt|README(?:\.[A-Za-z0-9._-]+)?|CHANGELOG(?:\.[A-Za-z0-9._-]+)?|CONTRIBUTING(?:\.[A-Za-z0-9._-]+)?|LICENSE(?:\.[A-Za-z0-9._-]+)?|COPYING(?:\.[A-Za-z0-9._-]+)?|AGENTS\.md|CLAUDE\.md|TODO(?:\.[A-Za-z0-9._-]+)?))\b/gi;
 const PLANNER_EXPLICIT_ARTIFACT_SPECIAL_BASENAME_RE =
   /^(?:Makefile|Dockerfile|CMakeLists\.txt|README(?:\.[A-Za-z0-9._-]+)?|CHANGELOG(?:\.[A-Za-z0-9._-]+)?|CONTRIBUTING(?:\.[A-Za-z0-9._-]+)?|LICENSE(?:\.[A-Za-z0-9._-]+)?|COPYING(?:\.[A-Za-z0-9._-]+)?|AGENTS\.md|CLAUDE\.md|TODO(?:\.[A-Za-z0-9._-]+)?)$/i;
-const PLANNER_PLAN_ARTIFACT_SOURCE_CUE_RE =
-  /\b(?:read|review|inspect|use|follow|based on|source of truth|go through)\b/i;
-const PLANNER_PLAN_ARTIFACT_EXECUTION_CUE_RE =
-  /\b(?:implement|execute|complete|finish|carry\s+out|apply|fix|repair|refactor|ship)\b/i;
+const PLANNER_ARTIFACT_FILE_EXTENSION_RE =
+  /^(?:c|cc|cpp|cxx|h|hpp|m|mm|rs|go|py|rb|php|java|kt|swift|cs|js|jsx|ts|tsx|json|toml|yaml|yml|xml|sh|zsh|bash|md|txt|rst|adoc|html|css|scss|less|sql|csv|tsv|ini|cfg|conf|env|lock)$/i;
 const PLANNER_PLAN_ARTIFACT_PHASE_CUE_RE =
   /\b(?:phase|step|task|item)s?\b/i;
 const PLANNER_PLAN_ARTIFACT_EDIT_CUE_RE =
@@ -2081,6 +2081,124 @@ export function applyRuntimePlannerBudgetClamp(
   };
 }
 
+const PLANNER_TOOL_NAME_ALIASES = new Map<string, string>([
+  ["system.listDirectory", "system.listDir"],
+]);
+
+const PLANNER_TOOL_ARG_ALIASES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  "system.readFile": { filePath: "path" },
+  "system.listDir": { filePath: "path", dirPath: "path", directoryPath: "path" },
+  "system.writeFile": { filePath: "path", text: "content", contents: "content", body: "content" },
+  "system.appendFile": { filePath: "path", text: "content", contents: "content", body: "content" },
+  "system.mkdir": { filePath: "path", dirPath: "path", directoryPath: "path" },
+  "system.delete": { filePath: "path", targetPath: "path" },
+  "system.move": {
+    sourcePath: "source",
+    from: "source",
+    destinationPath: "destination",
+    destPath: "destination",
+    to: "destination",
+  },
+};
+
+function canonicalizePlannerToolName(params: {
+  readonly toolName: string;
+  readonly stepIndex: number;
+  readonly stepName: string;
+  readonly diagnostics: PlannerDiagnostic[];
+}): string {
+  const canonicalToolName = PLANNER_TOOL_NAME_ALIASES.get(params.toolName);
+  if (!canonicalToolName) {
+    return params.toolName;
+  }
+  params.diagnostics.push(
+    createPlannerDiagnostic(
+      "parse",
+      "planner_tool_name_canonicalized",
+      `Planner step "${params.stepName}" referenced legacy tool "${params.toolName}"; canonicalizing to "${canonicalToolName}"`,
+      {
+        stepIndex: params.stepIndex,
+        stepName: params.stepName,
+        from: params.toolName,
+        to: canonicalToolName,
+      },
+    ),
+  );
+  return canonicalToolName;
+}
+
+function canonicalizeDeterministicPlannerToolArgs(params: {
+  readonly args: Record<string, unknown>;
+  readonly stepIndex: number;
+  readonly stepName: string;
+  readonly toolName: string;
+  readonly diagnostics: PlannerDiagnostic[];
+}): Record<string, unknown> | undefined {
+  const aliasMap = PLANNER_TOOL_ARG_ALIASES[params.toolName];
+  if (!aliasMap) {
+    return params.args;
+  }
+
+  let args = params.args;
+  const canonicalizedFields: string[] = [];
+  for (const [alias, canonical] of Object.entries(aliasMap)) {
+    if (!Object.prototype.hasOwnProperty.call(args, alias)) continue;
+    const aliasValue = args[alias];
+    if (aliasValue === undefined) continue;
+
+    if (Object.prototype.hasOwnProperty.call(args, canonical)) {
+      if (safeStringify(args[canonical]) !== safeStringify(aliasValue)) {
+        params.diagnostics.push(
+          createPlannerDiagnostic(
+            "parse",
+            "planner_tool_arg_alias_conflict",
+            `Planner step "${params.stepName}" has conflicting tool arguments "${alias}" and "${canonical}"`,
+            {
+              stepIndex: params.stepIndex,
+              stepName: params.stepName,
+              tool: params.toolName,
+              alias,
+              canonical,
+            },
+          ),
+        );
+        return undefined;
+      }
+      if (args === params.args) {
+        args = { ...params.args };
+      }
+      delete args[alias];
+      canonicalizedFields.push(`${alias}->${canonical}`);
+      continue;
+    }
+
+    if (args === params.args) {
+      args = { ...params.args };
+    }
+    args[canonical] = aliasValue;
+    delete args[alias];
+    canonicalizedFields.push(`${alias}->${canonical}`);
+  }
+
+  if (canonicalizedFields.length > 0) {
+    params.diagnostics.push(
+      createPlannerDiagnostic(
+        "parse",
+        "planner_tool_args_canonicalized",
+        `Planner step "${params.stepName}" used aliased tool argument names; canonicalizing them for runtime execution`,
+        {
+          stepIndex: params.stepIndex,
+          stepName: params.stepName,
+          tool: params.toolName,
+          canonicalizedFields: canonicalizedFields.join(","),
+        },
+      ),
+    );
+  }
+
+  return args;
+}
+
 function normalizeDeterministicPlannerToolArgs(params: {
   readonly step: Record<string, unknown>;
   readonly stepIndex: number;
@@ -2157,6 +2275,18 @@ function normalizeDeterministicPlannerToolArgs(params: {
       ),
     );
   }
+
+  const canonicalArgs = canonicalizeDeterministicPlannerToolArgs({
+    args,
+    stepIndex,
+    stepName,
+    toolName,
+    diagnostics,
+  });
+  if (!canonicalArgs) {
+    return undefined;
+  }
+  args = canonicalArgs;
 
   if (PLANNER_BASH_TOOL_NAMES.has(toolName)) {
     const command =
@@ -2336,18 +2466,24 @@ export function parsePlannerPlan(
         );
         return { diagnostics };
       }
+      const toolName = canonicalizePlannerToolName({
+        toolName: step.tool.trim(),
+        stepIndex: index,
+        stepName: safeName,
+        diagnostics,
+      });
       const args = normalizeDeterministicPlannerToolArgs({
         step,
         stepIndex: index,
         stepName: safeName,
-        toolName: step.tool.trim(),
+        toolName,
         diagnostics,
       });
       if (!args) {
         return { diagnostics };
       }
       const placeholderArg = findPlannerDeterministicToolArgPlaceholder({
-        toolName: step.tool.trim(),
+        toolName,
         args,
       });
       if (placeholderArg) {
@@ -2379,7 +2515,7 @@ export function parsePlannerPlan(
       steps.push({
         name: safeName,
         stepType,
-        tool: step.tool.trim(),
+        tool: toolName,
         args,
         onError,
         maxRetries,
@@ -2727,9 +2863,9 @@ export function salvagePlannerToolCallsAsPlan(
 
   const steps: PlannerStepIntent[] = [];
   for (const [index, toolCall] of toolCalls.entries()) {
-    const toolName =
+    const rawToolName =
       typeof toolCall.name === "string" ? toolCall.name.trim() : "";
-    if (toolName.length === 0) {
+    if (rawToolName.length === 0) {
       diagnostics.push(
         createPlannerDiagnostic(
           "parse",
@@ -2740,8 +2876,17 @@ export function salvagePlannerToolCallsAsPlan(
       );
       return { diagnostics };
     }
-    const args = parsePlannerToolCallArguments(toolCall.arguments);
-    if (!args) {
+    const stepName = sanitizePlannerStepName(
+      `${rawToolName.replace(/[^A-Za-z0-9_-]+/g, "_")}_${index + 1}`,
+    );
+    const toolName = canonicalizePlannerToolName({
+      toolName: rawToolName,
+      stepIndex: index,
+      stepName,
+      diagnostics,
+    });
+    const parsedArgs = parsePlannerToolCallArguments(toolCall.arguments);
+    if (!parsedArgs) {
       diagnostics.push(
         createPlannerDiagnostic(
           "parse",
@@ -2752,10 +2897,18 @@ export function salvagePlannerToolCallsAsPlan(
       );
       return { diagnostics };
     }
+    const args = canonicalizeDeterministicPlannerToolArgs({
+      args: parsedArgs,
+      stepIndex: index,
+      stepName,
+      toolName,
+      diagnostics,
+    });
+    if (!args) {
+      return { diagnostics };
+    }
     steps.push({
-      name: sanitizePlannerStepName(
-        `${toolName.replace(/[^A-Za-z0-9_-]+/g, "_")}_${index + 1}`,
-      ),
+      name: stepName,
       stepType: "deterministic_tool",
       tool: toolName,
       args,
@@ -3085,7 +3238,9 @@ function collectPlannerStepScopedPaths(
     const candidateValues = [
       step.args.path,
       step.args.sourcePath,
+      step.args.source,
       step.args.destinationPath,
+      step.args.destination,
       step.args.cwd,
     ];
     for (const value of candidateValues) {
@@ -3129,7 +3284,9 @@ function collectPlannerStepDeclaredEcosystems(
     const pathValues = [
       step.args.path,
       step.args.sourcePath,
+      step.args.source,
       step.args.destinationPath,
+      step.args.destination,
       step.args.cwd,
     ];
     for (const value of pathValues) {
@@ -4083,14 +4240,22 @@ function isExplicitPlannerArtifactCandidate(target: string): boolean {
   if (normalized.length === 0) {
     return false;
   }
-  return (
+  const basename = pathBasename(normalized);
+  if (
     normalized.startsWith("/") ||
     normalized.startsWith("./") ||
     normalized.startsWith("../") ||
-    normalized.includes("/") ||
-    /\.[a-z0-9._-]+$/i.test(pathBasename(normalized)) ||
-    PLANNER_EXPLICIT_ARTIFACT_SPECIAL_BASENAME_RE.test(pathBasename(normalized))
-  );
+    normalized.includes("/")
+  ) {
+    return true;
+  }
+  if (PLANNER_EXPLICIT_ARTIFACT_SPECIAL_BASENAME_RE.test(basename)) {
+    return true;
+  }
+  const extension = basename.includes(".")
+    ? basename.slice(basename.lastIndexOf(".") + 1)
+    : "";
+  return extension.length > 0 && PLANNER_ARTIFACT_FILE_EXTENSION_RE.test(extension);
 }
 
 export function extractPlannerArtifactTargets(
@@ -4130,6 +4295,45 @@ export function extractPlannerArtifactTargets(
   }
 
   return [...targets];
+}
+
+function escapePlannerArtifactRegexLiteral(value: string): string {
+  return value.replace(/[.*+?^\${}()|[\]\\]/g, "\\$&");
+}
+function plannerArtifactMentionHasSourceCue(
+  messageText: string,
+  target: string,
+): boolean {
+  const escapedTarget = escapePlannerArtifactRegexLiteral(target);
+  const wrappedTarget = `(?:@|[\`'"])?${escapedTarget}(?:[\`'"])?`;
+  const sourceCueBeforeTarget = new RegExp(
+    String.raw`\b(?:read|review|inspect|use|follow|based on|source of truth|go through|from)\b[\s\S]{0,80}?${wrappedTarget}`,
+    "i",
+  );
+  const sourceCueAfterTarget = new RegExp(
+    String.raw`${wrappedTarget}[\s\S]{0,80}?\b(?:source of truth|for guidance|as guidance|as the spec|as the source)\b`,
+    "i",
+  );
+  const implementationCueBeforeTarget = new RegExp(
+    String.raw`\b(?:implement|execute|complete|finish|carry\s+out|apply|fix|repair|refactor|ship)\b[\s\S]{0,80}?\b(?:in|from|using|following|per|according to)\b[\s\S]{0,32}?${wrappedTarget}`,
+    "i",
+  );
+  return (
+    sourceCueBeforeTarget.test(messageText) ||
+    sourceCueAfterTarget.test(messageText) ||
+    implementationCueBeforeTarget.test(messageText)
+  );
+}
+export function extractPlannerSourceArtifactTargets(
+  messageText: string,
+): readonly string[] {
+  const explicitTargets = extractPlannerArtifactTargets(messageText);
+  if (explicitTargets.length === 0) {
+    return [];
+  }
+  return explicitTargets.filter((target) =>
+    plannerArtifactMentionHasSourceCue(messageText, target)
+  );
 }
 
 function plannerRequestGroundedPlanArtifactIntent(
@@ -4182,10 +4386,8 @@ export function classifyPlannerPlanArtifactIntent(
   if (explicitArtifactTargets.length === 0) {
     return "none";
   }
-
-  if (plannerRequestGroundedPlanArtifactIntent(normalized, explicitArtifactTargets)) {
-    return "grounded_plan_generation";
-  }
+  const explicitSourceArtifactTargets =
+    extractPlannerSourceArtifactTargets(normalized);
 
   const isReviewQuestion =
     /\b(?:are there|is there|is it|does it|do we|can you review|read through|look at|check|analyze|evaluate|assess)\b/i.test(normalized) &&
@@ -4195,6 +4397,30 @@ export function classifyPlannerPlanArtifactIntent(
   }
 
   const signals = collectPlannerRequestSignals(normalized, []);
+  const hasArtifactGapClosureCue =
+    /\b(?:fill|add|address|fix|close|resolve|cover|patch|update|correct)\b[\s\S]{0,120}\b(?:issues?|gaps?|problems?|inconsistencies|missing(?:\s+(?:sections?|items?|pieces?|details?|content))?|outdated(?:\s+(?:sections?|items?|content))?)\b/i.test(
+      normalized,
+    ) ||
+    (/\b(?:find|identify|review|inspect|analy(?:s|z)e|check|look\s+for|spot|go\s+through|read\s+through)\b[\s\S]{0,140}\b(?:issues?|gaps?|problems?|inconsistencies|missing(?:\s+(?:sections?|items?|pieces?|details?|content))?|outdated(?:\s+(?:sections?|items?|content))?)\b/i.test(
+      normalized,
+    ) &&
+      /\b(?:fill|add|address|fix|close|resolve|cover|update|correct)\b[\s\S]{0,120}\b(?:them|those|it|whatever\s+is\s+missing|what\s+is\s+missing|the artifact|the file|the document|the plan|the spec|the issues?|the gaps?|the problems?|the missing(?:\s+(?:sections?|items?|pieces?|details?|content))?)\b/i.test(
+        normalized,
+      ));
+  const hasArtifactEditCue =
+    PLANNER_PLAN_ARTIFACT_EDIT_CUE_RE.test(normalized) ||
+    hasArtifactGapClosureCue ||
+    /\b(?:make|keep)\b[\s\S]{0,80}\b(?:perfect|complete|consistent|correct)\b/i.test(
+      normalized,
+    );
+  if (hasArtifactEditCue) {
+    return "edit_artifact";
+  }
+
+  if (plannerRequestGroundedPlanArtifactIntent(normalized, explicitArtifactTargets)) {
+    return "grounded_plan_generation";
+  }
+
   const hasImplementationExecutionVerb =
     /\b(?:implement|execute|finish|carry\s+out|apply|fix|repair|refactor|ship)\b/i.test(
       normalized,
@@ -4205,8 +4431,9 @@ export function classifyPlannerPlanArtifactIntent(
         PLANNER_PLAN_ARTIFACT_IMPLEMENTATION_CUE_RE.test(normalized) ||
         /\bevery\s+single\s+phase\b/i.test(normalized)
       ));
-  const hasArtifactSourceCue = PLANNER_PLAN_ARTIFACT_SOURCE_CUE_RE.test(normalized);
+  const hasArtifactSourceCue = explicitSourceArtifactTargets.length > 0;
   const hasImplementationFromArtifactCue =
+    explicitSourceArtifactTargets.length > 0 &&
     hasImplementationExecutionVerb &&
     (
       hasArtifactSourceCue ||
@@ -4219,18 +4446,6 @@ export function classifyPlannerPlanArtifactIntent(
     );
   if (hasImplementationFromArtifactCue) {
     return "implement_from_artifact";
-  }
-
-  const hasArtifactEditCue =
-    PLANNER_PLAN_ARTIFACT_EDIT_CUE_RE.test(normalized) ||
-    /\b(?:fill|add)\b[\s\S]{0,80}\b(?:gaps?|missing sections?|missing items?)\b/i.test(
-      normalized,
-    ) ||
-    /\b(?:make|keep)\b[\s\S]{0,80}\b(?:perfect|complete|consistent|correct)\b/i.test(
-      normalized,
-    );
-  if (hasArtifactEditCue) {
-    return "edit_artifact";
   }
 
   return "none";
@@ -4402,7 +4617,7 @@ function plannerStepHasMutableImplementationAuthority(
     return true;
   }
   return (
-    executionContext?.verificationMode === "mutation_required" ||
+    isMutationLikeVerificationMode(executionContext?.verificationMode) ||
     executionContext?.stepKind === "delegated_write" ||
     executionContext?.stepKind === "delegated_scaffold" ||
     executionContext?.effectClass === "filesystem_write" ||
@@ -4535,8 +4750,14 @@ function collectPlannerReferencedArtifacts(
   for (const step of plannerPlan.steps) {
     if (step.stepType === "deterministic_tool") {
       const candidateValues = scope === "source"
-        ? [step.args.path, step.args.sourcePath]
-        : [step.args.path, step.args.sourcePath, step.args.destinationPath];
+        ? [step.args.path, step.args.sourcePath, step.args.source]
+        : [
+            step.args.path,
+            step.args.sourcePath,
+            step.args.source,
+            step.args.destinationPath,
+            step.args.destination,
+          ];
       for (const value of candidateValues) {
         if (typeof value === "string") {
           addArtifact(value);
@@ -4591,9 +4812,13 @@ function validatePlannerArtifactAuthority(
   const referencedDocumentationArtifacts = referencedArtifacts.filter((artifact) =>
     areDocumentationOnlyArtifacts([artifact])
   );
+  const referencedNonDocumentationArtifacts = referencedArtifacts.filter((artifact) =>
+    !areDocumentationOnlyArtifacts([artifact])
+  );
   if (
     requestedArtifactTargets.length === 0 &&
-    referencedDocumentationArtifacts.length > 0
+    referencedDocumentationArtifacts.length > 0 &&
+    referencedNonDocumentationArtifacts.length === 0
   ) {
     return [
       createPlannerDiagnostic(
@@ -4632,10 +4857,12 @@ function validatePlannerArtifactAuthority(
   }
 
   if (artifactIntent === "implement_from_artifact") {
+    const requestedSourceArtifacts = extractPlannerSourceArtifactTargets(messageText);
     const sourceArtifacts = collectPlannerReferencedArtifacts(plannerPlan, "source");
     if (
+      requestedSourceArtifacts.length === 0 ||
       sourceArtifacts.length === 0 ||
-      !plannerArtifactTargetsOverlap(requestedArtifactTargets, sourceArtifacts)
+      !plannerArtifactTargetsOverlap(requestedSourceArtifacts, sourceArtifacts)
     ) {
       return [
         createPlannerDiagnostic(
@@ -4643,7 +4870,7 @@ function validatePlannerArtifactAuthority(
           "planner_artifact_source_does_not_match_request",
           "Implement-from-artifact plan must ground on the explicit source artifact requested by the user before mutating other artifacts",
           {
-            requestedArtifacts: requestedArtifactTargets.join(","),
+            requestedArtifacts: requestedSourceArtifacts.join(","),
             plannerSourceArtifacts: sourceArtifacts.join(","),
           },
         ),
@@ -4698,6 +4925,45 @@ function validatePlannerPlanArtifactExecutionOwnership(
   }
 
   return diagnostics;
+}
+
+function collectPlannerWritableArtifactTargets(
+  plannerPlan: PlannerPlan,
+): readonly string[] {
+  const targets = new Set<string>();
+  const addTarget = (value: string | undefined): void => {
+    if (typeof value !== "string") {
+      return;
+    }
+    const normalized = normalizePlannerArtifactTarget(value);
+    if (normalized.length === 0) {
+      return;
+    }
+    targets.add(normalized);
+  };
+
+  for (const step of plannerPlan.steps) {
+    if (
+      step.stepType === "deterministic_tool" &&
+      (step.tool === "system.writeFile" ||
+        step.tool === "system.appendFile" ||
+        step.tool === "desktop.text_editor")
+    ) {
+      addTarget(typeof step.args.path === "string" ? step.args.path : undefined);
+      continue;
+    }
+    if (step.stepType !== "subagent_task") {
+      continue;
+    }
+    if (!plannerStepHasMutableImplementationAuthority(step)) {
+      continue;
+    }
+    for (const artifactPath of step.executionContext?.targetArtifacts ?? []) {
+      addTarget(artifactPath);
+    }
+  }
+
+  return [...targets];
 }
 
 function validatePlannerPlanArtifactSteps(
@@ -4799,6 +5065,53 @@ function validatePlannerPlanArtifactSteps(
       );
     }
   }
+
+  const directOwnerArtifactUpdate =
+    typeof messageText === "string" &&
+    requestedArtifactTargets.length === 1 &&
+    areDocumentationOnlyArtifacts(requestedArtifactTargets) &&
+    classifyPlannerPlanArtifactIntent(messageText) === "edit_artifact" &&
+    !requestExplicitlyRequestsDelegation(messageText) &&
+    !extractExplicitSubagentOrchestrationRequirements(messageText);
+
+  if (directOwnerArtifactUpdate) {
+    const subagentSteps = plannerPlan.steps.filter(
+      (step): step is PlannerSubAgentTaskStepIntent =>
+        step.stepType === "subagent_task",
+    );
+    if (subagentSteps.length > 0) {
+      diagnostics.push(
+        createPlannerDiagnostic(
+          "validation",
+          "planner_plan_artifact_direct_owner_required",
+          "Explicit single-artifact documentation updates must stay on the direct owner path unless the user explicitly requests delegation",
+          {
+            requestedArtifacts: requestedArtifactTargets.join(","),
+            stepNames: subagentSteps.map((step) => step.name).join(","),
+          },
+        ),
+      );
+    }
+
+    const unexpectedWriteTargets = collectPlannerWritableArtifactTargets(plannerPlan)
+      .filter((artifactPath) =>
+        !plannerPathTargetsRequestedArtifact(artifactPath, requestedArtifactTargets)
+      );
+    if (unexpectedWriteTargets.length > 0) {
+      diagnostics.push(
+        createPlannerDiagnostic(
+          "validation",
+          "planner_plan_artifact_sidecar_write_forbidden",
+          "Explicit single-artifact documentation updates must not create or mutate sidecar artifacts unless the user explicitly asked for them",
+          {
+            requestedArtifacts: requestedArtifactTargets.join(","),
+            unexpectedWriteTargets: unexpectedWriteTargets.join(","),
+          },
+        ),
+      );
+    }
+  }
+
   return diagnostics;
 }
 
@@ -4859,6 +5172,17 @@ export function buildPlannerStepContractRefinementHint(
         diagnostic.code === "planner_plan_artifact_needs_grounding_step"
       ) {
         return "for substantial software planning-artifact requests, do not jump straight to the final artifact materialization step; add at least one grounding or decomposition step before the final artifact write";
+      }
+      if (diagnostic.code === "planner_plan_artifact_direct_owner_required") {
+        return (
+          "for explicit single-artifact documentation updates, keep the work on the direct owner path. " +
+          "Do not decompose into subagent_task steps unless the user explicitly requested multi-agent review or delegation"
+        );
+      }
+      if (diagnostic.code === "planner_plan_artifact_sidecar_write_forbidden") {
+        return (
+          "when the user names one artifact to update, mutate that artifact directly and do not create sidecar findings files or alternate write targets unless the user explicitly asked for them"
+        );
       }
       if (diagnostic.code === "planner_plan_artifact_missing_workspace_grounding") {
         return (
@@ -6344,7 +6668,9 @@ export function buildPlannerSynthesisFallbackContent(
       .filter((value): value is string => value !== null),
   ];
   const lines = [
-    "Completed the requested workflow, but the final synthesis model call failed. Returning a deterministic summary from executed steps.",
+    pipelineResult.status === "completed"
+      ? "Completed the requested workflow, but the final synthesis model call failed. Returning a deterministic summary from executed steps."
+      : "The requested workflow did not complete. Returning a deterministic summary from executed steps before the failure.",
     `Workflow status: ${pipelineResult.completedSteps}/${pipelineResult.totalSteps} steps completed.`,
     deterministicSteps.length > 0
       ? `Deterministic steps: ${deterministicSteps.join(", ")}`

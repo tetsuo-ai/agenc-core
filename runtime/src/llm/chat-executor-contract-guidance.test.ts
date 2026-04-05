@@ -1203,4 +1203,101 @@ describe("chat-executor-contract-guidance", () => {
     });
   });
 
+  it("stages explicit single-artifact updates through read, grounding, then target-only mutation", () => {
+    const artifactTaskContract = {
+      targetArtifacts: ["/tmp/project/PLAN.md"],
+      sourceArtifacts: ["/tmp/project/PLAN.md"],
+      workspaceRoot: "/tmp/project",
+      operationMode: "update_in_place",
+      groundingMode: "artifact_plus_workspace",
+      delegationPolicy: "direct_owner",
+      allowedToolNames: ["system.readFile", "system.listDir", "system.writeFile"],
+      displayTargetArtifact: "/tmp/project/PLAN.md",
+      artifactKind: "documentation",
+      acceptanceCriteria: ["PLAN.md is updated in place."],
+    } as const;
+
+    const initial = resolveToolContractGuidance({
+      phase: "initial",
+      messageText: "Read @PLAN.md, find any gaps, and fill them.",
+      toolCalls: [],
+      allowedToolNames: ["system.readFile", "system.listDir", "system.writeFile"],
+      requiredToolEvidence: {
+        artifactTaskContract,
+      },
+    });
+    expect(initial).toEqual({
+      source: "artifact-task",
+      runtimeInstruction:
+        "This is an explicit in-place artifact update for /tmp/project/PLAN.md. Start by reading that target artifact. " +
+        "Do not create sidecar analysis files, and do not implement what the document describes.",
+      routedToolNames: ["system.readFile"],
+      persistRoutedToolNames: false,
+      toolChoice: "required",
+      enforcement: {
+        mode: "block_other_tools",
+        message:
+          "Read /tmp/project/PLAN.md first before using other tools for this artifact update.",
+      },
+    });
+
+    const afterRead = resolveToolContractGuidance({
+      phase: "tool_followup",
+      messageText: "Read @PLAN.md, find any gaps, and fill them.",
+      toolCalls: [
+        makeToolCall({
+          name: "system.readFile",
+          args: { path: "/tmp/project/PLAN.md" },
+        }),
+      ],
+      allowedToolNames: ["system.readFile", "system.listDir", "system.writeFile"],
+      requiredToolEvidence: {
+        artifactTaskContract,
+      },
+    });
+    expect(afterRead).toEqual({
+      source: "artifact-task",
+      runtimeInstruction:
+        "Ground the requested update for /tmp/project/PLAN.md against the current workspace before editing it. " +
+        "Inspect the actual workspace structure and referenced source-of-truth files. Do not invent sidecar artifacts or implementation work.",
+      routedToolNames: ["system.listDir", "system.readFile"],
+      persistRoutedToolNames: false,
+      toolChoice: "required",
+      enforcement: {
+        mode: "block_other_tools",
+        message:
+          "Complete a bounded workspace inspection before mutating the requested artifact.",
+      },
+    });
+
+    const afterGrounding = resolveToolContractGuidance({
+      phase: "tool_followup",
+      messageText: "Read @PLAN.md, find any gaps, and fill them.",
+      toolCalls: [
+        makeToolCall({
+          name: "system.readFile",
+          args: { path: "/tmp/project/PLAN.md" },
+        }),
+        makeToolCall({
+          name: "system.listDir",
+          args: { path: "/tmp/project" },
+          result: JSON.stringify({ path: "/tmp/project", entries: ["src", "tests"] }),
+        }),
+      ],
+      allowedToolNames: ["system.readFile", "system.listDir", "system.writeFile"],
+      requiredToolEvidence: {
+        artifactTaskContract,
+      },
+    });
+    expect(afterGrounding).toEqual({
+      source: "artifact-task",
+      runtimeInstruction:
+        "Apply any needed updates directly to /tmp/project/PLAN.md. " +
+        "Only mutate that named artifact. Do not create scratch files or implement the document contents. If grounded inspection proves the artifact is already correct, report that explicitly instead of fabricating edits.",
+      routedToolNames: ["system.writeFile"],
+      persistRoutedToolNames: false,
+      toolChoice: "auto",
+    });
+  });
+
 });

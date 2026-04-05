@@ -59,6 +59,7 @@ import { canonicalizeExecutionStepKind } from "../workflow/execution-intent.js";
 import {
   canonicalizeWorkflowArtifactRelations,
   collectWorkflowArtifactRelationPaths,
+  isMutationLikeVerificationMode,
   type WorkflowStepRole,
 } from "../workflow/execution-envelope.js";
 import {
@@ -1450,8 +1451,8 @@ function selectPlannerVerificationMode(params: {
     return params.explicit;
   }
   for (const step of params.subagentSteps) {
-    if (step.executionContext?.verificationMode === "mutation_required") {
-      return "mutation_required";
+    if (isMutationLikeVerificationMode(step.executionContext?.verificationMode)) {
+      return step.executionContext?.verificationMode;
     }
   }
   if (

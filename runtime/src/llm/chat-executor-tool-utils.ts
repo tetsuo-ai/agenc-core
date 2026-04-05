@@ -368,9 +368,13 @@ export function normalizeToolCallArguments(
   toolName: string,
   args: Record<string, unknown>,
 ): Record<string, unknown> {
-  if (toolName !== "mcp.doom.start_game") return args;
+  const normalizedFilesystemArgs = normalizeFilesystemToolCallArguments(
+    toolName,
+    args,
+  );
+  if (toolName !== "mcp.doom.start_game") return normalizedFilesystemArgs;
 
-  let nextArgs = args;
+  let nextArgs = normalizedFilesystemArgs;
   const normalizedResolution = normalizeDoomScreenResolution(
     args.screen_resolution,
   );
@@ -407,6 +411,66 @@ export function normalizeToolCallArguments(
     delete nextArgs.recording_path;
   }
 
+  return nextArgs;
+}
+
+const TOOL_ARG_ALIASES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  "system.readFile": { filePath: "path" },
+  "system.listDir": { filePath: "path", dirPath: "path", directoryPath: "path" },
+  "system.writeFile": {
+    filePath: "path",
+    text: "content",
+    contents: "content",
+    body: "content",
+  },
+  "system.appendFile": {
+    filePath: "path",
+    text: "content",
+    contents: "content",
+    body: "content",
+  },
+  "system.mkdir": { filePath: "path", dirPath: "path", directoryPath: "path" },
+  "system.delete": { filePath: "path", targetPath: "path" },
+  "system.move": {
+    sourcePath: "source",
+    from: "source",
+    destinationPath: "destination",
+    destPath: "destination",
+    to: "destination",
+  },
+};
+
+function normalizeFilesystemToolCallArguments(
+  toolName: string,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  const aliasMap = TOOL_ARG_ALIASES[toolName];
+  if (!aliasMap) {
+    return args;
+  }
+
+  let nextArgs = args;
+  for (const [alias, canonical] of Object.entries(aliasMap)) {
+    if (!Object.prototype.hasOwnProperty.call(nextArgs, alias)) {
+      continue;
+    }
+    const aliasValue = nextArgs[alias];
+    if (aliasValue === undefined) {
+      continue;
+    }
+    if (Object.prototype.hasOwnProperty.call(nextArgs, canonical)) {
+      if (nextArgs === args) {
+        nextArgs = { ...args };
+      }
+      delete nextArgs[alias];
+      continue;
+    }
+    if (nextArgs === args) {
+      nextArgs = { ...args };
+    }
+    nextArgs[canonical] = aliasValue;
+    delete nextArgs[alias];
+  }
   return nextArgs;
 }
 

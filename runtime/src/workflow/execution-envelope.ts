@@ -19,6 +19,7 @@ export type ExecutionEffectClass =
 export type ExecutionVerificationMode =
   | "none"
   | "grounded_read"
+  | "conditional_mutation"
   | "mutation_required"
   | "deterministic_followup";
 export type ExecutionStepKind =
@@ -83,6 +84,15 @@ export interface ExecutionEnvelope {
   readonly resumePolicy?: ExecutionResumePolicy;
   readonly approvalProfile?: ExecutionApprovalProfile;
   readonly compatibilitySource?: ExecutionEnvelopeCompatibilitySource;
+}
+
+export function isMutationLikeVerificationMode(
+  verificationMode: ExecutionVerificationMode | undefined,
+): boolean {
+  return (
+    verificationMode === "mutation_required" ||
+    verificationMode === "conditional_mutation"
+  );
 }
 
 export function isCompatibilityExecutionEnvelope(
@@ -251,7 +261,7 @@ export function canonicalizeWorkflowStepRole(params: {
   if (
     params.stepKind === "delegated_write" ||
     params.stepKind === "delegated_scaffold" ||
-    params.verificationMode === "mutation_required" ||
+    isMutationLikeVerificationMode(params.verificationMode) ||
     params.effectClass === "filesystem_write" ||
     params.effectClass === "filesystem_scaffold"
   ) {
@@ -361,7 +371,7 @@ export function canonicalizeWorkflowArtifactRelations(params: {
     params.role === "writer" ||
       params.stepKind === "delegated_write" ||
       params.stepKind === "delegated_scaffold" ||
-      params.verificationMode === "mutation_required"
+      isMutationLikeVerificationMode(params.verificationMode)
       ? "write_owner"
       : params.role === "validator" ||
           params.stepKind === "delegated_validation" ||

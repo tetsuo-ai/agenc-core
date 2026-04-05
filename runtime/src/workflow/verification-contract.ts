@@ -10,7 +10,10 @@ import {
 import { isArtifactAccessAllowed } from "./artifact-contract.js";
 import type { PlaceholderTaxonomy } from "./completion-contract.js";
 import { isPathWithinRoot, normalizeEnvelopePath } from "./path-normalization.js";
-import { isMeaningfulWorkspaceInspectionToolCall } from "./workspace-inspection-evidence.js";
+import {
+  collectWorkspaceInspectionPathCandidates,
+  isMeaningfulWorkspaceInspectionToolCall,
+} from "./workspace-inspection-evidence.js";
 import {
   deriveVerificationObligations,
   hasDelegationRuntimeVerificationContext,
@@ -109,7 +112,7 @@ const DIRECT_MUTATION_TOOL_NAMES = new Set([
 ]);
 const SHELL_TOOL_NAMES = new Set(["system.bash", "desktop.bash"]);
 const NOOP_COMPLETION_RE =
-  /\b(?:already (?:satisf(?:ies|y)|exists?|present|up to date)|no (?:changes?|mutation|update)s? (?:needed|required)|nothing to change|no edits? needed)\b/i;
+  /\b(?:already (?:satisf(?:ies|y)|exists?|present|up to date)|no\s+(?:changes?|mutations?|updates?|edits?)\b(?:[\s\S]{0,80}?)\b(?:needed|required|necessary)\b|nothing to change|nothing to update|no edits?\s+(?:were\s+)?needed)\b/i;
 const IMPLEMENTATION_PLACEHOLDER_MARKER_RE =
   /\b(?:stub(?:bed)?|placeholder|todo|not implemented|unimplemented|pending implementation|coming soon|fixme)\b/i;
 const DOCUMENTATION_PLACEHOLDER_MARKER_RE =
@@ -764,18 +767,10 @@ function collectInspectionArtifactPaths(
   ) {
     return [];
   }
-  const args =
-    toolCall.args && typeof toolCall.args === "object" && !Array.isArray(toolCall.args)
-      ? (toolCall.args as Record<string, unknown>)
-      : {};
-  const parsedResult = parseResultObject(toolCall.result);
-  const candidates: string[] = [];
-  pushPathCandidate(candidates, args.path, workspaceRoot);
-  pushPathCandidate(candidates, args.source, workspaceRoot);
-  pushPathCandidate(candidates, args.destination, workspaceRoot);
-  pushPathCandidate(candidates, args.cwd, workspaceRoot);
-  pushPathCandidate(candidates, parsedResult?.path, workspaceRoot);
-  return [...new Set(candidates)];
+  return collectWorkspaceInspectionPathCandidates({
+    toolCall,
+    workspaceRoot,
+  });
 }
 
 function collectAuthoredContent(

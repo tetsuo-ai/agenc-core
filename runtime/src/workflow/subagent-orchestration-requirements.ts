@@ -4,6 +4,7 @@ import type {
   ExecutionStepKind,
   ExecutionVerificationMode,
 } from "./execution-envelope.js";
+import { isMutationLikeVerificationMode } from "./execution-envelope.js";
 
 export interface RequiredSubagentOrchestrationStep {
   readonly name: string;
@@ -262,7 +263,7 @@ function isMutableArtifactOwnerCandidate(
   return (
     stepKind === "delegated_write" ||
     stepKind === "delegated_scaffold" ||
-    candidate.executionContext?.verificationMode === "mutation_required"
+    isMutationLikeVerificationMode(candidate.executionContext?.verificationMode)
   );
 }
 

@@ -12,6 +12,7 @@ import {
   didToolCallFail,
   extractToolFailureTextFromResult,
 } from "../llm/chat-executor-tool-utils.js";
+import { isMutationLikeVerificationMode } from "./execution-envelope.js";
 
 export function assessPlannerDependencySatisfaction(
   step: PipelinePlannerStep,
@@ -60,7 +61,7 @@ function subagentStepAllowsDelegationFallback(
     executionContext?.stepKind === "delegated_write" ||
     executionContext?.stepKind === "delegated_scaffold" ||
     executionContext?.stepKind === "delegated_validation" ||
-    executionContext?.verificationMode === "mutation_required" ||
+    isMutationLikeVerificationMode(executionContext?.verificationMode) ||
     executionContext?.verificationMode === "deterministic_followup" ||
     executionContext?.effectClass === "filesystem_write" ||
     executionContext?.effectClass === "filesystem_scaffold" ||
