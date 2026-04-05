@@ -159,6 +159,30 @@ describe("verification-obligations", () => {
     });
   });
 
+  it("allows grounded no-ops when every required source artifact is also a tracked target", () => {
+    const obligations = deriveVerificationObligations({
+      workspaceRoot: "/tmp/project",
+      requiredSourceArtifacts: ["/tmp/project/AGENC.md"],
+      targetArtifacts: ["/tmp/project/AGENC.md"],
+      completionContract: {
+        taskClass: "artifact_only",
+        placeholdersAllowed: false,
+        partialCompletionAllowed: false,
+        placeholderTaxonomy: "documentation",
+      },
+    });
+
+    expect(obligations).toMatchObject({
+      verificationMode: "mutation_required",
+      requiresMutationEvidence: true,
+      requiresSourceArtifactReads: true,
+      allowsGroundedNoop: true,
+      completionContract: {
+        taskClass: "artifact_only",
+      },
+    });
+  });
+
   it("preserves explicit repair placeholder taxonomy from the completion contract", () => {
     const obligations = deriveVerificationObligations({
       workspaceRoot: "/tmp/project",

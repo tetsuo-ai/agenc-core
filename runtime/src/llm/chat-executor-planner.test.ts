@@ -720,6 +720,47 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
     expect(hint).toContain("rerun `npm install`");
   });
 
+  it("adds grounded runtime todo repair guidance when the todo artifact is missing", () => {
+    const hint = buildPipelineFailureRepairRefinementHint({
+      pipelineResult: {
+        status: "failed",
+        completedSteps: 1,
+        totalSteps: 3,
+        error: "File not found: /tmp/project/todo",
+        stopReasonHint: "tool_error",
+      },
+      plannerPlan: {
+        reason: "repair",
+        requiresSynthesis: true,
+        steps: [
+          {
+            name: "read_runtime_todo",
+            stepType: "deterministic_tool",
+            tool: "system.readFile",
+            args: {
+              path: "/tmp/project/todo",
+            },
+          },
+        ],
+      },
+      plannerToolCalls: [
+        {
+          name: "system.readFile",
+          args: {
+            path: "/tmp/project/todo",
+          },
+          result: '{"error":"File not found: /tmp/project/todo"}',
+          isError: true,
+          durationMs: 0,
+        },
+      ],
+    });
+
+    expect(hint).toContain("runtime-owned `/todo` artifact is missing");
+    expect(hint).toContain("directory listing alone");
+    expect(hint).toContain("non-target implementation, project, or config file");
+  });
+
   it("adds explicit browser split guidance for implementation-browser decomposition", () => {
     const hint = buildPlannerStructuralRefinementHint([
       {
@@ -2169,6 +2210,126 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
         }),
       ]),
     );
+  });
+
+  it("allows generic workspace-grounded artifact rewrites when the planner lists directories before rewriting the target doc", () => {
+    const workspaceRoot = "/tmp/agenc-shell";
+    const diagnostics = validatePlannerStepContracts(
+      {
+        reason: "review_and_update_plan",
+        requiresSynthesis: false,
+        confidence: 0.8,
+        steps: [
+          {
+            name: "list_src",
+            stepType: "deterministic_tool",
+            dependsOn: [],
+            tool: "system.listDir",
+            args: {
+              path: `${workspaceRoot}/src`,
+            },
+          },
+          {
+            name: "read_plan",
+            stepType: "deterministic_tool",
+            dependsOn: ["list_src"],
+            tool: "system.readFile",
+            args: {
+              path: `${workspaceRoot}/PLAN.md`,
+            },
+          },
+          {
+            name: "rewrite_plan",
+            stepType: "deterministic_tool",
+            dependsOn: ["read_plan"],
+            tool: "system.writeFile",
+            args: {
+              path: `${workspaceRoot}/PLAN.md`,
+              content: "updated plan",
+            },
+          },
+        ],
+      },
+      "Review the codebase layout against Phase1 in PLAN.md and update PLAN.md so it reflects the current workspace state.",
+    );
+
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("rejects runtime-owned todo repairs that only list directories before recreating the artifact", () => {
+    const workspaceRoot = "/tmp/agenc-shell";
+    const diagnostics = validatePlannerStepContracts(
+      {
+        reason: "repair_missing_runtime_todo",
+        requiresSynthesis: false,
+        confidence: 0.74,
+        steps: [
+          {
+            name: "inspect_workspace",
+            stepType: "deterministic_tool",
+            dependsOn: [],
+            tool: "system.listDir",
+            args: {
+              path: workspaceRoot,
+            },
+          },
+          {
+            name: "rewrite_runtime_todo",
+            stepType: "deterministic_tool",
+            dependsOn: ["inspect_workspace"],
+            tool: "system.writeFile",
+            args: {
+              path: `${workspaceRoot}/todo`,
+              content: "continue work",
+            },
+          },
+        ],
+      },
+      "Inspect the current workspace state, compare it to the implementation, and continue the remaining app work.",
+    );
+
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "planner_plan_artifact_missing_workspace_grounding",
+        }),
+      ]),
+    );
+  });
+
+  it("allows runtime-owned todo repairs when the planner reads a non-target workspace file before recreating the artifact", () => {
+    const workspaceRoot = "/tmp/agenc-shell";
+    const diagnostics = validatePlannerStepContracts(
+      {
+        reason: "repair_missing_runtime_todo",
+        requiresSynthesis: false,
+        confidence: 0.78,
+        steps: [
+          {
+            name: "inspect_source_file",
+            stepType: "deterministic_tool",
+            dependsOn: [],
+            tool: "system.readFile",
+            args: {
+              path: `${workspaceRoot}/src/ContentView.swift`,
+            },
+          },
+          {
+            name: "rewrite_runtime_todo",
+            stepType: "deterministic_tool",
+            dependsOn: ["inspect_source_file"],
+            tool: "system.writeFile",
+            args: {
+              path: `${workspaceRoot}/todo`,
+              content: "continue work",
+            },
+          },
+        ],
+      },
+      "Inspect the current workspace state, compare it to the implementation, and continue the remaining app work.",
+    );
+
+    expect(diagnostics).toEqual([]);
   });
 
   it("rejects plan-artifact execution requests that emit multiple mutable delegated owners for one workspace root", () => {
