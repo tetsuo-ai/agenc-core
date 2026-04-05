@@ -4699,6 +4699,7 @@ function plannerSubagentHasWorkspaceGrounding(
   requestedArtifactTargets: readonly string[],
   options?: {
     readonly allowBoundedWriteStep?: boolean;
+    readonly enforceNonTargetWorkspaceEvidence?: boolean;
   },
 ): boolean {
   const executionContext = step.executionContext;
@@ -4717,6 +4718,15 @@ function plannerSubagentHasWorkspaceGrounding(
     ...(executionContext?.allowedTools ?? []),
     ...safeStepStringArray(step.requiredToolCapabilities),
   ].map((value) => value.trim().toLowerCase());
+  if (options?.enforceNonTargetWorkspaceEvidence !== true) {
+    return scopedTools.some((toolName) =>
+      toolName.includes("read") ||
+      toolName.includes("listdir") ||
+      toolName.includes("stat") ||
+      toolName.includes("bash") ||
+      toolName.includes("text_editor")
+    );
+  }
   const hasReadCapability = scopedTools.some((toolName) =>
     toolName.includes("read") || toolName.includes("text_editor")
   );
@@ -4777,12 +4787,37 @@ function plannerSubagentHasWorkspaceGrounding(
 function isPlannerWorkspaceGroundingStep(
   step: PlannerStepIntent,
   requestedArtifactTargets: readonly string[],
+  options?: {
+    readonly enforceNonTargetWorkspaceEvidence?: boolean;
+  },
 ): boolean {
   if (step.stepType === "subagent_task") {
-    return plannerSubagentHasWorkspaceGrounding(step, requestedArtifactTargets);
+    return plannerSubagentHasWorkspaceGrounding(
+      step,
+      requestedArtifactTargets,
+      options,
+    );
   }
   if (step.stepType !== "deterministic_tool") {
     return false;
+  }
+  if (options?.enforceNonTargetWorkspaceEvidence !== true) {
+    if (step.tool === "system.listDir" || step.tool === "system.stat") {
+      return true;
+    }
+    if (step.tool === "system.readFile") {
+      return !plannerPathTargetsRequestedArtifact(
+        typeof step.args.path === "string" ? step.args.path : undefined,
+        requestedArtifactTargets,
+      );
+    }
+    if (!PLANNER_BASH_TOOL_NAMES.has(step.tool)) {
+      return false;
+    }
+    const commandText = extractCommandText(step.args).trim();
+    return /\b(?:ls|find|tree|rg|ripgrep|git\s+(?:status|diff|ls-files)|stat)\b/i.test(
+      commandText,
+    );
   }
   if (step.tool === "system.readFile") {
     return !plannerPathTargetsRequestedArtifact(
@@ -5065,6 +5100,7 @@ function validatePlannerPlanArtifactSteps(
   const diagnostics: PlannerDiagnostic[] = [];
   const usesRequestedArtifactTargetsOverride =
     (options?.requestedArtifactTargetsOverride?.length ?? 0) > 0;
+  const strictWorkspaceGrounding = usesRequestedArtifactTargetsOverride;
   const workspaceGroundedArtifactUpdate =
     typeof messageText === "string" &&
     (
@@ -5144,7 +5180,9 @@ function validatePlannerPlanArtifactSteps(
     const hasWorkspaceGroundingBeforeWrite = plannerPlan.steps.some(
       (step, index) =>
         index < lastWriteIndex &&
-        isPlannerWorkspaceGroundingStep(step, requestedArtifactTargets),
+        isPlannerWorkspaceGroundingStep(step, requestedArtifactTargets, {
+          enforceNonTargetWorkspaceEvidence: strictWorkspaceGrounding,
+        }),
     );
     const finalWriteCarriesWorkspaceGrounding =
       finalWriteStep.stepType === "subagent_task" &&
@@ -5153,9 +5191,23 @@ function validatePlannerPlanArtifactSteps(
         requestedArtifactTargets,
         { allowBoundedWriteStep: true },
       );
+    const finalWriteCarriesStrictWorkspaceGrounding =
+      finalWriteStep.stepType === "subagent_task" &&
+      plannerSubagentHasWorkspaceGrounding(
+        finalWriteStep,
+        requestedArtifactTargets,
+        {
+          allowBoundedWriteStep: true,
+          enforceNonTargetWorkspaceEvidence: strictWorkspaceGrounding,
+        },
+      );
     if (
       !hasWorkspaceGroundingBeforeWrite &&
-      !finalWriteCarriesWorkspaceGrounding
+      !(
+        strictWorkspaceGrounding
+          ? finalWriteCarriesStrictWorkspaceGrounding
+          : finalWriteCarriesWorkspaceGrounding
+      )
     ) {
       diagnostics.push(
         createPlannerDiagnostic(

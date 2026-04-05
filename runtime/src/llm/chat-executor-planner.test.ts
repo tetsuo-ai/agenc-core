@@ -2212,7 +2212,7 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
     );
   });
 
-  it("rejects workspace-grounded artifact rewrites when the planner only lists directories before rewriting the target doc", () => {
+  it("allows generic workspace-grounded artifact rewrites when the planner lists directories before rewriting the target doc", () => {
     const workspaceRoot = "/tmp/agenc-shell";
     const diagnostics = validatePlannerStepContracts(
       {
@@ -2253,13 +2253,7 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
       "Review the codebase layout against Phase1 in PLAN.md and update PLAN.md so it reflects the current workspace state.",
     );
 
-    expect(diagnostics).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          code: "planner_plan_artifact_missing_workspace_grounding",
-        }),
-      ]),
-    );
+    expect(diagnostics).toEqual([]);
   });
 
   it("rejects runtime-owned todo repairs that only list directories before recreating the artifact", () => {
