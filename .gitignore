@@ -57,6 +57,7 @@ obj/
 !config/private-kernel-distribution.json
 !config/private-kernel-distribution.example.json
 !config/private-kernel-distribution.local.json
+!web/public/assets/maps/**/*.json
 id.json
 deploy/
 keys/

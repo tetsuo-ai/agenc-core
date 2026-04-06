@@ -102,6 +102,8 @@ export interface SimulationEvent {
   resolved_event?: string | null;
   scene?: string | null;
   metadata?: Record<string, unknown> | null;
+  intent?: Record<string, unknown> | null;
+  outcome?: Record<string, unknown> | null;
 }
 
 export interface AgentState {

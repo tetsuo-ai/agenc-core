@@ -1,0 +1,129 @@
+{
+  "width": 18,
+  "height": 14,
+  "tilewidth": 16,
+  "tileheight": 16,
+  "orientation": "orthogonal",
+  "renderorder": "right-down",
+  "tilesets": [
+    {
+      "firstgid": 1,
+      "name": "lab-tiles",
+      "image": "/assets/maps/default/tileset.png",
+      "imagewidth": 64,
+      "imageheight": 64,
+      "tilewidth": 16,
+      "tileheight": 16,
+      "tilecount": 16,
+      "columns": 4,
+      "margin": 0,
+      "spacing": 0
+    }
+  ],
+  "layers": [
+    {
+      "id": 1,
+      "name": "ground",
+      "type": "tilelayer",
+      "width": 18,
+      "height": 14,
+      "visible": true,
+      "opacity": 1,
+      "x": 0,
+      "y": 0,
+      "data": [
+        1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,
+        1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+      ]
+    },
+    {
+      "id": 2,
+      "name": "locations",
+      "type": "objectgroup",
+      "visible": true,
+      "opacity": 1,
+      "x": 0,
+      "y": 0,
+      "objects": [
+        {
+          "id": 1,
+          "name": "lab-bench",
+          "type": "location",
+          "x": 16,
+          "y": 16,
+          "width": 96,
+          "height": 64,
+          "rotation": 0,
+          "visible": true
+        },
+        {
+          "id": 2,
+          "name": "server-room",
+          "type": "location",
+          "x": 176,
+          "y": 16,
+          "width": 96,
+          "height": 64,
+          "rotation": 0,
+          "visible": true
+        },
+        {
+          "id": 3,
+          "name": "meeting-room",
+          "type": "location",
+          "x": 96,
+          "y": 96,
+          "width": 96,
+          "height": 64,
+          "rotation": 0,
+          "visible": true
+        },
+        {
+          "id": 4,
+          "name": "library",
+          "type": "location",
+          "x": 16,
+          "y": 144,
+          "width": 64,
+          "height": 64,
+          "rotation": 0,
+          "visible": true
+        },
+        {
+          "id": 5,
+          "name": "cafeteria",
+          "type": "location",
+          "x": 208,
+          "y": 144,
+          "width": 64,
+          "height": 64,
+          "rotation": 0,
+          "visible": true
+        },
+        {
+          "id": 6,
+          "name": "office",
+          "type": "location",
+          "x": 96,
+          "y": 16,
+          "width": 64,
+          "height": 64,
+          "rotation": 0,
+          "visible": true
+        }
+      ]
+    }
+  ]
+}

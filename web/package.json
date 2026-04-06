@@ -16,6 +16,8 @@
   },
   "dependencies": {
     "@tetsuo-ai/runtime": "0.1.0",
+    "easystarjs": "^0.4.4",
+    "pixi.js": "^8.17.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-markdown": "^10.1.0",
@@ -29,12 +31,12 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
+    "@tailwindcss/postcss": "^4.2.1",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^25.4.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@types/react-syntax-highlighter": "^15.5.13",
-    "@tailwindcss/postcss": "^4.2.1",
     "@vitejs/plugin-react": "^5.1.4",
     "autoprefixer": "^10.4.27",
     "jsdom": "^28.1.0",
