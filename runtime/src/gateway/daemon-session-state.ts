@@ -1,4 +1,5 @@
 import type { ChatExecuteParams, ChatExecutorResult } from "../llm/chat-executor.js";
+import type { ActiveTaskContext } from "../llm/turn-execution-contract-types.js";
 import type { LLMStatefulResumeAnchor } from "../llm/types.js";
 import type { MemoryBackend } from "../memory/types.js";
 import {
@@ -7,6 +8,7 @@ import {
   type ArtifactCompactionState,
 } from "../memory/artifact-store.js";
 import {
+  SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY,
   SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY,
   SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY,
   SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY,
@@ -293,4 +295,32 @@ export function persistSessionStatefulContinuation(
   delete session.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY];
   delete session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY];
   delete session.metadata[SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY];
+}
+
+export function buildSessionActiveTaskContext(
+  session: Session,
+): ActiveTaskContext | undefined {
+  const raw = session.metadata[SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY];
+  if (
+    raw &&
+    typeof raw === "object" &&
+    !Array.isArray(raw) &&
+    (raw as Record<string, unknown>).version === 1 &&
+    typeof (raw as Record<string, unknown>).taskLineageId === "string"
+  ) {
+    return raw as ActiveTaskContext;
+  }
+  return undefined;
+}
+
+export function persistSessionActiveTaskContext(
+  session: Session,
+  result: ChatExecutorResult,
+): void {
+  if (result.activeTaskContext) {
+    session.metadata[SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY] =
+      result.activeTaskContext;
+  } else {
+    delete session.metadata[SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY];
+  }
 }
