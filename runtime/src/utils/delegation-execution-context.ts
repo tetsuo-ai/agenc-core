@@ -391,19 +391,15 @@ export function deriveDelegatedExecutionEnvelopeFromParent(params: {
   const requestedWorkspaceRoot = normalizeWorkspaceRoot(
     requestedContext?.workspaceRoot,
   );
-  if (
+  // When the planner emits a workspace root outside the parent's authority,
+  // correct it to the parent workspace root instead of hard-failing.
+  // The model's intent is to work in the session workspace; it sometimes
+  // hallucinates a different path from its context window.
+  const childWorkspaceRoot =
     requestedWorkspaceRoot &&
-    !isPathWithinRoot(requestedWorkspaceRoot, parentWorkspaceRoot)
-  ) {
-    return buildDerivationFailure({
-      code: "workspace_root_outside_parent_workspace",
-      message:
-        `Requested delegated workspace root "${requestedWorkspaceRoot}" is outside the trusted parent workspace root "${parentWorkspaceRoot}".`,
-      path: requestedWorkspaceRoot,
-    });
-  }
-
-  const childWorkspaceRoot = requestedWorkspaceRoot ?? parentWorkspaceRoot;
+    isPathWithinRoot(requestedWorkspaceRoot, parentWorkspaceRoot)
+      ? requestedWorkspaceRoot
+      : parentWorkspaceRoot;
 
   const requestedReadRoots = normalizeRequestedReadRoots(
     requestedContext?.allowedReadRoots,
