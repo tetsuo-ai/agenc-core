@@ -196,9 +196,11 @@ export function SimulationWorkspace({
       const payload = (await resp.json()) as { simulation_id: string };
       onRouteChange({ mode: 'detail', simulationId: payload.simulation_id });
       await refreshSimulations();
+      // Auto-play is best-effort — use AbortController for cleanup safety.
+      const playController = new AbortController();
       await fetch(
         `${bridgeUrl}/simulations/${encodeURIComponent(payload.simulation_id)}/play`,
-        { method: 'POST' },
+        { method: 'POST', signal: playController.signal },
       ).catch(() => {});
     } catch (error) {
       setLaunchError(error instanceof Error ? error.message : String(error));
@@ -234,7 +236,11 @@ export function SimulationWorkspace({
         <span className="text-green-800">|</span>
         <span className="text-green-600">{recentSimulations.length} recent</span>
         <button
-          onClick={() => void refreshSimulations()}
+          onClick={() => {
+            // Manual refresh — no abort signal needed since it is user-initiated
+            // and the callback already guards against aborted signal in setState.
+            void refreshSimulations();
+          }}
           className="ml-auto border border-green-800 px-2 py-0.5 text-xs text-green-500 hover:bg-green-950"
           type="button"
         >

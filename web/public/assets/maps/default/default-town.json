@@ -10,12 +10,12 @@
       "firstgid": 1,
       "name": "default-tiles",
       "image": "tileset.png",
-      "imagewidth": 64,
-      "imageheight": 64,
+      "imagewidth": 128,
+      "imageheight": 128,
       "tilewidth": 16,
       "tileheight": 16,
-      "tilecount": 16,
-      "columns": 4,
+      "tilecount": 64,
+      "columns": 8,
       "margin": 0,
       "spacing": 0
     }

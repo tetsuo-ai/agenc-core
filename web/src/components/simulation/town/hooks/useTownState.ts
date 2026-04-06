@@ -17,6 +17,16 @@ export interface AgentVisualState {
   locationId: string | null;
   color: number;
   moving: boolean;
+  speedMultiplier: number;
+}
+
+/** Simple string hash for deterministic per-agent speed variation. */
+function hashCode(str: string): number {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash * 31 + str.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash);
 }
 
 const AGENT_COLORS = [
@@ -66,6 +76,7 @@ export function computeAgentPositions(
       locationId,
       color: getAgentColor(colorIndex),
       moving: locationChanged && prev !== undefined,
+      speedMultiplier: 0.85 + (hashCode(agentId) % 30) / 100,
     });
 
     colorIndex++;
@@ -128,6 +139,7 @@ export function useTownState(
         locationId,
         color: getAgentColor(colorIndex),
         moving: locationChanged && prev !== undefined,
+        speedMultiplier: 0.85 + (hashCode(agentId) % 30) / 100,
       });
 
       colorIndex++;

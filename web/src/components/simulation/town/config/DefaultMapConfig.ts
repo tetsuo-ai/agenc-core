@@ -6,6 +6,8 @@
 
 import type { TiledMap, TiledObject } from '../maps/types';
 
+const BASE = import.meta.env.BASE_URL ?? '/';
+
 export function generateDefaultMap(
   locationIds: string[],
   cols: number = 4,
@@ -61,13 +63,13 @@ export function generateDefaultMap(
       {
         firstgid: 1,
         name: 'generated-tiles',
-        image: '/assets/maps/default/tileset.png',
-        imagewidth: 64,
-        imageheight: 64,
+        image: `${BASE}assets/maps/default/tileset.png`,
+        imagewidth: 128,
+        imageheight: 128,
         tilewidth: tileW,
         tileheight: tileH,
-        tilecount: 16,
-        columns: 4,
+        tilecount: 64,
+        columns: 8,
       },
     ],
     layers: [

@@ -21,8 +21,9 @@ export class PathfindingManager {
     tileHeight: number,
   ) {
     this.easystar = new EasyStar();
-    this.tileWidth = tileWidth;
-    this.tileHeight = tileHeight;
+    // Guard against zero tile dimensions (would cause division by zero in findPath)
+    this.tileWidth = tileWidth > 0 ? tileWidth : 16;
+    this.tileHeight = tileHeight > 0 ? tileHeight : 16;
 
     if (collisionGrid && collisionGrid.length > 0) {
       this.easystar.setGrid(collisionGrid);

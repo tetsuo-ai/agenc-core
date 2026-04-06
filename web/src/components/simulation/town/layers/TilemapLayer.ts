@@ -48,6 +48,7 @@ function renderTileLayer(
 
       const localId = gid - tileset.firstgid;
       const cols = tileset.columns;
+      if (cols <= 0) continue; // Guard: avoid division by zero from malformed tilesets
       const margin = tileset.margin ?? 0;
       const spacing = tileset.spacing ?? 0;
 

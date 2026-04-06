@@ -112,10 +112,24 @@ export function createLocationRegistry(
 
   function randomPointInRegion(locationId: string): { x: number; y: number } {
     const region = resolve(locationId);
+
+    // Guard: if region has zero or negative dimensions, return center
+    if (region.width <= 0 || region.height <= 0) {
+      return { x: region.centerX, y: region.centerY };
+    }
+
     const margin = Math.min(region.width, region.height) * 0.2;
+    const innerW = region.width - 2 * margin;
+    const innerH = region.height - 2 * margin;
+
+    // If margins consume the entire region, just return center
+    if (innerW <= 0 || innerH <= 0) {
+      return { x: region.centerX, y: region.centerY };
+    }
+
     return {
-      x: region.x + margin + Math.random() * (region.width - 2 * margin),
-      y: region.y + margin + Math.random() * (region.height - 2 * margin),
+      x: region.x + margin + Math.random() * innerW,
+      y: region.y + margin + Math.random() * innerH,
     };
   }
 

@@ -9,12 +9,18 @@ import { SpeechBubble } from './SpeechBubble';
 
 const AGENT_RADIUS = 10;
 const FRAME_SIZE = 32;
+const MAX_SPEECH_QUEUE = 5;
 
 const LABEL_STYLE = new TextStyle({
   fontFamily: 'monospace',
   fontSize: 10,
   fill: 0xffffff,
   stroke: { color: 0x000000, width: 2 },
+  align: 'center',
+});
+
+const ACTIVITY_EMOJI_STYLE = new TextStyle({
+  fontSize: 12,
   align: 'center',
 });
 
@@ -26,6 +32,8 @@ export class AgentSpriteDisplay {
   private animation: AnimationController;
   private speechBubble: SpeechBubble;
   private spritesheet: Texture | null = null;
+  private speechQueue: Array<{ text: string; durationMs: number }> = [];
+  private activityEmoji: Text;
   readonly agentId: string;
 
   constructor(agentId: string, name: string, color: number, spritesheet?: Texture) {
@@ -56,6 +64,12 @@ export class AgentSpriteDisplay {
     this.label.y = (this.sprite ? FRAME_SIZE / 2 : AGENT_RADIUS) + 4;
     this.container.addChild(this.label);
 
+    this.activityEmoji = new Text({ text: '', style: ACTIVITY_EMOJI_STYLE });
+    this.activityEmoji.anchor.set(0.5, 0.5);
+    this.activityEmoji.y = -8;
+    this.activityEmoji.visible = false;
+    this.container.addChild(this.activityEmoji);
+
     this.container.addChild(this.speechBubble.container);
   }
 
@@ -74,8 +88,30 @@ export class AgentSpriteDisplay {
   }
 
   showSpeech(text: string, durationMs: number = 4000): void {
+    if (this.speechBubble.isActive()) {
+      // Queue the speech; drop oldest if at capacity
+      if (this.speechQueue.length >= MAX_SPEECH_QUEUE) {
+        this.speechQueue.shift();
+      }
+      this.speechQueue.push({ text, durationMs });
+      return;
+    }
     this.animation.setState('talk');
     this.speechBubble.show(text, durationMs);
+  }
+
+  setActivity(emoji: string | null): void {
+    if (emoji) {
+      this.activityEmoji.text = emoji;
+      this.activityEmoji.visible = true;
+    } else {
+      this.activityEmoji.visible = false;
+    }
+  }
+
+  /** Returns the speech bubble instance for external stacking logic. */
+  getSpeechBubble(): SpeechBubble {
+    return this.speechBubble;
   }
 
   update(delta: number): void {
@@ -86,9 +122,17 @@ export class AgentSpriteDisplay {
     }
 
     // Update speech bubble (convert delta ticks to ms approximation)
+    const wasBubbleActive = this.speechBubble.isActive();
     this.speechBubble.update(delta * 16.67);
 
-    // Return to idle when speech ends
+    // Drain the queue when the current bubble finishes
+    if (wasBubbleActive && !this.speechBubble.isActive() && this.speechQueue.length > 0) {
+      const next = this.speechQueue.shift()!;
+      this.animation.setState('talk');
+      this.speechBubble.show(next.text, next.durationMs);
+    }
+
+    // Return to idle when speech ends and queue is empty
     if (!this.speechBubble.isActive() && this.animation.getState() === 'talk') {
       this.animation.setState('idle');
     }

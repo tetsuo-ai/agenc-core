@@ -25,6 +25,8 @@ export function useViewport(initialZoom: number = 1) {
 
   const isDragging = useRef(false);
   const lastPointer = useRef({ x: 0, y: 0 });
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   const pan = useCallback((dx: number, dy: number) => {
     setState((prev) => ({
@@ -39,8 +41,10 @@ export function useViewport(initialZoom: number = 1) {
     setState((prev) => {
       const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, newZoom));
       if (centerX !== undefined && centerY !== undefined) {
-        // Zoom toward pointer position
-        const factor = clamped / prev.zoom;
+        // Zoom toward pointer position. Guard against zero prev.zoom (should not
+        // happen due to MIN_ZOOM clamp, but defensive).
+        const prevZoom = prev.zoom || MIN_ZOOM;
+        const factor = clamped / prevZoom;
         return {
           ...prev,
           zoom: clamped,
@@ -78,9 +82,11 @@ export function useViewport(initialZoom: number = 1) {
     (e: WheelEvent) => {
       e.preventDefault();
       const delta = -e.deltaY * 0.001;
-      zoomTo(state.zoom + delta, e.clientX, e.clientY);
+      // Read current zoom from ref to avoid recreating this callback on every zoom change,
+      // which would cause the event listener in TownCanvas to churn.
+      zoomTo(stateRef.current.zoom + delta, e.clientX, e.clientY);
     },
-    [state.zoom, zoomTo],
+    [zoomTo],
   );
 
   const handlePointerDown = useCallback((e: PointerEvent) => {

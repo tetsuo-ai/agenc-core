@@ -79,13 +79,32 @@ function buildCollisionGrid(
   return grid;
 }
 
-export async function loadTiledMap(url: string): Promise<ParsedMap> {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Failed to load map: ${response.status} ${url}`);
+const MAP_LOAD_TIMEOUT_MS = 10_000;
+
+export async function loadTiledMap(url: string, signal?: AbortSignal): Promise<ParsedMap> {
+  // Create a timeout abort if no external signal, or combine with external signal
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), MAP_LOAD_TIMEOUT_MS);
+
+  // If the caller provides a signal, forward its abort
+  if (signal) {
+    if (signal.aborted) {
+      clearTimeout(timeoutId);
+      throw new DOMException('Aborted', 'AbortError');
+    }
+    signal.addEventListener('abort', () => controller.abort(), { once: true });
   }
-  const json = (await response.json()) as TiledMap;
-  return parseTiledMap(json);
+
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) {
+      throw new Error(`Failed to load map: ${response.status} ${url}`);
+    }
+    const json = (await response.json()) as TiledMap;
+    return parseTiledMap(json);
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 export function extractLocationObjects(parsed: ParsedMap): TiledObject[] {

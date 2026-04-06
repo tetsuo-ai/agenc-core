@@ -15,6 +15,24 @@ import type { ViewportState } from './hooks/useViewport';
 import type { VisualCommand } from './systems/EventInterpreter';
 import type { AgentState } from '../useSimulation';
 
+const ASSET_LOAD_TIMEOUT_MS = 8_000;
+const POSITION_REPORT_INTERVAL = 10; // frames between position reports (skip most frames)
+
+/**
+ * Map an agent's last action string to a simple activity emoji.
+ * Returns null when there is no action (hides the indicator).
+ */
+function actionToEmoji(action: string | null | undefined): string | null {
+  if (!action) return null;
+  const lower = action.toLowerCase();
+  if (/\b(speak|talk|say)\b/.test(lower)) return '\uD83D\uDCAC'; // speech balloon
+  if (/\b(walk|move|go)\b/.test(lower)) return '\uD83D\uDC63'; // footprints
+  if (/\b(read|write|study)\b/.test(lower)) return '\uD83D\uDCDA'; // books
+  if (/\b(eat|drink|cook)\b/.test(lower)) return '\uD83C\uDF7D\uFE0F'; // fork and knife with plate
+  if (/\b(trade|buy|sell)\b/.test(lower)) return '\uD83D\uDCB0'; // money bag
+  return '\u2699\uFE0F'; // gear
+}
+
 interface TownCanvasProps {
   parsedMap: ParsedMap | null;
   agents: AgentVisualState[];
@@ -125,6 +143,12 @@ export function TownCanvas({
     const canvas = canvasRef.current;
     const app = new Application();
     let destroyed = false;
+    const abortController = new AbortController();
+    let frameCounter = 0;
+
+    // Reusable maps to avoid per-frame allocations
+    const overlayPositions = new Map<string, { x: number; y: number }>();
+    const reportPositions = new Map<string, { x: number; y: number; locationId: string | null }>();
 
     app
       .init({
@@ -151,26 +175,47 @@ export function TownCanvas({
         timeFilterRef.current = timeFilter;
         worldContainer.filters = [timeFilter];
 
-        // Load tileset textures
+        // Load tileset textures with timeout and abort support
         const tilesetTextures = new Map<string, Texture>();
         for (const ts of parsedMap.tilesets) {
+          if (destroyed) break;
           try {
-            const texture = await Assets.load<Texture>(ts.image);
+            // Pre-check the asset exists before handing to PixiJS Assets loader
+            // (PixiJS can hang on non-image 404 responses)
+            const probe = await fetch(ts.image, {
+              method: 'HEAD',
+              signal: abortController.signal,
+            });
+            if (!probe.ok || !probe.headers.get('content-type')?.startsWith('image/')) {
+              console.warn(`Tileset unavailable (${probe.status}): ${ts.image}`);
+              continue;
+            }
+
+            // Wrap Assets.load with a timeout to prevent indefinite hangs
+            const texture = await Promise.race([
+              Assets.load<Texture>(ts.image),
+              new Promise<never>((_, reject) => {
+                const id = setTimeout(
+                  () => reject(new Error(`Tileset load timeout: ${ts.image}`)),
+                  ASSET_LOAD_TIMEOUT_MS,
+                );
+                abortController.signal.addEventListener('abort', () => {
+                  clearTimeout(id);
+                  reject(new DOMException('Aborted', 'AbortError'));
+                }, { once: true });
+              }),
+            ]);
             tilesetTextures.set(ts.name, texture);
-          } catch {
-            console.warn(`Failed to load tileset: ${ts.image}`);
+          } catch (err) {
+            if (abortController.signal.aborted) break;
+            console.warn(`Failed to load tileset: ${ts.image}`, err);
           }
         }
 
         if (destroyed) return;
 
-        // Try to load agent spritesheet
-        let agentSpritesheet: Texture | undefined;
-        try {
-          agentSpritesheet = await Assets.load<Texture>('/assets/sprites/agents/agent-default.png');
-        } catch {
-          // Falls back to circles
-        }
+        // Agent spritesheet not yet available — use circle fallback
+        const agentSpritesheet: Texture | undefined = undefined;
 
         if (destroyed) return;
 
@@ -202,51 +247,72 @@ export function TownCanvas({
           agentLayerRef.current?.update(agentsRef.current, ticker.deltaTime);
 
           // Process speech bubble commands
-          for (const cmd of commandsRef.current) {
+          const cmds = commandsRef.current;
+          for (let i = 0; i < cmds.length; i++) {
+            const cmd = cmds[i];
             const key = `${cmd.agentName}:${cmd.type}:${cmd.text ?? ''}`;
             if (!processedCommandsRef.current.has(key)) {
               processedCommandsRef.current.add(key);
               if ((cmd.type === 'speech' || cmd.type === 'action') && cmd.text) {
-                for (const agent of agentsRef.current) {
-                  if (agent.name === cmd.agentName) {
-                    agentLayerRef.current?.showSpeech(agent.agentId, cmd.text, cmd.duration);
+                const agents = agentsRef.current;
+                for (let j = 0; j < agents.length; j++) {
+                  if (agents[j].name === cmd.agentName) {
+                    agentLayerRef.current?.showSpeech(agents[j].agentId, cmd.text, cmd.duration);
                     break;
                   }
                 }
               }
-              if (processedCommandsRef.current.size > 200) {
-                const entries = [...processedCommandsRef.current];
-                processedCommandsRef.current = new Set(entries.slice(-100));
+              // Cap processed commands to prevent unbounded growth.
+              // Use a simple clear instead of spread+slice to avoid GC churn in the render loop.
+              if (processedCommandsRef.current.size > 500) {
+                processedCommandsRef.current.clear();
               }
             }
           }
 
-          // Update relationship overlay
-          if (overlayLayerRef.current) {
-            const positions = new Map<string, { x: number; y: number }>();
-            for (const agent of agentsRef.current) {
-              positions.set(agent.agentId, { x: agent.targetX, y: agent.targetY });
+          // Update activity emoji per agent based on lastAction
+          if (agentLayerRef.current) {
+            const states = agentStatesRef.current;
+            const agentList = agentsRef.current;
+            for (let i = 0; i < agentList.length; i++) {
+              const agentState = states[agentList[i].agentId];
+              const emoji = actionToEmoji(agentState?.lastAction);
+              agentLayerRef.current.setActivity(agentList[i].agentId, emoji);
             }
-            const rels = overlayLayerRef.current.extractRelationships(
-              agentsRef.current,
-              agentStatesRef.current,
-            );
-            overlayLayerRef.current.updateRelationships(rels, positions);
           }
 
-          // Report positions
-          const positions = new Map<
-            string,
-            { x: number; y: number; locationId: string | null }
-          >();
-          for (const agent of agentsRef.current) {
-            positions.set(agent.agentId, {
-              x: agent.targetX,
-              y: agent.targetY,
-              locationId: agent.locationId,
-            });
+          // Update relationship overlay (every frame for smooth line following)
+          if (overlayLayerRef.current) {
+            overlayPositions.clear();
+            const agents = agentsRef.current;
+            for (let i = 0; i < agents.length; i++) {
+              overlayPositions.set(agents[i].agentId, {
+                x: agents[i].targetX,
+                y: agents[i].targetY,
+              });
+            }
+            const rels = overlayLayerRef.current.extractRelationships(
+              agents,
+              agentStatesRef.current,
+            );
+            overlayLayerRef.current.updateRelationships(rels, overlayPositions);
           }
-          onPositionsUpdateRef.current(positions);
+
+          // Report positions (throttled — no need to update React state at 60fps)
+          frameCounter++;
+          if (frameCounter >= POSITION_REPORT_INTERVAL) {
+            frameCounter = 0;
+            reportPositions.clear();
+            const agents = agentsRef.current;
+            for (let i = 0; i < agents.length; i++) {
+              reportPositions.set(agents[i].agentId, {
+                x: agents[i].currentX,
+                y: agents[i].currentY,
+                locationId: agents[i].locationId,
+              });
+            }
+            onPositionsUpdateRef.current(reportPositions);
+          }
         });
       })
       .catch((err) => {
@@ -255,6 +321,7 @@ export function TownCanvas({
 
     return () => {
       destroyed = true;
+      abortController.abort();
       agentLayerRef.current?.destroy();
       agentLayerRef.current = null;
       overlayLayerRef.current?.destroy();
@@ -279,6 +346,10 @@ export function TownCanvas({
 function fitToViewport(app: Application, parsed: ParsedMap): void {
   const parent = app.canvas.parentElement;
   if (!parent) return;
+
+  // Guard against zero-size maps or zero-size containers
+  if (parsed.pixelWidth <= 0 || parsed.pixelHeight <= 0) return;
+  if (parent.clientWidth <= 0 || parent.clientHeight <= 0) return;
 
   const scaleX = parent.clientWidth / parsed.pixelWidth;
   const scaleY = parent.clientHeight / parsed.pixelHeight;

@@ -97,6 +97,32 @@ export class SpeechBubble {
     return this.active;
   }
 
+  /** Returns the base Y offset (before any external stacking adjustment). */
+  getBaseY(): number {
+    return this.container.y;
+  }
+
+  /** Returns the rendered height of the bubble including the tail. */
+  getHeight(): number {
+    if (!this.active) return 0;
+    return this.bg.height + TAIL_SIZE;
+  }
+
+  /** Returns the rendered width of the bubble. */
+  getWidth(): number {
+    if (!this.active) return 0;
+    return this.bg.width;
+  }
+
+  /** Apply an additional Y offset for stacking (added on top of the base position). */
+  applyStackOffset(offsetY: number): void {
+    if (!this.active) return;
+    // Recompute base position and apply stack offset
+    const textHeight = this.textObj.height;
+    const bgHeight = textHeight + PADDING * 2;
+    this.container.y = -(bgHeight + TAIL_SIZE + 16) + offsetY;
+  }
+
   destroy(): void {
     this.container.destroy({ children: true });
   }

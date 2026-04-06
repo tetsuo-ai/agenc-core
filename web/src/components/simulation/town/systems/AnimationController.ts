@@ -50,8 +50,12 @@ export class AnimationController {
         this.frameIndex = (this.frameIndex + 1) % FRAMES_PER_DIRECTION;
       }
     } else {
-      this.frameIndex = 0;
-      this.frameProgress = 0;
+      // Idle: cycle frames at 1/3 speed for subtle breathing animation
+      this.frameProgress += ANIMATION_SPEED * 0.3 * delta;
+      if (this.frameProgress >= 1) {
+        this.frameProgress -= 1;
+        this.frameIndex = (this.frameIndex + 1) % FRAMES_PER_DIRECTION;
+      }
     }
 
     return {

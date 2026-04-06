@@ -3,7 +3,7 @@
  * Phase 4: replay scrubber, multiple maps.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AgentState, SimulationEvent } from '../useSimulation';
 import { TownCanvas } from './TownCanvas';
 import { useTownState } from './hooks/useTownState';
@@ -32,17 +32,31 @@ export function TownView({ worldId, agentStates, events, onInspectAgent }: TownV
 
   const { viewport, handlers, resetView } = useViewport(1);
 
-  // Load map — use custom map if available, otherwise try default, and generate if default fails
+  // Ref to latest agentStates so the fallback generator can read them without
+  // the effect re-firing every time agentStates changes (which would cause an
+  // infinite fetch-and-reinit loop since agentStates gets a new reference each render).
+  const agentStatesRef = useRef(agentStates);
+  agentStatesRef.current = agentStates;
+
+  // Load map — use custom map if available, otherwise try default, and generate if default fails.
+  // IMPORTANT: Only depend on worldId — agentStates is read via ref to avoid re-fetch storms.
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     const config = getMapConfig(worldId);
 
-    loadTiledMap(config.mapJson)
+    // Clear previous map immediately so stale maps don't linger during load
+    setParsedMap(null);
+    setRegistry(null);
+    setMapError(null);
+
+    loadTiledMap(config.mapJson, controller.signal)
       .then((parsed) => {
         if (cancelled) return;
 
+        const base = import.meta.env.BASE_URL ?? '/';
         for (const ts of parsed.tilesets) {
-          if (!ts.image.startsWith('/') && !ts.image.startsWith('http')) {
+          if (!ts.image.startsWith(base) && !ts.image.startsWith('http')) {
             ts.image = config.tilesetBase + ts.image;
           }
         }
@@ -61,7 +75,7 @@ export function TownView({ worldId, agentStates, events, onInspectAgent }: TownV
 
         // If no custom map, generate one from discovered locations
         if (!hasCustomMap(worldId)) {
-          const discoveredLocations = extractDiscoveredLocations(agentStates);
+          const discoveredLocations = extractDiscoveredLocations(agentStatesRef.current);
           if (discoveredLocations.length > 0) {
             const generatedJson = generateDefaultMap(discoveredLocations);
             const parsed = parseTiledMap(generatedJson);
@@ -82,8 +96,9 @@ export function TownView({ worldId, agentStates, events, onInspectAgent }: TownV
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [worldId, agentStates]);
+  }, [worldId]);
 
   const { agents, updatePositions } = useTownState(agentStates, registry);
 
