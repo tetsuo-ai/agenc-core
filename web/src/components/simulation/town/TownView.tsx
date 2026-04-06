@@ -1,12 +1,13 @@
 /**
  * Root layout for the town visualization.
- * Renders TownCanvas with agent overlay + event sidebar.
+ * Phase 3: viewport pan/zoom, relationship overlay, time-of-day.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { AgentState, SimulationEvent } from '../useSimulation';
 import { TownCanvas } from './TownCanvas';
 import { useTownState } from './hooks/useTownState';
+import { useViewport } from './hooks/useViewport';
 import { loadTiledMap } from './maps/TiledMapLoader';
 import { createLocationRegistry, type LocationRegistryInstance } from './systems/LocationRegistry';
 import { getMapConfig } from './config/ScenarioMapRegistry';
@@ -26,6 +27,8 @@ export function TownView({ worldId, agentStates, events, onInspectAgent }: TownV
   const [registry, setRegistry] = useState<LocationRegistryInstance | null>(null);
   const [mapError, setMapError] = useState<string | null>(null);
 
+  const { viewport, handlers, resetView } = useViewport(1);
+
   useEffect(() => {
     let cancelled = false;
     const config = getMapConfig(worldId);
@@ -34,7 +37,6 @@ export function TownView({ worldId, agentStates, events, onInspectAgent }: TownV
       .then((parsed) => {
         if (cancelled) return;
 
-        // Resolve tileset image paths relative to map base
         for (const ts of parsed.tilesets) {
           if (!ts.image.startsWith('/') && !ts.image.startsWith('http')) {
             ts.image = config.tilesetBase + ts.image;
@@ -63,12 +65,19 @@ export function TownView({ worldId, agentStates, events, onInspectAgent }: TownV
 
   const { agents, updatePositions } = useTownState(agentStates, registry);
 
-  // Interpret recent events into visual commands (speech bubbles, actions)
   const commands = useMemo(() => {
-    // Only interpret last 10 events to avoid flooding
     const recent = events.slice(-10);
     return interpretEvents(recent);
   }, [events]);
+
+  // Extract time-of-day from any agent's worldProjection clock
+  const timeOfDay = useMemo(() => {
+    for (const state of Object.values(agentStates)) {
+      const tod = state.worldProjection?.clock?.time_of_day;
+      if (tod) return tod;
+    }
+    return null;
+  }, [agentStates]);
 
   const handlePositionsUpdate = useCallback(
     (positions: Map<string, { x: number; y: number; locationId: string | null }>) => {
@@ -100,20 +109,42 @@ export function TownView({ worldId, agentStates, events, onInspectAgent }: TownV
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
-      <div className="flex-1 min-h-0 min-w-0 bg-gray-950">
+      <div className="relative flex-1 min-h-0 min-w-0 bg-gray-950">
         {parsedMap ? (
           <TownCanvas
             parsedMap={parsedMap}
             agents={agents}
+            agentStates={agentStates}
             commands={commands}
+            viewport={viewport}
+            timeOfDay={timeOfDay}
             onAgentPositionsUpdate={handlePositionsUpdate}
             onAgentClick={handleAgentClick}
+            onWheel={handlers.onWheel}
+            onPointerDown={handlers.onPointerDown}
+            onPointerMove={handlers.onPointerMove}
+            onPointerUp={handlers.onPointerUp}
           />
         ) : (
           <div className="flex h-full items-center justify-center text-green-700 font-mono text-sm">
             Loading map...
           </div>
         )}
+        {/* Viewport controls overlay */}
+        <div className="absolute bottom-2 right-2 flex gap-1">
+          <button
+            onClick={resetView}
+            className="border border-green-800 bg-black/70 px-2 py-0.5 text-xs text-green-400 hover:bg-green-950"
+            type="button"
+          >
+            Reset
+          </button>
+          {timeOfDay && (
+            <span className="border border-green-900 bg-black/70 px-2 py-0.5 text-xs text-green-600">
+              {timeOfDay}
+            </span>
+          )}
+        </div>
       </div>
       <div className="w-64 min-h-0 shrink-0 overflow-y-auto border-l border-green-800">
         <EventTimeline events={events} />
