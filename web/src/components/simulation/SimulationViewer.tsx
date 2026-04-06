@@ -9,6 +9,9 @@ import { AgentCard } from './AgentCard';
 import { EventTimeline } from './EventTimeline';
 import { WorldStatePanel } from './WorldStatePanel';
 import { AgentInspector } from './AgentInspector';
+import { TownView } from './town/TownView';
+
+type ViewMode = 'timeline' | 'town';
 
 interface SimulationViewerProps {
   bridgeUrl?: string;
@@ -26,6 +29,7 @@ export function SimulationViewer({
   onBackToDashboard,
 }: SimulationViewerProps) {
   const [inspectedAgent, setInspectedAgent] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>('timeline');
   const initialStatus = useMemo(() => buildSimulationStatus(simulation), [simulation]);
   const { state, play, pause, step, stop } = useSimulation({
     simulationId: simulation.simulation_id,
@@ -82,15 +86,24 @@ export function SimulationViewer({
             <span>Max {simulation.max_steps}</span>
           </>
         )}
-        {onBackToDashboard && (
+        <div className="ml-auto flex items-center gap-2">
           <button
-            onClick={onBackToDashboard}
-            className="ml-auto border border-green-800 px-2 py-0.5 text-green-300 hover:bg-green-950"
+            onClick={() => setViewMode(viewMode === 'timeline' ? 'town' : 'timeline')}
+            className="border border-green-700 px-2 py-0.5 text-green-300 hover:bg-green-950"
             type="button"
           >
-            Back to Dashboard
+            {viewMode === 'timeline' ? 'Town View' : 'Timeline'}
           </button>
-        )}
+          {onBackToDashboard && (
+            <button
+              onClick={onBackToDashboard}
+              className="border border-green-800 px-2 py-0.5 text-green-300 hover:bg-green-950"
+              type="button"
+            >
+              Back to Dashboard
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-2 border-b border-green-950 px-3 py-1 text-xs">
@@ -125,34 +138,42 @@ export function SimulationViewer({
         )}
       </div>
 
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        <div className="min-h-0 w-64 shrink-0 overflow-y-auto border-r border-green-800 p-2 xl:w-72">
-          <div className="mb-2 text-xs font-bold tracking-wider text-green-600">
-            AGENTS ({Object.keys(state.agentStates).length || simulation.agent_ids.length})
-          </div>
-          {Object.entries(state.agentStates).map(([id, agentState]) => (
-            <div
-              key={id}
-              onClick={() => setInspectedAgent(id)}
-              className="cursor-pointer"
-            >
-              <AgentCard agentId={id} agent={agentState} />
+      {viewMode === 'town' ? (
+        <TownView
+          worldId={simulation.world_id}
+          agentStates={state.agentStates}
+          events={state.events}
+        />
+      ) : (
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <div className="min-h-0 w-64 shrink-0 overflow-y-auto border-r border-green-800 p-2 xl:w-72">
+            <div className="mb-2 text-xs font-bold tracking-wider text-green-600">
+              AGENTS ({Object.keys(state.agentStates).length || simulation.agent_ids.length})
             </div>
-          ))}
-          {Object.keys(state.agentStates).length === 0 && simulation.agent_ids.length > 0 && (
-            <div className="p-2 text-xs text-green-800">
-              {state.transportState === 'replay-hydrating' ? 'Hydrating agent state...' : 'Waiting for agent data...'}
-              <div className="mt-1 text-green-900">
-                Agents: {simulation.agent_ids.join(', ')}
+            {Object.entries(state.agentStates).map(([id, agentState]) => (
+              <div
+                key={id}
+                onClick={() => setInspectedAgent(id)}
+                className="cursor-pointer"
+              >
+                <AgentCard agentId={id} agent={agentState} />
               </div>
-            </div>
-          )}
-        </div>
+            ))}
+            {Object.keys(state.agentStates).length === 0 && simulation.agent_ids.length > 0 && (
+              <div className="p-2 text-xs text-green-800">
+                {state.transportState === 'replay-hydrating' ? 'Hydrating agent state...' : 'Waiting for agent data...'}
+                <div className="mt-1 text-green-900">
+                  Agents: {simulation.agent_ids.join(', ')}
+                </div>
+              </div>
+            )}
+          </div>
 
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-          <EventTimeline events={state.events} />
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            <EventTimeline events={state.events} />
+          </div>
         </div>
-      </div>
+      )}
 
       <WorldStatePanel
         agentStates={state.agentStates}
