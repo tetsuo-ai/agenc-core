@@ -257,7 +257,7 @@ function countStructuredBulletLines(messageText: string): number {
     .length;
 }
 
-function collectPlannerRequestSignals(
+export function collectPlannerRequestSignals(
   messageText: string,
   history: readonly LLMMessage[],
 ): PlannerRequestSignals {
@@ -467,14 +467,18 @@ export function assessPlannerDecision(
   };
 }
 
-export function requestRequiresToolGroundedExecution(
-  messageText: string,
-): boolean {
-  if (
+export function isDialogueOnlyDirectTurnMessage(messageText: string): boolean {
+  return (
     isDialogueOnlyExactResponseTurn(messageText) ||
     isDialogueOnlyMemoryTurn(messageText) ||
     isDialogueOnlyRecallTurn(messageText)
-  ) {
+  );
+}
+
+export function requestRequiresToolGroundedExecution(
+  messageText: string,
+): boolean {
+  if (isDialogueOnlyDirectTurnMessage(messageText)) {
     return false;
   }
 
@@ -826,6 +830,8 @@ export function buildPlannerMessages(
   const schemaTargetArtifact =
     groundedPlanArtifactRequest || planArtifactExecutionRequest
       ? schemaPlanArtifact
+      : implementFromArtifactRequest
+      ? schemaWorkspaceRoot
       : (
           canonicalPlannerWorkspaceRoot
             ? `${canonicalPlannerWorkspaceRoot}/src`
@@ -1025,6 +1031,7 @@ export function buildPlannerMessages(
       content:
         "The named planning artifact is the source specification for implementation work, not the primary artifact to rewrite. " +
         "Plan code changes, build/test verification, and bounded delegated implementation around the source spec. " +
+        "Unless the user explicitly bounded mutable scope to a narrower subtree, the single mutable implementation owner should own the workspace root so it can update source files, headers, tests, and root config files required by the plan. " +
         "Do not collapse the task into editing the planning artifact unless the user explicitly asks to update that artifact. " +
         "A plan that only reads the plan artifact, lists files, or produces read-only analysis is invalid for this request class. " +
         "Emit at least one concrete mutable implementation step, or a deterministic build/test-backed mutation path that changes owned source artifacts.",
@@ -3070,6 +3077,32 @@ function stepAuthorsNodeManifestOrConfig(
   );
 }
 
+const SOURCE_FILE_TARGET_RE =
+  /(?:^|\/)(?:src|lib|app|server|client|cmd|pkg|include|internal|tests?|spec)\/.+\.(?:c|cc|cpp|cxx|h|hpp|m|mm|rs|go|py|rb|php|java|kt|swift|cs|js|jsx|ts|tsx)$/i;
+const SCAFFOLD_SOURCE_TEXT_RE =
+  /\b(?:implement|implemented|implementation|entry files?|source files?|app\.tsx|index\.(?:ts|tsx|js|jsx|c|cpp|py|go|rs))\b/i;
+
+function stepScaffoldAuthorsImplementationSources(
+  step: PlannerSubAgentTaskStepIntent,
+): boolean {
+  const executionContext = step.executionContext;
+  const scaffoldLike =
+    executionContext?.stepKind === "delegated_scaffold" ||
+    executionContext?.effectClass === "filesystem_scaffold";
+  if (!scaffoldLike) {
+    return false;
+  }
+  const targetArtifacts = executionContext?.targetArtifacts ?? [];
+  if (targetArtifacts.some((artifact) => SOURCE_FILE_TARGET_RE.test(artifact))) {
+    return true;
+  }
+  const combined = collectPlannerSubagentStepText(step);
+  return (
+    SCAFFOLD_SOURCE_TEXT_RE.test(combined) &&
+    !/\bno source code yet\b/i.test(combined)
+  );
+}
+
 function stepObjectiveOrInputRequiresInstallSensitiveNodeVerification(
   step: PlannerSubAgentTaskStepIntent,
 ): boolean {
@@ -3736,19 +3769,27 @@ export function validatePlannerGraph(
       acceptanceCriteria: step.acceptanceCriteria,
       requiredToolCapabilities: step.requiredToolCapabilities,
     });
-    if (scopeAssessment.ok) continue;
+    if (scopeAssessment.ok && !stepScaffoldAuthorsImplementationSources(step)) {
+      continue;
+    }
+    const phases = scopeAssessment.ok
+      ? ["setup", "implementation"]
+      : scopeAssessment.phases;
+    const error = scopeAssessment.ok
+      ? "Scaffold-only delegated steps must stay source-free. Move starter source-file implementation into a later dependent implementation step."
+      : scopeAssessment.error;
     diagnostics.push(
       createPlannerDiagnostic(
         "validation",
         "subagent_step_needs_decomposition",
-        `Planner subagent step "${step.name}" is overloaded: ${scopeAssessment.error}`,
+        `Planner subagent step "${step.name}" is overloaded: ${error}`,
         {
           stepName: step.name,
-          phases: scopeAssessment.phases.join(","),
+          phases: phases.join(","),
           suggestedSteps:
             scopeAssessment.decomposition?.suggestedSteps
               .map((suggestion) => suggestion.name)
-              .join(",") ?? "",
+              .join(",") ?? "scaffold_configs,implement_sources",
         },
       ),
     );
@@ -4124,6 +4165,9 @@ export function validatePlannerStepContracts(
     }
     if (artifactIntent === "implement_from_artifact") {
       diagnostics.push(...validatePlannerPlanArtifactExecutionOwnership(plannerPlan));
+      diagnostics.push(
+        ...validateImplementFromArtifactMutableScope(plannerPlan, messageText),
+      );
       if (!plannerPlanHasMutableImplementationPath(plannerPlan)) {
         diagnostics.push(
           createPlannerDiagnostic(
@@ -4329,10 +4373,15 @@ function plannerArtifactMentionHasSourceCue(
     String.raw`\b(?:implement|execute|complete|finish|carry\s+out|apply|fix|repair|refactor|ship)\b[\s\S]{0,80}?\b(?:in|from|using|following|per|according to)\b[\s\S]{0,32}?${wrappedTarget}`,
     "i",
   );
+  const directImplementationCueTarget = new RegExp(
+    String.raw`\b(?:implement|execute|complete|finish|carry\s+out|apply|fix|repair|refactor|ship)\b[\s\S]{0,24}?${wrappedTarget}\b`,
+    "i",
+  );
   return (
     sourceCueBeforeTarget.test(messageText) ||
     sourceCueAfterTarget.test(messageText) ||
-    implementationCueBeforeTarget.test(messageText)
+    implementationCueBeforeTarget.test(messageText) ||
+    directImplementationCueTarget.test(messageText)
   );
 }
 export function extractPlannerSourceArtifactTargets(
@@ -5069,6 +5118,65 @@ function collectPlannerWritableArtifactTargets(
   return [...targets];
 }
 
+function plannerPathMatchesWorkspaceRoot(
+  rawPath: string | undefined,
+  workspaceRoot: string,
+): boolean {
+  if (typeof rawPath !== "string") {
+    return false;
+  }
+  return normalizePlannerArtifactTarget(rawPath) ===
+    normalizePlannerArtifactTarget(workspaceRoot);
+}
+
+function validateImplementFromArtifactMutableScope(
+  plannerPlan: PlannerPlan,
+  messageText: string,
+): readonly PlannerDiagnostic[] {
+  const requestedSourceArtifacts = extractPlannerSourceArtifactTargets(messageText);
+  if (requestedSourceArtifacts.length === 0) {
+    return [];
+  }
+
+  const expectedWorkspaceRoot = normalizeWorkspaceRoot(
+    pathDirname(requestedSourceArtifacts[0] ?? ""),
+  );
+  if (!expectedWorkspaceRoot) {
+    return [];
+  }
+
+  const mutableSubagentSteps = plannerPlan.steps.filter(
+    (step): step is PlannerSubAgentTaskStepIntent =>
+      step.stepType === "subagent_task" &&
+      plannerStepHasMutableImplementationAuthority(step),
+  );
+  if (mutableSubagentSteps.length === 0) {
+    return [];
+  }
+
+  const hasWorkspaceOwner = mutableSubagentSteps.some((step) =>
+    (step.executionContext?.targetArtifacts ?? []).some((artifactPath) =>
+      plannerPathMatchesWorkspaceRoot(artifactPath, expectedWorkspaceRoot)
+    )
+  );
+  if (hasWorkspaceOwner) {
+    return [];
+  }
+
+  return [
+    createPlannerDiagnostic(
+      "validation",
+      "planner_implementation_scope_too_narrow",
+      "Implement-from-artifact plans with delegated mutable execution must give the single mutable owner the workspace root unless the user explicitly bounded write scope",
+      {
+        workspaceRoot: expectedWorkspaceRoot,
+        writableTargets: collectPlannerWritableArtifactTargets(plannerPlan).join(","),
+        sourceArtifacts: requestedSourceArtifacts.join(","),
+      },
+    ),
+  ];
+}
+
 function collectPlannerRuntimeTodoArtifactTargets(
   plannerPlan: PlannerPlan,
 ): readonly string[] {
@@ -5321,6 +5429,15 @@ export function buildPlannerStepContractRefinementHint(
           "for implement-from-plan requests, the executable plan must include at least one mutable implementation step or deterministic build/test-backed mutation path. " +
           "Do not emit an analysis-only delegated research/review step, do not say \"do not implement code yet\" when the user asked for implementation, " +
           "and do not return a plan whose only action is reading PLAN.md or listing the workspace"
+        );
+      }
+      if (diagnostic.code === "planner_implementation_scope_too_narrow") {
+        const workspaceRoot =
+          readDiagnosticDetail(diagnostic, "workspaceRoot") ??
+          "the workspace root";
+        return (
+          `for implement-from-artifact requests, give the single mutable implementation owner ${workspaceRoot} as its writable target scope unless the user explicitly bounded writes to a narrower subtree. ` +
+          "Do not constrain the child to `/src` only when the requested implementation can require headers, tests, configs, and other workspace files"
         );
       }
       if (

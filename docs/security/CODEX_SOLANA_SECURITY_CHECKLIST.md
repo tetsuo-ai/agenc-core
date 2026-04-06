@@ -69,28 +69,33 @@ npm --prefix web run build
 3. Security MCP healthcheck:
 
 ```bash
-node scripts/check-security-mcp-stack.mjs --config mcp/security-stack.mcp.json --verbose
+# check-security-mcp-stack.mjs has been removed (see cleanup/dead-code-audit).
+# Use the /security-mcp-sweep skill or verify MCP server connectivity manually.
 ```
 
 4. Solana Fender program scan plus baseline gate:
 
 ```bash
 mkdir -p .tmp/security-mcp-sweep
-node scripts/solana-fender-mcp.mjs check-program programs/agenc-coordination > .tmp/security-mcp-sweep/fender-program.txt
-node scripts/check-fender-baseline.mjs --scan .tmp/security-mcp-sweep/fender-program.txt --baseline docs/security/fender-medium-baseline.json
+# solana-fender-mcp.mjs and check-fender-baseline.mjs have been removed
+# (see cleanup/dead-code-audit). Use the npm run wrappers instead:
+npm run -s fender:gate:program
 ```
 
 5. Solana Fender full-repo scan plus baseline gate when runtime, MCP, or program boundaries changed:
 
 ```bash
-node scripts/solana-fender-mcp.mjs check-program . > .tmp/security-mcp-sweep/fender-full.txt
-node scripts/check-fender-baseline.mjs --scan .tmp/security-mcp-sweep/fender-full.txt --baseline docs/security/fender-full-baseline.json
+# solana-fender-mcp.mjs and check-fender-baseline.mjs have been removed
+# (see cleanup/dead-code-audit). Use the npm run wrappers instead:
+npm run -s fender:gate:full
 ```
 
 6. GitGuardian MCP scan for repo secrets:
 
 ```bash
-node scripts/gitguardian-mcp-scan.mjs --profile mcp/security-stack.mcp.json --scope . --output .tmp/security-mcp-sweep/gitguardian-mcp.json --fail-on-error
+# gitguardian-mcp-scan.mjs has been removed (see cleanup/dead-code-audit).
+# Use the npm run wrapper instead:
+npm run -s security:gitguardian:mcp:scan -- --scope . --output .tmp/security-mcp-sweep/gitguardian-mcp.json
 ```
 
 7. Devnet smoke when write flows, authority handling, or market CLI paths changed:

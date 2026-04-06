@@ -95,6 +95,7 @@ describe("completion-progress", () => {
       remainingRequirements: [] as const,
       reusableEvidence: [] as const,
       updatedAt: 20,
+      contractFingerprint: previous?.contractFingerprint,
     };
 
     const merged = mergeWorkflowProgressSnapshots({
@@ -316,6 +317,64 @@ describe("completion-progress", () => {
     expect(merged?.reusableEvidence).toEqual([]);
   });
 
+  it("does not reuse verifier evidence when either snapshot is missing a contract fingerprint", () => {
+    const previous = {
+      ...deriveWorkflowProgressSnapshot({
+        stopReason: "completed",
+        completionState: "needs_verification",
+        toolCalls: [
+          {
+            name: "system.bash",
+            args: { command: "npm test" },
+            result: JSON.stringify({
+              stdout: "ok",
+              stderr: "",
+              exitCode: 0,
+              __agencVerification: {
+                category: "build",
+                repoLocal: true,
+                command: "npm test",
+              },
+            }),
+            isError: false,
+          },
+        ],
+        verificationContract: {
+          workspaceRoot: "/workspace",
+          targetArtifacts: ["/workspace/src/main.c"],
+          verificationMode: "mutation_required",
+          completionContract: {
+            taskClass: "build_required",
+            placeholdersAllowed: false,
+            partialCompletionAllowed: false,
+            placeholderTaxonomy: "implementation",
+          },
+        },
+        updatedAt: 5,
+      }),
+      contractFingerprint: undefined,
+    };
+    const next = {
+      completionState: "completed" as const,
+      stopReason: "completed" as const,
+      requiredRequirements: ["workflow_verifier_pass"] as const,
+      satisfiedRequirements: ["workflow_verifier_pass"] as const,
+      remainingRequirements: [] as const,
+      reusableEvidence: [] as const,
+      updatedAt: 15,
+      contractFingerprint: undefined,
+    };
+
+    const merged = mergeWorkflowProgressSnapshots({ previous, next });
+
+    expect(merged).toMatchObject({
+      completionState: "completed",
+      satisfiedRequirements: ["workflow_verifier_pass"],
+      remainingRequirements: [],
+    });
+    expect(merged?.reusableEvidence).toEqual([]);
+  });
+
   it("preserves needs-verification carryover when a later snapshot blocks before verifier closure", () => {
     const previous = deriveWorkflowProgressSnapshot({
       stopReason: "completed",
@@ -359,6 +418,7 @@ describe("completion-progress", () => {
       remainingRequirements: [] as const,
       reusableEvidence: [] as const,
       updatedAt: 15,
+      contractFingerprint: previous.contractFingerprint,
     };
 
     const merged = mergeWorkflowProgressSnapshots({

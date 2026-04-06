@@ -33,6 +33,7 @@ import { validateToolCallDetailed } from "../types.js";
 import { LLMProviderError, mapLLMError } from "../errors.js";
 import { ensureLazyImport } from "../lazy-import.js";
 import {
+  assertXaiStructuredOutputToolCompatibility,
   resolveLLMStatefulResponsesConfig,
   type ResolvedLLMStatefulResponsesConfig,
 } from "../provider-capabilities.js";
@@ -40,10 +41,7 @@ import {
   getProviderNativeToolDefinitions,
   type ProviderNativeToolDefinition,
 } from "../provider-native-search.js";
-import {
-  parseStructuredOutputText,
-  supportsXaiStructuredOutputsWithTools,
-} from "../structured-output.js";
+import { parseStructuredOutputText } from "../structured-output.js";
 import { withTimeout } from "../timeout.js";
 import { repairToolTurnSequence, validateToolTurnSequence } from "../tool-turn-validator.js";
 import type { GrokProviderConfig } from "./types.js";
@@ -1261,6 +1259,7 @@ export class GrokProvider implements LLMProvider {
             : parseStructuredOutputText(
               content,
               options.structuredOutput.schema.name,
+              options.structuredOutput.schema.schema,
             ),
         encryptedReasoning,
         finishReason,
@@ -1311,6 +1310,7 @@ export class GrokProvider implements LLMProvider {
               : parseStructuredOutputText(
                 content,
                 options.structuredOutput.schema.name,
+                options.structuredOutput.schema.schema,
               ),
           finishReason: "error",
           error: mappedError,
@@ -1857,19 +1857,12 @@ export class GrokProvider implements LLMProvider {
       }
     }
     if (structuredOutputEnabled && structuredOutputSchema) {
-      if (
-        selectedTools.toolsAttached &&
-        !supportsXaiStructuredOutputsWithTools(
-          typeof params.model === "string" ? params.model : this.config.model,
-        )
-      ) {
-        delete params.tools;
-        delete params.tool_choice;
-        delete params.parallel_tool_calls;
-        selectedTools.toolsAttached = false;
-        selectedTools.toolSuppressionReason =
-          "structured_output_with_tools_unsupported_model";
-      }
+      assertXaiStructuredOutputToolCompatibility({
+        providerName: this.name,
+        model: typeof params.model === "string" ? params.model : this.config.model,
+        structuredOutputRequested: true,
+        toolsRequested: selectedTools.toolsAttached,
+      });
       params.text = {
         format: {
           type: structuredOutputSchema.type,
@@ -2282,7 +2275,7 @@ export class GrokProvider implements LLMProvider {
       return undefined;
     }
     const rawText = this.extractOutputText(response);
-    return parseStructuredOutputText(rawText, schema.name);
+    return parseStructuredOutputText(rawText, schema.name, schema.schema);
   }
 
   private parseUsage(response: Record<string, unknown>): LLMUsage {

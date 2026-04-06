@@ -12,6 +12,7 @@ import {
   SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY,
   SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY,
   SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY,
+  SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY,
   type Session,
 } from "./session.js";
 import type {
@@ -250,4 +251,38 @@ describe("web session runtime state helpers", () => {
       artifactContext,
     });
   });
+  it("persists and hydrates active task context across web-session resume", async () => {
+    const memoryBackend = createMemoryBackendStub();
+    const activeTaskContext = {
+      version: 1 as const,
+      taskLineageId: "task-phase-0",
+      contractFingerprint: "contract-phase-0",
+      turnClass: "workflow_implementation" as const,
+      ownerMode: "workflow_owner" as const,
+      workspaceRoot: "/workspace",
+      sourceArtifacts: ["/workspace/PLAN.md"],
+      targetArtifacts: ["/workspace/src/main.c"],
+      displayArtifact: "PLAN.md",
+    };
+
+    await persistWebSessionRuntimeState(
+      memoryBackend,
+      "web-session-active-task",
+      createSession({
+        [SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY]: activeTaskContext,
+      }),
+    );
+
+    const hydrated = createSession();
+    await hydrateWebSessionRuntimeState(
+      memoryBackend,
+      "web-session-active-task",
+      hydrated,
+    );
+
+    expect(
+      hydrated.metadata[SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY],
+    ).toEqual(activeTaskContext);
+  });
+
 });

@@ -48,6 +48,20 @@ function makeActorResult(
     compacted: false,
     stopReason: "completed",
     completionState: "completed",
+    turnExecutionContract: createSyntheticDialogueTurnExecutionContract(),
+  };
+}
+
+function createSyntheticDialogueTurnExecutionContract() {
+  return {
+    version: 1 as const,
+    turnClass: "dialogue" as const,
+    ownerMode: "none" as const,
+    sourceArtifacts: [],
+    targetArtifacts: [],
+    delegationPolicy: "forbid" as const,
+    contractFingerprint: "synthetic-dialogue-contract",
+    taskLineageId: "synthetic-dialogue-task",
   };
 }
 

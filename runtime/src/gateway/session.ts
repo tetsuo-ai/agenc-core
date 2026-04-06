@@ -20,6 +20,8 @@ export const SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY =
   "statefulArtifactContext";
 export const SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY =
   "statefulArtifactRecords";
+export const SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY =
+  "activeTaskContext";
 
 export function clearStatefulContinuationMetadata(
   metadata: Record<string, unknown>,
@@ -28,6 +30,7 @@ export function clearStatefulContinuationMetadata(
   delete metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY];
   delete metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY];
   delete metadata[SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY];
+  delete metadata[SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY];
 }
 
 // ---------------------------------------------------------------------------
@@ -556,6 +559,7 @@ export class SessionManager {
             (resetCfg.idleMinutes ?? DEFAULT_IDLE_MINUTES) * 60_000;
           if (now - session.lastActiveAt >= idleMs) {
             session.history = [];
+            clearStatefulContinuationMetadata(session.metadata);
             session.lastActiveAt = now;
             resetIds.push(id);
           }
@@ -572,6 +576,7 @@ export class SessionManager {
           // and we are now past the reset time
           if (session.lastActiveAt < resetEpoch && now >= resetEpoch) {
             session.history = [];
+            clearStatefulContinuationMetadata(session.metadata);
             session.lastActiveAt = now;
             resetIds.push(id);
           }
@@ -589,6 +594,7 @@ export class SessionManager {
 
           if (lastDateStr !== nowDateStr && lastDay !== nowDay) {
             session.history = [];
+            clearStatefulContinuationMetadata(session.metadata);
             session.lastActiveAt = now;
             resetIds.push(id);
           }

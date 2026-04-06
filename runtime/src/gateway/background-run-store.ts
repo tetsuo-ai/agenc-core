@@ -1813,6 +1813,10 @@ function coerceCompletionProgress(
       typeof raw.stopReasonDetail === "string" ? raw.stopReasonDetail : undefined,
     validationCode:
       typeof raw.validationCode === "string" ? raw.validationCode as never : undefined,
+    contractFingerprint:
+      typeof raw.contractFingerprint === "string"
+        ? raw.contractFingerprint
+        : undefined,
     verificationContract:
       raw.verificationContract && typeof raw.verificationContract === "object"
         ? raw.verificationContract as never

@@ -22,7 +22,6 @@ This is the repo-level developer-documentation entrypoint for `agenc-core`.
 
 - [../web/README.md](../web/README.md) - web dashboard surface
 - [../mobile/README.md](../mobile/README.md) - mobile client surface
-- [../demo-app/README.md](../demo-app/README.md) - demo UI surface
 - [../containers/desktop/server/README.md](../containers/desktop/server/README.md) - desktop control server
 - `../examples/*/README.md` - runtime-dependent internal examples
 - [../test-fixtures/plugin-kit-channel-adapter/README.md](../test-fixtures/plugin-kit-channel-adapter/README.md) - plugin-kit fixture package

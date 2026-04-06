@@ -21,7 +21,6 @@ This repository currently owns the implementation for:
 - `containers/private-registry/`
 - `web/`
 - `mobile/`
-- `demo-app/`
 - runtime-dependent internal examples
 - `tools/localnet-social/`
 - `tools/proof-harness/`
@@ -96,7 +95,6 @@ agenc-core/
   containers/private-registry/
   web/
   mobile/
-  demo-app/
   examples/
   tools/
   test-fixtures/

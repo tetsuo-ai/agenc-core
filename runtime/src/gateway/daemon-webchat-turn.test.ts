@@ -6,6 +6,7 @@ import type { Logger } from "../utils/logger.js";
 import { hydrateWebSessionRuntimeState } from "./daemon-session-state.js";
 import { executeWebChatConversationTurn } from "./daemon-webchat-turn.js";
 import {
+  SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY,
   SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY,
   type Session,
 } from "./session.js";
@@ -57,14 +58,27 @@ function createMemoryBackendStub(): MemoryBackend {
   };
 }
 
-function createSession(): Session {
+function createSession(metadata: Record<string, unknown> = {}): Session {
   return {
     id: "session:test",
     workspaceId: "default",
     history: [],
     createdAt: 0,
     lastActiveAt: 0,
-    metadata: {},
+    metadata,
+  };
+}
+
+function createSyntheticDialogueTurnExecutionContract() {
+  return {
+    version: 1 as const,
+    turnClass: "dialogue" as const,
+    ownerMode: "none" as const,
+    sourceArtifacts: [],
+    targetArtifacts: [],
+    delegationPolicy: "forbid" as const,
+    contractFingerprint: "synthetic-dialogue-contract",
+    taskLineageId: "synthetic-dialogue-task",
   };
 }
 
@@ -83,6 +97,7 @@ function createResult(
     compacted: false,
     stopReason: "completed",
     completionState: "completed",
+    turnExecutionContract: createSyntheticDialogueTurnExecutionContract(),
     ...overrides,
   };
 }
@@ -863,4 +878,104 @@ You have broad access to this machine via the system.bash tool.`,
       }),
     );
   });
+  it("passes persisted active task context into the executor and stores the updated lineage", async () => {
+    const logger = createLoggerStub();
+    const memoryBackend = createMemoryBackendStub();
+    const session = createSession({
+      [SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY]: {
+        version: 1,
+        taskLineageId: "task-phase-0",
+        contractFingerprint: "phase-0-contract",
+        turnClass: "workflow_implementation",
+        ownerMode: "workflow_owner",
+        workspaceRoot: "/workspace",
+        sourceArtifacts: ["/workspace/PLAN.md"],
+        targetArtifacts: ["/workspace/src/main.c"],
+        displayArtifact: "PLAN.md",
+      },
+    });
+    const sessionMgr = {
+      getOrCreate: vi.fn(() => session),
+      appendMessage: vi.fn(),
+      compact: vi.fn(async () => undefined),
+    } as any;
+    const webChat = {
+      createAbortController: vi.fn(() => new AbortController()),
+      clearAbortController: vi.fn(),
+      send: vi.fn(async () => undefined),
+      pushToSession: vi.fn(),
+      broadcastEvent: vi.fn(),
+    } as any;
+    const hooks = {
+      dispatch: vi.fn(async () => ({ completed: true, payload: {} })),
+    } as any;
+    const signals = {
+      signalThinking: vi.fn(),
+      signalIdle: vi.fn(),
+    };
+    const nextActiveTaskContext = {
+      version: 1 as const,
+      taskLineageId: "task-phase-0",
+      contractFingerprint: "phase-1-contract",
+      turnClass: "workflow_implementation" as const,
+      ownerMode: "workflow_owner" as const,
+      workspaceRoot: "/workspace",
+      sourceArtifacts: ["/workspace/PLAN.md"],
+      targetArtifacts: ["/workspace/src/main.c"],
+      displayArtifact: "PLAN.md",
+    };
+    const execute = vi.fn(async () => createResult({ activeTaskContext: nextActiveTaskContext }));
+
+    await executeWebChatConversationTurn({
+      logger,
+      msg: {
+        sessionId: "session:test",
+        senderId: "operator-1",
+        channel: "webchat",
+        content: "Implement phase 0",
+      },
+      webChat,
+      chatExecutor: { execute } as any,
+      sessionMgr,
+      getSystemPrompt: () => "system",
+      sessionToolHandler: vi.fn() as any,
+      sessionStreamCallback: vi.fn(),
+      signals,
+      hooks,
+      memoryBackend,
+      sessionTokenBudget: 4000,
+      defaultMaxToolRounds: 3,
+      contextWindowTokens: 128000,
+      traceConfig: {
+        enabled: false,
+        includeHistory: true,
+        includeSystemPrompt: true,
+        includeToolArgs: true,
+        includeToolResults: true,
+        includeProviderPayloads: false,
+        maxChars: 20000,
+      },
+      turnTraceId: "trace-active-task",
+      buildToolRoutingDecision: () => undefined,
+      recordToolRoutingOutcome: vi.fn(),
+      getSessionTokenUsage: () => 0,
+      onModelInfo: vi.fn(),
+      onSubagentSynthesis: vi.fn(),
+    });
+
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtimeContext: expect.objectContaining({
+          activeTaskContext: expect.objectContaining({
+            contractFingerprint: "phase-0-contract",
+            taskLineageId: "task-phase-0",
+          }),
+        }),
+      }),
+    );
+    expect(session.metadata[SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY]).toEqual(
+      nextActiveTaskContext,
+    );
+  });
+
 });

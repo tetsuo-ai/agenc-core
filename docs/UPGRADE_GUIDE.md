@@ -184,8 +184,8 @@ yarn run test tests/upgrades.ts
 # Configure for devnet
 solana config set --url devnet
 
-# Use the simulate_upgrade.sh script
-./scripts/simulate_upgrade.sh devnet
+# simulate_upgrade.sh has been removed (see cleanup/dead-code-audit).
+# Use the manual devnet upgrade procedure from Step 2 above instead.
 ```
 
 ### Test Scenarios

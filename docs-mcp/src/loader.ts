@@ -23,7 +23,6 @@ const PACKAGE_DOC_ROOTS = [
   'programs',
   'web',
   'mobile',
-  'demo-app',
   'demo',
   'demos',
   'containers',

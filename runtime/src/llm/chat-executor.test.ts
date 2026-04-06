@@ -77,6 +77,7 @@ function createParams(
     history: [],
     systemPrompt: "You are a helpful assistant.",
     sessionId: "session-1",
+    runtimeContext: { workspaceRoot: "/tmp/chat-executor-test-workspace" },
     ...overrides,
   };
 }
@@ -361,6 +362,25 @@ describe("ChatExecutor", () => {
       expect(secondary.chat).not.toHaveBeenCalled();
     });
 
+    it("falls back when a provider returns a malformed response envelope", async () => {
+      const primary = createMockProvider("primary", {
+        chat: vi
+          .fn<[LLMMessage[], LLMChatOptions?], Promise<LLMResponse>>()
+          .mockResolvedValue(undefined as unknown as LLMResponse),
+      });
+      const secondary = createMockProvider("secondary", {
+        chat: vi
+          .fn<[LLMMessage[], LLMChatOptions?], Promise<LLMResponse>>()
+          .mockResolvedValue(mockResponse({ content: "secondary recovered" })),
+      });
+      const executor = new ChatExecutor({ providers: [primary, secondary] });
+
+      const result = await executor.execute(createParams());
+
+      expect(result.provider).toBe("secondary");
+      expect(result.usedFallback).toBe(true);
+    });
+
     it("retries transient provider failures on same provider before fallback", async () => {
       const primary = createMockProvider("primary", {
         chat: vi
@@ -368,7 +388,8 @@ describe("ChatExecutor", () => {
           .mockRejectedValueOnce(
             new LLMServerError("primary", 503, "temporary outage"),
           )
-          .mockResolvedValueOnce(mockResponse({ content: "recovered" })),
+          .mockResolvedValueOnce(mockResponse({ content: "recovered" }))
+          .mockResolvedValue(mockResponse({ content: "recovered" })),
       });
       const secondary = createMockProvider("secondary");
       const executor = new ChatExecutor({
@@ -890,7 +911,12 @@ describe("ChatExecutor", () => {
       });
 
       const executor = new ChatExecutor({ providers: [provider], toolHandler });
-      await executor.execute(createParams());
+      await executor.execute(
+        createParams({
+          message: createMessage("Set up the pong workspace in /workspace."),
+          runtimeContext: { workspaceRoot: "/workspace" },
+        }),
+      );
 
       const followupMessages = (provider.chat as ReturnType<typeof vi.fn>).mock
         .calls[1][0] as LLMMessage[];
@@ -1170,7 +1196,7 @@ describe("ChatExecutor", () => {
         }),
       );
 
-      expect(provider.chat).toHaveBeenCalledTimes(2);
+      expect(provider.chat).toHaveBeenCalledTimes(3);
       expect(result.stopReason).toBe("validation_error");
       expect(result.stopReasonDetail).toContain(
         "child reported no tool calls",
@@ -1218,7 +1244,7 @@ describe("ChatExecutor", () => {
       const executor = new ChatExecutor({
         providers: [provider],
         toolHandler,
-        allowedTools: ["system.writeFile", "system.bash"],
+        allowedTools: ["system.readFile", "system.writeFile", "system.bash"],
       });
       const result = await executor.execute(
         createParams({
@@ -1287,7 +1313,7 @@ describe("ChatExecutor", () => {
               gate: "workflow_completion_truth",
               decision: "accept",
               ownerClass: "implementation",
-              ownershipSource: "required_tool_evidence",
+              ownershipSource: "turn_contract",
               completionState: "completed",
             }),
           }),
@@ -1350,13 +1376,19 @@ describe("ChatExecutor", () => {
               content:
                 "Created `main.c` and `README.md` with grounded tool execution.",
             }),
+          )
+          .mockResolvedValue(
+            mockResponse({
+              content:
+                "Created `main.c` and `README.md` with grounded tool execution.",
+            }),
           ),
       });
 
       const executor = new ChatExecutor({
         providers: [provider],
         toolHandler,
-        allowedTools: ["system.writeFile", "system.bash"],
+        allowedTools: ["system.readFile", "system.writeFile", "system.bash"],
       });
       const result = await executor.execute(
         createParams({
@@ -1479,7 +1511,7 @@ describe("ChatExecutor", () => {
               gate: "workflow_completion_truth",
               decision: "accept",
               ownerClass: "implementation",
-              ownershipSource: "direct_deterministic_implementation",
+              ownershipSource: "turn_contract",
               reason: "workflow_verification_contract_present",
             }),
           }),
@@ -1487,33 +1519,10 @@ describe("ChatExecutor", () => {
       );
     });
 
-    it("fails implementation-class completion through the workflow gate when no runtime-owned contract exists", async () => {
-      const events: Record<string, unknown>[] = [];
+    it("fails implementation-class turns before execution when no workspace root is available", async () => {
       const toolHandler = vi.fn().mockResolvedValue("wrote source");
       const provider = createMockProvider("primary", {
-        chat: vi
-          .fn()
-          .mockResolvedValueOnce(
-            mockResponse({
-              content: "",
-              finishReason: "tool_calls",
-              toolCalls: [
-                {
-                  id: "tc-missing-contract",
-                  name: "system.writeFile",
-                  arguments: safeJson({
-                    path: "/tmp/phase9-missing-contract/src/main.c",
-                    content: "int main(void) { return 0; }\n",
-                  }),
-                },
-              ],
-            }),
-          )
-          .mockResolvedValueOnce(
-            mockResponse({
-              content: "Implemented src/main.c successfully.",
-            }),
-          ),
+        chat: vi.fn().mockResolvedValue(mockResponse({ content: "should not run" })),
       });
 
       const executor = new ChatExecutor({
@@ -1526,45 +1535,103 @@ describe("ChatExecutor", () => {
           message: createMessage(
             "Implement src/main.c and finish when the implementation is done.",
           ),
-          trace: {
-            onExecutionTraceEvent: (event) => {
-              events.push(event as unknown as Record<string, unknown>);
-            },
-          },
+          runtimeContext: {},
         }),
       );
 
       expect(result.stopReason).toBe("validation_error");
       expect(result.stopReasonDetail).toContain(
+        "requires a resolved workspace root",
+      );
+      expect(result.turnExecutionContract.turnClass).toBe(
+        "workflow_implementation",
+      );
+      expect(provider.chat).not.toHaveBeenCalled();
+      expect(toolHandler).not.toHaveBeenCalled();
+    });
+
+    it("binds direct implementation turns to a workflow contract before tool execution", async () => {
+      const toolHandler = vi.fn(async (name: string) => {
+        if (name === "system.writeFile") {
+          return safeJson({ ok: true });
+        }
+        if (name === "system.bash") {
+          return safeJson({
+            stdout: "ok",
+            stderr: "",
+            exitCode: 0,
+            __agencVerification: {
+              category: "build",
+              repoLocal: true,
+              command: "make test",
+            },
+          });
+        }
+        throw new Error("Unexpected tool " + name);
+      });
+      const provider = createMockProvider("primary", {
+        chat: vi
+          .fn()
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: "",
+              finishReason: "tool_calls",
+              toolCalls: [
+                {
+                  id: "tc-write-contract",
+                  name: "system.writeFile",
+                  arguments: safeJson({
+                    path: "/tmp/phase9-contract/src/main.c",
+                    content: "int main(void) { return 0; }\n",
+                  }),
+                },
+              ],
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: "",
+              finishReason: "tool_calls",
+              toolCalls: [
+                {
+                  id: "tc-build-contract",
+                  name: "system.bash",
+                  arguments: safeJson({ command: "make test" }),
+                },
+              ],
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: "Phase 0 implemented and verified with make test.",
+            }),
+          ),
+      });
+
+      const executor = new ChatExecutor({
+        providers: [provider],
+        toolHandler,
+        allowedTools: ["system.writeFile", "system.bash"],
+      });
+      const result = await executor.execute(
+        createParams({
+          message: createMessage("Implement phase 0 and run make test before finishing."),
+          runtimeContext: { workspaceRoot: "/tmp/phase9-contract" },
+        }),
+      );
+
+      expect(result.turnExecutionContract.turnClass).toBe(
+        "workflow_implementation",
+      );
+      expect(result.stopReasonDetail ?? "").not.toContain(
         "workflow-owned verification closure",
       );
-      expect(result.content).toContain(
-        "workflow-owned verification closure",
-      );
-      expect(events).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            type: "completion_gate_checked",
-            phase: "tool_followup",
-            payload: expect.objectContaining({
-              gate: "workflow_completion_truth",
-              decision: "fail",
-              ownerClass: "implementation",
-            }),
-          }),
-        ]),
-      );
-      expect(events).not.toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            type: "completion_gate_checked",
-            phase: "tool_followup",
-            payload: expect.objectContaining({
-              gate: "legacy_completion_compatibility",
-            }),
-          }),
-        ]),
-      );
+      expect(result.toolCalls.map((toolCall) => toolCall.name)).toEqual([
+        "system.writeFile",
+        "system.bash",
+      ]);
+      expect(result.completionState).not.toBe("blocked");
+      expect(result.stopReason).toBe("completed");
     });
 
     it("reports equivalent completion semantics for direct and planner deterministic implementation", async () => {
@@ -1761,7 +1828,7 @@ describe("ChatExecutor", () => {
               gate: "workflow_completion_truth",
               decision: "accept",
               ownerClass: "documentation",
-              ownershipSource: "required_tool_evidence",
+              ownershipSource: "turn_contract",
             }),
           }),
         ]),
@@ -5072,7 +5139,12 @@ describe("ChatExecutor", () => {
         toolHandler,
         maxToolRounds: 10,
       });
-      const result = await executor.execute(createParams());
+      const result = await executor.execute(
+        createParams({
+          message: createMessage("Set up the pong workspace in /workspace."),
+          runtimeContext: { workspaceRoot: "/workspace" },
+        }),
+      );
 
       // Should have stopped after 3 identical failures, not all 10 rounds
       expect(result.toolCalls.length).toBe(3);
@@ -5187,7 +5259,8 @@ describe("ChatExecutor", () => {
               ],
             }),
           )
-          .mockResolvedValueOnce(mockResponse({ content: "recovered" })),
+          .mockResolvedValueOnce(mockResponse({ content: "recovered" }))
+          .mockResolvedValue(mockResponse({ content: "recovered" })),
       });
 
       const executor = new ChatExecutor({
@@ -5231,7 +5304,8 @@ describe("ChatExecutor", () => {
               ],
             }),
           )
-          .mockResolvedValueOnce(mockResponse({ content: "recovered" })),
+          .mockResolvedValueOnce(mockResponse({ content: "recovered" }))
+          .mockResolvedValue(mockResponse({ content: "recovered" })),
       });
 
       const executor = new ChatExecutor({
@@ -5274,7 +5348,8 @@ describe("ChatExecutor", () => {
               ],
             }),
           )
-          .mockResolvedValueOnce(mockResponse({ content: "recovered" })),
+          .mockResolvedValueOnce(mockResponse({ content: "recovered" }))
+          .mockResolvedValue(mockResponse({ content: "recovered" })),
       });
 
       const executor = new ChatExecutor({
@@ -6128,9 +6203,14 @@ describe("ChatExecutor", () => {
     });
 
     it("injects a recovery hint when a delegated child escapes its workspace root", async () => {
-      const toolHandler = vi.fn().mockResolvedValue(
-        '{"error":"Delegated workspace root violation: path must stay under the delegated workspace root. Keep all filesystem paths under /home/tetsuo/agent-test/terrain-router-ts-2."}',
-      );
+      const toolHandler = vi
+        .fn()
+        .mockResolvedValueOnce(
+          '{"error":"Delegated workspace root violation: path must stay under the delegated workspace root. Keep all filesystem paths under /home/tetsuo/agent-test/terrain-router-ts-2."}',
+        )
+        .mockResolvedValueOnce(
+          '{"path":"/home/tetsuo/agent-test/terrain-router-ts-2/src/index.ts","bytesWritten":24}',
+        );
       const provider = createMockProvider("primary", {
         chat: vi
           .fn()
@@ -6148,7 +6228,22 @@ describe("ChatExecutor", () => {
               ],
             }),
           )
-          .mockResolvedValueOnce(mockResponse({ content: "recovered" })),
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: "",
+              finishReason: "tool_calls",
+              toolCalls: [
+                {
+                  id: "call-2",
+                  name: "system.writeFile",
+                  arguments:
+                    '{"path":"/home/tetsuo/agent-test/terrain-router-ts-2/src/index.ts","content":"export const ok = true;\n"}',
+                },
+              ],
+            }),
+          )
+          .mockResolvedValueOnce(mockResponse({ content: "recovered" }))
+          .mockResolvedValue(mockResponse({ content: "recovered" })),
       });
 
       const executor = new ChatExecutor({
@@ -6156,11 +6251,21 @@ describe("ChatExecutor", () => {
         toolHandler,
         maxToolRounds: 4,
       });
-      await executor.execute(createParams());
+      await executor.execute(
+        createParams({
+          message: createMessage(
+            "Implement src/index.ts within the delegated workspace root only.",
+          ),
+          runtimeContext: {
+            workspaceRoot: "/home/tetsuo/agent-test/terrain-router-ts-2",
+          },
+        }),
+      );
 
-      const secondCallMessages = (provider.chat as ReturnType<typeof vi.fn>)
-        .mock.calls[1][0] as LLMMessage[];
-      const injectedHint = secondCallMessages.find(
+      const followupMessages = (provider.chat as ReturnType<typeof vi.fn>).mock.calls
+        .slice(1)
+        .flatMap((call) => (call[0] as LLMMessage[]) ?? []);
+      const injectedHint = followupMessages.find(
         (msg) =>
           msg.role === "system" &&
           typeof msg.content === "string" &&
@@ -6204,7 +6309,12 @@ describe("ChatExecutor", () => {
         toolHandler,
         maxToolRounds: 10,
       });
-      const result = await executor.execute(createParams());
+      const result = await executor.execute(
+        createParams({
+          message: createMessage("Set up the pong workspace in /workspace."),
+          runtimeContext: { workspaceRoot: "/workspace" },
+        }),
+      );
 
       // All calls had different args, so loop detection should NOT fire
       expect(result.toolCalls.length).toBe(2);
@@ -6243,7 +6353,12 @@ describe("ChatExecutor", () => {
         toolHandler,
         maxToolRounds: 10,
       });
-      const result = await executor.execute(createParams());
+      const result = await executor.execute(
+        createParams({
+          message: createMessage("Set up the pong workspace in /workspace."),
+          runtimeContext: { workspaceRoot: "/workspace" },
+        }),
+      );
 
       // Should stop after 3 fully-failed rounds.
       expect(result.toolCalls.length).toBe(3);
@@ -6279,7 +6394,12 @@ describe("ChatExecutor", () => {
         toolHandler,
         maxToolRounds: 10,
       });
-      const result = await executor.execute(createParams());
+      const result = await executor.execute(
+        createParams({
+          message: createMessage("Set up the pong workspace in /workspace."),
+          runtimeContext: { workspaceRoot: "/workspace" },
+        }),
+      );
 
       expect(result.stopReason).toBe("no_progress");
       expect(result.stopReasonDetail).toContain("All tool calls failed for 3 consecutive rounds");
@@ -6505,7 +6625,16 @@ describe("ChatExecutor", () => {
       });
 
       const executor = new ChatExecutor({ providers: [provider], toolHandler });
-      const result = await executor.execute(createParams());
+      const result = await executor.execute(
+        createParams({
+          message: createMessage(
+            "Set up the neon-heist workspace under /home/tetsuo/git/AgenC by creating the requested folder.",
+          ),
+          runtimeContext: {
+            workspaceRoot: "/home/tetsuo/git/AgenC",
+          },
+        }),
+      );
 
       // Narrative file-creation claim suppression no longer rewrites the response;
       // the executor preserves the model's original response.
@@ -6538,7 +6667,12 @@ describe("ChatExecutor", () => {
       });
 
       const executor = new ChatExecutor({ providers: [provider], toolHandler });
-      const result = await executor.execute(createParams());
+      const result = await executor.execute(
+        createParams({
+          message: createMessage("Set up the pong workspace in /workspace."),
+          runtimeContext: { workspaceRoot: "/workspace" },
+        }),
+      );
 
       expect(result.content).toContain("Created the folder `/workspace/pong`.");
       expect(result.content).not.toContain(
@@ -7938,7 +8072,7 @@ describe("ChatExecutor", () => {
         }),
       );
 
-      expect(result.callUsage.map((entry) => entry.phase)).toEqual(["planner"]);
+      expect(result.callUsage.map((entry) => entry.phase)).toEqual(["planner", "planner_synthesis"]);
       expect(pipelineExecutor.execute).toHaveBeenCalled();
       expect(result.plannerSummary?.used).toBe(true);
     });
@@ -8431,7 +8565,9 @@ describe("ChatExecutor", () => {
 
       expect(provider.chat).toHaveBeenCalledTimes(1);
       expect(pipelineExecutor.execute).toHaveBeenCalledTimes(1);
-      expect(result.callUsage.map((entry) => entry.phase)).toEqual(["planner"]);
+      expect(result.callUsage.map((entry) => entry.phase)).toEqual([
+        "planner",
+      ]);
       expect(result.content).toBe("A1_R1_DONE");
       expect(result.plannerSummary?.used).toBe(true);
       expect(result.plannerSummary?.routeReason).toBe("social_seed_loop");
@@ -10097,22 +10233,13 @@ describe("ChatExecutor", () => {
                 steps: [
                   {
                     name: "setup_workspace",
-                    step_type: "subagent_task",
-                    objective: "Prepare the workspace and dependencies.",
-                    input_contract: "Workspace root is ready for implementation",
-                    acceptance_criteria: ["Workspace is ready for implementation"],
-                    required_tool_capabilities: ["system.writeFile"],
-                    context_requirements: ["prepare implementation workspace"],
-                    execution_context: plannerWriteExecutionContext(
-                      "/tmp/gameplay-app",
-                      {
-                        stepKind: "delegated_scaffold",
-                        effectClass: "filesystem_scaffold",
-                        targetArtifacts: ["package.json", "tsconfig.json"],
-                      },
-                    ),
-                    max_budget_hint: "3m",
-                    can_run_parallel: false,
+                    step_type: "deterministic_tool",
+                    tool: "system.writeFile",
+                    args: {
+                      path: "/tmp/gameplay-app/package.json",
+                      content: '{"name":"gameplay-app"}',
+                    },
+                    onError: "abort",
                   },
                   {
                     name: "implement_core",
@@ -10211,17 +10338,35 @@ describe("ChatExecutor", () => {
             mockResponse({
               content: safeJson({
                 overall: "pass",
-                confidence: 0.92,
+                confidence: 0.96,
                 unresolved: [],
                 steps: [
                   {
-                    name: "implementation_completion",
+                    name: "diagnose_test_failure",
                     verdict: "pass",
-                    confidence: 0.92,
+                    confidence: 0.96,
                     retryable: true,
                     issues: [],
                     summary:
-                      "deterministic implementation outputs and test evidence satisfy the implementation contract",
+                      "Grounded test-failure diagnosis is backed by the cited test file read.",
+                  },
+                  {
+                    name: "repair_unreachable_behavior",
+                    verdict: "pass",
+                    confidence: 0.96,
+                    retryable: true,
+                    issues: [],
+                    summary:
+                      "The repair step cites the failing test evidence and the owned source mutation that fixes the unreachable-path behavior.",
+                  },
+                  {
+                    name: "implementation_completion",
+                    verdict: "pass",
+                    confidence: 0.96,
+                    retryable: true,
+                    issues: [],
+                    summary:
+                      "Deterministic test execution and the grounded repair evidence satisfy the implementation contract.",
                   },
                 ],
               }),
@@ -10236,15 +10381,10 @@ describe("ChatExecutor", () => {
             context: {
               results: {
                 setup_workspace:
-                  completedDelegatedPlannerResult("Workspace prepared", [
-                    {
-                      name: "system.writeFile",
-                      args: {
-                        path: "package.json",
-                        content: "{\"name\":\"gameplay-app\"}",
-                      },
-                    },
-                  ]),
+                  safeJson({
+                    path: "package.json",
+                    status: "written",
+                  }),
                 implement_core:
                   completedDelegatedPlannerResult("Core implemented", [
                     {
@@ -10278,21 +10418,24 @@ describe("ChatExecutor", () => {
             context: {
               results: {
                 diagnose_test_failure:
-                  completedDelegatedPlannerResult("Root cause identified", [
-                    {
-                      name: "system.readFile",
-                      args: {
-                        path: "packages/core/test/index.test.ts",
+                  completedDelegatedPlannerResult(
+                    "Read file packages/core/test/index.test.ts and confirmed the failing test error: findPath() must return Infinity for the unreachable path.",
+                    [
+                      {
+                        name: "system.readFile",
+                        args: {
+                          path: "packages/core/test/index.test.ts",
+                        },
+                        result: safeJson({
+                          path: "packages/core/test/index.test.ts",
+                          content: "expect(findPath()).toBe(Infinity)",
+                        }),
                       },
-                      result: safeJson({
-                        path: "packages/core/test/index.test.ts",
-                        content: "expect(findPath()).toBe(Infinity)",
-                      }),
-                    },
-                  ]),
+                    ],
+                  ),
                 repair_unreachable_behavior:
                   completedDelegatedPlannerResult(
-                    "Unreachable-path behavior repaired",
+                    "Updated file packages/core/src/index.ts so the unreachable path now returns Infinity, matching the failing assertion in file packages/core/test/index.test.ts.",
                     [
                       {
                         name: "system.readFile",
@@ -10326,6 +10469,9 @@ describe("ChatExecutor", () => {
         toolHandler: vi.fn().mockResolvedValue("unused"),
         plannerEnabled: true,
         pipelineExecutor: pipelineExecutor as any,
+        subagentVerifier: {
+          enabled: true,
+        },
         delegationDecision: {
           enabled: true,
           scoreThreshold: 0.2,
@@ -10345,7 +10491,7 @@ describe("ChatExecutor", () => {
         }),
       );
 
-      expect(provider.chat).toHaveBeenCalledTimes(2);
+      expect(provider.chat).toHaveBeenCalledTimes(3);
       expect(pipelineExecutor.execute).toHaveBeenCalledTimes(2);
       const secondPlannerMessages = (provider.chat as ReturnType<typeof vi.fn>)
         .mock.calls[1][0] as LLMMessage[];
@@ -10382,24 +10528,14 @@ describe("ChatExecutor", () => {
                 steps: [
                   {
                     name: "scaffold_black_hole_app",
-                    step_type: "subagent_task",
-                    objective: "Scaffold the black-hole simulation workspace package.",
-                    input_contract: "Umbrella workspace root exists.",
-                    acceptance_criteria: [
-                      "Workspace package manifest and source files exist",
-                    ],
-                    required_tool_capabilities: ["system.writeFile"],
-                    context_requirements: ["umbrella workspace root"],
-                    execution_context: plannerWriteExecutionContext(
-                      "/tmp/agenc-umbrella",
-                      {
-                        stepKind: "delegated_scaffold",
-                        effectClass: "filesystem_scaffold",
-                        targetArtifacts: ["examples/black-hole-simulation"],
-                      },
-                    ),
-                    max_budget_hint: "3m",
-                    can_run_parallel: false,
+                    step_type: "deterministic_tool",
+                    tool: "system.writeFile",
+                    args: {
+                      path: "/tmp/agenc-umbrella/examples/black-hole-simulation/package.json",
+                      content:
+                        '{"name":"black-hole-simulation","scripts":{"build":"vite build"}}',
+                    },
+                    onError: "abort",
                   },
                   {
                     name: "build_black_hole_app",
@@ -10771,22 +10907,13 @@ describe("ChatExecutor", () => {
                 steps: [
                   {
                     name: "setup_workspace",
-                    step_type: "subagent_task",
-                    objective: "Prepare the workspace and dependencies.",
-                    input_contract: "Workspace root is ready for implementation",
-                    acceptance_criteria: ["Workspace is ready for implementation"],
-                    required_tool_capabilities: ["system.writeFile"],
-                    context_requirements: ["prepare implementation workspace"],
-                    execution_context: plannerWriteExecutionContext(
-                      "/tmp/gameplay-app",
-                      {
-                        stepKind: "delegated_scaffold",
-                        effectClass: "filesystem_scaffold",
-                        targetArtifacts: ["package.json", "tsconfig.json"],
-                      },
-                    ),
-                    max_budget_hint: "3m",
-                    can_run_parallel: false,
+                    step_type: "deterministic_tool",
+                    tool: "system.writeFile",
+                    args: {
+                      path: "/tmp/gameplay-app/package.json",
+                      content: '{"name":"gameplay-app"}',
+                    },
+                    onError: "abort",
                   },
                   {
                     name: "implement_core",
@@ -10945,17 +11072,35 @@ describe("ChatExecutor", () => {
               content:
                 safeJson({
                   overall: "pass",
-                  confidence: 0.94,
+                  confidence: 0.96,
                   unresolved: [],
                   steps: [
                     {
-                      name: "implementation_completion",
+                      name: "diagnose_import_failure",
                       verdict: "pass",
-                      confidence: 0.94,
+                      confidence: 0.96,
                       retryable: true,
                       issues: [],
                       summary:
-                        "deterministic implementation outputs and repeated test evidence satisfy the implementation contract",
+                        "Grounded import-failure diagnosis is backed by the cited import-error log.",
+                    },
+                    {
+                      name: "repair_import_failure",
+                      verdict: "pass",
+                      confidence: 0.96,
+                      retryable: true,
+                      issues: [],
+                      summary:
+                        "The import repair is grounded in the log evidence and the owned test-file mutation.",
+                    },
+                    {
+                      name: "implementation_completion",
+                      verdict: "pass",
+                      confidence: 0.96,
+                      retryable: true,
+                      issues: [],
+                      summary:
+                        "The final test run and grounded repair evidence satisfy the implementation contract.",
                     },
                   ],
                 }),
@@ -10969,15 +11114,10 @@ describe("ChatExecutor", () => {
             context: {
               results: {
                 setup_workspace:
-                  completedDelegatedPlannerResult("Workspace prepared", [
-                    {
-                      name: "system.writeFile",
-                      args: {
-                        path: "package.json",
-                        content: "{\"name\":\"gameplay-app\"}",
-                      },
-                    },
-                  ]),
+                  safeJson({
+                    path: "package.json",
+                    status: "written",
+                  }),
                 implement_core:
                   completedDelegatedPlannerResult("Core implemented", [
                     {
@@ -11111,6 +11251,9 @@ describe("ChatExecutor", () => {
         toolHandler: vi.fn().mockResolvedValue("unused"),
         plannerEnabled: true,
         pipelineExecutor: pipelineExecutor as any,
+        subagentVerifier: {
+          enabled: true,
+        },
         delegationDecision: {
           enabled: true,
           scoreThreshold: 0.2,
@@ -11130,7 +11273,7 @@ describe("ChatExecutor", () => {
         }),
       );
 
-      expect(provider.chat).toHaveBeenCalledTimes(3);
+      expect(provider.chat).toHaveBeenCalledTimes(4);
       expect(pipelineExecutor.execute).toHaveBeenCalledTimes(3);
       expect(result.stopReason).toBe("completed");
       expect(result.plannerSummary?.plannerCalls).toBe(3);
@@ -16432,7 +16575,7 @@ describe("ChatExecutor", () => {
                   `${workspaceRoot}/PLAN.md`,
                   `${workspaceRoot}/ANALYSIS.md`,
                 ],
-                target_artifacts: [`${workspaceRoot}/src`],
+                target_artifacts: [workspaceRoot],
                 effect_class: "filesystem_write",
                 verification_mode: "mutation_required",
                 step_kind: "delegated_write",
@@ -16936,7 +17079,6 @@ describe("ChatExecutor", () => {
       expect(result.completionProgress).toMatchObject({
         completionState: "partial",
         remainingRequirements: expect.arrayContaining([
-          "build_verification",
           "request_milestones",
         ]),
         satisfiedMilestoneIds: ["phase_1_impl"],
@@ -16955,6 +17097,7 @@ describe("ChatExecutor", () => {
     it("continues execution when request-level milestones remain even if the prose summary bypasses deferral heuristics", async () => {
       const events: Record<string, unknown>[] = [];
       const toolHandler = vi.fn()
+        .mockResolvedValueOnce("# PLAN\n- phase 1\n- phase 2")
         .mockResolvedValueOnce("wrote phase 1")
         .mockResolvedValueOnce("wrote phase 2");
       const provider = createMockProvider("primary", {
@@ -16965,6 +17108,13 @@ describe("ChatExecutor", () => {
               content: "",
               finishReason: "tool_calls",
               toolCalls: [
+                {
+                  id: "tc-read-plan",
+                  name: "system.readFile",
+                  arguments: safeJson({
+                    path: "/workspace/PLAN.md",
+                  }),
+                },
                 {
                   id: "tc-phase-1",
                   name: "system.writeFile",
@@ -17009,7 +17159,7 @@ describe("ChatExecutor", () => {
       const executor = new ChatExecutor({
         providers: [provider],
         toolHandler,
-        allowedTools: ["system.writeFile", "system.bash"],
+        allowedTools: ["system.readFile", "system.writeFile", "system.bash"],
       });
       const initializeExecutionContext = (
         executor as any
@@ -17098,11 +17248,14 @@ describe("ChatExecutor", () => {
       expect(result.completionState).toBe("completed");
       expect(result.content).toContain("Phase 1");
       expect(result.content).toContain("phase 2");
-      expect(toolHandler).toHaveBeenNthCalledWith(1, "system.writeFile", {
+      expect(toolHandler).toHaveBeenNthCalledWith(1, "system.readFile", {
+        path: "/workspace/PLAN.md",
+      });
+      expect(toolHandler).toHaveBeenNthCalledWith(2, "system.writeFile", {
         path: "/workspace/src/main.c",
         content: "phase 1\n",
       });
-      expect(toolHandler).toHaveBeenNthCalledWith(2, "system.writeFile", {
+      expect(toolHandler).toHaveBeenNthCalledWith(3, "system.writeFile", {
         path: "/workspace/src/jobs.c",
         content: "phase 2\n",
       });
@@ -17250,6 +17403,11 @@ describe("ChatExecutor", () => {
             mockResponse({
               content: "fallback direct execution",
             }),
+          )
+          .mockResolvedValue(
+            mockResponse({
+              content: "fallback direct execution",
+            }),
           ),
       });
       const pipelineExecutor = {
@@ -17274,7 +17432,7 @@ describe("ChatExecutor", () => {
         }),
       );
 
-      expect(provider.chat).toHaveBeenCalledTimes(2);
+      expect(provider.chat).toHaveBeenCalledTimes(3);
       expect(pipelineExecutor.execute).not.toHaveBeenCalled();
       expect(result.plannerSummary?.routeReason).toBe(
         "delegation_veto_score_below_threshold",
@@ -18632,8 +18790,45 @@ describe("ChatExecutor", () => {
               create_root_directory:
                 "mkdir -p /tmp/galaxy-factory completed successfully.",
               implement_workspace: completedDelegatedPlannerResult(
-                "package.json and tsconfig.json were authored, and packages/core/src/index.ts plus packages/cli/src/index.ts now exist with starter TypeScript exports; verification log line 18 confirms the package manifests reference the starters.",
-                ["system.writeFile", "system.readFile", "system.bash"],
+                "package.json, tsconfig.json, and the package-level manifests were authored, and packages/core/src/index.ts plus packages/cli/src/index.ts now exist with starter TypeScript exports; verification log line 18 confirms the package manifests reference the starters.",
+                [
+                  {
+                    name: "system.readFile",
+                    args: { path: "/tmp/galaxy-factory/package.json" },
+                  },
+                  {
+                    name: "system.readFile",
+                    args: { path: "/tmp/galaxy-factory/tsconfig.json" },
+                  },
+                  {
+                    name: "system.writeFile",
+                    args: { path: "/tmp/galaxy-factory/package.json" },
+                  },
+                  {
+                    name: "system.writeFile",
+                    args: { path: "/tmp/galaxy-factory/tsconfig.json" },
+                  },
+                  {
+                    name: "system.writeFile",
+                    args: { path: "/tmp/galaxy-factory/packages/core/package.json" },
+                  },
+                  {
+                    name: "system.writeFile",
+                    args: { path: "/tmp/galaxy-factory/packages/cli/package.json" },
+                  },
+                  {
+                    name: "system.writeFile",
+                    args: { path: "/tmp/galaxy-factory/packages/core/src/index.ts" },
+                  },
+                  {
+                    name: "system.writeFile",
+                    args: { path: "/tmp/galaxy-factory/packages/cli/src/index.ts" },
+                  },
+                  {
+                    name: "system.bash",
+                    args: { command: "pwd", cwd: "/tmp/galaxy-factory" },
+                  },
+                ],
               ),
               verify_workspace: '{"entries":["core","cli"]}',
             },

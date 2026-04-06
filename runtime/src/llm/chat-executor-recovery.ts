@@ -1930,11 +1930,14 @@ export function inferRecoveryHint(
     };
   }
 
-  if (failureTextLower.includes("delegated workspace root violation")) {
+  if (
+    failureTextLower.includes("outside the execution envelope roots for this turn") ||
+    failureTextLower.includes("delegated workspace root violation")
+  ) {
     return {
       key: "delegated-workspace-root-violation",
       message:
-        "This child task is scoped to a delegated workspace root. " +
+        "This child task is scoped to a delegated workspace root and execution envelope. " +
         "Keep file paths under the assigned root, prefer relative paths from that cwd, " +
         "and do not create fallback workspaces elsewhere (for example under `/tmp`).",
       };

@@ -3723,6 +3723,7 @@ function validateAcceptanceVerificationToolEvidence(
   spec: DelegationContractSpec,
   parsedOutput: Record<string, unknown> | undefined,
   toolCalls: readonly DelegationValidationToolCall[] | undefined,
+  deferExecutableOutcomeValidation = false,
 ): DelegationOutputValidationResult | undefined {
   if (!Array.isArray(toolCalls) || (spec.acceptanceCriteria?.length ?? 0) === 0) {
     return undefined;
@@ -3758,9 +3759,18 @@ function validateAcceptanceVerificationToolEvidence(
       );
     }
 
-    const remainingCategories = categories.filter((category) =>
-      category !== "inspection"
-    );
+    const remainingCategories = categories.filter((category) => {
+      if (category === "inspection") {
+        return false;
+      }
+      if (
+        deferExecutableOutcomeValidation &&
+        (category === "build" || category === "test")
+      ) {
+        return false;
+      }
+      return true;
+    });
     if (remainingCategories.length === 0) {
       continue;
     }
@@ -4424,6 +4434,7 @@ export function validateDelegatedOutputContract(params: {
     spec,
     parsedOutput,
     toolCalls,
+    deferExecutableOutcomeValidation,
   );
   if (acceptanceVerificationFailure) return acceptanceVerificationFailure;
 

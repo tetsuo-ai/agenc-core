@@ -17,7 +17,9 @@ import { toErrorMessage } from "../utils/async.js";
 import { buildChatUsagePayload } from "./chat-usage.js";
 import { summarizeLLMFailureForSurface } from "./daemon-llm-failure.js";
 import {
+  buildSessionActiveTaskContext,
   buildSessionStatefulOptions,
+  persistSessionActiveTaskContext,
   persistSessionStatefulContinuation,
   persistWebSessionRuntimeState,
 } from "./daemon-session-state.js";
@@ -269,6 +271,7 @@ export async function executeWebChatConversationTurn(
 
     const abortController = webChat.createAbortController(msg.sessionId);
     const sessionStateful = buildSessionStatefulOptions(session);
+    const sessionActiveTaskContext = buildSessionActiveTaskContext(session);
     const effectiveMaxToolRounds = resolveTurnMaxToolRounds(
       defaultMaxToolRounds,
       toolRoutingDecision,
@@ -295,8 +298,15 @@ export async function executeWebChatConversationTurn(
       systemPrompt: effectiveSystemPrompt,
       sessionId: msg.sessionId,
       runtimeContext:
-        typeof runtimeWorkspaceRoot === "string"
-          ? { workspaceRoot: runtimeWorkspaceRoot }
+        typeof runtimeWorkspaceRoot === "string" || sessionActiveTaskContext
+          ? {
+              ...(typeof runtimeWorkspaceRoot === "string"
+                ? { workspaceRoot: runtimeWorkspaceRoot }
+                : {}),
+              ...(sessionActiveTaskContext
+                ? { activeTaskContext: sessionActiveTaskContext }
+                : {}),
+            }
           : undefined,
       toolHandler: sessionToolHandler,
       onStreamChunk: sessionStreamCallback,
@@ -444,6 +454,7 @@ export async function executeWebChatConversationTurn(
     }
 
     persistSessionStatefulContinuation(session, result);
+    persistSessionActiveTaskContext(session, result);
     if (result.compacted) {
       await sessionMgr.compact(session.id);
     }

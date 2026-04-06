@@ -91,7 +91,7 @@ Migration expectations:
 | --- | --- |
 | operator console / TUI | primary mature operator surface |
 | `web/` | chosen daemon-backed dashboard surface |
-| `demo-app/` | move out of product path into demo/example track |
+| `demo-app/` | retired per ADR-003 |
 
 ## Runtime handoff rule
 

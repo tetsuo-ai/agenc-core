@@ -33,7 +33,6 @@ declared on-chain scope; informational notes are listed where applicable.
 - `containers/desktop/`
 - `mcp/src/tools/`
 - `web/`
-- `demo-app/`
 
 ## Threat Model
 

@@ -1276,24 +1276,7 @@ describe("GrokProvider", () => {
     });
   });
 
-  it("suppresses tools when structured outputs are combined with tools on non-Grok-4 models", async () => {
-    mockCreate.mockResolvedValueOnce(
-      makeCompletion({
-        output_text: '{"summary":"repo looks healthy"}',
-        output: [
-          {
-            type: "message",
-            content: [
-              {
-                type: "output_text",
-                text: '{"summary":"repo looks healthy"}',
-              },
-            ],
-          },
-        ],
-      }),
-    );
-
+  it("rejects structured outputs with tools on non-Grok-4 models instead of silently degrading", async () => {
     const provider = new GrokProvider({
       apiKey: "test-key",
       model: "grok-code-fast-1",
@@ -1312,63 +1295,70 @@ describe("GrokProvider", () => {
       ],
     });
 
-    const response = await provider.chat(
-      [{ role: "user", content: "inspect the repo and summarize findings" }],
-      {
-        structuredOutput: {
-          enabled: true,
-          schema: {
-            type: "json_schema",
-            name: "repo_summary",
+    await expect(
+      provider.chat(
+        [{ role: "user", content: "inspect the repo and summarize findings" }],
+        {
+          structuredOutput: {
+            enabled: true,
             schema: {
-              type: "object",
-              properties: {
-                summary: { type: "string" },
+              type: "json_schema",
+              name: "repo_summary",
+              schema: {
+                type: "object",
+                properties: {
+                  summary: { type: "string" },
+                },
+                required: ["summary"],
               },
-              required: ["summary"],
             },
           },
         },
-      },
+      ),
+    ).rejects.toThrow(/structured outputs with tools require a Grok 4 model/i);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed structured output payloads instead of treating them as success", async () => {
+    mockCreate.mockResolvedValueOnce(
+      makeCompletion({
+        output_text: '["repo looks healthy"]',
+        output: [
+          {
+            type: "message",
+            content: [
+              {
+                type: "output_text",
+                text: '["repo looks healthy"]',
+              },
+            ],
+          },
+        ],
+      }),
     );
 
-    const params = mockCreate.mock.calls[0][0];
-    expect(params.tools).toBeUndefined();
-    expect(params.tool_choice).toBeUndefined();
-    expect(params.parallel_tool_calls).toBeUndefined();
-    expect(params.text).toEqual({
-      format: {
-        type: "json_schema",
-        name: "repo_summary",
-        schema: {
-          type: "object",
-          properties: {
-            summary: { type: "string" },
+    const provider = new GrokProvider({ apiKey: "test-key" });
+    await expect(
+      provider.chat(
+        [{ role: "user", content: "inspect the repo and summarize findings" }],
+        {
+          structuredOutput: {
+            enabled: true,
+            schema: {
+              type: "json_schema",
+              name: "repo_summary",
+              schema: {
+                type: "object",
+                properties: {
+                  summary: { type: "string" },
+                },
+                required: ["summary"],
+              },
+            },
           },
-          required: ["summary"],
         },
-        strict: true,
-      },
-    });
-    expect(response.structuredOutput).toEqual({
-      type: "json_schema",
-      name: "repo_summary",
-      rawText: '{"summary":"repo looks healthy"}',
-      parsed: { summary: "repo looks healthy" },
-    });
-    expect(response.requestMetrics).toMatchObject({
-      toolCount: 0,
-      toolNames: ["system.bash"],
-      providerCatalogToolCount: 1,
-      toolsAttached: false,
-      toolSuppressionReason:
-        "structured_output_with_tools_unsupported_model",
-      structuredOutputEnabled: true,
-      structuredOutputName: "repo_summary",
-      structuredOutputStrict: true,
-      store: false,
-    });
-    expect(response.requestMetrics.toolChoice).toBeUndefined();
+      ),
+    ).rejects.toThrow(/must return a top-level JSON object/i);
   });
 
   it("disables parallel tool calls by default when tools are present", async () => {

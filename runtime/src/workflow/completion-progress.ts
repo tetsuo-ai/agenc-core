@@ -71,6 +71,7 @@ export function deriveWorkflowProgressSnapshot(params: {
   readonly completionContract?: ImplementationCompletionContract;
   readonly completedRequestMilestoneIds?: readonly string[];
   readonly updatedAt: number;
+  readonly contractFingerprint?: string;
 }): WorkflowProgressSnapshot | undefined {
   const mergedContract = mergeVerificationContract({
     verificationContract: params.verificationContract,
@@ -142,10 +143,12 @@ export function deriveWorkflowProgressSnapshot(params: {
     stopReason: params.stopReason,
     stopReasonDetail: params.stopReasonDetail,
     validationCode: params.validationCode,
-    contractFingerprint: buildProgressContractFingerprint({
-      verificationContract: mergedContract,
-      completionContract: mergedContract?.completionContract,
-    }),
+    contractFingerprint:
+      params.contractFingerprint ??
+      buildProgressContractFingerprint({
+        verificationContract: mergedContract,
+        completionContract: mergedContract?.completionContract,
+      }),
     verificationContract: mergedContract,
     completionContract: mergedContract?.completionContract,
     requiredRequirements: [...requiredRequirements],
@@ -297,7 +300,7 @@ function canReuseProgress(
   const nextSignature =
     next.contractFingerprint ?? buildProgressContractFingerprint(next);
   if (!previousSignature || !nextSignature) {
-    return true;
+    return false;
   }
   return previousSignature === nextSignature;
 }

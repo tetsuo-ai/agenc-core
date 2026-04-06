@@ -190,6 +190,16 @@ const ENVELOPE_TOOL_PATH_ARG_KEYS: Readonly<Record<string, readonly string[]>> =
   "system.delete": ["path"],
   "system.move": ["source", "destination"],
 };
+const CONTRACT_MUTATION_TOOL_NAMES = new Set([
+  "desktop.text_editor",
+  "system.appendFile",
+  "system.delete",
+  "system.mkdir",
+  "system.move",
+  "system.writeFile",
+]);
+const SHELL_MUTATION_COMMAND_RE =
+  /\b(?:mkdir|touch|rm|mv|cp|install|chmod|chown|tee|cmake|ninja|make|gcc|g\+\+|clang|clang\+\+|cargo\s+(?:build|test|fmt|clippy|add)|go\s+(?:build|test)|npm\s+(?:install|test|run\s+(?:build|typecheck|lint))|pnpm\s+(?:install|add|test|build|typecheck|lint)|yarn\s+(?:install|add|test|build|typecheck|lint)|bun\s+(?:install|add|test|run(?:\s+(?:build|typecheck|lint))?))\b|(?:^|\s)(?:cat|echo|printf)\b[^\n]*>/i;
 
 function getExecutionEnvelopeFilesystemAccessMode(
   toolName: string,
@@ -234,6 +244,34 @@ function canonicalizeExplicitArtifactReferenceArgs(params: {
   }
 
   return { args: nextArgs, canonicalizedFields };
+}
+
+function isMutationLikeToolUse(toolName: string, args: Record<string, unknown>): boolean {
+  if (CONTRACT_MUTATION_TOOL_NAMES.has(toolName)) {
+    return true;
+  }
+  if (toolName !== "system.bash" && toolName !== "desktop.bash") {
+    return false;
+  }
+  const command = typeof args.command === "string" ? args.command.trim() : "";
+  return command.length > 0 && SHELL_MUTATION_COMMAND_RE.test(command);
+}
+
+function enforceTurnExecutionContractPolicy(params: {
+  readonly ctx: ExecutionContext;
+  readonly toolName: string;
+  readonly args: Record<string, unknown>;
+}): string | undefined {
+  if (!isMutationLikeToolUse(params.toolName, params.args)) {
+    return undefined;
+  }
+  if (
+    params.ctx.turnExecutionContract.turnClass === "workflow_implementation" ||
+    params.ctx.turnExecutionContract.turnClass === "artifact_update"
+  ) {
+    return undefined;
+  }
+  return `Tool ${params.toolName} can mutate workspace state, but this turn is classified as ${params.ctx.turnExecutionContract.turnClass}. Mutation requires a workflow_implementation or artifact_update execution contract.`;
 }
 
 function enforceTopLevelExecutionEnvelope(params: {
@@ -455,6 +493,43 @@ export async function executeSingleToolCall(
   }
   if (Object.keys(argumentDiagnostics).length > 0) {
     argumentDiagnostics.rawArgs = rawArgs;
+  }
+  const contractPolicyError = enforceTurnExecutionContractPolicy({
+    ctx,
+    toolName: toolCall.name,
+    args,
+  });
+  if (contractPolicyError) {
+    callbacks.emitExecutionTrace(ctx, {
+      type: "tool_rejected",
+      phase: "tool_followup",
+      callIndex: ctx.callIndex,
+      payload: {
+        tool: toolCall.name,
+        args,
+        originalArgs: rawArgs,
+        reason: "turn_execution_contract",
+        error: contractPolicyError,
+      },
+    });
+    callbacks.pushMessage(
+      ctx,
+      {
+        role: "tool",
+        content: contractPolicyError,
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+      },
+      "tools",
+    );
+    callbacks.appendToolRecord(ctx, {
+      name: toolCall.name,
+      args,
+      result: contractPolicyError,
+      isError: true,
+      durationMs: 0,
+    });
+    return "skip";
   }
   const executionEnvelopeError = enforceTopLevelExecutionEnvelope({
     toolName: toolCall.name,

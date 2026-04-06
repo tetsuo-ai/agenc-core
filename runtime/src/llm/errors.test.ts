@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { RuntimeError, RuntimeErrorCodes } from "../types/errors.js";
 import {
   LLMAuthenticationError,
+  LLMInvalidResponseError,
   LLMMessageValidationError,
   LLMProviderError,
   LLMRateLimitError,
@@ -28,6 +29,11 @@ describe("classifyLLMFailure", () => {
     expect(classifyLLMFailure(new LLMProviderError("grok", "bad request", 400))).toBe(
       "provider_error",
     );
+    expect(
+      classifyLLMFailure(
+        new LLMInvalidResponseError("grok", "malformed response envelope"),
+      ),
+    ).toBe("provider_error");
   });
 
   it("classifies runtime budget errors", () => {

@@ -13,7 +13,7 @@ import {
   maybeInjectProviderFault,
 } from "./chat-executor-provider-retry.js";
 import { RuntimeFaultInjector } from "../eval/fault-injection.js";
-import { LLMTimeoutError } from "./errors.js";
+import { LLMInvalidResponseError, LLMTimeoutError } from "./errors.js";
 
 describe("shouldRetryProviderImmediately", () => {
   const rule = { maxRetries: 3, baseDelayMs: 100, maxDelayMs: 1000 };
@@ -58,6 +58,15 @@ describe("shouldFallbackForFailureClass", () => {
 
   it("returns true for rate_limited", () => {
     expect(shouldFallbackForFailureClass("rate_limited", new Error())).toBe(true);
+  });
+
+  it("returns true for malformed provider response envelopes", () => {
+    expect(
+      shouldFallbackForFailureClass(
+        "provider_error",
+        new LLMInvalidResponseError("grok", "invalid envelope"),
+      ),
+    ).toBe(true);
   });
 });
 

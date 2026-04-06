@@ -64,6 +64,7 @@ import {
 } from "../workflow/execution-envelope.js";
 import {
   extractDelegationTokens,
+  getAcceptanceVerificationCategories,
   validateDelegatedOutputContract,
 } from "../utils/delegation-validation.js";
 import { parseJsonObjectFromText } from "../utils/delegated-contract-normalization.js";
@@ -137,20 +138,32 @@ export function buildPlannerWorkflowAdmission(params: {
       )
       : params.subagentSteps;
   const verifierWorkItems: PlannerVerifierWorkItem[] =
-    subagentStepsForVerification.map((step) => ({
+    subagentStepsForVerification.map((step) => {
+      const workflowStep = step.workflowStep ?? buildPlannerWorkflowStepContract(step);
+      return {
         name: step.name,
         verificationKind: "subagent_output",
         objective: step.objective,
         inputContract: step.inputContract,
         acceptanceCriteria: step.acceptanceCriteria,
         requiredToolCapabilities: step.requiredToolCapabilities,
-        workflowStep: step.workflowStep ?? buildPlannerWorkflowStepContract(step),
+        workflowStep,
         workflowContract,
         verificationContract: buildPlannerStepVerificationContract(step),
         resultStepNames: [step.name],
-      }));
+        deferExecutableOutcomeValidation:
+          shouldDeferPlannerSubagentExecutableOutcomeValidation({
+            step,
+            workflowStep,
+            deterministicSteps: params.deterministicSteps,
+            completionContract,
+          }),
+      };
+    });
   const requiresMandatoryImplementationVerification =
-    taskClassification === "implementation_class";
+    Boolean(completionContract) &&
+    completionContract.taskClass !== "scaffold_allowed" &&
+    completionContract.taskClass !== "review_required";
   const requiresMandatorySubagentOutputVerification =
     requiredSubagentOutputStepNames.size > 0;
 
@@ -356,6 +369,8 @@ export function evaluatePlannerDeterministicChecks(
         output: trimmedOutput,
         toolCalls: childToolCalls,
         providerEvidence,
+        deferExecutableOutcomeValidation:
+          step.deferExecutableOutcomeValidation === true,
       });
       if (!contractValidation.ok) {
         if (contractValidation.code) {
@@ -1246,10 +1261,10 @@ function buildPlannerWorkflowVerificationContract(params: {
           params.verificationContract.workspaceRoot.trim().length > 0
         ? params.verificationContract.workspaceRoot.trim()
         : undefined;
-  const acceptanceCriteria = [
-    ...safeStepStringArray(params.verificationContract?.acceptanceCriteria),
-    ...params.subagentSteps.flatMap((step) => safeStepStringArray(step.acceptanceCriteria)),
-  ].filter((criterion) => criterion.trim().length > 0);
+  const acceptanceCriteria =
+    safeStepStringArray(params.verificationContract?.acceptanceCriteria).filter((criterion) =>
+      criterion.trim().length > 0
+    );
   const inputArtifacts = Array.from(
     new Set(
       params.subagentSteps.flatMap(
@@ -1386,6 +1401,36 @@ function buildPlannerStepVerificationContract(
   };
 }
 
+function shouldDeferPlannerSubagentExecutableOutcomeValidation(params: {
+  readonly step: PlannerSubAgentTaskStepIntent;
+  readonly workflowStep: ReturnType<typeof buildPlannerWorkflowStepContract>;
+  readonly deterministicSteps: readonly PlannerDeterministicToolStepIntent[];
+  readonly completionContract?: ImplementationCompletionContract;
+}): boolean {
+  if (!params.completionContract) {
+    return false;
+  }
+  if (
+    params.completionContract.taskClass === "scaffold_allowed" ||
+    params.completionContract.taskClass === "review_required"
+  ) {
+    return false;
+  }
+  if (params.deterministicSteps.length === 0) {
+    return false;
+  }
+  if (params.workflowStep.role === "validator") {
+    return false;
+  }
+  const stepKind = canonicalizeExecutionStepKind(
+    params.step.executionContext?.stepKind,
+  );
+  if (stepKind === "delegated_validation") {
+    return false;
+  }
+  return true;
+}
+
 function buildPlannerRequestCompletionContract(params: {
   readonly subagentSteps: readonly PlannerSubAgentTaskStepIntent[];
   readonly deterministicSteps: readonly PlannerDeterministicToolStepIntent[];
@@ -1428,7 +1473,8 @@ function classifyPlannerWorkflowAdmission(params: {
   if (
     !completionContract ||
     completionContract.taskClass === "scaffold_allowed" ||
-    completionContract.taskClass === "review_required"
+    completionContract.taskClass === "review_required" ||
+    completionContract.placeholderTaxonomy === "documentation"
   ) {
     return "docs_research_plan_only";
   }

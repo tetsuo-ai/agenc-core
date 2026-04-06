@@ -408,11 +408,8 @@ import {
 } from "./chat-executor-recovery.js";
 import {
   assessPlannerDecision,
-  classifyPlannerPlanArtifactIntent,
   extractExplicitDeterministicToolRequirements,
   extractExplicitSubagentOrchestrationRequirements,
-  extractPlannerArtifactTargets,
-  requestExplicitlyRequestsDelegation,
   requestRequiresToolGroundedExecution,
 } from "./chat-executor-planner.js";
 import {
@@ -425,9 +422,10 @@ import {
   executePlannerPath as executePlannerPathFn,
 } from "./chat-executor-planner-execution.js";
 import {
-  mergeArtifactTaskRequiredToolEvidence,
-  resolveDirectArtifactTaskContract,
-} from "./chat-executor-artifact-task.js";
+  deriveActiveTaskContext,
+  mergeTurnExecutionRequiredToolEvidence,
+  resolveTurnExecutionContract,
+} from "./turn-execution-contract.js";
 import {
   executeToolCallLoop as executeToolCallLoopFn,
 } from "./chat-executor-tool-loop.js";
@@ -760,6 +758,7 @@ export class ChatExecutor {
       completionContract: workflowContext.completionContract,
       completedRequestMilestoneIds: ctx.completedRequestMilestoneIds,
       updatedAt: Date.now(),
+      contractFingerprint: ctx.turnExecutionContract.contractFingerprint,
     });
 
     ctx.finalContent = reconcileTerminalFailureContent({
@@ -807,6 +806,8 @@ export class ChatExecutor {
       stopReason: ctx.stopReason,
       completionState: ctx.completionState,
       completionProgress,
+      turnExecutionContract: ctx.turnExecutionContract,
+      activeTaskContext: deriveActiveTaskContext(ctx.turnExecutionContract),
       stopReasonDetail: ctx.stopReasonDetail,
       validationCode: ctx.validationCode,
       evaluation: ctx.evaluation,
@@ -894,6 +895,7 @@ export class ChatExecutor {
       completionContract: workflowContext.completionContract,
       completedRequestMilestoneIds: ctx.completedRequestMilestoneIds,
       updatedAt: Date.now(),
+      contractFingerprint: ctx.turnExecutionContract.contractFingerprint,
     });
   }
 
@@ -2390,37 +2392,30 @@ export class ChatExecutor {
     const explicitSubagentOrchestrationRequirements =
       extractExplicitSubagentOrchestrationRequirements(messageText);
     const isConcordiaTurnMessage = isConcordiaSimulationTurnMessage(message);
-    const explicitArtifactTargets = extractPlannerArtifactTargets(messageText);
-    const artifactIntent = classifyPlannerPlanArtifactIntent(messageText);
-    const explicitDelegationRequested =
-      Boolean(explicitSubagentOrchestrationRequirements) ||
-      requestExplicitlyRequestsDelegation(messageText);
-    const explicitArtifactTaskContract = !isConcordiaTurnMessage
-      ? resolveDirectArtifactTaskContract({
-          messageText,
-          workspaceRoot:
-            params.runtimeContext?.workspaceRoot ??
-            this.resolveHostWorkspaceRoot?.() ??
-            undefined,
-          explicitArtifactTargets,
-          artifactIntent,
-          explicitDelegationRequested,
-          hasBlockingRuntimeContract: Boolean(
-            params.requiredToolEvidence?.delegationSpec ||
-              params.requiredToolEvidence?.artifactTaskContract,
-          ),
-        })
-      : undefined;
+    const turnExecutionContract = resolveTurnExecutionContract({
+      message,
+      runtimeContext: {
+        ...(params.runtimeContext ?? {}),
+        workspaceRoot:
+          params.runtimeContext?.workspaceRoot ??
+          this.resolveHostWorkspaceRoot?.() ??
+          undefined,
+      },
+      requiredToolEvidence: params.requiredToolEvidence,
+    });
+    const explicitArtifactTaskContract = turnExecutionContract.artifactTaskContract;
+    const directArtifactOwner =
+      explicitArtifactTaskContract?.delegationPolicy === "direct_owner";
     const groundedExecutionRequested =
       !isConcordiaTurnMessage &&
-      !explicitArtifactTaskContract &&
+      turnExecutionContract.turnClass === "workflow_implementation" &&
       requestRequiresToolGroundedExecution(messageText);
-    let plannerDecision = explicitArtifactTaskContract
+    let plannerDecision = directArtifactOwner
       ? {
           score: 4,
           shouldPlan: false,
           reason: "direct_artifact_owner_update",
-          artifactTargets: explicitArtifactTaskContract.targetArtifacts,
+          artifactTargets: explicitArtifactTaskContract?.targetArtifacts,
         }
       : assessPlannerDecision(
           this.plannerEnabled,
@@ -2430,7 +2425,7 @@ export class ChatExecutor {
         );
     if (
       !isConcordiaTurnMessage &&
-      !explicitArtifactTaskContract &&
+      !directArtifactOwner &&
       explicitDeterministicToolRequirements?.forcePlanner &&
       !plannerDecision.shouldPlan
     ) {
@@ -2442,7 +2437,7 @@ export class ChatExecutor {
     }
     if (
       !isConcordiaTurnMessage &&
-      !explicitArtifactTaskContract &&
+      !directArtifactOwner &&
       !plannerDecision.shouldPlan &&
       explicitSubagentOrchestrationRequirements
     ) {
@@ -2504,15 +2499,10 @@ export class ChatExecutor {
       }
     }
 
-    const resolvedRequiredToolEvidence =
-      explicitArtifactTaskContract &&
-      !plannerDecision.shouldPlan &&
-      plannerDecision.reason === "direct_artifact_owner_update"
-        ? mergeArtifactTaskRequiredToolEvidence({
-            base: params.requiredToolEvidence,
-            artifactTaskContract: explicitArtifactTaskContract,
-          })
-        : params.requiredToolEvidence;
+    const resolvedRequiredToolEvidence = mergeTurnExecutionRequiredToolEvidence({
+      base: params.requiredToolEvidence,
+      turnExecutionContract,
+    });
 
     const ctx = buildDefaultExecutionContext(
       {
@@ -2521,6 +2511,7 @@ export class ChatExecutor {
         systemPrompt,
         sessionId,
         runtimeContext: params.runtimeContext,
+        turnExecutionContract,
         signal,
         history,
         plannerDecision,
@@ -2561,6 +2552,13 @@ export class ChatExecutor {
         economicsPolicy: this.economicsPolicy,
       },
     );
+
+    if (turnExecutionContract.invalidReason) {
+      ctx.plannerHandled = true;
+      this.setStopReason(ctx, "validation_error", turnExecutionContract.invalidReason);
+      ctx.finalContent = turnExecutionContract.invalidReason;
+      return ctx;
+    }
 
     // Build messages array with explicit section tags for prompt budgeting.
     this.pushMessage(ctx, { role: "system", content: ctx.systemPrompt }, "system_anchor");

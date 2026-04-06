@@ -5,6 +5,7 @@ import type {
   RuntimeEconomicsPolicy,
   RuntimeRunClass,
 } from "./run-budget.js";
+import { supportsXaiStructuredOutputsWithTools } from "./structured-output.js";
 
 export interface ProviderRouteDescriptor {
   readonly index: number;
@@ -16,6 +17,7 @@ export interface ProviderRouteDescriptor {
   readonly costWeight: number;
   readonly latencyWeight: number;
   readonly parallelToolCallsConfigured: boolean;
+  readonly supportsStructuredOutputWithTools: boolean;
 }
 
 export interface ModelRoutingPolicy {
@@ -48,6 +50,16 @@ export interface ModelRouteRequirements {
   readonly statefulContinuationRequired?: boolean;
   readonly structuredOutputRequired?: boolean;
   readonly routedToolNames?: readonly string[];
+}
+
+function routeSupportsStructuredOutputWithTools(
+  providerName: string,
+  model?: string,
+): boolean {
+  if (providerName.toLowerCase() === "grok") {
+    return supportsXaiStructuredOutputsWithTools(model);
+  }
+  return true;
 }
 
 function clamp01(value: number): number {
@@ -134,6 +146,8 @@ export function buildModelRoutingPolicy(params: {
         costWeight: estimateCostWeight(provider.name, model),
         latencyWeight: estimateLatencyWeight(provider.name, model),
         parallelToolCallsConfigured: config?.parallelToolCalls === true,
+        supportsStructuredOutputWithTools:
+          routeSupportsStructuredOutputWithTools(provider.name, model),
       };
     }),
   };
@@ -185,6 +199,37 @@ function chooseDowngradedCandidate(
   )[0];
 }
 
+function resolveCapabilityCompatibleCandidates(params: {
+  readonly candidates: readonly ProviderRouteDescriptor[];
+  readonly requirements?: ModelRouteRequirements;
+}): {
+  readonly compatibleCandidates: readonly ProviderRouteDescriptor[];
+  readonly capabilityFiltered: boolean;
+} {
+  const requirements = params.requirements;
+  const toolsRequested = (requirements?.routedToolNames?.length ?? 0) > 0;
+  if (!requirements?.structuredOutputRequired || !toolsRequested) {
+    return {
+      compatibleCandidates: params.candidates,
+      capabilityFiltered: false,
+    };
+  }
+
+  const compatibleCandidates = params.candidates.filter((candidate) =>
+    candidate.supportsStructuredOutputWithTools
+  );
+  if (compatibleCandidates.length === 0) {
+    return {
+      compatibleCandidates: params.candidates,
+      capabilityFiltered: false,
+    };
+  }
+  return {
+    compatibleCandidates,
+    capabilityFiltered: compatibleCandidates.length !== params.candidates.length,
+  };
+}
+
 export function resolveParallelToolCallPolicy(params: {
   readonly policy: ModelRoutingPolicy;
   readonly selectedProviderName: string;
@@ -223,7 +268,6 @@ export function resolveModelRoute(params: {
   readonly requiredCapabilities?: readonly string[];
   readonly requirements?: ModelRouteRequirements;
 }): ModelRouteDecision {
-  void params.requirements;
   const degraded = new Set(
     (params.degradedProviderNames ?? []).map((entry) => entry.toLowerCase()),
   );
@@ -234,15 +278,20 @@ export function resolveModelRoute(params: {
   const routePool = healthyCandidates.length > 0
     ? healthyCandidates
     : params.policy.providers;
+  const capabilityResolution = resolveCapabilityCompatibleCandidates({
+    candidates: routePool,
+    requirements: params.requirements,
+  });
+  const selectionPool = capabilityResolution.compatibleCandidates;
   const defaultCandidate = chooseDefaultCandidate(
     params.runClass,
-    routePool,
+    selectionPool,
     params.requiredCapabilities,
   );
   const downgradedCandidate = params.pressure.shouldDowngrade
-    ? chooseDowngradedCandidate(routePool)
+    ? chooseDowngradedCandidate(selectionPool)
     : undefined;
-  const chosen = downgradedCandidate ?? defaultCandidate ?? routePool[0];
+  const chosen = downgradedCandidate ?? defaultCandidate ?? selectionPool[0];
 
   if (!chosen) {
     throw new Error("Model routing policy requires at least one provider");
@@ -253,6 +302,9 @@ export function resolveModelRoute(params: {
     chosen.index !== 0 ||
     degraded.has(firstProvider?.routeKey.toLowerCase() ?? "") ||
     degraded.has(firstProvider?.providerName.toLowerCase() ?? "");
+  const capabilityRerouted =
+    capabilityResolution.capabilityFiltered &&
+    chosen.index !== firstProvider?.index;
   const downgraded = Boolean(
     downgradedCandidate &&
       (downgradedCandidate.index !== defaultCandidate?.index ||
@@ -260,6 +312,8 @@ export function resolveModelRoute(params: {
   );
   const reason = downgraded
     ? "budget_pressure_downgrade"
+    : capabilityRerouted
+    ? "capability_reroute"
     : rerouted
     ? "degraded_provider_reroute"
     : "default_route";

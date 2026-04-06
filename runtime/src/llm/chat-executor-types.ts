@@ -70,6 +70,7 @@ import type {
 } from "../utils/delegation-validation.js";
 import type { HostToolingProfile } from "../gateway/host-tooling.js";
 import type { ArtifactTaskContract } from "./chat-executor-artifact-task.js";
+import type { ActiveTaskContext, TurnExecutionContract } from "./turn-execution-contract-types.js";
 import type {
   DelegationBanditPolicyTuner,
   DelegationBanditSelection,
@@ -181,6 +182,8 @@ export interface ChatExecuteParams {
   readonly runtimeContext?: {
     /** Authoritative workspace root for planning/execution when known. */
     readonly workspaceRoot?: string;
+    /** Typed active-task carryover used only when the current turn explicitly continues that task. */
+    readonly activeTaskContext?: ActiveTaskContext;
   };
   /** Per-call tool handler — overrides the constructor handler for this call. */
   readonly toolHandler?: ToolHandler;
@@ -377,6 +380,10 @@ export interface ChatExecutorResult {
   readonly completionState: WorkflowCompletionState;
   /** Structured progress snapshot for long-horizon resume/recovery flows. */
   readonly completionProgress?: WorkflowProgressSnapshot;
+  /** Single preflight execution contract that governed this turn. */
+  readonly turnExecutionContract: TurnExecutionContract;
+  /** Typed task carryover emitted for the next compatible turn, when applicable. */
+  readonly activeTaskContext?: ActiveTaskContext;
   /** Optional detail for non-completed stop reasons. */
   readonly stopReasonDetail?: string;
   /** Optional delegated-output validation code associated with a validation_error stop. */
@@ -640,6 +647,7 @@ export interface PlannerVerifierWorkItem {
   readonly requiredToolCapabilities: readonly string[];
   readonly resultStepNames?: readonly string[];
   readonly verificationContract?: WorkflowVerificationContract;
+  readonly deferExecutableOutcomeValidation?: boolean;
 }
 
 export type PlannerWorkflowTaskClassification =
@@ -829,6 +837,7 @@ export interface ExecutionContext {
   readonly systemPrompt: string;
   readonly sessionId: string;
   readonly runtimeWorkspaceRoot?: string;
+  readonly turnExecutionContract: TurnExecutionContract;
   readonly signal?: AbortSignal;
   readonly activeToolHandler?: ToolHandler;
   readonly activeStreamCallback?: StreamProgressCallback;
@@ -931,6 +940,7 @@ export interface BuildExecutionContextParams {
   readonly systemPrompt: string;
   readonly sessionId: string;
   readonly runtimeContext?: ChatExecuteParams["runtimeContext"];
+  readonly turnExecutionContract: TurnExecutionContract;
   readonly signal?: AbortSignal;
   readonly history: readonly LLMMessage[];
   readonly plannerDecision: PlannerDecision;
@@ -977,7 +987,9 @@ export function buildDefaultExecutionContext(
     messageText: params.messageText,
     systemPrompt: params.systemPrompt,
     sessionId: params.sessionId,
-    runtimeWorkspaceRoot: params.runtimeContext?.workspaceRoot,
+    runtimeWorkspaceRoot:
+      params.turnExecutionContract.workspaceRoot ?? params.runtimeContext?.workspaceRoot,
+    turnExecutionContract: params.turnExecutionContract,
     signal: params.signal,
     activeToolHandler: params.toolHandler,
     activeStreamCallback: params.streamCallback,

@@ -30,6 +30,19 @@ export async function executeNativeToolCall(
   }
 }
 
+function createSyntheticDialogueTurnExecutionContract() {
+  return {
+    version: 1 as const,
+    turnClass: "dialogue" as const,
+    ownerMode: "none" as const,
+    sourceArtifacts: [],
+    targetArtifacts: [],
+    delegationPolicy: "forbid" as const,
+    contractFingerprint: "synthetic-dialogue-contract",
+    taskLineageId: "synthetic-dialogue-task",
+  };
+}
+
 export function buildNativeActorResult(
   toolCalls: readonly ChatExecutorResult["toolCalls"][number][],
   content: string,
@@ -48,5 +61,6 @@ export function buildNativeActorResult(
     compacted: false,
     stopReason: "completed",
     completionState: "completed",
+    turnExecutionContract: createSyntheticDialogueTurnExecutionContract(),
   };
 }

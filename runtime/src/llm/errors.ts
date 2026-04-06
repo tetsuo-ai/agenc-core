@@ -164,6 +164,17 @@ export class LLMServerError extends RuntimeError {
   }
 }
 
+/**
+ * Error thrown when a provider transport succeeds but the returned response
+ * envelope is malformed or contradicts the requested capability contract.
+ */
+export class LLMInvalidResponseError extends LLMProviderError {
+  constructor(providerName: string, message: string) {
+    super(providerName, message, 502);
+    this.name = "LLMInvalidResponseError";
+  }
+}
+
 function parseRetryAfterMs(headers: unknown): number | undefined {
   if (!headers) return undefined;
 

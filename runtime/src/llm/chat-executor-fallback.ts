@@ -17,6 +17,7 @@ import {
   LLMRateLimitError,
   classifyLLMFailure,
 } from "./errors.js";
+import { assertValidLLMResponse } from "./response-validation.js";
 import {
   applyPromptBudget,
   type PromptBudgetConfig,
@@ -246,13 +247,14 @@ export async function callWithFallback(
           provider: provider.name,
           stage: transport,
         });
-        const response = shouldStream
+        const rawResponse = shouldStream
           ? await provider.chatStream(
             boundedMessages,
             streamChunkCallback,
             providerChatOptions,
           )
           : await provider.chat(boundedMessages, providerChatOptions);
+        const response = assertValidLLMResponse(provider.name, rawResponse);
 
         if (response.finishReason === "error") {
           throw (

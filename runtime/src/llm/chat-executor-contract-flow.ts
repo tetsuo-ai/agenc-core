@@ -63,6 +63,7 @@ type ContractFlowContext =
     | "providerEvidence"
     | "response"
     | "plannerSummaryState"
+    | "turnExecutionContract"
   > &
   {
     readonly messageMetadata?: Readonly<Record<string, unknown>>;
@@ -92,6 +93,7 @@ export interface RuntimeWorkflowContextResolution {
   readonly verificationContract?: WorkflowVerificationContract;
   readonly completionContract?: ImplementationCompletionContract;
   readonly ownershipSource?:
+    | "turn_contract"
     | "planner_owned"
     | "required_tool_evidence"
     | "direct_deterministic_implementation";
@@ -160,21 +162,52 @@ export function resolveExecutionToolContractGuidance(input: {
 export function resolveRuntimeWorkflowContext(input: {
   readonly ctx: ContractFlowContext;
 }): RuntimeWorkflowContextResolution {
+  const contractContext = mergeWorkflowVerificationContext({
+    verificationContract: input.ctx.turnExecutionContract.verificationContract,
+    completionContract: input.ctx.turnExecutionContract.completionContract,
+  });
   const plannerContext = mergeWorkflowVerificationContext({
     verificationContract: input.ctx.plannerVerificationContract,
     completionContract: input.ctx.plannerCompletionContract,
   });
-  if (plannerContext.verificationContract || plannerContext.completionContract) {
-    return {
-      ...plannerContext,
-      ownershipSource: "planner_owned",
-    };
-  }
-
   const explicitContext = mergeWorkflowVerificationContext({
     verificationContract: input.ctx.requiredToolEvidence?.verificationContract,
     completionContract: input.ctx.requiredToolEvidence?.completionContract,
   });
+
+  if (contractContext.verificationContract || contractContext.completionContract) {
+    return {
+      ...mergeWorkflowVerificationContext({
+        verificationContract: combineWorkflowVerificationContracts(
+          combineWorkflowVerificationContracts(
+            contractContext.verificationContract,
+            plannerContext.verificationContract,
+          ),
+          explicitContext.verificationContract,
+        ),
+        completionContract:
+          explicitContext.completionContract ??
+          plannerContext.completionContract ??
+          contractContext.completionContract,
+      }),
+      ownershipSource: "turn_contract",
+    };
+  }
+
+  if (plannerContext.verificationContract || plannerContext.completionContract) {
+    return {
+      ...mergeWorkflowVerificationContext({
+        verificationContract: combineWorkflowVerificationContracts(
+          plannerContext.verificationContract,
+          explicitContext.verificationContract,
+        ),
+        completionContract:
+          explicitContext.completionContract ?? plannerContext.completionContract,
+      }),
+      ownershipSource: "planner_owned",
+    };
+  }
+
   if (explicitContext.verificationContract || explicitContext.completionContract) {
     return {
       ...explicitContext,
@@ -288,6 +321,15 @@ export function requiresWorkflowOwnedImplementationCompletion(input: {
 }): boolean {
   if (hasConcordiaSimulationTurnContract(input.ctx.messageMetadata)) {
     return false;
+  }
+  if (input.ctx.turnExecutionContract.turnClass === "artifact_update") {
+    return false;
+  }
+  if (input.ctx.turnExecutionContract.turnClass === "workflow_implementation") {
+    return !(
+      input.ctx.turnExecutionContract.verificationContract ||
+      input.ctx.turnExecutionContract.completionContract
+    );
   }
   if (
     input.ctx.plannerSummaryState.used &&
@@ -499,6 +541,50 @@ export function buildRequiredToolEvidenceRetryInstruction(input: {
     correctionLines.join(" ") +
     allowedToolSummary
   );
+}
+
+function combineWorkflowVerificationContracts(
+  base: WorkflowVerificationContract | undefined,
+  overlay: WorkflowVerificationContract | undefined,
+): WorkflowVerificationContract | undefined {
+  if (!base) return overlay;
+  if (!overlay) return base;
+  const mergeList = (
+    primary: readonly string[] | undefined,
+    secondary: readonly string[] | undefined,
+  ): readonly string[] | undefined => {
+    const merged = [...(primary ?? []), ...(secondary ?? [])].filter(
+      (entry) => typeof entry === "string" && entry.trim().length > 0,
+    );
+    return merged.length > 0 ? [...new Set(merged)] : undefined;
+  };
+  return {
+    ...base,
+    ...overlay,
+    ...(mergeList(base.inputArtifacts, overlay.inputArtifacts)
+      ? { inputArtifacts: mergeList(base.inputArtifacts, overlay.inputArtifacts) }
+      : {}),
+    ...(mergeList(base.requiredSourceArtifacts, overlay.requiredSourceArtifacts)
+      ? {
+          requiredSourceArtifacts: mergeList(
+            base.requiredSourceArtifacts,
+            overlay.requiredSourceArtifacts,
+          ),
+        }
+      : {}),
+    ...(mergeList(base.targetArtifacts, overlay.targetArtifacts)
+      ? { targetArtifacts: mergeList(base.targetArtifacts, overlay.targetArtifacts) }
+      : {}),
+    ...(mergeList(base.acceptanceCriteria, overlay.acceptanceCriteria)
+      ? { acceptanceCriteria: mergeList(base.acceptanceCriteria, overlay.acceptanceCriteria) }
+      : {}),
+    ...(overlay.requestCompletion ?? base.requestCompletion
+      ? { requestCompletion: overlay.requestCompletion ?? base.requestCompletion }
+      : {}),
+    ...(overlay.completionContract ?? base.completionContract
+      ? { completionContract: overlay.completionContract ?? base.completionContract }
+      : {}),
+  };
 }
 
 function mergeWorkflowVerificationContext(input: {
