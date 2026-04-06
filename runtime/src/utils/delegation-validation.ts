@@ -4113,14 +4113,16 @@ function validateContradictoryCompletionClaim(
   if (isReviewerDelegatedTask(spec)) {
     return undefined;
   }
-  // Don't reject partial progress or honest status reports from write/scaffold
-  // tasks. The completionContract is often not set on the execution context
-  // at validation time, so also check stepKind directly.
-  const stepKind = spec.executionContext?.stepKind;
+  // Don't reject delegations with write/scaffold execution context or where
+  // partial completion is allowed. For direct delegations without stepKind,
+  // also check if the delegation actually produced file mutations (tool calls
+  // that successfully wrote files) — those should not be rejected by text analysis.
   if (
     spec.executionContext?.completionContract?.partialCompletionAllowed ||
-    stepKind === "delegated_write" ||
-    stepKind === "delegated_scaffold"
+    spec.executionContext?.stepKind === "delegated_write" ||
+    spec.executionContext?.stepKind === "delegated_scaffold" ||
+    (spec.executionContext?.effectClass === "filesystem_write" ||
+     spec.executionContext?.effectClass === "mixed")
   ) {
     return undefined;
   }
@@ -4187,18 +4189,13 @@ function validateBlockedPhaseOutput(
   if (isReviewerDelegatedTask(spec)) {
     return undefined;
   }
-  // Don't reject honest blocked/incomplete status reports. A subagent that
-  // reports "Blocked: missing system dependency" has done useful work and
-  // should surface the result to the user, not get rejected as malformed.
-  // The partialCompletionAllowed guard was insufficient because the
-  // completionContract is often not set on the execution context at
-  // validation time. Accept all delegated_write and delegated_scaffold
-  // outputs that report blocked status — the parent can decide what to do.
-  const stepKind = spec.executionContext?.stepKind;
+  // Don't reject delegations with write/scaffold context or filesystem effects.
   if (
     spec.executionContext?.completionContract?.partialCompletionAllowed ||
-    stepKind === "delegated_write" ||
-    stepKind === "delegated_scaffold"
+    spec.executionContext?.stepKind === "delegated_write" ||
+    spec.executionContext?.stepKind === "delegated_scaffold" ||
+    (spec.executionContext?.effectClass === "filesystem_write" ||
+     spec.executionContext?.effectClass === "mixed")
   ) {
     return undefined;
   }
