@@ -17,10 +17,6 @@ import type {
   SkillInjector,
 } from "../llm/chat-executor-types.js";
 import type { LLMProvider, ToolHandler } from "../llm/types.js";
-import type {
-  DelegationBanditPolicyTuner,
-  DelegationTrajectorySink,
-} from "../llm/delegation-learning.js";
 import type { HostToolingProfile } from "./host-tooling.js";
 import type { ResolvedSubAgentRuntimeConfig } from "./subagent-infrastructure.js";
 import type { GatewayLLMConfig } from "./types.js";
@@ -94,12 +90,6 @@ export interface CreateChatExecutorParams {
   subagentConfig: ResolvedSubAgentRuntimeConfig;
   /** Callback to resolve dynamic delegation score threshold. */
   resolveDelegationScoreThreshold: () => number;
-  /** Delegation learning sinks. */
-  delegationLearning?: {
-    trajectorySink?: DelegationTrajectorySink;
-    banditTuner?: DelegationBanditPolicyTuner;
-    defaultStrategyArmId?: string;
-  };
   /** Callback to resolve host tooling profile. */
   resolveHostToolingProfile: () => HostToolingProfile | null;
   /** Callback to resolve canonical host workspace root. */
@@ -200,12 +190,6 @@ export function createChatExecutor(
     subagentVerifier: {
       enabled: subagentConfig.enabled,
       force: subagentConfig.forceVerifier,
-    },
-    delegationLearning: {
-      trajectorySink: params.delegationLearning?.trajectorySink,
-      banditTuner: params.delegationLearning?.banditTuner,
-      defaultStrategyArmId:
-        params.delegationLearning?.defaultStrategyArmId ?? "balanced",
     },
     toolCallTimeoutMs: llmConfig?.toolCallTimeoutMs,
     requestTimeoutMs: llmConfig?.requestTimeoutMs,

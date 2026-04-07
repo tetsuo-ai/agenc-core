@@ -45,9 +45,6 @@ import {
   resolveDelegationDecisionConfig,
   type ResolvedDelegationDecisionConfig,
 } from "./delegation-decision.js";
-import type {
-  DelegationBanditPolicyTuner,
-} from "./delegation-learning.js";
 import type { HookRegistry } from "./hooks/index.js";
 import type { CanUseToolFn } from "./can-use-tool.js";
 import type { IsConcurrencySafeFn } from "./tool-orchestration.js";
@@ -314,8 +311,6 @@ export type {
   LLMRetryPolicyOverrides,
   ToolFailureCircuitBreakerConfig,
   ChatExecutorConfig,
-  EvaluatorConfig,
-  EvaluationResult,
 } from "./chat-executor-types.js";
 
 
@@ -351,7 +346,6 @@ export class ChatExecutor {
   private readonly delegationDecisionConfig: ResolvedDelegationDecisionConfig;
   private readonly resolveDelegationScoreThreshold?: () => number | undefined;
   private readonly subagentVerifierConfig: ResolvedSubagentVerifierConfig;
-  private readonly delegationBanditTuner?: DelegationBanditPolicyTuner;
   private readonly toolBudgetPerRequest: number;
   private readonly maxModelRecallsPerRequest: number;
   private readonly maxFailureBudgetPerRequest: number;
@@ -465,7 +459,6 @@ export class ChatExecutor {
     this.subagentVerifierConfig = ChatExecutor.resolveSubagentVerifierConfig(
       config.subagentVerifier,
     );
-    this.delegationBanditTuner = config.delegationLearning?.banditTuner;
     this.toolBudgetPerRequest = normalizeRuntimeLimit(
       config.toolBudgetPerRequest,
       DEFAULT_TOOL_BUDGET_PER_REQUEST,
@@ -649,7 +642,6 @@ export class ChatExecutor {
       activeTaskContext: deriveActiveTaskContext(ctx.turnExecutionContract),
       stopReasonDetail: ctx.stopReasonDetail,
       validationCode: ctx.validationCode,
-      evaluation: ctx.evaluation,
     };
   }
 
@@ -1325,7 +1317,6 @@ export class ChatExecutor {
         providerName: this.providers[0]?.name ?? "unknown",
         plannerEnabled: this.plannerEnabled,
         subagentVerifierEnabled: this.subagentVerifierConfig.enabled,
-        delegationBanditTunerEnabled: Boolean(this.delegationBanditTuner),
         delegationScoreThreshold: this.delegationDecisionConfig.scoreThreshold,
         defaultRunClass: this.defaultRunClass,
         economicsPolicy: this.economicsPolicy,

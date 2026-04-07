@@ -1966,11 +1966,6 @@ export class DaemonManager {
       subagentConfig: resolvedSubAgentConfig,
       resolveDelegationScoreThreshold: () =>
         this.resolveDelegationScoreThreshold(),
-      delegationLearning: {
-        trajectorySink: this._delegationTrajectorySink ?? undefined,
-        banditTuner: this._delegationBanditTuner ?? undefined,
-        defaultStrategyArmId: "balanced",
-      },
       resolveHostToolingProfile: () => this._hostToolingProfile,
       resolveHostWorkspaceRoot: () => this._hostWorkspacePath,
       pipelineExecutor: plannerPipelineExecutor,
@@ -3486,11 +3481,6 @@ export class DaemonManager {
         subagentConfig: resolvedSubAgentConfig,
         resolveDelegationScoreThreshold: () =>
           this.resolveDelegationScoreThreshold(),
-        delegationLearning: {
-          trajectorySink: this._delegationTrajectorySink ?? undefined,
-          banditTuner: this._delegationBanditTuner ?? undefined,
-          defaultStrategyArmId: "balanced",
-        },
         resolveHostToolingProfile: () => this._hostToolingProfile,
         resolveHostWorkspaceRoot: () => this._hostWorkspacePath,
         pipelineExecutor: plannerPipelineExecutor,

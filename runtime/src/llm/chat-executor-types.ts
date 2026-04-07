@@ -61,10 +61,6 @@ import type {
 import type { HostToolingProfile } from "../gateway/host-tooling.js";
 import type { ArtifactTaskContract } from "./chat-executor-artifact-task.js";
 import type { ActiveTaskContext, TurnExecutionContract } from "./turn-execution-contract-types.js";
-import type {
-  DelegationBanditPolicyTuner,
-  DelegationTrajectorySink,
-} from "./delegation-learning.js";
 import { RuntimeError, RuntimeErrorCodes } from "../types/errors.js";
 
 // ============================================================================
@@ -299,19 +295,6 @@ export interface ChatPlannerSummary {
     readonly confidence: number;
     readonly unresolvedItems: readonly string[];
   };
-  /** Online policy tuning diagnostics for delegation arm selection. */
-  readonly delegationPolicyTuning?: {
-    readonly enabled: boolean;
-    readonly contextClusterId?: string;
-    readonly selectedArmId?: string;
-    readonly selectedArmReason?: string;
-    readonly tunedThreshold?: number;
-    readonly exploration: boolean;
-    readonly finalReward?: number;
-    readonly usefulDelegation?: boolean;
-    readonly usefulDelegationScore?: number;
-    readonly rewardProxyVersion?: string;
-  };
 }
 
 export interface PlannerDiagnostic {
@@ -376,8 +359,6 @@ export interface ChatExecutorResult {
   readonly stopReasonDetail?: string;
   /** Optional delegated-output validation code associated with a validation_error stop. */
   readonly validationCode?: DelegationOutputValidationCode;
-  /** Result of response evaluation, if evaluator is configured. */
-  readonly evaluation?: EvaluationResult;
 }
 
 /** Minimal pipeline executor interface required by ChatExecutor planner path. */
@@ -467,8 +448,6 @@ export interface ChatExecutorConfig {
   readonly sessionCompactionThreshold?: number;
   /** Callback when context compaction occurs (budget recovery). */
   readonly onCompaction?: (sessionId: string, summary: string) => void;
-  /** Optional response evaluator/critic configuration. */
-  readonly evaluator?: EvaluatorConfig;
   /** Optional provider that injects self-learning context per message. */
   readonly learningProvider?: MemoryRetriever;
   /** Optional provider that injects cross-session progress context per message. */
@@ -511,12 +490,6 @@ export interface ChatExecutorConfig {
     /** Max verification rounds (initial verification included). */
     readonly maxRounds?: number;
   };
-  /** Optional delegation learning hooks (trajectory sink + online bandit tuner). */
-  readonly delegationLearning?: {
-    readonly trajectorySink?: DelegationTrajectorySink;
-    readonly banditTuner?: DelegationBanditPolicyTuner;
-    readonly defaultStrategyArmId?: string;
-  };
   /** Maximum tool calls allowed for a single execute() invocation. */
   readonly toolBudgetPerRequest?: number;
   /** Maximum model recalls (calls after the first) for a single execute() invocation. 0 = unlimited. */
@@ -541,27 +514,6 @@ export interface ChatExecutorConfig {
   readonly modelRoutingPolicy?: ModelRoutingPolicy;
   /** Force all calls in this executor instance into one run class (used for child runs). */
   readonly defaultRunClass?: RuntimeRunClass;
-}
-
-// ============================================================================
-// Evaluator types
-// ============================================================================
-
-/** Configuration for optional response evaluation/critic. */
-export interface EvaluatorConfig {
-  readonly rubric?: string;
-  /** Minimum score (0.0–1.0) to accept the response. Default: 0.7. */
-  readonly minScore?: number;
-  /** Maximum retry attempts when score is below threshold. Default: 1. */
-  readonly maxRetries?: number;
-}
-
-/** Result of a response evaluation. */
-export interface EvaluationResult {
-  readonly score: number;
-  readonly feedback: string;
-  readonly passed: boolean;
-  readonly retryCount: number;
 }
 
 // ============================================================================
@@ -673,18 +625,6 @@ export interface FullPlannerSummaryState extends MutablePlannerSummaryState {
   plannedSteps: number;
   estimatedRecallsAvoided: number;
   delegationDecision: DelegationDecision | undefined;
-  delegationPolicyTuning: {
-    enabled: boolean;
-    contextClusterId: string | undefined;
-    selectedArmId: string | undefined;
-    selectedArmReason: string | undefined;
-    tunedThreshold: number | undefined;
-    exploration: boolean;
-    finalReward: number | undefined;
-    usefulDelegation: boolean | undefined;
-    usefulDelegationScore: number | undefined;
-    rewardProxyVersion: string | undefined;
-  };
 }
 
 /** Loop-local mutable state shared across tool calls within a single round. */
@@ -760,7 +700,6 @@ export interface ExecutionContext {
   providerName: string;
   responseModel?: string;
   response?: LLMResponse;
-  evaluation?: EvaluationResult;
   finalContent: string;
   compacted: boolean;
   compactedArtifactContext?: ArtifactCompactionState;
@@ -815,7 +754,6 @@ export interface BuildExecutionContextConfig {
   readonly providerName: string;
   readonly plannerEnabled: boolean;
   readonly subagentVerifierEnabled: boolean;
-  readonly delegationBanditTunerEnabled: boolean;
   readonly delegationScoreThreshold: number;
   readonly defaultRunClass?: RuntimeRunClass;
   readonly economicsPolicy: RuntimeEconomicsPolicy;
@@ -900,7 +838,6 @@ export function buildDefaultExecutionContext(
     providerName: config.providerName,
     responseModel: undefined,
     response: undefined,
-    evaluation: undefined,
     finalContent: "",
     compacted: params.compacted,
     compactedArtifactContext: params.stateful?.artifactContext,
@@ -930,18 +867,6 @@ export function buildDefaultExecutionContext(
         overall: "skipped" as "pass" | "retry" | "fail" | "skipped",
         confidence: 1,
         unresolvedItems: [] as string[],
-      },
-      delegationPolicyTuning: {
-        enabled: config.delegationBanditTunerEnabled,
-        contextClusterId: undefined as string | undefined,
-        selectedArmId: undefined as string | undefined,
-        selectedArmReason: undefined as string | undefined,
-        tunedThreshold: undefined as number | undefined,
-        exploration: false,
-        finalReward: undefined as number | undefined,
-        usefulDelegation: undefined as boolean | undefined,
-        usefulDelegationScore: undefined as number | undefined,
-        rewardProxyVersion: undefined as string | undefined,
       },
     },
     completedRequestMilestoneIds: [],
