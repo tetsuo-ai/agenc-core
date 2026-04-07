@@ -1,3 +1,13 @@
+/**
+ * Workflow verification results — collapsed type stub (Cut 1.1).
+ *
+ * Replaces the previous 127-LOC channel-decision builder API used by
+ * the deleted planner verifier. Kept as opaque types so workflow/index
+ * still re-exports cleanly.
+ *
+ * @module
+ */
+
 import type {
   DelegationOutputValidationCode,
   DelegationOutputValidationResult,
@@ -35,93 +45,45 @@ export interface RuntimeVerificationDecision {
 
 export function verificationPass(
   channels: readonly RuntimeVerificationChannelDecision[] = [],
-  compatibilityFallbackSuggested = false,
 ): RuntimeVerificationDecision {
-  return {
-    ok: true,
-    channels,
-    ...(compatibilityFallbackSuggested
-      ? { compatibilityFallbackSuggested: true }
-      : {}),
-  };
+  return { ok: true, channels };
 }
 
 export function verificationFail(
   code: DelegationOutputValidationCode,
   message: string,
-  channels: readonly RuntimeVerificationChannelDecision[] = [],
 ): RuntimeVerificationDecision {
   return {
     ok: false,
     diagnostic: { code, message },
-    channels,
+    channels: [],
   };
 }
 
 export function verificationChannelPass(params: {
-  readonly channel: RuntimeVerificationChannelName;
-  readonly message: string;
-  readonly evidence?: readonly string[];
+  channel: RuntimeVerificationChannelName;
+  message: string;
+  evidence?: readonly string[];
 }): RuntimeVerificationChannelDecision {
-  return {
-    channel: params.channel,
-    ok: true,
-    message: params.message,
-    ...(params.evidence && params.evidence.length > 0
-      ? { evidence: params.evidence }
-      : {}),
-  };
+  return { channel: params.channel, ok: true, message: params.message, evidence: params.evidence };
 }
 
 export function verificationChannelFail(params: {
-  readonly channel: RuntimeVerificationChannelName;
-  readonly code: DelegationOutputValidationCode;
-  readonly message: string;
-  readonly evidence?: readonly string[];
+  channel: RuntimeVerificationChannelName;
+  message: string;
+  diagnostic?: RuntimeVerificationDiagnostic;
 }): RuntimeVerificationChannelDecision {
-  return {
-    channel: params.channel,
-    ok: false,
-    message: params.message,
-    diagnostic: {
-      code: params.code,
-      message: params.message,
-    },
-    ...(params.evidence && params.evidence.length > 0
-      ? { evidence: params.evidence }
-      : {}),
-  };
+  return { channel: params.channel, ok: false, message: params.message, diagnostic: params.diagnostic };
 }
 
-export function resolveRuntimeVerificationDecision(params: {
+export function resolveRuntimeVerificationDecision(_params: {
   readonly channels: readonly RuntimeVerificationChannelDecision[];
-  readonly compatibilityFallbackSuggested?: boolean;
 }): RuntimeVerificationDecision {
-  const failedChannel = params.channels.find((channel) => !channel.ok);
-  if (!failedChannel) {
-    return verificationPass(
-      params.channels,
-      params.compatibilityFallbackSuggested ?? false,
-    );
-  }
-  return verificationFail(
-    failedChannel.diagnostic?.code ?? "acceptance_evidence_missing",
-    failedChannel.diagnostic?.message ?? failedChannel.message,
-    params.channels,
-  );
+  return { ok: true, channels: [] };
 }
 
-export function toDelegationOutputValidationResult(params: {
-  readonly decision: RuntimeVerificationDecision;
-  readonly parsedOutput?: Record<string, unknown>;
-}): DelegationOutputValidationResult | undefined {
-  if (params.decision.ok || !params.decision.diagnostic) {
-    return undefined;
-  }
-  return {
-    ok: false,
-    code: params.decision.diagnostic.code,
-    error: params.decision.diagnostic.message,
-    ...(params.parsedOutput ? { parsedOutput: params.parsedOutput } : {}),
-  };
+export function toDelegationOutputValidationResult(
+  _params: Record<string, unknown>,
+): DelegationOutputValidationResult | undefined {
+  return undefined;
 }

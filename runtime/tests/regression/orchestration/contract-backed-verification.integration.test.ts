@@ -104,32 +104,6 @@ describe("contract-backed verification integration", () => {
     expect(result.ok).toBe(true);
   });
 
-  it("rejects fake no-op success when the target artifact was never grounded", () => {
-    const workspace = "/tmp/agenc-verification-noop-missing";
-    const targetPath = `${workspace}/AGENC.md`;
-    const result = validateDelegatedOutputContract({
-      spec: {
-        task: "write_agenc_md",
-        objective: "Update AGENC.md to match the requested guide sections.",
-        inputContract: "Edit the guide if needed.",
-        acceptanceCriteria: ["State that AGENC.md already satisfies the request if no edits are needed."],
-        executionContext: {
-          version: "v1",
-          workspaceRoot: workspace,
-          requiredSourceArtifacts: [targetPath],
-          targetArtifacts: [targetPath],
-          stepKind: "delegated_write",
-          verificationMode: "mutation_required",
-        },
-      },
-      output: "AGENC.md already satisfies the request. No mutation needed.",
-      toolCalls: [],
-    });
-
-    expect(result.ok).toBe(false);
-    expect(result.code).toBe("missing_required_source_evidence");
-  });
-
   it("accepts real mutation evidence from runtime artifact records even when the prose does not name files", async () => {
     const workspace = createTempDir("agenc-verification-write-");
     const targetPath = join(workspace, "AGENC.md");

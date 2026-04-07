@@ -1,19 +1,18 @@
+/**
+ * Workflow verification obligations — collapsed type stub (Cut 1.1).
+ *
+ * Replaces the previous 296-LOC verification-obligation derivation
+ * pipeline. The planner subsystem that produced workflow contracts
+ * has been deleted; the runtime no longer derives obligations from
+ * acceptance criteria. The exported types are kept as opaque shapes
+ * so consumer call sites still link.
+ *
+ * @module
+ */
+
 import type { DelegationContractSpec } from "../utils/delegation-validation.js";
-import { buildArtifactContract, type ArtifactContract } from "./artifact-contract.js";
-import type {
-  ImplementationCompletionContract,
-  PlaceholderTaxonomy,
-} from "./completion-contract.js";
-import { areDocumentationOnlyArtifacts } from "./artifact-paths.js";
+import type { ImplementationCompletionContract } from "./completion-contract.js";
 import type { WorkflowRequestCompletionContract } from "./request-completion.js";
-import type {
-  ExecutionStepKind,
-  ExecutionVerificationMode,
-} from "./execution-envelope.js";
-import { isMutationLikeVerificationMode } from "./execution-envelope.js";
-import { inferCompatibilityCompletionContract } from "./execution-intent.js";
-import { criterionRequiresWorkspaceInspectionVerification } from "./workspace-inspection-evidence.js";
-import { normalizeWorkspaceRoot } from "./path-normalization.js";
 
 export interface WorkflowVerificationContract {
   readonly workspaceRoot?: string;
@@ -25,28 +24,21 @@ export interface WorkflowVerificationContract {
     readonly sourceSteps?: readonly string[];
   };
   readonly acceptanceCriteria?: readonly string[];
-  readonly verificationMode?: ExecutionVerificationMode;
-  readonly stepKind?: ExecutionStepKind;
+  readonly verificationMode?: unknown;
+  readonly stepKind?: unknown;
   readonly completionContract?: ImplementationCompletionContract;
   readonly requestCompletion?: WorkflowRequestCompletionContract;
-  /**
-   * Optional reviewer/writer/validator role label propagated from the
-   * planner-emitted `execution_context.role` of the originating step. Used by
-   * the verifier to decide which role-specific verification path applies
-   * (e.g. reviewer-only steps cannot satisfy implementation-class
-   * acceptance criteria, validator steps must report deterministic outcomes).
-   */
   readonly role?: "reviewer" | "writer" | "validator" | "researcher" | "synthesizer";
 }
 
 export interface VerificationObligations {
   readonly workspaceRoot?: string;
-  readonly artifactContract: ArtifactContract;
+  readonly artifactContract: unknown;
   readonly acceptanceCriteria: readonly string[];
-  readonly verificationMode: ExecutionVerificationMode;
-  readonly stepKind?: ExecutionStepKind;
-  readonly completionContract?: ImplementationCompletionContract;
-  readonly placeholderTaxonomy: PlaceholderTaxonomy;
+  readonly verificationMode: unknown;
+  readonly stepKind?: unknown;
+  readonly completionContract?: unknown;
+  readonly placeholderTaxonomy: string;
   readonly requiresBuildVerification: boolean;
   readonly requiresBehaviorVerification: boolean;
   readonly requiresReviewVerification: boolean;
@@ -59,238 +51,13 @@ export interface VerificationObligations {
 }
 
 export function hasDelegationRuntimeVerificationContext(
-  spec: DelegationContractSpec | undefined,
+  _spec: DelegationContractSpec | undefined,
 ): boolean {
-  if (!spec) {
-    return false;
-  }
-  const executionContext = spec.executionContext;
-  return Boolean(
-    executionContext?.workspaceRoot ||
-      executionContext?.verificationMode ||
-      executionContext?.stepKind ||
-      executionContext?.completionContract ||
-      (executionContext?.inputArtifacts?.length ?? 0) > 0 ||
-      (executionContext?.requiredSourceArtifacts?.length ?? 0) > 0 ||
-      (executionContext?.targetArtifacts?.length ?? 0) > 0 ||
-      (spec.ownedArtifacts?.length ?? 0) > 0,
-  );
+  return false;
 }
-
-const BEHAVIOR_ACCEPTANCE_RE =
-  /\b(?:behavior|behaviour|scenario|smoke|e2e|end-to-end|play(?:test)?|job control|pipeline|pipes|signal|interactive|runtime flow|cli behavior|how to play)\b/i;
-const TEST_ACCEPTANCE_RE =
-  /\b(?:test|tests|testing|spec|specs|vitest|jest|pytest|ctest|cargo test|go test|playwright)\b/i;
-const BUILD_ACCEPTANCE_RE =
-  /\b(?:build|compile|compiled|typecheck|lint|tsc|cmake|make|bundle)\b/i;
 
 export function deriveVerificationObligations(
-  input: DelegationContractSpec | WorkflowVerificationContract,
+  _input: DelegationContractSpec | WorkflowVerificationContract,
 ): VerificationObligations | undefined {
-  const normalizedInput = normalizeVerificationContractInput(input);
-  // Audit S1.6: route every workspace root through normalizeWorkspaceRoot
-  // (path.resolve + ~ expansion + trim) so two consumers comparing
-  // workspace roots cannot disagree on whether `/tmp/foo` and
-  // `/tmp/foo/` are the same root.
-  const workspaceRoot = normalizeWorkspaceRoot(normalizedInput.workspaceRoot);
-  const requiredSourceArtifacts =
-    normalizedInput.requiredSourceArtifacts ??
-    normalizedInput.inputArtifacts ??
-    [];
-  const targetArtifacts =
-    normalizedInput.targetArtifacts ??
-    [];
-  const acceptanceCriteria =
-    normalizedInput.acceptanceCriteria?.filter((criterion) =>
-      typeof criterion === "string" && criterion.trim().length > 0
-    ) ?? [];
-
-  if (
-    !workspaceRoot &&
-    requiredSourceArtifacts.length === 0 &&
-    targetArtifacts.length === 0 &&
-    acceptanceCriteria.length === 0 &&
-    !normalizedInput.verificationMode &&
-    !normalizedInput.stepKind &&
-    !normalizedInput.completionContract
-  ) {
-    return undefined;
-  }
-
-  const stepKind = normalizedInput.stepKind;
-  const verificationMode =
-    normalizedInput.verificationMode ??
-    inferVerificationMode(stepKind, requiredSourceArtifacts, targetArtifacts);
-  const completionContract =
-    normalizedInput.completionContract ??
-    inferCompatibilityCompletionContract({
-      stepKind,
-      verificationMode,
-      targetArtifacts,
-    });
-  const acceptanceCriteriaRequireBehavior =
-    acceptanceCriteria.some((criterion) => criterionRequiresBehaviorVerification(criterion));
-  const acceptanceCriteriaRequireBuild =
-    acceptanceCriteria.some((criterion) => criterionRequiresBuildVerification(criterion));
-  const acceptanceCriteriaRequireWorkspaceInspection =
-    acceptanceCriteria.some((criterion) =>
-      criterionRequiresWorkspaceInspectionVerification(criterion)
-    );
-  const requiresBuildVerification =
-    completionContract?.taskClass === "build_required" ||
-    completionContract?.taskClass === "behavior_required" ||
-    acceptanceCriteriaRequireBuild ||
-    acceptanceCriteriaRequireBehavior;
-  const requiresBehaviorVerification =
-    completionContract?.taskClass === "behavior_required" ||
-    acceptanceCriteriaRequireBehavior;
-  const requiresReviewVerification =
-    completionContract?.taskClass === "review_required";
-  const requiresWorkspaceInspectionEvidence =
-    acceptanceCriteriaRequireWorkspaceInspection &&
-    normalizedInput.inheritedEvidence?.workspaceInspectionSatisfied !== true;
-  const requiresMutationEvidence =
-    completionContract?.taskClass === "review_required"
-      ? false
-      : isMutationLikeVerificationMode(verificationMode) ||
-        stepKind === "delegated_write" ||
-        stepKind === "delegated_scaffold";
-  const placeholdersAllowed = completionContract?.placeholdersAllowed ?? false;
-  const partialCompletionAllowed =
-    completionContract?.partialCompletionAllowed ?? false;
-  const placeholderTaxonomy =
-    completionContract?.placeholderTaxonomy ??
-    inferPlaceholderTaxonomy({
-      completionContract,
-      stepKind,
-      targetArtifacts,
-    });
-  const allowsGroundedNoop =
-    verificationMode === "conditional_mutation" ||
-    requiredSourceArtifactsCoveredByTargetReads(
-      requiredSourceArtifacts,
-      targetArtifacts,
-    );
-
-  return {
-    workspaceRoot,
-    artifactContract: buildArtifactContract({
-      requiredSourceArtifacts,
-      targetArtifacts,
-    }),
-    acceptanceCriteria,
-    verificationMode,
-    stepKind,
-    completionContract,
-    placeholderTaxonomy,
-    requiresBuildVerification,
-    requiresBehaviorVerification,
-    requiresReviewVerification,
-    requiresWorkspaceInspectionEvidence,
-    requiresMutationEvidence,
-    requiresSourceArtifactReads:
-      verificationMode === "grounded_read" ||
-      requiresReviewVerification ||
-      requiresWorkspaceInspectionEvidence ||
-      requiresMutationEvidence ||
-      requiredSourceArtifacts.length > 0,
-    allowsGroundedNoop,
-    placeholdersAllowed,
-    partialCompletionAllowed,
-  };
-}
-
-function criterionRequiresBehaviorVerification(criterion: string): boolean {
-  return (
-    BEHAVIOR_ACCEPTANCE_RE.test(criterion) ||
-    TEST_ACCEPTANCE_RE.test(criterion)
-  );
-}
-
-function criterionRequiresBuildVerification(criterion: string): boolean {
-  return BUILD_ACCEPTANCE_RE.test(criterion);
-}
-
-function normalizeVerificationContractInput(
-  input: DelegationContractSpec | WorkflowVerificationContract,
-): WorkflowVerificationContract {
-  if (isDelegationContractSpec(input)) {
-    const executionContext = input.executionContext;
-    return {
-      workspaceRoot: executionContext?.workspaceRoot,
-      requiredSourceArtifacts:
-        executionContext?.requiredSourceArtifacts ??
-        executionContext?.inputArtifacts,
-      inputArtifacts: executionContext?.inputArtifacts,
-      targetArtifacts:
-        executionContext?.targetArtifacts ??
-        input.ownedArtifacts,
-      inheritedEvidence: input.inheritedEvidence,
-      acceptanceCriteria: input.acceptanceCriteria,
-      verificationMode: executionContext?.verificationMode,
-      stepKind: executionContext?.stepKind,
-      completionContract: executionContext?.completionContract,
-    };
-  }
-  return input;
-}
-
-function isDelegationContractSpec(
-  input: DelegationContractSpec | WorkflowVerificationContract,
-): input is DelegationContractSpec {
-  return "executionContext" in input || "ownedArtifacts" in input;
-}
-
-function inferVerificationMode(
-  stepKind: ExecutionStepKind | undefined,
-  requiredSourceArtifacts: readonly string[],
-  targetArtifacts: readonly string[],
-): ExecutionVerificationMode {
-  if (stepKind === "delegated_validation") {
-    return "deterministic_followup";
-  }
-  if (stepKind === "delegated_write" || stepKind === "delegated_scaffold") {
-    return "mutation_required";
-  }
-  if (targetArtifacts.length > 0) {
-    return "mutation_required";
-  }
-  if (requiredSourceArtifacts.length > 0) {
-    return "grounded_read";
-  }
-  return "none";
-}
-
-function requiredSourceArtifactsCoveredByTargetReads(
-  requiredSourceArtifacts: readonly string[],
-  targetArtifacts: readonly string[],
-): boolean {
-  if (requiredSourceArtifacts.length === 0 || targetArtifacts.length === 0) {
-    return false;
-  }
-  const targetArtifactSet = new Set(targetArtifacts);
-  return requiredSourceArtifacts.every((artifact) => targetArtifactSet.has(artifact));
-}
-
-function inferPlaceholderTaxonomy(params: {
-  readonly completionContract?: ImplementationCompletionContract;
-  readonly stepKind?: ExecutionStepKind;
-  readonly targetArtifacts?: readonly string[];
-}): PlaceholderTaxonomy {
-  if (params.completionContract?.placeholderTaxonomy) {
-    return params.completionContract.placeholderTaxonomy;
-  }
-  if (
-    params.completionContract?.taskClass === "scaffold_allowed" ||
-    params.stepKind === "delegated_scaffold"
-  ) {
-    return "scaffold";
-  }
-  if (
-    params.completionContract?.taskClass === "artifact_only" &&
-    areDocumentationOnlyArtifacts(params.targetArtifacts ?? [])
-  ) {
-    return "documentation";
-  }
-  return "implementation";
+  return undefined;
 }

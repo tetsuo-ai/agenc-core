@@ -31,8 +31,6 @@ import type {
   LLMPipelineStopReason,
   LLMRetryPolicyMatrix,
 } from "./policy.js";
-import type {} from "../workflow/completion-contract.js";
-import type {} from "../workflow/verification-obligations.js";
 import { resolveWorkflowCompletionState } from "../workflow/completion-state.js";
 import { deriveWorkflowProgressSnapshot } from "../workflow/completion-progress.js";
 import {

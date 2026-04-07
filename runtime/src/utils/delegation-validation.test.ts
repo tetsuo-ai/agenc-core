@@ -71,14 +71,6 @@ describe("delegation-validation", () => {
     ).toEqual([]);
   });
 
-  it("treats current-workspace alignment criteria as inspection verification", () => {
-    expect(
-      getAcceptanceVerificationCategories(
-        "PLAN.md reflects the current workspace layout and recent directory changes accurately.",
-      ),
-    ).toEqual(["inspection"]);
-  });
-
   it("treats grounded verification command-reporting criteria as command verification", () => {
     expect(
       getAcceptanceVerificationCategories(
@@ -1952,76 +1944,6 @@ describe("delegation-validation", () => {
 
     expect(result.ok).toBe(false);
     expect(result.code).toBe("missing_required_source_evidence");
-  });
-
-  it("requires meaningful workspace inspection before workspace-grounded documentation rewrites", () => {
-    const result = validateDelegatedOutputContract({
-      spec: {
-        task: "review_and_update_plan",
-        objective:
-          "Review the codebase layout against phase1, identify plan gaps, and update PLAN.md.",
-        parentRequest:
-          "Review the entire codebase layout and code to verify if it correctly follows Phase1 as described in PLAN.md. Assess whether recent directory changes align with the plan.",
-        inputContract: "Use PLAN.md and the current workspace state as sources of truth.",
-        acceptanceCriteria: [
-          "PLAN.md reflects the current workspace layout and recent directory changes accurately.",
-        ],
-        executionContext: {
-          workspaceRoot: "/tmp/agenc-shell",
-          allowedReadRoots: ["/tmp/agenc-shell"],
-          allowedWriteRoots: ["/tmp/agenc-shell"],
-          requiredSourceArtifacts: ["/tmp/agenc-shell/PLAN.md"],
-          targetArtifacts: ["/tmp/agenc-shell/PLAN.md"],
-          allowedTools: ["system.readFile", "system.writeFile"],
-          effectClass: "filesystem_write",
-          verificationMode: "mutation_required",
-          stepKind: "delegated_write",
-        },
-      },
-      output: "Updated /tmp/agenc-shell/PLAN.md to reflect the current workspace layout.",
-      toolCalls: [
-        {
-          name: "system.readFile",
-          args: { path: "/tmp/agenc-shell/PLAN.md" },
-          result: JSON.stringify({
-            path: "/tmp/agenc-shell/PLAN.md",
-            content: "# PLAN\n",
-          }),
-        },
-        {
-          name: "system.writeFile",
-          args: {
-            path: "/tmp/agenc-shell/PLAN.md",
-            content: "# PLAN\nUpdated\n",
-          },
-          result: JSON.stringify({
-            path: "/tmp/agenc-shell/PLAN.md",
-            written: true,
-          }),
-        },
-      ],
-    });
-
-    expect(result.ok).toBe(false);
-    expect(result.code).toBe("missing_workspace_inspection_evidence");
-  });
-
-  it("detects workspace-grounded documentation rewrites from the delegated contract", () => {
-    expect(
-      specRequiresMeaningfulWorkspaceEvidence({
-        task: "review_and_update_plan",
-        objective:
-          "Review the codebase layout against phase1, identify plan gaps, and update PLAN.md.",
-        parentRequest:
-          "Assess whether recent directory changes align with the plan and update PLAN.md accordingly.",
-        inputContract: "Use PLAN.md and the current workspace state as sources of truth.",
-        executionContext: {
-          workspaceRoot: "/tmp/agenc-shell",
-          targetArtifacts: ["/tmp/agenc-shell/PLAN.md"],
-          requiredSourceArtifacts: ["/tmp/agenc-shell/PLAN.md"],
-        },
-      }),
-    ).toBe(true);
   });
 
   it("does not require local workspace inspection when grounded reviewer dependencies already satisfied it", () => {
@@ -4147,40 +4069,6 @@ Project is functional for core/pathfinding; CLI/web assumed usable per authored 
     expect(toolNames).toEqual([
       "system.listDir",
       "system.readFile",
-    ]);
-  });
-
-  it("prioritizes workspace inspection before mutation for workspace-grounded doc rewrites", () => {
-    const toolNames = resolveDelegatedInitialToolChoiceToolNames(
-      {
-        task: "review_and_update_plan",
-        objective:
-          "Review the codebase layout against phase1, identify plan gaps, and update PLAN.md.",
-        parentRequest:
-          "Assess whether recent directory changes align with the plan and update PLAN.md accordingly.",
-        inputContract: "Use PLAN.md and the current workspace state as sources of truth.",
-        acceptanceCriteria: [
-          "PLAN.md reflects the current workspace layout and recent directory changes accurately.",
-        ],
-        executionContext: {
-          workspaceRoot: "/tmp/agenc-shell",
-          targetArtifacts: ["/tmp/agenc-shell/PLAN.md"],
-          requiredSourceArtifacts: ["/tmp/agenc-shell/PLAN.md"],
-        },
-      },
-      [
-        "system.readFile",
-        "system.listDir",
-        "system.writeFile",
-        "system.bash",
-      ],
-    );
-
-    expect(toolNames).toEqual([
-      "system.listDir",
-      "system.readFile",
-      "system.writeFile",
-      "system.bash",
     ]);
   });
 

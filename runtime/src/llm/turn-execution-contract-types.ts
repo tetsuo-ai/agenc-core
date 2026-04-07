@@ -1,7 +1,17 @@
+/**
+ * Turn execution contract types — collapsed (Cut 1.2).
+ *
+ * The workflow-contract + completion-contract imports have been dropped
+ * as part of deleting the planner subsystem. The runtime no longer
+ * produces structured verification/completion contracts, so these
+ * fields are preserved on the `TurnExecutionContract` shape as opaque
+ * `unknown` slots to keep the call-site plumbing stable without the
+ * type bleeding out of workflow/.
+ *
+ * @module
+ */
+
 import type { ArtifactTaskContract } from "./chat-executor-artifact-task.js";
-import type { ExecutionEnvelope } from "../workflow/execution-envelope.js";
-import type { ImplementationCompletionContract } from "../workflow/completion-contract.js";
-import type { WorkflowVerificationContract } from "../workflow/verification-obligations.js";
 
 export type TurnExecutionClass =
   | "dialogue"
@@ -31,10 +41,10 @@ export interface TurnExecutionContract {
   readonly targetArtifacts: readonly string[];
   readonly allowedToolNames?: readonly string[];
   readonly delegationPolicy: TurnDelegationPolicy;
-  readonly verificationContract?: WorkflowVerificationContract;
-  readonly completionContract?: ImplementationCompletionContract;
+  readonly verificationContract?: unknown;
+  readonly completionContract?: unknown;
   readonly artifactTaskContract?: ArtifactTaskContract;
-  readonly executionEnvelope?: ExecutionEnvelope;
+  readonly executionEnvelope?: unknown;
   readonly contractFingerprint: string;
   readonly taskLineageId: string;
   readonly invalidReason?: string;

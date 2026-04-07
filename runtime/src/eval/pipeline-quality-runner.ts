@@ -52,7 +52,10 @@ import {
   type EconomicsScenarioRecord,
 } from "./economics-scorecard.js";
 import { buildRuntimeEconomicsPolicy } from "../llm/run-budget.js";
-import { assessDelegationDecision } from "../llm/delegation-decision.js";
+// Cut 1.2: assessDelegationDecision deleted; this eval scenario was
+// exercising the deleted utility-scoring path. The negative-economics
+// branch is now handled by gateway/delegation-admission.ts at the
+// admission layer rather than a utility-score post-check.
 
 const DEFAULT_CONTEXT_BENCHMARK_TURNS = 24;
 const DEFAULT_DESKTOP_RUNS = 1;
@@ -300,79 +303,10 @@ async function runEconomicsBenchmark(): Promise<ReturnType<typeof computeEconomi
     });
   }
 
-  {
-    const decision = assessDelegationDecision({
-      messageText:
-        "Explore the repo in parallel and produce a follow-up patch plan.",
-      plannerConfidence: 0.94,
-      complexityScore: 8,
-      totalSteps: 3,
-      synthesisSteps: 1,
-      edges: [],
-      subagentSteps: [
-        {
-          name: "explore_repo",
-          objective: "Explore the repository and collect findings.",
-          acceptanceCriteria: ["Read PLAN.md", "Return grounded findings"],
-          requiredToolCapabilities: ["system.readFile", "system.listDir"],
-          contextRequirements: [],
-          executionContext: {
-            workspaceRoot: "/workspace",
-            effectClass: "read_only",
-            verificationMode: "grounded_read",
-            requiredSourceArtifacts: ["PLAN.md"],
-            targetArtifacts: [],
-            inputArtifacts: [],
-            allowedReadRoots: ["/workspace"],
-            allowedWriteRoots: [],
-          },
-          maxBudgetHint: "15m",
-          canRunParallel: true,
-        },
-      ],
-      config: {
-        enabled: true,
-        scoreThreshold: 0,
-        maxFanoutPerTurn: 4,
-        maxDepth: 2,
-      },
-      budgetSnapshot: {
-        mode: "enforce",
-        childBudget: {
-          runClass: "child",
-          tokenCeiling: 4_000,
-          latencyCeilingMs: 120_000,
-          spendCeilingUnits: 3,
-          downgradeTokenRatio: 0.7,
-          downgradeSpendRatio: 0.7,
-          downgradeLatencyRatio: 0.7,
-        },
-        remainingTokens: 200,
-        remainingLatencyMs: 20_000,
-        remainingSpendUnits: 0.1,
-        parentTokenRatio: 0.95,
-        parentLatencyRatio: 0.2,
-        parentSpendRatio: 0.95,
-        childFanoutSoftCap: 1,
-        negativeDelegationMarginUnits: 0.3,
-        negativeDelegationMarginTokens: 128,
-      },
-    });
-    scenarios.push({
-      scenarioId: "negative_economics_delegation_denial",
-      passed: decision.reason === "negative_economics" && !decision.shouldDelegate,
-      tokenCeilingRespected: true,
-      latencyCeilingRespected: true,
-      spendCeilingRespected: true,
-      negativeEconomicsApplicable: true,
-      delegationDeniedOnNegativeEconomics:
-        decision.reason === "negative_economics" && !decision.shouldDelegate,
-      degradedProviderRerouteApplicable: false,
-      reroutedUnderDegradedProvider: false,
-      spendUnits: 0.1,
-      latencyMs: 1,
-    });
-  }
+  // Cut 1.2: negative_economics_delegation_denial scenario deleted
+  // along with assessDelegationDecision. The same hard-rejection path
+  // is now exercised by the delegation-admission integration test
+  // (gateway/delegation-admission.test.ts).
 
   {
     const primary = createEconomicsProvider({
