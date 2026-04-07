@@ -73,10 +73,8 @@ import type { ArtifactTaskContract } from "./chat-executor-artifact-task.js";
 import type { ActiveTaskContext, TurnExecutionContract } from "./turn-execution-contract-types.js";
 import type {
   DelegationBanditPolicyTuner,
-  DelegationBanditSelection,
   DelegationTrajectorySink,
 } from "./delegation-learning.js";
-import { deriveDelegationContextClusterId } from "./delegation-learning.js";
 import { RuntimeError, RuntimeErrorCodes } from "../types/errors.js";
 
 // ============================================================================
@@ -937,8 +935,6 @@ export interface ExecutionContext {
   readonly effectiveRequestTimeoutMs: number;
   readonly startTime: number;
   readonly requestDeadlineAt: number;
-  readonly parentTurnId: string;
-  readonly trajectoryTraceId: string;
   readonly initialRoutedToolNames: readonly string[];
   readonly expandedRoutedToolNames: readonly string[];
   readonly canExpandOnRoutingMiss: boolean;
@@ -988,32 +984,8 @@ export interface ExecutionContext {
   transientRoutedToolNames: readonly string[] | undefined;
   routedToolsExpanded: boolean;
   routedToolMisses: number;
-  plannerHandled: boolean;
-  plannerImplementationFallbackBlocked: boolean;
-  plannerWorkflowTaskClassification?: PlannerWorkflowTaskClassification;
-  plannerVerificationContract?: WorkflowVerificationContract;
-  plannerCompletionContract?: ImplementationCompletionContract;
-  plannerFailedStep?: {
-    readonly stepName?: string;
-    readonly stepIndex?: number;
-    readonly tool?: string;
-    readonly error?: string;
-  };
-  plannerTerminalFallback?: {
-    readonly kind: "planner_synthesis_fallback";
-    readonly reason: string;
-  };
   plannerSummaryState: FullPlannerSummaryState;
-  trajectoryContextClusterId: string;
-  selectedBanditArm?: DelegationBanditSelection;
-  tunedDelegationThreshold: number;
-  plannedSubagentSteps: number;
-  plannedDeterministicSteps: number;
-  plannedSynthesisSteps: number;
-  plannedDependencyDepth: number;
-  plannedFanout: number;
   completedRequestMilestoneIds: readonly string[];
-  requiredToolEvidenceCorrectionAttempts: number;
   economicsState: RuntimeEconomicsState;
   delegationBudgetSnapshot?: DelegationBudgetSnapshot;
 }
@@ -1092,8 +1064,6 @@ export function buildDefaultExecutionContext(
       config.requestTimeoutMs > 0
         ? startTime + config.requestTimeoutMs
         : Number.POSITIVE_INFINITY,
-    parentTurnId: `parent:${params.sessionId}:${startTime}`,
-    trajectoryTraceId: `trace:${params.sessionId}:${startTime}`,
     initialRoutedToolNames: params.initialRoutedToolNames,
     expandedRoutedToolNames: params.expandedRoutedToolNames,
     canExpandOnRoutingMiss: Boolean(
@@ -1155,13 +1125,6 @@ export function buildDefaultExecutionContext(
     transientRoutedToolNames: undefined,
     routedToolsExpanded: false,
     routedToolMisses: 0,
-    plannerHandled: false,
-    plannerImplementationFallbackBlocked: false,
-    plannerWorkflowTaskClassification: undefined,
-    plannerVerificationContract: undefined,
-    plannerCompletionContract: undefined,
-    plannerFailedStep: undefined,
-    plannerTerminalFallback: undefined,
     plannerSummaryState: {
       enabled: config.plannerEnabled,
       used: false,
@@ -1194,21 +1157,7 @@ export function buildDefaultExecutionContext(
         rewardProxyVersion: undefined as string | undefined,
       },
     },
-    trajectoryContextClusterId: deriveDelegationContextClusterId({
-      complexityScore: params.plannerDecision.score,
-      subagentStepCount: 0,
-      hasHistory,
-      highRiskPlan: false,
-    }),
-    selectedBanditArm: undefined,
-    tunedDelegationThreshold: params.baseDelegationThreshold,
-    plannedSubagentSteps: 0,
-    plannedDeterministicSteps: 0,
-    plannedSynthesisSteps: 0,
-    plannedDependencyDepth: 0,
-    plannedFanout: 0,
     completedRequestMilestoneIds: [],
-    requiredToolEvidenceCorrectionAttempts: 0,
     economicsState,
     delegationBudgetSnapshot: buildDelegationBudgetSnapshot(
       config.economicsPolicy,

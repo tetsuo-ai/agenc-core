@@ -573,18 +573,11 @@ export class ChatExecutor {
   ): Promise<ChatExecutorResult> {
     const ctx = await this.initializeExecutionContext(params);
 
-    // Planner path removed in Phase 2 of the refactor — every request
-    // now flows through `executeToolCallLoop` directly.
-
-    // Direct path: initial LLM call + tool loop. The planner subsystem
-    // was deleted in Phase 2; `plannerHandled` is always false here and
-    // `resolvePlannerFallbackBarrier` (now removed) was a no-op.
     await this.executeToolCallLoop(ctx);
 
     this.checkRequestTimeout(ctx, "finalization");
     this.synchronizeCompletionState(ctx);
 
-    // Finalization, trajectory recording, bandit outcome
     const { plannerSummary, durationMs } = this.recordOutcomeAndFinalize(ctx);
 
     // Cut 2: the planner-era reconcile* post-processing chain has been
@@ -1358,7 +1351,6 @@ export class ChatExecutor {
     );
 
     if (turnExecutionContract.invalidReason) {
-      ctx.plannerHandled = true;
       this.setStopReason(ctx, "validation_error", turnExecutionContract.invalidReason);
       ctx.finalContent = turnExecutionContract.invalidReason;
       return ctx;
