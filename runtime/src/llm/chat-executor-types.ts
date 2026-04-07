@@ -449,6 +449,14 @@ export interface ChatExecutorConfig {
    */
   readonly isConcurrencySafe?: import("./tool-orchestration.js").IsConcurrencySafeFn;
   /**
+   * Cut 5.4: queryTracking — chainId + depth pair propagated through
+   * the sub-agent nesting. Callers plumb the parent tracking in when
+   * spawning a child chat-executor; the runtime enforces a hard depth
+   * cap to prevent runaway recursive delegation and surfaces the
+   * chain on every hook context.
+   */
+  readonly queryTracking?: import("./query-tracking.js").QueryTracking;
+  /**
    * Maximum token budget per session. When cumulative usage meets or exceeds
    * this value, the executor attempts to compact conversation history by
    * summarizing older messages. If compaction fails, falls back to

@@ -51,6 +51,11 @@ import type {
 import type { HookRegistry } from "./hooks/index.js";
 import type { CanUseToolFn } from "./can-use-tool.js";
 import type { IsConcurrencySafeFn } from "./tool-orchestration.js";
+import {
+  rootQueryTracking,
+  isQueryDepthExceeded,
+  type QueryTracking,
+} from "./query-tracking.js";
 // ---------------------------------------------------------------------------
 // Imports from extracted sibling modules
 // ---------------------------------------------------------------------------
@@ -379,6 +384,14 @@ export class ChatExecutor {
    * opportunity before wiring real parallel dispatch.
    */
   private readonly isConcurrencySafe?: IsConcurrencySafeFn;
+  /**
+   * Cut 5.4: queryTracking (chainId + depth). When the caller
+   * provides a parent tracking record the runtime inherits the
+   * chainId and increments depth implicitly through
+   * `childQueryTracking` at sub-agent spawn points. The root
+   * executor defaults to a fresh chainId with depth 0.
+   */
+  private readonly queryTracking: QueryTracking;
 
   private readonly cooldowns = new Map<string, CooldownEntry>();
   private readonly sessionTokens = new Map<string, number>();
@@ -496,6 +509,17 @@ export class ChatExecutor {
     this.hookRegistry = config.hookRegistry;
     this.canUseTool = config.canUseTool;
     this.isConcurrencySafe = config.isConcurrencySafe;
+    this.queryTracking = config.queryTracking ?? rootQueryTracking();
+    if (isQueryDepthExceeded(this.queryTracking)) {
+      throw new Error(
+        `ChatExecutor queryTracking depth exceeded hard cap (${this.queryTracking.depth})`,
+      );
+    }
+  }
+
+  /** Cut 5.4: expose the current query tracking for sub-agent spawn callers. */
+  getQueryTracking(): QueryTracking {
+    return this.queryTracking;
   }
 
   private static resolveSubagentVerifierConfig(
