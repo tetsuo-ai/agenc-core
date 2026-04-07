@@ -15,6 +15,3 @@ export * from "./checkpoint.js";
 export * from "./sqlite-dlq.js";
 export * from "./sqlite-checkpoint-store.js";
 export * from "./metrics.js";
-export * from "./dependency-graph.js";
-export * from "./proof-pipeline.js";
-export * from "./speculative-executor.js";

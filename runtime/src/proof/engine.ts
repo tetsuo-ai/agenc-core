@@ -2,8 +2,7 @@
  * ProofEngine - ZK proof generation engine with caching and stats tracking.
  *
  * Wraps the SDK's ZK proof functions with caching, statistics tracking,
- * and error wrapping. Implements ProofGenerator from the proof pipeline
- * for plug-and-play integration.
+ * and error wrapping.
  *
  * @module
  */
@@ -15,12 +14,6 @@ import {
   type HashResult,
   type ProverConfig as SdkProverConfig,
 } from "@tetsuo-ai/sdk";
-import type { ProofGenerator } from "../task/proof-pipeline.js";
-import type {
-  OnChainTask,
-  TaskExecutionResult,
-  PrivateTaskExecutionResult,
-} from "../task/types.js";
 import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";
 import type { MetricsProvider } from "../task/types.js";
@@ -83,8 +76,6 @@ export function buildSdkProverConfig(
  * ProofEngine wraps the SDK's ZK proof functions with caching,
  * stats tracking, and error wrapping.
  *
- * Implements ProofGenerator for integration with ProofPipeline.
- *
  * @example
  * ```typescript
  * const engine = new ProofEngine({
@@ -111,7 +102,7 @@ export function buildSdkProverConfig(
  * });
  * ```
  */
-export class ProofEngine implements ProofGenerator {
+export class ProofEngine {
   private readonly methodId: Uint8Array | null;
   private readonly routerConfig: RouterConfig | null;
   private readonly proverBackend: ProverBackend;
@@ -348,29 +339,4 @@ export class ProofEngine implements ProofGenerator {
     };
   }
 
-  // ==========================================================================
-  // ProofGenerator interface (for ProofPipeline integration)
-  // ==========================================================================
-
-  /**
-   * Generate proof for public task completion.
-   * Returns the proofHash from the execution result.
-   */
-  async generatePublicProof(
-    _task: OnChainTask,
-    result: TaskExecutionResult,
-  ): Promise<Uint8Array> {
-    return result.proofHash;
-  }
-
-  /**
-   * Generate proof for private (ZK) task completion.
-   * Returns the router seal bytes from the execution result.
-   */
-  async generatePrivateProof(
-    _task: OnChainTask,
-    result: PrivateTaskExecutionResult,
-  ): Promise<Uint8Array> {
-    return result.sealBytes;
-  }
 }

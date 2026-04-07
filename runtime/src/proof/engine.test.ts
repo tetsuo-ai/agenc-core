@@ -497,34 +497,6 @@ describe("ProofEngine", () => {
     });
   });
 
-  // ==========================================================================
-  // ProofGenerator interface
-  // ==========================================================================
-
-  describe("ProofGenerator interface", () => {
-    it("generatePublicProof returns proofHash", async () => {
-      const engine = new ProofEngine();
-      const proofHash = new Uint8Array(32).fill(0xaa);
-      const result = await engine.generatePublicProof({} as any, {
-        proofHash,
-        resultData: new Uint8Array(64),
-      });
-      expect(result).toBe(proofHash);
-    });
-
-    it("generatePrivateProof returns seal bytes", async () => {
-      const engine = new ProofEngine();
-      const sealBytes = new Uint8Array(260).fill(0xbb);
-      const result = await engine.generatePrivateProof({} as any, {
-        sealBytes,
-        journal: new Uint8Array(192),
-        imageId: new Uint8Array(32),
-        bindingSeed: new Uint8Array(32),
-        nullifierSeed: new Uint8Array(32),
-      });
-      expect(result).toBe(sealBytes);
-    });
-  });
 });
 
 // =============================================================================
