@@ -32,14 +32,8 @@ import type {
   LLMPipelineStopReason,
   LLMRetryPolicyMatrix,
 } from "./policy.js";
-import type {
-  Pipeline,
-  PipelineExecutionEvent,
-  PipelineResult,
-} from "../workflow/pipeline.js";
 import type { ImplementationCompletionContract } from "../workflow/completion-contract.js";
 import type { WorkflowVerificationContract } from "../workflow/verification-obligations.js";
-import type { HostToolingProfile } from "../gateway/host-tooling.js";
 import { resolveWorkflowCompletionState } from "../workflow/completion-state.js";
 import { deriveWorkflowProgressSnapshot } from "../workflow/completion-progress.js";
 import { isDocumentationArtifactPath } from "../workflow/artifact-paths.js";
@@ -84,7 +78,6 @@ import type {
   ChatCallUsageRecord,
   ChatPlannerSummary,
   ChatExecutorResult,
-  DeterministicPipelineExecutor,
   ChatExecutorConfig,
   EvaluatorConfig,
   CooldownEntry,
@@ -419,9 +412,6 @@ import {
   callWithFallback as callWithFallbackFn,
 } from "./chat-executor-fallback.js";
 import {
-  executePlannerPath as executePlannerPathFn,
-} from "./chat-executor-planner-execution.js";
-import {
   deriveActiveTaskContext,
   mergeTurnExecutionRequiredToolEvidence,
   resolveTurnExecutionContract,
@@ -489,8 +479,6 @@ export class ChatExecutor {
   private readonly plannerEnabled: boolean;
   private readonly simpleAgentLoop: boolean;
   private readonly plannerMaxTokens: number;
-  private readonly delegationNestingDepth: number;
-  private readonly pipelineExecutor?: DeterministicPipelineExecutor;
   private readonly delegationDecisionConfig: ResolvedDelegationDecisionConfig;
   private readonly resolveDelegationScoreThreshold?: () => number | undefined;
   private readonly subagentVerifierConfig: ResolvedSubagentVerifierConfig;
@@ -504,7 +492,6 @@ export class ChatExecutor {
   private readonly requestTimeoutMs: number;
   private readonly retryPolicyMatrix: LLMRetryPolicyMatrix;
   private readonly toolFailureBreaker: ToolFailureCircuitBreaker;
-  private readonly resolveHostToolingProfile?: () => HostToolingProfile | null;
   private readonly resolveHostWorkspaceRoot?: () => string | null;
   private readonly economicsPolicy: RuntimeEconomicsPolicy;
   private readonly modelRoutingPolicy: ModelRoutingPolicy;
@@ -567,16 +554,10 @@ export class ChatExecutor {
       config.plannerMaxTokens,
       DEFAULT_PLANNER_MAX_TOKENS,
     );
-    this.delegationNestingDepth = Math.max(
-      0,
-      Math.floor(config.delegationNestingDepth ?? 0),
-    );
-    this.pipelineExecutor = config.pipelineExecutor;
     this.delegationDecisionConfig = resolveDelegationDecisionConfig(
       config.delegationDecision,
     );
     this.resolveDelegationScoreThreshold = config.resolveDelegationScoreThreshold;
-    this.resolveHostToolingProfile = config.resolveHostToolingProfile;
     this.resolveHostWorkspaceRoot = config.resolveHostWorkspaceRoot;
     this.subagentVerifierConfig = ChatExecutor.resolveSubagentVerifierConfig(
       config.subagentVerifier,
@@ -676,20 +657,9 @@ export class ChatExecutor {
   ): Promise<ChatExecutorResult> {
     const ctx = await this.initializeExecutionContext(params);
 
-    // Planner path (complexity-based delegation).
-    // Skipped entirely when `simpleAgentLoop` is enabled — the simple
-    // path is a Claude Code-style tool loop with no planner phase, no
-    // structured plan validation, and no contract synthesis. See the
-    // ChatExecutorConfig.simpleAgentLoop docstring.
-    if (
-      !this.simpleAgentLoop &&
-      this.plannerEnabled &&
-      ctx.plannerDecision.shouldPlan &&
-      this.pipelineExecutor &&
-      ctx.activeToolHandler
-    ) {
-      await this.executePlannerPath(ctx);
-    }
+    // Planner path removed in Phase 2 of the refactor — every request
+    // now flows through `executeToolCallLoop` directly. See PR #188 for
+    // the simpleAgentLoop flag that gated this for Phase 1.
 
     // Direct path: initial LLM call + tool loop
     if (!ctx.plannerHandled) {
@@ -1114,130 +1084,6 @@ export class ChatExecutor {
     event: ChatExecutionTraceEvent,
   ): void {
     ctx.trace?.onExecutionTraceEvent?.(event);
-  }
-
-  private emitPlannerTrace(
-    ctx: ExecutionContext,
-    type:
-      | "planner_path_finished"
-      | "planner_pipeline_finished"
-      | "planner_synthesis_fallback_applied"
-      | "planner_pipeline_started"
-      | "planner_plan_parsed"
-      | "planner_refinement_requested"
-      | "planner_verifier_retry_scheduled"
-      | "planner_verifier_round_finished",
-    payload: Record<string, unknown>,
-  ): void {
-    if (type === "planner_path_finished") {
-      this.synchronizeCompletionState(ctx);
-      if (payload.completionState === undefined) {
-        payload = {
-          ...payload,
-          completionState: ctx.completionState,
-        };
-      }
-    }
-    this.emitExecutionTrace(ctx, {
-      type,
-      phase: "planner",
-      callIndex: ctx.callIndex + 1,
-      payload,
-    });
-  }
-
-  private emitPipelineExecutionTrace(
-    ctx: ExecutionContext,
-    event: PipelineExecutionEvent,
-  ): void {
-    if (event.type === "step_state_changed") {
-      this.emitExecutionTrace(ctx, {
-        type: "planner_step_state_changed",
-        phase: "planner",
-        callIndex: ctx.callIndex + 1,
-        payload: {
-          pipelineId: event.pipelineId,
-          stepName: event.stepName,
-          stepIndex: event.stepIndex,
-          state: event.state,
-          previousState: event.previousState,
-          tool: event.tool,
-          args: event.args,
-          reason: event.reason,
-          blockingDependencies: event.blockingDependencies,
-        },
-      });
-      return;
-    }
-    if (event.type === "step_started") {
-      this.emitExecutionTrace(ctx, {
-        type: "tool_dispatch_started",
-        phase: "planner",
-        callIndex: ctx.callIndex + 1,
-        payload: {
-          pipelineId: event.pipelineId,
-          stepName: event.stepName,
-          stepIndex: event.stepIndex,
-          tool: event.tool,
-          args: event.args,
-        },
-      });
-      return;
-    }
-    if (event.type === "step_finished") {
-      if (typeof event.error === "string") {
-        ctx.plannerFailedStep = {
-          stepName: event.stepName,
-          stepIndex: event.stepIndex,
-          tool: event.tool,
-          error: event.error,
-        };
-      } else if (
-        ctx.plannerFailedStep &&
-        (
-          (
-            typeof ctx.plannerFailedStep.stepName === "string" &&
-            ctx.plannerFailedStep.stepName === event.stepName
-          ) ||
-          (
-            typeof ctx.plannerFailedStep.stepIndex === "number" &&
-            ctx.plannerFailedStep.stepIndex === event.stepIndex
-          )
-        )
-      ) {
-        ctx.plannerFailedStep = undefined;
-      }
-      this.emitExecutionTrace(ctx, {
-        type: "tool_dispatch_finished",
-        phase: "planner",
-        callIndex: ctx.callIndex + 1,
-        payload: {
-          pipelineId: event.pipelineId,
-          stepName: event.stepName,
-          stepIndex: event.stepIndex,
-          tool: event.tool,
-          args: event.args,
-          durationMs: event.durationMs,
-          isError: typeof event.error === "string",
-          ...(typeof event.result === "string"
-            ? { result: event.result }
-            : {}),
-          ...(typeof event.error === "string"
-            ? { error: event.error }
-            : {}),
-        },
-      });
-      return;
-    }
-    this.emitPlannerTrace(ctx, "planner_pipeline_finished", {
-      pipelineId: event.pipelineId,
-      halted: true,
-      stepName: event.stepName,
-      stepIndex: event.stepIndex,
-      tool: event.tool,
-      args: event.args,
-      error: event.error,
-    });
   }
 
   private maybePushRuntimeInstruction(
@@ -2339,74 +2185,6 @@ export class ChatExecutor {
     return next.response;
   }
 
-  private async runPipelineWithTimeout(
-    ctx: ExecutionContext,
-    pipeline: Pipeline,
-  ): Promise<PipelineResult | undefined> {
-    ctx.plannerFailedStep = undefined;
-    const remainingMs = this.getRemainingRequestMs(ctx);
-    if (!Number.isFinite(remainingMs)) {
-      return this.pipelineExecutor!.execute(
-        pipeline,
-        0,
-        {
-          ...(ctx.activeToolHandler
-            ? { toolHandler: ctx.activeToolHandler }
-            : {}),
-          onEvent: (event) => this.emitPipelineExecutionTrace(ctx, event),
-        },
-      );
-    }
-    if (remainingMs <= 0) {
-      this.setStopReason(
-        ctx,
-        "timeout",
-        this.timeoutDetail("planner pipeline execution", ctx.effectiveRequestTimeoutMs),
-      );
-      return undefined;
-    }
-    const timeoutMessage = `planner pipeline timed out after ${remainingMs}ms`;
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timeoutHandle = setTimeout(() => {
-        reject(new Error(timeoutMessage));
-      }, remainingMs);
-    });
-    try {
-      return await Promise.race([
-        this.pipelineExecutor!.execute(
-          pipeline,
-          0,
-          {
-            ...(ctx.activeToolHandler
-              ? { toolHandler: ctx.activeToolHandler }
-              : {}),
-            onEvent: (event) => this.emitPipelineExecutionTrace(ctx, event),
-          },
-        ),
-        timeoutPromise,
-      ]);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (message === timeoutMessage) {
-        this.setStopReason(
-          ctx,
-          "timeout",
-          this.timeoutDetail("planner pipeline execution", ctx.effectiveRequestTimeoutMs),
-        );
-        return undefined;
-      }
-      const annotated = annotateFailureError(
-        error,
-        "planner pipeline execution",
-      );
-      this.setStopReason(ctx, annotated.stopReason, annotated.stopReasonDetail);
-      throw annotated.error;
-    } finally {
-      if (timeoutHandle) clearTimeout(timeoutHandle);
-    }
-  }
-
   private async initializeExecutionContext(
     params: ChatExecuteParams,
   ): Promise<ExecutionContext> {
@@ -3254,28 +3032,6 @@ export class ChatExecutor {
       allowedTools: this.allowedTools,
       toolFailureBreaker: this.toolFailureBreaker,
     }, this.buildToolLoopCallbacks());
-  }
-
-  private async executePlannerPath(ctx: ExecutionContext): Promise<void> {
-    return executePlannerPathFn(ctx, {
-      plannerMaxTokens: this.plannerMaxTokens,
-      delegationNestingDepth: this.delegationNestingDepth,
-      delegationDecisionConfig: this.delegationDecisionConfig,
-      subagentVerifierConfig: this.subagentVerifierConfig,
-      delegationDefaultStrategyArmId: this.delegationDefaultStrategyArmId,
-      allowedTools: this.allowedTools,
-      delegationBanditTuner: this.delegationBanditTuner,
-      resolveHostToolingProfile: this.resolveHostToolingProfile,
-      resolveHostWorkspaceRoot: this.resolveHostWorkspaceRoot,
-    }, {
-      emitPlannerTrace: (c, type, payload) => this.emitPlannerTrace(c, type, payload),
-      setStopReason: (c, reason, detail) => this.setStopReason(c, reason, detail),
-      checkRequestTimeout: (c, stage) => this.checkRequestTimeout(c, stage),
-      callModelForPhase: (c, input) => this.callModelForPhase(c, input),
-      appendToolRecord: (c, record) => this.appendToolRecord(c, record),
-      runPipelineWithTimeout: (c, pipeline) => this.runPipelineWithTimeout(c, pipeline),
-      timeoutDetail: (stage, timeoutMs) => this.timeoutDetail(stage, timeoutMs),
-    });
   }
 
   /** Get accumulated token usage for a session. */
