@@ -230,12 +230,7 @@ export interface ChatCallUsageRecord {
   readonly phase:
     | "compaction"
     | "initial"
-    | "planner"
-    | "planner_verifier"
-    | "planner_synthesis"
-    | "tool_followup"
-    | "evaluator"
-    | "evaluator_retry";
+    | "tool_followup";
   readonly provider: string;
   readonly model?: string;
   readonly finishReason: LLMResponse["finishReason"];

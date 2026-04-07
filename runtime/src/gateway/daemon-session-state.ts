@@ -36,7 +36,6 @@ interface PersistedWebSessionRuntimeState {
 const SESSION_STATEFUL_LINEAGE_PHASES = new Set([
   "initial",
   "tool_followup",
-  "evaluator_retry",
 ]);
 
 function isStatefulResumeAnchor(

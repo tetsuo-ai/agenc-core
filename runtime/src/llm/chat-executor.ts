@@ -825,7 +825,7 @@ export class ChatExecutor {
       statefulHistoryCompacted: input.statefulHistoryCompacted,
     });
     const groundingMessage =
-      input.phase === "tool_followup" || input.phase === "planner_synthesis"
+      input.phase === "tool_followup"
         ? buildToolExecutionGroundingMessage({
           toolCalls: ctx.allToolCalls,
           providerEvidence: ctx.providerEvidence,
