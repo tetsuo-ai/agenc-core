@@ -18,8 +18,3 @@ export * from "./metrics.js";
 export * from "./dependency-graph.js";
 export * from "./proof-pipeline.js";
 export * from "./speculative-executor.js";
-export * from "./commitment-ledger.js";
-export * from "./rollback-controller.js";
-export * from "./proof-deferral.js";
-export * from "./speculative-scheduler.js";
-export * from "./speculation-metrics.js";

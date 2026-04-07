@@ -1666,9 +1666,9 @@ export class AutonomousAgent extends AgentRuntime {
     this.stats.tasksCompleted++;
     this.stats.totalEarnings += task.reward;
 
-    // Get the transaction signature from the proof pipeline job
-    const job = this.specExecutor?.getProofPipeline().getJob(taskPda);
-    const txSig = job?.transactionSignature ?? "";
+    // Cut 3.2: speculative proof pipeline deleted; transaction signature
+    // is no longer surfaced through the autonomous lane.
+    const txSig = "";
 
     this.onTaskCompleted?.(task, txSig);
     this.onEarnings?.(task.reward, task);

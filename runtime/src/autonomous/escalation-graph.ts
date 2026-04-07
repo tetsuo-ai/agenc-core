@@ -1,5 +1,9 @@
 /**
- * Deterministic escalation transition graph for verifier lane outcomes.
+ * Verifier escalation graph — collapsed stub (Cut 3.1).
+ *
+ * Replaces the previous 88-LOC deterministic transition graph for the
+ * verifier lane. The verifier has been deleted; every input collapses
+ * to `pass`.
  *
  * @module
  */
@@ -41,48 +45,8 @@ export interface EscalationGraphTransition {
   reason: EscalationTransitionReason;
 }
 
-/**
- * Resolve deterministic verifier transition for a single attempt.
- */
 export function resolveEscalationTransition(
-  input: EscalationGraphInput,
+  _input: EscalationGraphInput,
 ): EscalationGraphTransition {
-  if (input.policyDenied) {
-    return { state: "escalate", reason: "policy_denied" };
-  }
-
-  if (input.timedOut) {
-    return { state: "escalate", reason: "timeout" };
-  }
-
-  if (input.budgetExhausted) {
-    return { state: "escalate", reason: "budget_exhausted" };
-  }
-
-  if (input.verdict === "pass") {
-    return { state: "pass", reason: "pass" };
-  }
-
-  if (input.disagreements >= input.maxDisagreements) {
-    return { state: "escalate", reason: "disagreement_threshold" };
-  }
-
-  const attemptsRemaining = input.attempt < input.maxAttempts;
-  if (!attemptsRemaining) {
-    return { state: "escalate", reason: "retries_exhausted" };
-  }
-
-  if (input.verdict === "needs_revision") {
-    if (input.revisionAvailable) {
-      return { state: "revise", reason: "needs_revision" };
-    }
-
-    if (input.reexecuteOnNeedsRevision) {
-      return { state: "retry", reason: "retry_allowed" };
-    }
-
-    return { state: "escalate", reason: "revision_unavailable" };
-  }
-
-  return { state: "retry", reason: "retry_allowed" };
+  return { state: "pass", reason: "pass" };
 }
