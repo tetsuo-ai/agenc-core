@@ -835,6 +835,24 @@ export class ChatExecutor {
     ctx.messageSections.push(section);
   }
 
+  /**
+   * Set the pipeline stop reason. Implements the canonical "first
+   * non-completed reason wins" precedence: a stop reason can only be
+   * recorded when the current stop reason is `"completed"` (the initial
+   * state). Subsequent calls are silently dropped to preserve the
+   * authoritative first failure rather than letting later phases
+   * overwrite it with looser codes.
+   *
+   * The only legitimate bypass paths are documented at their call sites:
+   *   - The supersededStopReason reset around line 1890 (rolls a
+   *     soft validation_error back to completed when a follow-up call
+   *     produced a clean response).
+   *   - The snapshot restore in chat-executor-planner-execution.ts
+   *     around line 1965 (restores the pre-synthesis stop reason after
+   *     a failed synthesis attempt).
+   * Any other direct `ctx.stopReason = ...` assignment is a bug — it
+   * silently overwrites the authoritative stop reason. See audit S1.3.
+   */
   private setStopReason(
     ctx: ExecutionContext,
     reason: LLMPipelineStopReason,
@@ -1887,6 +1905,12 @@ export class ChatExecutor {
     }
 
     if (supersededStopReason) {
+      // Intentional bypass of the setStopReason guard: when the previous
+      // tool round was held under a soft stop reason and the follow-up
+      // call produced a clean response with no validation error and no
+      // tool calls, we roll the stop reason BACK to "completed" so the
+      // normal completion flow can proceed. This is the only legitimate
+      // forward-to-completed transition path. See setStopReason JSDoc.
       ctx.stopReason = "completed";
       ctx.stopReasonDetail = undefined;
     }
@@ -2058,7 +2082,11 @@ export class ChatExecutor {
       return undefined;
     }
     if (this.checkRequestTimeout(ctx, `${input.phase} model call`)) {
-      ctx.stopReason = "timeout";
+      // checkRequestTimeout already routes through setStopReason() which
+      // honors the "only transition from completed" guard. The previous
+      // direct `ctx.stopReason = "timeout"` assignment here bypassed that
+      // guard and could overwrite an earlier authoritative stop reason
+      // (audit S1.3).
       return undefined;
     }
     const effectiveRoutedToolNames = resolveEffectiveRoutedToolNames({

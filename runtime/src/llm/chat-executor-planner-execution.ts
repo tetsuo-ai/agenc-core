@@ -1962,6 +1962,13 @@ export async function executePlannerPath(
                 : error instanceof Error
                   ? error.message
                   : String(error);
+            // Intentional bypass of the setStopReason guard: snapshot
+            // restore. The synthesis attempt may have set a stop reason
+            // mid-flight that we want to roll back since synthesis
+            // failed but the pipeline itself completed. The deterministic
+            // fallback summary path then runs from the pre-synthesis
+            // state. See chat-executor.ts setStopReason JSDoc for the
+            // canonical "first non-completed reason wins" precedence.
             ctx.stopReason = stopReasonBeforeSynthesis;
             ctx.stopReasonDetail = stopReasonDetailBeforeSynthesis;
             ctx.plannerSummaryState.diagnostics.push({
