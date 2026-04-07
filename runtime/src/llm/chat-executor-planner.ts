@@ -4096,9 +4096,6 @@ export function validatePlannerStepContracts(
     }
     if (artifactIntent === "implement_from_artifact") {
       diagnostics.push(...validatePlannerPlanArtifactExecutionOwnership(plannerPlan));
-      diagnostics.push(
-        ...validateImplementFromArtifactMutableScope(plannerPlan, messageText),
-      );
       if (!plannerPlanHasMutableImplementationPath(plannerPlan)) {
         diagnostics.push(
           createPlannerDiagnostic(
@@ -4950,65 +4947,6 @@ function collectPlannerWritableArtifactTargets(
   return [...targets];
 }
 
-function plannerPathMatchesWorkspaceRoot(
-  rawPath: string | undefined,
-  workspaceRoot: string,
-): boolean {
-  if (typeof rawPath !== "string") {
-    return false;
-  }
-  return normalizePlannerArtifactTarget(rawPath) ===
-    normalizePlannerArtifactTarget(workspaceRoot);
-}
-
-function validateImplementFromArtifactMutableScope(
-  plannerPlan: PlannerPlan,
-  messageText: string,
-): readonly PlannerDiagnostic[] {
-  const requestedSourceArtifacts = extractPlannerSourceArtifactTargets(messageText);
-  if (requestedSourceArtifacts.length === 0) {
-    return [];
-  }
-
-  const expectedWorkspaceRoot = normalizeWorkspaceRoot(
-    pathDirname(requestedSourceArtifacts[0] ?? ""),
-  );
-  if (!expectedWorkspaceRoot) {
-    return [];
-  }
-
-  const mutableSubagentSteps = plannerPlan.steps.filter(
-    (step): step is PlannerSubAgentTaskStepIntent =>
-      step.stepType === "subagent_task" &&
-      plannerStepHasMutableImplementationAuthority(step),
-  );
-  if (mutableSubagentSteps.length === 0) {
-    return [];
-  }
-
-  const hasWorkspaceOwner = mutableSubagentSteps.some((step) =>
-    (step.executionContext?.targetArtifacts ?? []).some((artifactPath) =>
-      plannerPathMatchesWorkspaceRoot(artifactPath, expectedWorkspaceRoot)
-    )
-  );
-  if (hasWorkspaceOwner) {
-    return [];
-  }
-
-  return [
-    createPlannerDiagnostic(
-      "validation",
-      "planner_implementation_scope_too_narrow",
-      "Implement-from-artifact plans with delegated mutable execution must give the single mutable owner the workspace root unless the user explicitly bounded write scope",
-      {
-        workspaceRoot: expectedWorkspaceRoot,
-        writableTargets: collectPlannerWritableArtifactTargets(plannerPlan).join(","),
-        sourceArtifacts: requestedSourceArtifacts.join(","),
-      },
-    ),
-  ];
-}
-
 function collectPlannerRuntimeTodoArtifactTargets(
   plannerPlan: PlannerPlan,
 ): readonly string[] {
@@ -5264,15 +5202,6 @@ export function buildPlannerStepContractRefinementHint(
           "for implement-from-plan requests, the executable plan must include at least one mutable implementation step or deterministic build/test-backed mutation path. " +
           "Do not emit an analysis-only delegated research/review step, do not say \"do not implement code yet\" when the user asked for implementation, " +
           "and do not return a plan whose only action is reading PLAN.md or listing the workspace"
-        );
-      }
-      if (diagnostic.code === "planner_implementation_scope_too_narrow") {
-        const workspaceRoot =
-          readDiagnosticDetail(diagnostic, "workspaceRoot") ??
-          "the workspace root";
-        return (
-          `for implement-from-artifact requests, give the single mutable implementation owner ${workspaceRoot} as its writable target scope unless the user explicitly bounded writes to a narrower subtree. ` +
-          "Do not constrain the child to `/src` only when the requested implementation can require headers, tests, configs, and other workspace files"
         );
       }
       if (

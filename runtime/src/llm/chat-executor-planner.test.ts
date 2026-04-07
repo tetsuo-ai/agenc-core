@@ -2398,62 +2398,6 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
     );
   });
 
-  it("rejects implement-from-artifact plans that narrow delegated mutable scope to src only", () => {
-    const workspaceRoot = "/tmp/agenc-shell";
-    const diagnostics = validatePlannerStepContracts(
-      {
-        reason: "implement_from_plan",
-        requiresSynthesis: false,
-        confidence: 0.82,
-        planIntent: "implement_from_artifact",
-        steps: [
-          {
-            name: "read_plan",
-            stepType: "deterministic_tool",
-            dependsOn: [],
-            tool: "system.readFile",
-            args: {
-              path: `${workspaceRoot}/PLAN.md`,
-            },
-          },
-          {
-            name: "implement_phase_work",
-            stepType: "subagent_task",
-            dependsOn: ["read_plan"],
-            objective: "Implement the requested shell phases from PLAN.md.",
-            inputContract: "PLAN.md plus existing source tree.",
-            acceptanceCriteria: ["Requested shell phases are implemented and tested."],
-            requiredToolCapabilities: ["read", "write", "bash"],
-            contextRequirements: ["read_plan"],
-            maxBudgetHint: "20m",
-            canRunParallel: false,
-            executionContext: {
-              version: "v1",
-              workspaceRoot,
-              allowedReadRoots: [workspaceRoot],
-              allowedWriteRoots: [workspaceRoot],
-              requiredSourceArtifacts: [`${workspaceRoot}/PLAN.md`],
-              targetArtifacts: [`${workspaceRoot}/src`],
-              effectClass: "filesystem_write",
-              verificationMode: "mutation_required",
-              stepKind: "delegated_write",
-            },
-          },
-        ],
-        edges: [{ from: "read_plan", to: "implement_phase_work" }],
-      },
-      "Read all of @PLAN.md and complete every single phase in full.",
-    );
-
-    expect(diagnostics).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          code: "planner_implementation_scope_too_narrow",
-        }),
-      ]),
-    );
-  });
-
   // The "classifies the full existing artifact alias family consistently",
   // "detects workspace-grounded artifact update requests separately from plain
   // artifact edits", and "adds explicit workspace-grounding guidance to
