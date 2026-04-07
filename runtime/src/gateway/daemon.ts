@@ -220,6 +220,10 @@ import { createChannelHostServices } from "../plugins/channel-host-services.js";
 import type { ProactiveCommunicator } from "./proactive.js";
 import type { ToolRoutingDecision } from "./tool-routing.js";
 import {
+  loadAgentDefinitions,
+  type AgentDefinition,
+} from "./agent-loader.js";
+import {
   filterLlmToolsByEnvironment,
   type ToolEnvironmentMode,
 } from "./tool-environment-policy.js";
@@ -995,6 +999,14 @@ export class DaemonManager {
   private _llmProviderConfigCatalog: LLMProviderConfigCatalogEntry[] = [];
   private _primaryLlmConfig: GatewayLLMConfig | undefined = undefined;
   private _baseToolHandler: ToolHandler | null = null;
+  /**
+   * Cut 5.6: declarative agent definitions loaded from
+   * runtime/src/gateway/agent-definitions/, ~/.agenc/agents/, and
+   * project-level .agenc/agents/. The orchestrator will consume these
+   * in a follow-up commit; today they're loaded for visibility so
+   * operators can confirm which agents are available.
+   */
+  private _agentDefinitions: readonly AgentDefinition[] = [];
   private _defaultForegroundMaxToolRounds = 10;
   private _desktopManager:
     | import("../desktop/manager.js").DesktopSandboxManager
@@ -1434,6 +1446,32 @@ export class DaemonManager {
         this.getActiveDelegationAggressiveness(resolved),
       childProviderStrategy: resolved.childProviderStrategy,
     });
+
+    // Cut 5.6: load declarative agent definitions from the built-in
+    // runtime/src/gateway/agent-definitions/ directory and from the
+    // user-level ~/.agenc/agents/ directory. This is the claude_code
+    // shape for AgentDefinition — each .md file declares an agent
+    // with a name, description, allowed tools, and a system prompt in
+    // the markdown body. The definitions are logged for visibility
+    // so operators can confirm which agents are loaded. Future work
+    // will wire them into the sub-agent orchestrator as a replacement
+    // for the economics-based spawn decision path.
+    try {
+      this._agentDefinitions = loadAgentDefinitions();
+      if (this._agentDefinitions.length > 0) {
+        this.logger.info("Agent definitions loaded", {
+          count: this._agentDefinitions.length,
+          names: this._agentDefinitions.map((definition) => definition.name),
+          sources: Array.from(
+            new Set(this._agentDefinitions.map((definition) => definition.source)),
+          ),
+        });
+      }
+    } catch (error) {
+      this.logger.warn("Failed to load agent definitions", {
+        error: toErrorMessage(error),
+      });
+    }
   }
 
   async start(): Promise<void> {
