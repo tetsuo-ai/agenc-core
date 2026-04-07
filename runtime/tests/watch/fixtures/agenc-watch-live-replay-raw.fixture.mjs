@@ -240,7 +240,9 @@ export const WATCH_LIVE_REPLAY_RAW_SCENARIOS = freeze({
   },
   reconnect: {
     width: 96,
-    height: 20,
+    // Bumped from 20 → 24 so the splash welcome content stays visible
+    // after the header redesign added a trailing breathing-room spacer.
+    height: 24,
     startMs: Date.UTC(2026, 2, 14, 12, 10, 0),
     scenario: "reconnect",
     steps: [

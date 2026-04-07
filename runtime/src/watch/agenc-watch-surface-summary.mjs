@@ -906,9 +906,15 @@ export function buildWatchSurfaceSummary({
       sessionToken: compactSessionToken(sessionId),
       sessionLabel: localSessionLabel,
       lastActivityAt: sanitizeText(lastActivityAt, "idle"),
-      latestTool: sanitizeText(latestTool, "idle"),
-      latestToolState: sanitizeText(latestToolState, latestTool ? "running" : "idle"),
-      usage: sanitizeText(lastUsageSummary, "n/a"),
+      // Pass tool/usage through cleanly — empty string when truly absent
+      // (no tool ever fired / no usage event yet). The header layer decides
+      // whether to render a placeholder; coercing to "idle" / "n/a" here
+      // collides with the phase=idle row and triggers the "—" placeholder
+      // even when a previous run's value is still meaningful and worth
+      // displaying.
+      latestTool: sanitizeText(latestTool, ""),
+      latestToolState: sanitizeText(latestToolState, latestTool ? "running" : ""),
+      usage: sanitizeText(lastUsageSummary, ""),
       durableRunsState,
       durableRunsLabel,
       syncState,

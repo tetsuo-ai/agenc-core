@@ -167,6 +167,7 @@ import {
   toneSpec,
   badge,
   chip,
+  markerChip,
   stateTone,
   onSurface,
   paintSurface,
@@ -267,8 +268,19 @@ import {
 export { buildSurfaceSummaryCacheKey, latestSessionSummary };
 
 export function resolveWatchMouseTrackingEnabled(env = globalThis.process?.env ?? {}) {
-  const rawValue = String(env.AGENC_WATCH_ENABLE_MOUSE ?? "").trim();
-  return /^(1|true|yes|on)$/i.test(rawValue);
+  // Mouse tracking defaults to ON so the wheel scrolls the in-app
+  // transcript via the SGR mouse handler in agenc-watch-input.mjs (the
+  // `scrollCurrentViewBy(mouseWheel.delta)` path). Without it, wheel
+  // events fall through to the terminal and scroll the alt-screen
+  // viewport up — revealing the empty area above the header, which is
+  // never what the user wants.
+  //
+  // Users who prefer terminal-native click-to-select can opt out with
+  // AGENC_WATCH_ENABLE_MOUSE=0 (or false / no / off). On macOS, holding
+  // Option while clicking also bypasses mouse tracking for text selection.
+  const rawValue = String(env.AGENC_WATCH_ENABLE_MOUSE ?? "").trim().toLowerCase();
+  if (/^(0|false|no|off)$/.test(rawValue)) return false;
+  return true;
 }
 
 export async function createWatchApp(runtime = {}) {
@@ -1719,9 +1731,13 @@ function shouldShowSplash() {
 
 function resetLiveRunSurface() {
   watchState.latestAgentSummary = null;
-  watchState.latestTool = null;
-  watchState.latestToolState = null;
-  watchState.lastUsageSummary = null;
+  // Intentionally preserve `latestTool`, `latestToolState`, and
+  // `lastUsageSummary` across run boundaries. The server only emits
+  // `chat.usage` at completion, and tool events fire mid-stream — wiping
+  // these on every reset (chat.session, chat.resumed, /new) was the reason
+  // the header showed "—" while the agent was thinking and only snapped to
+  // real values at the end of an operation. Letting the previous values
+  // ride forward gives the user persistent context until fresh data arrives.
   watchState.liveSessionModelRoute = null;
   watchState.activeRunStartedAtMs = null;
 }
@@ -2359,6 +2375,7 @@ watchFrameController = createWatchFrameController({
   stateTone,
   badge,
   chip,
+  markerChip,
   row,
   renderPanel,
   joinColumns,

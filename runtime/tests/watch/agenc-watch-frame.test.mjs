@@ -33,7 +33,9 @@ test("frame controller computes slash-mode layout through the extracted boundary
 
   assert.equal(layout.width, 140);
   assert.equal(layout.height, 40);
-  assert.equal(layout.bodyHeight, 28);
+  // Header now ends with a trailing breathing-room spacer row, so the
+  // body has one fewer line than the pre-redesign layout (was 28).
+  assert.equal(layout.bodyHeight, 27);
   assert.equal(harness.layoutCalls.length, 1);
   assert.equal(harness.layoutCalls[0].slashMode, true);
   assert.equal(harness.layoutCalls[0].detailOpen, false);
@@ -471,14 +473,20 @@ test("frame controller renders the header model chip without repeating the provi
     height: 22,
   }).lines.join("\n");
 
-  assert.match(frameText, /MODEL:gpt-4\.1/);
-  assert.doesNotMatch(frameText, /MODEL:openai\/gpt-4\.1/);
+  // Model lives in the lower header border (Style C — Modern Card),
+  // rendered lowercase as "model <name>" instead of the old "MODEL:<name>"
+  // chip. The provider must still not be repeated alongside the name.
+  assert.match(frameText, /model gpt-4\.1/);
+  assert.doesNotMatch(frameText, /model openai\/gpt-4\.1/);
 });
 
 test("frame controller renders user transcript rows as shaded blocks without divider rules", () => {
+  // The redesigned header is taller (top spacer + bottom spacer rows), so
+  // a height of 18 pushes the transcript rows out of the visible viewport.
+  // Use 25 to keep the user-prompt block fully visible.
   const harness = createWatchFrameHarness({
     width: 60,
-    height: 18,
+    height: 25,
     events: [
       {
         id: "evt-you",
@@ -528,12 +536,20 @@ test("frame controller renders user transcript rows as shaded blocks without div
     },
   });
 
+  // The user-prompt rounded pill uses a hardcoded ANSI 238 background
+  // (medium gray) instead of `color.panelHiBg`, so the test mock for
+  // `<bg>` does not apply. Match the actual escape sequence emitted by
+  // the renderer.
+  const transcriptUserBg = "\x1b[48;5;238m";
   const lines = harness.controller.buildVisibleFrameSnapshot().lines.map((line) => String(line));
   const firstUserRow = lines.findIndex((line) =>
-    line.includes("<bg>") && line.includes("><reset> <soft>hola<reset>")
+    line.includes(transcriptUserBg) && line.includes("><reset> <soft>hola<reset>")
   );
   assert.notEqual(firstUserRow, -1);
-  assert.match(lines[firstUserRow + 1] ?? "", /<bg>\s+<soft>otra linea<reset>/);
+  assert.match(
+    lines[firstUserRow + 1] ?? "",
+    new RegExp(`\\x1b\\[48;5;238m\\s+<soft>otra linea<reset>`),
+  );
 
   const assistantRow = lines.findIndex((line, index) =>
     index > firstUserRow && line.includes("respuesta corta")

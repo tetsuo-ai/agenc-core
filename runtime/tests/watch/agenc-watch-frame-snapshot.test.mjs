@@ -134,9 +134,11 @@ test("frame snapshot keeps wide planner and sidebar chrome stable", () => {
 });
 
 test("frame snapshot keeps diff detail navigation stable", () => {
+  // Bumped from 22 → 26 to keep the diff status footer visible after the
+  // header redesign added a trailing breathing-room spacer row.
   const harness = createWatchFrameHarness({
     width: 100,
-    height: 22,
+    height: 26,
     watchState: {
       expandedEventId: "evt-diff",
       detailScrollOffset: 0,

@@ -70,6 +70,7 @@ export function createWatchFrameController(dependencies = {}) {
     stateTone,
     badge,
     chip,
+    markerChip,
     row,
     renderPanel,
     joinColumns,
@@ -81,6 +82,7 @@ export function createWatchFrameController(dependencies = {}) {
     formatClockLabel,
     animatedWorkingGlyph,
     compactSessionToken,
+    readGitBranchLabel,
     sanitizePlanLabel,
     plannerDagStatusTone,
     plannerDagStatusGlyph,
@@ -132,17 +134,40 @@ export function createWatchFrameController(dependencies = {}) {
   const hiddenTranscriptKinds = new Set(["status"]);
   const transcriptBlockInset = "  ";
   const transcriptBodyInset = "    ";
-  const transcriptUserBg = color.panelMessageBg ?? color.panelHiBg;
+  // Medium gray so the user-prompt rounded pill stands out clearly against
+  // both the terminal default bg AND the brand purple. ANSI 238 (#444444)
+  // is distinctly gray (not near-black), pure neutral hue (no blue/purple
+  // bleed), and gives strong value contrast for the vivid #af00ff logo.
+  // Matches headerPanelBg so the header rectangle and the prompt pill
+  // share one surface color.
+  const transcriptUserBg = "\x1b[48;5;238m";
   const transcriptQueuedBg = color.panelAltBg;
+  // Verbs are all "grok-flavored" — cognitive / deep-understanding actions in
+  // the spirit of Heinlein's coined word "grok" (to fully comprehend) and the
+  // Grok model family. Used in the active-run footer next to the breathing
+  // micro-rings spinner. Hash-seeded per run so each run picks one and holds
+  // it for the duration (see currentThinkingVerb).
   const thinkingVerbs = Object.freeze([
     "Grokking",
-    "Launching",
-    "Orbiting",
-    "Compiling",
-    "Patching",
-    "Routing",
-    "Boosting",
-    "Shipping",
+    "Pondering",
+    "Musing",
+    "Reasoning",
+    "Cogitating",
+    "Inferring",
+    "Distilling",
+    "Contemplating",
+    "Deliberating",
+    "Ruminating",
+    "Mulling",
+    "Decoding",
+    "Unraveling",
+    "Untangling",
+    "Synthesizing",
+    "Calculating",
+    "Hitchhiking",
+    "Sleuthing",
+    "Theorizing",
+    "Brainstorming",
   ]);
   const thinkingTips = Object.freeze([
     "Use /status to inspect the live run without leaving the terminal.",
@@ -294,18 +319,35 @@ export function createWatchFrameController(dependencies = {}) {
   }
 
   function currentThinkingPixelLines() {
-    const frameIndex = currentThinkingFooterFrameIndex();
-    const columns = thinkingPixelGrid.width / thinkingPixelGrid.cellWidth;
-    const rows = thinkingPixelGrid.height / thinkingPixelGrid.cellHeight;
-    const sweepCellX = Math.floor((frameIndex % thinkingPixelGrid.width) / thinkingPixelGrid.cellWidth);
-    const sweepCellY = Math.floor(((frameIndex + 1) % thinkingPixelGrid.height) / thinkingPixelGrid.cellHeight);
-    return Array.from({ length: rows }, (_, cellY) => Array.from({ length: columns }, (_, cellX) => {
-      const mask = thinkingPixelMaskForCell(cellX, cellY, frameIndex);
-      const tone = thinkingPixelToneForCell(cellX, cellY, frameIndex);
-      const char = brailleCharFromMask(mask);
-      const isPulseCell = cellX === sweepCellX || (rows > 1 && cellY === sweepCellY);
-      return `${toneColor(tone)}${isPulseCell ? color.bold : ""}${char}${color.reset}`;
-    }).join(""));
+    // Variant C — AGENC MICRO RINGS (Breathing). 3 chars wide, 6 frames,
+    // 1 row tall (footer-safe). The shape inhales from a faint dot triple,
+    // blooms into full braille rings, peaks at solid ⣿⣿⣿, and exhales back
+    // down — a smooth, on-brand "thinking breath" with linked-ring geometry.
+    //
+    // Drives off nowMs() directly (not the 4-step glyph index) so all six
+    // frames are reachable. Cadence ≈ 6.25 frames/sec (160 ms / frame),
+    // matching the spec from the design canvas.
+    //
+    // Each frame is paired with a brand-purple breathing tone:
+    //   0  ⠐⠂⠄  ANSI 92  (#5f00d7)  deep dim    — inhale start
+    //   1  ⡆⣶⡄  ANSI 98  (#875fd7)  rising      — fill
+    //   2  ⣾⣿⣷  ANSI 129 (#af00ff)  vivid base  — bloom
+    //   3  ⣿⣿⣿  ANSI 165 (#d700ff)  peak bright — full breath
+    //   4  ⣾⣿⣷  ANSI 129 (#af00ff)  vivid base  — exhale begin
+    //   5  ⡆⣶⡄  ANSI 98  (#875fd7)  falling     — settle
+    const breathFrames = ["⠐⠂⠄", "⡆⣶⡄", "⣾⣿⣷", "⣿⣿⣿", "⣾⣿⣷", "⡆⣶⡄"];
+    const breathTones = [
+      "\x1b[38;5;92m",
+      "\x1b[38;5;98m",
+      "\x1b[38;5;129m",
+      "\x1b[38;5;165m",
+      "\x1b[38;5;129m",
+      "\x1b[38;5;98m",
+    ];
+    const frameIndex = Math.floor((Number(nowMs()) || 0) / 160) % breathFrames.length;
+    const tone = breathTones[frameIndex];
+    const glyph = breathFrames[frameIndex];
+    return [`${tone}${color.bold}${glyph}${color.reset}`];
   }
 
   function currentThinkingVerbTone() {
@@ -313,11 +355,51 @@ export function createWatchFrameController(dependencies = {}) {
     return ["cyan", "teal", "yellow", "cyan"][frameIndex] ?? "cyan";
   }
 
+  // "Light scan" effect for the active-run verb. Each character in the verb
+  // is painted with a slightly offset palette index, so a bright magenta
+  // peak travels across the letters left → right while the rest of the word
+  // sits in deeper purples. Combined with bold modulation, this gives a
+  // smooth neon shimmer that pairs with the breathing micro-rings spinner
+  // without being a static block of color. Bypasses the theme tone system
+  // (uses raw 256-color ANSI escapes) so the shimmer survives across all
+  // theme presets and matches the spinner palette exactly.
+  function currentThinkingVerbDisplay(verb) {
+    const text = String(verb ?? "");
+    if (text.length === 0) {
+      return text;
+    }
+    // 8-frame brand-purple gradient: deep → soft → vivid → bright → flash
+    // peak → bright → vivid → soft. Cycle period 100 ms × 8 = 800 ms — a hair
+    // faster than the spinner's 960 ms breath so the shimmer feels alive.
+    const palette = [
+      "\x1b[38;5;54m",   // 0  deepest aubergine
+      "\x1b[38;5;92m",   // 1  deep purple
+      "\x1b[38;5;98m",   // 2  soft lavender
+      "\x1b[38;5;129m",  // 3  vivid brand
+      "\x1b[38;5;165m",  // 4  bright violet
+      "\x1b[38;5;207m",  // 5  flash magenta peak
+      "\x1b[38;5;165m",  // 6  bright violet
+      "\x1b[38;5;129m",  // 7  vivid brand
+    ];
+    const baseFrame = Math.floor((Number(nowMs()) || 0) / 100);
+    let result = "";
+    for (let charIndex = 0; charIndex < text.length; charIndex += 1) {
+      // Negative offset so the bright peak appears to walk left → right.
+      // The `+ palette.length * 1000` keeps the modulo positive even when
+      // baseFrame is small.
+      const paletteIndex = (baseFrame - charIndex + palette.length * 1000) % palette.length;
+      const tone = palette[paletteIndex];
+      result += `${tone}${color.bold}${text[charIndex]}`;
+    }
+    return `${result}${color.reset}`;
+  }
+
   function currentThinkingFooterBrand(summary) {
     return {
       logoLines: currentThinkingPixelLines(),
       verb: currentThinkingVerb(summary).toLowerCase(),
       verbTone: currentThinkingVerbTone(),
+      verbDisplay: currentThinkingVerbDisplay(currentThinkingVerb(summary).toLowerCase()),
     };
   }
 
@@ -360,21 +442,25 @@ export function createWatchFrameController(dependencies = {}) {
 
     let branch = "";
     try {
-      branch = sanitizeInlineText(
-        execFileSync("git", ["-C", root, "branch", "--show-current"], {
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "ignore"],
-        }),
-        "",
-      );
-      if (!branch) {
+      if (typeof readGitBranchLabel === "function") {
+        branch = sanitizeInlineText(readGitBranchLabel(root), "");
+      } else {
         branch = sanitizeInlineText(
-          execFileSync("git", ["-C", root, "rev-parse", "--short", "HEAD"], {
+          execFileSync("git", ["-C", root, "branch", "--show-current"], {
             encoding: "utf8",
             stdio: ["ignore", "pipe", "ignore"],
           }),
           "",
         );
+        if (!branch) {
+          branch = sanitizeInlineText(
+            execFileSync("git", ["-C", root, "rev-parse", "--short", "HEAD"], {
+              encoding: "utf8",
+              stdio: ["ignore", "pipe", "ignore"],
+            }),
+            "",
+          );
+        }
       }
       gitBranchCache.root = root;
       gitBranchCache.value = branch;
@@ -390,9 +476,25 @@ export function createWatchFrameController(dependencies = {}) {
     }
   }
 
+  function currentHeaderGitBranchLabel() {
+    const branch = sanitizeInlineText(currentGitBranchLabel(), "");
+    if (!branch) {
+      return "";
+    }
+    return sanitizeInlineText(
+      branch.replace(/^codex(?:$|[\/_-]+)/i, ""),
+      "",
+    ).trim();
+  }
+
   function currentHeaderLogoLines({ compact = false } = {}) {
     const active = hasActiveSurfaceRun();
-    const artTone = active ? color.ink : color.softInk;
+    // AgenC brand purple — saturated, not pastel. The palette's existing
+    // purples (slate 141, fog 97) read too soft against the navy header
+    // background, so the logo uses hardcoded vivid purples here:
+    //   ANSI 129 = #af00ff vivid pure purple — active run
+    //   ANSI 92  = #5f00d7 deep saturated purple — idle
+    const artTone = active ? "\x1b[38;5;129m" : "\x1b[38;5;92m";
     return agencHeaderLogoBoxLines.map((line, index) => {
       const weight = index === 0 || index === agencHeaderLogoBoxLines.length - 1
         ? color.bold
@@ -427,57 +529,55 @@ export function createWatchFrameController(dependencies = {}) {
   }
 
   function currentHeaderWorkspaceText(width) {
-    const separatorTone = color.slate || color.fog || "";
-    const separator = `${separatorTone} · ${color.reset}`;
+    // Header style C — Modern Card: workspace name + git branch on row 2,
+    // each prefixed with the ▸ marker. Branch is NOT in the top border.
     const workspaceName = currentWorkspaceName();
-    const branch = currentGitBranchLabel();
+    const branch = currentHeaderGitBranchLabel();
     const parts = [];
-    if (workspaceName) {
-      parts.push(
-        `${color.fog}ws${color.reset} ${color.ink}${truncate(workspaceName, 24)}${color.reset}`,
-      );
-    }
+    parts.push(
+      `${color.fog}▸ workspace${color.reset} ${color.ink}${truncate(workspaceName || "—", Math.max(16, Math.floor(width * 0.4)))}${color.reset}`,
+    );
     if (branch) {
       parts.push(
-        `${color.fog}git${color.reset} ${color.softInk}${truncate(branch, Math.max(16, Math.floor(width * 0.42)))}${color.reset}`,
+        `${color.fog}▸ git${color.reset} ${color.softInk}${truncate(branch, Math.max(12, Math.floor(width * 0.36)))}${color.reset}`,
       );
     }
-    return parts.join(separator);
+    return parts.join("  ");
   }
 
   function currentHeaderContextText(summary, width) {
-    const separatorTone = color.slate || color.fog || "";
-    const separator = `${separatorTone} · ${color.reset}`;
+    // Header style C — Modern Card: each field gets its own ▸ bullet
+    // and fields are joined with a single space (no inline · separator).
     const overview = summary?.overview ?? {};
     const parts = [
-      `${color.fog}phase${color.reset} ${color.ink}${truncate(sanitizeInlineText(overview.phaseLabel, "idle"), 22)}${color.reset}`,
+      `${color.fog}▸ phase${color.reset} ${color.ink}${truncate(sanitizeInlineText(overview.phaseLabel, "idle"), 22)}${color.reset}`,
     ];
     const latestTool = sanitizeInlineText(overview.latestTool, "");
     if (latestTool && latestTool !== "idle") {
       parts.push(
-        `${color.fog}tool${color.reset} ${color.softInk}${truncate(latestTool, 26)}${color.reset}`,
+        `${color.fog}▸ tool${color.reset} ${color.softInk}${truncate(latestTool, 26)}${color.reset}`,
       );
     }
     const activeAgents = Number(overview.activeAgentCount ?? 0);
     if (activeAgents > 0) {
       parts.push(
-        `${color.fog}agents${color.reset} ${color.softInk}${activeAgents}${color.reset}`,
+        `${color.fog}▸ agents${color.reset} ${color.softInk}${activeAgents}${color.reset}`,
       );
     }
     const queuedInputs = Number(overview.queuedInputCount ?? 0);
     if (queuedInputs > 0) {
       parts.push(
-        `${color.fog}queue${color.reset} ${color.softInk}${queuedInputs}${color.reset}`,
+        `${color.fog}▸ queue${color.reset} ${color.softInk}${queuedInputs}${color.reset}`,
       );
     }
-    return parts.join(separator);
+    return parts.join("  ");
   }
 
   function currentHeaderRunChip(summary, elapsed) {
     const phaseLabel = sanitizeInlineText(summary?.overview?.phaseLabel ?? "", hasActiveSurfaceRun() ? "running" : "idle");
     const runTone = hasActiveSurfaceRun() ? "cyan" : stateTone(phaseLabel);
     const runLabel = hasActiveSurfaceRun() ? phaseLabel || "running" : phaseLabel || "idle";
-    return `${chip("RUN", runLabel, runTone)} ${color.fog}${elapsed}${color.reset}`;
+    return `${markerChip("run", `${runLabel}  ${elapsed}`, runTone)}`;
   }
 
   function currentHeaderStatusChip(summary) {
@@ -485,11 +585,11 @@ export function createWatchFrameController(dependencies = {}) {
     const attention = summary?.attention ?? {};
     const connectionState = sanitizeInlineText(overview.connectionState, "unknown");
     if (connectionState && !["live", "connected"].includes(connectionState.toLowerCase())) {
-      return chip("STATUS", `link ${connectionState}`, stateTone(connectionState));
+      return markerChip("status", `link ${connectionState}`, stateTone(connectionState));
     }
     const approvals = Number(attention.approvalAlertCount ?? 0);
     if (approvals > 0) {
-      return chip(
+      return markerChip(
         "STATUS",
         `${approvals} approval${approvals === 1 ? "" : "s"}`,
         "red",
@@ -497,20 +597,20 @@ export function createWatchFrameController(dependencies = {}) {
     }
     const errors = Number(attention.errorAlertCount ?? 0);
     if (errors > 0) {
-      return chip(
+      return markerChip(
         "STATUS",
         `${errors} error${errors === 1 ? "" : "s"}`,
         "red",
       );
     }
     if (sanitizeInlineText(overview.fallbackState, "") === "active") {
-      return chip("STATUS", "fallback active", "amber");
+      return markerChip("status", "fallback active", "amber");
     }
     const runtimeState = sanitizeInlineText(overview.runtimeState, "");
     if (runtimeState && !["healthy", "ready", "ok", "idle"].includes(runtimeState.toLowerCase())) {
-      return chip("STATUS", `runtime ${runtimeState}`, stateTone(runtimeState));
+      return markerChip("status", `runtime ${runtimeState}`, stateTone(runtimeState));
     }
-    return chip("STATUS", "ready", "green");
+    return markerChip("status", "ready", "green");
   }
 
   function headerDataRow(logoLine, leftText, rightText, width) {
@@ -526,14 +626,46 @@ export function createWatchFrameController(dependencies = {}) {
     return Math.max(0, width - 2 - (padding * 2));
   }
 
-  function headerPanelTop(width) {
+  // Header style C — Modern Card.
+  // Top border inlays the brand on the left:
+  //   ╭─ AgenC ─────────────────────────────╮
+  // Bottom border inlays the active model name pushed to the right:
+  //   ╰─────────────────── model grok-4-fast ─╯
+  // Both borders are LEFT TRANSPARENT (terminal default background) so the
+  // gray fill stays strictly inside the rectangle and never leaks into the
+  // open terminal area to the right of the right border.
+  function headerPanelTop(width, brandLabel = "") {
     const borderTone = color.borderStrong || color.border || "";
-    return `${borderTone}┌${"─".repeat(Math.max(0, width - 2))}┐${color.reset}`;
+    const inner = Math.max(0, width - 2);
+    const brandVis = visibleLength(brandLabel);
+
+    if (brandVis === 0) {
+      return `${borderTone}╭${"─".repeat(inner)}╮${color.reset}`;
+    }
+
+    // Visible-char accounting:
+    //   ╭ ─ ' ' brand ' ' (dashes) ╮  =  2 corners + 1 + 1 + brand + 1 + N
+    //   total = 5 + brand + N  ⇒  N = width − 5 − brand = inner − 3 − brand
+    const dashes = Math.max(0, inner - 3 - brandVis);
+    return `${borderTone}╭─ ${color.reset}${brandLabel}${borderTone} ${"─".repeat(dashes)}╮${color.reset}`;
   }
 
-  function headerPanelBottom(width) {
+  function headerPanelBottom(width, modelLabel = "") {
     const borderTone = color.borderStrong || color.border || "";
-    return `${borderTone}└${"─".repeat(Math.max(0, width - 2))}┘${color.reset}`;
+    const inner = Math.max(0, width - 2);
+    const modelVis = visibleLength(modelLabel);
+
+    if (modelVis === 0 || inner < modelVis + 4) {
+      return `${borderTone}╰${"─".repeat(inner)}╯${color.reset}`;
+    }
+
+    // Right-align the model with a single trailing dash + corner:
+    //   ╰ (dashes) ' ' model ' ' ─ ╯
+    //   total = 2 corners + dashes + 1 + model + 1 + 1
+    //         = 5 + dashes + model
+    //   ⇒ dashes = width − 5 − model = inner − 3 − model
+    const dashes = Math.max(0, inner - 3 - modelVis);
+    return `${borderTone}╰${"─".repeat(dashes)} ${color.reset}${modelLabel}${borderTone} ─╯${color.reset}`;
   }
 
   function headerPanelRow(text, width, background, { padding = 1 } = {}) {
@@ -542,6 +674,9 @@ export function createWatchFrameController(dependencies = {}) {
     const contentWidth = headerPanelInnerWidth(width, padding);
     const content = fitAnsi(String(text ?? ""), contentWidth);
     const padded = `${" ".repeat(padding)}${content}${" ".repeat(padding)}`;
+    // Borders stay transparent (terminal default bg). Only the inner content
+    // gets the gray fill, so the rectangle's right edge is the hard boundary
+    // between gray and the open terminal area.
     return `${borderTone}│${color.reset}${paintSurface(padded, inner, background)}${borderTone}│${color.reset}`;
   }
 
@@ -579,7 +714,7 @@ export function createWatchFrameController(dependencies = {}) {
     return wrappedUsage.map((line, index) => {
       if (index === 0) {
         return fitAnsi(
-          `${logoPrefix}${color.fog}usage${color.reset} ${color.ink}${line}${color.reset}`,
+          `${logoPrefix}${color.fog}▸ usage${color.reset} ${color.ink}${line}${color.reset}`,
           width,
         );
       }
@@ -622,9 +757,13 @@ export function createWatchFrameController(dependencies = {}) {
     background = transcriptUserBg,
     marker = ">",
     markerTone = color.ink,
+    // One empty bg-painted row above AND below the content for breathing
+    // room. Set to 0 for a single-row block.
+    paddingRows = 1,
   } = {}) {
     const blockLines = Array.isArray(lines) ? lines : [lines];
-    return blockLines.map((line, index) => {
+
+    const contentLines = blockLines.map((line, index) => {
       const safeText = sanitizeDisplayText(
         typeof line === "string" ? line : displayLinePlainText(line),
       ) || "";
@@ -638,10 +777,22 @@ export function createWatchFrameController(dependencies = {}) {
       const content = `${prefix}${tone}${truncated}${color.reset}`;
       return paintSurface(content, width, background);
     });
+
+    if (paddingRows <= 0) {
+      return contentLines;
+    }
+
+    // Plain bg-painted empty rows above and below the content — no border
+    // characters, no half-block edge tricks (those rendered as 3D shadows
+    // in some terminals). Just a flat gray rectangle.
+    const paddingLine = paintSurface("", width, background);
+    const padding = Array.from({ length: paddingRows }, () => paddingLine);
+    return [...padding, ...contentLines, ...padding];
   }
 
   function transcriptInputBar(text, width, options = {}) {
-    return transcriptInputBlock([text], width, options)[0];
+    // Bar variant returns a single line — bypass the vertical padding.
+    return transcriptInputBlock([text], width, { ...options, paddingRows: 0 })[0];
   }
 
   function transcriptChatRows(lines, width, {
@@ -699,59 +850,169 @@ export function createWatchFrameController(dependencies = {}) {
       ? currentRunElapsedLabel()
       : currentSessionElapsedLabel();
     const compact = safeWidth < 88 || termHeight() < 28;
-    const headerPanelBg = color.panelMessageBg ?? color.panelAltBg ?? color.panelHiBg;
+    // \x1b[49m = default background. The header rectangle is just its
+    // borders + content; no gray fill inside. Lets the brand purple logo
+    // and the field labels read directly against the terminal's own bg
+    // without competing with a panel surface color.
+    const headerPanelBg = "\x1b[49m";
     const logoLines = currentHeaderLogoLines({ compact });
-    const brandLabel = `${color.ink}${color.bold}AgenC${color.reset}`;
-    const primaryText = `${brandLabel} ${color.softInk}${currentHeaderPrimaryText(summary, Math.max(18, Math.floor(innerWidth * 0.5)))}${color.reset}`;
-    const workspaceText = currentHeaderWorkspaceText(innerWidth);
-    const contextText = currentHeaderContextText(summary, innerWidth);
-    const routeChip = chip(
-      "MODEL",
-      currentHeaderRouteText(summary),
-      summary?.providerLabel && summary.providerLabel !== "pending" ? "teal" : "slate",
-    );
-    const runChip = currentHeaderRunChip(summary, elapsed);
-    const statusChip = currentHeaderStatusChip(summary);
-    const detailText = `${color.softInk}${truncate(
-      sanitizeInlineText(
-        summary?.runtimeLabel || currentThinkingTip(summary),
-        "ready",
-      ),
-      Math.max(16, Math.floor(innerWidth * 0.48)),
-    )}${color.reset}`;
 
-    const bodyRows = [
-      headerDataRow(
-        logoLines[0] ?? "",
-        primaryText,
-        runChip,
-        innerWidth,
-      ),
-      headerDataRow(
-        logoLines[1] ?? "",
-        workspaceText || `${color.softInk}${truncate(summary.runtimeLabel || "routing pending", Math.max(16, Math.floor(innerWidth * 0.5)))}${color.reset}`,
-        routeChip,
-        innerWidth,
-      ),
-      headerDataRow(
-        logoLines[2] ?? "",
-        contextText || `${color.softInk}${truncate(currentThinkingTip(summary), Math.max(18, Math.floor(innerWidth * 0.5)))}${color.reset}`,
-        statusChip,
-        innerWidth,
-      ),
-    ];
-    const footerRows = currentHeaderUsageRows(summary, logoLines[3] ?? "", innerWidth);
-    if (footerRows.length === 0) {
-      footerRows.push(headerDataRow(logoLines[3] ?? "", detailText, "", innerWidth));
+    // Style C — Modern Card, two-column layout.
+    //
+    //   ╭─ AgenC ───────────────────────────────────────────╮
+    //   │                                                    │
+    //   │ <logo> ▸ <objective>           ▸ run    <state>    │
+    //   │ <logo> ▸ workspace <name>      ▸ status <state>    │
+    //   │ <logo> ▸ git <branch>          ▸ phase  <state>    │
+    //   │ <logo> ▸ usage <tokens>        ▸ tool   <latest>   │
+    //   │                                                    │
+    //   ╰─────────────────────────── model grok-4-fast ─╯
+    //
+    // - Brand inlaid in top border, model inlaid in bottom border (right).
+    // - Every cell uses a `▸` marker (no `◆`, no `::`, no `·`).
+    // - Left cells start at the same x (after the logo prefix).
+    // - Right cells are padded to a single uniform width so they share both
+    //   the same left edge and the same right edge, forming a clean column.
+    // - Each row has exactly one left cell + one right cell — no inline
+    //   joining like "▸ workspace ... ▸ git ..." that creates a phantom
+    //   third middle column.
+    const brandLabel = `${color.ink}${color.bold}AgenC${color.reset}`;
+    const modelText = currentHeaderRouteText(summary);
+    const modelTone = summary?.providerLabel && summary.providerLabel !== "pending" ? "teal" : "slate";
+    const modelLabel = modelText
+      ? `${color.fog}model${color.reset} ${toneColor(modelTone)}${color.bold}${truncate(modelText, Math.max(12, Math.floor(innerWidth * 0.5)))}${color.reset}`
+      : "";
+
+    // ── Helpers ──────────────────────────────────────────────────────────
+    // A "field" is a left-column cell. A "stat" is a right-column cell.
+    // Both share the same `▸ label  value` shape so they line up visually.
+    const FIELD_VALUE_MAX = Math.max(14, Math.floor(innerWidth * 0.42));
+
+    function field(label, value, tone = color.ink) {
+      const safeValue = sanitizeInlineText(value, "—") || "—";
+      const truncated = truncate(safeValue, FIELD_VALUE_MAX);
+      if (label) {
+        return `${color.fog}▸ ${label}${color.reset} ${tone}${truncated}${color.reset}`;
+      }
+      return `${color.fog}▸${color.reset} ${tone}${truncated}${color.reset}`;
     }
 
+    function stat(label, value, tone = "ink") {
+      const safeValue = sanitizeInlineText(value, "—") || "—";
+      const truncated = truncate(safeValue, FIELD_VALUE_MAX);
+      return `${color.fog}▸ ${label}${color.reset}  ${toneColor(tone)}${color.bold}${truncated}${color.reset}`;
+    }
+
+    // ── Left column (4 metadata cells) ───────────────────────────────────
+    const objectiveCell = field(
+      "",
+      currentHeaderPrimaryText(summary, FIELD_VALUE_MAX),
+      color.ink,
+    );
+
+    const workspaceName = currentWorkspaceName();
+    const workspaceCell = field("workspace", workspaceName || "—", color.ink);
+
+    const branchName = currentHeaderGitBranchLabel();
+    const branchCell = field("git", branchName || "—", color.softInk);
+
+    const overview = summary?.overview ?? {};
+    const usageValue = sanitizeInlineText(overview.usage, "");
+    const usageCell = field(
+      "usage",
+      usageValue && usageValue !== "n/a" ? usageValue : "—",
+      color.ink,
+    );
+
+    // ── Right column (4 status cells) ────────────────────────────────────
+    const phaseLabel = sanitizeInlineText(
+      overview.phaseLabel ?? "",
+      hasActiveSurfaceRun() ? "running" : "idle",
+    );
+    const runTone = hasActiveSurfaceRun() ? "cyan" : stateTone(phaseLabel);
+    const runStateLabel = hasActiveSurfaceRun() ? phaseLabel || "running" : phaseLabel || "idle";
+    const runCell = stat("run", `${runStateLabel}  ${elapsed}`, runTone);
+
+    // Inline computation of the status cell — mirrors the old
+    // currentHeaderStatusChip logic but emits the new ▸ format.
+    const attention = summary?.attention ?? {};
+    const connectionState = sanitizeInlineText(overview.connectionState, "unknown");
+    const runtimeState = sanitizeInlineText(overview.runtimeState, "");
+    const fallbackState = sanitizeInlineText(overview.fallbackState, "");
+    const approvals = Number(attention.approvalAlertCount ?? 0);
+    const errors = Number(attention.errorAlertCount ?? 0);
+    let statusValue;
+    let statusTone;
+    if (connectionState && !["live", "connected"].includes(connectionState.toLowerCase())) {
+      statusValue = `link ${connectionState}`;
+      statusTone = stateTone(connectionState);
+    } else if (approvals > 0) {
+      statusValue = `${approvals} approval${approvals === 1 ? "" : "s"}`;
+      statusTone = "red";
+    } else if (errors > 0) {
+      statusValue = `${errors} error${errors === 1 ? "" : "s"}`;
+      statusTone = "red";
+    } else if (fallbackState === "active") {
+      statusValue = "fallback active";
+      statusTone = "amber";
+    } else if (runtimeState && !["healthy", "ready", "ok", "idle"].includes(runtimeState.toLowerCase())) {
+      statusValue = `runtime ${runtimeState}`;
+      statusTone = stateTone(runtimeState);
+    } else {
+      statusValue = "ready";
+      statusTone = "green";
+    }
+    const statusCell = stat("status", statusValue, statusTone);
+
+    const phaseCell = stat("phase", phaseLabel, stateTone(phaseLabel));
+
+    // "idle" from the surface summary means "no tool currently running",
+    // which is redundant with `phase idle`. Treat it the same as empty:
+    // show a `—` placeholder so the tool row doesn't echo the phase row.
+    const rawLatestTool = sanitizeInlineText(overview.latestTool, "");
+    const hasMeaningfulTool = rawLatestTool.length > 0 && rawLatestTool !== "idle";
+    const toolCell = stat(
+      "tool",
+      hasMeaningfulTool ? rawLatestTool : "—",
+      hasMeaningfulTool ? stateTone(overview.latestToolState) : "slate",
+    );
+
+    // ── Pad right column to uniform width ────────────────────────────────
+    const rightColumnCells = [runCell, statusCell, phaseCell, toolCell];
+    const rightColumnWidth = Math.max(
+      ...rightColumnCells.map((cellText) => visibleLength(cellText)),
+    );
+    const padRightCell = (cellText) => {
+      const padCount = Math.max(0, rightColumnWidth - visibleLength(cellText));
+      return `${cellText}${" ".repeat(padCount)}`;
+    };
+    const [runRight, statusRight, phaseRight, toolRight] = rightColumnCells.map(padRightCell);
+
+    // ── Assemble rows ────────────────────────────────────────────────────
+    const leftCells = [objectiveCell, workspaceCell, branchCell, usageCell];
+    const rightCells = [runRight, statusRight, phaseRight, toolRight];
+
+    const bodyRows = leftCells.map((leftText, i) =>
+      headerDataRow(
+        logoLines[i] ?? "",
+        leftText,
+        rightCells[i] ?? "",
+        innerWidth,
+      ),
+    );
+
     return [
-      headerPanelTop(safeWidth),
+      headerPanelTop(safeWidth, brandLabel),
       headerPanelSpacerRow(safeWidth, headerPanelBg, { padding: headerPanelPadding }),
       ...bodyRows.map((line) => headerPanelRow(line, safeWidth, headerPanelBg, { padding: headerPanelPadding })),
-      ...footerRows.map((line) => headerPanelRow(line, safeWidth, headerPanelBg, { padding: headerPanelPadding })),
       headerPanelSpacerRow(safeWidth, headerPanelBg, { padding: headerPanelPadding }),
-      headerPanelBottom(safeWidth),
+      headerPanelBottom(safeWidth, modelLabel),
+      // Outer spacer row — gives the first transcript line breathing room
+      // below the rectangle. Empty string is fine: the renderer paints every
+      // frame line with color.panelBg (terminal default), so this just shows
+      // up as a blank gap between the rectangle's bottom border and the
+      // first prompt.
+      "",
     ];
   }
 
@@ -2494,16 +2755,16 @@ export function createWatchFrameController(dependencies = {}) {
     let leftText = "";
     if (detailMode) {
       leftText = "detail";
-    } else if (fileTagMode) {
-      leftText = "@ file";
-    } else if (slashMode) {
-      leftText = Array.isArray(modelSuggestions) && modelSuggestions.length > 0
-        ? "/ model"
-        : "/ command";
     } else if (activeRun) {
       const footerBrand = currentThinkingFooterBrand(summary);
       leftText = `${footerBrand.verb}`;
     }
+    // Slash / file-tag mode used to set leftText to "/ command", "/ model",
+    // or "@ file" — these labels appear in the status row directly above the
+    // composer's top divider. Since the palette popup itself renders below
+    // the input and makes the mode obvious, that label was redundant clutter
+    // floating above the upper input line. Leave the status row alone in
+    // those modes.
     let rightText = normalizeFooterStatusText(watchState.transientStatus || "");
     if (!rightText && activeRun) {
       rightText = normalizeFooterStatusText(footer.rightStatus || "");
@@ -2518,13 +2779,19 @@ export function createWatchFrameController(dependencies = {}) {
     if (activeRun) {
       const footerBrand = currentThinkingFooterBrand(summary);
       const rightStatusText = `${color.fog}${truncate(rightText, Math.max(18, Math.floor(width * 0.32)))}${color.reset}`;
-      const logoLineOne = fitAnsi(
-        `${footerBrand.logoLines[0]} ${toneColor(footerBrand.verbTone)}${color.bold}${footerBrand.verb}${color.reset}`,
-        Math.max(10, width - Math.max(18, Math.floor(width * 0.32)) - 1),
-      );
+      // 1-char rotating braille spinner + verb on a single row. Wrapped
+      // in empty rows above and below for visual breathing room (matches
+      // the original 3-row footer footprint).
+      const spinnerGlyph = footerBrand.logoLines[0] ?? "";
+      // `verbDisplay` carries the per-character neon scan gradient. The
+      // trailing ellipsis is appended after the gradient with a soft
+      // brand-purple tone (#af00ff) so it reads as part of the word but
+      // doesn't compete with the shimmer.
+      const verbText = `${footerBrand.verbDisplay}\x1b[38;5;129m${color.bold}…${color.reset}`;
+      const leftWithVerb = `${spinnerGlyph} ${verbText}`;
       return [
         "",
-        flexBetween(logoLineOne, rightStatusText, width),
+        flexBetween(leftWithVerb, rightStatusText, width),
         "",
       ];
     }

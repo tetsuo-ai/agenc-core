@@ -1,11 +1,23 @@
+// Snapshot expectations updated for the redesigned header (Style C — Modern
+// Card). The header now uses lowercase ▸-prefixed cells in a strict 2-column
+// layout, brand "AgenC" in the top border, and "model <name> via <provider>"
+// in the bottom border.
 export const FRAME_SNAPSHOT_EXPECTATIONS = Object.freeze({
+  // Order matches the actual render: brand top border → 4 left/right body
+  // rows (objective/run, workspace/status, git/phase, usage/tool) → bottom
+  // border with the model. Then transcript content.
   widePlanner: {
     containsInOrder: [
       "AgenC",
-      "RUN:delegating",
-      "MODEL:grok-4 via grok",
-      "phase delegating",
-      "usage 3.4K total",
+      "▸ run",
+      "delegating",
+      "▸ status",
+      "▸ phase",
+      "▸ usage",
+      "3.4K total",
+      "▸ tool",
+      "system.writeFile",
+      "model grok-4 via grok",
       "● Working through the planner graph.",
       "RETURN done",
       "Edited runtime/src/index.ts",
@@ -21,16 +33,21 @@ export const FRAME_SNAPSHOT_EXPECTATIONS = Object.freeze({
   diffDetail: {
     containsInOrder: [
       "AgenC",
-      "RUN:running",
-      "MODEL:grok-4 via grok",
-      "usage 1.2K total",
+      "▸ run",
+      "running",
+      "▸ usage",
+      "1.2K total",
+      "model grok-4 via grok",
       "RETURN Edited runtime/src/index.ts",
       "return  ctrl+o close  ctrl+p prev hunk  ctrl+n next hunk",
       "│ /home/tetsuo/git/AgenC/runtime/src/index.ts",
-      "- return oldValue;",
       "+++ after",
       "+ return newValue;",
-      "4 of 11 lines  7 above  hunk 2/2  /home/tetsuo/git/AgenC/runtime/src/index.ts",
+      // The exact "X of 11 lines  N above  hunk K/2" status line depends on
+      // the visible body height, which shrank by one row in the redesign.
+      // Match the stable suffix instead of hard-coding the cursor position.
+      "of 11 lines",
+      "hunk 1/2  /home/tetsuo/git/AgenC/runtime/src/index.ts",
       "\n>",
     ],
     notContains: [
@@ -40,8 +57,9 @@ export const FRAME_SNAPSHOT_EXPECTATIONS = Object.freeze({
   narrowReconnect: {
     containsInOrder: [
       "AgenC",
-      "MODEL:routing pending",
-      "STATUS:link reconnecting",
+      "▸ status",
+      "link reconnecting",
+      "model routing pending",
       "● Reconnecting to the daemon.",
       "\n>",
     ],

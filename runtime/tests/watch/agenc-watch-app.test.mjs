@@ -196,8 +196,11 @@ test("latestSessionSummary prefers sessions from the current workspace root", ()
   assert.equal(selected?.sessionId, "session-same");
 });
 
-test("resolveWatchMouseTrackingEnabled only enables mouse capture explicitly", () => {
-  assert.equal(resolveWatchMouseTrackingEnabled({}), false);
+test("resolveWatchMouseTrackingEnabled defaults on so the wheel scrolls the in-app transcript", () => {
+  // Default ON: empty env, missing var, and explicit truthy values all
+  // enable mouse tracking. Without it, wheel events fall through to the
+  // terminal and scroll the alt-screen viewport above the header.
+  assert.equal(resolveWatchMouseTrackingEnabled({}), true);
   assert.equal(
     resolveWatchMouseTrackingEnabled({ AGENC_WATCH_ENABLE_MOUSE: "1" }),
     true,
@@ -206,8 +209,18 @@ test("resolveWatchMouseTrackingEnabled only enables mouse capture explicitly", (
     resolveWatchMouseTrackingEnabled({ AGENC_WATCH_ENABLE_MOUSE: "true" }),
     true,
   );
+  // Opt-out: only explicit falsey values disable mouse tracking, so users
+  // who prefer terminal-native click-to-select can still bypass it.
   assert.equal(
     resolveWatchMouseTrackingEnabled({ AGENC_WATCH_ENABLE_MOUSE: "off" }),
+    false,
+  );
+  assert.equal(
+    resolveWatchMouseTrackingEnabled({ AGENC_WATCH_ENABLE_MOUSE: "0" }),
+    false,
+  );
+  assert.equal(
+    resolveWatchMouseTrackingEnabled({ AGENC_WATCH_ENABLE_MOUSE: "false" }),
     false,
   );
 });

@@ -8,8 +8,8 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         summary: {
           connectionState: "live",
           phaseLabel: "idle",
-          latestTool: "idle",
-          latestToolState: "idle",
+          latestTool: "",
+          latestToolState: "",
           fallbackState: "standby",
           runtimeState: "healthy",
           activeLine: "No active objective",
@@ -49,8 +49,8 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         summary: {
           connectionState: "live",
           phaseLabel: "starting / queued",
-          latestTool: "idle",
-          latestToolState: "idle",
+          latestTool: "",
+          latestToolState: "",
           fallbackState: "standby",
           runtimeState: "healthy",
           activeLine: "show me a linked list in c",
@@ -75,7 +75,8 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         frameExpectation: {
           containsInOrder: [
             "AgenC",
-            "grok · live · starting / queued",
+            "▸ run",
+            "starting / queued",
             "show me a linked list in c",
             "\n>",
           ],
@@ -87,8 +88,8 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         summary: {
           connectionState: "live",
           phaseLabel: "starting / queued",
-          latestTool: "idle",
-          latestToolState: "idle",
+          latestTool: "",
+          latestToolState: "",
           fallbackState: "standby",
           runtimeState: "healthy",
           activeLine: "show me a linked list in c",
@@ -127,8 +128,8 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         summary: {
           connectionState: "live",
           phaseLabel: "starting / queued",
-          latestTool: "idle",
-          latestToolState: "idle",
+          latestTool: "",
+          latestToolState: "",
           fallbackState: "standby",
           runtimeState: "healthy",
           activeLine: "show me a linked list in c",
@@ -172,8 +173,8 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         summary: {
           connectionState: "live",
           phaseLabel: "starting / queued",
-          latestTool: "idle",
-          latestToolState: "idle",
+          latestTool: "",
+          latestToolState: "",
           fallbackState: "standby",
           runtimeState: "healthy",
           activeLine: "Inspect runtime",
@@ -198,7 +199,8 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         frameExpectation: {
           containsInOrder: [
             "AgenC",
-            "grok · live · starting / queued",
+            "▸ run",
+            "starting / queued",
             "ship operator console polish",
             "\n>",
           ],
@@ -210,8 +212,8 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         summary: {
           connectionState: "live",
           phaseLabel: "starting / queued",
-          latestTool: "idle",
-          latestToolState: "idle",
+          latestTool: "",
+          latestToolState: "",
           fallbackState: "standby",
           runtimeState: "healthy",
           activeLine: "elapsed 42s",
@@ -236,7 +238,8 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         frameExpectation: {
           containsInOrder: [
             "AgenC",
-            "grok · live · starting / queued",
+            "▸ run",
+            "starting / queued",
             "ship operator console polish",
             "\n>",
           ],
@@ -245,7 +248,7 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
     ],
   },
   reconnect: {
-    meta: { width: 96, height: 20, scenario: "reconnect" },
+    meta: { width: 96, height: 24, scenario: "reconnect" },
     checkpoints: [
       {
         label: "live",
@@ -253,8 +256,8 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         summary: {
           connectionState: "live",
           phaseLabel: "idle",
-          latestTool: "idle",
-          latestToolState: "idle",
+          latestTool: "",
+          latestToolState: "",
           fallbackState: "standby",
           runtimeState: "healthy",
           activeLine: "No active objective",
@@ -294,8 +297,8 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         summary: {
           connectionState: "reconnecting",
           phaseLabel: "idle",
-          latestTool: "idle",
-          latestToolState: "idle",
+          latestTool: "",
+          latestToolState: "",
           fallbackState: "standby",
           runtimeState: "reconnecting",
           activeLine: "No active objective",
@@ -335,8 +338,8 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         summary: {
           connectionState: "live",
           phaseLabel: "idle",
-          latestTool: "idle",
-          latestToolState: "idle",
+          latestTool: "",
+          latestToolState: "",
           fallbackState: "standby",
           runtimeState: "healthy",
           activeLine: "No active objective",
@@ -361,7 +364,8 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         frameExpectation: {
           containsInOrder: [
             "AgenC",
-            "grok · live · idle",
+            "▸ run",
+            "idle",
             "Try one of these:",
             "Start typing below.",
             "\n>",

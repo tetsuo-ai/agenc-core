@@ -192,6 +192,17 @@ export function chip(label, value, tone = "ink") {
   return `${badge(label, tone)} ${toneColor(tone)}${color.bold}${truncate(String(value), 32)}${color.reset}`;
 }
 
+/**
+ * Marker-style chip used by the header redesign (Style C — Modern Card).
+ * Renders as: `◆ LABEL  value` — no badge separator, marker glyph in border tone.
+ */
+export function markerChip(label, value, tone = "ink", marker = "◆") {
+  const spec = toneSpec(tone);
+  const truncatedValue = truncate(String(value), 32);
+  const borderTone = color.borderStrong || color.border || "";
+  return `${borderTone}${marker}${color.reset} ${spec.fg}${color.bold}${label}${color.reset}  ${toneColor(tone)}${truncatedValue}${color.reset}`;
+}
+
 export function stateTone(value) {
   const normalized = String(value ?? "").toLowerCase();
   if (/(error|failed|stopped|cancelled|blocked)/.test(normalized)) return "red";
