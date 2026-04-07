@@ -403,14 +403,6 @@ export interface ChatExecutorConfig {
    */
   readonly isConcurrencySafe?: import("./tool-orchestration.js").IsConcurrencySafeFn;
   /**
-   * Cut 5.4: queryTracking — chainId + depth pair propagated through
-   * the sub-agent nesting. Callers plumb the parent tracking in when
-   * spawning a child chat-executor; the runtime enforces a hard depth
-   * cap to prevent runaway recursive delegation and surfaces the
-   * chain on every hook context.
-   */
-  readonly queryTracking?: import("./query-tracking.js").QueryTracking;
-  /**
    * Cut 5.3: tool result budget config. When set, oversized tool
    * results are persisted to disk and replaced in the message history
    * with a `<persisted-output>` placeholder pointing at the file
