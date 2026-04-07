@@ -1,5 +1,4 @@
-export const UNLIMITED_RUNTIME_LIMIT = 0;
-export const UNLIMITED_RUNTIME_REMAINING = Number.MAX_SAFE_INTEGER;
+const UNLIMITED_RUNTIME_LIMIT = 0;
 
 interface NormalizeRuntimeLimitOptions {
   readonly min?: number;
@@ -20,16 +19,6 @@ function clampLimitedRuntimeValue(
     normalized = Math.min(normalized, Math.floor(options.max));
   }
   return normalized;
-}
-
-export function isUnlimitedRuntimeLimit(
-  value: number | undefined | null,
-): boolean {
-  return (
-    typeof value === "number" &&
-    Number.isFinite(value) &&
-    Math.floor(value) <= UNLIMITED_RUNTIME_LIMIT
-  );
 }
 
 export function hasRuntimeLimit(value: number | undefined | null): boolean {
@@ -81,16 +70,6 @@ export function isRuntimeLimitExceeded(
   limit: number | undefined | null,
 ): boolean {
   return hasRuntimeLimit(limit) && used > Number(limit);
-}
-
-export function remainingRuntimeLimit(
-  used: number,
-  limit: number | undefined | null,
-): number {
-  if (!hasRuntimeLimit(limit)) {
-    return UNLIMITED_RUNTIME_REMAINING;
-  }
-  return Math.max(0, Number(limit) - used);
 }
 
 export function resolveRuntimeTimeoutMs(params: {

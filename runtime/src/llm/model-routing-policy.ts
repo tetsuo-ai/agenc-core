@@ -47,16 +47,6 @@ export interface ModelRouteDecision {
   readonly reason: string;
 }
 
-export type ModelRoutingWorkflowPhase =
-  | "compaction"
-  | "initial"
-  | "planner"
-  | "planner_verifier"
-  | "planner_synthesis"
-  | "tool_followup"
-  | "evaluator"
-  | "evaluator_retry";
-
 export interface ModelRouteRequirements {
   readonly statefulContinuationRequired?: boolean;
   readonly structuredOutputRequired?: boolean;
