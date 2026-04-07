@@ -89,7 +89,6 @@ import type {
   ExecutionContext,
 } from "./chat-executor-types.js";
 import {
-  buildDelegationBudgetSnapshot,
   buildRuntimeEconomicsPolicy,
   buildRuntimeEconomicsSummary,
   getRuntimeBudgetPressure,
@@ -1123,10 +1122,6 @@ export class ChatExecutor {
       phase: input.phase,
       reason: routingDecision.route.reason,
     });
-    ctx.delegationBudgetSnapshot = buildDelegationBudgetSnapshot(
-      this.economicsPolicy,
-      ctx.economicsState,
-    );
     ctx.callUsage.push(
       this.createCallUsageRecord({
         callIndex: ++ctx.callIndex,

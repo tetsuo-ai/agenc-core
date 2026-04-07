@@ -45,14 +45,12 @@ import type {
 } from "../workflow/verification-obligations.js";
 import type { DelegationDecision, DelegationDecisionConfig } from "./delegation-decision.js";
 import type {
-  DelegationBudgetSnapshot,
   RuntimeEconomicsPolicy,
   RuntimeEconomicsState,
   RuntimeEconomicsSummary,
   RuntimeRunClass,
 } from "./run-budget.js";
 import {
-  buildDelegationBudgetSnapshot,
   createRuntimeEconomicsState,
 } from "./run-budget.js";
 import type { ModelRoutingPolicy } from "./model-routing-policy.js";
@@ -777,7 +775,6 @@ export interface ExecutionContext {
   plannerSummaryState: FullPlannerSummaryState;
   completedRequestMilestoneIds: readonly string[];
   economicsState: RuntimeEconomicsState;
-  delegationBudgetSnapshot?: DelegationBudgetSnapshot;
 }
 
 // ============================================================================
@@ -949,9 +946,5 @@ export function buildDefaultExecutionContext(
     },
     completedRequestMilestoneIds: [],
     economicsState,
-    delegationBudgetSnapshot: buildDelegationBudgetSnapshot(
-      config.economicsPolicy,
-      economicsState,
-    ),
   };
 }
