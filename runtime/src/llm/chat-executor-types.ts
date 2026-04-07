@@ -43,7 +43,7 @@ import type { WorkflowProgressSnapshot } from "../workflow/completion-progress.j
 import type {
   WorkflowVerificationContract,
 } from "../workflow/verification-obligations.js";
-import type { DelegationDecision, DelegationDecisionConfig } from "./delegation-decision.js";
+import type { DelegationDecisionConfig } from "./delegation-decision.js";
 import type {
   RuntimeEconomicsPolicy,
   RuntimeEconomicsState,
@@ -284,8 +284,6 @@ export interface ChatPlannerSummary {
   readonly estimatedRecallsAvoided: number;
   /** Structured planner parse/validation/policy diagnostics for this turn. */
   readonly diagnostics?: readonly PlannerDiagnostic[];
-  /** Sub-agent delegation utility decision for planner-emitted subagent tasks. */
-  readonly delegationDecision?: DelegationDecision;
   /** Sub-agent verification/critic pass summary. */
   readonly subagentVerification?: {
     readonly enabled: boolean;
@@ -624,7 +622,6 @@ export interface FullPlannerSummaryState extends MutablePlannerSummaryState {
   plannerCalls: number;
   plannedSteps: number;
   estimatedRecallsAvoided: number;
-  delegationDecision: DelegationDecision | undefined;
 }
 
 /** Loop-local mutable state shared across tool calls within a single round. */
@@ -859,7 +856,6 @@ export function buildDefaultExecutionContext(
       deterministicStepsExecuted: 0,
       estimatedRecallsAvoided: 0,
       diagnostics: [] as PlannerDiagnostic[],
-      delegationDecision: undefined as DelegationDecision | undefined,
       subagentVerification: {
         enabled: config.subagentVerifierEnabled,
         performed: false,
