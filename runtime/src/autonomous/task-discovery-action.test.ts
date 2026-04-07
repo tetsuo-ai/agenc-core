@@ -49,20 +49,6 @@ const mockContext: HeartbeatContext = {
   sendToChannels: vi.fn(),
 };
 
-// Mock scoreTaskRisk at module level
-vi.mock("./risk-scoring.js", () => ({
-  scoreTaskRisk: vi.fn().mockReturnValue({
-    score: 0.2,
-    tier: "low",
-    features: {},
-    contributions: [],
-    metadata: { mediumRiskThreshold: 0.35, highRiskThreshold: 0.7 },
-  }),
-}));
-
-import { scoreTaskRisk } from "./risk-scoring.js";
-const mockedScoreTaskRisk = vi.mocked(scoreTaskRisk);
-
 describe("TaskDiscoveryAction", () => {
   let scanner: ReturnType<typeof createMockScanner>;
   let goalManager: ReturnType<typeof createMockGoalManager>;
@@ -80,16 +66,9 @@ describe("TaskDiscoveryAction", () => {
     expect(result.quiet).toBe(true);
   });
 
-  it("queues goals for low-risk tasks", async () => {
+  it("queues a discovered task as a medium-priority goal", async () => {
     const task = createMockTask();
     (scanner.scan as ReturnType<typeof vi.fn>).mockResolvedValue([task]);
-    mockedScoreTaskRisk.mockReturnValue({
-      score: 0.2,
-      tier: "low",
-      features: {} as any,
-      contributions: [],
-      metadata: { mediumRiskThreshold: 0.35, highRiskThreshold: 0.7 },
-    });
 
     const action = createTaskDiscoveryAction({ scanner, goalManager });
     const result = await action.execute(mockContext);
@@ -99,61 +78,15 @@ describe("TaskDiscoveryAction", () => {
     expect(goalManager.addGoal).toHaveBeenCalledWith(
       expect.objectContaining({
         title: "On-chain task",
-        priority: "medium", // low risk → medium priority
+        priority: "medium",
         source: "meta-planner",
       }),
     );
   });
 
-  it("queues goals for medium-risk tasks with low priority", async () => {
-    const task = createMockTask();
-    (scanner.scan as ReturnType<typeof vi.fn>).mockResolvedValue([task]);
-    mockedScoreTaskRisk.mockReturnValue({
-      score: 0.5,
-      tier: "medium",
-      features: {} as any,
-      contributions: [],
-      metadata: { mediumRiskThreshold: 0.35, highRiskThreshold: 0.7 },
-    });
-
-    const action = createTaskDiscoveryAction({ scanner, goalManager });
-    const result = await action.execute(mockContext);
-
-    expect(result.hasOutput).toBe(true);
-    expect(goalManager.addGoal).toHaveBeenCalledWith(
-      expect.objectContaining({ priority: "low" }),
-    );
-  });
-
-  it("skips high-risk tasks", async () => {
-    const task = createMockTask();
-    (scanner.scan as ReturnType<typeof vi.fn>).mockResolvedValue([task]);
-    mockedScoreTaskRisk.mockReturnValue({
-      score: 0.85,
-      tier: "high",
-      features: {} as any,
-      contributions: [],
-      metadata: { mediumRiskThreshold: 0.35, highRiskThreshold: 0.7 },
-    });
-
-    const action = createTaskDiscoveryAction({ scanner, goalManager });
-    const result = await action.execute(mockContext);
-
-    expect(result.hasOutput).toBe(false);
-    expect(goalManager.addGoal).not.toHaveBeenCalled();
-    expect(result.output).toContain("skipped 1 high-risk");
-  });
-
   it("deduplicates by PDA across heartbeat cycles", async () => {
     const task = createMockTask();
     (scanner.scan as ReturnType<typeof vi.fn>).mockResolvedValue([task]);
-    mockedScoreTaskRisk.mockReturnValue({
-      score: 0.2,
-      tier: "low",
-      features: {} as any,
-      contributions: [],
-      metadata: { mediumRiskThreshold: 0.35, highRiskThreshold: 0.7 },
-    });
 
     const action = createTaskDiscoveryAction({ scanner, goalManager });
 
@@ -164,13 +97,6 @@ describe("TaskDiscoveryAction", () => {
     // Second cycle — same task, should not re-queue
     vi.clearAllMocks();
     (scanner.scan as ReturnType<typeof vi.fn>).mockResolvedValue([task]);
-    mockedScoreTaskRisk.mockReturnValue({
-      score: 0.2,
-      tier: "low",
-      features: {} as any,
-      contributions: [],
-      metadata: { mediumRiskThreshold: 0.35, highRiskThreshold: 0.7 },
-    });
     await action.execute(mockContext);
     expect(goalManager.addGoal).not.toHaveBeenCalled();
   });
@@ -178,13 +104,6 @@ describe("TaskDiscoveryAction", () => {
   it("caps at maxTasksPerScan", async () => {
     const tasks = Array.from({ length: 10 }, () => createMockTask());
     (scanner.scan as ReturnType<typeof vi.fn>).mockResolvedValue(tasks);
-    mockedScoreTaskRisk.mockReturnValue({
-      score: 0.2,
-      tier: "low",
-      features: {} as any,
-      contributions: [],
-      metadata: { mediumRiskThreshold: 0.35, highRiskThreshold: 0.7 },
-    });
 
     const action = createTaskDiscoveryAction({
       scanner,
@@ -196,25 +115,16 @@ describe("TaskDiscoveryAction", () => {
     expect(goalManager.addGoal).toHaveBeenCalledTimes(3);
   });
 
-  it("skips tasks above custom maxRiskScore", async () => {
-    const task = createMockTask();
-    (scanner.scan as ReturnType<typeof vi.fn>).mockResolvedValue([task]);
-    mockedScoreTaskRisk.mockReturnValue({
-      score: 0.4,
-      tier: "medium",
-      features: {} as any,
-      contributions: [],
-      metadata: { mediumRiskThreshold: 0.35, highRiskThreshold: 0.7 },
-    });
+  it("returns hasOutput=false when scanner throws", async () => {
+    (scanner.scan as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("rpc fail"),
+    );
 
-    const action = createTaskDiscoveryAction({
-      scanner,
-      goalManager,
-      maxRiskScore: 0.3,
-    });
+    const action = createTaskDiscoveryAction({ scanner, goalManager });
     const result = await action.execute(mockContext);
 
     expect(result.hasOutput).toBe(false);
+    expect(result.quiet).toBe(true);
     expect(goalManager.addGoal).not.toHaveBeenCalled();
   });
 });

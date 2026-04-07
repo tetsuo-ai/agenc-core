@@ -13,8 +13,7 @@ import type {
   HeartbeatResult,
 } from "../gateway/heartbeat.js";
 import type { TaskScanner } from "./scanner.js";
-import type { GoalManager, ManagedGoal } from "./goal-manager.js";
-import { scoreTaskRisk, type RiskTier } from "./risk-scoring.js";
+import type { GoalManager } from "./goal-manager.js";
 import type { Logger } from "../utils/logger.js";
 
 // ============================================================================
@@ -26,8 +25,6 @@ export interface TaskDiscoveryActionConfig {
   goalManager: GoalManager;
   /** Maximum tasks to evaluate per heartbeat cycle (default: 5). */
   maxTasksPerScan?: number;
-  /** Maximum acceptable risk score (0-1). Tasks above this are skipped (default: 0.70). */
-  maxRiskScore?: number;
   logger?: Logger;
 }
 
@@ -36,16 +33,6 @@ export interface TaskDiscoveryActionConfig {
 // ============================================================================
 
 const DEFAULT_MAX_TASKS_PER_SCAN = 5;
-const DEFAULT_MAX_RISK_SCORE = 0.7;
-
-const RISK_TIER_TO_PRIORITY: Record<
-  RiskTier,
-  ManagedGoal["priority"] | null
-> = {
-  low: "medium",
-  medium: "low",
-  high: null, // skip
-};
 
 // ============================================================================
 // Factory
@@ -61,7 +48,6 @@ export function createTaskDiscoveryAction(
   const { scanner, goalManager } = config;
   const maxTasksPerScan =
     config.maxTasksPerScan ?? DEFAULT_MAX_TASKS_PER_SCAN;
-  const maxRiskScore = config.maxRiskScore ?? DEFAULT_MAX_RISK_SCORE;
   const logger = config.logger;
 
   // Tracks PDAs already queued to avoid duplicates across heartbeat cycles
@@ -87,30 +73,16 @@ export function createTaskDiscoveryAction(
       // Limit work per heartbeat
       const batch = tasks.slice(0, maxTasksPerScan);
       let queued = 0;
-      let skippedRisk = 0;
 
       for (const task of batch) {
         const pdaKey = task.pda.toBase58();
         if (queuedPdas.has(pdaKey)) continue;
 
-        const riskResult = scoreTaskRisk(task);
-
-        if (riskResult.score > maxRiskScore) {
-          skippedRisk++;
-          continue;
-        }
-
-        const priority = RISK_TIER_TO_PRIORITY[riskResult.tier];
-        if (priority === null) {
-          skippedRisk++;
-          continue;
-        }
-
         try {
           await goalManager.addGoal({
             title: "On-chain task",
             description: `Task PDA: ${pdaKey}, reward: ${task.reward}`,
-            priority,
+            priority: "medium",
             source: "meta-planner",
             maxAttempts: 2,
           });
@@ -124,7 +96,7 @@ export function createTaskDiscoveryAction(
         }
       }
 
-      const output = `Discovered ${tasks.length} tasks, queued ${queued} goals (skipped ${skippedRisk} high-risk)`;
+      const output = `Discovered ${tasks.length} tasks, queued ${queued} goals`;
       logger?.debug?.(output);
 
       return {
