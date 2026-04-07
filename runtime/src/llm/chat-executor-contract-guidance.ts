@@ -45,7 +45,10 @@ import {
 import { extractExplicitImperativeToolNames } from "./chat-executor-explicit-tools.js";
 import { getAcceptanceVerificationCategories } from "../utils/delegation-validation.js";
 import { areDocumentationOnlyArtifacts } from "../workflow/artifact-paths.js";
-import { normalizeEnvelopePath } from "../workflow/path-normalization.js";
+import {
+  normalizeEnvelopePath,
+  normalizeWorkspaceRoot,
+} from "../workflow/path-normalization.js";
 import { isMeaningfulWorkspaceInspectionToolCall } from "../workflow/workspace-inspection-evidence.js";
 
 export type ToolContractGuidancePhase =
@@ -714,7 +717,10 @@ function isPlanBackedImplementationOwnerSpec(
   spec: DelegationContractSpec,
 ): boolean {
   const executionContext = spec.executionContext;
-  const workspaceRoot = executionContext?.workspaceRoot?.trim();
+  // Audit S1.6: normalize the workspace root before string-comparing
+  // it to artifact paths so trailing-slash / case / ~ aliasing cannot
+  // make identical roots compare unequal.
+  const workspaceRoot = normalizeWorkspaceRoot(executionContext?.workspaceRoot);
   const requiredSourceArtifacts = executionContext?.requiredSourceArtifacts ?? [];
   const targetArtifacts = executionContext?.targetArtifacts ?? [];
   if (!workspaceRoot || requiredSourceArtifacts.length === 0) {
@@ -724,7 +730,7 @@ function isPlanBackedImplementationOwnerSpec(
     return false;
   }
   const ownsWorkspaceRoot = targetArtifacts.some((artifactPath) =>
-    artifactPath.trim() === workspaceRoot
+    normalizeWorkspaceRoot(artifactPath) === workspaceRoot
   );
   return (
     ownsWorkspaceRoot ||

@@ -49,6 +49,7 @@ import {
   isPathWithinRoot,
   normalizeEnvelopePath,
   normalizeEnvelopeRoots,
+  normalizeWorkspaceRoot,
 } from "../workflow/path-normalization.js";
 import {
   resolveExecutionEnvelopeArtifactRelations,
@@ -860,7 +861,11 @@ function enforceSubAgentExecutionEnvelope(params: {
   const pathKeys = TOOL_PATH_ARG_KEYS[params.toolName] ?? [];
   if (pathKeys.length === 0) return undefined;
 
-  const workspaceRoot = executionContext.workspaceRoot?.trim() || params.defaultWorkingDirectory;
+  // Audit S1.6: normalize so the filesystem-effect handler enforces
+  // allowed-roots membership against the same canonical root that
+  // verifier and contract guidance use.
+  const workspaceRoot =
+    normalizeWorkspaceRoot(executionContext.workspaceRoot) ?? params.defaultWorkingDirectory;
   const readRoots = normalizeEnvelopeRoots(
     executionContext.allowedReadRoots ?? [],
     workspaceRoot,

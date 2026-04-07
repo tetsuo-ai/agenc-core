@@ -21,6 +21,7 @@ import {
   isPathWithinAnyRoot,
   normalizeEnvelopePath,
   normalizeEnvelopeRoots,
+  normalizeWorkspaceRoot,
   resolveExplicitArtifactReferencePath,
 } from "../workflow/path-normalization.js";
 import type {
@@ -300,7 +301,11 @@ function enforceTopLevelExecutionEnvelope(params: {
     return undefined;
   }
 
-  const workspaceRoot = envelope.workspaceRoot?.trim() || params.defaultWorkingDirectory;
+  // Audit S1.6: normalize the envelope workspace root so it matches the
+  // root the verifier and child execution paths see, instead of just
+  // trimming whitespace.
+  const workspaceRoot =
+    normalizeWorkspaceRoot(envelope.workspaceRoot) ?? params.defaultWorkingDirectory;
   const allowedRoots = normalizeEnvelopeRoots(
     mode === "read" ? envelope.allowedReadRoots ?? [] : envelope.allowedWriteRoots ?? [],
     workspaceRoot,

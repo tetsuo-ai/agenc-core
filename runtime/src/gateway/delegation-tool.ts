@@ -10,6 +10,7 @@
 import type { Tool } from "../tools/types.js";
 import { safeStringify } from "../tools/types.js";
 import type { DelegationExecutionContext } from "../utils/delegation-execution-context.js";
+import { normalizeWorkspaceRoot } from "../workflow/path-normalization.js";
 
 export const EXECUTE_WITH_AGENT_TOOL_NAME = "execute_with_agent";
 
@@ -227,7 +228,12 @@ function normalizeDelegatedPathToken(rawPath: string): string {
 export function resolveDelegatedWorkingDirectory(
   input: DelegatedWorkingDirectoryInput,
 ): DelegatedWorkingDirectoryResolution | undefined {
-  const explicitWorkspaceRoot = input.executionContext?.workspaceRoot?.trim();
+  // Audit S1.6: normalize the workspace root before passing it as the
+  // child working directory so the spawned subagent sees the same
+  // canonical path the parent verifier and contract checks see.
+  const explicitWorkspaceRoot = normalizeWorkspaceRoot(
+    input.executionContext?.workspaceRoot,
+  );
   if (explicitWorkspaceRoot) {
     return {
       path: normalizeDelegatedPathToken(explicitWorkspaceRoot),

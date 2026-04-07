@@ -48,6 +48,7 @@ import {
   isMeaningfulWorkspaceInspectionToolCall,
   textRequiresWorkspaceGroundedArtifactUpdate,
 } from "../workflow/workspace-inspection-evidence.js";
+import { normalizeWorkspaceRoot } from "../workflow/path-normalization.js";
 
 export interface DelegationContractSpec {
   readonly task?: string;
@@ -4255,7 +4256,10 @@ function specOwnsRemainingRequestEndToEnd(
   spec: DelegationContractSpec,
 ): boolean {
   const executionContext = spec.executionContext;
-  const workspaceRoot = executionContext?.workspaceRoot?.trim();
+  // Audit S1.6: normalize the workspace root before comparing it to
+  // artifact paths so trailing-slash / case / ~ aliasing cannot make
+  // identical roots compare unequal.
+  const workspaceRoot = normalizeWorkspaceRoot(executionContext?.workspaceRoot);
   const role = resolveExecutionEnvelopeRole(executionContext);
   if (!workspaceRoot || role !== "writer") {
     return false;
@@ -4265,9 +4269,9 @@ function specOwnsRemainingRequestEndToEnd(
   );
   const ownsWorkspaceRoot = artifactRelations.some((relation) =>
     relation.relationType === "write_owner" &&
-      relation.artifactPath.trim() === workspaceRoot
+      normalizeWorkspaceRoot(relation.artifactPath) === workspaceRoot
   ) || (executionContext?.targetArtifacts ?? []).some((artifactPath) =>
-    artifactPath.trim() === workspaceRoot
+    normalizeWorkspaceRoot(artifactPath) === workspaceRoot
   );
   if (!ownsWorkspaceRoot) {
     return false;

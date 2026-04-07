@@ -18,6 +18,7 @@ import {
   resolveExecutionEnvelopeArtifactRelations,
   resolveExecutionEnvelopeRole,
 } from "../workflow/execution-envelope.js";
+import { normalizeWorkspaceRoot } from "../workflow/path-normalization.js";
 import { safeStepStringArray } from "../llm/chat-executor-planner.js";
 
 const REVIEW_TEXT_RE =
@@ -533,7 +534,10 @@ function ownsRemainingRequestEndToEnd(
   analysis: DelegationStepAnalysis,
 ): boolean {
   const executionContext = analysis.step.executionContext;
-  const workspaceRoot = executionContext?.workspaceRoot?.trim();
+  // Audit S1.6: normalize before string-comparing the workspace root
+  // to relation/target artifact paths so trailing-slash and ~ aliasing
+  // cannot make identical roots compare unequal.
+  const workspaceRoot = normalizeWorkspaceRoot(executionContext?.workspaceRoot);
   const role = resolveExecutionEnvelopeRole(executionContext);
   if (!workspaceRoot || role !== "writer") {
     return false;
@@ -543,9 +547,9 @@ function ownsRemainingRequestEndToEnd(
   );
   const ownsWorkspaceRoot = artifactRelations.some((relation) =>
     relation.relationType === "write_owner" &&
-      relation.artifactPath.trim() === workspaceRoot
+      normalizeWorkspaceRoot(relation.artifactPath) === workspaceRoot
   ) || (executionContext?.targetArtifacts ?? []).some((artifactPath) =>
-    artifactPath.trim() === workspaceRoot
+    normalizeWorkspaceRoot(artifactPath) === workspaceRoot
   );
   if (!ownsWorkspaceRoot) {
     return false;

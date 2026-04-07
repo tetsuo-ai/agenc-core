@@ -13,6 +13,7 @@ import type {
 import { isMutationLikeVerificationMode } from "./execution-envelope.js";
 import { inferCompatibilityCompletionContract } from "./execution-intent.js";
 import { criterionRequiresWorkspaceInspectionVerification } from "./workspace-inspection-evidence.js";
+import { normalizeWorkspaceRoot } from "./path-normalization.js";
 
 export interface WorkflowVerificationContract {
   readonly workspaceRoot?: string;
@@ -87,7 +88,11 @@ export function deriveVerificationObligations(
   input: DelegationContractSpec | WorkflowVerificationContract,
 ): VerificationObligations | undefined {
   const normalizedInput = normalizeVerificationContractInput(input);
-  const workspaceRoot = normalizedInput.workspaceRoot?.trim();
+  // Audit S1.6: route every workspace root through normalizeWorkspaceRoot
+  // (path.resolve + ~ expansion + trim) so two consumers comparing
+  // workspace roots cannot disagree on whether `/tmp/foo` and
+  // `/tmp/foo/` are the same root.
+  const workspaceRoot = normalizeWorkspaceRoot(normalizedInput.workspaceRoot);
   const requiredSourceArtifacts =
     normalizedInput.requiredSourceArtifacts ??
     normalizedInput.inputArtifacts ??

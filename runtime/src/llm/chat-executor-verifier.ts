@@ -34,6 +34,7 @@ import type {
 } from "../workflow/request-completion.js";
 import type { WorkflowVerificationContract } from "../workflow/verification-obligations.js";
 import { isDocumentationArtifactPath } from "../workflow/artifact-paths.js";
+import { normalizeWorkspaceRoot } from "../workflow/path-normalization.js";
 import {
   DEFAULT_SUBAGENT_VERIFIER_MIN_CONFIDENCE,
   MAX_SUBAGENT_VERIFIER_OUTPUT_CHARS,
@@ -1334,14 +1335,13 @@ function buildPlannerWorkflowVerificationContract(params: {
   readonly verificationContract?: WorkflowVerificationContract;
   readonly completionContract?: ImplementationCompletionContract;
 }): WorkflowVerificationContract | undefined {
+  // Audit S1.6: route both workspace root sources through
+  // normalizeWorkspaceRoot so the verifier and the producer of the
+  // verification contract cannot disagree on whether two roots refer
+  // to the same directory (trailing slash, ~, case folding).
   const workspaceRoot =
-    typeof params.workspaceRoot === "string" &&
-      params.workspaceRoot.trim().length > 0
-      ? params.workspaceRoot.trim()
-      : typeof params.verificationContract?.workspaceRoot === "string" &&
-          params.verificationContract.workspaceRoot.trim().length > 0
-        ? params.verificationContract.workspaceRoot.trim()
-        : undefined;
+    normalizeWorkspaceRoot(params.workspaceRoot) ??
+    normalizeWorkspaceRoot(params.verificationContract?.workspaceRoot);
   const acceptanceCriteria =
     safeStepStringArray(params.verificationContract?.acceptanceCriteria).filter((criterion) =>
       criterion.trim().length > 0

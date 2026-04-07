@@ -1,7 +1,11 @@
 import { existsSync } from "node:fs";
 
 import type { DelegationExecutionContext } from "../utils/delegation-execution-context.js";
-import { isPathWithinAnyRoot, isPathWithinRoot } from "../workflow/path-normalization.js";
+import {
+  isPathWithinAnyRoot,
+  isPathWithinRoot,
+  normalizeWorkspaceRoot,
+} from "../workflow/path-normalization.js";
 
 export type DelegatedScopePreflightIssueCode =
   | "missing_execution_context"
@@ -126,7 +130,11 @@ export function preflightDelegatedLocalFileScope(params: {
     };
   }
 
-  const workspaceRoot = context?.workspaceRoot?.trim() || workingDirectory;
+  // Audit S1.6: normalize so the within-root checks below compare
+  // canonical paths from both sides instead of mixing trim-only and
+  // resolve-based forms.
+  const workspaceRoot =
+    normalizeWorkspaceRoot(context?.workspaceRoot) ?? workingDirectory;
   const issues: DelegatedScopePreflightIssue[] = [];
 
   if (!workspaceRoot) {

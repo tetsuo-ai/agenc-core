@@ -573,6 +573,9 @@ export function deriveDelegatedExecutionEnvelopeFromParent(params: {
   return {
     ok: true,
     executionContext,
-    workingDirectory: executionContext?.workspaceRoot?.trim() || undefined,
+    // Audit S1.6: normalize so the working directory passed to spawned
+    // child processes uses path.resolve + ~ expansion, matching the
+    // upstream parent workspace root used elsewhere in this file.
+    workingDirectory: normalizeWorkspaceRoot(executionContext?.workspaceRoot),
   };
 }
