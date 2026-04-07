@@ -1474,6 +1474,7 @@ export class GrokProvider implements LLMProvider {
         includeEncryptedReasoning: options?.includeEncryptedReasoning,
         structuredOutput: options?.structuredOutput,
         toolSelection,
+        promptCacheKey: options?.stateful?.sessionId?.trim() || undefined,
       });
       return {
         params: built.params,
@@ -1616,6 +1617,7 @@ export class GrokProvider implements LLMProvider {
       includeEncryptedReasoning: options?.includeEncryptedReasoning,
       structuredOutput: options?.structuredOutput,
       toolSelection,
+      promptCacheKey: sessionId,
     });
 
     return {
@@ -1735,6 +1737,7 @@ export class GrokProvider implements LLMProvider {
       includeEncryptedReasoning?: boolean;
       structuredOutput?: LLMChatOptions["structuredOutput"];
       toolSelection?: ToolSelectionDiagnostics;
+      promptCacheKey?: string;
     },
   ): {
     params: Record<string, unknown>;
@@ -1815,6 +1818,15 @@ export class GrokProvider implements LLMProvider {
     };
     if (options?.previousResponseId) {
       params.previous_response_id = options.previousResponseId;
+    }
+    // Cut 5.10: xAI prompt caching is prefix-based and is maximized by
+    // routing requests with the same conversation ID to the same
+    // server. For the Responses API, that routing hint is the
+    // `prompt_cache_key` request field. Feed it the session ID so
+    // every turn in the same AgenC session lands on the same backend
+    // and reuses the previously-cached system + history prefix.
+    if (options?.promptCacheKey) {
+      params.prompt_cache_key = options.promptCacheKey;
     }
     if (this.config.temperature !== undefined)
       params.temperature = this.config.temperature;
