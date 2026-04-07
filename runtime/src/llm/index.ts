@@ -124,14 +124,13 @@ export type {
   MemoryRetriever,
 } from "./chat-executor.js";
 
-// Delegation learning (Workstream H1/H2)
+// Delegation learning (trajectory recording for offline analysis)
 export {
   DELEGATION_TRAJECTORY_SCHEMA_VERSION,
   InMemoryDelegationTrajectorySink,
   computeDelegationFinalReward,
   deriveDelegationComplexityBucket,
   deriveDelegationContextClusterId,
-  DelegationBanditPolicyTuner,
 } from "./delegation-learning.js";
 export type {
   DelegationTrajectoryTurnType,
@@ -145,10 +144,6 @@ export type {
   DelegationFinalRewardInput,
   DelegationComplexityBucket,
   DelegationContextClusterInput,
-  DelegationBanditArm,
-  DelegationBanditArmStats,
-  DelegationBanditSelection,
-  DelegationBanditPolicyTunerConfig,
 } from "./delegation-learning.js";
 
 // Provider adapters

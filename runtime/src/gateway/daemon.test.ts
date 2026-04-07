@@ -3253,48 +3253,6 @@ describe("DaemonManager", () => {
     await dm.stop();
   });
 
-  it("start configures delegation learning runtime (trajectory sink + bandit tuner)", async () => {
-    vi.mocked(loadGatewayConfig).mockResolvedValueOnce({
-      gateway: { port: 9000 },
-      agent: { name: "test" },
-      connection: { rpcUrl: "http://localhost:8899" },
-      llm: {
-        provider: "grok",
-        subagents: {
-          enabled: true,
-          policyLearning: {
-            enabled: true,
-            epsilon: 0.2,
-            explorationBudget: 123,
-            minSamplesPerArm: 3,
-            ucbExplorationScale: 1.5,
-            arms: [
-              { id: "conservative", thresholdOffset: 0.1 },
-              { id: "balanced", thresholdOffset: 0 },
-              { id: "aggressive", thresholdOffset: -0.1 },
-            ],
-          },
-        },
-      },
-    } as any);
-
-    const pidPath = join(tempDir, "subagent-learning.pid");
-    const dm = new DaemonManager({ configPath: "/tmp/config.json", pidPath });
-    vi.spyOn(dm, "setupSignalHandlers").mockImplementation(() => {});
-
-    await dm.start();
-
-    expect(dm.delegationTrajectorySink).not.toBeNull();
-    expect(dm.delegationBanditTuner).not.toBeNull();
-    expect(dm.subAgentRuntimeConfig?.policyLearningEnabled).toBe(true);
-    expect(dm.subAgentRuntimeConfig?.policyLearningExplorationBudget).toBe(123);
-    expect(dm.subAgentRuntimeConfig?.policyLearningMinSamplesPerArm).toBe(3);
-    expect(dm.subAgentRuntimeConfig?.policyLearningUcbExplorationScale).toBe(1.5);
-    expect(dm.subAgentRuntimeConfig?.policyLearningArms).toHaveLength(3);
-
-    await dm.stop();
-  });
-
   it("reconfigures delegation thresholds in place without recreating manager", async () => {
     vi.mocked(loadGatewayConfig).mockResolvedValueOnce({
       gateway: { port: 9000 },

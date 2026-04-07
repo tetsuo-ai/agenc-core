@@ -61,48 +61,6 @@ describe("validateGatewayConfig desktop resource limits", () => {
     expect(result.errors).toContain("desktop.maxCpu must be greater than 0");
   });
 
-  it("accepts llm.subagents.policyLearning config with arm offsets", () => {
-    const config = makeConfig();
-    config.llm = {
-      provider: "grok",
-      subagents: {
-        enabled: true,
-        policyLearning: {
-          enabled: true,
-          epsilon: 0.15,
-          explorationBudget: 1000,
-          minSamplesPerArm: 2,
-          ucbExplorationScale: 1.3,
-          arms: [
-            { id: "conservative", thresholdOffset: 0.1 },
-            { id: "balanced", thresholdOffset: 0 },
-            { id: "aggressive", thresholdOffset: -0.1 },
-          ],
-        },
-      },
-    };
-    const result = validateGatewayConfig(config);
-    expect(result.valid).toBe(true);
-  });
-
-  it("rejects llm.subagents.policyLearning arm thresholdOffset outside bounds", () => {
-    const config = makeConfig();
-    config.llm = {
-      provider: "grok",
-      subagents: {
-        enabled: true,
-        policyLearning: {
-          arms: [{ id: "broken", thresholdOffset: 2 }],
-        },
-      },
-    };
-    const result = validateGatewayConfig(config);
-    expect(result.valid).toBe(false);
-    expect(result.errors).toContain(
-      "llm.subagents.policyLearning.arms[0].thresholdOffset must be a number between -1 and 1",
-    );
-  });
-
   it("accepts subagent open-question controls", () => {
     const config = makeConfig();
     config.llm = {

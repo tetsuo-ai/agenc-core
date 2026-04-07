@@ -121,7 +121,6 @@ import type {
   ChatToolRoutingSummary,
 } from "../llm/chat-executor.js";
 import {
-  DelegationBanditPolicyTuner,
   InMemoryDelegationTrajectorySink,
 } from "../llm/delegation-learning.js";
 import { DEFAULT_TOOL_CALL_TIMEOUT_MS } from "../llm/chat-executor-constants.js";
@@ -954,7 +953,6 @@ export class DaemonManager {
   private _subAgentLifecycleEmitter: SubAgentLifecycleEmitter | null = null;
   private _delegationTrajectorySink: InMemoryDelegationTrajectorySink | null =
     null;
-  private _delegationBanditTuner: DelegationBanditPolicyTuner | null = null;
   private _subAgentLifecycleUnsubscribe: (() => void) | null = null;
   private readonly _activeSessionTraceIds = new Map<string, string>();
   private readonly _activeSlashInitBySession = new Map<
@@ -1216,7 +1214,6 @@ export class DaemonManager {
         delegationVerifierService: this._delegationVerifierService,
         subAgentLifecycleEmitter: this._subAgentLifecycleEmitter,
         delegationTrajectorySink: this._delegationTrajectorySink,
-        delegationBanditTuner: this._delegationBanditTuner,
       },
       {
         subAgentRuntimeConfig: this._subAgentRuntimeConfig,
@@ -1232,7 +1229,6 @@ export class DaemonManager {
     this._delegationVerifierService = result.delegationVerifierService;
     this._subAgentLifecycleEmitter = result.subAgentLifecycleEmitter;
     this._delegationTrajectorySink = result.delegationTrajectorySink;
-    this._delegationBanditTuner = result.delegationBanditTuner;
   }
 
   private clearDelegationRuntimeServices(): void {
@@ -1242,7 +1238,6 @@ export class DaemonManager {
     );
     this._delegationPolicyEngine = result.delegationPolicyEngine;
     this._delegationVerifierService = result.delegationVerifierService;
-    this._delegationBanditTuner = result.delegationBanditTuner;
     this._delegationTrajectorySink = result.delegationTrajectorySink;
     this._subAgentLifecycleEmitter = result.subAgentLifecycleEmitter;
   }
@@ -6019,10 +6014,6 @@ export class DaemonManager {
 
   get delegationTrajectorySink(): InMemoryDelegationTrajectorySink | null {
     return this._delegationTrajectorySink;
-  }
-
-  get delegationBanditTuner(): DelegationBanditPolicyTuner | null {
-    return this._delegationBanditTuner;
   }
 
   getStatus(): DaemonStatus {

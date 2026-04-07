@@ -2322,101 +2322,6 @@ function validateLlmToolRoutingSection(
   }
 }
 
-function validateLlmSubagentPolicyLearningSection(
-  policyLearningValue: unknown,
-  errors: string[],
-): void {
-  if (policyLearningValue === undefined) return;
-  if (!isRecord(policyLearningValue)) {
-    errors.push("llm.subagents.policyLearning must be an object");
-    return;
-  }
-
-  if (
-    policyLearningValue.enabled !== undefined &&
-    typeof policyLearningValue.enabled !== "boolean"
-  ) {
-    errors.push("llm.subagents.policyLearning.enabled must be a boolean");
-  }
-  if (policyLearningValue.epsilon !== undefined) {
-    if (
-      typeof policyLearningValue.epsilon !== "number" ||
-      !Number.isFinite(policyLearningValue.epsilon) ||
-      policyLearningValue.epsilon < 0 ||
-      policyLearningValue.epsilon > 1
-    ) {
-      errors.push(
-        "llm.subagents.policyLearning.epsilon must be a number between 0 and 1",
-      );
-    }
-  }
-  if (policyLearningValue.explorationBudget !== undefined) {
-    requireIntRange(
-      policyLearningValue.explorationBudget,
-      "llm.subagents.policyLearning.explorationBudget",
-      0,
-      1_000_000,
-      errors,
-    );
-  }
-  if (policyLearningValue.minSamplesPerArm !== undefined) {
-    requireIntRange(
-      policyLearningValue.minSamplesPerArm,
-      "llm.subagents.policyLearning.minSamplesPerArm",
-      1,
-      10_000,
-      errors,
-    );
-  }
-  if (policyLearningValue.ucbExplorationScale !== undefined) {
-    if (
-      typeof policyLearningValue.ucbExplorationScale !== "number" ||
-      !Number.isFinite(policyLearningValue.ucbExplorationScale) ||
-      policyLearningValue.ucbExplorationScale < 0
-    ) {
-      errors.push(
-        "llm.subagents.policyLearning.ucbExplorationScale must be a non-negative number",
-      );
-    }
-  }
-  if (policyLearningValue.arms === undefined) return;
-  if (!Array.isArray(policyLearningValue.arms)) {
-    errors.push("llm.subagents.policyLearning.arms must be an array");
-    return;
-  }
-
-  for (let i = 0; i < policyLearningValue.arms.length; i++) {
-    const arm = policyLearningValue.arms[i];
-    if (!isRecord(arm)) {
-      errors.push(`llm.subagents.policyLearning.arms[${i}] must be an object`);
-      continue;
-    }
-    if (typeof arm.id !== "string" || arm.id.trim().length === 0) {
-      errors.push(
-        `llm.subagents.policyLearning.arms[${i}].id must be a non-empty string`,
-      );
-    }
-    if (
-      arm.thresholdOffset !== undefined &&
-      (
-        typeof arm.thresholdOffset !== "number" ||
-        !Number.isFinite(arm.thresholdOffset) ||
-        arm.thresholdOffset < -1 ||
-        arm.thresholdOffset > 1
-      )
-    ) {
-      errors.push(
-        `llm.subagents.policyLearning.arms[${i}].thresholdOffset must be a number between -1 and 1`,
-      );
-    }
-    if (arm.description !== undefined && typeof arm.description !== "string") {
-      errors.push(
-        `llm.subagents.policyLearning.arms[${i}].description must be a string`,
-      );
-    }
-  }
-}
-
 function validateLlmSubagentsSection(
   subagentsValue: unknown,
   errors: string[],
@@ -2598,11 +2503,6 @@ function validateLlmSubagentsSection(
       errors,
     );
   }
-
-  validateLlmSubagentPolicyLearningSection(
-    subagentsValue.policyLearning,
-    errors,
-  );
 
   if (
     subagentsValue.maxFanoutPerTurn !== undefined &&
