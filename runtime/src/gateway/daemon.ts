@@ -99,7 +99,6 @@ import {
 } from "../llm/chat-executor-tool-utils.js";
 import {
   getProviderNativeAdvertisedToolNames,
-  getProviderNativeToolRoutingDecisions,
 } from "../llm/provider-native-search.js";
 import {
   createLLMProviders as createLLMProvidersStandalone,
@@ -219,7 +218,7 @@ import {
 } from "./channel-wiring.js";
 import { createChannelHostServices } from "../plugins/channel-host-services.js";
 import type { ProactiveCommunicator } from "./proactive.js";
-import { ToolRouter, type ToolRoutingDecision } from "./tool-routing.js";
+import type { ToolRoutingDecision } from "./tool-routing.js";
 import {
   filterLlmToolsByEnvironment,
   type ToolEnvironmentMode,
@@ -995,7 +994,6 @@ export class DaemonManager {
   >();
   private _llmProviderConfigCatalog: LLMProviderConfigCatalogEntry[] = [];
   private _primaryLlmConfig: GatewayLLMConfig | undefined = undefined;
-  private _toolRouter: ToolRouter | null = null;
   private _baseToolHandler: ToolHandler | null = null;
   private _defaultForegroundMaxToolRounds = 10;
   private _desktopManager:
@@ -1667,11 +1665,6 @@ export class DaemonManager {
 
     this._allLlmTools = [...llmTools];
     this._llmTools = filterLlmToolsByEnvironment(llmTools, environment);
-    this._toolRouter = new ToolRouter(
-      this._llmTools,
-      config.llm?.toolRouting,
-      this.logger,
-    );
     this._baseToolHandler = baseToolHandler;
     const providers = await this.createLLMProviders(config, this._llmTools);
     this._llmProviders = providers;
@@ -3386,11 +3379,6 @@ export class DaemonManager {
     pipelineExecutor?: PipelineExecutor,
   ): Promise<void> {
     try {
-      this._toolRouter = new ToolRouter(
-        this._llmTools,
-        newConfig.llm?.toolRouting,
-        this.logger,
-      );
       const contextWindowTokens = await this.resolveLlmContextWindowTokens(
         newConfig.llm,
       );
@@ -3680,7 +3668,6 @@ export class DaemonManager {
     const historySessionId = resolveSessionId(webSessionId);
     sessionMgr.reset(historySessionId);
     this._chatExecutor?.resetSessionTokens(webSessionId);
-    this._toolRouter?.resetSession(webSessionId);
     this._sessionModelInfo.delete(webSessionId);
     await progressTracker?.clear(webSessionId);
     await this._sessionCredentialBroker?.revoke({
@@ -4707,40 +4694,21 @@ export class DaemonManager {
   }
 
   private buildToolRoutingDecision(
-    sessionId: string,
-    messageText: string,
-    history: readonly LLMMessage[],
+    _sessionId: string,
+    _messageText: string,
+    _history: readonly LLMMessage[],
   ): ToolRoutingDecision | undefined {
-    if (!this._toolRouter) return undefined;
-    try {
-      const decision = this._toolRouter.route({
-        sessionId,
-        messageText,
-        history,
-      });
-      return this.maybeAugmentToolRoutingDecisionWithNativeTools(
-        decision,
-        messageText,
-        history,
-      );
-    } catch (error) {
-      this.logger.warn?.(
-        "Tool routing decision failed; falling back to full toolset",
-        {
-          sessionId,
-          error: toErrorMessage(error),
-        },
-      );
-      return undefined;
-    }
+    // Cut 4.2: per-phase routing was planner-era. claude_code uses a
+    // single static tool list per query — every consumer now sees
+    // `undefined` and falls back to the gateway's static allowed tools.
+    return undefined;
   }
 
   private recordToolRoutingOutcome(
-    sessionId: string,
-    summary: ChatToolRoutingSummary | undefined,
+    _sessionId: string,
+    _summary: ChatToolRoutingSummary | undefined,
   ): void {
-    if (!this._toolRouter) return;
-    this._toolRouter.recordOutcome(sessionId, summary);
+    // Cut 4.2: routing cache deleted; nothing to record.
   }
 
   private resolveLifecycleParentSessionId(
@@ -4769,66 +4737,6 @@ export class DaemonManager {
         ...getProviderNativeAdvertisedToolNames(this._primaryLlmConfig),
       ]),
     );
-  }
-
-  private maybeAugmentToolRoutingDecisionWithNativeTools(
-    decision: ToolRoutingDecision,
-    messageText: string,
-    history: readonly LLMMessage[],
-  ): ToolRoutingDecision {
-    const nativeTools = getProviderNativeToolRoutingDecisions({
-      llmConfig: this._primaryLlmConfig,
-      messageText,
-      history,
-    });
-    if (nativeTools.length === 0) return decision;
-
-    const addedRoutedTools = nativeTools
-      .map((tool) => tool.toolName)
-      .filter((toolName) => !decision.routedToolNames.includes(toolName));
-    const addedExpandedTools = nativeTools
-      .map((tool) => tool.toolName)
-      .filter((toolName) => !decision.expandedToolNames.includes(toolName));
-    if (addedRoutedTools.length === 0 && addedExpandedTools.length === 0) {
-      return decision;
-    }
-
-    const routedToolNames = Array.from(
-      new Set([...decision.routedToolNames, ...addedRoutedTools]),
-    );
-    const expandedToolNames = Array.from(
-      new Set([...decision.expandedToolNames, ...addedExpandedTools]),
-    );
-    const routedAdded = nativeTools
-      .filter((tool) => addedRoutedTools.includes(tool.toolName))
-      .reduce((sum, tool) => sum + tool.schemaChars, 0);
-    const expandedAdded = nativeTools
-      .filter((tool) => addedExpandedTools.includes(tool.toolName))
-      .reduce((sum, tool) => sum + tool.schemaChars, 0);
-    const schemaCharsFull =
-      decision.diagnostics.schemaCharsFull +
-      nativeTools.reduce((sum, tool) => sum + tool.schemaChars, 0);
-    const schemaCharsRouted =
-      decision.diagnostics.schemaCharsRouted + routedAdded;
-    const schemaCharsExpanded =
-      decision.diagnostics.schemaCharsExpanded + expandedAdded;
-
-    return {
-      routedToolNames,
-      expandedToolNames,
-      diagnostics: {
-        ...decision.diagnostics,
-        totalToolCount:
-          decision.diagnostics.totalToolCount +
-          nativeTools.length,
-        routedToolCount: routedToolNames.length,
-        expandedToolCount: expandedToolNames.length,
-        schemaCharsFull,
-        schemaCharsRouted,
-        schemaCharsExpanded,
-        schemaCharsSaved: Math.max(0, schemaCharsFull - schemaCharsRouted),
-      },
-    };
   }
 
   private relaySubAgentLifecycleEvent(
@@ -5928,8 +5836,6 @@ export class DaemonManager {
         this._telemetry.destroy();
         this._telemetry = null;
       }
-      this._toolRouter?.clear();
-      this._toolRouter = null;
       await this.destroySubAgentInfrastructure();
       this._subAgentRuntimeConfig = null;
       this.clearDelegationRuntimeServices();
