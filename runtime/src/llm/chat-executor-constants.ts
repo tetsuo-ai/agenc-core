@@ -43,12 +43,6 @@ export const SHELL_BUILTIN_COMMANDS = new Set([
 export const MAX_RESULT_PREVIEW_CHARS = 10_000;
 /** Max chars for error message previews. */
 export const MAX_ERROR_PREVIEW_CHARS = 10_000;
-/** Max chars of user message sent to the evaluator. */
-export const MAX_EVAL_USER_CHARS = 500;
-/** Max chars of response sent to the evaluator. */
-export const MAX_EVAL_RESPONSE_CHARS = 2000;
-/** Cap history depth sent to providers per request. */
-export const MAX_HISTORY_MESSAGES = 100;
 /** Max chars retained per history message. */
 export const MAX_HISTORY_MESSAGE_CHARS = 100_000;
 /** Max chars from a single injected system context block (skills/memory/progress). */
@@ -97,25 +91,6 @@ export const REPETITIVE_LINE_MAX_UNIQUE_RATIO = 0.35;
 export const DEFAULT_MAX_RUNTIME_SYSTEM_HINTS = 4;
 /** Default max planner output budget in tokens. 0 = unlimited. */
 export const DEFAULT_PLANNER_MAX_TOKENS = 0;
-/** Bounded planner retries when a delegated step is rejected for decomposition. */
-export const DEFAULT_PLANNER_MAX_REFINEMENT_ATTEMPTS = 2;
-/** Default retries reserved for planner step-contract cleanup before structural replans. */
-export const DEFAULT_PLANNER_MAX_STEP_CONTRACT_RETRIES = 1;
-/**
- * Additional repair replans allowed after executable planner steps have
- * already changed the workspace but deterministic verification still fails.
- */
-export const DEFAULT_PLANNER_MAX_RUNTIME_REPAIR_RETRIES = 1;
-/** Maximum deterministic steps accepted from a planner pass. 0 = unlimited. */
-export const MAX_PLANNER_STEPS = 0;
-/** Parent history slice candidates retained for per-subagent curation. */
-export const MAX_PLANNER_CONTEXT_HISTORY_CANDIDATES = 12;
-/** Max chars retained for one planner history candidate entry. */
-export const MAX_PLANNER_CONTEXT_HISTORY_CHARS = 600;
-/** Max chars retained for one planner memory candidate entry. */
-export const MAX_PLANNER_CONTEXT_MEMORY_CHARS = 1_200;
-/** Max chars retained for one planner tool-output candidate entry. */
-export const MAX_PLANNER_CONTEXT_TOOL_OUTPUT_CHARS = 1_200;
 /** Default per-request tool-call budget. 0 = unlimited. */
 export const DEFAULT_TOOL_BUDGET_PER_REQUEST = 0;
 /** Default per-request model recall budget (calls after first). 0 = unlimited. */
@@ -134,10 +109,6 @@ export const MAX_ADAPTIVE_TOOL_ROUNDS = 0;
 export const DEFAULT_SUBAGENT_VERIFIER_MIN_CONFIDENCE = 0.65;
 /** Default max rounds for verifier/critique loops (initial round included). */
 export const DEFAULT_SUBAGENT_VERIFIER_MAX_ROUNDS = 2;
-/** Max chars retained from one subagent output in verifier prompts. */
-export const MAX_SUBAGENT_VERIFIER_OUTPUT_CHARS = 3_000;
-/** Max chars retained from one verifier artifact payload. */
-export const MAX_SUBAGENT_VERIFIER_ARTIFACT_CHARS = 2_000;
 /** Break no-progress loops after repeated semantically equivalent rounds. */
 export const MAX_CONSECUTIVE_SEMANTIC_DUPLICATE_ROUNDS = 2;
 /** Default repeated-failure threshold before opening session breaker. */
@@ -185,15 +156,6 @@ export const SAFE_TOOL_RETRY_TOOLS = new Set([
   "system.searchFiles",
   "system.htmlToMarkdown",
 ]);
-
-// ============================================================================
-// Class-level constants (formerly private static readonly on ChatExecutor)
-// ============================================================================
-
-export const DEFAULT_EVAL_RUBRIC =
-  "Rate this AI response 0.0-1.0. Consider accuracy, completeness, clarity, " +
-  "and appropriate use of tool results.\n" +
-  'Return ONLY JSON: {"score": 0.0-1.0, "feedback": "brief explanation"}';
 
 /** Max chars of history text sent to the summarization call. */
 export const MAX_COMPACT_INPUT = 20_000;
