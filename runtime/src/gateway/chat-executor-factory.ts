@@ -174,10 +174,6 @@ export function createChatExecutor(
     toolBudgetPerRequest: llmConfig?.toolBudgetPerRequest,
     maxModelRecallsPerRequest: llmConfig?.maxModelRecallsPerRequest,
     maxFailureBudgetPerRequest: llmConfig?.maxFailureBudgetPerRequest,
-    subagentVerifier: {
-      enabled: subagentConfig.enabled,
-      force: subagentConfig.forceVerifier,
-    },
     toolCallTimeoutMs: llmConfig?.toolCallTimeoutMs,
     requestTimeoutMs: llmConfig?.requestTimeoutMs,
     retryPolicyMatrix: llmConfig?.retryPolicy,

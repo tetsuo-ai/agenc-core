@@ -78,7 +78,6 @@ import type {
   ChatExecutorConfig,
   CooldownEntry,
   FallbackResult,
-  ResolvedSubagentVerifierConfig,
   ExecutionContext,
 } from "./chat-executor-types.js";
 import {
@@ -106,8 +105,6 @@ import {
   DEFAULT_TOOL_CALL_TIMEOUT_MS,
   DEFAULT_REQUEST_TIMEOUT_MS,
   MAX_ADAPTIVE_TOOL_ROUNDS,
-  DEFAULT_SUBAGENT_VERIFIER_MIN_CONFIDENCE,
-  DEFAULT_SUBAGENT_VERIFIER_MAX_ROUNDS,
   DEFAULT_TOOL_FAILURE_BREAKER_THRESHOLD,
   DEFAULT_TOOL_FAILURE_BREAKER_WINDOW_MS,
   DEFAULT_TOOL_FAILURE_BREAKER_COOLDOWN_MS,
@@ -339,7 +336,6 @@ export class ChatExecutor {
   private readonly onCompaction?: (sessionId: string, summary: string) => void;
   private readonly plannerEnabled: boolean;
   private readonly plannerMaxTokens: number;
-  private readonly subagentVerifierConfig: ResolvedSubagentVerifierConfig;
   private readonly toolBudgetPerRequest: number;
   private readonly maxModelRecallsPerRequest: number;
   private readonly maxFailureBudgetPerRequest: number;
@@ -446,9 +442,6 @@ export class ChatExecutor {
       DEFAULT_PLANNER_MAX_TOKENS,
     );
     this.resolveHostWorkspaceRoot = config.resolveHostWorkspaceRoot;
-    this.subagentVerifierConfig = ChatExecutor.resolveSubagentVerifierConfig(
-      config.subagentVerifier,
-    );
     this.toolBudgetPerRequest = normalizeRuntimeLimit(
       config.toolBudgetPerRequest,
       DEFAULT_TOOL_BUDGET_PER_REQUEST,
@@ -522,27 +515,6 @@ export class ChatExecutor {
     return this.queryTracking;
   }
 
-  private static resolveSubagentVerifierConfig(
-    config: ChatExecutorConfig["subagentVerifier"] | undefined,
-  ): ResolvedSubagentVerifierConfig {
-    const maxRoundsRaw = config?.maxRounds ?? DEFAULT_SUBAGENT_VERIFIER_MAX_ROUNDS;
-    return {
-      enabled: config?.enabled === true,
-      force: config?.force === true,
-      minConfidence: Math.min(
-        1,
-        Math.max(
-          0,
-          config?.minConfidence ?? DEFAULT_SUBAGENT_VERIFIER_MIN_CONFIDENCE,
-        ),
-      ),
-      maxRounds: normalizeRuntimeLimit(
-        maxRoundsRaw,
-        DEFAULT_SUBAGENT_VERIFIER_MAX_ROUNDS,
-      ),
-    };
-  }
-
   /**
    * Execute a chat message against the provider chain.
    */
@@ -569,10 +541,6 @@ export class ChatExecutor {
       completionContract: undefined,
       completedRequestMilestoneIds: ctx.completedRequestMilestoneIds,
       validationCode: ctx.validationCode,
-      verifier: {
-        performed: ctx.plannerSummaryState.subagentVerification.performed,
-        overall: ctx.plannerSummaryState.subagentVerification.overall,
-      },
     });
 
     const durationMs = Date.now() - ctx.startTime;
@@ -593,10 +561,6 @@ export class ChatExecutor {
       completedRequestMilestoneIds: ctx.completedRequestMilestoneIds,
       updatedAt: Date.now(),
       contractFingerprint: ctx.turnExecutionContract.contractFingerprint,
-      verifier: {
-        performed: ctx.plannerSummaryState.subagentVerification.performed,
-        overall: ctx.plannerSummaryState.subagentVerification.overall,
-      },
     });
 
     return {
@@ -1299,7 +1263,6 @@ export class ChatExecutor {
         ),
         providerName: this.providers[0]?.name ?? "unknown",
         plannerEnabled: this.plannerEnabled,
-        subagentVerifierEnabled: this.subagentVerifierConfig.enabled,
         defaultRunClass: this.defaultRunClass,
         economicsPolicy: this.economicsPolicy,
       },

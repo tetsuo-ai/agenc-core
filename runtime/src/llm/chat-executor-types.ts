@@ -283,15 +283,6 @@ export interface ChatPlannerSummary {
   readonly estimatedRecallsAvoided: number;
   /** Structured planner parse/validation/policy diagnostics for this turn. */
   readonly diagnostics?: readonly PlannerDiagnostic[];
-  /** Sub-agent verification/critic pass summary. */
-  readonly subagentVerification?: {
-    readonly enabled: boolean;
-    readonly performed: boolean;
-    readonly rounds: number;
-    readonly overall: "pass" | "retry" | "fail" | "skipped";
-    readonly confidence: number;
-    readonly unresolvedItems: readonly string[];
-  };
 }
 
 export interface PlannerDiagnostic {
@@ -472,17 +463,6 @@ export interface ChatExecutorConfig {
   readonly delegationNestingDepth?: number;
   /** Optional deterministic workflow executor used when planner emits executable steps. */
   readonly pipelineExecutor?: DeterministicPipelineExecutor;
-  /** Optional verifier/critic loop for planner-emitted subagent outputs. */
-  readonly subagentVerifier?: {
-    /** Enable verifier flow for planner-emitted subagent steps. */
-    readonly enabled?: boolean;
-    /** Enforce verification whenever subagent steps execute. */
-    readonly force?: boolean;
-    /** Minimum confidence required to accept child outputs. */
-    readonly minConfidence?: number;
-    /** Max verification rounds (initial verification included). */
-    readonly maxRounds?: number;
-  };
   /** Maximum tool calls allowed for a single execute() invocation. */
   readonly toolBudgetPerRequest?: number;
   /** Maximum model recalls (calls after the first) for a single execute() invocation. 0 = unlimited. */
@@ -578,26 +558,9 @@ export interface SubagentVerifierDecision {
   readonly source: "deterministic" | "model" | "merged";
 }
 
-export interface ResolvedSubagentVerifierConfig {
-  readonly enabled: boolean;
-  readonly force: boolean;
-  readonly minConfidence: number;
-  readonly maxRounds: number;
-}
-
-export interface MutablePlannerVerificationSummary {
-  enabled: boolean;
-  performed: boolean;
-  rounds: number;
-  overall: "pass" | "retry" | "fail" | "skipped";
-  confidence: number;
-  unresolvedItems: string[];
-}
-
 export interface MutablePlannerSummaryState {
   deterministicStepsExecuted: number;
   diagnostics: PlannerDiagnostic[];
-  subagentVerification: MutablePlannerVerificationSummary;
   /**
    * Model-emitted plan-artifact intent classification, propagated from
    * `PlannerPlan.planIntent`. Replaces the regex-based pre-call classifier
@@ -743,7 +706,6 @@ export interface BuildExecutionContextConfig {
   readonly requestTimeoutMs: number;
   readonly providerName: string;
   readonly plannerEnabled: boolean;
-  readonly subagentVerifierEnabled: boolean;
   readonly defaultRunClass?: RuntimeRunClass;
   readonly economicsPolicy: RuntimeEconomicsPolicy;
 }
@@ -847,14 +809,6 @@ export function buildDefaultExecutionContext(
       deterministicStepsExecuted: 0,
       estimatedRecallsAvoided: 0,
       diagnostics: [] as PlannerDiagnostic[],
-      subagentVerification: {
-        enabled: config.subagentVerifierEnabled,
-        performed: false,
-        rounds: 0,
-        overall: "skipped" as "pass" | "retry" | "fail" | "skipped",
-        confidence: 1,
-        unresolvedItems: [] as string[],
-      },
     },
     completedRequestMilestoneIds: [],
     economicsState,
