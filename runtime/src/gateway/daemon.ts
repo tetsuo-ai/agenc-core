@@ -99,7 +99,6 @@ import {
   normalizeToolCallArguments,
   parseToolResultObject,
 } from "../llm/chat-executor-tool-utils.js";
-import { resolveToolContractExecutionBlock } from "../llm/chat-executor-contract-guidance.js";
 import {
   getProviderNativeAdvertisedToolNames,
   getProviderNativeToolRoutingDecisions,
@@ -5779,7 +5778,6 @@ export class DaemonManager {
       : DEFAULT_DOOM_FIT_RESOLUTION;
     const doomTurnToolCalls: ToolCallRecord[] = [];
     let doomStopIssued = false;
-    const advertisedToolNames = this.getAdvertisedToolNames();
 
     const sessionToolHandler = this.createWebChatSessionToolHandler({
       sessionId: msg.sessionId,
@@ -5821,16 +5819,10 @@ export class DaemonManager {
           }
           if (blockedResult) return blockedResult;
         }
-        const contractBlock = resolveToolContractExecutionBlock({
-          phase: doomTurnToolCalls.length === 0 ? "initial" : "tool_followup",
-          messageText: msg.content,
-          toolCalls: doomTurnToolCalls,
-          allowedToolNames: advertisedToolNames,
-          candidateToolName: toolName,
-        });
-        if (contractBlock) {
-          return JSON.stringify({ error: contractBlock });
-        }
+        // The contract-guidance pre-call validator was removed in
+        // Phase 2c of the planner rip-out. Doom turns now rely on
+        // the model's own system prompt to select tools in the
+        // right order; the runtime no longer second-guesses.
         return undefined;
       },
       onToolEnd: (toolName, args, result, durationMs) => {

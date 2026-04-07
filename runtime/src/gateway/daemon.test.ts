@@ -136,7 +136,6 @@ import { createSessionToolHandler } from "./tool-handler-factory.js";
 import type { ToolCallRecord } from "../llm/chat-executor.js";
 import type { ChatExecutorResult } from "../llm/chat-executor.js";
 import { didToolCallFail } from "../llm/chat-executor-tool-utils.js";
-import { resolveToolContractExecutionBlock } from "../llm/chat-executor-contract-guidance.js";
 import { PolicyEngine } from "../policy/engine.js";
 import { createPolicyGateHook } from "../policy/policy-gate.js";
 import { SESSION_ALLOWED_ROOTS_ARG } from "../tools/system/filesystem.js";
@@ -2817,86 +2816,6 @@ describe("DaemonManager", () => {
     ]);
   });
 
-  it("blocks desktop bash detours before Doom launch evidence exists in webchat turns", async () => {
-    const dm = new DaemonManager({ configPath: "/tmp/config.json" });
-    const baseToolHandler = vi.fn(async (name: string) => {
-      if (name === "mcp.doom.start_game") {
-        return JSON.stringify({ status: "running" });
-      }
-      return JSON.stringify({ stdout: "ok", stderr: "", exitCode: 0 });
-    });
-    const hooks = {
-      dispatch: vi.fn(async () => ({ completed: true, payload: {} })),
-    } as any;
-    const webChat = {
-      pushToSession: vi.fn(),
-      broadcastEvent: vi.fn(),
-    } as any;
-    const toolCalls: ToolCallRecord[] = [];
-
-    const handler = (dm as any).createWebChatSessionToolHandler({
-      sessionId: "session-doom",
-      webChat,
-      hooks,
-      baseToolHandler,
-      traceLabel: "webchat",
-      traceConfig: { enabled: false },
-      traceId: "trace-doom",
-      beforeHandle: (toolName: string) => {
-        const block = resolveToolContractExecutionBlock({
-          phase: toolCalls.length === 0 ? "initial" : "tool_followup",
-          messageText:
-            "I want you to play doom on defend the center with godmode on so i can watch in a desktop container.",
-          toolCalls,
-          allowedToolNames: ["desktop.bash", "mcp.doom.start_game"],
-          candidateToolName: toolName,
-        });
-        return block ? JSON.stringify({ error: block }) : undefined;
-      },
-      onToolEnd: (
-        toolName: string,
-        args: Record<string, unknown>,
-        result: string,
-        durationMs: number,
-      ) => {
-        toolCalls.push({
-          name: toolName,
-          args,
-          result,
-          isError: didToolCallFail(false, result),
-          durationMs,
-        });
-      },
-    });
-
-    const blocked = await handler("desktop.bash", { command: "which doom" });
-    expect(JSON.parse(blocked)).toEqual({
-      error:
-        "This Doom turn must begin with `mcp.doom.start_game`. " +
-        "Do not launch or inspect Doom with `desktop.bash`, `desktop.process_start`, `system.bash`, or direct binary commands before the MCP launch succeeds. " +
-        "Allowed now: `mcp.doom.start_game`. " +
-        "Do not use `desktop.bash` yet.",
-    });
-    expect(baseToolHandler).not.toHaveBeenCalled();
-
-    await handler("mcp.doom.start_game", {
-      scenario: "defend_the_center",
-      async_player: true,
-    });
-    await handler("desktop.bash", { command: "echo ok" });
-
-    expect(baseToolHandler).toHaveBeenNthCalledWith(
-      1,
-      "mcp.doom.start_game",
-      expect.objectContaining({
-        scenario: "defend_the_center",
-        async_player: true,
-      }),
-    );
-    expect(baseToolHandler).toHaveBeenNthCalledWith(2, "desktop.bash", {
-      command: "echo ok",
-    });
-  });
 
   it("blocks package manifest writes with unsupported workspace protocol before execution", async () => {
     const dm = new DaemonManager({ configPath: "/tmp/config.json" });

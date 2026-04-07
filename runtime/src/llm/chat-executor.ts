@@ -117,9 +117,6 @@ import {
   RECOVERY_HINT_PREFIX,
 } from "./chat-executor-constants.js";
 import {
-  resolveRuntimeWorkflowContext,
-} from "./chat-executor-contract-flow.js";
-import {
   didToolCallFail,
   resolveRetryPolicyMatrix,
 } from "./chat-executor-tool-utils.js";
@@ -352,7 +349,6 @@ export class ChatExecutor {
   private readonly maxRuntimeSystemHints: number;
   private readonly onCompaction?: (sessionId: string, summary: string) => void;
   private readonly plannerEnabled: boolean;
-  private readonly simpleAgentLoop: boolean;
   private readonly plannerMaxTokens: number;
   private readonly delegationDecisionConfig: ResolvedDelegationDecisionConfig;
   private readonly resolveDelegationScoreThreshold?: () => number | undefined;
@@ -416,14 +412,6 @@ export class ChatExecutor {
         : DEFAULT_MAX_RUNTIME_SYSTEM_HINTS;
     this.onCompaction = config.onCompaction;
     this.plannerEnabled = config.plannerEnabled ?? false;
-    // Default false in the constructor for the duration of the
-    // transition: existing test fixtures (273 instantiations across
-    // chat-executor.test.ts) were written against the planner-driven
-    // flow and would all need rewriting otherwise. Production callers
-    // pass `true` explicitly via gateway/chat-executor-factory.ts.
-    // Once the planner subsystem is deleted in Phase 2 of the refactor,
-    // the legacy tests are deleted with it and this default flips.
-    this.simpleAgentLoop = config.simpleAgentLoop ?? false;
     this.plannerMaxTokens = normalizeRuntimeLimit(
       config.plannerMaxTokens,
       DEFAULT_PLANNER_MAX_TOKENS,
@@ -713,25 +701,20 @@ export class ChatExecutor {
     }
   }
 
-  private resolveWorkflowVerificationContext(ctx: ExecutionContext): {
+  private resolveWorkflowVerificationContext(_ctx: ExecutionContext): {
     verificationContract?: WorkflowVerificationContract;
     completionContract?: ImplementationCompletionContract;
   } {
     // Simple agent loop has NO inferred contracts. The model + system
     // prompt + tools are the entire contract. With no
     // verificationContract and no completionContract, every downstream
-    // gate (`enforce*BeforeCompletion`, `synchronizeCompletionState`,
-    // the placeholder/stub detector, the `reconcileTerminal*`
-    // rewriters) becomes a no-op and the executor just delivers the
-    // model's last assistant message verbatim.
-    if (this.simpleAgentLoop) {
-      return {};
-    }
-    const workflowContext = resolveRuntimeWorkflowContext({ ctx });
-    return {
-      verificationContract: workflowContext.verificationContract,
-      completionContract: workflowContext.completionContract,
-    };
+    // gate (`synchronizeCompletionState`, the placeholder/stub
+    // detector, the `reconcileTerminal*` rewriters) becomes a no-op
+    // and the executor just delivers the model's last assistant
+    // message verbatim. The contract-flow machinery that computed
+    // these was deleted along with `chat-executor-contract-flow.ts`
+    // in Phase 2c of the planner rip-out.
+    return {};
   }
 
   private synchronizeCompletionState(ctx: ExecutionContext): void {
