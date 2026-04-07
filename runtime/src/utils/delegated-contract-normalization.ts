@@ -70,7 +70,7 @@ function rewriteDelegatedContractShape<T extends DelegatedContractTextShape>(
   } as T;
 }
 
-export function sanitizeDelegatedRecallText(
+function sanitizeDelegatedRecallText(
   text: string | undefined,
 ): string | undefined {
   if (!text) return undefined;
@@ -101,7 +101,7 @@ export function sanitizeDelegatedRecallInput<T extends DelegatedContractTextShap
   });
 }
 
-export function stripDelegatedJsonPresentationHints(
+function stripDelegatedJsonPresentationHints(
   text: string | undefined,
 ): string | undefined {
   if (!text) return undefined;
@@ -114,7 +114,7 @@ export function stripDelegatedJsonPresentationHints(
   return stripped.length > 0 ? stripped : undefined;
 }
 
-export function prefersLiteralDelegatedOutput(
+function prefersLiteralDelegatedOutput(
   input: DelegatedContractTextShape,
 ): boolean {
   const combined = collectDelegatedContractText(input);

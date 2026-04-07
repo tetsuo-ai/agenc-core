@@ -122,7 +122,7 @@ export function isSubrunRedundancyPattern(
   );
 }
 
-export function assertValidSubrunScope(
+function assertValidSubrunScope(
   scope: SubrunScope,
   context = "subrun scope",
 ): void {
@@ -176,7 +176,7 @@ export function assertValidSubrunScope(
   }
 }
 
-export function assertValidSubrunBudget(
+function assertValidSubrunBudget(
   budget: SubrunBudget,
   context = "subrun budget",
 ): void {
@@ -200,7 +200,7 @@ export function assertValidSubrunBudget(
   }
 }
 
-export function assertValidSubrunArtifactContract(
+function assertValidSubrunArtifactContract(
   contract: SubrunArtifactContract,
   context = "subrun artifact contract",
 ): void {

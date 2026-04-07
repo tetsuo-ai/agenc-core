@@ -188,7 +188,7 @@ export function resolveRetryPolicyMatrix(
   return merged;
 }
 
-export function hasExplicitIdempotencyKey(args: Record<string, unknown>): boolean {
+function hasExplicitIdempotencyKey(args: Record<string, unknown>): boolean {
   const value = args.idempotencyKey;
   return typeof value === "string" && value.trim().length > 0;
 }
@@ -220,19 +220,19 @@ export function sanitizeToolCallsForReplay(
   }));
 }
 
-export function isHighRiskToolCall(
+function isHighRiskToolCall(
   toolName: string,
 ): boolean {
   if (HIGH_RISK_TOOLS.has(toolName)) return true;
   return HIGH_RISK_TOOL_PREFIXES.some((prefix) => toolName.startsWith(prefix));
 }
 
-export function isToolRetrySafe(toolName: string): boolean {
+function isToolRetrySafe(toolName: string): boolean {
   if (SAFE_TOOL_RETRY_TOOLS.has(toolName)) return true;
   return SAFE_TOOL_RETRY_PREFIXES.some((prefix) => toolName.startsWith(prefix));
 }
 
-export function isLikelyToolTransportFailure(
+function isLikelyToolTransportFailure(
   errorText: string,
 ): boolean {
   const lower = errorText.toLowerCase();

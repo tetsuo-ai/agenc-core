@@ -12,7 +12,6 @@ import {
   type WorkflowStepRole,
 } from "../workflow/execution-envelope.js";
 import type { ImplementationCompletionContract } from "../workflow/completion-contract.js";
-import { migrateExecutionEnvelope } from "../workflow/migrations.js";
 import { buildCanonicalDelegatedFilesystemScope } from "../workflow/delegated-filesystem-scope.js";
 import {
   isConcreteExecutableEnvelopeRoot,
@@ -58,7 +57,7 @@ export function sanitizeDelegationContextRequirements(
   return sanitized;
 }
 
-export function extractLegacyDelegatedWorkspaceRoot(
+function extractLegacyDelegatedWorkspaceRoot(
   contextRequirements?: readonly (string | undefined | null)[],
 ): string | undefined {
   return (contextRequirements ?? [])
@@ -97,12 +96,6 @@ function legacyWorkspaceRootNeedsConcreteFallback(path: string): boolean {
     trimmed.startsWith("~") ||
     /^[a-zA-Z]:[\\/]/.test(trimmed)
   );
-}
-
-export function coerceDelegationExecutionContext(
-  value: unknown,
-): DelegationExecutionContext | undefined {
-  return migrateExecutionEnvelope(value).value;
 }
 
 export function buildDelegationExecutionContext(params: {
@@ -224,7 +217,7 @@ export function buildLegacyDelegationExecutionContext(params: {
   });
 }
 
-export function canonicalizeDelegationExecutionContext(
+function canonicalizeDelegationExecutionContext(
   context: DelegationExecutionContext | undefined,
   params: {
     readonly inheritedWorkspaceRoot?: string | null;

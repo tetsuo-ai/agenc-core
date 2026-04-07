@@ -217,7 +217,7 @@ export async function resolveLlmContextWindowTokens(
 // Provider catalog helpers
 // ============================================================================
 
-export function normalizeProviderCatalogModel(
+function normalizeProviderCatalogModel(
   provider: string,
   model: string | undefined,
 ): string | undefined {
@@ -229,7 +229,7 @@ export function normalizeProviderCatalogModel(
   return trimmed.toLowerCase();
 }
 
-export function buildProviderConfigCatalogEntry(
+function buildProviderConfigCatalogEntry(
   config: GatewayLLMConfig,
 ): LLMProviderConfigCatalogEntry {
   return {
@@ -239,7 +239,7 @@ export function buildProviderConfigCatalogEntry(
   };
 }
 
-export function findConfiguredLlmConfigForProvider(
+function findConfiguredLlmConfigForProvider(
   provider: LLMProvider,
   profile: LLMProviderExecutionProfile | undefined,
   providerConfigByInstance: WeakMap<LLMProvider, GatewayLLMConfig>,

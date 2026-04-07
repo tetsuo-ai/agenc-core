@@ -94,7 +94,7 @@ const REMOTE_SESSION_RUN_DOMAIN = createRemoteSessionRunDomain();
 // Managed process policy helpers
 // ---------------------------------------------------------------------------
 
-export function getManagedProcessPolicy(
+function getManagedProcessPolicy(
   run: ActiveBackgroundRun,
 ): BackgroundRunManagedProcessPolicy {
   const mode = normalizeManagedProcessPolicyMode(
@@ -117,7 +117,7 @@ export function getManagedProcessPolicy(
   };
 }
 
-export function getManagedProcessPolicyMode(run: ActiveBackgroundRun): "none" | "until_exit" | "keep_running" | "restart_on_exit" {
+function getManagedProcessPolicyMode(run: ActiveBackgroundRun): "none" | "until_exit" | "keep_running" | "restart_on_exit" {
   return getManagedProcessPolicy(run).mode;
 }
 
@@ -125,7 +125,7 @@ export function getManagedProcessPolicyMode(run: ActiveBackgroundRun): "none" | 
 // Managed process surface tool mapping
 // ---------------------------------------------------------------------------
 
-export function getManagedProcessSurfaceFromToolName(
+function getManagedProcessSurfaceFromToolName(
   toolName: string,
 ): "desktop" | "host" | "host_server" | undefined {
   if (toolName.startsWith("desktop.process_")) {
@@ -146,7 +146,7 @@ export function getManagedProcessSurface(
   return target.surface ?? "desktop";
 }
 
-export function managedProcessStatusToolName(
+function managedProcessStatusToolName(
   surface: "desktop" | "host" | "host_server",
 ): "desktop.process_status" | "system.processStatus" | "system.serverStatus" {
   if (surface === "host") {
@@ -158,7 +158,7 @@ export function managedProcessStatusToolName(
   return "desktop.process_status";
 }
 
-export function managedProcessStartToolName(
+function managedProcessStartToolName(
   surface: "desktop" | "host" | "host_server",
 ): "desktop.process_start" | "system.processStart" | "system.serverStart" {
   if (surface === "host") {
@@ -204,7 +204,7 @@ export function buildManagedProcessStopArgs(
   };
 }
 
-export function buildManagedProcessStatusArgs(
+function buildManagedProcessStatusArgs(
   target: Extract<BackgroundRunObservedTarget, { kind: "managed_process" }>,
 ): Record<string, unknown> {
   return getManagedProcessSurface(target) === "host_server"
@@ -222,7 +222,7 @@ export function buildManagedProcessStatusArgs(
 // Managed process launch spec parsing
 // ---------------------------------------------------------------------------
 
-export function parseManagedProcessLaunchSpec(
+function parseManagedProcessLaunchSpec(
   payload: Record<string, unknown>,
   toolName: string,
 ): BackgroundRunManagedProcessLaunchSpec | undefined {
@@ -270,7 +270,7 @@ export function parseManagedProcessLaunchSpec(
 // Managed process state parsing & observation
 // ---------------------------------------------------------------------------
 
-export function parseManagedProcessState(value: unknown): "running" | "exited" | undefined {
+function parseManagedProcessState(value: unknown): "running" | "exited" | undefined {
   if (value === "running" || value === "exited") {
     return value;
   }
@@ -283,7 +283,7 @@ export function parseManagedProcessState(value: unknown): "running" | "exited" |
   return undefined;
 }
 
-export function findManagedProcessTarget(
+function findManagedProcessTarget(
   observedTargets: readonly BackgroundRunObservedTarget[],
   processId: string | undefined,
   label: string | undefined,
@@ -325,7 +325,7 @@ export function findLatestManagedProcessTarget(
     );
 }
 
-export function extractManagedProcessObservation(
+function extractManagedProcessObservation(
   toolCall: ChatExecutorResult["toolCalls"][number],
   observedAt: number,
   existingTarget?: Extract<BackgroundRunObservedTarget, { kind: "managed_process" }>,
@@ -380,7 +380,7 @@ export function extractManagedProcessObservation(
   };
 }
 
-export function upsertObservedTarget(
+function upsertObservedTarget(
   observedTargets: readonly BackgroundRunObservedTarget[],
   nextTarget: BackgroundRunObservedTarget,
 ): BackgroundRunObservedTarget[] {
@@ -451,7 +451,7 @@ export function observeManagedProcessTargets(
 // Watch registration helpers
 // ---------------------------------------------------------------------------
 
-export function buildManagedProcessWatchRegistration(
+function buildManagedProcessWatchRegistration(
   target: Extract<BackgroundRunObservedTarget, { kind: "managed_process" }>,
 ): BackgroundRunWatchRegistration {
   return {
@@ -466,7 +466,7 @@ export function buildManagedProcessWatchRegistration(
   };
 }
 
-export function upsertWatchRegistration(
+function upsertWatchRegistration(
   registrations: readonly BackgroundRunWatchRegistration[],
   nextRegistration: BackgroundRunWatchRegistration,
 ): BackgroundRunWatchRegistration[] {
@@ -484,7 +484,7 @@ export function upsertWatchRegistration(
 // Process exit signal observation
 // ---------------------------------------------------------------------------
 
-export function parseProcessExitSignalProcessId(signal: { data?: Record<string, unknown> | null }): string | undefined {
+function parseProcessExitSignalProcessId(signal: { data?: Record<string, unknown> | null }): string | undefined {
   const processId =
     signal.data && typeof signal.data === "object"
       ? signal.data.processId
@@ -538,7 +538,7 @@ export function observeManagedProcessExitSignal(run: ActiveBackgroundRun): void 
 // Deterministic completion decisions
 // ---------------------------------------------------------------------------
 
-export function shouldKeepRunningAfterProcessExit(run: ActiveBackgroundRun): boolean {
+function shouldKeepRunningAfterProcessExit(run: ActiveBackgroundRun): boolean {
   const policyMode = getManagedProcessPolicyMode(run);
   if (policyMode === "keep_running" || policyMode === "restart_on_exit") {
     return true;
@@ -561,7 +561,7 @@ export function shouldKeepRunningAfterProcessExit(run: ActiveBackgroundRun): boo
   );
 }
 
-export function allowsHeuristicProcessExitCompletion(run: ActiveBackgroundRun): boolean {
+function allowsHeuristicProcessExitCompletion(run: ActiveBackgroundRun): boolean {
   if (run.contract.requiresUserStop || run.contract.kind === "until_stopped") {
     return false;
   }
@@ -591,7 +591,7 @@ export function buildManagedProcessIdentity(
   return `${target.label ? `"${target.label}" ` : ""}(${target.processId})`;
 }
 
-export function buildManagedProcessCompletionDecision(
+function buildManagedProcessCompletionDecision(
   run: ActiveBackgroundRun,
 ): BackgroundRunDecision | undefined {
   if (run.contract.requiresUserStop || run.contract.kind === "until_stopped") {
@@ -630,7 +630,7 @@ export function buildManagedProcessCompletionDecision(
   };
 }
 
-export function buildHeuristicProcessExitCompletionDecision(
+function buildHeuristicProcessExitCompletionDecision(
   run: ActiveBackgroundRun,
 ): BackgroundRunDecision | undefined {
   const processExitSignal = [...run.pendingSignals]
@@ -660,7 +660,7 @@ export function buildHeuristicProcessExitCompletionDecision(
   };
 }
 
-export function buildDeterministicCompletionDecision(
+function buildDeterministicCompletionDecision(
   run: ActiveBackgroundRun,
 ): BackgroundRunDecision | undefined {
   return (
@@ -673,13 +673,13 @@ export function buildDeterministicCompletionDecision(
 // Native cycle helpers
 // ---------------------------------------------------------------------------
 
-export function hasOnlyNativeManagedProcessSignals(
+function hasOnlyNativeManagedProcessSignals(
   run: ActiveBackgroundRun,
 ): boolean {
   return run.pendingSignals.every((signal) => signal.type === "process_exit");
 }
 
-export function shouldUseManagedProcessNativeCycle(
+function shouldUseManagedProcessNativeCycle(
   run: ActiveBackgroundRun,
 ): boolean {
   if (getManagedProcessPolicyMode(run) === "none") return false;
@@ -690,7 +690,7 @@ export function shouldUseManagedProcessNativeCycle(
   return hasOnlyNativeManagedProcessSignals(run);
 }
 
-export function hasManagedProcessExitWatch(
+function hasManagedProcessExitWatch(
   run: ActiveBackgroundRun,
   target: Extract<BackgroundRunObservedTarget, { kind: "managed_process" }>,
 ): boolean {
@@ -702,7 +702,7 @@ export function hasManagedProcessExitWatch(
   );
 }
 
-export function computeManagedProcessReconcileIntervalMs(
+function computeManagedProcessReconcileIntervalMs(
   run: ActiveBackgroundRun,
   target: Extract<BackgroundRunObservedTarget, { kind: "managed_process" }>,
 ): number {
@@ -719,7 +719,7 @@ export function computeManagedProcessReconcileIntervalMs(
   );
 }
 
-export function buildManagedProcessRetryPolicy(
+function buildManagedProcessRetryPolicy(
   run: ActiveBackgroundRun,
 ): import("./run-domains.js").RunDomainRetryPolicy {
   const target = findLatestManagedProcessTarget(run.observedTargets);
@@ -743,7 +743,7 @@ export function buildManagedProcessRetryPolicy(
 // Bootstrap helpers
 // ---------------------------------------------------------------------------
 
-export function listManagedProcessBootstrapCandidates(
+function listManagedProcessBootstrapCandidates(
   run: ActiveBackgroundRun,
 ): readonly string[] {
   return [
@@ -757,7 +757,7 @@ export function listManagedProcessBootstrapCandidates(
   );
 }
 
-export function extractManagedProcessBootstrapCommandLine(
+function extractManagedProcessBootstrapCommandLine(
   run: ActiveBackgroundRun,
 ): string | undefined {
   const isLikelyBootstrapCommand = (candidate: string): boolean => {
@@ -799,7 +799,7 @@ export function extractManagedProcessBootstrapCommandLine(
   return undefined;
 }
 
-export function extractManagedProcessBootstrapLabel(
+function extractManagedProcessBootstrapLabel(
   run: ActiveBackgroundRun,
 ): string | undefined {
   for (const candidate of listManagedProcessBootstrapCandidates(run)) {
@@ -814,7 +814,7 @@ export function extractManagedProcessBootstrapLabel(
   return undefined;
 }
 
-export function extractBootstrapHealthUrl(run: ActiveBackgroundRun): URL | undefined {
+function extractBootstrapHealthUrl(run: ActiveBackgroundRun): URL | undefined {
   const urlPattern = /https?:\/\/[^\s`"'<>]+/g;
   for (const candidate of listManagedProcessBootstrapCandidates(run)) {
     for (const match of candidate.matchAll(urlPattern)) {
@@ -835,7 +835,7 @@ export function extractBootstrapHealthUrl(run: ActiveBackgroundRun): URL | undef
   return undefined;
 }
 
-export function extractBootstrapPortFromArgs(args: readonly string[]): number | undefined {
+function extractBootstrapPortFromArgs(args: readonly string[]): number | undefined {
   for (const value of args) {
     if (!/^\d{2,5}$/.test(value)) {
       continue;
@@ -848,7 +848,7 @@ export function extractBootstrapPortFromArgs(args: readonly string[]): number | 
   return undefined;
 }
 
-export function wantsManagedServerBootstrap(
+function wantsManagedServerBootstrap(
   run: ActiveBackgroundRun,
   commandSpec: ManagedProcessCommandSpec,
 ): boolean {
@@ -870,7 +870,7 @@ export function wantsManagedServerBootstrap(
   return Boolean(explicitUrl) || commandLooksLikeServer || objectiveLooksLikeServer;
 }
 
-export function buildManagedProcessBootstrapIdempotencyKey(
+function buildManagedProcessBootstrapIdempotencyKey(
   run: ActiveBackgroundRun,
   label: string | undefined,
 ): string {
@@ -880,7 +880,7 @@ export function buildManagedProcessBootstrapIdempotencyKey(
   return `background-run:${run.id}:managed-process`;
 }
 
-export function buildManagedProcessBootstrapStartSpec(
+function buildManagedProcessBootstrapStartSpec(
   run: ActiveBackgroundRun,
   commandSpec: ManagedProcessCommandSpec,
   label: string | undefined,
@@ -928,7 +928,7 @@ export function buildManagedProcessBootstrapStartSpec(
   };
 }
 
-export function shouldUpgradeManagedProcessTargetToServerHandle(
+function shouldUpgradeManagedProcessTargetToServerHandle(
   run: ActiveBackgroundRun,
   target: Extract<BackgroundRunObservedTarget, { kind: "managed_process" }>,
 ): boolean {
@@ -967,7 +967,7 @@ export function listRunningManagedProcessTargets(
   return targets;
 }
 
-export function buildManagedProcessExitDetail(
+function buildManagedProcessExitDetail(
   run: ActiveBackgroundRun,
   target: Extract<BackgroundRunObservedTarget, { kind: "managed_process" }>,
 ): string {
@@ -992,7 +992,7 @@ export function buildManagedProcessExitDetail(
   );
 }
 
-export function markManagedProcessRestart(
+function markManagedProcessRestart(
   run: ActiveBackgroundRun,
   previousTarget: Extract<BackgroundRunObservedTarget, { kind: "managed_process" }>,
   now: number,
@@ -1014,7 +1014,7 @@ export function markManagedProcessRestart(
 // Native cycle execution
 // ---------------------------------------------------------------------------
 
-export async function executeManagedServerUpgradeCycle(params: {
+async function executeManagedServerUpgradeCycle(params: {
   run: ActiveBackgroundRun;
   toolHandler: ToolHandler;
   now: number;
@@ -1155,7 +1155,7 @@ export async function executeManagedServerUpgradeCycle(params: {
   };
 }
 
-export async function executeManagedProcessNativeCycle(params: {
+async function executeManagedProcessNativeCycle(params: {
   run: ActiveBackgroundRun;
   toolHandler: ToolHandler;
   now: number;

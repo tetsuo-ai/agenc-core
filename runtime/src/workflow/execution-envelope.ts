@@ -243,7 +243,7 @@ export function createExecutionEnvelope(params: {
   };
 }
 
-export function canonicalizeWorkflowStepRole(params: {
+function canonicalizeWorkflowStepRole(params: {
   readonly role?: string | null;
   readonly stepKind?: ExecutionStepKind;
   readonly effectClass?: ExecutionEffectClass;
@@ -308,7 +308,7 @@ function dedupeWorkflowArtifactRelations(
   return deduped;
 }
 
-export function canonicalizeWorkflowArtifactRelations(params: {
+function canonicalizeWorkflowArtifactRelations(params: {
   readonly workspaceRoot?: string;
   readonly artifactRelations?: readonly {
     readonly relationType?: string | null;
@@ -417,25 +417,4 @@ export function resolveExecutionEnvelopeArtifactRelations(
     verificationMode: envelope.verificationMode,
     role: resolveExecutionEnvelopeRole(envelope),
   });
-}
-
-export function collectWorkflowArtifactRelationPaths(params: {
-  readonly relations?: readonly WorkflowArtifactRelation[];
-  readonly relationTypes?: readonly WorkflowArtifactRelationType[];
-}): readonly string[] {
-  const relationTypeFilter =
-    params.relationTypes && params.relationTypes.length > 0
-      ? new Set(params.relationTypes)
-      : undefined;
-  const artifacts = new Set<string>();
-  for (const relation of params.relations ?? []) {
-    if (
-      relationTypeFilter &&
-      !relationTypeFilter.has(relation.relationType)
-    ) {
-      continue;
-    }
-    artifacts.add(relation.artifactPath);
-  }
-  return [...artifacts];
 }

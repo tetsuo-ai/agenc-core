@@ -7,7 +7,7 @@ export const CONCORDIA_GENERATE_AGENTS_MESSAGE_TYPE =
 const CONCORDIA_GENERATOR_SESSION_PREFIX = "concordia:generator:";
 const CONCORDIA_GENERATOR_SENDER_ID = "concordia-agent-generator";
 
-export function hasConcordiaSimulationTurnContract(
+function hasConcordiaSimulationTurnContract(
   metadata?: Readonly<Record<string, unknown>>,
 ): boolean {
   if (!metadata) return false;
@@ -18,7 +18,7 @@ export function hasConcordiaSimulationTurnContract(
   );
 }
 
-export function hasConcordiaGenerateAgentsContract(
+function hasConcordiaGenerateAgentsContract(
   metadata?: Readonly<Record<string, unknown>>,
 ): boolean {
   if (!metadata) return false;
@@ -29,7 +29,7 @@ export function hasConcordiaGenerateAgentsContract(
   );
 }
 
-export function looksLikeConcordiaGenerateAgentsPrompt(
+function looksLikeConcordiaGenerateAgentsPrompt(
   messageText: string,
 ): boolean {
   return (

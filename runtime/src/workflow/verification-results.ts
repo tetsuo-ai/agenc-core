@@ -60,28 +60,6 @@ export function verificationFail(
   };
 }
 
-export function verificationChannelPass(params: {
-  channel: RuntimeVerificationChannelName;
-  message: string;
-  evidence?: readonly string[];
-}): RuntimeVerificationChannelDecision {
-  return { channel: params.channel, ok: true, message: params.message, evidence: params.evidence };
-}
-
-export function verificationChannelFail(params: {
-  channel: RuntimeVerificationChannelName;
-  message: string;
-  diagnostic?: RuntimeVerificationDiagnostic;
-}): RuntimeVerificationChannelDecision {
-  return { channel: params.channel, ok: false, message: params.message, diagnostic: params.diagnostic };
-}
-
-export function resolveRuntimeVerificationDecision(_params: {
-  readonly channels: readonly RuntimeVerificationChannelDecision[];
-}): RuntimeVerificationDecision {
-  return { ok: true, channels: [] };
-}
-
 export function toDelegationOutputValidationResult(
   _params: Record<string, unknown>,
 ): DelegationOutputValidationResult | undefined {
