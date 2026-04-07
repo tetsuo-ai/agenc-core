@@ -5,7 +5,7 @@ import {
   assessDelegationAdmission,
 } from "../gateway/delegation-admission.js";
 import { normalizeRuntimeLimit } from "./runtime-limit-policy.js";
-import { safeStepStringArray } from "./chat-executor-planner.js";
+import { safeStepStringArray } from "./chat-executor-step-utils.js";
 
 export type DelegationDecisionReason =
   | "delegation_disabled"

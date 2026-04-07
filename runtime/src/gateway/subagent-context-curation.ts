@@ -26,7 +26,7 @@ import {
   isConcreteExecutableEnvelopeRoot,
   normalizeWorkspaceRoot,
 } from "../workflow/path-normalization.js";
-import { safeStepStringArray } from "../llm/chat-executor-planner.js";
+import { safeStepStringArray } from "../llm/chat-executor-step-utils.js";
 import {
   type CuratedSection,
   type DependencyArtifactCandidate,

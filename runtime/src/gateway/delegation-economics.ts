@@ -8,7 +8,7 @@ import {
   type WorkflowArtifactRelation,
 } from "../workflow/execution-envelope.js";
 import { normalizeArtifactPaths } from "../workflow/path-normalization.js";
-import { safeStepStringArray } from "../llm/chat-executor-planner.js";
+import { safeStepStringArray } from "../llm/chat-executor-step-utils.js";
 
 const EXPLICIT_FILE_ARTIFACT_GLOBAL_RE =
   /(?:^|[\s`'"])(?:\/[^\s`'"]*?\.[a-z0-9]{1,10}|\.{1,2}\/[^\s`'"]*?\.[a-z0-9]{1,10}|(?:[a-z0-9_.-]+\/)+[a-z0-9_.-]+\.[a-z0-9]{1,10}|[a-z0-9_.-]+\.[a-z0-9]{1,10})(?=$|[\s`'"])/gi;

@@ -32,7 +32,7 @@ import {
   isConcreteExecutableEnvelopeRoot,
   normalizeWorkspaceRoot,
 } from "../workflow/path-normalization.js";
-import { safeStepStringArray } from "../llm/chat-executor-planner.js";
+import { safeStepStringArray } from "../llm/chat-executor-step-utils.js";
 
 export type DelegatedScopeTrustSignal =
   | "trusted_runtime_envelope_mismatch"

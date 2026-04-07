@@ -19,7 +19,7 @@ import {
   resolveExecutionEnvelopeRole,
 } from "../workflow/execution-envelope.js";
 import { normalizeWorkspaceRoot } from "../workflow/path-normalization.js";
-import { safeStepStringArray } from "../llm/chat-executor-planner.js";
+import { safeStepStringArray } from "../llm/chat-executor-step-utils.js";
 
 const REVIEW_TEXT_RE =
   /\b(?:review|critique|audit|inspect|assess|evaluate|docs?|documentation|security|architecture)\b/i;

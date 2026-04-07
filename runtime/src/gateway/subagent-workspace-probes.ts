@@ -24,7 +24,7 @@ import { normalizeDependencyArtifactPath, sanitizeExecutionPromptText } from "./
 import type {
   PipelinePlannerDeterministicStep as DeterministicStep,
 } from "../workflow/pipeline.js";
-import { safeStepStringArray } from "../llm/chat-executor-planner.js";
+import { safeStepStringArray } from "../llm/chat-executor-step-utils.js";
 
 function isNodeInstallPlannerStep(
   step: { stepType: string; tool?: string; args?: Record<string, unknown> },
