@@ -575,15 +575,26 @@ export class ChatExecutor {
     await this.executeToolCallLoop(ctx);
 
     this.checkRequestTimeout(ctx, "finalization");
-    this.synchronizeCompletionState(ctx);
 
-    const { plannerSummary, durationMs } = this.recordOutcomeAndFinalize(ctx);
+    // Cut 2: derive the final completion state from stop reason + tool
+    // calls. The planner verifier/contract path is gone; the resolver
+    // collapses to defaults when given undefined contracts.
+    ctx.completionState = resolveWorkflowCompletionState({
+      stopReason: ctx.stopReason,
+      toolCalls: ctx.allToolCalls,
+      verificationContract: undefined,
+      completionContract: undefined,
+      completedRequestMilestoneIds: ctx.completedRequestMilestoneIds,
+      validationCode: ctx.validationCode,
+      verifier: {
+        performed: ctx.plannerSummaryState.subagentVerification.performed,
+        overall: ctx.plannerSummaryState.subagentVerification.overall,
+      },
+    });
 
-    // Cut 2: the planner-era reconcile* post-processing chain has been
-    // removed. The flat tool-loop now relies on the model's own response
-    // text without runtime-side narrative reconciliation against expected
-    // workflow shapes. The completionProgress block is preserved for the
-    // result envelope but no longer feeds back into finalContent rewriting.
+    const durationMs = Date.now() - ctx.startTime;
+    const plannerSummary: ChatPlannerSummary = ctx.plannerSummaryState;
+
     ctx.finalContent = sanitizeFinalContent(ctx.finalContent);
     // Cut 4: resolveWorkflowVerificationContext always returned `{}`
     // after the planner subsystem was deleted; the workflow contract
@@ -690,30 +701,6 @@ export class ChatExecutor {
 
   // Cut 4: resolveWorkflowVerificationContext deleted (returned `{}`
   // unconditionally after the planner-era contract flow was removed).
-
-  private synchronizeCompletionState(ctx: ExecutionContext): void {
-    // Cut 4: simplified — no workflow contract is ever derived for the
-    // flat tool loop, so we just pass undefined contracts through to
-    // resolveWorkflowCompletionState which collapses to a default
-    // completion state derived only from stop reason + tool calls.
-    ctx.completionState = resolveWorkflowCompletionState({
-      stopReason: ctx.stopReason,
-      toolCalls: ctx.allToolCalls,
-      verificationContract: undefined,
-      completionContract: undefined,
-      completedRequestMilestoneIds: ctx.completedRequestMilestoneIds,
-      validationCode: ctx.validationCode,
-      verifier: {
-        performed: ctx.plannerSummaryState.subagentVerification.performed,
-        overall: ctx.plannerSummaryState.subagentVerification.overall,
-      },
-    });
-  }
-
-
-  // resolvePlannerFallbackBarrier removed in Cut 2 — the planner subsystem
-  // was deleted in Phase 2 and the barrier always returned undefined after
-  // that, since `plannerImplementationFallbackBlocked` is never set true.
 
   private timeoutDetail(
     stage: string,
@@ -1653,19 +1640,6 @@ export class ChatExecutor {
       }
     }
     return messages.length;
-  }
-
-  private recordOutcomeAndFinalize(ctx: ExecutionContext): {
-    plannerSummary: ChatPlannerSummary;
-    durationMs: number;
-  } {
-    // Cut 2.1: planner-era reward signal, bandit tuner, trajectory sink,
-    // and useful-delegation proxy ceremony deleted. The planner subsystem
-    // was removed in earlier phases — there is no planner outcome to
-    // record and no quality proxy to feed back into a learning loop.
-    const durationMs = Date.now() - ctx.startTime;
-    const plannerSummary: ChatPlannerSummary = ctx.plannerSummaryState;
-    return { plannerSummary, durationMs };
   }
 
   private getSessionCompactionState(sessionId: string): {
