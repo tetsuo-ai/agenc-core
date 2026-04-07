@@ -9,6 +9,7 @@ import {
   buildPlannerVerifierAdmission,
   buildSubagentVerifierStructuredOutputRequest,
   evaluatePlannerDeterministicChecks,
+  mergeSubagentVerifierDecisions,
   parseSubagentVerifierDecision,
 } from "./chat-executor-verifier.js";
 
@@ -555,5 +556,180 @@ describe("structured verifier outputs", () => {
         }),
       ],
     });
+  });
+
+  it("preserves free-text issues so verdict and issues stay consistent", () => {
+    const step = createStep();
+    const { verifierWorkItems } = buildPlannerVerifierAdmission({
+      subagentSteps: [step],
+      deterministicSteps: [],
+    });
+
+    // Model returns verdict=fail with only free-text issues (no typed
+    // PlannerVerifierIssueCode entries). Before the invariant fix the
+    // assessment ended up with verdict=fail and issues=[], which the merge
+    // step then propagated as a contradictory "validation_error: ... checks
+    // passed" message.
+    const decision = parseSubagentVerifierDecision(
+      {
+        overall: "fail",
+        confidence: 0.2,
+        unresolved: [],
+        steps: [
+          {
+            name: step.name,
+            verdict: "fail",
+            confidence: 0.2,
+            retryable: false,
+            issues: ["the agent invented evidence not present in the logs"],
+            summary: "hallucinated evidence",
+          },
+        ],
+      },
+      verifierWorkItems,
+    );
+
+    expect(decision).toBeDefined();
+    expect(decision?.steps[0]?.verdict).toBe("fail");
+    expect(decision?.steps[0]?.issues.length).toBeGreaterThan(0);
+    expect(decision?.steps[0]?.issues).toContain(
+      "the agent invented evidence not present in the logs",
+    );
+  });
+
+  it("coerces a non-pass verdict with empty issues to pass", () => {
+    const step = createStep();
+    const { verifierWorkItems } = buildPlannerVerifierAdmission({
+      subagentSteps: [step],
+      deterministicSteps: [],
+    });
+
+    // A model that escalates verdict to fail but reports no issues at all
+    // is internally inconsistent. The parser must coerce back to pass
+    // rather than emit `validation_error: <step>:checks passed`.
+    const decision = parseSubagentVerifierDecision(
+      {
+        overall: "fail",
+        confidence: 0.3,
+        unresolved: [],
+        steps: [
+          {
+            name: step.name,
+            verdict: "fail",
+            confidence: 0.3,
+            retryable: false,
+            issues: [],
+            summary: "checks passed",
+          },
+        ],
+      },
+      verifierWorkItems,
+    );
+
+    expect(decision?.steps[0]?.verdict).toBe("pass");
+    expect(decision?.steps[0]?.issues).toEqual([]);
+  });
+});
+
+describe("mergeSubagentVerifierDecisions", () => {
+  it("never produces a non-pass merged step with empty issues", () => {
+    const merged = mergeSubagentVerifierDecisions(
+      {
+        overall: "pass",
+        confidence: 1,
+        unresolvedItems: [],
+        steps: [
+          {
+            name: "delegate_logs",
+            verdict: "pass",
+            confidence: 1,
+            retryable: false,
+            issues: [],
+            summary: "deterministic verifier checks passed",
+          },
+        ],
+        source: "deterministic",
+      },
+      {
+        overall: "pass",
+        confidence: 1,
+        unresolvedItems: [],
+        steps: [
+          {
+            name: "delegate_logs",
+            // The model parser should already coerce this to pass before
+            // it ever reaches the merge, but the merge step itself must
+            // also enforce the invariant defensively.
+            verdict: "pass",
+            confidence: 1,
+            retryable: false,
+            issues: [],
+            summary: "merged verifier checks passed",
+          },
+        ],
+        source: "model",
+      },
+    );
+
+    expect(merged.overall).toBe("pass");
+    expect(merged.unresolvedItems).toEqual([]);
+    for (const step of merged.steps) {
+      if (step.verdict !== "pass") {
+        expect(step.issues.length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("combines issues from deterministic and model decisions", () => {
+    const merged = mergeSubagentVerifierDecisions(
+      {
+        overall: "retry",
+        confidence: 0.6,
+        unresolvedItems: ["delegate_logs:weak_evidence_density"],
+        steps: [
+          {
+            name: "delegate_logs",
+            verdict: "retry",
+            confidence: 0.6,
+            retryable: true,
+            issues: ["weak_evidence_density"],
+            summary: "weak_evidence_density",
+          },
+        ],
+        source: "deterministic",
+      },
+      {
+        overall: "fail",
+        confidence: 0.4,
+        unresolvedItems: [],
+        steps: [
+          {
+            name: "delegate_logs",
+            verdict: "fail",
+            confidence: 0.4,
+            retryable: false,
+            issues: ["hallucination_risk_artifact_mismatch"],
+            summary: "hallucination_risk_artifact_mismatch",
+          },
+        ],
+        source: "model",
+      },
+    );
+
+    expect(merged.overall).toBe("fail");
+    const mergedStep = merged.steps[0];
+    expect(mergedStep?.verdict).toBe("fail");
+    expect(mergedStep?.issues).toEqual(
+      expect.arrayContaining([
+        "weak_evidence_density",
+        "hallucination_risk_artifact_mismatch",
+      ]),
+    );
+    expect(mergedStep?.summary).not.toContain("checks passed");
+    // Every unresolved item must reference real diagnostics, never the
+    // contradictory "checks passed" sentinel from the old merge bug.
+    for (const item of merged.unresolvedItems) {
+      expect(item).not.toContain("checks passed");
+    }
   });
 });

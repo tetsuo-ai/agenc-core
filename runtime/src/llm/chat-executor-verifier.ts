@@ -308,6 +308,14 @@ export function evaluatePlannerDeterministicChecks(
           const hybridIssues = collectHybridVerifierIssues(hybridDecision);
           if (hybridIssues.length > 0) {
             issues.push(...hybridIssues);
+          } else {
+            // Invariant: a non-pass verdict must always carry at least one
+            // diagnostic so downstream summaries / validation_error messages
+            // never contradict the verdict (e.g. verdict=fail + summary
+            // "checks passed"). The hybrid validator should populate
+            // issues, but if the collector returns empty we record a
+            // generic placeholder rather than emit a contradictory state.
+            issues.push("hybrid_verification_failed");
           }
           verdict = "fail";
           retryable = false;
@@ -442,14 +450,25 @@ export function evaluatePlannerDeterministicChecks(
     }
 
     const confidence = Math.max(0, 1 - Math.min(0.9, issues.length * 0.18));
-    if (verdict !== "pass" || confidence < DEFAULT_SUBAGENT_VERIFIER_MIN_CONFIDENCE) {
+    // Invariant: any non-pass verdict must carry at least one issue so the
+    // summary, unresolvedItems, and downstream merge can never report
+    // "checks passed" while the verdict is retry/fail. If we somehow got a
+    // non-pass verdict with empty issues (defensive — every code path above
+    // is supposed to push an issue when escalating verdict), coerce the
+    // verdict back to pass rather than emit a contradictory assessment.
+    const coercedVerdict: SubagentVerifierStepVerdict =
+      verdict !== "pass" && issues.length === 0 ? "pass" : verdict;
+    if (
+      coercedVerdict !== "pass" ||
+      confidence < DEFAULT_SUBAGENT_VERIFIER_MIN_CONFIDENCE
+    ) {
       unresolvedItems.push(
         `${step.name}:${issues.length > 0 ? issues.join(",") : "low_confidence"}`,
       );
     }
     stepAssessments.push({
       name: step.name,
-      verdict,
+      verdict: coercedVerdict,
       confidence,
       retryable,
       issues,
@@ -793,20 +812,29 @@ export function parseSubagentVerifierDecision(
           .map((issue) => issue.trim())
           .filter((issue) => issue.length > 0)
       : [];
-    // Separate typed issue codes from free-text descriptions.
-    // Both are kept — typed codes drive cleanup-mode routing while
-    // free-text descriptions are preserved for summaries and diagnostics.
-    const issues = rawIssues.filter(isPlannerVerifierIssueCode);
+    // Keep all issue strings in the assessment (typed codes + free-text).
+    // Typed codes drive cleanup-mode routing via isPlannerVerifierIssueCode
+    // checks at the call sites; free-text descriptions stay so the
+    // verdict/issues invariant ("non-pass verdict ⇒ at least one issue")
+    // holds for downstream summaries, merge, and unresolvedItems.
+    const typedIssues = rawIssues.filter(isPlannerVerifierIssueCode);
     const freeTextIssues = rawIssues.filter((i) => !isPlannerVerifierIssueCode(i));
+    const issues = [...typedIssues, ...freeTextIssues];
     const summary = parsePlannerOptionalString(obj.summary) ??
-      (issues.length > 0
-        ? issues.join("; ")
+      (typedIssues.length > 0
+        ? typedIssues.join("; ")
         : freeTextIssues.length > 0
           ? freeTextIssues.join("; ")
           : "verifier assessment");
+    // Invariant: a non-pass verdict must carry at least one issue. If the
+    // model returned verdict=retry/fail with an empty issues list, coerce
+    // back to pass rather than emit a contradictory assessment that the
+    // merge step would propagate as "validation_error: ... checks passed".
+    const coercedVerdict: SubagentVerifierStepVerdict =
+      verdictRaw !== "pass" && issues.length === 0 ? "pass" : verdictRaw;
     assessments.push({
       name,
-      verdict: verdictRaw,
+      verdict: coercedVerdict,
       confidence: stepConfidence,
       retryable,
       issues,
@@ -864,11 +892,22 @@ export function mergeSubagentVerifierDecisions(
       byName.set(step.name, step);
       continue;
     }
-    const mergedVerdict = moreSevereVerifierVerdict(
+    const candidateVerdict = moreSevereVerifierVerdict(
       existing.verdict,
       step.verdict,
     );
     const mergedIssues = [...new Set([...existing.issues, ...step.issues])];
+    // Invariant: a non-pass merged verdict must always carry at least one
+    // issue. Otherwise the resulting summary would say "checks passed"
+    // while the verdict says retry/fail — exactly the contradictory state
+    // that produced "validation_error: ... checks passed" in production.
+    // If both child decisions independently escalated their verdict above
+    // pass without recording any issues, coerce the merged verdict to pass
+    // rather than emit a contradictory assessment.
+    const mergedVerdict: SubagentVerifierStepVerdict =
+      candidateVerdict !== "pass" && mergedIssues.length === 0
+        ? "pass"
+        : candidateVerdict;
     byName.set(step.name, {
       name: step.name,
       verdict: mergedVerdict,
@@ -887,8 +926,13 @@ export function mergeSubagentVerifierDecisions(
     ...new Set([
       ...deterministic.unresolvedItems,
       ...model.unresolvedItems,
+      // Only surface a merged step in unresolvedItems when it has a real
+      // diagnostic. After the invariant above, any non-pass merged step is
+      // guaranteed to have a non-empty issues array, but we filter
+      // defensively so a future code change cannot reintroduce
+      // "verdict=fail summary=checks passed" pairs in the unresolved list.
       ...steps
-        .filter((step) => step.verdict !== "pass")
+        .filter((step) => step.verdict !== "pass" && step.issues.length > 0)
         .map((step) => `${step.name}:${step.summary}`),
     ]),
   ];

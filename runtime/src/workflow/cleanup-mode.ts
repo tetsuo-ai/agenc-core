@@ -41,6 +41,7 @@ export const PLANNER_VERIFIER_LITERAL_ISSUE_CODES = [
   "weak_evidence_density",
   "hallucination_risk_artifact_mismatch",
   "missing_tool_result_consistency_signal",
+  "hybrid_verification_failed",
 ] as const;
 
 export type PlannerVerifierLiteralIssueCode =
