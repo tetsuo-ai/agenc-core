@@ -31,17 +31,11 @@ const DEFAULT_POLICY: RuntimePolicyConfig = {
   enabled: false,
 };
 
+// Cut 7.1: glob matching is unified through policy/glob.ts.
+import { matchGlob } from "./glob.js";
+
 function globMatch(pattern: string, value: string): boolean {
-  if (pattern === "*") return true;
-  const normalizedPattern = pattern.trim().toLowerCase();
-  const normalizedValue = value.trim().toLowerCase();
-  if (!normalizedPattern.includes("*")) {
-    return normalizedPattern === normalizedValue;
-  }
-  const escaped = normalizedPattern
-    .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*/g, ".*");
-  return new RegExp(`^${escaped}$`, "i").test(normalizedValue);
+  return matchGlob(pattern.trim().toLowerCase(), value.trim().toLowerCase());
 }
 
 function pathMatchesRoot(candidate: string, root: string): boolean {

@@ -41,6 +41,7 @@ import {
 import {
   estimatePromptShape,
 } from "./chat-executor-text.js";
+import { normalizeMessagesForAPI } from "./messages.js";
 import { getProviderRouteKey } from "./model-routing-policy.js";
 import type { RuntimeFaultInjector } from "../eval/fault-injection.js";
 
@@ -126,7 +127,15 @@ export async function callWithFallback(
     })),
     deps.promptBudget,
   );
-  const boundedMessages = budgeted.messages;
+  // Cut 5.8: pass the budgeted history through normalizeMessagesForAPI
+  // before handing it to the provider. This drops boundary/snip system
+  // messages, merges consecutive user messages, drops empty assistant
+  // content (except the last message), and prunes orphan tool results
+  // whose tool_call_id no longer matches a preceding assistant
+  // tool_calls entry.
+  const boundedMessages: LLMMessage[] = [
+    ...normalizeMessagesForAPI(budgeted.messages),
+  ];
   const afterBudget = estimatePromptShape(boundedMessages);
   const budgetDiagnostics = budgeted.diagnostics;
   const hasStatefulSessionId = Boolean(options?.statefulSessionId);

@@ -212,35 +212,16 @@ export interface ApprovalEngineConfig {
 // Utilities
 // ============================================================================
 
+// Cut 7.1: glob matching is unified through policy/glob.ts.
+import { matchGlob } from "../policy/glob.js";
+
 /**
- * Simple glob matcher — supports `*` as a wildcard for any sequence of chars.
+ * Simple glob matcher — delegates to the unified policy/glob matcher.
+ * Re-exported for backwards compatibility with consumers that still
+ * import this name from approvals.ts.
  */
 export function globMatch(pattern: string, value: string): boolean {
-  if (pattern === "*") return true;
-  if (!pattern.includes("*")) return value === pattern;
-
-  const parts = pattern.split("*");
-  let cursor = 0;
-  const [first, ...rest] = parts;
-
-  if (!value.startsWith(first ?? "")) return false;
-  cursor = (first ?? "").length;
-
-  for (let i = 0; i < rest.length; i += 1) {
-    const part = rest[i] ?? "";
-    if (part.length === 0) continue;
-
-    // Last segment must match the end.
-    if (i === rest.length - 1) {
-      return value.slice(cursor).endsWith(part);
-    }
-
-    const next = value.indexOf(part, cursor);
-    if (next === -1) return false;
-    cursor = next + part.length;
-  }
-
-  return true;
+  return matchGlob(pattern, value);
 }
 
 /**

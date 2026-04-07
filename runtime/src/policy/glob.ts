@@ -85,3 +85,45 @@ function matchPlain(pattern: string, candidate: string): boolean {
   }
   return candidate === pattern;
 }
+
+/**
+ * Generic glob match for a single value. Supports the same syntax as
+ * `matchToolPattern` but extends `*` to be a free wildcard that can
+ * appear anywhere in the pattern, for callers that need to match
+ * hosts, channel names, identity IDs, and tool prefixes uniformly.
+ * Empty pattern only matches an empty value.
+ */
+export function matchGlob(pattern: string, value: string): boolean {
+  if (pattern === "" && value === "") return true;
+  if (!pattern) return false;
+  if (pattern === "*") return true;
+  if (pattern.length > 2 && pattern.startsWith("/") && pattern.endsWith("/")) {
+    try {
+      return new RegExp(pattern.slice(1, -1)).test(value);
+    } catch {
+      return false;
+    }
+  }
+  if (pattern.includes("|")) {
+    return pattern
+      .split("|")
+      .map((entry) => entry.trim())
+      .some((entry) => matchGlob(entry, value));
+  }
+  if (!pattern.includes("*")) return value === pattern;
+  // Multi-segment glob: split on `*` and walk segments left-to-right.
+  const parts = pattern.split("*");
+  const first = parts[0] ?? "";
+  const last = parts[parts.length - 1] ?? "";
+  if (!value.startsWith(first)) return false;
+  if (!value.endsWith(last)) return false;
+  let cursor = first.length;
+  for (let i = 1; i < parts.length - 1; i += 1) {
+    const part = parts[i] ?? "";
+    if (part.length === 0) continue;
+    const next = value.indexOf(part, cursor);
+    if (next === -1) return false;
+    cursor = next + part.length;
+  }
+  return cursor <= value.length - last.length || parts.length === 1;
+}
