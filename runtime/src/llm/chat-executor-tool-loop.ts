@@ -80,6 +80,10 @@ import {
   defaultHookExecutor,
 } from "./hooks/index.js";
 import type { CanUseToolFn } from "./can-use-tool.js";
+import {
+  partitionToolCalls,
+  type IsConcurrencySafeFn,
+} from "./tool-orchestration.js";
 
 // ============================================================================
 // Callback interfaces
@@ -152,6 +156,15 @@ export interface ToolLoopConfig {
    * before dispatch.
    */
   readonly canUseTool?: CanUseToolFn;
+  /**
+   * Cut 5.5: concurrency-safe tool predicate. When set, the tool loop
+   * partitions each round's tool calls into consecutive-concurrency-safe
+   * batches and emits a telemetry trace describing the partition shape.
+   * The dispatch itself remains serial (stateful mutation through the
+   * loop callbacks is order-sensitive); this wiring lets callers
+   * inventory which rounds would benefit from parallel dispatch.
+   */
+  readonly isConcurrencySafe?: IsConcurrencySafeFn;
 }
 
 // ============================================================================
@@ -880,6 +893,36 @@ export async function executeToolCallLoop(
       },
       "assistant_runtime",
     );
+
+    // Cut 5.5: emit a partitioning trace showing which subset of this
+    // round's tool calls are concurrency-safe. When callers wire a
+    // real `isConcurrencySafe` predicate, the trace records how many
+    // parallel batches the round would have produced. Dispatch remains
+    // serial because the loop callbacks mutate ctx in order-sensitive
+    // ways.
+    if (config.isConcurrencySafe) {
+      const batches = partitionToolCalls(
+        ctx.response.toolCalls,
+        config.isConcurrencySafe,
+      );
+      callbacks.emitExecutionTrace(ctx, {
+        type: "tool_dispatch_started",
+        phase: "tool_followup",
+        callIndex: ctx.callIndex,
+        payload: {
+          tool: "__round_partition__",
+          args: {},
+          argumentDiagnostics: {
+            batchCount: batches.length,
+            parallelBatchCount: batches.filter((batch) => batch.isConcurrencySafe)
+              .length,
+            concurrencySafeToolNames: batches
+              .filter((batch) => batch.isConcurrencySafe)
+              .flatMap((batch) => batch.toolCalls.map((call) => call.name)),
+          },
+        },
+      });
+    }
 
     let abortRound = false;
     for (const toolCall of ctx.response.toolCalls) {

@@ -442,6 +442,13 @@ export interface ChatExecutorConfig {
    */
   readonly canUseTool?: import("./can-use-tool.js").CanUseToolFn;
   /**
+   * Cut 5.5: optional concurrency-safety predicate. When provided,
+   * the tool loop emits a per-round partition trace identifying which
+   * batches could have been dispatched in parallel. Dispatch itself
+   * remains serial.
+   */
+  readonly isConcurrencySafe?: import("./tool-orchestration.js").IsConcurrencySafeFn;
+  /**
    * Maximum token budget per session. When cumulative usage meets or exceeds
    * this value, the executor attempts to compact conversation history by
    * summarizing older messages. If compaction fails, falls back to

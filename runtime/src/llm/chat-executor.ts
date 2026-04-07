@@ -50,6 +50,7 @@ import type {
 } from "./delegation-learning.js";
 import type { HookRegistry } from "./hooks/index.js";
 import type { CanUseToolFn } from "./can-use-tool.js";
+import type { IsConcurrencySafeFn } from "./tool-orchestration.js";
 // ---------------------------------------------------------------------------
 // Imports from extracted sibling modules
 // ---------------------------------------------------------------------------
@@ -370,6 +371,14 @@ export class ChatExecutor {
    * unchanged.
    */
   private readonly canUseTool?: CanUseToolFn;
+  /**
+   * Cut 5.5: optional concurrency-safety predicate. When set, the
+   * tool loop emits a per-round partition trace recording which tool
+   * calls could have been dispatched in parallel. Dispatch itself
+   * remains serial; the telemetry lets operators see the parallelism
+   * opportunity before wiring real parallel dispatch.
+   */
+  private readonly isConcurrencySafe?: IsConcurrencySafeFn;
 
   private readonly cooldowns = new Map<string, CooldownEntry>();
   private readonly sessionTokens = new Map<string, number>();
@@ -486,6 +495,7 @@ export class ChatExecutor {
     this.defaultRunClass = config.defaultRunClass;
     this.hookRegistry = config.hookRegistry;
     this.canUseTool = config.canUseTool;
+    this.isConcurrencySafe = config.isConcurrencySafe;
   }
 
   private static resolveSubagentVerifierConfig(
@@ -1679,6 +1689,9 @@ export class ChatExecutor {
       toolFailureBreaker: this.toolFailureBreaker,
       ...(this.hookRegistry ? { hookRegistry: this.hookRegistry } : {}),
       ...(this.canUseTool ? { canUseTool: this.canUseTool } : {}),
+      ...(this.isConcurrencySafe
+        ? { isConcurrencySafe: this.isConcurrencySafe }
+        : {}),
     }, this.buildToolLoopCallbacks());
   }
 
