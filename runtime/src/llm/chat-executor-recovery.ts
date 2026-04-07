@@ -20,7 +20,6 @@ import {
   extractToolFailureText,
   parseToolResultObject,
 } from "./chat-executor-tool-utils.js";
-import {} from "../utils/delegated-scope-trust.js";
 
 const NON_ACTIONABLE_STATEFUL_FALLBACK_REASONS = new Set<LLMStatefulFallbackReason>(["store_disabled"]);
 

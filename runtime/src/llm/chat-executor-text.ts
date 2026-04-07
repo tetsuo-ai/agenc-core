@@ -15,8 +15,6 @@ import type {
   PromptBudgetSection,
 } from "./prompt-budget.js";
 import type { ToolCallRecord, ChatPromptShape } from "./chat-executor-types.js";
-import type {} from "../workflow/completion-state.js";
-import type {} from "../workflow/completion-progress.js";
 import {
   MAX_FINAL_RESPONSE_CHARS,
   REPETITIVE_LINE_MIN_COUNT,
@@ -52,10 +50,9 @@ import {
   assessExecuteWithAgentResult,
   sanitizeDelegatedAssistantEnvironmentSummary,
 } from "../utils/delegated-scope-trust.js";
-import {} from "./chat-executor-recovery.js";
 
 // ============================================================================
-// JSON parsing helpers (used by planner + verifier)
+// JSON parsing helpers
 // ============================================================================
 
 export { parseJsonObjectFromText, tryParseObject };
