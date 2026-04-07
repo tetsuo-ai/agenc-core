@@ -131,8 +131,6 @@ export {
 } from "./delegation-decision.js";
 export type {
   DelegationDecisionConfig,
-  DelegationDecisionReason,
-  DelegationDecision,
   ResolvedDelegationDecisionConfig,
 } from "./delegation-decision.js";
 

@@ -1,5 +1,5 @@
 /**
- * Delegation decision — collapsed stub (Cut 1.2).
+ * Delegation decision config — collapsed stub (Cut 1.2).
  *
  * Replaces the previous 619-LOC `assessDelegationDecision()` machinery
  * (utility scoring, decomposition benefit, coordination overhead,
@@ -7,15 +7,11 @@
  * fanout/depth caps). The planner subsystem that consumed this output
  * has been deleted; live delegation now flows through
  * `gateway/delegation-admission.ts::assessDelegationAdmission` which
- * applies hard-rejection-only gates. The exported types are kept as
- * tiny shapes so chat-executor configuration call sites still parse.
+ * applies hard-rejection-only gates. Only the config shape survives so
+ * the chat-executor constructor can still parse it.
  *
  * @module
  */
-
-export type DelegationDecisionReason =
-  | "delegation_disabled"
-  | "approved";
 
 export type DelegationHardBlockedTaskClass =
   | "wallet_signing"
@@ -23,22 +19,6 @@ export type DelegationHardBlockedTaskClass =
   | "stake_or_rewards"
   | "destructive_host_mutation"
   | "credential_exfiltration";
-
-export type DelegationHardBlockedMatchSource = "capability" | "text";
-
-/**
- * Minimal delegation verdict shape kept for ExecutionContext plumbing.
- * The rich scoring output (utilityScore, decompositionBenefit,
- * coordinationOverhead, latencyCostRisk, safetyRisk, ...) was produced
- * by the deleted assessDelegationDecision pipeline. The runtime now
- * only distinguishes approved vs delegation_disabled outcomes.
- */
-export interface DelegationDecision {
-  readonly shouldDelegate: boolean;
-  readonly reason: DelegationDecisionReason;
-  readonly hardBlockedTaskClass: DelegationHardBlockedTaskClass | null;
-  readonly hardBlockedTaskClassSource: DelegationHardBlockedMatchSource | null;
-}
 
 export interface DelegationDecisionConfig {
   readonly enabled?: boolean;
