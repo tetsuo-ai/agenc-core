@@ -33,25 +33,17 @@ import type {
 import type {
   Pipeline,
   PipelineExecutionOptions,
-  PipelinePlannerContext,
   PipelineResult,
-  PipelineStep,
 } from "../workflow/pipeline.js";
 import type { ArtifactCompactionState } from "../memory/artifact-store.js";
-import type { WorkflowGraphEdge } from "../workflow/types.js";
+import type { ExecutionEnvelope } from "../workflow/execution-envelope.js";
 import type { ImplementationCompletionContract } from "../workflow/completion-contract.js";
-import type {
-  ExecutionEnvelope,
-  WorkflowArtifactRelation,
-  WorkflowStepRole,
-} from "../workflow/execution-envelope.js";
 import type { WorkflowCompletionState } from "../workflow/completion-state.js";
 import type { WorkflowProgressSnapshot } from "../workflow/completion-progress.js";
 import type {
   WorkflowVerificationContract,
 } from "../workflow/verification-obligations.js";
 import type { DelegationDecision, DelegationDecisionConfig } from "./delegation-decision.js";
-import type { DelegationExecutionContext } from "../utils/delegation-execution-context.js";
 import type {
   DelegationBudgetSnapshot,
   RuntimeEconomicsPolicy,
@@ -618,161 +610,11 @@ export interface PlannerDecision {
 
 export type PlannerStepType = "deterministic_tool" | "subagent_task" | "synthesis";
 
-export interface PlannerStepBaseIntent {
-  name: string;
-  stepType: PlannerStepType;
-  dependsOn?: readonly string[];
-}
-
-export type WorkflowContractClass =
-  | "artifact_review_and_rewrite"
-  | "implementation_with_verification"
-  | "validation_only"
-  | "read_only_review"
-  | "research_and_synthesis";
-
-export interface WorkflowStepContract {
-  readonly name: string;
-  readonly role: WorkflowStepRole;
-  readonly objective: string;
-  readonly inputContract: string;
-  readonly acceptanceCriteria: readonly string[];
-  readonly requiredToolCapabilities: readonly string[];
-  readonly contextRequirements: readonly string[];
-  readonly executionContext?: ExecutionEnvelope;
-  readonly artifactRelations: readonly WorkflowArtifactRelation[];
-}
-
-export interface WorkflowContract {
-  readonly workflowClass: WorkflowContractClass;
-  readonly steps: readonly WorkflowStepContract[];
-  readonly requiredChildren?: {
-    readonly cardinality?: number;
-    readonly roles?: readonly WorkflowStepRole[];
-    readonly exactNames?: readonly string[];
-  };
-}
-
-export interface PlannerDeterministicToolStepIntent extends PlannerStepBaseIntent {
-  stepType: "deterministic_tool";
-  tool: string;
-  args: Record<string, unknown>;
-  onError?: PipelineStep["onError"];
-  maxRetries?: number;
-}
-
-export interface PlannerSubAgentTaskStepIntent extends PlannerStepBaseIntent {
-  stepType: "subagent_task";
-  objective: string;
-  inputContract: string;
-  acceptanceCriteria: readonly string[];
-  requiredToolCapabilities: readonly string[];
-  contextRequirements: readonly string[];
-  executionContext?: DelegationExecutionContext;
-  workflowStep?: WorkflowStepContract;
-  maxBudgetHint: string;
-  canRunParallel: boolean;
-}
-
-export interface PlannerVerifierWorkItem {
-  readonly name: string;
-  readonly verificationKind: "subagent_output" | "deterministic_implementation";
-  readonly objective: string;
-  readonly inputContract: string;
-  readonly acceptanceCriteria: readonly string[];
-  readonly requiredToolCapabilities: readonly string[];
-  readonly resultStepNames?: readonly string[];
-  readonly verificationContract?: WorkflowVerificationContract;
-  readonly deferExecutableOutcomeValidation?: boolean;
-  /**
-   * Per-step workflow contract carried over from the originating
-   * `PlannerSubAgentTaskStepIntent.workflowStep`. Lets the verifier inspect
-   * the step's executionContext, role, contextRequirements, and
-   * artifactRelations without having to re-resolve them from the source
-   * step. Optional because not every verifier work item is backed by a
-   * subagent step (some are deterministic-implementation work items).
-   */
-  readonly workflowStep?: WorkflowStepContract;
-  /**
-   * Plan-level workflow contract propagated from the parent
-   * `PlannerPlan.workflowContract`. Carries the overall workflow class and
-   * structural shape so role-specific verification paths can decide whether
-   * the work item belongs to an implementation, documentation, or
-   * read-only workflow.
-   */
-  readonly workflowContract?: WorkflowContract;
-}
-
-export type PlannerWorkflowTaskClassification =
-  | "implementation_class"
-  | "docs_research_plan_only"
-  | "invalid";
-
-export interface PlannerWorkflowAdmission {
-  readonly taskClassification: PlannerWorkflowTaskClassification;
-  readonly verificationContract?: WorkflowVerificationContract;
-  readonly completionContract?: ImplementationCompletionContract;
-  readonly verifierWorkItems: readonly PlannerVerifierWorkItem[];
-  readonly requiresMandatoryImplementationVerification: boolean;
-  readonly requiresMandatorySubagentOutputVerification: boolean;
-  readonly invalidReason?: string;
-  /**
-   * Plan-level workflow contract propagated from the parent
-   * `PlannerPlan.workflowContract`. The verifier reads this to decide
-   * whether the admission belongs to an implementation, documentation, or
-   * read-only workflow class.
-   */
-  readonly workflowContract?: WorkflowContract;
-}
-
-export interface PlannerSynthesisStepIntent extends PlannerStepBaseIntent {
-  stepType: "synthesis";
-  objective?: string;
-}
-
-export type PlannerStepIntent =
-  | PlannerDeterministicToolStepIntent
-  | PlannerSubAgentTaskStepIntent
-  | PlannerSynthesisStepIntent;
-
 export type PlannerPlanArtifactIntent =
   | "none"
   | "grounded_plan_generation"
   | "edit_artifact"
   | "implement_from_artifact";
-
-export interface PlannerPlan {
-  reason?: string;
-  requiresSynthesis?: boolean;
-  confidence?: number;
-  /**
-   * The model-emitted classification of how the user wants the named planning
-   * artifact to be treated. Replaces the old regex-based pre-call classifier
-   * (`classifyPlannerPlanArtifactIntent`). The model decides this from full
-   * context (user message, recent conversation, workspace state) instead of a
-   * surface-level regex match against the user's literal words.
-   *
-   * - `edit_artifact`: user wants the named planning file modified in place
-   * - `implement_from_artifact`: user wants the work the plan describes built
-   * - `grounded_plan_generation`: user wants a new plan written from scratch
-   * - `none`: no planning-artifact intent applies (default)
-   */
-  planIntent?: PlannerPlanArtifactIntent;
-  steps: PlannerStepIntent[];
-  edges: readonly WorkflowGraphEdge[];
-  workflowContract?: WorkflowContract;
-}
-
-export interface PlannerParseResult {
-  readonly plan?: PlannerPlan;
-  readonly diagnostics: readonly PlannerDiagnostic[];
-}
-
-export interface PlannerGraphValidationConfig {
-  readonly maxSubagentFanout: number;
-  readonly maxSubagentDepth: number;
-  readonly workspaceRoot?: string;
-}
 
 export type SubagentVerifierStepVerdict = "pass" | "retry" | "fail";
 
@@ -821,58 +663,6 @@ export interface MutablePlannerSummaryState {
    * against the user message.
    */
   plannerPlanIntent?: PlannerPlanArtifactIntent;
-}
-
-export interface PlannerPipelineVerifierLoopInput {
-  pipeline: Pipeline;
-  plannerPlan: PlannerPlan;
-  verifierWorkItems: readonly PlannerVerifierWorkItem[];
-  deterministicSteps: readonly PlannerDeterministicToolStepIntent[];
-  plannerExecutionContext: PipelinePlannerContext;
-  shouldRunPlannerVerifier: boolean;
-  requiresMandatoryImplementationVerification: boolean;
-  requiresMandatorySubagentOutputVerification: boolean;
-  plannerSummaryState: MutablePlannerSummaryState;
-  checkRequestTimeout: (stage: string) => boolean;
-  runPipelineWithGlobalTimeout: (
-    pipeline: Pipeline,
-  ) => Promise<PipelineResult | undefined>;
-  runPlannerVerifierRound: (input: {
-    plannerPlan: PlannerPlan;
-    verifierWorkItems: readonly PlannerVerifierWorkItem[];
-    pipelineResult: PipelineResult;
-    plannerToolCalls: readonly ToolCallRecord[];
-    plannerContext: PipelinePlannerContext;
-    round: number;
-    requiresMandatoryImplementationVerification: boolean;
-  }) => Promise<SubagentVerifierDecision>;
-  onVerifierRoundFinished?: (payload: {
-    executionRound: number;
-    verifierRound: number;
-    overall: SubagentVerifierDecision["overall"];
-    confidence: number;
-    minConfidence: number;
-    belowConfidence: boolean;
-    retryable: boolean;
-    canRetry: boolean;
-    unresolvedItems: readonly string[];
-    pipelineStatus: PipelineResult["status"];
-    completedSteps: number;
-    totalSteps: number;
-  }) => void;
-  onVerifierRetryScheduled?: (payload: {
-    executionRound: number;
-    verifierRound: number;
-    nextExecutionRound: number;
-    overall: SubagentVerifierDecision["overall"];
-    confidence: number;
-    minConfidence: number;
-    unresolvedItems: readonly string[];
-    completedSteps: number;
-    totalSteps: number;
-  }) => void;
-  appendToolRecord: (record: ToolCallRecord) => void;
-  setStopReason: (reason: LLMPipelineStopReason, detail?: string) => void;
 }
 
 /** Full planner summary state — extends the subset used by executePlannerPipelineWithVerifier. */
