@@ -33,9 +33,7 @@ import type {
 } from "./chat-executor-types.js";
 import type {
   RoundStuckState,
-  ToolRoundProgressSummary,
 } from "./chat-executor-tool-utils.js";
-import type { ToolRoundBudgetExtensionResult } from "./chat-executor-budget-extension.js";
 import type { ToolFailureCircuitBreaker } from "./tool-failure-circuit-breaker.js";
 import {
   MAX_TOOL_IMAGE_CHARS_BUDGET,
@@ -57,7 +55,6 @@ import {
   checkToolLoopStuckDetection,
   buildToolLoopRecoveryMessages,
   buildRoutingExpansionMessage,
-  summarizeToolRoundProgress,
   enrichToolResultMetadata,
 } from "./chat-executor-tool-utils.js";
 import {
@@ -135,11 +132,6 @@ export interface ToolLoopCallbacks {
       budgetReason: string;
     },
   ): Promise<LLMResponse | undefined>;
-  evaluateToolRoundBudgetExtension(params: {
-    readonly ctx: ExecutionContext;
-    readonly currentLimit: number;
-    readonly recentRounds: readonly ToolRoundProgressSummary[];
-  }): ToolRoundBudgetExtensionResult;
   serializeRemainingRequestMs(remainingRequestMs: number): number | null;
 }
 
@@ -893,9 +885,6 @@ export async function executeToolCallLoop(
 
   let rounds = 0;
   let effectiveMaxToolRounds = ctx.effectiveMaxToolRounds;
-  const successfulSemanticToolKeys = new Set<string>();
-  const verificationFailureDiagnosticKeys = new Set<string>();
-  const recentRoundProgress: ToolRoundProgressSummary[] = [];
   const stuckState: RoundStuckState = {
     consecutiveAllFailedRounds: 0,
     lastRoundSemanticKey: "",
@@ -932,7 +921,6 @@ export async function executeToolCallLoop(
 
     rounds++;
     const roundToolCallStart = ctx.allToolCalls.length;
-    const roundStartedAt = Date.now();
     const roundRoutedToolNames =
       ctx.transientRoutedToolNames ?? ctx.activeRoutedToolNames;
     loopState.activeRoutedToolSet = buildActiveRoutedToolSet(
@@ -1103,94 +1091,6 @@ export async function executeToolCallLoop(
     });
     if (!nextResponse) break;
     ctx.response = nextResponse;
-
-    const roundProgress = summarizeToolRoundProgress(
-      roundCalls,
-      Date.now() - roundStartedAt,
-      successfulSemanticToolKeys,
-      verificationFailureDiagnosticKeys,
-    );
-    recentRoundProgress.push(roundProgress);
-    if (recentRoundProgress.length > 3) {
-      recentRoundProgress.shift();
-    }
-
-    if (
-      ctx.response.finishReason === "tool_calls" &&
-      isRuntimeLimitReached(rounds, effectiveMaxToolRounds)
-    ) {
-      const extension = callbacks.evaluateToolRoundBudgetExtension({
-        ctx,
-        currentLimit: effectiveMaxToolRounds,
-        recentRounds: recentRoundProgress,
-      });
-      callbacks.emitExecutionTrace(ctx, {
-        type: "tool_round_budget_extension_evaluated",
-        phase: "tool_followup",
-        callIndex: ctx.callIndex + 1,
-        payload: {
-          currentLimit: effectiveMaxToolRounds,
-          decision: extension.decision,
-          recentProgressRate: extension.recentProgressRate,
-          recentTotalNewSuccessfulSemanticKeys:
-            extension.recentTotalNewSuccessfulSemanticKeys,
-          recentTotalNewVerificationFailureDiagnosticKeys:
-            extension.recentTotalNewVerificationFailureDiagnosticKeys,
-          weightedAverageNewSuccessfulSemanticKeys:
-            extension.weightedAverageNewSuccessfulSemanticKeys,
-          latestRoundHadMaterialProgress:
-            extension.latestRoundHadMaterialProgress,
-          latestRoundNewSuccessfulSemanticKeys:
-            extension.latestRoundNewSuccessfulSemanticKeys,
-          latestRoundNewVerificationFailureDiagnosticKeys:
-            extension.latestRoundNewVerificationFailureDiagnosticKeys,
-          extensionReason: extension.extensionReason,
-          repairCycleOpen: extension.repairCycleOpen,
-          repairCycleNeedsMutation:
-            extension.repairCycleNeedsMutation,
-          repairCycleNeedsVerification:
-            extension.repairCycleNeedsVerification,
-          effectiveToolBudget: ctx.effectiveToolBudget,
-          remainingToolBudget: extension.remainingToolBudget,
-          remainingRequestMs: callbacks.serializeRemainingRequestMs(
-            extension.remainingRequestMs,
-          ),
-          recentAverageRoundMs: extension.recentAverageRoundMs,
-          extensionRounds: extension.extensionRounds,
-          newLimit: extension.newLimit,
-        },
-      });
-      if (extension.decision === "extended") {
-        const previousLimit = effectiveMaxToolRounds;
-        effectiveMaxToolRounds = extension.newLimit;
-        callbacks.emitExecutionTrace(ctx, {
-          type: "tool_round_budget_extended",
-          phase: "tool_followup",
-          callIndex: ctx.callIndex + 1,
-          payload: {
-            previousLimit,
-            newLimit: effectiveMaxToolRounds,
-            extensionRounds: extension.extensionRounds,
-            remainingRequestMs: callbacks.serializeRemainingRequestMs(
-              extension.remainingRequestMs,
-            ),
-            recentAverageRoundMs: extension.recentAverageRoundMs,
-            extensionReason: extension.extensionReason,
-            latestRoundNewSuccessfulSemanticKeys:
-              extension.latestRoundNewSuccessfulSemanticKeys,
-            latestRoundNewVerificationFailureDiagnosticKeys:
-              extension.latestRoundNewVerificationFailureDiagnosticKeys,
-            effectiveToolBudget: ctx.effectiveToolBudget,
-            remainingToolBudget: extension.remainingToolBudget,
-            repairCycleOpen: extension.repairCycleOpen,
-            repairCycleNeedsMutation:
-              extension.repairCycleNeedsMutation,
-            repairCycleNeedsVerification:
-              extension.repairCycleNeedsVerification,
-          },
-        });
-      }
-    }
   }
 
   if (ctx.signal?.aborted) {

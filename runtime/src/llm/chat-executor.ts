@@ -237,9 +237,6 @@ function mergeExplicitRequirementToolNames(
   return Array.from(new Set(fallbackToolNames));
 }
 
-import type {
-  ToolRoundProgressSummary,
-} from "./chat-executor-tool-utils.js";
 import {
   extractMessageText,
   truncateText,
@@ -262,9 +259,6 @@ import {
   requestRequiresToolGroundedExecution,
 } from "./chat-executor-planner.js";
 import {
-  evaluateToolRoundBudgetExtension as evaluateToolRoundBudgetExtensionFn,
-} from "./chat-executor-budget-extension.js";
-import {
   callWithFallback as callWithFallbackFn,
 } from "./chat-executor-fallback.js";
 import {
@@ -275,9 +269,6 @@ import {
 import {
   executeToolCallLoop as executeToolCallLoopFn,
 } from "./chat-executor-tool-loop.js";
-export type {
-  ToolRoundBudgetExtensionResult,
-} from "./chat-executor-budget-extension.js";
 // ---------------------------------------------------------------------------
 // Re-exports — preserve backward-compatible import paths for consumers
 // ---------------------------------------------------------------------------
@@ -724,17 +715,6 @@ export class ChatExecutor {
     return Number.isFinite(remainingRequestMs)
       ? Math.max(0, remainingRequestMs)
       : null;
-  }
-
-  private evaluateToolRoundBudgetExtension(params: {
-    readonly ctx: ExecutionContext;
-    readonly currentLimit: number;
-    readonly recentRounds: readonly ToolRoundProgressSummary[];
-  }) {
-    return evaluateToolRoundBudgetExtensionFn(
-      params,
-      (ctx) => this.getRemainingRequestMs(ctx),
-    );
   }
 
   private emitExecutionTrace(
@@ -1576,8 +1556,6 @@ export class ChatExecutor {
         this.maybePushRuntimeInstruction(c, content),
       callModelForPhase: (c: ExecutionContext, input: Parameters<ChatExecutor["callModelForPhase"]>[1]) =>
         this.callModelForPhase(c, input),
-      evaluateToolRoundBudgetExtension: (params: Parameters<ChatExecutor["evaluateToolRoundBudgetExtension"]>[0]) =>
-        this.evaluateToolRoundBudgetExtension(params),
       serializeRemainingRequestMs: (ms: number) =>
         this.serializeRemainingRequestMs(ms),
     };

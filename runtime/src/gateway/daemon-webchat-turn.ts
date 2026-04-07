@@ -86,58 +86,6 @@ export interface ExecuteWebChatConversationTurnParams {
   readonly onSubagentSynthesis?: (result: ChatExecutorResult) => void;
 }
 
-function maybeBroadcastExecutionTraceEventToWebChat(params: {
-  webChat: WebChatChannel;
-  sessionId: string;
-  traceId: string;
-  event: ChatExecutionTraceEvent;
-}): void {
-  const { webChat, sessionId, traceId, event } = params;
-  const basePayload: Record<string, unknown> = {
-    sessionId,
-    traceId,
-    ...(typeof event.phase === "string" ? { phase: event.phase } : {}),
-    ...(Number.isFinite(Number(event.callIndex))
-      ? { callIndex: Number(event.callIndex) }
-      : {}),
-    ...event.payload,
-  };
-
-  switch (event.type) {
-    case "planner_path_finished":
-    case "planner_pipeline_finished":
-    case "planner_synthesis_fallback_applied":
-    case "planner_pipeline_started":
-    case "planner_plan_parsed":
-    case "planner_refinement_requested":
-    case "planner_step_state_changed":
-    case "planner_verifier_retry_scheduled":
-    case "planner_verifier_round_finished":
-      webChat.broadcastEvent(event.type, basePayload);
-      return;
-    case "tool_dispatch_started":
-      if (
-        event.phase === "planner" &&
-        typeof event.payload.stepName === "string" &&
-        event.payload.stepName.trim()
-      ) {
-        webChat.broadcastEvent("planner_step_started", basePayload);
-      }
-      return;
-    case "tool_dispatch_finished":
-      if (
-        event.phase === "planner" &&
-        typeof event.payload.stepName === "string" &&
-        event.payload.stepName.trim()
-      ) {
-        webChat.broadcastEvent("planner_step_finished", basePayload);
-      }
-      return;
-    default:
-      return;
-  }
-}
-
 async function resolveWebChatTurnWorkspaceRoot(params: {
   readonly webChat: WebChatChannel;
   readonly sessionId: string;
@@ -347,12 +295,6 @@ export async function executeWebChatConversationTurn(
               event,
             });
           }
-          maybeBroadcastExecutionTraceEventToWebChat({
-            webChat,
-            sessionId: msg.sessionId,
-            traceId: turnTraceId,
-            event,
-          });
         },
       },
     });

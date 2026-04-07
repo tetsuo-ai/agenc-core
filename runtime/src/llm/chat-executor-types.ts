@@ -123,26 +123,12 @@ export interface ToolCallRecord {
 }
 
 export type ChatExecutionTraceEventType =
-  | "completion_gate_checked"
-  | "contract_guidance_resolved"
   | "context_injected"
   | "model_call_prepared"
-  | "planner_path_finished"
-  | "planner_pipeline_finished"
-  | "planner_synthesis_fallback_applied"
-  | "planner_pipeline_started"
-  | "planner_plan_parsed"
-  | "planner_refinement_requested"
-  | "planner_step_state_changed"
-  | "planner_verifier_retry_scheduled"
-  | "planner_verifier_round_finished"
   | "recovery_hints_injected"
   | "route_expanded"
   | "tool_arguments_invalid"
   | "tool_loop_stuck_detected"
-  | "tool_round_budget_finalization_finished"
-  | "tool_round_budget_extension_evaluated"
-  | "tool_round_budget_extended"
   | "tool_dispatch_finished"
   | "tool_dispatch_started"
   | "tool_rejected";
