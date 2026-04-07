@@ -1128,29 +1128,18 @@ export class ChatExecutor {
       },
       requiredToolEvidence: params.requiredToolEvidence,
     });
-    const explicitArtifactTaskContract = turnExecutionContract.artifactTaskContract;
-    const directArtifactOwner =
-      explicitArtifactTaskContract?.delegationPolicy === "direct_owner";
     const groundedExecutionRequested =
       !isConcordiaTurnMessage &&
       turnExecutionContract.turnClass === "workflow_implementation" &&
       requestRequiresToolGroundedExecution(messageText);
-    let plannerDecision = directArtifactOwner
-      ? {
-          score: 4,
-          shouldPlan: false,
-          reason: "direct_artifact_owner_update",
-          artifactTargets: explicitArtifactTaskContract?.targetArtifacts,
-        }
-      : assessPlannerDecision(
-          this.plannerEnabled,
-          messageText,
-          history,
-          params.message.metadata,
-        );
+    let plannerDecision = assessPlannerDecision(
+      this.plannerEnabled,
+      messageText,
+      history,
+      params.message.metadata,
+    );
     if (
       !isConcordiaTurnMessage &&
-      !directArtifactOwner &&
       explicitDeterministicToolRequirements?.forcePlanner &&
       !plannerDecision.shouldPlan
     ) {
@@ -1162,7 +1151,6 @@ export class ChatExecutor {
     }
     if (
       !isConcordiaTurnMessage &&
-      !directArtifactOwner &&
       !plannerDecision.shouldPlan &&
       explicitSubagentOrchestrationRequirements
     ) {

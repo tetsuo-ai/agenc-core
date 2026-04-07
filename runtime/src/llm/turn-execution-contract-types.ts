@@ -11,8 +11,6 @@
  * @module
  */
 
-import type { ArtifactTaskContract } from "./chat-executor-artifact-task.js";
-
 export type TurnExecutionClass =
   | "dialogue"
   | "artifact_update"
@@ -43,7 +41,6 @@ export interface TurnExecutionContract {
   readonly delegationPolicy: TurnDelegationPolicy;
   readonly verificationContract?: unknown;
   readonly completionContract?: unknown;
-  readonly artifactTaskContract?: ArtifactTaskContract;
   readonly executionEnvelope?: unknown;
   readonly contractFingerprint: string;
   readonly taskLineageId: string;

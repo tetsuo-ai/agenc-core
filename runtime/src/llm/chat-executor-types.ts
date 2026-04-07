@@ -58,7 +58,6 @@ import type {
   DelegationOutputValidationCode,
 } from "../utils/delegation-validation.js";
 import type { HostToolingProfile } from "../gateway/host-tooling.js";
-import type { ArtifactTaskContract } from "./chat-executor-artifact-task.js";
 import type { ActiveTaskContext, TurnExecutionContract } from "./turn-execution-contract-types.js";
 import { RuntimeError, RuntimeErrorCodes } from "../types/errors.js";
 
@@ -210,8 +209,6 @@ export interface ChatExecuteParams {
     readonly verificationContract?: WorkflowVerificationContract;
     /** Optional completion contract for implementation-class tasks. */
     readonly completionContract?: ImplementationCompletionContract;
-    /** Optional direct-owner artifact update contract for explicit artifact tasks. */
-    readonly artifactTaskContract?: ArtifactTaskContract;
     /** Optional execution envelope used to bound top-level tool access for explicit artifact tasks. */
     readonly executionEnvelope?: ExecutionEnvelope;
   };
@@ -631,7 +628,6 @@ export interface ExecutionContext {
     readonly unsafeBenchmarkMode?: boolean;
     readonly verificationContract?: WorkflowVerificationContract;
     readonly completionContract?: ImplementationCompletionContract;
-    readonly artifactTaskContract?: ArtifactTaskContract;
     readonly executionEnvelope?: ExecutionEnvelope;
   };
   readonly trace?: ChatExecuteParams["trace"];
@@ -762,7 +758,6 @@ export function buildDefaultExecutionContext(
         unsafeBenchmarkMode: params.requiredToolEvidence.unsafeBenchmarkMode,
         verificationContract: params.requiredToolEvidence.verificationContract,
         completionContract: params.requiredToolEvidence.completionContract,
-        artifactTaskContract: params.requiredToolEvidence.artifactTaskContract,
         executionEnvelope: params.requiredToolEvidence.executionEnvelope,
       }
       : undefined,
