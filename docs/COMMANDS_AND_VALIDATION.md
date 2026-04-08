@@ -62,6 +62,32 @@ agenc-runtime market disputes list --rpc <url>
 agenc-runtime market reputation summary --rpc <url>
 ```
 
+## Public Wrapper Release Rehearsal
+
+When validating the supported public install surface from `@tetsuo-ai/agenc`,
+release-path docs and manual rehearsal commands should use `agenc`, not the
+compatibility alias `agenc-runtime`. The currently supported wrapper tuple is:
+
+- Linux `x64`
+- Node `>=18.0.0`
+
+Useful first-use commands:
+
+```bash
+agenc onboard
+agenc runtime install
+agenc start
+agenc agent register --rpc <url>
+agenc market tasks create --description "public task" --reward 50000000 --rpc <url>
+agenc market tasks list --rpc <url>
+agenc market tui --rpc <url>
+```
+
+Claim and complete from a second signer-backed agent when you need the full
+creator/worker rehearsal. See
+[architecture/guides/public-wrapper-devnet-marketplace-rehearsal.md](./architecture/guides/public-wrapper-devnet-marketplace-rehearsal.md)
+for the supported boundary and manual prerequisites.
+
 ## Solana Security Sweep
 
 For Codex-assisted Solana work, especially non-ZK marketplace changes, use the

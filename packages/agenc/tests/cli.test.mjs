@@ -103,7 +103,11 @@ test("runAgencWrapper help includes the dashboard entrypoint", async () => {
   );
 
   assert.equal(code, 0);
-  assert.match(stdout.read(), /agenc ui/u);
+  const help = stdout.read();
+  assert.match(help, /agenc ui/u);
+  assert.match(help, /agenc agent register/u);
+  assert.match(help, /agenc market tasks create/u);
+  assert.match(help, /Linux x64/u);
 });
 
 test("runAgencWrapper uses force install semantics for runtime update", async () => {
