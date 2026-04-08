@@ -150,13 +150,6 @@ function countFailedChildToolCalls(
   }, 0);
 }
 
-function hasDelegationFailureSignal(_output: string): boolean {
-  // Disabled — regex-scanning model prose for failure signals produces
-  // too many false positives (e.g. ncurses timeout(), error handling code).
-  // The structured isError flag on tool calls is the reliable signal.
-  return false;
-}
-
 function isDeferredDisclosureStoreTurn(input: ExecuteWithAgentInput): boolean {
   const combined = [
     input.task,
@@ -759,16 +752,13 @@ export async function executeDelegationTool(
       completionProgress: childResult.completionProgress,
       stopReasonDetail: childResult.stopReasonDetail,
     });
-    const unresolvedChildFailure =
-      failedChildToolCalls > 0 &&
-      hasDelegationFailureSignal(childResult.output);
     const normalizedChildOutput = normalizeDelegatedSessionHandleOutput({
       childSessionId,
       input,
       output: childResult.output,
     });
 
-    if (childCompleted && !unresolvedChildFailure) {
+    if (childCompleted) {
       lifecycleEmitter?.emit({
         type: "subagents.completed",
         timestamp: Date.now(),
@@ -807,9 +797,7 @@ export async function executeDelegationTool(
     }
 
     const reason = childCompletionStateFailure ??
-      (unresolvedChildFailure
-        ? `Sub-agent completed with unresolved tool failures (${failedChildToolCalls})`
-        : parseDelegationFailureReason(childResult.output));
+      parseDelegationFailureReason(childResult.output);
     const terminalType =
       finalStatus === "cancelled" ? "subagents.cancelled" : "subagents.failed";
     lifecycleEmitter?.emit({

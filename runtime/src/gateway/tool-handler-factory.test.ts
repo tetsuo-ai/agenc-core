@@ -3111,7 +3111,6 @@ describe("createSessionToolHandler", () => {
       failedToolCalls?: number;
     };
 
-    // hasDelegationFailureSignal is disabled (always returns false) and
     // countFailedChildToolCalls only counts isError: true (the mock has isError: false),
     // so the child reports success with no failed tool calls.
     expect(parsed.success).toBe(true);
