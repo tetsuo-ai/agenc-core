@@ -1,16 +1,3 @@
-/**
- * Model routing policy — collapsed stub (Cut 1.2).
- *
- * Replaces the previous 349-LOC cost-weighted / latency-weighted /
- * pressure-based route selection machinery. The planner subsystem
- * that differentiated planner / verifier / child / executor run
- * classes has been deleted; the runtime now always calls the first
- * available provider, and reroutes are handled downstream by the
- * provider-fallback wrapper in chat-executor-fallback.ts.
- *
- * @module
- */
-
 import type { GatewayLLMConfig } from "../gateway/types.js";
 import type { LLMProvider } from "./types.js";
 import type {
@@ -27,7 +14,7 @@ interface ProviderRouteDescriptor {
   readonly reasoning: boolean;
   readonly costWeight: number;
   readonly latencyWeight: number;
-  readonly parallelToolCallsConfigured: boolean;
+  readonly parallelToolCallsConfigured?: boolean;
   readonly supportsStructuredOutputWithTools: boolean;
 }
 
@@ -53,13 +40,23 @@ interface ModelRouteRequirements {
   readonly routedToolNames?: readonly string[];
 }
 
+interface ProviderRoutingConfigLike {
+  readonly provider?: string;
+  readonly model?: string;
+  readonly parallelToolCalls?: boolean;
+  readonly structuredOutputs?: {
+    readonly enabled?: boolean;
+  };
+  readonly reasoningEffort?: string;
+}
+
 function buildProviderRouteKey(
   providerName: string,
   model?: string,
 ): string {
   const providerPart = providerName.trim().toLowerCase() || "unknown";
   const modelPart = model?.trim().toLowerCase();
-  return modelPart ? `${providerPart}:${modelPart}` : providerPart;
+  return modelPart ? providerPart + ":" + modelPart : providerPart;
 }
 
 export function getProviderRouteKey(
@@ -74,24 +71,86 @@ export function getProviderRouteKey(
   return buildProviderRouteKey(provider.name, providerModel);
 }
 
+function asProviderRoutingConfigLike(
+  value: unknown,
+): ProviderRoutingConfigLike | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  return value as ProviderRoutingConfigLike;
+}
+
+function selectProviderConfig(
+  providerName: string,
+  index: number,
+  llmConfig: GatewayLLMConfig | undefined,
+  providerConfigs: readonly unknown[] | undefined,
+): ProviderRoutingConfigLike | undefined {
+  const direct = asProviderRoutingConfigLike(providerConfigs?.[index]);
+  if (direct?.provider === providerName) {
+    return direct;
+  }
+
+  if (providerConfigs && providerConfigs.length > 0) {
+    for (const candidate of providerConfigs) {
+      const config = asProviderRoutingConfigLike(candidate);
+      if (config?.provider === providerName) {
+        return config;
+      }
+    }
+  }
+
+  if (index === 0 && llmConfig?.provider === providerName) {
+    return llmConfig;
+  }
+
+  return undefined;
+}
+
+function buildProviderDescriptor(
+  provider: LLMProvider,
+  index: number,
+  llmConfig: GatewayLLMConfig | undefined,
+  providerConfigs: readonly unknown[] | undefined,
+): ProviderRouteDescriptor {
+  const config = selectProviderConfig(
+    provider.name,
+    index,
+    llmConfig,
+    providerConfigs,
+  );
+  const model = config?.model;
+  const supportsStructuredOutputWithTools =
+    provider.name === "grok" ||
+    config?.structuredOutputs?.enabled !== false;
+
+  return {
+    index,
+    providerName: provider.name,
+    model,
+    routeKey: buildProviderRouteKey(provider.name, model),
+    provider,
+    reasoning: Boolean(config?.reasoningEffort),
+    costWeight: provider.name === "ollama" ? 0.9 : 1,
+    latencyWeight: provider.name === "ollama" ? 1.1 : 1,
+    parallelToolCallsConfigured: config?.parallelToolCalls,
+    supportsStructuredOutputWithTools,
+  };
+}
+
 export function buildModelRoutingPolicy(params: {
   readonly providers: readonly LLMProvider[];
   readonly economicsPolicy: RuntimeEconomicsPolicy;
   readonly llmConfig?: GatewayLLMConfig;
   readonly providerConfigs?: readonly unknown[];
 }): ModelRoutingPolicy {
-  const descriptors: ProviderRouteDescriptor[] = params.providers.map(
-    (provider, index) => ({
-      index,
-      providerName: provider.name,
-      routeKey: getProviderRouteKey(provider),
+  const descriptors = params.providers.map((provider, index) =>
+    buildProviderDescriptor(
       provider,
-      reasoning: false,
-      costWeight: 1,
-      latencyWeight: 1,
-      parallelToolCallsConfigured: false,
-      supportsStructuredOutputWithTools: true,
-    }),
+      index,
+      params.llmConfig,
+      params.providerConfigs,
+    ),
   );
   return {
     providers: descriptors,
@@ -99,13 +158,78 @@ export function buildModelRoutingPolicy(params: {
   };
 }
 
-export function resolveParallelToolCallPolicy(_params: {
+function findProviderDescriptor(
+  policy: ModelRoutingPolicy,
+  params: {
+    readonly selectedProviderRouteKey?: string;
+    readonly selectedProviderName?: string;
+  },
+): ProviderRouteDescriptor | undefined {
+  return policy.providers.find((descriptor) => {
+    if (
+      params.selectedProviderRouteKey &&
+      descriptor.routeKey === params.selectedProviderRouteKey
+    ) {
+      return true;
+    }
+    return (
+      params.selectedProviderName !== undefined &&
+      descriptor.providerName === params.selectedProviderName
+    );
+  });
+}
+
+export function resolveParallelToolCallPolicy(params: {
   readonly policy: ModelRoutingPolicy;
   readonly selectedProviderName?: string;
   readonly selectedProviderRouteKey?: string;
   readonly phase: string;
 }): boolean | undefined {
-  return undefined;
+  const descriptor = findProviderDescriptor(params.policy, {
+    selectedProviderName: params.selectedProviderName,
+    selectedProviderRouteKey: params.selectedProviderRouteKey,
+  });
+  if (!descriptor) {
+    return undefined;
+  }
+  return descriptor.parallelToolCallsConfigured;
+}
+
+function prioritizeStructuredOutputProviders(
+  descriptors: readonly ProviderRouteDescriptor[],
+): readonly ProviderRouteDescriptor[] {
+  const preferred = descriptors.filter(
+    (descriptor) => descriptor.supportsStructuredOutputWithTools,
+  );
+  if (preferred.length === 0 || preferred.length === descriptors.length) {
+    return descriptors;
+  }
+  const deferred = descriptors.filter(
+    (descriptor) => !descriptor.supportsStructuredOutputWithTools,
+  );
+  return [...preferred, ...deferred];
+}
+
+function prioritizeHealthyProviders(
+  descriptors: readonly ProviderRouteDescriptor[],
+  degradedProviderNames: readonly string[] | undefined,
+): readonly ProviderRouteDescriptor[] {
+  if (!degradedProviderNames || degradedProviderNames.length === 0) {
+    return descriptors;
+  }
+  const degraded = new Set(
+    degradedProviderNames.map((providerName) => providerName.trim()),
+  );
+  const healthy = descriptors.filter(
+    (descriptor) => !degraded.has(descriptor.providerName),
+  );
+  if (healthy.length === 0 || healthy.length === descriptors.length) {
+    return descriptors;
+  }
+  const cooledDown = descriptors.filter((descriptor) =>
+    degraded.has(descriptor.providerName),
+  );
+  return [...healthy, ...cooledDown];
 }
 
 export function resolveModelRoute(params: {
@@ -116,22 +240,67 @@ export function resolveModelRoute(params: {
   readonly requirements?: ModelRouteRequirements;
   readonly requiredCapabilities?: readonly string[];
 }): ModelRouteDecision {
-  const providers = params.policy.providers.map((entry) => entry.provider);
-  const first = params.policy.providers[0];
+  const baseline = params.policy.providers;
+  let ordered = baseline;
+  let reason = "default";
+
+  if (params.requirements?.structuredOutputRequired) {
+    const prioritized = prioritizeStructuredOutputProviders(ordered);
+    if (prioritized[0]?.routeKey !== ordered[0]?.routeKey) {
+      ordered = prioritized;
+      reason = "structured_output_capability";
+    }
+  }
+
+  const healthyFirst = prioritizeHealthyProviders(
+    ordered,
+    params.degradedProviderNames,
+  );
+  if (healthyFirst[0]?.routeKey !== ordered[0]?.routeKey) {
+    ordered = healthyFirst;
+    reason = "degraded_provider";
+  }
+
+  const selected = ordered[0] ?? baseline[0];
+  const rerouted =
+    Boolean(selected) &&
+    Boolean(baseline[0]) &&
+    selected.routeKey !== baseline[0].routeKey;
+
   return {
     runClass: params.runClass,
-    providers,
-    selectedProviderName: first?.providerName ?? "unknown",
-    selectedModel: first?.model,
-    selectedProviderRouteKey: first?.routeKey ?? "unknown",
-    rerouted: false,
+    providers: ordered.map((descriptor) => descriptor.provider),
+    selectedProviderName: selected?.providerName ?? "unknown",
+    selectedModel: selected?.model,
+    selectedProviderRouteKey: selected?.routeKey ?? "unknown",
+    rerouted,
     downgraded: false,
-    reason: "default",
+    reason: rerouted ? reason : "default",
   };
 }
 
+function asFiniteNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
 export function estimateDelegationStepSpendUnits(
-  _input: Record<string, unknown>,
+  input: Record<string, unknown>,
 ): number {
-  return 0;
+  const budgetMinutes = Math.max(1, asFiniteNumber(input.budgetMinutes, 5));
+  const mutable = input.mutable === true;
+  const shellObservationOnly = input.shellObservationOnly === true;
+  const verifierCost = Math.max(0, Math.min(1, asFiniteNumber(input.verifierCost, 0)));
+  const retryCost = Math.max(0, Math.min(1, asFiniteNumber(input.retryCost, 0)));
+
+  let spendUnits = budgetMinutes * 0.06;
+  if (mutable) {
+    spendUnits += 0.35;
+  }
+  if (shellObservationOnly) {
+    spendUnits *= 0.5;
+  }
+  spendUnits += verifierCost * 0.2;
+  spendUnits += retryCost * 0.2;
+
+  return Number(Math.max(0.05, spendUnits).toFixed(4));
 }
