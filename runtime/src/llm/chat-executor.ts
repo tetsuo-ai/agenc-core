@@ -61,7 +61,6 @@ import type {
   DetailedSkillInjectionResult,
   SkillInjector,
   MemoryRetriever,
-  ToolCallRecord,
   ChatExecutionTraceEvent,
   ChatExecuteParams,
   ChatCallUsageRecord,
@@ -108,14 +107,11 @@ import { ToolFailureCircuitBreaker } from "./tool-failure-circuit-breaker.js";
 import { compactHistoryIntoArtifactContext } from "./context-compaction.js";
 import { selectRelevantArtifactRefs } from "./context-pruning.js";
 import {
-  appendToolRecord,
   checkRequestTimeout as checkRequestTimeoutFree,
   emitExecutionTrace as emitExecutionTraceFree,
   getRemainingRequestMs,
   hasModelRecallBudget,
-  maybePushRuntimeInstruction as maybePushRuntimeInstructionFree,
   pushMessage as pushMessageFree,
-  replaceRuntimeRecoveryHintMessages as replaceRuntimeRecoveryHintMessagesFree,
   serializeRemainingRequestMs,
   serializeRequestTimeoutMs,
   setStopReason as setStopReasonFree,
@@ -280,7 +276,9 @@ import {
   resolveTurnExecutionContract,
 } from "./turn-execution-contract.js";
 import {
+  buildToolLoopCallbacks as buildToolLoopCallbacksFree,
   executeToolCallLoop as executeToolCallLoopFn,
+  findInFlightCompactionTailStartIndex as findInFlightCompactionTailStartIndexFree,
 } from "./chat-executor-tool-loop.js";
 // ---------------------------------------------------------------------------
 // Re-exports — preserve backward-compatible import paths for consumers
@@ -1354,7 +1352,7 @@ export class ChatExecutor {
       };
     }
 
-    const replayTailStartIndex = this.findInFlightCompactionTailStartIndex(
+    const replayTailStartIndex = findInFlightCompactionTailStartIndexFree(
       input.callMessages,
       input.callSections,
     );
@@ -1464,21 +1462,6 @@ export class ChatExecutor {
     }
   }
 
-  private findInFlightCompactionTailStartIndex(
-    messages: readonly LLMMessage[],
-    sections?: readonly PromptBudgetSection[],
-  ): number {
-    for (let index = messages.length - 1; index >= 0; index--) {
-      if (
-        sections?.[index] === "user" ||
-        messages[index]?.role === "user"
-      ) {
-        return index + 1;
-      }
-    }
-    return messages.length;
-  }
-
   private getSessionCompactionState(sessionId: string): {
     readonly used: number;
     readonly hardBudgetReached: boolean;
@@ -1496,31 +1479,12 @@ export class ChatExecutor {
   }
 
 
-  private buildToolLoopCallbacks() {
-    const maxRuntimeSystemHints = this.maxRuntimeSystemHints;
-    return {
-      pushMessage: (c: ExecutionContext, msg: LLMMessage, section: PromptBudgetSection, reconciliation?: LLMMessage) =>
-        pushMessageFree(c, msg, section, reconciliation),
-      setStopReason: (c: ExecutionContext, reason: LLMPipelineStopReason, detail?: string) =>
-        setStopReasonFree(c, reason, detail),
-      checkRequestTimeout: (c: ExecutionContext, stage: string) =>
-        checkRequestTimeoutFree(c, stage),
-      appendToolRecord: (c: ExecutionContext, record: ToolCallRecord) =>
-        appendToolRecord(c, record),
-      emitExecutionTrace: (c: ExecutionContext, event: ChatExecutionTraceEvent) =>
-        emitExecutionTraceFree(c, event),
-      replaceRuntimeRecoveryHintMessages: (c: ExecutionContext, hints: readonly { key: string }[]) =>
-        replaceRuntimeRecoveryHintMessagesFree(c, hints),
-      maybePushRuntimeInstruction: (c: ExecutionContext, content: string) =>
-        maybePushRuntimeInstructionFree(c, content, maxRuntimeSystemHints),
-      callModelForPhase: (c: ExecutionContext, input: Parameters<ChatExecutor["callModelForPhase"]>[1]) =>
-        this.callModelForPhase(c, input),
-      serializeRemainingRequestMs: (ms: number) =>
-        serializeRemainingRequestMs(ms),
-    };
-  }
-
   private async executeToolCallLoop(ctx: ExecutionContext): Promise<void> {
+    // Phase F extraction (PR-5): delegates to the free tool-loop
+    // helper. The callback struct wires the pure ctx helpers from
+    // chat-executor-ctx-helpers.ts and threads `callModelForPhase`
+    // through as a dependency — that is still a class method until
+    // PR-7 extracts E5 into `chat-executor-model-orchestration.ts`.
     return executeToolCallLoopFn(ctx, {
       maxRuntimeSystemHints: this.maxRuntimeSystemHints,
       toolCallTimeoutMs: this.toolCallTimeoutMs,
@@ -1541,7 +1505,10 @@ export class ChatExecutor {
       ...(this.consolidationHook
         ? { consolidationHook: this.consolidationHook }
         : {}),
-    }, this.buildToolLoopCallbacks());
+    }, buildToolLoopCallbacksFree({
+      maxRuntimeSystemHints: this.maxRuntimeSystemHints,
+      callModelForPhase: (c, input) => this.callModelForPhase(c, input),
+    }));
   }
 
   /** Get accumulated token usage for a session. */

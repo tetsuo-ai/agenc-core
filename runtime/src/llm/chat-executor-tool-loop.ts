@@ -92,12 +92,22 @@ import {
 } from "./compact/index.js";
 import { applyReactiveCompact } from "./compact/reactive-compact.js";
 import { LLMContextWindowExceededError } from "./errors.js";
+import {
+  appendToolRecord,
+  checkRequestTimeout,
+  emitExecutionTrace,
+  maybePushRuntimeInstruction,
+  pushMessage,
+  replaceRuntimeRecoveryHintMessages,
+  serializeRemainingRequestMs,
+  setStopReason,
+} from "./chat-executor-ctx-helpers.js";
 
 // ============================================================================
 // Callback interfaces
 // ============================================================================
 
-interface ToolLoopCallbacks {
+export interface ToolLoopCallbacks {
   pushMessage(
     ctx: ExecutionContext,
     message: import("./types.js").LLMMessage,
@@ -141,7 +151,7 @@ interface ToolLoopCallbacks {
   serializeRemainingRequestMs(remainingRequestMs: number): number | null;
 }
 
-interface ToolLoopConfig {
+export interface ToolLoopConfig {
   readonly maxRuntimeSystemHints: number;
   readonly toolCallTimeoutMs: number;
   readonly retryPolicyMatrix: LLMRetryPolicyMatrix;
@@ -1407,4 +1417,74 @@ export async function executeToolCallLoop(
   if (!ctx.finalContent && ctx.stopReason !== "completed" && ctx.stopReasonDetail) {
     ctx.finalContent = ctx.stopReasonDetail;
   }
+}
+
+// ============================================================================
+// Callback wiring — Phase F PR-5 extraction
+// ============================================================================
+
+/**
+ * Dependencies for `buildToolLoopCallbacks` that aren't already pure
+ * ctx helpers. Only two values need to come from the owning
+ * `ChatExecutor` instance: the per-request max runtime system hint
+ * cap (a construction-time config) and the `callModelForPhase`
+ * orchestration entrypoint (still class state until PR-7 extracts E5).
+ */
+export interface ToolLoopCallbacksDependencies {
+  readonly maxRuntimeSystemHints: number;
+  readonly callModelForPhase: ToolLoopCallbacks["callModelForPhase"];
+}
+
+/**
+ * Build the callback struct consumed by `executeToolCallLoop`. All
+ * callback entries route to pure free helpers in
+ * `chat-executor-ctx-helpers.ts` except `callModelForPhase`, which is
+ * passed through from the caller so the tool loop does not need any
+ * import on `chat-executor.ts`.
+ *
+ * Phase F extraction (PR-5). Previously
+ * `ChatExecutor.buildToolLoopCallbacks`.
+ */
+export function buildToolLoopCallbacks(
+  deps: ToolLoopCallbacksDependencies,
+): ToolLoopCallbacks {
+  const { maxRuntimeSystemHints, callModelForPhase } = deps;
+  return {
+    pushMessage,
+    setStopReason,
+    checkRequestTimeout,
+    appendToolRecord,
+    emitExecutionTrace,
+    replaceRuntimeRecoveryHintMessages,
+    maybePushRuntimeInstruction: (ctx, content) =>
+      maybePushRuntimeInstruction(ctx, content, maxRuntimeSystemHints),
+    callModelForPhase,
+    serializeRemainingRequestMs,
+  };
+}
+
+/**
+ * Find the index where the "tail" section of a message array begins,
+ * defined as the slice after the last user message. Used by in-flight
+ * compaction (PR-6 extraction target E1) to preserve the trailing
+ * turn unchanged when compacting the conversation history replay.
+ *
+ * Phase F extraction (PR-5). Previously
+ * `ChatExecutor.findInFlightCompactionTailStartIndex`. Extracted here
+ * so PR-6's `chat-executor-in-flight-compaction.ts` can import it
+ * without depending on `chat-executor.ts`.
+ */
+export function findInFlightCompactionTailStartIndex(
+  messages: readonly import("./types.js").LLMMessage[],
+  sections?: readonly PromptBudgetSection[],
+): number {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (
+      sections?.[index] === "user" ||
+      messages[index]?.role === "user"
+    ) {
+      return index + 1;
+    }
+  }
+  return messages.length;
 }
