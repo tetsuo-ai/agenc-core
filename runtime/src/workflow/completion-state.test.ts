@@ -114,6 +114,37 @@ describe("completion-state", () => {
     ).toBe("completed");
   });
 
+  it("keeps behavior-required work in needs_verification when verification is skipped", () => {
+    expect(
+      resolveWorkflowCompletionState({
+        stopReason: "completed",
+        toolCalls: [
+          {
+            name: "system.writeFile",
+            args: { path: "/workspace/src/runner.js" },
+            result: JSON.stringify({ ok: true }),
+            isError: false,
+          },
+        ],
+        verificationContract: {
+          workspaceRoot: "/workspace",
+          targetArtifacts: ["/workspace/src/runner.js"],
+          acceptanceCriteria: ["Behavior verification must pass before completion."],
+          completionContract: {
+            taskClass: "behavior_required",
+            placeholdersAllowed: false,
+            partialCompletionAllowed: false,
+            placeholderTaxonomy: "implementation",
+          },
+        },
+        verifier: {
+          performed: false,
+          overall: "skipped",
+        },
+      }),
+    ).toBe("needs_verification");
+  });
+
   it("keeps request-level multi-phase work partial when local verification passes but planner milestones remain", () => {
     expect(
       resolveWorkflowCompletionState({
