@@ -81,6 +81,7 @@ function buildRuntimeArtifacts(repoRootPath, artifactDir, runtimeVersion, privat
       privateKeyPath,
       "--key-id",
       "local-dev",
+      "--allow-missing-bundled-external-plugins",
       "--skip-build",
     ],
     repoRootPath,
