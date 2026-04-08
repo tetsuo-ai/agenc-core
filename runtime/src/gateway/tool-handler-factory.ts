@@ -149,12 +149,6 @@ const WRITE_FILESYSTEM_TOOL_MODES: Readonly<Record<string, ArtifactAccessMode>> 
   "system.delete": "write",
   "system.move": "write",
 };
-const ROOT_SCOPED_COMMAND_TOOLS = new Set([
-  "system.bash",
-  "desktop.bash",
-  "system.processStart",
-  "system.serverStart",
-]);
 const ABSOLUTE_PATH_ARG_RE = /^(?:~\/|\/)/;
 const HEAD_TAIL_OPTION_VALUE_FLAGS = new Set([
   "-c",
@@ -1120,10 +1114,6 @@ function expandHomeDirectory(rawPath: string): string {
   return rawPath;
 }
 
-function normalizeScopedRootPath(rootPath: string): string {
-  return resolvePath(expandHomeDirectory(rootPath.trim()));
-}
-
 function isWithinRoot(rootPath: string, candidatePath: string): boolean {
   const rel = relative(rootPath, candidatePath);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
@@ -1350,16 +1340,6 @@ function validateDelegatedCanonicalToolPaths(
   }
 
   return undefined;
-}
-
-function buildScopedRootViolationMessage(
-  detail: string,
-  scopedFilesystemRoot: string,
-): string {
-  return (
-    `Delegated workspace root violation: ${detail}. ` +
-    `Keep all filesystem paths under ${scopedFilesystemRoot}.`
-  );
 }
 
 type ShellToken =
@@ -1667,111 +1647,7 @@ function extractDirectCommandPathArgs(
   }
 }
 
-function isAllowedOutOfRootShellSinkPath(candidatePath: string): boolean {
-  return candidatePath === "/dev/null";
-}
-
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function validateScopedFilesystemRoot(
-  toolName: string,
-  args: Record<string, unknown>,
-  scopedFilesystemRoot?: string,
-): string | undefined {
-  const root = scopedFilesystemRoot?.trim();
-  if (!root) return undefined;
-  const normalizedRoot = normalizeScopedRootPath(root);
-
-  const pathArgKeys = TOOL_PATH_ARG_KEYS[toolName];
-  if (pathArgKeys) {
-    for (const key of pathArgKeys) {
-      const value = args[key];
-      if (typeof value !== "string" || value.trim().length === 0) continue;
-      const candidatePath = normalizeScopedPathCandidate(value);
-      if (!isWithinRoot(normalizedRoot, candidatePath)) {
-        return buildScopedRootViolationMessage(
-          `${key} must stay under the delegated workspace root`,
-          normalizedRoot,
-        );
-      }
-    }
-  }
-
-  if (ROOT_SCOPED_COMMAND_TOOLS.has(toolName)) {
-    const cwdValue = typeof args.cwd === "string" ? args.cwd.trim() : undefined;
-    if (cwdValue) {
-      const candidateCwd = normalizeScopedPathCandidate(cwdValue);
-      if (
-        !isWithinRoot(normalizedRoot, candidateCwd) &&
-        !allowsMissingRootBootstrapCwd(
-          toolName,
-          args,
-          normalizedRoot,
-          candidateCwd,
-        )
-      ) {
-        return buildScopedRootViolationMessage(
-          "cwd must stay under the delegated workspace root",
-          normalizedRoot,
-        );
-      }
-    }
-  }
-
-  if (
-    (toolName === "system.bash" || toolName === "desktop.bash") &&
-    Array.isArray(args.args)
-  ) {
-    for (const arg of extractDirectCommandPathArgs(args.command, args.args)) {
-      const candidatePath = normalizeScopedPathCandidate(arg);
-      if (isAllowedOutOfRootShellSinkPath(candidatePath)) {
-        continue;
-      }
-      if (!isWithinRoot(normalizedRoot, candidatePath)) {
-        return buildScopedRootViolationMessage(
-          "command arguments reference a path outside the delegated workspace root",
-          normalizedRoot,
-        );
-      }
-    }
-  }
-
-  if (
-    (toolName === "system.bash" || toolName === "desktop.bash") &&
-    !Array.isArray(args.args) &&
-    typeof args.command === "string"
-  ) {
-    for (const pathValue of extractAbsoluteShellPaths(args.command)) {
-      const candidatePath = normalizeScopedPathCandidate(pathValue);
-      if (isAllowedOutOfRootShellSinkPath(candidatePath)) {
-        continue;
-      }
-      if (!isWithinRoot(normalizedRoot, candidatePath)) {
-        return buildScopedRootViolationMessage(
-          "shell mode command references a path outside the delegated workspace root",
-          normalizedRoot,
-        );
-      }
-    }
-  }
-
-  return undefined;
-}
-
-function allowsMissingRootBootstrapCwd(
-  toolName: string,
-  args: Record<string, unknown>,
-  normalizedRoot: string,
-  candidateCwd: string,
-): boolean {
-  if (pathExists(normalizedRoot)) {
-    return false;
-  }
-  if (isWithinRoot(normalizedRoot, candidateCwd)) {
-    return false;
-  }
-  return referencesAbsolutePathWithinRoot(toolName, args, normalizedRoot);
-}
-
 function normalizeDesktopBashCommand(
   name: string,
   args: Record<string, unknown>,
@@ -2508,9 +2384,6 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
         ),
       });
     }
-    // Scoped root validation removed — subagents and delegated children
-    // need full filesystem access to work in the parent's workspace.
-    void validateScopedFilesystemRoot;
     const delegationContext = delegation?.();
     const subAgentManager = delegationContext?.subAgentManager ?? null;
     const policyEngine = delegationContext?.policyEngine ?? null;

@@ -1283,15 +1283,6 @@ function inferRoundRecoveryHint(
       };
     }
   }
-  const failedManagedStop = roundCalls.some((call) => {
-    if (call.name !== "desktop.process_stop") return false;
-    if (!didToolCallFail(call.isError, call.result)) return false;
-    return extractToolFailureText(call)
-      .toLowerCase()
-      .includes("managed process not found");
-  });
-  if (!failedManagedStop) return undefined;
-
   return undefined;
 }
 
