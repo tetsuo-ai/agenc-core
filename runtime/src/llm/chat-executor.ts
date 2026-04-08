@@ -86,8 +86,6 @@ import {
   type RuntimeRunClass,
 } from "./run-budget.js";
 import {
-  hasRuntimeLimit,
-  isRuntimeLimitReached,
   normalizeRuntimeLimit,
 } from "./runtime-limit-policy.js";
 import {
@@ -119,12 +117,20 @@ import { compactHistoryIntoArtifactContext } from "./context-compaction.js";
 import { selectRelevantArtifactRefs } from "./context-pruning.js";
 import {
   appendToolRecord,
-  buildTimeoutDetail,
+  checkRequestTimeout as checkRequestTimeoutFree,
+  emitExecutionTrace as emitExecutionTraceFree,
   getRemainingRequestMs,
   hasModelRecallBudget,
+  pushMessage as pushMessageFree,
   serializeRemainingRequestMs,
   serializeRequestTimeoutMs,
+  setStopReason as setStopReasonFree,
 } from "./chat-executor-ctx-helpers.js";
+import {
+  buildDegradedProviderNames as buildDegradedProviderNamesFree,
+  getSessionCompactionState as getSessionCompactionStateFree,
+  trackTokenUsage as trackTokenUsageFree,
+} from "./chat-executor-state.js";
 
 function shouldUseSessionStatefulContinuationForPhase(
   phase: ChatCallUsageRecord["phase"],
@@ -251,7 +257,6 @@ import {
   sanitizeFinalContent,
   normalizeHistory,
   normalizeHistoryForStatefulReconciliation,
-  toStatefulReconciliationMessage,
   appendUserMessage,
   buildToolExecutionGroundingMessage,
 } from "./chat-executor-text.js";
@@ -644,11 +649,8 @@ export class ChatExecutor {
     section: PromptBudgetSection,
     reconciliationMessage?: LLMMessage,
   ): void {
-    ctx.messages.push(nextMessage);
-    ctx.reconciliationMessages.push(
-      toStatefulReconciliationMessage(reconciliationMessage ?? nextMessage),
-    );
-    ctx.messageSections.push(section);
+    // Phase F extraction (PR-1): delegates to pure helper.
+    pushMessageFree(ctx, nextMessage, section, reconciliationMessage);
   }
 
   /**
@@ -674,20 +676,13 @@ export class ChatExecutor {
     reason: LLMPipelineStopReason,
     detail?: string,
   ): void {
-    if (ctx.stopReason === "completed") {
-      ctx.stopReason = reason;
-      ctx.stopReasonDetail = detail;
-    }
+    // Phase F extraction (PR-1): delegates to pure helper.
+    setStopReasonFree(ctx, reason, detail);
   }
 
   private checkRequestTimeout(ctx: ExecutionContext, stage: string): boolean {
-    if (getRemainingRequestMs(ctx) > 0) return false;
-    this.setStopReason(
-      ctx,
-      "timeout",
-      buildTimeoutDetail(stage, ctx.effectiveRequestTimeoutMs),
-    );
-    return true;
+    // Phase F extraction (PR-1): delegates to pure helper.
+    return checkRequestTimeoutFree(ctx, stage);
   }
 
   private appendToolRecord(ctx: ExecutionContext, record: ToolCallRecord): void {
@@ -742,14 +737,9 @@ export class ChatExecutor {
   }
 
   private buildDegradedProviderNames(): readonly string[] {
-    const now = Date.now();
-    const names: string[] = [];
-    for (const [providerName, cooldown] of this.cooldowns.entries()) {
-      if (cooldown.availableAt > now) {
-        names.push(providerName);
-      }
-    }
-    return names;
+    // Phase F extraction (PR-1): delegates to pure helper with
+    // the class's cooldown Map threaded as an argument.
+    return buildDegradedProviderNamesFree(this.cooldowns);
   }
 
   private getRemainingRequestMs(ctx: ExecutionContext): number {
@@ -771,7 +761,8 @@ export class ChatExecutor {
     ctx: ExecutionContext,
     event: ChatExecutionTraceEvent,
   ): void {
-    ctx.trace?.onExecutionTraceEvent?.(event);
+    // Phase F extraction (PR-1): delegates to pure helper.
+    emitExecutionTraceFree(ctx, event);
   }
 
   private maybePushRuntimeInstruction(
@@ -1577,14 +1568,15 @@ export class ChatExecutor {
     readonly hardBudgetReached: boolean;
     readonly softThresholdReached: boolean;
   } {
-    const used = this.sessionTokens.get(sessionId) ?? 0;
-    return {
-      used,
-      hardBudgetReached: isRuntimeLimitReached(used, this.sessionTokenBudget),
-      softThresholdReached:
-        hasRuntimeLimit(this.sessionCompactionThreshold) &&
-        isRuntimeLimitReached(used, this.sessionCompactionThreshold),
-    };
+    // Phase F extraction (PR-1): delegates to pure helper with the
+    // class's session token Map + budget thresholds threaded as
+    // arguments.
+    return getSessionCompactionStateFree(
+      this.sessionTokens,
+      sessionId,
+      this.sessionTokenBudget,
+      this.sessionCompactionThreshold,
+    );
   }
 
 
@@ -1880,20 +1872,16 @@ export class ChatExecutor {
   }
 
   private trackTokenUsage(sessionId: string, tokens: number): void {
-    const current = this.sessionTokens.get(sessionId) ?? 0;
-
-    // Delete-then-reinsert to maintain LRU order (most recent at end)
-    this.sessionTokens.delete(sessionId);
-    this.sessionTokens.set(sessionId, current + tokens);
-
-    // Evict least-recently-used entries if over capacity
-    if (this.sessionTokens.size > this.maxTrackedSessions) {
-      const oldest = this.sessionTokens.keys().next().value;
-      if (oldest !== undefined) {
-        this.sessionTokens.delete(oldest);
-        this.toolFailureBreaker.clearSession(oldest);
-      }
-    }
+    // Phase F extraction (PR-1): delegates to pure helper with the
+    // class's session token Map + cap + breaker threaded as
+    // arguments.
+    trackTokenUsageFree(
+      this.sessionTokens,
+      sessionId,
+      tokens,
+      this.maxTrackedSessions,
+      this.toolFailureBreaker,
+    );
   }
 
   private createCallUsageRecord(input: {
