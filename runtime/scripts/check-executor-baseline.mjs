@@ -44,8 +44,14 @@ const repoRoot = resolve(runtimeRoot, "..");
 //                  removed 5 test files — 2 net add because U1-U7
 //                  added 8 new test files — and 27 it() blocks that
 //                  tested code no longer in the tree)
-const MIN_TEST_FILES = 358;
-const MIN_IT_BLOCKS = 5949;
+// 2026-04-08 PR10: 372 test files / 5983 it() blocks
+//                  (Phase F PR-10 split chat-executor.test.ts into 10
+//                  module-aligned sibling files plus a thinned
+//                  integration suite; added 7 fresh unit tests in
+//                  chat-executor-usage.test.ts covering the pure
+//                  accumulateUsage/createCallUsageRecord helpers)
+const MIN_TEST_FILES = 372;
+const MIN_IT_BLOCKS = 5983;
 
 // Ban phrases that are *unambiguously* AI-attribution markers. We do
 // NOT ban the bare words "Claude" or "Anthropic" because the user's

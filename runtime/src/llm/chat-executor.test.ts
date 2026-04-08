@@ -1,26 +1,43 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { ChatExecutor, ChatBudgetExceededError } from "./chat-executor.js";
-import type { ChatExecuteParams, ChatExecutorConfig } from "./chat-executor.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { ChatExecutor } from "./chat-executor.js";
+import type { ChatExecuteParams } from "./chat-executor.js";
 import type {
   LLMChatOptions,
+  LLMMessage,
   LLMProvider,
   LLMResponse,
-  LLMMessage,
   StreamProgressCallback,
 } from "./types.js";
 import type { GatewayMessage } from "../gateway/message.js";
 import {
-  LLMTimeoutError,
-  LLMServerError,
-  LLMRateLimitError,
   LLMAuthenticationError,
   LLMMessageValidationError,
   LLMProviderError,
+  LLMRateLimitError,
+  LLMServerError,
+  LLMTimeoutError,
 } from "./errors.js";
-import type { ArtifactCompactionState } from "../memory/artifact-store.js";
 
 // ============================================================================
 // Test helpers
+// ============================================================================
+//
+// This thinned ChatExecutor integration suite covers the full execute()
+// pipeline via smoke tests for basic operation, provider fallback, cooldown
+// state, core tool-loop behavior, narrative safeguards, and constructor
+// edge cases. Module-level behavior lives in sibling files:
+//
+//   chat-executor-ctx-helpers.test.ts          recovery hints, stop reason
+//   chat-executor-state.test.ts                token budget and session state
+//   chat-executor-config.test.ts               routing decisions
+//   chat-executor-usage.test.ts                accumulateUsage / createCallUsageRecord
+//   chat-executor-in-flight-compaction.test.ts soft-threshold compaction
+//   chat-executor-history-compaction.test.ts   hard-budget compactHistory
+//   chat-executor-context-injection.test.ts    skill/memory/progress injection
+//   chat-executor-model-orchestration.test.ts  per-call budgets and tool routing
+//   chat-executor-init.test.ts                 message normalization / prompt budget
+//   chat-executor-request.test.ts              streaming wiring, stateful summary
 // ============================================================================
 
 function mockResponse(overrides: Partial<LLMResponse> = {}): LLMResponse {
@@ -79,129 +96,6 @@ function createParams(
     runtimeContext: { workspaceRoot: "/tmp/chat-executor-test-workspace" },
     ...overrides,
   };
-}
-
-function buildLongHistory(count: number): LLMMessage[] {
-  return Array.from({ length: count }, (_, i) => ({
-    role: (i % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
-    content: `message ${i}`,
-  }));
-}
-
-function plannerScopePath(workspaceRoot: string, entry: string): string {
-  if (!entry || entry === ".") return workspaceRoot;
-  if (entry.startsWith("/")) return entry;
-  return `${workspaceRoot.replace(/\/+$/, "")}/${entry.replace(/^\/+/, "")}`;
-}
-
-function plannerReadOnlyExecutionContext(
-  workspaceRoot: string,
-  options: {
-    readonly sourceArtifacts?: readonly string[];
-    readonly inputArtifacts?: readonly string[];
-    readonly verificationMode?: "none" | "grounded_read";
-    readonly stepKind?: "delegated_research" | "delegated_review";
-  } = {},
-): Record<string, unknown> {
-  const sourceArtifacts = (options.sourceArtifacts ?? []).map((entry) =>
-    plannerScopePath(workspaceRoot, entry)
-  );
-  const inputArtifacts = (options.inputArtifacts ?? []).map((entry) =>
-    plannerScopePath(workspaceRoot, entry)
-  );
-  const verificationMode = options.verificationMode ??
-    (sourceArtifacts.length > 0 || inputArtifacts.length > 0
-      ? "grounded_read"
-      : "none");
-  const stepKind = options.stepKind ??
-    (verificationMode === "grounded_read"
-      ? "delegated_review"
-      : "delegated_research");
-  return {
-    version: "v1",
-    workspace_root: workspaceRoot,
-    allowed_read_roots: [workspaceRoot],
-    ...(inputArtifacts.length > 0
-      ? { input_artifacts: inputArtifacts }
-      : {}),
-    ...(sourceArtifacts.length > 0
-      ? { required_source_artifacts: sourceArtifacts }
-      : {}),
-    effect_class: "read_only",
-    verification_mode: verificationMode,
-    step_kind: stepKind,
-  };
-}
-
-function plannerWriteExecutionContext(
-  workspaceRoot: string,
-  options: {
-    readonly sourceArtifacts?: readonly string[];
-    readonly inputArtifacts?: readonly string[];
-    readonly targetArtifacts?: readonly string[];
-    readonly effectClass?: "filesystem_write" | "filesystem_scaffold" | "shell" | "mixed";
-    readonly verificationMode?: "mutation_required" | "deterministic_followup";
-    readonly stepKind?: "delegated_write" | "delegated_scaffold" | "delegated_validation";
-  } = {},
-): Record<string, unknown> {
-  const sourceArtifacts = (options.sourceArtifacts ?? []).map((entry) =>
-    plannerScopePath(workspaceRoot, entry)
-  );
-  const inputArtifacts = (options.inputArtifacts ?? []).map((entry) =>
-    plannerScopePath(workspaceRoot, entry)
-  );
-  const targetArtifacts = (options.targetArtifacts ?? []).map((entry) =>
-    plannerScopePath(workspaceRoot, entry)
-  );
-  return {
-    version: "v1",
-    workspace_root: workspaceRoot,
-    allowed_read_roots: [workspaceRoot],
-    allowed_write_roots: [workspaceRoot],
-    ...(inputArtifacts.length > 0
-      ? { input_artifacts: inputArtifacts }
-      : {}),
-    ...(sourceArtifacts.length > 0
-      ? { required_source_artifacts: sourceArtifacts }
-      : {}),
-    ...(targetArtifacts.length > 0
-      ? { target_artifacts: targetArtifacts }
-      : {}),
-    effect_class: options.effectClass ?? "filesystem_write",
-    verification_mode: options.verificationMode ?? "mutation_required",
-    step_kind: options.stepKind ?? "delegated_write",
-  };
-}
-
-function completedDelegatedPlannerResult(
-  output: string,
-  toolCalls:
-    | readonly string[]
-    | readonly {
-      readonly name?: string;
-      readonly args?: unknown;
-      readonly result?: string;
-      readonly isError?: boolean;
-    }[] = ["system.writeFile"],
-): string {
-  return safeJson({
-    status: "completed",
-    output,
-    success: true,
-    durationMs: 12,
-    failedToolCalls: 0,
-    toolCalls: toolCalls.map((entry) =>
-      typeof entry === "string"
-        ? {
-          name: entry,
-          isError: false,
-        }
-        : {
-          ...entry,
-          isError: entry.isError === true,
-        }
-    ),
-  });
 }
 
 // ============================================================================
