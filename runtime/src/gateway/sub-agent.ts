@@ -15,6 +15,7 @@ import type {
 } from "./session-isolation.js";
 import { createGatewayMessage } from "./message.js";
 import { ChatExecutor } from "../llm/chat-executor.js";
+import { runSubagentToLegacyResult } from "./subagent-query.js";
 import { buildModelRoutingPolicy } from "../llm/model-routing-policy.js";
 import type { GatewayLLMConfig } from "./types.js";
 import type { PromptBudgetConfig } from "../llm/prompt-budget.js";
@@ -827,36 +828,63 @@ export class SubAgentManager {
           ? [...handle.config.tools]
           : undefined;
 
-      const resultOrAbort = await raceAbort(
-        executor.execute({
-          message,
-          history: handle.history,
-          systemPrompt,
+      // Phase K: subagent spawn now routes through the generator
+      // surface via runSubagentToLegacyResult. Same semantics as
+      // the old direct executor.execute() call under the Phase C
+      // adapter shape (the helper drains executeChat and returns
+      // the legacy result), but the call site is now the stable
+      // entry point that a follow-up can swap to a direct
+      // helper-orchestration implementation without touching
+      // this file.
+      const spawnedResult = await raceAbort(
+        runSubagentToLegacyResult(executor, {
           sessionId: handle.sessionId,
-          ...(spawnRoutedTools
-            ? { toolRouting: { routedToolNames: spawnRoutedTools } }
-            : {}),
-          ...(handle.config.workingDirectory
-            ? {
-              runtimeContext: {
-                workspaceRoot: handle.config.workingDirectory,
-              },
-            }
-            : {}),
-          ...(typeof effectiveToolBudgetPerRequest === "number"
-            ? { toolBudgetPerRequest: effectiveToolBudgetPerRequest }
-            : {}),
-          requiredToolEvidence: handle.config.delegationSpec
-            ? {
-              maxCorrectionAttempts: handle.config.requireToolCall ? 1 : 0,
-              delegationSpec: handle.config.delegationSpec,
-              unsafeBenchmarkMode,
-            }
-            : undefined,
-          ...(providerTrace ? { trace: providerTrace } : {}),
+          parentSessionId: handle.parentSessionId,
+          params: {
+            message,
+            history: handle.history,
+            systemPrompt,
+            sessionId: handle.sessionId,
+            ...(spawnRoutedTools
+              ? { toolRouting: { routedToolNames: spawnRoutedTools } }
+              : {}),
+            ...(handle.config.workingDirectory
+              ? {
+                runtimeContext: {
+                  workspaceRoot: handle.config.workingDirectory,
+                },
+              }
+              : {}),
+            ...(typeof effectiveToolBudgetPerRequest === "number"
+              ? { toolBudgetPerRequest: effectiveToolBudgetPerRequest }
+              : {}),
+            requiredToolEvidence: handle.config.delegationSpec
+              ? {
+                maxCorrectionAttempts: handle.config.requireToolCall ? 1 : 0,
+                delegationSpec: handle.config.delegationSpec,
+                unsafeBenchmarkMode,
+              }
+              : undefined,
+            ...(providerTrace ? { trace: providerTrace } : {}),
+          },
         }),
         handle.abortController.signal,
       );
+      // runSubagentToLegacyResult guarantees legacyResult is set
+      // on the happy path (Phase C adapter populates
+      // Terminal.legacyResult from the underlying
+      // ChatExecutorResult). If legacyResult is missing on a
+      // non-aborted spawn, the adapter contract was violated —
+      // surface as a hard error so the incident is visible.
+      const resultOrAbort =
+        spawnedResult === ABORT_SENTINEL
+          ? ABORT_SENTINEL
+          : (spawnedResult.legacyResult ??
+            (() => {
+              throw new Error(
+                "sub-agent: runSubagentToLegacyResult returned without a legacyResult",
+              );
+            })());
 
       // Guard: don't overwrite if cancelled/timed_out during execution
       if (resultOrAbort === ABORT_SENTINEL || handle.status !== "running")

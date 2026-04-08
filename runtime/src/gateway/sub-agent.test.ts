@@ -135,9 +135,15 @@ function makeManagerConfig(
  * Wait for async execution to settle.
  * Uses real microtask flushing (no setTimeout) so it works with both
  * real and fake timers.
+ *
+ * Bumped from 20 to 200 iterations after Phase K migrated sub-agent
+ * spawning to route through the executeChat generator + drain helper
+ * stack. The extra indirection adds ~4-6 microtask boundaries per
+ * spawn before the manager's result slot is populated; 20 was no
+ * longer enough to reach the post-return bookkeeping on every test.
  */
 async function settle(): Promise<void> {
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 200; i++) {
     await Promise.resolve();
   }
 }
