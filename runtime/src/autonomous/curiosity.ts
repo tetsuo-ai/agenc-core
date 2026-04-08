@@ -15,6 +15,7 @@ import type {
   HeartbeatResult,
 } from "../gateway/heartbeat.js";
 import type { ChatExecutor } from "../llm/chat-executor.js";
+import { executeChatToLegacyResult } from "../llm/execute-chat.js";
 import type { ToolHandler } from "../llm/types.js";
 import {
   createExecutionTraceEventLogger,
@@ -130,8 +131,9 @@ export function createCuriosityAction(config: CuriosityConfig): HeartbeatAction 
               }
               : undefined;
 
-          // Research the topic using ChatExecutor with tools
-          const result = await chatExecutor.execute({
+          // Phase E: curiosity research migrated to drain the
+          // Phase C generator. No behavior change.
+          const result = await executeChatToLegacyResult(chatExecutor, {
             message: createGatewayMessage({
               sessionId,
               senderId: "curiosity-module",
@@ -196,7 +198,7 @@ export function createCuriosityAction(config: CuriosityConfig): HeartbeatAction 
                   }),
                 }
                 : undefined;
-            const evalResult = await chatExecutor.execute({
+            const evalResult = await executeChatToLegacyResult(chatExecutor, {
               message: createGatewayMessage({
                 sessionId: evalSessionId,
                 senderId: "curiosity-module",

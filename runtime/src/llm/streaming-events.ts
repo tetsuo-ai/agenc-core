@@ -22,7 +22,10 @@ import type {
   LLMUsage,
 } from "./types.js";
 import type { LLMPipelineStopReason } from "./policy.js";
-import type { ToolCallRecord } from "./chat-executor-types.js";
+import type {
+  ChatExecutorResult,
+  ToolCallRecord,
+} from "./chat-executor-types.js";
 
 /**
  * Emitted at the top of every provider call iteration, before the
@@ -152,6 +155,20 @@ export interface Terminal {
   readonly tokenUsage: LLMUsage;
   readonly durationMs: number;
   readonly error?: Error;
+  /**
+   * Phase E transitional carry-through: the full `ChatExecutorResult`
+   * produced by the underlying class-based `execute()` call. Present
+   * only while Phase C's `executeChat()` is an adapter that delegates
+   * to the class. Callers that migrated in Phase E can read
+   * `terminal.legacyResult` to preserve field reads like
+   * `toolRoutingSummary`, `plannerSummary`, `statefulSummary` that
+   * are not carried on the event-derived shape.
+   *
+   * Phase F deletes the adapter and this field goes away — the
+   * generator will own those fields directly via new event types
+   * or extended Terminal fields at that point.
+   */
+  readonly legacyResult?: ChatExecutorResult;
 }
 
 /**

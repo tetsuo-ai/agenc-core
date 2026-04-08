@@ -21,6 +21,7 @@ import type { ControlResponse } from "./types.js";
 import type { Logger } from "../utils/logger.js";
 import type { ToolHandler } from "../llm/types.js";
 import type { ChatExecutor } from "../llm/chat-executor.js";
+import { executeChatToLegacyResult } from "../llm/execute-chat.js";
 import type { SessionManager } from "./session.js";
 import type { HookDispatcher } from "./hooks.js";
 import type { ApprovalEngine } from "./approvals.js";
@@ -777,15 +778,15 @@ export class VoiceBridge {
             }),
           }
           : undefined;
-      const result = await chatExecutor.execute({
+      // Phase E: voice-bridge delegation migrated to drain the
+      // Phase C generator. No stream callback — the voice overlay
+      // would flood with partial text otherwise.
+      const result = await executeChatToLegacyResult(chatExecutor, {
         message: gatewayMsg,
         history,
         systemPrompt: this.config.systemPrompt,
         sessionId,
         toolHandler: delegationToolHandler,
-        // No onStreamChunk — streaming LLM text to the voice overlay floods
-        // it with hundreds of words the user can't read. Tool cards in the
-        // chat panel provide progress instead.
         maxToolRounds: MAX_DELEGATION_TOOL_ROUNDS,
         signal: abortController.signal,
         ...(providerTrace ? { trace: providerTrace } : {}),

@@ -147,6 +147,12 @@ function resultToAssistantEvent(
 
 /**
  * Build the generator's return `Terminal` from the legacy result.
+ *
+ * Phase E note: carries the full `ChatExecutorResult` through as
+ * `legacyResult` so migrated callers can read fields that are not
+ * on the event-derived shape (`toolRoutingSummary`, `plannerSummary`,
+ * `statefulSummary`, `economicsSummary`, etc.). Phase F will drop
+ * the adapter and this carry-through.
  */
 function resultToTerminal(
   result: ChatExecutorResult,
@@ -158,6 +164,7 @@ function resultToTerminal(
     toolCalls: result.toolCalls,
     tokenUsage: result.tokenUsage,
     durationMs,
+    legacyResult: result,
   };
 }
 
@@ -334,4 +341,46 @@ export async function* executeChat(
   }
 
   return resultToTerminal(result, Date.now() - startedAt);
+}
+
+/**
+ * Convenience wrapper for Phase E caller migrations: drives the
+ * `executeChat` generator to completion and returns the legacy
+ * `ChatExecutorResult` shape via `Terminal.legacyResult`. Callers
+ * that still need the full result (`toolRoutingSummary`,
+ * `plannerSummary`, etc.) can use this function instead of rolling
+ * their own drain loop. The stream chunk pass-through is forwarded
+ * to the caller's `params.onStreamChunk` automatically.
+ *
+ * Under Phase C's adapter shape this function is semantically
+ * identical to calling `chatExecutor.execute(params)` directly —
+ * the point is that the caller goes through the generator surface,
+ * which is the stable API that Phase F preserves.
+ */
+export async function executeChatToLegacyResult(
+  chatExecutor: ChatExecutor,
+  params: ChatExecuteParams,
+): Promise<ChatExecutorResult> {
+  const generator = executeChat(chatExecutor, params);
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const step = await generator.next();
+    if (step.done) {
+      const terminal = step.value;
+      if (terminal.legacyResult) return terminal.legacyResult;
+      // Error path: the underlying execute() rejected, so the
+      // generator returned a Terminal with `error` set and no
+      // legacyResult. Re-throw the original error so callers
+      // preserve their existing error-handling paths.
+      if (terminal.error) throw terminal.error;
+      throw new Error(
+        "executeChatToLegacyResult: terminal had no legacyResult; " +
+          "executeChat adapter contract violated",
+      );
+    }
+    // Events are drained by the caller's onStreamChunk pass-through
+    // on StreamEvent; non-stream events are intentionally ignored
+    // in the legacy path (migrated callers read the full result
+    // from the terminal instead of reacting to individual events).
+  }
 }

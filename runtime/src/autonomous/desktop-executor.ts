@@ -13,6 +13,7 @@
  */
 
 import type { ChatExecutor, ToolCallRecord } from "../llm/chat-executor.js";
+import { executeChatToLegacyResult } from "../llm/execute-chat.js";
 import type { ToolHandler, LLMProvider } from "../llm/types.js";
 import {
   createExecutionTraceEventLogger,
@@ -290,7 +291,9 @@ export class DesktopExecutor {
         stage: "plan",
         traceId: `${sessionId}:plan:${planStart}`,
       });
-      const planResult = await this.chatExecutor.execute({
+      // Phase E: desktop-executor plan phase migrated to drain the
+      // Phase C generator.
+      const planResult = await executeChatToLegacyResult(this.chatExecutor, {
         message: makeMessage(planPrompt, sessionId),
         history: [],
         systemPrompt:
@@ -402,7 +405,9 @@ export class DesktopExecutor {
         });
         let actResult;
         try {
-          actResult = await this.chatExecutor.execute({
+          // Phase E: desktop-executor act phase migrated to drain
+          // the Phase C generator.
+          actResult = await executeChatToLegacyResult(this.chatExecutor, {
             message: makeMessage(actPrompt, sessionId),
             history: [],
             systemPrompt:

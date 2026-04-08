@@ -7,6 +7,7 @@ import { BackgroundRunStore, type PersistedBackgroundRun } from "../gateway/back
 import { createEffectApprovalPolicy } from "../gateway/effect-approval-policy.js";
 import { SqliteBackend } from "../memory/sqlite/backend.js";
 import { ChatExecutor } from "../llm/chat-executor.js";
+import { executeChatToLegacyResult } from "../llm/execute-chat.js";
 import { LLMTimeoutError } from "../llm/errors.js";
 import type { LLMProvider, LLMResponse } from "../llm/types.js";
 import { resolveWorkflowCompletionState } from "../workflow/completion-state.js";
@@ -246,7 +247,7 @@ async function runDegradedProviderRetryScenario(): Promise<PipelineImplementatio
   const executor = new ChatExecutor({
     providers: [primary, fallback],
   });
-  const result = await executor.execute({
+  const result = await executeChatToLegacyResult(executor, {
     message: {
       id: "phase8-reroute-message",
       channel: "eval",

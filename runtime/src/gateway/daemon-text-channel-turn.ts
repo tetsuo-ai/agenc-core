@@ -3,6 +3,7 @@ import type {
   ChatExecutorResult,
   ChatToolRoutingSummary,
 } from "../llm/chat-executor.js";
+import { executeChatToLegacyResult } from "../llm/execute-chat.js";
 import type {
   LLMProviderTraceEvent,
   LLMStructuredOutputRequest,
@@ -225,7 +226,12 @@ export async function executeTextChannelTurn(
     defaultMaxToolRounds,
     toolRoutingDecision,
   );
-  const result = await chatExecutor.execute({
+  // Phase E: text-channel caller now drains the Phase C generator
+  // via executeChatToLegacyResult. Identical semantics to the
+  // direct chatExecutor.execute() call under the adapter shape —
+  // Phase F will swap the underlying orchestration without
+  // touching this call site.
+  const result = await executeChatToLegacyResult(chatExecutor, {
     message: msg,
     history: session.history,
     systemPrompt: effectiveSystemPrompt,

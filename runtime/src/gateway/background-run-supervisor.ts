@@ -11,6 +11,7 @@
  */
 
 import type { ChatExecutor, ChatExecutorResult } from "../llm/chat-executor.js";
+import { executeChatToLegacyResult } from "../llm/execute-chat.js";
 import type { LLMProvider, ToolHandler } from "../llm/types.js";
 import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";
@@ -3503,7 +3504,9 @@ export class BackgroundRunSupervisor {
         if (!abortSignal) {
           throw new Error("Background cycle missing abort signal");
         }
-        actorResult = await this.chatExecutor.execute({
+        // Phase E: background-run supervisor migrated to drain the
+        // Phase C generator inside the cycle loop.
+        actorResult = await executeChatToLegacyResult(this.chatExecutor, {
           message: toRunMessage(actorPrompt, sessionId, run.id, run.cycleCount),
           history: run.internalHistory,
           systemPrompt: actorSystemPrompt,

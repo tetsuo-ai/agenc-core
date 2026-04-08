@@ -16,6 +16,7 @@ import {
   ChatExecutor,
   type ChatExecutorConfig,
 } from "../llm/chat-executor.js";
+import { executeChatToLegacyResult } from "../llm/execute-chat.js";
 import { LLMMessageValidationError } from "../llm/errors.js";
 import {
   validateToolTurnSequence,
@@ -278,7 +279,7 @@ async function runEconomicsBenchmark(): Promise<ReturnType<typeof computeEconomi
       maxToolRounds: 3,
       economicsPolicy: tinyExecutorPolicy,
     });
-    const result = await executor.execute({
+    const result = await executeChatToLegacyResult(executor, {
       message: createBenchmarkMessage("stay within runtime budget", "economics-budget", 0),
       history: [],
       systemPrompt: "Budget test",
@@ -320,13 +321,13 @@ async function runEconomicsBenchmark(): Promise<ReturnType<typeof computeEconomi
         mode: "enforce",
       }),
     });
-    await executor.execute({
+    await executeChatToLegacyResult(executor, {
       message: createBenchmarkMessage("trip provider cooldown", "economics-reroute", 0),
       history: [],
       systemPrompt: "Reroute test",
       sessionId: "economics-reroute",
     });
-    const rerouted = await executor.execute({
+    const rerouted = await executeChatToLegacyResult(executor, {
       message: createBenchmarkMessage("run on healthy provider", "economics-reroute", 1),
       history: [],
       systemPrompt: "Reroute test",
@@ -409,7 +410,7 @@ async function runContextAndTokenBenchmark(
     const content =
       `Phase 9 context turn ${turn}: keep PLAN.md, src/main.c, parser.test.ts, ` +
       "and the active implementation notes aligned; respond with a compact ack.";
-    const result = await executor.execute({
+    const result = await executeChatToLegacyResult(executor, {
       message: createBenchmarkMessage(content, sessionId, turn),
       history: session.history,
       systemPrompt,

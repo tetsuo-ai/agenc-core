@@ -6,6 +6,7 @@ import type {
 } from "../llm/chat-executor.js";
 import type { ChatExecutionTraceEvent } from "../llm/chat-executor-types.js";
 import { hasActionableStatefulFallback } from "../llm/chat-executor-recovery.js";
+import { executeChatToLegacyResult } from "../llm/execute-chat.js";
 import type {
   LLMProviderTraceEvent,
   StreamProgressCallback,
@@ -240,7 +241,13 @@ export async function executeWebChatConversationTurn(
           }
         : msg;
 
-    const result = await chatExecutor.execute({
+    // Phase E: webchat streaming caller migrated to drain the
+    // Phase C generator. onStreamChunk pass-through is handled
+    // inside executeChat() — the bridge queue forwards every
+    // stream chunk through the supplied callback before yielding
+    // the event, so the caller-visible callback behavior is
+    // identical to the direct chatExecutor.execute() call.
+    const result = await executeChatToLegacyResult(chatExecutor, {
       message: effectiveMessage,
       history: session.history,
       systemPrompt: effectiveSystemPrompt,
