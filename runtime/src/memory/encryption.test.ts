@@ -3,7 +3,7 @@ import {
   createAES256GCMProvider,
   createVersionedAES256GCMProvider,
 } from "./encryption.js";
-import { randomBytes } from "node:crypto";
+import { createCipheriv, randomBytes } from "node:crypto";
 
 describe("AES-256-GCM encryption", () => {
   const key = randomBytes(32);
@@ -173,6 +173,29 @@ describe("Versioned AES-256-GCM key rotation", () => {
     });
 
     expect(versionedProvider.decrypt(legacyCiphertext)).toBe("legacy data");
+  });
+
+  it("decrypts legacy ciphertexts whose IV collides with the version marker", () => {
+    const legacyKey = randomBytes(32);
+    const iv = Buffer.concat([Buffer.from([0x56, 0xee]), randomBytes(10)]);
+    const cipher = createCipheriv("aes-256-gcm", legacyKey, iv);
+    const encrypted = Buffer.concat([
+      cipher.update("legacy marker collision", "utf8"),
+      cipher.final(),
+    ]);
+    const authTag = cipher.getAuthTag();
+    const legacyCiphertext = Buffer.concat([iv, authTag, encrypted]).toString(
+      "base64",
+    );
+
+    const versionedProvider = createVersionedAES256GCMProvider({
+      keys: { 0: legacyKey, 1: keyV1 },
+      currentVersion: 1,
+    });
+
+    expect(versionedProvider.decrypt(legacyCiphertext)).toBe(
+      "legacy marker collision",
+    );
   });
 
   it("different versions produce different ciphertexts", () => {

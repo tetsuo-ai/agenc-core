@@ -179,44 +179,20 @@ export function createVersionedAES256GCMProvider(
     return combined.toString("base64");
   }
 
-  function detectVersionAndDecrypt(ciphertext: string): string {
-    const combined = Buffer.from(ciphertext, "base64");
-
-    // Check for version marker
-    if (combined.length >= 2 && combined[0] === VERSION_MARKER) {
-      const version = combined[1];
-      const key = keyMap.get(version);
-      if (!key) {
-        throw new Error(`No key available for version ${version}`);
-      }
-      const payload = combined.subarray(2);
-      if (payload.length < IV_BYTES + TAG_BYTES) {
-        throw new Error("Versioned ciphertext too short");
-      }
-      const iv = payload.subarray(0, IV_BYTES);
-      const authTag = payload.subarray(IV_BYTES, IV_BYTES + TAG_BYTES);
-      const encrypted = payload.subarray(IV_BYTES + TAG_BYTES);
-
-      const decipher = createDecipheriv(ALGORITHM, key, iv, {
-        authTagLength: TAG_BYTES,
-      });
-      decipher.setAuthTag(authTag);
-      return Buffer.concat([
-        decipher.update(encrypted),
-        decipher.final(),
-      ]).toString("utf8");
+  function decryptPayload(
+    payload: Buffer,
+    key: Buffer,
+    shortCiphertextError: string,
+  ): string {
+    if (payload.length < IV_BYTES + TAG_BYTES) {
+      throw new Error(shortCiphertextError);
     }
 
-    // Non-versioned ciphertext — try version 0 key, then current key
-    const legacyKey: Buffer = keyMap.get(0) ?? currentKey;
-    if (combined.length < IV_BYTES + TAG_BYTES) {
-      throw new Error("Ciphertext too short");
-    }
-    const iv = combined.subarray(0, IV_BYTES);
-    const authTag = combined.subarray(IV_BYTES, IV_BYTES + TAG_BYTES);
-    const encrypted = combined.subarray(IV_BYTES + TAG_BYTES);
+    const iv = payload.subarray(0, IV_BYTES);
+    const authTag = payload.subarray(IV_BYTES, IV_BYTES + TAG_BYTES);
+    const encrypted = payload.subarray(IV_BYTES + TAG_BYTES);
 
-    const decipher = createDecipheriv(ALGORITHM, legacyKey, iv, {
+    const decipher = createDecipheriv(ALGORITHM, key, iv, {
       authTagLength: TAG_BYTES,
     });
     decipher.setAuthTag(authTag);
@@ -224,6 +200,36 @@ export function createVersionedAES256GCMProvider(
       decipher.update(encrypted),
       decipher.final(),
     ]).toString("utf8");
+  }
+
+  function decryptLegacyPayload(combined: Buffer): string {
+    const legacyKey: Buffer = keyMap.get(0) ?? currentKey;
+    return decryptPayload(combined, legacyKey, "Ciphertext too short");
+  }
+
+  function detectVersionAndDecrypt(ciphertext: string): string {
+    const combined = Buffer.from(ciphertext, "base64");
+
+    // Check for version marker
+    if (combined.length >= 2 && combined[0] === VERSION_MARKER) {
+      const version = combined[1];
+      const key = keyMap.get(version);
+      const payload = combined.subarray(2);
+
+      if (key) {
+        return decryptPayload(payload, key, "Versioned ciphertext too short");
+      }
+
+      // Legacy ciphertexts can start with the version marker because their IV is random.
+      // Only preserve the unknown-version error when the legacy decode also fails.
+      try {
+        return decryptLegacyPayload(combined);
+      } catch {
+        throw new Error(`No key available for version ${version}`);
+      }
+    }
+
+    return decryptLegacyPayload(combined);
   }
 
   return {
