@@ -17,6 +17,7 @@ import {
   LLMRateLimitError,
   classifyLLMFailure,
 } from "./errors.js";
+import { RuntimeError, RuntimeErrorCodes } from "../types/errors.js";
 import { assertValidLLMResponse } from "./response-validation.js";
 import {
   applyPromptBudget,
@@ -74,6 +75,25 @@ function shouldBypassStreamingForModelCall(
   return isExplicitToolTurn;
 }
 
+function createRequestDeadlineExceededError(
+  callPhase: ChatCallUsageRecord["phase"] | undefined,
+  requestTimeoutMs: number | undefined,
+): RuntimeError {
+  const stage = callPhase ? `${callPhase} model call` : "model call";
+  const normalizedTimeoutMs =
+    typeof requestTimeoutMs === "number" &&
+    Number.isFinite(requestTimeoutMs) &&
+    requestTimeoutMs > 0
+      ? Math.floor(requestTimeoutMs)
+      : undefined;
+  return new RuntimeError(
+    normalizedTimeoutMs === undefined
+      ? `Request exceeded end-to-end timeout during ${stage}`
+      : `Request exceeded end-to-end timeout (${normalizedTimeoutMs}ms) during ${stage}`,
+    RuntimeErrorCodes.LLM_TIMEOUT,
+  );
+}
+
 // ============================================================================
 // Configuration interface for callWithFallback
 // ============================================================================
@@ -104,6 +124,7 @@ interface CallWithFallbackOptions {
   parallelToolCalls?: boolean;
   structuredOutput?: LLMChatOptions["structuredOutput"];
   requestDeadlineAt?: number;
+  requestTimeoutMs?: number;
   signal?: AbortSignal;
   trace?: ChatExecuteParams["trace"];
   callIndex?: number;
@@ -253,14 +274,20 @@ export async function callWithFallback(
         const remainingProviderMs =
           options?.requestDeadlineAt !== undefined &&
             Number.isFinite(options.requestDeadlineAt)
-            ? Math.max(1, options.requestDeadlineAt - Date.now())
+            ? options.requestDeadlineAt - Date.now()
             : undefined;
+        if (remainingProviderMs !== undefined && remainingProviderMs <= 0) {
+          throw createRequestDeadlineExceededError(
+            options?.callPhase,
+            options?.requestTimeoutMs,
+          );
+        }
         const providerChatOptions: LLMChatOptions | undefined =
           baseChatOptions || remainingProviderMs !== undefined
             ? {
               ...(baseChatOptions ?? {}),
               ...(remainingProviderMs !== undefined
-                ? { timeoutMs: remainingProviderMs }
+                ? { timeoutMs: Math.max(1, Math.floor(remainingProviderMs)) }
                 : {}),
             }
             : undefined;

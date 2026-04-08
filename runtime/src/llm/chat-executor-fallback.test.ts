@@ -131,6 +131,60 @@ describe("callWithFallback", () => {
     expect(provider.chat).not.toHaveBeenCalled();
   });
 
+  it("stops fallback once the end-to-end deadline has expired instead of starting a 1ms retry", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-08T00:00:00.000Z"));
+    try {
+      const primary = {
+        ...createMockProvider({
+          name: "primary",
+          chat: vi.fn().mockImplementation(async () => {
+            vi.setSystemTime(new Date(Date.now() + 250));
+            throw new LLMServerError("primary", 503, "temporary outage");
+          }),
+        }),
+        config: { model: "primary-model" },
+      } as LLMProvider & { config: { model: string } };
+      const secondary = {
+        ...createMockProvider({
+          name: "secondary",
+          chat: vi.fn().mockResolvedValue(mockResponse({ model: "secondary-model" })),
+        }),
+        config: { model: "secondary-model" },
+      } as LLMProvider & { config: { model: string } };
+
+      await expect(
+        callWithFallback(
+          {
+            providers: [primary, secondary],
+            cooldowns: new Map(),
+            promptBudget: {},
+            retryPolicyMatrix: DEFAULT_LLM_RETRY_POLICY_MATRIX,
+            cooldownMs: 1_000,
+            maxCooldownMs: 60_000,
+          },
+          [{ role: "user", content: "continue" }],
+          undefined,
+          undefined,
+          {
+            callPhase: "tool_followup",
+            toolChoice: "required",
+            requestDeadlineAt: Date.now() + 200,
+            requestTimeoutMs: 200,
+          },
+        ),
+      ).rejects.toMatchObject({
+        message:
+          "Request exceeded end-to-end timeout (200ms) during tool_followup model call",
+      });
+
+      expect(primary.chat).toHaveBeenCalledOnce();
+      expect(secondary.chat).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("uses non-stream chat when streaming is explicitly disabled", async () => {
     const provider = createMockProvider();
     const onStreamChunk = vi.fn();

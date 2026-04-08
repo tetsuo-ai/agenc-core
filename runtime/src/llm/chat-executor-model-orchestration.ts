@@ -394,6 +394,7 @@ export async function callModelForPhase(
       effectiveCallSections,
       {
         requestDeadlineAt: ctx.requestDeadlineAt,
+        requestTimeoutMs: ctx.effectiveRequestTimeoutMs,
         signal: ctx.signal,
         ...(allowStatefulContinuation && input.statefulSessionId
           ? {

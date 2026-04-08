@@ -860,6 +860,7 @@ export class GrokProvider implements LLMProvider {
   ): Promise<LLMResponse> {
     const client = await this.ensureClient();
     let plan = this.buildRequestPlan(messages, options);
+    let lastAttemptTimeoutMs: number | undefined;
     const requestTimeout = resolveRequestTimeoutMs(
       this.configuredTimeoutMs,
       options?.timeoutMs,
@@ -877,6 +878,7 @@ export class GrokProvider implements LLMProvider {
             timeoutMs: Math.max(1, requestDeadlineAt - Date.now()),
           }
           : requestTimeout;
+      lastAttemptTimeoutMs = activeRequestTimeout.timeoutMs;
       emitProviderTraceEvent(options, {
         kind: "request",
         transport: "chat",
@@ -965,7 +967,10 @@ export class GrokProvider implements LLMProvider {
           });
           continue;
         }
-        const mapped = this.mapError(err, Math.max(1, requestDeadlineAt - Date.now()));
+        const mapped = this.mapError(
+          err,
+          lastAttemptTimeoutMs ?? requestTimeout.timeoutMs,
+        );
         this.logPromptOverflowDiagnostics(mapped, plan.params);
         throw mapped;
       }

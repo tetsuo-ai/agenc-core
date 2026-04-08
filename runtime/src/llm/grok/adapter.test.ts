@@ -1637,12 +1637,14 @@ describe("GrokProvider", () => {
     );
 
     const provider = new GrokProvider({ apiKey: "test-key", timeoutMs: 60_000 });
-    await expect(
-      provider.chat(
-        [{ role: "user", content: "test" }],
-        { timeoutMs: 5 },
-      ),
-    ).rejects.toThrow(LLMTimeoutError);
+    const timeoutError = await provider.chat(
+      [{ role: "user", content: "test" }],
+      { timeoutMs: 5 },
+    ).catch((error: unknown) => error);
+
+    expect(timeoutError).toBeInstanceOf(LLMTimeoutError);
+    expect((timeoutError as LLMTimeoutError).timeoutMs).toBe(5);
+    expect((timeoutError as LLMTimeoutError).message).toContain("5ms");
 
     expect(mockCreate).toHaveBeenCalledOnce();
     expect(mockCreate.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
