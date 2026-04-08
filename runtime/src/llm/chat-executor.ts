@@ -365,6 +365,16 @@ export class ChatExecutor {
    * tool loop rounds inside a single session.
    */
   private readonly toolResultBudget?: ToolBudgetConfig;
+  /**
+   * Phase N: optional memory consolidation hook threaded into the
+   * per-iteration compaction chain. See ChatExecutorConfig for shape.
+   */
+  private readonly consolidationHook?: (
+    messages: readonly LLMMessage[],
+  ) => {
+    readonly action: "noop" | "consolidated";
+    readonly summaryMessage?: LLMMessage;
+  };
   private readonly toolResultBudgetState = new Map<
     string,
     ContentReplacementState
@@ -479,6 +489,7 @@ export class ChatExecutor {
     this.canUseTool = config.canUseTool;
     this.isConcurrencySafe = config.isConcurrencySafe;
     this.toolResultBudget = config.toolResultBudget;
+    this.consolidationHook = config.consolidationHook;
   }
 
   /**
@@ -1625,6 +1636,9 @@ export class ChatExecutor {
             toolResultBudget: this.toolResultBudget,
             toolResultBudgetState: this.toolResultBudgetState,
           }
+        : {}),
+      ...(this.consolidationHook
+        ? { consolidationHook: this.consolidationHook }
         : {}),
     }, this.buildToolLoopCallbacks());
   }

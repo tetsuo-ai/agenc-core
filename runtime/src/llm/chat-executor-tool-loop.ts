@@ -178,6 +178,21 @@ interface ToolLoopConfig {
    */
   readonly toolResultBudget?: ToolBudgetConfig;
   readonly toolResultBudgetState?: Map<string, ContentReplacementState>;
+  /**
+   * Phase N wire-up: optional memory consolidation hook passed to
+   * `applyPerIterationCompaction`. When set, the per-iteration
+   * compaction chain invokes this hook after the autocompact
+   * decision layer. Callers typically wire
+   * `memory/consolidation.ts:consolidateEpisodicSlice` here to
+   * get deterministic in-memory slice consolidation. Off by
+   * default — the feature is explicitly opt-in.
+   */
+  readonly consolidationHook?: (
+    messages: readonly import("./types.js").LLMMessage[],
+  ) => {
+    readonly action: "noop" | "consolidated";
+    readonly summaryMessage?: import("./types.js").LLMMessage;
+  };
 }
 
 // ============================================================================
@@ -894,6 +909,9 @@ async function runPerIterationCompactionBeforeModelCall(
     nowMs: Date.now(),
     autocompactThresholdTokens: DEFAULT_AUTOCOMPACT_THRESHOLD_TOKENS,
     lastResponseUsage: ctx.response?.usage,
+    ...(config.consolidationHook
+      ? { consolidationHook: config.consolidationHook }
+      : {}),
   });
 
   ctx.perIterationCompaction = result.state;

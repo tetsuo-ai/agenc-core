@@ -397,6 +397,22 @@ export interface ChatExecutorConfig {
    */
   readonly toolResultBudget?: import("./tool-result-budget.js").ToolBudgetConfig;
   /**
+   * Phase N: optional memory consolidation hook. When set, the
+   * per-iteration compaction chain invokes the hook after the
+   * autocompact decision layer and appends any synthetic summary
+   * message it returns to the boundary list. The executor threads
+   * this through to `runPerIterationCompactionBeforeModelCall`
+   * and ultimately `applyPerIterationCompaction`. Callers wire
+   * `memory/consolidation.ts:consolidateEpisodicSlice` here for
+   * deterministic in-memory slice consolidation. Off by default.
+   */
+  readonly consolidationHook?: (
+    messages: readonly import("./types.js").LLMMessage[],
+  ) => {
+    readonly action: "noop" | "consolidated";
+    readonly summaryMessage?: import("./types.js").LLMMessage;
+  };
+  /**
    * Maximum token budget per session. When cumulative usage meets or exceeds
    * this value, the executor attempts to compact conversation history by
    * summarizing older messages. If compaction fails, falls back to
