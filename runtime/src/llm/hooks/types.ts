@@ -1,13 +1,28 @@
 /**
- * Hook system types (Cut 5.2).
+ * Hook system types — Phase H narrowed vocabulary.
  *
- * Mirrors `claude_code/utils/hooks.ts` and the schemas under
- * `claude_code/schemas/hooks.ts`.
+ * Mirrors a subset of `/home/tetsuo/git/claude_code/utils/hooks.ts`:
+ * the events this runtime actually fires, plus the ones it has a
+ * clear wiring plan for. Phase H (16-phase refactor, TODO.MD)
+ * deleted 8 event types that were declared but never dispatched:
+ * `UserPromptSubmit`, `Notification`, `FileChanged`, `ConfigChange`,
+ * `PermissionRequest`, `PermissionDenied`, `SubagentStart`,
+ * `SubagentStop`. AgenC has no watcher that would fire the
+ * filesystem/config events; the approval engine already owns
+ * permission escalation; subagent lifecycle goes through WebSocket
+ * `WS_SUBAGENTS_*` events instead; and user prompt submission is
+ * a channel-plugin concern, not a hook-dispatcher concern.
  *
- * The runtime today has a partial hook surface in
- * `gateway/hook-dispatcher.ts` (PreToolUse / PostToolUse only). This
- * module ships the full claude_code-shaped event taxonomy so the
- * gateway dispatcher can be widened in a follow-up commit.
+ * The 8 remaining events are:
+ *   - `PreToolUse` / `PostToolUse` / `PostToolUseFailure` — LIVE.
+ *     Fired from the tool dispatch loop around every tool call.
+ *   - `SessionStart` — fired from `daemon.ts` when a new session is
+ *     created (Phase H wire-up pending — declared for now).
+ *   - `Stop` / `StopFailure` — fired from the generator Terminal
+ *     path in `execute-chat.ts` (Phase H wire-up pending).
+ *   - `PreCompact` / `PostCompact` — fired from the layered
+ *     compaction chain in `chat-executor-tool-loop.ts` (Phase H
+ *     wire-up pending).
  *
  * @module
  */
@@ -16,21 +31,13 @@ import type { LLMMessage, LLMToolCall } from "../types.js";
 
 export type HookEvent =
   | "SessionStart"
-  | "UserPromptSubmit"
   | "PreToolUse"
   | "PostToolUse"
   | "PostToolUseFailure"
-  | "PermissionRequest"
-  | "PermissionDenied"
   | "Stop"
   | "StopFailure"
   | "PreCompact"
-  | "PostCompact"
-  | "SubagentStart"
-  | "SubagentStop"
-  | "Notification"
-  | "FileChanged"
-  | "ConfigChange";
+  | "PostCompact";
 
 export type HookKind = "command" | "callback" | "function" | "http";
 
@@ -85,20 +92,7 @@ export type HookContext =
   | PostToolUseContext
   | PostToolUseFailureContext
   | SessionLifecycleContext
-  | CompactContext
-  | (HookContextBase & {
-      readonly event: Exclude<
-        HookEvent,
-        | "PreToolUse"
-        | "PostToolUse"
-        | "PostToolUseFailure"
-        | "SessionStart"
-        | "Stop"
-        | "StopFailure"
-        | "PreCompact"
-        | "PostCompact"
-      >;
-    });
+  | CompactContext;
 
 export interface HookOutcome {
   readonly action: "allow" | "deny" | "noop";
