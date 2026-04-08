@@ -945,6 +945,9 @@ describe("DesktopExecutor", () => {
       expect(second.summary).toContain("Another goal is already executing");
 
       // Clean up: resolve the first promise
+      await vi.waitFor(() => {
+        expect(typeof resolveFirst).toBe("function");
+      });
       resolveFirst({
         content: "[]",
         provider: "mock",

@@ -24,6 +24,7 @@ function parseArgs(argv) {
     releaseRepository: "tetsuo-ai/agenc-core",
     releaseTag: null,
     runtimeVersionOverride: null,
+    allowMissingBundledExternalPlugins: false,
     skipBuild: false,
   };
 
@@ -50,6 +51,9 @@ function parseArgs(argv) {
         break;
       case "--runtime-version-override":
         options.runtimeVersionOverride = argv[++index];
+        break;
+      case "--allow-missing-bundled-external-plugins":
+        options.allowMissingBundledExternalPlugins = true;
         break;
       case "--skip-build":
         options.skipBuild = true;
@@ -129,7 +133,10 @@ async function resolveLocalWorkspaceDependencyDirs(runtimePackage) {
   return localWorkspaceDeps;
 }
 
-async function resolveBundledExternalPlugins(runtimePackage) {
+async function resolveBundledExternalPlugins(
+  runtimePackage,
+  { allowMissing = false } = {},
+) {
   const declared = runtimePackage.agenc?.bundledExternalPlugins ?? [];
   if (!Array.isArray(declared) || declared.length === 0) {
     return [];
@@ -154,6 +161,12 @@ async function resolveBundledExternalPlugins(runtimePackage) {
     }
     const directory = path.resolve(repoRoot, siblingRepoPath);
     if (!existsSync(directory)) {
+      if (allowMissing) {
+        process.stdout.write(
+          `[public-runtime] skipping bundled external plugin "${name}" because ${directory} is not present in this checkout\n`,
+        );
+        continue;
+      }
       throw new Error(
         `[public-runtime] bundled external plugin "${name}" expected at ${directory} but the directory does not exist. ` +
           `Clone the sibling repo next to agenc-core or remove the entry from runtime/package.json#agenc.bundledExternalPlugins.`,
@@ -280,8 +293,12 @@ async function main() {
       );
     }
 
-    const bundledExternalPlugins =
-      await resolveBundledExternalPlugins(runtimePackage);
+    const bundledExternalPlugins = await resolveBundledExternalPlugins(
+      runtimePackage,
+      {
+        allowMissing: options.allowMissingBundledExternalPlugins,
+      },
+    );
     if (!options.skipBuild) {
       for (const plugin of bundledExternalPlugins) {
         buildBundledExternalPlugin(plugin);
