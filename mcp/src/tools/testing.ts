@@ -155,7 +155,7 @@ function asRegressionArray(value: unknown): Array<Record<string, unknown>> {
   ) as Array<Record<string, unknown>>;
 }
 
-export interface BenchmarkMutationSummaryInput {
+interface BenchmarkMutationSummaryInput {
   benchmarkArtifact: unknown;
   mutationArtifact?: unknown;
 }

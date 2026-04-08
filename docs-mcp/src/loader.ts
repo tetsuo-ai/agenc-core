@@ -173,7 +173,7 @@ function loadNamedFiles(dirPath: string, repoRoot: string, allowedNames: Readonl
   return entries;
 }
 
-export interface LoadedDocs {
+interface LoadedDocs {
   docs: Map<string, DocEntry>;
   repoRoot: string;
 }

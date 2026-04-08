@@ -1,4 +1,4 @@
-export interface DisputeDriftPromptInput {
+interface DisputeDriftPromptInput {
   dispute_pda: string;
   trace_id?: string;
 }

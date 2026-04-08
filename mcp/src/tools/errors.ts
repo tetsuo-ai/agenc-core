@@ -644,28 +644,6 @@ function formatError(entry: ErrorEntry): string {
 }
 
 /**
- * Get all error codes as a formatted reference.
- */
-export function getAllErrorCodes(): string {
-  const categories = new Map<string, ErrorEntry[]>();
-  for (const entry of ERROR_TABLE) {
-    const list = categories.get(entry.category) ?? [];
-    list.push(entry);
-    categories.set(entry.category, list);
-  }
-
-  const sections: string[] = [];
-  for (const [category, entries] of categories) {
-    const lines = entries.map(
-      (e) =>
-        `  ${e.code} (0x${e.code.toString(16).padStart(4, "0")}) ${e.name}: ${e.message}`,
-    );
-    sections.push(`## ${category} Errors\n${lines.join("\n")}`);
-  }
-  return sections.join("\n\n");
-}
-
-/**
  * Register error decoder tools on the MCP server.
  */
 export function registerErrorTools(server: McpServer): void {

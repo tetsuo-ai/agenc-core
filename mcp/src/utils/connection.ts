@@ -20,7 +20,7 @@ import {
 } from "@tetsuo-ai/runtime";
 
 /** Supported network names */
-export type NetworkName = "localnet" | "devnet" | "mainnet";
+type NetworkName = "localnet" | "devnet" | "mainnet";
 
 /** RPC endpoints for each network */
 const NETWORK_URLS: Record<NetworkName, string> = {
@@ -127,15 +127,6 @@ export async function getSigningProgram(): Promise<{
   });
   const program = createProgram(provider, currentProgramId);
   return { program, keypair };
-}
-
-/**
- * Get the wallet public key from the configured keypair.
- */
-export async function getWalletPublicKey(): Promise<PublicKey> {
-  const keypairPath = getKeypairPath();
-  const keypair = await loadKeypairFromFile(keypairPath);
-  return keypair.publicKey;
 }
 
 /**

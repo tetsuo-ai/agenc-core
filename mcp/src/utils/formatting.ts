@@ -48,20 +48,6 @@ export function safeBigInt(val: unknown): bigint {
 }
 
 /**
- * Format a public key with optional truncation.
- */
-export function formatPubkey(
-  pubkey: PublicKey | string,
-  truncate = false,
-): string {
-  const s = typeof pubkey === "string" ? pubkey : pubkey.toBase58();
-  if (truncate && s.length > 12) {
-    return `${s.slice(0, 6)}...${s.slice(-6)}`;
-  }
-  return s;
-}
-
-/**
  * Format a byte array as hex string.
  */
 export function formatBytes(

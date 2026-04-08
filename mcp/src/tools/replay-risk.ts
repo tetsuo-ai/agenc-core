@@ -9,7 +9,7 @@ export interface ToolRiskCaps {
   maxPayloadBytes: number;
 }
 
-export interface ToolRiskProfile {
+interface ToolRiskProfile {
   toolName: string;
   riskLevel: RiskLevel;
   rationale: string;
@@ -25,7 +25,7 @@ const DEFAULT_TOOL_CAPS: ToolRiskCaps = {
   maxPayloadBytes: 120_000,
 };
 
-export const REPLAY_TOOL_RISK_PROFILES: Record<string, ToolRiskProfile> = {
+const REPLAY_TOOL_RISK_PROFILES: Record<string, ToolRiskProfile> = {
   agenc_replay_backfill: {
     toolName: "agenc_replay_backfill",
     riskLevel: "high",
@@ -86,7 +86,7 @@ export function getToolRiskProfile(toolName: string): ToolRiskProfile {
   );
 }
 
-export interface ReplayRiskConfig {
+interface ReplayRiskConfig {
   globalPolicy: ReplayPolicy;
   toolOverrides?: Record<string, Partial<ToolRiskCaps>>;
 }

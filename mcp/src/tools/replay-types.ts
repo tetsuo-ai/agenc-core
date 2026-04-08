@@ -69,7 +69,7 @@ export const ReplayStatusInputSchema = baseSchema.extend({
 });
 export type ReplayStatusInput = z.infer<typeof ReplayStatusInputSchema>;
 
-export const ReplayBackfillResultSchema = z.object({
+const ReplayBackfillResultSchema = z.object({
   processed: z.number().nonnegative(),
   duplicates: z.number().nonnegative(),
   cursor: z
@@ -83,7 +83,7 @@ export const ReplayBackfillResultSchema = z.object({
     .nullable(),
 });
 
-export const ReplayCompareAnomalySchema = z.object({
+const ReplayCompareAnomalySchema = z.object({
   anomaly_id: z.string(),
   code: z.string(),
   severity: z.string(),
@@ -93,7 +93,7 @@ export const ReplayCompareAnomalySchema = z.object({
   seq: z.number().int().optional(),
 });
 
-export const ReplayCompareResultSchema = z.object({
+const ReplayCompareResultSchema = z.object({
   status: z.enum(["clean", "mismatched"]),
   strictness: z.enum(["strict", "lenient"]),
   local_event_count: z.number().nonnegative(),
