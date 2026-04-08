@@ -716,6 +716,133 @@ describe("ChatExecutor", () => {
       ]);
     });
 
+
+    it("does not turn an empty post-tool follow-up into a fake tool-result success", async () => {
+      const toolHandler = vi
+        .fn()
+        .mockResolvedValue('{"entries":["src","package.json"]}');
+      const provider = createMockProvider("primary", {
+        chat: vi
+          .fn()
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: "",
+              finishReason: "tool_calls",
+              toolCalls: [
+                { id: "tc-1", name: "system.listDir", arguments: '{"path":"."}' },
+              ],
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({ content: "", finishReason: "stop" }),
+          ),
+      });
+
+      const executor = new ChatExecutor({ providers: [provider], toolHandler });
+      const result = await executor.execute(createParams());
+
+      expect(result.stopReason).toBe("no_progress");
+      expect(result.content).toContain(
+        "Model returned empty content after tool follow-up",
+      );
+      expect(result.content).not.toContain("Operation completed. Result");
+      expect(result.toolCalls).toHaveLength(1);
+      expect(result.toolCalls[0]).toEqual(
+        expect.objectContaining({
+          name: "system.listDir",
+          args: { path: "." },
+          result: '{"entries":["src","package.json"]}',
+          isError: false,
+        }),
+      );
+    });
+
+    it("surfaces timeout detail instead of summarizing tool output when tool follow-up never starts", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-04-08T00:00:00.000Z"));
+      try {
+        const toolHandler = vi.fn().mockImplementation(async () => {
+          vi.setSystemTime(new Date(Date.now() + 250));
+          return '{"entries":["src","package.json"]}';
+        });
+        const provider = createMockProvider("primary", {
+          chat: vi
+            .fn()
+            .mockResolvedValueOnce(
+              mockResponse({
+                content: "",
+                finishReason: "tool_calls",
+                toolCalls: [
+                  { id: "tc-1", name: "system.listDir", arguments: '{"path":"."}' },
+                ],
+              }),
+            ),
+        });
+
+        const executor = new ChatExecutor({ providers: [provider], toolHandler });
+        const result = await executor.execute(
+          createParams({ requestTimeoutMs: 200 }),
+        );
+
+        expect(result.stopReason).toBe("timeout");
+        expect(result.content).toContain(
+          "Request exceeded end-to-end timeout (200ms) during tool follow-up",
+        );
+        expect(result.content).not.toContain("Completed system.listDir");
+        expect(result.content).not.toContain("Operation completed. Result");
+        expect(provider.chat).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("summarizes structured tool payloads when max tool rounds end before a final answer", async () => {
+      const toolHandler = vi.fn().mockResolvedValue(
+        JSON.stringify({
+          path: "/tmp/project",
+          entries: [
+            { name: "runtime", type: "dir", size: 0 },
+            { name: "package.json", type: "file", size: 128 },
+          ],
+        }),
+      );
+      const provider = createMockProvider("primary", {
+        chat: vi
+          .fn()
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: "",
+              finishReason: "tool_calls",
+              toolCalls: [
+                { id: "tc-1", name: "system.listDir", arguments: '{"path":"."}' },
+              ],
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: "",
+              finishReason: "tool_calls",
+              toolCalls: [
+                { id: "tc-2", name: "system.listDir", arguments: '{"path":"."}' },
+              ],
+            }),
+          ),
+      });
+
+      const executor = new ChatExecutor({
+        providers: [provider],
+        toolHandler,
+        maxToolRounds: 1,
+      });
+      const result = await executor.execute(createParams());
+
+      expect(result.stopReason).toBe("tool_calls");
+      expect(result.content).toContain("Operation completed. Result");
+      expect(result.content).toContain("package.json");
+      expect(result.content).toContain('"entries"');
+      expect(provider.chat).toHaveBeenCalledTimes(2);
+    });
+
     it("sanitizes screenshot tool payloads and keeps image artifacts out-of-band", async () => {
       const hugeBase64 = "A".repeat(90_000);
       const toolHandler = vi.fn().mockResolvedValue(

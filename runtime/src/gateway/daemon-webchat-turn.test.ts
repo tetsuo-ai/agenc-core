@@ -654,6 +654,86 @@ You have broad access to this machine via the system.bash tool.`,
     expect(memoryBackend.addEntry).not.toHaveBeenCalled();
   });
 
+  it("surfaces returned non-success results to webchat and skips outbound persistence side effects", async () => {
+    const logger = createLoggerStub();
+    const memoryBackend = createMemoryBackendStub();
+    const sessionMgr = {
+      getOrCreate: vi.fn(() => createSession()),
+      appendMessage: vi.fn(),
+      compact: vi.fn(async () => undefined),
+    } as any;
+    const webChat = {
+      createAbortController: vi.fn(() => new AbortController()),
+      clearAbortController: vi.fn(),
+      send: vi.fn(async () => undefined),
+      pushToSession: vi.fn(),
+      broadcastEvent: vi.fn(),
+    } as any;
+    const hooks = {
+      dispatch: vi.fn(async () => ({ completed: true, payload: {} })),
+    } as any;
+    const signals = {
+      signalThinking: vi.fn(),
+      signalIdle: vi.fn(),
+    };
+
+    await executeWebChatConversationTurn({
+      logger,
+      msg: {
+        sessionId: "session:test",
+        senderId: "operator-1",
+        channel: "webchat",
+        content: "hello",
+      },
+      webChat,
+      chatExecutor: {
+        execute: vi.fn(async () =>
+          createResult({
+            content: "Operation completed. Result:\n```json\n{\"entries\":[\"src\"]}\n```",
+            stopReason: "timeout",
+            stopReasonDetail: "tool follow-up timed out",
+            completionState: "blocked",
+          })
+        ),
+      } as any,
+      sessionMgr,
+      getSystemPrompt: () => "system",
+      sessionToolHandler: vi.fn() as any,
+      sessionStreamCallback: vi.fn(),
+      signals,
+      hooks,
+      memoryBackend,
+      sessionTokenBudget: 16_000,
+      defaultMaxToolRounds: 3,
+      contextWindowTokens: 64_000,
+      traceConfig: {
+        enabled: false,
+        includeHistory: true,
+        includeSystemPrompt: true,
+        includeToolArgs: true,
+        includeToolResults: true,
+        includeProviderPayloads: false,
+        maxChars: 20_000,
+      },
+      turnTraceId: "trace-1",
+      buildToolRoutingDecision: () => undefined,
+      recordToolRoutingOutcome: vi.fn(),
+      getSessionTokenUsage: () => 0,
+      onModelInfo: vi.fn(),
+      onSubagentSynthesis: vi.fn(),
+    });
+
+    expect(webChat.clearAbortController).toHaveBeenCalledWith("session:test");
+    expect(signals.signalIdle).toHaveBeenCalledWith("session:test");
+    expect(webChat.send).toHaveBeenCalledWith({
+      sessionId: "session:test",
+      content: "Error (timeout): tool follow-up timed out",
+    });
+    expect(sessionMgr.appendMessage).not.toHaveBeenCalled();
+    expect(hooks.dispatch).not.toHaveBeenCalled();
+    expect(memoryBackend.addEntry).not.toHaveBeenCalled();
+  });
+
   it("passes the session workspace root into planner/runtime execution instead of a conflicting message root", async () => {
     const logger = createLoggerStub();
     const memoryBackend = createMemoryBackendStub();

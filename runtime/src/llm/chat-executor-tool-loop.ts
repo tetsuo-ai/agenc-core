@@ -1410,7 +1410,23 @@ export async function executeToolCallLoop(
   }
 
   ctx.finalContent = ctx.response?.content ?? "";
-  if (!ctx.finalContent && ctx.allToolCalls.length > 0) {
+  const missingFinalToolFollowupAnswer =
+    !ctx.finalContent &&
+    ctx.allToolCalls.length > 0 &&
+    ctx.stopReason === "completed";
+  if (missingFinalToolFollowupAnswer) {
+    callbacks.setStopReason(
+      ctx,
+      "no_progress",
+      "Model returned empty content after tool follow-up; refusing to surface raw tool output as the final answer.",
+    );
+  }
+  const shouldSummarizeToolFallback =
+    !missingFinalToolFollowupAnswer &&
+    !ctx.finalContent &&
+    ctx.allToolCalls.length > 0 &&
+    ctx.stopReason === "tool_calls";
+  if (shouldSummarizeToolFallback) {
     ctx.finalContent =
       generateFallbackContent(ctx.allToolCalls) ?? ctx.finalContent;
   }

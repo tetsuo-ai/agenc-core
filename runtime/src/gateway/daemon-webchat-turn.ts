@@ -394,6 +394,14 @@ export async function executeWebChatConversationTurn(
         },
       );
     }
+    if (result.stopReason !== "completed" && result.stopReason !== "tool_calls") {
+      const stopReasonDetail =
+        result.stopReasonDetail ?? result.content ?? "LLM execution did not complete";
+      throw Object.assign(new Error(stopReasonDetail), {
+        stopReason: result.stopReason,
+        stopReasonDetail,
+      });
+    }
     if (hasActionableStatefulFallback(result.statefulSummary)) {
       logger.warn("[stateful] webchat fallback_to_stateless", {
         traceId: turnTraceId,
