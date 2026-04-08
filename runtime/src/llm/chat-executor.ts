@@ -42,6 +42,7 @@ import {
 } from "./model-routing-policy.js";
 import { isConcordiaSimulationTurnMessage } from "./chat-executor-turn-contracts.js";
 import type { HookRegistry } from "./hooks/index.js";
+import { dispatchHooks, defaultHookExecutor } from "./hooks/index.js";
 import type { CanUseToolFn } from "./can-use-tool.js";
 import type { IsConcurrencySafeFn } from "./tool-orchestration.js";
 import type {
@@ -504,6 +505,25 @@ export class ChatExecutor {
   ): Promise<ChatExecutorResult> {
     const ctx = await this.initializeExecutionContext(params);
 
+    // Phase H: dispatch SessionStart the first time a session is
+    // observed. `sessionTokens` is a per-session Map the executor
+    // initializes lazily — absence of an entry means this is the
+    // first execute() call for this session id. Mirrors
+    // `claude_code/utils/sessionStart.ts:executeSessionStartHooks`.
+    if (this.hookRegistry && !this.sessionTokens.has(ctx.sessionId)) {
+      await dispatchHooks({
+        registry: this.hookRegistry,
+        event: "SessionStart",
+        matchKey: ctx.sessionId,
+        executor: defaultHookExecutor,
+        context: {
+          event: "SessionStart",
+          sessionId: ctx.sessionId,
+          messages: ctx.messages,
+        },
+      });
+    }
+
     await this.executeToolCallLoop(ctx);
 
     this.checkRequestTimeout(ctx, "finalization");
@@ -536,6 +556,29 @@ export class ChatExecutor {
       updatedAt: Date.now(),
       contractFingerprint: ctx.turnExecutionContract.contractFingerprint,
     });
+
+    // Phase H: dispatch Stop / StopFailure at the terminal path.
+    // Stop fires on completed state; StopFailure on any non-
+    // completed state (budget_exceeded, no_progress, cancelled,
+    // provider_error, timeout, etc.). Mirrors
+    // `claude_code/query/stopHooks.ts:executeStopHooks`.
+    if (this.hookRegistry) {
+      const stopEvent: "Stop" | "StopFailure" =
+        ctx.stopReason === "completed" || ctx.stopReason === "tool_calls"
+          ? "Stop"
+          : "StopFailure";
+      await dispatchHooks({
+        registry: this.hookRegistry,
+        event: stopEvent,
+        matchKey: ctx.sessionId,
+        executor: defaultHookExecutor,
+        context: {
+          event: stopEvent,
+          sessionId: ctx.sessionId,
+          messages: ctx.messages,
+        },
+      });
+    }
 
     return {
       content: ctx.finalContent,

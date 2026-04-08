@@ -882,11 +882,12 @@ export async function executeSingleToolCall(
  * provider call in this file is now preceded by this helper, so the
  * chain actually runs.
  */
-function runPerIterationCompactionBeforeModelCall(
+async function runPerIterationCompactionBeforeModelCall(
   ctx: ExecutionContext,
+  config: ToolLoopConfig,
   callbacks: ToolLoopCallbacks,
   phase: ChatCallUsageRecord["phase"],
-): void {
+): Promise<void> {
   const result = applyPerIterationCompaction({
     messages: ctx.messages,
     state: ctx.perIterationCompaction,
@@ -898,6 +899,32 @@ function runPerIterationCompactionBeforeModelCall(
   ctx.perIterationCompaction = result.state;
 
   if (result.action === "noop") return;
+
+  // Phase H: dispatch PreCompact for each layer that fired, with the
+  // registry-supplied matcher allowed to veto. Mirrors
+  // `claude_code/services/compact/compact.ts:executePreCompactHooks`.
+  if (config.hookRegistry) {
+    for (const boundary of result.boundaries) {
+      const content =
+        typeof boundary.content === "string" ? boundary.content : "";
+      const layer = extractCompactionLayerTag(content) as
+        | "snip"
+        | "microcompact"
+        | "autocompact"
+        | "reactive-compact";
+      await dispatchHooks({
+        registry: config.hookRegistry,
+        event: "PreCompact",
+        matchKey: layer,
+        executor: defaultHookExecutor,
+        context: {
+          event: "PreCompact",
+          sessionId: ctx.sessionId,
+          layer,
+        },
+      });
+    }
+  }
 
   // Snip and microcompact actually prune messages; autocompact is
   // decision-only and hands the pruned view back unchanged.
@@ -925,6 +952,31 @@ function runPerIterationCompactionBeforeModelCall(
         messagesAfter: ctx.messages.length,
       },
     });
+  }
+
+  // Phase H: dispatch PostCompact for each layer that fired, AFTER
+  // ctx.messages has been updated so hooks observe the new state.
+  if (config.hookRegistry) {
+    for (const boundary of result.boundaries) {
+      const content =
+        typeof boundary.content === "string" ? boundary.content : "";
+      const layer = extractCompactionLayerTag(content) as
+        | "snip"
+        | "microcompact"
+        | "autocompact"
+        | "reactive-compact";
+      await dispatchHooks({
+        registry: config.hookRegistry,
+        event: "PostCompact",
+        matchKey: layer,
+        executor: defaultHookExecutor,
+        context: {
+          event: "PostCompact",
+          sessionId: ctx.sessionId,
+          layer,
+        },
+      });
+    }
   }
 }
 
@@ -1010,8 +1062,14 @@ export async function executeToolCallLoop(
 ): Promise<void> {
   // Phase A wire-up: run the layered compaction chain before the
   // initial provider call. This is the top-of-iteration insertion
-  // point mirrored from claude_code/query.ts:395-426.
-  runPerIterationCompactionBeforeModelCall(ctx, callbacks, "initial");
+  // point mirrored from claude_code/query.ts:395-426. Phase H added
+  // PreCompact / PostCompact hook dispatch inside the helper.
+  await runPerIterationCompactionBeforeModelCall(
+    ctx,
+    config,
+    callbacks,
+    "initial",
+  );
   // Phase I wire-up: wrap the provider call in reactive compaction
   // recovery so a 413 response triggers a retry with trimmed
   // history before bubbling the error.
@@ -1280,8 +1338,14 @@ export async function executeToolCallLoop(
     // Phase A wire-up: run the layered compaction chain before the
     // follow-up provider call. Phase I wire-up: wrap the call in
     // reactive compaction recovery so a 413 triggers a retry with
-    // trimmed history.
-    runPerIterationCompactionBeforeModelCall(ctx, callbacks, "tool_followup");
+    // trimmed history. Phase H added PreCompact / PostCompact hook
+    // dispatch inside the helper.
+    await runPerIterationCompactionBeforeModelCall(
+      ctx,
+      config,
+      callbacks,
+      "tool_followup",
+    );
     // Re-call LLM.
     const nextResponse = await callModelWithReactiveCompact(
       ctx,
