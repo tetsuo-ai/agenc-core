@@ -55,13 +55,6 @@ export interface DelegationContractSpec {
   readonly toolContract?: DelegatedToolContractResolution;
 }
 
-export interface DelegationValidationToolCall {
-  readonly name?: string;
-  readonly args?: unknown;
-  readonly result?: string;
-  readonly isError?: boolean;
-}
-
 export const DELEGATION_OUTPUT_VALIDATION_CODES = [
   "empty_output",
   "empty_structured_payload",
@@ -83,13 +76,6 @@ export const DELEGATION_OUTPUT_VALIDATION_CODES = [
 
 export type DelegationOutputValidationCode =
   typeof DELEGATION_OUTPUT_VALIDATION_CODES[number];
-
-export interface DelegationOutputValidationResult {
-  readonly ok: boolean;
-  readonly code?: DelegationOutputValidationCode;
-  readonly error?: string;
-  readonly parsedOutput?: Record<string, unknown>;
-}
 
 interface DelegatedChildToolAllowlistRefinement {
   readonly allowedTools: readonly string[];

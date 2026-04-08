@@ -253,7 +253,7 @@ function isBNLikeWithToNumber(
  * Type guard for RawOnChainTask data.
  * Validates all required fields are present with correct types.
  */
-export function isRawOnChainTask(data: unknown): data is RawOnChainTask {
+function isRawOnChainTask(data: unknown): data is RawOnChainTask {
   if (typeof data !== "object" || data === null) {
     return false;
   }
@@ -325,7 +325,7 @@ export function isRawOnChainTask(data: unknown): data is RawOnChainTask {
  * Type guard for RawOnChainTaskClaim data.
  * Validates all required fields are present with correct types.
  */
-export function isRawOnChainTaskClaim(
+function isRawOnChainTaskClaim(
   data: unknown,
 ): data is RawOnChainTaskClaim {
   if (typeof data !== "object" || data === null) {
