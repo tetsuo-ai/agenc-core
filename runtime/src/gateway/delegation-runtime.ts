@@ -38,7 +38,6 @@ interface DelegationPolicyDecision {
     | "subagent_delegation_blocked"
     | "forbidden_tool"
     | "tool_not_allowlisted"
-    | "score_below_threshold"
     | "unsafe_benchmark_bypass"
     | "allowed";
   readonly threshold: number;
