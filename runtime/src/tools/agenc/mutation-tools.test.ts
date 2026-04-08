@@ -215,6 +215,9 @@ describe('agenc mutation tools', () => {
     expect(parsed.price).toBe('42');
     expect(parsed.transactionSignature).toBe('register-skill-sig');
     expect(program.methods.registerSkill).toHaveBeenCalledTimes(1);
+    const registerArgs = program.methods.registerSkill.mock.calls[0];
+    expect(registerArgs[3]?.constructor?.name).toBe('BN');
+    expect(registerArgs[3]?.toString()).toBe('42');
     expect(program._registerSkillChain.accountsPartial).toHaveBeenCalledTimes(1);
   });
 
@@ -268,6 +271,9 @@ describe('agenc mutation tools', () => {
     expect(parsed.priceMint).toBeNull();
     expect(parsed.transactionSignature).toBe('purchase-skill-sig');
     expect(program.methods.purchaseSkill).toHaveBeenCalledTimes(1);
+    const purchaseArg = program.methods.purchaseSkill.mock.calls[0][0];
+    expect(purchaseArg?.constructor?.name).toBe('BN');
+    expect(purchaseArg?.toString()).toBe('42');
     expect(program._purchaseSkillChain.accountsPartial).toHaveBeenCalledTimes(1);
   });
 

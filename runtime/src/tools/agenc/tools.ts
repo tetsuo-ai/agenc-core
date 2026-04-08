@@ -16,7 +16,7 @@
  */
 
 import { PublicKey, SystemProgram } from '@solana/web3.js';
-import anchor, { type Program } from '@coral-xyz/anchor';
+import anchor, { BN, type Program } from '@coral-xyz/anchor';
 import { getAssociatedTokenAddressSync } from '@tetsuo-ai/sdk';
 import type { AgencCoordination } from '../../types/agenc_coordination.js';
 import type { Tool, ToolResult } from '../types.js';
@@ -918,11 +918,11 @@ export function createCreateTaskTool(
         const txSignature = await (program.methods as any)
           .createTask(
             toAnchorBytes(taskId),
-            new anchor.BN(requiredCapabilities.toString()),
+            new BN(requiredCapabilities.toString()),
             toAnchorBytes(descBytes),
-            new anchor.BN(reward.toString()),
+            new BN(reward.toString()),
             maxWorkers,
-            new anchor.BN(deadline),
+            new BN(deadline),
             taskType,
             null,
             0,
