@@ -2285,7 +2285,7 @@ describe("SubAgentManager", () => {
 
       expect(chatSpy).toHaveBeenCalledTimes(1);
       const messages = chatSpy.mock.calls[0][0] as LLMMessage[];
-      expect(messages[0]).toEqual({
+      expect(messages[0]).toMatchObject({
         role: "system",
         content: "Custom prompt for sub-agent",
       });

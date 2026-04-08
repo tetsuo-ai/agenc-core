@@ -958,30 +958,12 @@ export {
   DANGEROUS_SHELL_PATTERNS,
 } from "./tools/index.js";
 
-// ZK Proof Engine (Phase 7)
-export {
-  // Core types
-  type ProofEngineConfig,
-  type ProofCacheConfig,
-  type ProverBackend,
-  type ProverBackendConfig,
-  type RouterConfig,
-  type ProofInputs,
-  type EngineProofResult,
-  type ProofEngineStats,
-  type HashResult,
-  type ToolsStatus,
-  // Error classes
-  ProofGenerationError,
-  ProofVerificationError,
-  ProofCacheError,
-  // Cache
-  ProofCache,
-  deriveCacheKey,
-  // Engine
-  ProofEngine,
-  buildSdkProverConfig,
-} from "./proof/index.js";
+// ZK Proof Engine was removed in Phase L of the 16-phase refactor
+// (TODO.MD). The runtime-side proof/ directory was a historical
+// fragment duplicating agenc-sdk's proof support; zero external
+// consumers imported the ProofEngine / ProofCache / ProverBackend
+// symbols from the runtime barrel. The authoritative proving
+// surface lives in agenc-prover.
 
 // Memory Backends (Phase 6)
 export {
@@ -1892,25 +1874,12 @@ export {
   type XaiRealtimeClientConfig,
 } from "./voice/index.js";
 
-// Cross-Protocol Bridges (Phase 10)
-export {
-  // Types
-  type LangChainTool,
-  type LangChainBridgeConfig,
-  type X402PaymentRequest,
-  type X402PaymentResponse,
-  type X402BridgeConfig,
-  type FarcasterPostParams,
-  type FarcasterPostResult,
-  type FarcasterBridgeConfig,
-  // Error classes
-  BridgeError,
-  BridgePaymentError,
-  // Bridge classes
-  LangChainBridge,
-  X402Bridge,
-  FarcasterBridge,
-} from "./bridges/index.js";
+// Cross-Protocol Bridges (LangChain / X402 / Farcaster) were removed
+// in Phase L of the 16-phase refactor (TODO.MD). The bridges/
+// directory shipped as a public subpath but had zero external
+// consumers across the AgenC workspace — farcaster and x402
+// integrations now live in dedicated plugin packages outside
+// @tetsuo-ai/runtime.
 
 // Reputation Economy (Phase 10.3)
 export {
