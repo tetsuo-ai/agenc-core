@@ -920,7 +920,6 @@ export class DaemonManager {
   private _targetChannelConfigs: Record<string, GatewayChannelConfig> = {};
   private readonly _pendingConnectorRestarts = new Set<string>();
   private _proactiveCommunicator: ProactiveCommunicator | null = null;
-  private _heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private _heartbeatScheduler:
     | import("./heartbeat.js").HeartbeatScheduler
     | null = null;
@@ -5800,10 +5799,6 @@ export class DaemonManager {
       this._cronScheduler.stop();
       this._cronScheduler = null;
     }
-    if (this._heartbeatTimer !== null) {
-      clearInterval(this._heartbeatTimer);
-      this._heartbeatTimer = null;
-    }
     if (this._desktopExecutor !== null) {
       this._desktopExecutor.cancel();
       this._desktopExecutor = null;
@@ -5925,11 +5920,6 @@ export class DaemonManager {
       if (this._cronScheduler !== null) {
         this._cronScheduler.stop();
         this._cronScheduler = null;
-      }
-      // Stop legacy heartbeat timer (if still in use)
-      if (this._heartbeatTimer !== null) {
-        clearInterval(this._heartbeatTimer);
-        this._heartbeatTimer = null;
       }
       // Stop desktop executor
       if (this._desktopExecutor !== null) {
