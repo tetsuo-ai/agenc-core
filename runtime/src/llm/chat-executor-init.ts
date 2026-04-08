@@ -43,12 +43,6 @@ import {
   appendUserMessage,
 } from "./chat-executor-text.js";
 import {
-  assessPlannerDecision,
-  extractExplicitDeterministicToolRequirements,
-  extractExplicitSubagentOrchestrationRequirements,
-  requestRequiresToolGroundedExecution,
-} from "./chat-executor-planner.js";
-import {
   mergeTurnExecutionRequiredToolEvidence,
   resolveTurnExecutionContract,
 } from "./turn-execution-contract.js";
@@ -61,6 +55,7 @@ import {
   type ExecutionContext,
   type SkillInjector,
   type MemoryRetriever,
+  type PlannerDecision,
 } from "./chat-executor-types.js";
 import { selectRelevantArtifactRefs } from "./context-pruning.js";
 import { MAX_PROMPT_CHARS_BUDGET } from "./chat-executor-constants.js";
@@ -83,23 +78,6 @@ export function normalizeInitRequestTimeoutMs(
   timeoutMs: number | undefined,
 ): number {
   return normalizeRuntimeLimit(timeoutMs, DEFAULT_REQUEST_TIMEOUT_MS);
-}
-
-function mergeExplicitRequirementToolNames(
-  primaryToolNames: readonly string[],
-  secondaryToolNames: readonly string[],
-  fallbackToolNames: readonly string[],
-): readonly string[] {
-  const merged = Array.from(
-    new Set([
-      ...primaryToolNames,
-      ...secondaryToolNames,
-    ]),
-  );
-  if (merged.length > 0) {
-    return merged;
-  }
-  return Array.from(new Set(fallbackToolNames));
 }
 
 /**
@@ -189,19 +167,6 @@ export async function initializeExecutionContext(
   const expandedRoutedToolNames = params.toolRouting?.expandedToolNames
     ? Array.from(new Set(params.toolRouting.expandedToolNames))
     : [];
-  const explicitRequirementToolNames = mergeExplicitRequirementToolNames(
-    initialRoutedToolNames,
-    expandedRoutedToolNames,
-    deps.allowedTools ? [...deps.allowedTools] : [],
-  );
-  const explicitDeterministicToolRequirements =
-    extractExplicitDeterministicToolRequirements(
-      messageText,
-      explicitRequirementToolNames,
-      message.metadata,
-    );
-  const explicitSubagentOrchestrationRequirements =
-    extractExplicitSubagentOrchestrationRequirements(messageText);
   const isConcordiaTurnMessage = isConcordiaSimulationTurnMessage(message);
   const turnExecutionContract = resolveTurnExecutionContract({
     message,
@@ -214,45 +179,16 @@ export async function initializeExecutionContext(
     },
     requiredToolEvidence: params.requiredToolEvidence,
   });
-  const groundedExecutionRequested =
-    !isConcordiaTurnMessage &&
-    turnExecutionContract.turnClass === "workflow_implementation" &&
-    requestRequiresToolGroundedExecution(messageText);
-  let plannerDecision = assessPlannerDecision(
-    deps.plannerEnabled,
-    messageText,
-    history,
-    params.message.metadata,
-  );
-  if (
-    !isConcordiaTurnMessage &&
-    explicitDeterministicToolRequirements?.forcePlanner &&
-    !plannerDecision.shouldPlan
-  ) {
-    plannerDecision = {
-      score: Math.max(plannerDecision.score, 3),
-      shouldPlan: true,
-      reason: "explicit_deterministic_tool_requirements",
-    };
-  }
-  if (
-    !isConcordiaTurnMessage &&
-    !plannerDecision.shouldPlan &&
-    explicitSubagentOrchestrationRequirements
-  ) {
-    plannerDecision = {
-      score: Math.max(plannerDecision.score, 4),
-      shouldPlan: true,
-      reason: "explicit_subagent_orchestration_requirements",
-    };
-  }
-  if (!plannerDecision.shouldPlan && groundedExecutionRequested) {
-    plannerDecision = {
-      score: Math.max(plannerDecision.score, 4),
-      shouldPlan: true,
-      reason: "grounded_execution_request",
-    };
-  }
+  // The planner subsystem has been deleted (chat-executor-planner.ts is a
+  // stub that always returns shouldPlan: false). Every planner decision
+  // collapses to a single constant. The explicit-requirement branches that
+  // used to upgrade planner decisions are statically dead — dropped with
+  // the planner module in PR-9.
+  const plannerDecision: PlannerDecision = {
+    score: 0,
+    shouldPlan: false,
+    reason: "planner_disabled",
+  };
 
   // Pre-check token budget — attempt compaction instead of hard fail
   let compacted = false;
