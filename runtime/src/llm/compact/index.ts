@@ -97,29 +97,111 @@ export interface PerIterationCompactionResult {
 
 /**
  * Orchestrator for the snip → microcompact → autocompact chain. Mirrors
- * `claude_code/query.ts` per-iteration compaction wire-up.
+ * `claude_code/query.ts` per-iteration compaction wire-up (~lines
+ * 395–426 in the reference). Runs at the top of each provider call:
  *
- * **U0 stub**: returns noop on every call so the export shape exists and
- * callers can land their wiring PRs. U1 replaces this body with the real
- * chain that invokes each layer in order, threads state forward, and
- * accumulates boundary messages. Do NOT wire the real behavior here
- * without the accompanying chat-executor-tool-loop changes from U1 —
- * the two have to land together or the loop sees mid-iteration state
- * drift.
+ *   1. `applySnip` — drops the oldest messages from a long-idle session
+ *      without touching the ones the model still needs. Tracks how many
+ *      tokens it freed so the downstream autocompact decision can skip
+ *      a borderline trigger.
+ *   2. `applyMicrocompact` — replaces cold tool-result bodies with a
+ *      placeholder, keeping the assistant tool-call messages intact so
+ *      the API still sees a well-formed sequence.
+ *   3. `applyAutocompact` — decision-only layer. Observes the message
+ *      token count post-snip/microcompact and flags the caller to run
+ *      its full summarizer when the history still exceeds the
+ *      threshold. The caller (chat-executor) owns the actual
+ *      summarization model call; this layer just reports the
+ *      decision.
+ *
+ * Each layer is pure and returns its next state. The orchestrator
+ * threads state forward, accumulates any boundary messages the layers
+ * produce (so callers can emit trace events / surface them to the
+ * user), and reports a single combined `action` of `"noop"` or
+ * `"compacted"`. Boundary messages are returned separately from the
+ * pruned message list — the caller decides whether to inject them into
+ * the outgoing conversation or just log them. Mirror behavior of
+ * claude_code: boundary messages are observational, not model-facing.
  */
 export function applyPerIterationCompaction(
   input: PerIterationCompactionInput,
 ): PerIterationCompactionResult {
-  // Layer calls are deliberately unused in U0. The references keep the
-  // import graph honest for the U1 wire-up PR and prevent noUnusedLocals
-  // from tripping when U0 lands alone.
-  void applySnip;
-  void applyMicrocompact;
-  void applyAutocompact;
+  const nowMs = input.nowMs;
+  const boundaries: LLMMessage[] = [];
+  let currentMessages: readonly LLMMessage[] = input.messages;
+  let snipState = input.state.snip;
+  let microState = input.state.microcompact;
+  let autoState = input.state.autocompact;
+  let snipTokensFreed = 0;
+  let anyAction = false;
+
+  // --- Layer 1: snip ---
+  const snipResult = applySnip({
+    messages: currentMessages,
+    state: snipState,
+    nowMs,
+  });
+  snipState = snipResult.state;
+  if (snipResult.action === "snipped") {
+    anyAction = true;
+    // Estimate tokens freed as a rough message-delta proxy. The
+    // autocompact threshold check reads this value to short-circuit
+    // a borderline trigger after a successful snip.
+    const dropped = currentMessages.length - snipResult.messages.length;
+    snipTokensFreed = Math.max(0, dropped) * APPROX_TOKENS_PER_SNIPPED_MESSAGE;
+    currentMessages = snipResult.messages;
+    if (snipResult.boundary) boundaries.push(snipResult.boundary);
+  }
+
+  // --- Layer 2: microcompact ---
+  const microResult = applyMicrocompact({
+    messages: currentMessages,
+    state: microState,
+    nowMs,
+  });
+  microState = microResult.state;
+  if (microResult.action === "microcompacted") {
+    anyAction = true;
+    currentMessages = microResult.messages;
+    if (microResult.boundary) boundaries.push(microResult.boundary);
+  }
+
+  // --- Layer 3: autocompact (decision only) ---
+  const autoResult = applyAutocompact({
+    messages: currentMessages,
+    state: autoState,
+    thresholdTokens: input.autocompactThresholdTokens,
+    lastResponseUsage: input.lastResponseUsage,
+    snipTokensFreed,
+  });
+  autoState = autoResult.state;
+  if (autoResult.action === "autocompacted") {
+    anyAction = true;
+    // autocompact is decision-only: it does NOT mutate messages. The
+    // caller observes the boundary and runs its summarizer.
+    if (autoResult.boundary) boundaries.push(autoResult.boundary);
+  }
+
   return {
-    action: "noop",
-    messages: input.messages,
-    state: input.state,
-    boundaries: [],
+    action: anyAction ? "compacted" : "noop",
+    messages: currentMessages,
+    state: {
+      snip: snipState,
+      microcompact: microState,
+      autocompact: autoState,
+    },
+    boundaries,
   };
 }
+
+/**
+ * Conservative token estimate per snipped message used by the
+ * snip → autocompact handoff. 192 is the claude_code reference value
+ * for an average assistant/user message in a tool-heavy conversation.
+ * Overestimating is safer than underestimating — if snip frees more
+ * tokens than we claim, autocompact might trigger unnecessarily; if
+ * we overstate, we may skip a legitimate autocompact. The real
+ * threshold check uses `tokenCountWithEstimation` on the resulting
+ * message set, so this number only affects borderline cases.
+ */
+const APPROX_TOKENS_PER_SNIPPED_MESSAGE = 192;

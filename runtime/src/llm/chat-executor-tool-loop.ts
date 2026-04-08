@@ -86,6 +86,10 @@ import {
   type ContentReplacementState,
   type ToolBudgetConfig,
 } from "./tool-result-budget.js";
+import {
+  applyPerIterationCompaction,
+  DEFAULT_AUTOCOMPACT_THRESHOLD_TOKENS,
+} from "./compact/index.js";
 
 // ============================================================================
 // Callback interfaces
@@ -861,11 +865,87 @@ export async function executeSingleToolCall(
 // executeToolCallLoop (standalone)
 // ============================================================================
 
+/**
+ * Run the snip → microcompact → autocompact chain on the current
+ * conversation history before handing it to the provider. Mutates
+ * `ctx.messages` in place if any layer prunes, updates
+ * `ctx.perIterationCompaction`, and emits a trace event per layer
+ * that fired. Safe to call before every provider call — layers noop
+ * when their conditions are not met.
+ *
+ * This is the live wire-up referenced by Phase A of the 16-phase
+ * refactor in TODO.MD. Prior to this wiring, the compact skeleton at
+ * `runtime/src/llm/compact/*.ts` was a disconnected port — the
+ * functions existed but nothing in the live loop called them. Every
+ * provider call in this file is now preceded by this helper, so the
+ * chain actually runs.
+ */
+function runPerIterationCompactionBeforeModelCall(
+  ctx: ExecutionContext,
+  callbacks: ToolLoopCallbacks,
+  phase: ChatCallUsageRecord["phase"],
+): void {
+  const result = applyPerIterationCompaction({
+    messages: ctx.messages,
+    state: ctx.perIterationCompaction,
+    nowMs: Date.now(),
+    autocompactThresholdTokens: DEFAULT_AUTOCOMPACT_THRESHOLD_TOKENS,
+    lastResponseUsage: ctx.response?.usage,
+  });
+
+  ctx.perIterationCompaction = result.state;
+
+  if (result.action === "noop") return;
+
+  // Snip and microcompact actually prune messages; autocompact is
+  // decision-only and hands the pruned view back unchanged.
+  if (result.messages.length !== ctx.messages.length) {
+    // The compaction chain returns a readonly slice. We need a mutable
+    // array on ctx.messages so the rest of the loop can push to it.
+    // Preserve section alignment by trimming messageSections to match.
+    const droppedCount = ctx.messages.length - result.messages.length;
+    ctx.messages = [...result.messages];
+    if (ctx.messageSections.length >= droppedCount) {
+      ctx.messageSections.splice(0, droppedCount);
+    }
+  }
+
+  for (const boundary of result.boundaries) {
+    const content =
+      typeof boundary.content === "string" ? boundary.content : "";
+    callbacks.emitExecutionTrace(ctx, {
+      type: "compaction_triggered",
+      phase,
+      callIndex: ctx.callIndex,
+      payload: {
+        layer: extractCompactionLayerTag(content),
+        boundary: content,
+        messagesAfter: ctx.messages.length,
+      },
+    });
+  }
+}
+
+/**
+ * Extract the `[layer]` tag from a compaction boundary message's
+ * content. Returns `"unknown"` if no tag is found. The layers write
+ * their tag as the first bracketed token in the boundary content
+ * (e.g. `[snip] dropped 12 oldest messages after 610s idle`).
+ */
+function extractCompactionLayerTag(content: string): string {
+  const match = /^\[([a-z_-]+)\]/.exec(content);
+  return match?.[1] ?? "unknown";
+}
+
 export async function executeToolCallLoop(
   ctx: ExecutionContext,
   config: ToolLoopConfig,
   callbacks: ToolLoopCallbacks,
 ): Promise<void> {
+  // Phase A wire-up: run the layered compaction chain before the
+  // initial provider call. This is the top-of-iteration insertion
+  // point mirrored from claude_code/query.ts:395-426.
+  runPerIterationCompactionBeforeModelCall(ctx, callbacks, "initial");
   ctx.response = await callbacks.callModelForPhase(ctx, {
     phase: "initial",
     callMessages: ctx.messages,
@@ -1076,6 +1156,11 @@ export async function executeToolCallLoop(
       }
     }
 
+    // Phase A wire-up: run the layered compaction chain before the
+    // follow-up provider call. This is the second of two top-of-
+    // iteration insertion points for the snip → microcompact →
+    // autocompact chain, mirrored from claude_code/query.ts:395-426.
+    runPerIterationCompactionBeforeModelCall(ctx, callbacks, "tool_followup");
     // Re-call LLM.
     const nextResponse = await callbacks.callModelForPhase(ctx, {
       phase: "tool_followup",

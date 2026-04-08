@@ -60,6 +60,10 @@ import type {
 import type { HostToolingProfile } from "../gateway/host-tooling.js";
 import type { ActiveTaskContext, TurnExecutionContract } from "./turn-execution-contract-types.js";
 import { RuntimeError, RuntimeErrorCodes } from "../types/errors.js";
+import {
+  createPerIterationCompactionState,
+  type PerIterationCompactionState,
+} from "./compact/index.js";
 
 // ============================================================================
 // Error classes
@@ -123,6 +127,7 @@ export interface ToolCallRecord {
 }
 
 type ChatExecutionTraceEventType =
+  | "compaction_triggered"
   | "context_injected"
   | "model_call_prepared"
   | "recovery_hints_injected"
@@ -602,6 +607,15 @@ export interface ExecutionContext {
   plannerSummaryState: FullPlannerSummaryState;
   completedRequestMilestoneIds: readonly string[];
   economicsState: RuntimeEconomicsState;
+  /**
+   * Per-iteration compaction state composed across snip, microcompact,
+   * and autocompact layers. Replaced on every provider call in
+   * `executeToolCallLoop` via `applyPerIterationCompaction`. Persisted
+   * across requests via the executor's session state map so cold-
+   * session snip and microcompact layers can observe the inter-request
+   * idle gap. See `runtime/src/llm/compact/index.ts`.
+   */
+  perIterationCompaction: PerIterationCompactionState;
 }
 
 // ============================================================================
@@ -745,5 +759,6 @@ export function buildDefaultExecutionContext(
     },
     completedRequestMilestoneIds: [],
     economicsState,
+    perIterationCompaction: createPerIterationCompactionState(),
   };
 }
