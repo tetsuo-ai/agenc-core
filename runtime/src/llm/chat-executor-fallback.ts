@@ -94,6 +94,14 @@ interface CallWithFallbackOptions {
   reconciliationMessages?: readonly LLMMessage[];
   routedToolNames?: readonly string[];
   toolChoice?: LLMToolChoice;
+  /**
+   * Pre-Phase-F behavior: the class wrapper accepted this field but
+   * the module silently dropped it before handing `baseChatOptions`
+   * to the provider. Kept on the type so explicit call sites still
+   * type-check; threading it through is tracked as a separate bug
+   * out of scope for the Phase F refactor.
+   */
+  parallelToolCalls?: boolean;
   structuredOutput?: LLMChatOptions["structuredOutput"];
   requestDeadlineAt?: number;
   signal?: AbortSignal;

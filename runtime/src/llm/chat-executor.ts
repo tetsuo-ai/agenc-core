@@ -20,7 +20,6 @@ import type {
   StreamProgressCallback,
   ToolHandler,
 } from "./types.js";
-import type { ArtifactCompactionState } from "../memory/artifact-store.js";
 import type {
   PromptBudgetConfig,
   PromptBudgetSection,
@@ -94,7 +93,6 @@ import {
   DEFAULT_TOOL_FAILURE_BREAKER_THRESHOLD,
   DEFAULT_TOOL_FAILURE_BREAKER_WINDOW_MS,
   DEFAULT_TOOL_FAILURE_BREAKER_COOLDOWN_MS,
-  MAX_COMPACT_INPUT,
 } from "./chat-executor-constants.js";
 import {
   resolveRetryPolicyMatrix,
@@ -104,7 +102,6 @@ import {
   resolveEffectiveRoutedToolNames,
 } from "./chat-executor-routing-state.js";
 import { ToolFailureCircuitBreaker } from "./tool-failure-circuit-breaker.js";
-import { compactHistoryIntoArtifactContext } from "./context-compaction.js";
 import { selectRelevantArtifactRefs } from "./context-pruning.js";
 import {
   checkRequestTimeout as checkRequestTimeoutFree,
@@ -271,6 +268,13 @@ import {
   callWithFallback as callWithFallbackFn,
 } from "./chat-executor-fallback.js";
 import {
+  compactHistory as compactHistoryFree,
+  type HistoryCompactionDependencies,
+} from "./chat-executor-history-compaction.js";
+import {
+  maybeCompactInFlightCallInput as maybeCompactInFlightCallInputFree,
+} from "./chat-executor-in-flight-compaction.js";
+import {
   deriveActiveTaskContext,
   mergeTurnExecutionRequiredToolEvidence,
   resolveTurnExecutionContract,
@@ -278,7 +282,6 @@ import {
 import {
   buildToolLoopCallbacks as buildToolLoopCallbacksFree,
   executeToolCallLoop as executeToolCallLoopFn,
-  findInFlightCompactionTailStartIndex as findInFlightCompactionTailStartIndexFree,
 } from "./chat-executor-tool-loop.js";
 // ---------------------------------------------------------------------------
 // Re-exports — preserve backward-compatible import paths for consumers
@@ -773,12 +776,25 @@ export class ChatExecutor {
     } else {
       ctx.transientRoutedToolNames = effectiveRoutedToolNames;
     }
-    const compactedCallInput = await this.maybeCompactInFlightCallInput(ctx, {
-      callMessages: input.callMessages,
-      callReconciliationMessages: input.callReconciliationMessages,
-      callSections: input.callSections,
-      statefulHistoryCompacted: input.statefulHistoryCompacted,
-    });
+    const compactedCallInput = await maybeCompactInFlightCallInputFree(
+      ctx,
+      {
+        callMessages: input.callMessages,
+        callReconciliationMessages: input.callReconciliationMessages,
+        callSections: input.callSections,
+        statefulHistoryCompacted: input.statefulHistoryCompacted,
+      },
+      {
+        ...this.buildHistoryCompactionDeps(),
+        sessionTokens: this.sessionTokens,
+        sessionTokenBudget: this.sessionTokenBudget,
+        sessionCompactionThreshold: this.sessionCompactionThreshold,
+      },
+      {
+        resetSessionTokens: (sessionId: string) =>
+          this.resetSessionTokens(sessionId),
+      },
+    );
     const groundingMessage =
       input.phase === "tool_followup"
         ? buildToolExecutionGroundingMessage({
@@ -893,7 +909,15 @@ export class ChatExecutor {
     });
     let next: FallbackResult;
     try {
-      next = await this.callWithFallback(
+      next = await callWithFallbackFn(
+        {
+          providers: routingDecision.route.providers,
+          cooldowns: this.cooldowns,
+          promptBudget: this.promptBudget,
+          retryPolicyMatrix: this.retryPolicyMatrix,
+          cooldownMs: this.cooldownMs,
+          maxCooldownMs: this.maxCooldownMs,
+        },
         effectiveCallMessages,
         input.onStreamChunk,
         effectiveCallSections,
@@ -932,7 +956,6 @@ export class ChatExecutor {
             }
             : {}),
           ...(disableStreaming ? { disableStreaming: true } : {}),
-          providersOverride: routingDecision.route.providers,
         },
       );
     } catch (error) {
@@ -1090,11 +1113,16 @@ export class ChatExecutor {
         ? undefined
         : new Map(this.cooldowns);
       try {
-        const compactedResult = await this.compactHistory(
+        const compactedResult = await compactHistoryFree(
           history,
           sessionId,
-          params.trace,
-          params.stateful?.artifactContext,
+          this.buildHistoryCompactionDeps(),
+          {
+            ...(params.trace ? { trace: params.trace } : {}),
+            ...(params.stateful?.artifactContext
+              ? { existingArtifactContext: params.stateful.artifactContext }
+              : {}),
+          },
         );
         history = compactedResult.history;
         compactedArtifactContext = compactedResult.artifactContext;
@@ -1297,169 +1325,23 @@ export class ChatExecutor {
     return ctx;
   }
 
-  private async maybeCompactInFlightCallInput(
-    ctx: ExecutionContext,
-    input: {
-      readonly callMessages: readonly LLMMessage[];
-      readonly callReconciliationMessages?: readonly LLMMessage[];
-      readonly callSections?: readonly PromptBudgetSection[];
-      readonly statefulHistoryCompacted?: boolean;
-    },
-  ): Promise<{
-    readonly callMessages: readonly LLMMessage[];
-    readonly callReconciliationMessages?: readonly LLMMessage[];
-    readonly callSections?: readonly PromptBudgetSection[];
-    readonly statefulHistoryCompacted: boolean;
-  }> {
-    const compactionState = this.getSessionCompactionState(ctx.sessionId);
-    const statefulHistoryCompacted =
-      input.statefulHistoryCompacted === true || ctx.compacted;
-    if (
-      !compactionState.hardBudgetReached &&
-      !compactionState.softThresholdReached
-    ) {
-      return {
-        callMessages: input.callMessages,
-        callReconciliationMessages: input.callReconciliationMessages,
-        callSections: input.callSections,
-        statefulHistoryCompacted,
-      };
-    }
-
-    const usesLiveExecutionMessages =
-      input.callMessages === ctx.messages &&
-      (
-        input.callSections === undefined ||
-        input.callSections === ctx.messageSections
-      ) &&
-      (
-        input.callReconciliationMessages === undefined ||
-        input.callReconciliationMessages === ctx.reconciliationMessages
-      );
-    if (!usesLiveExecutionMessages) {
-      if (compactionState.hardBudgetReached) {
-        throw new ChatBudgetExceededError(
-          ctx.sessionId,
-          compactionState.used,
-          this.sessionTokenBudget!,
-        );
-      }
-      return {
-        callMessages: input.callMessages,
-        callReconciliationMessages: input.callReconciliationMessages,
-        callSections: input.callSections,
-        statefulHistoryCompacted,
-      };
-    }
-
-    const replayTailStartIndex = findInFlightCompactionTailStartIndexFree(
-      input.callMessages,
-      input.callSections,
-    );
-    const replayTail = input.callMessages.slice(replayTailStartIndex);
-    const inFlightKeepTailCount = 3;
-    if (replayTail.length <= inFlightKeepTailCount) {
-      if (compactionState.hardBudgetReached) {
-        throw new ChatBudgetExceededError(
-          ctx.sessionId,
-          compactionState.used,
-          this.sessionTokenBudget!,
-        );
-      }
-      return {
-        callMessages: input.callMessages,
-        callReconciliationMessages: input.callReconciliationMessages,
-        callSections: input.callSections,
-        statefulHistoryCompacted,
-      };
-    }
-
-    const cooldownSnapshot = compactionState.hardBudgetReached
-      ? undefined
-      : new Map(this.cooldowns);
-    try {
-      const compacted = await this.compactHistory(
-        replayTail,
-        ctx.sessionId,
-        ctx.trace,
-        ctx.compactedArtifactContext,
-        inFlightKeepTailCount,
-      );
-      const retainedTailCount = Math.max(0, compacted.history.length - 1);
-      const replayTailReconciliationMessages = (
-        input.callReconciliationMessages ?? ctx.reconciliationMessages
-      ).slice(replayTailStartIndex);
-      const replayTailSections = (
-        input.callSections ?? ctx.messageSections
-      ).slice(replayTailStartIndex);
-      const compactedReconciliationMessages: readonly LLMMessage[] = [
-        {
-          role: "system",
-          content:
-            typeof compacted.history[0]?.content === "string"
-              ? compacted.history[0].content
-              : "",
-        },
-        ...replayTailReconciliationMessages.slice(-retainedTailCount),
-      ];
-      const compactedSections: readonly PromptBudgetSection[] = [
-        "memory_working",
-        ...replayTailSections.slice(-retainedTailCount),
-      ];
-      const nextMessages = [
-        ...input.callMessages.slice(0, replayTailStartIndex),
-        ...compacted.history,
-      ];
-      const nextReconciliationMessages = [
-        ...(input.callReconciliationMessages ?? ctx.reconciliationMessages).slice(
-          0,
-          replayTailStartIndex,
-        ),
-        ...compactedReconciliationMessages,
-      ];
-      const nextSections = [
-        ...(input.callSections ?? ctx.messageSections).slice(
-          0,
-          replayTailStartIndex,
-        ),
-        ...compactedSections,
-      ];
-      ctx.messages = [...nextMessages];
-      ctx.reconciliationMessages = [...nextReconciliationMessages];
-      ctx.messageSections = [...nextSections];
-      ctx.compacted = true;
-      ctx.compactedArtifactContext = compacted.artifactContext;
-      this.resetSessionTokens(ctx.sessionId);
-      return {
-        callMessages: ctx.messages,
-        callReconciliationMessages: ctx.reconciliationMessages,
-        callSections: ctx.messageSections,
-        statefulHistoryCompacted: true,
-      };
-    } catch (error) {
-      if (compactionState.hardBudgetReached) {
-        if (error instanceof ChatBudgetExceededError) {
-          throw error;
-        }
-        throw new ChatBudgetExceededError(
-          ctx.sessionId,
-          compactionState.used,
-          this.sessionTokenBudget!,
-        );
-      }
-      if (cooldownSnapshot) {
-        this.cooldowns.clear();
-        for (const [providerName, cooldown] of cooldownSnapshot.entries()) {
-          this.cooldowns.set(providerName, cooldown);
-        }
-      }
-      return {
-        callMessages: input.callMessages,
-        callReconciliationMessages: input.callReconciliationMessages,
-        callSections: input.callSections,
-        statefulHistoryCompacted,
-      };
-    }
+  /**
+   * Build the dependency struct consumed by `compactHistory` and
+   * `maybeCompactInFlightCallInput` free helpers. Bundles every
+   * immutable construction-time config field the compaction chain
+   * needs (providers, cooldowns, promptBudget, retry policy matrix,
+   * cooldown bounds, optional onCompaction hook).
+   */
+  private buildHistoryCompactionDeps(): HistoryCompactionDependencies {
+    return {
+      providers: this.providers,
+      cooldowns: this.cooldowns,
+      promptBudget: this.promptBudget,
+      retryPolicyMatrix: this.retryPolicyMatrix,
+      cooldownMs: this.cooldownMs,
+      maxCooldownMs: this.maxCooldownMs,
+      ...(this.onCompaction ? { onCompaction: this.onCompaction } : {}),
+    };
   }
 
   private getSessionCompactionState(sessionId: string): {
@@ -1542,49 +1424,6 @@ export class ChatExecutor {
   // --------------------------------------------------------------------------
   // Private helpers
   // --------------------------------------------------------------------------
-
-  private async callWithFallback(
-    messages: readonly LLMMessage[],
-    onStreamChunk?: StreamProgressCallback,
-    messageSections?: readonly PromptBudgetSection[],
-    options?: {
-      providersOverride?: readonly LLMProvider[];
-      statefulSessionId?: string;
-      statefulResumeAnchor?: LLMStatefulResumeAnchor;
-      statefulHistoryCompacted?: boolean;
-      reconciliationMessages?: readonly LLMMessage[];
-      routedToolNames?: readonly string[];
-      toolChoice?: LLMToolChoice;
-      parallelToolCalls?: boolean;
-      requestDeadlineAt?: number;
-      signal?: AbortSignal;
-      trace?: ChatExecuteParams["trace"];
-      callIndex?: number;
-      callPhase?: ChatCallUsageRecord["phase"];
-    },
-  ): Promise<FallbackResult> {
-    const startedAt = Date.now();
-    const result = await callWithFallbackFn(
-      {
-        providers: options?.providersOverride ?? this.providers,
-        cooldowns: this.cooldowns,
-        promptBudget: this.promptBudget,
-        retryPolicyMatrix: this.retryPolicyMatrix,
-        cooldownMs: this.cooldownMs,
-        maxCooldownMs: this.maxCooldownMs,
-      },
-      messages,
-      onStreamChunk,
-      messageSections,
-      options,
-    );
-    return {
-      ...result,
-      durationMs: Math.max(1, Date.now() - startedAt),
-    };
-  }
-
-
 
 
 
@@ -1750,97 +1589,4 @@ export class ChatExecutor {
   // Context compaction
   // --------------------------------------------------------------------------
 
-  /** Max chars of history text sent to the summarization call. */
-
-  private async compactHistory(
-    history: readonly LLMMessage[],
-    sessionId: string,
-    trace?: ChatExecuteParams["trace"],
-    existingArtifactContext?: ArtifactCompactionState,
-    keepTailCount?: number,
-  ): Promise<{ history: readonly LLMMessage[]; artifactContext?: ArtifactCompactionState }> {
-    const effectiveKeepTailCount = Math.max(1, keepTailCount ?? 5);
-    if (history.length <= effectiveKeepTailCount) {
-      return {
-        history: [...history],
-        artifactContext: existingArtifactContext,
-      };
-    }
-
-    let narrativeSummary: string | undefined;
-    const toSummarize = history.slice(0, history.length - effectiveKeepTailCount);
-    let historyText = toSummarize
-      .map((message) => {
-        const content =
-          typeof message.content === "string"
-            ? message.content
-            : message.content
-                .filter((part): part is { type: "text"; text: string } => part.type === "text")
-                .map((part) => part.text)
-                .join(" ");
-        return `[${message.role}] ${content.slice(0, 500)}`;
-      })
-      .join("\n");
-    if (historyText.length > MAX_COMPACT_INPUT) {
-      historyText = historyText.slice(-MAX_COMPACT_INPUT);
-    }
-    try {
-      const compactResponse = await this.callWithFallback(
-        [
-          {
-            role: "system",
-            content:
-              "Summarize only the durable task state from this history. Preserve key decisions, important tool outcomes, current artifacts, explicit blockers, and unfinished implementation or verification work. " +
-              "If the history contains stubs, placeholders, partial work, denied commands, or anything still needing verification, list that as unresolved work. " +
-              "Never say there is no unresolved work unless the history explicitly shows final completion and verification closure. Omit pleasantries.",
-          },
-          { role: "user", content: historyText },
-        ],
-        undefined,
-        undefined,
-        {
-          ...(trace
-            ? {
-                trace,
-                callIndex: 0,
-                callPhase: "compaction" as const,
-              }
-            : {}),
-          routedToolNames: [],
-          toolChoice: "none",
-          parallelToolCalls: false,
-        },
-      );
-      narrativeSummary = compactResponse.response.content.trim() || undefined;
-    } catch (error) {
-      throw annotateFailureError(error, "history compaction").error;
-    }
-
-    const compacted = compactHistoryIntoArtifactContext({
-      sessionId,
-      history,
-      keepTailCount: effectiveKeepTailCount,
-      source: "executor_compaction",
-      existingState: existingArtifactContext,
-      ...(narrativeSummary ? { narrativeSummary } : {}),
-    });
-
-    if (this.onCompaction) {
-      try {
-        this.onCompaction(
-          sessionId,
-          narrativeSummary && narrativeSummary.trim().length > 0
-            ? narrativeSummary
-            : compacted.summaryText,
-        );
-      } catch {
-        /* non-blocking */
-      }
-    }
-
-    return {
-      history: compacted.compactedHistory,
-      artifactContext: compacted.state,
-    };
-  }
 }
