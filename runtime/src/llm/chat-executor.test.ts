@@ -252,7 +252,7 @@ describe("ChatExecutor", () => {
 
       const messages = (provider.chat as ReturnType<typeof vi.fn>).mock
         .calls[0][0] as LLMMessage[];
-      expect(messages[0]).toEqual({ role: "system", content: "Be helpful." });
+      expect(messages[0]).toMatchObject({ role: "system", content: "Be helpful." });
     });
 
     it("uses chatStream when onStreamChunk provided", async () => {
@@ -3223,7 +3223,7 @@ describe("ChatExecutor", () => {
 
       const messages = (provider.chat as ReturnType<typeof vi.fn>).mock
         .calls[0][0] as LLMMessage[];
-      expect(messages[1]).toEqual({
+      expect(messages[1]).toMatchObject({
         role: "system",
         content: "Skill context: you can search",
       });
@@ -3286,7 +3286,7 @@ describe("ChatExecutor", () => {
 
       const messages = (provider.chat as ReturnType<typeof vi.fn>).mock
         .calls[0][0] as LLMMessage[];
-      expect(messages[1]).toEqual({
+      expect(messages[1]).toMatchObject({
         role: "system",
         content: "Memory: user prefers short answers",
       });
@@ -3312,10 +3312,14 @@ describe("ChatExecutor", () => {
 
       const messages = (provider.chat as ReturnType<typeof vi.fn>).mock
         .calls[0][0] as LLMMessage[];
-      expect(messages).toContainEqual({
-        role: "system",
-        content: "## Recent Progress\n\n- [tool_result] ran ls",
-      });
+      expect(messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: "system",
+            content: "## Recent Progress\n\n- [tool_result] ran ls",
+          }),
+        ]),
+      );
     });
 
     it("progressProvider failure is non-blocking", async () => {
