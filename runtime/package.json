@@ -38,6 +38,7 @@
     "pretypecheck": "npm run build --workspace=@tetsuo-ai/desktop-tool-contracts",
     "typecheck": "tsc --noEmit",
     "check:package-entrypoints": "node scripts/check-package-entrypoints.mjs",
+    "check:executor-baseline": "node scripts/check-executor-baseline.mjs",
     "check-idl-drift": "tsx scripts/check-idl-drift.ts",
     "pretest": "npm run build --workspace=@tetsuo-ai/desktop-tool-contracts && npm run build --workspace=@tetsuo-ai/plugin-kit-channel-fixture",
     "test": "vitest run --exclude tests/integration.test.ts --exclude tests/eval-replay.integration.test.ts --exclude tests/benchmark-runner.integration.test.ts",
