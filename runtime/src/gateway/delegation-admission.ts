@@ -883,17 +883,6 @@ export function assessDelegationAdmission(
     });
   }
 
-  if (isSharedContextReadOnlyReview(input, economics)) {
-    return buildDecision({
-      allowed: false,
-      reason: "shared_context_review",
-      shape,
-      economics,
-      stepAdmissions,
-      diagnostics,
-    });
-  }
-
   if (
     input.threshold >= 0.5 &&
     economics.utilityScore < clamp01(input.threshold)
