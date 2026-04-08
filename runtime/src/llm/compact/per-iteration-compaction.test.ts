@@ -10,7 +10,7 @@
  * the state-threading rule broke).
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { LLMMessage } from "../types.js";
 import {
   applyPerIterationCompaction,
@@ -220,6 +220,48 @@ describe("applyPerIterationCompaction", () => {
     // Second call is not idle enough for snip/microcompact to fire,
     // but the state must still advance the clock.
     expect(second.state.snip.lastTouchMs).toBe(T0 + 100);
+  });
+
+  it("invokes the optional consolidation hook when supplied (Phase N)", () => {
+    const state = createPerIterationCompactionState();
+    const messages: LLMMessage[] = [
+      makeUser("discuss"),
+      makeAssistant("sure"),
+    ];
+    const summaryMessage: LLMMessage = {
+      role: "system",
+      content: "[consolidation] recurring topics: alpha, beta",
+    };
+    const hook = vi.fn(() => ({
+      action: "consolidated" as const,
+      summaryMessage,
+    }));
+    const result = applyPerIterationCompaction({
+      messages,
+      state,
+      nowMs: T0,
+      consolidationHook: hook,
+    });
+    expect(hook).toHaveBeenCalledTimes(1);
+    expect(result.action).toBe("compacted");
+    expect(result.boundaries.some((m) => m === summaryMessage)).toBe(true);
+  });
+
+  it("skips consolidation when the hook reports noop", () => {
+    const state = createPerIterationCompactionState();
+    const messages: LLMMessage[] = [
+      makeUser("short"),
+      makeAssistant("ok"),
+    ];
+    const hook = vi.fn(() => ({ action: "noop" as const }));
+    const result = applyPerIterationCompaction({
+      messages,
+      state,
+      nowMs: T0,
+      consolidationHook: hook,
+    });
+    expect(hook).toHaveBeenCalledTimes(1);
+    expect(result.action).toBe("noop");
   });
 
   it("accumulates boundaries in layer order (snip before microcompact before autocompact)", () => {

@@ -95,6 +95,22 @@ export interface PerIterationCompactionInput {
   readonly nowMs: number;
   readonly autocompactThresholdTokens?: number;
   readonly lastResponseUsage?: LLMUsage;
+  /**
+   * Phase N: optional memory-consolidation hook. When provided, the
+   * orchestrator invokes the hook after the autocompact decision
+   * layer. The hook receives the current message window and may
+   * return a synthetic summary message; the orchestrator appends
+   * it to the boundary list so the caller can splice it into the
+   * live history. The hook is off by default — only callers that
+   * explicitly wire `memory/consolidation.ts:consolidateEpisodicSlice`
+   * get consolidation semantics. The feature is deliberately opt-in
+   * because it changes the effective prompt shape and should only
+   * activate on long conversations where the caller wants
+   * semantic-noise pruning.
+   */
+  readonly consolidationHook?: (
+    messages: readonly LLMMessage[],
+  ) => { readonly action: "noop" | "consolidated"; readonly summaryMessage?: LLMMessage };
 }
 
 export interface PerIterationCompactionResult {
@@ -189,6 +205,22 @@ export function applyPerIterationCompaction(
     // autocompact is decision-only: it does NOT mutate messages. The
     // caller observes the boundary and runs its summarizer.
     if (autoResult.boundary) boundaries.push(autoResult.boundary);
+  }
+
+  // --- Layer 4 (Phase N, optional): memory consolidation ---
+  // Only fires when the caller has explicitly wired a consolidation
+  // hook. Produces a synthetic summary message that joins the
+  // boundary list — the caller decides whether to splice it into
+  // the live history.
+  if (input.consolidationHook) {
+    const consolidationResult = input.consolidationHook(currentMessages);
+    if (
+      consolidationResult.action === "consolidated" &&
+      consolidationResult.summaryMessage
+    ) {
+      anyAction = true;
+      boundaries.push(consolidationResult.summaryMessage);
+    }
   }
 
   return {
