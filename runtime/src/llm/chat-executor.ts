@@ -108,7 +108,6 @@ import {
   RECOVERY_HINT_PREFIX,
 } from "./chat-executor-constants.js";
 import {
-  didToolCallFail,
   resolveRetryPolicyMatrix,
 } from "./chat-executor-tool-utils.js";
 import {
@@ -118,6 +117,14 @@ import {
 import { ToolFailureCircuitBreaker } from "./tool-failure-circuit-breaker.js";
 import { compactHistoryIntoArtifactContext } from "./context-compaction.js";
 import { selectRelevantArtifactRefs } from "./context-pruning.js";
+import {
+  appendToolRecord,
+  buildTimeoutDetail,
+  getRemainingRequestMs,
+  hasModelRecallBudget,
+  serializeRemainingRequestMs,
+  serializeRequestTimeoutMs,
+} from "./chat-executor-ctx-helpers.js";
 
 function shouldUseSessionStatefulContinuationForPhase(
   phase: ChatCallUsageRecord["phase"],
@@ -673,37 +680,24 @@ export class ChatExecutor {
     }
   }
 
-  private timeoutDetail(
-    stage: string,
-    requestTimeoutMs = this.requestTimeoutMs,
-  ): string {
-    if (requestTimeoutMs <= 0) {
-      return `Request exceeded end-to-end timeout during ${stage}`;
-    }
-    return `Request exceeded end-to-end timeout (${requestTimeoutMs}ms) during ${stage}`;
-  }
-
   private checkRequestTimeout(ctx: ExecutionContext, stage: string): boolean {
-    if (this.getRemainingRequestMs(ctx) > 0) return false;
+    if (getRemainingRequestMs(ctx) > 0) return false;
     this.setStopReason(
       ctx,
       "timeout",
-      this.timeoutDetail(stage, ctx.effectiveRequestTimeoutMs),
+      buildTimeoutDetail(stage, ctx.effectiveRequestTimeoutMs),
     );
     return true;
   }
 
   private appendToolRecord(ctx: ExecutionContext, record: ToolCallRecord): void {
-    ctx.allToolCalls.push(record);
-    if (didToolCallFail(record.isError, record.result)) {
-      ctx.failedToolCalls++;
-    }
+    // Phase F extraction: delegates to the pure helper.
+    appendToolRecord(ctx, record);
   }
 
   private hasModelRecallBudget(ctx: ExecutionContext): boolean {
-    if (ctx.modelCalls === 0) return true;
-    if (ctx.effectiveMaxModelRecalls <= 0) return true;
-    return ctx.modelCalls - 1 < ctx.effectiveMaxModelRecalls;
+    // Phase F extraction: delegates to the pure helper.
+    return hasModelRecallBudget(ctx);
   }
 
   private resolveRunClassForPhase(
@@ -759,20 +753,18 @@ export class ChatExecutor {
   }
 
   private getRemainingRequestMs(ctx: ExecutionContext): number {
-    if (ctx.effectiveRequestTimeoutMs <= 0) {
-      return Number.POSITIVE_INFINITY;
-    }
-    return ctx.requestDeadlineAt - Date.now();
+    // Phase F extraction: delegates to the pure helper.
+    return getRemainingRequestMs(ctx);
   }
 
   private serializeRequestTimeoutMs(timeoutMs: number): number | null {
-    return Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : null;
+    // Phase F extraction: delegates to the pure helper.
+    return serializeRequestTimeoutMs(timeoutMs);
   }
 
   private serializeRemainingRequestMs(remainingRequestMs: number): number | null {
-    return Number.isFinite(remainingRequestMs)
-      ? Math.max(0, remainingRequestMs)
-      : null;
+    // Phase F extraction: delegates to the pure helper.
+    return serializeRemainingRequestMs(remainingRequestMs);
   }
 
   private emitExecutionTrace(
