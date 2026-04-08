@@ -17,14 +17,12 @@ import type {
   LLMStructuredOutputRequest,
   LLMToolChoice,
   LLMResponse,
-  LLMUsage,
   StreamProgressCallback,
   ToolHandler,
 } from "./types.js";
 import type { ArtifactCompactionState } from "../memory/artifact-store.js";
 import type {
   PromptBudgetConfig,
-  PromptBudgetDiagnostics,
   PromptBudgetSection,
 } from "./prompt-budget.js";
 import type {
@@ -66,7 +64,6 @@ import type {
   ToolCallRecord,
   ChatExecutionTraceEvent,
   ChatExecuteParams,
-  ChatPromptShape,
   ChatCallUsageRecord,
   ChatPlannerSummary,
   ChatExecutorResult,
@@ -131,6 +128,10 @@ import {
   getContextSectionMaxChars as getContextSectionMaxCharsFree,
   resolveRoutingDecision as resolveRoutingDecisionFree,
 } from "./chat-executor-config.js";
+import {
+  accumulateUsage as accumulateUsageFree,
+  createCallUsageRecord as createCallUsageRecordFree,
+} from "./chat-executor-usage.js";
 
 function shouldUseSessionStatefulContinuationForPhase(
   phase: ChatCallUsageRecord["phase"],
@@ -1020,7 +1021,7 @@ export class ChatExecutor {
       next.response.providerEvidence,
     );
     if (next.usedFallback) ctx.usedFallback = true;
-    this.accumulateUsage(ctx.cumulativeUsage, next.response.usage);
+    accumulateUsageFree(ctx.cumulativeUsage, next.response.usage);
     this.trackTokenUsage(ctx.sessionId, next.response.usage.totalTokens);
     recordRuntimeModelCall({
       policy: this.economicsPolicy,
@@ -1036,7 +1037,7 @@ export class ChatExecutor {
       reason: routingDecision.route.reason,
     });
     ctx.callUsage.push(
-      this.createCallUsageRecord({
+      createCallUsageRecordFree({
         callIndex: ++ctx.callIndex,
         phase: input.phase,
         providerName: next.providerName,
@@ -1831,12 +1832,6 @@ export class ChatExecutor {
     return getContextSectionMaxCharsFree(this.promptBudget, section);
   }
 
-  private accumulateUsage(cumulative: LLMUsage, usage: LLMUsage): void {
-    cumulative.promptTokens += usage.promptTokens;
-    cumulative.completionTokens += usage.completionTokens;
-    cumulative.totalTokens += usage.totalTokens;
-  }
-
   private trackTokenUsage(sessionId: string, tokens: number): void {
     // Phase F extraction (PR-1): delegates to pure helper with the
     // class's session token Map + cap + breaker threaded as
@@ -1850,32 +1845,6 @@ export class ChatExecutor {
     );
   }
 
-  private createCallUsageRecord(input: {
-    callIndex: number;
-    phase: ChatCallUsageRecord["phase"];
-    providerName: string;
-    response: LLMResponse;
-    beforeBudget: ChatPromptShape;
-    afterBudget: ChatPromptShape;
-    budgetDiagnostics?: PromptBudgetDiagnostics;
-    durationMs: number;
-  }): ChatCallUsageRecord {
-    return {
-      callIndex: input.callIndex,
-      phase: input.phase,
-      provider: input.providerName,
-      model: input.response.model,
-      finishReason: input.response.finishReason,
-      usage: input.response.usage,
-      durationMs: input.durationMs,
-      beforeBudget: input.beforeBudget,
-      afterBudget: input.afterBudget,
-      providerRequestMetrics: input.response.requestMetrics,
-      budgetDiagnostics: input.budgetDiagnostics,
-      statefulDiagnostics: input.response.stateful,
-      compactionDiagnostics: input.response.compaction,
-    };
-  }
 
   // --------------------------------------------------------------------------
   // Context compaction
