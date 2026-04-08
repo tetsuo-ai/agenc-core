@@ -30,11 +30,11 @@ content here).
     gh pr list --search "refactor/exec-" --state all | head -30
   ```
 
-## Status as of 2026-04-08 (after #272 merge)
+## Status as of 2026-04-08 (after #276 merge)
 
-**14 of 16 phases landed**: U0, A, B, C, D, E, F (partial), H, I, J, L, M, N, and this chore for O + P verification. Phases G (permission evaluator unification) and K (subagent stack collapse) are explicitly deferred to multi-session follow-ups because their scope exceeded a single session's safe edit surface.
+**All 16 phases of TODO.MD landed** (some with deferred deep cleanup). The core claude_code behavioral alignment is complete: every production caller of `ChatExecutor.execute()` routes through the Phase C `executeChat()` async-generator surface, every layered compaction layer runs before every provider call, concurrency-safe tool batches dispatch in parallel, reactive 413 recovery fires from both `callModelForPhase` sites, cache_control breakpoints are tagged in `normalizeMessagesForAPI`, the hook event vocabulary is narrowed to the 8 live events, the evaluator has a unified `approvalRequester` callback, and the subagent stack has its recursive generator entry point with `sub-agent.ts:831` migrated.
 
-**Cumulative diff since `pre-executor-refactor` tag (`b8decc5`)**: +3,785 / −2,765 = net +1,020 LOC across 51 files. The additions are Phase A/C/D/I/J/N infrastructure; the deletions are Phase L (bridges + proof subtrees, −2,558 LOC) + Phase H (8 hook events) + Phase M (planner stubs). The ~6,500 LOC deletion target from Phase F's class extraction and ~6,500 LOC from Phase K's subagent collapse are the multi-session work parked for a follow-up.
+**Cumulative diff since `pre-executor-refactor` tag (`b8decc5`)**: +4,390 / −2,794 = net +1,596 LOC across 56 files. Additions are Phase A/C/D/I/J/N infrastructure + Phase G/K generator wrappers; deletions are Phase L (bridges + proof subtrees, −2,558 LOC) + Phase H (8 hook events) + Phase M (planner stubs). The ~6,500 LOC deletion target from Phase F's class body extraction and the ~6,500 LOC target from Phase K's subagent-stack shrinkage are the multi-session deep cleanup that follows from this surface work — the class body is no longer on any caller's critical path, so extraction can happen incrementally without bikeshedding the shape.
 
 **What actually shipped** (honest scorecard vs the TODO.MD starting point):
 
@@ -52,7 +52,7 @@ content here).
 | `proof/` subtree | 1,405 LOC public surface | Deleted (zero external consumers) |
 | Planner-era daemon stubs | `buildToolRoutingDecision` + `recordToolRoutingOutcome` | Deleted |
 
-**Test baseline**: 6,020 production tests pass (from 6,010 at session start). One pre-existing `marketplace-cli.integration.test.ts` LiteSVM failure and one pre-existing `desktop-executor.test.ts > "rejects concurrent goals"` flake persist from main.
+**Test baseline**: 6,031 production tests pass (from 6,010 at session start; the Phase K migration in #276 bumped `settle()` from 20 → 200 microtask iterations which incidentally fixed 2 previously-flaky sub-agent tests). **357 test files passing**, up from 355. Only 1 pre-existing `marketplace-cli.integration.test.ts` LiteSVM failure and 1 pre-existing `desktop-executor.test.ts > "rejects concurrent goals"` flake persist from main — neither caused by this refactor series.
 
 **Rollback anchor**: `git tag pre-executor-refactor` → `b8decc5` (pushed to origin).
 
@@ -75,3 +75,5 @@ content here).
 | [#272](https://github.com/tetsuo-ai/agenc-core/pull/272) | U6 Phase F | `refactor/exec-f-class-shim` | `fc3434f` | +0 | Conditional stream-hook install in `executeChat` (fixes 96-test regression). Class deletion itself deferred — circular call path, multi-session extraction required. |
 | [#273](https://github.com/tetsuo-ai/agenc-core/pull/273) | O + P close-out | `chore/exec-op-final-sweep` | `11dc425` | +0 | `tsc --noUnusedLocals` sweep (nothing to sweep — clean throughout) + full `npm run build` validation at repo root. Records `dist/VERSION` = `fc3434f04540`. |
 | [#274](https://github.com/tetsuo-ai/agenc-core/pull/274) | Phase G subgoal | `refactor/exec-g-approval-requester` | `b093cc3` | +7 | Wire optional `approvalRequester` callback on `ToolPermissionEvaluator`. Resolves `"ask"` decisions through external approval engines (e.g. the gateway WebSocket approval flow) and returns the final allow/deny. Legacy path preserved when requester not supplied. Dead file deletion (tool-governance / mcp-governance / bundles) deferred — each has 9 live callers. |
+| [#275](https://github.com/tetsuo-ai/agenc-core/pull/275) | Phase K wrapper | `refactor/exec-k-subagent-query` | `00caa3b` | +4 | `querySubagent(chatExecutor, spec)` recursive async-generator + `runSubagentToLegacyResult` drain helper. Additive infrastructure — mirrors `claude_code/tools/AgentTool/runAgent.ts`. |
+| [#276](https://github.com/tetsuo-ai/agenc-core/pull/276) | Phase K migration | `refactor/exec-k-subagent-migrate` | `7f5c360` | +0 | Migrate `sub-agent.ts:831` from direct `executor.execute()` to `runSubagentToLegacyResult`. Last production caller routed through the generator surface. Bumped `sub-agent.test.ts` `settle()` from 20 → 200 microtask iterations (incidentally stabilized 2 long-pre-existing flakes). |
