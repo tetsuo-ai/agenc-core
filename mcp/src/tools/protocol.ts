@@ -1,8 +1,6 @@
 import { PublicKey } from "@solana/web3.js";
 import { SEEDS } from "@tetsuo-ai/sdk";
 import {
-  getAnchorErrorName,
-  getAnchorErrorMessage,
   findProtocolPda,
   deriveAgentPda,
   deriveProtocolPda,
@@ -342,90 +340,6 @@ export function registerProtocolTools(server: McpServer): void {
                 "Bump: " + (bump !== undefined ? bump : "N/A"),
                 "Seeds: " + seedsDesc,
                 "Program: " + programId.toBase58(),
-              ].join("\n"),
-            },
-          ],
-        };
-      } catch (error) {
-        return toolErrorResponse(error);
-      }
-    },
-  );
-
-  server.tool(
-    "agenc_decode_error",
-    "Decode an Anchor error code (6000-6077) to name and description",
-    {
-      error_code: z.number().int().describe("Anchor error code (e.g. 6000)"),
-    },
-    async ({ error_code }) => {
-      try {
-        const name = getAnchorErrorName(error_code);
-        const message = name
-          ? getAnchorErrorMessage(
-              error_code as Parameters<typeof getAnchorErrorMessage>[0],
-            )
-          : undefined;
-
-        if (!name) {
-          // Check if it's a standard Anchor framework error
-          if (error_code >= 100 && error_code < 6000) {
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text:
-                    "Error code " +
-                    error_code +
-                    " is an Anchor framework error, not an AgenC program error.\nAgenC error codes range from 6000-6175.",
-                },
-              ],
-            };
-          }
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text:
-                  "Unknown error code: " +
-                  error_code +
-                  "\nValid range: 6000-6175",
-              },
-            ],
-          };
-        }
-
-        // Determine category based on error enum ordering in errors.rs.
-        // Boundaries are the LAST code in each category range (6000 + enum index).
-        const ERROR_CATEGORY_BOUNDARIES: ReadonlyArray<
-          readonly [number, string]
-        > = [
-          [6007, "Agent"],
-          [6023, "Task"],
-          [6032, "Claim"],
-          [6047, "Dispute"],
-          [6050, "State"],
-          [6061, "Protocol"],
-          [6068, "General"],
-          [6071, "Rate Limiting"],
-        ];
-        const category =
-          ERROR_CATEGORY_BOUNDARIES.find(([max]) => error_code <= max)?.[1] ??
-          "Version/Upgrade";
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: [
-                "Error Code: " +
-                  error_code +
-                  " (0x" +
-                  error_code.toString(16) +
-                  ")",
-                "Name: " + name,
-                "Category: " + category,
-                "Description: " + (message || "No description available"),
               ].join("\n"),
             },
           ],
