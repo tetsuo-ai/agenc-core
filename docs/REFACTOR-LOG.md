@@ -30,6 +30,32 @@ content here).
     gh pr list --search "refactor/exec-" --state all | head -30
   ```
 
+## Status as of 2026-04-08 (after #272 merge)
+
+**14 of 16 phases landed**: U0, A, B, C, D, E, F (partial), H, I, J, L, M, N, and this chore for O + P verification. Phases G (permission evaluator unification) and K (subagent stack collapse) are explicitly deferred to multi-session follow-ups because their scope exceeded a single session's safe edit surface.
+
+**Cumulative diff since `pre-executor-refactor` tag (`b8decc5`)**: +3,785 / −2,765 = net +1,020 LOC across 51 files. The additions are Phase A/C/D/I/J/N infrastructure; the deletions are Phase L (bridges + proof subtrees, −2,558 LOC) + Phase H (8 hook events) + Phase M (planner stubs). The ~6,500 LOC deletion target from Phase F's class extraction and ~6,500 LOC from Phase K's subagent collapse are the multi-session work parked for a follow-up.
+
+**What actually shipped** (honest scorecard vs the TODO.MD starting point):
+
+| Subsystem | Before | After |
+|---|---|---|
+| Layered compaction | SKELETON ONLY (zero imports) | Live: snip → microcompact → autocompact runs before every provider call in `chat-executor-tool-loop.ts` |
+| Parallel tool dispatch | TELEMETRY ONLY | Live: `Promise.all` on concurrency-safe batches, partition-aware |
+| Reactive 413 compaction | Not implemented | Live: `LLMContextWindowExceededError` detection + retry wrapper |
+| cache_control breakpoints | Zero references | Tagging infrastructure landed in `normalizeMessagesForAPI`; adapter wiring deferred pending xAI docs verification |
+| Async generator loop | Class-based only | `executeChat()` generator runs in parallel with the class; 10 production callers drain it via `executeChatToLegacyResult` |
+| Memory consolidation layer | Not wired | Optional `consolidationHook` on the per-iteration chain + deterministic slice helper |
+| Streaming event vocabulary | No yielded event types | 7 event types + legacy-callback bridge |
+| Hook vocabulary | 16 types declared, 3 fired | 8 types (8 dead ones deleted); `SessionStart`/`Stop`/`StopFailure`/`PreCompact`/`PostCompact` wire-up remains pending |
+| `bridges/` subtree | 1,124 LOC public surface | Deleted (zero external consumers) |
+| `proof/` subtree | 1,405 LOC public surface | Deleted (zero external consumers) |
+| Planner-era daemon stubs | `buildToolRoutingDecision` + `recordToolRoutingOutcome` | Deleted |
+
+**Test baseline**: 6,020 production tests pass (from 6,010 at session start). One pre-existing `marketplace-cli.integration.test.ts` LiteSVM failure and one pre-existing `desktop-executor.test.ts > "rejects concurrent goals"` flake persist from main.
+
+**Rollback anchor**: `git tag pre-executor-refactor` → `b8decc5` (pushed to origin).
+
 ## Ledger
 
 | PR # | Phase | Branch | Merged SHA | Test count Δ | Notes |
@@ -46,3 +72,5 @@ content here).
 | [#269](https://github.com/tetsuo-ai/agenc-core/pull/269) | U9 Phase L | `refactor/exec-l-dead-files` | `9cdd581` | −27 | Delete `runtime/src/bridges/` (LangChain/X402/Farcaster) and `runtime/src/proof/` (ZK engine) — zero external consumers. −2,558 LOC net. |
 | [#270](https://github.com/tetsuo-ai/agenc-core/pull/270) | U9 Phase N | `refactor/exec-n-memory-consolidation` | `a3b421a` | +10 | Add deterministic `consolidateEpisodicSlice` + optional `consolidationHook` layer in `applyPerIterationCompaction`. |
 | [#271](https://github.com/tetsuo-ai/agenc-core/pull/271) | U5 Phase E | `refactor/exec-e-text-channel` | `3c7ea2f` | +0 | Migrate all 10 production callers to drain `executeChat` via `executeChatToLegacyResult`. Preserves field reads, honors error rethrow contract. |
+| [#272](https://github.com/tetsuo-ai/agenc-core/pull/272) | U6 Phase F | `refactor/exec-f-class-shim` | `fc3434f` | +0 | Conditional stream-hook install in `executeChat` (fixes 96-test regression). Class deletion itself deferred — circular call path, multi-session extraction required. |
+| [#273](https://github.com/tetsuo-ai/agenc-core/pull/273) *(pending)* | O + P close-out | `chore/exec-op-final-sweep` | — | +0 | `tsc --noUnusedLocals` sweep (nothing to sweep — clean throughout) + full `npm run build` validation at repo root. Records `dist/VERSION` = `fc3434f04540`. |
