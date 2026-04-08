@@ -22,6 +22,19 @@ interface CompletionStateToolCall {
   readonly isError: boolean;
 }
 
+function requiresPassedVerificationForCompletion(
+  completionContract: ImplementationCompletionContract | undefined,
+): boolean {
+  switch (completionContract?.taskClass) {
+    case "behavior_required":
+    case "build_required":
+    case "review_required":
+      return true;
+    default:
+      return false;
+  }
+}
+
 export function resolvePipelineCompletionState(input: {
   readonly status: "running" | "completed" | "failed" | "halted";
   readonly completedSteps: number;
@@ -45,6 +58,8 @@ export function resolveWorkflowCompletionState(input: {
   readonly verifier?: PlannerVerificationSnapshot;
 }): WorkflowCompletionState {
   const verifier = input.verifier;
+  const completionContract =
+    input.completionContract ?? input.verificationContract?.completionContract;
   const successfulToolCalls = input.toolCalls.filter(
     (toolCall) => !didToolCallFail(toolCall.isError, toolCall.result),
   );
@@ -60,6 +75,12 @@ export function resolveWorkflowCompletionState(input: {
     }
     if (verifier?.overall === "retry" || verifier?.overall === "fail") {
       return hasProgress ? "partial" : "blocked";
+    }
+    if (
+      requiresPassedVerificationForCompletion(completionContract) &&
+      verifier?.overall !== "pass"
+    ) {
+      return "needs_verification";
     }
     return "completed";
   }
