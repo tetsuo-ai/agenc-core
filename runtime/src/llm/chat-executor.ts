@@ -11,11 +11,7 @@
 
 import type {
   LLMProvider,
-  LLMProviderEvidence,
   LLMMessage,
-  LLMStatefulResumeAnchor,
-  LLMStructuredOutputRequest,
-  LLMToolChoice,
   LLMResponse,
   StreamProgressCallback,
   ToolHandler,
@@ -32,8 +28,6 @@ import { resolveWorkflowCompletionState } from "../workflow/completion-state.js"
 import { deriveWorkflowProgressSnapshot } from "../workflow/completion-progress.js";
 import {
   buildModelRoutingPolicy,
-  getProviderRouteKey,
-  resolveParallelToolCallPolicy,
   type ModelRoutingPolicy,
 } from "./model-routing-policy.js";
 import { isConcordiaSimulationTurnMessage } from "./chat-executor-turn-contracts.js";
@@ -50,30 +44,22 @@ import type {
 // ---------------------------------------------------------------------------
 
 import {
-  annotateFailureError,
-} from "./chat-executor-provider-retry.js";
-import {
   ChatBudgetExceededError,
   buildDefaultExecutionContext,
 } from "./chat-executor-types.js";
 import type {
-  DetailedSkillInjectionResult,
   SkillInjector,
   MemoryRetriever,
-  ChatExecutionTraceEvent,
   ChatExecuteParams,
-  ChatCallUsageRecord,
   ChatPlannerSummary,
   ChatExecutorResult,
   ChatExecutorConfig,
   CooldownEntry,
-  FallbackResult,
   ExecutionContext,
 } from "./chat-executor-types.js";
 import {
   buildRuntimeEconomicsPolicy,
   buildRuntimeEconomicsSummary,
-  recordRuntimeModelCall,
   type RuntimeEconomicsPolicy,
   type RuntimeRunClass,
 } from "./run-budget.js";
@@ -97,137 +83,16 @@ import {
 import {
   resolveRetryPolicyMatrix,
 } from "./chat-executor-tool-utils.js";
-import {
-  applyActiveRoutedToolNames,
-  resolveEffectiveRoutedToolNames,
-} from "./chat-executor-routing-state.js";
 import { ToolFailureCircuitBreaker } from "./tool-failure-circuit-breaker.js";
 import { selectRelevantArtifactRefs } from "./context-pruning.js";
 import {
   checkRequestTimeout as checkRequestTimeoutFree,
-  emitExecutionTrace as emitExecutionTraceFree,
-  getRemainingRequestMs,
-  hasModelRecallBudget,
   pushMessage as pushMessageFree,
-  serializeRemainingRequestMs,
-  serializeRequestTimeoutMs,
   setStopReason as setStopReasonFree,
 } from "./chat-executor-ctx-helpers.js";
 import {
-  buildDegradedProviderNames as buildDegradedProviderNamesFree,
   getSessionCompactionState as getSessionCompactionStateFree,
-  trackTokenUsage as trackTokenUsageFree,
 } from "./chat-executor-state.js";
-import {
-  getContextSectionMaxChars as getContextSectionMaxCharsFree,
-  resolveRoutingDecision as resolveRoutingDecisionFree,
-} from "./chat-executor-config.js";
-import {
-  accumulateUsage as accumulateUsageFree,
-  createCallUsageRecord as createCallUsageRecordFree,
-} from "./chat-executor-usage.js";
-
-function shouldUseSessionStatefulContinuationForPhase(
-  phase: ChatCallUsageRecord["phase"],
-): boolean {
-  return phase === "initial" || phase === "tool_followup";
-}
-
-interface DetailedMemoryTraceEntry {
-  readonly role?: string;
-  readonly source?: string;
-  readonly provenance?: string;
-  readonly combinedScore?: number;
-}
-
-interface DetailedMemoryRetrievalResult {
-  readonly content: string | undefined;
-  readonly entries?: readonly DetailedMemoryTraceEntry[];
-  readonly curatedIncluded?: boolean;
-  readonly estimatedTokens?: number;
-}
-
-interface DetailedMemoryRetriever extends MemoryRetriever {
-  retrieveDetailed(
-    message: string,
-    sessionId: string,
-  ): Promise<DetailedMemoryRetrievalResult>;
-}
-
-interface DetailedSkillInjector extends SkillInjector {
-  injectDetailed(
-    message: string,
-    sessionId: string,
-  ): Promise<DetailedSkillInjectionResult>;
-}
-
-function isDetailedMemoryRetriever(
-  provider: SkillInjector | MemoryRetriever | undefined,
-): provider is DetailedMemoryRetriever {
-  return (
-    !!provider &&
-    "retrieveDetailed" in provider &&
-    typeof provider.retrieveDetailed === "function"
-  );
-}
-
-function isDetailedSkillInjector(
-  provider: SkillInjector | MemoryRetriever | undefined,
-): provider is DetailedSkillInjector {
-  return (
-    !!provider &&
-    "injectDetailed" in provider &&
-    typeof provider.injectDetailed === "function"
-  );
-}
-
-function mergeProviderEvidence(
-  current: LLMProviderEvidence | undefined,
-  incoming: LLMProviderEvidence | undefined,
-): LLMProviderEvidence | undefined {
-  if (!current) return incoming;
-  if (!incoming) return current;
-
-  const citations = Array.from(new Set([
-    ...(current.citations ?? []),
-    ...(incoming.citations ?? []),
-  ]));
-  const serverSideToolCalls = [
-    ...(current.serverSideToolCalls ?? []),
-    ...(incoming.serverSideToolCalls ?? []),
-  ];
-  const serverSideToolUsageByCategory = new Map<string, number>();
-  for (const entry of [
-    ...(current.serverSideToolUsage ?? []),
-    ...(incoming.serverSideToolUsage ?? []),
-  ]) {
-    serverSideToolUsageByCategory.set(
-      entry.category,
-      (serverSideToolUsageByCategory.get(entry.category) ?? 0) + entry.count,
-    );
-  }
-  const serverSideToolUsage = [...serverSideToolUsageByCategory.entries()].map(
-    ([category, count]) => ({
-      category,
-      toolType:
-        [...(current.serverSideToolUsage ?? []), ...(incoming.serverSideToolUsage ?? [])]
-          .find((entry) => entry.category === category)?.toolType,
-      count,
-    }),
-  );
-  if (
-    citations.length === 0 &&
-    serverSideToolCalls.length === 0 &&
-    serverSideToolUsage.length === 0
-  ) {
-    return undefined;
-  }
-  return {
-    ...(citations.length > 0 ? { citations } : {}),
-    ...(serverSideToolCalls.length > 0 ? { serverSideToolCalls } : {}),
-    ...(serverSideToolUsage.length > 0 ? { serverSideToolUsage } : {}),
-  };
-}
 
 function mergeExplicitRequirementToolNames(
   primaryToolNames: readonly string[],
@@ -248,12 +113,10 @@ function mergeExplicitRequirementToolNames(
 
 import {
   extractMessageText,
-  truncateText,
   sanitizeFinalContent,
   normalizeHistory,
   normalizeHistoryForStatefulReconciliation,
   appendUserMessage,
-  buildToolExecutionGroundingMessage,
 } from "./chat-executor-text.js";
 import {
   summarizeStateful,
@@ -265,15 +128,17 @@ import {
   requestRequiresToolGroundedExecution,
 } from "./chat-executor-planner.js";
 import {
-  callWithFallback as callWithFallbackFn,
-} from "./chat-executor-fallback.js";
-import {
   compactHistory as compactHistoryFree,
   type HistoryCompactionDependencies,
 } from "./chat-executor-history-compaction.js";
 import {
-  maybeCompactInFlightCallInput as maybeCompactInFlightCallInputFree,
-} from "./chat-executor-in-flight-compaction.js";
+  injectContext as injectContextFree,
+} from "./chat-executor-context-injection.js";
+import {
+  callModelForPhase as callModelForPhaseFree,
+  type CallModelForPhaseDependencies,
+  type CallModelForPhaseInput,
+} from "./chat-executor-model-orchestration.js";
 import {
   deriveActiveTaskContext,
   mergeTurnExecutionRequiredToolEvidence,
@@ -688,320 +553,55 @@ export class ChatExecutor {
     return checkRequestTimeoutFree(ctx, stage);
   }
 
-  private resolveRoutingDecision(
-    ctx: ExecutionContext,
-    phase: ChatCallUsageRecord["phase"],
-    requirements?: {
-      readonly statefulContinuationRequired?: boolean;
-      readonly structuredOutputRequired?: boolean;
-      readonly routedToolNames?: readonly string[];
-    },
-  ) {
-    // Phase F extraction (PR-2): delegates to pure helper with
-    // degradedProviderNames pre-computed from the state module.
-    return resolveRoutingDecisionFree(
-      ctx,
-      phase,
-      {
-        economicsPolicy: this.economicsPolicy,
-        modelRoutingPolicy: this.modelRoutingPolicy,
-        defaultRunClass: this.defaultRunClass,
-      },
-      this.buildDegradedProviderNames(),
-      requirements,
-    );
+
+
+
+
+  /**
+   * Build the dependency struct consumed by `callModelForPhase` and
+   * the tool-loop callbacks wrapper. Bundles every readonly
+   * construction-time field the free orchestration helper reads.
+   */
+  private buildCallModelForPhaseDeps(): CallModelForPhaseDependencies {
+    return {
+      historyCompaction: this.buildHistoryCompactionDeps(),
+      providers: this.providers,
+      cooldowns: this.cooldowns,
+      promptBudget: this.promptBudget,
+      retryPolicyMatrix: this.retryPolicyMatrix,
+      cooldownMs: this.cooldownMs,
+      maxCooldownMs: this.maxCooldownMs,
+      economicsPolicy: this.economicsPolicy,
+      modelRoutingPolicy: this.modelRoutingPolicy,
+      allowedTools: this.allowedTools,
+      defaultRunClass: this.defaultRunClass,
+      sessionTokens: this.sessionTokens,
+      sessionTokenBudget: this.sessionTokenBudget,
+      sessionCompactionThreshold: this.sessionCompactionThreshold,
+      maxTrackedSessions: this.maxTrackedSessions,
+      toolFailureBreaker: this.toolFailureBreaker,
+    };
   }
-
-  private buildDegradedProviderNames(): readonly string[] {
-    // Phase F extraction (PR-1): delegates to pure helper with
-    // the class's cooldown Map threaded as an argument.
-    return buildDegradedProviderNamesFree(this.cooldowns);
-  }
-
-  private emitExecutionTrace(
-    ctx: ExecutionContext,
-    event: ChatExecutionTraceEvent,
-  ): void {
-    // Phase F extraction (PR-1): delegates to pure helper.
-    emitExecutionTraceFree(ctx, event);
-  }
-
-
-
-
 
   private async callModelForPhase(
     ctx: ExecutionContext,
-    input: {
-      phase: ChatCallUsageRecord["phase"];
-      callMessages: readonly LLMMessage[];
-      callReconciliationMessages?: readonly LLMMessage[];
-      callSections?: readonly PromptBudgetSection[];
-      onStreamChunk?: StreamProgressCallback;
-      statefulSessionId?: string;
-      statefulResumeAnchor?: LLMStatefulResumeAnchor;
-      statefulHistoryCompacted?: boolean;
-      routedToolNames?: readonly string[];
-      persistRoutedToolNames?: boolean;
-      toolChoice?: LLMToolChoice;
-      structuredOutput?: LLMStructuredOutputRequest;
-      preparationDiagnostics?: Record<string, unknown>;
-      allowRecallBudgetBypass?: boolean;
-      budgetReason: string;
-    },
+    input: CallModelForPhaseInput,
   ): Promise<LLMResponse | undefined> {
-    if (!input.allowRecallBudgetBypass && !hasModelRecallBudget(ctx)) {
-      this.setStopReason(ctx, "budget_exceeded", input.budgetReason);
-      return undefined;
-    }
-    if (this.checkRequestTimeout(ctx, `${input.phase} model call`)) {
-      // checkRequestTimeout already routes through setStopReason() which
-      // honors the "only transition from completed" guard. The previous
-      // direct `ctx.stopReason = "timeout"` assignment here bypassed that
-      // guard and could overwrite an earlier authoritative stop reason
-      // (audit S1.3).
-      return undefined;
-    }
-    const effectiveRoutedToolNames = resolveEffectiveRoutedToolNames({
-      requestedRoutedToolNames: input.routedToolNames,
-      hasToolRouting: Boolean(ctx.toolRouting),
-      activeRoutedToolNames: ctx.activeRoutedToolNames,
-      allowedTools: this.allowedTools ?? undefined,
-    });
-    const allowStatefulContinuation =
-      shouldUseSessionStatefulContinuationForPhase(input.phase);
-    if (input.persistRoutedToolNames !== false) {
-      applyActiveRoutedToolNames(ctx, effectiveRoutedToolNames);
-      ctx.transientRoutedToolNames = undefined;
-    } else {
-      ctx.transientRoutedToolNames = effectiveRoutedToolNames;
-    }
-    const compactedCallInput = await maybeCompactInFlightCallInputFree(
+    // Phase F extraction (PR-7, E5): delegates to the free helper in
+    // chat-executor-model-orchestration.ts. The method stays on the
+    // class as a 1-call wrapper because the tool loop's callback
+    // struct threads it through as a dependency (PR-5). PR-8 deletes
+    // this delegator when executeRequest and the class itself shrink
+    // to a DI container.
+    return callModelForPhaseFree(
       ctx,
-      {
-        callMessages: input.callMessages,
-        callReconciliationMessages: input.callReconciliationMessages,
-        callSections: input.callSections,
-        statefulHistoryCompacted: input.statefulHistoryCompacted,
-      },
-      {
-        ...this.buildHistoryCompactionDeps(),
-        sessionTokens: this.sessionTokens,
-        sessionTokenBudget: this.sessionTokenBudget,
-        sessionCompactionThreshold: this.sessionCompactionThreshold,
-      },
+      input,
+      this.buildCallModelForPhaseDeps(),
       {
         resetSessionTokens: (sessionId: string) =>
           this.resetSessionTokens(sessionId),
       },
     );
-    const groundingMessage =
-      input.phase === "tool_followup"
-        ? buildToolExecutionGroundingMessage({
-          toolCalls: ctx.allToolCalls,
-          providerEvidence: ctx.providerEvidence,
-        })
-        : undefined;
-    const effectiveCallMessages = groundingMessage
-      ? [...compactedCallInput.callMessages, groundingMessage]
-      : [...compactedCallInput.callMessages];
-    const effectiveCallSections =
-      groundingMessage && compactedCallInput.callSections
-        ? [...compactedCallInput.callSections, "system_runtime" as const]
-        : compactedCallInput.callSections;
-    const requestedStructuredOutput =
-      input.structuredOutput?.enabled === false ||
-        input.structuredOutput?.schema === undefined
-        ? undefined
-        : input.structuredOutput;
-    const statefulContinuationRequired =
-      allowStatefulContinuation &&
-      Boolean(input.statefulSessionId) &&
-      (
-        input.phase === "tool_followup" ||
-        Boolean(input.statefulResumeAnchor) ||
-        compactedCallInput.statefulHistoryCompacted === true ||
-        ctx.history.length > 0
-      );
-    let routingDecision: ReturnType<ChatExecutor["resolveRoutingDecision"]>;
-    try {
-      routingDecision = this.resolveRoutingDecision(ctx, input.phase, {
-        statefulContinuationRequired,
-        structuredOutputRequired: requestedStructuredOutput !== undefined,
-        routedToolNames: effectiveRoutedToolNames,
-      });
-    } catch (error) {
-      const annotated = annotateFailureError(
-        error,
-        `${input.phase} routing preflight`,
-      );
-      this.setStopReason(ctx, annotated.stopReason, annotated.stopReasonDetail);
-      throw annotated.error;
-    }
-    const parallelToolCalls = resolveParallelToolCallPolicy({
-      policy: this.modelRoutingPolicy,
-      selectedProviderName: routingDecision.route.selectedProviderName,
-      selectedProviderRouteKey: routingDecision.route.selectedProviderRouteKey,
-      phase: input.phase,
-    });
-    const disableStreaming =
-      ctx.plannerDecision.reason === "concordia_generate_agents_turn" ||
-      ctx.plannerDecision.reason === "exact_response_turn" ||
-      ctx.plannerDecision.reason === "dialogue_memory_turn";
-    const structuredOutput =
-      requestedStructuredOutput &&
-      routingDecision.route.selectedProviderName === "grok"
-        ? requestedStructuredOutput
-        : undefined;
-    if (
-      this.economicsPolicy.mode === "enforce" &&
-      routingDecision.pressure.hardExceeded
-    ) {
-      this.setStopReason(
-        ctx,
-        "budget_exceeded",
-        `${routingDecision.runClass} budget ceiling reached before ${input.phase} model call`,
-      );
-      return undefined;
-    }
-    this.emitExecutionTrace(ctx, {
-      type: "model_call_prepared",
-      phase: input.phase,
-      callIndex: ctx.callIndex + 1,
-      payload: {
-        ...(input.routedToolNames !== undefined
-          ? { requestedRoutedToolNames: input.routedToolNames }
-          : {}),
-        ...(input.preparationDiagnostics ?? {}),
-        routedToolNames: effectiveRoutedToolNames ?? [],
-        activeRecoveryHintKeys: ctx.activeRecoveryHintKeys,
-        remainingRequestMs: serializeRemainingRequestMs(
-          getRemainingRequestMs(ctx),
-        ),
-        effectiveRequestTimeoutMs: serializeRequestTimeoutMs(
-          ctx.effectiveRequestTimeoutMs,
-        ),
-        toolChoice:
-          input.toolChoice === undefined
-            ? undefined
-            : typeof input.toolChoice === "string"
-            ? input.toolChoice
-            : input.toolChoice.name,
-        parallelToolCalls,
-        structuredOutputSchemaName: structuredOutput?.schema?.name,
-        messageCount: effectiveCallMessages.length,
-        groundingMessageAdded: Boolean(groundingMessage),
-        activeRouteMisses: ctx.routedToolMisses,
-        routedToolsExpanded: ctx.routedToolsExpanded,
-        economicsRunClass: routingDecision.runClass,
-        providerRoute: routingDecision.route.providers.map((provider) =>
-          getProviderRouteKey(provider)
-        ),
-        providerRouteReason: routingDecision.route.reason,
-        budgetPressure: {
-          tokenRatio: Number(routingDecision.pressure.tokenRatio.toFixed(4)),
-          latencyRatio: Number(routingDecision.pressure.latencyRatio.toFixed(4)),
-          spendRatio: Number(routingDecision.pressure.spendRatio.toFixed(4)),
-          hardExceeded: routingDecision.pressure.hardExceeded,
-          downgraded: routingDecision.route.downgraded,
-        },
-      },
-    });
-    let next: FallbackResult;
-    try {
-      next = await callWithFallbackFn(
-        {
-          providers: routingDecision.route.providers,
-          cooldowns: this.cooldowns,
-          promptBudget: this.promptBudget,
-          retryPolicyMatrix: this.retryPolicyMatrix,
-          cooldownMs: this.cooldownMs,
-          maxCooldownMs: this.maxCooldownMs,
-        },
-        effectiveCallMessages,
-        input.onStreamChunk,
-        effectiveCallSections,
-        {
-          requestDeadlineAt: ctx.requestDeadlineAt,
-          signal: ctx.signal,
-          ...(allowStatefulContinuation && input.statefulSessionId
-            ? {
-              statefulSessionId: input.statefulSessionId,
-              reconciliationMessages:
-                compactedCallInput.callReconciliationMessages ??
-                ctx.reconciliationMessages,
-              ...(compactedCallInput.statefulHistoryCompacted
-                ? { statefulHistoryCompacted: true }
-                : {}),
-              ...(input.statefulResumeAnchor
-                ? { statefulResumeAnchor: input.statefulResumeAnchor }
-                : {}),
-            }
-            : {}),
-          ...(effectiveRoutedToolNames !== undefined
-            ? { routedToolNames: effectiveRoutedToolNames }
-            : {}),
-          ...(input.toolChoice !== undefined
-            ? { toolChoice: input.toolChoice }
-            : {}),
-          parallelToolCalls,
-          ...(structuredOutput !== undefined
-            ? { structuredOutput }
-            : {}),
-          ...(ctx.trace
-            ? {
-              trace: ctx.trace,
-              callIndex: ctx.callIndex + 1,
-              callPhase: input.phase,
-            }
-            : {}),
-          ...(disableStreaming ? { disableStreaming: true } : {}),
-        },
-      );
-    } catch (error) {
-      const annotated = annotateFailureError(
-        error,
-        `${input.phase} model call`,
-      );
-      this.setStopReason(ctx, annotated.stopReason, annotated.stopReasonDetail);
-      throw annotated.error;
-    }
-    ctx.modelCalls++;
-    ctx.providerName = next.providerName;
-    ctx.responseModel = next.response.model;
-    ctx.providerEvidence = mergeProviderEvidence(
-      ctx.providerEvidence,
-      next.response.providerEvidence,
-    );
-    if (next.usedFallback) ctx.usedFallback = true;
-    accumulateUsageFree(ctx.cumulativeUsage, next.response.usage);
-    this.trackTokenUsage(ctx.sessionId, next.response.usage.totalTokens);
-    recordRuntimeModelCall({
-      policy: this.economicsPolicy,
-      state: ctx.economicsState,
-      runClass: routingDecision.runClass,
-      provider: next.providerName,
-      model: next.response.model,
-      usage: next.response.usage,
-      durationMs: next.durationMs,
-      rerouted: routingDecision.route.rerouted || next.usedFallback,
-      downgraded: routingDecision.route.downgraded,
-      phase: input.phase,
-      reason: routingDecision.route.reason,
-    });
-    ctx.callUsage.push(
-      createCallUsageRecordFree({
-        callIndex: ++ctx.callIndex,
-        phase: input.phase,
-        providerName: next.providerName,
-        response: next.response,
-        durationMs: next.durationMs,
-        beforeBudget: next.beforeBudget,
-        afterBudget: next.afterBudget,
-        budgetDiagnostics: next.budgetDiagnostics,
-      }),
-    );
-    return next.response;
   }
 
   private async initializeExecutionContext(
@@ -1212,8 +812,9 @@ export class ChatExecutor {
       params.contextInjection?.memory !== false && !isConcordiaTurn;
 
     // Context injection — skill, identity, memory, and learning (all best-effort)
+    const contextInjectionDeps = { promptBudget: this.promptBudget };
     if (enableSkillContext) {
-      await this.injectContext(
+      await injectContextFree(
         ctx,
         this.skillInjector,
         ctx.messageText,
@@ -1221,13 +822,14 @@ export class ChatExecutor {
         ctx.messages,
         ctx.messageSections,
         "system_runtime",
+        contextInjectionDeps,
       );
     }
     // Phase 5.4: inject agent identity (personality, beliefs, traits) after skills
     // but before memory/learning so the agent's persona frames retrieved context.
     // Identity is always injected (not gated on hasHistory) since it defines who the agent is.
     if (enableIdentityContext && this.identityProvider) {
-      await this.injectContext(
+      await injectContextFree(
         ctx,
         this.identityProvider,
         ctx.messageText,
@@ -1235,6 +837,7 @@ export class ChatExecutor {
         ctx.messages,
         ctx.messageSections,
         "system_runtime",
+        contextInjectionDeps,
       );
     }
     // Persistent semantic memory (workspace-scoped, cross-session) is always
@@ -1242,7 +845,7 @@ export class ChatExecutor {
     // The retriever handles its own scoping: working memory is session-scoped,
     // semantic/episodic memory is workspace-scoped with maxAge filtering.
     if (enableMemoryContext && ctx.hasHistory) {
-      await this.injectContext(
+      await injectContextFree(
         ctx,
         this.memoryRetriever,
         ctx.messageText,
@@ -1250,13 +853,14 @@ export class ChatExecutor {
         ctx.messages,
         ctx.messageSections,
         "memory_semantic",
+        contextInjectionDeps,
       );
     }
     // Session-scoped providers (learning patterns, progress tracker) are gated
     // on hasHistory since they rely on current-session context and should not
     // inject stale session state into a truly fresh first turn.
     if (enableMemoryContext && ctx.hasHistory) {
-      await this.injectContext(
+      await injectContextFree(
         ctx,
         this.learningProvider,
         ctx.messageText,
@@ -1264,8 +868,9 @@ export class ChatExecutor {
         ctx.messages,
         ctx.messageSections,
         "memory_episodic",
+        contextInjectionDeps,
       );
-      await this.injectContext(
+      await injectContextFree(
         ctx,
         this.progressProvider,
         ctx.messageText,
@@ -1273,6 +878,7 @@ export class ChatExecutor {
         ctx.messages,
         ctx.messageSections,
         "memory_working",
+        contextInjectionDeps,
       );
     }
 
@@ -1420,173 +1026,5 @@ export class ChatExecutor {
   clearCooldowns(): void {
     this.cooldowns.clear();
   }
-
-  // --------------------------------------------------------------------------
-  // Private helpers
-  // --------------------------------------------------------------------------
-
-
-
-  /** Extract plain-text content from a gateway message. */
-
-  /**
-   * Best-effort context injection. Supports both SkillInjector (`.inject()`)
-   * and MemoryRetriever (`.retrieve()`) interfaces.
-   */
-  private async injectContext(
-    ctx: ExecutionContext,
-    provider: SkillInjector | MemoryRetriever | undefined,
-    message: string,
-    sessionId: string,
-    messages: LLMMessage[],
-    sections: PromptBudgetSection[],
-    section: PromptBudgetSection,
-  ): Promise<void> {
-    if (!provider) return;
-    const isSkillInjector = "inject" in provider;
-    const providerKind = isSkillInjector ? "skill" : "memory";
-    try {
-      const detailedSkillResult =
-        providerKind === "skill" && isDetailedSkillInjector(provider)
-          ? await provider.injectDetailed(message, sessionId)
-          : undefined;
-      const detailedMemoryResult =
-        providerKind === "memory" && isDetailedMemoryRetriever(provider)
-          ? await provider.retrieveDetailed(message, sessionId)
-          : undefined;
-      const sectionMaxChars = this.getContextSectionMaxChars(section);
-      const context =
-        providerKind === "skill"
-          ? (detailedSkillResult?.content ??
-            await (provider as SkillInjector).inject(message, sessionId))
-          : (detailedMemoryResult?.content ??
-            await (provider as MemoryRetriever).retrieve(message, sessionId));
-      const hasDetailedSkillSplit =
-        providerKind === "skill" &&
-        (typeof detailedSkillResult?.trustedContent === "string" ||
-          typeof detailedSkillResult?.untrustedContent === "string");
-      const truncatedTrustedContext =
-        providerKind === "skill" &&
-          typeof detailedSkillResult?.trustedContent === "string" &&
-          detailedSkillResult.trustedContent.length > 0
-          ? truncateText(detailedSkillResult.trustedContent, sectionMaxChars)
-          : undefined;
-      const truncatedUntrustedContext =
-        providerKind === "skill" &&
-          typeof detailedSkillResult?.untrustedContent === "string" &&
-          detailedSkillResult.untrustedContent.length > 0
-          ? truncateText(detailedSkillResult.untrustedContent, sectionMaxChars)
-          : undefined;
-      const truncatedContext = (!hasDetailedSkillSplit) &&
-          typeof context === "string" &&
-          context.length > 0
-        ? truncateText(context, sectionMaxChars)
-        : undefined;
-      if (truncatedTrustedContext) {
-        messages.push({
-          role: "system",
-          content: truncatedTrustedContext,
-        });
-        sections.push(section);
-      }
-      if (truncatedUntrustedContext) {
-        messages.push({
-          role: "user",
-          content: truncatedUntrustedContext,
-        });
-        sections.push("user");
-      }
-      if (truncatedContext) {
-        messages.push({
-          role: "system",
-          content: truncatedContext,
-        });
-        sections.push(section);
-      }
-      const injectedChars =
-        (truncatedTrustedContext?.length ?? 0) +
-        (truncatedUntrustedContext?.length ?? 0) +
-        (truncatedContext?.length ?? 0);
-      this.emitExecutionTrace(ctx, {
-        type: "context_injected",
-        phase: "initial",
-        callIndex: ctx.callIndex,
-        payload: {
-          providerKind,
-          section,
-          injected: Boolean(
-            truncatedTrustedContext ||
-              truncatedUntrustedContext ||
-              truncatedContext,
-          ),
-          originalChars: typeof context === "string" ? context.length : 0,
-          injectedChars,
-          ...(detailedSkillResult
-            ? {
-                trustedOriginalChars:
-                  detailedSkillResult.trustedContent?.length ?? 0,
-                trustedInjectedChars:
-                  truncatedTrustedContext?.length ?? 0,
-                untrustedOriginalChars:
-                  detailedSkillResult.untrustedContent?.length ?? 0,
-                untrustedInjectedChars:
-                  truncatedUntrustedContext?.length ?? 0,
-              }
-            : {}),
-          ...(detailedMemoryResult
-            ? {
-                curatedIncluded: detailedMemoryResult.curatedIncluded ?? false,
-                estimatedTokens: detailedMemoryResult.estimatedTokens ?? 0,
-                entries: (detailedMemoryResult.entries ?? []).slice(0, 8).map(
-                  (entry) => ({
-                    role: entry.role ?? "unknown",
-                    source: entry.source ?? "unknown",
-                    provenance: entry.provenance ?? "unknown",
-                    score: typeof entry.combinedScore === "number"
-                      ? Number(entry.combinedScore.toFixed(4))
-                      : undefined,
-                  }),
-                ),
-              }
-            : {}),
-        },
-      });
-    } catch {
-      this.emitExecutionTrace(ctx, {
-        type: "context_injected",
-        phase: "initial",
-        callIndex: ctx.callIndex,
-        payload: {
-          providerKind,
-          section,
-          injected: false,
-          error: "context_injection_failed",
-        },
-      });
-    }
-  }
-
-  private getContextSectionMaxChars(section: PromptBudgetSection): number {
-    // Phase F extraction (PR-2): delegates to pure helper.
-    return getContextSectionMaxCharsFree(this.promptBudget, section);
-  }
-
-  private trackTokenUsage(sessionId: string, tokens: number): void {
-    // Phase F extraction (PR-1): delegates to pure helper with the
-    // class's session token Map + cap + breaker threaded as
-    // arguments.
-    trackTokenUsageFree(
-      this.sessionTokens,
-      sessionId,
-      tokens,
-      this.maxTrackedSessions,
-      this.toolFailureBreaker,
-    );
-  }
-
-
-  // --------------------------------------------------------------------------
-  // Context compaction
-  // --------------------------------------------------------------------------
 
 }
