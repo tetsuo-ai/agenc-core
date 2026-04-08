@@ -87,7 +87,6 @@ import type {
   LLMTool,
   ToolHandler,
   StreamProgressCallback,
-  LLMMessage,
 } from "../llm/types.js";
 import { type Tool } from "../tools/types.js";
 import type { GatewayMessage } from "./message.js";
@@ -118,7 +117,6 @@ import type {
   DeterministicPipelineExecutor,
   SkillInjector,
   MemoryRetriever,
-  ChatToolRoutingSummary,
 } from "../llm/chat-executor.js";
 import {
   InMemoryDelegationTrajectorySink,
@@ -220,7 +218,6 @@ import {
 } from "./channel-wiring.js";
 import { createChannelHostServices } from "../plugins/channel-host-services.js";
 import type { ProactiveCommunicator } from "./proactive.js";
-import type { ToolRoutingDecision } from "./tool-routing.js";
 import {
   loadAgentDefinitions,
   type AgentDefinition,
@@ -2171,8 +2168,10 @@ export class DaemonManager {
             traceId: `background:${sessionId}:${runId}:${cycleIndex}`,
             hookMetadata: { backgroundRunId: runId },
           }),
-        buildToolRoutingDecision: (sessionId, messageText, history) =>
-          this.buildToolRoutingDecision(sessionId, messageText, history),
+        // Phase M: per-phase routing was planner-era. Always returns
+        // undefined; downstream consumers fall back to static allowed
+        // tools. The stub method was deleted from this class.
+        buildToolRoutingDecision: () => undefined,
         seedHistoryForSession: (sessionId) =>
           sessionMgr.get(sessionId)?.history ?? [],
         isSessionBusy: (sessionId) =>
@@ -3163,10 +3162,12 @@ export class DaemonManager {
         this.registerTextApprovalDispatcher(sessionId, channelName, send),
       createTextChannelSessionToolHandler: (params) =>
         this.createTextChannelSessionToolHandler(params),
-      buildToolRoutingDecision: (sessionId, content, history) =>
-        this.buildToolRoutingDecision(sessionId, content, history),
-      recordToolRoutingOutcome: (sessionId, summary) =>
-        this.recordToolRoutingOutcome(sessionId, summary),
+      // Phase M: tool routing decisions are static post-planner; the
+      // stub methods that used to back these callbacks were deleted.
+      buildToolRoutingDecision: () => undefined,
+      recordToolRoutingOutcome: () => {
+        /* no-op: static routing, nothing to record */
+      },
     };
   }
 
@@ -4721,23 +4722,10 @@ export class DaemonManager {
     return true;
   }
 
-  private buildToolRoutingDecision(
-    _sessionId: string,
-    _messageText: string,
-    _history: readonly LLMMessage[],
-  ): ToolRoutingDecision | undefined {
-    // Cut 4.2: per-phase routing was planner-era. claude_code uses a
-    // single static tool list per query — every consumer now sees
-    // `undefined` and falls back to the gateway's static allowed tools.
-    return undefined;
-  }
-
-  private recordToolRoutingOutcome(
-    _sessionId: string,
-    _summary: ChatToolRoutingSummary | undefined,
-  ): void {
-    // Tool routing decisions are static now; nothing to record per-turn.
-  }
+  // Phase M: `buildToolRoutingDecision` and `recordToolRoutingOutcome`
+  // were planner-era stubs (always returned undefined / no-op).
+  // Deleted as of the 16-phase refactor; callers now inline the
+  // static undefined/no-op at their contract boundaries.
 
   private resolveLifecycleParentSessionId(
     event: SubAgentLifecycleEvent,
@@ -5666,10 +5654,11 @@ export class DaemonManager {
         contextWindowTokens,
         traceConfig,
         turnTraceId,
-        buildToolRoutingDecision: (sessionId, content, history) =>
-          this.buildToolRoutingDecision(sessionId, content, history),
-        recordToolRoutingOutcome: (sessionId, summary) => {
-          this.recordToolRoutingOutcome(sessionId, summary);
+        // Phase M: tool routing is static post-planner. The stubs
+        // that used to back these callbacks were deleted.
+        buildToolRoutingDecision: () => undefined,
+        recordToolRoutingOutcome: () => {
+          /* no-op */
         },
         getSessionTokenUsage: (sessionId) =>
           chatExecutor.getSessionTokenUsage(sessionId),
