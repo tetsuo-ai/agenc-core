@@ -175,6 +175,34 @@ export class LLMInvalidResponseError extends LLMProviderError {
   }
 }
 
+/**
+ * Error thrown when an LLM provider rejects a request because the
+ * combined prompt + expected completion exceeds the model's context
+ * window. Surfaced as an HTTP 413 or as a provider-specific
+ * "prompt too long" / "context_length_exceeded" error.
+ *
+ * Phase I of the 16-phase refactor in TODO.MD wires this error into
+ * the reactive compaction retry loop — the runtime catches it,
+ * applies `applyReactiveCompact` to trim the oldest messages, and
+ * retries until it either succeeds or the reactive compact layer
+ * reports `exhausted`.
+ */
+export class LLMContextWindowExceededError extends LLMProviderError {
+  public readonly effectiveTokens?: number;
+  public readonly maxTokens?: number;
+
+  constructor(
+    providerName: string,
+    message: string,
+    options: { effectiveTokens?: number; maxTokens?: number } = {},
+  ) {
+    super(providerName, message, 413);
+    this.name = "LLMContextWindowExceededError";
+    this.effectiveTokens = options.effectiveTokens;
+    this.maxTokens = options.maxTokens;
+  }
+}
+
 function parseRetryAfterMs(headers: unknown): number | undefined {
   if (!headers) return undefined;
 
@@ -200,6 +228,9 @@ function parseRetryAfterMs(headers: unknown): number | undefined {
 const TRANSIENT_PROVIDER_SERVER_MESSAGE_RE =
   /\b(?:service\s+temporarily\s+unavailable|temporarily\s+unavailable|server\s+temporarily\s+unavailable|upstream\s+connect\s+error|bad\s+gateway|gateway\s+timeout|server\s+overloaded|temporarily\s+overloaded|temporarily\s+down|backend\s+unavailable)\b/i;
 
+const CONTEXT_WINDOW_EXCEEDED_MESSAGE_RE =
+  /(?:context[_\s-]?length[_\s-]?exceeded|prompt[_\s-]?too[_\s-]?long|maximum\s+context\s+length|context\s+length\s+is|input\s+too\s+long|request\s+too\s+large|tokens?\s+exceeds?\s+(?:the\s+)?(?:model|maximum)|413|payload\s+too\s+large)/i;
+
 /**
  * Map an unknown error from an LLM SDK call into a typed LLM error.
  *
@@ -213,6 +244,7 @@ export function mapLLMError(
 ): Error {
   if (
     err instanceof LLMMessageValidationError ||
+    err instanceof LLMContextWindowExceededError ||
     err instanceof LLMProviderError ||
     err instanceof LLMRateLimitError ||
     err instanceof LLMTimeoutError ||
@@ -243,6 +275,16 @@ export function mapLLMError(
     return new LLMRateLimitError(providerName, parseRetryAfterMs(e?.headers));
   }
 
+  // Phase I: detect context window overflow by HTTP 413 or by
+  // a provider message pattern. Must come BEFORE the generic 5xx
+  // branch so the reactive compact layer gets a chance to trim.
+  if (
+    status === 413 ||
+    CONTEXT_WINDOW_EXCEEDED_MESSAGE_RE.test(message)
+  ) {
+    return new LLMContextWindowExceededError(providerName, message);
+  }
+
   if (
     e?.code === "ETIMEDOUT" ||
     e?.code === "ECONNABORTED" ||
@@ -271,6 +313,11 @@ export function classifyLLMFailure(error: unknown): LLMFailureClass {
   if (error instanceof LLMRateLimitError) return "rate_limited";
   if (error instanceof LLMTimeoutError) return "timeout";
   if (error instanceof LLMToolCallError) return "tool_error";
+  // Phase I: context-window overflow classifies as a provider error
+  // for the fallback cooldown path, but callers above the fallback
+  // layer (chat-executor-tool-loop.ts) branch on the concrete type
+  // to invoke reactive compaction before giving up.
+  if (error instanceof LLMContextWindowExceededError) return "provider_error";
   if (error instanceof LLMServerError || error instanceof LLMProviderError) {
     return "provider_error";
   }

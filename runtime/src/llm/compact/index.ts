@@ -61,15 +61,23 @@ import {
   createAutoCompactTrackingState,
   type AutoCompactTrackingState,
 } from "./autocompact.js";
+import {
+  createReactiveCompactState,
+  type ReactiveCompactState,
+} from "./reactive-compact.js";
 
 /**
- * Per-iteration compaction state composed across all three layers. This
- * is the state object the chat-executor loop threads between iterations.
+ * Per-iteration compaction state composed across all four layers.
+ * The first three (snip, microcompact, autocompact) fire at the top
+ * of every iteration; the fourth (reactiveCompact) fires only in
+ * response to a `LLMContextWindowExceededError` from the provider
+ * (Phase I).
  */
 export interface PerIterationCompactionState {
   readonly snip: SnipState;
   readonly microcompact: MicrocompactState;
   readonly autocompact: AutoCompactTrackingState;
+  readonly reactiveCompact: ReactiveCompactState;
 }
 
 export function createPerIterationCompactionState(): PerIterationCompactionState {
@@ -77,6 +85,7 @@ export function createPerIterationCompactionState(): PerIterationCompactionState
     snip: createSnipState(),
     microcompact: createMicrocompactState(),
     autocompact: createAutoCompactTrackingState(),
+    reactiveCompact: createReactiveCompactState(),
   };
 }
 
@@ -189,6 +198,10 @@ export function applyPerIterationCompaction(
       snip: snipState,
       microcompact: microState,
       autocompact: autoState,
+      // Reactive compaction state is threaded through separately
+      // by chat-executor-tool-loop.ts on the 413 error path —
+      // it is NOT advanced by the per-iteration chain itself.
+      reactiveCompact: input.state.reactiveCompact,
     },
     boundaries,
   };

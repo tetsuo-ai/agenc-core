@@ -90,6 +90,8 @@ import {
   applyPerIterationCompaction,
   DEFAULT_AUTOCOMPACT_THRESHOLD_TOKENS,
 } from "./compact/index.js";
+import { applyReactiveCompact } from "./compact/reactive-compact.js";
+import { LLMContextWindowExceededError } from "./errors.js";
 
 // ============================================================================
 // Callback interfaces
@@ -937,6 +939,70 @@ function extractCompactionLayerTag(content: string): string {
   return match?.[1] ?? "unknown";
 }
 
+/**
+ * Phase I wire-up: wrap a provider call with reactive compaction.
+ *
+ * When the provider returns a `LLMContextWindowExceededError` (HTTP
+ * 413 or provider-specific prompt-too-long error), invoke
+ * `applyReactiveCompact` on `ctx.messages` to drop the oldest
+ * messages, update the state, and retry the call. Repeat up to the
+ * reactive-compact layer's internal limit (3 attempts by default;
+ * `applyReactiveCompact` returns `"exhausted"` after that).
+ *
+ * Mirrors `claude_code/query.ts` reactive compaction recovery.
+ */
+async function callModelWithReactiveCompact(
+  ctx: ExecutionContext,
+  callbacks: ToolLoopCallbacks,
+  phase: ChatCallUsageRecord["phase"],
+  buildInput: () => Parameters<ToolLoopCallbacks["callModelForPhase"]>[1],
+): Promise<LLMResponse | undefined> {
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    try {
+      return await callbacks.callModelForPhase(ctx, buildInput());
+    } catch (err) {
+      if (!(err instanceof LLMContextWindowExceededError)) {
+        throw err;
+      }
+      const reactiveState =
+        ctx.perIterationCompaction.reactiveCompact ?? {
+          attemptIndex: 0,
+          lastTriggerMs: null,
+        };
+      const result = applyReactiveCompact({
+        messages: ctx.messages,
+        state: reactiveState,
+        nowMs: Date.now(),
+      });
+      if (result.action === "exhausted" || result.action === "noop") {
+        // Give up and bubble the original 413 — the caller's error
+        // handling decides what to surface to the user.
+        throw err;
+      }
+      ctx.messages = [...result.messages];
+      ctx.perIterationCompaction = {
+        ...ctx.perIterationCompaction,
+        reactiveCompact: result.state,
+      };
+      if (result.boundary && typeof result.boundary.content === "string") {
+        callbacks.emitExecutionTrace(ctx, {
+          type: "compaction_triggered",
+          phase,
+          callIndex: ctx.callIndex,
+          payload: {
+            layer: "reactive-compact",
+            boundary: result.boundary.content,
+            messagesAfter: ctx.messages.length,
+            attempt: result.state.attemptIndex,
+          },
+        });
+      }
+      // Loop back and retry with trimmed history.
+    }
+  }
+}
+
 export async function executeToolCallLoop(
   ctx: ExecutionContext,
   config: ToolLoopConfig,
@@ -946,21 +1012,29 @@ export async function executeToolCallLoop(
   // initial provider call. This is the top-of-iteration insertion
   // point mirrored from claude_code/query.ts:395-426.
   runPerIterationCompactionBeforeModelCall(ctx, callbacks, "initial");
-  ctx.response = await callbacks.callModelForPhase(ctx, {
-    phase: "initial",
-    callMessages: ctx.messages,
-    callSections: ctx.messageSections,
-    onStreamChunk: ctx.activeStreamCallback,
-    statefulSessionId: ctx.sessionId,
-    statefulResumeAnchor: ctx.stateful?.resumeAnchor,
-    statefulHistoryCompacted: ctx.stateful?.historyCompacted,
-    preparationDiagnostics: {
-      plannerReason: ctx.plannerDecision.reason,
-      plannerShouldPlan: ctx.plannerDecision.shouldPlan,
-    },
-    budgetReason:
-      "Initial completion blocked by max model recalls per request budget",
-  });
+  // Phase I wire-up: wrap the provider call in reactive compaction
+  // recovery so a 413 response triggers a retry with trimmed
+  // history before bubbling the error.
+  ctx.response = await callModelWithReactiveCompact(
+    ctx,
+    callbacks,
+    "initial",
+    () => ({
+      phase: "initial",
+      callMessages: ctx.messages,
+      callSections: ctx.messageSections,
+      onStreamChunk: ctx.activeStreamCallback,
+      statefulSessionId: ctx.sessionId,
+      statefulResumeAnchor: ctx.stateful?.resumeAnchor,
+      statefulHistoryCompacted: ctx.stateful?.historyCompacted,
+      preparationDiagnostics: {
+        plannerReason: ctx.plannerDecision.reason,
+        plannerShouldPlan: ctx.plannerDecision.shouldPlan,
+      },
+      budgetReason:
+        "Initial completion blocked by max model recalls per request budget",
+    }),
+  );
 
   let rounds = 0;
   let effectiveMaxToolRounds = ctx.effectiveMaxToolRounds;
@@ -1204,22 +1278,27 @@ export async function executeToolCallLoop(
     }
 
     // Phase A wire-up: run the layered compaction chain before the
-    // follow-up provider call. This is the second of two top-of-
-    // iteration insertion points for the snip → microcompact →
-    // autocompact chain, mirrored from claude_code/query.ts:395-426.
+    // follow-up provider call. Phase I wire-up: wrap the call in
+    // reactive compaction recovery so a 413 triggers a retry with
+    // trimmed history.
     runPerIterationCompactionBeforeModelCall(ctx, callbacks, "tool_followup");
     // Re-call LLM.
-    const nextResponse = await callbacks.callModelForPhase(ctx, {
-      phase: "tool_followup",
-      callMessages: ctx.messages,
-      callSections: ctx.messageSections,
-      onStreamChunk: ctx.activeStreamCallback,
-      statefulSessionId: ctx.sessionId,
-      statefulResumeAnchor: ctx.stateful?.resumeAnchor,
-      statefulHistoryCompacted: ctx.stateful?.historyCompacted,
-      budgetReason:
-        "Max model recalls exceeded while following up after tool calls",
-    });
+    const nextResponse = await callModelWithReactiveCompact(
+      ctx,
+      callbacks,
+      "tool_followup",
+      () => ({
+        phase: "tool_followup",
+        callMessages: ctx.messages,
+        callSections: ctx.messageSections,
+        onStreamChunk: ctx.activeStreamCallback,
+        statefulSessionId: ctx.sessionId,
+        statefulResumeAnchor: ctx.stateful?.resumeAnchor,
+        statefulHistoryCompacted: ctx.stateful?.historyCompacted,
+        budgetReason:
+          "Max model recalls exceeded while following up after tool calls",
+      }),
+    );
     if (!nextResponse) break;
     ctx.response = nextResponse;
   }
