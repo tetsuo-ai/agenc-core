@@ -37,7 +37,6 @@ import {
   buildModelRoutingPolicy,
   getProviderRouteKey,
   resolveParallelToolCallPolicy,
-  resolveModelRoute,
   type ModelRoutingPolicy,
 } from "./model-routing-policy.js";
 import { isConcordiaSimulationTurnMessage } from "./chat-executor-turn-contracts.js";
@@ -79,8 +78,6 @@ import type {
 import {
   buildRuntimeEconomicsPolicy,
   buildRuntimeEconomicsSummary,
-  getRuntimeBudgetPressure,
-  mapPhaseToRunClass,
   recordRuntimeModelCall,
   type RuntimeEconomicsPolicy,
   type RuntimeRunClass,
@@ -89,7 +86,6 @@ import {
   normalizeRuntimeLimit,
 } from "./runtime-limit-policy.js";
 import {
-  MAX_CONTEXT_INJECTION_CHARS,
   MAX_PROMPT_CHARS_BUDGET,
   DEFAULT_MAX_RUNTIME_SYSTEM_HINTS,
   DEFAULT_PLANNER_MAX_TOKENS,
@@ -131,6 +127,10 @@ import {
   getSessionCompactionState as getSessionCompactionStateFree,
   trackTokenUsage as trackTokenUsageFree,
 } from "./chat-executor-state.js";
+import {
+  getContextSectionMaxChars as getContextSectionMaxCharsFree,
+  resolveRoutingDecision as resolveRoutingDecisionFree,
+} from "./chat-executor-config.js";
 
 function shouldUseSessionStatefulContinuationForPhase(
   phase: ChatCallUsageRecord["phase"],
@@ -695,19 +695,6 @@ export class ChatExecutor {
     return hasModelRecallBudget(ctx);
   }
 
-  private resolveRunClassForPhase(
-    ctx: ExecutionContext,
-    phase: ChatCallUsageRecord["phase"],
-  ): RuntimeRunClass {
-    if (
-      isConcordiaSimulationTurnMessage(ctx.message) &&
-      (phase === "initial" || phase === "tool_followup")
-    ) {
-      return "child";
-    }
-    return ctx.defaultRunClass ?? this.defaultRunClass ?? mapPhaseToRunClass(phase);
-  }
-
   private resolveRoutingDecision(
     ctx: ExecutionContext,
     phase: ChatCallUsageRecord["phase"],
@@ -717,23 +704,19 @@ export class ChatExecutor {
       readonly routedToolNames?: readonly string[];
     },
   ) {
-    const runClass = this.resolveRunClassForPhase(ctx, phase);
-    const pressure = getRuntimeBudgetPressure(
-      this.economicsPolicy,
-      ctx.economicsState,
-      runClass,
+    // Phase F extraction (PR-2): delegates to pure helper with
+    // degradedProviderNames pre-computed from the state module.
+    return resolveRoutingDecisionFree(
+      ctx,
+      phase,
+      {
+        economicsPolicy: this.economicsPolicy,
+        modelRoutingPolicy: this.modelRoutingPolicy,
+        defaultRunClass: this.defaultRunClass,
+      },
+      this.buildDegradedProviderNames(),
+      requirements,
     );
-    return {
-      runClass,
-      pressure,
-      route: resolveModelRoute({
-        policy: this.modelRoutingPolicy,
-        runClass,
-        pressure,
-        degradedProviderNames: this.buildDegradedProviderNames(),
-        requirements,
-      }),
-    };
   }
 
   private buildDegradedProviderNames(): readonly string[] {
@@ -1844,25 +1827,8 @@ export class ChatExecutor {
   }
 
   private getContextSectionMaxChars(section: PromptBudgetSection): number {
-    const roleContracts = this.promptBudget.memoryRoleContracts;
-    const byRole = (role: "working" | "episodic" | "semantic"): number => {
-      const maxChars = roleContracts?.[role]?.maxChars;
-      if (typeof maxChars !== "number" || !Number.isFinite(maxChars)) {
-        return MAX_CONTEXT_INJECTION_CHARS;
-      }
-      return Math.max(256, Math.floor(maxChars));
-    };
-
-    switch (section) {
-      case "memory_working":
-        return Math.min(MAX_CONTEXT_INJECTION_CHARS, byRole("working"));
-      case "memory_episodic":
-        return Math.min(MAX_CONTEXT_INJECTION_CHARS, byRole("episodic"));
-      case "memory_semantic":
-        return Math.min(MAX_CONTEXT_INJECTION_CHARS, byRole("semantic"));
-      default:
-        return MAX_CONTEXT_INJECTION_CHARS;
-    }
+    // Phase F extraction (PR-2): delegates to pure helper.
+    return getContextSectionMaxCharsFree(this.promptBudget, section);
   }
 
   private accumulateUsage(cumulative: LLMUsage, usage: LLMUsage): void {
