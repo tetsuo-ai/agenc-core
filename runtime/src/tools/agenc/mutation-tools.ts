@@ -276,10 +276,10 @@ async function resolveAuthorityAgentPda(
   });
 
   if (matches.length === 0) {
-    return [null, errorResult('No agent registration found for signer. Provide the explicit agent PDA.')];
+    return [null, errorResult('No agent registration found for signer wallet. Run `agenc-runtime agent register --rpc <url>` first, or provide the explicit agent PDA.')];
   }
   if (matches.length > 1) {
-    return [null, errorResult('Multiple agent registrations found. Provide the explicit agent PDA.')];
+    return [null, errorResult('Multiple agent registrations found for signer wallet. Provide the explicit agent PDA.')];
   }
 
   return [matches[0].pubkey, null];

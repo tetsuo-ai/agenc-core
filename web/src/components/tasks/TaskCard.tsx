@@ -47,10 +47,16 @@ export function TaskCard({
   const statusKey = task.status.toLowerCase();
   const statusClass = STATUS_STYLES[statusKey] ?? STATUS_STYLES.open;
   const description = task.description?.trim() || 'untitled task';
-  const canClaim = statusKey === 'open';
-  const canCancel = statusKey === 'open';
-  const canComplete = statusKey === 'in_progress' || statusKey === 'pending_validation';
-  const canDispute = statusKey === 'in_progress' || statusKey === 'pending_validation';
+  const ownedBySigner = Boolean(task.ownedBySigner);
+  const assignedToSigner = Boolean(task.assignedToSigner);
+  const canClaim =
+    task.claimableBySigner ??
+    (statusKey === 'open' && !ownedBySigner && !assignedToSigner);
+  const canCancel = statusKey === 'open' && ownedBySigner;
+  const canComplete =
+    (statusKey === 'in_progress' || statusKey === 'pending_validation') && assignedToSigner;
+  const canDispute =
+    (statusKey === 'in_progress' || statusKey === 'pending_validation') && assignedToSigner;
 
   return (
     <article className="border border-bbs-border bg-bbs-dark px-4 py-4 transition-colors hover:border-bbs-purple-dim hover:bg-bbs-surface">

@@ -167,6 +167,10 @@ export interface TaskInfo {
   creator?: string;
   worker?: string;
   description?: string;
+  viewerAgentPda?: string;
+  ownedBySigner?: boolean;
+  assignedToSigner?: boolean;
+  claimableBySigner?: boolean;
 }
 
 // ============================================================================

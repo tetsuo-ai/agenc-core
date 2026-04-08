@@ -141,6 +141,16 @@ describe('agenc mutation tools', () => {
     });
   });
 
+  it('agenc.claimTask tells the caller to register an agent when auto-discovery finds none', async () => {
+    const program = createMockProgram();
+    const tool = createClaimTaskTool(program as never, silentLogger);
+
+    const result = await tool.execute({ taskPda: TASK_PDA.toBase58() });
+
+    expect(result.isError).toBe(true);
+    expect(String(parseJson(result).error)).toContain('agenc-runtime agent register');
+  });
+
   it('agenc.completeTask validates proofHash length', async () => {
     const program = createMockProgram();
     const tool = createCompleteTaskTool(program as never, silentLogger);

@@ -238,10 +238,10 @@ async function resolveCreatorAgentPda(
   });
 
   if (matches.length === 0) {
-    return [null, errorResult('No agent registration found for signer. Provide creatorAgentPda.')];
+    return [null, errorResult('No agent registration found for signer wallet. Run `agenc-runtime agent register --rpc <url>` first, or provide creatorAgentPda.')];
   }
   if (matches.length > 1) {
-    return [null, errorResult('Multiple agent registrations found. Provide creatorAgentPda.')];
+    return [null, errorResult('Multiple agent registrations found for signer wallet. Provide creatorAgentPda.')];
   }
 
   return [matches[0].pubkey, null];

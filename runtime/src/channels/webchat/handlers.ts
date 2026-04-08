@@ -209,15 +209,38 @@ async function resolveSignerAgent(program: ReturnType<typeof createProgram>): Pr
   };
 }
 
-function mapTaskSummary(entry: Awaited<ReturnType<TaskOperations['fetchAllTasks']>>[number]) {
+interface TaskViewerContext {
+  viewerAgentPda: string;
+  claimedTaskIds: Set<string>;
+}
+
+function mapTaskSummary(
+  entry: Awaited<ReturnType<TaskOperations['fetchAllTasks']>>[number],
+  viewerContext?: TaskViewerContext,
+) {
   const task = serializeMarketplaceTaskEntry(entry);
-  return {
+  const summary = {
     id: task.taskPda,
     status: task.status,
     reward: lamportsToSol(BigInt(task.rewardLamports)),
     creator: task.creator,
     description: task.description,
     worker: task.currentWorkers > 0 ? `${task.currentWorkers} worker(s)` : undefined,
+  };
+
+  if (!viewerContext) {
+    return summary;
+  }
+
+  const ownedBySigner = task.creator === viewerContext.viewerAgentPda;
+  const assignedToSigner = viewerContext.claimedTaskIds.has(task.taskPda);
+
+  return {
+    ...summary,
+    viewerAgentPda: viewerContext.viewerAgentPda,
+    ownedBySigner,
+    assignedToSigner,
+    claimableBySigner: task.status === 'open' && !ownedBySigner && !assignedToSigner,
   };
 }
 
@@ -929,9 +952,28 @@ async function sendTaskList(deps: WebChatDeps, id: string | undefined, send: Sen
     logger: silentLogger,
   });
   const allTasks = await ops.fetchAllTasks();
+
+  let viewerContext: TaskViewerContext | undefined;
+  try {
+    const { program: signerProgram } = await createProgramContext(deps);
+    const signerAgent = await resolveSignerAgent(signerProgram);
+    const signerTaskOps = new TaskOperations({
+      program: signerProgram,
+      agentId: signerAgent.agentId,
+      logger: silentLogger,
+    });
+    const activeClaims = await signerTaskOps.fetchActiveClaims();
+    viewerContext = {
+      viewerAgentPda: signerAgent.agentPda.toBase58(),
+      claimedTaskIds: new Set(activeClaims.map(({ taskPda }) => taskPda.toBase58())),
+    };
+  } catch {
+    viewerContext = undefined;
+  }
+
   const payload = allTasks
     .sort((left, right) => right.task.createdAt - left.task.createdAt)
-    .map(mapTaskSummary);
+    .map((entry) => mapTaskSummary(entry, viewerContext));
   send({ type: 'tasks.list', payload, id });
 }
 
