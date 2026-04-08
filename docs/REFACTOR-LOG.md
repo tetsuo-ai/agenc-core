@@ -1,0 +1,36 @@
+# Executor Refactor Log — claude_code Behavioral Alignment
+
+**Purpose.** Durable ledger for the 16-phase refactor defined in
+[`TODO.MD`](../TODO.MD) that aligns `runtime/src/llm/*` with
+claude_code's async-generator query loop while preserving every
+AgenC-only surface.
+
+**Spec**: [`TODO.MD`](../TODO.MD) (authoritative, do not duplicate
+content here).
+**Execution runbook**: session plan file
+(`.claude/plans/partitioned-leaping-codd.md` locally), collapses the
+16 phases into 9 ship units.
+**Rollback anchor**: git tag `pre-executor-refactor` on origin.
+
+**Log rules.**
+
+- One row per merged PR, appended chronologically (oldest first).
+- Do **not** edit rows after they are written. Use a new row for
+  corrections or reverts.
+- `Test count Δ` is the delta against the previous row
+  (`+0` means held the baseline; `+4` means added 4 `it()` blocks).
+- The `check:executor-baseline` script enforces the floor:
+  357 test files / 7594 `it()` blocks as of 2026-04-07. Any PR that
+  drops under those numbers fails the fast-path gate.
+- On a fresh session, reconstruct refactor state with:
+  ```
+  cd /home/tetsuo/git/AgenC/agenc-core && \
+    git fetch --tags && \
+    cat docs/REFACTOR-LOG.md | tail -20 && \
+    gh pr list --search "refactor/exec-" --state all | head -30
+  ```
+
+## Ledger
+
+| PR # | Phase | Branch | Merged SHA | Test count Δ | Notes |
+|---|---|---|---|---|---|

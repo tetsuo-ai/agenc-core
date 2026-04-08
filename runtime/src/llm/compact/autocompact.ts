@@ -43,6 +43,14 @@ interface AutocompactInput {
   readonly state: AutoCompactTrackingState;
   readonly thresholdTokens?: number;
   readonly lastResponseUsage?: LLMUsage;
+  /**
+   * Tokens freed by a preceding snip pass in the same iteration. The
+   * orchestrator subtracts this from the effective token count so a
+   * successful snip can short-circuit a borderline autocompact decision.
+   * U0 accepts the parameter for API stability; U1 wires the real
+   * threshold adjustment.
+   */
+  readonly snipTokensFreed?: number;
 }
 
 interface AutocompactResult {
@@ -64,6 +72,10 @@ interface AutocompactResult {
 export function applyAutocompact(input: AutocompactInput): AutocompactResult {
   const thresholdTokens =
     input.thresholdTokens ?? DEFAULT_AUTOCOMPACT_THRESHOLD_TOKENS;
+  // U0: snipTokensFreed is accepted but not yet consumed by the threshold
+  // comparison. U1 will subtract it from tokensBefore before the check so
+  // a snip that already pruned enough can avoid a needless autocompact.
+  void input.snipTokensFreed;
   const tokensBefore = tokenCountWithEstimation({
     messages: input.messages,
     lastResponseUsage: input.lastResponseUsage,
