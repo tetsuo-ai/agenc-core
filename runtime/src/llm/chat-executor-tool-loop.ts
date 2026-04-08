@@ -1019,17 +1019,21 @@ export async function executeToolCallLoop(
       "assistant_runtime",
     );
 
-    // Cut 5.5: emit a partitioning trace showing which subset of this
-    // round's tool calls are concurrency-safe. When callers wire a
-    // real `isConcurrencySafe` predicate, the trace records how many
-    // parallel batches the round would have produced. Dispatch remains
-    // serial because the loop callbacks mutate ctx in order-sensitive
-    // ways.
+    // Phase B (U2): partition this round's tool calls into
+    // concurrency-safe batches. A run of consecutive read-only tool
+    // calls becomes one parallel batch dispatched via Promise.all;
+    // every other call runs serially as its own batch of length 1.
+    // When the caller does not supply `isConcurrencySafe`, every
+    // call falls into its own serial batch (identical to the old
+    // for-loop).
+    const dispatchBatches = partitionToolCalls(
+      ctx.response.toolCalls,
+      config.isConcurrencySafe ?? (() => false),
+    );
+    const parallelBatchCount = dispatchBatches.filter(
+      (batch) => batch.isConcurrencySafe && batch.toolCalls.length > 1,
+    ).length;
     if (config.isConcurrencySafe) {
-      const batches = partitionToolCalls(
-        ctx.response.toolCalls,
-        config.isConcurrencySafe,
-      );
       callbacks.emitExecutionTrace(ctx, {
         type: "tool_dispatch_started",
         phase: "tool_followup",
@@ -1038,10 +1042,9 @@ export async function executeToolCallLoop(
           tool: "__round_partition__",
           args: {},
           argumentDiagnostics: {
-            batchCount: batches.length,
-            parallelBatchCount: batches.filter((batch) => batch.isConcurrencySafe)
-              .length,
-            concurrencySafeToolNames: batches
+            batchCount: dispatchBatches.length,
+            parallelBatchCount,
+            concurrencySafeToolNames: dispatchBatches
               .filter((batch) => batch.isConcurrencySafe)
               .flatMap((batch) => batch.toolCalls.map((call) => call.name)),
           },
@@ -1050,15 +1053,59 @@ export async function executeToolCallLoop(
     }
 
     let abortRound = false;
-    for (const toolCall of ctx.response.toolCalls) {
-      const action = await executeSingleToolCall(ctx, toolCall, loopState, config, callbacks);
-      if (action === "end_round") {
-        break;
+    let breakRound = false;
+    for (const batch of dispatchBatches) {
+      if (batch.toolCalls.length === 0) continue;
+      if (batch.isConcurrencySafe && batch.toolCalls.length > 1) {
+        // Phase B wire-up: concurrency-safe batches dispatch via
+        // Promise.all. The concurrency guarantee is: JS is
+        // single-threaded, so per-call mutations on ctx (messages,
+        // allToolCalls, etc.) are atomic between await points. The
+        // tool_result protocol does NOT require results to appear in
+        // the same order as the originating tool_calls — each
+        // tool_result carries its own tool_call_id that the provider
+        // matches against the prior assistant message. Completion
+        // order is therefore acceptable.
+        //
+        // Image-char budget mutations (loopState.remainingToolImageChars)
+        // can be race-prone across interleaved parallel calls, but
+        // tools in the concurrency-safe allowlist are read-only
+        // (system.readFile, system.listDir, agenc.* queries) and do
+        // not return images, so the budget drift is bounded to zero
+        // for this code path in practice.
+        const results = await Promise.all(
+          batch.toolCalls.map((call) =>
+            executeSingleToolCall(ctx, call, loopState, config, callbacks),
+          ),
+        );
+        for (const action of results) {
+          if (action === "end_round") {
+            breakRound = true;
+          }
+          if (action === "abort_loop" || action === "abort_round") {
+            abortRound = true;
+          }
+        }
+      } else {
+        for (const toolCall of batch.toolCalls) {
+          const action = await executeSingleToolCall(
+            ctx,
+            toolCall,
+            loopState,
+            config,
+            callbacks,
+          );
+          if (action === "end_round") {
+            breakRound = true;
+            break;
+          }
+          if (action === "abort_loop" || action === "abort_round") {
+            abortRound = true;
+            break;
+          }
+        }
       }
-      if (action === "abort_loop" || action === "abort_round") {
-        abortRound = true;
-        break;
-      }
+      if (abortRound || breakRound) break;
     }
 
     if (ctx.signal?.aborted) {

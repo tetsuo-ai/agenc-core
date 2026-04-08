@@ -35,3 +35,4 @@ content here).
 | PR # | Phase | Branch | Merged SHA | Test count Δ | Notes |
 |---|---|---|---|---|---|
 | [#260](https://github.com/tetsuo-ai/agenc-core/pull/260) | U0 pre-work | `refactor/exec-prework` | `e08544a` | +0 | Baseline script, autocompact snipTokensFreed sig, applyPerIterationCompaction stub, REFACTOR-LOG.md, `pre-executor-refactor` tag pushed to origin. |
+| [#261](https://github.com/tetsuo-ai/agenc-core/pull/261) | U1 Phase A | `refactor/exec-a-wire-compaction` | `a816e1b` | +7 | Wire snip → microcompact → autocompact chain into `executeToolCallLoop` before both `callModelForPhase` sites. `compact/*` skeleton is now live. |
