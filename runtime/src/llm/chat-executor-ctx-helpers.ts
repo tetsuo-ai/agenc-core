@@ -17,6 +17,7 @@
 
 import { didToolCallFail } from "./chat-executor-tool-utils.js";
 import { toStatefulReconciliationMessage } from "./chat-executor-text.js";
+import { RECOVERY_HINT_PREFIX } from "./chat-executor-constants.js";
 import type {
   ChatExecutionTraceEvent,
   ExecutionContext,
@@ -192,4 +193,67 @@ export function emitExecutionTrace(
   event: ChatExecutionTraceEvent,
 ): void {
   ctx.trace?.onExecutionTraceEvent?.(event);
+}
+
+/**
+ * Append a runtime system hint to the ctx messages, respecting the
+ * configured cap on runtime system hint count and deduping against
+ * existing identical `system_runtime` content.
+ *
+ * Phase F extraction (PR-4). Previously
+ * `ChatExecutor.maybePushRuntimeInstruction`.
+ */
+export function maybePushRuntimeInstruction(
+  ctx: ExecutionContext,
+  content: string,
+  maxRuntimeSystemHints: number,
+): void {
+  const runtimeHintCount = ctx.messageSections.filter(
+    (section) => section === "system_runtime",
+  ).length;
+  if (runtimeHintCount >= maxRuntimeSystemHints) return;
+
+  const alreadyPresent = ctx.messages.some((message, index) => {
+    if (ctx.messageSections[index] !== "system_runtime") return false;
+    return message.role === "system" &&
+      typeof message.content === "string" &&
+      message.content === content;
+  });
+  if (alreadyPresent) return;
+
+  pushMessage(ctx, { role: "system", content }, "system_runtime");
+}
+
+/**
+ * Replace existing recovery-hint system messages with a new set.
+ * Walks the ctx messages, drops any `system_runtime` entry whose
+ * content starts with the recovery hint prefix, and records the
+ * supplied recovery hint keys as the active set on ctx.
+ *
+ * Phase F extraction (PR-4). Previously
+ * `ChatExecutor.replaceRuntimeRecoveryHintMessages`.
+ */
+export function replaceRuntimeRecoveryHintMessages(
+  ctx: ExecutionContext,
+  recoveryHints: readonly { key: string }[],
+): void {
+  const nextMessages: LLMMessage[] = [];
+  const nextSections: PromptBudgetSection[] = [];
+  for (let index = 0; index < ctx.messages.length; index++) {
+    const message = ctx.messages[index];
+    const section = ctx.messageSections[index];
+    if (
+      section === "system_runtime" &&
+      message?.role === "system" &&
+      typeof message.content === "string" &&
+      message.content.startsWith(RECOVERY_HINT_PREFIX)
+    ) {
+      continue;
+    }
+    nextMessages.push(message);
+    nextSections.push(section);
+  }
+  ctx.messages = nextMessages;
+  ctx.messageSections = nextSections;
+  ctx.activeRecoveryHintKeys = recoveryHints.map((hint) => hint.key);
 }

@@ -96,7 +96,6 @@ import {
   DEFAULT_TOOL_FAILURE_BREAKER_WINDOW_MS,
   DEFAULT_TOOL_FAILURE_BREAKER_COOLDOWN_MS,
   MAX_COMPACT_INPUT,
-  RECOVERY_HINT_PREFIX,
 } from "./chat-executor-constants.js";
 import {
   resolveRetryPolicyMatrix,
@@ -114,7 +113,9 @@ import {
   emitExecutionTrace as emitExecutionTraceFree,
   getRemainingRequestMs,
   hasModelRecallBudget,
+  maybePushRuntimeInstruction as maybePushRuntimeInstructionFree,
   pushMessage as pushMessageFree,
+  replaceRuntimeRecoveryHintMessages as replaceRuntimeRecoveryHintMessagesFree,
   serializeRemainingRequestMs,
   serializeRequestTimeoutMs,
   setStopReason as setStopReasonFree,
@@ -686,16 +687,6 @@ export class ChatExecutor {
     return checkRequestTimeoutFree(ctx, stage);
   }
 
-  private appendToolRecord(ctx: ExecutionContext, record: ToolCallRecord): void {
-    // Phase F extraction: delegates to the pure helper.
-    appendToolRecord(ctx, record);
-  }
-
-  private hasModelRecallBudget(ctx: ExecutionContext): boolean {
-    // Phase F extraction: delegates to the pure helper.
-    return hasModelRecallBudget(ctx);
-  }
-
   private resolveRoutingDecision(
     ctx: ExecutionContext,
     phase: ChatCallUsageRecord["phase"],
@@ -726,21 +717,6 @@ export class ChatExecutor {
     return buildDegradedProviderNamesFree(this.cooldowns);
   }
 
-  private getRemainingRequestMs(ctx: ExecutionContext): number {
-    // Phase F extraction: delegates to the pure helper.
-    return getRemainingRequestMs(ctx);
-  }
-
-  private serializeRequestTimeoutMs(timeoutMs: number): number | null {
-    // Phase F extraction: delegates to the pure helper.
-    return serializeRequestTimeoutMs(timeoutMs);
-  }
-
-  private serializeRemainingRequestMs(remainingRequestMs: number): number | null {
-    // Phase F extraction: delegates to the pure helper.
-    return serializeRemainingRequestMs(remainingRequestMs);
-  }
-
   private emitExecutionTrace(
     ctx: ExecutionContext,
     event: ChatExecutionTraceEvent,
@@ -749,50 +725,6 @@ export class ChatExecutor {
     emitExecutionTraceFree(ctx, event);
   }
 
-  private maybePushRuntimeInstruction(
-    ctx: ExecutionContext,
-    content: string,
-  ): void {
-    const runtimeHintCount = ctx.messageSections.filter(
-      (section) => section === "system_runtime",
-    ).length;
-    if (runtimeHintCount >= this.maxRuntimeSystemHints) return;
-
-    const alreadyPresent = ctx.messages.some((message, index) => {
-      if (ctx.messageSections[index] !== "system_runtime") return false;
-      return message.role === "system" &&
-        typeof message.content === "string" &&
-        message.content === content;
-    });
-    if (alreadyPresent) return;
-
-    this.pushMessage(ctx, { role: "system", content }, "system_runtime");
-  }
-
-  private replaceRuntimeRecoveryHintMessages(
-    ctx: ExecutionContext,
-    recoveryHints: readonly { key: string }[],
-  ): void {
-    const nextMessages: LLMMessage[] = [];
-    const nextSections: PromptBudgetSection[] = [];
-    for (let index = 0; index < ctx.messages.length; index++) {
-      const message = ctx.messages[index];
-      const section = ctx.messageSections[index];
-      if (
-        section === "system_runtime" &&
-        message?.role === "system" &&
-        typeof message.content === "string" &&
-        message.content.startsWith(RECOVERY_HINT_PREFIX)
-      ) {
-        continue;
-      }
-      nextMessages.push(message);
-      nextSections.push(section);
-    }
-    ctx.messages = nextMessages;
-    ctx.messageSections = nextSections;
-    ctx.activeRecoveryHintKeys = recoveryHints.map((hint) => hint.key);
-  }
 
 
 
@@ -817,7 +749,7 @@ export class ChatExecutor {
       budgetReason: string;
     },
   ): Promise<LLMResponse | undefined> {
-    if (!input.allowRecallBudgetBypass && !this.hasModelRecallBudget(ctx)) {
+    if (!input.allowRecallBudgetBypass && !hasModelRecallBudget(ctx)) {
       this.setStopReason(ctx, "budget_exceeded", input.budgetReason);
       return undefined;
     }
@@ -929,10 +861,10 @@ export class ChatExecutor {
         ...(input.preparationDiagnostics ?? {}),
         routedToolNames: effectiveRoutedToolNames ?? [],
         activeRecoveryHintKeys: ctx.activeRecoveryHintKeys,
-        remainingRequestMs: this.serializeRemainingRequestMs(
-          this.getRemainingRequestMs(ctx),
+        remainingRequestMs: serializeRemainingRequestMs(
+          getRemainingRequestMs(ctx),
         ),
-        effectiveRequestTimeoutMs: this.serializeRequestTimeoutMs(
+        effectiveRequestTimeoutMs: serializeRequestTimeoutMs(
           ctx.effectiveRequestTimeoutMs,
         ),
         toolChoice:
@@ -1565,25 +1497,26 @@ export class ChatExecutor {
 
 
   private buildToolLoopCallbacks() {
+    const maxRuntimeSystemHints = this.maxRuntimeSystemHints;
     return {
       pushMessage: (c: ExecutionContext, msg: LLMMessage, section: PromptBudgetSection, reconciliation?: LLMMessage) =>
-        this.pushMessage(c, msg, section, reconciliation),
+        pushMessageFree(c, msg, section, reconciliation),
       setStopReason: (c: ExecutionContext, reason: LLMPipelineStopReason, detail?: string) =>
-        this.setStopReason(c, reason, detail),
+        setStopReasonFree(c, reason, detail),
       checkRequestTimeout: (c: ExecutionContext, stage: string) =>
-        this.checkRequestTimeout(c, stage),
+        checkRequestTimeoutFree(c, stage),
       appendToolRecord: (c: ExecutionContext, record: ToolCallRecord) =>
-        this.appendToolRecord(c, record),
+        appendToolRecord(c, record),
       emitExecutionTrace: (c: ExecutionContext, event: ChatExecutionTraceEvent) =>
-        this.emitExecutionTrace(c, event),
+        emitExecutionTraceFree(c, event),
       replaceRuntimeRecoveryHintMessages: (c: ExecutionContext, hints: readonly { key: string }[]) =>
-        this.replaceRuntimeRecoveryHintMessages(c, hints),
+        replaceRuntimeRecoveryHintMessagesFree(c, hints),
       maybePushRuntimeInstruction: (c: ExecutionContext, content: string) =>
-        this.maybePushRuntimeInstruction(c, content),
+        maybePushRuntimeInstructionFree(c, content, maxRuntimeSystemHints),
       callModelForPhase: (c: ExecutionContext, input: Parameters<ChatExecutor["callModelForPhase"]>[1]) =>
         this.callModelForPhase(c, input),
       serializeRemainingRequestMs: (ms: number) =>
-        this.serializeRemainingRequestMs(ms),
+        serializeRemainingRequestMs(ms),
     };
   }
 
