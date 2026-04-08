@@ -482,6 +482,18 @@ export class ChatExecutor {
 
   /**
    * Execute a chat message against the provider chain.
+   *
+   * Phase F (16-phase refactor) note: Phase E already routes every
+   * production caller through the Phase C `executeChat()` async
+   * generator via `executeChatToLegacyResult`. `executeChat`
+   * internally calls back into this method, so making `execute`
+   * itself a back-compat shim that routes through the generator
+   * would create infinite recursion. The cleanest shape is to
+   * keep `execute` as the single direct orchestration entry point
+   * and let the generator wrap it. Phase F's real goal — deleting
+   * the class body — is deferred to a follow-up PR that extracts
+   * `executeRequest()` into free functions so the generator can
+   * own the orchestration directly.
    */
   async execute(params: ChatExecuteParams): Promise<ChatExecutorResult> {
     return this.executeRequest(params);

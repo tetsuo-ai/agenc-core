@@ -256,27 +256,30 @@ export async function* executeChat(
   const queue = new StreamChunkQueue();
   const passThrough: StreamProgressCallback | undefined = params.onStreamChunk;
 
-  const hookedCallback: StreamProgressCallback = (chunk: LLMStreamChunk) => {
-    queue.push({
-      type: "stream_chunk",
-      requestId,
-      content: chunk.content,
-      toolCalls: chunk.toolCalls,
-      done: chunk.done,
-    });
-    if (passThrough) {
-      try {
-        passThrough(chunk);
-      } catch {
-        // Pass-through callbacks must not abort the generator.
-      }
-    }
-  };
-
-  const hookedParams: ChatExecuteParams = {
-    ...params,
-    onStreamChunk: hookedCallback,
-  };
+  // Only install the stream hook when the caller already wanted
+  // streaming. Installing unconditionally would force chatStream()
+  // on every turn and break providers (and tests) that rely on
+  // the non-streaming chat() path for correctness.
+  const hookedParams: ChatExecuteParams =
+    passThrough !== undefined
+      ? {
+          ...params,
+          onStreamChunk: (chunk: LLMStreamChunk) => {
+            queue.push({
+              type: "stream_chunk",
+              requestId,
+              content: chunk.content,
+              toolCalls: chunk.toolCalls,
+              done: chunk.done,
+            });
+            try {
+              passThrough(chunk);
+            } catch {
+              // Pass-through callbacks must not abort the generator.
+            }
+          },
+        }
+      : params;
 
   let executeError: unknown;
   const executePromise = chatExecutor
