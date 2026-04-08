@@ -1,1201 +1,745 @@
-# TODO: Make AgenC runtime BEHAVE like claude_code (without becoming the claude CLI)
+# Phase F Proper + Residual Cleanup — Complete Execution Plan
 
-**Goal.** The AgenC runtime daemon should feel as reliable as claude_code's
-agent loop — deep streaming, layered compaction that actually runs, parallel
-tool dispatch, recursive sub-agents, reactive recovery — while **keeping every
-AgenC-only surface** (WebSocket channels, daemon control plane, background
-runs, Concordia bridge, skills marketplace, Solana protocol integration,
-Watch TUI, memory/consolidation, observability/replay, desktop automation,
-eval/chaos suite, autonomous lane).
+## Context
 
-**Non-goal.** We are NOT becoming the claude CLI. No Ink TUI, no print/repl
-modes, no @anthropic-ai/sdk direct dependency on claude_code packages, no CLI
-entrypoints beyond the existing `agenc-runtime`/`agenc`/`agenc-watch` bins.
+The `runtime/src/llm/chat-executor.ts` file is currently **2,023 LOC** and holds the single `ChatExecutor` class whose body has accreted through the 18 PRs of the 16-phase refactor. Every prior phase used the class body as a staging area: Phase A wired compaction into it, Phase I wrapped reactive 413 recovery around its `callModelForPhase`, Phase H added hook dispatch inside its `executeRequest`, Phase E migrated every production caller to route through the generator that delegates into it. The class survived because the earlier phases deliberately left the orchestration body alone — extracting it is surgical work that the prior session scopes could not safely absorb.
 
-**Source of this plan.** Parallel audit of
-`/home/tetsuo/git/claude_code` and `/home/tetsuo/git/AgenC/agenc-core/runtime`
-by 10 focused subagents covering: query.ts shape, tool orchestration, dead
-code, subagent stack, Message types, AgenC extensions, hooks/permissions,
-compaction, chatExecutor caller migration, and daemon residuals.
+**Phase F proper is that extraction.** The goal is to move the 29 private methods (totalling ~1,272 LOC of orchestration) out of the class and into 9 sibling modules, so the runtime's agent loop matches the free-function shape in `/home/tetsuo/git/claude_code/query.ts`. Claude_code's query loop threads state as explicit arguments through async generators and free helpers — no class methods anywhere in the critical path. After Phase F proper, AgenC's chat-executor directory will have the same shape: the class becomes a ~650 LOC DI container that owns readonly config + per-instance state Maps + 5 public methods, while the actual orchestration lives in testable free functions.
 
-**What the previous continuation sprint actually did** (PRs #178–#258, ~-35K
-LOC): deleted planner-era cruft, un-exported every symbol with zero external
-consumers, ported individual claude_code patterns (hooks, canUseTool, layered
-compact modules, tool-result-budget, message normalization, agent loader,
-permission glob) as **disconnected files**, and removed ~23K LOC of dead tests
-and stubs. What it did **not** do: wire those ported patterns into the live
-loop, convert the ChatExecutor class to an async generator, implement real
-tool parallelism, or add reactive 413 recovery.
+Phase F proper also absorbs the residual cleanup that earlier phases flagged but didn't close out:
 
-**The honest scorecard.**
+- **`chat-executor-planner.ts`** (56 LOC) is a confirmed dead stub. Its 4 exports all return hardcoded `{ shouldPlan: false }` / `false`. Inlining the returns at the 4 call sites and deleting the file is a one-PR cleanup.
+- **The subagent stack** (13,657 LOC across 20 files) has ~4,000 LOC of dead helpers, deprecated templates, and defunct fallbacks identified by static analysis. Shrinking to ~9,500 LOC was the TODO.MD target; the realistic floor after dead-code deletion and consolidation is ~6,300 LOC.
 
-| Subsystem | Claude parity | Status |
-|---|---|---|
-| Hooks registry | ✓ defined, ✓ partially wired | PreToolUse/PostToolUse fire; 8 other events declared but never fired |
-| canUseTool seam | ✓ wired at chat-executor-tool-loop.ts:610 | Live |
-| Permission evaluator | ✓ unified class exists at policy/tool-permission-evaluator.ts | Not wired to WebSocket approvals |
-| Tool result budget | ✓ wired at chat-executor-tool-loop.ts:733 | Live |
-| Message normalization | ✓ ported at llm/messages.ts | Partial (no cache_control, no tombstones) |
-| Layered compaction | ✗ **SKELETON ONLY** | Files exist at llm/compact/* but **never imported from chat-executor** |
-| Parallel tool dispatch | ✗ **TELEMETRY ONLY** | `isConcurrencySafe` predicate is inventory; dispatch loop is serial |
-| Reactive 413 compaction | ✗ not implemented | No context_window_exceeded handling |
-| cache_control breakpoints | ✗ not implemented | Zero `cache_control` references in runtime/src/llm |
-| Async generator loop | ✗ class-based | `ChatExecutor.execute() → Promise<ChatExecutorResult>` |
-| TombstoneMessage | ✗ type doesn't exist | Needed for compaction boundaries |
-| ToolUseSummaryMessage | ✗ type doesn't exist | Needed for subagent summaries |
-| RequestStartEvent / StreamEvent | ✗ no yielded event types | LLMStreamChunk callback only |
-| Subagent stack | ✗ 13,657 LOC vs claude's 6,072 | Has legitimate extensions but 5K+ bloat |
+**Anchor**: `pre-executor-refactor` tag at `b8decc5` is the global refactor rollback point. Phase F proper starts from current main `72dbd92` (after PR #280 extracted the 6 pure ctx helpers as a pattern demonstration). Every PR in this plan creates its own revert tag before merging.
 
-**This plan finishes the job in 16 ordered phases.** No partial work. Each
-phase has concrete acceptance criteria, precise file targets, and a PR name.
-The plan removes ~15,000 more LOC of dead code and adds ~2,000 LOC of real
-wiring.
+**Scope constraint (non-negotiable)**: this refactor does **NOT** port claude_code's CLI UI, Ink TUI, `@anthropic-ai/sdk` direct dependency, print mode, repl mode, or any UI-adjacent code. AgenC has its own WebSocket channels, Watch TUI, desktop automation, background runs, Concordia bridge, skills marketplace, Solana protocol integration — those are out of scope and untouched. What Phase F proper aligns with claude_code is the **runtime agent loop shape**: the free-function orchestration, the state-as-argument helper pattern, and the explicit dep-struct pattern for cross-helper references.
 
 ---
 
-## Table of Contents
+## Scope Boundaries
 
-- [Phase A — Wire the layered compaction into the live loop](#phase-a)
-- [Phase B — Implement real parallel tool dispatch](#phase-b)
-- [Phase C — Introduce `executeChat()` async generator alongside the class](#phase-c)
-- [Phase D — Add streaming event types](#phase-d)
-- [Phase E — Migrate all `chatExecutor.execute()` callers to `for await`](#phase-e)
-- [Phase F — Delete the old `ChatExecutor` class](#phase-f)
-- [Phase G — Unify tool permission evaluator with WebSocket approval flow](#phase-g)
-- [Phase H — Delete dead hook event types + fire the real ones](#phase-h)
-- [Phase I — Wire reactive compaction on 413 / context_window_exceeded](#phase-i)
-- [Phase J — Add cache_control breakpoints on stable prefixes](#phase-j)
-- [Phase K — Collapse subagent stack to claude_code-shaped recursive executeChat()](#phase-k)
-- [Phase L — Delete runtime-wide dead files (bridges, proof, browser, operator-events)](#phase-l)
-- [Phase M — Delete residual planner stub methods from daemon.ts](#phase-m)
-- [Phase N — Wire memory/consolidation into the compaction chain](#phase-n)
-- [Phase O — Final `tsc --noUnusedLocals` cascade sweep](#phase-o)
-- [Phase P — Ship it: rebuild, repack, restart, validate](#phase-p)
-- [Appendix A — Deletion manifest](#appendix-a)
-- [Appendix B — PR sequence and branch names](#appendix-b)
-- [Appendix C — What explicitly stays (AgenC-only surfaces)](#appendix-c)
+### In scope
+
+- Extract the 29 private methods of `ChatExecutor` into 9 sibling free-function modules.
+- Delete `chat-executor-planner.ts` (56 LOC dead stub) and inline the 4 call sites.
+- Reduce the subagent stack by ~4,100 LOC via dead-code deletion.
+- Consolidate `subagent-prompt-builder.ts` and `subagent-failure-classification.ts` into `subagent-orchestrator.ts` to reclaim ~500 LOC of file overhead.
+- Split `chat-executor.test.ts` (4,196 LOC, 107 tests) into 10 module-aligned test files plus a thinned 1,500-LOC integration suite.
+- Accept the `AsyncHookRegistry` port from claude_code as **not needed** (rationale below).
+
+### Out of scope — explicitly NOT touched
+
+- **Concordia bridge** (`runtime/src/plugins/channel-host-services.ts`, `runtime/src/gateway/concordia*`, `runtime/src/llm/chat-executor-turn-contracts.ts` references).
+- **Watch TUI** (`runtime/src/bin/agenc-watch*`, `runtime/src/watch-*`).
+- **Channel layer** (`runtime/src/channels/`, `runtime/src/gateway/daemon-*-turn.ts`). They call into ChatExecutor via the public API; that API is preserved.
+- **Memory backends** (`runtime/src/memory/`) except `consolidation.ts` (already touched by Phase N in PR #270/#279). Consumed by `injectContext` but internals unchanged.
+- **Skills marketplace** (`runtime/src/skills/`, `marketplace/`) and its LiteSVM tests.
+- **Solana protocol integration** (`runtime/src/tools/agenc/`, `runtime/src/task/`, `runtime/src/dispute/`, Anchor programs in `agenc-protocol`).
+- **Background runs + autonomous lane** (`runtime/src/gateway/background-run-*`, `runtime/src/autonomous/*`). Call into ChatExecutor via public API.
+- **Eval suite** (`runtime/src/eval/`). Used for verification only.
+- **Hooks dispatcher** (`runtime/src/llm/hooks/`). The dispatcher itself is unchanged; PR-5 and PR-8 preserve every hook event call site.
+- **Desktop automation** (`runtime/src/desktop/`).
+- **The 15 sibling `chat-executor-*.ts` modules that already exist**. Only `chat-executor-tool-loop.ts` (PR-5), `chat-executor-fallback.ts` (PR-6), `chat-executor-ctx-helpers.ts` (PR-1, PR-4), and `chat-executor-planner.ts` (deleted in PR-9) are modified. Everything else — recovery, provider-retry, routing-state, text, tool-utils, types, constants, step-utils, turn-contracts — is unchanged.
+- **`agenc-protocol`, `agenc-sdk`, `agenc-plugin-kit`, `agenc-prover`, `agenc-plugin-concordia`, `concordia_bridge`** — cross-repo, not touched.
+
+Anything not on this plan's PR list and not on the explicit "files touched" inside a PR must not change.
 
 ---
 
-## <a id="phase-a"></a>Phase A — Wire the layered compaction into the live loop
+## Pre-Existing State (Ground Truth)
 
-**Goal.** Stop lying about having layered compaction. The files at
-`runtime/src/llm/compact/*.ts` (snip, microcompact, autocompact, reactive-compact,
-token-count, constants) are structurally correct ports of claude_code's
-`services/compact/*`, but **zero of them are imported from chat-executor.ts**.
-The runtime currently calls `compactHistoryIntoArtifactContext()` (an older
-monolithic path) and the whole `snip → microcompact → autocompact` chain
-never runs. This phase wires the chain into the iteration loop in the exact
-order claude_code uses.
+These numbers are verified against the current `main` HEAD at `72dbd92`:
 
-**Files to modify.**
+- `runtime/src/llm/chat-executor.ts`: **2,023 LOC** (readonly fields + constructor: ~210 LOC lines 310-516, private methods: ~1,272 LOC lines 517-2,022, public methods: 5 total).
+- `runtime/src/llm/chat-executor.test.ts`: **4,196 LOC / 107 tests**.
+- `runtime/src/llm/chat-executor-planner.ts`: **56 LOC**, all stub no-ops returning hardcoded values.
+- `runtime/src/llm/chat-executor-ctx-helpers.ts`: **165 LOC** (created by PR #280, holds the 6 pure ctx helpers that established the extraction pattern).
+- Subagent stack (`runtime/src/gateway/`): subagent-orchestrator.ts 2,507, subagent-prompt-builder.ts 1,207, subagent-context-curation.ts 1,130, delegation-admission.ts 1,130, sub-agent.ts 1,090 (post PR #276), tool-handler-factory-delegation.ts 851, subagent-workspace-probes.ts 833, subagent-infrastructure.ts 617, subagent-failure-classification.ts 404, delegation-scope.ts 271, delegation-runtime.ts 261, delegated-scope-preflight.ts 266, delegation-timeout.ts 134, delegation-economics.ts 92, subagent-query.ts 145.
+- Test baseline: **361 test files / 5,970 `it()` blocks / 6,031 production tests passing**. 5 conditional skips. 2 pre-existing flakes on the exception list below.
+- Daemon currently running at `72dbd92` via `agenc-runtime --from-source` on port 3100.
 
-- `runtime/src/llm/chat-executor.ts` — import the four layers, thread state
-  between iterations, invoke in order before every provider call.
-- `runtime/src/llm/chat-executor-types.ts` — add `CompactionState` field to
-  the iteration context type.
-- `runtime/src/llm/prompt-budget.ts` (832 LOC) — remove the ad-hoc
-  `compactHistoryIntoArtifactContext()` path once layered chain proves it
-  covers the same cases. **Target: delete ~600 LOC, keep the 200 LOC of
-  actual budget math that the layered chain reuses.**
-- `runtime/src/llm/compact/index.ts` — restore the `applyPerIterationCompaction()`
-  orchestrator that I deleted in PR #258 (I deleted it before realizing it was
-  the intended wire-up point).
+---
 
-**Concrete wire-up (mirror claude_code/query.ts:395–426):**
+## Private Method Extraction Map
 
-```typescript
-// At the top of each loop iteration, before the provider call:
+These 29 private methods inside `ChatExecutor` get extracted. Numbers are line ranges in the current `chat-executor.ts`.
 
-let snipTokensFreed = 0;
-const snipResult = applySnip({ messages, state: state.snip, nowMs });
-if (snipResult.action === "snipped") {
-  messages = snipResult.messages;
-  state = { ...state, snip: snipResult.state };
-  snipTokensFreed = snipResult.tokensFreed;
-  yield snipResult.boundaryMessage;
-}
+### 8 extraction clusters (low-to-medium risk)
 
-const microResult = await applyMicrocompact({ messages, state: state.microcompact, nowMs });
-if (microResult.action === "microcompacted") {
-  messages = microResult.messages;
-  state = { ...state, microcompact: microResult.state };
-  yield microResult.boundaryMessage;
-}
+| # | Cluster | Methods | LOC | Target module |
+|---|---|---|---|---|
+| 1 | Pure ctx helpers | `pushMessage` (641-671), `setStopReason` (672-682), `checkRequestTimeout` (683-692), `emitExecutionTrace` (770-776) | ~35 | extend `chat-executor-ctx-helpers.ts` |
+| 2 | State-map accessors | `buildDegradedProviderNames` (744-754), `getSessionCompactionState` (1575-1590), `trackTokenUsage` (1882-1898) | ~40 | new `chat-executor-state.ts` |
+| 3 | Config-read helpers | `resolveRunClassForPhase` (703-715), `resolveRoutingDecision` (716-743), `getContextSectionMaxChars` (1854-1875) | ~60 | new `chat-executor-config.ts` |
+| 4 | Message mutation | `maybePushRuntimeInstruction` (777-796), `replaceRuntimeRecoveryHintMessages` (797-820) | ~43 | extend `chat-executor-ctx-helpers.ts` |
+| 5 | Delete PR #280 shims | `appendToolRecord` (693-697), `hasModelRecallBudget` (698-702), `getRemainingRequestMs` (755-758), `serializeRequestTimeoutMs` (760-763), `serializeRemainingRequestMs` (765-768), delegation comments | ~20 | delete from class; call helpers directly |
+| 6 | Callback wiring | `buildToolLoopCallbacks` (1591-1613), `executeToolCallLoop` wrapper (1614-1638), `findInFlightCompactionTailStartIndex` (1560-1574) | ~45 | extend `chat-executor-tool-loop.ts` |
+| 7 | Pure utility | `accumulateUsage` (1876-1881), `createCallUsageRecord` (1899-1931) | ~31 | new `chat-executor-usage.ts` |
+| 8 | *(folded into PR-5)* | — | — | — |
 
-const autoResult = applyAutocompact({
-  messages,
-  state: state.autocompact,
-  thresholdTokens: autocompactThresholdTokens,
-  lastResponseUsage: lastUsage,
-  snipTokensFreed,
-});
-if (autoResult.action === "autocompacted") {
-  messages = autoResult.messages;
-  state = { ...state, autocompact: autoResult.state };
-  yield autoResult.boundaryMessage;
-}
+### 6 surgical extractions (the orchestration giants, E0-E6)
+
+| # | Method | Lines | LOC | Difficulty | Target module | Depends on |
+|---|---|---|---|---|---|---|
+| E3 | `callWithFallback` | 1670-1720 | 40 | Tiny | extend `chat-executor-fallback.ts` | None |
+| E2 | `compactHistory` | 1932-2022 | 91 | Medium | new `chat-executor-history-compaction.ts` | E3 |
+| E1 | `maybeCompactInFlightCallInput` | 1395-1559 | 165 | Surgical | new `chat-executor-in-flight-compaction.ts` | E2, Cluster 2 |
+| E4 | `injectContext` | 1721-1853 | 132 | Medium | new `chat-executor-context-injection.ts` | Cluster 1, 3 |
+| E5 | `callModelForPhase` | 825-1078 | 253 | Surgical | new `chat-executor-model-orchestration.ts` | E1, E3, Clusters 1-3 |
+| E6 | `initializeExecutionContext` | 1079-1394 | 315 | Large | new `chat-executor-init.ts` | E2, E4, Clusters 1-4 |
+| E0 | `executeRequest` | 521-635 | 119 | Tiny (after deps) | new `chat-executor-request.ts` | E6, Cluster 6 |
+
+**Extraction rule**: every free function takes `(ctx, input, deps)` where `deps` is an explicit struct of the class-state references the function needs. No hidden closures over `this`. Matches the claude_code pattern from `query.ts` L204-217 where the `State` object is reified and threaded explicitly.
+
+---
+
+## PR-by-PR Execution Sequence
+
+Dependency-driven ordering. Each PR is scoped to one session and creates its own revert tag (`pre-phase-f-pr<N>`) before merging.
+
+```
+PR-1 pure-ctx + state-map             (no deps; foundation)
+  PR-2 config-helpers                 (depends PR-1 pattern, Cluster 2)
+    PR-3 usage helpers                (parallel to PR-2)
+      PR-4 message-mutation + shim delete (depends PR-1)
+        PR-5 callback wiring + tool-loop (depends PR-1, PR-4)
+          PR-6 in-flight + history compaction + fallback (depends PR-1, PR-2)
+            PR-7 context injection + model orchestration (depends PR-1..6)
+              PR-8 init + executeRequest + class shrink (depends ALL)
+                PR-9 planner stub deletion (after PR-8)
+                  PR-10 test split (after PR-8)
+                    PR-11 subagent shrink phase 1 (independent of executor)
+                      PR-12 subagent consolidation phase 2 (depends PR-11)
+                        PR-13 verification & ledger close
 ```
 
-**Note.** Per-iteration `yield` statements assume Phase C has landed. If
-Phase A lands first (it should, so we can validate the chain before the
-generator rewrite), the `yield` calls become `emitTrace()` calls and return
-through the existing callback surface.
-
-**Acceptance.**
-
-- Every `await provider.chat()` in `chat-executor.ts` is preceded by
-  `applySnip → applyMicrocompact → applyAutocompact` on the per-session state.
-- `runtime/src/llm/compact/index.ts` re-exports a working
-  `applyPerIterationCompaction()`.
-- `tsc --noEmit -p runtime/tsconfig.json` clean.
-- Unit test `runtime/src/llm/compact/autocompact.test.ts` still passes.
-- **New test:** `runtime/src/llm/chat-executor-compaction.test.ts` driving a
-  multi-turn session where a snip boundary fires mid-iteration and the
-  subsequent provider call sees the pruned tail.
-
-**PR:** `refactor/phase-a-wire-layered-compaction`
+PR-9, PR-11, PR-12 are technically independent of the executor sequence — they can run in parallel if a second operator is available, but single-operator execution should follow the order above to keep blast radius small.
 
 ---
 
-## <a id="phase-b"></a>Phase B — Implement real parallel tool dispatch
+### PR-1 — Extract Cluster 1 (pure ctx helpers) + Cluster 2 (state-map accessors)
 
-**Goal.** Replace the serial tool dispatch loop in
-`chat-executor-tool-loop.ts:973–982` with a real concurrency-safe batch
-dispatcher that matches `claude_code/services/tools/toolOrchestration.ts:152–177`.
-Currently the `isConcurrencySafe` predicate at line 164 is **telemetry
-inventory only** — the tool loop still iterates `for (const toolCall of ctx.response.toolCalls)`.
+**Branch**: `refactor/exec-f-pr1-ctx-state`  
+**Revert tag**: `pre-phase-f-pr1` at `72dbd92`
 
-**Files to modify.**
+**Files created**: `runtime/src/llm/chat-executor-state.ts` (new).  
+**Files modified**: `runtime/src/llm/chat-executor.ts`, `runtime/src/llm/chat-executor-ctx-helpers.ts`.
 
-- `runtime/src/llm/chat-executor-tool-loop.ts` — replace the serial
-  `for` loop (lines 973–982) with batch-partitioning + `Promise.all()`
-  on the concurrency-safe batches.
-- `runtime/src/llm/tool-orchestration.ts` (60 LOC) — expand from predicate
-  to real `runTools()` dispatcher mirroring claude_code's 188-LOC version.
-- `runtime/src/llm/chat-executor-types.ts` — add `maxConcurrency?: number`
-  to the executor config (default 10, matching claude_code).
+**Extractions**:
 
-**Concrete change:**
+- `pushMessage(ctx, msg, section, reconciliation?)` → `chat-executor-ctx-helpers.ts`
+- `setStopReason(ctx, reason, detail?)` → `chat-executor-ctx-helpers.ts` (preserves the "first non-completed wins" guard)
+- `checkRequestTimeout(ctx, stage, timeoutMs)` → `chat-executor-ctx-helpers.ts`
+- `emitExecutionTrace(ctx, event)` → `chat-executor-ctx-helpers.ts`
+- `buildDegradedProviderNames(cooldowns, nowMs?)` → `chat-executor-state.ts`
+- `getSessionCompactionState(sessionTokens, sessionTokenBudget, sessionCompactionThreshold)` → `chat-executor-state.ts`
+- `trackTokenUsage(sessionTokens, sessionId, tokens, toolFailureBreaker, maxTrackedSessions)` → `chat-executor-state.ts`
 
-```typescript
-// Before (runtime/src/llm/chat-executor-tool-loop.ts:973–982):
-for (const toolCall of ctx.response.toolCalls) {
-  const action = await executeSingleToolCall(ctx, toolCall, loopState, config, callbacks);
-  if (action === "stop") break;
-}
+Class methods become 1-line delegators that get deleted in PR-8.
 
-// After:
-const batches = partitionToolCalls(
-  ctx.response.toolCalls,
-  config.isConcurrencySafe ?? (() => false),
-);
-for (const batch of batches) {
-  if (batch.isConcurrencySafe && batch.toolCalls.length > 1) {
-    const results = await Promise.all(
-      batch.toolCalls.map((call) =>
-        executeSingleToolCall(ctx, call, loopState, config, callbacks),
-      ),
-    );
-    if (results.some((r) => r === "stop")) break;
-  } else {
-    for (const call of batch.toolCalls) {
-      const action = await executeSingleToolCall(ctx, call, loopState, config, callbacks);
-      if (action === "stop") break;
-    }
-  }
-}
+**LOC delta**: chat-executor.ts 2,023 → 1,948 (-75). chat-executor-ctx-helpers.ts 165 → 225 (+60). new chat-executor-state.ts ~80.
+
+**Acceptance**:
+
+- `npm run typecheck --workspace=@tetsuo-ai/runtime` clean
+- `npx vitest run runtime/src/llm/chat-executor.test.ts` 107/107 pass
+- `node runtime/scripts/check-executor-baseline.mjs` passes
+- `grep -rn "this\.pushMessage\|this\.setStopReason\|this\.checkRequestTimeout" runtime/src/llm/chat-executor.ts` returns only the delegator lines
+
+**Risk**: Trivial. Pure helpers, no async, no captured class state beyond the explicit arguments.
+
+**Session estimate**: 2h.
+
+---
+
+### PR-2 — Extract Cluster 3 (config-read helpers)
+
+**Branch**: `refactor/exec-f-pr2-config-helpers`  
+**Revert tag**: `pre-phase-f-pr2`
+
+**Files created**: `runtime/src/llm/chat-executor-config.ts`.
+
+**Extractions**:
+
+- `resolveRunClassForPhase(message, defaultRunClass, phase)` → `chat-executor-config.ts`
+- `resolveRoutingDecision(ctx, economicsPolicy, modelRoutingPolicy, phase, degradedProviderNames, requirements?)` → `chat-executor-config.ts`
+- `getContextSectionMaxChars(promptBudget, section)` → `chat-executor-config.ts`
+
+`resolveRoutingDecision` takes `degradedProviderNames` as an explicit arg (computed by the caller via `buildDegradedProviderNames` from PR-1). No more `this.buildDegradedProviderNames()` self-call.
+
+**LOC delta**: chat-executor.ts 1,948 → 1,888 (-60). new chat-executor-config.ts ~100.
+
+**Acceptance**: same as PR-1 + `npx vitest run runtime/src/llm/chat-executor-routing-state.test.ts` green.
+
+**Risk**: Trivial.  
+**Session estimate**: 1.5h.
+
+---
+
+### PR-3 — Extract Cluster 7 (usage utilities)
+
+**Branch**: `refactor/exec-f-pr3-usage-helpers`
+
+**Files created**: `runtime/src/llm/chat-executor-usage.ts`.
+
+**Extractions**:
+
+- `accumulateUsage(cumulative, usage)` → `chat-executor-usage.ts`
+- `createCallUsageRecord(input)` → `chat-executor-usage.ts`
+
+Both are pure functions. Could be merged into PR-2 if session capacity permits; keeping it separate gives a cleaner revert point.
+
+**LOC delta**: chat-executor.ts 1,888 → 1,857 (-31). new chat-executor-usage.ts ~50.
+
+**Risk**: Trivial.  
+**Session estimate**: 1h.
+
+---
+
+### PR-4 — Cluster 4 (message mutation) + Cluster 5 (PR #280 shim cleanup)
+
+**Branch**: `refactor/exec-f-pr4-message-mutation-and-shim-cleanup`
+
+**Files modified**: `chat-executor-ctx-helpers.ts`, `chat-executor.ts`.
+
+**Extractions**:
+
+- `maybePushRuntimeInstruction(ctx, content, maxRuntimeSystemHints, pushMessage)` → `chat-executor-ctx-helpers.ts`
+- `replaceRuntimeRecoveryHintMessages(ctx, recoveryHints)` → `chat-executor-ctx-helpers.ts`
+
+**Shim deletions** (PR #280 left these as 1-line delegators to keep the earlier PR's blast radius small; this PR finishes the cleanup):
+
+- Delete `appendToolRecord`, `hasModelRecallBudget`, `getRemainingRequestMs`, `serializeRequestTimeoutMs`, `serializeRemainingRequestMs` shim methods on the class.
+- Update internal callers (inside chat-executor.ts) to import the helpers directly from `chat-executor-ctx-helpers.ts`.
+
+**LOC delta**: chat-executor.ts 1,857 → 1,797 (-60). chat-executor-ctx-helpers.ts 225 → 280 (+55).
+
+**Acceptance**: `grep -n "this\.appendToolRecord\|this\.hasModelRecallBudget\|this\.getRemainingRequestMs\|this\.serialize" runtime/src/llm/chat-executor.ts` returns zero after this PR.
+
+**Risk**: Trivial. Mechanical replace.  
+**Session estimate**: 2h.
+
+---
+
+### PR-5 — Cluster 6 (callback wiring) into existing chat-executor-tool-loop.ts
+
+**Branch**: `refactor/exec-f-pr5-tool-loop-callback-wiring`
+
+**Files modified**: `runtime/src/llm/chat-executor-tool-loop.ts`, `runtime/src/llm/chat-executor.ts`.
+
+**Extractions**:
+
+- `buildToolLoopCallbacks(deps)` → `chat-executor-tool-loop.ts` (takes a `ToolLoopDependencies` struct of hookRegistry, canUseTool, isConcurrencySafe, toolFailureBreaker, toolResultBudget, toolResultBudgetState, maxRuntimeSystemHints, toolCallTimeoutMs, retryPolicyMatrix, allowedTools, consolidationHook).
+- `executeToolCallLoop` wrapper method → absorbs into the existing `executeToolCallLoop` free function in chat-executor-tool-loop.ts; class method becomes a 3-line delegator.
+- `findInFlightCompactionTailStartIndex` → folded into chat-executor-tool-loop.ts (only consumer is PR-6's in-flight compaction, which will be extracted next; during PR-5 it lives in tool-loop and gets re-exported for PR-6 consumption).
+
+**LOC delta**: chat-executor.ts 1,797 → 1,752 (-45). chat-executor-tool-loop.ts 1,410 → 1,470 (+60).
+
+**Acceptance**:
+
+- Existing `runtime/src/llm/chat-executor-tool-loop*.test.ts` green
+- Phase H hook dispatch integration tests (PR #278's new assertions) green
+- `runtime/src/llm/chat-executor-parallel-dispatch.test.ts` green
+
+**Risk**: Medium. Touches the hook integration path added by Phase H (PR #278). Verify hook dispatch tests before merging.
+
+**Stop-and-ask**: if the `ToolLoopDependencies` struct exceeds 14 fields, split it into `ToolLoopHooksDeps` and `ToolLoopCoreDeps` and surface.
+
+**Session estimate**: 3h.
+
+---
+
+### PR-6 — E1 + E2 + E3: compaction and fallback extraction
+
+**Branch**: `refactor/exec-f-pr6-compaction-fallback`
+
+**Files created**:
+
+- `runtime/src/llm/chat-executor-in-flight-compaction.ts`
+- `runtime/src/llm/chat-executor-history-compaction.ts`
+
+**Files modified**: extends `runtime/src/llm/chat-executor-fallback.ts` (397 LOC).
+
+**Extractions**:
+
+- **E3** `callWithFallback` (40 LOC) → new export `callProvidersWithFallback(messages, onStreamChunk?, messageSections?, options, deps)` in `chat-executor-fallback.ts`. Takes `deps: { providers, promptBudget, retryPolicyMatrix, cooldownMs, maxCooldownMs, cooldowns }`. Adds duration measurement wrapper.
+- **E2** `compactHistory` (91 LOC) → new `chat-executor-history-compaction.ts`. Takes `(history, sessionId, trace, existingArtifactContext, keepTailCount, deps, callWithFallback)` where `deps: { onCompaction }`. Uses `callProvidersWithFallback` from E3.
+- **E1** `maybeCompactInFlightCallInput` (165 LOC) → new `chat-executor-in-flight-compaction.ts`. Takes `(ctx, input, deps, compactHistory)` where `deps: { sessionTokenBudget, sessionCompactionThreshold, maxTrackedSessions, sessionTokens, cooldowns }`. Uses `compactHistory` from E2 as an injected dependency (no direct import to avoid circularity with chat-executor.ts which still imports E1).
+
+Both `compactHistory` and `maybeCompactInFlightCallInput` thread their dependencies explicitly; no captured `this`.
+
+**LOC delta**: chat-executor.ts 1,752 → 1,456 (-296). new chat-executor-history-compaction.ts ~130. new chat-executor-in-flight-compaction.ts ~200. chat-executor-fallback.ts 397 → 470.
+
+**Acceptance**:
+
+- All 107 chat-executor.test.ts tests pass
+- `runtime/src/llm/chat-executor-fallback.test.ts` green
+- `runtime/src/llm/context-compaction.test.ts` green (this is the legacy compaction path that chat-executor.ts still calls)
+- The cooldown snapshot/restore semantics on soft-threshold failure (chat-executor.ts:1122-1155 area) must be byte-identical — this is the path tested by `runtime/src/llm/chat-executor-provider-retry.test.ts`
+
+**Risk**: Medium-high. Compaction is the highest-traffic code path under load. Preserve identical observable behavior — trace events, cooldown snapshot/restore, soft-vs-hard threshold semantics must not drift.
+
+**Stop-and-ask**: if `maybeCompactInFlightCallInput` extraction reveals shared mutable closure state with `executeToolCallLoop` that isn't already on `ctx`, pause and resurface.
+
+**Session estimate**: 4h.
+
+---
+
+### PR-7 — E4 + E5: context injection and model orchestration
+
+**Branch**: `refactor/exec-f-pr7-injection-model-orchestration`
+
+**Files created**:
+
+- `runtime/src/llm/chat-executor-context-injection.ts`
+- `runtime/src/llm/chat-executor-model-orchestration.ts`
+
+**Extractions**:
+
+- **E4** `injectContext` (132 LOC) → new `chat-executor-context-injection.ts`. Signature: `(ctx, provider, messageText, sessionId, messages, sections, section, deps, helpers)` where `deps: { promptBudget }` and `helpers: { emitExecutionTrace, pushMessage, getContextSectionMaxChars, truncateText }`.
+- **E5** `callModelForPhase` (253 LOC) → new `chat-executor-model-orchestration.ts`. Signature: `(ctx, input, deps, helpers)` where `deps: { economicsPolicy, modelRoutingPolicy, allowedTools }` and `helpers: { hasModelRecallBudget, checkRequestTimeout, setStopReason, maybeCompactInFlightCallInput, resolveRoutingDecision, emitExecutionTrace, callWithFallback }`.
+
+**LOC delta**: chat-executor.ts 1,456 → 1,071 (-385). new chat-executor-context-injection.ts ~170. new chat-executor-model-orchestration.ts ~290.
+
+**Acceptance**:
+
+- All 107 chat-executor.test.ts tests pass
+- Hook dispatch (Phase H tests) green
+- Trace event ordering unchanged: capture a sample execution trace before and after, compare byte-by-byte for a fixture turn
+- `runtime/src/llm/chat-executor-provider-retry.test.ts` green
+
+**Risk**: Surgical. `callModelForPhase` is the largest single function and threads through every state mutation in the request. Recommend a dry-run branch before the real extraction to size the dep struct.
+
+**Stop-and-ask**:
+
+- If the `callModelForPhase` dep struct exceeds 12 fields, split the function further before extracting
+- If the trace ordering drifts, stop and investigate — the extraction is wrong somewhere
+
+**Session estimate**: 4-5h.
+
+---
+
+### PR-8 — E6 + E0: init + executeRequest + class shrink (KEYSTONE PR)
+
+**Branch**: `refactor/exec-f-pr8-init-request-class-shrink`
+
+**Files created**:
+
+- `runtime/src/llm/chat-executor-init.ts`
+- `runtime/src/llm/chat-executor-request.ts`
+
+**Extractions**:
+
+- **E6** `initializeExecutionContext` (315 LOC) → new `chat-executor-init.ts`. Largest single function extraction in Phase F. Takes `(params, deps, state, helpers)` where `deps` carries all the construction-time config (providers, maxToolRounds, toolBudgetPerRequest, maxModelRecallsPerRequest, maxFailureBudgetPerRequest, requestTimeoutMs, economicsPolicy, defaultRunClass, plannerEnabled, skillInjector, memoryRetriever, learningProvider, progressProvider, identityProvider, promptBudget, allowedTools, resolveHostWorkspaceRoot, maxTrackedSessions, sessionTokenBudget, sessionCompactionThreshold), `state` carries `{ sessionTokens, cooldowns }`, and `helpers` carries `{ getSessionCompactionState, compactHistory, resetSessionTokens, setStopReason, pushMessage, injectContext }`.
+
+- **E0** `executeRequest` (119 LOC) → new `chat-executor-request.ts`. After E6 and Cluster 6 extractions, the body is mostly orchestration: call `initializeExecutionContext`, dispatch SessionStart hook (Phase H), call `executeToolCallLoop`, call `checkRequestTimeout`, resolve completion state, dispatch Stop/StopFailure hooks (Phase H), build the result. Takes `(params, deps, state, helpers)` where `helpers: { initializeExecutionContext, executeToolCallLoop, checkRequestTimeout }` and `deps` carries `hookRegistry`, `economicsPolicy`, plus everything E6 and E5 need.
+
+**Class shrink**: after PR-8, `ChatExecutor` body contains:
+
+- 30 readonly fields + constructor (lines 310-516, ~210 LOC, unchanged)
+- `private dependencies()` method that returns a frozen struct packaging the readonly fields and state Maps for the free functions to consume. ~30 LOC.
+- 5 public method delegators:
+  - `async execute(params)` → `return executeRequestFree(params, this.dependencies())`
+  - `getSessionTokenUsage(sessionId)` → `return this.sessionTokens.get(sessionId) ?? 0`
+  - `resetSessionTokens(sessionId)` → 3 lines (delete from map, clear breaker, clear provider state)
+  - `clearAllSessionTokens()` → 3 lines
+  - `clearCooldowns()` → 1 line
+- 1 private static helper (`normalizeRequestTimeoutMs`) — ~3 LOC
+- Re-exports (ChatBudgetExceededError, SkillInjector type, MemoryRetriever type, etc.) — ~18 LOC
+
+**LOC delta**: chat-executor.ts 1,071 → **~650** (-421). new chat-executor-init.ts ~350. new chat-executor-request.ts ~140.
+
+**Decision: accept the ~650 LOC residual as a first-class design**. The class cannot be deleted without rewriting every caller to pass config explicitly. The class's role becomes: **DI container + public API facade**. This matches claude_code's pattern: in claude_code, `Tools` are registered objects (not class instances) that own their state, and the query loop calls them as free functions — but AgenC's gateway/channel layer expects a `ChatExecutor` instance, so the facade stays. Rewriting every caller to a factory pattern would be ~3,000 LOC of ripple across `gateway/`, `autonomous/`, `channels/`, `eval/` at zero behavioral benefit.
+
+**Acceptance criteria**:
+
+- Full `chat-executor.test.ts` suite (107 tests) passes
+- Full `runtime/src/llm/` test suite passes (currently 462/462 after PR #280)
+- `npm run typecheck` clean without `--skipLibCheck`
+- The 5 public methods on ChatExecutor have byte-identical signatures and return shapes
+- Outside-package callers (`grep -rn "new ChatExecutor" runtime/src gateway/`) compile with zero changes
+- Daemon smoke test: restart `agenc-runtime --from-source` and run a sample chat turn through the WebSocket channel; compare output to baseline captured before PR-1
+
+**Risk**: Keystone. If extraction goes wrong, every prior PR in the sequence is at risk. Mitigation: PR-8 does ONLY extraction + class shrink. No renames, no signature changes on the 5 public methods, no behavior changes.
+
+**Stop-and-ask**:
+
+- If any caller of ChatExecutor outside `runtime/src/llm/` needs a signature change, pause. The expectation is zero downstream changes.
+- If the `dependencies()` struct exceeds 35 fields, pause — that's a sign the class has cross-cutting state that shouldn't be threaded through, and an alternative design (per-module dep sub-structs) should be considered.
+
+**Session estimate**: 4-6h. Consider splitting into PR-8a (E6) and PR-8b (E0 + class shrink) if session budget is tight — this adds a second ~2h session but each is safer.
+
+---
+
+### PR-9 — Delete chat-executor-planner.ts and inline no-op returns
+
+**Branch**: `refactor/exec-f-pr9-delete-planner-stub`
+
+**Files deleted**: `runtime/src/llm/chat-executor-planner.ts` (56 LOC).
+
+**Files modified**: `runtime/src/llm/chat-executor-init.ts` (PR-8 destination of the 4 call sites).
+
+**Inline replacements**:
+
+- `assessPlannerDecision(...)` → `{ score: 0, shouldPlan: false, reason: "planner_disabled" } satisfies PlannerDecision`
+- `extractExplicitDeterministicToolRequirements(...)` → `undefined`
+- `extractExplicitSubagentOrchestrationRequirements(...)` → `undefined`
+- `requestRequiresToolGroundedExecution(...)` → `false`
+
+The downstream code in `initializeExecutionContext` that branches on `explicitDeterministicToolRequirements?.forcePlanner` and `explicitSubagentOrchestrationRequirements` becomes statically dead. Delete those dead branches as well (~40 LOC in chat-executor-init.ts).
+
+**LOC delta**: -56 (file deleted) -40 (dead branches in init) = **-96 net LOC**, -1 file.
+
+**Acceptance**:
+
+- `grep -rn "chat-executor-planner" runtime/src` returns zero
+- `grep -rn "assessPlannerDecision\|extractExplicitDeterministic\|extractExplicitSubagent\|requestRequiresToolGrounded" runtime/src` returns zero
+- All tests still pass (no test depends on `shouldPlan: true` semantics; if any do, they were testing dead behavior and get deleted)
+- `PlannerDecision` type may still be needed by `ChatPlannerSummary` — verify and either keep the type alias in `chat-executor-types.ts` or delete the whole type chain
+
+**Risk**: Trivial. Mechanical inline.  
+**Session estimate**: 1h.
+
+---
+
+### PR-10 — Test split: 10 module files + thinned integration suite
+
+**Branch**: `refactor/exec-f-pr10-test-split`
+
+**Files created**:
+
+- `runtime/src/llm/chat-executor-ctx-helpers.test.ts` (covers PR-1 + PR-4 extractions)
+- `runtime/src/llm/chat-executor-state.test.ts`
+- `runtime/src/llm/chat-executor-config.test.ts`
+- `runtime/src/llm/chat-executor-usage.test.ts`
+- `runtime/src/llm/chat-executor-in-flight-compaction.test.ts`
+- `runtime/src/llm/chat-executor-history-compaction.test.ts`
+- `runtime/src/llm/chat-executor-context-injection.test.ts`
+- `runtime/src/llm/chat-executor-model-orchestration.test.ts`
+- `runtime/src/llm/chat-executor-init.test.ts`
+- `runtime/src/llm/chat-executor-request.test.ts`
+
+**Files modified**: `runtime/src/llm/chat-executor.test.ts` (4,196 → ~1,500 LOC). Keeps ~40 integration tests that exercise the full `execute()` path; deletes trivial wrapper tests that asserted class-method behavior now covered by module files.
+
+**Migration strategy**:
+
+1. Categorize every test in the 4,196-LOC monolith into a target module bucket. Produce the categorization as a markdown table in the PR body.
+2. Move tests one category at a time (use `git mv` where feasible; otherwise cut-paste).
+3. Re-run the entire suite after each category to catch test-ordering dependencies.
+4. Delete the moved tests from the monolith in a final commit within the PR.
+
+**LOC delta**: chat-executor.test.ts -2,696. New 10 module test files total ~5,550 LOC. Net test LOC: +2,854 (distributed across 11 files instead of 1).
+
+**Acceptance**:
+
+- `node runtime/scripts/check-executor-baseline.mjs` passes (361 files baseline holds — new files compensate for the shrunk monolith)
+- No test file exceeds 1,500 LOC
+- `npm run test --workspace=@tetsuo-ai/runtime` passes
+
+**Risk**: Medium tedium. The 4,196-LOC monolith is where regressions get caught; the split must preserve coverage.
+
+**Stop-and-ask**:
+
+- If more than 10 tests turn out to be uncategorizable (cross multiple modules), surface to discuss whether the integration suite should grow back instead of shrinking
+
+**Session estimate**: 1-2 sessions depending on categorization difficulty. If it takes more than 2 sessions, surface and re-scope.
+
+---
+
+### PR-11 — Subagent stack shrink phase 1 (dead code deletion)
+
+**Branch**: `refactor/exec-f-pr11-subagent-dead-code`
+
+**Files modified** (no consolidation yet, just shrinking; each file deleted-in-place in its own commit for per-file revertability):
+
+| File | Before | After | Delta | What goes |
+|---|---|---|---|---|
+| `runtime/src/gateway/subagent-orchestrator.ts` | 2,507 | ~1,600 | -907 | 8 unused helper fns for the deleted planner; dead error classification branches; defunct budget pre-checks |
+| `runtime/src/gateway/subagent-prompt-builder.ts` | 1,207 | ~1,000 | -207 | Deprecated "breadth-first" probing template; minor template dedup |
+| `runtime/src/gateway/subagent-context-curation.ts` | 1,130 | ~900 | -230 | Unused artifact relevance scoring; dead artifact type guards; unused memory dedup |
+| `runtime/src/gateway/delegation-admission.ts` | 1,130 | ~1,000 | -130 | Unused fan-out metrics; cost re-estimation fallbacks |
+| `runtime/src/gateway/subagent-workspace-probes.ts` | 833 | ~700 | -133 | Legacy cwd-inference fallback; dead "shallow probe" template |
+| `runtime/src/gateway/subagent-infrastructure.ts` | 617 | ~550 | -67 | Unused identity reconciliation |
+| Others (subagent-failure-classification, subagent-dependency-summarization, delegation-scope) | various | various | ~-200 | Scattered minor dead code |
+
+**Total LOC delta**: **-1,874**. Subagent stack: 13,657 → 11,783.
+
+**Acceptance**:
+
+- `npm run typecheck --workspace=@tetsuo-ai/runtime` clean
+- `runtime/src/gateway/subagent-orchestrator.test.ts` green
+- `runtime/src/gateway/subagent-context-curation.test.ts` green
+- `runtime/src/gateway/subagent-workspace-probes.test.ts` green
+- `runtime/src/gateway/subagent-failure-classification.test.ts` green
+- `runtime/src/gateway/subagent-query.test.ts` green (Phase K wrapper, PR #275)
+- `runtime/src/gateway/sub-agent.test.ts` green (78/78 after Phase K migration in PR #276)
+- `grep -r "<deleted-symbol>" /home/tetsuo/git/AgenC` across the whole AgenC workspace returns zero new hits for each deleted export
+
+**Risk**: Medium. Agent C identified dead code by static analysis. Some may turn out to be used reflectively or in test fixtures. Each file deleted in its own commit for per-file revertability.
+
+**Stop-and-ask**:
+
+- If any single file shrinks more than 50% and the remaining body is trivial wrappers, pause — that's a sign the file should be merged into its sibling in PR-12 instead of shrunk in isolation
+- If a deletion surfaces a test that was gated on the now-deleted symbol, check whether the test was testing dead behavior (delete the test) or a legitimate path (restore the symbol and flag it for future review)
+
+**Session estimate**: 4h.
+
+---
+
+### PR-12 — Subagent stack consolidation phase 2
+
+**Branch**: `refactor/exec-f-pr12-subagent-consolidation`
+
+**Files merged**:
+
+- `runtime/src/gateway/subagent-prompt-builder.ts` (~1,000 LOC after PR-11) → folded into `runtime/src/gateway/subagent-orchestrator.ts`. Reclaims ~280 LOC of file overhead (imports, JSDoc, type re-exports).
+- `runtime/src/gateway/subagent-failure-classification.ts` (~330 LOC after PR-11) → folded into `runtime/src/gateway/subagent-orchestrator.ts`. Reclaims ~220 LOC of file overhead.
+
+**Files modified**: `subagent-orchestrator.ts` grows from ~1,600 to ~2,430 (still under the original 2,507 pre-PR-11).
+
+**LOC delta**: **-500 net**. Subagent stack: 11,783 → ~11,283 after consolidation.
+
+**Realistic floor**: ~11,200-11,300 LOC. The TODO.MD target of 7,000 and this plan's earlier estimate of 9,500 were both optimistic — those numbers assumed deleting LIVE delegation logic, which preserves correctness-critical behavior we can't cut. The achievable floor is what's reached after PR-11 + PR-12: ~4,000 LOC of dead-code deletion plus ~500 LOC of file-overhead consolidation.
+
+**Acceptance**:
+
+- All subagent tests pass
+- Imports from outside `runtime/src/gateway/` (the gateway public API) unchanged
+- `grep -rn "subagent-prompt-builder\|subagent-failure-classification" runtime/src` returns zero outside the merge commit
+
+**Risk**: Low after PR-11 has shrunk the contents. Mostly a file move + import rewrite.
+
+**Session estimate**: 3h.
+
+---
+
+### PR-13 — Verification, refactor-log update, TODO.MD close
+
+**Branch**: `chore/phase-f-close-out`
+
+**Files modified**:
+
+- `TODO.MD` — mark Phase F as complete; add note of any open questions that surfaced; link to PR sequence
+- `docs/REFACTOR-LOG.md` — append entries for PR-1 through PR-12 (each row: PR number, branch, SHA, test count delta, notes)
+
+**Verification matrix**:
+
+- `node runtime/scripts/check-executor-baseline.mjs` passes
+- `npm run typecheck --workspace=@tetsuo-ai/runtime` clean
+- `npm run test --workspace=@tetsuo-ai/runtime` passes modulo the flaky exception list
+- `npm run build` at repo root completes clean (contracts → runtime → mcp → docs-mcp → desktop-server)
+- `wc -l runtime/src/llm/chat-executor*.ts` shows chat-executor.ts at ~650 LOC
+- `wc -l runtime/src/gateway/subagent-*.ts runtime/src/gateway/delegation-*.ts` shows subagent stack at ~11,200-11,300 LOC
+- Daemon smoke test: `agenc-runtime stop && agenc-runtime start --from-source` against a scratch profile, run 5 sample turns (text channel, webchat, voice-bridge if available, background-run, sub-agent delegation), verify no new error classes in `~/.agenc/daemon.errors.log`
+- Compare `runtime/dist/VERSION` commit hash to current main HEAD
+
+**Risk**: None — documentation and verification only.
+
+**Session estimate**: 2h.
+
+---
+
+## Verification Gates (shared across all PRs)
+
+Every PR must pass the following before merge:
+
+### Per-PR fast-path (runs in ~5 min)
+
+```
+cd /home/tetsuo/git/AgenC/agenc-core
+git status                                              # clean working tree assertion
+npm run typecheck --workspace=@tetsuo-ai/runtime        # tsc --noEmit
+npm run check:executor-baseline --workspace=@tetsuo-ai/runtime
+npx vitest run runtime/src/llm/chat-executor            # ~90s hot path
+npx vitest run runtime/src/llm/execute-chat             # generator adapter
+npx vitest run runtime/src/gateway/daemon-text-channel-turn.test.ts \
+               runtime/src/gateway/daemon-webchat-turn.test.ts \
+               runtime/src/gateway/voice-bridge.test.ts
+npx vitest run runtime/src/autonomous/
 ```
 
-**Risk.** Tools that mutate shared state (the workspace, the session file,
-running desktop handles) must keep `isConcurrencySafe === false`. Default
-all tools to `false`; opt-in to `true` only for read-only tools
-(`system.readFile`, `system.listDir`, `agenc.*` read queries).
+### Full-suite gate (runs on PR-1, PR-6, PR-7, PR-8, PR-10, PR-13)
 
-**Acceptance.**
-
-- `chat-executor-tool-loop.ts` uses `Promise.all()` for concurrency-safe
-  batches.
-- `partitionToolCalls()` is the only place that reads `isConcurrencySafe`.
-- `isConcurrencySafe` returns `true` only for a hand-curated allowlist of
-  read-only tools in the tool registry; everything else stays serial.
-- **New test:** `chat-executor-tool-loop-parallel.test.ts` with 3 read tools
-  in a single round verifies they dispatch in parallel (mock provider
-  records start/end times).
-- Existing tests stay green. Run the full suite.
-
-**PR:** `refactor/phase-b-parallel-tool-dispatch`
-
----
-
-## <a id="phase-c"></a>Phase C — Introduce `executeChat()` async generator alongside the class
-
-**Goal.** Land a new `async function* executeChat(params)` in
-`runtime/src/llm/execute-chat.ts` that mirrors `claude_code/query.ts:219`'s
-shape. It runs **in parallel** with the existing `ChatExecutor` class — both
-coexist. Phase C does not delete the class; that's Phase F.
-
-**New file.** `runtime/src/llm/execute-chat.ts` (~600 LOC)
-
-**Shape:**
-
-```typescript
-export async function* executeChat(
-  params: ExecuteChatParams,
-): AsyncGenerator<
-  | RequestStartEvent
-  | StreamEvent
-  | AssistantMessage
-  | ToolResultMessage
-  | TombstoneMessage
-  | ToolUseSummaryMessage,
-  Terminal
-> {
-  const ctx = buildExecutionContext(params);
-  let state = initialLoopState(params);
-
-  while (true) {
-    yield { type: "request_start", requestId: ctx.requestId };
-
-    // Phase A compaction chain
-    const { messages: pruned, compactionState, boundaries } = await runCompactionChain(
-      state.messages,
-      state.compaction,
-    );
-    state = { ...state, messages: pruned, compaction: compactionState };
-    for (const boundary of boundaries) yield boundary;
-
-    // Cache control (Phase J)
-    const messagesForAPI = applyCacheControlBreakpoints(pruned);
-
-    // Provider call
-    const response = yield* callProviderWithStream(ctx, messagesForAPI);
-    if (isTerminal(response)) return response.terminal;
-
-    // Phase B parallel tool dispatch
-    const toolResults = yield* dispatchTools(ctx, response.toolCalls);
-
-    state.messages = [...pruned, response.message, ...toolResults];
-    state.turnCount += 1;
-
-    if (shouldStop(state, ctx)) {
-      return buildTerminal(state, ctx);
-    }
-  }
-}
+```
+npm run typecheck --workspace=@tetsuo-ai/runtime
+npm run test --workspace=@tetsuo-ai/runtime
+npm run build                                           # repo root full build
+node runtime/scripts/check-executor-baseline.mjs
 ```
 
-The generator delegates to sub-generators for provider streaming and tool
-dispatch. Each sub-generator yields events as they happen, so the caller
-receives them incrementally.
+### Flaky exception list (do NOT block PRs on these)
 
-**Feature parity with `ChatExecutor.execute()`:** Phase C must keep every
-public behavior the class has — provider fallback, stateful responses,
-tool_result ordering, abort signals, token budget, request timeout,
-economics policy, model routing. The class's private methods become free
-functions in `runtime/src/llm/chat-executor-helpers.ts`.
+Pre-existing failures unrelated to Phase F. Treat as known-bad:
 
-**Implementation rule.** No method on `ChatExecutor` is deleted in Phase C.
-The class stays untouched. `executeChat()` uses the same helpers.
+1. **`runtime/tests/marketplace-cli.integration.test.ts`** — LiteSVM setup `DeclaredProgramIdMismatch` error. Excluded by `npm run test` already.
+2. **`runtime/src/autonomous/desktop-executor.test.ts > "rejects concurrent goals"`** — race condition in the desktop automation harness. Pre-existing on main.
+3. **`runtime/src/tools/system/server.test.ts > "persists the shared resource envelope when provided"`** — channel persistence flake. Passes on retry.
 
-**Acceptance.**
-
-- `runtime/src/llm/execute-chat.ts` exports `executeChat()` as an async
-  generator.
-- All yield event types are declared in Phase D (so Phase D must merge first
-  or C+D merge together).
-- `tsc --noEmit` clean.
-- **New test:** `execute-chat.test.ts` — drives a 3-turn conversation with a
-  mock provider and asserts that (a) events are yielded in the right order,
-  (b) tools dispatch, (c) the terminal carries the right reason.
-- `ChatExecutor.execute()` tests stay green.
-
-**PR:** `refactor/phase-c-executechat-async-generator`
+Any new failure outside this list is a **stop-and-ask trigger**.
 
 ---
 
-## <a id="phase-d"></a>Phase D — Add streaming event types
+## Stop-and-Ask Triggers
 
-**Goal.** Define the yield event vocabulary `executeChat()` produces. Mirror
-`claude_code/types/message.ts` shapes.
+Pause execution and surface to the user if any of the following occurs:
 
-**New file.** `runtime/src/llm/streaming-events.ts`
-
-```typescript
-export interface RequestStartEvent {
-  readonly type: "request_start";
-  readonly requestId: string;
-  readonly turnIndex: number;
-  readonly timestamp: number;
-}
-
-export interface StreamEvent {
-  readonly type: "stream_chunk";
-  readonly requestId: string;
-  readonly content: string;
-  readonly toolCalls?: readonly LLMToolCall[];
-  readonly done: boolean;
-}
-
-export interface AssistantMessage {
-  readonly type: "assistant";
-  readonly uuid: string;
-  readonly content: LLMContentPart[];
-  readonly usage?: LLMUsage;
-  readonly stopReason?: LLMPipelineStopReason;
-}
-
-export interface ToolResultMessage {
-  readonly type: "tool_result";
-  readonly toolCallId: string;
-  readonly content: string;
-  readonly isError: boolean;
-  readonly durationMs: number;
-}
-
-export interface TombstoneMessage {
-  readonly type: "tombstone";
-  readonly reason: "snip" | "microcompact" | "autocompact" | "reactive_compact";
-  readonly tokensFreed: number;
-  readonly markedAt: number;
-}
-
-export interface ToolUseSummaryMessage {
-  readonly type: "tool_use_summary";
-  readonly toolCallIds: readonly string[];
-  readonly summary: string;
-  readonly sessionId: string;
-}
-
-export interface Terminal {
-  readonly reason:
-    | "stop_reason_end_turn"
-    | "max_turns_reached"
-    | "max_tool_rounds_exceeded"
-    | "token_budget_exceeded"
-    | "user_abort"
-    | "provider_fallback_exhausted"
-    | "recovery_exhausted"
-    | "context_compaction_failed";
-  readonly finalContent: string;
-  readonly toolCalls: readonly ToolCallRecord[];
-  readonly tokenUsage: LLMUsage;
-  readonly durationMs: number;
-  readonly error?: Error;
-}
-
-export type ExecuteChatYield =
-  | RequestStartEvent
-  | StreamEvent
-  | AssistantMessage
-  | ToolResultMessage
-  | TombstoneMessage
-  | ToolUseSummaryMessage;
-```
-
-**Bridge to existing code.** Add adapters in `runtime/src/llm/streaming-bridge.ts`
-that translate these events into the current `StreamProgressCallback +
-trace events` callbacks. Callers that haven't migrated yet can wrap
-`executeChat()` in a bridge function that drains the generator into the
-legacy callback shape.
-
-**Acceptance.**
-
-- `runtime/src/llm/streaming-events.ts` defines all 7 event types.
-- `runtime/src/llm/streaming-bridge.ts` has `drainToLegacyCallbacks()` and
-  `buildChatExecutorResultFromEvents()`.
-- Unit tests for the bridge: events in → legacy result out.
-
-**PR:** `refactor/phase-d-streaming-event-types`
+1. **TypeScript cascade > 30 errors** after a single extraction — indicates the dep struct is wrong or hidden coupling exists.
+2. **Any integration test in `chat-executor.test.ts` regresses** that is NOT slated for deletion in PR-10.
+3. **An unexpected outside-package caller** of any private ChatExecutor method appears (e.g., `(executor as any).privateMethod` access).
+4. **`callModelForPhase` dep struct exceeds 12 fields** in PR-7 — split the function further first.
+5. **`dependencies()` struct in PR-8 exceeds 35 fields** — consider per-module dep sub-structs.
+6. **Any subagent file shrinks more than 50%** in PR-11 and becomes trivial wrappers — fold in PR-12 instead.
+7. **PR-10 test categorization reveals > 10 boundary-crossing tests** that don't fit a single module bucket.
+8. **A flaky test outside the exception list fires twice in a row** during gate verification.
+9. **Daemon smoke test in PR-13 produces non-identical output** to the pre-PR baseline (captured before PR-1).
+10. **Any caller of ChatExecutor outside `runtime/src/llm/` needs a signature change** in PR-8 — expected zero.
+11. **A deleted subagent symbol** (PR-11) turns up in a cross-repo grep (agenc-sdk, agenc-protocol, agenc-plugin-kit, agenc-prover, agenc-plugin-concordia, agenc-core mcp/web/tools) — surface the consumer before deleting.
 
 ---
 
-## <a id="phase-e"></a>Phase E — Migrate all `chatExecutor.execute()` callers to `for await`
+## What Stays (Appendix)
 
-**Goal.** Convert every production caller of `ChatExecutor.execute()` to
-`for await (const event of executeChat(...))`. One caller per PR for
-bisectability.
+Do not touch these during Phase F. They are orthogonal subsystems that consume ChatExecutor via its public API and should see zero behavioral change.
 
-**Callers identified** (from the daemon-caller-audit subagent):
-
-| # | File | Line | Callsite | Streaming | Notes |
-|---|---|---|---|---|---|
-| 1 | `daemon-text-channel-turn.ts` | 228 | `const result = await chatExecutor.execute(...)` | No | Reads .content, .toolCalls, .tokenUsage, .stopReason, .stopReasonDetail, .provider, .model, .durationMs, .compacted, .statefulSummary, .toolRoutingSummary, .plannerSummary, .callUsage |
-| 2 | `daemon-webchat-turn.ts` | 243 | `const result = await chatExecutor.execute(...)` | **Yes** | Uses `onStreamChunk: sessionStreamCallback` (line 260) + signal abort. Full suite of result reads + hook dispatch on outbound |
-| 3 | `voice-bridge.ts` | 780 | `const result = await chatExecutor.execute(...)` | No (explicit comment: floods overlay) | Inside `handleDelegationToolCall()`; persists via `persistDelegationResult()` |
-| 4 | `background-run-supervisor.ts` | 3506 | `actorResult = await this.chatExecutor.execute(...)` | No | Inside executeCycle(); reads .content, .toolCalls, .tokenUsage, .completionProgress, .statefulSummary |
-| 5 | `autonomous/curiosity.ts` | 134, 199 | Two call sites in `checkCuriosity()` | No | Reads .content only |
-| 6 | `autonomous/desktop-executor.ts` | 293, 405 | planResult, actResult | No | Reads .content and .toolCalls |
-| 7 | `sub-agent.ts` | 831 | Inside recursive subagent spawn | No | Wrapped in SubAgentManager; will be replaced in Phase K |
-| 8 | Eval runners: `pipeline-quality-runner.ts`, `implementation-gate-suite.ts`, `delegated-workspace-gate-suite.ts`, `long-horizon-suite.ts`, `chaos-suite.ts` | various | Benchmark assertions | No | Migrate last |
-
-**Migration pattern for each caller:**
-
-```typescript
-// Before
-const result = await chatExecutor.execute(params);
-processContent(result.content);
-logTrace(result.toolCalls);
-
-// After
-let finalContent = "";
-const allToolCalls: ToolCallRecord[] = [];
-let tokenUsage: LLMUsage | undefined;
-let terminal: Terminal | undefined;
-const generator = executeChat(params);
-
-while (true) {
-  const { value, done } = await generator.next();
-  if (done) { terminal = value; break; }
-  switch (value.type) {
-    case "stream_chunk":
-      sessionStreamCallback?.(value);
-      break;
-    case "assistant":
-      finalContent = extractText(value.content);
-      if (value.usage) tokenUsage = value.usage;
-      break;
-    case "tool_result":
-      allToolCalls.push(toToolCallRecord(value));
-      break;
-    case "tombstone":
-      emitCompactionTrace(value);
-      break;
-    // ... handle other event types
-  }
-}
-
-processContent(finalContent);
-logTrace(allToolCalls);
-```
-
-**One PR per caller.** PR #1 = daemon-text-channel-turn, PR #2 =
-daemon-webchat-turn (streaming path), PR #3 = voice-bridge, PR #4 =
-background-run-supervisor, PR #5 = autonomous/curiosity + desktop-executor,
-PR #6 = eval runners (bulk).
-
-**Acceptance per PR.**
-
-- Target caller uses `for await (const event of executeChat(...))`.
-- All result-field reads are preserved via event accumulation.
-- `tsc --noEmit` clean.
-- Caller's own tests (+ session persistence tests + webchat integration
-  tests) stay green.
-- Manual smoke test: run a real turn against the daemon via that channel,
-  verify trace events land in the right places.
-
-**PR series:** `refactor/phase-e-migrate-<caller>` (6 PRs)
+- **Concordia bridge**: `runtime/src/plugins/channel-host-services.ts`, `runtime/src/gateway/concordia*`, `runtime/src/llm/chat-executor-turn-contracts.ts` (the `isConcordiaSimulationTurnMessage` reference inside E5 stays as-is; the turn-contracts file is not modified).
+- **Watch TUI**: `runtime/src/bin/agenc-watch*`, `runtime/src/watch-*`.
+- **Channel layer**: `runtime/src/channels/*`, `runtime/src/gateway/daemon-text-channel-turn.ts`, `runtime/src/gateway/daemon-webchat-turn.ts`, `runtime/src/gateway/voice-bridge.ts`. All 10 callers migrated in Phase E (PR #271) continue to call `chatExecutor.execute(params)` or `executeChatToLegacyResult(chatExecutor, params)` — both paths preserve their signatures through Phase F.
+- **Memory backends**: `runtime/src/memory/*` (InMemory, SQLite, Redis, vector store, consolidation, graph). Consumed by E4 (`injectContext`) but internals unchanged.
+- **Skills marketplace**: `runtime/src/skills/*`, `marketplace/*`, all Jupiter DEX integration, the LiteSVM tests.
+- **Solana protocol**: `runtime/src/tools/agenc/*`, `runtime/src/task/*`, `runtime/src/dispute/*`, `runtime/src/governance/*`, `runtime/src/reputation/*`, `runtime/src/social/*`. Anchor programs in `agenc-protocol` are a separate repo.
+- **Background runs + autonomous lane**: `runtime/src/gateway/background-run-*`, `runtime/src/autonomous/*` (goal-manager, curiosity, desktop-executor, strategic memory, risk-scoring). All consume ChatExecutor via the public `execute()` method or `executeChatToLegacyResult` helper.
+- **Eval suite**: `runtime/src/eval/*` — pipeline-quality-runner, implementation-gate-suite, delegated-workspace-gate-suite, long-horizon-suite, chaos-suite, mutation suite. Used for verification in PR-13 but source untouched.
+- **Hooks dispatcher**: `runtime/src/llm/hooks/*`. The dispatcher itself, the matcher, the executors, and the registry are all unchanged. PR-5 and PR-8 preserve every hook event call site added by Phase H (PR #278).
+- **Desktop automation**: `runtime/src/desktop/*` — sandbox manager, REST bridge, container routing.
+- **15 sibling chat-executor-*.ts modules**: only `chat-executor-tool-loop.ts` (PR-5, PR-6 via findInFlightCompactionTailStartIndex), `chat-executor-fallback.ts` (PR-6), `chat-executor-ctx-helpers.ts` (PR-1, PR-4), and `chat-executor-planner.ts` (deleted PR-9) are touched. All others — chat-executor-recovery, chat-executor-provider-retry, chat-executor-routing-state, chat-executor-text, chat-executor-tool-utils, chat-executor-types, chat-executor-constants, chat-executor-step-utils, chat-executor-turn-contracts, execute-chat, streaming-events, streaming-bridge, messages, compact/* — are unchanged.
+- **Cross-repo packages**: `agenc-protocol`, `agenc-sdk`, `agenc-plugin-kit`, `agenc-prover`, `agenc-plugin-concordia`, `concordia_bridge`. No changes.
 
 ---
 
-## <a id="phase-f"></a>Phase F — Delete the old `ChatExecutor` class
+## Rollback Strategy
 
-**Goal.** Once every caller uses `executeChat()`, delete the class. This
-is the single biggest simplification in the plan.
+Each PR is independently revertable.
 
-**Files to delete or shrink.**
+1. **Global anchor**: `git tag pre-executor-refactor` at `b8decc5` — the whole-refactor escape hatch (reverts all 20 merged PRs).
+2. **Per-PR revert tags**: each PR creates `git tag pre-phase-f-pr<N>` at the commit immediately before its merge (so `pre-phase-f-pr1` points at `72dbd92`, the current main). Pushed to origin.
+3. **Single-PR revert**: `git revert <merge-sha>` followed by a re-run of the PR's verification gates. Because each PR moves code without changing behavior, a revert should restore the methods to the class with no cascade.
+4. **Cascade-revert**: if PR-N causes a regression surfacing after PR-N+2 merges, revert in reverse order (N+2, N+1, N) and re-plan from the `pre-phase-f-pr<N>` tag.
+5. **PR-8 rollback caveat**: PR-8 is the keystone. If reverted, PR-9's inline replacements need to move back from `chat-executor-init.ts` (which no longer exists post-revert) to `chat-executor.ts`. Mitigation: do not start PR-9 until PR-8 has been on main for at least 24 hours and daemon smoke test has passed twice.
+6. **Subagent PRs (PR-11, PR-12)**: fully orthogonal to the executor sequence. Revertable independently.
 
-| File | Before | After | Action |
+---
+
+## AsyncHookRegistry Decision
+
+**Recommendation: do NOT port claude_code's `AsyncHookRegistry` pattern (~1,200 LOC).**
+
+**Rationale**: AgenC already has a `HookRegistry` in `runtime/src/llm/hooks/` that handles all 9 lifecycle events (SessionStart, Stop, StopFailure, PreToolUse, PostToolUse, PostToolUseFailure, PreCompact, PostCompact) plus the tool boundary events. Dispatch is synchronous-per-event but supports async handlers via `dispatchHooks`. Integration with `chat-executor.ts` at lines 531-543 (SessionStart) and 583-599 (Stop/StopFailure) was landed in Phase H (PR #278).
+
+Claude_code's `AsyncHookRegistry` adds cross-request hook coordination — a hook fired in request N can influence behavior in request N+1 via an async listener that survives between requests. The primary consumer in claude_code is the **Ink TUI progress streaming**, which AgenC doesn't have (explicitly out of scope per the prompt). AgenC's cross-request state is already handled by the per-instance Maps on `ChatExecutor` (sessionTokens, cooldowns, toolResultBudgetState) and by the channel layer's session state.
+
+Cost of porting: ~1,200 LOC of new infrastructure + integration into hooks/ + re-validation of all 9 hook events. Benefit: no concrete AgenC consumer identified. The pattern would be dead code on day one.
+
+**If a future use case emerges** (e.g., Watch TUI subscription wanting to observe hook events across requests), a follow-up PR can add it as Phase F+1. For this plan, it is explicitly marked as not needed.
+
+---
+
+## Session Estimate Summary
+
+| PR | Session count | Duration | Notes |
 |---|---|---|---|
-| `runtime/src/llm/chat-executor.ts` | 1,962 LOC | 0 LOC | **DELETE** — replaced by `execute-chat.ts` + `chat-executor-helpers.ts` |
-| `runtime/src/llm/chat-executor-recovery.ts` | 1,794 | ~300 | **SHRINK** — recovery logic becomes sub-generators inside `execute-chat.ts` |
-| `runtime/src/llm/chat-executor-text.ts` | 929 | ~200 | **SHRINK** — keep only `estimateContentChars` + `parseJsonObjectFromText` |
-| `runtime/src/llm/chat-executor-tool-loop.ts` | 1,117 | ~400 | **SHRINK** — loop becomes sub-generator inside `execute-chat.ts` |
-| `runtime/src/llm/chat-executor-tool-utils.ts` | 856 | ~300 | **SHRINK** — keep normalizeToolCallArguments and related pure helpers |
-| `runtime/src/llm/chat-executor-types.ts` | 749 | ~200 | **SHRINK** — keep ExecuteChatParams, ToolCallRecord; delete ChatExecutorResult (replaced by Terminal) |
-| `runtime/src/llm/chat-executor-fallback.ts` | 388 | ~120 | **SHRINK** — keep the cooldown state + policy; integrate with executeChat's provider loop |
-| `runtime/src/llm/chat-executor-planner-verifier-loop.ts` | ? | 0 | **DELETE** — planner-verifier loop is fully gone |
-| `runtime/src/llm/chat-executor-constants.ts` | 160 | ~80 | **SHRINK** — drop planner-era constants |
-| `runtime/src/llm/chat-executor-routing-state.ts` | 92 | 0 | **DELETE** — tool routing is static in claude_code shape |
-| `runtime/src/llm/chat-executor-step-utils.ts` | 26 | 0 | **DELETE** if unused post-migration |
-| `runtime/src/llm/chat-executor-turn-contracts.ts` | 69 | 0 | **DELETE** — turn contracts are stub-only |
+| PR-1 | 1 | 2h | Foundation pattern |
+| PR-2 | 1 | 1.5h | Trivial |
+| PR-3 | 1 | 1h | Could merge into PR-2 |
+| PR-4 | 1 | 2h | PR #280 shim cleanup |
+| PR-5 | 1 | 3h | Hook integration sensitivity |
+| PR-6 | 1 | 4h | Compaction hot path |
+| PR-7 | 1 | 4-5h | callModelForPhase 253 LOC |
+| PR-8 | 1 (or 2) | 4-6h | **Keystone**; consider splitting into 8a + 8b |
+| PR-9 | 1 | 1h | Mechanical inline |
+| PR-10 | 1-2 | 4-8h | Test categorization-bound |
+| PR-11 | 1 | 4h | Subagent dead code |
+| PR-12 | 1 | 3h | Subagent consolidation |
+| PR-13 | 1 | 2h | Verification + docs |
 
-**Target LOC savings:** ~6,500 LOC deleted from the `chat-executor*` family.
+**Total: 13-15 sessions over 3-4 weeks** for single-operator serial execution. PR-11 and PR-12 can run in parallel with PR-1 through PR-9 if a second operator is available — that path shortens wall-clock to ~2 weeks.
 
-**Also delete:** `runtime/src/llm/chat-executor.test.ts` (4,222 LOC) — the
-tests were written against the class shape and must be rewritten against
-`executeChat()`. The new tests live in `runtime/src/llm/execute-chat.test.ts`.
-
-**Acceptance.**
-
-- No file named `chat-executor.ts` exists.
-- `grep -rn "new ChatExecutor\b" runtime/src` returns empty.
-- `grep -rn "ChatExecutor\b" runtime/src` returns only type imports that were
-  renamed.
-- `tsc --noEmit` clean.
-- `vitest run` clean modulo the pre-existing marketplace-cli failure.
-
-**PR:** `refactor/phase-f-delete-chat-executor-class`
+**LOC-per-session guidance**: prior phases averaged 150-250 LOC moved per session. PR-7 and PR-8 exceed this and are the reasons for their 4-6h estimates. Any PR moving > 300 LOC should have an explicit checkpoint mid-session.
 
 ---
 
-## <a id="phase-g"></a>Phase G — Unify tool permission evaluator with WebSocket approval flow
+## Open Questions for the User
 
-**Goal.** Collapse the multi-layer permission stack into a single
-`ToolPermissionEvaluator` that matches `claude_code`'s `Tool.checkPermissions()`
-return shape while keeping AgenC's WebSocket approval escalation.
-
-**Current state.** `runtime/src/policy/tool-permission-evaluator.ts` already
-exists and implements most of the 7 stages (deny → allow → per-tool → canUseTool
-→ budgets → approval-required → default-allow). What's missing: the
-approval-required path is NOT plumbed into `gateway/approvals.ts` — it's a
-parallel gate in `tool-handler-factory-delegation.ts`.
-
-**Files to modify.**
-
-- `runtime/src/policy/tool-permission-evaluator.ts` — accept an async
-  `approvalRequester` callback that resolves to the approval outcome.
-- `runtime/src/gateway/chat-executor-factory.ts` — wire the daemon's
-  `ApprovalEngine` into the evaluator via the callback.
-- `runtime/src/gateway/tool-handler-factory-delegation.ts` — remove the
-  parallel approval gate; let the evaluator own it.
-- `runtime/src/gateway/tool-handler-factory.ts` (3,272 LOC) — shrink the
-  permission branches; delegate to evaluator.
-
-**Files to delete.**
-
-- `runtime/src/policy/tool-governance.ts` (226 LOC) — superseded by
-  `effect-approval-policy.ts`, not called from primary approval path.
-- `runtime/src/policy/mcp-governance.ts` (269 LOC) — fold MCP supply-chain
-  rules into the unified evaluator's rule list.
-- `runtime/src/policy/bundles.ts` (377 LOC) — dead legacy bundling, resolved
-  elsewhere.
-
-**Glob matcher consolidation.** Delete the duplicate glob matchers in
-`gateway/approvals.ts`, `policy/tool-policy.ts:149–180`, and
-`llm/hooks/matcher.ts`. Use `policy/glob.ts:matchGlob()` everywhere.
-
-**Acceptance.**
-
-- One exported function: `evaluateToolPermission(toolName, args, context) →
-  { behavior: "allow" | "deny" | "ask", message?, approvalRequestId? }`.
-- `grep -rn "matchGlob\|matchesPattern" runtime/src` shows only one matcher
-  impl.
-- When `behavior === "ask"`, the tool dispatch awaits the WebSocket approval
-  response and resumes with allow/deny.
-- ~850 LOC deleted across policy/.
-- Tests: unit tests for the evaluator cover all 7 stages.
-
-**PR series:**
-- `refactor/phase-g1-unify-tool-permission-evaluator`
-- `refactor/phase-g2-delete-dead-policy-files`
-- `refactor/phase-g3-consolidate-glob-matcher`
+1. **PR-8 keystone risk**: OK with a 4-6h single-session PR that moves 421 LOC of class body? Alternative: split into PR-8a (E6 `initializeExecutionContext`) and PR-8b (E0 `executeRequest` + class shrink) — adds a second long session but each is safer.
+2. **Subagent shrink target**: commit to realistic floor of ~11,200-11,300 LOC after PR-11 + PR-12? The TODO.MD's original 7,000 target is unachievable without cutting live delegation logic, and 9,500 was still optimistic.
+3. **AsyncHookRegistry**: confirm "do not port" is correct, or surface a concrete AgenC consumer that would benefit.
+4. **PR-10 test split timing**: 1-2 sessions acceptable, or should it be split into PR-10a (ctx + state + config + usage test moves) and PR-10b (compaction + model + init + request test moves)?
+5. **Daemon smoke baseline**: should the runbook explicitly capture a sample chat trace from current main (`72dbd92`) before PR-1 merges, so PR-13 has something concrete to compare against? **Recommended: yes** — capture via `agenc ws --record` or the equivalent and store in `docs/baselines/`.
+6. **Per-PR revert tag naming**: confirm `pre-phase-f-pr<N>` convention, or specify a different scheme.
+7. **Parallel execution**: is there a second operator available for PR-11 + PR-12 parallel track, or is this single-operator serial?
 
 ---
 
-## <a id="phase-h"></a>Phase H — Delete dead hook event types + fire the real ones
+## Target End-State Metrics
 
-**Goal.** The hook registry at `runtime/src/llm/hooks/types.ts` declares 17
-event types mirroring `claude_code/schemas/hooks.ts`, but only
-`PreToolUse`, `PostToolUse`, and `PostToolUseFailure` are actually fired
-anywhere in the runtime. Decide: delete the dead 14 or wire them up.
+After PR-13 merges, the runtime should report:
 
-**Decision.** Delete the ones that don't serve an AgenC-specific use case.
-Wire up the ones that do.
+- `wc -l runtime/src/llm/chat-executor.ts` → **~650 LOC** (down from 2,023, -68%)
+- `wc -l runtime/src/llm/chat-executor-*.ts | tail -1` → ~3,800 LOC total across 19 files (was 2,023 in 1 file + ~1,800 in 15 siblings = ~3,800; distribution changes but total stays roughly constant; the refactor trades one giant for many focused modules)
+- `wc -l runtime/src/gateway/subagent-*.ts runtime/src/gateway/delegation-*.ts` → **~11,250 LOC** (down from 13,657, -18%)
+- `wc -l runtime/src/llm/chat-executor.test.ts` → **~1,500 LOC** (down from 4,196, -64%)
+- `wc -l runtime/src/llm/chat-executor-*.test.ts | tail -1` → ~6,050 LOC total across 11 test files (was 4,196 in 1 file; refactor distributes coverage into focused module tests)
+- Total test count: **~6,400** production tests (up from 6,031; modular tests add granular coverage)
+- `runtime/dist/VERSION` reports current `main` HEAD commit at refactor completion
+- Daemon smoke matrix green: text-channel, webchat with streaming, voice-bridge, background-run cycle, curiosity cycle, sub-agent delegation, Concordia session (if available)
+- Error rate over a 30-minute live workload ≤ pre-Phase-F baseline
 
-**Delete (8 events):**
+**Phase F is complete when**:
 
-- `FileChanged`, `ConfigChange` — AgenC has no watcher that would fire them.
-- `SubagentStart`, `SubagentStop` — use `WS_SUBAGENTS_*` WebSocket events
-  instead; runtime hooks don't add value.
-- `PermissionRequest`, `PermissionDenied` — already handled by the approval
-  engine; duplicative.
-- `UserPromptSubmit`, `Notification` — CLI-centric; AgenC uses channel
-  plugins for user input.
-
-**Wire up (6 events):**
-
-- `SessionStart` — fire from `daemon.ts` when a new session is created.
-- `Stop` — fire from `execute-chat.ts` when the generator returns a Terminal.
-- `StopFailure` — fire on Terminal.reason === "recovery_exhausted" | "error".
-- `PreCompact` — fire from the compaction chain in Phase A, before each layer.
-- `PostCompact` — fire from the compaction chain after each layer.
-- Keep `PreToolUse`, `PostToolUse`, `PostToolUseFailure` (already live).
-
-**Files to modify.**
-
-- `runtime/src/llm/hooks/types.ts` — remove 8 dead event type members.
-- `runtime/src/llm/hooks/dispatcher.ts` — remove dead context shapes.
-- `runtime/src/llm/execute-chat.ts` — fire SessionStart, Stop, StopFailure.
-- `runtime/src/llm/compact/index.ts` — fire PreCompact, PostCompact.
-- `runtime/src/gateway/daemon.ts` — call SessionStart on session creation.
-
-**Acceptance.**
-
-- `grep -rn "HookEvent\." runtime/src` shows only the 9 kept event names.
-- Every HookEvent name that exists is fired from at least one production
-  site.
-- Unit tests verify SessionStart / Stop / PreCompact / PostCompact fire
-  correctly.
-
-**PR:** `refactor/phase-h-hook-events-cleanup`
+- `grep -rn "private async " runtime/src/llm/chat-executor.ts` returns nothing (no more private async methods on the class)
+- `grep -rn "private " runtime/src/llm/chat-executor.ts` returns only readonly field declarations plus `private dependencies()` + `private static normalizeRequestTimeoutMs`
+- `chat-executor-planner.ts` does not exist
+- `subagent-prompt-builder.ts` and `subagent-failure-classification.ts` do not exist (merged into orchestrator)
+- All 13 PRs in this plan are merged
+- `pre-phase-f-pr1` through `pre-phase-f-pr13` tags exist on origin
 
 ---
 
-## <a id="phase-i"></a>Phase I — Wire reactive compaction on 413 / context_window_exceeded
+## Critical Files for Implementation
 
-**Goal.** Implement claude_code's reactive compaction: when a provider returns
-a 413 (context too long) error, trim the history and retry up to N times
-before bubbling the error.
+### Source files (referenced throughout the plan)
 
-**Files to modify.**
+- `/home/tetsuo/git/AgenC/agenc-core/runtime/src/llm/chat-executor.ts` (target of extraction)
+- `/home/tetsuo/git/AgenC/agenc-core/runtime/src/llm/chat-executor-ctx-helpers.ts` (PR-1, PR-4 destination)
+- `/home/tetsuo/git/AgenC/agenc-core/runtime/src/llm/chat-executor-tool-loop.ts` (PR-5 destination)
+- `/home/tetsuo/git/AgenC/agenc-core/runtime/src/llm/chat-executor-fallback.ts` (PR-6 destination for E3)
+- `/home/tetsuo/git/AgenC/agenc-core/runtime/src/llm/chat-executor-planner.ts` (PR-9 delete target)
+- `/home/tetsuo/git/AgenC/agenc-core/runtime/src/llm/chat-executor.test.ts` (PR-10 split target)
+- `/home/tetsuo/git/AgenC/agenc-core/runtime/src/gateway/subagent-orchestrator.ts` (PR-11 dead code target, PR-12 merge destination)
+- `/home/tetsuo/git/AgenC/agenc-core/runtime/src/gateway/subagent-prompt-builder.ts` (PR-12 merge source)
+- `/home/tetsuo/git/AgenC/agenc-core/runtime/src/gateway/subagent-failure-classification.ts` (PR-12 merge source)
+- `/home/tetsuo/git/AgenC/agenc-core/runtime/src/gateway/subagent-context-curation.ts`, `delegation-admission.ts`, `subagent-workspace-probes.ts`, `subagent-infrastructure.ts` (PR-11 dead code targets)
 
-- `runtime/src/llm/chat-executor-recovery.ts` (will be shrunk in Phase F)
-  — add a reactive compaction recovery path that catches the provider error,
-  invokes `applyReactiveCompact()`, retries.
-- `runtime/src/llm/grok/adapter.ts` — ensure 413 errors are mapped to a
-  distinct `LLMProviderError` type the recovery path can recognize.
-- `runtime/src/llm/errors.ts` — add `LLMContextWindowExceededError` if not
-  present.
+### Reference files (read-only, for alignment)
 
-**Concrete change:**
+- `/home/tetsuo/git/claude_code/query.ts` (L204-1729) — reference shape for async generator + state threading
+- `/home/tetsuo/git/claude_code/services/tools/toolOrchestration.ts` (L19-177) — reference for `runTools` free-function dispatch
+- `/home/tetsuo/git/claude_code/services/compact/compact.ts` (L330-700) — reference for `compactConversation` free-function shape
+- `/home/tetsuo/git/claude_code/tools/AgentTool/runAgent.ts` (L248-860) — reference for recursive subagent generator pattern
+- `/home/tetsuo/git/claude_code/utils/hooks.ts` (L3594-4157) — reference for free-function hook dispatchers
+- `/home/tetsuo/git/claude_code/query/stopHooks.ts` (L65-342) — reference for Stop/StopFailure hook integration
 
-```typescript
-// In execute-chat.ts error handling:
+### Scripts
 
-try {
-  const response = yield* callProviderWithStream(ctx, messages);
-} catch (err) {
-  if (isContextWindowError(err) && !state.hasAttemptedReactiveCompact) {
-    const result = applyReactiveCompact({
-      messages: state.messages,
-      state: state.compaction.reactive,
-      trimPercent: 0.25,
-    });
-    state = {
-      ...state,
-      messages: result.messages,
-      compaction: { ...state.compaction, reactive: result.state },
-      hasAttemptedReactiveCompact: true,
-    };
-    yield result.boundaryMessage;
-    continue; // retry
-  }
-  throw err;
-}
-```
-
-**Acceptance.**
-
-- 413 errors trigger reactive compaction and retry.
-- After N retries (default 3), the error bubbles with a Terminal.reason
-  of `"context_compaction_failed"`.
-- Unit test with mock provider that returns 413 once, succeeds on retry.
-
-**PR:** `refactor/phase-i-reactive-413-compact`
+- `runtime/scripts/check-executor-baseline.mjs` — baseline gate, enforces `>= 361 test files, >= 5,970 it() blocks`
+- `runtime/scripts/build-public-runtime-artifacts*.mjs` — used by daemon smoke test in PR-13
 
 ---
 
-## <a id="phase-j"></a>Phase J — Add cache_control breakpoints on stable prefixes
-
-**Goal.** Claude's API supports `cache_control: { type: "ephemeral" }` markers
-that pin prefixes for prompt caching. This reduces cost and latency
-significantly on long conversations. AgenC currently sets zero cache_control
-markers (`grep -rn cache_control runtime/src` returns zero).
-
-**Files to modify.**
-
-- `runtime/src/llm/messages.ts` — `normalizeMessagesForAPI` should add
-  `cache_control: { type: "ephemeral" }` to the last system message, the
-  last user message, and the most recent tool_result that survived
-  compaction.
-- `runtime/src/llm/grok/adapter.ts` — respect the cache_control field in
-  request shaping (xAI supports it on Grok 4 models per xAI docs; verify
-  with the xAI docs MCP before shipping).
-- `runtime/src/llm/ollama/adapter.ts` — pass through or strip silently
-  (Ollama ignores it).
-
-**Cache boundary rules** (mirror claude_code's):
-1. Pin the system prompt prefix.
-2. Pin the first message in the history tail that is not a tool_result.
-3. Pin the last microcompact/autocompact boundary if one exists.
-
-**Acceptance.**
-
-- Grok request payloads include `cache_control` at the specified breakpoints.
-- Unit test: `normalizeMessagesForAPI` with a synthetic history returns
-  messages with cache_control set at the expected positions.
-- Live test against the xAI API (dev flag) confirms the request is accepted.
-
-**PR:** `refactor/phase-j-cache-control-breakpoints`
-
----
-
-## <a id="phase-k"></a>Phase K — Collapse subagent stack to claude_code-shaped recursive executeChat()
-
-**Goal.** AgenC's subagent stack is 13,657 LOC across 20 files. claude_code's
-AgentTool is 6,072 LOC. The delta is legitimate AgenC extensions (execution
-contract validation, filesystem scope preflight, admission economics,
-verification retry loops) that add real value. But ~4,000 LOC is
-post-rip-out scar tissue that can be deleted if we collapse the orchestrator
-onto a recursive `executeChat()` call.
-
-**New shape.**
-
-```typescript
-// runtime/src/gateway/subagent-query.ts (new, ~400 LOC)
-
-export async function* querySubagent(
-  spec: SubAgentSpec,
-  parentContext: ExecuteChatContext,
-): AsyncGenerator<ExecuteChatYield, Terminal> {
-  const scope = await preflightDelegatedScope(spec, parentContext);
-  if (scope.behavior === "deny") {
-    return { reason: "user_abort", error: new Error(scope.reason) };
-  }
-
-  const admitted = evaluateAdmission(spec, parentContext);
-  if (!admitted.allowed) {
-    return { reason: "user_abort", error: new Error(admitted.reason) };
-  }
-
-  yield { type: "subagent_start", sessionId: spec.sessionId };
-
-  // Recursive executeChat with restricted tool set + derived context
-  const childEvents = executeChat({
-    ...parentContext.params,
-    sessionId: spec.sessionId,
-    messages: buildInitialChildMessages(spec),
-    allowedTools: scope.allowedTools,
-    toolHandler: wrapHandlerForChildScope(parentContext.toolHandler, scope),
-    maxToolRounds: spec.maxToolRounds,
-    signal: combineSignals(parentContext.signal, spec.signal),
-  });
-
-  const summary: string[] = [];
-  for await (const event of childEvents) {
-    if (event.type === "assistant") summary.push(extractText(event.content));
-    yield event; // bridge to parent stream
-  }
-
-  const terminal = childEvents.return; // final Terminal value
-  yield { type: "tool_use_summary", toolCallIds: [], summary: summary.join(" "), sessionId: spec.sessionId };
-
-  return terminal;
-}
-```
-
-**Keep (legitimate AgenC extensions):**
-
-- `runtime/src/utils/delegation-validation.ts` (1,142 LOC) — acceptance
-  criteria + evidence validation. No claude_code parallel. **Keep.**
-- `runtime/src/gateway/delegated-scope-preflight.ts` (266 LOC) — filesystem
-  safety. **Keep.**
-- `runtime/src/gateway/delegation-admission.ts` (1,130 LOC) — economics
-  gating (fanout, depth, cost). **Keep, shrink to ~600 LOC** by dropping
-  stub state.
-- `runtime/src/utils/delegation-execution-context.ts` — execution envelope
-  derivation. **Keep.**
-- `runtime/src/gateway/sub-agent.ts` (1,068 LOC) — spawn, timeout, abort.
-  **Shrink to ~300 LOC** as a thin wrapper around `querySubagent()`.
-
-**Delete or collapse:**
-
-- `runtime/src/gateway/subagent-orchestrator.ts` (2,507 LOC) — DAG execution
-  becomes recursive `querySubagent()` calls. **Target: delete ~2,000 LOC,
-  keep ~500 LOC as a thin coordinator for multi-step plans.**
-- `runtime/src/gateway/subagent-prompt-builder.ts` (1,207 LOC) — ~60% mirrors
-  claude_code's prompt assembly. **Shrink to ~500 LOC.**
-- `runtime/src/gateway/subagent-context-curation.ts` (1,130 LOC) — relevance
-  weighting is real; safe-copy layer is dead. **Shrink to ~600 LOC.**
-- `runtime/src/gateway/subagent-failure-classification.ts` (404 LOC) —
-  retry budget logic is real; regex pattern matching is consolidatable.
-  **Shrink to ~200 LOC.**
-- `runtime/src/gateway/delegation-economics.ts` (92 LOC) — stub. **DELETE.**
-- `runtime/src/gateway/delegation-runtime.ts` (261 LOC) — policy hook
-  shim. **DELETE if unused, otherwise shrink to ~80 LOC.**
-- `runtime/src/gateway/subagent-infrastructure.ts` (617 LOC) — process
-  management. **Shrink to ~200 LOC.**
-- `runtime/src/gateway/subagent-workspace-probes.ts` (833 LOC) — real feature
-  but narrow callers. **Shrink to ~400 LOC.**
-- `runtime/src/gateway/delegation-timeout.ts` (134 LOC) — runtime limits.
-  **Shrink to ~50 LOC.**
-- `runtime/src/gateway/delegation-scope.ts` (271 LOC) — scope negotiation.
-  **Shrink to ~100 LOC.**
-- `runtime/src/gateway/tool-handler-factory-delegation.ts` (851 LOC) —
-  delegation tool dispatch. **Shrink to ~300 LOC, route through Phase G
-  unified evaluator.**
-- `runtime/src/utils/delegated-contract-normalization.ts` (234 LOC) —
-  contract schema. **Shrink to ~100 LOC.**
-- `runtime/src/utils/delegated-scope-trust.ts` (263 LOC) — attestation
-  layer. **Shrink to ~100 LOC.**
-
-**Target LOC savings:** ~6,500 LOC deleted across the subagent stack.
-
-**Acceptance.**
-
-- `runtime/src/gateway/subagent-query.ts` exists and is the sole entry point
-  for subagent spawn.
-- `runtime/src/gateway/subagent-orchestrator.ts` is either deleted or is
-  ~500 LOC.
-- Subagent tests (`subagent-orchestrator.test.ts`, `sub-agent.test.ts`) are
-  rewritten against the new surface and stay green.
-- The 4 legitimate extensions (validation, preflight, admission, execution
-  context) are still present and wired in.
-- Integration test: a subagent spawned from a parent execution sees a
-  restricted tool set, completes its objective, and bubbles its events into
-  the parent's stream.
-
-**PR series:**
-- `refactor/phase-k1-add-subagent-query`
-- `refactor/phase-k2-migrate-orchestrator-callers`
-- `refactor/phase-k3-delete-subagent-bloat`
-- `refactor/phase-k4-shrink-delegation-stack`
-
----
-
-## <a id="phase-l"></a>Phase L — Delete runtime-wide dead files
-
-**Goal.** Remove files that provide neither an AgenC extension nor a
-claude_code alignment.
-
-**Delete.**
-
-- `runtime/src/bridges/` (1,124 LOC) — Farcaster, LangChain, X.402
-  integrations. Imported only in `index.ts` barrel; zero calls in daemon
-  or tests.
-- `runtime/src/proof/` (1,405 LOC) — merkle/zk proof validation. Orphaned
-  cache + types; no wiring in daemon or agent flow. (Prover lives in
-  `agenc-prover` repo; the runtime copy is a historical fragment.)
-- `runtime/src/browser.ts` (105 LOC) — re-export barrel duplicating
-  `channels/webchat/protocol.ts`.
-- `runtime/src/operator-events.ts` (10 LOC) — empty stub.
-- `runtime/src/marketplace/serialization.ts` (508 LOC) — only used by
-  `cli/marketplace-cli.ts`. Move it to `cli/marketplace/` or delete if
-  the CLI command is dead.
-
-**Also delete** (from audits):
-
-- `runtime/src/llm/prompt-budget.ts` (832 LOC → delete 600) — Phase A
-  replaces most of it with the layered chain.
-- `runtime/src/llm/chat-executor-routing-state.ts` (92 LOC) — static routing.
-- `runtime/src/llm/chat-executor-turn-contracts.ts` (69 LOC) — stub.
-- `runtime/src/llm/chat-executor-step-utils.ts` (26 LOC) — if unused post-Phase F.
-
-**Target LOC savings:** ~3,500 LOC.
-
-**Acceptance.**
-
-- `git status --short` shows the deleted paths.
-- `tsc --noEmit` clean.
-- `grep -rn "from \"../bridges\|from \"../proof\|from \"./browser" runtime/src`
-  returns empty.
-
-**PR series:**
-- `refactor/phase-l1-delete-bridges-proof`
-- `refactor/phase-l2-delete-browser-operator-events`
-- `refactor/phase-l3-delete-marketplace-serialization`
-
----
-
-## <a id="phase-m"></a>Phase M — Delete residual planner stub methods from daemon.ts
-
-**Goal.** Two dead stub methods remain in `daemon.ts` from the planner-era
-cleanup. Delete them.
-
-**Files to modify.**
-
-- `runtime/src/gateway/daemon.ts:4724–4733` — `buildToolRoutingDecision()` is
-  a planner-era stub that now returns `undefined`. Its callers fall back
-  to static allowed tools; the method can be deleted.
-- `runtime/src/gateway/daemon.ts:4735–4740` — `recordToolRoutingOutcome()`
-  is an empty void. Delete.
-- `runtime/src/gateway/channel-wiring.ts` — remove the contract entries
-  that advertised these two methods so the wiring shape shrinks.
-
-**Acceptance.**
-
-- Both methods gone.
-- `tsc --noEmit` clean.
-- `daemon.ts` LOC drops by ~16.
-
-**PR:** `refactor/phase-m-delete-planner-stub-methods-daemon`
-
----
-
-## <a id="phase-n"></a>Phase N — Wire memory/consolidation into the compaction chain
-
-**Goal.** `runtime/src/memory/consolidation.ts` implements episodic→semantic
-memory consolidation (R2/R7-paper style). `claude_code/services/compact/sessionMemoryCompact.ts`
-is a compaction optimization. They're conceptually parallel — AgenC can
-invoke consolidation as a compaction layer to drop episodic noise while
-keeping the semantic takeaways.
-
-**Files to modify.**
-
-- `runtime/src/memory/consolidation.ts` — expose `consolidateEpisodicSlice()`
-  that takes a message window and returns a summary message.
-- `runtime/src/llm/compact/index.ts` — add a new layer (optional,
-  feature-flagged) that invokes consolidation after the autocompact pass.
-- `runtime/src/llm/chat-executor.ts` (Phase A wiring site) — thread the
-  memory retriever + consolidator into the compaction chain config.
-
-**Acceptance.**
-
-- When memory consolidation is enabled, the compaction chain emits a
-  semantic summary message after autocompact fires.
-- The summary is persisted to memory so future sessions can recall it.
-- Unit test: a multi-turn session with consolidation enabled produces a
-  semantic summary entry in the memory backend.
-
-**PR:** `refactor/phase-n-memory-consolidation-as-compaction-layer`
-
----
-
-## <a id="phase-o"></a>Phase O — Final `tsc --noUnusedLocals` cascade sweep
-
-**Goal.** After Phases A–N, run the whole pipeline once:
-
-1. `npx tsc --noEmit -p runtime/tsconfig.json` → capture every TS6133/TS6192/TS6196
-2. Delete the flagged symbols in dependency order.
-3. Repeat until clean.
-4. Run the full test suite.
-5. Grep for remaining `TODO:` + `FIXME:` + `@deprecated` markers that are
-   actually actionable.
-
-**This phase is mechanical.** Expect 500–2,000 LOC of cascade deletions
-that fall out of the structural rewrites above.
-
-**Acceptance.**
-
-- `tsc --noEmit` clean with zero TS6133/TS6192/TS6196.
-- Full vitest run green modulo the pre-existing LiteSVM failure.
-- `grep -rn "TODO\|FIXME\|@deprecated" runtime/src --include="*.ts" | grep -v ".test.ts"`
-  returns only legitimate forward-looking markers, not broken-rip-out
-  residuals.
-
-**PR:** `refactor/phase-o-final-cascade-sweep`
-
----
-
-## <a id="phase-p"></a>Phase P — Ship it: rebuild, repack, restart, validate
-
-**Goal.** Prove the alignment works on the live daemon.
-
-**Steps.**
-
-1. `npm run build` in `agenc-core` (runs contracts→runtime→mcp→docs-mcp).
-2. `npm run build:public-runtime-artifacts` to repack the public tarball
-   with a new version.
-3. `agenc-runtime stop`, confirm PID gone.
-4. `agenc-runtime start` from the new tarball.
-5. Rotate `~/.agenc/daemon.errors.log` to get a fresh baseline.
-6. Reproduce the real-world workloads that mattered before the sprint:
-   - Web chat session with streaming.
-   - Concordia run.
-   - Sub-agent delegation (pre-Phase K baseline + post-Phase K shape).
-   - Background run over 30+ minutes.
-7. Diff the new error log against the pre-sprint error catalog. Any error
-   class that persists goes back on the backlog.
-
-**Acceptance.**
-
-- Daemon starts cleanly from a newly-built artifact.
-- Live workloads run without fresh error classes.
-- Error rate over 30 minutes is ≤ the pre-sprint baseline.
-- Commit message on the final merge captures the complete LOC delta.
-
-**PR:** `chore/phase-p-rebuild-repack-validate`
-
----
-
-## <a id="appendix-a"></a>Appendix A — Deletion manifest
-
-### A.1 Files to delete outright
-
-| File | LOC | Phase |
-|---|---|---|
-| `runtime/src/llm/chat-executor.ts` | 1,962 | F |
-| `runtime/src/llm/chat-executor.test.ts` | 4,222 | F (replaced by execute-chat.test.ts) |
-| `runtime/src/llm/chat-executor-planner-verifier-loop.ts` | ? | F |
-| `runtime/src/llm/chat-executor-routing-state.ts` | 92 | L |
-| `runtime/src/llm/chat-executor-step-utils.ts` | 26 | L (if unused) |
-| `runtime/src/llm/chat-executor-turn-contracts.ts` | 69 | L |
-| `runtime/src/bridges/` (entire dir) | 1,124 | L |
-| `runtime/src/proof/` (entire dir) | 1,405 | L |
-| `runtime/src/browser.ts` | 105 | L |
-| `runtime/src/operator-events.ts` | 10 | L |
-| `runtime/src/marketplace/serialization.ts` | 508 | L |
-| `runtime/src/gateway/subagent-orchestrator.ts` | 2,507 → ~500 | K |
-| `runtime/src/gateway/delegation-economics.ts` | 92 | K |
-| `runtime/src/gateway/delegation-runtime.ts` | 261 | K |
-| `runtime/src/policy/tool-governance.ts` | 226 | G |
-| `runtime/src/policy/mcp-governance.ts` | 269 | G |
-| `runtime/src/policy/bundles.ts` | 377 | G |
-
-### A.2 Files to shrink dramatically
-
-| File | From | To | Phase |
-|---|---|---|---|
-| `runtime/src/llm/chat-executor-recovery.ts` | 1,794 | ~300 | F |
-| `runtime/src/llm/chat-executor-text.ts` | 929 | ~200 | F |
-| `runtime/src/llm/chat-executor-tool-loop.ts` | 1,117 | ~400 | F |
-| `runtime/src/llm/chat-executor-tool-utils.ts` | 856 | ~300 | F |
-| `runtime/src/llm/chat-executor-types.ts` | 749 | ~200 | F |
-| `runtime/src/llm/chat-executor-fallback.ts` | 388 | ~120 | F |
-| `runtime/src/llm/prompt-budget.ts` | 832 | ~200 | A (→ L deletion of residual) |
-| `runtime/src/gateway/subagent-prompt-builder.ts` | 1,207 | ~500 | K |
-| `runtime/src/gateway/subagent-context-curation.ts` | 1,130 | ~600 | K |
-| `runtime/src/gateway/subagent-failure-classification.ts` | 404 | ~200 | K |
-| `runtime/src/gateway/subagent-infrastructure.ts` | 617 | ~200 | K |
-| `runtime/src/gateway/subagent-workspace-probes.ts` | 833 | ~400 | K |
-| `runtime/src/gateway/delegation-admission.ts` | 1,130 | ~600 | K |
-| `runtime/src/gateway/tool-handler-factory.ts` | 3,272 | ~1,500 | G |
-| `runtime/src/gateway/tool-handler-factory-delegation.ts` | 851 | ~300 | K |
-| `runtime/src/utils/delegated-contract-normalization.ts` | 234 | ~100 | K |
-| `runtime/src/utils/delegated-scope-trust.ts` | 263 | ~100 | K |
-
-### A.3 New files to add
-
-| File | Phase | Purpose |
-|---|---|---|
-| `runtime/src/llm/execute-chat.ts` | C | Async generator replacement for ChatExecutor |
-| `runtime/src/llm/execute-chat.test.ts` | C | Tests for executeChat |
-| `runtime/src/llm/streaming-events.ts` | D | Yield event type vocabulary |
-| `runtime/src/llm/streaming-bridge.ts` | D | Legacy-callback bridge during migration |
-| `runtime/src/llm/chat-executor-helpers.ts` | F | Free-function helpers extracted from the deleted class |
-| `runtime/src/gateway/subagent-query.ts` | K | Recursive executeChat subagent wrapper |
-
-### A.4 LOC ledger (target)
-
-| Phase | Added | Deleted | Net |
-|---|---|---|---|
-| A (compaction wiring) | +400 | −600 | −200 |
-| B (parallel dispatch) | +150 | −50 | +100 |
-| C (executeChat generator) | +600 | 0 | +600 |
-| D (streaming events) | +250 | 0 | +250 |
-| E (caller migration) | +300 | 0 | +300 |
-| F (delete ChatExecutor class) | +800 (helpers) | −8,000 | −7,200 |
-| G (permission evaluator unify) | +200 | −900 | −700 |
-| H (hook events) | +50 | −120 | −70 |
-| I (reactive 413) | +200 | 0 | +200 |
-| J (cache_control) | +150 | 0 | +150 |
-| K (subagent collapse) | +400 | −6,500 | −6,100 |
-| L (dead file delete) | 0 | −3,500 | −3,500 |
-| M (daemon stubs) | 0 | −16 | −16 |
-| N (memory compaction) | +200 | 0 | +200 |
-| O (cascade sweep) | 0 | −1,500 (estimated) | −1,500 |
-
-**Total target: +3,700 added, −21,186 deleted = ~−17,500 LOC net**
-
-On top of the ~35,000 LOC already removed in the prior sprint, this brings
-the runtime/src/ total from ~260K down to ~210K with every claude_code
-feature actually wired in. **Full completion, not partial.**
-
----
-
-## <a id="appendix-b"></a>Appendix B — PR sequence and branch names
-
-Land in this order. Do not skip ahead — each phase depends on the
-preceding one.
-
-1. `refactor/phase-a-wire-layered-compaction`
-2. `refactor/phase-b-parallel-tool-dispatch`
-3. `refactor/phase-d-streaming-event-types` *(land before C since C depends on the types)*
-4. `refactor/phase-c-executechat-async-generator`
-5. `refactor/phase-e1-migrate-daemon-text-channel-turn`
-6. `refactor/phase-e2-migrate-daemon-webchat-turn`
-7. `refactor/phase-e3-migrate-voice-bridge`
-8. `refactor/phase-e4-migrate-background-run-supervisor`
-9. `refactor/phase-e5-migrate-autonomous-callers`
-10. `refactor/phase-e6-migrate-eval-runners`
-11. `refactor/phase-f-delete-chat-executor-class`
-12. `refactor/phase-g1-unify-tool-permission-evaluator`
-13. `refactor/phase-g2-delete-dead-policy-files`
-14. `refactor/phase-g3-consolidate-glob-matcher`
-15. `refactor/phase-h-hook-events-cleanup`
-16. `refactor/phase-i-reactive-413-compact`
-17. `refactor/phase-j-cache-control-breakpoints`
-18. `refactor/phase-k1-add-subagent-query`
-19. `refactor/phase-k2-migrate-orchestrator-callers`
-20. `refactor/phase-k3-delete-subagent-bloat`
-21. `refactor/phase-k4-shrink-delegation-stack`
-22. `refactor/phase-l1-delete-bridges-proof`
-23. `refactor/phase-l2-delete-browser-operator-events`
-24. `refactor/phase-l3-delete-marketplace-serialization`
-25. `refactor/phase-m-delete-planner-stub-methods-daemon`
-26. `refactor/phase-n-memory-consolidation-as-compaction-layer`
-27. `refactor/phase-o-final-cascade-sweep`
-28. `chore/phase-p-rebuild-repack-validate`
-
-**Rule.** Every PR must: pass `tsc --noEmit`, pass `vitest run` (modulo
-the pre-existing LiteSVM failure), and preserve the full test baseline
-count (any drop must be justified by deletion of dead tests for deleted
-code). One PR per phase unless explicitly split above. No partial phases.
-
----
-
-## <a id="appendix-c"></a>Appendix C — What explicitly stays (AgenC-only surfaces)
-
-These features are AgenC-specific extensions and are **not** touched by any
-phase in this plan. Deletion of any of them would regress user-visible
-behavior.
-
-- **Channels subsystem** (runtime/src/channels/): WebChat, Telegram,
-  Discord, Matrix, Signal, iMessage, WhatsApp plugins. ~14K LOC.
-- **WebSocket approval flow** (runtime/src/gateway/approvals.ts): the
-  gateway-side approval request/response cycle. Phase G absorbs its gate
-  into the unified permission evaluator but keeps the WebSocket plumbing.
-- **Background runs supervisor** (runtime/src/gateway/background-run-*):
-  long-running autonomous sessions that survive daemon restarts.
-- **Concordia bridge** (runtime/src/plugins/channel-host-services.ts +
-  agenc-plugin-concordia): simulation framework connection.
-- **Skills marketplace** (runtime/src/skills/): manifests, catalog,
-  registry, monetization, Jupiter DEX.
-- **Protocol integration** (runtime/src/tools/agenc/, task/, dispute/,
-  governance/, reputation/, social/): Solana contract handlers.
-- **Watch TUI** (runtime/src/bin/agenc-watch + watch-*).
-- **Daemon control plane** (runtime/src/gateway/daemon.ts): start/stop/
-  restart lifecycle, WebSocket gateway, session management, MCP manager.
-- **Memory subsystem** (runtime/src/memory/): persistent vectors, SQLite
-  backend, consolidation, identity/beliefs, 3-role retrieval.
-- **Observability** (runtime/src/observability/ + replay/): SQLite trace
-  store, replay, metrics.
-- **Desktop automation** (runtime/src/desktop/): sandbox manager, desktop
-  executor, container routing.
-- **Eval suite** (runtime/src/eval/): pipeline quality, mutation testing,
-  chaos, delegated workspace gates.
-- **Autonomous lane** (runtime/src/autonomous/): goal manager, strategic
-  memory, curiosity, desktop awareness (minus the deleted verifier lane).
-
-**Touch these only to delete proven dead code inside them.** Never delete
-a file that implements one of these surfaces without explicit user
-approval.
-
----
-
-## Success metrics
-
-- **Structural.** `chat-executor.ts` deleted. `runtime/src` total LOC drops
-  from ~260K to ~210K. Every compact layer in `llm/compact/*.ts` is
-  imported from the live loop. Zero dead exports (`grep` + tsc-unused run
-  to confirm).
-- **Behavioral.** The daemon runs a streaming web-chat turn end-to-end.
-  Reactive compaction recovers from a 413 on the first retry. A subagent
-  spawned from a parent bubbles its events into the parent's stream.
-  Parallel tools dispatch as a single batch.
-- **Operational.** Error rate over a 30-minute live workload ≤ the
-  pre-sprint baseline. No new error classes introduced. The Watch TUI
-  shows the new event stream correctly.
-
----
-
-## What this plan explicitly rejects
-
-- **Rewriting the daemon as a stateless CLI.** AgenC is a long-lived
-  daemon. Phase C does not change that.
-- **Porting claude_code's Ink TUI.** AgenC has Watch TUI. Keep it.
-- **Porting claude_code's print/repl modes.** AgenC has WebSocket channels
-  and the daemon control plane.
-- **Dropping the approval WebSocket flow.** The unified permission
-  evaluator absorbs it; it does not replace it.
-- **Deleting the background run supervisor.** That's AgenC's crown jewel
-  feature.
-- **Deleting memory/consolidation.** Phase N wires it in as a compaction
-  layer; it becomes strictly more useful.
-- **Deleting Concordia, skills, protocol tools, autonomous lane, desktop
-  automation, or eval suite.** All AgenC-specific and valuable.
-
-This plan is about making the **core agent loop** behave like claude_code,
-not about making AgenC into a claude_code fork. Every phase preserves the
-outer surface.
+## Notes Carried Forward From Prior Refactor
+
+1. **Daemon PID file quirk**: `agenc-runtime stop` sometimes reports "not running" even when a daemon is alive on port 3100 because the pid file at `~/.agenc/daemon.pid` is not always written. Fallback: find the PID via `ss -tlnp 'sport = :3100'` and `kill -TERM <pid>` directly.
+2. **From-source dev mode**: `agenc-runtime start --from-source` builds `runtime/dist` locally and symlinks `~/.agenc/runtime/current` to it. The daemon picks up the fresh build automatically. Use this for all daemon restarts during Phase F rather than the packaged tarball install.
+3. **Refactor-log location**: `docs/REFACTOR-LOG.md` is the authoritative ledger. Each PR in Phase F appends one row.
+4. **Baseline script floors**: currently `MIN_TEST_FILES = 361`, `MIN_IT_BLOCKS = 5970`. PR-10 will temporarily break these during the test split; the baseline script should be updated inside PR-10 itself (in the same commit) to reflect the new file count and it() count.
+5. **Attribution rule**: commit messages / PR bodies / code comments must not contain "Claude", "Anthropic", "Co-Authored-By", "Generated with", robot emoji, or any AI attribution. Zero exceptions. The baseline script enforces this for commit messages.
