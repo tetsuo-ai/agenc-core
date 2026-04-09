@@ -115,7 +115,7 @@ class MockEventSource {
 }
 
 describe('useSimulation', () => {
-  const fetchMock = vi.fn<Parameters<typeof fetch>, ReturnType<typeof fetch>>();
+  const fetchMock = vi.fn();
 
   beforeEach(() => {
     fetchMock.mockReset();
@@ -133,7 +133,7 @@ describe('useSimulation', () => {
   it('ignores late responses from a previously selected simulation', async () => {
     const staleStatus = deferred<Response>();
 
-    fetchMock.mockImplementation(async (input) => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/simulations/sim-1/events') && !url.includes('/stream')) {
         return jsonResponse({
@@ -229,7 +229,7 @@ describe('useSimulation', () => {
   it('swallows aborted replay hydration during selection changes', async () => {
     const aborted = deferred<Response>();
 
-    fetchMock.mockImplementation(async (input) => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/simulations/sim-1/events') && !url.includes('/stream')) {
         return aborted.promise;
@@ -313,7 +313,7 @@ describe('useSimulation', () => {
 
   it('hydrates replay, catches up after reconnect, and deduplicates repeated live events', async () => {
 
-    fetchMock.mockImplementation(async (input) => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/simulations/sim-live/events') && !url.includes('/stream') && url.includes('cursor=evt-3')) {
         return jsonResponse({
@@ -390,7 +390,7 @@ describe('useSimulation', () => {
   it('keeps paused sims on heartbeat status polling while disabling repeated agent polling', async () => {
     vi.useFakeTimers();
 
-    fetchMock.mockImplementation(async (input) => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/simulations/sim-paused/events') && !url.includes('/stream')) {
         return jsonResponse({ simulation_id: 'sim-paused', events: [], next_cursor: null });
@@ -457,7 +457,7 @@ describe('useSimulation', () => {
 
   it('keeps archived sims disconnected after initial hydration', async () => {
 
-    fetchMock.mockImplementation(async (input) => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/simulations/sim-archived/events') && !url.includes('/stream')) {
         return jsonResponse({
