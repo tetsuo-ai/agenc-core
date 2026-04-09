@@ -18,6 +18,7 @@ import {
   extractToolFailureTextFromResult,
   normalizeToolCallArguments,
 } from '../llm/chat-executor-tool-utils.js';
+import { TEST_FILE_PATH_RE } from "../llm/verification-target-guard.js";
 import type { HookDispatcher } from './hooks.js';
 import type { ApprovalEffectRef, ApprovalEngine } from './approvals.js';
 import {
@@ -179,8 +180,6 @@ const SED_OPTION_VALUE_FLAGS = new Set([
   "--file",
 ]);
 const WORKSPACE_ALIAS_ROOT = "/workspace";
-const TEST_FILE_PATH_RE =
-  /(?:^|\/)(?:test|tests|spec|specs|__tests__)(?:\/|$)|\.(?:test|spec)\.[^/]+$/i;
 const BEHAVIOR_COMMAND_RE =
   /\b(?:test|tests|vitest|jest|pytest|playwright|ctest|cargo test|go test|smoke|scenario|e2e|end-to-end)\b/i;
 const BUILD_COMMAND_RE =
