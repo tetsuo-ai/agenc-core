@@ -290,7 +290,9 @@ async function createSignerProgramContext(options: BaseCliOptions): Promise<{
   const connection = new Connection(rpcUrl);
   const programId = parseProgramId(options.programId);
   const keypairPath =
-    process.env.SOLANA_KEYPAIR_PATH ?? getDefaultKeypairPath();
+    options.keypairPath ??
+    process.env.SOLANA_KEYPAIR_PATH ??
+    getDefaultKeypairPath();
   const keypair = await loadKeypairFromFile(keypairPath);
   const provider = createWalletProvider(connection, keypair);
   return {

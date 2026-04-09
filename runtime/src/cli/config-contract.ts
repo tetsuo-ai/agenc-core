@@ -159,6 +159,7 @@ function parseCanonicalCliConfig(value: GatewayConfig): CliFileConfig {
   return {
     rpcUrl: parseOptionalString(value.connection.rpcUrl),
     programId: parseOptionalString(value.connection.programId),
+    keypairPath: parseOptionalString(value.connection.keypairPath),
     storeType:
       normalizeStoreType(value.replay?.store?.type) ?? DEFAULT_CLI_STORE_TYPE,
     sqlitePath: parseOptionalString(value.replay?.store?.sqlitePath),

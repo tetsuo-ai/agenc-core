@@ -27,6 +27,7 @@ export interface BaseCliOptions {
   role?: OperatorRole;
   rpcUrl?: string;
   programId?: string;
+  keypairPath?: string;
   storeType: "memory" | "sqlite";
   sqlitePath?: string;
   traceId?: string;
@@ -184,6 +185,7 @@ export interface CliFileConfig {
   configVersion?: string;
   rpcUrl?: string;
   programId?: string;
+  keypairPath?: string;
   storeType?: "memory" | "sqlite";
   sqlitePath?: string;
   traceId?: string;

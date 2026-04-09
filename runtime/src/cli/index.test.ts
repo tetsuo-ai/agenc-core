@@ -42,11 +42,13 @@ const {
   runMarketTaskCreateCommand,
   runMarketTaskClaimCommand,
   runMarketGovernanceVoteCommand,
+  runMarketReputationSummaryCommand,
 } = vi.hoisted(() => ({
   runMarketTasksListCommand: vi.fn(async () => 0),
   runMarketTaskCreateCommand: vi.fn(async () => 0),
   runMarketTaskClaimCommand: vi.fn(async () => 0),
   runMarketGovernanceVoteCommand: vi.fn(async () => 0),
+  runMarketReputationSummaryCommand: vi.fn(async () => 0),
 }));
 const { runMarketTuiCommand } = vi.hoisted(() => ({
   runMarketTuiCommand: vi.fn(async () => 0),
@@ -85,6 +87,7 @@ vi.mock("./marketplace-cli.js", async () => {
     runMarketTaskCreateCommand,
     runMarketTaskClaimCommand,
     runMarketGovernanceVoteCommand,
+    runMarketReputationSummaryCommand,
   };
 });
 
@@ -402,6 +405,41 @@ describe("runtime root CLI", () => {
         description: "Public task from CLI test",
         reward: "50000000",
         requiredCapabilities: "1",
+      }),
+    );
+  });
+
+  it("routes market reputation summaries through the root CLI command surface with configured keypair paths", async () => {
+    const stdout = captureStream();
+    const stderr = captureStream();
+    const configuredKeypairPath = join(workspace, "configured-id.json");
+    writeFileSync(
+      process.env.AGENC_CONFIG!,
+      JSON.stringify({
+        gateway: { port: 3100 },
+        agent: { name: "cli-root-test-agent" },
+        connection: {
+          rpcUrl: "https://api.devnet.solana.com",
+          keypairPath: configuredKeypairPath,
+        },
+        replay: { store: { type: "memory" } },
+      }),
+      "utf8",
+    );
+
+    const code = await runCli({
+      argv: ["market", "reputation", "summary"],
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+    });
+
+    expect(code).toBe(0);
+    expect(stderr.data()).toBe("");
+    expect(runMarketReputationSummaryCommand).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        rpcUrl: "https://api.devnet.solana.com",
+        keypairPath: configuredKeypairPath,
       }),
     );
   });

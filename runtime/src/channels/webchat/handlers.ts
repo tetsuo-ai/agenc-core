@@ -963,11 +963,11 @@ async function handleMarketReputationSummary(
       });
       return;
     }
-    const { agentId: _agentId, ...payload } = summary;
+    const { agentId: _agentId, ...summaryPayload } = summary;
 
     send({
       type: 'market.reputation.summary',
-      payload,
+      payload: summaryPayload,
       id,
     });
   });

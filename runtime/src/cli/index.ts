@@ -1473,6 +1473,7 @@ function normalizeGlobalFlags(
   role?: OperatorRole;
   rpcUrl?: string;
   programId?: string;
+  keypairPath?: string;
   storeType: "memory" | "sqlite";
   sqlitePath?: string;
   traceId?: string;
@@ -1499,6 +1500,7 @@ function normalizeGlobalFlags(
     programId: parseOptionalString(
       flags["program-id"] ?? envConfig.programId ?? fileConfig.programId,
     ),
+    keypairPath: parseOptionalString(fileConfig.keypairPath),
     storeType: normalizeStoreType(
       flags["store-type"] ?? envConfig.storeType ?? fileConfig.storeType,
     ),
@@ -1616,6 +1618,7 @@ function makePluginOptionsBase(global: PluginGlobalContext): BaseCliOptions {
     role: global.role,
     rpcUrl: global.rpcUrl,
     programId: global.programId,
+    keypairPath: global.keypairPath,
     storeType: global.storeType,
     sqlitePath: global.sqlitePath,
     traceId: global.traceId,
@@ -2083,6 +2086,7 @@ function normalizeAndValidate(parsed: ParsedArgv): CliParseReport {
     role: global.role,
     rpcUrl: global.rpcUrl,
     programId: global.programId,
+    keypairPath: global.keypairPath,
     storeType: global.storeType,
     sqlitePath: global.sqlitePath,
     traceId: global.traceId,
@@ -2193,6 +2197,7 @@ function normalizeAndValidatePluginCommand(
     role: global.role,
     rpcUrl: global.rpcUrl,
     programId: global.programId,
+    keypairPath: global.keypairPath,
     storeType: global.storeType,
     sqlitePath: global.sqlitePath,
     traceId: global.traceId,
@@ -2315,6 +2320,7 @@ function normalizeAndValidateSkillCommand(
     role: global.role,
     rpcUrl: global.rpcUrl,
     programId: global.programId,
+    keypairPath: global.keypairPath,
     storeType: global.storeType,
     sqlitePath: global.sqlitePath,
     traceId: global.traceId,
@@ -2560,6 +2566,7 @@ function normalizeAndValidateMarketCommand(
     role: global.role,
     rpcUrl: global.rpcUrl,
     programId: global.programId,
+    keypairPath: global.keypairPath,
     storeType: global.storeType,
     sqlitePath: global.sqlitePath,
     traceId: global.traceId,
