@@ -1469,29 +1469,27 @@ describe("project init", () => {
 });
 
 describe("webchat background-run routing", () => {
-  it("routes durable server prompts with natural until-stop phrasing into background supervision", async () => {
+  it("does NOT auto-route until-stop phrasing into background supervision", async () => {
+    // Regression test for the 2026-04-09 auto-route disable.
+    //
+    // Previous behavior: any chat message matching `inferBackgroundRunIntent`
+    // (UNTIL_STOP_RE / KEEP_UPDATING_RE / BACKGROUND_RE / CONTINUOUS_RE)
+    // was silently rerouted to `BackgroundRunSupervisor.startRun(...)` and
+    // the synchronous chat executor was bypassed entirely. Combined with a
+    // broken decision resolver that declared "objective satisfied" after a
+    // single `system.readFile`, the user-facing symptom was: chat message
+    // goes in, nothing happens, no UI feedback, no error.
+    //
+    // The auto-route was disabled in `daemon.ts` (look for the
+    // `void inferBackgroundRunIntent;` marker). Background runs are still
+    // available via the supervisor's explicit start surface, but chat
+    // messages must always fall through to the synchronous executor.
+    //
+    // This test verifies the supervisor's `startRun` is NOT invoked even
+    // when the message contains classic auto-route phrasing.
     const dm = new DaemonManager({ configPath: "/tmp/config.json" });
     const startRun = vi.fn(async () => undefined);
     const getStatusSnapshot = vi.fn(() => undefined);
-    const execute = vi.fn();
-    const session = { metadata: {} as Record<string, unknown> };
-    const webChat = {
-      send: vi.fn(async () => undefined),
-      pushToSession: vi.fn(),
-      broadcastEvent: vi.fn(),
-    } as any;
-    const commandRegistry = {
-      dispatch: vi.fn(async () => false),
-    } as any;
-    const hooks = {
-      dispatch: vi.fn(async () => ({ completed: true, payload: {} })),
-    } as any;
-    const sessionMgr = {
-      getOrCreate: vi.fn(() => session),
-    } as any;
-    const memoryBackend = {
-      addEntry: vi.fn(async () => undefined),
-    } as any;
 
     (dm as any).gateway = {
       config: {
@@ -1506,18 +1504,38 @@ describe("webchat background-run routing", () => {
       startRun,
     };
 
+    // Stub out the synchronous executor path so this test focuses on
+    // routing only.
+    const executeWebChatConversationTurnSpy = vi
+      .spyOn(dm as any, "executeWebChatConversationTurn")
+      .mockResolvedValue(undefined);
+
+    const webChat = {
+      send: vi.fn(async () => undefined),
+      pushToSession: vi.fn(),
+      broadcastEvent: vi.fn(),
+    } as any;
+    const commandRegistry = { dispatch: vi.fn(async () => false) } as any;
+    const hooks = {
+      dispatch: vi.fn(async () => ({ completed: true, payload: {} })),
+    } as any;
+    const sessionMgr = {
+      getOrCreate: vi.fn(() => ({ metadata: {} })),
+    } as any;
+    const memoryBackend = { addEntry: vi.fn(async () => undefined) } as any;
+
     await (dm as any).handleWebChatInboundMessage(
       {
         sessionId: "session-background-server",
         senderId: "operator-1",
         channel: "webchat",
         content:
-          "Start a durable HTTP server on port 8774 serving /home/tetsuo/git/AgenC. Use the typed server handle tools, verify it is ready, and keep it running until I tell you to stop.",
+          "Start a durable HTTP server on port 8774 and keep it running until I tell you to stop.",
       },
       {
         webChat,
         commandRegistry,
-        getChatExecutor: () => ({ execute }),
+        getChatExecutor: () => ({ execute: vi.fn() }),
         getLoggingConfig: () => ({}),
         hooks,
         sessionMgr,
@@ -1531,27 +1549,9 @@ describe("webchat background-run routing", () => {
       },
     );
 
-    expect(commandRegistry.dispatch).toHaveBeenCalledOnce();
-    expect(hooks.dispatch).toHaveBeenCalledWith("message:inbound", {
-      sessionId: "session-background-server",
-      content:
-        "Start a durable HTTP server on port 8774 serving /home/tetsuo/git/AgenC. Use the typed server handle tools, verify it is ready, and keep it running until I tell you to stop.",
-      senderId: "operator-1",
-    });
-    expect(getStatusSnapshot).toHaveBeenCalledWith("session-background-server");
-    expect(memoryBackend.addEntry).toHaveBeenCalledWith({
-      sessionId: "session-background-server",
-      role: "user",
-      content:
-        "Start a durable HTTP server on port 8774 serving /home/tetsuo/git/AgenC. Use the typed server handle tools, verify it is ready, and keep it running until I tell you to stop.",
-    });
-    expect(startRun).toHaveBeenCalledWith({
-      sessionId: "session-background-server",
-      objective:
-        "Start a durable HTTP server on port 8774 serving /home/tetsuo/git/AgenC. Use the typed server handle tools, verify it is ready, and keep it running until I tell you to stop.",
-    });
-    expect(execute).not.toHaveBeenCalled();
-    expect(webChat.send).not.toHaveBeenCalled();
+    expect(startRun).not.toHaveBeenCalled();
+    expect(executeWebChatConversationTurnSpy).toHaveBeenCalledOnce();
+    executeWebChatConversationTurnSpy.mockRestore();
   });
 
 });
