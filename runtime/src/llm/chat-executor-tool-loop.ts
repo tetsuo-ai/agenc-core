@@ -67,6 +67,10 @@ import {
   preflightStaleCopiedCmakeHarnessInvocation,
 } from "./chat-executor-recovery.js";
 import {
+  ANTI_FABRICATION_HARNESS_OVERWRITE_REASON,
+  evaluateWriteOverFailedVerification,
+} from "./verification-target-guard.js";
+import {
   sanitizeToolCallsForReplay,
   generateFallbackContent,
   buildPromptToolContent,
@@ -616,6 +620,57 @@ export async function executeSingleToolCall(
       name: toolCall.name,
       args,
       result: staleHarnessPreflight.rejectionError,
+      isError: true,
+      durationMs: 0,
+    });
+    return "skip";
+  }
+  // Anti-fabrication gate: structurally refuse writeFile/appendFile/
+  // text_editor over a verification harness when a prior `system.bash` /
+  // `desktop.bash` call in the same turn failed while referencing that
+  // harness by basename. Modeled on Claude Code's layered verification
+  // contract, this removes the affordance for the model to silently
+  // rewrite a failing test into a fake-pass stub.
+  const antiFabricationDecision = evaluateWriteOverFailedVerification({
+    toolName: toolCall.name,
+    args,
+    priorToolCalls: ctx.allToolCalls,
+  });
+  if (antiFabricationDecision.refuse) {
+    const refusalMessage =
+      antiFabricationDecision.message ??
+      `Tool "${toolCall.name}" refused by anti-fabrication gate.`;
+    callbacks.emitExecutionTrace(ctx, {
+      type: "tool_rejected",
+      phase: "tool_followup",
+      callIndex: ctx.callIndex,
+      payload: {
+        tool: toolCall.name,
+        args,
+        originalArgs: rawArgs,
+        reason:
+          antiFabricationDecision.reason ??
+          ANTI_FABRICATION_HARNESS_OVERWRITE_REASON,
+        error: refusalMessage,
+        ...(antiFabricationDecision.evidence
+          ? { evidence: antiFabricationDecision.evidence }
+          : {}),
+      },
+    });
+    callbacks.pushMessage(
+      ctx,
+      {
+        role: "tool",
+        content: refusalMessage,
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+      },
+      "tools",
+    );
+    callbacks.appendToolRecord(ctx, {
+      name: toolCall.name,
+      args,
+      result: refusalMessage,
       isError: true,
       durationMs: 0,
     });

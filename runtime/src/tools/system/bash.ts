@@ -696,7 +696,8 @@ export function createBashTool(config?: BashToolConfig): Tool {
     description:
       "Execute commands in two modes:\n" +
       '1. **Direct mode** (command + args): Set `command` to a binary (e.g. "git") and `args` to an array of flags/operands. Uses execFile directly.\n' +
-      '2. **Shell mode** (command only, no args): Set `command` to a full shell string (e.g. "ls -la | grep foo"). Pipes, redirects, chaining, and backgrounding are supported.',
+      '2. **Shell mode** (command only, no args): Set `command` to a full shell string (e.g. "ls -la | grep foo"). Pipes, redirects, chaining, and backgrounding are supported.\n\n' +
+      "NEVER use this tool to bypass verification: no `--no-verify` on commits, no `|| true` wrapping around failing tests, no rewriting a failing test into `exit 0`. If a test fails, read the error and fix the real cause. If a pre-commit or CI hook fails, investigate the cause and create a new commit with the fix — do not skip the hook. If the verification harness itself is genuinely wrong, stop and explain the discrepancy in your reply so the user can review before you modify the harness. Attempts to overwrite a verification harness that just failed in this turn will be refused by the runtime.",
     inputSchema: {
       type: "object",
       properties: {
