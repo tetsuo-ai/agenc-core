@@ -72,6 +72,21 @@ import type { LLMFailureClass, LLMPipelineStopReason } from "../policy.js";
  * top-level key not in this set instead of silently stripping it the way
  * `sanitizeToDocumentedXaiResponsesParams()` does.
  */
+/**
+ * Documented maximum `tools` array length for xAI /v1/responses. Source:
+ * developers/rest-api-reference/inference/chat Responses API section:
+ * "A max of 128 tools are supported."
+ *
+ * The runtime enforces this in two places: the Grok adapter's
+ * `buildParams()` auto-trims the tool array to this cap BEFORE the
+ * strict filter runs (so agents with large tool catalogs stay
+ * functional), and `validateXaiRequestPreFlight()` throws on any
+ * request whose tools array still exceeds this after the auto-trim
+ * (defense in depth against a regression that bypasses the adapter
+ * trim).
+ */
+export const XAI_RESPONSES_MAX_TOOL_COUNT = 128;
+
 export const DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS: ReadonlySet<string> = new Set([
   "include",
   "input",
@@ -496,15 +511,19 @@ export function validateXaiRequestPreFlight(
   // of 128 tools are supported." AgenC was previously sending 129 which
   // silently passed through xAI's 200-level validation but potentially
   // contributed to undefined downstream decoder behavior. Fail closed
-  // at the boundary so the runtime cannot exceed the contract.
-  if (tools.length > 128) {
+  // at the boundary so the runtime cannot exceed the contract. The
+  // Grok adapter also auto-trims to this cap in buildParams() before
+  // this validator runs, so in normal operation this throw is a
+  // defense-in-depth against a regression that bypasses the adapter
+  // trim.
+  if (tools.length > XAI_RESPONSES_MAX_TOOL_COUNT) {
     throw new XaiUndocumentedFieldError(
       "tools",
       `has ${tools.length} entries but the xAI Responses API documents a ` +
-        `maximum of 128 tools per request ` +
+        `maximum of ${XAI_RESPONSES_MAX_TOOL_COUNT} tools per request ` +
         `(developers/rest-api-reference/inference/chat). Sending more than ` +
-        `128 violates the documented contract even if the request returns ` +
-        `HTTP 200.`,
+        `${XAI_RESPONSES_MAX_TOOL_COUNT} violates the documented contract ` +
+        `even if the request returns HTTP 200.`,
     );
   }
   for (let i = 0; i < tools.length; i++) {

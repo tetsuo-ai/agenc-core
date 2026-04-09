@@ -37,6 +37,7 @@ import {
   validateXaiRequestPreFlight,
   validateXaiResponsePostFlight,
   XaiSilentToolDropError,
+  XAI_RESPONSES_MAX_TOOL_COUNT,
 } from "./xai-strict-filter.js";
 import { ensureLazyImport } from "../lazy-import.js";
 import {
@@ -1965,6 +1966,37 @@ export class GrokProvider implements LLMProvider {
     // silently broke multi-step tool sequences end-to-end.
     if (selectedTools.tools.length > 0) {
       if (!hasImages || VISION_MODELS_WITH_TOOLS.has(visionModel)) {
+        // Enforce the documented xAI Responses API maximum of 128
+        // tools (developers/rest-api-reference/inference/chat). The
+        // strict pre-flight validator throws on any request with more
+        // than XAI_RESPONSES_MAX_TOOL_COUNT tools; trim here so a
+        // local catalog that legitimately exceeds the limit (e.g.
+        // many MCP servers enabled) stays functional instead of
+        // failing closed at every request. The trim is deterministic
+        // (tail of the registry order) and the dropped tool names
+        // are logged so operators can reorder their tool registry
+        // or drop unused MCP servers to reclaim the dropped slots.
+        if (selectedTools.tools.length > XAI_RESPONSES_MAX_TOOL_COUNT) {
+          const dropped = selectedTools.tools.slice(
+            XAI_RESPONSES_MAX_TOOL_COUNT,
+          );
+          const droppedNames = dropped
+            .map((t) => String((t as { name?: unknown }).name ?? "<unnamed>"))
+            .join(", ");
+          console.warn(
+            `[GrokProvider] Tool catalog has ${selectedTools.tools.length} ` +
+              `tools but xAI Responses API documents a maximum of ` +
+              `${XAI_RESPONSES_MAX_TOOL_COUNT}. Trimming the tail of the ` +
+              `registry to stay within the contract. Dropped tools (last ` +
+              `in registry order): ${droppedNames}. Reorder your tool ` +
+              `registry or disable unused MCP servers if these should be ` +
+              `retained.`,
+          );
+          selectedTools.tools = selectedTools.tools.slice(
+            0,
+            XAI_RESPONSES_MAX_TOOL_COUNT,
+          ) as typeof selectedTools.tools;
+        }
         params.tools = selectedTools.tools;
         selectedTools.toolsAttached = true;
         params.parallel_tool_calls = this.config.parallelToolCalls;

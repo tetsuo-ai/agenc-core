@@ -1518,6 +1518,100 @@ describe("GrokProvider", () => {
     expect((params.tools as unknown[]).length).toBe(120);
   });
 
+  it("auto-trims tool catalog to documented xAI 128-tool maximum", async () => {
+    // AgenC's live tool registry has 129 tools (77 system + 20 doom MCP
+    // + 18 agenc protocol + 6 social + 4 task + execute_with_agent +
+    // coordinator_mode + 2 solana-fender). xAI docs cap tools at 128.
+    // The adapter must auto-trim to stay functional; the strict filter's
+    // 128-tool rejection is a defense-in-depth catch below this layer.
+    mockCreate.mockResolvedValueOnce(makeCompletion());
+
+    const overLimitTools: LLMTool[] = Array.from(
+      { length: 129 },
+      (_, i) => ({
+        type: "function",
+        function: {
+          name: `tool_${String(i).padStart(3, "0")}`,
+          description: `Tool ${i}`,
+          parameters: {
+            type: "object",
+            properties: { a: { type: "string" } },
+            required: ["a"],
+          },
+        },
+      }),
+    );
+
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+      tools: overLimitTools,
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let capturedWarnCalls: unknown[][] = [];
+    try {
+      await provider.chat([{ role: "user", content: "hello" }]);
+      // Capture before mockRestore() below clears mock.calls.
+      capturedWarnCalls = warnSpy.mock.calls.map((call) => [...call]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    const params = mockCreate.mock.calls[0][0];
+    expect(Array.isArray(params.tools)).toBe(true);
+    // Trimmed to exactly 128; the last tool (tool_128) is dropped.
+    expect((params.tools as unknown[]).length).toBe(128);
+    const sentNames = (params.tools as Array<{ name?: unknown }>).map((t) =>
+      String(t.name),
+    );
+    expect(sentNames[0]).toBe("tool_000");
+    expect(sentNames[127]).toBe("tool_127");
+    expect(sentNames).not.toContain("tool_128");
+
+    // Operator-visible warning naming the dropped tool.
+    const warnCall = capturedWarnCalls.find((call) =>
+      String(call[0] ?? "").includes("Tool catalog has 129 tools"),
+    );
+    expect(warnCall).toBeDefined();
+    expect(String(warnCall?.[0] ?? "")).toContain("tool_128");
+  });
+
+  it("does NOT trim when tool catalog is exactly at the 128 limit", async () => {
+    mockCreate.mockResolvedValueOnce(makeCompletion());
+
+    const atLimitTools: LLMTool[] = Array.from({ length: 128 }, (_, i) => ({
+      type: "function",
+      function: {
+        name: `tool_${i}`,
+        description: `Tool ${i}`,
+        parameters: {
+          type: "object",
+          properties: { a: { type: "string" } },
+          required: ["a"],
+        },
+      },
+    }));
+
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+      tools: atLimitTools,
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let capturedWarnCalls: unknown[][] = [];
+    try {
+      await provider.chat([{ role: "user", content: "hello" }]);
+      capturedWarnCalls = warnSpy.mock.calls.map((call) => [...call]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    const params = mockCreate.mock.calls[0][0];
+    expect((params.tools as unknown[]).length).toBe(128);
+    const trimWarns = capturedWarnCalls.filter((call) =>
+      String(call[0] ?? "").includes("Tool catalog has"),
+    );
+    expect(trimWarns).toHaveLength(0);
+  });
+
   it("passes usage information", async () => {
     mockCreate.mockResolvedValueOnce(makeCompletion());
 
