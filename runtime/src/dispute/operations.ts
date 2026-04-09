@@ -366,7 +366,10 @@ export class DisputeOperations {
         params.defendantWorkers,
       );
 
-      const builder = this.program.methods
+      // The runtime patches local IDL account layouts ahead of the published
+      // protocol typings, so this builder needs a narrow escape hatch until the
+      // package catches up.
+      const builder = (this.program.methods as any)
         .initiateDispute(
           toAnchorBytes(params.disputeId),
           toAnchorBytes(params.taskId),

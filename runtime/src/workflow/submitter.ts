@@ -237,7 +237,10 @@ export class DAGSubmitter {
       creator,
     );
 
-    return this.program.methods
+    // The runtime patches local IDL account layouts ahead of the published
+    // protocol typings, so these builders need a narrow escape hatch until the
+    // package catches up.
+    return (this.program.methods as any)
       .createTask(
         toAnchorBytes(taskId),
         new BN(template.requiredCapabilities.toString()),
@@ -287,7 +290,10 @@ export class DAGSubmitter {
       creator,
     );
 
-    return this.program.methods
+    // The runtime patches local IDL account layouts ahead of the published
+    // protocol typings, so these builders need a narrow escape hatch until the
+    // package catches up.
+    return (this.program.methods as any)
       .createDependentTask(
         toAnchorBytes(taskId),
         new BN(template.requiredCapabilities.toString()),

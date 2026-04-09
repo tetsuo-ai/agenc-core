@@ -115,7 +115,7 @@ class MockEventSource {
 }
 
 describe('useSimulation', () => {
-  const fetchMock = vi.fn<typeof fetch>();
+  const fetchMock = vi.fn<Parameters<typeof fetch>, ReturnType<typeof fetch>>();
 
   beforeEach(() => {
     fetchMock.mockReset();

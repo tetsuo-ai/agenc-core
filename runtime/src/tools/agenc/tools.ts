@@ -16,7 +16,7 @@
  */
 
 import { PublicKey, SystemProgram } from '@solana/web3.js';
-import anchor, { BN, type Program } from '@coral-xyz/anchor';
+import { BN, type Program } from '@coral-xyz/anchor';
 import { getAssociatedTokenAddressSync } from '@tetsuo-ai/sdk';
 import type { AgencCoordination } from '../../types/agenc_coordination.js';
 import type { Tool, ToolResult } from '../types.js';

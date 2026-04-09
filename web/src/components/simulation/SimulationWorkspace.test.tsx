@@ -84,7 +84,7 @@ function makeRecord(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 describe('SimulationWorkspace', () => {
-  const fetchMock = vi.fn<typeof fetch>();
+  const fetchMock = vi.fn<Parameters<typeof fetch>, ReturnType<typeof fetch>>();
 
   beforeEach(() => {
     viewerSimulationId = null;
