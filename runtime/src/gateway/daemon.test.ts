@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { PublicKey } from "@solana/web3.js";
 import { mkdtemp, rm, readFile, writeFile, stat, mkdir, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,9 @@ const mockDesktopManagerStart = vi.fn(async () => {});
 const mockDesktopManagerStop = vi.fn(async () => {});
 const mockWatchdogStart = vi.fn();
 const mockWatchdogStop = vi.fn();
+const { mockCreateAgencTools } = vi.hoisted(() => ({
+  mockCreateAgencTools: vi.fn(() => []),
+}));
 
 // Provide real async utils (no dependency chain)
 vi.mock("../utils/async.js", () => ({
@@ -71,6 +75,10 @@ vi.mock("./config-watcher.js", () => ({
 
 vi.mock("./wallet-loader.js", () => ({
   loadWallet: vi.fn(async () => null),
+}));
+
+vi.mock("../tools/agenc/index.js", () => ({
+  createAgencTools: mockCreateAgencTools,
 }));
 
 vi.mock("../desktop/manager.js", () => {
@@ -138,6 +146,7 @@ import { didToolCallFail } from "../llm/chat-executor-tool-utils.js";
 import { PolicyEngine } from "../policy/engine.js";
 import { createPolicyGateHook } from "../policy/policy-gate.js";
 import { SESSION_ALLOWED_ROOTS_ARG } from "../tools/system/filesystem.js";
+import { TaskStore } from "../tools/system/task-tracker.js";
 import {
   SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY,
   SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY,
@@ -2169,6 +2178,134 @@ describe("DaemonManager", () => {
       { task: "test" },
     );
     expect(directResult).toContain("session-scoped tool handler");
+  });
+
+  it("forwards the configured programId when registering agenc tools", async () => {
+    const programId = "11111111111111111111111111111111";
+    const dm = new DaemonManager({ configPath: "/tmp/config.json" });
+
+    await (dm as any).createToolRegistry({
+      desktop: { enabled: false },
+      connection: {
+        rpcUrl: "http://localhost:8899",
+        programId,
+      },
+    });
+
+    expect(mockCreateAgencTools).toHaveBeenCalledTimes(1);
+    expect(mockCreateAgencTools).toHaveBeenCalledWith(
+      expect.objectContaining({
+        programId: expect.any(PublicKey),
+      }),
+    );
+    const registrationArgs = mockCreateAgencTools.mock.calls[0]?.[0] as {
+      programId?: PublicKey;
+    };
+    expect(registrationArgs.programId?.toBase58()).toBe(programId);
+  });
+
+  it("drops web-session task tracker state during session reset", async () => {
+    const dm = new DaemonManager({ configPath: "/tmp/config.json" });
+    const taskStore = new TaskStore();
+    taskStore.create("web-session-1", {
+      subject: "Existing task",
+      description: "Should be dropped on reset",
+    });
+    (dm as any)._taskTrackerStore = taskStore;
+
+    const sessionMgr = {
+      reset: vi.fn(),
+    };
+    const memoryBackend = {
+      deleteThread: vi.fn(async () => undefined),
+      get: vi.fn(async () => undefined),
+      delete: vi.fn(async () => undefined),
+    };
+    const progressTracker = {
+      clear: vi.fn(async () => undefined),
+    };
+
+    await (dm as any).resetWebSessionContext({
+      webSessionId: "web-session-1",
+      sessionMgr,
+      resolveSessionId: (sessionKey: string) => `history:${sessionKey}`,
+      memoryBackend,
+      progressTracker,
+    });
+
+    expect(sessionMgr.reset).toHaveBeenCalledWith("history:web-session-1");
+    expect(taskStore.create("web-session-1", {
+      subject: "Replacement task",
+      description: "Fresh list after reset",
+    }).id).toBe("1");
+  });
+
+  it("drops subagent task tracker state when subagent contexts are destroyed", async () => {
+    const dm = new DaemonManager({ configPath: "/tmp/config.json" });
+    const taskStore = new TaskStore();
+    taskStore.create("subagent:child-1", {
+      subject: "Subagent task",
+      description: "Should be dropped during teardown",
+    });
+    (dm as any)._taskTrackerStore = taskStore;
+    (dm as any)._llmProviders = [{}];
+    vi.spyOn(dm as any, "ensureSubAgentDefaultWorkspace").mockResolvedValue(undefined);
+    vi.spyOn(dm as any, "resolveLlmContextWindowTokens").mockResolvedValue(128_000);
+
+    await (dm as any).configureSubAgentInfrastructure({
+      llm: {
+        provider: "grok",
+        subagents: {
+          enabled: true,
+        },
+      },
+    });
+
+    const destroyContext = vi.fn(async () => undefined);
+    (dm as any)._sessionIsolationManager = {
+      destroyContext,
+      listActiveContexts: () => [],
+    };
+
+    const destroySubagentContext = ((dm as any)._subAgentManager as any).config
+      .destroyContext as (sessionIdentity: {
+        parentSessionId: string;
+        subagentSessionId: string;
+      }) => Promise<void>;
+
+    await destroySubagentContext({
+      parentSessionId: "parent-session-1",
+      subagentSessionId: "subagent:child-1",
+    });
+
+    expect(destroyContext).toHaveBeenCalledWith({
+      parentSessionId: "parent-session-1",
+      subagentSessionId: "subagent:child-1",
+    });
+    expect(taskStore.create("subagent:child-1", {
+      subject: "Replacement subagent task",
+      description: "Fresh list after teardown",
+    }).id).toBe("1");
+
+    await (dm as any).destroySubAgentInfrastructure();
+  });
+
+  it("clears the shared task tracker store when the daemon stops", async () => {
+    const dm = new DaemonManager({ configPath: "/tmp/config.json" });
+    const taskStore = new TaskStore();
+    taskStore.create("session-stop-1", {
+      subject: "Stop cleanup",
+      description: "Should be cleared during daemon shutdown",
+    });
+    (dm as any)._taskTrackerStore = taskStore;
+
+    await dm.stop();
+
+    expect((dm as any)._taskTrackerStore).toBeNull();
+    expect(taskStore.create("session-stop-1", {
+      subject: "Replacement stop cleanup",
+      description: "Fresh list after stop",
+    }).id).toBe("1");
   });
 
   it("disables host execution deny lists when yolo mode is enabled", async () => {

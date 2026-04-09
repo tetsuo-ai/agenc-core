@@ -129,6 +129,7 @@ import {
 import { ToolRegistry } from "../tools/registry.js";
 import { SystemRemoteJobManager } from "../tools/system/remote-job.js";
 import { SystemRemoteSessionManager } from "../tools/system/remote-session.js";
+import { TaskStore } from "../tools/system/task-tracker.js";
 import { DEFAULT_TIMEOUT_MS as DEFAULT_BASH_TOOL_TIMEOUT_MS } from "../tools/system/types.js";
 import {
   SkillDiscovery,
@@ -1026,6 +1027,7 @@ export class DaemonManager {
   private _durableSubrunOrchestrator: DurableSubrunOrchestrator | null = null;
   private _remoteJobManager: SystemRemoteJobManager | null = null;
   private _remoteSessionManager: SystemRemoteSessionManager | null = null;
+  private _taskTrackerStore: TaskStore | null = null;
   private _sessionModelInfo = new Map<
     string,
     {
@@ -1347,6 +1349,10 @@ export class DaemonManager {
         if (manager) {
           await manager.destroyContext(sessionIdentity);
         }
+        this.dropTaskTrackerSession(
+          sessionIdentity.subagentSessionId,
+          "subagent_teardown",
+        );
         await cleanupDesktopSession(
           sessionIdentity.subagentSessionId,
           {
@@ -3583,6 +3589,7 @@ export class DaemonManager {
     }, metrics);
     this._remoteJobManager = result.remoteJobManager;
     this._remoteSessionManager = result.remoteSessionManager;
+    this._taskTrackerStore = result.taskTrackerStore;
     this._containerMCPConfigs = result.containerMCPConfigs;
     this._mcpManager = result.mcpManager;
     this._connectionManager = result.connectionManager;
@@ -3596,6 +3603,20 @@ export class DaemonManager {
       },
       logger: this.logger,
     });
+  }
+
+  private dropTaskTrackerSession(sessionId: string, reason: string): void {
+    const normalizedSessionId = sessionId.trim();
+    if (!normalizedSessionId || !this._taskTrackerStore) {
+      return;
+    }
+    const dropped = this._taskTrackerStore.dropList(normalizedSessionId);
+    if (dropped) {
+      this.logger.debug("Dropped task tracker state for session", {
+        sessionId: normalizedSessionId,
+        reason,
+      });
+    }
   }
 
   private handleIncomingSocialMessage(
@@ -3696,6 +3717,7 @@ export class DaemonManager {
 
     const historySessionId = resolveSessionId(webSessionId);
     sessionMgr.reset(historySessionId);
+    this.dropTaskTrackerSession(webSessionId, "session_reset");
     this._chatExecutor?.resetSessionTokens(webSessionId);
     this._sessionModelInfo.delete(webSessionId);
     await progressTracker?.clear(webSessionId);
@@ -5890,6 +5912,10 @@ export class DaemonManager {
       if (this._connectionManager !== null) {
         this._connectionManager.destroy();
         this._connectionManager = null;
+      }
+      if (this._taskTrackerStore !== null) {
+        this._taskTrackerStore.reset();
+        this._taskTrackerStore = null;
       }
       if (this._memoryBackend !== null) {
         await this._memoryBackend.close();

@@ -1167,18 +1167,515 @@ export function createWatchFrameController(dependencies = {}) {
     return lines;
   }
 
-  function currentBottomPopupLayout(width = termWidth(), height = termHeight()) {
-    const paletteState = currentComposerPaletteState(64);
+  function marketTaskBrowserStatusTone(status) {
+    switch (String(status ?? "").trim().toLowerCase()) {
+      case "open":
+      case "active":
+      case "approved":
+      case "passed":
+      case "registered":
+        return color.green;
+      case "claimed":
+      case "pending":
+      case "appealed":
+      case "review":
+        return color.yellow;
+      case "completed":
+      case "closed":
+      case "resolved":
+      case "executed":
+        return color.teal;
+      case "failed":
+      case "cancelled":
+      case "rejected":
+      case "expired":
+      case "slashed":
+        return color.red;
+      default:
+        return color.fog;
+    }
+  }
+
+  function normalizeMarketTaskBrowserSelectionIndex(itemCount, browserState) {
+    if (!Number.isInteger(itemCount) || itemCount <= 0) {
+      return -1;
+    }
+    const nextIndex = Number.isInteger(browserState?.selectedIndex)
+      ? browserState.selectedIndex
+      : 0;
+    return Math.max(0, Math.min(itemCount - 1, nextIndex));
+  }
+
+  function marketTaskBrowserVisibleEntryLimit(height) {
+    const safeHeight = Math.max(0, Number(height) || 0);
+    if (safeHeight >= 30) return 4;
+    if (safeHeight >= 24) return 3;
+    if (safeHeight >= 20) return 2;
+    return 1;
+  }
+
+  function currentMarketTaskBrowserState() {
+    const browser = watchState.marketTaskBrowser;
+    if (!browser || typeof browser !== "object" || browser.open !== true) {
+      return {
+        mode: "none",
+        browser: null,
+        items: [],
+        activeIndex: -1,
+      };
+    }
+    if (watchState.expandedEventId) {
+      return {
+        mode: "none",
+        browser: null,
+        items: [],
+        activeIndex: -1,
+      };
+    }
+    if (String(currentInputValue() ?? "").trim().length > 0) {
+      return {
+        mode: "none",
+        browser: null,
+        items: [],
+        activeIndex: -1,
+      };
+    }
+    const items = Array.isArray(browser.items) ? browser.items : [];
     return {
-      paletteState,
-      popup: composerPaletteLines(width, paletteState, height),
+      mode: "browser",
+      browser,
+      items,
+      activeIndex: normalizeMarketTaskBrowserSelectionIndex(items.length, browser),
+    };
+  }
+
+  function marketTaskBrowserKind(browserState) {
+    const kind = String(browserState?.browser?.kind ?? "tasks").trim().toLowerCase();
+    switch (kind) {
+      case "skills":
+      case "governance":
+      case "disputes":
+      case "reputation":
+        return kind;
+      default:
+        return "tasks";
+    }
+  }
+
+  function marketTaskBrowserCountLabel(kind, count) {
+    switch (kind) {
+      case "skills":
+        return `${count} skill${count === 1 ? "" : "s"}`;
+      case "governance":
+        return `${count} proposal${count === 1 ? "" : "s"}`;
+      case "disputes":
+        return `${count} dispute${count === 1 ? "" : "s"}`;
+      case "reputation":
+        return `${count} record${count === 1 ? "" : "s"}`;
+      default:
+        return `${count} task${count === 1 ? "" : "s"}`;
+    }
+  }
+
+  function marketTaskBrowserLoadingLabel(kind) {
+    switch (kind) {
+      case "skills":
+        return "Loading marketplace skills…";
+      case "governance":
+        return "Loading governance proposals…";
+      case "disputes":
+        return "Loading marketplace disputes…";
+      case "reputation":
+        return "Loading reputation summary…";
+      default:
+        return "Loading marketplace tasks…";
+    }
+  }
+
+  function marketTaskBrowserEmptyLabel(kind) {
+    switch (kind) {
+      case "skills":
+        return "No marketplace skills found.";
+      case "governance":
+        return "No governance proposals found.";
+      case "disputes":
+        return "No marketplace disputes found.";
+      case "reputation":
+        return "No reputation summary available.";
+      default:
+        return "No marketplace tasks found.";
+    }
+  }
+
+  function marketTaskBrowserSummaryLine(width, browserState) {
+    const browser = browserState.browser;
+    const kind = marketTaskBrowserKind(browserState);
+    const count = browserState.items.length;
+    const summaryLabel = browser.loading
+      ? "loading…"
+      : marketTaskBrowserCountLabel(kind, count);
+    return fitAnsi(
+      flexBetween(
+        `${color.magenta}${browser.title}${color.reset}${color.fog} · ${summaryLabel}${color.reset}`,
+        `${color.fog}↑↓ navigate · Enter details · Esc close${color.reset}`,
+        width,
+      ),
+      width,
+    );
+  }
+
+  function marketTaskBrowserFilterLine(width, browserState) {
+    const kind = marketTaskBrowserKind(browserState);
+    if (kind === "skills") {
+      const query = String(browserState.browser?.query ?? "").trim();
+      const filters = [];
+      if (query) {
+        filters.push(`query "${sanitizeInlineText(query) || query}"`);
+      }
+      filters.push(browserState.browser?.activeOnly === false ? "all skills" : "active only");
+      return fitAnsi(
+        `${color.fog}filters:${color.reset} ${color.softInk}${filters.join(" · ")}${color.reset}`,
+        width,
+      );
+    }
+    if (kind === "tasks" || kind === "governance" || kind === "disputes") {
+      const statuses = Array.isArray(browserState.browser?.statuses)
+        ? browserState.browser.statuses.filter(Boolean)
+        : [];
+      if (statuses.length === 0) {
+        return null;
+      }
+      return fitAnsi(
+        `${color.fog}filters:${color.reset} ${color.softInk}${statuses.join(", ")}${color.reset}`,
+        width,
+      );
+    }
+    return null;
+  }
+
+  function marketTaskBrowserEntryLine(item, width, browserState, { selected = false } = {}) {
+    const kind = marketTaskBrowserKind(browserState);
+    const marker = selected
+      ? `${color.magenta}${color.bold}›${color.reset}`
+      : `${color.fog}·${color.reset}`;
+    if (kind === "skills") {
+      const stateLabel = item?.isActive === false ? "inactive" : "active";
+      const stateTone = item?.isActive === false ? color.fog : color.green;
+      const name = sanitizeInlineText(item?.name ?? "") || "unknown skill";
+      const priceLabel = String(item?.priceDisplay ?? "").trim() || "n/a";
+      const ratingLabel = Number.isFinite(Number(item?.rating))
+        ? `rating ${Number(item.rating).toFixed(1)}`
+        : null;
+      const downloads = Number(item?.downloads);
+      const downloadsLabel = Number.isFinite(downloads)
+        ? `${downloads} download${downloads === 1 ? "" : "s"}`
+        : null;
+      return fitAnsi(
+        flexBetween(
+          `${marker} ${stateTone}[${stateLabel}]${color.reset} ${(selected ? color.magenta : color.softInk)}${name}${color.reset}`,
+          `${color.fog}${[priceLabel, ratingLabel, downloadsLabel].filter(Boolean).join(" · ")}${color.reset}`,
+          width,
+        ),
+        width,
+      );
+    }
+    if (kind === "governance") {
+      const status = String(item?.status ?? "unknown").trim() || "unknown";
+      const proposalType = sanitizeInlineText(item?.proposalType ?? "");
+      const preview = sanitizeInlineText(item?.payloadPreview ?? "");
+      const title = proposalType && preview
+        ? `${proposalType}: ${preview}`
+        : preview || proposalType || sanitizeInlineText(item?.proposalPda ?? "") || "proposal";
+      const votesForLabel = item?.votesFor ? `for ${item.votesFor}` : null;
+      const votesAgainstLabel = item?.votesAgainst ? `against ${item.votesAgainst}` : null;
+      const votersLabel = Number.isFinite(Number(item?.totalVoters))
+        ? `${item.totalVoters} voter${Number(item.totalVoters) === 1 ? "" : "s"}`
+        : null;
+      return fitAnsi(
+        flexBetween(
+          `${marker} ${marketTaskBrowserStatusTone(status)}[${status}]${color.reset} ${(selected ? color.magenta : color.softInk)}${title}${color.reset}`,
+          `${color.fog}${[votesForLabel, votesAgainstLabel, votersLabel].filter(Boolean).join(" · ")}${color.reset}`,
+          width,
+        ),
+        width,
+      );
+    }
+    if (kind === "disputes") {
+      const status = String(item?.status ?? "unknown").trim() || "unknown";
+      const resolution = sanitizeInlineText(item?.resolutionType ?? "") || "dispute";
+      const disputeLabel = sanitizeInlineText(item?.disputePda ?? "") || sanitizeInlineText(item?.taskPda ?? "") || "record";
+      const title = `${resolution} · ${disputeLabel}`;
+      const votesForLabel = item?.votesFor ? `for ${item.votesFor}` : null;
+      const votesAgainstLabel = item?.votesAgainst ? `against ${item.votesAgainst}` : null;
+      const votersLabel = Number.isFinite(Number(item?.totalVoters))
+        ? `${item.totalVoters} voter${Number(item.totalVoters) === 1 ? "" : "s"}`
+        : null;
+      return fitAnsi(
+        flexBetween(
+          `${marker} ${marketTaskBrowserStatusTone(status)}[${status}]${color.reset} ${(selected ? color.magenta : color.softInk)}${title}${color.reset}`,
+          `${color.fog}${[votesForLabel, votesAgainstLabel, votersLabel].filter(Boolean).join(" · ")}${color.reset}`,
+          width,
+        ),
+        width,
+      );
+    }
+    if (kind === "reputation") {
+      const registered = item?.registered !== false;
+      const stateLabel = registered ? "registered" : "unregistered";
+      const stateTone = registered ? color.green : color.fog;
+      const subject = sanitizeInlineText(item?.authority ?? item?.agentPda ?? item?.agentId ?? "") || "reputation summary";
+      const effectiveLabel = Number.isFinite(Number(item?.effectiveReputation))
+        ? `effective ${Number(item.effectiveReputation)}`
+        : null;
+      const tasksCompleted = String(item?.tasksCompleted ?? "").trim();
+      const tasksLabel = tasksCompleted
+        ? `${tasksCompleted} task${tasksCompleted === "1" ? "" : "s"}`
+        : null;
+      return fitAnsi(
+        flexBetween(
+          `${marker} ${stateTone}[${stateLabel}]${color.reset} ${(selected ? color.magenta : color.softInk)}${subject}${color.reset}`,
+          `${color.fog}${[effectiveLabel, tasksLabel].filter(Boolean).join(" · ")}${color.reset}`,
+          width,
+        ),
+        width,
+      );
+    }
+    const status = String(item?.status ?? "unknown").trim() || "unknown";
+    const description = sanitizeInlineText(item?.description ?? "") || "untitled task";
+    const workersLabel = Number.isFinite(Number(item?.currentWorkers))
+      ? Number.isFinite(Number(item?.maxWorkers))
+        ? `${item.currentWorkers}/${item.maxWorkers} workers`
+        : `${item.currentWorkers} workers`
+      : null;
+    const rewardLabel = String(item?.rewardDisplay ?? "").trim() || "n/a";
+    return fitAnsi(
+      flexBetween(
+        `${marker} ${marketTaskBrowserStatusTone(status)}[${status}]${color.reset} ${(selected ? color.magenta : color.softInk)}${description}${color.reset}`,
+        `${color.fog}${[rewardLabel, workersLabel].filter(Boolean).join(" · ")}${color.reset}`,
+        width,
+      ),
+      width,
+    );
+  }
+
+  function marketTaskBrowserDetailLines(item, width, height, browserState) {
+    const prefix = "   ";
+    const detailWidth = Math.max(12, width - visibleLength(prefix));
+    const lines = [];
+    const maxRows = Math.max(2, Math.min(6, Math.floor(Math.max(0, Number(height) || 0) / 3)));
+    const kind = marketTaskBrowserKind(browserState);
+    const pushField = (label, value) => {
+      if (value === null || value === undefined || value === "") {
+        return;
+      }
+      const wrapped = wrapBlock(`${label}: ${String(value)}`, detailWidth);
+      wrapped.forEach((line) => {
+        lines.push(fitAnsi(`${prefix}${color.fog}${line}${color.reset}`, width));
+      });
+    };
+
+    if (kind === "skills") {
+      pushField("skill id", item?.skillId ?? item?.key ?? null);
+      pushField("skill pda", item?.skillPda ?? null);
+      pushField("author", item?.author ?? null);
+      if (item?.priceDisplay && item.priceDisplay !== "n/a") {
+        pushField(
+          "price",
+          item?.priceLamports
+            ? `${item.priceDisplay} (${item.priceLamports} lamports)`
+            : item.priceDisplay,
+        );
+      }
+      if (Number.isFinite(Number(item?.rating))) {
+        const rating = Number(item.rating).toFixed(1);
+        const ratingCount = Number(item?.ratingCount);
+        pushField(
+          "rating",
+          Number.isFinite(ratingCount) && ratingCount > 0
+            ? `${rating} (${ratingCount} rating${ratingCount === 1 ? "" : "s"})`
+            : rating,
+        );
+      }
+      if (Number.isFinite(Number(item?.downloads))) {
+        pushField("downloads", String(Number(item.downloads)));
+      }
+      if (Number.isFinite(Number(item?.version))) {
+        pushField("version", String(Number(item.version)));
+      }
+      if (Array.isArray(item?.tags) && item.tags.length > 0) {
+        pushField("tags", item.tags.join(", "));
+      }
+      pushField("created", item?.createdAtLabel ?? item?.createdAt ?? null);
+      pushField("updated", item?.updatedAtLabel ?? item?.updatedAt ?? null);
+      pushField("content hash", item?.contentHash ?? null);
+    } else if (kind === "governance") {
+      pushField("proposal pda", item?.proposalPda ?? item?.key ?? null);
+      pushField("proposer", item?.proposer ?? null);
+      pushField("type", item?.proposalType ?? null);
+      pushField("status", item?.status ?? null);
+      const voteParts = [];
+      if (item?.votesFor) voteParts.push(`for ${item.votesFor}`);
+      if (item?.votesAgainst) voteParts.push(`against ${item.votesAgainst}`);
+      if (Number.isFinite(Number(item?.totalVoters))) voteParts.push(`${item.totalVoters} voters`);
+      pushField("votes", voteParts.join(" · ") || null);
+      pushField("quorum", item?.quorum ?? null);
+      pushField("created", item?.createdAtLabel ?? item?.createdAt ?? null);
+      pushField("voting deadline", item?.votingDeadlineLabel ?? item?.votingDeadline ?? null);
+      pushField("execution after", item?.executionAfterLabel ?? item?.executionAfter ?? null);
+      pushField("payload", item?.payloadPreview ?? null);
+      pushField("title hash", item?.titleHash ?? null);
+      pushField("description hash", item?.descriptionHash ?? null);
+    } else if (kind === "disputes") {
+      pushField("dispute pda", item?.disputePda ?? item?.key ?? null);
+      pushField("task pda", item?.taskPda ?? null);
+      pushField("initiator", item?.initiator ?? null);
+      pushField("defendant", item?.defendant ?? null);
+      pushField("status", item?.status ?? null);
+      pushField("resolution", item?.resolutionType ?? null);
+      const voteParts = [];
+      if (item?.votesFor) voteParts.push(`for ${item.votesFor}`);
+      if (item?.votesAgainst) voteParts.push(`against ${item.votesAgainst}`);
+      if (Number.isFinite(Number(item?.totalVoters))) voteParts.push(`${item.totalVoters} voters`);
+      pushField("votes", voteParts.join(" · ") || null);
+      pushField("created", item?.createdAtLabel ?? item?.createdAt ?? null);
+      pushField("voting deadline", item?.votingDeadlineLabel ?? item?.votingDeadline ?? null);
+      pushField("expires", item?.expiresAtLabel ?? item?.expiresAt ?? null);
+      pushField("resolved", item?.resolvedAtLabel ?? item?.resolvedAt ?? null);
+      pushField("slash applied", item?.slashApplied);
+      pushField("initiator slash", item?.initiatorSlashApplied);
+      pushField("worker stake", item?.workerStakeAtDispute ?? null);
+      pushField("initiated by creator", item?.initiatedByCreator);
+      pushField("reward mint", item?.rewardMint ?? null);
+      pushField("evidence hash", item?.evidenceHash ?? null);
+    } else if (kind === "reputation") {
+      pushField("registered", item?.registered !== false ? "true" : "false");
+      pushField("authority", item?.authority ?? null);
+      pushField("agent pda", item?.agentPda ?? null);
+      pushField("agent id", item?.agentId ?? null);
+      pushField("base reputation", item?.baseReputation ?? null);
+      pushField("effective reputation", item?.effectiveReputation ?? null);
+      pushField("tasks completed", item?.tasksCompleted ?? null);
+      if (item?.totalEarnedSol || item?.totalEarned) {
+        pushField(
+          "total earned",
+          item?.totalEarnedSol
+            ? `${item.totalEarnedSol} SOL${item?.totalEarned ? ` (${item.totalEarned} lamports)` : ""}`
+            : item.totalEarned,
+        );
+      }
+      if (item?.stakedAmountSol || item?.stakedAmount) {
+        pushField(
+          "staked",
+          item?.stakedAmountSol
+            ? `${item.stakedAmountSol} SOL${item?.stakedAmount ? ` (${item.stakedAmount} lamports)` : ""}`
+            : item.stakedAmount,
+        );
+      }
+      pushField("locked until", item?.lockedUntilLabel ?? item?.lockedUntil ?? null);
+      if (Array.isArray(item?.inboundDelegations)) {
+        pushField("inbound delegations", String(item.inboundDelegations.length));
+      }
+      if (Array.isArray(item?.outboundDelegations)) {
+        pushField("outbound delegations", String(item.outboundDelegations.length));
+      }
+    } else {
+      pushField("task id", item?.taskId ?? item?.key ?? null);
+      pushField("task pda", item?.taskPda ?? null);
+      pushField("creator", item?.creator ?? null);
+      if (item?.rewardDisplay && item.rewardDisplay !== "n/a") {
+        pushField(
+          "reward",
+          item?.rewardLamports
+            ? `${item.rewardDisplay} (${item.rewardLamports} lamports)`
+            : item.rewardDisplay,
+        );
+      }
+      if (Number.isFinite(Number(item?.currentWorkers)) || Number.isFinite(Number(item?.maxWorkers))) {
+        pushField(
+          "workers",
+          Number.isFinite(Number(item?.maxWorkers))
+            ? `${item?.currentWorkers ?? 0}/${item.maxWorkers}`
+            : String(item?.currentWorkers ?? 0),
+        );
+      }
+      pushField("deadline", item?.deadlineLabel ?? item?.deadline ?? null);
+      pushField("created", item?.createdAtLabel ?? item?.createdAt ?? null);
+    }
+
+    if (lines.length <= maxRows) {
+      return lines;
+    }
+    return [
+      ...lines.slice(0, maxRows - 1),
+      fitAnsi(`${prefix}${color.fog}…${color.reset}`, width),
+    ];
+  }
+
+  function marketTaskBrowserLines(width, browserState, height = termHeight()) {
+    if (browserState.mode === "none") {
+      return [];
+    }
+    const lines = [marketTaskBrowserSummaryLine(width, browserState)];
+    const filterLine = marketTaskBrowserFilterLine(width, browserState);
+    if (filterLine) {
+      lines.push(filterLine);
+    }
+    const kind = marketTaskBrowserKind(browserState);
+    if (browserState.browser?.loading) {
+      lines.push(
+        fitAnsi(
+          `${color.fog}${marketTaskBrowserLoadingLabel(kind)}${color.reset}`,
+          width,
+        ),
+      );
+      return lines;
+    }
+    if (browserState.items.length === 0) {
+      lines.push(
+        fitAnsi(
+          `${color.fog}${marketTaskBrowserEmptyLabel(kind)}${color.reset}`,
+          width,
+        ),
+      );
+      return lines;
+    }
+
+    const visibleEntries = composerPaletteWindow(
+      browserState.items,
+      browserState.activeIndex,
+      marketTaskBrowserVisibleEntryLimit(height),
+    );
+    visibleEntries.entries.forEach((item, index) => {
+      const absoluteIndex = visibleEntries.start + index;
+      const selected = absoluteIndex === browserState.activeIndex;
+      lines.push(marketTaskBrowserEntryLine(item, width, browserState, { selected }));
+      if (selected && browserState.browser?.expandedTaskKey === item?.key) {
+        lines.push(...marketTaskBrowserDetailLines(item, width, height, browserState));
+      }
+    });
+    return lines;
+  }
+
+  function currentBottomPopupLayout(width = termWidth(), height = termHeight()) {
+
+    const paletteState = currentComposerPaletteState(64);
+    if (paletteState.mode !== "none") {
+      return {
+        popupState: paletteState,
+        popup: composerPaletteLines(width, paletteState, height),
+      };
+    }
+    const marketTaskBrowserState = currentMarketTaskBrowserState();
+    return {
+      popupState: marketTaskBrowserState,
+      popup: marketTaskBrowserLines(width, marketTaskBrowserState, height),
     };
   }
 
   function currentTranscriptLayout() {
     const width = termWidth();
     const height = termHeight();
-    const { paletteState, popup } = currentBottomPopupLayout(width, height);
+    const { popupState, popup } = currentBottomPopupLayout(width, height);
     const popupRows = popup.length;
     const headerRows = headerLines(width).length;
     return buildWatchLayout({
@@ -1186,7 +1683,7 @@ export function createWatchFrameController(dependencies = {}) {
       height,
       headerRows,
       popupRows,
-      slashMode: paletteState.mode !== "none",
+      slashMode: popupState.mode !== "none",
       detailOpen: Boolean(watchState.expandedEventId),
     });
   }
@@ -2008,7 +2505,27 @@ export function createWatchFrameController(dependencies = {}) {
     return preview;
   }
 
+  function eventDetailVariant(event) {
+    if (
+      !event ||
+      typeof event !== "object" ||
+      typeof event.detailBody !== "string" ||
+      event.detailBody.trim().length === 0 ||
+      event.detailBody === event.body
+    ) {
+      return event;
+    }
+    return {
+      ...event,
+      body: event.detailBody,
+      bodyTruncated: false,
+    };
+  }
+
   function eventHasHiddenPreview(event, width) {
+    if (eventDetailVariant(event) !== event) {
+      return true;
+    }
     const sourcePreview = isSourcePreviewEvent(event);
     const markdownPreview = isMarkdownRenderableEvent(event);
     const displayLinePreview =
@@ -2258,7 +2775,7 @@ export function createWatchFrameController(dependencies = {}) {
   }
 
   function detailViewportState(event, width, targetHeight) {
-    const body = wrapEventDisplayLines(event, width);
+    const body = wrapEventDisplayLines(eventDetailVariant(event), width);
     const metaRows = event?.title && buildTranscriptEventSummary(event).meta !== sanitizeDisplayText(event.title)
       ? 1
       : 0;

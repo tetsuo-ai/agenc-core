@@ -335,6 +335,11 @@ const REMOTE_TOOL_COMMANDS = Object.freeze([
     usage: "/desktop <start|stop|status|vnc|list|attach>",
     description: "Manage remote desktop/browser sandboxes from the watch TUI.",
   }),
+  Object.freeze({
+    name: "/market",
+    usage: "/market <tasks|skills|governance|disputes|reputation> ...",
+    description: "Inspect and mutate marketplace tasks, skills, governance, disputes, and reputation from the main watch TUI.",
+  }),
 ]);
 
 const EXTENSIBILITY_COMMANDS = Object.freeze([

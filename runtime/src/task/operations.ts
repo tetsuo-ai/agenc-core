@@ -37,6 +37,7 @@ import type {
 import {
   isManualValidationTask,
   parseOnChainTask,
+  parseOnChainTaskAccountData,
   parseOnChainTaskClaim,
   OnChainTaskStatus,
 } from "./types.js";
@@ -191,6 +192,34 @@ export class TaskOperations {
     return { task, taskPda };
   }
 
+  private async fetchTaskAccounts(
+    filters: Array<{ memcmp: { offset: number; bytes: string } }> = [],
+  ): Promise<Array<{ task: OnChainTask; taskPda: PublicKey }>> {
+    const discriminator = this.program.coder.accounts.memcmp("task");
+    const accounts = await this.program.provider.connection.getProgramAccounts(
+      this.program.programId,
+      {
+        filters: [{ memcmp: discriminator }, ...filters],
+      },
+    );
+
+    const results: Array<{ task: OnChainTask; taskPda: PublicKey }> = [];
+    for (const account of accounts) {
+      try {
+        results.push({
+          task: parseOnChainTaskAccountData(account.account.data),
+          taskPda: account.pubkey,
+        });
+      } catch (err) {
+        this.logger.warn(
+          `Skipping undecodable task account ${account.pubkey.toBase58()}: ${String(err)}`,
+        );
+      }
+    }
+
+    return results;
+  }
+
   /**
    * Fetch all tasks from the chain.
    *
@@ -199,11 +228,7 @@ export class TaskOperations {
   async fetchAllTasks(): Promise<
     Array<{ task: OnChainTask; taskPda: PublicKey }>
   > {
-    const accounts = await this.program.account.task.all();
-    return accounts.map((acc) => ({
-      task: parseOnChainTask(acc.account),
-      taskPda: acc.publicKey,
-    }));
+    return this.fetchTaskAccounts();
   }
 
   /**
@@ -222,7 +247,7 @@ export class TaskOperations {
     return queryWithFallback(
       async () => {
         const [openAccounts, inProgressAccounts] = await Promise.all([
-          this.program.account.task.all([
+          this.fetchTaskAccounts([
             {
               memcmp: {
                 offset: TASK_STATUS_OFFSET,
@@ -230,7 +255,7 @@ export class TaskOperations {
               },
             },
           ]),
-          this.program.account.task.all([
+          this.fetchTaskAccounts([
             {
               memcmp: {
                 offset: TASK_STATUS_OFFSET,
@@ -240,20 +265,7 @@ export class TaskOperations {
           ]),
         ]);
 
-        const results: Array<{ task: OnChainTask; taskPda: PublicKey }> = [];
-        for (const acc of openAccounts) {
-          results.push({
-            task: parseOnChainTask(acc.account),
-            taskPda: acc.publicKey,
-          });
-        }
-        for (const acc of inProgressAccounts) {
-          results.push({
-            task: parseOnChainTask(acc.account),
-            taskPda: acc.publicKey,
-          });
-        }
-        return results;
+        return [...openAccounts, ...inProgressAccounts];
       },
       async () => {
         const all = await this.fetchAllTasks();

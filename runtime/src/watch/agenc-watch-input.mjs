@@ -31,6 +31,10 @@ export function createWatchInputController(dependencies = {}) {
     autocompleteComposerInput,
     acceptComposerPaletteSelection = () => false,
     navigateComposer,
+    hasActiveMarketTaskBrowser = () => false,
+    navigateMarketTaskBrowser = () => false,
+    toggleMarketTaskBrowserExpansion = () => false,
+    dismissMarketTaskBrowser = () => false,
     hasActiveComposerPalette = () => false,
     navigateComposerPalette = () => false,
     moveComposerCursorByCharacter,
@@ -64,6 +68,10 @@ export function createWatchInputController(dependencies = {}) {
   assertFunction("autocompleteComposerInput", autocompleteComposerInput);
   assertFunction("acceptComposerPaletteSelection", acceptComposerPaletteSelection);
   assertFunction("navigateComposer", navigateComposer);
+  assertFunction("hasActiveMarketTaskBrowser", hasActiveMarketTaskBrowser);
+  assertFunction("navigateMarketTaskBrowser", navigateMarketTaskBrowser);
+  assertFunction("toggleMarketTaskBrowserExpansion", toggleMarketTaskBrowserExpansion);
+  assertFunction("dismissMarketTaskBrowser", dismissMarketTaskBrowser);
   assertFunction("hasActiveComposerPalette", hasActiveComposerPalette);
   assertFunction("navigateComposerPalette", navigateComposerPalette);
   assertFunction("moveComposerCursorByCharacter", moveComposerCursorByCharacter);
@@ -246,6 +254,11 @@ export function createWatchInputController(dependencies = {}) {
   }
 
   function submitComposerInput() {
+    if (hasActiveMarketTaskBrowser()) {
+      toggleMarketTaskBrowserExpansion();
+      scheduleRender();
+      return;
+    }
     if (hasActiveComposerPalette()) {
       acceptComposerPaletteSelection();
     }
@@ -307,6 +320,10 @@ export function createWatchInputController(dependencies = {}) {
         deleteComposerForward();
       } },
       { seq: "\x1b[A", run: () => {
+        if (hasActiveMarketTaskBrowser()) {
+          navigateMarketTaskBrowser(-1);
+          return;
+        }
         if (hasActiveComposerPalette()) {
           navigateComposerPalette(-1);
           return;
@@ -314,6 +331,10 @@ export function createWatchInputController(dependencies = {}) {
         navigateComposer(-1);
       } },
       { seq: "\x1b[B", run: () => {
+        if (hasActiveMarketTaskBrowser()) {
+          navigateMarketTaskBrowser(1);
+          return;
+        }
         if (hasActiveComposerPalette()) {
           navigateComposerPalette(1);
           return;
@@ -344,7 +365,9 @@ export function createWatchInputController(dependencies = {}) {
     }
 
     if (rest === "\x1b") {
-      if (watchState.expandedEventId) {
+      if (hasActiveMarketTaskBrowser()) {
+        dismissMarketTaskBrowser();
+      } else if (watchState.expandedEventId) {
         watchState.expandedEventId = null;
         watchState.detailScrollOffset = 0;
         setTransientStatus("detail closed");

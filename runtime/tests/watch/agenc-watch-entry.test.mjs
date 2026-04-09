@@ -36,6 +36,7 @@ test("runAgencWatchCli exits with the app exit code on success", async () => {
   assert.deepEqual(harness.exits, [7]);
   assert.deepEqual(harness.writes, []);
   assert.equal(harness.env.AGENC_WATCH_ENABLE_ATTACHMENTS, "true");
+  assert.equal(harness.env.AGENC_WATCH_ENABLE_REMOTE_TOOLS, "true");
 });
 
 test("runAgencWatchCli writes errors and exits non-zero on failure", async () => {
@@ -52,11 +53,13 @@ test("runAgencWatchCli writes errors and exits non-zero on failure", async () =>
   assert.equal(harness.writes.length, 1);
   assert.match(harness.writes[0], /boom/);
   assert.equal(harness.env.AGENC_WATCH_ENABLE_ATTACHMENTS, "true");
+  assert.equal(harness.env.AGENC_WATCH_ENABLE_REMOTE_TOOLS, "true");
 });
 
-test("runAgencWatchCli preserves an explicit attachment override", async () => {
+test("runAgencWatchCli preserves explicit attachment and remote-tool overrides", async () => {
   const harness = createProcessHarness();
   harness.env.AGENC_WATCH_ENABLE_ATTACHMENTS = "false";
+  harness.env.AGENC_WATCH_ENABLE_REMOTE_TOOLS = "false";
 
   await runAgencWatchCli({
     runWatchApp: async () => 0,
@@ -65,4 +68,5 @@ test("runAgencWatchCli preserves an explicit attachment override", async () => {
 
   assert.deepEqual(harness.exits, [0]);
   assert.equal(harness.env.AGENC_WATCH_ENABLE_ATTACHMENTS, "false");
+  assert.equal(harness.env.AGENC_WATCH_ENABLE_REMOTE_TOOLS, "false");
 });

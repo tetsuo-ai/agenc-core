@@ -1695,6 +1695,8 @@ watchCommandController = createWatchCommandController({
   clearPendingAttachments,
   prepareChatMessagePayload,
   applyOptimisticModelSelection,
+  openMarketTaskBrowser,
+  dismissMarketTaskBrowser,
   openLatestDiffDetail,
   currentDiffNavigationState: () =>
     watchFrameController?.currentDiffNavigationState() ?? {
@@ -1753,7 +1755,533 @@ function currentExpandedEvent() {
       : null);
 }
 
+function marketBrowserKind(value) {
+  const kind = String(value?.kind ?? value ?? "").trim().toLowerCase();
+  switch (kind) {
+    case "skills":
+    case "governance":
+    case "disputes":
+    case "reputation":
+      return kind;
+    default:
+      return "tasks";
+  }
+}
+
+function marketTaskBrowserDefaultTitle(kind = "tasks") {
+  switch (marketBrowserKind(kind)) {
+    case "skills":
+      return "Marketplace Skills";
+    case "governance":
+      return "Governance Proposals";
+    case "disputes":
+      return "Marketplace Disputes";
+    case "reputation":
+      return "Reputation Summary";
+    default:
+      return "Marketplace Tasks";
+  }
+}
+
+function marketTaskBrowserNoun(kind = "tasks") {
+  switch (marketBrowserKind(kind)) {
+    case "skills":
+      return "skill";
+    case "governance":
+      return "proposal";
+    case "disputes":
+      return "dispute";
+    case "reputation":
+      return "reputation summary";
+    default:
+      return "task";
+  }
+}
+
+function marketTaskBrowserItemLabel(item, kind = "tasks") {
+  switch (marketBrowserKind(kind)) {
+    case "skills":
+      return item?.name ?? item?.skillId ?? item?.key ?? "selected skill";
+    case "governance":
+      return item?.payloadPreview ?? item?.proposalType ?? item?.proposalPda ?? item?.key ?? "selected proposal";
+    case "disputes":
+      return item?.disputePda ?? item?.resolutionType ?? item?.taskPda ?? item?.key ?? "selected dispute";
+    case "reputation":
+      return item?.authority ?? item?.agentPda ?? item?.agentId ?? item?.key ?? "selected reputation summary";
+    default:
+      return item?.description ?? item?.taskId ?? item?.key ?? "selected task";
+  }
+}
+
+function marketTaskBrowserUsesStatuses(kind = "tasks") {
+  const browserKind = marketBrowserKind(kind);
+  return browserKind === "tasks" || browserKind === "governance" || browserKind === "disputes";
+}
+
+function marketTaskBrowserItemKey(item, fallbackIndex = 0, kind = "tasks") {
+  switch (marketBrowserKind(kind)) {
+    case "skills": {
+      const skillPda = String(item?.skillPda ?? "").trim();
+      if (skillPda) {
+        return skillPda;
+      }
+      const skillId = String(item?.skillId ?? "").trim();
+      if (skillId) {
+        return skillId;
+      }
+      return `skill-${fallbackIndex + 1}`;
+    }
+    case "governance": {
+      const proposalPda = String(item?.proposalPda ?? "").trim();
+      if (proposalPda) {
+        return proposalPda;
+      }
+      return `proposal-${fallbackIndex + 1}`;
+    }
+    case "disputes": {
+      const disputePda = String(item?.disputePda ?? "").trim();
+      if (disputePda) {
+        return disputePda;
+      }
+      const disputeId = String(item?.disputeId ?? "").trim();
+      if (disputeId) {
+        return disputeId;
+      }
+      return `dispute-${fallbackIndex + 1}`;
+    }
+    case "reputation": {
+      const agentPda = String(item?.agentPda ?? "").trim();
+      if (agentPda) {
+        return agentPda;
+      }
+      const authority = String(item?.authority ?? "").trim();
+      if (authority) {
+        return authority;
+      }
+      const agentId = String(item?.agentId ?? "").trim();
+      if (agentId) {
+        return agentId;
+      }
+      return `reputation-${fallbackIndex + 1}`;
+    }
+    default: {
+      const taskPda = String(item?.taskPda ?? "").trim();
+      if (taskPda) {
+        return taskPda;
+      }
+      const taskId = String(item?.taskId ?? "").trim();
+      if (taskId) {
+        return taskId;
+      }
+      return `task-${fallbackIndex + 1}`;
+    }
+  }
+}
+
+function formatMarketTaskBrowserTimestamp(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return null;
+  }
+  const millis = numeric >= 1e12
+    ? numeric
+    : numeric >= 1e9
+      ? numeric * 1000
+      : null;
+  if (!millis) {
+    return String(value);
+  }
+  const date = new Date(millis);
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+  return date.toISOString().replace("T", " ").replace(".000Z", "Z");
+}
+
+function normalizeMarketSkillBrowserItems(items = []) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  return items
+    .map((item, index) => {
+      const priceSol = String(item?.priceSol ?? item?.price ?? "").trim();
+      const priceLamports = String(item?.priceLamports ?? "").trim();
+      return {
+        key: marketTaskBrowserItemKey(item, index, "skills"),
+        skillPda: String(item?.skillPda ?? "").trim(),
+        skillId: String(item?.skillId ?? "").trim(),
+        name: String(item?.name ?? "").trim() || "unknown skill",
+        author: String(item?.author ?? item?.seller ?? "").trim(),
+        tags: Array.isArray(item?.tags)
+          ? item.tags.map((tag) => String(tag ?? "").trim()).filter(Boolean)
+          : [],
+        priceSol,
+        priceLamports,
+        priceMint: item?.priceMint ?? null,
+        priceDisplay: priceSol
+          ? `${priceSol} SOL`
+          : priceLamports
+            ? `${priceLamports} lamports`
+            : "n/a",
+        rating: Number.isFinite(Number(item?.rating ?? item?.averageRating))
+          ? Number(item?.rating ?? item?.averageRating)
+          : null,
+        ratingCount: Number.isFinite(Number(item?.ratingCount))
+          ? Number(item.ratingCount)
+          : null,
+        downloads: Number.isFinite(Number(item?.downloads))
+          ? Number(item.downloads)
+          : null,
+        version: Number.isFinite(Number(item?.version))
+          ? Number(item.version)
+          : null,
+        isActive: item?.isActive !== false,
+        createdAt: item?.createdAt ?? null,
+        createdAtLabel: formatMarketTaskBrowserTimestamp(item?.createdAt),
+        updatedAt: item?.updatedAt ?? null,
+        updatedAtLabel: formatMarketTaskBrowserTimestamp(item?.updatedAt),
+        contentHash: String(item?.contentHash ?? "").trim(),
+      };
+    })
+    .filter((item) => item.skillPda || item.skillId || item.name);
+}
+
+function normalizeMarketGovernanceBrowserItems(items = []) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  return items
+    .map((item, index) => ({
+      key: marketTaskBrowserItemKey(item, index, "governance"),
+      proposalPda: String(item?.proposalPda ?? "").trim(),
+      proposer: String(item?.proposer ?? "").trim(),
+      proposalType: String(item?.proposalType ?? "").trim(),
+      status: String(item?.status ?? "unknown").trim() || "unknown",
+      titleHash: String(item?.titleHash ?? "").trim(),
+      descriptionHash: String(item?.descriptionHash ?? "").trim(),
+      payloadPreview: String(item?.payloadPreview ?? "").trim(),
+      votesFor: String(item?.votesFor ?? "").trim(),
+      votesAgainst: String(item?.votesAgainst ?? "").trim(),
+      totalVoters: Number.isFinite(Number(item?.totalVoters))
+        ? Number(item.totalVoters)
+        : null,
+      quorum: String(item?.quorum ?? "").trim(),
+      createdAt: item?.createdAt ?? null,
+      createdAtLabel: formatMarketTaskBrowserTimestamp(item?.createdAt),
+      votingDeadline: item?.votingDeadline ?? null,
+      votingDeadlineLabel: formatMarketTaskBrowserTimestamp(item?.votingDeadline),
+      executionAfter: item?.executionAfter ?? null,
+      executionAfterLabel: formatMarketTaskBrowserTimestamp(item?.executionAfter),
+    }))
+    .filter((item) => item.proposalPda || item.payloadPreview || item.proposalType);
+}
+
+function normalizeMarketDisputeBrowserItems(items = []) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  return items
+    .map((item, index) => ({
+      key: marketTaskBrowserItemKey(item, index, "disputes"),
+      disputePda: String(item?.disputePda ?? "").trim(),
+      disputeId: String(item?.disputeId ?? "").trim(),
+      taskPda: String(item?.taskPda ?? "").trim(),
+      initiator: String(item?.initiator ?? "").trim(),
+      defendant: String(item?.defendant ?? "").trim(),
+      status: String(item?.status ?? "unknown").trim() || "unknown",
+      resolutionType: String(item?.resolutionType ?? "").trim(),
+      evidenceHash: String(item?.evidenceHash ?? "").trim(),
+      votesFor: String(item?.votesFor ?? "").trim(),
+      votesAgainst: String(item?.votesAgainst ?? "").trim(),
+      totalVoters: Number.isFinite(Number(item?.totalVoters))
+        ? Number(item.totalVoters)
+        : null,
+      createdAt: item?.createdAt ?? null,
+      createdAtLabel: formatMarketTaskBrowserTimestamp(item?.createdAt),
+      votingDeadline: item?.votingDeadline ?? null,
+      votingDeadlineLabel: formatMarketTaskBrowserTimestamp(item?.votingDeadline),
+      expiresAt: item?.expiresAt ?? null,
+      expiresAtLabel: formatMarketTaskBrowserTimestamp(item?.expiresAt),
+      resolvedAt: item?.resolvedAt ?? null,
+      resolvedAtLabel: formatMarketTaskBrowserTimestamp(item?.resolvedAt),
+      slashApplied: item?.slashApplied === true,
+      initiatorSlashApplied: item?.initiatorSlashApplied === true,
+      workerStakeAtDispute: String(item?.workerStakeAtDispute ?? "").trim(),
+      initiatedByCreator: item?.initiatedByCreator === true,
+      rewardMint: item?.rewardMint ?? null,
+    }))
+    .filter((item) => item.disputePda || item.disputeId || item.taskPda);
+}
+
+function normalizeMarketReputationBrowserItems(items = []) {
+  const list = Array.isArray(items)
+    ? items
+    : items && typeof items === "object"
+      ? [items]
+      : [];
+  return list
+    .filter((item) => item && typeof item === "object")
+    .map((item, index) => ({
+      key: marketTaskBrowserItemKey(item, index, "reputation"),
+      registered: item?.registered !== false,
+      authority: String(item?.authority ?? "").trim(),
+      agentPda: String(item?.agentPda ?? "").trim(),
+      agentId: String(item?.agentId ?? "").trim(),
+      baseReputation: Number.isFinite(Number(item?.baseReputation))
+        ? Number(item.baseReputation)
+        : null,
+      effectiveReputation: Number.isFinite(Number(item?.effectiveReputation))
+        ? Number(item.effectiveReputation)
+        : null,
+      tasksCompleted: String(item?.tasksCompleted ?? "").trim(),
+      totalEarned: String(item?.totalEarned ?? "").trim(),
+      totalEarnedSol: String(item?.totalEarnedSol ?? "").trim(),
+      stakedAmount: String(item?.stakedAmount ?? "").trim(),
+      stakedAmountSol: String(item?.stakedAmountSol ?? "").trim(),
+      lockedUntil: item?.lockedUntil ?? null,
+      lockedUntilLabel: formatMarketTaskBrowserTimestamp(item?.lockedUntil),
+      inboundDelegations: Array.isArray(item?.inboundDelegations)
+        ? item.inboundDelegations
+        : [],
+      outboundDelegations: Array.isArray(item?.outboundDelegations)
+        ? item.outboundDelegations
+        : [],
+    }))
+    .filter(
+      (item) =>
+        item.agentPda ||
+        item.authority ||
+        item.agentId ||
+        item.baseReputation !== null ||
+        item.effectiveReputation !== null ||
+        item.tasksCompleted ||
+        item.totalEarned ||
+        item.stakedAmount ||
+        item.registered === false,
+    );
+}
+
+function normalizeMarketTaskBrowserItems(items = [], kind = "tasks") {
+  switch (marketBrowserKind(kind)) {
+    case "skills":
+      return normalizeMarketSkillBrowserItems(items);
+    case "governance":
+      return normalizeMarketGovernanceBrowserItems(items);
+    case "disputes":
+      return normalizeMarketDisputeBrowserItems(items);
+    case "reputation":
+      return normalizeMarketReputationBrowserItems(items);
+    default:
+      if (!Array.isArray(items)) {
+        return [];
+      }
+      return items
+        .map((item, index) => {
+          const rewardSol = String(item?.rewardSol ?? item?.reward ?? "").trim();
+          const rewardLamports = String(item?.rewardLamports ?? "").trim();
+          return {
+            key: marketTaskBrowserItemKey(item, index, "tasks"),
+            taskPda: String(item?.taskPda ?? "").trim(),
+            taskId: String(item?.taskId ?? "").trim(),
+            status: String(item?.status ?? "unknown").trim() || "unknown",
+            description: String(item?.description ?? "").trim() || "untitled task",
+            creator: String(item?.creator ?? "").trim(),
+            rewardSol,
+            rewardLamports,
+            rewardMint: item?.rewardMint ?? null,
+            rewardDisplay: rewardSol
+              ? `${rewardSol} SOL`
+              : rewardLamports
+                ? `${rewardLamports} lamports`
+                : "n/a",
+            currentWorkers: Number.isFinite(Number(item?.currentWorkers))
+              ? Number(item.currentWorkers)
+              : null,
+            maxWorkers: Number.isFinite(Number(item?.maxWorkers))
+              ? Number(item.maxWorkers)
+              : null,
+            deadline: item?.deadline ?? null,
+            deadlineLabel: formatMarketTaskBrowserTimestamp(item?.deadline),
+            createdAt: item?.createdAt ?? null,
+            createdAtLabel: formatMarketTaskBrowserTimestamp(item?.createdAt),
+          };
+        })
+        .filter((item) => item.taskPda || item.taskId || item.description);
+  }
+}
+
+function currentMarketTaskBrowser() {
+
+  const browser = watchState.marketTaskBrowser;
+  return browser && typeof browser === "object" && browser.open === true
+    ? browser
+    : null;
+}
+
+function hasActiveMarketTaskBrowser({ requireBlankComposer = false } = {}) {
+  const browser = currentMarketTaskBrowser();
+  if (!browser) {
+    return false;
+  }
+  if (!requireBlankComposer) {
+    return true;
+  }
+  return String(watchState.composerInput ?? "").trim().length === 0;
+}
+
+function openMarketTaskBrowser({
+  title = "Marketplace Tasks",
+  statuses = [],
+  kind = "tasks",
+  query = "",
+  activeOnly = true,
+} = {}) {
+  const browserKind = marketBrowserKind(kind);
+  const current = currentMarketTaskBrowser();
+  const currentKind = marketBrowserKind(current);
+  const normalizedStatuses = marketTaskBrowserUsesStatuses(browserKind) && Array.isArray(statuses)
+    ? statuses.map((value) => String(value ?? "").trim()).filter(Boolean)
+    : [];
+  const normalizedQuery = browserKind === "skills"
+    ? String(query ?? "").trim()
+    : "";
+  const defaultTitle = marketTaskBrowserDefaultTitle(browserKind);
+  watchState.expandedEventId = null;
+  watchState.detailScrollOffset = 0;
+  watchState.marketTaskBrowser = {
+    open: true,
+    kind: browserKind,
+    title: String(title ?? defaultTitle).trim() || defaultTitle,
+    statuses: marketTaskBrowserUsesStatuses(browserKind)
+      ? normalizedStatuses
+      : [],
+    query: browserKind === "skills" ? normalizedQuery : "",
+    activeOnly: browserKind === "skills" ? activeOnly !== false : true,
+    loading: true,
+    items:
+      browserKind === currentKind && Array.isArray(current?.items)
+        ? current.items
+        : [],
+    selectedIndex:
+      browserKind === currentKind && Number.isFinite(Number(current?.selectedIndex))
+        ? Number(current.selectedIndex)
+        : 0,
+    expandedTaskKey:
+      browserKind === currentKind ? current?.expandedTaskKey ?? null : null,
+    updatedAtMs: nowMs(),
+  };
+  return watchState.marketTaskBrowser;
+}
+
+function hydrateMarketTaskBrowser({ title = "Marketplace Tasks", items = [], kind = "tasks" } = {}) {
+  const browserKind = marketBrowserKind(kind);
+  const normalizedItems = normalizeMarketTaskBrowserItems(items, browserKind);
+  const current = currentMarketTaskBrowser();
+  const currentKind = marketBrowserKind(current);
+  const currentSelectedKey =
+    current && browserKind === currentKind && Array.isArray(current.items) && current.items.length > 0
+      ? current.items[Math.max(0, Math.min(current.items.length - 1, Number(current.selectedIndex) || 0))]?.key ?? null
+      : null;
+  let selectedIndex = normalizedItems.findIndex((item) => item.key === currentSelectedKey);
+  if (selectedIndex < 0) {
+    selectedIndex = Math.max(
+      0,
+      Math.min(
+        normalizedItems.length - 1,
+        browserKind === currentKind ? Number(current?.selectedIndex) || 0 : 0,
+      ),
+    );
+  }
+  const expandedTaskKey =
+    current?.expandedTaskKey && browserKind === currentKind && normalizedItems.some((item) => item.key === current.expandedTaskKey)
+      ? current.expandedTaskKey
+      : null;
+  const defaultTitle = marketTaskBrowserDefaultTitle(browserKind);
+  watchState.expandedEventId = null;
+  watchState.detailScrollOffset = 0;
+  watchState.marketTaskBrowser = {
+    open: true,
+    kind: browserKind,
+    title: String(title ?? current?.title ?? defaultTitle).trim() || defaultTitle,
+    statuses: marketTaskBrowserUsesStatuses(browserKind) && browserKind === currentKind && Array.isArray(current?.statuses)
+      ? current.statuses
+      : [],
+    query: browserKind === "skills" && browserKind === currentKind
+      ? String(current?.query ?? "").trim()
+      : "",
+    activeOnly: browserKind === "skills" && browserKind === currentKind
+      ? current?.activeOnly !== false
+      : true,
+    loading: false,
+    items: normalizedItems,
+    selectedIndex: normalizedItems.length > 0 ? selectedIndex : 0,
+    expandedTaskKey,
+    updatedAtMs: nowMs(),
+  };
+  return watchState.marketTaskBrowser;
+}
+
+function navigateMarketTaskBrowser(direction) {
+
+  const browser = currentMarketTaskBrowser();
+  if (!browser || !Array.isArray(browser.items) || browser.items.length === 0) {
+    return false;
+  }
+  const delta = direction < 0 ? -1 : 1;
+  const nextIndex = Math.max(0, Math.min(browser.items.length - 1, browser.selectedIndex + delta));
+  if (nextIndex === browser.selectedIndex) {
+    return false;
+  }
+  browser.selectedIndex = nextIndex;
+  if (browser.expandedTaskKey) {
+    browser.expandedTaskKey = browser.items[nextIndex]?.key ?? null;
+  }
+  return true;
+}
+
+function toggleMarketTaskBrowserExpansion() {
+  const browser = currentMarketTaskBrowser();
+  const browserKind = marketBrowserKind(browser);
+  const noun = marketTaskBrowserNoun(browserKind);
+  if (!browser || !Array.isArray(browser.items) || browser.items.length === 0) {
+    setTransientStatus(`no marketplace ${noun} selected`);
+    return false;
+  }
+  const item = browser.items[Math.max(0, Math.min(browser.items.length - 1, browser.selectedIndex))];
+  if (!item) {
+    setTransientStatus(`no marketplace ${noun} selected`);
+    return false;
+  }
+  const label = String(marketTaskBrowserItemLabel(item, browserKind) ?? "").trim() || `selected ${noun}`;
+  if (browser.expandedTaskKey === item.key) {
+    browser.expandedTaskKey = null;
+    setTransientStatus(`${noun} details collapsed`);
+    return true;
+  }
+  browser.expandedTaskKey = item.key;
+  setTransientStatus(`${noun} details open: ${label}`);
+  return true;
+}
+
+function dismissMarketTaskBrowser() {
+  const browser = currentMarketTaskBrowser();
+  if (!browser) {
+    return false;
+  }
+  const browserKind = marketBrowserKind(browser);
+  const noun = marketTaskBrowserNoun(browserKind);
+  if (browser.expandedTaskKey) {
+    browser.expandedTaskKey = null;
+    setTransientStatus(`${noun} details collapsed`);
+    return true;
+  }
+  watchState.marketTaskBrowser = null;
+  setTransientStatus(`market ${noun} browser closed`);
+  return true;
+}
+
 function openLatestDiffDetail() {
+
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
     if (!isDiffRenderableEvent(event)) {
@@ -2283,6 +2811,7 @@ watchTransportController = createWatchTransportController({
     handlePlannerTraceEvent,
     handleSubagentLifecycleMessage,
     hydratePlannerDagFromTraceArtifacts,
+    hydrateMarketTaskBrowser,
     isExpectedMissingRunInspect,
     isUnavailableBackgroundRunInspect,
     isRetryableBootstrapError,
@@ -2429,6 +2958,10 @@ watchInputController = createWatchInputController({
   autocompleteComposerInput,
   acceptComposerPaletteSelection,
   navigateComposer,
+  hasActiveMarketTaskBrowser: () => hasActiveMarketTaskBrowser({ requireBlankComposer: true }),
+  navigateMarketTaskBrowser,
+  toggleMarketTaskBrowserExpansion,
+  dismissMarketTaskBrowser,
   hasActiveComposerPalette,
   navigateComposerPalette,
   moveComposerCursorByCharacter: moveComposerCursorHorizontally,

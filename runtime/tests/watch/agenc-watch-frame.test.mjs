@@ -110,6 +110,310 @@ test("frame controller prefers the newest truncated event when opening detail mo
   assert.ok(harness.statusCalls.includes("detail open: Prompt"));
 });
 
+test("frame controller treats market events with detailBody as expandable", () => {
+  const harness = createWatchFrameHarness({
+    events: [
+      {
+        id: "evt-1",
+        kind: "market",
+        title: "Marketplace Tasks",
+        body: "1. Task 1",
+        detailBody: "1. Task 1\n2. Task 2\n3. Task 3",
+        timestamp: "12:00:00",
+      },
+    ],
+  });
+
+  harness.controller.toggleExpandedEvent();
+
+  assert.equal(harness.watchState.expandedEventId, "evt-1");
+  assert.ok(harness.statusCalls.includes("detail open: Marketplace Tasks"));
+});
+
+test("frame controller renders the marketplace task browser inline below the composer", () => {
+  const harness = createWatchFrameHarness({
+    watchState: {
+      marketTaskBrowser: {
+        open: true,
+        title: "Marketplace Tasks",
+        statuses: ["open", "claimed"],
+        loading: false,
+        selectedIndex: 1,
+        expandedTaskKey: "task-2",
+        items: [
+          {
+            key: "task-1",
+            taskId: "task-1",
+            taskPda: "task-pda-1",
+            status: "open",
+            description: "Task 1",
+            rewardDisplay: "1 SOL",
+            currentWorkers: 1,
+            maxWorkers: 2,
+          },
+          {
+            key: "task-2",
+            taskId: "task-2",
+            taskPda: "task-pda-2",
+            status: "claimed",
+            description: "Task 2",
+            rewardDisplay: "2 SOL",
+            rewardLamports: "2000000000",
+            creator: "creator-2",
+            currentWorkers: 2,
+            maxWorkers: 4,
+            deadlineLabel: "2026-04-10 12:00:00Z",
+            createdAtLabel: "2026-04-09 12:00:00Z",
+          },
+        ],
+      },
+    },
+    inputValue: "",
+    width: 120,
+    height: 38,
+  });
+
+  const snapshot = harness.controller.buildVisibleFrameSnapshot();
+  const titleRow = snapshot.lines.findIndex((line) => String(line).includes("Marketplace Tasks"));
+  const taskRow = snapshot.lines.findIndex((line) => String(line).includes("Task 2") && String(line).includes("2 SOL"));
+  const detailRow = snapshot.lines.findIndex((line) => String(line).includes("task id: task-2"));
+
+  assert.notEqual(titleRow, -1);
+  assert.notEqual(taskRow, -1);
+  assert.notEqual(detailRow, -1);
+  assert.ok(titleRow + 1 > snapshot.composer.absoluteRow);
+  assert.ok(taskRow + 1 > snapshot.composer.absoluteRow);
+  assert.ok(detailRow + 1 > snapshot.composer.absoluteRow);
+  assert.equal(harness.layoutCalls.at(-1)?.slashMode, true);
+});
+
+test("frame controller renders the marketplace skill browser inline below the composer", () => {
+  const harness = createWatchFrameHarness({
+    watchState: {
+      marketTaskBrowser: {
+        open: true,
+        kind: "skills",
+        title: "Marketplace Skills",
+        query: "browser",
+        activeOnly: true,
+        loading: false,
+        selectedIndex: 1,
+        expandedTaskKey: "skill-2",
+        items: [
+          {
+            key: "skill-1",
+            skillId: "skill-1",
+            skillPda: "skill-pda-1",
+            name: "Skill 1",
+            isActive: true,
+            priceDisplay: "1 SOL",
+            rating: 4.1,
+            downloads: 11,
+          },
+          {
+            key: "skill-2",
+            skillId: "skill-2",
+            skillPda: "skill-pda-2",
+            name: "Browser Skill",
+            author: "author-2",
+            tags: ["browser", "automation"],
+            isActive: true,
+            priceDisplay: "2 SOL",
+            priceLamports: "2000000000",
+            rating: 4.8,
+            ratingCount: 12,
+            downloads: 42,
+            version: 3,
+            createdAtLabel: "2026-04-09 12:00:00Z",
+            updatedAtLabel: "2026-04-10 08:00:00Z",
+          },
+        ],
+      },
+    },
+    inputValue: "",
+    width: 120,
+    height: 38,
+  });
+
+  const snapshot = harness.controller.buildVisibleFrameSnapshot();
+  const titleRow = snapshot.lines.findIndex((line) => String(line).includes("Marketplace Skills"));
+  const skillRow = snapshot.lines.findIndex((line) => String(line).includes("Browser Skill") && String(line).includes("2 SOL"));
+  const detailRow = snapshot.lines.findIndex((line) => String(line).includes("skill id: skill-2"));
+
+  assert.notEqual(titleRow, -1);
+  assert.notEqual(skillRow, -1);
+  assert.notEqual(detailRow, -1);
+  assert.ok(titleRow + 1 > snapshot.composer.absoluteRow);
+  assert.ok(skillRow + 1 > snapshot.composer.absoluteRow);
+  assert.ok(detailRow + 1 > snapshot.composer.absoluteRow);
+  assert.equal(harness.layoutCalls.at(-1)?.slashMode, true);
+});
+
+
+test("frame controller renders the governance browser inline below the composer", () => {
+  const harness = createWatchFrameHarness({
+    watchState: {
+      marketTaskBrowser: {
+        open: true,
+        kind: "governance",
+        title: "Governance Proposals",
+        statuses: ["active"],
+        loading: false,
+        selectedIndex: 1,
+        expandedTaskKey: "proposal-2",
+        items: [
+          {
+            key: "proposal-1",
+            proposalPda: "proposal-pda-1",
+            status: "open",
+            proposalType: "budget",
+            payloadPreview: "Treasury top-up",
+          },
+          {
+            key: "proposal-2",
+            proposalPda: "proposal-pda-2",
+            proposer: "agent-2",
+            status: "active",
+            proposalType: "upgrade",
+            payloadPreview: "Upgrade validator set",
+            votesFor: "12",
+            votesAgainst: "3",
+            totalVoters: 15,
+            createdAtLabel: "2026-04-09 12:00:00Z",
+            votingDeadlineLabel: "2026-04-10 12:00:00Z",
+          },
+        ],
+      },
+    },
+    inputValue: "",
+    width: 120,
+    height: 38,
+  });
+
+  const snapshot = harness.controller.buildVisibleFrameSnapshot();
+  const titleRow = snapshot.lines.findIndex((line) => String(line).includes("Governance Proposals"));
+  const proposalRow = snapshot.lines.findIndex(
+    (line) =>
+      String(line).includes("Upgrade validator set") &&
+      String(line).includes("for 12") &&
+      String(line).includes("against 3"),
+  );
+  const detailRow = snapshot.lines.findIndex((line) =>
+    String(line).includes("proposal pda: proposal-pda-2"),
+  );
+
+  assert.notEqual(titleRow, -1);
+  assert.notEqual(proposalRow, -1);
+  assert.notEqual(detailRow, -1);
+  assert.ok(titleRow + 1 > snapshot.composer.absoluteRow);
+  assert.ok(proposalRow + 1 > snapshot.composer.absoluteRow);
+  assert.ok(detailRow + 1 > snapshot.composer.absoluteRow);
+  assert.equal(harness.layoutCalls.at(-1)?.slashMode, true);
+});
+
+test("frame controller renders the disputes browser inline below the composer", () => {
+  const harness = createWatchFrameHarness({
+    watchState: {
+      marketTaskBrowser: {
+        open: true,
+        kind: "disputes",
+        title: "Marketplace Disputes",
+        statuses: ["pending"],
+        loading: false,
+        selectedIndex: 0,
+        expandedTaskKey: "dispute-1",
+        items: [
+          {
+            key: "dispute-1",
+            disputePda: "dispute-pda-1",
+            taskPda: "task-pda-9",
+            initiator: "creator-1",
+            defendant: "worker-1",
+            status: "pending",
+            resolutionType: "refund",
+            votesFor: "2",
+            votesAgainst: "1",
+            totalVoters: 3,
+            createdAtLabel: "2026-04-09 12:00:00Z",
+          },
+        ],
+      },
+    },
+    inputValue: "",
+    width: 120,
+    height: 38,
+  });
+
+  const snapshot = harness.controller.buildVisibleFrameSnapshot();
+  const titleRow = snapshot.lines.findIndex((line) => String(line).includes("Marketplace Disputes"));
+  const disputeRow = snapshot.lines.findIndex(
+    (line) =>
+      String(line).includes("refund") &&
+      String(line).includes("dispute-pda-1") &&
+      String(line).includes("for 2"),
+  );
+  const detailRow = snapshot.lines.findIndex((line) =>
+    String(line).includes("dispute pda: dispute-pda-1"),
+  );
+
+  assert.notEqual(titleRow, -1);
+  assert.notEqual(disputeRow, -1);
+  assert.notEqual(detailRow, -1);
+  assert.ok(titleRow + 1 > snapshot.composer.absoluteRow);
+  assert.ok(disputeRow + 1 > snapshot.composer.absoluteRow);
+  assert.ok(detailRow + 1 > snapshot.composer.absoluteRow);
+  assert.equal(harness.layoutCalls.at(-1)?.slashMode, true);
+});
+
+test("frame controller renders the reputation browser inline below the composer", () => {
+  const harness = createWatchFrameHarness({
+    watchState: {
+      marketTaskBrowser: {
+        open: true,
+        kind: "reputation",
+        title: "Reputation Summary",
+        loading: false,
+        selectedIndex: 0,
+        expandedTaskKey: "rep-1",
+        items: [
+          {
+            key: "rep-1",
+            authority: "agent-authority-1",
+            agentPda: "agent-pda-1",
+            registered: true,
+            effectiveReputation: 98,
+            tasksCompleted: "14",
+            totalEarnedSol: "4.2",
+          },
+        ],
+      },
+    },
+    inputValue: "",
+    width: 120,
+    height: 38,
+  });
+
+  const snapshot = harness.controller.buildVisibleFrameSnapshot();
+  const titleRow = snapshot.lines.findIndex((line) => String(line).includes("Reputation Summary"));
+  const reputationRow = snapshot.lines.findIndex(
+    (line) =>
+      String(line).includes("agent-authority-1") &&
+      String(line).includes("effective 98") &&
+      String(line).includes("14 tasks"),
+  );
+  const detailRow = snapshot.lines.findIndex((line) =>
+    String(line).includes("agent pda: agent-pda-1"),
+  );
+
+  assert.notEqual(titleRow, -1);
+  assert.notEqual(reputationRow, -1);
+  assert.notEqual(detailRow, -1);
+  assert.ok(titleRow + 1 > snapshot.composer.absoluteRow);
+  assert.ok(reputationRow + 1 > snapshot.composer.absoluteRow);
+  assert.ok(detailRow + 1 > snapshot.composer.absoluteRow);
+  assert.equal(harness.layoutCalls.at(-1)?.slashMode, true);
+});
+
 test("frame controller exports transcript view through the extracted seam", () => {
   const harness = createWatchFrameHarness({
     events: [
@@ -167,6 +471,31 @@ test("frame controller exports the rendered detail view instead of raw event bod
   assert.equal(
     harness.fileWrites[0].text,
     "[12:00:00] Patch Preview\n\ndiff --git a/file.ts b/file.ts\n+const value = 1;\n",
+  );
+});
+
+test("frame controller exports detailBody when an expanded event provides richer detail text", () => {
+  const harness = createWatchFrameHarness({
+    events: [
+      {
+        id: "evt-1",
+        kind: "market",
+        title: "Marketplace Tasks",
+        body: "1. Task 1",
+        detailBody: "1. Task 1\n2. Task 2\n3. Task 3",
+        timestamp: "12:00:00",
+      },
+    ],
+  });
+  harness.watchState.expandedEventId = "evt-1";
+
+  const exportPath = harness.controller.exportCurrentView({ announce: true });
+
+  assert.ok(exportPath);
+  assert.equal(harness.fileWrites.length, 1);
+  assert.equal(
+    harness.fileWrites[0].text,
+    "[12:00:00] Marketplace Tasks\n\n1. Task 1\n2. Task 2\n3. Task 3\n",
   );
 });
 
@@ -449,7 +778,7 @@ test("frame controller keeps footer minimal while surfacing run context in the f
   assert.match(frameText, /LATEST:system\.bash/);
   assert.match(frameText, /PLAN:2/);
   assert.match(frameText, /session 12345678/);
-  assert.match(frameText, /~\/(?:agenc-core(?:\/runtime)?)?\n>/);
+  assert.match(frameText, /(?:~\/[^\n]*|\/[^\n]+)\n>/);
   assert.equal(/\nlive\s+idle\n>/.test(frameText), false);
 });
 

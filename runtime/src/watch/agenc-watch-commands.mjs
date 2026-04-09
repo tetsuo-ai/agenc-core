@@ -604,6 +604,537 @@ function buildDesktopCommand(parsedSlash) {
   };
 }
 
+function parseSlashFlagTokens(tokens = []) {
+  const positional = [];
+  const flags = {};
+  for (let index = 0; index < tokens.length;) {
+    const token = String(tokens[index] ?? "").trim();
+    if (token.startsWith("--")) {
+      const values = [];
+      index += 1;
+      while (index < tokens.length) {
+        const nextToken = String(tokens[index] ?? "").trim();
+        if (nextToken.startsWith("--")) {
+          break;
+        }
+        values.push(nextToken);
+        index += 1;
+      }
+      flags[token.toLowerCase()] = values.join(" ").trim();
+      continue;
+    }
+    positional.push(token);
+    index += 1;
+  }
+  return { positional, flags };
+}
+
+function hasSlashFlag(flags, flagName) {
+  return Object.prototype.hasOwnProperty.call(
+    flags ?? {},
+    `--${String(flagName ?? "").trim().toLowerCase()}`,
+  );
+}
+
+function readSlashFlag(flags, flagName) {
+  const key = `--${String(flagName ?? "").trim().toLowerCase()}`;
+  const value = flags?.[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function parseDelimitedStrings(value) {
+  return String(value ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function parsePairListValue(value, leftKey, rightKey) {
+  const entries = parseDelimitedStrings(value);
+  if (entries.length === 0) {
+    return {
+      error: `Expected ${leftKey}:${rightKey}[,${leftKey}:${rightKey}...]`,
+    };
+  }
+  const pairs = [];
+  for (const entry of entries) {
+    const parts = entry.split(":").map((part) => part.trim());
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      return {
+        error: `Invalid pair "${entry}". Expected ${leftKey}:${rightKey}.`,
+      };
+    }
+    pairs.push({
+      [leftKey]: parts[0],
+      [rightKey]: parts[1],
+    });
+  }
+  return { value: pairs };
+}
+
+function parseFiniteNumber(value, label) {
+  const parsed = Number.parseFloat(String(value ?? "").trim());
+  if (!Number.isFinite(parsed)) {
+    return {
+      error: `${label} must be a finite number.`,
+    };
+  }
+  return { value: parsed };
+}
+
+function parseSafeInteger(value, label) {
+  const parsed = Number.parseInt(String(value ?? "").trim(), 10);
+  if (!Number.isSafeInteger(parsed)) {
+    return {
+      error: `${label} must be a safe integer.`,
+    };
+  }
+  return { value: parsed };
+}
+
+function buildMarketCommand(parsedSlash) {
+  const usage =
+    "Usage: /market <tasks|skills|governance|disputes|reputation> ...";
+  const args = Array.isArray(parsedSlash?.args) ? parsedSlash.args : [];
+  const area = String(args[0] ?? "").trim().toLowerCase();
+  const action = String(args[1] ?? "").trim().toLowerCase();
+  const { positional, flags } = parseSlashFlagTokens(args.slice(2));
+
+  if (!area || !["tasks", "skills", "governance", "disputes", "reputation"].includes(area)) {
+    return { error: usage };
+  }
+
+  if (area === "tasks") {
+    const taskAction = action || "list";
+    if (taskAction === "list") {
+      const statuses = parseDelimitedStrings(readSlashFlag(flags, "status"));
+      return {
+        messageType: "tasks.list",
+        payload: statuses.length > 0 ? { statuses } : {},
+        title: "Marketplace Tasks",
+        body:
+          statuses.length > 0
+            ? `Requested marketplace tasks with status filter: ${statuses.join(", ")}.`
+            : "Requested marketplace tasks.",
+        status: "requesting marketplace tasks",
+        openBrowser: {
+          kind: "tasks",
+          statuses,
+        },
+      };
+    }
+    if (taskAction === "create") {
+      const description = readSlashFlag(flags, "description") || readSlashFlag(flags, "desc");
+      if (!description) {
+        return {
+          error:
+            "Usage: /market tasks create --description <text> (--reward <sol> | --reward-lamports <lamports>)",
+        };
+      }
+      const rewardLamports = readSlashFlag(flags, "reward-lamports");
+      const reward = readSlashFlag(flags, "reward");
+      if (!rewardLamports && !reward) {
+        return {
+          error:
+            "Usage: /market tasks create --description <text> (--reward <sol> | --reward-lamports <lamports>)",
+        };
+      }
+      if (rewardLamports) {
+        const parsedLamports = parseSafeInteger(rewardLamports, "reward-lamports");
+        if (parsedLamports.error || parsedLamports.value <= 0) {
+          return {
+            error: parsedLamports.error ?? "reward-lamports must be greater than 0.",
+          };
+        }
+        return {
+          messageType: "tasks.create",
+          payload: {
+            params: {
+              description,
+              rewardLamports: String(parsedLamports.value),
+            },
+          },
+          title: "Create Task",
+          body: `Creating marketplace task.\n\ndescription: ${description}\nreward: ${parsedLamports.value} lamports`,
+          status: "creating marketplace task",
+        };
+      }
+      const parsedReward = parseFiniteNumber(reward, "reward");
+      if (parsedReward.error || parsedReward.value <= 0) {
+        return {
+          error: parsedReward.error ?? "reward must be greater than 0.",
+        };
+      }
+      return {
+        messageType: "tasks.create",
+        payload: {
+          params: {
+            description,
+            reward: parsedReward.value,
+          },
+        },
+        title: "Create Task",
+        body: `Creating marketplace task.\n\ndescription: ${description}\nreward: ${parsedReward.value} SOL`,
+        status: "creating marketplace task",
+      };
+    }
+    if (taskAction === "detail") {
+      const taskPda = String(positional[0] ?? "").trim();
+      if (!taskPda) {
+        return {
+          error: "Usage: /market tasks detail <taskPda>",
+        };
+      }
+      return {
+        messageType: "tasks.detail",
+        payload: { taskPda },
+        title: "Task Detail",
+        body: `Requested marketplace task ${taskPda}.`,
+        status: "loading task detail",
+      };
+    }
+    if (["cancel", "claim"].includes(taskAction)) {
+      const taskId = String(positional[0] ?? "").trim();
+      if (!taskId) {
+        return {
+          error: `Usage: /market tasks ${taskAction} <taskPda>`,
+        };
+      }
+      return {
+        messageType: `tasks.${taskAction}`,
+        payload: { taskId },
+        title: taskAction === "cancel" ? "Cancel Task" : "Claim Task",
+        body:
+          taskAction === "cancel"
+            ? `Cancelling marketplace task ${taskId}.`
+            : `Claiming marketplace task ${taskId}.`,
+        status:
+          taskAction === "cancel"
+            ? "cancelling marketplace task"
+            : "claiming marketplace task",
+      };
+    }
+    if (taskAction === "complete") {
+      const taskId = String(positional[0] ?? "").trim();
+      if (!taskId) {
+        return {
+          error: "Usage: /market tasks complete <taskPda> [--result-data <text>]",
+        };
+      }
+      const resultData = readSlashFlag(flags, "result-data");
+      return {
+        messageType: "tasks.complete",
+        payload: {
+          taskId,
+          ...(resultData ? { resultData } : {}),
+        },
+        title: "Complete Task",
+        body: resultData
+          ? `Completing marketplace task ${taskId}.\n\nresult: ${resultData}`
+          : `Completing marketplace task ${taskId}.`,
+        status: "completing marketplace task",
+      };
+    }
+    if (taskAction === "dispute") {
+      const taskId = String(positional[0] ?? "").trim();
+      const evidence = readSlashFlag(flags, "evidence");
+      const resolutionType = readSlashFlag(flags, "resolution-type") || "refund";
+      if (!taskId || !evidence) {
+        return {
+          error:
+            "Usage: /market tasks dispute <taskPda> --evidence <text> [--resolution-type refund|complete|split]",
+        };
+      }
+      if (!["refund", "complete", "split"].includes(resolutionType)) {
+        return {
+          error: "resolution-type must be one of refund, complete, or split.",
+        };
+      }
+      return {
+        messageType: "tasks.dispute",
+        payload: { taskId, evidence, resolutionType },
+        title: "Open Dispute",
+        body: `Opening dispute for task ${taskId}.\n\nresolution: ${resolutionType}\nevidence: ${evidence}`,
+        status: "opening marketplace dispute",
+      };
+    }
+    return { error: `${usage}\n\nTasks: list, create, detail, cancel, claim, complete, dispute` };
+  }
+
+  if (area === "skills") {
+    const skillAction = action || "list";
+    if (skillAction === "list") {
+      const query = readSlashFlag(flags, "query") || String(positional[0] ?? "").trim();
+      const activeOnly = !hasSlashFlag(flags, "all");
+      return {
+        messageType: "market.skills.list",
+        payload: {
+          ...(query ? { query } : {}),
+          activeOnly,
+        },
+        title: "Marketplace Skills",
+        body: query
+          ? `Searching marketplace skills for "${query}".`
+          : activeOnly
+            ? "Requested active marketplace skills."
+            : "Requested all marketplace skills.",
+        status: "requesting marketplace skills",
+        openBrowser: {
+          kind: "skills",
+          query,
+          activeOnly,
+        },
+      };
+    }
+    if (skillAction === "detail") {
+      const skillPda = String(positional[0] ?? "").trim();
+      if (!skillPda) {
+        return { error: "Usage: /market skills detail <skillPda>" };
+      }
+      return {
+        messageType: "market.skills.detail",
+        payload: { skillPda },
+        title: "Skill Detail",
+        body: `Requested marketplace skill ${skillPda}.`,
+        status: "loading skill detail",
+      };
+    }
+    if (skillAction === "purchase") {
+      const skillPda = String(positional[0] ?? "").trim();
+      const skillId = String(positional[1] ?? "").trim();
+      if (!skillPda) {
+        return { error: "Usage: /market skills purchase <skillPda> [skillId]" };
+      }
+      return {
+        messageType: "market.skills.purchase",
+        payload: {
+          skillPda,
+          ...(skillId ? { skillId } : {}),
+        },
+        title: "Purchase Skill",
+        body: skillId
+          ? `Purchasing marketplace skill ${skillPda} (${skillId}).`
+          : `Purchasing marketplace skill ${skillPda}.`,
+        status: "purchasing marketplace skill",
+      };
+    }
+    if (skillAction === "rate") {
+      const skillPda = String(positional[0] ?? "").trim();
+      const ratingToken = String(positional[1] ?? "").trim();
+      const parsedRating = parseSafeInteger(ratingToken, "rating");
+      if (!skillPda || parsedRating.error || parsedRating.value < 1 || parsedRating.value > 5) {
+        return {
+          error: "Usage: /market skills rate <skillPda> <1-5> [--review <text>]",
+        };
+      }
+      const review = readSlashFlag(flags, "review");
+      return {
+        messageType: "market.skills.rate",
+        payload: {
+          skillPda,
+          rating: parsedRating.value,
+          ...(review ? { review } : {}),
+        },
+        title: "Rate Skill",
+        body: review
+          ? `Rating marketplace skill ${skillPda} with ${parsedRating.value}/5.\n\nreview: ${review}`
+          : `Rating marketplace skill ${skillPda} with ${parsedRating.value}/5.`,
+        status: "rating marketplace skill",
+      };
+    }
+    return { error: `${usage}\n\nSkills: list, detail, purchase, rate` };
+  }
+
+  if (area === "governance") {
+    const governanceAction = action || "list";
+    if (governanceAction === "list") {
+      const status = readSlashFlag(flags, "status");
+      return {
+        messageType: "market.governance.list",
+        payload: status ? { status } : {},
+        title: "Governance Proposals",
+        body: status
+          ? `Requested governance proposals with status ${status}.`
+          : "Requested governance proposals.",
+        status: "requesting governance proposals",
+        openBrowser: {
+          kind: "governance",
+          statuses: status ? [status] : [],
+        },
+      };
+    }
+    if (governanceAction === "detail") {
+      const proposalPda = String(positional[0] ?? "").trim();
+      if (!proposalPda) {
+        return { error: "Usage: /market governance detail <proposalPda>" };
+      }
+      return {
+        messageType: "market.governance.detail",
+        payload: { proposalPda },
+        title: "Governance Detail",
+        body: `Requested governance proposal ${proposalPda}.`,
+        status: "loading governance detail",
+      };
+    }
+    if (governanceAction === "vote") {
+      const proposalPda = String(positional[0] ?? "").trim();
+      const voteToken = String(positional[1] ?? "").trim().toLowerCase();
+      if (!proposalPda || !["yes", "no"].includes(voteToken)) {
+        return { error: "Usage: /market governance vote <proposalPda> <yes|no>" };
+      }
+      return {
+        messageType: "market.governance.vote",
+        payload: {
+          proposalPda,
+          approve: voteToken === "yes",
+        },
+        title: "Governance Vote",
+        body: `Casting ${voteToken} vote for proposal ${proposalPda}.`,
+        status: "submitting governance vote",
+      };
+    }
+    return { error: `${usage}\n\nGovernance: list, detail, vote` };
+  }
+
+  if (area === "disputes") {
+    const disputeAction = action || "list";
+    if (disputeAction === "list") {
+      const statuses = parseDelimitedStrings(readSlashFlag(flags, "status"));
+      return {
+        messageType: "market.disputes.list",
+        payload: statuses.length > 0 ? { statuses } : {},
+        title: "Marketplace Disputes",
+        body:
+          statuses.length > 0
+            ? `Requested disputes with status filter: ${statuses.join(", ")}.`
+            : "Requested marketplace disputes.",
+        status: "requesting marketplace disputes",
+        openBrowser: {
+          kind: "disputes",
+          statuses,
+        },
+      };
+    }
+    if (disputeAction === "detail") {
+      const disputePda = String(positional[0] ?? "").trim();
+      if (!disputePda) {
+        return { error: "Usage: /market disputes detail <disputePda>" };
+      }
+      return {
+        messageType: "market.disputes.detail",
+        payload: { disputePda },
+        title: "Dispute Detail",
+        body: `Requested dispute ${disputePda}.`,
+        status: "loading dispute detail",
+      };
+    }
+    if (disputeAction === "resolve") {
+      const disputePda = String(positional[0] ?? "").trim();
+      const arbiterVotesText = readSlashFlag(flags, "arbiter-votes");
+      const extraWorkersText = readSlashFlag(flags, "extra-workers");
+      if (!disputePda || !arbiterVotesText) {
+        return {
+          error:
+            "Usage: /market disputes resolve <disputePda> --arbiter-votes <votePda:arbiterPda[,..]> [--extra-workers <claimPda:workerPda[,..]>]",
+        };
+      }
+      const arbiterVotes = parsePairListValue(
+        arbiterVotesText,
+        "votePda",
+        "arbiterAgentPda",
+      );
+      if (arbiterVotes.error) {
+        return { error: arbiterVotes.error };
+      }
+      const extraWorkers = extraWorkersText
+        ? parsePairListValue(extraWorkersText, "claimPda", "workerPda")
+        : { value: [] };
+      if (extraWorkers.error) {
+        return { error: extraWorkers.error };
+      }
+      return {
+        messageType: "market.disputes.resolve",
+        payload: {
+          disputePda,
+          arbiterVotes: arbiterVotes.value,
+          ...(extraWorkers.value.length > 0 ? { extraWorkers: extraWorkers.value } : {}),
+        },
+        title: "Resolve Dispute",
+        body: `Resolving dispute ${disputePda} with ${arbiterVotes.value.length} arbiter vote(s).`,
+        status: "resolving marketplace dispute",
+      };
+    }
+    return { error: `${usage}\n\nDisputes: list, detail, resolve` };
+  }
+
+  const reputationAction = action || "summary";
+  if (reputationAction === "summary") {
+    const agentPda = readSlashFlag(flags, "agent-pda") || String(positional[0] ?? "").trim();
+    return {
+      messageType: "market.reputation.summary",
+      payload: agentPda ? { agentPda } : {},
+      title: "Reputation Summary",
+      body: agentPda
+        ? `Requested reputation summary for ${agentPda}.`
+        : "Requested signer reputation summary.",
+      status: "loading reputation summary",
+      openBrowser: {
+        kind: "reputation",
+      },
+    };
+  }
+  if (reputationAction === "stake") {
+    const amount = String(positional[0] ?? "").trim() || readSlashFlag(flags, "amount");
+    if (!amount) {
+      return { error: "Usage: /market reputation stake <lamports>" };
+    }
+    return {
+      messageType: "market.reputation.stake",
+      payload: { amount },
+      title: "Stake Reputation",
+      body: `Staking ${amount} lamports into reputation.`,
+      status: "staking reputation",
+    };
+  }
+  if (reputationAction === "delegate") {
+    const amount = String(positional[0] ?? "").trim() || readSlashFlag(flags, "amount");
+    const parsedAmount = parseFiniteNumber(amount, "amount");
+    const delegateeAgentPda = readSlashFlag(flags, "delegatee-agent-pda");
+    const delegateeAgentId = readSlashFlag(flags, "delegatee-agent-id");
+    const expiresAtText = readSlashFlag(flags, "expires-at");
+    if (!amount || parsedAmount.error || (!delegateeAgentPda && !delegateeAgentId)) {
+      return {
+        error:
+          "Usage: /market reputation delegate <amount> (--delegatee-agent-pda <pda> | --delegatee-agent-id <id>) [--expires-at <unix>]",
+      };
+    }
+    let expiresAt;
+    if (expiresAtText) {
+      const parsedExpiresAt = parseSafeInteger(expiresAtText, "expires-at");
+      if (parsedExpiresAt.error) {
+        return { error: parsedExpiresAt.error };
+      }
+      expiresAt = parsedExpiresAt.value;
+    }
+    return {
+      messageType: "market.reputation.delegate",
+      payload: {
+        amount: parsedAmount.value,
+        ...(delegateeAgentPda ? { delegateeAgentPda } : {}),
+        ...(delegateeAgentId ? { delegateeAgentId } : {}),
+        ...(typeof expiresAt === "number" ? { expiresAt } : {}),
+      },
+      title: "Delegate Reputation",
+      body: delegateeAgentPda
+        ? `Delegating ${parsedAmount.value} reputation to ${delegateeAgentPda}.`
+        : `Delegating ${parsedAmount.value} reputation to agent ${delegateeAgentId}.`,
+      status: "delegating reputation",
+    };
+  }
+
+  return { error: `${usage}\n\nReputation: summary, stake, delegate` };
+}
+
 function buildSkillTogglePayload(parsedSlash) {
   const args = Array.isArray(parsedSlash?.args) ? parsedSlash.args : [];
   const subcommand = (args[0] ?? "list").trim().toLowerCase();
@@ -911,6 +1442,8 @@ export function createWatchCommandController(dependencies = {}) {
     clearPendingAttachments,
     prepareChatMessagePayload,
     applyOptimisticModelSelection,
+    openMarketTaskBrowser,
+    dismissMarketTaskBrowser,
     openLatestDiffDetail,
     currentDiffNavigationState,
     jumpCurrentDiffHunk,
@@ -967,6 +1500,10 @@ export function createWatchCommandController(dependencies = {}) {
     assertFunction("captureCheckpoint", captureCheckpoint);
     assertFunction("listCheckpoints", listCheckpoints);
     assertFunction("rewindToCheckpoint", rewindToCheckpoint);
+  }
+  if (commandNames.has("/market")) {
+    assertFunction("openMarketTaskBrowser", openMarketTaskBrowser);
+    assertFunction("dismissMarketTaskBrowser", dismissMarketTaskBrowser);
   }
   if (commandNames.has("/diff")) {
     assertFunction("openLatestDiffDetail", openLatestDiffDetail);
@@ -1610,6 +2147,31 @@ export function createWatchCommandController(dependencies = {}) {
         }
         pushEvent("operator", action.title, action.body, "teal");
         send("chat.message", authPayload({ content: action.content }));
+        return true;
+      }
+
+      if (canonicalName === "/market") {
+        const action = buildMarketCommand(parsedSlash);
+        if (action.error) {
+          pushEvent("error", "Usage Error", action.error, "red");
+          return true;
+        }
+        pushEvent("operator", action.title, action.body, "teal");
+        if (action.openBrowser) {
+          openMarketTaskBrowser({
+            title: action.title,
+            kind: action.openBrowser.kind,
+            statuses: action.openBrowser.statuses,
+            query: action.openBrowser.query,
+            activeOnly: action.openBrowser.activeOnly,
+          });
+        } else {
+          dismissMarketTaskBrowser();
+        }
+        if (action.status) {
+          setTransientStatus(action.status);
+        }
+        send(action.messageType, action.payload);
         return true;
       }
 

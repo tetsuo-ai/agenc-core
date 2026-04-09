@@ -558,6 +558,7 @@ export function createWatchState({
       persistedWatchState.activeCheckpointId,
       null,
     ),
+    marketTaskBrowser: null,
     expandedEventId: null,
     secretPrompt: null,
     composerInput: "",

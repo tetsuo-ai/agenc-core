@@ -31,6 +31,8 @@ import {
 import { PROGRAM_ID, SEEDS } from "@tetsuo-ai/sdk";
 import { silentLogger } from "../utils/logger.js";
 import { generateAgentId } from "../utils/encoding.js";
+import { findAuthorityRateLimitPda } from "../agent/pda.js";
+import { deriveTaskSubmissionPda } from "../task/pda.js";
 
 // ============================================================================
 // Test Helpers
@@ -126,6 +128,9 @@ function createMockProgram(overrides: Record<string, any> = {}) {
       },
       task: {
         fetch: vi.fn().mockResolvedValue({ rewardMint: null }),
+      },
+      taskSubmission: {
+        fetchNullable: vi.fn().mockResolvedValue(null),
       },
     },
     methods: {
@@ -565,7 +570,65 @@ describe("DisputeOperations", () => {
       expect(result.transactionSignature).toBe("mock-signature");
       expect(result.disputePda).toBeDefined();
       expect(program.methods.initiateDispute).toHaveBeenCalled();
-      expect(program._methodBuilder.accountsPartial).toHaveBeenCalled();
+      expect(program._methodBuilder.accountsPartial).toHaveBeenCalledWith(
+        expect.objectContaining({
+          authorityRateLimit: findAuthorityRateLimitPda(
+            program.provider.publicKey,
+            program.programId,
+          ),
+        }),
+      );
+    });
+
+    it("omits taskSubmission when the derived submission account does not exist", async () => {
+      const workerClaimPda = randomPubkey();
+
+      await ops.initiateDispute({
+        disputeId: randomBytes(32),
+        taskPda: randomPubkey(),
+        taskId: randomBytes(32),
+        evidenceHash: randomBytes(32),
+        resolutionType: 1,
+        evidence: "Creator dispute tied to an existing worker claim.",
+        workerAgentPda: randomPubkey(),
+        workerClaimPda,
+      });
+
+      expect(program.account.taskSubmission.fetchNullable).toHaveBeenCalledWith(
+        deriveTaskSubmissionPda(workerClaimPda, program.programId).address,
+      );
+      expect(program._methodBuilder.accountsPartial).toHaveBeenCalledWith(
+        expect.objectContaining({
+          taskSubmission: null,
+        }),
+      );
+    });
+
+    it("passes taskSubmission when the derived submission account exists", async () => {
+      const workerClaimPda = randomPubkey();
+      program.account.taskSubmission.fetchNullable.mockResolvedValue({
+        worker: randomPubkey(),
+      });
+
+      await ops.initiateDispute({
+        disputeId: randomBytes(32),
+        taskPda: randomPubkey(),
+        taskId: randomBytes(32),
+        evidenceHash: randomBytes(32),
+        resolutionType: 1,
+        evidence: "Creator dispute tied to an existing worker submission.",
+        workerAgentPda: randomPubkey(),
+        workerClaimPda,
+      });
+
+      expect(program._methodBuilder.accountsPartial).toHaveBeenCalledWith(
+        expect.objectContaining({
+          taskSubmission: deriveTaskSubmissionPda(
+            workerClaimPda,
+            program.programId,
+          ).address,
+        }),
+      );
     });
 
     it("initiates dispute as creator with defendant workers", async () => {

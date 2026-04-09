@@ -337,6 +337,14 @@ function createCommandHarness(overrides = {}) {
         attachmentSummaries,
       };
     },
+    openMarketTaskBrowser({ title, kind, statuses, query, activeOnly }) {
+      calls.push({ type: "openMarketTaskBrowser", title, kind, statuses, query, activeOnly });
+      return { title, kind, statuses, query, activeOnly };
+    },
+    dismissMarketTaskBrowser() {
+      calls.push({ type: "dismissMarketTaskBrowser" });
+      return true;
+    },
     openLatestDiffDetail() {
       calls.push({ type: "openLatestDiffDetail" });
       return {
@@ -1330,6 +1338,176 @@ test("command controller forwards desktop tooling commands onto chat.message", (
         entry.kind === "error" &&
         entry.title === "Usage Error" &&
         /Usage: \/desktop/.test(entry.body),
+    ),
+  );
+});
+
+test("command controller opens the market task browser before requesting marketplace tasks", () => {
+  const { controller, calls } = createCommandHarness({
+    WATCH_COMMANDS: [
+      { name: "/market", usage: "/market", description: "market", aliases: [] },
+    ],
+  });
+
+  assert.equal(controller.dispatchOperatorInput("/market tasks list --status open,claimed"), true);
+
+  const marketRequest = calls.find(
+    (entry) => entry.type === "send" && entry.frameType === "tasks.list",
+  );
+  assert.deepEqual(marketRequest?.payload, { statuses: ["open", "claimed"] });
+  assert.deepEqual(
+    calls.filter((entry) => entry.type === "openMarketTaskBrowser"),
+    [
+      {
+        type: "openMarketTaskBrowser",
+        title: "Marketplace Tasks",
+        kind: "tasks",
+        statuses: ["open", "claimed"],
+        query: undefined,
+        activeOnly: undefined,
+      },
+    ],
+  );
+  assert.ok(
+    calls.some(
+      (entry) => entry.type === "status" && entry.status === "requesting marketplace tasks",
+    ),
+  );
+});
+
+test("command controller opens the market skill browser before requesting marketplace skills", () => {
+  const { controller, calls } = createCommandHarness({
+    WATCH_COMMANDS: [
+      { name: "/market", usage: "/market", description: "market", aliases: [] },
+    ],
+  });
+
+  assert.equal(controller.dispatchOperatorInput("/market skills list --query browser"), true);
+
+  const marketRequest = calls.find(
+    (entry) => entry.type === "send" && entry.frameType === "market.skills.list",
+  );
+  assert.deepEqual(marketRequest?.payload, { query: "browser", activeOnly: true });
+  assert.deepEqual(
+    calls.filter((entry) => entry.type === "dismissMarketTaskBrowser"),
+    [],
+  );
+  assert.deepEqual(
+    calls.filter((entry) => entry.type === "openMarketTaskBrowser"),
+    [
+      {
+        type: "openMarketTaskBrowser",
+        title: "Marketplace Skills",
+        kind: "skills",
+        statuses: undefined,
+        query: "browser",
+        activeOnly: true,
+      },
+    ],
+  );
+  assert.ok(
+    calls.some(
+      (entry) => entry.type === "status" && entry.status === "requesting marketplace skills",
+    ),
+  );
+});
+
+
+test("command controller opens the governance browser before requesting governance proposals", () => {
+  const { controller, calls } = createCommandHarness({
+    WATCH_COMMANDS: [
+      { name: "/market", usage: "/market", description: "market", aliases: [] },
+    ],
+  });
+
+  assert.equal(controller.dispatchOperatorInput("/market governance list --status active"), true);
+
+  const marketRequest = calls.find(
+    (entry) => entry.type === "send" && entry.frameType === "market.governance.list",
+  );
+  assert.deepEqual(marketRequest?.payload, { status: "active" });
+  assert.deepEqual(
+    calls.filter((entry) => entry.type === "openMarketTaskBrowser"),
+    [
+      {
+        type: "openMarketTaskBrowser",
+        title: "Governance Proposals",
+        kind: "governance",
+        statuses: ["active"],
+        query: undefined,
+        activeOnly: undefined,
+      },
+    ],
+  );
+  assert.ok(
+    calls.some(
+      (entry) => entry.type === "status" && entry.status === "requesting governance proposals",
+    ),
+  );
+});
+
+test("command controller opens the disputes browser before requesting marketplace disputes", () => {
+  const { controller, calls } = createCommandHarness({
+    WATCH_COMMANDS: [
+      { name: "/market", usage: "/market", description: "market", aliases: [] },
+    ],
+  });
+
+  assert.equal(controller.dispatchOperatorInput("/market disputes list --status open,resolved"), true);
+
+  const marketRequest = calls.find(
+    (entry) => entry.type === "send" && entry.frameType === "market.disputes.list",
+  );
+  assert.deepEqual(marketRequest?.payload, { statuses: ["open", "resolved"] });
+  assert.deepEqual(
+    calls.filter((entry) => entry.type === "openMarketTaskBrowser"),
+    [
+      {
+        type: "openMarketTaskBrowser",
+        title: "Marketplace Disputes",
+        kind: "disputes",
+        statuses: ["open", "resolved"],
+        query: undefined,
+        activeOnly: undefined,
+      },
+    ],
+  );
+  assert.ok(
+    calls.some(
+      (entry) => entry.type === "status" && entry.status === "requesting marketplace disputes",
+    ),
+  );
+});
+
+test("command controller opens the reputation browser before requesting a reputation summary", () => {
+  const { controller, calls } = createCommandHarness({
+    WATCH_COMMANDS: [
+      { name: "/market", usage: "/market", description: "market", aliases: [] },
+    ],
+  });
+
+  assert.equal(controller.dispatchOperatorInput("/market reputation summary --agent-pda agent-pda-1"), true);
+
+  const marketRequest = calls.find(
+    (entry) => entry.type === "send" && entry.frameType === "market.reputation.summary",
+  );
+  assert.deepEqual(marketRequest?.payload, { agentPda: "agent-pda-1" });
+  assert.deepEqual(
+    calls.filter((entry) => entry.type === "openMarketTaskBrowser"),
+    [
+      {
+        type: "openMarketTaskBrowser",
+        title: "Reputation Summary",
+        kind: "reputation",
+        statuses: undefined,
+        query: undefined,
+        activeOnly: undefined,
+      },
+    ],
+  );
+  assert.ok(
+    calls.some(
+      (entry) => entry.type === "status" && entry.status === "loading reputation summary",
     ),
   );
 });

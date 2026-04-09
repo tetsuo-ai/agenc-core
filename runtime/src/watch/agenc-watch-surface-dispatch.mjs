@@ -15,6 +15,8 @@ export function dispatchOperatorSurfaceEvent(surfaceEvent, rawMessage, api) {
       return handleToolSurfaceEvent(surfaceEvent, state, api);
     case "social":
       return handleSocialSurfaceEvent(surfaceEvent, api);
+    case "market":
+      return handleMarketSurfaceEvent(surfaceEvent, api);
     case "run":
       return handleRunSurfaceEvent(surfaceEvent, state, api);
     case "observability":
@@ -339,6 +341,365 @@ function handleSocialSurfaceEvent(surfaceEvent, api) {
       payload.content ?? "",
     ].join("\n"),
     "blue",
+  );
+  return true;
+}
+
+function coerceMarketText(value, fallback = "unknown") {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+  const text = String(value).trim();
+  return text.length > 0 ? text : fallback;
+}
+
+function joinMarketLines(lines) {
+  return lines.filter(Boolean).join("\n");
+}
+
+function renderMarketList(items, buildLine, { limit = Infinity } = {}) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return "No records returned.";
+  }
+  const safeLimit =
+    Number.isFinite(Number(limit)) && Number(limit) > 0
+      ? Math.max(1, Math.floor(Number(limit)))
+      : Infinity;
+  const visible =
+    safeLimit === Infinity ? items : items.slice(0, safeLimit);
+  const lines = visible
+    .map((item, index) => buildLine(item ?? {}, index))
+    .filter(Boolean);
+  if (items.length > visible.length) {
+    lines.push(`... ${items.length - visible.length} more`);
+  }
+  return lines.join("\n");
+}
+
+function summarizeMarketList(items, buildLine) {
+  return renderMarketList(items, buildLine, { limit: 5 });
+}
+
+function marketEventTitle(type) {
+  switch (type) {
+    case "tasks.list":
+      return "Marketplace Tasks";
+    case "tasks.detail":
+      return "Task Detail";
+    case "task.created":
+      return "Task Created";
+    case "task.claimed":
+      return "Task Claimed";
+    case "task.completed":
+      return "Task Completed";
+    case "task.cancelled":
+      return "Task Cancelled";
+    case "task.disputed":
+      return "Task Disputed";
+    case "market.skills.list":
+      return "Marketplace Skills";
+    case "market.skills.detail":
+      return "Skill Detail";
+    case "market.skills.purchased":
+      return "Skill Purchased";
+    case "market.skills.rated":
+      return "Skill Rated";
+    case "market.governance.list":
+      return "Governance Proposals";
+    case "market.governance.detail":
+      return "Governance Proposal";
+    case "market.governance.voted":
+      return "Governance Vote";
+    case "market.disputes.list":
+      return "Marketplace Disputes";
+    case "market.disputes.detail":
+      return "Dispute Detail";
+    case "market.disputes.resolved":
+      return "Dispute Resolved";
+    case "market.reputation.summary":
+      return "Reputation Summary";
+    case "market.reputation.staked":
+      return "Reputation Staked";
+    case "market.reputation.delegated":
+      return "Reputation Delegated";
+    default:
+      return "Marketplace Event";
+  }
+}
+
+function marketEventTone(type) {
+  if (type.startsWith("market.disputes") || type === "task.disputed") {
+    return "amber";
+  }
+  if (type === "task.completed" || type === "market.disputes.resolved") {
+    return "green";
+  }
+  return "teal";
+}
+
+function formatMarketplaceSkillListLine(item, index) {
+  const name = coerceMarketText(item?.name ?? item?.skillId ?? item?.skillPda, "unknown skill");
+  const ratingValue = Number(item?.rating ?? item?.averageRating);
+  const downloadsValue = Number(item?.downloads);
+  const details = [];
+  if (Number.isFinite(ratingValue)) {
+    details.push(`rating ${ratingValue.toFixed(1)}`);
+  }
+  if (Number.isFinite(downloadsValue)) {
+    details.push(`downloads ${downloadsValue}`);
+  }
+  return `${index + 1}. ${name}${details.length > 0 ? ` · ${details.join(" · ")}` : ""}`;
+}
+
+function formatMarketplaceGovernanceListLine(item, index) {
+  const subject = coerceMarketText(
+    item?.payloadPreview ?? item?.proposalType ?? item?.proposalPda,
+    "proposal",
+  );
+  const details = [];
+  const votesFor = String(item?.votesFor ?? "").trim();
+  const votesAgainst = String(item?.votesAgainst ?? "").trim();
+  if (votesFor) {
+    details.push(`for ${votesFor}`);
+  }
+  if (votesAgainst) {
+    details.push(`against ${votesAgainst}`);
+  }
+  return `${index + 1}. [${coerceMarketText(item?.status)}] ${subject}${details.length > 0 ? ` · ${details.join(" · ")}` : ""}`;
+}
+
+function formatMarketplaceDisputeListLine(item, index) {
+  const subject = coerceMarketText(
+    item?.resolutionType ?? item?.disputePda ?? item?.taskPda,
+    "dispute",
+  );
+  const details = [];
+  const votesFor = String(item?.votesFor ?? "").trim();
+  const votesAgainst = String(item?.votesAgainst ?? "").trim();
+  if (votesFor) {
+    details.push(`for ${votesFor}`);
+  }
+  if (votesAgainst) {
+    details.push(`against ${votesAgainst}`);
+  }
+  return `${index + 1}. [${coerceMarketText(item?.status)}] ${subject}${details.length > 0 ? ` · ${details.join(" · ")}` : ""}`;
+}
+
+function formatMarketplaceReputationListLine(item, index) {
+  const label = coerceMarketText(
+    item?.authority ?? item?.agentPda ?? item?.agentId,
+    "reputation summary",
+  );
+  const details = [];
+  if (item?.effectiveReputation !== undefined) {
+    details.push(`effective ${coerceMarketText(item.effectiveReputation)}`);
+  }
+  if (item?.tasksCompleted !== undefined) {
+    details.push(`tasks ${coerceMarketText(item.tasksCompleted)}`);
+  }
+  return `${index + 1}. [${item?.registered === false ? "unregistered" : "registered"}] ${label}${details.length > 0 ? ` · ${details.join(" · ")}` : ""}`;
+}
+
+function marketEventStatus(type) {
+  switch (type) {
+    case "tasks.list":
+      return "market tasks loaded";
+    case "tasks.detail":
+      return "task detail loaded";
+    case "market.skills.list":
+      return "market skills loaded";
+    case "market.governance.list":
+      return "governance proposals loaded";
+    case "market.disputes.list":
+      return "market disputes loaded";
+    case "market.reputation.summary":
+      return "reputation summary loaded";
+    default:
+      return `${marketEventTitle(type).toLowerCase()} received`;
+  }
+}
+
+function summarizeMarketSurfaceEvent(surfaceEvent, api) {
+  const payload = surfaceEvent.payloadRecord;
+  const list = surfaceEvent.payloadList;
+  switch (surfaceEvent.type) {
+    case "tasks.list":
+      return summarizeMarketList(list ?? [], (item, index) =>
+        `${index + 1}. [${coerceMarketText(item.status)}] ${coerceMarketText(item.description, "untitled task")} (${coerceMarketText(item.reward, "n/a")} SOL)`,
+      );
+    case "tasks.detail":
+      return joinMarketLines([
+        `task: ${coerceMarketText(payload.taskPda ?? payload.id)}`,
+        `status: ${coerceMarketText(payload.status)}`,
+        payload.reward !== undefined ? `reward: ${coerceMarketText(payload.reward)} SOL` : null,
+        payload.rewardLamports !== undefined ? `reward lamports: ${coerceMarketText(payload.rewardLamports)}` : null,
+        payload.creator ? `creator: ${coerceMarketText(payload.creator)}` : null,
+        payload.currentWorkers !== undefined ? `workers: ${coerceMarketText(payload.currentWorkers)}` : null,
+        payload.description ? "" : null,
+        payload.description ? coerceMarketText(payload.description, "") : null,
+      ]);
+    case "task.created":
+      return joinMarketLines([
+        `task: ${coerceMarketText(payload.taskPda)}`,
+        payload.description ? "" : null,
+        payload.description ? coerceMarketText(payload.description, "") : null,
+      ]);
+    case "task.claimed":
+      return joinMarketLines([
+        `task: ${coerceMarketText(payload.taskPda)}`,
+        payload.worker ? `worker: ${coerceMarketText(payload.worker)}` : null,
+      ]);
+    case "task.completed":
+      return joinMarketLines([
+        `task: ${coerceMarketText(payload.taskPda)}`,
+        payload.resultData ? `result: ${coerceMarketText(payload.resultData)}` : null,
+      ]);
+    case "task.cancelled":
+      return `task: ${coerceMarketText(payload.taskPda)}`;
+    case "task.disputed":
+      return joinMarketLines([
+        `task: ${coerceMarketText(payload.taskPda)}`,
+        payload.evidence ? `evidence: ${coerceMarketText(payload.evidence)}` : null,
+        payload.resolutionType ? `requested resolution: ${coerceMarketText(payload.resolutionType)}` : null,
+      ]);
+    case "market.skills.list":
+      return summarizeMarketList(list ?? [], (item, index) =>
+        formatMarketplaceSkillListLine(item, index),
+      );
+    case "market.skills.detail":
+      return joinMarketLines([
+        `skill: ${coerceMarketText(payload.skillId ?? payload.skillPda)}`,
+        payload.seller ? `seller: ${coerceMarketText(payload.seller)}` : null,
+        payload.price !== undefined ? `price: ${coerceMarketText(payload.price)}` : null,
+        payload.averageRating !== undefined ? `rating: ${coerceMarketText(payload.averageRating)}` : null,
+        payload.description ? "" : null,
+        payload.description ? coerceMarketText(payload.description, "") : null,
+      ]);
+    case "market.skills.purchased":
+      return joinMarketLines([
+        `skill: ${coerceMarketText(payload.skillId ?? payload.skillPda)}`,
+        payload.receiptPda ? `receipt: ${coerceMarketText(payload.receiptPda)}` : null,
+      ]);
+    case "market.skills.rated":
+      return joinMarketLines([
+        `skill: ${coerceMarketText(payload.skillPda)}`,
+        `rating: ${coerceMarketText(payload.rating)}`,
+      ]);
+    case "market.governance.list":
+      return summarizeMarketList(list ?? [], (item, index) =>
+        formatMarketplaceGovernanceListLine(item, index),
+      );
+    case "market.governance.detail":
+      return joinMarketLines([
+        `proposal: ${coerceMarketText(payload.proposalPda)}`,
+        payload.title ? `title: ${coerceMarketText(payload.title)}` : null,
+        payload.status ? `status: ${coerceMarketText(payload.status)}` : null,
+        payload.description ? "" : null,
+        payload.description ? coerceMarketText(payload.description, "") : null,
+      ]);
+    case "market.governance.voted":
+      return joinMarketLines([
+        `proposal: ${coerceMarketText(payload.proposalPda)}`,
+        `vote: ${payload.approve === true ? "yes" : "no"}`,
+      ]);
+    case "market.disputes.list":
+      return summarizeMarketList(list ?? [], (item, index) =>
+        formatMarketplaceDisputeListLine(item, index),
+      );
+    case "market.disputes.detail":
+      return joinMarketLines([
+        `dispute: ${coerceMarketText(payload.disputePda)}`,
+        payload.status ? `status: ${coerceMarketText(payload.status)}` : null,
+        payload.taskPda ? `task: ${coerceMarketText(payload.taskPda)}` : null,
+        payload.reason ? `reason: ${coerceMarketText(payload.reason)}` : null,
+      ]);
+    case "market.disputes.resolved":
+      return joinMarketLines([
+        `dispute: ${coerceMarketText(payload.disputePda)}`,
+        payload.result ? api.tryPrettyJson(payload.result) : null,
+      ]);
+    case "market.reputation.summary":
+      return formatMarketplaceReputationListLine(payload ?? {}, 0);
+    case "market.reputation.staked":
+      return `amount: ${coerceMarketText(payload.amount)}`;
+    case "market.reputation.delegated":
+      return joinMarketLines([
+        `amount: ${coerceMarketText(payload.amount)}`,
+        payload.delegateeAgentPda ? `delegatee: ${coerceMarketText(payload.delegateeAgentPda)}` : null,
+        payload.expiresAt ? `expires at: ${coerceMarketText(payload.expiresAt)}` : null,
+      ]);
+    default:
+      return api.tryPrettyJson(surfaceEvent.payload ?? payload);
+  }
+}
+
+function buildMarketDetailSurfaceEvent(surfaceEvent, api) {
+  const payload = surfaceEvent.payloadRecord;
+  const list = surfaceEvent.payloadList;
+  switch (surfaceEvent.type) {
+    case "tasks.list":
+      return renderMarketList(list ?? [], (item, index) =>
+        `${index + 1}. [${coerceMarketText(item.status)}] ${coerceMarketText(item.description, "untitled task")} (${coerceMarketText(item.reward, "n/a")} SOL)`,
+      );
+    case "market.skills.list":
+      return renderMarketList(list ?? [], (item, index) =>
+        formatMarketplaceSkillListLine(item, index),
+      );
+    case "market.governance.list":
+      return renderMarketList(list ?? [], (item, index) =>
+        formatMarketplaceGovernanceListLine(item, index),
+      );
+    case "market.disputes.list":
+      return renderMarketList(list ?? [], (item, index) =>
+        formatMarketplaceDisputeListLine(item, index),
+      );
+    case "market.reputation.summary":
+      return joinMarketLines([
+        payload.authority ? `authority: ${coerceMarketText(payload.authority)}` : null,
+        payload.agentPda ? `agent: ${coerceMarketText(payload.agentPda)}` : null,
+        payload.agentId ? `agent id: ${coerceMarketText(payload.agentId)}` : null,
+        payload.baseReputation !== undefined ? `base reputation: ${coerceMarketText(payload.baseReputation)}` : null,
+        payload.effectiveReputation !== undefined ? `effective reputation: ${coerceMarketText(payload.effectiveReputation)}` : null,
+        payload.tasksCompleted !== undefined ? `completed tasks: ${coerceMarketText(payload.tasksCompleted)}` : null,
+        payload.totalEarnedSol !== undefined ? `total earned: ${coerceMarketText(payload.totalEarnedSol)} SOL` : null,
+        payload.stakedAmountSol !== undefined ? `staked: ${coerceMarketText(payload.stakedAmountSol)} SOL` : null,
+      ]);
+    default:
+      return summarizeMarketSurfaceEvent(surfaceEvent, api);
+  }
+}
+
+function handleMarketSurfaceEvent(surfaceEvent, api) {
+  const title = marketEventTitle(surfaceEvent.type);
+  const summaryBody = summarizeMarketSurfaceEvent(surfaceEvent, api);
+  const detailBody = buildMarketDetailSurfaceEvent(surfaceEvent, api);
+  const browserKinds = {
+    "tasks.list": "tasks",
+    "market.skills.list": "skills",
+    "market.governance.list": "governance",
+    "market.disputes.list": "disputes",
+    "market.reputation.summary": "reputation",
+  };
+  const browserKind = browserKinds[surfaceEvent.type];
+  if (browserKind && typeof api.hydrateMarketTaskBrowser === "function") {
+    api.hydrateMarketTaskBrowser({
+      title,
+      items:
+        surfaceEvent.type === "market.reputation.summary"
+          ? (surfaceEvent.payloadRecord && Object.keys(surfaceEvent.payloadRecord).length > 0
+            ? [surfaceEvent.payloadRecord]
+            : [])
+          : surfaceEvent.payloadList ?? [],
+      kind: browserKind,
+    });
+  }
+  api.setTransientStatus(marketEventStatus(surfaceEvent.type));
+  api.eventStore.pushEvent(
+    "market",
+    title,
+    summaryBody,
+    marketEventTone(surfaceEvent.type),
+    detailBody && detailBody !== summaryBody ? { detailBody } : {},
   );
   return true;
 }

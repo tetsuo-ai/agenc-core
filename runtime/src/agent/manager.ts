@@ -8,7 +8,7 @@
  */
 
 import { Connection, PublicKey, TransactionSignature } from "@solana/web3.js";
-import anchor, { Program, AnchorProvider } from "@coral-xyz/anchor";
+import { BN, Program, AnchorProvider } from "@coral-xyz/anchor";
 import { PROGRAM_ID } from "@tetsuo-ai/sdk";
 import type { AgencCoordination } from "../types/agenc_coordination.js";
 import {
@@ -297,10 +297,10 @@ export class AgentManager {
     await this.program.methods
       .registerAgent(
         Array.from(params.agentId),
-        new anchor.BN(params.capabilities.toString()),
+        new BN(params.capabilities.toString()),
         params.endpoint,
         params.metadataUri ?? null,
-        new anchor.BN(params.stakeAmount.toString()),
+        new BN(params.stakeAmount.toString()),
       )
       .accountsPartial({
         agent: agentPda,
@@ -463,7 +463,7 @@ export class AgentManager {
     // Prepare update values (null means "keep current value" in the instruction)
     const capabilities =
       params.capabilities !== undefined
-        ? new anchor.BN(params.capabilities.toString())
+        ? new BN(params.capabilities.toString())
         : null;
     const endpoint = params.endpoint ?? null;
     const metadataUri = params.metadataUri ?? null;

@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   getDefaultKeypairPath: vi.fn(() => '/tmp/test-id.json'),
   fetchAllTasks: vi.fn(),
   fetchActiveClaims: vi.fn(),
+  serializeMarketplaceDisputeDetail: vi.fn(),
+  serializeMarketplaceTask: vi.fn(),
   serializeMarketplaceTaskEntry: vi.fn(),
 }));
 
@@ -37,6 +39,8 @@ vi.mock('../../marketplace/serialization.js', () => ({
   serializeMarketplaceProposalDetail: vi.fn(),
   serializeMarketplaceProposalSummary: vi.fn(),
   serializeMarketplaceSkill: vi.fn(),
+  serializeMarketplaceDisputeDetail: mocks.serializeMarketplaceDisputeDetail,
+  serializeMarketplaceTask: mocks.serializeMarketplaceTask,
   serializeMarketplaceTaskEntry: mocks.serializeMarketplaceTaskEntry,
 }));
 

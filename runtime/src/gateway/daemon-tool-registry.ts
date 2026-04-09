@@ -36,7 +36,10 @@ import { createSandboxTools } from "../tools/system/sandbox-handle.js";
 import { createServerTools } from "../tools/system/server.js";
 import { createSqliteTools } from "../tools/system/sqlite.js";
 import { createSpreadsheetTools } from "../tools/system/spreadsheet.js";
-import { createTaskTrackerTools } from "../tools/system/task-tracker.js";
+import {
+  createTaskTrackerTools,
+  TaskStore,
+} from "../tools/system/task-tracker.js";
 import { resolveBrowserToolMode } from "./browser-tool-mode.js";
 import { createExecuteWithAgentTool } from "./delegation-tool.js";
 import { createCoordinatorModeTool } from "./coordinator-tool.js";
@@ -51,6 +54,7 @@ import {
 } from "../policy/index.js";
 import { ConnectionManager } from "../connection/manager.js";
 import type { UnifiedTelemetryCollector } from "../telemetry/collector.js";
+import { PublicKey } from "@solana/web3.js";
 import {
   resolveBashToolEnv,
   resolveBashDenyExclusions,
@@ -88,6 +92,7 @@ interface ToolRegistrySideEffects {
   containerMCPConfigs: GatewayMCPServerConfig[];
   mcpManager: import("../mcp-client/manager.js").MCPManager | null;
   connectionManager: ConnectionManager | null;
+  taskTrackerStore: TaskStore;
 }
 
 // ============================================================================
@@ -308,7 +313,8 @@ export async function createDaemonToolRegistry(
       logger,
     ),
   );
-  registry.registerAll(createTaskTrackerTools());
+  const taskTrackerStore = new TaskStore();
+  registry.registerAll(createTaskTrackerTools(taskTrackerStore));
   registry.register(createExecuteWithAgentTool());
   registry.register(createCoordinatorModeTool());
   const walletResult = await loadWallet(config);
@@ -571,12 +577,16 @@ export async function createDaemonToolRegistry(
         metrics,
       });
       connectionManager = connMgr;
+      const configuredProgramId = config.connection.programId?.trim()
+        ? new PublicKey(config.connection.programId.trim())
+        : undefined;
 
       const { createAgencTools } = await import("../tools/agenc/index.js");
       registry.registerAll(
         createAgencTools({
           connection: connMgr.getConnection(),
           wallet: walletResult?.wallet,
+          ...(configuredProgramId ? { programId: configuredProgramId } : {}),
           logger,
         }),
       );
@@ -626,5 +636,6 @@ export async function createDaemonToolRegistry(
     containerMCPConfigs,
     mcpManager,
     connectionManager,
+    taskTrackerStore,
   };
 }

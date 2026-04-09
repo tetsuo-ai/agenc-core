@@ -43,3 +43,24 @@ test("computeTranscriptPreviewMaxLines gives the latest followed agent more room
   assert.equal(followedLatest, Infinity);
   assert.ok(followedLatest > olderAgent);
 });
+
+test("computeTranscriptPreviewMaxLines gives marketplace events enough room for multi-row previews", () => {
+  const generic = computeTranscriptPreviewMaxLines({
+    eventKind: "history",
+    latestIsCurrent: false,
+    following: true,
+    viewportLines: 28,
+    maxPreviewSourceLines: 160,
+  });
+  const market = computeTranscriptPreviewMaxLines({
+    eventKind: "market",
+    latestIsCurrent: false,
+    following: true,
+    viewportLines: 28,
+    maxPreviewSourceLines: 160,
+  });
+
+  assert.equal(generic, 2);
+  assert.equal(market, 6);
+  assert.ok(market > generic);
+});

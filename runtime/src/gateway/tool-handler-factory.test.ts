@@ -14,6 +14,11 @@ import type { SubAgentResult } from "./sub-agent.js";
 import { createSessionToolHandler } from "./tool-handler-factory.js";
 import { SessionCredentialBroker } from "../policy/session-credentials.js";
 import { SESSION_ALLOWED_ROOTS_ARG } from "../tools/system/filesystem.js";
+import {
+  createTaskTrackerTools,
+  TASK_LIST_ARG,
+  TaskStore,
+} from "../tools/system/task-tracker.js";
 import { createMockMemoryBackend } from "../memory/test-utils.js";
 import { EffectLedger } from "../workflow/effect-ledger.js";
 
@@ -354,6 +359,132 @@ describe("createSessionToolHandler", () => {
       path: `${workspaceRoot}/src/index.ts`,
       content: "export const safe = true;\n",
       [SESSION_ALLOWED_ROOTS_ARG]: [workspaceRoot],
+    });
+  });
+
+  it("injects session task-list ids on the gateway path and strips spoofed internal args", async () => {
+    const taskStore = new TaskStore();
+    const taskTools = new Map(
+      createTaskTrackerTools(taskStore).map((tool) => [tool.name, tool]),
+    );
+    const sentMessages: ControlResponse[] = [];
+    const send = vi.fn((msg: ControlResponse): void => {
+      sentMessages.push(msg);
+    });
+    const baseHandler = vi.fn(
+      async (toolName: string, args: Record<string, unknown>) => {
+        const tool = taskTools.get(toolName);
+        if (!tool) {
+          throw new Error(`Unexpected tool: ${toolName}`);
+        }
+        const result = await tool.execute(args);
+        return result.content;
+      },
+    );
+
+    const sessionAHandler = createSessionToolHandler({
+      sessionId: "session-a",
+      baseHandler,
+      routerId: "router-a",
+      send,
+    });
+    const sessionBHandler = createSessionToolHandler({
+      sessionId: "session-b",
+      baseHandler,
+      routerId: "router-a",
+      send,
+    });
+
+    await sessionAHandler("task.create", {
+      subject: "Session A task",
+      description: "Created through the gateway handler",
+      [TASK_LIST_ARG]: "spoofed-a",
+    });
+    await sessionBHandler("task.create", {
+      subject: "Session B task",
+      description: "Created through the gateway handler",
+      [TASK_LIST_ARG]: "spoofed-b",
+    });
+    const sessionATasks = JSON.parse(await sessionAHandler("task.list", {})) as {
+      count: number;
+      tasks: Array<{ subject: string }>;
+    };
+    const sessionBTasks = JSON.parse(await sessionBHandler("task.list", {})) as {
+      count: number;
+      tasks: Array<{ subject: string }>;
+    };
+
+    expect(baseHandler).toHaveBeenNthCalledWith(1, "task.create", {
+      subject: "Session A task",
+      description: "Created through the gateway handler",
+      [TASK_LIST_ARG]: "session-a",
+    });
+    expect(baseHandler).toHaveBeenNthCalledWith(2, "task.create", {
+      subject: "Session B task",
+      description: "Created through the gateway handler",
+      [TASK_LIST_ARG]: "session-b",
+    });
+    expect(baseHandler).toHaveBeenNthCalledWith(3, "task.list", {
+      [TASK_LIST_ARG]: "session-a",
+    });
+    expect(baseHandler).toHaveBeenNthCalledWith(4, "task.list", {
+      [TASK_LIST_ARG]: "session-b",
+    });
+
+    const executingMessages = sentMessages.filter(
+      (msg) => msg.type === "tools.executing",
+    );
+    expect(executingMessages).toHaveLength(4);
+    expect(executingMessages[0]).toMatchObject({
+      payload: {
+        toolName: "task.create",
+        args: {
+          subject: "Session A task",
+          description: "Created through the gateway handler",
+        },
+      },
+    });
+    expect((executingMessages[0]?.payload as { args?: Record<string, unknown> }).args).not.toHaveProperty(
+      TASK_LIST_ARG,
+    );
+    expect(executingMessages[1]).toMatchObject({
+      payload: {
+        toolName: "task.create",
+        args: {
+          subject: "Session B task",
+          description: "Created through the gateway handler",
+        },
+      },
+    });
+    expect((executingMessages[1]?.payload as { args?: Record<string, unknown> }).args).not.toHaveProperty(
+      TASK_LIST_ARG,
+    );
+    expect(executingMessages[2]).toMatchObject({
+      payload: {
+        toolName: "task.list",
+        args: {},
+      },
+    });
+    expect((executingMessages[2]?.payload as { args?: Record<string, unknown> }).args).not.toHaveProperty(
+      TASK_LIST_ARG,
+    );
+    expect(executingMessages[3]).toMatchObject({
+      payload: {
+        toolName: "task.list",
+        args: {},
+      },
+    });
+    expect((executingMessages[3]?.payload as { args?: Record<string, unknown> }).args).not.toHaveProperty(
+      TASK_LIST_ARG,
+    );
+
+    expect(sessionATasks).toMatchObject({
+      count: 1,
+      tasks: [{ subject: "Session A task" }],
+    });
+    expect(sessionBTasks).toMatchObject({
+      count: 1,
+      tasks: [{ subject: "Session B task" }],
     });
   });
 

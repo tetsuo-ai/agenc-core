@@ -28,10 +28,12 @@ import { createProgram, createReadOnlyProgram } from '../../idl.js';
 import {
   buildMarketplaceReputationSummaryForAgent,
   buildMarketplaceUnregisteredSummary,
+  serializeMarketplaceDisputeDetail,
   serializeMarketplaceDisputeSummary,
   serializeMarketplaceProposalDetail,
   serializeMarketplaceProposalSummary,
   serializeMarketplaceSkill,
+  serializeMarketplaceTask,
   serializeMarketplaceTaskEntry,
 } from '../../marketplace/serialization.js';
 import { TaskOperations } from '../../task/operations.js';
@@ -56,6 +58,7 @@ import {
   createDelegateReputationTool,
   createInitiateDisputeTool,
   createRateSkillTool,
+  createResolveDisputeTool,
   createStakeReputationTool,
   createVoteProposalTool,
 } from '../../tools/agenc/mutation-tools.js';
@@ -64,6 +67,7 @@ import { PublicKey, SystemProgram } from '@solana/web3.js';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { parseAgentState } from '../../agent/types.js';
 
 export type SendFn = (response: ControlResponse) => void;
 export interface HandlerRequestContext {
@@ -270,6 +274,36 @@ function parseToolError(result: { content: string; isError?: boolean }): string 
   } catch {
     return result.content;
   }
+}
+
+function parseToolPayload(result: { content: string }): unknown {
+  try {
+    return JSON.parse(result.content);
+  } catch {
+    return { raw: result.content };
+  }
+}
+
+function readTaskIdentifier(payload: Record<string, unknown> | undefined): string {
+  const taskId = typeof payload?.taskId === 'string' ? payload.taskId.trim() : '';
+  if (taskId) return taskId;
+  const taskPda = typeof payload?.taskPda === 'string' ? payload.taskPda.trim() : '';
+  return taskPda;
+}
+
+function readStatusFilters(payload: Record<string, unknown> | undefined): string[] {
+  if (Array.isArray(payload?.statuses)) {
+    return payload.statuses
+      .map((entry) => String(entry ?? '').trim().toLowerCase())
+      .filter(Boolean);
+  }
+  if (typeof payload?.status === 'string') {
+    return payload.status
+      .split(',')
+      .map((entry) => entry.trim().toLowerCase())
+      .filter(Boolean);
+  }
+  return [];
 }
 
 // ============================================================================
@@ -541,13 +575,8 @@ async function handleMarketSkillsPurchase(
   send: SendFn,
 ): Promise<void> {
   const skillPda = payload?.skillPda;
-  const skillId = payload?.skillId;
   if (!skillPda || typeof skillPda !== 'string') {
     send({ type: 'error', error: 'Missing skillPda in payload', id });
-    return;
-  }
-  if (!skillId || typeof skillId !== 'string') {
-    send({ type: 'error', error: 'Missing skillId in payload', id });
     return;
   }
   if (!deps.connection) {
@@ -558,6 +587,19 @@ async function handleMarketSkillsPurchase(
   try {
     const connection = deps.connection!;
     const { program } = await createProgramContext(deps);
+    const skillPublicKey = new PublicKey(skillPda);
+    let skillId = typeof payload?.skillId === 'string' ? payload.skillId.trim() : '';
+    if (!skillId) {
+      const account = await (program.account as any).skillRegistration.fetchNullable(skillPublicKey);
+      if (!account) {
+        send({ type: 'error', error: `Skill not found: ${skillPda}`, id });
+        return;
+      }
+      skillId = serializeMarketplaceSkill({
+        publicKey: skillPublicKey,
+        account: account as Record<string, unknown>,
+      }).skillId;
+    }
     const signerAgent = await resolveSignerAgent(program);
     const registryClient = new OnChainSkillRegistryClient({
       connection,
@@ -570,7 +612,7 @@ async function handleMarketSkillsPurchase(
       logger: silentLogger,
     });
     const result = await purchaseManager.purchase(
-      new PublicKey(skillPda),
+      skillPublicKey,
       skillId,
       join(homedir(), '.agenc', 'skills', `${skillId}.md`),
     );
@@ -759,11 +801,10 @@ async function handleMarketDisputesList(
       agentId: new Uint8Array(32),
       logger: silentLogger,
     });
-    const statusFilter =
-      typeof payload?.status === 'string' ? payload.status.trim().toLowerCase() : '';
+    const statusFilters = readStatusFilters(payload);
     const disputes = (await ops.fetchAllDisputes())
       .map(mapDisputeSummary)
-      .filter((entry) => !statusFilter || entry.status === statusFilter)
+      .filter((entry) => statusFilters.length === 0 || statusFilters.includes(entry.status))
       .sort((left, right) => right.createdAt - left.createdAt);
 
     send({ type: 'market.disputes.list', payload: disputes, id });
@@ -800,18 +841,62 @@ async function handleMarketDisputesDetail(
     }
     send({
       type: 'market.disputes.detail',
-      payload: serializeMarketplaceDisputeSummary({
-        dispute,
-        disputePda: new PublicKey(disputePda),
-      }),
+      payload: serializeMarketplaceDisputeDetail(new PublicKey(disputePda), dispute),
       id,
     });
   });
 }
 
+async function handleMarketDisputesResolve(
+  deps: WebChatDeps,
+  payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): Promise<void> {
+  const disputePda = typeof payload?.disputePda === 'string' ? payload.disputePda.trim() : '';
+  if (!disputePda) {
+    send({ type: 'error', error: 'Missing disputePda in payload', id });
+    return;
+  }
+  if (!Array.isArray(payload?.arbiterVotes) || payload.arbiterVotes.length === 0) {
+    send({ type: 'error', error: 'Missing arbiterVotes in payload', id });
+    return;
+  }
+  if (!deps.connection) {
+    send({ type: 'error', error: SOLANA_NOT_CONFIGURED, id });
+    return;
+  }
+
+  try {
+    const { program } = await createProgramContext(deps);
+    const tool = createResolveDisputeTool(program, silentLogger);
+    const result = await tool.execute({
+      disputePda,
+      arbiterVotes: payload.arbiterVotes,
+      ...(Array.isArray(payload?.extraWorkers) ? { extraWorkers: payload.extraWorkers } : {}),
+    });
+    if (result.isError) {
+      send({ type: 'error', error: `Failed to resolve dispute: ${parseToolError(result)}`, id });
+      return;
+    }
+    const resolvedPayload = {
+      disputePda,
+      result: parseToolPayload(result),
+    };
+    send({
+      type: 'market.disputes.resolved',
+      payload: resolvedPayload,
+      id,
+    });
+    deps.broadcastEvent?.('market.dispute.resolved', resolvedPayload);
+  } catch (err) {
+    send({ type: 'error', error: `Failed to resolve dispute: ${(err as Error).message}`, id });
+  }
+}
+
 async function handleMarketReputationSummary(
   deps: WebChatDeps,
-  _payload: Record<string, unknown> | undefined,
+  payload: Record<string, unknown> | undefined,
   id: string | undefined,
   send: SendFn,
 ): Promise<void> {
@@ -821,6 +906,35 @@ async function handleMarketReputationSummary(
   }
 
   await safeAsync(send, id, 'error', 'Failed to load reputation summary', async () => {
+    const requestedAgentPda =
+      typeof payload?.agentPda === 'string' ? payload.agentPda.trim() : '';
+    if (requestedAgentPda) {
+      const program = createReadOnlyProgramContext(deps);
+      const agentPda = new PublicKey(requestedAgentPda);
+      const rawAgent = await (program.account as any).agentRegistration.fetchNullable(agentPda);
+      if (!rawAgent) {
+        send({ type: 'error', error: `Agent not found: ${requestedAgentPda}`, id });
+        return;
+      }
+      const agent = parseAgentState(rawAgent as Record<string, unknown>);
+      const summary = await buildMarketplaceReputationSummaryForAgent(
+        program,
+        agentPda,
+        agent.agentId,
+      );
+      if (!summary) {
+        send({ type: 'error', error: `Reputation summary unavailable: ${requestedAgentPda}`, id });
+        return;
+      }
+      const { agentId: _agentId, ...summaryPayload } = summary;
+      send({
+        type: 'market.reputation.summary',
+        payload: summaryPayload,
+        id,
+      });
+      return;
+    }
+
     const { program } = await createProgramContext(deps);
     const authority = program.provider.publicKey?.toBase58() ?? '';
 
@@ -944,7 +1058,12 @@ async function handleMarketReputationDelegate(
  *       + 1 (max_workers) + 1 (current_workers) + 1 (status)
  */
 /** Helper: send a refreshed task list to the client using typed task operations. */
-async function sendTaskList(deps: WebChatDeps, id: string | undefined, send: SendFn): Promise<void> {
+async function sendTaskList(
+  deps: WebChatDeps,
+  id: string | undefined,
+  send: SendFn,
+  { statuses = [] }: { statuses?: string[] } = {},
+): Promise<void> {
   const program = createReadOnlyProgramContext(deps);
   const ops = new TaskOperations({
     program,
@@ -973,13 +1092,14 @@ async function sendTaskList(deps: WebChatDeps, id: string | undefined, send: Sen
 
   const payload = allTasks
     .sort((left, right) => right.task.createdAt - left.task.createdAt)
-    .map((entry) => mapTaskSummary(entry, viewerContext));
+    .map((entry) => mapTaskSummary(entry, viewerContext))
+    .filter((entry) => statuses.length === 0 || statuses.includes(entry.status));
   send({ type: 'tasks.list', payload, id });
 }
 
 export async function handleTasksList(
   deps: WebChatDeps,
-  _payload: Record<string, unknown> | undefined,
+  payload: Record<string, unknown> | undefined,
   id: string | undefined,
   send: SendFn,
 ): Promise<void> {
@@ -987,7 +1107,44 @@ export async function handleTasksList(
     send({ type: 'error', error: SOLANA_NOT_CONFIGURED, id });
     return;
   }
-  await safeAsync(send, id, 'error', 'Failed to list tasks', () => sendTaskList(deps, id, send));
+  const statuses = readStatusFilters(payload);
+  await safeAsync(send, id, 'error', 'Failed to list tasks', () => sendTaskList(deps, id, send, { statuses }));
+}
+
+async function handleTasksDetail(
+  deps: WebChatDeps,
+  payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): Promise<void> {
+  const taskPda = readTaskIdentifier(payload);
+  if (!taskPda) {
+    send({ type: 'error', error: 'Missing taskPda in payload', id });
+    return;
+  }
+  if (!deps.connection) {
+    send({ type: 'error', error: SOLANA_NOT_CONFIGURED, id });
+    return;
+  }
+  await safeAsync(send, id, 'error', 'Failed to inspect task', async () => {
+    const program = createReadOnlyProgramContext(deps);
+    const taskOps = new TaskOperations({
+      program,
+      agentId: new Uint8Array(32),
+      logger: silentLogger,
+    });
+    const publicKey = new PublicKey(taskPda);
+    const task = await taskOps.fetchTask(publicKey);
+    if (!task) {
+      send({ type: 'error', error: `Task not found: ${taskPda}`, id });
+      return;
+    }
+    send({
+      type: 'tasks.detail',
+      payload: serializeMarketplaceTask(publicKey, task),
+      id,
+    });
+  });
 }
 
 async function handleTasksCreate(
@@ -1010,10 +1167,15 @@ async function handleTasksCreate(
     const descStr = typeof (params as Record<string, unknown>).description === 'string'
       ? (params as Record<string, unknown>).description as string
       : 'Task from WebUI';
+    const explicitRewardLamports = typeof (params as Record<string, unknown>).rewardLamports === 'string'
+      ? (params as Record<string, unknown>).rewardLamports as string
+      : '';
     const rewardInput = typeof (params as Record<string, unknown>).reward === 'number'
       ? (params as Record<string, unknown>).reward as number
       : 0;
-    const rewardLamports = BigInt(Math.max(Math.round(rewardInput * 1_000_000_000), 10_000_000));
+    const rewardLamports = explicitRewardLamports
+      ? BigInt(explicitRewardLamports)
+      : BigInt(Math.max(Math.round(rewardInput * 1_000_000_000), 10_000_000));
     const { program } = await createProgramContext(deps);
     const tool = createCreateTaskTool(program, silentLogger);
     const result = await tool.execute({
@@ -1046,8 +1208,8 @@ async function handleTasksCancel(
   id: string | undefined,
   send: SendFn,
 ): Promise<void> {
-  const taskId = payload?.taskId;
-  if (!taskId || typeof taskId !== 'string') {
+  const taskId = readTaskIdentifier(payload);
+  if (!taskId) {
     send({ type: 'error', error: 'Missing taskId in payload', id });
     return;
   }
@@ -1086,8 +1248,8 @@ async function handleTasksClaim(
   id: string | undefined,
   send: SendFn,
 ): Promise<void> {
-  const taskId = payload?.taskId;
-  if (!taskId || typeof taskId !== 'string') {
+  const taskId = readTaskIdentifier(payload);
+  if (!taskId) {
     send({ type: 'error', error: 'Missing taskId in payload', id });
     return;
   }
@@ -1118,8 +1280,8 @@ async function handleTasksComplete(
   id: string | undefined,
   send: SendFn,
 ): Promise<void> {
-  const taskId = payload?.taskId;
-  if (!taskId || typeof taskId !== 'string') {
+  const taskId = readTaskIdentifier(payload);
+  if (!taskId) {
     send({ type: 'error', error: 'Missing taskId in payload', id });
     return;
   }
@@ -1158,8 +1320,8 @@ async function handleTasksDispute(
   id: string | undefined,
   send: SendFn,
 ): Promise<void> {
-  const taskId = payload?.taskId;
-  if (!taskId || typeof taskId !== 'string') {
+  const taskId = readTaskIdentifier(payload);
+  if (!taskId) {
     send({ type: 'error', error: 'Missing taskId in payload', id });
     return;
   }
@@ -2229,10 +2391,12 @@ export const HANDLER_MAP: Readonly<Record<string, HandlerFn>> = {
   'market.governance.vote': handleMarketGovernanceVote,
   'market.disputes.list': handleMarketDisputesList,
   'market.disputes.detail': handleMarketDisputesDetail,
+  'market.disputes.resolve': handleMarketDisputesResolve,
   'market.reputation.summary': handleMarketReputationSummary,
   'market.reputation.stake': handleMarketReputationStake,
   'market.reputation.delegate': handleMarketReputationDelegate,
   'tasks.list': handleTasksList,
+  'tasks.detail': handleTasksDetail,
   'tasks.create': handleTasksCreate,
   'tasks.claim': handleTasksClaim,
   'tasks.complete': handleTasksComplete,

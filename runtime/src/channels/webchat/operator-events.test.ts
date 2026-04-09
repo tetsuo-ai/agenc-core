@@ -262,6 +262,31 @@ describe("operator event normalization", () => {
     });
   });
 
+  it("classifies marketplace and task events into the market family", () => {
+    const normalized = normalizeOperatorMessage({
+      type: "tasks.detail",
+      payload: {
+        taskPda: "task-1",
+        status: "open",
+      },
+    });
+    const surface = projectOperatorSurfaceEvent(normalized);
+
+    expect(normalized).toMatchObject({
+      kind: "market",
+      type: "tasks.detail",
+    });
+    expect(surface).toMatchObject({
+      family: "market",
+      type: "tasks.detail",
+      payloadRecord: {
+        taskPda: "task-1",
+        status: "open",
+      },
+      isSessionScoped: false,
+    });
+  });
+
   it("preserves top-level error strings on normalized messages and surface events", () => {
     const normalized = normalizeOperatorMessage({
       type: "error",

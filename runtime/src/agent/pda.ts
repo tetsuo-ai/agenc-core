@@ -5,6 +5,14 @@
 
 import { PublicKey } from "@solana/web3.js";
 import { PROGRAM_ID, SEEDS } from "@tetsuo-ai/sdk";
+
+type OptionalSeedRecord = Partial<Record<string, Buffer>>;
+
+// The runtime can move ahead of the published SDK package. Fall back to raw
+// seed bytes locally until the matching SDK release is available.
+const optionalSeeds = SEEDS as OptionalSeedRecord;
+const AUTHORITY_RATE_LIMIT_SEED =
+  optionalSeeds.AUTHORITY_RATE_LIMIT ?? Buffer.from("authority_rate_limit");
 import { AGENT_ID_LENGTH } from "./types.js";
 import { derivePda, validateIdLength } from "../utils/pda.js";
 
@@ -91,6 +99,38 @@ export function findAgentPda(
  */
 export function findProtocolPda(programId: PublicKey = PROGRAM_ID): PublicKey {
   return deriveProtocolPda(programId).address;
+}
+
+/**
+ * Derives the authority rate-limit PDA and bump seed.
+ * Used by task creation and dispute initiation cooldown logic.
+ * Seeds: ["authority_rate_limit", authority]
+ *
+ * @param authority - Authority (wallet) public key
+ * @param programId - Program ID (defaults to PROGRAM_ID)
+ * @returns PDA address and bump seed
+ */
+export function deriveAuthorityRateLimitPda(
+  authority: PublicKey,
+  programId: PublicKey = PROGRAM_ID,
+): PdaWithBump {
+  return derivePda([AUTHORITY_RATE_LIMIT_SEED, authority.toBuffer()], programId);
+}
+
+/**
+ * Finds the authority rate-limit PDA address (without bump).
+ * Convenience wrapper around deriveAuthorityRateLimitPda for when only the
+ * address is needed.
+ *
+ * @param authority - Authority (wallet) public key
+ * @param programId - Program ID (defaults to PROGRAM_ID)
+ * @returns PDA address
+ */
+export function findAuthorityRateLimitPda(
+  authority: PublicKey,
+  programId: PublicKey = PROGRAM_ID,
+): PublicKey {
+  return deriveAuthorityRateLimitPda(authority, programId).address;
 }
 
 /**

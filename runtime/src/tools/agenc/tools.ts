@@ -22,7 +22,7 @@ import type { AgencCoordination } from '../../types/agenc_coordination.js';
 import type { Tool, ToolResult } from '../types.js';
 import { safeStringify } from '../types.js';
 import { TaskOperations } from '../../task/operations.js';
-import { findAgentPda, findProtocolPda } from '../../agent/pda.js';
+import { findAgentPda, findAuthorityRateLimitPda, findProtocolPda } from '../../agent/pda.js';
 import { findTaskPda, findEscrowPda } from '../../task/pda.js';
 import {
   taskStatusToString,
@@ -738,10 +738,10 @@ export function createRegisterAgentTool(
         const txSignature = await program.methods
           .registerAgent(
             Array.from(agentId),
-            new anchor.BN(capabilities.toString()),
+            new BN(capabilities.toString()),
             endpoint,
             metadataUri,
-            new anchor.BN(stakeAmount.toString()),
+            new BN(stakeAmount.toString()),
           )
           .accountsPartial({
             agent: agentPda,
@@ -909,6 +909,7 @@ export function createCreateTaskTool(
         const taskPda = findTaskPda(creator, taskId, program.programId);
         const escrowPda = findEscrowPda(taskPda, program.programId);
         const protocolPda = findProtocolPda(program.programId);
+        const authorityRateLimitPda = findAuthorityRateLimitPda(creator, program.programId);
         const tokenAccounts = buildCreateTaskTokenAccounts(
           rewardMint,
           escrowPda,
@@ -933,6 +934,7 @@ export function createCreateTaskTool(
             escrow: escrowPda,
             protocolConfig: protocolPda,
             creatorAgent: creatorAgentPda,
+            authorityRateLimit: authorityRateLimitPda,
             authority: creator,
             creator,
             systemProgram: SystemProgram.programId,

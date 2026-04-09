@@ -57,8 +57,10 @@ export {
 export {
   deriveAgentPda,
   deriveProtocolPda,
+  deriveAuthorityRateLimitPda,
   findAgentPda,
   findProtocolPda,
+  findAuthorityRateLimitPda,
   deriveAuthorityVotePda,
   findAuthorityVotePda,
   type PdaWithBump,

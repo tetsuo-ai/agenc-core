@@ -3,6 +3,7 @@ export type NormalizedOperatorMessageKind =
   | "approval"
   | "chat"
   | "error"
+  | "market"
   | "observability"
   | "planner"
   | "run"
@@ -42,6 +43,7 @@ export type OperatorSurfaceEventFamily =
   | "approval"
   | "chat"
   | "error"
+  | "market"
   | "observability"
   | "planner"
   | "run"
@@ -131,6 +133,7 @@ function classifyOperatorMessageKind(type: string): NormalizedOperatorMessageKin
   if (type.startsWith("subagents.")) return "subagent";
   if (type === "tools.executing" || type === "tools.result") return "tool";
   if (type.startsWith("chat.")) return "chat";
+  if (type.startsWith("market.") || type.startsWith("tasks.") || type.startsWith("task.")) return "market";
   if (type === "runs.list" || type.startsWith("run.")) return "run";
   if (type.startsWith("approval.")) return "approval";
   if (type.startsWith("observability.")) return "observability";
@@ -165,6 +168,9 @@ function classifyOperatorSurfaceEventFamily(type: string): OperatorSurfaceEventF
     type === "chat.usage"
   ) {
     return "chat";
+  }
+  if (type.startsWith("market.") || type.startsWith("tasks.") || type.startsWith("task.")) {
+    return "market";
   }
   if (type === "runs.list" || type.startsWith("run.")) return "run";
   if (type.startsWith("observability.")) return "observability";
