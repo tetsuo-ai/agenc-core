@@ -70,6 +70,7 @@ import {
   ANTI_FABRICATION_HARNESS_OVERWRITE_REASON,
   evaluateWriteOverFailedVerification,
 } from "./verification-target-guard.js";
+import { evaluateTurnEndStopGate } from "./chat-executor-stop-gate.js";
 import {
   sanitizeToolCallsForReplay,
   generateFallbackContent,
@@ -1182,6 +1183,19 @@ export async function executeToolCallLoop(
     consecutiveFailCount: 0,
   };
 
+  // Turn-end stop gate: gives the model exactly ONE recovery turn after
+  // the tool loop exits if the about-to-be-final assistant text claims
+  // success while the turn's tool ledger shows failures or refusals.
+  // Modeled on Claude Code's `query/stopHooks.ts` blocking-error flow.
+  // The do-while wraps the existing inner tool loop so that on
+  // intervention the recovery model call cycles back through the inner
+  // loop (which handles whatever the model returns — text or more tool
+  // calls). After one intervention, `stopGateFired` is true and the gate
+  // skips on subsequent passes to prevent infinite loops.
+  let stopGateFired = false;
+  let shouldContinueAfterStopGate = false;
+  do {
+    shouldContinueAfterStopGate = false;
   while (
     ctx.response &&
     ctx.response.finishReason === "tool_calls" &&
@@ -1439,6 +1453,78 @@ export async function executeToolCallLoop(
     if (!nextResponse) break;
     ctx.response = nextResponse;
   }
+
+  // Turn-end stop gate evaluation. Runs only when the inner tool loop
+  // exited cleanly (model stopped requesting tools, no abort, no
+  // budget/timeout failure). Fires at most once per turn.
+  if (
+    !stopGateFired &&
+    !ctx.signal?.aborted &&
+    ctx.response &&
+    ctx.response.finishReason !== "tool_calls" &&
+    ctx.stopReason === "completed"
+  ) {
+    const gateDecision = evaluateTurnEndStopGate({
+      finalContent: ctx.response.content ?? "",
+      allToolCalls: ctx.allToolCalls,
+    });
+    if (gateDecision.shouldIntervene && gateDecision.blockingMessage) {
+      stopGateFired = true;
+      callbacks.emitExecutionTrace(ctx, {
+        type: "stop_gate_intervention",
+        phase: "tool_followup",
+        callIndex: ctx.callIndex,
+        payload: {
+          reason: gateDecision.reason,
+          finalContentPreview: (ctx.response.content ?? "").slice(0, 240),
+          evidence: gateDecision.evidence,
+        },
+      });
+      // Inject the synthetic blocking message as a user-role turn so
+      // the model treats it as authoritative runtime feedback (not just
+      // another assistant aside). Phase tagging matches the existing
+      // recovery-hint convention so prompt budget accounting works.
+      callbacks.pushMessage(
+        ctx,
+        {
+          role: "user",
+          content: gateDecision.blockingMessage,
+        },
+        "system_runtime",
+      );
+      // Re-call the model. The recovery response will either be more
+      // tool calls (the inner while loop runs again on the next
+      // do-while iteration) or a text response (the gate skip path
+      // takes over because stopGateFired is now true).
+      await runPerIterationCompactionBeforeModelCall(
+        ctx,
+        config,
+        callbacks,
+        "tool_followup",
+      );
+      const recoveryResponse = await callModelWithReactiveCompact(
+        ctx,
+        callbacks,
+        "tool_followup",
+        () => ({
+          phase: "tool_followup",
+          callMessages: ctx.messages,
+          callSections: ctx.messageSections,
+          onStreamChunk: ctx.activeStreamCallback,
+          statefulSessionId: ctx.sessionId,
+          statefulResumeAnchor: ctx.stateful?.resumeAnchor,
+          statefulHistoryCompacted: ctx.stateful?.historyCompacted,
+          budgetReason:
+            "Max model recalls exceeded during stop-gate recovery turn",
+        }),
+      );
+      if (recoveryResponse) {
+        ctx.response = recoveryResponse;
+        shouldContinueAfterStopGate = true;
+      }
+    }
+  }
+  } while (shouldContinueAfterStopGate);
 
   if (ctx.signal?.aborted) {
     callbacks.setStopReason(ctx, "cancelled", "Execution cancelled by caller");

@@ -132,6 +132,7 @@ type ChatExecutionTraceEventType =
   | "model_call_prepared"
   | "recovery_hints_injected"
   | "route_expanded"
+  | "stop_gate_intervention"
   | "tool_arguments_invalid"
   | "tool_loop_stuck_detected"
   | "tool_dispatch_finished"
