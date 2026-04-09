@@ -152,7 +152,13 @@ describe("ChatExecutor initialization and prompt budgeting", () => {
       expect(result.content.length).toBeLessThan(3_000);
     });
 
-    it("truncates oversized final assistant output", async () => {
+    it("preserves long final assistant output without truncation", async () => {
+      // AgenC no longer applies an output-size cap to final model output.
+      // The previous MAX_FINAL_RESPONSE_CHARS=24_000 hard cap has been
+      // removed so legitimate long responses flow through untouched.
+      // The runaway-repetition safety net still catches degenerate loops
+      // (40+ identical lines, <35% unique); a single repeated character
+      // is one "line" and does not trigger that detector.
       const provider = createMockProvider("primary", {
         chat: vi
           .fn()
@@ -162,8 +168,8 @@ describe("ChatExecutor initialization and prompt budgeting", () => {
 
       const result = await executor.execute(createParams());
 
-      expect(result.content).toContain("oversized model output suppressed");
-      expect(result.content.length).toBeLessThanOrEqual(24_200);
+      expect(result.content).not.toContain("oversized model output suppressed");
+      expect(result.content.length).toBe(80_000);
     });
 
     it("keeps prompt growth bounded across repeated long turns", async () => {

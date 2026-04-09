@@ -749,6 +749,265 @@ describe("validateXaiResponsePostFlight (incomplete responses)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// mid-sentence truncation detection (xAI /v1/responses decoder bug)
+// ---------------------------------------------------------------------------
+
+describe("validateXaiResponsePostFlight (mid-sentence truncation bug)", () => {
+  // The live trigger reproduced end-to-end via curl (report.txt §4.4):
+  //   - status: "completed", incomplete_details: null
+  //   - sent tools non-empty, tool_choice: auto (default)
+  //   - input has prior function_call_output items
+  //   - response has zero function_call blocks
+  //   - message text ends mid-list-item ("\n2")
+
+  it("detects truncation matching the live xAI decoder bug", () => {
+    const request = toolFollowupRequest({
+      tools: [functionTool("system.bash"), functionTool("system.writeFile")],
+      // tool_choice omitted → effective "auto"
+    });
+    const truncated =
+      "**Phase 0 bootstrap failed to build.**\n\n" +
+      "**Failures:**\n" +
+      "1. CMakeLists.txt: `find_package(Readline)` failed - no " +
+      "ReadlineConfig.cmake (fixed by switching to pkg-config).\n2";
+    const result = validateXaiResponsePostFlight({
+      request,
+      response: responseWith({
+        status: "completed",
+        incomplete_details: null,
+        output: [messageBlock(truncated)],
+        usage: { input_tokens: 36091, output_tokens: 40, total_tokens: 36131 },
+      }),
+    });
+    const anomaly = result.find(
+      (a) => a.code === "truncated_response_mid_sentence",
+    );
+    expect(anomaly).toBeDefined();
+    expect(anomaly?.severity).toBe("warn");
+    expect(anomaly?.evidence).toMatchObject({
+      outputTokens: 40,
+      priorFunctionCallOutputCount: 1,
+      toolChoice: "auto",
+    });
+    expect(anomaly?.evidence.messageTextTail).toContain("pkg-config).\n2");
+  });
+
+  it("does NOT flag when text ends with a period", () => {
+    const request = toolFollowupRequest({
+      tools: [functionTool("system.bash")],
+    });
+    const result = validateXaiResponsePostFlight({
+      request,
+      response: responseWith({
+        status: "completed",
+        incomplete_details: null,
+        output: [
+          messageBlock(
+            "Phase 0 complete. All tests passed and the binary is ready.",
+          ),
+        ],
+      }),
+    });
+    expect(
+      result.find((a) => a.code === "truncated_response_mid_sentence"),
+    ).toBeUndefined();
+  });
+
+  it("does NOT flag when text ends with a closing code fence", () => {
+    const request = toolFollowupRequest({
+      tools: [functionTool("system.bash")],
+    });
+    const result = validateXaiResponsePostFlight({
+      request,
+      response: responseWith({
+        status: "completed",
+        incomplete_details: null,
+        output: [
+          messageBlock("Here is the script:\n\n```bash\nls -la\n```"),
+        ],
+      }),
+    });
+    expect(
+      result.find((a) => a.code === "truncated_response_mid_sentence"),
+    ).toBeUndefined();
+  });
+
+  it("does NOT flag when tool_choice is 'none' (mitigation path output)", () => {
+    const request = toolFollowupRequest({
+      tools: [functionTool("system.bash")],
+      tool_choice: "none",
+    });
+    const result = validateXaiResponsePostFlight({
+      request,
+      response: responseWith({
+        status: "completed",
+        incomplete_details: null,
+        output: [messageBlock("Build failed because readline was missing")],
+      }),
+    });
+    // Even though the text has no terminal punctuation, tool_choice=none
+    // means we're already on the mitigation path — don't re-flag.
+    expect(
+      result.find((a) => a.code === "truncated_response_mid_sentence"),
+    ).toBeUndefined();
+  });
+
+  it("does NOT flag when input has no prior function_call_output items", () => {
+    // Fresh turn with no tool history — the bug does not trigger here.
+    const request = {
+      model: "grok-4-1-fast-non-reasoning",
+      input: [{ role: "user", content: "hi" }],
+      tools: [functionTool("system.bash")],
+      store: false,
+    };
+    const result = validateXaiResponsePostFlight({
+      request,
+      response: responseWith({
+        status: "completed",
+        incomplete_details: null,
+        output: [messageBlock("hello there friend no period")],
+      }),
+    });
+    expect(
+      result.find((a) => a.code === "truncated_response_mid_sentence"),
+    ).toBeUndefined();
+  });
+
+  it("does NOT flag when the response contains a function_call block", () => {
+    const request = toolFollowupRequest({
+      tools: [functionTool("system.bash")],
+    });
+    const result = validateXaiResponsePostFlight({
+      request,
+      response: responseWith({
+        status: "completed",
+        incomplete_details: null,
+        output: [
+          messageBlock("Running next tool"),
+          functionCallBlock("system.bash", '{"command":"ls"}'),
+        ],
+      }),
+    });
+    expect(
+      result.find((a) => a.code === "truncated_response_mid_sentence"),
+    ).toBeUndefined();
+  });
+
+  it("does NOT flag when tools array is empty", () => {
+    const request = toolFollowupRequest({ tools: [] });
+    const result = validateXaiResponsePostFlight({
+      request,
+      response: responseWith({
+        status: "completed",
+        incomplete_details: null,
+        output: [messageBlock("Build failed: missing library")],
+      }),
+    });
+    expect(
+      result.find((a) => a.code === "truncated_response_mid_sentence"),
+    ).toBeUndefined();
+  });
+
+  it("does NOT flag when status is not 'completed'", () => {
+    const request = toolFollowupRequest({
+      tools: [functionTool("system.bash")],
+    });
+    const result = validateXaiResponsePostFlight({
+      request,
+      response: responseWith({
+        status: "incomplete",
+        incomplete_details: { reason: "max_output_tokens" },
+        output: [messageBlock("Build failed - truncated")],
+      }),
+    });
+    // Should surface as "incomplete_response", NOT "truncated_response_mid_sentence".
+    expect(
+      result.find((a) => a.code === "truncated_response_mid_sentence"),
+    ).toBeUndefined();
+    expect(
+      result.find((a) => a.code === "incomplete_response"),
+    ).toBeDefined();
+  });
+
+  it("does NOT flag when incomplete_details is populated", () => {
+    const request = toolFollowupRequest({
+      tools: [functionTool("system.bash")],
+    });
+    const result = validateXaiResponsePostFlight({
+      request,
+      response: responseWith({
+        status: "completed",
+        // defensive: status=completed + incomplete_details shouldn't happen
+        // per xAI docs, but don't trip on it if it does
+        incomplete_details: { reason: "max_output_tokens" },
+        output: [messageBlock("Build failed truncated")],
+      }),
+    });
+    expect(
+      result.find((a) => a.code === "truncated_response_mid_sentence"),
+    ).toBeUndefined();
+  });
+
+  it("detects truncation at mid-word (no punctuation at all)", () => {
+    const request = toolFollowupRequest({
+      tools: [functionTool("system.bash")],
+    });
+    const result = validateXaiResponsePostFlight({
+      request,
+      response: responseWith({
+        status: "completed",
+        incomplete_details: null,
+        output: [messageBlock("Compilation errors in src/utils.c and src/shell")],
+        usage: { input_tokens: 100, output_tokens: 13, total_tokens: 113 },
+      }),
+    });
+    const anomaly = result.find(
+      (a) => a.code === "truncated_response_mid_sentence",
+    );
+    expect(anomaly).toBeDefined();
+    expect(anomaly?.evidence.outputTokens).toBe(13);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pre-flight 128-tool limit enforcement
+// ---------------------------------------------------------------------------
+
+describe("validateXaiRequestPreFlight (documented 128-tool limit)", () => {
+  it("accepts exactly 128 tools", () => {
+    const tools = Array.from({ length: 128 }, (_, i) =>
+      functionTool(`tool.${i}`),
+    );
+    expect(() =>
+      validateXaiRequestPreFlight(plainTextRequest({ tools })),
+    ).not.toThrow();
+  });
+
+  it("rejects 129 tools (the count we were previously sending)", () => {
+    const tools = Array.from({ length: 129 }, (_, i) =>
+      functionTool(`tool.${i}`),
+    );
+    expect(() =>
+      validateXaiRequestPreFlight(plainTextRequest({ tools })),
+    ).toThrow(XaiUndocumentedFieldError);
+  });
+
+  it("rejects 200 tools with a clear error message", () => {
+    const tools = Array.from({ length: 200 }, (_, i) =>
+      functionTool(`tool.${i}`),
+    );
+    try {
+      validateXaiRequestPreFlight(plainTextRequest({ tools }));
+      expect.fail("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(XaiUndocumentedFieldError);
+      expect((err as Error).message).toContain("200");
+      expect((err as Error).message).toContain("128");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // schema constant exposure (so adapter can swap to the shared set)
 // ---------------------------------------------------------------------------
 

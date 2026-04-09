@@ -79,8 +79,6 @@ export const TOOL_RESULT_PRIORITY_KEYS = [
 export const MAX_TOOL_IMAGE_CHARS_BUDGET = 100_000;
 /** Max chars retained from a single user text message. */
 export const MAX_USER_MESSAGE_CHARS = 8_000;
-/** Hard cap for final assistant response size (protects against runaway output). */
-export const MAX_FINAL_RESPONSE_CHARS = 24_000;
 /** Minimum line count before repetitive-output suppression is evaluated. */
 export const REPETITIVE_LINE_MIN_COUNT = 40;
 /** Dominant-line repetition threshold for runaway detection. */

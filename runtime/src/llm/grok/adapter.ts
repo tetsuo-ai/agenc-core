@@ -902,7 +902,18 @@ export class GrokProvider implements LLMProvider {
           this.name,
           options?.signal,
         );
-        const response = result.data;
+        const originalResponse = result.data;
+        // Auto-mitigate the xAI mid-sentence truncation bug by
+        // replaying with tool_choice="none" when the strict filter
+        // detects the trigger pattern. See report.txt §4.4.
+        const mitigatedResponse = await this.maybeRetryMidSentenceTruncation(
+          client,
+          activePlan.params as Record<string, unknown>,
+          originalResponse as Record<string, unknown>,
+          options,
+          "chat",
+        );
+        const response = (mitigatedResponse ?? originalResponse) as typeof originalResponse;
         const responseMeta = buildProviderResponseMeta({
           response: result.response,
           requestId: result.requestId,
@@ -1164,7 +1175,52 @@ export class GrokProvider implements LLMProvider {
 
         if (event.type === "response.completed") {
           receivedTerminalEvent = true;
-          const response = event.response ?? {};
+          let response = event.response ?? {};
+
+          // Auto-mitigate the xAI mid-sentence truncation bug on the
+          // streaming terminal payload. The user has already seen the
+          // truncated deltas via onChunk; the mitigation replaces the
+          // accumulated content with the retry result so the final
+          // LLMResponse returned to the executor carries the corrected
+          // text. A secondary onChunk is emitted with the corrected
+          // content so UIs that re-render on the latest delta show
+          // the corrected version. See report.txt §4.4.
+          const mitigatedResponse = await this.maybeRetryMidSentenceTruncation(
+            client,
+            params,
+            response as Record<string, unknown>,
+            options,
+            "chat_stream",
+          );
+          if (mitigatedResponse) {
+            response = mitigatedResponse;
+            // Reset stream-accumulated tool calls; the mitigation
+            // retry ran with tool_choice="none" so it cannot have
+            // emitted a function_call, but we still clear the map
+            // so any lingering partial deltas from the original
+            // stream don't leak into the final response.
+            toolCallAccum.clear();
+            // Replace streamed content with the corrected text so
+            // the returned LLMResponse has the full response.
+            const correctedText = String(
+              (mitigatedResponse as { output_text?: unknown }).output_text ??
+                "",
+            );
+            const correctedFromOutput = this.extractOutputText(
+              mitigatedResponse,
+            );
+            const effectiveCorrected =
+              correctedText.length > 0
+                ? correctedText
+                : correctedFromOutput ?? "";
+            if (effectiveCorrected.length > 0) {
+              // Signal the correction as a delta replacing the
+              // truncated stream the UI has already rendered.
+              onChunk({ content: effectiveCorrected, done: false });
+              content = effectiveCorrected;
+            }
+          }
+
           streamResponseMeta = {
             ...(streamResponseMeta ?? {}),
             ...(buildProviderResponseMeta({ payload: response }) ?? {}),
@@ -1191,6 +1247,11 @@ export class GrokProvider implements LLMProvider {
           // Strict post-flight on the streaming terminal payload. Same
           // contract as the non-streaming parseResponse() path: error-level
           // anomalies throw, warn-level anomalies log via console.warn.
+          // Mid-sentence truncation is handled above (via the mitigation
+          // retry) so it is skipped here — if the retry succeeded, the
+          // anomaly is no longer present; if the retry failed, the
+          // original anomaly was already logged inside the mitigation
+          // path and re-logging would be noise.
           const xaiAnomalies = validateXaiResponsePostFlight({
             request: params,
             response: response as Record<string, unknown>,
@@ -1205,6 +1266,7 @@ export class GrokProvider implements LLMProvider {
                 anomaly.evidence,
               );
             }
+            if (anomaly.code === "truncated_response_mid_sentence") continue;
             console.warn(
               `[GrokProvider] xAI post-flight anomaly (${anomaly.code}): ${anomaly.message}`,
               anomaly.evidence,
@@ -1854,12 +1916,11 @@ export class GrokProvider implements LLMProvider {
     }
     if (this.config.temperature !== undefined)
       params.temperature = this.config.temperature;
-    if (
-      typeof this.config.maxTokens === "number" &&
-      Number.isFinite(this.config.maxTokens) &&
-      this.config.maxTokens > 0
-    )
-      params.max_output_tokens = this.config.maxTokens;
+    // Output-token cap removed intentionally. AgenC never sends
+    // max_output_tokens on /v1/responses — the whole point of routing
+    // through a 2M-context model is that the runtime lets the model
+    // finish its thought. Any config value that previously would have
+    // become max_output_tokens is now ignored for this field.
     const maxTurns = options?.maxTurns ?? this.config.maxTurns;
     if (
       typeof maxTurns === "number" &&
@@ -2257,6 +2318,119 @@ export class GrokProvider implements LLMProvider {
     return parts;
   }
 
+  /**
+   * Auto-mitigate the documented xAI /v1/responses mid-sentence
+   * truncation bug (report.txt §4.4). When a response matches the
+   * known trigger — status="completed", incomplete_details=null,
+   * zero tool-call blocks, tools sent, tool_choice="auto", input has
+   * prior function_call_output turns, text ends mid-sentence — this
+   * method re-issues the SAME request with tool_choice="none" to
+   * force xAI's text-mode decoder path, which the reproduction matrix
+   * proves is not affected by the bug.
+   *
+   * Returns the corrected response payload on successful mitigation,
+   * or `undefined` if the original response was not truncated, the
+   * retry failed, or the retry itself also truncated (a second
+   * truncation would indicate a different failure mode and the
+   * original response is returned upstream).
+   *
+   * The retry is single-shot (no loops), non-streaming (simpler to
+   * buffer), and does not propagate any client-side AbortSignal so a
+   * user-initiated cancel still fires at the higher level.
+   */
+  private async maybeRetryMidSentenceTruncation(
+    client: unknown,
+    originalParams: Record<string, unknown>,
+    originalResponse: Record<string, unknown>,
+    options: LLMChatOptions | undefined,
+    transport: "chat" | "chat_stream",
+  ): Promise<Record<string, unknown> | undefined> {
+    const anomalies = validateXaiResponsePostFlight({
+      request: originalParams,
+      response: originalResponse,
+    });
+    const truncation = anomalies.find(
+      (a) => a.code === "truncated_response_mid_sentence",
+    );
+    if (!truncation) return undefined;
+
+    // Clone params and force the mitigating tool_choice. Keep the
+    // retry non-streaming so the caller doesn't have to re-buffer
+    // SSE deltas. parallel_tool_calls is meaningless with
+    // tool_choice="none" — drop it so the strict pre-flight doesn't
+    // see a redundant field on the retry.
+    const retryParams: Record<string, unknown> = {
+      ...originalParams,
+      tool_choice: "none",
+      stream: false,
+    };
+    delete retryParams.parallel_tool_calls;
+
+    emitProviderTraceEvent(options, {
+      kind: "request",
+      transport,
+      provider: this.name,
+      model: String(retryParams.model ?? this.config.model),
+      payload:
+        cloneProviderTracePayload(retryParams) ??
+        { error: "provider_retry_request_trace_unavailable" },
+      context: {
+        retryReason: "xai_mid_sentence_truncation_mitigation",
+        originalEvidence: truncation.evidence,
+      } as unknown as ReturnType<typeof buildProviderRequestTraceContext>,
+    });
+
+    try {
+      const retryResult = await createWithResponseMetadata<
+        Record<string, unknown>
+      >(client, retryParams, undefined);
+      const retryResponse = retryResult.data;
+
+      emitProviderTraceEvent(options, {
+        kind: "response",
+        transport,
+        provider: this.name,
+        model: String(
+          (retryResponse as { model?: unknown }).model ?? retryParams.model,
+        ),
+        payload:
+          cloneProviderTracePayload(retryResponse) ??
+          { error: "provider_retry_response_trace_unavailable" },
+        context: {
+          retryReason: "xai_mid_sentence_truncation_mitigation",
+        } as unknown as ReturnType<typeof buildProviderResponseTraceContext>,
+      });
+
+      // Re-run post-flight on the retry. If the retry ALSO truncated
+      // (a second hit of the same bug on the mitigation path), give
+      // up and let the caller surface the original response so the
+      // failure stays visible rather than hanging on mitigation.
+      const retryAnomalies = validateXaiResponsePostFlight({
+        request: retryParams,
+        response: retryResponse,
+      });
+      const retryTruncated = retryAnomalies.some(
+        (a) => a.code === "truncated_response_mid_sentence",
+      );
+      if (retryTruncated) {
+        console.warn(
+          `[GrokProvider] xAI mid-sentence truncation retry with ` +
+            `tool_choice="none" also returned a truncated response; ` +
+            `falling through to original.`,
+        );
+        return undefined;
+      }
+
+      return retryResponse;
+    } catch (err) {
+      console.warn(
+        `[GrokProvider] xAI mid-sentence truncation retry failed:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return undefined;
+    }
+  }
+
   private parseResponse(
     response: any,
     request: Record<string, unknown> | undefined,
@@ -2292,6 +2466,13 @@ export class GrokProvider implements LLMProvider {
             anomaly.evidence,
           );
         }
+        // truncated_response_mid_sentence is handled upstream by
+        // maybeRetryMidSentenceTruncation() BEFORE parseResponse is
+        // called. If it surfaces here, it means the retry ran and
+        // also truncated, OR parseResponse was called on a stored
+        // response that bypassed the mitigation. Either way the
+        // truncation has already been logged; don't re-log here.
+        if (anomaly.code === "truncated_response_mid_sentence") continue;
         console.warn(
           `[GrokProvider] xAI post-flight anomaly (${anomaly.code}): ${anomaly.message}`,
           anomaly.evidence,

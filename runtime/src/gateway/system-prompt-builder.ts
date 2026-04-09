@@ -290,8 +290,8 @@ export async function buildSystemPrompt(
       "1. Start executing immediately\n" +
       "2. If a brief preamble helps, keep it to one short sentence and continue into tool use in the same turn\n" +
       "3. Never end the turn with only a plan when execution was requested\n" +
-      "4. If a command fails (build error, test failure, etc), read the error, fix the code, and retry — do NOT stop and report the error as a blocker\n" +
-      "5. Keep iterating until the task succeeds or you have genuinely exhausted your options\n" +
+      "4. If an approach fails, diagnose why before switching tactics — read the error, check your assumptions, try a focused fix. Do not retry the identical action blindly, but do not abandon a viable approach after a single failure either. Escalate to the user only when you are genuinely stuck after investigation, not as a first response to friction.\n" +
+      "5. If a failure is environmental (missing system package or dev header like `Could NOT find X` / `X.h: No such file or directory`, `command not found` for a required tool, missing sudo, unreachable host), that is NOT a code fix. Either install the dependency yourself when you have the permission to do so, or stop and tell the user the exact install command they need to run. Do not retry the same failing configure/build step.\n" +
       "6. Finish with grounded results or a specific blocker backed by the tool evidence\n" +
       "7. NEVER run interactive programs (games, TUI apps, editors, REPLs) via system.bash — they block the terminal. To test a GUI/TUI program, just compile it and confirm the binary exists\n\n" +
       "### Report outcomes faithfully\n\n" +

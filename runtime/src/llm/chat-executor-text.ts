@@ -16,7 +16,6 @@ import type {
 } from "./prompt-budget.js";
 import type { ToolCallRecord, ChatPromptShape } from "./chat-executor-types.js";
 import {
-  MAX_FINAL_RESPONSE_CHARS,
   REPETITIVE_LINE_MIN_COUNT,
   REPETITIVE_LINE_MIN_REPEATS,
   REPETITIVE_LINE_MAX_UNIQUE_RATIO,
@@ -116,12 +115,13 @@ function isBase64Like(value: string): boolean {
 
 export function sanitizeFinalContent(content: string): string {
   if (!content) return content;
-  const collapsed = collapseRunawayRepetition(content);
-  if (collapsed.length <= MAX_FINAL_RESPONSE_CHARS) return collapsed;
-  return (
-    truncateText(collapsed, MAX_FINAL_RESPONSE_CHARS) +
-    "\n\n[response truncated: oversized model output suppressed]"
-  );
+  // Output-size cap removed intentionally. Only the runaway-repetition
+  // safety net (40+ identical lines, <35% unique) still runs — that is
+  // a degenerate-loop catch, not a length limit. The previous
+  // MAX_FINAL_RESPONSE_CHARS=24_000 hard cap has been removed so AgenC
+  // never truncates legitimate model output on the way out, even if
+  // the model produces a very long final message.
+  return collapseRunawayRepetition(content);
 }
 
 
