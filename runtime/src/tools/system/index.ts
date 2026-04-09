@@ -85,6 +85,18 @@ export {
 } from "./sandbox-handle.js";
 
 export {
+  createTaskTrackerTools,
+  TaskStore,
+  TASK_LIST_ARG,
+  DEFAULT_TASK_LIST_ID,
+  TASK_TRACKER_TOOL_NAMES,
+  type Task,
+  type TaskStatus,
+  type TaskCreateInput,
+  type TaskUpdatePatch,
+} from "./task-tracker.js";
+
+export {
   type BashToolConfig,
   type BashToolInput,
   type BashExecutionResult,

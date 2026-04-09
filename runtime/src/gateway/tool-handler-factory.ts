@@ -13,6 +13,10 @@ import { isAbsolute, relative, resolve as resolvePath } from 'node:path';
 import type { ToolHandler } from '../llm/types.js';
 import { SESSION_ALLOWED_ROOTS_ARG } from "../tools/system/filesystem.js";
 import {
+  TASK_LIST_ARG,
+  TASK_TRACKER_TOOL_NAMES,
+} from "../tools/system/task-tracker.js";
+import {
   didToolCallFail,
   enrichToolResultMetadata,
   extractToolFailureTextFromResult,
@@ -203,12 +207,36 @@ function normalizeToolName(name: string): string {
 function stripInternalToolArgs(
   args: Record<string, unknown>,
 ): Record<string, unknown> {
-  if (!(SESSION_ALLOWED_ROOTS_ARG in args)) {
+  const hasAllowedRoots = SESSION_ALLOWED_ROOTS_ARG in args;
+  const hasTaskListId = TASK_LIST_ARG in args;
+  if (!hasAllowedRoots && !hasTaskListId) {
     return args;
   }
   const nextArgs = { ...args };
-  delete nextArgs[SESSION_ALLOWED_ROOTS_ARG];
+  if (hasAllowedRoots) {
+    delete nextArgs[SESSION_ALLOWED_ROOTS_ARG];
+  }
+  if (hasTaskListId) {
+    delete nextArgs[TASK_LIST_ARG];
+  }
   return nextArgs;
+}
+
+function applySessionTaskListId(
+  toolName: string,
+  args: Record<string, unknown>,
+  sessionId: string | undefined,
+): Record<string, unknown> {
+  if (!TASK_TRACKER_TOOL_NAMES.has(toolName)) {
+    return args;
+  }
+  if (!sessionId || sessionId.trim().length === 0) {
+    return args;
+  }
+  return {
+    ...args,
+    [TASK_LIST_ARG]: sessionId,
+  };
 }
 
 function applySessionAllowedRoots(
@@ -2823,6 +2851,7 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
       executionArgs,
       delegatedParentAllowedRoots,
     );
+    executionArgs = applySessionTaskListId(toolName, executionArgs, sessionId);
 
     const subAgentEnvelopeError = isSubAgentSession
       ? enforceSubAgentExecutionEnvelope({
