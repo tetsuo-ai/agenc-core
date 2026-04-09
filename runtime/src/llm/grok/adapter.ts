@@ -31,6 +31,13 @@ import type {
 } from "../types.js";
 import { validateToolCallDetailed } from "../types.js";
 import { LLMProviderError, mapLLMError } from "../errors.js";
+import {
+  assertNoSilentToolDropOnFollowup,
+  DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS,
+  validateXaiRequestPreFlight,
+  validateXaiResponsePostFlight,
+  XaiSilentToolDropError,
+} from "./xai-strict-filter.js";
 import { ensureLazyImport } from "../lazy-import.js";
 import {
   assertXaiStructuredOutputToolCompatibility,
@@ -69,28 +76,15 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_MESSAGES_PAYLOAD_CHARS = 80_000;
 const MAX_SYSTEM_MESSAGE_CHARS = 16_000;
 const MAX_MESSAGE_CHARS_PER_ENTRY = 4_000;
-const MAX_TOOL_SCHEMA_CHARS_FOLLOWUP = 20_000;
-const DOCUMENTED_XAI_RESPONSES_FIELDS = new Set([
-  "include",
-  "input",
-  "logprobs",
-  "max_output_tokens",
-  "max_turns",
-  "model",
-  "parallel_tool_calls",
-  "previous_response_id",
-  "prompt_cache_key",
-  "reasoning",
-  "store",
-  "stream",
-  "temperature",
-  "text",
-  "tool_choice",
-  "tools",
-  "top_logprobs",
-  "top_p",
-  "user",
-]);
+// MAX_TOOL_SCHEMA_CHARS_FOLLOWUP removed 2026-04-09: see buildParams() comment
+// near `selectedTools.tools.length > 0`. The 20K limit was silently dropping
+// the entire tools array on every tool-followup request.
+//
+// The canonical /v1/responses field allowlist now lives in
+// `xai-strict-filter.ts` as `DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS` and is
+// imported above. Single source of truth — both the strict pre-flight
+// validator and `sanitizeToDocumentedXaiResponsesParams()` use the same set.
+const DOCUMENTED_XAI_RESPONSES_FIELDS = DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS;
 
 /** Vision models known to support function-calling alongside image understanding. */
 const VISION_MODELS_WITH_TOOLS = new Set([
@@ -916,6 +910,7 @@ export class GrokProvider implements LLMProvider {
         });
         const parsed = this.parseResponse(
           response,
+          activePlan.params,
           activePlan.requestMetrics,
           activePlan.statefulDiagnostics,
           activePlan.compactionDiagnostics,
@@ -1192,6 +1187,30 @@ export class GrokProvider implements LLMProvider {
           for (const toolCall of completedToolCalls) {
             toolCallAccum.set(toolCall.id, toolCall);
           }
+
+          // Strict post-flight on the streaming terminal payload. Same
+          // contract as the non-streaming parseResponse() path: error-level
+          // anomalies throw, warn-level anomalies log via console.warn.
+          const xaiAnomalies = validateXaiResponsePostFlight({
+            request: params,
+            response: response as Record<string, unknown>,
+          });
+          for (const anomaly of xaiAnomalies) {
+            if (
+              anomaly.severity === "error" &&
+              anomaly.code === "silent_tool_drop_promised_in_text"
+            ) {
+              throw new XaiSilentToolDropError(
+                "incoming_promised_tools_missing",
+                anomaly.evidence,
+              );
+            }
+            console.warn(
+              `[GrokProvider] xAI post-flight anomaly (${anomaly.code}): ${anomaly.message}`,
+              anomaly.evidence,
+            );
+          }
+
           this.emitToolCallNormalizationIssues(
             normalizationIssues,
             options,
@@ -1868,12 +1887,23 @@ export class GrokProvider implements LLMProvider {
       options?.structuredOutput?.enabled !== false &&
       structuredOutputSchema !== undefined;
     // Enable tools unless the vision model is known to not support them.
+    //
+    // Removed 2026-04-09: the previous logic also dropped the entire tools
+    // array on any follow-up turn whose tool-schema serialized to more than
+    // MAX_TOOL_SCHEMA_CHARS_FOLLOWUP (= 20_000) characters, on the
+    // assumption that this would save tokens. With AgenC's full system tool
+    // catalog (40+ tools, verbose descriptions) the schema sits well above
+    // 20K, so every chat turn that produced a tool result was followed by a
+    // model call with `tools: []`. The model would then return text-only
+    // (because there were no tools to call), the tool loop would exit
+    // because `finishReason !== "tool_calls"`, and from the user's
+    // perspective the agent would do exactly one tool call per chat turn
+    // and then "give up". xAI's prompt cache deduplicates the tool schema
+    // across requests in the same session, so always sending the tools
+    // array is cheap; the previous guard was a token-saving theory that
+    // silently broke multi-step tool sequences end-to-end.
     if (selectedTools.tools.length > 0) {
-      const hasToolResults = messages.some((m) => m.role === "tool");
-      if (
-        (!hasImages || VISION_MODELS_WITH_TOOLS.has(visionModel)) &&
-        (!hasToolResults || selectedTools.chars <= MAX_TOOL_SCHEMA_CHARS_FOLLOWUP)
-      ) {
+      if (!hasImages || VISION_MODELS_WITH_TOOLS.has(visionModel)) {
         params.tools = selectedTools.tools;
         selectedTools.toolsAttached = true;
         params.parallel_tool_calls = this.config.parallelToolCalls;
@@ -1881,10 +1911,8 @@ export class GrokProvider implements LLMProvider {
         if (toolChoice !== undefined) {
           params.tool_choice = toolChoice;
         }
-      } else if (hasImages && !VISION_MODELS_WITH_TOOLS.has(visionModel)) {
+      } else {
         selectedTools.toolSuppressionReason = "vision_model_without_tool_support";
-      } else if (hasToolResults) {
-        selectedTools.toolSuppressionReason = "followup_tool_schema_limit";
       }
     }
     if (structuredOutputEnabled && structuredOutputSchema) {
@@ -1914,6 +1942,35 @@ export class GrokProvider implements LLMProvider {
         },
       };
     }
+    // Strict pre-flight: validate the outgoing /v1/responses request body
+    // against the documented xAI contract before it leaves the runtime.
+    // Throws XaiUnknownModelError / XaiUndocumentedFieldError on rejection.
+    // The throws map to provider_error via classifyLLMFailure() and flow
+    // through the existing retry-with-fallback policy. Runs BEFORE
+    // sanitizeToDocumentedXaiResponsesParams() so the validator sees the
+    // params as the runtime intends to send them, including any field
+    // that the sanitize step would silently strip.
+    validateXaiRequestPreFlight(params);
+
+    // Inline silent-tool-drop assertion. Catches the legacy
+    // MAX_TOOL_SCHEMA_CHARS_FOLLOWUP bug pattern: the runtime selected
+    // tools (`selectedTools.tools.length > 0`) but the final params has
+    // no `tools` field. The pre-flight validator can't catch this with
+    // the params alone — it needs the runtime's selection intent.
+    //
+    // The `toolSuppressionReason` argument tells the assertion when an
+    // empty `tools` field is *intentional* (e.g.
+    // `vision_model_without_tool_support` when an image is sent to a
+    // vision model that lacks tool support, or `empty_allowlist` when
+    // the routed tool subset resolves to zero matches). In those cases
+    // the assertion is a no-op — the runtime deliberately suppressed
+    // tools and that is not a bug.
+    assertNoSilentToolDropOnFollowup({
+      runtimeIntendedToolCount: selectedTools.tools.length,
+      toolSuppressionReason: selectedTools.toolSuppressionReason,
+      outgoingParams: params,
+    });
+
     return {
       params: sanitizeToDocumentedXaiResponsesParams(params),
       toolSelection: selectedTools,
@@ -2202,6 +2259,7 @@ export class GrokProvider implements LLMProvider {
 
   private parseResponse(
     response: any,
+    request: Record<string, unknown> | undefined,
     requestMetrics?: LLMRequestMetrics,
     statefulDiagnostics?: LLMStatefulDiagnostics,
     compactionDiagnostics?: LLMCompactionDiagnostics,
@@ -2212,6 +2270,35 @@ export class GrokProvider implements LLMProvider {
     const { toolCalls, normalizationIssues } = this.extractToolCallsFromOutput(
       response.output,
     );
+
+    // Strict post-flight: detect xAI silent-degradation patterns. Error-
+    // level anomalies throw so the executor sees them as provider_error.
+    // Warn-level anomalies (model silent aliasing, incomplete responses)
+    // log via console.warn for observability without failing the turn.
+    // Pass-through path when no request context is available (e.g. parsing
+    // a stored response by ID).
+    if (request) {
+      const anomalies = validateXaiResponsePostFlight({
+        request,
+        response: response as Record<string, unknown>,
+      });
+      for (const anomaly of anomalies) {
+        if (
+          anomaly.severity === "error" &&
+          anomaly.code === "silent_tool_drop_promised_in_text"
+        ) {
+          throw new XaiSilentToolDropError(
+            "incoming_promised_tools_missing",
+            anomaly.evidence,
+          );
+        }
+        console.warn(
+          `[GrokProvider] xAI post-flight anomaly (${anomaly.code}): ${anomaly.message}`,
+          anomaly.evidence,
+        );
+      }
+    }
+
     const finishReason = this.mapResponseFinishReason(response, toolCalls);
     const responseId =
       typeof response?.id === "string" ? String(response.id) : undefined;
@@ -2247,7 +2334,9 @@ export class GrokProvider implements LLMProvider {
   }
 
   private toStoredResponse(response: Record<string, unknown>): LLMStoredResponse {
-    const parsed = this.parseResponse(response);
+    // Stored responses are retrieved by ID; we don't have the original
+    // request body, so the post-flight validator runs in pass-through mode.
+    const parsed = this.parseResponse(response, undefined);
     const encryptedReasoning = this.extractEncryptedReasoningDiagnostics(response, {
       requested: undefined,
     });

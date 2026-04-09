@@ -237,16 +237,11 @@ const ENVELOPE_TOOL_PATH_ARG_KEYS: Readonly<Record<string, readonly string[]>> =
   "system.delete": ["path"],
   "system.move": ["source", "destination"],
 };
-const CONTRACT_MUTATION_TOOL_NAMES = new Set([
-  "desktop.text_editor",
-  "system.appendFile",
-  "system.delete",
-  "system.mkdir",
-  "system.move",
-  "system.writeFile",
-]);
-const SHELL_MUTATION_COMMAND_RE =
-  /\b(?:mkdir|touch|rm|mv|cp|install|chmod|chown|tee|cmake|ninja|make|gcc|g\+\+|clang|clang\+\+|cargo\s+(?:build|test|fmt|clippy|add)|go\s+(?:build|test)|npm\s+(?:install|test|run\s+(?:build|typecheck|lint))|pnpm\s+(?:install|add|test|build|typecheck|lint)|yarn\s+(?:install|add|test|build|typecheck|lint)|bun\s+(?:install|add|test|run(?:\s+(?:build|typecheck|lint))?))\b|(?:^|\s)(?:cat|echo|printf)\b[^\n]*>/i;
+// CONTRACT_MUTATION_TOOL_NAMES / SHELL_MUTATION_COMMAND_RE / isMutationLikeToolUse
+// were removed alongside the no-op'd enforceTurnExecutionContractPolicy gate
+// (see comment on that function below). The classifier those constants
+// fed has been gone since Cut 1.2 and the gate now always returns
+// undefined, so the constants are dead.
 
 function getExecutionEnvelopeFilesystemAccessMode(
   toolName: string,
@@ -293,32 +288,27 @@ function canonicalizeExplicitArtifactReferenceArgs(params: {
   return { args: nextArgs, canonicalizedFields };
 }
 
-function isMutationLikeToolUse(toolName: string, args: Record<string, unknown>): boolean {
-  if (CONTRACT_MUTATION_TOOL_NAMES.has(toolName)) {
-    return true;
-  }
-  if (toolName !== "system.bash" && toolName !== "desktop.bash") {
-    return false;
-  }
-  const command = typeof args.command === "string" ? args.command.trim() : "";
-  return command.length > 0 && SHELL_MUTATION_COMMAND_RE.test(command);
-}
-
-function enforceTurnExecutionContractPolicy(params: {
+function enforceTurnExecutionContractPolicy(_params: {
   readonly ctx: ExecutionContext;
   readonly toolName: string;
   readonly args: Record<string, unknown>;
 }): string | undefined {
-  if (!isMutationLikeToolUse(params.toolName, params.args)) {
-    return undefined;
-  }
-  if (
-    params.ctx.turnExecutionContract.turnClass === "workflow_implementation" ||
-    params.ctx.turnExecutionContract.turnClass === "artifact_update"
-  ) {
-    return undefined;
-  }
-  return `Tool ${params.toolName} can mutate workspace state, but this turn is classified as ${params.ctx.turnExecutionContract.turnClass}. Mutation requires a workflow_implementation or artifact_update execution contract.`;
+  // Regression no-op (2026-04-09):
+  //
+  // This gate originally rejected mutation-class tool calls when the turn
+  // had not been classified as `workflow_implementation` or
+  // `artifact_update`. The classifier that produced those values lived in
+  // the planner subsystem that was removed by Cut 1.2. With the planner
+  // gone, `resolveTurnExecutionContract` is a stub that always returns
+  // `turnClass: "dialogue"` (see runtime/src/llm/turn-execution-contract.ts),
+  // so this gate refused 100% of mutations and made the runtime unusable
+  // for any code-changing chat turn.
+  //
+  // Until a real classifier is reinstated (or the gate is properly removed
+  // along with its plumbing), short-circuit to "no rejection". The
+  // upstream anti-fabrication gate, the canUseTool seam, the policy-gate
+  // hook, and the ToolPermissionEvaluator all still run normally.
+  return undefined;
 }
 
 function enforceTopLevelExecutionEnvelope(params: {

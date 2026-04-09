@@ -1186,8 +1186,13 @@ describe("GrokProvider", () => {
   it("wires max_turns, reasoning effort, and encrypted reasoning include from config", async () => {
     mockCreate.mockResolvedValueOnce(makeCompletion());
 
+    // Per developers/model-capabilities/text/reasoning, the `reasoning`
+    // parameter is only supported on `grok-4.20-multi-agent-0309` (where
+    // it controls agent count). All other Grok 4 variants reject it.
+    // The strict pre-flight validator enforces this.
     const provider = new GrokProvider({
       apiKey: "test-key",
+      model: "grok-4.20-multi-agent-0309",
       maxTurns: 4,
       reasoningEffort: "high",
       includeEncryptedReasoning: true,
@@ -1451,7 +1456,16 @@ describe("GrokProvider", () => {
     expect(paramsJson.includes("description")).toBe(false);
   });
 
-  it("omits tools on follow-up turns when tool payload is large", async () => {
+  it("keeps tools on follow-up turns even when tool payload is large", async () => {
+    // Regression test for the legacy `MAX_TOOL_SCHEMA_CHARS_FOLLOWUP = 20_000`
+    // bug. The previous behavior dropped the entire `tools` array on every
+    // follow-up turn whose serialized tool schema exceeded 20K chars,
+    // which made the Grok agent loop exit after exactly one tool call per
+    // chat turn (the model would have no tools to call on the followup).
+    // The fix removed the budget guard; now tools are always sent. The
+    // strict-filter `assertNoSilentToolDropOnFollowup` enforces this
+    // structurally — if the runtime selects tools and they get stripped
+    // before send, the adapter throws.
     mockCreate.mockResolvedValueOnce(makeCompletion());
 
     const manyTools: LLMTool[] = Array.from({ length: 120 }, (_, i) => ({
@@ -1500,7 +1514,8 @@ describe("GrokProvider", () => {
     ]);
 
     const params = mockCreate.mock.calls[0][0];
-    expect(params.tools).toBeUndefined();
+    expect(Array.isArray(params.tools)).toBe(true);
+    expect((params.tools as unknown[]).length).toBe(120);
   });
 
   it("passes usage information", async () => {

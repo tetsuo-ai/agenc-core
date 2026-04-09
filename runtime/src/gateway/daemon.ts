@@ -5519,48 +5519,38 @@ export class DaemonManager {
       }
     }
 
-    if (
-      inferBackgroundRunIntent(msg.content) &&
-      this._backgroundRunSupervisor
-    ) {
-      const admission = this.evaluateBackgroundRunAdmission({
-        sessionId: msg.sessionId,
-        domain: "generic",
-      });
-      if (!admission.allowed) {
-        this.logger.info("Background run canary admission denied", {
-          sessionId: msg.sessionId,
-          cohort: admission.cohort,
-          reason: admission.reason,
-        });
-        await webChat.send({
-          sessionId: msg.sessionId,
-          content: formatBackgroundRunAdmissionDenied(admission.reason),
-        });
-        return;
-      } else {
-        await memoryBackend
-          .addEntry({
-            sessionId: msg.sessionId,
-            role: "user",
-            content: msg.content,
-          })
-          .catch((error) => {
-            this.logger.debug(
-              "Background run user message memory write failed",
-              {
-                sessionId: msg.sessionId,
-                error: toErrorMessage(error),
-              },
-            );
-          });
-        await this._backgroundRunSupervisor.startRun({
-          sessionId: msg.sessionId,
-          objective: msg.content,
-        });
-        return;
-      }
-    }
+    // Auto-routing of chat messages to background runs disabled 2026-04-09.
+    //
+    // The previous behavior here was: if `inferBackgroundRunIntent(msg.content)`
+    // matched any of UNTIL_STOP_RE / KEEP_UPDATING_RE / BACKGROUND_RE /
+    // CONTINUOUS_RE, the daemon would silently reroute the chat message to
+    // `BackgroundRunSupervisor.startRun(...)` and return without ever invoking
+    // the synchronous chat executor. From the user's perspective the chat
+    // would simply hang — no streaming response, no tool dispatch in the
+    // chat lane, no UI status update — because:
+    //
+    //   1. The regex was over-aggressive: prompts like "implement every
+    //      phase in one continuous run without stopping" matched
+    //      CONTINUOUS_RE / UNTIL_STOP_RE and got auto-routed even when
+    //      the user clearly wanted a synchronous chat turn.
+    //   2. The background-run cycle decision resolver fired after the
+    //      first tool call and falsely classified the run as
+    //      `state: "completed"` whenever any filesystem activity was
+    //      observed (e.g. a single `system.readFile` of PLAN.md), so the
+    //      run terminated immediately without doing any real work.
+    //   3. No `webchat.ws.outbound` event was pushed back to the chat UI
+    //      to tell the user a background run had been started or had
+    //      finished, so the chat appeared frozen.
+    //
+    // Until both the intent classifier and the decision resolver are
+    // fixed, all chat messages fall through to the synchronous chat
+    // executor below. Background runs are still available via the
+    // supervisor's explicit start/control surface for callers that
+    // genuinely want them; they just are not auto-inferred from message
+    // text anymore.
+    void inferBackgroundRunIntent;
+    void formatBackgroundRunAdmissionDenied;
+    void this.evaluateBackgroundRunAdmission;
 
     const sessionStreamCallback: StreamProgressCallback = (chunk) => {
       webChat.pushToSession(msg.sessionId, {
