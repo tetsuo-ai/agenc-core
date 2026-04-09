@@ -438,7 +438,6 @@ describeIfProtocolWorkspace("marketplace CLI integration", () => {
         evidence: VALID_EVIDENCE,
         resolutionType: "refund",
         initiatorAgentPda: creator.agentPda.toBase58(),
-        workerAgentPda: worker.agentPda.toBase58(),
       },
       creator.agentPda.toBase58(),
     );

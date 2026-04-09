@@ -26,6 +26,7 @@ import {
   findBidderMarketStatePda,
   findClaimPda,
 } from '../../task/pda.js';
+import { parseOnChainTaskClaim } from '../../task/types.js';
 import type { Logger } from '../../utils/logger.js';
 import { bytesToHex, generateAgentId, hexToBytes } from '../../utils/encoding.js';
 import type { Tool, ToolResult } from '../types.js';
@@ -483,6 +484,41 @@ function parseWorkerPairs(
     pairs.push({ claimPda, workerPda });
   }
   return [pairs, null];
+}
+
+async function resolveUniqueWorkerClaimForTask(
+  program: Program<AgencCoordination>,
+  taskPda: PublicKey,
+): Promise<
+  | { workerAgentPda: PublicKey; workerClaimPda: PublicKey }
+  | { error: string }
+> {
+  const taskClaims = await program.account.taskClaim.all();
+  const matchingClaims = taskClaims
+    .map((account) => ({
+      claimPda: account.publicKey,
+      claim: parseOnChainTaskClaim(account.account),
+    }))
+    .filter(({ claim }) => claim.task.equals(taskPda));
+
+  if (matchingClaims.length === 0) {
+    return {
+      error:
+        'workerAgentPda is required when creator initiates dispute and no worker claim exists for the task.',
+    };
+  }
+
+  if (matchingClaims.length > 1) {
+    return {
+      error:
+        'workerAgentPda is required when creator initiates dispute for a task with multiple worker claims.',
+    };
+  }
+
+  return {
+    workerAgentPda: matchingClaims[0].claim.worker,
+    workerClaimPda: matchingClaims[0].claimPda,
+  };
 }
 
 export function createClaimTaskTool(
@@ -1208,6 +1244,18 @@ export function createInitiateDisputeTool(
         const initiatorClaimPda = initiatedByCreator
           ? null
           : findClaimPda(taskPda, signerAgent.agentPda, program.programId);
+
+        if (initiatedByCreator && workerAgentPda === null) {
+          const resolvedWorker = await resolveUniqueWorkerClaimForTask(
+            program,
+            taskPda,
+          );
+          if ('error' in resolvedWorker) {
+            return errorResult(resolvedWorker.error);
+          }
+          workerAgentPda = resolvedWorker.workerAgentPda;
+          workerClaimPda = workerClaimPda ?? resolvedWorker.workerClaimPda;
+        }
 
         const derivedWorkerClaimPda =
           workerClaimPda ?? (workerAgentPda ? findClaimPda(taskPda, workerAgentPda, program.programId) : undefined);

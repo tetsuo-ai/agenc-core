@@ -16,6 +16,7 @@ import {
 import {
   createClaimTaskTool,
   createCompleteTaskTool,
+  createInitiateDisputeTool,
   createRegisterSkillTool,
   createPurchaseSkillTool,
   createCreateProposalTool,
@@ -27,6 +28,7 @@ import {
 const SIGNER = PublicKey.unique();
 const AGENT_PDA = PublicKey.unique();
 const TASK_PDA = PublicKey.unique();
+const CLAIM_PDA = PublicKey.unique();
 const DISPUTE_PDA = PublicKey.unique();
 const SKILL_PDA = PublicKey.unique();
 const DEFENDANT_AGENT_PDA = PublicKey.unique();
@@ -111,6 +113,9 @@ function createMockProgram(options: { signer?: PublicKey | null } = {}) {
           }
           throw new Error(`Unknown skill: ${pda.toBase58()}`);
         }),
+      },
+      taskClaim: {
+        all: vi.fn(async () => []),
       },
     },
     methods: {
@@ -285,6 +290,60 @@ describe('agenc mutation tools', () => {
     expect(purchaseArg?.constructor?.name).toBe('BN');
     expect(purchaseArg?.toString()).toBe('42');
     expect(program._purchaseSkillChain.accountsPartial).toHaveBeenCalledTimes(1);
+  });
+
+
+  it('agenc.initiateDispute auto-discovers the sole worker claim for creator-initiated disputes', async () => {
+    const program = createMockProgram();
+    vi.spyOn(TaskOperations.prototype, 'fetchTask').mockResolvedValue({
+      creator: SIGNER,
+      taskId: new Uint8Array(32).fill(9),
+    } as never);
+    program.account.taskClaim.all.mockResolvedValue([
+      {
+        publicKey: CLAIM_PDA,
+        account: {
+          task: TASK_PDA,
+          worker: DEFENDANT_AGENT_PDA,
+          claimedAt: { toNumber: () => 1700000000 },
+          expiresAt: { toNumber: () => 1700003600 },
+          completedAt: { toNumber: () => 0 },
+          proofHash: new Uint8Array(32),
+          resultData: new Uint8Array(64),
+          isCompleted: false,
+          isValidated: false,
+          rewardPaid: { toString: () => '0' },
+          bump: 1,
+        },
+      },
+    ]);
+    const initiateSpy = vi
+      .spyOn(DisputeOperations.prototype, 'initiateDispute')
+      .mockResolvedValue({
+        disputePda: DISPUTE_PDA,
+        transactionSignature: 'dispute-sig',
+      });
+
+    const tool = createInitiateDisputeTool(program as never, silentLogger);
+    const result = await tool.execute({
+      taskPda: TASK_PDA.toBase58(),
+      evidence: 'creator dispute evidence',
+      resolutionType: 'refund',
+      initiatorAgentPda: AGENT_PDA.toBase58(),
+    });
+
+    const parsed = parseJson(result);
+
+    expect(result.isError).toBeUndefined();
+    expect(parsed.disputePda).toBe(DISPUTE_PDA.toBase58());
+    expect(parsed.transactionSignature).toBe('dispute-sig');
+    expect(initiateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        initiatorClaimPda: null,
+        workerAgentPda: DEFENDANT_AGENT_PDA,
+        workerClaimPda: CLAIM_PDA,
+      }),
+    );
   });
 
   it('agenc.resolveDispute returns transaction details when the dispute resolves', async () => {
