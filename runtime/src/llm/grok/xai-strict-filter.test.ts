@@ -617,14 +617,32 @@ describe("validateXaiResponsePostFlight (silent-drop detection — the bug we hi
     expect(result[0]?.code).toBe("silent_tool_drop_promised_in_text");
   });
 
-  it("detects 'next, I'll'", () => {
+  it("detects 'next, I'll run'", () => {
     const result = validateXaiResponsePostFlight({
       request: toolFollowupRequest(),
       response: responseWith({
-        output: [messageBlock("Done with phase 1. Next, I'll create src/main.c.")],
+        output: [messageBlock("Done with phase 1. Next, I'll run the test suite.")],
       }),
     });
     expect(result[0]?.code).toBe("silent_tool_drop_promised_in_text");
+  });
+
+  it("does NOT detect normal explanatory English ('I will write the explanation')", () => {
+    // Regression test for the previous PROMISE_LANGUAGE_RE which matched
+    // `create` and `write` and produced false positives on legitimate
+    // assistant prose.
+    const result = validateXaiResponsePostFlight({
+      request: toolFollowupRequest(),
+      response: responseWith({
+        output: [
+          messageBlock(
+            "I will write the explanation in the next paragraph. " +
+              "Let me create a summary for you below.",
+          ),
+        ],
+      }),
+    });
+    expect(result).toEqual([]);
   });
 
   it("detects 'let me run'", () => {
@@ -647,7 +665,7 @@ describe("validateXaiResponsePostFlight (silent-drop detection — the bug we hi
     });
     expect(result[0]?.evidence).toMatchObject({
       sentToolCount: 1,
-      functionCallCount: 0,
+      toolCallBlockCount: 0,
     });
     expect(String(result[0]?.evidence.messageTextPreview)).toContain(
       "I will call",
@@ -750,4 +768,299 @@ describe("DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS", () => {
       false,
     );
   });
+});
+
+// ---------------------------------------------------------------------------
+// Audit-driven test cases (post code-review fixes)
+// ---------------------------------------------------------------------------
+
+describe("multi-agent specific restrictions", () => {
+  it("rejects max_output_tokens on grok-4.20-multi-agent-0309", () => {
+    expect(() =>
+      validateXaiRequestPreFlight(
+        plainTextRequest({
+          model: "grok-4.20-multi-agent-0309",
+          max_output_tokens: 1024,
+        }),
+      ),
+    ).toThrow(XaiUndocumentedFieldError);
+  });
+
+  it("allows max_output_tokens on non-multi-agent models", () => {
+    expect(() =>
+      validateXaiRequestPreFlight(
+        plainTextRequest({
+          model: "grok-4-1-fast-non-reasoning",
+          max_output_tokens: 1024,
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  it("rejects client-side function tools on multi-agent", () => {
+    expect(() =>
+      validateXaiRequestPreFlight(
+        plainTextRequest({
+          model: "grok-4.20-multi-agent-0309",
+          tools: [functionTool("system.bash")],
+        }),
+      ),
+    ).toThrow(XaiUndocumentedFieldError);
+  });
+
+  it("allows server-side built-in tools on multi-agent", () => {
+    expect(() =>
+      validateXaiRequestPreFlight(
+        plainTextRequest({
+          model: "grok-4.20-multi-agent-0309",
+          tools: [{ type: "web_search" }, { type: "x_search" }],
+        }),
+      ),
+    ).not.toThrow();
+  });
+});
+
+describe("built-in tool type allowlist", () => {
+  it("accepts every documented built-in server-side tool type", () => {
+    for (const t of [
+      "function",
+      "web_search",
+      "x_search",
+      "code_interpreter",
+      "code_execution",
+      "collections_search",
+      "file_search",
+      "attachment_search",
+      "mcp",
+    ]) {
+      const tools =
+        t === "function"
+          ? [functionTool("system.bash")]
+          : [{ type: t }];
+      expect(() =>
+        validateXaiRequestPreFlight(plainTextRequest({ tools })),
+      ).not.toThrow();
+    }
+  });
+
+  it("rejects unknown tool type strings (typo guard)", () => {
+    for (const bad of ["webSearch", "web-search", "WebSearch", "code_runner", ""]) {
+      expect(() =>
+        validateXaiRequestPreFlight(
+          plainTextRequest({ tools: [{ type: bad }] }),
+        ),
+      ).toThrow(XaiUndocumentedFieldError);
+    }
+  });
+
+  it("rejects tool entries with no type field", () => {
+    expect(() =>
+      validateXaiRequestPreFlight(
+        plainTextRequest({ tools: [{ name: "no_type" }] }),
+      ),
+    ).toThrow(XaiUndocumentedFieldError);
+  });
+});
+
+describe("image/video models reject tools[]", () => {
+  it("throws when tools are passed to grok-imagine-image", () => {
+    expect(() =>
+      validateXaiRequestPreFlight(
+        plainTextRequest({
+          model: "grok-imagine-image",
+          tools: [functionTool("system.bash")],
+        }),
+      ),
+    ).toThrow(XaiUndocumentedFieldError);
+  });
+
+  it("allows grok-imagine-image with no tools", () => {
+    expect(() =>
+      validateXaiRequestPreFlight(
+        plainTextRequest({ model: "grok-imagine-image" }),
+      ),
+    ).not.toThrow();
+  });
+});
+
+describe("assertNoSilentToolDropOnFollowup with toolSuppressionReason", () => {
+  // BLOCKER fix: when the runtime intentionally suppressed tools (e.g.
+  // vision_model_without_tool_support, empty_allowlist), the helper must
+  // not throw — the empty `tools` field was on purpose, not a bug.
+  it("does NOT throw when toolSuppressionReason is set (vision_model_without_tool_support)", () => {
+    const params = toolFollowupRequest({});
+    delete params.tools;
+    expect(() =>
+      assertNoSilentToolDropOnFollowup({
+        runtimeIntendedToolCount: 5,
+        toolSuppressionReason: "vision_model_without_tool_support",
+        outgoingParams: params,
+      }),
+    ).not.toThrow();
+  });
+
+  it("does NOT throw when toolSuppressionReason is set (empty_allowlist)", () => {
+    const params = toolFollowupRequest({});
+    delete params.tools;
+    expect(() =>
+      assertNoSilentToolDropOnFollowup({
+        runtimeIntendedToolCount: 5,
+        toolSuppressionReason: "empty_allowlist",
+        outgoingParams: params,
+      }),
+    ).not.toThrow();
+  });
+
+  it("DOES throw when toolSuppressionReason is undefined and the bug pattern matches", () => {
+    const params = toolFollowupRequest({});
+    delete params.tools;
+    expect(() =>
+      assertNoSilentToolDropOnFollowup({
+        runtimeIntendedToolCount: 5,
+        outgoingParams: params,
+      }),
+    ).toThrow(XaiSilentToolDropError);
+  });
+
+  it("evidence carries isFollowupTurn discriminator on followup turns", () => {
+    const params = toolFollowupRequest({});
+    delete params.tools;
+    try {
+      assertNoSilentToolDropOnFollowup({
+        runtimeIntendedToolCount: 5,
+        outgoingParams: params,
+      });
+    } catch (e) {
+      expect((e as XaiSilentToolDropError).evidence).toMatchObject({
+        isFollowupTurn: true,
+        toolFollowupCount: 1,
+      });
+    }
+  });
+
+  it("evidence sets isFollowupTurn=false on non-followup turns", () => {
+    // The runtime had tools but the params went out empty on a turn
+    // with no function_call_output items. Still a bug, but the
+    // discriminator should reflect it's not a followup.
+    const params = plainTextRequest();
+    delete params.tools;
+    try {
+      assertNoSilentToolDropOnFollowup({
+        runtimeIntendedToolCount: 5,
+        outgoingParams: params,
+      });
+    } catch (e) {
+      expect((e as XaiSilentToolDropError).evidence).toMatchObject({
+        isFollowupTurn: false,
+        toolFollowupCount: 0,
+      });
+    }
+  });
+});
+
+describe("post-flight: server-side tool call types count as tool calls", () => {
+  // HIGH fix: web_search_call, x_search_call, code_interpreter_call,
+  // file_search_call, mcp_call all satisfy "the model issued a tool call"
+  // and must NOT trigger the silent_tool_drop_promised_in_text anomaly.
+  for (const callType of [
+    "web_search_call",
+    "x_search_call",
+    "code_interpreter_call",
+    "file_search_call",
+    "mcp_call",
+  ]) {
+    it(`does NOT flag silent tool drop when response contains ${callType}`, () => {
+      const result = validateXaiResponsePostFlight({
+        request: toolFollowupRequest(),
+        response: responseWith({
+          output: [
+            { type: callType, id: "x", status: "completed" },
+            messageBlock("I will call the tool again next."),
+          ],
+        }),
+      });
+      expect(
+        result.find((a) => a.code === "silent_tool_drop_promised_in_text"),
+      ).toBeUndefined();
+    });
+  }
+});
+
+describe("post-flight: failed_response anomaly", () => {
+  // HIGH fix: response.status === "failed" must be surfaced.
+  it("emits failed_response severity=error when status is 'failed'", () => {
+    const result = validateXaiResponsePostFlight({
+      request: plainTextRequest(),
+      response: responseWith({
+        status: "failed",
+        error: { message: "model overloaded", code: "rate_limit" },
+        output: [],
+      }),
+    });
+    const failed = result.find((a) => a.code === "failed_response");
+    expect(failed).toBeDefined();
+    expect(failed?.severity).toBe("error");
+    expect(String(failed?.message)).toContain("model overloaded");
+  });
+
+  it("uses a sane default message when error.message is missing", () => {
+    const result = validateXaiResponsePostFlight({
+      request: plainTextRequest(),
+      response: responseWith({
+        status: "failed",
+        error: null,
+        output: [],
+      }),
+    });
+    const failed = result.find((a) => a.code === "failed_response");
+    expect(failed).toBeDefined();
+    expect(String(failed?.message)).toContain("Provider returned status");
+  });
+});
+
+describe("post-flight: extractMessageText walks reasoning blocks", () => {
+  // MEDIUM fix: Grok puts promise language in reasoning.summary[].text too.
+  it("detects promise language in reasoning block summaries", () => {
+    const result = validateXaiResponsePostFlight({
+      request: toolFollowupRequest(),
+      response: responseWith({
+        output: [
+          {
+            type: "reasoning",
+            id: "rs_test",
+            status: "completed",
+            summary: [
+              {
+                type: "summary_text",
+                text: "I will call system.bash to bootstrap the project.",
+              },
+            ],
+          },
+          messageBlock("One moment."),
+        ],
+      }),
+    });
+    expect(result[0]?.code).toBe("silent_tool_drop_promised_in_text");
+  });
+});
+
+describe("post-flight: tightened PROMISE_LANGUAGE_RE", () => {
+  // Coverage for the regex tightening: `create` and `write` were removed
+  // because they false-positive on normal explanatory prose.
+  for (const phrase of [
+    "I will create a summary for you in this section.",
+    "Let me write the explanation here.",
+    "I'll write a brief overview of the steps.",
+    "Going to create the table below to compare the options.",
+  ]) {
+    it(`does NOT match normal English: "${phrase.slice(0, 40)}…"`, () => {
+      const result = validateXaiResponsePostFlight({
+        request: toolFollowupRequest(),
+        response: responseWith({ output: [messageBlock(phrase)] }),
+      });
+      expect(
+        result.find((a) => a.code === "silent_tool_drop_promised_in_text"),
+      ).toBeUndefined();
+    });
+  }
 });

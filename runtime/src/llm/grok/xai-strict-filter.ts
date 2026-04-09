@@ -75,7 +75,6 @@ import type { LLMFailureClass, LLMPipelineStopReason } from "../policy.js";
 export const DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS: ReadonlySet<string> = new Set([
   "include",
   "input",
-  "logprobs",
   "max_output_tokens",
   "max_turns",
   "model",
@@ -89,9 +88,54 @@ export const DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS: ReadonlySet<string> = new 
   "text",
   "tool_choice",
   "tools",
-  "top_logprobs",
   "top_p",
   "user",
+  // logprobs / top_logprobs are kept in the allowlist because the existing
+  // adapter and tests use them, even though the xAI docs explicitly say
+  // they are accepted but ignored on grok-4.20 family models per
+  // developers/models. The validator does not reject them, but the
+  // post-flight does not assert anything about them either.
+  "logprobs",
+  "top_logprobs",
+]);
+
+/**
+ * Built-in / server-side tool type names accepted by the xAI Responses API.
+ *
+ * Source: developers/tools/overview, developers/tools/web-search,
+ * developers/tools/code-execution, developers/tools/collections-search,
+ * developers/tools/remote-mcp via mcp__xai-docs__get_doc_page on 2026-04-09.
+ *
+ * Note: `code_execution` is the xAI SDK alias for what the Responses API
+ * calls `code_interpreter`. Both are accepted as input tool type names.
+ */
+const DOCUMENTED_XAI_BUILTIN_TOOL_TYPES: ReadonlySet<string> = new Set([
+  "function",
+  "web_search",
+  "x_search",
+  "code_interpreter",
+  "code_execution",
+  "collections_search",
+  "file_search",
+  "attachment_search",
+  "mcp",
+]);
+
+/**
+ * Output block `type` values that count as a model-issued tool call. The
+ * post-flight silent-tool-drop detector treats the response as having a
+ * tool call if it contains any block of these types.
+ *
+ * Source: developers/model-capabilities/text/comparison and
+ * developers/tools/tool-usage-details#identifying-tool-call-types.
+ */
+const SERVER_SIDE_TOOL_CALL_OUTPUT_TYPES: ReadonlySet<string> = new Set([
+  "function_call",
+  "web_search_call",
+  "x_search_call",
+  "code_interpreter_call",
+  "file_search_call",
+  "mcp_call",
 ]);
 
 /**
@@ -198,15 +242,29 @@ export function modelSupportsReasoningEffort(canonicalModel: string): boolean {
  * Match logic must be careful: `non-reasoning` includes the substring
  * `reasoning` but is NOT a reasoning variant. We check for the explicit
  * `-reasoning` suffix or the `-non-reasoning` exclusion, plus the
- * multi-agent variant which is also a reasoning model.
+ * multi-agent variant which is also a reasoning model. The legacy
+ * `grok-3-mini` was the only Grok 3 family model that returned
+ * `reasoning_content` per developers/rate-limits, but the docs do not
+ * say it explicitly forbids penalty/stop, so we do not flag it here.
+ * If a future xAI doc update confirms that, add it to this branch.
  */
 export function modelIsReasoningVariant(canonicalModel: string): boolean {
   if (canonicalModel.includes("non-reasoning")) return false;
   return (
     canonicalModel.endsWith("-reasoning") ||
-    canonicalModel.includes("multi-agent") ||
-    canonicalModel === "grok-3-mini"
+    canonicalModel.includes("multi-agent")
   );
+}
+
+/**
+ * True if the canonical model is the multi-agent variant. Per
+ * developers/model-capabilities/text/multi-agent#limitations, multi-agent
+ * does NOT support `max_tokens` / `max_output_tokens`, does NOT support
+ * client-side function calling, and does NOT work with the Chat
+ * Completions API.
+ */
+export function modelIsMultiAgent(canonicalModel: string): boolean {
+  return canonicalModel.includes("multi-agent");
 }
 
 // ---------------------------------------------------------------------------
@@ -391,6 +449,31 @@ export function validateXaiRequestPreFlight(
     }
   }
 
+  // 3a. max_output_tokens is not supported on the multi-agent variant per
+  //     developers/model-capabilities/text/multi-agent#limitations.
+  if ("max_output_tokens" in params && modelIsMultiAgent(canonicalModel)) {
+    throw new XaiUndocumentedFieldError(
+      "max_output_tokens",
+      `is not supported on the multi-agent variant (${canonicalModel}); ` +
+        `see developers/model-capabilities/text/multi-agent#limitations`,
+    );
+  }
+
+  // 3b. tools is not supported on image/video output models per the
+  //     developers/models capability matrix (the imagine-* family has no
+  //     functions/structured capability).
+  if (
+    Array.isArray(params.tools) &&
+    params.tools.length > 0 &&
+    !modelSupportsFunctionCalling(canonicalModel)
+  ) {
+    throw new XaiUndocumentedFieldError(
+      "tools",
+      `is not supported on ${canonicalModel} (image/video output model); ` +
+        `see developers/models capability matrix`,
+    );
+  }
+
   // 4. Reject any top-level field not in the documented contract. This
   //    catches "AgenC code added a field that the sanitize step would have
   //    silently stripped" — a class of bug that would otherwise be invisible.
@@ -404,7 +487,9 @@ export function validateXaiRequestPreFlight(
     }
   }
 
-  // 5. Tool definition shape — must be FLAT, not nested.
+  // 5. Tool entries — validate `type` against the documented set, and for
+  //    function tools require the FLAT shape (xAI Responses) not the
+  //    legacy nested {function:{...}} shape (Chat Completions).
   const tools = Array.isArray(params.tools) ? params.tools : [];
   for (let i = 0; i < tools.length; i++) {
     const tool = tools[i];
@@ -415,7 +500,31 @@ export function validateXaiRequestPreFlight(
       );
     }
     const toolObj = tool as Record<string, unknown>;
-    if (toolObj.type === "function") {
+    const toolType = toolObj.type;
+    if (typeof toolType !== "string") {
+      throw new XaiUndocumentedFieldError(
+        `tools[${i}].type`,
+        `is required and must be a string`,
+      );
+    }
+    if (!DOCUMENTED_XAI_BUILTIN_TOOL_TYPES.has(toolType)) {
+      throw new XaiUndocumentedFieldError(
+        `tools[${i}].type`,
+        `value "${toolType}" is not in the documented xAI Responses tool ` +
+          `type set: ${[...DOCUMENTED_XAI_BUILTIN_TOOL_TYPES].sort().join(", ")}`,
+      );
+    }
+    // Multi-agent rejects client-side function calling per
+    // developers/model-capabilities/text/multi-agent#limitations.
+    if (toolType === "function" && modelIsMultiAgent(canonicalModel)) {
+      throw new XaiUndocumentedFieldError(
+        `tools[${i}].type`,
+        `client-side function calling is not supported on the multi-agent ` +
+          `variant (${canonicalModel}); only built-in server-side tools are ` +
+          `accepted`,
+      );
+    }
+    if (toolType === "function") {
       if ("function" in toolObj) {
         throw new XaiUndocumentedFieldError(
           `tools[${i}]`,
@@ -480,64 +589,100 @@ export interface XaiResponseAnomaly {
   readonly code:
     | "silent_tool_drop_promised_in_text"
     | "model_silently_aliased"
-    | "incomplete_response";
+    | "incomplete_response"
+    | "failed_response";
   readonly severity: "error" | "warn";
   readonly message: string;
   readonly evidence: Record<string, unknown>;
 }
 
 /**
- * Promise-language pattern. Matches the kinds of phrases Grok produces
- * when it intends to make a tool call but doesn't include a `function_call`
- * block in the response. Sourced from real failure traces under
+ * Promise-language pattern. Matches phrases Grok produces when it intends
+ * to make a tool call but doesn't include any tool-call block in the
+ * response. Sourced from real failure traces under
  * `~/.agenc/trace-payloads/` captured 2026-04-09 (sessions
  * `b17c7771...`, `e8a543dd...`, `c2e5fc93...`).
+ *
+ * Verbs are restricted to ones that uniquely indicate machine action —
+ * `call`, `invoke`, `run`, `execute`. The original draft also included
+ * `create` and `write`, but those match normal explanatory English
+ * ("I will write the explanation below", "let me create a summary"),
+ * which produced false positives in unit tests. The high-confidence
+ * phrases below cover the real failure modes from the live traces.
  *
  * Examples that match:
  *   - "I will call the build tool now"
  *   - "Now executing the next step"
  *   - "(Continuing with tool calls to bootstrap.)"
- *   - "Next, I'll create src/main.c"
- *   - "Let me run the test"
- *   - "Going to invoke system.bash"
+ *   - "Next, I'll run the test"
+ *   - "Let me invoke system.bash"
+ *   - "Going to call system.writeFile"
  */
 const PROMISE_LANGUAGE_RE =
-  /\b(?:I\s+will\s+(?:call|use|invoke|run|create|write|build|execute)|now\s+(?:executing|running|invoking|calling)|continuing\s+with\s+(?:tool|the\s+tool|tools)|next,?\s+I[''']?ll|let\s+me\s+(?:run|call|invoke|create|write)|going\s+to\s+(?:call|run|invoke|create|write))/i;
+  /\b(?:I\s+will\s+(?:call|invoke|run|execute)|I[''']?ll\s+(?:call|invoke|run|execute)|now\s+(?:executing|running|invoking|calling)|continuing\s+with\s+(?:tool|the\s+tool|tools)|next,?\s+I[''']?ll\s+(?:call|invoke|run|execute)|let\s+me\s+(?:run|call|invoke|execute)|going\s+to\s+(?:call|run|invoke|execute))/i;
 
+/**
+ * Extract all text the model produced in this turn — both `message` block
+ * content and `reasoning` block summaries. Grok puts promise language in
+ * either, so the post-flight scan must walk both.
+ */
 function extractMessageText(output: unknown): string {
   if (!Array.isArray(output)) return "";
   const parts: string[] = [];
   for (const item of output) {
-    if (
-      !item ||
-      typeof item !== "object" ||
-      (item as { type?: unknown }).type !== "message"
-    ) {
+    if (!item || typeof item !== "object") continue;
+    const itemType = (item as { type?: unknown }).type;
+    if (itemType === "message") {
+      const content = (item as { content?: unknown }).content;
+      if (!Array.isArray(content)) continue;
+      for (const block of content) {
+        if (
+          block &&
+          typeof block === "object" &&
+          typeof (block as { text?: unknown }).text === "string"
+        ) {
+          parts.push((block as { text: string }).text);
+        }
+      }
       continue;
     }
-    const content = (item as { content?: unknown }).content;
-    if (!Array.isArray(content)) continue;
-    for (const block of content) {
-      if (
-        block &&
-        typeof block === "object" &&
-        typeof (block as { text?: unknown }).text === "string"
-      ) {
-        parts.push((block as { text: string }).text);
+    if (itemType === "reasoning") {
+      const summary = (item as { summary?: unknown }).summary;
+      if (!Array.isArray(summary)) continue;
+      for (const entry of summary) {
+        if (
+          entry &&
+          typeof entry === "object" &&
+          typeof (entry as { text?: unknown }).text === "string"
+        ) {
+          parts.push((entry as { text: string }).text);
+        }
       }
+      continue;
     }
   }
   return parts.join("\n");
 }
 
-function countOutputBlocksOfType(output: unknown, type: string): number {
+/**
+ * Count output blocks whose `type` is one of the documented tool-call
+ * output types ({@link SERVER_SIDE_TOOL_CALL_OUTPUT_TYPES}). The
+ * post-flight silent-tool-drop detector treats the model as having
+ * issued a tool call if this is non-zero, regardless of whether the
+ * call was a client-side `function_call` or a server-side
+ * `web_search_call` / `code_interpreter_call` / etc.
+ */
+function countToolCallOutputBlocks(output: unknown): number {
   if (!Array.isArray(output)) return 0;
   let count = 0;
   for (const item of output) {
     if (
       item &&
       typeof item === "object" &&
-      (item as { type?: unknown }).type === type
+      typeof (item as { type?: unknown }).type === "string" &&
+      SERVER_SIDE_TOOL_CALL_OUTPUT_TYPES.has(
+        (item as { type: string }).type,
+      )
     ) {
       count++;
     }
@@ -583,13 +728,17 @@ export function validateXaiResponsePostFlight(params: {
     ? params.request.tools
     : [];
   const output = (params.response as { output?: unknown }).output;
-  const functionCallCount = countOutputBlocksOfType(output, "function_call");
+  // Count any tool-call output type, not just `function_call`. Server-side
+  // tool calls (web_search_call, x_search_call, code_interpreter_call,
+  // file_search_call, mcp_call) also satisfy "the model issued a tool call",
+  // so a response with any of these is NOT a silent tool drop.
+  const toolCallBlockCount = countToolCallOutputBlocks(output);
   const messageText = extractMessageText(output);
 
   // 1. Silent tool drop (incoming).
   if (
     sentTools.length > 0 &&
-    functionCallCount === 0 &&
+    toolCallBlockCount === 0 &&
     messageText.length > 0 &&
     PROMISE_LANGUAGE_RE.test(messageText)
   ) {
@@ -597,14 +746,16 @@ export function validateXaiResponsePostFlight(params: {
       code: "silent_tool_drop_promised_in_text",
       severity: "error",
       message:
-        `Sent ${sentTools.length} tools, response has 0 function_call ` +
-        `blocks, but the assistant message text contains promise language ` +
+        `Sent ${sentTools.length} tools, response has 0 tool-call output ` +
+        `blocks (function_call / web_search_call / x_search_call / ` +
+        `code_interpreter_call / file_search_call / mcp_call), but the ` +
+        `assistant message or reasoning text contains promise language ` +
         `("I will call", "now executing", "continuing with tool calls", ` +
         `etc). xAI may have silently dropped the tools or the model ` +
         `degraded its output.`,
       evidence: {
         sentToolCount: sentTools.length,
-        functionCallCount,
+        toolCallBlockCount,
         messageTextPreview: messageText.slice(0, 240),
       },
     });
@@ -636,7 +787,6 @@ export function validateXaiResponsePostFlight(params: {
   }
 
   // 3. Incomplete responses.
-  // (no-op marker — fallthrough below)
   if (
     (params.response as { status?: unknown }).status === "incomplete"
   ) {
@@ -657,6 +807,30 @@ export function validateXaiResponsePostFlight(params: {
     });
   }
 
+  // 4. Failed responses. Per developers/debugging, status: "failed" means
+  //    xAI accepted the request but the model could not produce a valid
+  //    response. The adapter's existing extractResponseError() also
+  //    handles this in the non-streaming path, but the strict filter
+  //    surfaces it as a structured anomaly so the post-flight is
+  //    authoritative regardless of which path is in use.
+  if ((params.response as { status?: unknown }).status === "failed") {
+    const errorPayload = (params.response as { error?: unknown }).error;
+    const errorMessage =
+      errorPayload &&
+      typeof errorPayload === "object" &&
+      typeof (errorPayload as { message?: unknown }).message === "string"
+        ? (errorPayload as { message: string }).message
+        : "Provider returned status: failed";
+    anomalies.push({
+      code: "failed_response",
+      severity: "error",
+      message:
+        `xAI response status is "failed": ${errorMessage}. The request was ` +
+        `accepted but the model could not produce a valid response.`,
+      evidence: { error: errorPayload ?? null },
+    });
+  }
+
   return anomalies;
 }
 
@@ -674,22 +848,46 @@ export function validateXaiResponsePostFlight(params: {
  *
  * This check lives outside `validateXaiRequestPreFlight` because it needs
  * the runtime's tool-selection intent — knowing how many tools the
- * adapter *meant* to send. The pre-flight validator only sees the final
- * params and cannot distinguish "intentional zero tools" from "tools were
- * stripped after selection".
+ * adapter *meant* to send and whether the suppression was intentional.
+ * The pre-flight validator only sees the final params and cannot
+ * distinguish "intentional zero tools" from "tools were stripped after
+ * selection".
+ *
+ * Pass `toolSuppressionReason` from `selectedTools.toolSuppressionReason`
+ * (the diagnostics object the adapter's `resolveResponseTools()` produces).
+ * When suppression was intentional (e.g.
+ * `vision_model_without_tool_support`, `empty_allowlist`,
+ * `followup_tool_schema_limit`), the helper returns without throwing —
+ * the empty `tools` field was on purpose, not a bug.
  *
  * Call this in `buildParams()` immediately after the tool attachment
- * gate, with `runtimeIntendedToolCount = selectedTools.tools.length`.
+ * gate, with:
+ *   - `runtimeIntendedToolCount = selectedTools.tools.length`
+ *   - `toolSuppressionReason = selectedTools.toolSuppressionReason`
  *
- * Throws {@link XaiSilentToolDropError} on detection. Does nothing
- * otherwise.
+ * Throws {@link XaiSilentToolDropError} only when the runtime intended to
+ * send tools, no suppression reason was set, and the outgoing params have
+ * an empty or missing `tools` field. Does nothing otherwise.
+ *
+ * The thrown error's `turnKind` discriminator is set based on whether the
+ * outgoing input actually contains a `function_call_output` item:
+ *   - `outgoing_followup_tools_empty` — true follow-up turn (the original
+ *     bug pattern from MAX_TOOL_SCHEMA_CHARS_FOLLOWUP)
+ *   - the helper currently only supports the followup discriminator;
+ *     non-followup empty-tools cases are still detected but the
+ *     discriminator is the same. A future variant can split them.
  */
 export function assertNoSilentToolDropOnFollowup(params: {
   readonly runtimeIntendedToolCount: number;
   readonly outgoingParams: Record<string, unknown>;
+  readonly toolSuppressionReason?: string;
 }): void {
   if (params.runtimeIntendedToolCount === 0) {
     return; // intentional no-tools call — not the bug pattern
+  }
+  if (params.toolSuppressionReason) {
+    return; // suppression was intentional (e.g. vision model without
+    // tool support, empty allowlist) — not the bug pattern
   }
   const outgoingTools = Array.isArray(params.outgoingParams.tools)
     ? params.outgoingParams.tools
@@ -697,9 +895,10 @@ export function assertNoSilentToolDropOnFollowup(params: {
   if (outgoingTools.length > 0) {
     return; // tools made it through — no drop
   }
-  // The runtime had tools to send and the params are about to go out
-  // empty. Detect whether this is a tool-followup turn (has function
-  // results in input) so the error message can pinpoint the bug pattern.
+  // The runtime had tools to send, suppression was NOT intentional, and
+  // the params are about to go out empty. This is the bug pattern.
+  // Detect whether this is a tool-followup turn (has function results in
+  // input) so the error message and evidence can pinpoint the case.
   const inputItems = Array.isArray(params.outgoingParams.input)
     ? params.outgoingParams.input
     : [];
@@ -717,6 +916,7 @@ export function assertNoSilentToolDropOnFollowup(params: {
     runtimeIntendedToolCount: params.runtimeIntendedToolCount,
     outgoingToolCount: 0,
     toolFollowupCount,
+    isFollowupTurn: toolFollowupCount > 0,
     inputItemCount: inputItems.length,
     model:
       typeof params.outgoingParams.model === "string"

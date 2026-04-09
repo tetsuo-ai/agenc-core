@@ -33,6 +33,7 @@ import { validateToolCallDetailed } from "../types.js";
 import { LLMProviderError, mapLLMError } from "../errors.js";
 import {
   assertNoSilentToolDropOnFollowup,
+  DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS,
   validateXaiRequestPreFlight,
   validateXaiResponsePostFlight,
   XaiSilentToolDropError,
@@ -78,27 +79,12 @@ const MAX_MESSAGE_CHARS_PER_ENTRY = 4_000;
 // MAX_TOOL_SCHEMA_CHARS_FOLLOWUP removed 2026-04-09: see buildParams() comment
 // near `selectedTools.tools.length > 0`. The 20K limit was silently dropping
 // the entire tools array on every tool-followup request.
-const DOCUMENTED_XAI_RESPONSES_FIELDS = new Set([
-  "include",
-  "input",
-  "logprobs",
-  "max_output_tokens",
-  "max_turns",
-  "model",
-  "parallel_tool_calls",
-  "previous_response_id",
-  "prompt_cache_key",
-  "reasoning",
-  "store",
-  "stream",
-  "temperature",
-  "text",
-  "tool_choice",
-  "tools",
-  "top_logprobs",
-  "top_p",
-  "user",
-]);
+//
+// The canonical /v1/responses field allowlist now lives in
+// `xai-strict-filter.ts` as `DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS` and is
+// imported above. Single source of truth — both the strict pre-flight
+// validator and `sanitizeToDocumentedXaiResponsesParams()` use the same set.
+const DOCUMENTED_XAI_RESPONSES_FIELDS = DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS;
 
 /** Vision models known to support function-calling alongside image understanding. */
 const VISION_MODELS_WITH_TOOLS = new Set([
@@ -1971,8 +1957,17 @@ export class GrokProvider implements LLMProvider {
     // tools (`selectedTools.tools.length > 0`) but the final params has
     // no `tools` field. The pre-flight validator can't catch this with
     // the params alone — it needs the runtime's selection intent.
+    //
+    // The `toolSuppressionReason` argument tells the assertion when an
+    // empty `tools` field is *intentional* (e.g.
+    // `vision_model_without_tool_support` when an image is sent to a
+    // vision model that lacks tool support, or `empty_allowlist` when
+    // the routed tool subset resolves to zero matches). In those cases
+    // the assertion is a no-op — the runtime deliberately suppressed
+    // tools and that is not a bug.
     assertNoSilentToolDropOnFollowup({
       runtimeIntendedToolCount: selectedTools.tools.length,
+      toolSuppressionReason: selectedTools.toolSuppressionReason,
       outgoingParams: params,
     });
 
