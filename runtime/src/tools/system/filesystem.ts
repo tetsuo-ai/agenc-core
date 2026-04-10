@@ -385,6 +385,69 @@ async function validatePath(
 const VALID_ENCODINGS = new Set(["utf-8", "base64"]);
 const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
 
+/**
+ * Detect and undo one level of JSON double-escaping in file content.
+ *
+ * Grok's JSON encoder sometimes adds an extra escape level to tool-call
+ * arguments, so the model intends `#include "shell.h"` but produces
+ * JSON `"#include \\\"shell.h\\\""` which after one JSON.parse becomes
+ * the literal string `#include \"shell.h\"` — with backslash-quote
+ * characters in the actual file content.
+ *
+ * Detection heuristic: a correctly-encoded file that contains double
+ * quotes will always have at least some BARE `"` characters (string
+ * delimiters, JSON keys, HTML attributes, etc.). A double-escaped file
+ * has ZERO bare `"` — every quote is `\"`. So if `escapedQuotes > 0`
+ * AND `bareQuotes === 0`, the content was double-escaped and we undo
+ * one level.
+ *
+ * Why this is safe:
+ * - Legitimate `\"` inside strings (like `printf("She said \"hello\"")`)
+ *   always coexists with bare `"` (the function-argument string
+ *   delimiters). The ratio check doesn't trigger when bare quotes exist.
+ * - The ONLY way to have escaped quotes with ZERO bare quotes is if
+ *   every single `"` in the intended file got an extra `\` prepended —
+ *   which is exactly the double-escaping bug.
+ * - The un-escape is a single uniform level (`\"` → `"`, `\\` → `\`),
+ *   which is the exact inverse of the extra escape level the model added.
+ *   Nested legitimate escapes like `\\\"` (intended `\"` in the file)
+ *   become `\"` after un-escaping — which is correct.
+ *
+ * This runs on system.writeFile content and system.editFile new_string
+ * BEFORE writing to disk. It is NOT needed for system.editFile
+ * old_string because old_string is matched against the file's ACTUAL
+ * bytes (which don't have double-escaping; the file on disk is
+ * authoritative).
+ */
+function undoDoubleEscapingIfDetected(content: string): string {
+  if (!content.includes('\\"')) return content;
+
+  // Count bare " (not preceded by \) vs escaped \" sequences.
+  // We use split-based counting which is O(n) and avoids regex
+  // backtracking on large files.
+  let bareQuotes = 0;
+  let escapedQuotes = 0;
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] === '"') {
+      if (i > 0 && content[i - 1] === '\\') {
+        escapedQuotes++;
+      } else {
+        bareQuotes++;
+      }
+    }
+  }
+
+  if (escapedQuotes === 0 || bareQuotes > 0) {
+    // Either no escaped quotes (nothing to fix) or bare quotes exist
+    // alongside escaped ones (legitimate escaping, not double-encoded).
+    return content;
+  }
+
+  // All quotes are escaped, zero bare quotes → double-escaped.
+  // Undo one level. Order matters: \\ → \ first, then \" → ".
+  return content.replace(/\\\\/g, '\\').replace(/\\"/g, '"');
+}
+
 /** Detect if file content is likely binary (contains null bytes). */
 function isBinaryContent(buffer: Buffer): boolean {
   for (let i = 0; i < Math.min(buffer.length, 8192); i++) {
@@ -584,10 +647,16 @@ function createWriteFileTool(
             return errorResult("Invalid base64 content");
           }
         }
+        // Undo Grok double-escaping before encoding to bytes. Only
+        // applies to text mode — base64 content is passed through raw.
+        const sanitizedContent =
+          encoding === "base64"
+            ? args.content
+            : undoDoubleEscapingIfDetected(args.content);
         const data =
           encoding === "base64"
-            ? Buffer.from(args.content, "base64")
-            : Buffer.from(args.content, "utf-8");
+            ? Buffer.from(sanitizedContent, "base64")
+            : Buffer.from(sanitizedContent, "utf-8");
 
         if (data.length > maxWriteBytes) {
           return errorResult(
@@ -880,12 +949,19 @@ function createEditFileTool(
           );
         }
 
+        // Undo Grok double-escaping on new_string before substitution.
+        // old_string is NOT sanitized — it matches against the file's
+        // ACTUAL bytes which are authoritative.
+        const sanitizedNewString = undoDoubleEscapingIfDetected(
+          args.new_string,
+        );
+
         // Compute the new content. For the unique-match case use a
         // single replace; for replace_all walk the string to avoid
         // String.prototype.replaceAll edge cases on older runtimes.
         const newContent = replaceAll
-          ? existingContent.split(args.old_string).join(args.new_string)
-          : existingContent.replace(args.old_string, args.new_string);
+          ? existingContent.split(args.old_string).join(sanitizedNewString)
+          : existingContent.replace(args.old_string, sanitizedNewString);
 
         const newBuffer = Buffer.from(newContent, "utf-8");
         if (newBuffer.length > maxWriteBytes) {
