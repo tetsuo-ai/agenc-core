@@ -97,7 +97,7 @@ import {
 } from "./tool-result-budget.js";
 import {
   applyPerIterationCompaction,
-  DEFAULT_AUTOCOMPACT_THRESHOLD_TOKENS,
+  computeAutocompactThreshold,
 } from "./compact/index.js";
 import { applyReactiveCompact } from "./compact/reactive-compact.js";
 import { LLMContextWindowExceededError } from "./errors.js";
@@ -166,6 +166,13 @@ export interface ToolLoopConfig {
   readonly retryPolicyMatrix: LLMRetryPolicyMatrix;
   readonly allowedTools: Set<string> | null;
   readonly toolFailureBreaker: ToolFailureCircuitBreaker;
+  /**
+   * The model's context window in tokens. Used to compute the
+   * autocompact threshold as a percentage of the window
+   * (DEFAULT_AUTOCOMPACT_THRESHOLD_FRACTION = 40%). When not set,
+   * falls back to DEFAULT_AUTOCOMPACT_THRESHOLD_TOKENS (120K).
+   */
+  readonly contextWindowTokens?: number;
   /** Cut 5.2: hook registry for PreToolUse / PostToolUse / PostToolUseFailure. */
   readonly hookRegistry?: HookRegistry;
   /**
@@ -967,7 +974,7 @@ async function runPerIterationCompactionBeforeModelCall(
     messages: ctx.messages,
     state: ctx.perIterationCompaction,
     nowMs: Date.now(),
-    autocompactThresholdTokens: DEFAULT_AUTOCOMPACT_THRESHOLD_TOKENS,
+    autocompactThresholdTokens: computeAutocompactThreshold(config.contextWindowTokens),
     lastResponseUsage: ctx.response?.usage,
     ...(config.consolidationHook
       ? { consolidationHook: config.consolidationHook }

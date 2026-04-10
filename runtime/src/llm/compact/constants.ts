@@ -16,22 +16,47 @@
 export const ESCALATED_MAX_TOKENS = 64_000;
 
 /**
- * Default token threshold above which the proactive autocompact layer
- * will summarize history. Configurable per-session via the executor's
- * `sessionCompactionThreshold`.
+ * Fraction of the model's context window at which autocompact fires.
+ * 0.4 means "compact when the prompt exceeds 40% of the context window."
+ * This gives the model 40% of its window for history before compaction,
+ * leaving 60% for the remaining prompt overhead (system prompt, tools,
+ * current turn, output).
  *
- * Raised from 120K to 800K to support large-context models (grok-4.20
- * at 2M context). At 120K the model compacted at 6% of the 2M window,
- * losing most of its working memory after ~30 tool calls — the model
- * would forget which files it had written, which phases were complete,
- * and what build errors it had seen. At 800K the model can sustain
- * 80+ tool calls before compaction fires (~40% of 2M).
- *
- * TODO: scale dynamically from the model's context window
- * (e.g. contextWindowTokens * 0.4) once the tool loop has access to
- * the execution profile.
+ * The previous hardcoded 120K threshold was 6% of a 2M window, causing
+ * the model to lose its working memory after ~30 tool calls. Scaling
+ * by percentage means the threshold automatically adapts to any model:
+ *   - grok-4.20-0309-reasoning (2M): 800K threshold
+ *   - grok-4-1-fast (2M): 800K threshold
+ *   - grok-3-mini (128K): 51K threshold
+ *   - ollama local (32K): 12.8K threshold
  */
-export const DEFAULT_AUTOCOMPACT_THRESHOLD_TOKENS = 800_000;
+export const DEFAULT_AUTOCOMPACT_THRESHOLD_FRACTION = 0.4;
+
+/**
+ * Fallback token threshold when the context window size is unknown
+ * (contextWindowTokens not provided). Conservative at 120K to avoid
+ * OOM on small-context models. When the context window IS known,
+ * `DEFAULT_AUTOCOMPACT_THRESHOLD_FRACTION` is used instead.
+ */
+export const DEFAULT_AUTOCOMPACT_THRESHOLD_TOKENS = 120_000;
+
+/**
+ * Compute the autocompact threshold from the model's context window.
+ * Returns the fraction-based threshold when `contextWindowTokens` is
+ * provided, otherwise falls back to the hardcoded default.
+ */
+export function computeAutocompactThreshold(
+  contextWindowTokens?: number,
+): number {
+  if (
+    typeof contextWindowTokens === "number" &&
+    Number.isFinite(contextWindowTokens) &&
+    contextWindowTokens > 0
+  ) {
+    return Math.floor(contextWindowTokens * DEFAULT_AUTOCOMPACT_THRESHOLD_FRACTION);
+  }
+  return DEFAULT_AUTOCOMPACT_THRESHOLD_TOKENS;
+}
 
 /**
  * Default time gap between activity bursts that allows the snip layer
