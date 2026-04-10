@@ -3,6 +3,7 @@ import type { DelegationOutputValidationCode } from "../utils/delegation-validat
 export type CompletionValidatorId =
   | "artifact_evidence"
   | "turn_end_stop_gate"
+  | "request_task_progress"
   | "filesystem_artifact_verification"
   | "deterministic_acceptance_probes"
   | "top_level_verifier";
@@ -98,6 +99,7 @@ export interface RuntimeMailboxMessage {
 export const COMPLETION_VALIDATOR_ORDER: readonly CompletionValidatorId[] = [
   "artifact_evidence",
   "turn_end_stop_gate",
+  "request_task_progress",
   "filesystem_artifact_verification",
   "deterministic_acceptance_probes",
   "top_level_verifier",

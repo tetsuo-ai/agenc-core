@@ -188,6 +188,46 @@ describe("ChatExecutor request assembly", () => {
   });
 
   describe("stateful session wiring and result assembly", () => {
+    it("injects the request milestone contract before the first model call", async () => {
+      const provider = createMockProvider("primary", {
+        chat: vi.fn().mockResolvedValue(mockResponse({ content: "ok" })),
+      });
+      const executor = new ChatExecutor({ providers: [provider] });
+
+      await executor.execute(
+        createParams({
+          requiredToolEvidence: {
+            maxCorrectionAttempts: 1,
+            verificationContract: {
+              workspaceRoot: "/tmp/chat-executor-test-workspace",
+              targetArtifacts: ["/tmp/chat-executor-test-workspace/src/main.c"],
+              verificationMode: "mutation_required",
+              requestCompletion: {
+                requiredMilestones: [
+                  { id: "phase_1", description: "Finish phase 1" },
+                  { id: "phase_2", description: "Verify phase 2" },
+                ],
+              },
+            } as any,
+          },
+        }),
+      );
+
+      const messages = (provider.chat as ReturnType<typeof vi.fn>).mock
+        .calls[0]?.[0] as LLMMessage[];
+      const instruction = messages.find(
+        (message) =>
+          message.role === "system" &&
+          typeof message.content === "string" &&
+          message.content.includes("Request milestone contract:"),
+      );
+
+      expect(instruction).toBeDefined();
+      expect(String(instruction?.content)).toContain("phase_1: Finish phase 1");
+      expect(String(instruction?.content)).toContain("metadata._runtime.milestoneIds");
+      expect(String(instruction?.content)).toContain("metadata._runtime.verification");
+    });
+
     it("passes stateful session options through provider calls", async () => {
       const provider = createMockProvider("primary", {
         chat: vi.fn().mockResolvedValue(

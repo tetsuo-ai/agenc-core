@@ -107,7 +107,7 @@ describe("task-tracker", () => {
     });
 
     it("preserves activeForm and metadata when provided", async () => {
-      await callTool(create, {
+      const result = await callTool(create, {
         subject: "Run the build",
         description: "npm run build",
         activeForm: "Running the build",
@@ -116,6 +116,55 @@ describe("task-tracker", () => {
       const stored = store.list(DEFAULT_TASK_LIST_ID)[0];
       expect(stored.activeForm).toBe("Running the build");
       expect(stored.metadata).toEqual({ priority: "high", tags: ["ci"] });
+      expect(result.body.taskRuntime).toMatchObject({
+        fullTask: expect.objectContaining({
+          subject: "Run the build",
+        }),
+        runtimeMetadata: {
+          hasRuntimeMetadata: false,
+          milestoneIds: [],
+          verification: false,
+          malformed: false,
+          errors: [],
+        },
+      });
+    });
+
+    it("returns normalized runtime metadata alongside the compact task summary", async () => {
+      const result = await callTool(create, {
+        subject: "Implement phase 1",
+        description: "Ship the first milestone",
+        metadata: {
+          _runtime: {
+            milestoneIds: ["phase_1"],
+            verification: true,
+          },
+        },
+      });
+
+      expect(result.body.task).toMatchObject({
+        id: "1",
+        subject: "Implement phase 1",
+        status: "pending",
+      });
+      expect(result.body.taskRuntime).toMatchObject({
+        fullTask: expect.objectContaining({
+          id: "1",
+          metadata: {
+            _runtime: {
+              milestoneIds: ["phase_1"],
+              verification: true,
+            },
+          },
+        }),
+        runtimeMetadata: {
+          hasRuntimeMetadata: true,
+          milestoneIds: ["phase_1"],
+          verification: true,
+          malformed: false,
+          errors: [],
+        },
+      });
     });
   });
 
@@ -185,6 +234,19 @@ describe("task-tracker", () => {
       expect(task.blockedBy).toEqual([]);
       expect(typeof task.createdAt).toBe("number");
       expect(typeof task.updatedAt).toBe("number");
+      expect(result.body.taskRuntime).toMatchObject({
+        fullTask: expect.objectContaining({
+          id: "1",
+          description: "Tail daemon log for the last hour",
+        }),
+        runtimeMetadata: {
+          hasRuntimeMetadata: false,
+          milestoneIds: [],
+          verification: false,
+          malformed: false,
+          errors: [],
+        },
+      });
     });
 
     it("returns an error when the task does not exist", async () => {
@@ -231,6 +293,46 @@ describe("task-tracker", () => {
       });
       const merged = store.get(DEFAULT_TASK_LIST_ID, "1");
       expect(merged?.metadata).toEqual({ retries: 3 });
+    });
+
+    it("surfaces malformed runtime metadata in the additive taskRuntime payload", async () => {
+      const result = await callTool(update, {
+        taskId: "1",
+        metadata: {
+          _runtime: {
+            milestoneIds: ["phase_1", "phase_1", ""],
+            verification: "yes",
+          },
+        },
+      });
+
+      expect(result.body.task).toMatchObject({
+        id: "1",
+        status: "pending",
+      });
+      expect(result.body.taskRuntime).toMatchObject({
+        fullTask: expect.objectContaining({
+          id: "1",
+        }),
+      });
+      expect(result.body.taskRuntime).toMatchObject({
+        runtimeMetadata: expect.objectContaining({
+          hasRuntimeMetadata: true,
+          malformed: true,
+          milestoneIds: ["phase_1"],
+          verification: false,
+        }),
+      });
+      expect(
+        ((result.body.taskRuntime as Record<string, unknown>).runtimeMetadata as Record<string, unknown>)
+          .errors,
+      ).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining("verification must be a boolean"),
+          expect.stringContaining("cannot contain duplicates"),
+          expect.stringContaining("cannot contain empty strings"),
+        ]),
+      );
     });
 
     it("appends unique blockedBy ids", async () => {

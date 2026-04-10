@@ -187,6 +187,8 @@ describe("DaemonManager host workspace prompt and memory resolution", () => {
       expect(prompt).toContain("local engineering and automation tasks");
       expect(prompt).toContain("Start executing immediately");
       expect(prompt).toContain("Never end the turn with only a plan");
+      expect(prompt).toContain("metadata._runtime.milestoneIds");
+      expect(prompt).toContain("metadata._runtime.verification");
       expect(prompt).not.toContain("AgenC protocol");
       expect(prompt).not.toContain("Solana");
       expect(prompt).not.toContain("# Identity");

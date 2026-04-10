@@ -101,8 +101,10 @@ import { LLMContextWindowExceededError } from "./errors.js";
 import {
   appendToolRecord,
   checkRequestTimeout,
+  clearRuntimeInstructionKey,
   emitExecutionTrace,
   maybePushRuntimeInstruction,
+  maybePushKeyedRuntimeInstruction,
   pushMessage,
   replaceRuntimeRecoveryHintMessages,
   serializeRemainingRequestMs,
@@ -125,6 +127,13 @@ import {
   responseHasToolCalls,
   type ToolProtocolRepairReason,
 } from "./tool-protocol-state.js";
+import {
+  getRemainingRequestTaskMilestones,
+  noteRequestTaskVerifierAttempt,
+  REQUEST_TASK_PROGRESS_NO_IN_PROGRESS_KEY,
+  REQUEST_TASK_PROGRESS_NO_TASK_YET_KEY,
+  type RequestTaskObservationResult,
+} from "./request-task-progress.js";
 
 // ============================================================================
 // Callback interfaces
@@ -143,7 +152,10 @@ export interface ToolLoopCallbacks {
     detail?: string,
   ): void;
   checkRequestTimeout(ctx: ExecutionContext, stage: string): boolean;
-  appendToolRecord(ctx: ExecutionContext, record: ToolCallRecord): void;
+  appendToolRecord(
+    ctx: ExecutionContext,
+    record: ToolCallRecord,
+  ): RequestTaskObservationResult | undefined;
   emitExecutionTrace(
     ctx: ExecutionContext,
     event: ChatExecutionTraceEvent,
@@ -153,6 +165,14 @@ export interface ToolLoopCallbacks {
     recoveryHints: readonly RecoveryHint[],
   ): void;
   maybePushRuntimeInstruction(ctx: ExecutionContext, content: string): void;
+  maybePushKeyedRuntimeInstruction(
+    ctx: ExecutionContext,
+    params: {
+      readonly key: string;
+      readonly content: string;
+    },
+  ): void;
+  clearRuntimeInstructionKey(ctx: ExecutionContext, key: string): void;
   callModelForPhase(
     ctx: ExecutionContext,
     input: {
@@ -244,7 +264,7 @@ function pushToolResultMessage(params: {
     },
     "tools",
   );
-  callbacks.appendToolRecord(ctx, {
+  const observation = callbacks.appendToolRecord(ctx, {
     name: toolName,
     args,
     result: content,
@@ -254,6 +274,7 @@ function pushToolResultMessage(params: {
     ...(synthetic ? { synthetic: true } : {}),
     ...(protocolRepairReason ? { protocolRepairReason } : {}),
   });
+  reconcileRequestTaskReminderState(ctx, callbacks, observation);
   recordToolProtocolResult(ctx.toolProtocolState, toolCallId);
   syncToolProtocolSnapshot(ctx);
   callbacks.emitExecutionTrace(ctx, {
@@ -270,6 +291,63 @@ function pushToolResultMessage(params: {
       ...(protocolRepairReason ? { protocolRepairReason } : {}),
     },
   });
+}
+
+function reconcileRequestTaskReminderState(
+  ctx: ExecutionContext,
+  callbacks: ToolLoopCallbacks,
+  observation: RequestTaskObservationResult | undefined,
+): void {
+  if (!observation) {
+    return;
+  }
+  if (
+    (observation.source === "task.create" ||
+      observation.source === "task.update") &&
+    observation.nonDeletedTaskCount > 0
+  ) {
+    callbacks.clearRuntimeInstructionKey(
+      ctx,
+      REQUEST_TASK_PROGRESS_NO_TASK_YET_KEY,
+    );
+  }
+  if (observation.inProgressTaskCount > 0) {
+    callbacks.clearRuntimeInstructionKey(
+      ctx,
+      REQUEST_TASK_PROGRESS_NO_IN_PROGRESS_KEY,
+    );
+  }
+}
+
+function maybeInjectRequestTaskReminders(
+  ctx: ExecutionContext,
+  callbacks: ToolLoopCallbacks,
+  rounds: number,
+): void {
+  if (rounds < 1 || ctx.requestTaskState.allowedMilestones.length === 0) {
+    return;
+  }
+  const remainingMilestones = getRemainingRequestTaskMilestones(
+    ctx.requestTaskState,
+  );
+  if (ctx.requestTaskState.nonDeletedTaskCount === 0) {
+    callbacks.maybePushKeyedRuntimeInstruction(ctx, {
+      key: REQUEST_TASK_PROGRESS_NO_TASK_YET_KEY,
+      content:
+        "This request has an active milestone contract. Create or update a task and attach the matching milestone ids in `metadata._runtime.milestoneIds` before you continue finalizing work.",
+    });
+    return;
+  }
+  if (
+    remainingMilestones.length > 0 &&
+    ctx.requestTaskState.inProgressTaskIds.length === 0
+  ) {
+    callbacks.maybePushKeyedRuntimeInstruction(ctx, {
+      key: REQUEST_TASK_PROGRESS_NO_IN_PROGRESS_KEY,
+      content:
+        "Request milestones are still open, but no task is currently marked in_progress. Update one task to in_progress before continuing.",
+    });
+  }
 }
 
 function materializeResponseToolCalls(
@@ -1061,7 +1139,7 @@ export async function executeSingleToolCall(
     }
   }
 
-  callbacks.appendToolRecord(ctx, {
+  const observation = callbacks.appendToolRecord(ctx, {
     name: toolCall.name,
     args,
     result,
@@ -1069,6 +1147,7 @@ export async function executeSingleToolCall(
     durationMs: exec.durationMs,
     toolCallId: toolCall.id,
   });
+  reconcileRequestTaskReminderState(ctx, callbacks, observation);
   callbacks.emitExecutionTrace(ctx, {
     type: "tool_dispatch_finished",
     phase: "tool_followup",
@@ -1736,6 +1815,7 @@ export async function executeToolCallLoop(
     )) {
       callbacks.pushMessage(ctx, msg, "system_runtime");
     }
+    maybeInjectRequestTaskReminders(ctx, callbacks, rounds);
 
     // Routing expansion on miss.
     if (loopState.expandAfterRound && ctx.expandedRoutedToolNames.length > 0) {
@@ -1859,7 +1939,8 @@ export async function executeToolCallLoop(
       }
       if (validation.probeRuns) {
         for (const run of validation.probeRuns) {
-          callbacks.appendToolRecord(ctx, run);
+          const observation = callbacks.appendToolRecord(ctx, run);
+          reconcileRequestTaskReminderState(ctx, callbacks, observation);
         }
       }
       if (validation.verifier) {
@@ -1867,6 +1948,9 @@ export async function executeToolCallLoop(
           performed: validation.verifier.attempted,
           overall: validation.verifier.overall,
         };
+        if (validation.verifier.attempted) {
+          noteRequestTaskVerifierAttempt(ctx.requestTaskState);
+        }
         ctx.runtimeContractSnapshot = updateRuntimeContractVerifierVerdict({
           snapshot: ctx.runtimeContractSnapshot,
           verifier: validation.verifier,
@@ -1913,7 +1997,9 @@ export async function executeToolCallLoop(
           ? "Max model recalls exceeded during artifact-evidence recovery turn"
           : validator.id === "turn_end_stop_gate"
             ? "Max model recalls exceeded during stop-gate recovery turn"
-            : validator.id === "filesystem_artifact_verification"
+            : validator.id === "request_task_progress"
+              ? "Max model recalls exceeded during request-task progress recovery turn"
+              : validator.id === "filesystem_artifact_verification"
               ? "Max model recalls exceeded during filesystem artifact recovery turn"
               : validator.id === "deterministic_acceptance_probes"
                 ? "Max model recalls exceeded during deterministic acceptance-probe recovery turn"
@@ -2057,6 +2143,9 @@ export function buildToolLoopCallbacks(
     replaceRuntimeRecoveryHintMessages,
     maybePushRuntimeInstruction: (ctx, content) =>
       maybePushRuntimeInstruction(ctx, content, maxRuntimeSystemHints),
+    maybePushKeyedRuntimeInstruction: (ctx, params) =>
+      maybePushKeyedRuntimeInstruction(ctx, params, maxRuntimeSystemHints),
+    clearRuntimeInstructionKey,
     callModelForPhase,
     serializeRemainingRequestMs,
   };

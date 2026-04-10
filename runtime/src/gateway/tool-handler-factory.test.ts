@@ -402,16 +402,16 @@ describe("createSessionToolHandler", () => {
       send,
     });
 
-    await sessionAHandler("task.create", {
+    const sessionACreate = JSON.parse(await sessionAHandler("task.create", {
       subject: "Session A task",
       description: "Created through the gateway handler",
       [TASK_LIST_ARG]: "spoofed-a",
-    });
-    await sessionBHandler("task.create", {
+    })) as Record<string, unknown>;
+    const sessionBCreate = JSON.parse(await sessionBHandler("task.create", {
       subject: "Session B task",
       description: "Created through the gateway handler",
       [TASK_LIST_ARG]: "spoofed-b",
-    });
+    })) as Record<string, unknown>;
     const sessionATasks = JSON.parse(await sessionAHandler("task.list", {})) as {
       count: number;
       tasks: Array<{ subject: string }>;
@@ -436,6 +436,22 @@ describe("createSessionToolHandler", () => {
     });
     expect(baseHandler).toHaveBeenNthCalledWith(4, "task.list", {
       [TASK_LIST_ARG]: "session-b",
+    });
+    expect(sessionACreate.taskRuntime).toMatchObject({
+      fullTask: expect.objectContaining({
+        subject: "Session A task",
+      }),
+      runtimeMetadata: expect.objectContaining({
+        hasRuntimeMetadata: false,
+      }),
+    });
+    expect(sessionBCreate.taskRuntime).toMatchObject({
+      fullTask: expect.objectContaining({
+        subject: "Session B task",
+      }),
+      runtimeMetadata: expect.objectContaining({
+        hasRuntimeMetadata: false,
+      }),
     });
 
     const executingMessages = sentMessages.filter(

@@ -23,6 +23,7 @@ import type {
   RuntimeContractFlags,
 } from "../runtime-contract/types.js";
 import { runTopLevelVerifierValidation } from "../gateway/top-level-verifier.js";
+import { getRemainingRequestTaskMilestones } from "./request-task-progress.js";
 
 export interface CompletionValidatorExecutionResult
   extends CompletionValidatorResult {
@@ -216,6 +217,124 @@ export function buildCompletionValidators(params: {
             decision.reason === "narrated_future_tool_work"
               ? "Stop-gate recovery exhausted: the model kept narrating future work instead of calling tools."
               : "Stop-gate recovery exhausted after the model continued to emit an invalid completion summary.",
+        };
+      },
+    },
+    {
+      id: "request_task_progress",
+      enabled: true,
+      async execute(): Promise<CompletionValidatorExecutionResult> {
+        const requestTaskState = params.ctx.requestTaskState;
+        const remainingMilestones = getRemainingRequestTaskMilestones(
+          requestTaskState,
+        );
+        const hasMalformedTaskMetadata =
+          requestTaskState.malformedTasks.length > 0;
+        const verificationPressure =
+          requestTaskState.completedNonVerificationTaskIdsSinceVerification
+            .length >= 3 &&
+          requestTaskState.verificationTaskIds.length === 0 &&
+          params.ctx.verifierSnapshot?.performed !== true;
+        const hasMilestoneContract =
+          requestTaskState.allowedMilestones.length > 0;
+
+        if (
+          !hasMalformedTaskMetadata &&
+          !verificationPressure &&
+          (!hasMilestoneContract || remainingMilestones.length === 0)
+        ) {
+          return { id: "request_task_progress", outcome: "pass" };
+        }
+
+        const maxAttempts =
+          params.ctx.requiredToolEvidence?.maxCorrectionAttempts ?? 1;
+        if (hasMalformedTaskMetadata) {
+          const allowedIds = requestTaskState.allowedMilestones.map(
+            (milestone) => milestone.id,
+          );
+          const malformedDetails = requestTaskState.malformedTasks
+            .map(
+              (task) =>
+                `#${task.taskId}: ${task.errors.join("; ")}`,
+            )
+            .join("\n");
+          return {
+            id: "request_task_progress",
+            outcome: "retry_with_blocking_message",
+            reason: "request_task_progress",
+            blockingMessage:
+              "Task runtime metadata is malformed and must be corrected before finalization.\n" +
+              `${malformedDetails}\n` +
+              (allowedIds.length > 0
+                ? `Allowed request milestone ids: ${allowedIds.join(", ")}`
+                : "Remove or correct malformed `metadata._runtime` fields before continuing."),
+            evidence: {
+              malformedTasks: requestTaskState.malformedTasks,
+              allowedMilestoneIds: allowedIds,
+            },
+            maxAttempts,
+            exhaustedDetail:
+              "Request task progress recovery exhausted while malformed task metadata remained in the session task state.",
+          };
+        }
+
+        if (
+          hasMilestoneContract &&
+          remainingMilestones.length > 0 &&
+          requestTaskState.inProgressTaskIds.length === 0
+        ) {
+          return {
+            id: "request_task_progress",
+            outcome: "retry_with_blocking_message",
+            reason: "request_task_progress",
+            blockingMessage:
+              "Request milestones are still open, but no task is marked in_progress. Update one task to in_progress before you continue.\n" +
+              "Remaining milestones:\n" +
+              remainingMilestones
+                .map((milestone) => `- ${milestone.id}: ${milestone.description}`)
+                .join("\n"),
+            evidence: {
+              remainingMilestones,
+              inProgressTaskIds: requestTaskState.inProgressTaskIds,
+            },
+            maxAttempts,
+            exhaustedDetail:
+              "Request task progress recovery exhausted while request milestones remained open without an active in_progress task.",
+          };
+        }
+
+        if (verificationPressure) {
+          return {
+            id: "request_task_progress",
+            outcome: "retry_with_blocking_message",
+            reason: "request_task_progress",
+            blockingMessage:
+              "Three or more non-verification tasks have been completed since the last verification anchor. Before finalizing, create or update a verification task with `metadata._runtime.verification: true` and continue with verification work.",
+            evidence: {
+              completedNonVerificationTaskIdsSinceVerification:
+                requestTaskState.completedNonVerificationTaskIdsSinceVerification,
+              verificationTaskIds: requestTaskState.verificationTaskIds,
+              verifierAttempted: params.ctx.verifierSnapshot?.performed === true,
+            },
+            maxAttempts,
+            exhaustedDetail:
+              "Request task progress recovery exhausted after repeated attempts to finalize without a verification task or verifier run.",
+          };
+        }
+
+        return {
+          id: "request_task_progress",
+          outcome: "retry_with_blocking_message",
+          reason: "request_task_progress",
+          blockingMessage:
+            "Request milestones are still open. Continue the implementation and close the matching milestone-linked tasks before finalizing.\n" +
+            remainingMilestones
+              .map((milestone) => `- ${milestone.id}: ${milestone.description}`)
+              .join("\n"),
+          evidence: { remainingMilestones },
+          maxAttempts,
+          exhaustedDetail:
+            "Request task progress recovery exhausted while request milestones were still incomplete.",
         };
       },
     },

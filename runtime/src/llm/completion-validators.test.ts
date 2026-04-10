@@ -9,6 +9,11 @@ import { buildCompletionValidators } from "./completion-validators.js";
 import type { ExecutionContext, ToolCallRecord } from "./chat-executor-types.js";
 import { createRuntimeContractSnapshot } from "../runtime-contract/types.js";
 import type { RuntimeContractFlags } from "../runtime-contract/types.js";
+import {
+  createRequestTaskProgressState,
+  observeRequestTaskToolRecord,
+  setAllowedRequestTaskMilestones,
+} from "./request-task-progress.js";
 
 function makeFlags(
   overrides: Partial<RuntimeContractFlags> = {},
@@ -51,6 +56,9 @@ function makeCtx(params: {
     },
     stopReason: "completed",
     completionState: "completed",
+    completedRequestMilestoneIds: [],
+    requestTaskState: createRequestTaskProgressState(),
+    activeRuntimeReminderKeys: new Set<string>(),
     turnExecutionContract: {
       targetArtifacts: params.targetArtifacts ?? [],
     },
@@ -68,7 +76,59 @@ function successfulWrite(path: string): ToolCallRecord {
   };
 }
 
+function taskToolResult(params: {
+  readonly toolName?: "task.create" | "task.update" | "task.get";
+  readonly id: string;
+  readonly status: "pending" | "in_progress" | "completed" | "deleted";
+  readonly metadata?: Record<string, unknown>;
+}): ToolCallRecord {
+  const toolName = params.toolName ?? "task.update";
+  return {
+    name: toolName,
+    args: { taskId: params.id },
+    result: JSON.stringify({
+      task: {
+        id: params.id,
+        subject: `Task ${params.id}`,
+        status: params.status,
+      },
+      taskRuntime: {
+        fullTask: {
+          id: params.id,
+          subject: `Task ${params.id}`,
+          description: `Description ${params.id}`,
+          status: params.status,
+          blocks: [],
+          blockedBy: [],
+          ...(params.metadata ? { metadata: params.metadata } : {}),
+          createdAt: 1,
+          updatedAt: 2,
+        },
+        runtimeMetadata: {},
+      },
+    }),
+    isError: false,
+    durationMs: 1,
+  };
+}
+
 describe("completion-validators", () => {
+  it("registers request_task_progress between stop-gate and filesystem checks", () => {
+    const validators = buildCompletionValidators({
+      ctx: makeCtx({}),
+      runtimeContractFlags: makeFlags(),
+    });
+
+    expect(validators.map((validator) => validator.id)).toEqual([
+      "artifact_evidence",
+      "turn_end_stop_gate",
+      "request_task_progress",
+      "filesystem_artifact_verification",
+      "deterministic_acceptance_probes",
+      "top_level_verifier",
+    ]);
+  });
+
   it("uses the stop-hook runtime for the stop validator when enabled", async () => {
     const flags = makeFlags({ stopHooksEnabled: true });
     const validators = buildCompletionValidators({
@@ -154,5 +214,79 @@ describe("completion-validators", () => {
     expect(deterministicResult.stopHookResult?.phase).toBe("VerificationReady");
     expect(topLevelResult.outcome).toBe("retry_with_blocking_message");
     expect(toolHandler).not.toHaveBeenCalled();
+  });
+
+  it("blocks finalization when request milestones remain open without an in_progress task", async () => {
+    const ctx = makeCtx({});
+    setAllowedRequestTaskMilestones(ctx.requestTaskState, [
+      { id: "phase_1", description: "Finish phase 1" },
+    ]);
+    const validators = buildCompletionValidators({
+      ctx,
+      runtimeContractFlags: makeFlags(),
+    });
+
+    const result = await validators.find(
+      (validator) => validator.id === "request_task_progress",
+    )!.execute();
+
+    expect(result.outcome).toBe("retry_with_blocking_message");
+    expect(result.blockingMessage).toContain("no task is marked in_progress");
+  });
+
+  it("blocks malformed runtime milestone metadata before allowing completion", async () => {
+    const ctx = makeCtx({});
+    setAllowedRequestTaskMilestones(ctx.requestTaskState, [
+      { id: "phase_1", description: "Finish phase 1" },
+    ]);
+    observeRequestTaskToolRecord(
+      ctx.requestTaskState,
+      taskToolResult({
+        id: "1",
+        status: "completed",
+        metadata: {
+          _runtime: {
+            milestoneIds: ["phase_1", "phase_1"],
+          },
+        },
+      }),
+    );
+    ctx.completedRequestMilestoneIds = [...ctx.requestTaskState.completedMilestoneIds];
+    const validators = buildCompletionValidators({
+      ctx,
+      runtimeContractFlags: makeFlags(),
+    });
+
+    const result = await validators.find(
+      (validator) => validator.id === "request_task_progress",
+    )!.execute();
+
+    expect(result.outcome).toBe("retry_with_blocking_message");
+    expect(result.blockingMessage).toContain("malformed");
+    expect(result.blockingMessage).toContain("#1");
+  });
+
+  it("requires a verification task after three completed non-verification tasks", async () => {
+    const ctx = makeCtx({});
+    for (const id of ["1", "2", "3"]) {
+      observeRequestTaskToolRecord(
+        ctx.requestTaskState,
+        taskToolResult({
+          id,
+          status: "completed",
+        }),
+      );
+    }
+    const validators = buildCompletionValidators({
+      ctx,
+      runtimeContractFlags: makeFlags(),
+    });
+
+    const result = await validators.find(
+      (validator) => validator.id === "request_task_progress",
+    )!.execute();
+
+    expect(result.outcome).toBe("retry_with_blocking_message");
+    expect(result.blockingMessage).toContain("verification task");
   });
 });

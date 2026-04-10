@@ -13,17 +13,31 @@ interface WorkflowRequestCompletionStatus {
   readonly remainingMilestones: readonly WorkflowRequestMilestone[];
 }
 
+export function normalizeWorkflowRequestMilestones(
+  contract?: WorkflowRequestCompletionContract,
+): readonly WorkflowRequestMilestone[] {
+  return (
+    contract?.requiredMilestones
+      .map((milestone) => {
+        const id =
+          typeof milestone.id === "string" ? milestone.id.trim() : "";
+        const description =
+          typeof milestone.description === "string"
+            ? milestone.description.trim()
+            : "";
+        return id.length > 0 && description.length > 0
+          ? { id, description }
+          : undefined;
+      })
+      .filter((milestone): milestone is WorkflowRequestMilestone => milestone !== undefined) ?? []
+  );
+}
+
 export function resolveWorkflowRequestCompletionStatus(params: {
   readonly contract?: WorkflowRequestCompletionContract;
   readonly completedMilestoneIds?: readonly string[];
 }): WorkflowRequestCompletionStatus | undefined {
-  const requiredMilestones =
-    params.contract?.requiredMilestones.filter((milestone) =>
-      typeof milestone.id === "string" &&
-      milestone.id.trim().length > 0 &&
-      typeof milestone.description === "string" &&
-      milestone.description.trim().length > 0
-    ) ?? [];
+  const requiredMilestones = normalizeWorkflowRequestMilestones(params.contract);
   if (requiredMilestones.length === 0) {
     return undefined;
   }

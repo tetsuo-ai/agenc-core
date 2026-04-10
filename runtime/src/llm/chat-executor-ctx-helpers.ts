@@ -18,6 +18,10 @@
 import { didToolCallFail } from "./chat-executor-tool-utils.js";
 import { toStatefulReconciliationMessage } from "./chat-executor-text.js";
 import { RECOVERY_HINT_PREFIX } from "./chat-executor-constants.js";
+import {
+  observeRequestTaskToolRecord,
+  type RequestTaskObservationResult,
+} from "./request-task-progress.js";
 import type {
   ChatExecutionTraceEvent,
   ExecutionContext,
@@ -35,11 +39,19 @@ import type { PromptBudgetSection } from "./prompt-budget.js";
 export function appendToolRecord(
   ctx: ExecutionContext,
   record: ToolCallRecord,
-): void {
+): RequestTaskObservationResult | undefined {
   ctx.allToolCalls.push(record);
   if (didToolCallFail(record.isError, record.result)) {
     ctx.failedToolCalls++;
+    return undefined;
   }
+  const observation = observeRequestTaskToolRecord(ctx.requestTaskState, record);
+  if (observation) {
+    ctx.completedRequestMilestoneIds = [
+      ...ctx.requestTaskState.completedMilestoneIds,
+    ];
+  }
+  return observation;
 }
 
 /**
@@ -222,6 +234,34 @@ export function maybePushRuntimeInstruction(
   if (alreadyPresent) return;
 
   pushMessage(ctx, { role: "system", content }, "system_runtime");
+}
+
+export function clearRuntimeInstructionKey(
+  ctx: ExecutionContext,
+  key: string,
+): void {
+  ctx.activeRuntimeReminderKeys.delete(key);
+}
+
+export function maybePushKeyedRuntimeInstruction(
+  ctx: ExecutionContext,
+  params: {
+    readonly key: string;
+    readonly content: string;
+  },
+  maxRuntimeSystemHints: number,
+): void {
+  if (ctx.activeRuntimeReminderKeys.has(params.key)) {
+    return;
+  }
+  const runtimeHintCount = ctx.messageSections.filter(
+    (section) => section === "system_runtime",
+  ).length;
+  if (runtimeHintCount >= maxRuntimeSystemHints) {
+    return;
+  }
+  ctx.activeRuntimeReminderKeys.add(params.key);
+  pushMessage(ctx, { role: "system", content: params.content }, "system_runtime");
 }
 
 /**

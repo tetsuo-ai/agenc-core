@@ -79,6 +79,10 @@ import {
   createPerIterationCompactionState,
   type PerIterationCompactionState,
 } from "./compact/index.js";
+import {
+  createRequestTaskProgressState,
+  type RequestTaskProgressState,
+} from "./request-task-progress.js";
 
 // ============================================================================
 // Error classes
@@ -655,6 +659,7 @@ export interface ExecutionContext {
   allToolCalls: ToolCallRecord[];
   failedToolCalls: number;
   activeRecoveryHintKeys: string[];
+  activeRuntimeReminderKeys: Set<string>;
   providerEvidence: LLMProviderEvidence | undefined;
   usedFallback: boolean;
   providerName: string;
@@ -676,6 +681,7 @@ export interface ExecutionContext {
   routedToolsExpanded: boolean;
   routedToolMisses: number;
   plannerSummaryState: FullPlannerSummaryState;
+  requestTaskState: RequestTaskProgressState;
   completedRequestMilestoneIds: readonly string[];
   economicsState: RuntimeEconomicsState;
   /**
@@ -807,6 +813,7 @@ export function buildDefaultExecutionContext(
     allToolCalls: [],
     failedToolCalls: 0,
     activeRecoveryHintKeys: [],
+    activeRuntimeReminderKeys: new Set<string>(),
     providerEvidence: undefined,
     usedFallback: false,
     providerName: config.providerName,
@@ -840,6 +847,7 @@ export function buildDefaultExecutionContext(
       estimatedRecallsAvoided: 0,
       diagnostics: [] as PlannerDiagnostic[],
     },
+    requestTaskState: createRequestTaskProgressState(),
     completedRequestMilestoneIds: [],
     economicsState,
     perIterationCompaction: createPerIterationCompactionState(),

@@ -25,6 +25,9 @@
 
 import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
+import {
+  normalizeRequestTaskRuntimeMetadata,
+} from "../../workflow/request-task-runtime.js";
 
 /**
  * Magic arg key used by the gateway to thread the current session id
@@ -340,12 +343,20 @@ function fullTask(task: Task): Record<string, unknown> {
   };
 }
 
+function taskRuntime(task: Task): Record<string, unknown> {
+  return {
+    fullTask: fullTask(task),
+    runtimeMetadata: normalizeRequestTaskRuntimeMetadata(task.metadata),
+  };
+}
+
 const TASK_CREATE_DESCRIPTION =
   "Create a structured task in the current session's task list. Use proactively for " +
   "multi-step work (3+ steps), complex tasks that require planning, or when the user " +
   "supplies multiple things to do. Tasks created here are scoped to the current session " +
   "and cleared on daemon restart. Mark a task in_progress with task.update BEFORE " +
-  "starting work, and completed as soon as the work is fully done.";
+  "starting work, and completed as soon as the work is fully done. For runtime-managed " +
+  "milestone tracking, use metadata._runtime.milestoneIds and metadata._runtime.verification.";
 
 const TASK_LIST_DESCRIPTION =
   "List tasks in the current session's task list. Returns id, subject, status, owner, " +
@@ -361,7 +372,8 @@ const TASK_UPDATE_DESCRIPTION =
   "blocks. Status transitions: pending -> in_progress -> completed. Use status " +
   "'deleted' to permanently remove a task. Metadata is merged shallowly; pass a key " +
   "with value null to delete that key. addBlocks / addBlockedBy append unique ids " +
-  "to the existing arrays.";
+  "to the existing arrays. Runtime-managed milestone tracking uses metadata._runtime.milestoneIds " +
+  "and metadata._runtime.verification.";
 
 /**
  * Build the four task tracker tools sharing a single in-memory store.
@@ -397,7 +409,8 @@ export function createTaskTrackerTools(
         },
         metadata: {
           type: "object",
-          description: "Arbitrary metadata to attach to the task.",
+          description:
+            "Arbitrary metadata to attach to the task. Runtime-managed milestone tracking uses metadata._runtime.milestoneIds and metadata._runtime.verification.",
         },
       },
       required: ["subject", "description"],
@@ -420,6 +433,7 @@ export function createTaskTrackerTools(
       return okResult({
         message: `Task #${task.id} created: ${task.subject}`,
         task: summarizeTask(task),
+        taskRuntime: taskRuntime(task),
       });
     },
   };
@@ -467,7 +481,10 @@ export function createTaskTrackerTools(
       if (!taskId) return errorResult("taskId must be a non-empty string");
       const task = taskStore.get(resolveListId(args), taskId);
       if (!task) return errorResult(`task ${taskId} not found`);
-      return okResult({ task: fullTask(task) });
+      return okResult({
+        task: fullTask(task),
+        taskRuntime: taskRuntime(task),
+      });
     },
   };
 
@@ -491,7 +508,8 @@ export function createTaskTrackerTools(
         owner: { type: "string" },
         metadata: {
           type: "object",
-          description: "Merged into existing metadata; values of null delete the key.",
+          description:
+            "Merged into existing metadata; values of null delete the key. Runtime-managed milestone tracking uses metadata._runtime.milestoneIds and metadata._runtime.verification.",
         },
         addBlocks: {
           type: "array",
@@ -611,6 +629,7 @@ export function createTaskTrackerTools(
       return okResult({
         message: `Task #${task.id} updated`,
         task: summarizeTask(task),
+        taskRuntime: taskRuntime(task),
       });
     },
   };
