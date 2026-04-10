@@ -974,6 +974,72 @@ describe("SubAgentManager", () => {
       }
     });
 
+    it("passes system-prompt overrides and explicit required tool evidence into child execution", async () => {
+      const executeSpy = vi.spyOn(ChatExecutor.prototype, "execute")
+        .mockResolvedValueOnce({
+          content: "VERDICT: PASS",
+          provider: "mock",
+          model: "mock",
+          usedFallback: false,
+          toolCalls: [
+            {
+              name: "system.readFile",
+              args: { path: "/workspace/src/main.ts" },
+              result: '{"ok":true}',
+              isError: false,
+              durationMs: 1,
+            },
+          ],
+          tokenUsage: {
+            promptTokens: 10,
+            completionTokens: 5,
+            totalTokens: 15,
+          },
+          callUsage: [],
+          durationMs: 1,
+          compacted: false,
+          stopReason: "completed",
+          completionState: "completed",
+        });
+
+      try {
+        const manager = new SubAgentManager(makeManagerConfig({
+          systemPrompt: "parent sub-agent prompt",
+        }));
+        const sessionId = await manager.spawn({
+          parentSessionId: "p",
+          task: "verify the implementation",
+          prompt: "Run the verifier checks",
+          systemPrompt: "verifier worker prompt",
+          tools: ["system.readFile", "system.bash"],
+          requiredToolEvidence: {
+            maxCorrectionAttempts: 1,
+            executionEnvelope: {
+              workspaceRoot: "/workspace",
+              targetArtifacts: ["/workspace/src/main.ts"],
+              verificationMode: "grounded_read",
+            },
+          },
+        });
+        await settle();
+
+        expect(manager.getResult(sessionId)?.success).toBe(true);
+        expect(executeSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            systemPrompt: "verifier worker prompt",
+            requiredToolEvidence: expect.objectContaining({
+              executionEnvelope: expect.objectContaining({
+                verificationMode: "grounded_read",
+                targetArtifacts: ["/workspace/src/main.ts"],
+              }),
+            }),
+          }),
+        );
+      } finally {
+        executeSpy.mockRestore();
+      }
+    });
+
     it("preserves child completion progress and refuses completion when the workflow state needs verification", async () => {
       const executeSpy = vi.spyOn(ChatExecutor.prototype, "execute")
         .mockResolvedValueOnce({

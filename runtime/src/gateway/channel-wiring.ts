@@ -48,6 +48,9 @@ import { formatForChannel } from "./format.js";
 import { executeTextChannelTurn } from "./daemon-text-channel-turn.js";
 import type { ToolRoutingDecision } from "./tool-routing.js";
 import { loadConfiguredPluginChannel } from "../plugins/channel-loader.js";
+import type { AgentDefinition } from "./agent-loader.js";
+import type { DelegationVerifierService } from "./delegation-runtime.js";
+import type { SubAgentManager } from "./sub-agent.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -113,6 +116,10 @@ export interface ChannelWiringDeps {
     sessionId: string,
     summary: ChatToolRoutingSummary | undefined,
   ): void;
+
+  readonly subAgentManager?: Pick<SubAgentManager, "spawn" | "waitForResult"> | null;
+  readonly verifierService?: Pick<DelegationVerifierService, "shouldVerifySubAgentResult"> | null;
+  readonly agentDefinitions?: readonly AgentDefinition[];
 }
 
 // ---------------------------------------------------------------------------
@@ -330,6 +337,9 @@ async function wireTelegram(
         recordToolRoutingOutcome: (sessionId, summary) => {
           deps.recordToolRoutingOutcome(sessionId, summary);
         },
+        subAgentManager: deps.subAgentManager ?? null,
+        verifierService: deps.verifierService ?? null,
+        agentDefinitions: deps.agentDefinitions,
       });
 
       deps.logger.debug("Telegram reply ready", {
@@ -521,6 +531,9 @@ export async function wireExternalChannel(
         recordToolRoutingOutcome: (sessionId, summary) => {
           deps.recordToolRoutingOutcome(sessionId, summary);
         },
+        subAgentManager: deps.subAgentManager ?? null,
+        verifierService: deps.verifierService ?? null,
+        agentDefinitions: deps.agentDefinitions,
       });
 
       const formatted = formatForChannel(

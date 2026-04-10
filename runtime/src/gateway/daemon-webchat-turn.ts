@@ -24,6 +24,7 @@ import {
   persistSessionStatefulContinuation,
   persistWebSessionRuntimeState,
 } from "./daemon-session-state.js";
+import { maybeRunTopLevelVerifier } from "./top-level-verifier.js";
 import { filterSystemPromptForToolRouting } from "./system-prompt-routing.js";
 import {
   logExecutionTraceEvent,
@@ -50,6 +51,9 @@ import type { Session, SessionManager } from "./session.js";
 import type { ToolRoutingDecision } from "./tool-routing.js";
 import { resolveTurnMaxToolRounds } from "./tool-round-budget.js";
 import { buildAssistantDelegatedScopeMetadata } from "../utils/delegated-scope-trust.js";
+import type { AgentDefinition } from "./agent-loader.js";
+import type { DelegationVerifierService } from "./delegation-runtime.js";
+import type { SubAgentManager } from "./sub-agent.js";
 
 interface WebChatTurnSignals {
   signalThinking: (sessionId: string) => void;
@@ -85,6 +89,9 @@ interface ExecuteWebChatConversationTurnParams {
   readonly getSessionTokenUsage: (sessionId: string) => number;
   readonly onModelInfo?: (result: ChatExecutorResult) => void;
   readonly onSubagentSynthesis?: (result: ChatExecutorResult) => void;
+  readonly subAgentManager?: Pick<SubAgentManager, "spawn" | "waitForResult"> | null;
+  readonly verifierService?: Pick<DelegationVerifierService, "shouldVerifySubAgentResult"> | null;
+  readonly agentDefinitions?: readonly AgentDefinition[];
 }
 
 async function resolveWebChatTurnWorkspaceRoot(params: {
@@ -136,6 +143,9 @@ export async function executeWebChatConversationTurn(
     getSessionTokenUsage,
     onModelInfo,
     onSubagentSynthesis,
+    subAgentManager = null,
+    verifierService = null,
+    agentDefinitions,
   } = params;
 
   try {
@@ -247,7 +257,7 @@ export async function executeWebChatConversationTurn(
     // stream chunk through the supplied callback before yielding
     // the event, so the caller-visible callback behavior is
     // identical to the direct chatExecutor.execute() call.
-    const result = await executeChatToLegacyResult(chatExecutor, {
+    const rawResult = await executeChatToLegacyResult(chatExecutor, {
       message: effectiveMessage,
       history: session.history,
       systemPrompt: effectiveSystemPrompt,
@@ -304,6 +314,15 @@ export async function executeWebChatConversationTurn(
           }
         },
       },
+    });
+    const result = await maybeRunTopLevelVerifier({
+      sessionId: msg.sessionId,
+      userRequest: msg.content,
+      result: rawResult,
+      subAgentManager,
+      verifierService,
+      agentDefinitions,
+      logger,
     });
     recordToolRoutingOutcome(msg.sessionId, result.toolRoutingSummary);
 

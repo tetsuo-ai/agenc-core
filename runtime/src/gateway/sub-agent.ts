@@ -24,6 +24,7 @@ import {
   type RuntimeBudgetMode,
 } from "../llm/run-budget.js";
 import type {
+  ChatExecuteParams,
   ChatExecutorResult,
   ToolCallRecord,
 } from "../llm/chat-executor-types.js";
@@ -147,6 +148,7 @@ export interface SubAgentConfig {
   readonly parentSessionId: string;
   readonly task: string;
   readonly prompt?: string;
+  readonly systemPrompt?: string;
   readonly continuationSessionId?: string;
   readonly timeoutMs?: number;
   readonly toolBudgetPerRequest?: number;
@@ -157,6 +159,7 @@ export interface SubAgentConfig {
   readonly requiredCapabilities?: readonly string[];
   readonly requireToolCall?: boolean;
   readonly delegationSpec?: DelegationContractSpec;
+  readonly requiredToolEvidence?: ChatExecuteParams["requiredToolEvidence"];
   readonly unsafeBenchmarkMode?: boolean;
   /**
    * Phase 2.8: Memory inheritance policy for sub-agents.
@@ -403,6 +406,14 @@ export class SubAgentManager {
     const handle = this.handles.get(sessionId);
     if (!handle) return null;
     if (handle.status === "running") return null;
+    return handle.result;
+  }
+
+  async waitForResult(sessionId: string): Promise<SubAgentResult | null> {
+    this.pruneTerminalHandles();
+    const handle = this.handles.get(sessionId);
+    if (!handle) return null;
+    await handle.execution;
     return handle.result;
   }
 
@@ -749,7 +760,9 @@ export class SubAgentManager {
       });
 
       const systemPrompt =
-        this.config.systemPrompt ?? DEFAULT_SUB_AGENT_SYSTEM_PROMPT;
+        handle.config.systemPrompt ??
+        this.config.systemPrompt ??
+        DEFAULT_SUB_AGENT_SYSTEM_PROMPT;
       const subAgentTraceId = `subagent:${handle.sessionId}:${Date.now()}`;
       const unsafeBenchmarkMode = handle.config.unsafeBenchmarkMode === true;
       const traceEnabled =
@@ -815,6 +828,26 @@ export class SubAgentManager {
         });
       }
 
+      const inheritedRequiredToolEvidence = handle.config.delegationSpec
+        ? {
+            maxCorrectionAttempts: handle.config.requireToolCall ? 1 : 0,
+            delegationSpec: handle.config.delegationSpec,
+            unsafeBenchmarkMode,
+          }
+        : undefined;
+      const explicitRequiredToolEvidence = handle.config.requiredToolEvidence;
+      const requiredToolEvidence =
+        inheritedRequiredToolEvidence || explicitRequiredToolEvidence
+          ? {
+              ...(inheritedRequiredToolEvidence ?? {}),
+              ...(explicitRequiredToolEvidence ?? {}),
+              maxCorrectionAttempts:
+                explicitRequiredToolEvidence?.maxCorrectionAttempts ??
+                inheritedRequiredToolEvidence?.maxCorrectionAttempts ??
+                0,
+            }
+          : undefined;
+
       // When the spawn comes from the orchestrator pipeline (has an
       // execution context with explicit tool scope), pass the resolved
       // tools as routedToolNames so the sub-agent's ChatExecutor uses
@@ -858,13 +891,9 @@ export class SubAgentManager {
             ...(typeof effectiveToolBudgetPerRequest === "number"
               ? { toolBudgetPerRequest: effectiveToolBudgetPerRequest }
               : {}),
-            requiredToolEvidence: handle.config.delegationSpec
-              ? {
-                maxCorrectionAttempts: handle.config.requireToolCall ? 1 : 0,
-                delegationSpec: handle.config.delegationSpec,
-                unsafeBenchmarkMode,
-              }
-              : undefined,
+            ...(requiredToolEvidence
+              ? { requiredToolEvidence }
+              : {}),
             ...(providerTrace ? { trace: providerTrace } : {}),
           },
         }),

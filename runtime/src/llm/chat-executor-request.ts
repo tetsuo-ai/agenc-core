@@ -32,6 +32,7 @@ import { resolveWorkflowCompletionState } from "../workflow/completion-state.js"
 import { deriveWorkflowProgressSnapshot } from "../workflow/completion-progress.js";
 import { buildRuntimeEconomicsSummary } from "./run-budget.js";
 import { deriveActiveTaskContext } from "./turn-execution-contract.js";
+import { resolveWorkflowEvidenceFromRequiredToolEvidence } from "./turn-execution-contract.js";
 import type {
   ChatExecuteParams,
   ChatExecutorResult,
@@ -108,13 +109,18 @@ export async function executeRequest(
   checkRequestTimeout(ctx, "finalization");
 
   // Derive the final completion state from stop reason + tool calls.
-  // The runtime no longer carries verification or completion contracts
-  // through the chat-executor; both are passed as undefined.
+  const workflowEvidence = resolveWorkflowEvidenceFromRequiredToolEvidence({
+    requiredToolEvidence: ctx.requiredToolEvidence,
+    runtimeContext: {
+      workspaceRoot: ctx.runtimeWorkspaceRoot,
+      activeTaskContext: deriveActiveTaskContext(ctx.turnExecutionContract),
+    },
+  });
   ctx.completionState = resolveWorkflowCompletionState({
     stopReason: ctx.stopReason,
     toolCalls: ctx.allToolCalls,
-    verificationContract: undefined,
-    completionContract: undefined,
+    verificationContract: workflowEvidence.verificationContract,
+    completionContract: workflowEvidence.completionContract,
     completedRequestMilestoneIds: ctx.completedRequestMilestoneIds,
     validationCode: ctx.validationCode,
   });
@@ -129,8 +135,8 @@ export async function executeRequest(
     stopReasonDetail: ctx.stopReasonDetail,
     validationCode: ctx.validationCode,
     toolCalls: ctx.allToolCalls,
-    verificationContract: undefined,
-    completionContract: undefined,
+    verificationContract: workflowEvidence.verificationContract,
+    completionContract: workflowEvidence.completionContract,
     completedRequestMilestoneIds: ctx.completedRequestMilestoneIds,
     updatedAt: Date.now(),
     contractFingerprint: ctx.turnExecutionContract.contractFingerprint,
@@ -194,4 +200,3 @@ export async function executeRequest(
     validationCode: ctx.validationCode,
   };
 }
-

@@ -25,9 +25,15 @@ import {
   isConcordiaGenerateAgentsMessage,
 } from "../llm/chat-executor-turn-contracts.js";
 import {
+  buildSessionActiveTaskContext,
   buildSessionStatefulOptions,
+  persistSessionActiveTaskContext,
   persistSessionStatefulContinuation,
 } from "./daemon-session-state.js";
+import { maybeRunTopLevelVerifier } from "./top-level-verifier.js";
+import type { AgentDefinition } from "./agent-loader.js";
+import type { DelegationVerifierService } from "./delegation-runtime.js";
+import type { SubAgentManager } from "./sub-agent.js";
 import { filterSystemPromptForToolRouting } from "./system-prompt-routing.js";
 import {
   logExecutionTraceEvent,
@@ -116,6 +122,9 @@ interface ExecuteTextChannelTurnParams {
     summary: ChatToolRoutingSummary | undefined,
   ) => void;
   readonly persistToDaemonMemory?: boolean;
+  readonly subAgentManager?: Pick<SubAgentManager, "spawn" | "waitForResult"> | null;
+  readonly verifierService?: Pick<DelegationVerifierService, "shouldVerifySubAgentResult"> | null;
+  readonly agentDefinitions?: readonly AgentDefinition[];
 }
 
 export async function executeTextChannelTurn(
@@ -139,6 +148,9 @@ export async function executeTextChannelTurn(
     buildToolRoutingDecision,
     recordToolRoutingOutcome,
     persistToDaemonMemory = shouldPersistToDaemonMemory(msg),
+    subAgentManager = null,
+    verifierService = null,
+    agentDefinitions,
   } = params;
 
   const toolRoutingDecision = buildToolRoutingDecision(
@@ -219,6 +231,7 @@ export async function executeTextChannelTurn(
   }
 
   const sessionStateful = buildSessionStatefulOptions(session);
+  const sessionActiveTaskContext = buildSessionActiveTaskContext(session);
   const isConcordiaGenerateAgentsTurn = isConcordiaGenerateAgentsMessage(msg);
   const structuredOutput =
     buildConcordiaGenerateAgentsStructuredOutput(msg);
@@ -231,11 +244,14 @@ export async function executeTextChannelTurn(
   // direct chatExecutor.execute() call under the adapter shape —
   // Phase F will swap the underlying orchestration without
   // touching this call site.
-  const result = await executeChatToLegacyResult(chatExecutor, {
+  const rawResult = await executeChatToLegacyResult(chatExecutor, {
     message: msg,
     history: session.history,
     systemPrompt: effectiveSystemPrompt,
     sessionId: msg.sessionId,
+    ...(sessionActiveTaskContext
+      ? { runtimeContext: { activeTaskContext: sessionActiveTaskContext } }
+      : {}),
     toolHandler,
     maxToolRounds: effectiveMaxToolRounds,
     ...(sessionStateful ? { stateful: sessionStateful } : {}),
@@ -281,6 +297,15 @@ export async function executeTextChannelTurn(
           },
         }
       : {}),
+  });
+  const result = await maybeRunTopLevelVerifier({
+    sessionId: msg.sessionId,
+    userRequest: msg.content,
+    result: rawResult,
+    subAgentManager,
+    verifierService,
+    agentDefinitions,
+    logger,
   });
   recordToolRoutingOutcome(msg.sessionId, result.toolRoutingSummary);
 
@@ -381,6 +406,7 @@ export async function executeTextChannelTurn(
   }
 
   persistSessionStatefulContinuation(session, result);
+  persistSessionActiveTaskContext(session, result);
   sessionMgr.appendMessage(session.id, {
     role: "user",
     content: msg.content,

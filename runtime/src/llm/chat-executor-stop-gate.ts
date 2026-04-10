@@ -39,9 +39,19 @@
  * @module
  */
 
-import type { ToolCallRecord } from "./chat-executor-types.js";
+import type { ChatExecuteParams, ToolCallRecord } from "./chat-executor-types.js";
 
-import { extractToolFailureText } from "./chat-executor-tool-utils.js";
+import {
+  didToolCallFail,
+  extractToolFailureText,
+} from "./chat-executor-tool-utils.js";
+import type { DelegationOutputValidationCode } from "../utils/delegation-validation.js";
+import { areDocumentationOnlyArtifacts } from "../workflow/artifact-paths.js";
+import {
+  isPathWithinRoot,
+  normalizeArtifactPaths,
+} from "../workflow/path-normalization.js";
+import { resolveWorkflowEvidenceFromRequiredToolEvidence } from "./turn-execution-contract.js";
 
 // ---------------------------------------------------------------------------
 // Detector knobs
@@ -237,10 +247,32 @@ export interface StopGateInterventionDecision {
   readonly evidence: StopGateEvidence;
 }
 
+export interface ArtifactEvidenceGateEvidence {
+  readonly successfulToolCallCount: number;
+  readonly requiredTargetArtifacts: readonly string[];
+  readonly mutatedArtifacts: readonly string[];
+  readonly inspectedArtifacts: readonly string[];
+  readonly missingArtifacts: readonly string[];
+}
+
+export interface ArtifactEvidenceGateDecision {
+  readonly shouldIntervene: boolean;
+  readonly validationCode?: DelegationOutputValidationCode;
+  readonly stopReasonDetail?: string;
+  readonly blockingMessage?: string;
+  readonly evidence: ArtifactEvidenceGateEvidence;
+}
+
 export interface EvaluateTurnEndStopGateParams {
   /** The model's about-to-be-final assistant text. */
   readonly finalContent: string;
   /** The full tool ledger for the turn (`ctx.allToolCalls`, turn-scoped). */
+  readonly allToolCalls: readonly ToolCallRecord[];
+}
+
+export interface EvaluateArtifactEvidenceGateParams {
+  readonly requiredToolEvidence?: ChatExecuteParams["requiredToolEvidence"];
+  readonly runtimeContext?: ChatExecuteParams["runtimeContext"];
   readonly allToolCalls: readonly ToolCallRecord[];
 }
 
@@ -394,6 +426,144 @@ function buildBlockingMessage(params: {
   }
 
   return lines.join("\n");
+}
+
+const MUTATION_PATH_ARG_BY_TOOL: Readonly<Record<string, readonly string[]>> = {
+  "system.writeFile": ["path"],
+  "system.appendFile": ["path"],
+  "system.editFile": ["path"],
+  "system.mkdir": ["path"],
+  "system.move": ["destination"],
+  "desktop.text_editor": ["path"],
+};
+
+const INSPECTION_PATH_ARG_BY_TOOL: Readonly<Record<string, readonly string[]>> = {
+  "system.readFile": ["path"],
+  "system.stat": ["path"],
+  "system.listDir": ["path"],
+  "desktop.text_editor": ["path"],
+};
+
+function normalizeToolPath(
+  rawPath: unknown,
+  workspaceRoot?: string,
+): string | undefined {
+  if (typeof rawPath !== "string" || rawPath.trim().length === 0) {
+    return undefined;
+  }
+  return normalizeArtifactPaths([rawPath], workspaceRoot)[0];
+}
+
+function collectToolPaths(params: {
+  readonly toolCall: ToolCallRecord;
+  readonly workspaceRoot?: string;
+  readonly pathKeys: Readonly<Record<string, readonly string[]>>;
+  readonly includeDesktopEditorViews?: boolean;
+}): readonly string[] {
+  const keys = params.pathKeys[params.toolCall.name] ?? [];
+  if (keys.length === 0) return [];
+
+  if (params.toolCall.name === "desktop.text_editor") {
+    const command =
+      typeof params.toolCall.args.command === "string"
+        ? params.toolCall.args.command.trim().toLowerCase()
+        : "";
+    const isView = command === "view";
+    if (params.includeDesktopEditorViews === true && !isView) {
+      return [];
+    }
+    if (params.includeDesktopEditorViews !== true && isView) {
+      return [];
+    }
+  }
+
+  const paths = new Set<string>();
+  for (const key of keys) {
+    const normalized = normalizeToolPath(
+      params.toolCall.args[key],
+      params.workspaceRoot,
+    );
+    if (normalized) {
+      paths.add(normalized);
+    }
+  }
+  return [...paths];
+}
+
+function artifactHasEvidence(
+  artifactPath: string,
+  evidencePaths: readonly string[],
+): boolean {
+  return evidencePaths.some((evidencePath) =>
+    evidencePath === artifactPath ||
+    isPathWithinRoot(evidencePath, artifactPath)
+  );
+}
+
+function buildMissingArtifactDetail(params: {
+  readonly code: Extract<
+    DelegationOutputValidationCode,
+    | "missing_successful_tool_evidence"
+    | "missing_file_mutation_evidence"
+    | "missing_file_artifact_evidence"
+  >;
+  readonly missingArtifacts: readonly string[];
+}): string {
+  if (params.code === "missing_successful_tool_evidence") {
+    return "Workflow-owned execution requires successful tool-grounded evidence before completion, but this turn recorded no successful tool calls.";
+  }
+  const joined = params.missingArtifacts.join(", ");
+  if (params.code === "missing_file_artifact_evidence") {
+    return `Missing file artifact evidence for ${joined}.`;
+  }
+  return `Missing file mutation evidence for ${joined}.`;
+}
+
+function buildArtifactEvidenceBlockingMessage(params: {
+  readonly validationCode: Extract<
+    DelegationOutputValidationCode,
+    | "missing_successful_tool_evidence"
+    | "missing_file_mutation_evidence"
+    | "missing_file_artifact_evidence"
+  >;
+  readonly missingArtifacts: readonly string[];
+  readonly mutatedArtifacts: readonly string[];
+  readonly inspectedArtifacts: readonly string[];
+}): string {
+  const missingLines = params.missingArtifacts.length > 0
+    ? `Missing artifacts:\n${params.missingArtifacts.map((path) => `- ${path}`).join("\n")}\n\n`
+    : "";
+  const mutatedLines = params.mutatedArtifacts.length > 0
+    ? `Observed file mutations:\n${params.mutatedArtifacts.map((path) => `- ${path}`).join("\n")}\n\n`
+    : "";
+  const inspectedLines = params.inspectedArtifacts.length > 0
+    ? `Observed file inspection evidence:\n${params.inspectedArtifacts.map((path) => `- ${path}`).join("\n")}\n\n`
+    : "";
+
+  if (params.validationCode === "missing_successful_tool_evidence") {
+    return (
+      "Runtime validation blocked completion because this workflow-owned turn has no successful tool-grounded evidence.\n\n" +
+      "Call real tools to continue the work or report the blocker grounded in tool output. Do not claim completion without successful tool results."
+    );
+  }
+
+  if (params.validationCode === "missing_file_artifact_evidence") {
+    return (
+      "Runtime validation blocked completion because the workflow contract only allows a no-op when the target artifacts are proven with tool evidence.\n\n" +
+      missingLines +
+      mutatedLines +
+      inspectedLines +
+      "Call real file-inspection or file-mutation tools on every missing artifact before claiming completion."
+    );
+  }
+
+  return (
+    "Runtime validation blocked completion because the workflow contract requires actual file mutations for every target artifact.\n\n" +
+    missingLines +
+    mutatedLines +
+    inspectedLines +
+    "Call real file-mutation tools (`system.writeFile`, `system.editFile`, `system.appendFile`, `desktop.text_editor`, `system.move`, `system.mkdir`) on every missing artifact before claiming completion."
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -566,6 +736,161 @@ export function evaluateTurnEndStopGate(
     refusedCalls,
     evidence,
   });
+}
+
+export function evaluateArtifactEvidenceGate(
+  params: EvaluateArtifactEvidenceGateParams,
+): ArtifactEvidenceGateDecision {
+  const emptyEvidence: ArtifactEvidenceGateEvidence = {
+    successfulToolCallCount: 0,
+    requiredTargetArtifacts: [],
+    mutatedArtifacts: [],
+    inspectedArtifacts: [],
+    missingArtifacts: [],
+  };
+
+  if (params.requiredToolEvidence?.unsafeBenchmarkMode === true) {
+    return {
+      shouldIntervene: false,
+      evidence: emptyEvidence,
+    };
+  }
+
+  const workflowEvidence = resolveWorkflowEvidenceFromRequiredToolEvidence({
+    requiredToolEvidence: params.requiredToolEvidence,
+    runtimeContext: params.runtimeContext,
+  });
+  const targetArtifacts = workflowEvidence.targetArtifacts;
+  if (targetArtifacts.length === 0) {
+    return {
+      shouldIntervene: false,
+      evidence: emptyEvidence,
+    };
+  }
+
+  const successfulToolCalls = params.allToolCalls.filter((toolCall) =>
+    !didToolCallFail(toolCall.isError, toolCall.result)
+  );
+  if (successfulToolCalls.length === 0) {
+    const validationCode = "missing_successful_tool_evidence" as const;
+    return {
+      shouldIntervene: true,
+      validationCode,
+      stopReasonDetail: buildMissingArtifactDetail({
+        code: validationCode,
+        missingArtifacts: targetArtifacts,
+      }),
+      blockingMessage: buildArtifactEvidenceBlockingMessage({
+        validationCode,
+        missingArtifacts: targetArtifacts,
+        mutatedArtifacts: [],
+        inspectedArtifacts: [],
+      }),
+      evidence: {
+        successfulToolCallCount: 0,
+        requiredTargetArtifacts: targetArtifacts,
+        mutatedArtifacts: [],
+        inspectedArtifacts: [],
+        missingArtifacts: targetArtifacts,
+      },
+    };
+  }
+
+  const workspaceRoot = workflowEvidence.workspaceRoot;
+  const mutatedArtifacts = new Set<string>();
+  const inspectedArtifacts = new Set<string>();
+  for (const toolCall of successfulToolCalls) {
+    for (const path of collectToolPaths({
+      toolCall,
+      workspaceRoot,
+      pathKeys: MUTATION_PATH_ARG_BY_TOOL,
+    })) {
+      mutatedArtifacts.add(path);
+      inspectedArtifacts.add(path);
+    }
+    for (const path of collectToolPaths({
+      toolCall,
+      workspaceRoot,
+      pathKeys: INSPECTION_PATH_ARG_BY_TOOL,
+      includeDesktopEditorViews: true,
+    })) {
+      inspectedArtifacts.add(path);
+    }
+  }
+
+  const mutatedArtifactList = [...mutatedArtifacts];
+  const inspectedArtifactList = [...inspectedArtifacts];
+  const missingMutationArtifacts = targetArtifacts.filter((artifactPath) =>
+    !artifactHasEvidence(artifactPath, mutatedArtifactList)
+  );
+  if (missingMutationArtifacts.length === 0) {
+    return {
+      shouldIntervene: false,
+      evidence: {
+        successfulToolCallCount: successfulToolCalls.length,
+        requiredTargetArtifacts: targetArtifacts,
+        mutatedArtifacts: mutatedArtifactList,
+        inspectedArtifacts: inspectedArtifactList,
+        missingArtifacts: [],
+      },
+    };
+  }
+
+  const verificationMode =
+    workflowEvidence.executionEnvelope?.verificationMode ??
+    workflowEvidence.verificationContract?.verificationMode;
+  const groundedReadAllowed = verificationMode === "grounded_read";
+  const conditionalMutationAllowed =
+    verificationMode === "conditional_mutation" ||
+    areDocumentationOnlyArtifacts(targetArtifacts);
+  const missingArtifactEvidence = targetArtifacts.filter((artifactPath) =>
+    !artifactHasEvidence(artifactPath, inspectedArtifactList)
+  );
+  if (
+    (groundedReadAllowed || conditionalMutationAllowed) &&
+    missingArtifactEvidence.length === 0
+  ) {
+    return {
+      shouldIntervene: false,
+      evidence: {
+        successfulToolCallCount: successfulToolCalls.length,
+        requiredTargetArtifacts: targetArtifacts,
+        mutatedArtifacts: mutatedArtifactList,
+        inspectedArtifacts: inspectedArtifactList,
+        missingArtifacts: [],
+      },
+    };
+  }
+
+  const validationCode = groundedReadAllowed || conditionalMutationAllowed
+    ? "missing_file_artifact_evidence" as const
+    : "missing_file_mutation_evidence" as const;
+  const missingArtifacts =
+    validationCode === "missing_file_artifact_evidence"
+      ? missingArtifactEvidence
+      : missingMutationArtifacts;
+
+  return {
+    shouldIntervene: true,
+    validationCode,
+    stopReasonDetail: buildMissingArtifactDetail({
+      code: validationCode,
+      missingArtifacts,
+    }),
+    blockingMessage: buildArtifactEvidenceBlockingMessage({
+      validationCode,
+      missingArtifacts,
+      mutatedArtifacts: mutatedArtifactList,
+      inspectedArtifacts: inspectedArtifactList,
+    }),
+    evidence: {
+      successfulToolCallCount: successfulToolCalls.length,
+      requiredTargetArtifacts: targetArtifacts,
+      mutatedArtifacts: mutatedArtifactList,
+      inspectedArtifacts: inspectedArtifactList,
+      missingArtifacts,
+    },
+  };
 }
 
 /**
