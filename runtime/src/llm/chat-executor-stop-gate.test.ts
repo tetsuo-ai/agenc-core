@@ -160,6 +160,161 @@ describe("evaluateTurnEndStopGate (pass cases)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// detector 0: narrated_future_tool_work — model checkpointed in text
+// instead of calling the next tool
+// ---------------------------------------------------------------------------
+
+describe("evaluateTurnEndStopGate — narrated_future_tool_work", () => {
+  // Live trigger from session at 2026-04-09 19:33 (chat.message at
+  // 01:33:34.469Z): the model emitted "Next tool calls will implement
+  // lexer.c from PLAN.md specs." as a final reply. The user had said
+  // "do not stop until every single phase has been implemented" so the
+  // model checkpointed instead of asking permission. The chat-executor
+  // saw text-only -> turn ended.
+  it("fires on the exact 'Next tool calls will...' pattern from the live trace", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "**Project structure created per @PLAN.md Phase 1: directories, " +
+        "CMakeLists.txt, headers, utils.c stub, shell.c stub. Build " +
+        "blocked by missing lexer/parser/executor implementations and " +
+        "some utils compilation issues (fixed in latest write). Ready " +
+        "for Phase 2 lexer implementation.**\n\nNext tool calls will " +
+        "implement lexer.c from PLAN.md specs.",
+      allToolCalls: [
+        bashSuccess("mkdir src"),
+        bashSuccess("touch src/lexer.c"),
+        bashSuccess("cmake .."),
+      ],
+    });
+    expect(decision.shouldIntervene).toBe(true);
+    expect(decision.reason).toBe("narrated_future_tool_work");
+    expect(decision.blockingMessage).toContain("NARRATED");
+    expect(decision.blockingMessage).toContain("ONE recovery turn");
+    expect(decision.blockingMessage).toContain("Next tool calls will");
+  });
+
+  it("fires on 'Now I will write the parser'", () => {
+    // No success-claim prefix and length > TRUNCATED_SUCCESS_MAX_CHARS
+    // so truncated_success_claim does not pre-empt narrated.
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "Lexer scaffolding is in place across src/lexer.c and tests/lexer_test.c. " +
+        "Now I will write the parser to handle pipelines.",
+      allToolCalls: [bashSuccess("ls")],
+    });
+    expect(decision.shouldIntervene).toBe(true);
+    expect(decision.reason).toBe("narrated_future_tool_work");
+  });
+
+  it("fires on \"Next, I'll create the executor\"", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "Lexer scaffolding written. Next, I'll create the executor module.",
+      allToolCalls: [bashSuccess("ls")],
+    });
+    expect(decision.shouldIntervene).toBe(true);
+    expect(decision.reason).toBe("narrated_future_tool_work");
+  });
+
+  it("fires on 'Going to implement Phase 2 now'", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent: "Phase 1 stubs in place. Going to implement Phase 2 now.",
+      allToolCalls: [bashSuccess("ls")],
+    });
+    expect(decision.shouldIntervene).toBe(true);
+    expect(decision.reason).toBe("narrated_future_tool_work");
+  });
+
+  it("fires on \"I'll continue with the build fix\"", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "First pass scaffolding complete. I'll continue with the build fix in the next round.",
+      allToolCalls: [bashSuccess("ls")],
+    });
+    expect(decision.shouldIntervene).toBe(true);
+    expect(decision.reason).toBe("narrated_future_tool_work");
+  });
+
+  it("fires on 'Next step is to run cmake'", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "Source files are written. Next step is to run cmake and verify the build.",
+      allToolCalls: [bashSuccess("ls")],
+    });
+    expect(decision.shouldIntervene).toBe(true);
+    expect(decision.reason).toBe("narrated_future_tool_work");
+  });
+
+  it("fires on 'Continuing with Phase 3'", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "Wrote parser tests in tests/parser_test.c and verified the " +
+        "AST matches expected shape. Continuing with Phase 3 now.",
+      allToolCalls: [bashSuccess("ls")],
+    });
+    expect(decision.shouldIntervene).toBe(true);
+    expect(decision.reason).toBe("narrated_future_tool_work");
+  });
+
+  it("fires on 'Moving on to lexer implementation'", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "Stubs in place. Moving on to lexer implementation in the next turn.",
+      allToolCalls: [bashSuccess("ls")],
+    });
+    expect(decision.shouldIntervene).toBe(true);
+    expect(decision.reason).toBe("narrated_future_tool_work");
+  });
+
+  it("does NOT fire when the model says 'task complete'", () => {
+    // Test message must be > TRUNCATED_SUCCESS_MAX_CHARS (100) so the
+    // truncated_success_claim detector does not also fire on the
+    // success-claim phrasing.
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "All phases implemented. Task complete. I'll continue with " +
+        "maintenance items if you need them later, but the primary " +
+        "task you asked for is fully done and the binary is built " +
+        "and tests are passing across the entire suite.",
+      allToolCalls: [bashSuccess("ls"), bashSuccess("make")],
+    });
+    expect(decision.shouldIntervene).toBe(false);
+  });
+
+  it("does NOT fire when the model says 'all phases implemented'", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "All phases implemented successfully. Ready for the next user " +
+        "request whenever you have one. The codebase compiles cleanly " +
+        "and all tests pass with no warnings, and the implementation " +
+        "follows every spec in PLAN.md exactly.",
+      allToolCalls: [bashSuccess("ls")],
+    });
+    expect(decision.shouldIntervene).toBe(false);
+  });
+
+  it("does NOT fire on a fresh greeting turn with no tool calls", () => {
+    // Empty allToolCalls means this is the first model call. The model
+    // is not checkpointing mid-task; it's starting a conversation.
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "I'll run the tests for you. Let me call system.bash now.",
+      allToolCalls: [],
+    });
+    expect(decision.shouldIntervene).toBe(false);
+  });
+
+  it("does NOT fire on a normal text response without future-work narration", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "I checked the file and it looks correct. The output matches what you expected.",
+      allToolCalls: [readFile("src/main.c")],
+    });
+    expect(decision.shouldIntervene).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // detector 1: anti-fab refusal + success claim
 // ---------------------------------------------------------------------------
 
