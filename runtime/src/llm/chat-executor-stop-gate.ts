@@ -136,7 +136,38 @@ const TRUNCATED_SUCCESS_MAX_CHARS = 100;
  *   - "Task done. Binary built and tests passing."
  */
 const NARRATED_FUTURE_TOOL_WORK_RE =
-  /\b(?:next\s+tool\s+calls?\s+(?:will|should|must)|now\s+I\s+(?:will|need\s+to|am\s+going\s+to|am\s+about\s+to)|now\s+I[''']?ll|next,?\s+I\s+(?:will|need\s+to|am\s+going\s+to|am\s+about\s+to)|next,?\s+I[''']?ll|going\s+to\s+(?:call|invoke|run|execute|implement|write|create|continue|start|finish|build|compile|test|fix|add|edit|update|generate|produce|stub|complete)|I[''']?ll\s+(?:call|invoke|run|execute|implement|write|create|continue|start|finish|build|compile|test|fix|add|edit|update|generate|produce|stub|complete)|next\s+step\s+(?:is|will\s+be)\s+to|let\s+me\s+(?:call|invoke|run|execute|implement|write|create|continue|start|finish|build|compile|test|fix|add|edit|update|generate|produce|stub|complete)|I\s+will\s+now\s+(?:call|invoke|run|execute|implement|write|create|continue|start|finish|build|compile|test|fix|add|edit|update|generate|produce|stub|complete)|continuing\s+(?:with|to)\s+\w+|moving\s+on\s+to\s+\w+|proceeding\s+(?:to|with)\s+\w+|about\s+to\s+(?:call|invoke|run|execute|implement|write|create|continue|start|finish|build|compile|test|fix|add|edit|update|generate|produce|stub|complete)|will\s+now\s+(?:implement|write|create|build|compile|test|fix|continue))/i;
+  /\b(?:next\s+tool\s+calls?\s+(?:will|should|must)|now\s+I\s+(?:will|need\s+to|am\s+going\s+to|am\s+about\s+to)|now\s+I[''']?ll|next,?\s+I\s+(?:will|need\s+to|am\s+going\s+to|am\s+about\s+to)|next,?\s+I[''']?ll|going\s+to\s+(?:call|invoke|run|execute|implement|write|create|continue|start|finish|build|compile|test|fix|add|edit|update|generate|produce|stub|complete)|I[''']?ll\s+(?:call|invoke|run|execute|implement|write|create|continue|start|finish|build|compile|test|fix|add|edit|update|generate|produce|stub|complete)|next\s+(?:step|action)\s*(?:is|will\s+be|:)|let\s+me\s+(?:call|invoke|run|execute|implement|write|create|continue|start|finish|build|compile|test|fix|add|edit|update|generate|produce|stub|complete)|I\s+will\s+now\s+(?:call|invoke|run|execute|implement|write|create|continue|start|finish|build|compile|test|fix|add|edit|update|generate|produce|stub|complete)|continuing\s+(?:with|to)\s+\w+|moving\s+(?:on\s+)?to\s+\w+|proceeding\s+(?:to|with)\s+\w+|about\s+to\s+(?:call|invoke|run|execute|implement|write|create|continue|start|finish|build|compile|test|fix|add|edit|update|generate|produce|stub|complete)|will\s+now\s+(?:implement|write|create|build|compile|test|fix|continue)|ready\s+(?:to|for)\s+(?:phase|implement|start|continue|begin|build|write|create|fix|run|execute|the\s+next))/i;
+
+/**
+ * Permission-question patterns the model emits as a final reply when
+ * checkpointing. The chat-executor's tool loop sees a question-mark
+ * ending as `finishReason !== "tool_calls"` -> turn end, exactly like
+ * a statement-form narration. PR #309 forbade this in the system prompt
+ * but the model still does it under load. The detector treats any final
+ * content that ENDS with one of these patterns as a stall and fires the
+ * recovery turn.
+ *
+ * Anchors at the END of the trimmed final text (`$`) so legitimate
+ * mid-message uses ("...continue? Yes, this is what we want.") don't
+ * trigger. Only a real ending with the question mark counts.
+ *
+ * Examples that should match:
+ *   - "...All 12+ source files exist, project builds cleanly. Continue?"
+ *   - "...Ready to proceed?"
+ *   - "...Should I continue?"
+ *   - "...Should I proceed to phase 2?"
+ *   - "...Move on to phase 1?"
+ *   - "...Go ahead?"
+ *   - "...Ready for phase 1?"
+ *   - "...Continue to phase N?"
+ *
+ * Examples that should NOT match:
+ *   - "I checked the file and it looks correct."
+ *   - "Task complete. All phases done."
+ *   - "Build failed. Here's why: ..."
+ */
+const MID_TASK_PERMISSION_QUESTION_RE =
+  /(?:^|[\s.!?\)])(?:continue|proceed|go\s+ahead|move\s+on|next|ready|should\s+I|may\s+I|shall\s+I)\b[^.!?]*\?\s*$/i;
 
 /**
  * Phrases that explicitly mark the turn as terminally complete. When the
@@ -544,6 +575,16 @@ export function evaluateTurnEndStopGate(
  * very bottom of the function as the lowest-priority detector after
  * the false-success branches fail to match.
  *
+ * Checks two related patterns:
+ *   (a) NARRATED_FUTURE_TOOL_WORK_RE — statement-form narration of
+ *       upcoming tool work ("Now I'll implement X", "Moving to phase Y")
+ *   (b) MID_TASK_PERMISSION_QUESTION_RE — final content ends with a
+ *       continuation question ("Continue?", "Ready to proceed?")
+ *
+ * Both fire as `narrated_future_tool_work` because the recovery action
+ * is the same: tell the model to call the tools instead of asking
+ * permission or previewing the next step.
+ *
  * The check skips when the text contains a TERMINAL_COMPLETION_RE
  * marker (legitimate end-of-task) or when the turn made zero tool
  * calls (fresh greeting/question, not mid-task checkpointing).
@@ -555,24 +596,29 @@ function maybeFireNarratedFutureToolWork(params: {
   readonly refusedCalls: readonly ToolCallRecord[];
   readonly evidence: StopGateEvidence;
 }): StopGateInterventionDecision {
-  if (
-    params.allToolCalls.length > 0 &&
-    NARRATED_FUTURE_TOOL_WORK_RE.test(params.finalContent) &&
-    !TERMINAL_COMPLETION_RE.test(params.finalContent)
-  ) {
-    return {
-      shouldIntervene: true,
-      reason: "narrated_future_tool_work",
-      blockingMessage: buildBlockingMessage({
-        reason: "narrated_future_tool_work",
-        finalContent: params.finalContent,
-        failedShellCalls: params.failedShellCalls,
-        refusedCalls: params.refusedCalls,
-      }),
-      evidence: params.evidence,
-    };
+  const trimmed = params.finalContent.trimEnd();
+  if (params.allToolCalls.length === 0) {
+    return { shouldIntervene: false, evidence: params.evidence };
   }
-  return { shouldIntervene: false, evidence: params.evidence };
+  if (TERMINAL_COMPLETION_RE.test(params.finalContent)) {
+    return { shouldIntervene: false, evidence: params.evidence };
+  }
+  const narrated = NARRATED_FUTURE_TOOL_WORK_RE.test(params.finalContent);
+  const permissionQuestion = MID_TASK_PERMISSION_QUESTION_RE.test(trimmed);
+  if (!narrated && !permissionQuestion) {
+    return { shouldIntervene: false, evidence: params.evidence };
+  }
+  return {
+    shouldIntervene: true,
+    reason: "narrated_future_tool_work",
+    blockingMessage: buildBlockingMessage({
+      reason: "narrated_future_tool_work",
+      finalContent: params.finalContent,
+      failedShellCalls: params.failedShellCalls,
+      refusedCalls: params.refusedCalls,
+    }),
+    evidence: params.evidence,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -584,6 +630,7 @@ export const __TESTING__ = {
   FALSE_SUCCESS_RE,
   FAILURE_ACKNOWLEDGMENT_RE,
   NARRATED_FUTURE_TOOL_WORK_RE,
+  MID_TASK_PERMISSION_QUESTION_RE,
   TERMINAL_COMPLETION_RE,
   TRUNCATED_SUCCESS_MAX_CHARS,
   ANTI_FAB_REFUSAL_REASON_KEYWORDS,
