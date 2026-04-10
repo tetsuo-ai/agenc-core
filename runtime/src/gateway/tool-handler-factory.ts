@@ -11,7 +11,10 @@ import type { ControlResponse } from './types.js';
 import { existsSync } from 'node:fs';
 import { isAbsolute, relative, resolve as resolvePath } from 'node:path';
 import type { ToolHandler } from '../llm/types.js';
-import { SESSION_ALLOWED_ROOTS_ARG } from "../tools/system/filesystem.js";
+import {
+  SESSION_ALLOWED_ROOTS_ARG,
+  SESSION_ID_ARG,
+} from "../tools/system/filesystem.js";
 import {
   TASK_LIST_ARG,
   TASK_TRACKER_TOOL_NAMES,
@@ -88,6 +91,7 @@ const SESSION_ALLOWED_ROOT_TOOL_NAMES = new Set([
   "system.readFile",
   "system.writeFile",
   "system.appendFile",
+  "system.editFile",
   "system.listDir",
   "system.stat",
   "system.mkdir",
@@ -106,11 +110,27 @@ const SESSION_ALLOWED_ROOT_TOOL_NAMES = new Set([
   "system.spreadsheetInfo",
   "system.spreadsheetRead",
 ]);
+
+/**
+ * Filesystem tool names that need a session-scoped readFileState entry
+ * for the Read-before-Write rule. The gateway injects `SESSION_ID_ARG`
+ * into the args of every call to one of these tools so the per-session
+ * read tracker in `runtime/src/tools/system/filesystem.ts` can record
+ * (for readFile) and check (for writeFile/editFile) which paths the
+ * model has seen in the current chat session.
+ */
+const SESSION_ID_TOOL_NAMES = new Set([
+  "system.readFile",
+  "system.writeFile",
+  "system.appendFile",
+  "system.editFile",
+]);
 const TOOL_PATH_ARG_KEYS: Readonly<Record<string, readonly string[]>> = {
   "desktop.text_editor": ["path"],
   "system.readFile": ["path"],
   "system.writeFile": ["path"],
   "system.appendFile": ["path"],
+  "system.editFile": ["path"],
   "system.listDir": ["path"],
   "system.stat": ["path"],
   "system.mkdir": ["path"],
@@ -150,6 +170,7 @@ const WRITE_FILESYSTEM_TOOL_MODES: Readonly<Record<string, ArtifactAccessMode>> 
   "desktop.text_editor": "write",
   "system.writeFile": "write",
   "system.appendFile": "append",
+  "system.editFile": "write",
   "system.mkdir": "mkdir",
   "system.delete": "write",
   "system.move": "write",
@@ -208,7 +229,8 @@ function stripInternalToolArgs(
 ): Record<string, unknown> {
   const hasAllowedRoots = SESSION_ALLOWED_ROOTS_ARG in args;
   const hasTaskListId = TASK_LIST_ARG in args;
-  if (!hasAllowedRoots && !hasTaskListId) {
+  const hasSessionId = SESSION_ID_ARG in args;
+  if (!hasAllowedRoots && !hasTaskListId && !hasSessionId) {
     return args;
   }
   const nextArgs = { ...args };
@@ -217,6 +239,9 @@ function stripInternalToolArgs(
   }
   if (hasTaskListId) {
     delete nextArgs[TASK_LIST_ARG];
+  }
+  if (hasSessionId) {
+    delete nextArgs[SESSION_ID_ARG];
   }
   return nextArgs;
 }
@@ -253,6 +278,30 @@ function applySessionAllowedRoots(
   return {
     ...args,
     [SESSION_ALLOWED_ROOTS_ARG]: [...additionalAllowedPaths],
+  };
+}
+
+/**
+ * Inject the chat session ID into the args of filesystem tools that
+ * participate in the Read-before-Write rule. The injected value is
+ * consumed by the per-session readFileState map in
+ * `runtime/src/tools/system/filesystem.ts` and stripped from any
+ * user-visible serialization by `stripInternalToolArgs`.
+ */
+function applySessionId(
+  toolName: string,
+  args: Record<string, unknown>,
+  sessionId: string | undefined,
+): Record<string, unknown> {
+  if (!SESSION_ID_TOOL_NAMES.has(toolName)) {
+    return args;
+  }
+  if (!sessionId || sessionId.trim().length === 0) {
+    return args;
+  }
+  return {
+    ...args,
+    [SESSION_ID_ARG]: sessionId,
   };
 }
 
@@ -2851,6 +2900,7 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
       delegatedParentAllowedRoots,
     );
     executionArgs = applySessionTaskListId(toolName, executionArgs, sessionId);
+    executionArgs = applySessionId(toolName, executionArgs, sessionId);
 
     const subAgentEnvelopeError = isSubAgentSession
       ? enforceSubAgentExecutionEnvelope({

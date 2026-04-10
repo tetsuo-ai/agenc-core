@@ -145,7 +145,10 @@ import type { ChatExecutorResult } from "../llm/chat-executor.js";
 import { didToolCallFail } from "../llm/chat-executor-tool-utils.js";
 import { PolicyEngine } from "../policy/engine.js";
 import { createPolicyGateHook } from "../policy/policy-gate.js";
-import { SESSION_ALLOWED_ROOTS_ARG } from "../tools/system/filesystem.js";
+import {
+  SESSION_ALLOWED_ROOTS_ARG,
+  SESSION_ID_ARG,
+} from "../tools/system/filesystem.js";
 import { TaskStore } from "../tools/system/task-tracker.js";
 import {
   SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY,
@@ -2554,6 +2557,7 @@ describe("DaemonManager", () => {
         null,
         2,
       ),
+      [SESSION_ID_ARG]: "session-host-tooling-supported",
     });
   });
 
@@ -2598,6 +2602,7 @@ describe("DaemonManager", () => {
       path: `${sessionWorkspaceRoot}/src/app.ts`,
       content: "export const ok = true;\n",
       [SESSION_ALLOWED_ROOTS_ARG]: [sessionWorkspaceRoot],
+      [SESSION_ID_ARG]: "session-project-root",
     });
   });
 

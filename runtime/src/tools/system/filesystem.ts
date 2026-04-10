@@ -1,19 +1,35 @@
 /**
  * Filesystem tools for @tetsuo-ai/runtime
  *
- * Provides 8 tools for reading, writing, listing, and managing files
- * on the host system. All operations are gated by configurable path
- * allowlists with path traversal prevention and size limits.
+ * Provides 9 tools for reading, writing, editing, listing, and managing
+ * files on the host system. All operations are gated by configurable
+ * path allowlists with path traversal prevention and size limits.
  *
  * Tools:
  * - system.readFile — read file contents (text or base64)
- * - system.writeFile — write file (creates parent dirs)
+ * - system.writeFile — write/overwrite a full file (creates parent dirs)
  * - system.appendFile — append to file
+ * - system.editFile — string-replace edit on an existing file
+ *                     (Claude-Code-style old_string/new_string semantics;
+ *                      preferred over writeFile for incremental edits to
+ *                      avoid JSON-escape bugs in nested string literals)
  * - system.listDir — list directory entries
  * - system.stat — file/directory metadata
  * - system.mkdir — create directories
  * - system.delete — delete file/directory (requires opt-in)
  * - system.move — rename/move file or directory
+ *
+ * Read-before-Write rule:
+ * `system.writeFile` and `system.editFile` enforce that the model has
+ * called `system.readFile` on the target path in the current session
+ * before any modification (modeled on Claude Code's
+ * `tools/FileWriteTool/FileWriteTool.ts:198-206` check). This forces
+ * the model to have the LITERAL pre-edit bytes in its context before
+ * generating the next write, which is the highest-leverage structural
+ * defense against the Grok JSON-escape bug. The rule is skipped for
+ * non-existent files (creating new files does not require a prior
+ * read) and skipped entirely when no session ID is present in tool
+ * args (e.g. unit tests, eval harness).
  *
  * @module
  */
@@ -40,6 +56,103 @@ const DEFAULT_MAX_WRITE_BYTES = 10_485_760; // 10 MB
 const MAX_LIST_ENTRIES = 10_000;
 const MAX_PATH_LENGTH = 4096;
 export const SESSION_ALLOWED_ROOTS_ARG = "__agencSessionAllowedRoots";
+
+/**
+ * Per-session arg name carrying the session identifier into filesystem
+ * tool calls. The gateway's `applySessionId` injector adds this to
+ * `system.readFile`, `system.writeFile`, `system.appendFile`, and
+ * `system.editFile` args before invoking the tool, and
+ * `stripInternalToolArgs` removes it before any user-visible
+ * serialization.
+ *
+ * The constant is named to mirror {@link SESSION_ALLOWED_ROOTS_ARG} so
+ * the convention for "internal arg with double-underscore prefix" stays
+ * uniform across the filesystem tool surface.
+ */
+export const SESSION_ID_ARG = "__agencSessionId";
+
+/**
+ * Per-session readFileState map. Tracks which files have been read in
+ * each session so that `system.writeFile` and `system.editFile` can
+ * enforce a Read-before-Write rule modeled on Claude Code's
+ * `tools/FileWriteTool/FileWriteTool.ts:198-206` check (see report.txt
+ * §References for the upstream pattern).
+ *
+ * The rationale is documented in detail in PR #314: forcing the model
+ * to call `system.readFile` before any modification is the highest-
+ * leverage structural defense against the JSON-escape bug Grok exhibits
+ * when re-writing C source files via `system.writeFile`. The model
+ * gets the LITERAL pre-edit bytes (with any visible `\"` mistakes)
+ * back into its context BEFORE generating the next write, so escape
+ * mismatches become self-correcting instead of accumulating across
+ * blind rewrites.
+ *
+ * Implementation notes:
+ *   - Module-level Map keyed by sessionId (string)
+ *   - Value is a Set<string> of canonical (post-`canonicalize()`)
+ *     paths the model has read in this session
+ *   - Reads of non-existent paths are NOT recorded (the path may not
+ *     have a canonical form yet)
+ *   - `system.writeFile` and `system.editFile` consult this map only
+ *     when the target path EXISTS — creating a new file does not
+ *     require a prior read (Claude Code's FileWriteTool.ts:191-196
+ *     uses the same ENOENT escape hatch)
+ *   - The set lives for the lifetime of the daemon process; explicit
+ *     cleanup is handled by `clearSessionReadState(sessionId)` when
+ *     a session ends, called from the gateway's session lifecycle
+ *
+ * This map is intentionally NOT exposed via tool args. Mutation
+ * happens via the helpers below; tools never see the underlying Set.
+ */
+const sessionReadState = new Map<string, Set<string>>();
+
+function recordSessionRead(
+  sessionId: string | undefined,
+  canonicalPath: string,
+): void {
+  if (!sessionId || sessionId.trim().length === 0) return;
+  if (!canonicalPath || canonicalPath.trim().length === 0) return;
+  let set = sessionReadState.get(sessionId);
+  if (!set) {
+    set = new Set();
+    sessionReadState.set(sessionId, set);
+  }
+  set.add(canonicalPath);
+}
+
+function hasSessionRead(
+  sessionId: string | undefined,
+  canonicalPath: string,
+): boolean {
+  if (!sessionId || sessionId.trim().length === 0) return false;
+  const set = sessionReadState.get(sessionId);
+  if (!set) return false;
+  return set.has(canonicalPath);
+}
+
+/**
+ * Clear all recorded reads for a session. Called from the gateway when
+ * a session is closed so the map does not grow without bound on
+ * long-running daemons.
+ */
+export function clearSessionReadState(sessionId: string): void {
+  sessionReadState.delete(sessionId);
+}
+
+/**
+ * Resolve the session ID from tool args (injected by the gateway via
+ * `applySessionId`). Returns `undefined` when no session ID is present
+ * — that signals "tool was called outside a chat session" (e.g. eval
+ * harness, direct unit test) and Read-before-Write enforcement is
+ * skipped in that case so non-session callers stay functional.
+ */
+function resolveSessionId(args: Record<string, unknown>): string | undefined {
+  const value = args[SESSION_ID_ARG];
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value;
+  }
+  return undefined;
+}
 
 /**
  * Filesystem tool configuration.
@@ -349,6 +462,12 @@ function createReadFileTool(
           forceEncoding === "base64" ||
           (!forceEncoding && isBinaryContent(buffer));
 
+        // Record the read in the per-session readFileState so
+        // subsequent system.writeFile / system.editFile calls on this
+        // path satisfy the Read-before-Write rule. See PR #314 and
+        // the SESSION_ID_ARG comment for the rationale.
+        recordSessionRead(resolveSessionId(args), resolved!);
+
         return {
           content: safeStringify({
             path: args.path,
@@ -378,7 +497,11 @@ function createWriteFileTool(
   return {
     name: "system.writeFile",
     description:
-      "Write content to a file. Creates parent directories if needed. Gated by path allowlist and size limits.",
+      "Write content to a file. Creates parent directories if needed. Gated by path allowlist and size limits. " +
+      "If the file already exists, you MUST call system.readFile on it first in this session — the runtime will " +
+      "reject the write otherwise. For modifying existing files, prefer system.editFile (string-replace) over " +
+      "system.writeFile (full rewrite); editFile only sends the diff and is much less prone to JSON-escape bugs " +
+      "in nested string literals like #include directives or shell single-quotes.",
     inputSchema: {
       type: "object",
       properties: {
@@ -413,6 +536,35 @@ function createWriteFileTool(
           return errorResult("content must be a string");
         }
 
+        // Read-before-Write enforcement (Claude Code FileWriteTool.ts:198-206
+        // pattern). If the target path EXISTS and the model has not called
+        // system.readFile on it in the current session, reject the write
+        // with a structured error that names the rule. Non-existent paths
+        // are allowed through unconditionally so brand-new file creation
+        // continues to work without a prior read.
+        const sessionId = resolveSessionId(args);
+        let targetExists = false;
+        try {
+          const existingStat = await stat(resolved!);
+          targetExists = existingStat.isFile();
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException)?.code;
+          if (code !== "ENOENT") throw err;
+          // ENOENT — file does not exist yet, this is a creation, no
+          // prior read required.
+        }
+        if (
+          targetExists &&
+          sessionId !== undefined &&
+          !hasSessionRead(sessionId, resolved!)
+        ) {
+          return errorResult(
+            `File has not been read yet. Read it first before writing to it. ` +
+              `Call system.readFile on "${args.path}" before calling system.writeFile, ` +
+              `OR prefer system.editFile (str_replace semantics) for incremental edits.`,
+          );
+        }
+
         const encoding = (args.encoding as string) || "utf-8";
         if (!VALID_ENCODINGS.has(encoding)) {
           return errorResult(
@@ -445,6 +597,12 @@ function createWriteFileTool(
 
         await mkdir(dirname(resolved!), { recursive: true });
         await writeFile(resolved!, data);
+
+        // Successful write counts as the "current state" the model has
+        // seen — record the path so subsequent edits to the same file
+        // in the same session don't require a redundant readFile.
+        recordSessionRead(sessionId, resolved!);
+
         return {
           content: safeStringify({
             path: args.path,
@@ -524,6 +682,235 @@ function createAppendFileTool(
         };
       } catch (err) {
         return errorResult(safeError(err, "append"));
+      }
+    },
+  };
+}
+
+/**
+ * `system.editFile` — Claude-Code-style string-replacement edit tool.
+ *
+ * Mirrors `tools/FileEditTool/FileEditTool.ts` from Claude Code. Takes
+ * `{path, old_string, new_string, replace_all?}` and performs an exact
+ * string replacement on the file at `path`. The model uses this tool
+ * for incremental edits instead of `system.writeFile` (full file
+ * replacement). The architectural reason is in the `system.writeFile`
+ * description: rewriting a 200-line C source file via a JSON tool
+ * call exposes hundreds of nested-quote escape opportunities, every
+ * single one of which the Grok adapter has been observed to mangle
+ * (see report.txt §writeFile-escape-bug for the live trace evidence).
+ * Edits scoped to ~50 chars of `old_string` + `new_string` shrink the
+ * escape surface ~100x and make every observed live-trace failure
+ * disappear.
+ *
+ * Semantics:
+ *   - The file MUST exist. Creating new files is `system.writeFile`'s
+ *     job. `system.editFile` returns an error if the path does not
+ *     resolve to a regular file.
+ *   - The file MUST have been read in this session via
+ *     `system.readFile` (or written via `system.writeFile` /
+ *     `system.editFile` which auto-record the new content as "read").
+ *     The Read-before-Edit rule is enforced at the tool boundary
+ *     before any filesystem mutation.
+ *   - `old_string` MUST appear EXACTLY ONCE in the file unless
+ *     `replace_all === true`. If zero matches: returns an error
+ *     pointing the model at the actual file content. If multiple
+ *     matches and `replace_all` is false: returns an error telling the
+ *     model to either narrow `old_string` with more context or pass
+ *     `replace_all: true`.
+ *   - `old_string === new_string` is rejected (no-op edits are a sign
+ *     of a confused model and waste a turn).
+ *
+ * The successful result records the post-edit content as "read" so
+ * subsequent edits in the same session can chain without a redundant
+ * `readFile` call.
+ */
+function createEditFileTool(
+  allowedPaths: readonly string[],
+  maxWriteBytes: number,
+  maxReadBytes: number,
+): Tool {
+  return {
+    name: "system.editFile",
+    description:
+      "Perform an exact string replacement in an existing file. Prefer this over system.writeFile for ALL " +
+      "modifications to existing files — it only sends the diff (old_string → new_string), so it does not " +
+      "expose the model to JSON-escape mistakes in nested string literals like #include directives, shell " +
+      "single-quotes, or printf format strings. The file must exist and must have been read in this session " +
+      "(via system.readFile, or implicitly via a prior system.writeFile / system.editFile in the same session). " +
+      "old_string must match exactly once unless replace_all is true. If old_string is not unique, narrow it " +
+      "with more surrounding context or pass replace_all: true.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Absolute or relative file path to edit",
+        },
+        old_string: {
+          type: "string",
+          description:
+            "The exact text to replace. Must appear in the file. Use enough surrounding context to be unique unless replace_all is true.",
+        },
+        new_string: {
+          type: "string",
+          description:
+            "The replacement text. Must differ from old_string (no-op edits are rejected).",
+        },
+        replace_all: {
+          type: "boolean",
+          description:
+            "If true, replace every occurrence of old_string. If false (default), exactly one occurrence is required.",
+        },
+      },
+      required: ["path", "old_string", "new_string"],
+    },
+    async execute(args: Record<string, unknown>): Promise<ToolResult> {
+      try {
+        const [resolved, pathErr] = await validatePath(
+          args.path,
+          allowedPaths,
+          "path",
+          args,
+        );
+        if (pathErr) return pathErr;
+
+        if (typeof args.old_string !== "string") {
+          return errorResult("old_string must be a string");
+        }
+        if (typeof args.new_string !== "string") {
+          return errorResult("new_string must be a string");
+        }
+        if (args.old_string.length === 0) {
+          return errorResult(
+            "old_string must be a non-empty string. To create a new file or write a full file, use system.writeFile.",
+          );
+        }
+        if (args.old_string === args.new_string) {
+          return errorResult(
+            "old_string and new_string are identical — no-op edits are rejected. " +
+              "If you intended to replace a different region, narrow old_string to the actual target.",
+          );
+        }
+        const replaceAll = args.replace_all === true;
+
+        // The target file MUST exist. Creating new files is system.writeFile's
+        // job; this tool only modifies existing files.
+        let fileStats;
+        try {
+          fileStats = await stat(resolved!);
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException)?.code;
+          if (code === "ENOENT") {
+            return errorResult(
+              `File not found: ${args.path}. system.editFile only modifies existing files. ` +
+                `Use system.writeFile to create new files.`,
+            );
+          }
+          throw err;
+        }
+        if (!fileStats.isFile()) {
+          return errorResult(`Path is not a regular file: ${args.path}`);
+        }
+        if (fileStats.size > maxReadBytes) {
+          return errorResult(
+            `File size ${fileStats.size} bytes exceeds limit of ${maxReadBytes} bytes`,
+          );
+        }
+
+        // Read-before-Edit enforcement (Claude Code FileEditTool prompt:5
+        // pattern). Same rule as system.writeFile: the model must have
+        // called system.readFile on this path in the current session.
+        const sessionId = resolveSessionId(args);
+        if (
+          sessionId !== undefined &&
+          !hasSessionRead(sessionId, resolved!)
+        ) {
+          return errorResult(
+            `File has not been read yet. Read it first before editing it. ` +
+              `Call system.readFile on "${args.path}" before calling system.editFile. ` +
+              `The Read-before-Edit rule exists so you have the literal current contents of the file ` +
+              `(including any prior escape mistakes) in your context before generating the new edit.`,
+          );
+        }
+
+        const existingBuffer = await readFile(resolved!);
+        if (existingBuffer.length > maxReadBytes) {
+          return errorResult(
+            `File size ${existingBuffer.length} bytes exceeds limit of ${maxReadBytes} bytes`,
+          );
+        }
+        if (isBinaryContent(existingBuffer)) {
+          return errorResult(
+            `File appears to be binary: ${args.path}. system.editFile only operates on text files.`,
+          );
+        }
+        const existingContent = existingBuffer.toString("utf-8");
+
+        // Find occurrences of old_string in the existing content. We do
+        // a literal substring search (not regex) to match Claude Code's
+        // FileEditTool semantics — old_string is interpreted as plain
+        // text with no metacharacter handling.
+        let occurrences = 0;
+        let searchFrom = 0;
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const index = existingContent.indexOf(
+            args.old_string,
+            searchFrom,
+          );
+          if (index < 0) break;
+          occurrences++;
+          searchFrom = index + args.old_string.length;
+          if (!replaceAll && occurrences > 1) break; // early-out for the unique-match check
+        }
+        if (occurrences === 0) {
+          return errorResult(
+            `old_string not found in ${args.path}. The exact text you provided does not appear ` +
+              `anywhere in the file. Re-read the file with system.readFile to see the current ` +
+              `contents (including any escape characters that may differ from what you remember), ` +
+              `then construct old_string from the actual bytes you see.`,
+          );
+        }
+        if (!replaceAll && occurrences > 1) {
+          return errorResult(
+            `old_string is not unique in ${args.path} (found multiple matches). ` +
+              `Either narrow old_string by adding more surrounding context until it matches exactly ` +
+              `one location, or pass replace_all: true to replace every occurrence.`,
+          );
+        }
+
+        // Compute the new content. For the unique-match case use a
+        // single replace; for replace_all walk the string to avoid
+        // String.prototype.replaceAll edge cases on older runtimes.
+        const newContent = replaceAll
+          ? existingContent.split(args.old_string).join(args.new_string)
+          : existingContent.replace(args.old_string, args.new_string);
+
+        const newBuffer = Buffer.from(newContent, "utf-8");
+        if (newBuffer.length > maxWriteBytes) {
+          return errorResult(
+            `Resulting file size ${newBuffer.length} bytes exceeds limit of ${maxWriteBytes} bytes`,
+          );
+        }
+
+        await writeFile(resolved!, newBuffer);
+
+        // Record the post-edit content as "read" so the next edit in
+        // this session does not require a redundant readFile.
+        recordSessionRead(sessionId, resolved!);
+
+        return {
+          content: safeStringify({
+            path: args.path,
+            replacements: occurrences,
+            replaceAll,
+            bytesWritten: newBuffer.length,
+            previousSize: existingBuffer.length,
+          }),
+        };
+      } catch (err) {
+        return errorResult(safeError(err, "edit"));
       }
     },
   };
@@ -889,6 +1276,7 @@ export function createFilesystemTools(config: FilesystemToolConfig): Tool[] {
     createReadFileTool(allowedPaths, maxReadBytes),
     createWriteFileTool(allowedPaths, maxWriteBytes),
     createAppendFileTool(allowedPaths, maxWriteBytes),
+    createEditFileTool(allowedPaths, maxWriteBytes, maxReadBytes),
     createListDirTool(allowedPaths),
     createStatTool(allowedPaths),
     createMkdirTool(allowedPaths),
