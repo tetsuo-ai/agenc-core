@@ -31,6 +31,10 @@ describe("loadPersonalityTemplate", () => {
     expect(files.soul).toBeDefined();
     expect(files.user).toBeDefined();
     expect(files.tools).toBeDefined();
+    expect(files.tools).toContain("agenc.inspectMarketplace");
+    expect(files.tools).toContain("Never invent aliases, labels, or placeholder names for `agentPda`");
+    expect(files.tools).toContain("agenc.getProtocolConfig");
+    expect(files.tools).toContain("only for protocol fees, thresholds, rate limits, and versioning");
     expect(files.heartbeat).toBeDefined();
     expect(files.boot).toBeDefined();
     expect(files.capabilities).toBeDefined();
@@ -51,8 +55,13 @@ describe("loadPersonalityTemplate", () => {
     const files = loadPersonalityTemplate("developer");
     expect(files.agent).toContain("Developer");
     expect(files.agent).toContain("code analysis");
+    expect(files.agent).toContain("fenced `diff` blocks");
     expect(files.soul).toContain("rigorous");
     expect(files.capabilities).toContain("code execution");
+    expect(files.tools).toContain("tables, JSON, or `diff` fences");
+    expect(files.tools).toContain("agenc.inspectMarketplace");
+    expect(files.tools).toContain("especially disputes, governance, and reputation inspections");
+    expect(files.tools).toContain("Never invent aliases, labels, or placeholder names for `agentPda`");
   });
 
   it("minimal has minimal content", () => {

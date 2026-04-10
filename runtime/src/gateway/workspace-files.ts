@@ -324,6 +324,11 @@ Configure which tools the agent should prefer and how to use them.
 - Task operations (list, get, create, claim, complete)
 - Agent operations (register, update, query)
 - Protocol queries (config, PDA derivation)
+
+## Usage Rules
+- Use \`agenc.inspectMarketplace\` first for marketplace overview, tasks, skills, governance, disputes, and reputation read prompts
+- Only pass \`subject\` or \`agentPda\` for marketplace reputation inspection when the user or a prior tool result provides a real base58 agent PDA
+- Never invent aliases, labels, or placeholder names for \`agentPda\`; omit the field when no explicit PDA is available so the tool can return the \`requires_input\` placeholder
 `,
   [WORKSPACE_FILES.HEARTBEAT]: `# Heartbeat
 

@@ -1298,7 +1298,7 @@ function createMoveTool(allowedPaths: readonly string[]): Tool {
 // ============================================================================
 
 /**
- * Create all filesystem tools (8 tools).
+ * Create all filesystem tools (9 tools).
  *
  * @param config - Filesystem tool configuration with allowed paths and limits
  * @returns Array of Tool instances

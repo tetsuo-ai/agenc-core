@@ -7,10 +7,16 @@
  * the runtime no longer maintains per-cluster routing caches, schema
  * cost ledgers, or invalidation signals.
  *
- * The `ToolRoutingDecision` shape is preserved as a type so existing
- * trace serialization, channel-wiring callbacks, and chat-executor
- * routing summaries keep their structural shape during the transition.
- * Every live producer now returns `undefined`.
+ * The `ToolRoutingDecision` shape is preserved so existing trace
+ * serialization, channel-wiring callbacks, and chat-executor routing
+ * summaries keep their structural shape during the transition.
+ *
+ * Most turns still rely on the static full tool catalog, but we keep a
+ * tiny lexical router for cases where the broad catalog repeatedly
+ * causes the model to drift to the wrong read tool. Marketplace surface
+ * inspection is one of those cases: overview / tasks / skills /
+ * governance / disputes / reputation prompts should use
+ * `agenc.inspectMarketplace` rather than the lower-level list/get tools.
  *
  * @module
  */
@@ -33,10 +39,80 @@ export interface ToolRoutingDecision {
   };
 }
 
-/**
- * Resolve the static allowed-tool name set for a session. The previous
- * router consulted a long set of cluster heuristics; static allowed
- * tools are now derived from the gateway's permission rules + tool
- * registry, and this helper exists only as a stable single source of
- * truth callers can resolve tool names through.
- */
+const MARKETPLACE_INSPECT_TOOL = "agenc.inspectMarketplace";
+
+const MARKETPLACE_CONTEXT_RE = /\bmarketplace\b/i;
+const MARKETPLACE_READ_VERB_RE =
+  /\b(?:inspect|show|summarize|summary|review|browse|list|top)\b/i;
+const MARKETPLACE_SURFACE_RE =
+  /\b(?:overview|surface|surfaces|tasks?|skills?|governance|proposals?|disputes?|reputation|counts?|available)\b/i;
+const MARKETPLACE_MUTATION_RE =
+  /\b(?:create|claim|complete|cancel|purchase|buy|install|rate|register|resolve|submit|file)\b/i;
+
+function estimateToolSchemaChars(toolNames: readonly string[]): number {
+  return toolNames.reduce((total, toolName) => total + toolName.length, 0);
+}
+
+function buildSingleToolDecision(params: {
+  availableToolNames: readonly string[];
+  routedToolName: string;
+  clusterKey: string;
+  confidence?: number;
+}): ToolRoutingDecision | undefined {
+  const { availableToolNames, routedToolName, clusterKey } = params;
+  if (!availableToolNames.includes(routedToolName)) {
+    return undefined;
+  }
+
+  const schemaCharsFull = estimateToolSchemaChars(availableToolNames);
+  const schemaCharsRouted = estimateToolSchemaChars([routedToolName]);
+
+  return {
+    routedToolNames: [routedToolName],
+    expandedToolNames: [routedToolName],
+    diagnostics: {
+      cacheHit: false,
+      clusterKey,
+      confidence: params.confidence ?? 1,
+      totalToolCount: availableToolNames.length,
+      routedToolCount: 1,
+      expandedToolCount: 1,
+      schemaCharsFull,
+      schemaCharsRouted,
+      schemaCharsExpanded: schemaCharsRouted,
+      schemaCharsSaved: Math.max(0, schemaCharsFull - schemaCharsRouted),
+    },
+  };
+}
+
+function isMarketplaceInspectPrompt(content: string): boolean {
+  const normalized = content.trim();
+  if (!MARKETPLACE_CONTEXT_RE.test(normalized)) {
+    return false;
+  }
+  if (MARKETPLACE_MUTATION_RE.test(normalized)) {
+    return false;
+  }
+  return MARKETPLACE_READ_VERB_RE.test(normalized) ||
+    MARKETPLACE_SURFACE_RE.test(normalized);
+}
+
+export function buildStaticToolRoutingDecision(params: {
+  content: string;
+  availableToolNames: readonly string[];
+}): ToolRoutingDecision | undefined {
+  const { content, availableToolNames } = params;
+  if (content.trim().length === 0 || availableToolNames.length === 0) {
+    return undefined;
+  }
+
+  if (isMarketplaceInspectPrompt(content)) {
+    return buildSingleToolDecision({
+      availableToolNames,
+      routedToolName: MARKETPLACE_INSPECT_TOOL,
+      clusterKey: "marketplace-inspect",
+    });
+  }
+
+  return undefined;
+}

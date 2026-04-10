@@ -10,7 +10,15 @@ import { createProgram, createReadOnlyProgram } from "../../idl.js";
 import { AnchorProvider } from "@coral-xyz/anchor";
 import {
   createListTasksTool,
+  createInspectMarketplaceTool,
   createGetTaskTool,
+  createListSkillsTool,
+  createGetSkillTool,
+  createListGovernanceProposalsTool,
+  createGetGovernanceProposalTool,
+  createListDisputesTool,
+  createGetDisputeTool,
+  createGetReputationSummaryTool,
   createGetTokenBalanceTool,
   createRegisterAgentTool,
   createCreateTaskTool,
@@ -33,15 +41,29 @@ import {
 
 // Re-export serialized types
 export type {
-  SerializedTask,
   SerializedAgent,
+  SerializedDisputeDetail,
+  SerializedDisputeSummary,
+  SerializedGovernanceProposalDetail,
+  SerializedGovernanceProposalSummary,
   SerializedProtocolConfig,
+  SerializedReputationSummary,
+  SerializedSkill,
+  SerializedTask,
 } from "./types.js";
 
 // Re-export individual tool factories for advanced usage
 export {
   createListTasksTool,
+  createInspectMarketplaceTool,
   createGetTaskTool,
+  createListSkillsTool,
+  createGetSkillTool,
+  createListGovernanceProposalsTool,
+  createGetGovernanceProposalTool,
+  createListDisputesTool,
+  createGetDisputeTool,
+  createGetReputationSummaryTool,
   createGetTokenBalanceTool,
   createRegisterAgentTool,
   createCreateTaskTool,
@@ -107,8 +129,16 @@ export function createAgencTools(context: ToolContext): Tool[] {
   });
 
   return [
+    createInspectMarketplaceTool(program, context.logger),
     createListTasksTool(ops, context.logger),
     createGetTaskTool(ops, context.logger),
+    createListSkillsTool(program, context.logger),
+    createGetSkillTool(program, context.logger),
+    createListGovernanceProposalsTool(program, context.logger),
+    createGetGovernanceProposalTool(program, context.logger),
+    createListDisputesTool(program, context.logger),
+    createGetDisputeTool(program, context.logger),
+    createGetReputationSummaryTool(program, context.logger),
     createGetTokenBalanceTool(program, context.logger),
     createRegisterAgentTool(program, context.logger),
     createCreateTaskTool(program, context.logger),

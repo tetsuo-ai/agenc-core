@@ -677,12 +677,13 @@ describe('Edge cases', () => {
     expect(rr.isError).toBe(true);
   });
 
-  it('returns correct tool count (8 tools)', () => {
-    expect(tools.length).toBe(8);
+  it('returns correct tool count (9 tools)', () => {
+    expect(tools.length).toBe(9);
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
       'system.appendFile',
       'system.delete',
+      'system.editFile',
       'system.listDir',
       'system.mkdir',
       'system.move',

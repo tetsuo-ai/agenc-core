@@ -439,9 +439,24 @@ function marketEventTone(type) {
 
 function formatMarketplaceSkillListLine(item, index) {
   const name = coerceMarketText(item?.name ?? item?.skillId ?? item?.skillPda, "unknown skill");
+  const state = item?.isActive === false ? "inactive" : "active";
+  const price = String(item?.priceDisplay ?? "").trim() || (
+    item?.priceSol !== undefined ? `${coerceMarketText(item.priceSol)} SOL`
+      : item?.priceLamports !== undefined ? `${coerceMarketText(item.priceLamports)} lamports`
+        : item?.price !== undefined ? coerceMarketText(item.price)
+          : ""
+  );
   const ratingValue = Number(item?.rating ?? item?.averageRating);
   const downloadsValue = Number(item?.downloads);
+  const author = String(item?.author ?? item?.seller ?? "").trim();
   const details = [];
+  details.push(`[${state}]`);
+  if (price) {
+    details.push(price);
+  }
+  if (author) {
+    details.push(`by ${author}`);
+  }
   if (Number.isFinite(ratingValue)) {
     details.push(`rating ${ratingValue.toFixed(1)}`);
   }
@@ -452,18 +467,30 @@ function formatMarketplaceSkillListLine(item, index) {
 }
 
 function formatMarketplaceGovernanceListLine(item, index) {
+  const preview = String(item?.payloadPreview ?? "").trim();
+  const proposalType = String(item?.proposalType ?? "").trim();
   const subject = coerceMarketText(
-    item?.payloadPreview ?? item?.proposalType ?? item?.proposalPda,
+    preview && proposalType
+      ? `${proposalType}: ${preview}`
+      : preview || proposalType || item?.proposalPda,
     "proposal",
   );
   const details = [];
+  const proposer = String(item?.proposer ?? "").trim();
   const votesFor = String(item?.votesFor ?? "").trim();
   const votesAgainst = String(item?.votesAgainst ?? "").trim();
+  const totalVoters = Number(item?.totalVoters);
+  if (proposer) {
+    details.push(`by ${proposer}`);
+  }
   if (votesFor) {
     details.push(`for ${votesFor}`);
   }
   if (votesAgainst) {
     details.push(`against ${votesAgainst}`);
+  }
+  if (Number.isFinite(totalVoters)) {
+    details.push(`${totalVoters} voter${totalVoters === 1 ? "" : "s"}`);
   }
   return `${index + 1}. [${coerceMarketText(item?.status)}] ${subject}${details.length > 0 ? ` · ${details.join(" · ")}` : ""}`;
 }
@@ -474,13 +501,21 @@ function formatMarketplaceDisputeListLine(item, index) {
     "dispute",
   );
   const details = [];
+  const disputeLabel = String(item?.disputePda ?? item?.taskPda ?? "").trim();
   const votesFor = String(item?.votesFor ?? "").trim();
   const votesAgainst = String(item?.votesAgainst ?? "").trim();
+  const totalVoters = Number(item?.totalVoters);
+  if (disputeLabel) {
+    details.push(disputeLabel);
+  }
   if (votesFor) {
     details.push(`for ${votesFor}`);
   }
   if (votesAgainst) {
     details.push(`against ${votesAgainst}`);
+  }
+  if (Number.isFinite(totalVoters)) {
+    details.push(`${totalVoters} voter${totalVoters === 1 ? "" : "s"}`);
   }
   return `${index + 1}. [${coerceMarketText(item?.status)}] ${subject}${details.length > 0 ? ` · ${details.join(" · ")}` : ""}`;
 }
@@ -496,6 +531,9 @@ function formatMarketplaceReputationListLine(item, index) {
   }
   if (item?.tasksCompleted !== undefined) {
     details.push(`tasks ${coerceMarketText(item.tasksCompleted)}`);
+  }
+  if (item?.totalEarnedSol !== undefined) {
+    details.push(`earned ${coerceMarketText(item.totalEarnedSol)} SOL`);
   }
   return `${index + 1}. [${item?.registered === false ? "unregistered" : "registered"}] ${label}${details.length > 0 ? ` · ${details.join(" · ")}` : ""}`;
 }
@@ -658,11 +696,26 @@ function buildMarketDetailSurfaceEvent(surfaceEvent, api) {
         payload.authority ? `authority: ${coerceMarketText(payload.authority)}` : null,
         payload.agentPda ? `agent: ${coerceMarketText(payload.agentPda)}` : null,
         payload.agentId ? `agent id: ${coerceMarketText(payload.agentId)}` : null,
-        payload.baseReputation !== undefined ? `base reputation: ${coerceMarketText(payload.baseReputation)}` : null,
-        payload.effectiveReputation !== undefined ? `effective reputation: ${coerceMarketText(payload.effectiveReputation)}` : null,
-        payload.tasksCompleted !== undefined ? `completed tasks: ${coerceMarketText(payload.tasksCompleted)}` : null,
-        payload.totalEarnedSol !== undefined ? `total earned: ${coerceMarketText(payload.totalEarnedSol)} SOL` : null,
-        payload.stakedAmountSol !== undefined ? `staked: ${coerceMarketText(payload.stakedAmountSol)} SOL` : null,
+        [
+          payload.baseReputation !== undefined ? `base ${coerceMarketText(payload.baseReputation)}` : null,
+          payload.effectiveReputation !== undefined ? `effective ${coerceMarketText(payload.effectiveReputation)}` : null,
+          payload.tasksCompleted !== undefined ? `${coerceMarketText(payload.tasksCompleted)} tasks` : null,
+        ].filter(Boolean).length > 0
+          ? `scorecard: ${[
+            payload.baseReputation !== undefined ? `base ${coerceMarketText(payload.baseReputation)}` : null,
+            payload.effectiveReputation !== undefined ? `effective ${coerceMarketText(payload.effectiveReputation)}` : null,
+            payload.tasksCompleted !== undefined ? `${coerceMarketText(payload.tasksCompleted)} tasks` : null,
+          ].filter(Boolean).join(" · ")}`
+          : null,
+        [
+          payload.totalEarnedSol !== undefined ? `${coerceMarketText(payload.totalEarnedSol)} SOL earned` : null,
+          payload.stakedAmountSol !== undefined ? `${coerceMarketText(payload.stakedAmountSol)} SOL staked` : null,
+        ].filter(Boolean).length > 0
+          ? `activity: ${[
+            payload.totalEarnedSol !== undefined ? `${coerceMarketText(payload.totalEarnedSol)} SOL earned` : null,
+            payload.stakedAmountSol !== undefined ? `${coerceMarketText(payload.stakedAmountSol)} SOL staked` : null,
+          ].filter(Boolean).join(" · ")}`
+          : null,
       ]);
     default:
       return summarizeMarketSurfaceEvent(surfaceEvent, api);

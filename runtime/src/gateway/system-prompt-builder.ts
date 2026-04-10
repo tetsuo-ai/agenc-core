@@ -308,8 +308,18 @@ export async function buildSystemPrompt(
       "If you genuinely have nothing more to do because the task is complete, your final reply should describe what you actually verified via tool results — not what you would have done. If a task is too large to fit in one turn, keep calling tools until you run out of useful actions; do not summarize fake progress to end the turn early.\n\n" +
       "For simple questions or explanation-only requests, respond directly without tools.";
 
+  const marketplaceToolInstruction =
+    "\n\n## Marketplace Tool Calling Rules\n\n" +
+    "For marketplace read prompts, use `agenc.inspectMarketplace` first.\n" +
+    "For `agenc.inspectMarketplace` reputation requests, only pass `subject` or `agentPda` when the user or a prior tool result provides a real base58 agent PDA.\n" +
+    "Never invent aliases, labels, or placeholder names for `agentPda`.\n" +
+    "If no explicit agent PDA is available, omit `subject` and `agentPda` so the tool can return the `requires_input` placeholder.";
+
   const additionalContext =
-    desktopContext + planningInstruction + modelDisclosureContext;
+    desktopContext +
+    planningInstruction +
+    marketplaceToolInstruction +
+    modelDisclosureContext;
   const workspacePath = resolveActiveHostWorkspacePath(config, opts.configPath);
   const loader = new WorkspaceLoader(workspacePath);
 

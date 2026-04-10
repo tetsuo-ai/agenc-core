@@ -23,6 +23,12 @@ import {
   serializeMarketplaceTask,
   serializeMarketplaceTaskEntry,
 } from "../marketplace/serialization.js";
+import {
+  buildMarketplaceInspectOverview,
+  buildMarketplaceInspectSurface,
+  buildMarketplaceReputationInspectPlaceholder,
+  resolveMarketplaceInspectSurface,
+} from "../marketplace/surfaces.mjs";
 import { OnChainSkillRegistryClient } from "../skills/registry/client.js";
 import { SkillPurchaseManager } from "../skills/registry/payment.js";
 import { TaskOperations } from "../task/operations.js";
@@ -147,6 +153,15 @@ export interface MarketReputationDelegateOptions extends BaseCliOptions {
   delegatorAgentPda?: string;
 }
 
+export interface MarketInspectOptions extends BaseCliOptions {
+  surface: string;
+  subject?: string;
+  statuses?: string[];
+  query?: string;
+  tags?: string[];
+  limit?: number;
+}
+
 export type MarketCommandOptions =
   | MarketTasksListOptions
   | MarketTaskCreateOptions
@@ -167,7 +182,8 @@ export type MarketCommandOptions =
   | MarketDisputeResolveOptions
   | MarketReputationSummaryOptions
   | MarketReputationStakeOptions
-  | MarketReputationDelegateOptions;
+  | MarketReputationDelegateOptions
+  | MarketInspectOptions;
 
 type MarketProgram = Program<AgencCoordination>;
 
@@ -420,6 +436,339 @@ function filterByStatus<T extends { status: string }>(
   const filter = normalizeStatusFilter(statuses);
   if (!filter) return items;
   return items.filter((item) => filter.has(item.status));
+}
+
+function filterInspectItemsByStatus(
+  items: Record<string, unknown>[],
+  statuses?: string[],
+): Record<string, unknown>[] {
+  const filter = normalizeStatusFilter(statuses);
+  if (!filter) return items;
+  return items.filter((item) =>
+    filter.has(String(item.status ?? "").trim().toLowerCase()),
+  );
+}
+
+type CapturedCliPayload = Record<string, unknown> | null;
+
+function asCapturedCliPayload(value: unknown): CapturedCliPayload {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function readCapturedArray(
+  payload: CapturedCliPayload,
+  key: string,
+): Record<string, unknown>[] {
+  const value = payload?.[key];
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter(
+    (item): item is Record<string, unknown> =>
+      Boolean(item) && typeof item === "object" && !Array.isArray(item),
+  );
+}
+
+function readCapturedObject(
+  payload: CapturedCliPayload,
+  key: string,
+): Record<string, unknown> | null {
+  const value = payload?.[key];
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function readCapturedCount(
+  payload: CapturedCliPayload,
+  fallbackCount: number,
+): number {
+  const numeric = Number(payload?.count);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : fallbackCount;
+}
+
+async function captureMarketplaceCommand<TOptions extends BaseCliOptions>(
+  context: CliRuntimeContext,
+  runner: (
+    context: CliRuntimeContext,
+    options: TOptions,
+  ) => Promise<CliStatusCode>,
+  options: TOptions,
+): Promise<{
+  code: CliStatusCode;
+  output: CapturedCliPayload;
+  error?: unknown;
+}> {
+  let output: unknown;
+  let error: unknown;
+  const captureContext: CliRuntimeContext = {
+    logger: context.logger,
+    outputFormat: "json",
+    output(value) {
+      output = value;
+    },
+    error(value) {
+      error = value;
+    },
+  };
+  const code = await runner(captureContext, options);
+  return {
+    code,
+    output: asCapturedCliPayload(output),
+    error,
+  };
+}
+
+function forwardMarketplaceInspectFailure(
+  context: CliRuntimeContext,
+  error: unknown,
+  fallbackMessage: string,
+): void {
+  if (error !== undefined) {
+    context.error(error);
+    return;
+  }
+  context.error({
+    status: "error",
+    code: "MARKET_INSPECT_FAILED",
+    message: fallbackMessage,
+  });
+}
+
+export async function runMarketInspectCommand(
+  context: CliRuntimeContext,
+  options: MarketInspectOptions,
+): Promise<CliStatusCode> {
+  const surface = resolveMarketplaceInspectSurface(options.surface, null);
+  if (!surface) {
+    context.error({
+      status: "error",
+      code: "MARKET_INSPECT_SURFACE_INVALID",
+      message: `Unknown inspect surface: ${options.surface}`,
+    });
+    return 1;
+  }
+
+  const statuses = Array.isArray(options.statuses)
+    ? options.statuses.map((value) => String(value ?? "").trim()).filter(Boolean)
+    : undefined;
+  const query =
+    typeof options.query === "string" && options.query.trim().length > 0
+      ? options.query.trim()
+      : undefined;
+  const tags = Array.isArray(options.tags)
+    ? options.tags.map((value) => String(value ?? "").trim()).filter(Boolean)
+    : undefined;
+  const subject =
+    typeof options.subject === "string" && options.subject.trim().length > 0
+      ? options.subject.trim()
+      : undefined;
+
+  if (!(surface === "reputation" && !subject) && !requireRpcUrl(context, options)) {
+    return 1;
+  }
+
+  try {
+    const buildTasksSurface = async () => {
+      const captured = await captureMarketplaceCommand(
+        context,
+        runMarketTasksListCommand,
+        {
+          ...options,
+          statuses,
+        } as MarketTasksListOptions,
+      );
+      if (captured.code !== 0 || !captured.output) {
+        forwardMarketplaceInspectFailure(
+          context,
+          captured.error,
+          "Failed to inspect marketplace tasks.",
+        );
+        return null;
+      }
+      const items = readCapturedArray(captured.output, "tasks");
+      return buildMarketplaceInspectSurface({
+        surface: "tasks",
+        items,
+        count: readCapturedCount(captured.output, items.length),
+        filters: { statuses },
+      });
+    };
+
+    const buildSkillsSurface = async () => {
+      const captured = await captureMarketplaceCommand(
+        context,
+        runMarketSkillsListCommand,
+        {
+          ...options,
+          query,
+          tags,
+          limit: options.limit,
+        } as MarketSkillsListOptions,
+      );
+      if (captured.code !== 0 || !captured.output) {
+        forwardMarketplaceInspectFailure(
+          context,
+          captured.error,
+          "Failed to inspect marketplace skills.",
+        );
+        return null;
+      }
+      const items = readCapturedArray(captured.output, "skills");
+      return buildMarketplaceInspectSurface({
+        surface: "skills",
+        items,
+        count: readCapturedCount(captured.output, items.length),
+        filters: {
+          query,
+          tags,
+          limit: options.limit,
+          activeOnly: false,
+        },
+      });
+    };
+
+    const buildGovernanceSurface = async () => {
+      const captured = await captureMarketplaceCommand(
+        context,
+        runMarketGovernanceListCommand,
+        options as MarketGovernanceListOptions,
+      );
+      if (captured.code !== 0 || !captured.output) {
+        forwardMarketplaceInspectFailure(
+          context,
+          captured.error,
+          "Failed to inspect governance proposals.",
+        );
+        return null;
+      }
+      const items = filterInspectItemsByStatus(
+        readCapturedArray(captured.output, "proposals"),
+        statuses,
+      );
+      return buildMarketplaceInspectSurface({
+        surface: "governance",
+        items,
+        count: items.length,
+        filters: { statuses },
+      });
+    };
+
+    const buildDisputesSurface = async () => {
+      const captured = await captureMarketplaceCommand(
+        context,
+        runMarketDisputesListCommand,
+        {
+          ...options,
+          statuses,
+        } as MarketDisputesListOptions,
+      );
+      if (captured.code !== 0 || !captured.output) {
+        forwardMarketplaceInspectFailure(
+          context,
+          captured.error,
+          "Failed to inspect marketplace disputes.",
+        );
+        return null;
+      }
+      const items = readCapturedArray(captured.output, "disputes");
+      return buildMarketplaceInspectSurface({
+        surface: "disputes",
+        items,
+        count: readCapturedCount(captured.output, items.length),
+        filters: { statuses },
+      });
+    };
+
+    const buildReputationSurface = async () => {
+      if (!subject) {
+        return buildMarketplaceReputationInspectPlaceholder();
+      }
+      const captured = await captureMarketplaceCommand(
+        context,
+        runMarketReputationSummaryCommand,
+        {
+          ...options,
+          agentPda: subject,
+        } as MarketReputationSummaryOptions,
+      );
+      if (captured.code !== 0 || !captured.output) {
+        forwardMarketplaceInspectFailure(
+          context,
+          captured.error,
+          "Failed to inspect marketplace reputation.",
+        );
+        return null;
+      }
+      const summary = readCapturedObject(captured.output, "summary");
+      return buildMarketplaceInspectSurface({
+        surface: "reputation",
+        subject,
+        items: summary ? [summary] : [],
+        count: summary ? 1 : 0,
+      });
+    };
+
+    let inspectSurface;
+    switch (surface) {
+      case "tasks":
+        inspectSurface = await buildTasksSurface();
+        break;
+      case "skills":
+        inspectSurface = await buildSkillsSurface();
+        break;
+      case "governance":
+        inspectSurface = await buildGovernanceSurface();
+        break;
+      case "disputes":
+        inspectSurface = await buildDisputesSurface();
+        break;
+      case "reputation":
+        inspectSurface = await buildReputationSurface();
+        break;
+      case "marketplace": {
+        const surfaces = [
+          await buildTasksSurface(),
+          await buildSkillsSurface(),
+          await buildGovernanceSurface(),
+          await buildDisputesSurface(),
+          await buildReputationSurface(),
+        ];
+        if (surfaces.some((entry) => entry === null)) {
+          return 1;
+        }
+        const overviewSurfaces = surfaces.filter(
+          (entry): entry is NonNullable<(typeof surfaces)[number]> => entry !== null,
+        );
+        inspectSurface = buildMarketplaceInspectOverview({
+          surfaces: overviewSurfaces,
+          subject,
+        });
+        break;
+      }
+    }
+
+    if (!inspectSurface) {
+      return 1;
+    }
+
+    context.output({
+      status: "ok",
+      command: "market.inspect",
+      schema: "market.inspect.output.v1",
+      surface: inspectSurface,
+    });
+    return 0;
+  } catch (error) {
+    context.error({
+      status: "error",
+      code: "MARKET_INSPECT_FAILED",
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return 1;
+  }
 }
 
 async function loadSkillAccount(

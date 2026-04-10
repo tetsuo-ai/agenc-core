@@ -72,6 +72,57 @@ Paragraph with [docs](https://example.com/docs), ![diagram](asset.png), and \`np
   );
 });
 
+test("buildMarkdownDisplayLines falls back to ordered stacked rows for wide tables", () => {
+  const lines = buildMarkdownDisplayLines(`
+| Name | Owner | Status | Notes | Updated |
+| --- | --- | --- | --- | --- |
+| Governance Sync | team-ops | active | Keeps proposal state and votes aligned across surfaces | today |
+`);
+
+  const actual = lines
+    .filter((line) => line.mode !== "blank")
+    .map((line) => ({ mode: line.mode, text: line.text }));
+
+  assert.equal(
+    JSON.stringify(actual),
+    JSON.stringify([
+      { mode: "table-header", text: "Name · Owner · Status · Notes · Updated" },
+      { mode: "table-divider", text: "───────────────────────────────────────" },
+      { mode: "table-row", text: "1. Name: Governance Sync" },
+      { mode: "table-row", text: "   Owner: team-ops" },
+      { mode: "table-row", text: "   Status: active" },
+      { mode: "table-row", text: "   Notes: Keeps proposal state and votes aligned across surfaces" },
+      { mode: "table-row", text: "   Updated: today" },
+    ]),
+  );
+});
+
+test("buildMarkdownDisplayLines renders fenced diff blocks with diff modes", () => {
+  const lines = buildMarkdownDisplayLines(`
+\`\`\`diff
+--- a/src/app.ts
++++ b/src/app.ts
+@@ -1 +1 @@
+-console.log("old")
++console.log("new")
+\`\`\`
+`);
+
+  const actual = lines
+    .filter((line) => line.mode !== "blank")
+    .map((line) => ({ mode: line.mode, text: line.text }));
+
+  assert.equal(
+    JSON.stringify(actual),
+    JSON.stringify([
+      { mode: "diff-header", text: "patch · src/app.ts" },
+      { mode: "diff-hunk", text: "@@ -1 +1 @@" },
+      { mode: "diff-remove", text: "-console.log(\"old\")" },
+      { mode: "diff-add", text: "+console.log(\"new\")" },
+    ]),
+  );
+});
+
 test("wrapRichDisplayLines preserves list and quote continuation prefixes", () => {
   const lines = wrapRichDisplayLines(
     buildMarkdownDisplayLines(`

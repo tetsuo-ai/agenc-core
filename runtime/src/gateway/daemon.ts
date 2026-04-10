@@ -218,6 +218,7 @@ import {
   type ExternalChannelRegistry,
 } from "./channel-wiring.js";
 import { createChannelHostServices } from "../plugins/channel-host-services.js";
+import { buildStaticToolRoutingDecision } from "./tool-routing.js";
 import type { ProactiveCommunicator } from "./proactive.js";
 import {
   loadAgentDefinitions,
@@ -2174,10 +2175,11 @@ export class DaemonManager {
             traceId: `background:${sessionId}:${runId}:${cycleIndex}`,
             hookMetadata: { backgroundRunId: runId },
           }),
-        // Phase M: per-phase routing was planner-era. Always returns
-        // undefined; downstream consumers fall back to static allowed
-        // tools. The stub method was deleted from this class.
-        buildToolRoutingDecision: () => undefined,
+        buildToolRoutingDecision: (_sessionId, content, _history) =>
+          buildStaticToolRoutingDecision({
+            content,
+            availableToolNames: this.getAdvertisedToolNames(),
+          }),
         seedHistoryForSession: (sessionId) =>
           sessionMgr.get(sessionId)?.history ?? [],
         isSessionBusy: (sessionId) =>
@@ -3168,9 +3170,11 @@ export class DaemonManager {
         this.registerTextApprovalDispatcher(sessionId, channelName, send),
       createTextChannelSessionToolHandler: (params) =>
         this.createTextChannelSessionToolHandler(params),
-      // Phase M: tool routing decisions are static post-planner; the
-      // stub methods that used to back these callbacks were deleted.
-      buildToolRoutingDecision: () => undefined,
+      buildToolRoutingDecision: (_sessionId, content, _history) =>
+        buildStaticToolRoutingDecision({
+          content,
+          availableToolNames: this.getAdvertisedToolNames(),
+        }),
       recordToolRoutingOutcome: () => {
         /* no-op: static routing, nothing to record */
       },
@@ -5669,9 +5673,11 @@ export class DaemonManager {
         contextWindowTokens,
         traceConfig,
         turnTraceId,
-        // Phase M: tool routing is static post-planner. The stubs
-        // that used to back these callbacks were deleted.
-        buildToolRoutingDecision: () => undefined,
+        buildToolRoutingDecision: (_sessionId, content, _history) =>
+          buildStaticToolRoutingDecision({
+            content,
+            availableToolNames: this.getAdvertisedToolNames(),
+          }),
         recordToolRoutingOutcome: () => {
           /* no-op */
         },

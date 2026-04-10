@@ -231,6 +231,47 @@ describe("DaemonManager host workspace prompt and memory resolution", () => {
       await rm(hostPath, { recursive: true, force: true });
     }
   });
+
+  it("appends marketplace reputation tool-call guidance for host workspace prompts", async () => {
+    const hostPath = await mkdtemp(join(tmpdir(), "agenc-host-marketplace-prompt-"));
+    try {
+      await writeFile(
+        join(hostPath, "AGENT.md"),
+        "# Agent\n\nHost workspace agent\n",
+        "utf-8",
+      );
+      await writeFile(
+        join(hostPath, "TOOLS.md"),
+        "# Tools\n\nHost workspace tools\n",
+        "utf-8",
+      );
+
+      const noop = () => {};
+      const silentLog = {
+        debug: noop,
+        info: noop,
+        warn: noop,
+        error: noop,
+        setLevel: noop,
+      } as any;
+      const prompt = await buildSystemPrompt(
+        {
+          gateway: { port: 9000 },
+          agent: { name: "host-test" },
+          connection: { rpcUrl: "http://localhost:8899" },
+          workspace: { hostPath },
+        } as any,
+        { yolo: false, configPath: "/tmp/config.json", logger: silentLog },
+      );
+
+      expect(prompt).toContain("Host workspace agent");
+      expect(prompt).toContain("For `agenc.inspectMarketplace` reputation requests");
+      expect(prompt).toContain("Never invent aliases, labels, or placeholder names for `agentPda`");
+      expect(prompt).toContain("return the `requires_input` placeholder");
+    } finally {
+      await rm(hostPath, { recursive: true, force: true });
+    }
+  });
 });
 
 // ============================================================================

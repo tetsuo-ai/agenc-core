@@ -176,7 +176,7 @@ test("frame controller renders the marketplace task browser inline below the com
   const snapshot = harness.controller.buildVisibleFrameSnapshot();
   const titleRow = snapshot.lines.findIndex((line) => String(line).includes("Marketplace Tasks"));
   const taskRow = snapshot.lines.findIndex((line) => String(line).includes("Task 2") && String(line).includes("2 SOL"));
-  const detailRow = snapshot.lines.findIndex((line) => String(line).includes("task id: task-2"));
+  const detailRow = snapshot.lines.findIndex((line) => String(line).includes("identity: task-2 · task-pda-2"));
 
   assert.notEqual(titleRow, -1);
   assert.notEqual(taskRow, -1);
@@ -237,8 +237,8 @@ test("frame controller renders the marketplace skill browser inline below the co
 
   const snapshot = harness.controller.buildVisibleFrameSnapshot();
   const titleRow = snapshot.lines.findIndex((line) => String(line).includes("Marketplace Skills"));
-  const skillRow = snapshot.lines.findIndex((line) => String(line).includes("Browser Skill") && String(line).includes("2 SOL"));
-  const detailRow = snapshot.lines.findIndex((line) => String(line).includes("skill id: skill-2"));
+  const skillRow = snapshot.lines.findIndex((line) => String(line).includes("Browser Skill") && String(line).includes("by author-2"));
+  const detailRow = snapshot.lines.findIndex((line) => String(line).includes("identity: skill-2 · skill-pda-2"));
 
   assert.notEqual(titleRow, -1);
   assert.notEqual(skillRow, -1);
@@ -295,11 +295,12 @@ test("frame controller renders the governance browser inline below the composer"
   const proposalRow = snapshot.lines.findIndex(
     (line) =>
       String(line).includes("Upgrade validator set") &&
+      String(line).includes("by agent-2") &&
       String(line).includes("for 12") &&
       String(line).includes("against 3"),
   );
   const detailRow = snapshot.lines.findIndex((line) =>
-    String(line).includes("proposal pda: proposal-pda-2"),
+    String(line).includes("identity: proposal-pda-2 · upgrade"),
   );
 
   assert.notEqual(titleRow, -1);
@@ -353,7 +354,7 @@ test("frame controller renders the disputes browser inline below the composer", 
       String(line).includes("for 2"),
   );
   const detailRow = snapshot.lines.findIndex((line) =>
-    String(line).includes("dispute pda: dispute-pda-1"),
+    String(line).includes("identity: dispute-pda-1 · task-pda-9"),
   );
 
   assert.notEqual(titleRow, -1);
@@ -399,10 +400,10 @@ test("frame controller renders the reputation browser inline below the composer"
     (line) =>
       String(line).includes("agent-authority-1") &&
       String(line).includes("effective 98") &&
-      String(line).includes("14 tasks"),
+      String(line).includes("4.2 SOL"),
   );
   const detailRow = snapshot.lines.findIndex((line) =>
-    String(line).includes("agent pda: agent-pda-1"),
+    String(line).includes("activity: 14 tasks · 4.2 SOL earned"),
   );
 
   assert.notEqual(titleRow, -1);
@@ -888,4 +889,183 @@ test("frame controller renders user transcript rows as shaded blocks without div
     lines.slice(firstUserRow + 2, assistantRow).some((line) => /^─+$/.test(line)),
     false,
   );
+});
+
+test("frame controller renders full non-code agent replies in transcript view", () => {
+  const harness = createWatchFrameHarness({
+    width: 60,
+    height: 28,
+    previewLines: 2,
+    events: [
+      {
+        id: "evt-agent",
+        kind: "agent",
+        title: "Agent Reply",
+        body: "ignored",
+        timestamp: "15:15:01",
+      },
+    ],
+    dependencies: {
+      isMarkdownRenderableEvent(event) {
+        return event?.kind === "agent";
+      },
+      buildEventDisplayLines() {
+        return [
+          createDisplayLine("Here are the open tasks", "paragraph"),
+          createDisplayLine("1. Task A", "list"),
+          createDisplayLine("2. Task B", "list"),
+          createDisplayLine("3. Task C", "list"),
+        ];
+      },
+    },
+  });
+
+  const lines = harness.controller.buildVisibleFrameSnapshot().lines.map((line) => String(line));
+  const headingRow = lines.findIndex((line) => line.includes("Here are the open tasks"));
+  const firstTaskRow = lines.findIndex((line) => line.includes("1. Task A"));
+
+  assert.ok(lines.some((line) => line.includes("Here are the open tasks")));
+  assert.ok(lines.some((line) => line.includes("1. Task A")));
+  assert.ok(lines.some((line) => line.includes("2. Task B")));
+  assert.ok(lines.some((line) => line.includes("3. Task C")));
+  assert.ok(firstTaskRow > headingRow + 1);
+  assert.equal(String(lines[headingRow + 1] ?? "").trim().length, 0);
+});
+
+test("frame controller renders full code-heavy agent replies in transcript view", () => {
+  const harness = createWatchFrameHarness({
+    width: 60,
+    height: 28,
+    previewLines: 2,
+    events: [
+      {
+        id: "evt-agent",
+        kind: "agent",
+        title: "Agent Reply",
+        body: "ignored",
+        timestamp: "15:15:01",
+      },
+    ],
+    dependencies: {
+      isMarkdownRenderableEvent(event) {
+        return event?.kind === "agent";
+      },
+      buildEventDisplayLines() {
+        return [
+          createDisplayLine("Patch preview", "paragraph"),
+          createDisplayLine("code · ts", "code-meta"),
+          createDisplayLine("const task = 1;", "code"),
+          createDisplayLine("return task;", "code"),
+        ];
+      },
+      wrapEventDisplayLines() {
+        return [
+          createDisplayLine("Patch preview", "paragraph"),
+          createDisplayLine("code · ts", "code-meta"),
+          createDisplayLine("const task = 1;", "code"),
+          createDisplayLine("return task;", "code"),
+        ];
+      },
+    },
+  });
+
+  const lines = harness.controller.buildVisibleFrameSnapshot().lines.map((line) => String(line));
+
+  assert.ok(lines.some((line) => line.includes("Patch preview")));
+  assert.ok(lines.some((line) => line.includes("code · ts")));
+  assert.ok(lines.some((line) => line.includes("const task = 1;")));
+  assert.ok(lines.some((line) => line.includes("return task;")));
+});
+
+test("frame controller renders restored agent detailBody instead of truncated body", () => {
+  const harness = createWatchFrameHarness({
+    width: 64,
+    height: 36,
+    previewLines: 2,
+    events: [
+      {
+        id: "evt-agent-old",
+        kind: "agent",
+        title: "Agent Reply",
+        body: "stored preview only…",
+        detailBody: "Full restored reply\nline beyond stored cutoff",
+        bodyTruncated: true,
+        timestamp: "15:15:01",
+      },
+      {
+        id: "evt-you-later",
+        kind: "you",
+        title: "Prompt",
+        body: "next prompt",
+        timestamp: "15:15:02",
+      },
+    ],
+    dependencies: {
+      isMarkdownRenderableEvent(event) {
+        return event?.kind === "agent";
+      },
+      buildEventDisplayLines(event) {
+        return String(event?.body ?? "")
+          .split("\n")
+          .map((line) => createDisplayLine(line, "paragraph"));
+      },
+    },
+  });
+
+  const lines = harness.controller.buildVisibleFrameSnapshot().lines.map((line) => String(line));
+
+  assert.ok(lines.some((line) => line.includes("Full restored reply")));
+  assert.ok(lines.some((line) => line.includes("line beyond stored cutoff")));
+  assert.equal(lines.some((line) => line.includes("stored preview only")), false);
+});
+
+test("frame controller does not add blank rows between wrapped lines of one paragraph", () => {
+  const harness = createWatchFrameHarness({
+    width: 36,
+    height: 28,
+    previewLines: 2,
+    events: [
+      {
+        id: "evt-agent",
+        kind: "agent",
+        title: "Agent Reply",
+        body: "ignored",
+        timestamp: "15:15:01",
+      },
+    ],
+    dependencies: {
+      isMarkdownRenderableEvent(event) {
+        return event?.kind === "agent";
+      },
+      buildEventDisplayLines() {
+        return [
+          createDisplayLine(
+            "This is a long paragraph that should wrap across multiple transcript rows without extra blank gaps.",
+            "paragraph",
+          ),
+          createDisplayLine("Next paragraph", "paragraph"),
+        ];
+      },
+      wrapDisplayLines(lines, width) {
+        const text = String(lines[0]?.plainText ?? lines[0]?.text ?? "");
+        const chunkSize = Math.max(8, Number(width) || 8);
+        const chunks = [];
+        for (let index = 0; index < text.length; index += chunkSize) {
+          chunks.push(createDisplayLine(text.slice(index, index + chunkSize), lines[0]?.mode ?? "plain"));
+        }
+        return chunks;
+      },
+    },
+  });
+
+  const lines = harness.controller.buildVisibleFrameSnapshot().lines.map((line) => String(line));
+  const firstParagraphRow = lines.findIndex((line) => line.includes("This is a long paragraph"));
+  const nextParagraphRow = lines.findIndex((line) => line.includes("Next paragraph"));
+  const continuationRows = lines.slice(firstParagraphRow + 1, Math.max(firstParagraphRow + 1, nextParagraphRow - 1));
+
+  assert.notEqual(firstParagraphRow, -1);
+  assert.notEqual(nextParagraphRow, -1);
+  assert.ok(continuationRows.length >= 1);
+  assert.equal(continuationRows.some((line) => String(line).trim().length === 0), false);
+  assert.equal(String(lines[nextParagraphRow - 1] ?? "").trim().length, 0);
 });

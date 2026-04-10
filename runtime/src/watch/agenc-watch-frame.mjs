@@ -1,6 +1,12 @@
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import {
+  marketBrowserKind as marketTaskBrowserKind,
+  marketTaskBrowserCountLabel,
+  marketTaskBrowserEmptyLabel,
+  marketTaskBrowserLoadingLabel,
+} from "../marketplace/surfaces.mjs";
 import { createWatchSplashRenderer } from "./agenc-watch-splash.mjs";
 import { visibleLength, wrapBlock } from "./agenc-watch-text-utils.mjs";
 
@@ -799,14 +805,20 @@ export function createWatchFrameController(dependencies = {}) {
     marker = "●",
     markerTone = color.ink,
     textTone = color.ink,
+    preserveBlankLines = false,
   } = {}) {
     const safeLines = (Array.isArray(lines) ? lines : [lines])
       .map((line) => sanitizeDisplayText(
         typeof line === "string" ? line : displayLinePlainText(line),
-      ))
-      .filter((line) => line.length > 0);
+      ));
     const rows = [];
     safeLines.forEach((line, index) => {
+      if (line.length === 0) {
+        if (preserveBlankLines) {
+          rows.push(fitAnsi(transcriptBodyInset, width));
+        }
+        return;
+      }
       const markerPrefix = index === 0
         ? `${transcriptBlockInset}${markerTone}${color.bold}${marker}${color.reset} `
         : transcriptBodyInset;
@@ -1214,6 +1226,21 @@ export function createWatchFrameController(dependencies = {}) {
     return 1;
   }
 
+  function joinMarketBrowserParts(parts = []) {
+    return parts
+      .map((value) => sanitizeInlineText(value ?? "", ""))
+      .filter(Boolean)
+      .join(" · ");
+  }
+
+  function marketBrowserCountLabel(value, noun) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      return null;
+    }
+    return `${numeric} ${noun}${numeric === 1 ? "" : "s"}`;
+  }
+
   function currentMarketTaskBrowserState() {
     const browser = watchState.marketTaskBrowser;
     if (!browser || typeof browser !== "object" || browser.open !== true) {
@@ -1247,64 +1274,6 @@ export function createWatchFrameController(dependencies = {}) {
       items,
       activeIndex: normalizeMarketTaskBrowserSelectionIndex(items.length, browser),
     };
-  }
-
-  function marketTaskBrowserKind(browserState) {
-    const kind = String(browserState?.browser?.kind ?? "tasks").trim().toLowerCase();
-    switch (kind) {
-      case "skills":
-      case "governance":
-      case "disputes":
-      case "reputation":
-        return kind;
-      default:
-        return "tasks";
-    }
-  }
-
-  function marketTaskBrowserCountLabel(kind, count) {
-    switch (kind) {
-      case "skills":
-        return `${count} skill${count === 1 ? "" : "s"}`;
-      case "governance":
-        return `${count} proposal${count === 1 ? "" : "s"}`;
-      case "disputes":
-        return `${count} dispute${count === 1 ? "" : "s"}`;
-      case "reputation":
-        return `${count} record${count === 1 ? "" : "s"}`;
-      default:
-        return `${count} task${count === 1 ? "" : "s"}`;
-    }
-  }
-
-  function marketTaskBrowserLoadingLabel(kind) {
-    switch (kind) {
-      case "skills":
-        return "Loading marketplace skills…";
-      case "governance":
-        return "Loading governance proposals…";
-      case "disputes":
-        return "Loading marketplace disputes…";
-      case "reputation":
-        return "Loading reputation summary…";
-      default:
-        return "Loading marketplace tasks…";
-    }
-  }
-
-  function marketTaskBrowserEmptyLabel(kind) {
-    switch (kind) {
-      case "skills":
-        return "No marketplace skills found.";
-      case "governance":
-        return "No governance proposals found.";
-      case "disputes":
-        return "No marketplace disputes found.";
-      case "reputation":
-        return "No reputation summary available.";
-      default:
-        return "No marketplace tasks found.";
-    }
   }
 
   function marketTaskBrowserSummaryLine(width, browserState) {
@@ -1363,6 +1332,9 @@ export function createWatchFrameController(dependencies = {}) {
       const stateTone = item?.isActive === false ? color.fog : color.green;
       const name = sanitizeInlineText(item?.name ?? "") || "unknown skill";
       const priceLabel = String(item?.priceDisplay ?? "").trim() || "n/a";
+      const authorLabel = sanitizeInlineText(item?.author ?? "")
+        ? `by ${sanitizeInlineText(item.author)}`
+        : null;
       const ratingLabel = Number.isFinite(Number(item?.rating))
         ? `rating ${Number(item.rating).toFixed(1)}`
         : null;
@@ -1373,7 +1345,7 @@ export function createWatchFrameController(dependencies = {}) {
       return fitAnsi(
         flexBetween(
           `${marker} ${stateTone}[${stateLabel}]${color.reset} ${(selected ? color.magenta : color.softInk)}${name}${color.reset}`,
-          `${color.fog}${[priceLabel, ratingLabel, downloadsLabel].filter(Boolean).join(" · ")}${color.reset}`,
+          `${color.fog}${joinMarketBrowserParts([priceLabel, authorLabel, ratingLabel, downloadsLabel])}${color.reset}`,
           width,
         ),
         width,
@@ -1386,6 +1358,9 @@ export function createWatchFrameController(dependencies = {}) {
       const title = proposalType && preview
         ? `${proposalType}: ${preview}`
         : preview || proposalType || sanitizeInlineText(item?.proposalPda ?? "") || "proposal";
+      const proposerLabel = sanitizeInlineText(item?.proposer ?? "")
+        ? `by ${sanitizeInlineText(item.proposer)}`
+        : null;
       const votesForLabel = item?.votesFor ? `for ${item.votesFor}` : null;
       const votesAgainstLabel = item?.votesAgainst ? `against ${item.votesAgainst}` : null;
       const votersLabel = Number.isFinite(Number(item?.totalVoters))
@@ -1394,7 +1369,7 @@ export function createWatchFrameController(dependencies = {}) {
       return fitAnsi(
         flexBetween(
           `${marker} ${marketTaskBrowserStatusTone(status)}[${status}]${color.reset} ${(selected ? color.magenta : color.softInk)}${title}${color.reset}`,
-          `${color.fog}${[votesForLabel, votesAgainstLabel, votersLabel].filter(Boolean).join(" · ")}${color.reset}`,
+          `${color.fog}${joinMarketBrowserParts([proposerLabel, votesForLabel, votesAgainstLabel, votersLabel])}${color.reset}`,
           width,
         ),
         width,
@@ -1431,10 +1406,13 @@ export function createWatchFrameController(dependencies = {}) {
       const tasksLabel = tasksCompleted
         ? `${tasksCompleted} task${tasksCompleted === "1" ? "" : "s"}`
         : null;
+      const earnedLabel = String(item?.totalEarnedSol ?? "").trim()
+        ? `${item.totalEarnedSol} SOL`
+        : null;
       return fitAnsi(
         flexBetween(
           `${marker} ${stateTone}[${stateLabel}]${color.reset} ${(selected ? color.magenta : color.softInk)}${subject}${color.reset}`,
-          `${color.fog}${[effectiveLabel, tasksLabel].filter(Boolean).join(" · ")}${color.reset}`,
+          `${color.fog}${joinMarketBrowserParts([effectiveLabel, tasksLabel, earnedLabel])}${color.reset}`,
           width,
         ),
         width,
@@ -1473,133 +1451,129 @@ export function createWatchFrameController(dependencies = {}) {
         lines.push(fitAnsi(`${prefix}${color.fog}${line}${color.reset}`, width));
       });
     };
+    const pushJoinedField = (label, parts) => {
+      const value = joinMarketBrowserParts(parts);
+      if (value) {
+        pushField(label, value);
+      }
+    };
 
     if (kind === "skills") {
-      pushField("skill id", item?.skillId ?? item?.key ?? null);
-      pushField("skill pda", item?.skillPda ?? null);
+      pushJoinedField("skill", [item?.name ?? item?.skillId ?? item?.key ?? null, item?.isActive === false ? "inactive" : "active"]);
+      pushJoinedField("identity", [item?.skillId ?? item?.key ?? null, item?.skillPda ?? null]);
       pushField("author", item?.author ?? null);
       if (item?.priceDisplay && item.priceDisplay !== "n/a") {
         pushField(
-          "price",
+          "pricing",
           item?.priceLamports
             ? `${item.priceDisplay} (${item.priceLamports} lamports)`
             : item.priceDisplay,
         );
       }
-      if (Number.isFinite(Number(item?.rating))) {
-        const rating = Number(item.rating).toFixed(1);
-        const ratingCount = Number(item?.ratingCount);
-        pushField(
-          "rating",
-          Number.isFinite(ratingCount) && ratingCount > 0
-            ? `${rating} (${ratingCount} rating${ratingCount === 1 ? "" : "s"})`
-            : rating,
-        );
-      }
-      if (Number.isFinite(Number(item?.downloads))) {
-        pushField("downloads", String(Number(item.downloads)));
-      }
-      if (Number.isFinite(Number(item?.version))) {
-        pushField("version", String(Number(item.version)));
-      }
+      const rating = Number.isFinite(Number(item?.rating))
+        ? Number(item.rating).toFixed(1)
+        : null;
+      const ratingCount = Number(item?.ratingCount);
+      const ratingCountLabel = Number.isFinite(ratingCount) && ratingCount > 0
+        ? `${ratingCount} rating${ratingCount === 1 ? "" : "s"}`
+        : null;
+      const downloadsLabel = marketBrowserCountLabel(item?.downloads, "download");
+      const versionLabel = Number.isFinite(Number(item?.version))
+        ? `v${Number(item.version)}`
+        : null;
+      pushJoinedField("activity", [rating && `rating ${rating}`, ratingCountLabel, downloadsLabel, versionLabel]);
       if (Array.isArray(item?.tags) && item.tags.length > 0) {
         pushField("tags", item.tags.join(", "));
       }
-      pushField("created", item?.createdAtLabel ?? item?.createdAt ?? null);
-      pushField("updated", item?.updatedAtLabel ?? item?.updatedAt ?? null);
+      pushJoinedField("timestamps", [
+        item?.createdAtLabel ?? item?.createdAt ? `created ${item?.createdAtLabel ?? item?.createdAt}` : null,
+        item?.updatedAtLabel ?? item?.updatedAt ? `updated ${item?.updatedAtLabel ?? item?.updatedAt}` : null,
+      ]);
       pushField("content hash", item?.contentHash ?? null);
     } else if (kind === "governance") {
-      pushField("proposal pda", item?.proposalPda ?? item?.key ?? null);
+      pushJoinedField("proposal", [item?.payloadPreview ?? item?.proposalType ?? item?.proposalPda ?? item?.key ?? null, item?.status ?? null]);
+      pushJoinedField("identity", [item?.proposalPda ?? item?.key ?? null, item?.proposalType ?? null]);
       pushField("proposer", item?.proposer ?? null);
-      pushField("type", item?.proposalType ?? null);
-      pushField("status", item?.status ?? null);
       const voteParts = [];
       if (item?.votesFor) voteParts.push(`for ${item.votesFor}`);
       if (item?.votesAgainst) voteParts.push(`against ${item.votesAgainst}`);
       if (Number.isFinite(Number(item?.totalVoters))) voteParts.push(`${item.totalVoters} voters`);
+      if (item?.quorum) voteParts.push(`quorum ${item.quorum}`);
       pushField("votes", voteParts.join(" · ") || null);
-      pushField("quorum", item?.quorum ?? null);
-      pushField("created", item?.createdAtLabel ?? item?.createdAt ?? null);
-      pushField("voting deadline", item?.votingDeadlineLabel ?? item?.votingDeadline ?? null);
-      pushField("execution after", item?.executionAfterLabel ?? item?.executionAfter ?? null);
-      pushField("payload", item?.payloadPreview ?? null);
+      pushJoinedField("window", [
+        item?.createdAtLabel ?? item?.createdAt ? `created ${item?.createdAtLabel ?? item?.createdAt}` : null,
+        item?.votingDeadlineLabel ?? item?.votingDeadline ? `deadline ${item?.votingDeadlineLabel ?? item?.votingDeadline}` : null,
+        item?.executionAfterLabel ?? item?.executionAfter ? `execute ${item?.executionAfterLabel ?? item?.executionAfter}` : null,
+      ]);
       pushField("title hash", item?.titleHash ?? null);
       pushField("description hash", item?.descriptionHash ?? null);
     } else if (kind === "disputes") {
-      pushField("dispute pda", item?.disputePda ?? item?.key ?? null);
-      pushField("task pda", item?.taskPda ?? null);
-      pushField("initiator", item?.initiator ?? null);
-      pushField("defendant", item?.defendant ?? null);
-      pushField("status", item?.status ?? null);
-      pushField("resolution", item?.resolutionType ?? null);
+      pushJoinedField("dispute", [item?.resolutionType ?? item?.disputePda ?? item?.key ?? null, item?.status ?? null]);
+      pushJoinedField("identity", [item?.disputePda ?? item?.key ?? null, item?.taskPda ?? null]);
+      pushJoinedField("parties", [
+        item?.initiator ? `initiator ${item.initiator}` : null,
+        item?.defendant ? `defendant ${item.defendant}` : null,
+      ]);
       const voteParts = [];
       if (item?.votesFor) voteParts.push(`for ${item.votesFor}`);
       if (item?.votesAgainst) voteParts.push(`against ${item.votesAgainst}`);
       if (Number.isFinite(Number(item?.totalVoters))) voteParts.push(`${item.totalVoters} voters`);
       pushField("votes", voteParts.join(" · ") || null);
-      pushField("created", item?.createdAtLabel ?? item?.createdAt ?? null);
-      pushField("voting deadline", item?.votingDeadlineLabel ?? item?.votingDeadline ?? null);
-      pushField("expires", item?.expiresAtLabel ?? item?.expiresAt ?? null);
-      pushField("resolved", item?.resolvedAtLabel ?? item?.resolvedAt ?? null);
-      pushField("slash applied", item?.slashApplied);
-      pushField("initiator slash", item?.initiatorSlashApplied);
-      pushField("worker stake", item?.workerStakeAtDispute ?? null);
-      pushField("initiated by creator", item?.initiatedByCreator);
-      pushField("reward mint", item?.rewardMint ?? null);
+      pushJoinedField("timeline", [
+        item?.createdAtLabel ?? item?.createdAt ? `created ${item?.createdAtLabel ?? item?.createdAt}` : null,
+        item?.votingDeadlineLabel ?? item?.votingDeadline ? `deadline ${item?.votingDeadlineLabel ?? item?.votingDeadline}` : null,
+        item?.expiresAtLabel ?? item?.expiresAt ? `expires ${item?.expiresAtLabel ?? item?.expiresAt}` : null,
+        item?.resolvedAtLabel ?? item?.resolvedAt ? `resolved ${item?.resolvedAtLabel ?? item?.resolvedAt}` : null,
+      ]);
+      pushJoinedField("flags", [
+        item?.slashApplied === true ? "slash applied" : null,
+        item?.initiatorSlashApplied === true ? "initiator slashed" : null,
+        item?.initiatedByCreator === true ? "initiated by creator" : null,
+      ]);
+      pushJoinedField("economics", [item?.workerStakeAtDispute ? `stake ${item.workerStakeAtDispute}` : null, item?.rewardMint ? `mint ${item.rewardMint}` : null]);
       pushField("evidence hash", item?.evidenceHash ?? null);
     } else if (kind === "reputation") {
-      pushField("registered", item?.registered !== false ? "true" : "false");
-      pushField("authority", item?.authority ?? null);
-      pushField("agent pda", item?.agentPda ?? null);
-      pushField("agent id", item?.agentId ?? null);
-      pushField("base reputation", item?.baseReputation ?? null);
-      pushField("effective reputation", item?.effectiveReputation ?? null);
-      pushField("tasks completed", item?.tasksCompleted ?? null);
-      if (item?.totalEarnedSol || item?.totalEarned) {
-        pushField(
-          "total earned",
-          item?.totalEarnedSol
-            ? `${item.totalEarnedSol} SOL${item?.totalEarned ? ` (${item.totalEarned} lamports)` : ""}`
-            : item.totalEarned,
-        );
-      }
-      if (item?.stakedAmountSol || item?.stakedAmount) {
-        pushField(
-          "staked",
-          item?.stakedAmountSol
-            ? `${item.stakedAmountSol} SOL${item?.stakedAmount ? ` (${item.stakedAmount} lamports)` : ""}`
-            : item.stakedAmount,
-        );
-      }
+      pushJoinedField("summary", [item?.authority ?? item?.agentPda ?? item?.agentId ?? null, item?.registered !== false ? "registered" : "unregistered"]);
+      pushJoinedField("identity", [item?.agentPda ?? null, item?.agentId ? `agent id ${item.agentId}` : null]);
+      pushJoinedField("score", [
+        item?.baseReputation !== null && item?.baseReputation !== undefined ? `base ${item.baseReputation}` : null,
+        item?.effectiveReputation !== null && item?.effectiveReputation !== undefined ? `effective ${item.effectiveReputation}` : null,
+      ]);
+      pushJoinedField("activity", [
+        item?.tasksCompleted ? `${item.tasksCompleted} task${String(item.tasksCompleted) === "1" ? "" : "s"}` : null,
+        item?.totalEarnedSol
+          ? `${item.totalEarnedSol} SOL earned${item?.totalEarned ? ` (${item.totalEarned} lamports)` : ""}`
+          : item?.totalEarned ? `${item.totalEarned} lamports earned` : null,
+        item?.stakedAmountSol
+          ? `${item.stakedAmountSol} SOL staked${item?.stakedAmount ? ` (${item.stakedAmount} lamports)` : ""}`
+          : item?.stakedAmount ? `${item.stakedAmount} lamports staked` : null,
+      ]);
+      pushJoinedField("delegations", [
+        Array.isArray(item?.inboundDelegations) ? `${item.inboundDelegations.length} inbound` : null,
+        Array.isArray(item?.outboundDelegations) ? `${item.outboundDelegations.length} outbound` : null,
+      ]);
       pushField("locked until", item?.lockedUntilLabel ?? item?.lockedUntil ?? null);
-      if (Array.isArray(item?.inboundDelegations)) {
-        pushField("inbound delegations", String(item.inboundDelegations.length));
-      }
-      if (Array.isArray(item?.outboundDelegations)) {
-        pushField("outbound delegations", String(item.outboundDelegations.length));
-      }
     } else {
-      pushField("task id", item?.taskId ?? item?.key ?? null);
-      pushField("task pda", item?.taskPda ?? null);
+      pushJoinedField("task", [item?.description ?? item?.taskId ?? item?.key ?? null, item?.status ?? null]);
+      pushJoinedField("identity", [item?.taskId ?? item?.key ?? null, item?.taskPda ?? null]);
       pushField("creator", item?.creator ?? null);
       if (item?.rewardDisplay && item.rewardDisplay !== "n/a") {
         pushField(
-          "reward",
+          "economics",
           item?.rewardLamports
             ? `${item.rewardDisplay} (${item.rewardLamports} lamports)`
             : item.rewardDisplay,
         );
       }
-      if (Number.isFinite(Number(item?.currentWorkers)) || Number.isFinite(Number(item?.maxWorkers))) {
-        pushField(
-          "workers",
-          Number.isFinite(Number(item?.maxWorkers))
-            ? `${item?.currentWorkers ?? 0}/${item.maxWorkers}`
-            : String(item?.currentWorkers ?? 0),
-        );
-      }
-      pushField("deadline", item?.deadlineLabel ?? item?.deadline ?? null);
-      pushField("created", item?.createdAtLabel ?? item?.createdAt ?? null);
+      pushJoinedField("delivery", [
+        Number.isFinite(Number(item?.currentWorkers)) || Number.isFinite(Number(item?.maxWorkers))
+          ? Number.isFinite(Number(item?.maxWorkers))
+            ? `${item?.currentWorkers ?? 0}/${item.maxWorkers} workers`
+            : `${item?.currentWorkers ?? 0} workers`
+          : null,
+        item?.deadlineLabel ?? item?.deadline ? `deadline ${item?.deadlineLabel ?? item?.deadline}` : null,
+        item?.createdAtLabel ?? item?.createdAt ? `created ${item?.createdAtLabel ?? item?.createdAt}` : null,
+      ]);
     }
 
     if (lines.length <= maxRows) {
@@ -2618,6 +2592,49 @@ export function createWatchFrameController(dependencies = {}) {
     return showBody && event.kind !== "queued";
   }
 
+  function isRoomyAgentDisplayMode(mode) {
+    const normalized = String(mode ?? "");
+    return normalized === "plain" ||
+      normalized === "paragraph" ||
+      normalized === "list" ||
+      normalized === "quote" ||
+      normalized === "heading" ||
+      normalized === "table-header" ||
+      normalized === "table-row";
+  }
+
+
+  function fullAgentTranscriptLines(event, width) {
+    const previewWidth = Math.max(12, width - 4);
+    const displayLines = buildEventDisplayLines(eventDetailVariant(event), Infinity);
+    if (!Array.isArray(displayLines) || displayLines.length === 0) {
+      return [];
+    }
+    const rows = [];
+    displayLines.forEach((line, index) => {
+      const entry = typeof line === "string" ? createDisplayLine(line, "plain") : line;
+      const plainText = displayLinePlainText(entry).trim();
+      if (entry?.mode === "blank" || plainText.length === 0) {
+        if (rows.length > 0 && rows.at(-1)?.mode !== "blank") {
+          rows.push(createDisplayLine("", "blank"));
+        }
+        return;
+      }
+      rows.push(...wrapDisplayLines([entry], previewWidth));
+      const hasLaterContent = displayLines.slice(index + 1).some((candidate) => {
+        const candidateText = displayLinePlainText(candidate).trim();
+        return String(candidate?.mode ?? "") !== "blank" && candidateText.length > 0;
+      });
+      if (hasLaterContent && isRoomyAgentDisplayMode(entry?.mode)) {
+        rows.push(createDisplayLine("", "blank"));
+      }
+    });
+    while (rows.at(-1)?.mode === "blank") {
+      rows.pop();
+    }
+    return rows;
+  }
+
   function renderEventBlock(event, width, { showBody = true } = {}) {
     const rows = [];
     const previewLines = eventPreviewLines(event, Math.max(12, width - 4));
@@ -2647,11 +2664,17 @@ export function createWatchFrameController(dependencies = {}) {
       return rows;
     }
     if (event.kind === "agent") {
+      const fullAgentLines = fullAgentTranscriptLines(event, width);
+      const agentSplit =
+        fullAgentLines.length > 0
+          ? splitTranscriptPreviewForHeadline(event, fullAgentLines)
+          : previewSplit;
       rows.push(
-        ...transcriptChatRows([headline, ...previewSplit.bodyLines], width, {
+        ...transcriptChatRows([agentSplit.headline || headline, ...agentSplit.bodyLines], width, {
           marker: "●",
           markerTone: color.ink,
           textTone: color.ink,
+          preserveBlankLines: fullAgentLines.length > 0,
         }),
       );
       return rows;

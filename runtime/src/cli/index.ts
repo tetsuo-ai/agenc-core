@@ -68,6 +68,7 @@ import type {
   MarketDisputeResolveOptions,
   MarketDisputesListOptions,
   MarketGovernanceDetailOptions,
+  MarketInspectOptions,
   MarketGovernanceListOptions,
   MarketGovernanceVoteOptions,
   MarketReputationDelegateOptions,
@@ -93,6 +94,7 @@ import {
   runMarketDisputesListCommand,
   runMarketGovernanceDetailCommand,
   runMarketGovernanceListCommand,
+  runMarketInspectCommand,
   runMarketGovernanceVoteCommand,
   runMarketReputationDelegateCommand,
   runMarketReputationStakeCommand,
@@ -141,6 +143,7 @@ import {
   runConnectorStatusCommand,
 } from "./connectors.js";
 import { getDefaultPidPath } from "../gateway/daemon.js";
+import { resolveMarketplaceInspectSurface } from "../marketplace/surfaces.mjs";
 import {
   discoverLegacyImportConfigPath,
   getCanonicalDefaultConfigPath,
@@ -591,6 +594,7 @@ type MarketCommand =
   | "reputation.summary"
   | "reputation.stake"
   | "reputation.delegate"
+  | "inspect"
   | "tui";
 
 const MARKET_COMMAND_OPTIONS: Record<MarketCommand, Set<string>> = {
@@ -633,6 +637,7 @@ const MARKET_COMMAND_OPTIONS: Record<MarketCommand, Set<string>> = {
     "expires-at",
     "delegator-agent-pda",
   ]),
+  inspect: new Set(["status", "query", "tags", "limit"]),
   tui: new Set(),
 };
 
@@ -767,6 +772,12 @@ const MARKET_COMMANDS: Record<MarketCommand, MarketCommandDescriptor> = {
     commandOptions: MARKET_COMMAND_OPTIONS["reputation.delegate"],
     run: runMarketReputationDelegateCommand as MarketCommandDescriptor["run"],
   },
+  inspect: {
+    name: "inspect",
+    description: "Inspect a shared marketplace surface",
+    commandOptions: MARKET_COMMAND_OPTIONS.inspect,
+    run: runMarketInspectCommand as MarketCommandDescriptor["run"],
+  },
   tui: {
     name: "tui",
     description: "Launch the interactive marketplace terminal workspace",
@@ -797,6 +808,7 @@ function validateMarketCommand(name: string): name is MarketCommand {
     name === "reputation.summary" ||
     name === "reputation.stake" ||
     name === "reputation.delegate" ||
+    name === "inspect" ||
     name === "tui"
   );
 }
@@ -857,6 +869,7 @@ function buildHelp(): string {
     "jobs [--help] <command> [options]",
     "agent [--help] <command> [options]",
     "market [--help] <domain> <command> [options]",
+    "market inspect <surface> [subject]",
     "market tui",
     "skill [--help] <command> [options]",
     "",
@@ -932,6 +945,7 @@ function buildHelp(): string {
     "  reputation stake <lamports>                  Stake SOL on reputation",
     "  reputation delegate <amount> --delegatee-agent-pda <pda>",
     "                                              Delegate reputation to another agent",
+    "  inspect <surface> [subject]                  Inspect a shared marketplace surface",
     "  tui                                          Launch the interactive terminal marketplace workspace",
     "",
     "Skill subcommands:",
@@ -2573,6 +2587,53 @@ function normalizeAndValidateMarketCommand(
     idempotencyWindow: global.idempotencyWindow,
   };
 
+  if (domain === "inspect") {
+    const surfaceToken = parsed.positional[2];
+    if (!surfaceToken) {
+      throw createCliError(
+        "market inspect requires <surface>",
+        ERROR_CODES.MISSING_TARGET,
+      );
+    }
+
+    validateUnknownStandaloneOptions(parsed.flags, MARKET_COMMAND_OPTIONS.inspect);
+
+    const surface = resolveMarketplaceInspectSurface(surfaceToken, null);
+    if (!surface) {
+      throw createCliError(
+        `unknown inspect surface: ${surfaceToken}`,
+        ERROR_CODES.INVALID_VALUE,
+      );
+    }
+
+    return {
+      command: "market",
+      marketCommand: "inspect",
+      global: {
+        help: base.help,
+        strictMode: base.strictMode,
+        outputFormat: base.outputFormat,
+        role: base.role,
+        rpcUrl: base.rpcUrl,
+        programId: base.programId,
+        storeType: base.storeType,
+        sqlitePath: base.sqlitePath,
+        traceId: base.traceId,
+        idempotencyWindow: base.idempotencyWindow,
+      },
+      options: {
+        ...base,
+        surface,
+        subject: parseOptionalString(parsed.positional[3]),
+        statuses: parseStringListFlag(parsed.flags.status),
+        query: parseOptionalStringFlag(parsed.flags.query),
+        tags: parseStringListFlag(parsed.flags.tags),
+        limit: parseOptionalNumberFlag(parsed.flags.limit),
+      } as MarketInspectOptions,
+      outputFormat: base.outputFormat,
+    };
+  }
+
   if (domain === "tui") {
     const explicitOutputRequested =
       parseOptionalStringFlag(parsed.flags.output) !== undefined ||
@@ -2630,7 +2691,7 @@ function normalizeAndValidateMarketCommand(
     MARKET_COMMAND_OPTIONS[marketCommand],
   );
 
-  let options: MarketCommandOptions;
+  let options: MarketCommandOptions | undefined;
   switch (marketCommand) {
     case "tasks.list":
       options = {
@@ -2935,6 +2996,13 @@ function normalizeAndValidateMarketCommand(
       } as MarketReputationDelegateOptions;
       break;
     }
+  }
+
+  if (!options) {
+    throw createCliError(
+      `unknown market command: ${marketCommand}`,
+      ERROR_CODES.UNKNOWN_MARKET_COMMAND,
+    );
   }
 
   return {
