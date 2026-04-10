@@ -18,10 +18,20 @@ export const ESCALATED_MAX_TOKENS = 64_000;
 /**
  * Default token threshold above which the proactive autocompact layer
  * will summarize history. Configurable per-session via the executor's
- * `sessionCompactionThreshold`. The default is set conservatively to
- * leave room for a single multi-turn tool loop iteration on top.
+ * `sessionCompactionThreshold`.
+ *
+ * Raised from 120K to 800K to support large-context models (grok-4.20
+ * at 2M context). At 120K the model compacted at 6% of the 2M window,
+ * losing most of its working memory after ~30 tool calls — the model
+ * would forget which files it had written, which phases were complete,
+ * and what build errors it had seen. At 800K the model can sustain
+ * 80+ tool calls before compaction fires (~40% of 2M).
+ *
+ * TODO: scale dynamically from the model's context window
+ * (e.g. contextWindowTokens * 0.4) once the tool loop has access to
+ * the execution profile.
  */
-export const DEFAULT_AUTOCOMPACT_THRESHOLD_TOKENS = 120_000;
+export const DEFAULT_AUTOCOMPACT_THRESHOLD_TOKENS = 800_000;
 
 /**
  * Default time gap between activity bursts that allows the snip layer
