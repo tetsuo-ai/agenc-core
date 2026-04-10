@@ -73,6 +73,7 @@ import {
 import {
   evaluateArtifactEvidenceGate,
   evaluateTurnEndStopGate,
+  checkFilesystemArtifacts,
 } from "./chat-executor-stop-gate.js";
 import {
   sanitizeToolCallsForReplay,
@@ -1591,6 +1592,78 @@ export async function executeToolCallLoop(
             statefulHistoryCompacted: ctx.stateful?.historyCompacted,
             budgetReason:
               "Max model recalls exceeded during stop-gate recovery turn",
+          }),
+        );
+        if (recoveryResponse) {
+          ctx.response = recoveryResponse;
+          shouldContinueAfterStopGate = true;
+        }
+      }
+    }
+
+    // Filesystem artifact verification: after all text-based gates have
+    // run and NOT intervened, check whether files the model wrote during
+    // this turn actually exist and are non-empty on disk. Only runs when
+    // the model claims terminal completion (TERMINAL_COMPLETION_RE match
+    // in the final content). This catches the fabrication case where the
+    // model says "all files implemented" but 8 of 14 are 0 bytes.
+    //
+    // Runs as a SEPARATE check from the stop gate so it fires even when
+    // the stop gate already fired once (stopGateFired=true). The stop
+    // gate's one-shot limit prevents infinite loops on text-based
+    // recovery, but the filesystem check is a different dimension — it
+    // verifies artifacts, not text patterns.
+    if (
+      ctx.response &&
+      ctx.response.finishReason !== "tool_calls" &&
+      ctx.stopReason === "completed" &&
+      ctx.allToolCalls.length > 0 &&
+      !ctx.signal?.aborted
+    ) {
+      const fsCheck = await checkFilesystemArtifacts({
+        finalContent: ctx.response.content ?? "",
+        allToolCalls: ctx.allToolCalls,
+      });
+      if (fsCheck.shouldIntervene && fsCheck.blockingMessage) {
+        callbacks.emitExecutionTrace(ctx, {
+          type: "stop_gate_intervention",
+          phase: "tool_followup",
+          callIndex: ctx.callIndex,
+          payload: {
+            reason: "filesystem_artifact_verification",
+            emptyFiles: fsCheck.emptyFiles,
+            missingFiles: fsCheck.missingFiles,
+            checkedFiles: fsCheck.checkedFiles,
+          },
+        });
+        callbacks.pushMessage(
+          ctx,
+          {
+            role: "user",
+            content: fsCheck.blockingMessage,
+          },
+          "system_runtime",
+        );
+        await runPerIterationCompactionBeforeModelCall(
+          ctx,
+          config,
+          callbacks,
+          "tool_followup",
+        );
+        const recoveryResponse = await callModelWithReactiveCompact(
+          ctx,
+          callbacks,
+          "tool_followup",
+          () => ({
+            phase: "tool_followup",
+            callMessages: ctx.messages,
+            callSections: ctx.messageSections,
+            onStreamChunk: ctx.activeStreamCallback,
+            statefulSessionId: ctx.sessionId,
+            statefulResumeAnchor: ctx.stateful?.resumeAnchor,
+            statefulHistoryCompacted: ctx.stateful?.historyCompacted,
+            budgetReason:
+              "Max model recalls exceeded during filesystem artifact recovery turn",
           }),
         );
         if (recoveryResponse) {

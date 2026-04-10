@@ -950,6 +950,197 @@ function maybeFireNarratedFutureToolWork(params: {
 // Exposed regex constants for tests
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Filesystem artifact verification (async — runs on claimed completion)
+// ---------------------------------------------------------------------------
+
+import { stat as fsStat } from "node:fs/promises";
+
+/**
+ * Tool names whose `path` arg represents a file mutation (the model
+ * intended to create or modify a file at that path).
+ */
+const FILE_WRITE_TOOL_NAMES = new Set([
+  "system.writeFile",
+  "system.editFile",
+  "system.appendFile",
+  "desktop.text_editor",
+]);
+
+/**
+ * Tool names whose `path` arg represents a file deletion. Files that
+ * were written AND subsequently deleted in the same turn are excluded
+ * from the empty-file check (legitimate create→use→clean-up workflow).
+ */
+const FILE_DELETE_TOOL_NAMES = new Set([
+  "system.delete",
+]);
+
+export interface FilesystemArtifactCheckResult {
+  readonly shouldIntervene: boolean;
+  readonly emptyFiles: readonly string[];
+  readonly missingFiles: readonly string[];
+  readonly checkedFiles: readonly string[];
+  readonly deletedFiles: readonly string[];
+  readonly blockingMessage?: string;
+}
+
+/**
+ * Async post-gate that checks OBSERVED file mutations from the turn's
+ * tool ledger against the actual filesystem. Runs only when the model's
+ * final text matches `TERMINAL_COMPLETION_RE` (claims task complete).
+ *
+ * For each `system.writeFile` / `system.editFile` / `system.appendFile`
+ * call in the turn that had non-empty content, checks that the target
+ * file:
+ *   (a) exists on disk (stat does not throw ENOENT)
+ *   (b) is non-zero bytes
+ *
+ * Files that were explicitly deleted in the same turn (via
+ * `system.delete` or `system.bash` with `rm`) are excluded.
+ *
+ * Returns `shouldIntervene: true` with a blocking message listing the
+ * empty/missing files if any are found. The caller injects the message
+ * and forces a recovery turn, same as the existing stop gate pattern.
+ *
+ * This catches the exact fabrication case from 2026-04-10: the model
+ * claimed "all 14 files implemented" but 8 were 0 bytes on disk. The
+ * gate checks the filesystem, not the model's text.
+ */
+export async function checkFilesystemArtifacts(params: {
+  readonly finalContent: string;
+  readonly allToolCalls: readonly ToolCallRecord[];
+}): Promise<FilesystemArtifactCheckResult> {
+  const noIntervention: FilesystemArtifactCheckResult = {
+    shouldIntervene: false,
+    emptyFiles: [],
+    missingFiles: [],
+    checkedFiles: [],
+    deletedFiles: [],
+  };
+
+  // Only run when the model claims terminal completion.
+  if (!TERMINAL_COMPLETION_RE.test(params.finalContent)) {
+    return noIntervention;
+  }
+
+  // Collect all file paths the model wrote/edited with non-empty content.
+  const writtenPaths = new Set<string>();
+  for (const call of params.allToolCalls) {
+    if (!FILE_WRITE_TOOL_NAMES.has(call.name)) continue;
+    if (call.isError) continue; // failed writes don't count
+
+    const path =
+      typeof call.args?.path === "string" ? call.args.path : undefined;
+    if (!path) continue;
+
+    // For writeFile/appendFile: check if content was non-empty.
+    // For editFile: check if new_string was non-empty.
+    // For desktop.text_editor: always check (content varies).
+    const contentArg =
+      call.name === "system.editFile"
+        ? call.args?.new_string
+        : call.args?.content;
+    if (typeof contentArg === "string" && contentArg.length === 0) {
+      continue; // intentionally empty write — skip
+    }
+
+    writtenPaths.add(path);
+  }
+
+  if (writtenPaths.size === 0) {
+    return noIntervention;
+  }
+
+  // Collect deleted paths so we can exclude them.
+  const deletedPaths = new Set<string>();
+  for (const call of params.allToolCalls) {
+    if (FILE_DELETE_TOOL_NAMES.has(call.name) && !call.isError) {
+      const path =
+        typeof call.args?.path === "string" ? call.args.path : undefined;
+      if (path) deletedPaths.add(path);
+    }
+    // Also check for `rm` in bash commands.
+    if (call.name === "system.bash" || call.name === "desktop.bash") {
+      const cmd =
+        typeof call.args?.command === "string" ? call.args.command : "";
+      // Simple heuristic: if bash command contains `rm` and a written
+      // path, exclude that path. Not perfect but catches the common case.
+      for (const writtenPath of writtenPaths) {
+        if (cmd.includes("rm") && cmd.includes(writtenPath)) {
+          deletedPaths.add(writtenPath);
+        }
+      }
+    }
+  }
+
+  // Check each written file on disk.
+  const checkedFiles: string[] = [];
+  const emptyFiles: string[] = [];
+  const missingFiles: string[] = [];
+
+  for (const filePath of writtenPaths) {
+    if (deletedPaths.has(filePath)) continue;
+    checkedFiles.push(filePath);
+    try {
+      const stats = await fsStat(filePath);
+      if (stats.isFile() && stats.size === 0) {
+        emptyFiles.push(filePath);
+      }
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code === "ENOENT") {
+        missingFiles.push(filePath);
+      }
+      // Other errors (EACCES, etc.) — skip, don't flag.
+    }
+  }
+
+  const problems = [...emptyFiles, ...missingFiles];
+  if (problems.length === 0) {
+    return {
+      shouldIntervene: false,
+      emptyFiles,
+      missingFiles,
+      checkedFiles,
+      deletedFiles: [...deletedPaths],
+    };
+  }
+
+  const emptyList = emptyFiles.length > 0
+    ? `Empty files (0 bytes on disk):\n${emptyFiles.map((p) => `  • ${p}`).join("\n")}\n\n`
+    : "";
+  const missingList = missingFiles.length > 0
+    ? `Missing files (not found on disk):\n${missingFiles.map((p) => `  • ${p}`).join("\n")}\n\n`
+    : "";
+
+  const blockingMessage =
+    `Your final reply claims the task is complete, but the runtime ` +
+    `verified the filesystem and found ${problems.length} file(s) that ` +
+    `you wrote during this turn are now empty or missing on disk.\n\n` +
+    emptyList +
+    missingList +
+    `You called system.writeFile / system.editFile on these paths with ` +
+    `non-empty content, but the files are now 0 bytes or absent. This ` +
+    `means either:\n` +
+    `  (a) The write silently failed (check the tool result for errors)\n` +
+    `  (b) A later operation overwrote the file with empty content\n` +
+    `  (c) The file was never actually written despite the tool call\n\n` +
+    `You have ONE recovery turn. Re-read each empty/missing file with ` +
+    `system.readFile, then use system.writeFile or system.editFile to ` +
+    `write the actual implementation. Do NOT claim completion again ` +
+    `until every file has real content verified via tool results.`;
+
+  return {
+    shouldIntervene: true,
+    emptyFiles,
+    missingFiles,
+    checkedFiles,
+    deletedFiles: [...deletedPaths],
+    blockingMessage,
+  };
+}
+
 /** Exported for unit tests. */
 export const __TESTING__ = {
   FALSE_SUCCESS_RE,
