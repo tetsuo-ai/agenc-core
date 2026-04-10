@@ -13,7 +13,10 @@ import {
 import type { SubAgentResult } from "./sub-agent.js";
 import { createSessionToolHandler } from "./tool-handler-factory.js";
 import { SessionCredentialBroker } from "../policy/session-credentials.js";
-import { SESSION_ALLOWED_ROOTS_ARG } from "../tools/system/filesystem.js";
+import {
+  SESSION_ALLOWED_ROOTS_ARG,
+  SESSION_ID_ARG,
+} from "../tools/system/filesystem.js";
 import {
   createTaskTrackerTools,
   TASK_LIST_ARG,
@@ -245,6 +248,7 @@ describe("createSessionToolHandler", () => {
       path: "/tmp/project-root/src/grid.ts",
       content: "export const grid = true;\n",
       [SESSION_ALLOWED_ROOTS_ARG]: ["/tmp/project-root"],
+      [SESSION_ID_ARG]: "session-1",
     });
     expect(sentMessages[0]).toMatchObject({
       type: "tools.executing",
@@ -292,6 +296,7 @@ describe("createSessionToolHandler", () => {
       path: `${sessionWorkspaceRoot}/src/session.ts`,
       content: "export const sessionScoped = true;\n",
       [SESSION_ALLOWED_ROOTS_ARG]: [sessionWorkspaceRoot],
+      [SESSION_ID_ARG]: "session-1",
     });
     expect(sentMessages[0]).toMatchObject({
       type: "tools.executing",
@@ -331,6 +336,7 @@ describe("createSessionToolHandler", () => {
     expect(baseHandler).toHaveBeenCalledWith("system.readFile", {
       path: `${workspaceRoot}/PLAN.md`,
       [SESSION_ALLOWED_ROOTS_ARG]: [workspaceRoot],
+      [SESSION_ID_ARG]: "session-1",
     });
   });
 
@@ -359,6 +365,7 @@ describe("createSessionToolHandler", () => {
       path: `${workspaceRoot}/src/index.ts`,
       content: "export const safe = true;\n",
       [SESSION_ALLOWED_ROOTS_ARG]: [workspaceRoot],
+      [SESSION_ID_ARG]: "session-1",
     });
   });
 
@@ -595,6 +602,7 @@ describe("createSessionToolHandler", () => {
       path: `${workspaceRoot}/project/package.json`,
       content: "{\n}\n",
       [SESSION_ALLOWED_ROOTS_ARG]: [workspaceRoot],
+      [SESSION_ID_ARG]: "session-1",
     });
     expect(baseHandler).toHaveBeenNthCalledWith(2, "system.bash", {
       command: "mkdir",
@@ -630,6 +638,7 @@ describe("createSessionToolHandler", () => {
       path: `${hostWorkspaceRoot}/signal-cartography-ts-57/package.json`,
       content: "{\n}\n",
       [SESSION_ALLOWED_ROOTS_ARG]: [delegatedWorkspaceRoot],
+      [SESSION_ID_ARG]: "session-1",
     });
   });
 
@@ -806,6 +815,7 @@ describe("createSessionToolHandler", () => {
       path: "/tmp/other-project/src/index.ts",
       content: "export const broken = true;\n",
       [SESSION_ALLOWED_ROOTS_ARG]: ["/tmp/project-root"],
+      [SESSION_ID_ARG]: "session-1",
     });
   });
 
@@ -2622,6 +2632,7 @@ describe("createSessionToolHandler", () => {
       path: "/tmp/workspace/tests/run_tests.sh",
       content: "#!/bin/bash\nbash tests/run_tests.sh\n",
       [SESSION_ALLOWED_ROOTS_ARG]: ["/tmp/workspace"],
+      [SESSION_ID_ARG]: "subagent:child-harness-allow",
     });
   });
 
@@ -2674,6 +2685,7 @@ describe("createSessionToolHandler", () => {
       path: "/tmp/shell-workspace/src/main.c",
       content: "int main(void) { return 0; }\n",
       [SESSION_ALLOWED_ROOTS_ARG]: ["/tmp/shell-workspace"],
+      [SESSION_ID_ARG]: "subagent:child-2",
     });
   });
 
@@ -2718,6 +2730,7 @@ describe("createSessionToolHandler", () => {
         expect(args).toEqual({
           path: planPath,
           [SESSION_ALLOWED_ROOTS_ARG]: [workspaceRoot],
+          [SESSION_ID_ARG]: "session-parent",
         });
         return JSON.stringify({ path: planPath, content: originalPlan });
       }
