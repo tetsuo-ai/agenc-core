@@ -938,6 +938,24 @@ export function validateXaiResponsePostFlight(params: {
   const priorFnOutputCount = countFunctionCallOutputInInput(
     (params.request as { input?: unknown }).input,
   );
+  const usage = (params.response as { usage?: unknown }).usage;
+  const outputTokens =
+    usage && typeof usage === "object"
+      ? Number((usage as { output_tokens?: unknown }).output_tokens) || 0
+      : 0;
+  // Two variants of the same xAI decoder bug:
+  //   (a) Mid-sentence truncation: text present but cut off mid-word
+  //   (b) Empty-output truncation: output_tokens === 0, output === []
+  // Both share the same trigger shape (completed + null incomplete +
+  // tools + auto + prior fn_output + zero tool-call blocks). Variant
+  // (b) was not caught in PR #306 because the condition required
+  // messageText.length > 0. Live trigger: session 5e9bcf4d... at
+  // 03:31:42 call_6 returned output:[] with 0 tokens while the prior
+  // calls (2-5) were all productive writeFile sequences.
+  const isMidSentenceTruncation =
+    messageText.length > 0 && !endsWithTerminalPunctuation(messageText);
+  const isEmptyOutputTruncation =
+    messageText.length === 0 && outputTokens === 0;
   if (
     responseStatus === "completed" &&
     (responseIncomplete === null || responseIncomplete === undefined) &&
@@ -945,27 +963,30 @@ export function validateXaiResponsePostFlight(params: {
     effChoice === "auto" &&
     priorFnOutputCount > 0 &&
     toolCallBlockCount === 0 &&
-    messageText.length > 0 &&
-    !endsWithTerminalPunctuation(messageText)
+    (isMidSentenceTruncation || isEmptyOutputTruncation)
   ) {
-    const usage = (params.response as { usage?: unknown }).usage;
-    const outputTokens =
-      usage && typeof usage === "object"
-        ? Number((usage as { output_tokens?: unknown }).output_tokens) || 0
-        : 0;
     anomalies.push({
       code: "truncated_response_mid_sentence",
       severity: "warn",
       message:
-        `xAI /v1/responses returned status="completed" with ` +
-        `incomplete_details=null, but the text-only response ends without ` +
-        `terminal punctuation after ${outputTokens} output tokens. ` +
-        `This matches the documented xAI decoder tool-mode → text-mode ` +
-        `transition bug (report.txt §4.4): a turn with ${priorFnOutputCount} ` +
-        `prior function_call_output items, ${sentTools.length} tools in ` +
-        `scope, and tool_choice="auto" silently truncates mid-sentence when ` +
-        `the model samples text instead of another tool call. The adapter ` +
-        `will retry this request with tool_choice="none".`,
+        isEmptyOutputTruncation
+          ? `xAI /v1/responses returned status="completed" with ` +
+            `incomplete_details=null and output_tokens=0 (completely empty ` +
+            `output). This is the zero-token variant of the xAI decoder ` +
+            `tool-mode → text-mode transition bug: a turn with ` +
+            `${priorFnOutputCount} prior function_call_output items, ` +
+            `${sentTools.length} tools in scope, and tool_choice="auto" ` +
+            `produced zero output. The adapter will retry with ` +
+            `tool_choice="none".`
+          : `xAI /v1/responses returned status="completed" with ` +
+            `incomplete_details=null, but the text-only response ends without ` +
+            `terminal punctuation after ${outputTokens} output tokens. ` +
+            `This matches the documented xAI decoder tool-mode → text-mode ` +
+            `transition bug (report.txt §4.4): a turn with ${priorFnOutputCount} ` +
+            `prior function_call_output items, ${sentTools.length} tools in ` +
+            `scope, and tool_choice="auto" silently truncates mid-sentence when ` +
+            `the model samples text instead of another tool call. The adapter ` +
+            `will retry this request with tool_choice="none".`,
       evidence: {
         outputTokens,
         messageTextTail: messageText.slice(-120),
@@ -973,6 +994,7 @@ export function validateXaiResponsePostFlight(params: {
         sentToolCount: sentTools.length,
         toolCallBlockCount,
         toolChoice: effChoice,
+        variant: isEmptyOutputTruncation ? "empty_output" : "mid_sentence",
       },
     });
   }
