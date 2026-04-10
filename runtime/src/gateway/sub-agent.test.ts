@@ -2232,6 +2232,75 @@ describe("SubAgentManager", () => {
       }
     });
 
+    it("rejects continuation attempts that widen the delegated tool scope", async () => {
+      const executeSpy = vi
+        .spyOn(ChatExecutor.prototype, "execute")
+        .mockResolvedValue({
+          content: "CHILD-STORED-S1",
+          provider: "mock-llm",
+          usedFallback: false,
+          toolCalls: [],
+          tokenUsage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+          callUsage: [],
+          durationMs: 10,
+          compacted: false,
+          stopReason: "completed",
+          completionState: "completed",
+          completionProgress: {
+            completionState: "completed",
+            stopReason: "completed",
+            requiredRequirements: [],
+            satisfiedRequirements: [],
+            remainingRequirements: [],
+            reusableEvidence: [],
+            updatedAt: 1_700_000_000_000,
+          },
+        } as any);
+      const manager = new SubAgentManager(makeManagerConfig());
+
+      try {
+        const firstSessionId = await manager.spawn({
+          parentSessionId: "parent-1",
+          task: "Initial constrained pass",
+          tools: ["system.readFile"],
+          workingDirectory: "/tmp/agenc-subagent",
+          workingDirectorySource: "execution_envelope",
+          delegationSpec: {
+            task: "Initial constrained pass",
+            tools: ["system.readFile"],
+            executionContext: {
+              workspaceRoot: "/tmp/agenc-subagent",
+              allowedReadRoots: ["/tmp/agenc-subagent"],
+              allowedWriteRoots: ["/tmp/agenc-subagent"],
+            },
+          },
+        });
+        await settle();
+
+        await expect(manager.spawn({
+          parentSessionId: "parent-1",
+          task: "Widen the scope",
+          continuationSessionId: firstSessionId,
+          tools: ["system.readFile", "system.writeFile"],
+          workingDirectory: "/tmp/agenc-subagent",
+          workingDirectorySource: "execution_envelope",
+          delegationSpec: {
+            task: "Widen the scope",
+            tools: ["system.readFile", "system.writeFile"],
+            executionContext: {
+              workspaceRoot: "/tmp/agenc-subagent",
+              allowedReadRoots: ["/tmp/agenc-subagent"],
+              allowedWriteRoots: ["/tmp/agenc-subagent"],
+            },
+          },
+        })).rejects.toThrow(
+          /cannot widen the delegated tool scope/,
+        );
+      } finally {
+        executeSpy.mockRestore();
+      }
+    });
+
     it("finds the latest successful child session for a parent", async () => {
       vi.useFakeTimers();
       try {

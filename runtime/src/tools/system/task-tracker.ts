@@ -15,7 +15,10 @@ import { join, resolve } from "node:path";
 import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import type { MemoryBackend, DurabilityLevel } from "../../memory/types.js";
-import type { RuntimeVerifierVerdict } from "../../runtime-contract/types.js";
+import type {
+  DelegatedRuntimeResult,
+  RuntimeVerifierVerdict,
+} from "../../runtime-contract/types.js";
 import { silentLogger, type Logger } from "../../utils/logger.js";
 import {
   normalizeRequestTaskRuntimeMetadata,
@@ -170,6 +173,7 @@ export interface RuntimeTaskFinalizeParams {
   readonly summary: string;
   readonly output?: string;
   readonly structuredOutput?: unknown;
+  readonly runtimeResult?: DelegatedRuntimeResult;
   readonly usage?: Record<string, unknown>;
   readonly verifierVerdict?: RuntimeVerifierVerdict;
   readonly ownedArtifacts?: readonly string[];
@@ -190,6 +194,7 @@ export interface TaskOutputResult {
   readonly summary?: string;
   readonly output?: string;
   readonly structuredOutput?: unknown;
+  readonly runtimeResult?: DelegatedRuntimeResult;
   readonly usage?: Record<string, unknown>;
   readonly verifierVerdict?: RuntimeVerifierVerdict;
   readonly ownedArtifacts?: readonly string[];
@@ -208,6 +213,7 @@ interface TaskOutputEnvelope {
   readonly summary: string;
   readonly output?: string;
   readonly structuredOutput?: unknown;
+  readonly runtimeResult?: DelegatedRuntimeResult;
   readonly usage?: Record<string, unknown>;
   readonly verifierVerdict?: RuntimeVerifierVerdict;
   readonly ownedArtifacts?: readonly string[];
@@ -696,6 +702,9 @@ function coerceTaskOutputEnvelope(value: unknown): TaskOutputEnvelope | undefine
     ...(typeof raw.output === "string" ? { output: raw.output } : {}),
     ...(raw.structuredOutput !== undefined
       ? { structuredOutput: raw.structuredOutput }
+      : {}),
+    ...(asPlainObject(raw.runtimeResult)
+      ? { runtimeResult: raw.runtimeResult as DelegatedRuntimeResult }
       : {}),
     ...(asPlainObject(raw.usage) ? { usage: asPlainObject(raw.usage) } : {}),
     ...(asPlainObject(raw.verifierVerdict)
@@ -1201,6 +1210,7 @@ export class TaskStore {
   ): Promise<Task | undefined> {
     const outputRef = params.output !== undefined ||
         params.structuredOutput !== undefined ||
+        params.runtimeResult !== undefined ||
         params.usage !== undefined ||
         params.verifierVerdict !== undefined ||
         params.externalRef !== undefined
@@ -1213,6 +1223,9 @@ export class TaskStore {
           ...(params.output !== undefined ? { output: params.output } : {}),
           ...(params.structuredOutput !== undefined
             ? { structuredOutput: params.structuredOutput }
+            : {}),
+          ...(params.runtimeResult !== undefined
+            ? { runtimeResult: params.runtimeResult }
             : {}),
           ...(params.usage !== undefined ? { usage: { ...params.usage } } : {}),
           ...(params.verifierVerdict !== undefined
@@ -1359,6 +1372,9 @@ export class TaskStore {
       ...(output !== undefined ? { output } : {}),
       ...(outputEnvelope?.structuredOutput !== undefined
         ? { structuredOutput: outputEnvelope.structuredOutput }
+        : {}),
+      ...(outputEnvelope?.runtimeResult !== undefined
+        ? { runtimeResult: outputEnvelope.runtimeResult }
         : {}),
       ...(outputEnvelope?.usage ? { usage: outputEnvelope.usage } : {}),
       ...(outputEnvelope?.verifierVerdict

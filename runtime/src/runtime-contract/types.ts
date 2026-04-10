@@ -168,6 +168,28 @@ export interface RuntimeMailboxMessage {
   readonly body?: string;
 }
 
+export interface DelegatedRuntimeResult {
+  readonly surface: "direct_child" | "planner_child" | "verifier";
+  readonly workerSessionId?: string;
+  readonly status:
+    | "in_progress"
+    | "completed"
+    | "failed"
+    | "cancelled"
+    | "timed_out";
+  readonly completionState?: "completed" | "partial" | "blocked" | "needs_verification";
+  readonly stopReason?: string;
+  readonly stopReasonDetail?: string;
+  readonly validationCode?: DelegationOutputValidationCode;
+  readonly taskId?: string;
+  readonly verifierRequirement?: VerifierRequirement;
+  readonly verifierVerdict?: RuntimeVerifierVerdict;
+  readonly executionEnvelopeFingerprint?: string;
+  readonly continuationSessionId?: string;
+  readonly outputReady?: boolean;
+  readonly ownedArtifacts?: readonly string[];
+}
+
 export const COMPLETION_VALIDATOR_ORDER: readonly CompletionValidatorId[] = [
   "artifact_evidence",
   "turn_end_stop_gate",

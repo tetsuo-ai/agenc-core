@@ -265,6 +265,18 @@ describe("coordinator_mode", () => {
       const initialWorker = await manager.spawn({
         parentSessionId: "session-a",
         task: "Initial worker pass",
+        tools: ["system.readFile"],
+        workingDirectory: "/tmp/agenc-coordinator",
+        workingDirectorySource: "execution_envelope",
+        delegationSpec: {
+          task: "Initial worker pass",
+          tools: ["system.readFile"],
+          executionContext: {
+            workspaceRoot: "/tmp/agenc-coordinator",
+            allowedReadRoots: ["/tmp/agenc-coordinator"],
+            allowedWriteRoots: ["/tmp/agenc-coordinator"],
+          },
+        },
       });
       await waitForWorkerResult(manager, initialWorker);
 

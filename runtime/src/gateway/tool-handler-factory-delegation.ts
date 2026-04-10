@@ -32,6 +32,14 @@ import {
 } from "./delegated-scope-preflight.js";
 import type { RuntimeContractFlags } from "../runtime-contract/types.js";
 import type { TaskStore } from "../tools/system/task-tracker.js";
+import {
+  buildDelegatedRuntimeResult,
+  computeDelegatedExecutionEnvelopeFingerprint,
+  mapPlannerVerifierSnapshotToRuntimeVerdict,
+  mergeVerifierRequirements,
+  resolveDelegatedTerminalOutcome,
+} from "./delegated-runtime-result.js";
+import type { VerifierRequirement } from "./verifier-probes.js";
 
 const DELEGATION_POLL_INTERVAL_MS = 75;
 const DELEGATION_PROGRESS_INTERVAL_MS = 1000;
@@ -84,58 +92,6 @@ function parseDelegationFailureReason(output: string): string {
   if (!trimmed) return "Sub-agent execution failed";
   const firstLine = trimmed.split(/\r?\n/, 1)[0] ?? trimmed;
   return firstLine.slice(0, 240);
-}
-
-function resolveChildTerminalStatus(params: {
-  readonly completionState?: "completed" | "partial" | "blocked" | "needs_verification";
-  readonly stopReason?: string;
-  readonly reportedStatus?: string;
-}): string {
-  if (params.stopReason === "cancelled") {
-    return "cancelled";
-  }
-  if (params.stopReason === "timeout") {
-    return "timed_out";
-  }
-  if (params.completionState === "completed") {
-    return "completed";
-  }
-  if (
-    params.reportedStatus === "cancelled" ||
-    params.reportedStatus === "timed_out"
-  ) {
-    return params.reportedStatus;
-  }
-  return "failed";
-}
-
-function buildNonCompletedChildReason(params: {
-  readonly completionState?: "completed" | "partial" | "blocked" | "needs_verification";
-  readonly completionProgress?: {
-    readonly remainingRequirements?: readonly string[];
-  };
-  readonly stopReasonDetail?: string;
-}): string | undefined {
-  if (!params.completionState || params.completionState === "completed") {
-    return undefined;
-  }
-  const remainingRequirements =
-    params.completionProgress?.remainingRequirements?.filter((entry) =>
-      typeof entry === "string" && entry.trim().length > 0
-    ) ?? [];
-  const remainingSuffix = remainingRequirements.length > 0
-    ? ` Remaining requirements: ${remainingRequirements.join(", ")}.`
-    : "";
-  const detailSuffix =
-    typeof params.stopReasonDetail === "string" &&
-      params.stopReasonDetail.trim().length > 0
-      ? ` ${params.stopReasonDetail.trim()}`
-      : "";
-  return (
-    `Sub-agent did not reach a completed workflow state (${params.completionState}).` +
-    remainingSuffix +
-    detailSuffix
-  ).trim();
 }
 
 function countFailedChildToolCalls(
@@ -391,6 +347,14 @@ function shouldReturnAsyncTaskHandle(
   );
 }
 
+function isDelegationToolName(toolName: string): boolean {
+  const normalized = toolName.trim().toLowerCase();
+  return normalized === "execute_with_agent" ||
+    normalized === "coordinator_mode" ||
+    normalized.startsWith("subagent.") ||
+    normalized.startsWith("agenc.subagent.");
+}
+
 async function finalizeDelegationTask(params: {
   readonly taskStore: TaskStore;
   readonly sessionId: string;
@@ -402,26 +366,43 @@ async function finalizeDelegationTask(params: {
   readonly toolName: string;
   readonly objective: string;
   readonly toolCallId: string;
-  readonly verifierRequirement?: Record<string, unknown>;
+  readonly verifierRequirement?: VerifierRequirement;
+  readonly executionEnvelopeFingerprint?: string;
+  readonly ownedArtifacts?: readonly string[];
 }): Promise<void> {
   const childResult = params.result;
-  const childCompleted = childResult?.completionState === "completed";
   const failedChildToolCalls = countFailedChildToolCalls(childResult?.toolCalls);
-  const finalStatus = resolveChildTerminalStatus({
+  const verifierVerdict = mapPlannerVerifierSnapshotToRuntimeVerdict(
+    childResult?.verifierSnapshot,
+  );
+  const terminalOutcome = resolveDelegatedTerminalOutcome({
+    surface: "direct_child",
+    workerSessionId: params.childSessionId,
+    taskId: params.taskId,
     completionState: childResult?.completionState,
+    completionProgress: childResult?.completionProgress,
     stopReason: childResult?.stopReason,
-    reportedStatus: childResult?.stopReason === "cancelled"
-      ? "cancelled"
-      : childResult?.stopReason === "timeout"
-        ? "timed_out"
-        : undefined,
+    stopReasonDetail: childResult?.stopReasonDetail,
+    validationCode: childResult?.validationCode,
+    reportedStatus:
+      childResult?.stopReason === "cancelled"
+        ? "cancelled"
+        : childResult?.stopReason === "timeout"
+          ? "timed_out"
+          : undefined,
+    verifierRequirement: params.verifierRequirement,
+    verifierVerdict,
+    executionEnvelopeFingerprint:
+      childResult?.contractFingerprint ?? params.executionEnvelopeFingerprint,
+    continuationSessionId: params.childSessionId,
+    ownedArtifacts: params.ownedArtifacts,
   });
   const normalizedChildOutput = normalizeDelegatedSessionHandleOutput({
     childSessionId: params.childSessionId,
     input: params.input,
     output: childResult?.output ?? "",
   });
-  if (childCompleted) {
+  if (terminalOutcome.success) {
     params.lifecycleEmitter?.emit({
       type: "subagents.completed",
       timestamp: Date.now(),
@@ -436,9 +417,7 @@ async function finalizeDelegationTask(params: {
         providerName: childResult?.providerName,
         output: normalizedChildOutput,
         toolCallId: params.toolCallId,
-        ...(params.verifierRequirement
-          ? { verifierRequirement: params.verifierRequirement }
-          : {}),
+        runtimeResult: terminalOutcome.runtimeResult,
       },
     });
     await params.taskStore.finalizeRuntimeTask({
@@ -446,33 +425,33 @@ async function finalizeDelegationTask(params: {
       taskId: params.taskId,
       status: "completed",
       summary: "Delegated worker completed successfully.",
-        output: normalizedChildOutput,
-        usage: childResult?.tokenUsage as unknown as Record<string, unknown> | undefined,
-        externalRef: {
-          kind: "subagent",
-          id: params.childSessionId,
-          sessionId: params.childSessionId,
-        },
-        eventData: {
-          durationMs: childResult?.durationMs,
-          toolCalls: childResult?.toolCalls.length ?? 0,
-          ...(params.verifierRequirement
-            ? { verifierRequirement: params.verifierRequirement }
-            : {}),
-        },
-      });
+      output: normalizedChildOutput,
+      runtimeResult: terminalOutcome.runtimeResult,
+      usage:
+        childResult?.tokenUsage as unknown as Record<string, unknown> | undefined,
+      verifierVerdict,
+      ownedArtifacts: params.ownedArtifacts,
+      externalRef: {
+        kind: "subagent",
+        id: params.childSessionId,
+        sessionId: params.childSessionId,
+      },
+      eventData: {
+        durationMs: childResult?.durationMs,
+        toolCalls: childResult?.toolCalls.length ?? 0,
+        runtimeResult: terminalOutcome.runtimeResult,
+      },
+    });
     return;
   }
 
   const reason =
-    buildNonCompletedChildReason({
-      completionState: childResult?.completionState,
-      completionProgress: childResult?.completionProgress,
-      stopReasonDetail: childResult?.stopReasonDetail,
-    }) ??
+    terminalOutcome.failureReason ??
     parseDelegationFailureReason(childResult?.output ?? "");
   const terminalType =
-    finalStatus === "cancelled" ? "subagents.cancelled" : "subagents.failed";
+    terminalOutcome.terminalStatus === "cancelled"
+      ? "subagents.cancelled"
+      : "subagents.failed";
   params.lifecycleEmitter?.emit({
     type: terminalType,
     timestamp: Date.now(),
@@ -488,15 +467,20 @@ async function finalizeDelegationTask(params: {
       toolCalls: childResult?.toolCalls.length ?? 0,
       failedToolCalls: failedChildToolCalls,
       toolCallId: params.toolCallId,
+      runtimeResult: terminalOutcome.runtimeResult,
     },
   });
   await params.taskStore.finalizeRuntimeTask({
     listId: params.sessionId,
     taskId: params.taskId,
-    status: finalStatus === "cancelled" ? "cancelled" : "failed",
+    status:
+      terminalOutcome.terminalStatus === "cancelled" ? "cancelled" : "failed",
     summary: reason,
     output: childResult?.output,
+    runtimeResult: terminalOutcome.runtimeResult,
     usage: childResult?.tokenUsage as unknown as Record<string, unknown> | undefined,
+    verifierVerdict,
+    ownedArtifacts: params.ownedArtifacts,
     externalRef: {
       kind: "subagent",
       id: params.childSessionId,
@@ -506,6 +490,7 @@ async function finalizeDelegationTask(params: {
       durationMs: childResult?.durationMs,
       toolCalls: childResult?.toolCalls.length ?? 0,
       failedToolCalls: failedChildToolCalls,
+      runtimeResult: terminalOutcome.runtimeResult,
     },
   });
 }
@@ -594,6 +579,7 @@ export async function executeDelegationTool(
     requestedTools: input.tools,
     parentAllowedTools: availableToolNames,
     availableTools: availableToolNames,
+    allowDelegationTools: isSubAgentSessionId(sessionId),
     enforceParentIntersection: true,
     strictExplicitToolAllowlist: Array.isArray(input.tools) && input.tools.length > 0,
     unsafeBenchmarkMode,
@@ -633,6 +619,11 @@ export async function executeDelegationTool(
   }
   const effectiveExecutionContext = derivedExecutionEnvelope.executionContext;
   const workingDirectory = derivedExecutionEnvelope.workingDirectory;
+  const executionEnvelopeFingerprint = computeDelegatedExecutionEnvelopeFingerprint({
+    workingDirectory,
+    executionContext: effectiveExecutionContext,
+    allowedTools: resolvedChildScope.allowedTools,
+  });
   const { executionContext: _requestedExecutionContext, ...inputWithoutExecutionContext } =
     input;
   const effectiveInput: ExecuteWithAgentInput = effectiveExecutionContext
@@ -673,7 +664,12 @@ export async function executeDelegationTool(
     input: effectiveInput,
     threshold: params.delegationThreshold ?? 0.2,
   });
-  if (!unsafeBenchmarkMode && !admission.allowed) {
+  const nestedDelegationAuthorized =
+    isSubAgentSessionId(sessionId) &&
+    resolvedChildScope.allowedTools.some((toolName) =>
+      isDelegationToolName(toolName)
+    );
+  if (!unsafeBenchmarkMode && !admission.allowed && !nestedDelegationAuthorized) {
     lifecycleEmitter?.emit({
       type: "subagents.failed",
       timestamp: Date.now(),
@@ -715,10 +711,18 @@ export async function executeDelegationTool(
           : undefined,
       }
       : effectiveInput;
-  const verifierRequirement = verifier?.resolveVerifierRequirement({
-    runtimeRequired: params.runtimeContractFlags?.verifierRuntimeRequired,
-    projectBootstrap: params.runtimeContractFlags?.verifierProjectBootstrap,
-    workspaceRoot: workingDirectory,
+  const inheritedVerifierRequirement =
+    isSubAgentSessionId(sessionId) &&
+      typeof subAgentManager.getVerifierRequirement === "function"
+      ? subAgentManager.getVerifierRequirement(sessionId)
+      : undefined;
+  const verifierRequirement = mergeVerifierRequirements({
+    inherited: inheritedVerifierRequirement,
+    resolved: verifier?.resolveVerifierRequirement({
+      runtimeRequired: params.runtimeContractFlags?.verifierRuntimeRequired,
+      projectBootstrap: params.runtimeContractFlags?.verifierProjectBootstrap,
+      workspaceRoot: workingDirectory,
+    }),
   });
   let runtimeTaskId: string | undefined;
   if (taskStore) {
@@ -839,9 +843,10 @@ export async function executeDelegationTool(
         ? { requiredCapabilities: input.requiredToolCapabilities }
         : {}),
       requireToolCall: specRequiresSuccessfulToolEvidence(effectiveInput),
-        delegationSpec: admittedInput,
-        unsafeBenchmarkMode,
-      });
+      delegationSpec: admittedInput,
+      ...(verifierRequirement ? { verifierRequirement } : {}),
+      unsafeBenchmarkMode,
+    });
     if (taskStore && runtimeTaskId) {
       await taskStore.attachExternalRef(
         sessionId,
@@ -958,9 +963,9 @@ export async function executeDelegationTool(
           toolName: name,
           objective,
           toolCallId,
-          ...(verifierRequirement
-            ? { verifierRequirement: verifierRequirement as unknown as Record<string, unknown> }
-            : {}),
+          verifierRequirement,
+          executionEnvelopeFingerprint,
+          ownedArtifacts: admittedInput.delegationAdmission?.ownedArtifacts,
         }),
       )
       .catch(async (error) => {
@@ -1002,6 +1007,17 @@ export async function executeDelegationTool(
       subagentSessionId: childSessionId,
       objective,
       taskId: runtimeTaskId,
+      runtimeResult: buildDelegatedRuntimeResult({
+        surface: "direct_child",
+        workerSessionId: childSessionId,
+        status: "in_progress",
+        taskId: runtimeTaskId,
+        verifierRequirement,
+        executionEnvelopeFingerprint,
+        continuationSessionId: childSessionId,
+        outputReady: false,
+        ownedArtifacts: admittedInput.delegationAdmission?.ownedArtifacts,
+      }),
       task: {
         id: runtimeTaskId,
         kind: "subagent",
@@ -1049,18 +1065,26 @@ export async function executeDelegationTool(
     }
 
     const childInfo = subAgentManager.getInfo(childSessionId);
-    const childCompleted = childResult.completionState === "completed";
-    const finalStatus = resolveChildTerminalStatus({
-      completionState: childResult.completionState,
-      stopReason: childResult.stopReason,
-      reportedStatus: childInfo?.status,
-    });
-
     const failedChildToolCalls = countFailedChildToolCalls(childResult.toolCalls);
-    const childCompletionStateFailure = buildNonCompletedChildReason({
+    const verifierVerdict = mapPlannerVerifierSnapshotToRuntimeVerdict(
+      childResult.verifierSnapshot,
+    );
+    const terminalOutcome = resolveDelegatedTerminalOutcome({
+      surface: "direct_child",
+      workerSessionId: childSessionId,
+      taskId: runtimeTaskId,
       completionState: childResult.completionState,
       completionProgress: childResult.completionProgress,
+      stopReason: childResult.stopReason,
       stopReasonDetail: childResult.stopReasonDetail,
+      validationCode: childResult.validationCode,
+      reportedStatus: childInfo?.status,
+      verifierRequirement,
+      verifierVerdict,
+      executionEnvelopeFingerprint:
+        childResult.contractFingerprint ?? executionEnvelopeFingerprint,
+      continuationSessionId: childSessionId,
+      ownedArtifacts: admittedInput.delegationAdmission?.ownedArtifacts,
     });
     const normalizedChildOutput = normalizeDelegatedSessionHandleOutput({
       childSessionId,
@@ -1068,7 +1092,7 @@ export async function executeDelegationTool(
       output: childResult.output,
     });
 
-    if (childCompleted) {
+    if (terminalOutcome.success) {
       lifecycleEmitter?.emit({
         type: "subagents.completed",
         timestamp: Date.now(),
@@ -1083,7 +1107,7 @@ export async function executeDelegationTool(
           providerName: childResult.providerName,
           output: normalizedChildOutput,
           toolCallId,
-          ...(verifierRequirement ? { verifierRequirement } : {}),
+          runtimeResult: terminalOutcome.runtimeResult,
         },
       });
       if (taskStore && runtimeTaskId) {
@@ -1093,8 +1117,10 @@ export async function executeDelegationTool(
           status: "completed",
           summary: "Delegated worker completed successfully.",
           output: normalizedChildOutput,
+          runtimeResult: terminalOutcome.runtimeResult,
           usage:
             childResult.tokenUsage as unknown as Record<string, unknown> | undefined,
+          verifierVerdict,
           ownedArtifacts: admittedInput.delegationAdmission?.ownedArtifacts,
           workingDirectory,
           isolation: admittedInput.delegationAdmission?.isolationReason,
@@ -1106,13 +1132,13 @@ export async function executeDelegationTool(
           eventData: {
             durationMs: childResult.durationMs,
             toolCalls: childResult.toolCalls.length,
-            ...(verifierRequirement ? { verifierRequirement } : {}),
+            runtimeResult: terminalOutcome.runtimeResult,
           },
         });
       }
       return finalizeDelegationResult({
         success: true,
-        status: finalStatus,
+        status: terminalOutcome.terminalStatus,
         subagentSessionId: childSessionId,
         objective,
         ...(runtimeTaskId ? { taskId: runtimeTaskId } : {}),
@@ -1123,19 +1149,22 @@ export async function executeDelegationTool(
         providerEvidence: childResult.providerEvidence,
         providerName: childResult.providerName,
         tokenUsage: childResult.tokenUsage,
-        completionState: childResult.completionState,
+        completionState: terminalOutcome.runtimeResult.completionState,
         completionProgress: childResult.completionProgress,
         stopReason: childResult.stopReason,
         stopReasonDetail: childResult.stopReasonDetail,
         validationCode: childResult.validationCode,
+        runtimeResult: terminalOutcome.runtimeResult,
         ...(verifierRequirement ? { verifierRequirement } : {}),
       });
     }
 
-    const reason = childCompletionStateFailure ??
+    const reason = terminalOutcome.failureReason ??
       parseDelegationFailureReason(childResult.output);
     const terminalType =
-      finalStatus === "cancelled" ? "subagents.cancelled" : "subagents.failed";
+      terminalOutcome.terminalStatus === "cancelled"
+        ? "subagents.cancelled"
+        : "subagents.failed";
     lifecycleEmitter?.emit({
       type: terminalType,
       timestamp: Date.now(),
@@ -1151,17 +1180,21 @@ export async function executeDelegationTool(
         toolCalls: childResult.toolCalls.length,
         failedToolCalls: failedChildToolCalls,
         toolCallId,
+        runtimeResult: terminalOutcome.runtimeResult,
       },
     });
     if (taskStore && runtimeTaskId) {
       await taskStore.finalizeRuntimeTask({
         listId: sessionId,
         taskId: runtimeTaskId,
-        status: finalStatus === "cancelled" ? "cancelled" : "failed",
+        status:
+          terminalOutcome.terminalStatus === "cancelled" ? "cancelled" : "failed",
         summary: reason,
         output: childResult.output,
+        runtimeResult: terminalOutcome.runtimeResult,
         usage:
           childResult.tokenUsage as unknown as Record<string, unknown> | undefined,
+        verifierVerdict,
         ownedArtifacts: admittedInput.delegationAdmission?.ownedArtifacts,
         workingDirectory,
         isolation: admittedInput.delegationAdmission?.isolationReason,
@@ -1174,13 +1207,13 @@ export async function executeDelegationTool(
           durationMs: childResult.durationMs,
           toolCalls: childResult.toolCalls.length,
           failedToolCalls: failedChildToolCalls,
-          ...(verifierRequirement ? { verifierRequirement } : {}),
+          runtimeResult: terminalOutcome.runtimeResult,
         },
       });
     }
     return finalizeDelegationResult({
       success: false,
-      status: finalStatus,
+      status: terminalOutcome.terminalStatus,
       subagentSessionId: childSessionId,
       objective,
       ...(runtimeTaskId ? { taskId: runtimeTaskId } : {}),
@@ -1191,11 +1224,12 @@ export async function executeDelegationTool(
       failedToolCalls: failedChildToolCalls,
       providerName: childResult.providerName,
       tokenUsage: childResult.tokenUsage,
-      completionState: childResult.completionState,
+      completionState: terminalOutcome.runtimeResult.completionState,
       completionProgress: childResult.completionProgress,
       stopReason: childResult.stopReason,
       stopReasonDetail: childResult.stopReasonDetail,
       validationCode: childResult.validationCode,
+      runtimeResult: terminalOutcome.runtimeResult,
       ...(verifierRequirement ? { verifierRequirement } : {}),
     });
   }

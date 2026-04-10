@@ -812,6 +812,7 @@ export function resolveDelegatedChildToolScope(params: {
   parentAllowedTools?: readonly string[];
   availableTools?: readonly string[];
   forbiddenTools?: readonly string[];
+  allowDelegationTools?: boolean;
   enforceParentIntersection?: boolean;
   strictExplicitToolAllowlist?: boolean;
   unsafeBenchmarkMode?: boolean;
@@ -880,7 +881,11 @@ export function resolveDelegatedChildToolScope(params: {
       options.removalBucket?.push(normalized);
       return;
     }
-    if (!unsafeBenchmarkMode && isDelegationToolNameLike(normalized)) {
+    if (
+      !unsafeBenchmarkMode &&
+      !params.allowDelegationTools &&
+      isDelegationToolNameLike(normalized)
+    ) {
       removedAsDelegationTools.push(normalized);
       return;
     }
@@ -1135,7 +1140,6 @@ export function resolveDelegatedChildToolScope(params: {
     },
   };
 }
-
 
 
 

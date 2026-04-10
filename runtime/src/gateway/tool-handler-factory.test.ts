@@ -1783,6 +1783,11 @@ describe("createSessionToolHandler", () => {
           updatedAt: 1_700_000_000_000,
         },
         stopReason: "completed",
+        verifierSnapshot: {
+          performed: true,
+          overall: "pass",
+          summary: "Build probe passed.",
+        },
         durationMs: 42,
         toolCalls: [
           {
@@ -1853,6 +1858,12 @@ describe("createSessionToolHandler", () => {
       subagentSessionId?: string;
       objective?: string;
       completionState?: string;
+      runtimeResult?: {
+        status?: string;
+        completionState?: string;
+        verifierVerdict?: { overall?: string };
+        continuationSessionId?: string;
+      };
     };
 
     expect(baseHandler).not.toHaveBeenCalled();
@@ -1881,6 +1892,12 @@ describe("createSessionToolHandler", () => {
     expect(parsed.completionState).toBe("completed");
     expect(parsed.subagentSessionId).toBe("subagent:child-1");
     expect(parsed.objective).toBe("Inspect file");
+    expect(parsed.runtimeResult).toMatchObject({
+      status: "completed",
+      completionState: "completed",
+      verifierVerdict: { overall: "pass" },
+      continuationSessionId: "subagent:child-1",
+    });
 
     const executingCount = sentMessages.filter((msg) => msg.type === "tools.executing").length;
     const resultCount = sentMessages.filter((msg) => msg.type === "tools.result").length;
@@ -1895,6 +1912,88 @@ describe("createSessionToolHandler", () => {
     );
     expect(lifecycleEvents.some((event) => event.type === "subagents.completed")).toBe(
       true,
+    );
+  });
+
+  it("allows explicitly scoped nested delegation from a sub-agent session", async () => {
+    const subAgentManager = {
+      getInfo: vi.fn((sessionId: string) => ({
+        sessionId,
+        parentSessionId: "session-parent",
+        depth: 1,
+        status: "completed",
+        startedAt: Date.now() - 100,
+        task: "Parent child task",
+      })),
+      getExecutionContext: vi.fn(() => ({
+        workspaceRoot: "/tmp/project-root",
+        allowedTools: ["execute_with_agent", "system.readFile"],
+        allowedReadRoots: ["/tmp/project-root"],
+        allowedWriteRoots: ["/tmp/project-root"],
+        targetArtifacts: ["/tmp/project-root/src/nested.ts"],
+        verificationMode: "mutation_required",
+        stepKind: "delegated_write",
+      })),
+      getVerifierRequirement: vi.fn(() => undefined),
+      spawn: vi.fn(async () => "subagent:grandchild-1"),
+      getResult: vi.fn(() => makeCompletedChildResult({
+        sessionId: "subagent:grandchild-1",
+        output: '{"summary":"grandchild completed"}',
+        success: true,
+        durationMs: 20,
+        toolCalls: [],
+      })),
+    };
+
+    const handler = createSessionToolHandler({
+      sessionId: "subagent:child-1",
+      baseHandler: vi.fn(async () => "should-not-run"),
+      availableToolNames: ["execute_with_agent", "system.readFile"],
+      routerId: "router-a",
+      send: vi.fn(),
+      defaultWorkingDirectory: "/tmp/project-root",
+      delegation: () => ({
+        subAgentManager: subAgentManager as any,
+        policyEngine: new DelegationPolicyEngine({
+          enabled: true,
+          spawnDecisionThreshold: 0.2,
+          fallbackBehavior: "fail_request",
+        }),
+        verifier: null,
+        lifecycleEmitter: null,
+      }),
+    });
+
+    const result = await handler("execute_with_agent", {
+      task: "Implement the nested child step for src/nested.ts only",
+      objective: "Own /tmp/project-root/src/nested.ts and delegate the bounded child step only for that file",
+      tools: ["execute_with_agent", "system.readFile"],
+      acceptanceCriteria: ["Only /tmp/project-root/src/nested.ts is owned by this nested child"],
+      executionContext: {
+        allowedTools: ["execute_with_agent", "system.readFile"],
+        targetArtifacts: ["/tmp/project-root/src/nested.ts"],
+        verificationMode: "mutation_required",
+        stepKind: "delegated_write",
+      },
+      delegationAdmission: {
+        shape: "bounded_sequential_handoff",
+        isolationReason: "Nested child owns /tmp/project-root/src/nested.ts only.",
+        ownedArtifacts: ["/tmp/project-root/src/nested.ts"],
+        verifierObligations: ["Preserve verifier obligations for nested child"],
+      },
+    });
+    const parsed = JSON.parse(result) as {
+      success?: boolean;
+      subagentSessionId?: string;
+    };
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.subagentSessionId).toBe("subagent:grandchild-1");
+    expect(subAgentManager.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parentSessionId: "subagent:child-1",
+        tools: ["execute_with_agent", "system.readFile"],
+      }),
     );
   });
 
@@ -1959,11 +2058,21 @@ describe("createSessionToolHandler", () => {
         readonly status?: string;
         readonly taskId?: string;
         readonly task?: Record<string, unknown>;
+        readonly runtimeResult?: {
+          readonly status?: string;
+          readonly taskId?: string;
+          readonly outputReady?: boolean;
+        };
       };
 
       expect(parsed.success).toBe(true);
       expect(parsed.status).toBe("in_progress");
       expect(parsed.taskId).toBeTruthy();
+      expect(parsed.runtimeResult).toMatchObject({
+        status: "in_progress",
+        taskId: parsed.taskId,
+        outputReady: false,
+      });
       expect(parsed.task).toMatchObject({
         id: parsed.taskId,
         kind: "subagent",
@@ -1980,6 +2089,11 @@ describe("createSessionToolHandler", () => {
       const output = await taskStore.readTaskOutput("session-parent", parsed.taskId!);
       expect(output?.summary).toBe("Delegated worker completed successfully.");
       expect(output?.output).toBe('{"summary":"child completed"}');
+      expect(output?.runtimeResult).toMatchObject({
+        status: "completed",
+        completionState: "completed",
+        continuationSessionId: "subagent:child-async",
+      });
     } finally {
       rmSync(outputRoot, { recursive: true, force: true });
     }
@@ -2058,6 +2172,95 @@ describe("createSessionToolHandler", () => {
     ]);
     expect(parsed.error).toContain("did not reach a completed workflow state");
     expect(parsed.error).toContain("workflow_verifier_pass");
+  });
+
+  it("blocks delegated child success when verification is required but the child never passed it", async () => {
+    const verifier = {
+      resolveVerifierRequirement: vi.fn(() => ({
+        required: true,
+        profiles: ["generic"],
+        probeCategories: ["build"],
+        mutationPolicy: "read_only_workspace",
+        allowTempArtifacts: false,
+        bootstrapSource: "disabled",
+        rationale: ["test"],
+      })),
+    };
+
+    const handler = createSessionToolHandler({
+      sessionId: "session-parent",
+      baseHandler: vi.fn(async () => "should-not-run"),
+      availableToolNames: ["system.writeFile", "system.bash"],
+      routerId: "router-a",
+      send: vi.fn(),
+      defaultWorkingDirectory: "/tmp/project",
+      delegation: () => ({
+        subAgentManager: {
+          spawn: vi.fn(async () => "subagent:child-verify-missing"),
+          getResult: vi.fn(() => ({
+            sessionId: "subagent:child-verify-missing",
+            output: "Implemented the requested files.",
+            success: true,
+            completionState: "completed",
+            completionProgress: {
+              completionState: "completed",
+              stopReason: "completed",
+              requiredRequirements: [],
+              satisfiedRequirements: [],
+              remainingRequirements: [],
+              reusableEvidence: [],
+              updatedAt: 1_700_000_000_000,
+            },
+            stopReason: "completed",
+            durationMs: 42,
+            toolCalls: [
+              {
+                name: "system.writeFile",
+                args: { path: "/tmp/project/src/main.ts" },
+                result: '{"ok":true}',
+                isError: false,
+                durationMs: 5,
+              },
+            ],
+          })),
+          getInfo: vi.fn(() => ({
+            sessionId: "subagent:child-verify-missing",
+            parentSessionId: "session-parent",
+            depth: 1,
+            status: "completed",
+            startedAt: Date.now() - 100,
+            task: "Implement the CLI",
+          })),
+        } as any,
+        policyEngine: null,
+        verifier: verifier as any,
+        lifecycleEmitter: null,
+      }),
+    });
+
+    const result = await handler("execute_with_agent", {
+      task: "Implement the CLI",
+      tools: ["system.writeFile", "system.bash"],
+    });
+    const parsed = JSON.parse(result) as {
+      success?: boolean;
+      status?: string;
+      error?: string;
+      completionState?: string;
+      runtimeResult?: {
+        completionState?: string;
+        verifierRequirement?: { required?: boolean };
+      };
+    };
+
+    expect(parsed.success).toBe(false);
+    expect(parsed.status).toBe("failed");
+    expect(parsed.completionState).toBe("needs_verification");
+    expect(parsed.runtimeResult).toMatchObject({
+      completionState: "needs_verification",
+      verifierRequirement: { required: true },
+    });
+    expect(parsed.error).toContain("requires a passing verifier result");
   });
 
   it("allows non-filesystem execute_with_agent delegation without a structured execution envelope", async () => {
@@ -4458,7 +4661,7 @@ describe("createSessionToolHandler", () => {
     expect(sentMessages.some((msg) => msg.type === "tools.result")).toBe(false);
   });
 
-  it("blocks delegation tools from sub-agent sessions to prevent privilege expansion", async () => {
+  it("fails closed when nested delegation is requested without a sub-agent manager", async () => {
     const sentMessages: ControlResponse[] = [];
     const send = vi.fn((msg: ControlResponse): void => {
       sentMessages.push(msg);
@@ -4486,10 +4689,10 @@ describe("createSessionToolHandler", () => {
     const result = await handler("execute_with_agent", { task: "expand scope" });
     const parsed = JSON.parse(result) as { error?: string };
 
-    expect(parsed.error).toContain("cannot invoke delegation tools");
+    expect(parsed.error).toContain("sub-agent manager is not initialized");
     expect(baseHandler).not.toHaveBeenCalled();
-    expect(sentMessages.some((msg) => msg.type === "tools.executing")).toBe(false);
-    expect(sentMessages.some((msg) => msg.type === "tools.result")).toBe(false);
+    expect(sentMessages.some((msg) => msg.type === "tools.executing")).toBe(true);
+    expect(sentMessages.some((msg) => msg.type === "tools.result")).toBe(true);
   });
 
   it("allows nested delegation from sub-agent sessions in unsafe benchmark mode", async () => {

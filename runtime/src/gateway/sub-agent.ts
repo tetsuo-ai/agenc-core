@@ -55,6 +55,7 @@ import type {
   DelegationContractSpec,
   DelegationOutputValidationCode,
 } from "../utils/delegation-validation.js";
+import type { VerifierRequirement } from "./verifier-probes.js";
 import { SubAgentSpawnError } from "./errors.js";
 
 // ============================================================================
@@ -161,6 +162,7 @@ export interface SubAgentConfig {
   readonly requireToolCall?: boolean;
   readonly structuredOutput?: ChatExecuteParams["structuredOutput"];
   readonly delegationSpec?: DelegationContractSpec;
+  readonly verifierRequirement?: VerifierRequirement;
   readonly requiredToolEvidence?: ChatExecuteParams["requiredToolEvidence"];
   readonly unsafeBenchmarkMode?: boolean;
   /**
@@ -184,6 +186,8 @@ export interface SubAgentResult {
   readonly providerName?: string;
   readonly completionState?: ChatExecutorResult["completionState"];
   readonly completionProgress?: ChatExecutorResult["completionProgress"];
+  readonly verifierSnapshot?: ChatExecutorResult["verifierSnapshot"];
+  readonly contractFingerprint?: string;
   readonly stopReason?: ChatExecutorResult["stopReason"];
   readonly stopReasonDetail?: string;
   readonly validationCode?: DelegationOutputValidationCode;
@@ -286,6 +290,118 @@ function mapChatCompletionToSubAgentStatus(input: {
   if (input.stopReason === "cancelled") return "cancelled";
   if (input.completionState === "completed") return "completed";
   return "failed";
+}
+
+function normalizeStringList(values: readonly string[] | undefined): readonly string[] {
+  return (values ?? [])
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function stableConfigFragment(value: unknown): string {
+  if (value === null || value === undefined) {
+    return String(value);
+  }
+  if (typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableConfigFragment(entry)).join(",")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, entry]) => entry !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right));
+  return `{${entries
+    .map(([key, entry]) => `${JSON.stringify(key)}:${stableConfigFragment(entry)}`)
+    .join(",")}}`;
+}
+
+function normalizeVerifierRequirement(
+  requirement: VerifierRequirement | undefined,
+): string | undefined {
+  if (!requirement) return undefined;
+  return stableConfigFragment({
+    required: requirement.required,
+    profiles: normalizeStringList(requirement.profiles),
+    probeCategories: normalizeStringList(requirement.probeCategories),
+    mutationPolicy: requirement.mutationPolicy,
+    allowTempArtifacts: requirement.allowTempArtifacts,
+    bootstrapSource: requirement.bootstrapSource,
+  });
+}
+
+function normalizeExecutionContextFingerprint(
+  executionContext: DelegationContractSpec["executionContext"] | undefined,
+): string | undefined {
+  if (!executionContext) return undefined;
+  return stableConfigFragment({
+    workspaceRoot: executionContext.workspaceRoot,
+    allowedTools: normalizeStringList(executionContext.allowedTools),
+    allowedReadRoots: normalizeStringList(executionContext.allowedReadRoots),
+    allowedWriteRoots: normalizeStringList(executionContext.allowedWriteRoots),
+    inputArtifacts: normalizeStringList(executionContext.inputArtifacts),
+    requiredSourceArtifacts: normalizeStringList(
+      executionContext.requiredSourceArtifacts,
+    ),
+    targetArtifacts: normalizeStringList(executionContext.targetArtifacts),
+    effectClass: executionContext.effectClass,
+    verificationMode: executionContext.verificationMode,
+    stepKind: executionContext.stepKind,
+    fallbackPolicy: executionContext.fallbackPolicy,
+    resumePolicy: executionContext.resumePolicy,
+    approvalProfile: executionContext.approvalProfile,
+  });
+}
+
+function validateContinuationCompatibility(params: {
+  readonly existing: SubAgentConfig;
+  readonly next: SubAgentConfig;
+}): string | undefined {
+  const existingWorkingDirectory = params.existing.workingDirectory?.trim();
+  const nextWorkingDirectory = params.next.workingDirectory?.trim();
+  if (existingWorkingDirectory !== nextWorkingDirectory) {
+    return "continuationSessionId cannot change the delegated working directory";
+  }
+
+  const existingTools = normalizeStringList(params.existing.tools);
+  const nextTools = normalizeStringList(params.next.tools);
+  if (
+    existingTools.length > 0 &&
+    (nextTools.length === 0 ||
+      nextTools.some((toolName) => !existingTools.includes(toolName)))
+  ) {
+    return "continuationSessionId cannot widen the delegated tool scope";
+  }
+
+  if (
+    params.existing.requireToolCall === true &&
+    params.next.requireToolCall !== true
+  ) {
+    return "continuationSessionId must preserve required child tool evidence";
+  }
+
+  const existingContext = normalizeExecutionContextFingerprint(
+    params.existing.delegationSpec?.executionContext,
+  );
+  const nextContext = normalizeExecutionContextFingerprint(
+    params.next.delegationSpec?.executionContext,
+  );
+  if (existingContext !== nextContext) {
+    return "continuationSessionId cannot change the delegated execution envelope";
+  }
+
+  const existingVerifier = normalizeVerifierRequirement(
+    params.existing.verifierRequirement,
+  );
+  const nextVerifier = normalizeVerifierRequirement(
+    params.next.verifierRequirement,
+  );
+  if (existingVerifier !== nextVerifier) {
+    return "continuationSessionId must preserve verifier obligations";
+  }
+
+  return undefined;
 }
 
 // ============================================================================
@@ -439,6 +555,13 @@ export class SubAgentManager {
   ): DelegationContractSpec["executionContext"] | undefined {
     this.pruneTerminalHandles();
     return this.handles.get(sessionId)?.config.delegationSpec?.executionContext;
+  }
+
+  getVerifierRequirement(
+    sessionId: string,
+  ): VerifierRequirement | undefined {
+    this.pruneTerminalHandles();
+    return this.handles.get(sessionId)?.config.verifierRequirement;
   }
 
   cancel(sessionId: string): boolean {
@@ -955,6 +1078,8 @@ export class SubAgentManager {
         providerName: selectedProvider.name,
         completionState: resultOrAbort.completionState,
         completionProgress: resultOrAbort.completionProgress,
+        verifierSnapshot: resultOrAbort.verifierSnapshot,
+        contractFingerprint: resultOrAbort.turnExecutionContract?.contractFingerprint,
         stopReason: resultOrAbort.stopReason,
         stopReasonDetail: resultOrAbort.stopReasonDetail,
         validationCode: resultOrAbort.validationCode,
@@ -1083,6 +1208,16 @@ export class SubAgentManager {
       throw new SubAgentSpawnError(
         config.parentSessionId,
         `continuationSessionId "${continuationSessionId}" belongs to a different parent session`,
+      );
+    }
+    const compatibilityError = validateContinuationCompatibility({
+      existing: existing.config,
+      next: config,
+    });
+    if (compatibilityError) {
+      throw new SubAgentSpawnError(
+        config.parentSessionId,
+        `${compatibilityError} (${continuationSessionId})`,
       );
     }
     return existing;

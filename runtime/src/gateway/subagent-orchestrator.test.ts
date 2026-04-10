@@ -508,6 +508,23 @@ describe("SubAgentOrchestrator", () => {
         }),
       ]),
     );
+    const finishedEvent = events.find((event) => event.type === "step_finished") as
+      | { result?: string }
+      | undefined;
+    const parsed = JSON.parse(finishedEvent?.result ?? "{}") as {
+      runtimeResult?: {
+        surface?: string;
+        status?: string;
+        completionState?: string;
+        continuationSessionId?: string;
+      };
+    };
+    expect(parsed.runtimeResult).toMatchObject({
+      surface: "planner_child",
+      status: "completed",
+      completionState: "completed",
+      continuationSessionId: expect.any(String),
+    });
   });
 
   it("passes working-directory context requirements through planner-emitted subagent spawns", async () => {

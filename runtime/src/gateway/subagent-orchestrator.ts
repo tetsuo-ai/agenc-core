@@ -106,6 +106,11 @@ import {
   buildWorkspaceStateGuidanceLines,
 } from "./subagent-workspace-probes.js";
 import {
+  buildDelegatedIncompleteReason,
+  buildDelegatedRuntimeResult,
+  mapPlannerVerifierSnapshotToRuntimeVerdict,
+} from "./delegated-runtime-result.js";
+import {
   summarizeParentRequestForSubagent,
   collectDependencyContexts,
   buildArtifactRelevanceTerms,
@@ -175,6 +180,8 @@ type ExecuteSubagentAttemptOutcome =
     readonly providerName?: string;
     readonly completionState?: SubAgentResult["completionState"];
     readonly completionProgress?: SubAgentResult["completionProgress"];
+    readonly verifierSnapshot?: SubAgentResult["verifierSnapshot"];
+    readonly contractFingerprint?: SubAgentResult["contractFingerprint"];
     readonly stopReason?: SubAgentResult["stopReason"];
     readonly stopReasonDetail?: SubAgentResult["stopReasonDetail"];
     readonly validationCode?: SubAgentResult["validationCode"];
@@ -222,29 +229,6 @@ function shouldRejectPlannedDelegationAtExecutionTime(
 
 function didSubagentReachCompletedState(result: SubAgentResult): boolean {
   return result.completionState === "completed";
-}
-
-function buildNonCompletedSubagentMessage(result: SubAgentResult): string | undefined {
-  if (!result.completionState || result.completionState === "completed") {
-    return undefined;
-  }
-  const remainingRequirements =
-    result.completionProgress?.remainingRequirements?.filter((entry) =>
-      typeof entry === "string" && entry.trim().length > 0
-    ) ?? [];
-  const remainingSuffix = remainingRequirements.length > 0
-    ? ` Remaining requirements: ${remainingRequirements.join(", ")}.`
-    : "";
-  const detailSuffix =
-    typeof result.stopReasonDetail === "string" &&
-      result.stopReasonDetail.trim().length > 0
-      ? ` ${result.stopReasonDetail.trim()}`
-      : "";
-  return (
-    `Sub-agent did not reach a completed workflow state (${result.completionState}).` +
-    remainingSuffix +
-    detailSuffix
-  ).trim();
 }
 
 interface SubAgentExecutionManager {
@@ -1202,6 +1186,22 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
             stopReason: attemptOutcome.stopReason ?? null,
             stopReasonDetail: attemptOutcome.stopReasonDetail ?? null,
             validationCode: attemptOutcome.validationCode ?? null,
+            runtimeResult: buildDelegatedRuntimeResult({
+              surface: "planner_child",
+              workerSessionId: attemptOutcome.subagentSessionId,
+              status: "completed",
+              completionState: attemptOutcome.completionState ?? "completed",
+              stopReason: attemptOutcome.stopReason,
+              stopReasonDetail: attemptOutcome.stopReasonDetail,
+              validationCode: attemptOutcome.validationCode,
+              verifierVerdict: mapPlannerVerifierSnapshotToRuntimeVerdict(
+                attemptOutcome.verifierSnapshot,
+              ),
+              executionEnvelopeFingerprint:
+                attemptOutcome.contractFingerprint,
+              continuationSessionId: attemptOutcome.subagentSessionId,
+              outputReady: true,
+            }),
             attempts: attempt,
             retryPolicy: retryAttempts,
           }),
@@ -1412,6 +1412,17 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
               validationCode: failure.validationCode ?? null,
               message: failure.message,
             })),
+            runtimeResult: buildDelegatedRuntimeResult({
+              surface: "planner_child",
+              workerSessionId: lastFailure.childSessionId,
+              status: "failed",
+              completionState:
+                lastFailure.validationCode ? "needs_verification" : "blocked",
+              stopReason: lastFailure.stopReasonHint,
+              validationCode: lastFailure.validationCode,
+              continuationSessionId: lastFailure.childSessionId,
+              outputReady: true,
+            }),
             decomposition: lastFailure.decomposition,
             attempts: attempt,
             retryPolicy: retryAttempts,
@@ -1443,6 +1454,17 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
                 validationCode: failure.validationCode ?? null,
                 message: failure.message,
               })),
+              runtimeResult: buildDelegatedRuntimeResult({
+                surface: "planner_child",
+                workerSessionId: lastFailure.childSessionId,
+                status: "failed",
+                completionState:
+                  lastFailure.validationCode ? "needs_verification" : "blocked",
+                stopReason: lastFailure.stopReasonHint,
+                validationCode: lastFailure.validationCode,
+                continuationSessionId: lastFailure.childSessionId,
+                outputReady: true,
+              }),
               attempts: attempt,
               retryPolicy: retryAttempts,
               subagentSessionId: lastFailure.childSessionId ?? null,
@@ -1722,13 +1744,22 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
           providerName: result.providerName,
           completionState: result.completionState,
           completionProgress: result.completionProgress,
+          verifierSnapshot: result.verifierSnapshot,
+          contractFingerprint: result.contractFingerprint,
           stopReason: result.stopReason,
           stopReasonDetail: result.stopReasonDetail,
           validationCode: result.validationCode,
         };
       }
 
-      const completionStateFailure = buildNonCompletedSubagentMessage(result);
+      const completionStateFailure = buildDelegatedIncompleteReason({
+        completionState: result.completionState,
+        completionProgress: result.completionProgress,
+        stopReasonDetail: result.stopReasonDetail,
+        verifierVerdict: mapPlannerVerifierSnapshotToRuntimeVerdict(
+          result.verifierSnapshot,
+        ),
+      });
       const message = completionStateFailure ??
         (
           typeof result.stopReasonDetail === "string" &&

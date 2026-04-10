@@ -134,15 +134,6 @@ export class DelegationPolicyEngine {
       };
     }
 
-    if (input.isSubAgentSession) {
-      return {
-        allowed: false,
-        reason: "Sub-agent sessions cannot invoke delegation tools",
-        matchedRule: "subagent_delegation_blocked",
-        threshold: this.config.spawnDecisionThreshold,
-      };
-    }
-
     // Parent sessions may be constrained by explicit allow/deny lists.
     const forbidden = new Set(this.config.forbiddenParentTools ?? []);
     if (forbidden.has(input.toolName)) {
