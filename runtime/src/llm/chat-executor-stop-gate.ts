@@ -98,6 +98,59 @@ const ANTI_FAB_REFUSAL_REASON_KEYWORDS: readonly string[] = [
 const TRUNCATED_SUCCESS_MAX_CHARS = 100;
 
 /**
+ * Phrases the model emits when it has decided to checkpoint with a
+ * narration of future tool work INSTEAD of actually calling those tools.
+ *
+ * Sourced from real failure traces 2026-04-09 19:33 (session
+ * `3e887760...` call_2 final reply at 01:33:34.469Z): the model said
+ * "Next tool calls will implement lexer.c from PLAN.md specs." and then
+ * stopped, even though the user had explicitly said "do not stop until
+ * every single phase has been implemented." The chat-executor's tool
+ * loop sees `finishReason !== "tool_calls"` and exits, so the
+ * narration becomes a hard turn boundary.
+ *
+ * This pattern is structurally identical to "Continue to Phase N?" from
+ * pre-PR-#309: the model is checkpointing with text instead of doing the
+ * work. PR #309 forbade question-form permission asks but did not cover
+ * statement-form intent narration. The verbs are intentionally broad —
+ * the goal is to catch every flavor of "I'm pausing to talk about the
+ * next tool call instead of just calling it" while not interfering with
+ * legitimate completion summaries.
+ *
+ * Examples that should match:
+ *   - "Next tool calls will implement lexer.c"
+ *   - "Now I will write the parser"
+ *   - "Next, I'll create the executor"
+ *   - "Going to implement Phase 2 now"
+ *   - "I'll continue with the build fix"
+ *   - "Next step is to run cmake"
+ *   - "Let me run the test now"
+ *   - "Continuing with Phase 3"
+ *   - "Moving on to lexer implementation"
+ *   - "Proceeding to write builtins.c"
+ *   - "About to implement parser"
+ *
+ * Examples that should NOT match (legitimate completion summaries):
+ *   - "Phase 0 complete. Tests passed."
+ *   - "All phases implemented successfully."
+ *   - "Task done. Binary built and tests passing."
+ */
+const NARRATED_FUTURE_TOOL_WORK_RE =
+  /\b(?:next\s+tool\s+calls?\s+(?:will|should|must)|now\s+I\s+(?:will|need\s+to|am\s+going\s+to|am\s+about\s+to)|now\s+I[''']?ll|next,?\s+I\s+(?:will|need\s+to|am\s+going\s+to|am\s+about\s+to)|next,?\s+I[''']?ll|going\s+to\s+(?:call|invoke|run|execute|implement|write|create|continue|start|finish|build|compile|test|fix|add|edit|update|generate|produce|stub|complete)|I[''']?ll\s+(?:call|invoke|run|execute|implement|write|create|continue|start|finish|build|compile|test|fix|add|edit|update|generate|produce|stub|complete)|next\s+step\s+(?:is|will\s+be)\s+to|let\s+me\s+(?:call|invoke|run|execute|implement|write|create|continue|start|finish|build|compile|test|fix|add|edit|update|generate|produce|stub|complete)|I\s+will\s+now\s+(?:call|invoke|run|execute|implement|write|create|continue|start|finish|build|compile|test|fix|add|edit|update|generate|produce|stub|complete)|continuing\s+(?:with|to)\s+\w+|moving\s+on\s+to\s+\w+|proceeding\s+(?:to|with)\s+\w+|about\s+to\s+(?:call|invoke|run|execute|implement|write|create|continue|start|finish|build|compile|test|fix|add|edit|update|generate|produce|stub|complete)|will\s+now\s+(?:implement|write|create|build|compile|test|fix|continue))/i;
+
+/**
+ * Phrases that explicitly mark the turn as terminally complete. When the
+ * final assistant text contains one of these AND the
+ * `NARRATED_FUTURE_TOOL_WORK_RE` would otherwise match, treat the
+ * narration as a legitimate "here is what would come next if the user
+ * asked for more" closing rather than a checkpoint. The narration
+ * detector skips the turn in that case so genuine session-end summaries
+ * are not forced into a recovery loop.
+ */
+const TERMINAL_COMPLETION_RE =
+  /\b(?:task\s+(?:complete|completed|done|finished)|all\s+phases?\s+(?:complete|completed|done|finished|implemented)|implementation\s+(?:complete|completed|done|finished)|nothing\s+(?:more|else)\s+to\s+(?:do|implement)|session\s+(?:complete|done|finished)|finished\s+the\s+(?:task|work|implementation|plan)|project\s+(?:complete|completed|done|finished))/i;
+
+/**
  * Tool names whose failures count as "this turn had a failed shell
  * command", which is the strongest signal that a success claim is fake.
  * Reading file errors and lookup failures are excluded to avoid
@@ -122,7 +175,8 @@ const SHELL_LIKE_TOOL_NAMES: ReadonlySet<string> = new Set([
 export type StopGateInterventionReason =
   | "false_success_after_failed_bash"
   | "false_success_after_anti_fab_refusal"
-  | "truncated_success_claim";
+  | "truncated_success_claim"
+  | "narrated_future_tool_work";
 
 export interface StopGateEvidence {
   /** Number of `system.bash` / `desktop.bash` calls in the turn that returned `isError: true`. */
@@ -236,6 +290,21 @@ function buildBlockingMessage(params: {
           `an incomplete summary. Either way, the user cannot act on this.`,
       );
       break;
+    case "narrated_future_tool_work":
+      lines.push(
+        `Your previous reply NARRATED future tool work in plain text ` +
+          `instead of actually calling the tools. The runtime's tool ` +
+          `loop sees a text-only response as the end of the turn, so ` +
+          `your "next, I'll implement X" / "going to call Y" / "next ` +
+          `tool calls will Z" sentence is interpreted as "I am stopping ` +
+          `here." The user explicitly told you to keep going until the ` +
+          `work is done — they have NOT asked for a status update or a ` +
+          `preview of upcoming steps.`,
+      );
+      lines.push("");
+      lines.push(`The exact narration that triggered this stop:`);
+      lines.push(`  > ${truncate(params.finalContent.trim(), 400)}`);
+      break;
   }
 
   if (params.failedShellCalls.length > 0) {
@@ -254,23 +323,44 @@ function buildBlockingMessage(params: {
   }
 
   lines.push("");
-  lines.push(
-    `You have ONE recovery turn. Either:`,
-  );
-  lines.push(
-    `  (a) Make tool calls to actually fix the underlying causes, or`,
-  );
-  lines.push(
-    `  (b) Retract the success claim in plain English, list which steps ` +
-      `actually failed, and explain the blockers (e.g. missing system ` +
-      `package, configuration error, file permissions). Be specific.`,
-  );
-  lines.push("");
-  lines.push(
-    `Do NOT repeat the success claim. Do NOT narrate that "everything ` +
-      `worked despite minor issues" — the runtime tool ledger is the ` +
-      `source of truth, and it shows failures.`,
-  );
+  if (params.reason === "narrated_future_tool_work") {
+    lines.push(
+      `You have ONE recovery turn. In this turn you MUST:`,
+    );
+    lines.push(
+      `  • Call the tools you said you were going to call. ` +
+        `Do NOT preview them, do NOT explain what you are about to do, ` +
+        `do NOT ask permission, do NOT checkpoint. Just CALL the tools.`,
+    );
+    lines.push("");
+    lines.push(
+      `Do NOT emit another text-only message that talks about future ` +
+        `tool calls. The runtime treats text-only as turn-end. If you ` +
+        `genuinely cannot proceed (waiting on credentials, blocked by an ` +
+        `external decision, hit a hard error you have already fixed and ` +
+        `are confident requires human input), say so explicitly with ` +
+        `the exact blocker — but only after you have actually attempted ` +
+        `the next tool call.`,
+    );
+  } else {
+    lines.push(
+      `You have ONE recovery turn. Either:`,
+    );
+    lines.push(
+      `  (a) Make tool calls to actually fix the underlying causes, or`,
+    );
+    lines.push(
+      `  (b) Retract the success claim in plain English, list which steps ` +
+        `actually failed, and explain the blockers (e.g. missing system ` +
+        `package, configuration error, file permissions). Be specific.`,
+    );
+    lines.push("");
+    lines.push(
+      `Do NOT repeat the success claim. Do NOT narrate that "everything ` +
+        `worked despite minor issues" — the runtime tool ledger is the ` +
+        `source of truth, and it shows failures.`,
+    );
+  }
 
   return lines.join("\n");
 }
@@ -365,7 +455,18 @@ export function evaluateTurnEndStopGate(
 
   const claimsSuccess = FALSE_SUCCESS_RE.test(finalContent);
   if (!claimsSuccess) {
-    return { shouldIntervene: false, evidence };
+    // Skip the success-claim detectors but still check the
+    // narrated-future-tool-work detector below — narration without a
+    // false success claim is the post-PR-#309 checkpointing failure
+    // mode and is the only thing the gate should fire on for an
+    // honest-but-stalling reply.
+    return maybeFireNarratedFutureToolWork({
+      finalContent,
+      allToolCalls,
+      failedShellCalls,
+      refusedCalls,
+      evidence,
+    });
   }
 
   const acknowledgesFailure = FAILURE_ACKNOWLEDGMENT_RE.test(finalContent);
@@ -421,7 +522,57 @@ export function evaluateTurnEndStopGate(
     };
   }
 
-  return { shouldIntervene: false, evidence };
+  // Detector 4 (lowest priority): the model claimed success but ALSO
+  // narrated future tool work. This catches the post-PR-#309 stall
+  // pattern even when the model wraps it in success language ("Phase 0
+  // complete. Now I will write the lexer.") — the success claim alone
+  // might be honest but stopping after it when the user said "do not
+  // stop" is the actual failure mode.
+  return maybeFireNarratedFutureToolWork({
+    finalContent,
+    allToolCalls,
+    failedShellCalls,
+    refusedCalls,
+    evidence,
+  });
+}
+
+/**
+ * Helper for the narrated-future-tool-work detector. Called from two
+ * branches of `evaluateTurnEndStopGate`: once when there is no false
+ * success claim at all (the honest-but-stalling case) and once at the
+ * very bottom of the function as the lowest-priority detector after
+ * the false-success branches fail to match.
+ *
+ * The check skips when the text contains a TERMINAL_COMPLETION_RE
+ * marker (legitimate end-of-task) or when the turn made zero tool
+ * calls (fresh greeting/question, not mid-task checkpointing).
+ */
+function maybeFireNarratedFutureToolWork(params: {
+  readonly finalContent: string;
+  readonly allToolCalls: readonly ToolCallRecord[];
+  readonly failedShellCalls: readonly ToolCallRecord[];
+  readonly refusedCalls: readonly ToolCallRecord[];
+  readonly evidence: StopGateEvidence;
+}): StopGateInterventionDecision {
+  if (
+    params.allToolCalls.length > 0 &&
+    NARRATED_FUTURE_TOOL_WORK_RE.test(params.finalContent) &&
+    !TERMINAL_COMPLETION_RE.test(params.finalContent)
+  ) {
+    return {
+      shouldIntervene: true,
+      reason: "narrated_future_tool_work",
+      blockingMessage: buildBlockingMessage({
+        reason: "narrated_future_tool_work",
+        finalContent: params.finalContent,
+        failedShellCalls: params.failedShellCalls,
+        refusedCalls: params.refusedCalls,
+      }),
+      evidence: params.evidence,
+    };
+  }
+  return { shouldIntervene: false, evidence: params.evidence };
 }
 
 // ---------------------------------------------------------------------------
@@ -432,6 +583,8 @@ export function evaluateTurnEndStopGate(
 export const __TESTING__ = {
   FALSE_SUCCESS_RE,
   FAILURE_ACKNOWLEDGMENT_RE,
+  NARRATED_FUTURE_TOOL_WORK_RE,
+  TERMINAL_COMPLETION_RE,
   TRUNCATED_SUCCESS_MAX_CHARS,
   ANTI_FAB_REFUSAL_REASON_KEYWORDS,
 };
