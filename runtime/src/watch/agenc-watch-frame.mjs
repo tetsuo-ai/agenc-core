@@ -2703,7 +2703,16 @@ export function createWatchFrameController(dependencies = {}) {
         .map((event) => event.id),
     );
     transcriptEvents.forEach((event, index) => {
+      // Agent text replies must NEVER be hidden behind the headline-only
+      // collapse. The rich-body window only retains body rendering for the
+      // last 6-8 events; agent reply events outside that window otherwise
+      // collapse to a single headline line, which is how the final agent
+      // text could vanish from the visible transcript when many tool
+      // events ran between the reply and the latest event. Forcing
+      // showBody=true for kind:"agent" guarantees the model's text reply
+      // is always visible to the user regardless of position.
       const showBody =
+        event.kind === "agent" ||
         recentSourcePreviewIds.has(event.id) ||
         index >= Math.max(0, transcriptEvents.length - richBodyWindow) ||
         event.id === latestEvent?.id;

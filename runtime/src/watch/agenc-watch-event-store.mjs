@@ -288,17 +288,47 @@ export function createWatchEventStore(dependencies = {}) {
 
   function commitAgentMessage(body) {
     const content = stripTerminalControlSequences(sanitizeLargeText(body ?? ""));
+    // Defensive: never silently swallow a real chat.message. If the daemon
+    // sent us a non-empty agent reply, the watch transcript MUST land it
+    // visibly in the event store regardless of streaming-state machine
+    // drift. Empty bodies are still surfaced (as a small placeholder) so
+    // the operator knows the turn finished even when the model produced
+    // no text.
     const target = findLatestStreamingAgentEvent();
     if (!target) {
-      return pushEvent("agent", "Agent Reply", content || "(empty)", "cyan", {
+      const safeContent = content.length > 0 ? content : "(empty)";
+      const pushed = pushEvent("agent", "Agent Reply", safeContent, "cyan", {
         renderMode: "markdown",
         streamState: "complete",
       });
+      // When a fresh agent reply lands without a streaming target it almost
+      // always represents the model finishing its turn. Force the
+      // transcript follow mode back on so the user is snapped to the new
+      // reply instead of leaving them staring at whatever they were
+      // scrolled to mid-tool-output. Losing a final message to a stale
+      // scroll position is worse than the small UX cost of a forced snap.
+      watchState.transcriptFollowMode = true;
+      watchState.transcriptScrollOffset = 0;
+      scheduleRender();
+      return pushed;
     }
     return withPreservedManualTranscriptViewport(({ shouldFollow }) => {
       const timestamp = nowStamp();
       const createdAtMs = nowMs();
-      updateExistingEventBody(target, content || storedEventBody(target) || "(empty)");
+      // Always overwrite the streaming target body with the canonical
+      // commit content when it is non-empty. The previous fallback chain
+      // (`content || storedEventBody(target) || "(empty)"`) could keep a
+      // stale streamed partial when the commit content was non-empty but
+      // semantically different — and could keep "(empty)" forever when
+      // both the commit content and the streamed body were transiently
+      // blank. The commit is the authoritative final text; trust it.
+      const nextBody =
+        content.length > 0
+          ? content
+          : storedEventBody(target).length > 0
+            ? storedEventBody(target)
+            : "(empty)";
+      updateExistingEventBody(target, nextBody);
       target.timestamp = timestamp;
       target.createdAtMs = createdAtMs;
       target.title = "Agent Reply";
@@ -307,7 +337,12 @@ export function createWatchEventStore(dependencies = {}) {
       target.streamState = "complete";
       updateLatestAgentSummary(target);
       updateActivity(timestamp);
-      followTranscriptIfNeeded(shouldFollow);
+      // Force re-engage follow mode on commit. See above note on the
+      // pushEvent path — committing a final agent reply is the moment the
+      // operator most needs to be looking at the bottom of the transcript.
+      watchState.transcriptFollowMode = true;
+      watchState.transcriptScrollOffset = 0;
+      followTranscriptIfNeeded(true);
       scheduleRender();
       return target;
     });
