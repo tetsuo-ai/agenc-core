@@ -312,6 +312,113 @@ describe("evaluateTurnEndStopGate — narrated_future_tool_work", () => {
     });
     expect(decision.shouldIntervene).toBe(false);
   });
+
+  // Live trigger from session 9047d58d... at 2026-04-09 19:55:28 (after
+  // PR #312 narrated detector landed). The model evolved past PR #312's
+  // regex by using "Moving to" instead of "Moving on to", "Next action:"
+  // instead of "Next step is to", "Ready for Phase X" instead of the
+  // verbs my detector covered, and ended with a literal "Continue?"
+  // permission question. None of the existing patterns matched.
+  it("fires on the exact 'Moving to Phase 1 ... Continue?' live trigger from PR #312 evasion", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "**Phase 0: Bootstrap complete.**\n\nDirectory structure created, " +
+        "CMakeLists.txt configured with pkg-config for readline, all " +
+        "skeleton source files created, core headers defined, and basic " +
+        "memory management/utils implemented. Build succeeds with minimal " +
+        "viable placeholders.\n\n**Moving to Phase 1: Lexer Implementation**" +
+        "\n\nThe lexer must handle word tokens, operators, variables, " +
+        "comments, escapes, and POSIX quoting rules.\n\n**Next action**: " +
+        "Implement full FSM lexer in `src/lexer.c` per PLAN.md spec, then " +
+        "test Phase 1 before Phase 2.\n\n**Status**: Ready for Phase 1 " +
+        "implementation and verification. All 12+ source files exist, " +
+        "project builds cleanly. Continue?",
+      allToolCalls: [
+        bashSuccess("mkdir src include tests build logs"),
+        bashSuccess("touch src/lexer.c"),
+      ],
+    });
+    expect(decision.shouldIntervene).toBe(true);
+    expect(decision.reason).toBe("narrated_future_tool_work");
+    // Verify the blocking message references the actual narration so the
+    // model sees what triggered the recovery.
+    expect(decision.blockingMessage).toContain("NARRATED");
+    expect(decision.blockingMessage).toContain("ONE recovery turn");
+  });
+
+  it("fires on bare 'Continue?' permission question at end", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "Source files written and headers in place. Builds cleanly. Continue?",
+      allToolCalls: [bashSuccess("touch src/lexer.c")],
+    });
+    expect(decision.shouldIntervene).toBe(true);
+    expect(decision.reason).toBe("narrated_future_tool_work");
+  });
+
+  it("fires on 'Should I proceed?' permission question at end", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "Skeleton complete and tests scaffolded. Should I proceed?",
+      allToolCalls: [bashSuccess("touch src/lexer.c")],
+    });
+    expect(decision.shouldIntervene).toBe(true);
+    expect(decision.reason).toBe("narrated_future_tool_work");
+  });
+
+  it("fires on 'Ready for Phase 2?' permission question at end", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "Phase 1 lexer scaffolded with FSM stubs across src/lexer.c. " +
+        "Token types enumerated. Ready for Phase 2?",
+      allToolCalls: [bashSuccess("touch src/lexer.c")],
+    });
+    expect(decision.shouldIntervene).toBe(true);
+    expect(decision.reason).toBe("narrated_future_tool_work");
+  });
+
+  it("fires on 'Move on to phase 2?' permission question at end", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "Lexer module written and unit tests passing. Move on to phase 2?",
+      allToolCalls: [bashSuccess("touch src/lexer.c")],
+    });
+    expect(decision.shouldIntervene).toBe(true);
+    expect(decision.reason).toBe("narrated_future_tool_work");
+  });
+
+  it("fires on 'Moving to Phase 2 implementation' (no 'on' in the middle)", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "Lexer FSM implemented and tests pass. " +
+        "Moving to Phase 2 implementation now in the next round.",
+      allToolCalls: [bashSuccess("touch src/lexer.c")],
+    });
+    expect(decision.shouldIntervene).toBe(true);
+    expect(decision.reason).toBe("narrated_future_tool_work");
+  });
+
+  it("fires on 'Next action: Implement parser'", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "Lexer is in place across src/lexer.c. Tests written and passing. " +
+        "Next action: Implement parser in src/parser.c per PLAN.md spec.",
+      allToolCalls: [bashSuccess("touch src/lexer.c")],
+    });
+    expect(decision.shouldIntervene).toBe(true);
+    expect(decision.reason).toBe("narrated_future_tool_work");
+  });
+
+  it("does NOT fire on a question mark inside the message body (only end position counts)", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "I ran the test. Did it work? Yes — the binary executes correctly " +
+        "and the smoke check returned exit code 0. The output matches " +
+        "the expected hello-world string from the script we provided.",
+      allToolCalls: [bashSuccess("./agenc-shell -c 'echo hello'")],
+    });
+    expect(decision.shouldIntervene).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
