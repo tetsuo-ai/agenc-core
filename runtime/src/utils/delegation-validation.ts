@@ -72,6 +72,7 @@ export const DELEGATION_OUTPUT_VALIDATION_CODES = [
   "missing_file_mutation_evidence",
   "missing_required_source_evidence",
   "missing_file_artifact_evidence",
+  "deterministic_acceptance_probe_failed",
 ] as const;
 
 export type DelegationOutputValidationCode =
@@ -1134,7 +1135,6 @@ export function resolveDelegatedChildToolScope(params: {
     },
   };
 }
-
 
 
 

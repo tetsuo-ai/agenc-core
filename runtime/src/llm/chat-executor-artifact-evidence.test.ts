@@ -1,3 +1,7 @@
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import { ChatExecutor } from "./chat-executor.js";
@@ -109,7 +113,8 @@ describe("top-level artifact evidence gate", () => {
         )
         .mockResolvedValueOnce(
           mockResponse({
-            content: "All phases from PLAN.md have been fully implemented and integrated.",
+            content:
+              "All phases from PLAN.md have been fully implemented and integrated across the requested workspace files, and the implementation summary is intentionally long enough to avoid truncated-success handling during this acceptance-probe test.",
           }),
         )
         .mockResolvedValueOnce(
@@ -217,6 +222,146 @@ describe("top-level artifact evidence gate", () => {
     expect(result.content).toContain(`${WORKSPACE_ROOT}/src/parser.c`);
     expect(result.completionState).toBe("partial");
     expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2);
+  });
+
+  it("fails closed when stop-gate recovery is spent on another text-only completion claim", async () => {
+    const provider = createMockProvider("primary", {
+      chat: vi
+        .fn<[LLMMessage[], LLMChatOptions?], Promise<LLMResponse>>()
+        .mockResolvedValueOnce(
+          mockResponse({
+            content: "",
+            finishReason: "tool_calls",
+            toolCalls: [
+              {
+                id: "tc-1",
+                name: "system.bash",
+                arguments: safeJson({
+                  command: "make",
+                  args: [],
+                }),
+              },
+            ],
+          }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({
+            content: "Build succeeded and all phases were fully implemented.",
+          }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({
+            content: "Next I will fix the build and write the remaining files.",
+          }),
+        ),
+    });
+    const toolHandler = vi.fn(async (name: string) =>
+      name === "system.bash"
+        ? safeJson({ exitCode: 2, stderr: "link failed" })
+        : safeJson({ ok: true }),
+    );
+    const executor = new ChatExecutor({ providers: [provider], toolHandler });
+
+    const result = await executor.execute(createParams());
+
+    expect(result.stopReason).toBe("validation_error");
+    expect(result.content).toContain("Stop-gate recovery exhausted");
+    expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(3);
+    expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls[2]?.[1]).toMatchObject({
+      toolChoice: "required",
+    });
+  });
+
+  it("re-enters the loop when deterministic acceptance probes fail", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-acceptance-probe-"));
+    const sourcePath = join(workspaceRoot, "src/main.txt");
+    mkdirSync(join(workspaceRoot, "src"), { recursive: true });
+    writeFileSync(join(workspaceRoot, "Makefile"), "all:\n\t@echo ok\n", "utf8");
+
+    const provider = createMockProvider("primary", {
+      chat: vi
+        .fn<[LLMMessage[], LLMChatOptions?], Promise<LLMResponse>>()
+        .mockResolvedValueOnce(
+          mockResponse({
+            content: "",
+            finishReason: "tool_calls",
+            toolCalls: [
+              {
+                id: "tc-1",
+                name: "system.writeFile",
+                arguments: safeJson({
+                  path: sourcePath,
+                  content: "bad build",
+                }),
+              },
+            ],
+          }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({
+            content: "All phases from PLAN.md have been fully implemented and integrated.",
+          }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({
+            content: "",
+            finishReason: "tool_calls",
+            toolCalls: [
+              {
+                id: "tc-2",
+                name: "system.writeFile",
+                arguments: safeJson({
+                  path: sourcePath,
+                  content: "good build",
+                }),
+              },
+            ],
+          }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({
+            content:
+              "Implementation completed with passing acceptance probes after the recovery write, and this completion summary is intentionally verbose so the stop gate does not misclassify it as a truncated success claim.",
+          }),
+        ),
+    });
+    const toolHandler = vi.fn(async (name: string, args: Record<string, unknown>) => {
+      if (name === "system.writeFile") {
+        const targetPath = String(args.path);
+        writeFileSync(
+          targetPath,
+          String(args.content ?? ""),
+          "utf8",
+        );
+        return safeJson({ ok: true, path: targetPath });
+      }
+      if (name === "system.bash" && args.command === "make") {
+        const current = readFileSync(sourcePath, "utf8");
+        return current.includes("good")
+          ? safeJson({ exitCode: 0, stdout: "ok" })
+          : safeJson({ exitCode: 2, stderr: "build failed" });
+      }
+      return safeJson({ exitCode: 0, stdout: "ok" });
+    });
+    const executor = new ChatExecutor({ providers: [provider], toolHandler });
+
+    try {
+      const result = await executor.execute(
+        createParams({
+          runtimeContext: { workspaceRoot },
+        }),
+      );
+
+      expect(result.stopReason).toBe("completed");
+      expect(result.toolCalls.filter((call) => call.name === "system.writeFile")).toHaveLength(2);
+      expect(result.toolCalls.filter((call) => call.name === "system.bash")).toHaveLength(2);
+      expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(4);
+      expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls[2]?.[1]).toMatchObject({
+        toolChoice: "required",
+      });
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   it("allows docs-only no-op completions when the target artifact was inspected", () => {

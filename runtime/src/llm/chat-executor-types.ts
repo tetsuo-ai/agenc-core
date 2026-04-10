@@ -11,6 +11,8 @@ import type {
   LLMCompactionDiagnostics,
   LLMProviderTraceEvent,
   LLMResponse,
+  LLMStructuredOutputRequest,
+  LLMStructuredOutputResult,
   LLMUsage,
   LLMRequestMetrics,
   LLMStatefulDiagnostics,
@@ -152,6 +154,8 @@ export interface ChatExecuteParams {
   readonly history: readonly LLMMessage[];
   readonly systemPrompt: string;
   readonly sessionId: string;
+  /** Optional request-scoped structured output contract. */
+  readonly structuredOutput?: LLMStructuredOutputRequest;
   /** Runtime-owned execution context resolved before model/planner execution. */
   readonly runtimeContext?: {
     /** Authoritative workspace root for planning/execution when known. */
@@ -303,6 +307,8 @@ export interface ChatExecutorResult {
   readonly usedFallback: boolean;
   readonly toolCalls: readonly ToolCallRecord[];
   readonly providerEvidence?: LLMProviderEvidence;
+  /** Structured output returned by the provider when requested. */
+  readonly structuredOutput?: LLMStructuredOutputResult;
   readonly tokenUsage: LLMUsage;
   /** Per-call token and prompt-shape attribution for this execution. */
   readonly callUsage: readonly ChatCallUsageRecord[];
@@ -563,6 +569,7 @@ export interface ExecutionContext {
   readonly messageText: string;
   readonly systemPrompt: string;
   readonly sessionId: string;
+  readonly structuredOutput?: ChatExecuteParams["structuredOutput"];
   readonly runtimeWorkspaceRoot?: string;
   readonly turnExecutionContract: TurnExecutionContract;
   readonly signal?: AbortSignal;
@@ -645,6 +652,7 @@ interface BuildExecutionContextParams {
   readonly messageText: string;
   readonly systemPrompt: string;
   readonly sessionId: string;
+  readonly structuredOutput?: ChatExecuteParams["structuredOutput"];
   readonly runtimeContext?: ChatExecuteParams["runtimeContext"];
   readonly turnExecutionContract: TurnExecutionContract;
   readonly signal?: AbortSignal;
@@ -689,6 +697,7 @@ export function buildDefaultExecutionContext(
     messageText: params.messageText,
     systemPrompt: params.systemPrompt,
     sessionId: params.sessionId,
+    structuredOutput: params.structuredOutput,
     runtimeWorkspaceRoot:
       params.turnExecutionContract.workspaceRoot ?? params.runtimeContext?.workspaceRoot,
     turnExecutionContract: params.turnExecutionContract,

@@ -33,6 +33,7 @@ import type {
   LLMProviderExecutionProfile,
   LLMMessage,
   LLMProviderEvidence,
+  LLMStructuredOutputResult,
   LLMUsage,
   ToolHandler,
 } from "../llm/types.js";
@@ -158,6 +159,7 @@ export interface SubAgentConfig {
   readonly tools?: readonly string[];
   readonly requiredCapabilities?: readonly string[];
   readonly requireToolCall?: boolean;
+  readonly structuredOutput?: ChatExecuteParams["structuredOutput"];
   readonly delegationSpec?: DelegationContractSpec;
   readonly requiredToolEvidence?: ChatExecuteParams["requiredToolEvidence"];
   readonly unsafeBenchmarkMode?: boolean;
@@ -177,6 +179,7 @@ export interface SubAgentResult {
   readonly durationMs: number;
   readonly toolCalls: readonly ToolCallRecord[];
   readonly providerEvidence?: LLMProviderEvidence;
+  readonly structuredOutput?: LLMStructuredOutputResult;
   readonly tokenUsage?: LLMUsage;
   readonly providerName?: string;
   readonly completionState?: ChatExecutorResult["completionState"];
@@ -894,6 +897,9 @@ export class SubAgentManager {
             ...(requiredToolEvidence
               ? { requiredToolEvidence }
               : {}),
+            ...(handle.config.structuredOutput
+              ? { structuredOutput: handle.config.structuredOutput }
+              : {}),
             ...(providerTrace ? { trace: providerTrace } : {}),
           },
         }),
@@ -944,6 +950,7 @@ export class SubAgentManager {
         durationMs: Date.now() - handle.startedAt,
         toolCalls: resultOrAbort.toolCalls,
         providerEvidence: resultOrAbort.providerEvidence,
+        structuredOutput: resultOrAbort.structuredOutput,
         tokenUsage: resultOrAbort.tokenUsage,
         providerName: selectedProvider.name,
         completionState: resultOrAbort.completionState,

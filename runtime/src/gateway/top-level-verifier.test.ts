@@ -97,6 +97,13 @@ describe("maybeRunTopLevelVerifier", () => {
       expect.objectContaining({
         systemPrompt: "Verifier system prompt",
         tools: ["system.readFile", "system.bash"],
+        structuredOutput: expect.objectContaining({
+          enabled: true,
+          schema: expect.objectContaining({
+            name: "agenc_top_level_verifier_decision",
+            strict: true,
+          }),
+        }),
         requiredToolEvidence: expect.objectContaining({
           executionEnvelope: expect.objectContaining({
             verificationMode: "grounded_read",
@@ -107,6 +114,41 @@ describe("maybeRunTopLevelVerifier", () => {
     );
     expect(updated.completionState).toBe("partial");
     expect(updated.content).toContain("Verification did not pass.");
+    expect(updated.stopReasonDetail).toContain("Top-level verifier fail");
+  });
+
+  it("prefers structured verifier verdicts over text parsing", async () => {
+    const spawn = vi.fn(async () => "subagent:verify-2");
+    const waitForResult = vi.fn(async () => ({
+      sessionId: "subagent:verify-2",
+      output: "Verifier wrote a long narrative without a VERDICT line.",
+      success: false,
+      durationMs: 25,
+      toolCalls: [],
+      structuredOutput: {
+        type: "json_schema",
+        name: "agenc_top_level_verifier_decision",
+        parsed: {
+          verdict: "fail",
+          summary: "Build fails under verifier-run acceptance checks.",
+        },
+      },
+      completionState: "completed",
+      stopReason: "completed",
+    }));
+
+    const updated = await maybeRunTopLevelVerifier({
+      sessionId: "session:test",
+      userRequest: "Implement every phase from PLAN.md",
+      result: createResult(),
+      subAgentManager: { spawn, waitForResult },
+      verifierService: {
+        shouldVerifySubAgentResult: vi.fn(() => true),
+      },
+    });
+
+    expect(updated.completionState).toBe("partial");
+    expect(updated.content).toContain("Build fails under verifier-run acceptance checks.");
     expect(updated.stopReasonDetail).toContain("Top-level verifier fail");
   });
 

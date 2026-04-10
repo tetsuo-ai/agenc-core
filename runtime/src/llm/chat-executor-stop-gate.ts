@@ -575,6 +575,9 @@ function findFailedShellCalls(
 ): ToolCallRecord[] {
   const out: ToolCallRecord[] = [];
   for (const call of allToolCalls) {
+    if (call.args.__runtimeAcceptanceProbe === true) {
+      continue;
+    }
     if (call.isError && isShellLikeTool(call.name)) {
       out.push(call);
     }
