@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { createWatchEventStore } from "../../src/watch/agenc-watch-event-store.mjs";
 
-function createHarness() {
+function createHarness(overrides = {}) {
   const events = [];
   const watchState = {
     transcriptScrollOffset: 12,
@@ -25,10 +25,11 @@ function createHarness() {
     nextId: (prefix = "evt") => `${prefix}-${++nextIdCounter}`,
     nowStamp: () => `12:00:0${++nowCounter}`,
     nowMs: () => 1_000 + nowCounter,
-    normalizeEventBody: (value) => ({
+    normalizeEventBody: overrides.normalizeEventBody ?? ((value) => ({
       body: String(value ?? ""),
       bodyTruncated: String(value ?? "").length > 8,
-    }),
+      fullBody: String(value ?? ""),
+    })),
     sanitizeLargeText: (value) => String(value ?? ""),
     sanitizeInlineText: (value) => String(value ?? "").replace(/\s+/g, " ").trim(),
     stripTerminalControlSequences: (value) => String(value ?? "").replace(/\x1b\[[0-9;]*m/g, ""),
@@ -104,6 +105,50 @@ test("event store restores transcript history and clears stale expanded selectio
   assert.equal(watchState.transcriptScrollOffset, 0);
   assert.equal(watchState.detailScrollOffset, 0);
   assert.equal(watchState.expandedEventId, null);
+});
+
+test("event store preserves full truncated assistant history as detail body", () => {
+  const { store, events } = createHarness({
+    normalizeEventBody(value) {
+      const body = String(value ?? "");
+      return {
+        body: body.length > 8 ? `${body.slice(0, 7)}…` : body,
+        bodyTruncated: body.length > 8,
+        fullBody: body,
+      };
+    },
+  });
+  const fullReply = "0123456789abcdef";
+
+  store.restoreTranscriptFromHistory([
+    { sender: "assistant", content: fullReply, timestamp: "2026-03-14T00:00:01.000Z" },
+  ]);
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].body, "0123456…");
+  assert.equal(events[0].bodyTruncated, true);
+  assert.equal(events[0].detailBody, fullReply);
+});
+
+test("event store appends streaming chunks from preserved full assistant body", () => {
+  const { store, events } = createHarness({
+    normalizeEventBody(value) {
+      const body = String(value ?? "");
+      return {
+        body: body.length > 8 ? `${body.slice(0, 7)}…` : body,
+        bodyTruncated: body.length > 8,
+        fullBody: body,
+      };
+    },
+  });
+
+  store.appendAgentStreamChunk("01234");
+  store.appendAgentStreamChunk("56789");
+  store.appendAgentStreamChunk("abcdef", { done: true });
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].body, "0123456…");
+  assert.equal(events[0].detailBody, "0123456789abcdef");
 });
 
 test("event store clears live transcript view and delegation state", () => {

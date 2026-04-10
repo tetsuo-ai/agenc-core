@@ -2603,18 +2603,11 @@ export function createWatchFrameController(dependencies = {}) {
       normalized === "table-row";
   }
 
-  function isInlineCodeDisplayMode(mode) {
-    const normalized = String(mode ?? "");
-    return normalized === "code" || normalized === "code-meta" || normalized.startsWith("diff");
-  }
 
   function fullAgentTranscriptLines(event, width) {
     const previewWidth = Math.max(12, width - 4);
-    const displayLines = buildEventDisplayLines(eventDetailVariant(event), maxPreviewSourceLines * 8);
+    const displayLines = buildEventDisplayLines(eventDetailVariant(event), Infinity);
     if (!Array.isArray(displayLines) || displayLines.length === 0) {
-      return [];
-    }
-    if (displayLines.some((line) => isInlineCodeDisplayMode(line?.mode))) {
       return [];
     }
     const rows = [];

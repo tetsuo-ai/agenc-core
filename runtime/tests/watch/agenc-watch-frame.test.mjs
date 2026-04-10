@@ -932,7 +932,7 @@ test("frame controller renders full non-code agent replies in transcript view", 
   assert.equal(String(lines[headingRow + 1] ?? "").trim().length, 0);
 });
 
-test("frame controller keeps code-heavy agent replies on the preview path", () => {
+test("frame controller renders full code-heavy agent replies in transcript view", () => {
   const harness = createWatchFrameHarness({
     width: 60,
     height: 28,
@@ -973,8 +973,50 @@ test("frame controller keeps code-heavy agent replies on the preview path", () =
 
   assert.ok(lines.some((line) => line.includes("Patch preview")));
   assert.ok(lines.some((line) => line.includes("code · ts")));
-  assert.equal(lines.some((line) => line.includes("const task = 1;")), false);
-  assert.equal(lines.some((line) => line.includes("return task;")), false);
+  assert.ok(lines.some((line) => line.includes("const task = 1;")));
+  assert.ok(lines.some((line) => line.includes("return task;")));
+});
+
+test("frame controller renders restored agent detailBody instead of truncated body", () => {
+  const harness = createWatchFrameHarness({
+    width: 64,
+    height: 36,
+    previewLines: 2,
+    events: [
+      {
+        id: "evt-agent-old",
+        kind: "agent",
+        title: "Agent Reply",
+        body: "stored preview only…",
+        detailBody: "Full restored reply\nline beyond stored cutoff",
+        bodyTruncated: true,
+        timestamp: "15:15:01",
+      },
+      {
+        id: "evt-you-later",
+        kind: "you",
+        title: "Prompt",
+        body: "next prompt",
+        timestamp: "15:15:02",
+      },
+    ],
+    dependencies: {
+      isMarkdownRenderableEvent(event) {
+        return event?.kind === "agent";
+      },
+      buildEventDisplayLines(event) {
+        return String(event?.body ?? "")
+          .split("\n")
+          .map((line) => createDisplayLine(line, "paragraph"));
+      },
+    },
+  });
+
+  const lines = harness.controller.buildVisibleFrameSnapshot().lines.map((line) => String(line));
+
+  assert.ok(lines.some((line) => line.includes("Full restored reply")));
+  assert.ok(lines.some((line) => line.includes("line beyond stored cutoff")));
+  assert.equal(lines.some((line) => line.includes("stored preview only")), false);
 });
 
 test("frame controller does not add blank rows between wrapped lines of one paragraph", () => {

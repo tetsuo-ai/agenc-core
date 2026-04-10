@@ -139,7 +139,13 @@ export function createWatchEventStore(dependencies = {}) {
   }
 
   function storedEventBody(event) {
-    if (!event || typeof event.body !== "string") {
+    if (!event || typeof event !== "object") {
+      return "";
+    }
+    if (typeof event.detailBody === "string" && event.detailBody.length > 0) {
+      return event.detailBody;
+    }
+    if (typeof event.body !== "string") {
       return "";
     }
     return event.bodyTruncated && event.body.endsWith("…")
@@ -147,10 +153,36 @@ export function createWatchEventStore(dependencies = {}) {
       : event.body;
   }
 
+  function shouldPreserveFullDetailBody(event) {
+    return event?.kind === "agent";
+  }
+
+  function normalizedFullBody(normalized, fallbackBody) {
+    if (typeof normalized?.fullBody === "string" && normalized.fullBody.length > 0) {
+      return normalized.fullBody;
+    }
+    return stripTerminalControlSequences(sanitizeLargeText(fallbackBody ?? "")) || "(empty)";
+  }
+
+  function preserveFullDetailBody(event, normalized, fallbackBody) {
+    if (!shouldPreserveFullDetailBody(event)) {
+      return;
+    }
+    if (normalized?.bodyTruncated) {
+      const fullBody = normalizedFullBody(normalized, fallbackBody);
+      if (fullBody && fullBody !== event.body) {
+        event.detailBody = fullBody;
+      }
+      return;
+    }
+    delete event.detailBody;
+  }
+
   function updateExistingEventBody(event, body) {
     const normalized = normalizeEventBody(body);
     event.body = normalized.body;
     event.bodyTruncated = normalized.bodyTruncated;
+    preserveFullDetailBody(event, normalized, body);
   }
 
   function restoreTranscriptFromHistory(history) {
@@ -171,7 +203,7 @@ export function createWatchEventStore(dependencies = {}) {
             : "history";
       const normalized = normalizeEventBody(entry?.content ?? "(empty)");
       const timestamp = formatHistoryTimestamp(entry?.timestamp, nowStamp);
-      events.push({
+      const restoredEvent = {
         id: nextId("evt"),
         kind,
         title:
@@ -186,7 +218,9 @@ export function createWatchEventStore(dependencies = {}) {
         body: normalized.body,
         bodyTruncated: normalized.bodyTruncated,
         renderMode: kind === "agent" ? "markdown" : undefined,
-      });
+      };
+      preserveFullDetailBody(restoredEvent, normalized, entry?.content ?? "(empty)");
+      events.push(restoredEvent);
       updateActivity(timestamp);
     }
     if (events.length === 0) {
@@ -211,12 +245,14 @@ export function createWatchEventStore(dependencies = {}) {
         bodyTruncated: normalized.bodyTruncated,
         ...metadata,
       };
+      preserveFullDetailBody(nextEvent, normalized, body);
       const lastEvent = events[events.length - 1];
       if (shouldCoalesceRenderedEvent(lastEvent, nextEvent)) {
         lastEvent.timestamp = timestamp;
         lastEvent.createdAtMs = createdAtMs;
         lastEvent.tone = tone;
         lastEvent.bodyTruncated = normalized.bodyTruncated;
+        preserveFullDetailBody(lastEvent, normalized, body);
         updateActivity(timestamp);
         followTranscriptIfNeeded(shouldFollow);
         scheduleRender();
@@ -261,6 +297,7 @@ export function createWatchEventStore(dependencies = {}) {
           renderMode: "markdown",
           streamState: nextAgentStreamState({ done }),
         };
+        preserveFullDetailBody(target, normalized, safeChunk || "(streaming)");
         events.push(target);
         if (introDismissKinds.has("agent")) {
           dismissIntro();
