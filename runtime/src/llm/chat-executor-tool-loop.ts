@@ -9,6 +9,7 @@ import type {
   LLMResponse,
   StreamProgressCallback,
   LLMStatefulResumeAnchor,
+  LLMStructuredOutputRequest,
   LLMToolChoice,
 } from "./types.js";
 import type { PromptBudgetSection } from "./prompt-budget.js";
@@ -75,6 +76,8 @@ import {
   evaluateTurnEndStopGate,
   checkFilesystemArtifacts,
 } from "./chat-executor-stop-gate.js";
+import { runDeterministicAcceptanceProbes } from "./deterministic-acceptance-probes.js";
+import { evaluateShellWorkspaceWritePolicy } from "./shell-write-policy.js";
 import {
   sanitizeToolCallsForReplay,
   generateFallbackContent,
@@ -111,6 +114,7 @@ import {
   serializeRemainingRequestMs,
   setStopReason,
 } from "./chat-executor-ctx-helpers.js";
+import type { DelegationOutputValidationCode } from "../utils/delegation-validation.js";
 
 // ============================================================================
 // Callback interfaces
@@ -152,6 +156,7 @@ export interface ToolLoopCallbacks {
       routedToolNames?: readonly string[];
       persistRoutedToolNames?: boolean;
       toolChoice?: LLMToolChoice;
+      structuredOutput?: LLMStructuredOutputRequest;
       preparationDiagnostics?: Record<string, unknown>;
       allowRecallBudgetBypass?: boolean;
       budgetReason: string;
@@ -622,6 +627,49 @@ export async function executeSingleToolCall(
       name: toolCall.name,
       args,
       result: staleHarnessPreflight.rejectionError,
+      isError: true,
+      durationMs: 0,
+    });
+    return "skip";
+  }
+  const shellWorkspaceWriteDecision = evaluateShellWorkspaceWritePolicy({
+    toolName: toolCall.name,
+    args,
+    workspaceRoot: ctx.runtimeWorkspaceRoot,
+    turnClass: ctx.turnExecutionContract.turnClass,
+  });
+  if (shellWorkspaceWriteDecision.blocked) {
+    const rejectionMessage =
+      shellWorkspaceWriteDecision.message ??
+      `Tool "${toolCall.name}" blocked by shell workspace write policy.`;
+    callbacks.emitExecutionTrace(ctx, {
+      type: "tool_rejected",
+      phase: "tool_followup",
+      callIndex: ctx.callIndex,
+      payload: {
+        tool: toolCall.name,
+        args,
+        originalArgs: rawArgs,
+        reason: "shell_workspace_file_write_disallowed",
+        blockedTargets: shellWorkspaceWriteDecision.blockedTargets,
+        observedTargets: shellWorkspaceWriteDecision.observedTargets,
+        error: rejectionMessage,
+      },
+    });
+    callbacks.pushMessage(
+      ctx,
+      {
+        role: "tool",
+        content: rejectionMessage,
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+      },
+      "tools",
+    );
+    callbacks.appendToolRecord(ctx, {
+      name: toolCall.name,
+      args,
+      result: rejectionMessage,
       isError: true,
       durationMs: 0,
     });
@@ -1167,6 +1215,7 @@ export async function executeToolCallLoop(
       callMessages: ctx.messages,
       callSections: ctx.messageSections,
       onStreamChunk: ctx.activeStreamCallback,
+      structuredOutput: ctx.structuredOutput,
       statefulSessionId: ctx.sessionId,
       statefulResumeAnchor: ctx.stateful?.resumeAnchor,
       statefulHistoryCompacted: ctx.stateful?.historyCompacted,
@@ -1194,18 +1243,99 @@ export async function executeToolCallLoop(
     consecutiveFailCount: 0,
   };
 
-  // Turn-end stop gate: gives the model exactly ONE recovery turn after
-  // the tool loop exits if the about-to-be-final assistant text claims
-  // success while the turn's tool ledger shows failures or refusals.
-  // Modeled on Claude Code's `query/stopHooks.ts` blocking-error flow.
-  // The do-while wraps the existing inner tool loop so that on
-  // intervention the recovery model call cycles back through the inner
-  // loop (which handles whatever the model returns — text or more tool
-  // calls). After one intervention, `stopGateFired` is true and the gate
-  // skips on subsequent passes to prevent infinite loops.
-  let stopGateFired = false;
-  let artifactGateCorrectionAttempts = 0;
+  // Turn-end completion validation: each validator gets a bounded
+  // number of recovery recalls. A recovery reply that spends its turn
+  // narrating instead of calling tools no longer consumes a global
+  // one-shot boolean and exits the loop as "completed" on the next
+  // pass. Instead, the same validator re-fires until its own attempt
+  // budget is exhausted, at which point the turn fails closed with
+  // `validation_error`.
+  const completionValidationAttempts = new Map<string, number>();
   let shouldContinueAfterStopGate = false;
+  const attemptCompletionRecovery = async (params: {
+    readonly attemptKey?: string;
+    readonly reason: string;
+    readonly blockingMessage?: string;
+    readonly evidence?: unknown;
+    readonly maxAttempts?: number;
+    readonly budgetReason: string;
+    readonly exhaustedDetail: string;
+    readonly validationCode?: DelegationOutputValidationCode;
+  }): Promise<boolean> => {
+    const maxAttempts = Math.max(0, params.maxAttempts ?? 1);
+    const attemptKey = params.attemptKey ?? params.reason;
+    const attempts = completionValidationAttempts.get(attemptKey) ?? 0;
+    if (!params.blockingMessage || attempts >= maxAttempts) {
+      callbacks.setStopReason(ctx, "validation_error", params.exhaustedDetail);
+      if (params.validationCode) {
+        ctx.validationCode = params.validationCode;
+      }
+      if (ctx.response) {
+        ctx.response = {
+          ...ctx.response,
+          content: "",
+        };
+      }
+      return false;
+    }
+
+    completionValidationAttempts.set(attemptKey, attempts + 1);
+    callbacks.emitExecutionTrace(ctx, {
+      type: "stop_gate_intervention",
+      phase: "tool_followup",
+      callIndex: ctx.callIndex,
+      payload: {
+        reason: params.reason,
+        attempt: attempts + 1,
+        maxAttempts,
+        finalContentPreview: (ctx.response?.content ?? "").slice(0, 240),
+        ...(params.evidence !== undefined ? { evidence: params.evidence } : {}),
+      },
+    });
+    callbacks.pushMessage(
+      ctx,
+      {
+        role: "user",
+        content: params.blockingMessage,
+      },
+      "system_runtime",
+    );
+    await runPerIterationCompactionBeforeModelCall(
+      ctx,
+      config,
+      callbacks,
+      "tool_followup",
+    );
+    const recoveryResponse = await callModelWithReactiveCompact(
+      ctx,
+      callbacks,
+      "tool_followup",
+      () => ({
+        phase: "tool_followup",
+        callMessages: ctx.messages,
+        callSections: ctx.messageSections,
+        onStreamChunk: ctx.activeStreamCallback,
+        structuredOutput: ctx.structuredOutput,
+        statefulSessionId: ctx.sessionId,
+        statefulResumeAnchor: ctx.stateful?.resumeAnchor,
+        statefulHistoryCompacted: ctx.stateful?.historyCompacted,
+        toolChoice: "required",
+        budgetReason: params.budgetReason,
+      }),
+    );
+    if (!recoveryResponse) {
+      if (ctx.stopReason === "completed") {
+        callbacks.setStopReason(ctx, "validation_error", params.exhaustedDetail);
+        if (params.validationCode) {
+          ctx.validationCode = params.validationCode;
+        }
+      }
+      return false;
+    }
+    ctx.response = recoveryResponse;
+    shouldContinueAfterStopGate = true;
+    return true;
+  };
   do {
     shouldContinueAfterStopGate = false;
   while (
@@ -1455,6 +1585,7 @@ export async function executeToolCallLoop(
         callMessages: ctx.messages,
         callSections: ctx.messageSections,
         onStreamChunk: ctx.activeStreamCallback,
+        structuredOutput: ctx.structuredOutput,
         statefulSessionId: ctx.sessionId,
         statefulResumeAnchor: ctx.stateful?.resumeAnchor,
         statefulHistoryCompacted: ctx.stateful?.historyCompacted,
@@ -1483,128 +1614,43 @@ export async function executeToolCallLoop(
       allToolCalls: ctx.allToolCalls,
     });
     if (artifactGateDecision.shouldIntervene) {
-      const maxCorrectionAttempts = ctx.requiredToolEvidence?.maxCorrectionAttempts ?? 0;
-      if (
-        artifactGateDecision.blockingMessage &&
-        artifactGateCorrectionAttempts < maxCorrectionAttempts
-      ) {
-        artifactGateCorrectionAttempts += 1;
-        callbacks.emitExecutionTrace(ctx, {
-          type: "stop_gate_intervention",
-          phase: "tool_followup",
-          callIndex: ctx.callIndex,
-          payload: {
-            reason: artifactGateDecision.validationCode,
-            finalContentPreview: (ctx.response.content ?? "").slice(0, 240),
-            evidence: artifactGateDecision.evidence,
-          },
-        });
-        callbacks.pushMessage(
-          ctx,
-          {
-            role: "user",
-            content: artifactGateDecision.blockingMessage,
-          },
-          "system_runtime",
-        );
-        await runPerIterationCompactionBeforeModelCall(
-          ctx,
-          config,
-          callbacks,
-          "tool_followup",
-        );
-        const recoveryResponse = await callModelWithReactiveCompact(
-          ctx,
-          callbacks,
-          "tool_followup",
-          () => ({
-            phase: "tool_followup",
-            callMessages: ctx.messages,
-            callSections: ctx.messageSections,
-            onStreamChunk: ctx.activeStreamCallback,
-            statefulSessionId: ctx.sessionId,
-            statefulResumeAnchor: ctx.stateful?.resumeAnchor,
-            statefulHistoryCompacted: ctx.stateful?.historyCompacted,
-            toolChoice: "required",
-            budgetReason:
-              "Max model recalls exceeded during artifact-evidence recovery turn",
-          }),
-        );
-        if (recoveryResponse) {
-          ctx.response = recoveryResponse;
-          shouldContinueAfterStopGate = true;
-        }
-      } else {
-        callbacks.setStopReason(
-          ctx,
-          "validation_error",
-          artifactGateDecision.stopReasonDetail,
-        );
-        ctx.validationCode = artifactGateDecision.validationCode;
-        ctx.response = {
-          ...ctx.response,
-          content: "",
-        };
-      }
-    } else if (!stopGateFired) {
-      const gateDecision = evaluateTurnEndStopGate({
-        finalContent: ctx.response.content ?? "",
-        allToolCalls: ctx.allToolCalls,
+      await attemptCompletionRecovery({
+        reason: artifactGateDecision.validationCode ?? "artifact_evidence_gate",
+        blockingMessage: artifactGateDecision.blockingMessage,
+        evidence: artifactGateDecision.evidence,
+        maxAttempts: ctx.requiredToolEvidence?.maxCorrectionAttempts ?? 0,
+        budgetReason:
+          "Max model recalls exceeded during artifact-evidence recovery turn",
+        exhaustedDetail:
+          artifactGateDecision.stopReasonDetail ??
+          "Artifact-evidence recovery exhausted.",
+        validationCode: artifactGateDecision.validationCode,
       });
-      if (gateDecision.shouldIntervene && gateDecision.blockingMessage) {
-        stopGateFired = true;
-        callbacks.emitExecutionTrace(ctx, {
-          type: "stop_gate_intervention",
-          phase: "tool_followup",
-          callIndex: ctx.callIndex,
-          payload: {
-            reason: gateDecision.reason,
-            finalContentPreview: (ctx.response.content ?? "").slice(0, 240),
-            evidence: gateDecision.evidence,
-          },
-        });
-        // Inject the synthetic blocking message as a user-role turn so
-        // the model treats it as authoritative runtime feedback (not just
-        // another assistant aside). Phase tagging matches the existing
-        // recovery-hint convention so prompt budget accounting works.
-        callbacks.pushMessage(
-          ctx,
-          {
-            role: "user",
-            content: gateDecision.blockingMessage,
-          },
-          "system_runtime",
-        );
-        // Re-call the model. The recovery response will either be more
-        // tool calls (the inner while loop runs again on the next
-        // do-while iteration) or a text response (the gate skip path
-        // takes over because stopGateFired is now true).
-        await runPerIterationCompactionBeforeModelCall(
-          ctx,
-          config,
-          callbacks,
-          "tool_followup",
-        );
-        const recoveryResponse = await callModelWithReactiveCompact(
-          ctx,
-          callbacks,
-          "tool_followup",
-          () => ({
-            phase: "tool_followup",
-            callMessages: ctx.messages,
-            callSections: ctx.messageSections,
-            onStreamChunk: ctx.activeStreamCallback,
-            statefulSessionId: ctx.sessionId,
-            statefulResumeAnchor: ctx.stateful?.resumeAnchor,
-            statefulHistoryCompacted: ctx.stateful?.historyCompacted,
-            budgetReason:
-              "Max model recalls exceeded during stop-gate recovery turn",
-          }),
-        );
-        if (recoveryResponse) {
-          ctx.response = recoveryResponse;
-          shouldContinueAfterStopGate = true;
-        }
+      if (shouldContinueAfterStopGate) {
+        continue;
+      }
+    }
+
+    const gateDecision = evaluateTurnEndStopGate({
+      finalContent: ctx.response.content ?? "",
+      allToolCalls: ctx.allToolCalls,
+    });
+    if (gateDecision.shouldIntervene) {
+      await attemptCompletionRecovery({
+        attemptKey: "turn_end_stop_gate",
+        reason: gateDecision.reason ?? "turn_end_stop_gate",
+        blockingMessage: gateDecision.blockingMessage,
+        evidence: gateDecision.evidence,
+        maxAttempts: 1,
+        budgetReason:
+          "Max model recalls exceeded during stop-gate recovery turn",
+        exhaustedDetail:
+          gateDecision.reason === "narrated_future_tool_work"
+            ? "Stop-gate recovery exhausted: the model kept narrating future work instead of calling tools."
+            : "Stop-gate recovery exhausted after the model continued to emit an invalid completion summary.",
+      });
+      if (shouldContinueAfterStopGate) {
+        continue;
       }
     }
 
@@ -1622,7 +1668,6 @@ export async function executeToolCallLoop(
     // verifies artifacts, not text patterns.
     if (
       ctx.response &&
-      ctx.response.finishReason !== "tool_calls" &&
       ctx.stopReason === "completed" &&
       ctx.allToolCalls.length > 0 &&
       !ctx.signal?.aborted
@@ -1631,51 +1676,58 @@ export async function executeToolCallLoop(
         finalContent: ctx.response.content ?? "",
         allToolCalls: ctx.allToolCalls,
       });
-      if (fsCheck.shouldIntervene && fsCheck.blockingMessage) {
-        callbacks.emitExecutionTrace(ctx, {
-          type: "stop_gate_intervention",
-          phase: "tool_followup",
-          callIndex: ctx.callIndex,
-          payload: {
-            reason: "filesystem_artifact_verification",
+      if (fsCheck.shouldIntervene) {
+        await attemptCompletionRecovery({
+          reason: "filesystem_artifact_verification",
+          blockingMessage: fsCheck.blockingMessage,
+          evidence: {
             emptyFiles: fsCheck.emptyFiles,
             missingFiles: fsCheck.missingFiles,
             checkedFiles: fsCheck.checkedFiles,
           },
+          maxAttempts: 1,
+          budgetReason:
+            "Max model recalls exceeded during filesystem artifact recovery turn",
+          exhaustedDetail:
+            "Filesystem artifact verification failed after recovery; missing or empty artifacts remain on disk.",
         });
-        callbacks.pushMessage(
-          ctx,
-          {
-            role: "user",
-            content: fsCheck.blockingMessage,
-          },
-          "system_runtime",
-        );
-        await runPerIterationCompactionBeforeModelCall(
-          ctx,
-          config,
-          callbacks,
-          "tool_followup",
-        );
-        const recoveryResponse = await callModelWithReactiveCompact(
-          ctx,
-          callbacks,
-          "tool_followup",
-          () => ({
-            phase: "tool_followup",
-            callMessages: ctx.messages,
-            callSections: ctx.messageSections,
-            onStreamChunk: ctx.activeStreamCallback,
-            statefulSessionId: ctx.sessionId,
-            statefulResumeAnchor: ctx.stateful?.resumeAnchor,
-            statefulHistoryCompacted: ctx.stateful?.historyCompacted,
-            budgetReason:
-              "Max model recalls exceeded during filesystem artifact recovery turn",
-          }),
-        );
-        if (recoveryResponse) {
-          ctx.response = recoveryResponse;
-          shouldContinueAfterStopGate = true;
+        if (shouldContinueAfterStopGate) {
+          continue;
+        }
+      }
+    }
+
+    if (
+      ctx.response &&
+      ctx.stopReason === "completed" &&
+      !ctx.signal?.aborted
+    ) {
+      const probeDecision = await runDeterministicAcceptanceProbes({
+        workspaceRoot: ctx.runtimeWorkspaceRoot,
+        targetArtifacts: ctx.turnExecutionContract.targetArtifacts,
+        allToolCalls: ctx.allToolCalls,
+        activeToolHandler: ctx.activeToolHandler,
+      });
+      for (const run of probeDecision.probeRuns) {
+        callbacks.appendToolRecord(ctx, run);
+      }
+      if (probeDecision.shouldIntervene) {
+        await attemptCompletionRecovery({
+          reason:
+            probeDecision.validationCode ??
+            "deterministic_acceptance_probe_failed",
+          blockingMessage: probeDecision.blockingMessage,
+          evidence: probeDecision.evidence,
+          maxAttempts: 1,
+          budgetReason:
+            "Max model recalls exceeded during deterministic acceptance-probe recovery turn",
+          exhaustedDetail:
+            probeDecision.stopReasonDetail ??
+            "Deterministic acceptance-probe recovery exhausted.",
+          validationCode: probeDecision.validationCode,
+        });
+        if (shouldContinueAfterStopGate) {
+          continue;
         }
       }
     }

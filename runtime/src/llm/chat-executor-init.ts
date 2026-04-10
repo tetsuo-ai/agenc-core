@@ -249,6 +249,7 @@ export async function initializeExecutionContext(
       messageText,
       systemPrompt,
       sessionId,
+      structuredOutput: params.structuredOutput,
       runtimeContext: params.runtimeContext,
       turnExecutionContract,
       signal,

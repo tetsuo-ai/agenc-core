@@ -172,6 +172,7 @@ export async function executeRequest(
     usedFallback: ctx.usedFallback,
     toolCalls: ctx.allToolCalls,
     providerEvidence: ctx.providerEvidence,
+    structuredOutput: ctx.response?.structuredOutput,
     tokenUsage: ctx.cumulativeUsage,
     callUsage: ctx.callUsage,
     durationMs,

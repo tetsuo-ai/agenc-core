@@ -86,7 +86,7 @@ export function buildDesktopContext(
       "- `browser_click`, `browser_type`, `browser_run_code`, `browser_wait_for` — Interact with and inspect the page.\n" +
       "- `browser_tabs` is only for tab management/debugging after navigation. It is NOT evidence of browsing and must not be your first step.\n\n" +
       "CRITICAL RULES:\n" +
-      "- To create/edit files: use desktop.text_editor as the default. Only fall back to shell-based file writes when an editor action cannot express the change.\n" +
+      "- To create/edit files: use desktop.text_editor as the default. Do not use shell heredocs, redirection, or `tee` to author workspace source files.\n" +
       '- To install packages: desktop.bash with "pip install flask" or "sudo apt-get install -y pkg"\n' +
       '- To run scripts: desktop.bash with "python app.py" or "node server.js"\n' +
       "- For durable code-execution environments, isolated workspace/container jobs, or sandbox lifecycle management, prefer system.sandboxStart plus system.sandboxJob* tools over desktop.process_* or raw shell commands.\n" +
@@ -167,7 +167,7 @@ export function buildDesktopContext(
       "- `browser_tabs` is only for tab management/debugging after navigation. It is NOT evidence of browsing and must not be your first step.\n" +
       "Playwright uses bundled Chromium. The desktop container also has Chromium aliases (`chromium`, `chromium-browser`) and the Epiphany GUI browser.\n\n" +
       "CRITICAL RULES:\n" +
-      "- To create/edit files: use desktop.text_editor as the default. Only fall back to shell-based file writes when an editor action cannot express the change.\n" +
+      "- To create/edit files: use desktop.text_editor as the default. Do not use shell heredocs, redirection, or `tee` to author workspace source files.\n" +
       '- To install packages: desktop.bash with "pip install flask" or "sudo apt-get install -y pkg"\n' +
       '- To run scripts: desktop.bash with "python app.py" or "node server.js"\n' +
       "- For durable code-execution environments, prefer system.sandboxStart plus system.sandboxJob* tools over raw docker shell commands.\n" +
@@ -213,7 +213,7 @@ export function buildDesktopContext(
       "- Press Enter: osascript -e 'tell application \"System Events\" to key code 36'\n" +
       "- Click coordinates: osascript -e 'tell application \"System Events\" to click at {x, y}'\n" +
       "- Get frontmost app: osascript -e 'tell application \"System Events\" to get name of first process whose frontmost is true'\n" +
-      "- Create file: Use the system.writeFile tool or echo via bash\n" +
+      "- Create file: Use the system.writeFile tool or desktop.text_editor\n" +
       "Be helpful, direct, and action-oriented. Execute tasks immediately without hesitation.";
   } else {
     ctx +=

@@ -19,6 +19,7 @@ import type { AgentDefinition } from "./agent-loader.js";
 import type { DelegationVerifierService } from "./delegation-runtime.js";
 import { isSubAgentSessionId } from "./delegation-runtime.js";
 import type { SubAgentConfig, SubAgentManager, SubAgentResult } from "./sub-agent.js";
+import type { LLMStructuredOutputRequest } from "../llm/types.js";
 
 const DEFAULT_VERIFY_TOOLS = [
   "system.readFile",
@@ -31,6 +32,45 @@ const DEFAULT_VERIFY_SYSTEM_PROMPT =
   "You are a verification agent. Your job is to try to break the claimed implementation with real checks. " +
   "Stay read-only, inspect the declared artifacts directly, run repo-local verification commands when possible, " +
   "and finish with exactly one line: VERDICT: PASS, VERDICT: FAIL, or VERDICT: PARTIAL.";
+const VERIFY_STRUCTURED_OUTPUT: LLMStructuredOutputRequest = {
+  enabled: true,
+  schema: {
+    type: "json_schema",
+    name: "agenc_top_level_verifier_decision",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["verdict", "summary"],
+      properties: {
+        verdict: {
+          type: "string",
+          enum: ["pass", "fail", "retry"],
+        },
+        summary: {
+          type: "string",
+          minLength: 1,
+        },
+        checks: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["name", "result"],
+            properties: {
+              name: { type: "string", minLength: 1 },
+              result: {
+                type: "string",
+                enum: ["pass", "fail", "retry"],
+              },
+              detail: { type: "string" },
+            },
+          },
+        },
+      },
+    },
+  },
+};
 
 interface MaybeRunTopLevelVerifierParams {
   readonly sessionId: string;
@@ -104,10 +144,46 @@ function buildVerifierPrompt(params: {
   return lines.join("\n");
 }
 
+function parseStructuredVerifierSnapshot(result: SubAgentResult | null): {
+  readonly snapshot: PlannerVerificationSnapshot;
+  readonly summary: string;
+} | null {
+  const parsed = result?.structuredOutput?.parsed;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+  const object = parsed as Record<string, unknown>;
+  const verdict = typeof object.verdict === "string"
+    ? object.verdict.trim().toLowerCase()
+    : "";
+  const summary =
+    typeof object.summary === "string" && object.summary.trim().length > 0
+      ? truncate(object.summary.trim(), 2000)
+      : undefined;
+  if (verdict !== "pass" && verdict !== "fail" && verdict !== "retry") {
+    return null;
+  }
+  return {
+    snapshot:
+      verdict === "pass"
+        ? { performed: true, overall: "pass" }
+        : verdict === "fail"
+          ? { performed: true, overall: "fail" }
+          : { performed: true, overall: "retry" },
+    summary:
+      summary ??
+      "Top-level verifier returned a structured verdict without a usable summary.",
+  };
+}
+
 function parseVerifierSnapshot(result: SubAgentResult | null): {
   readonly snapshot: PlannerVerificationSnapshot;
   readonly summary: string;
 } {
+  const structured = parseStructuredVerifierSnapshot(result);
+  if (structured) {
+    return structured;
+  }
   if (!result) {
     return {
       snapshot: { performed: false, overall: "retry" },
@@ -271,6 +347,7 @@ export async function maybeRunTopLevelVerifier(
     }),
     systemPrompt: definition.systemPrompt,
     tools: definition.tools,
+    structuredOutput: VERIFY_STRUCTURED_OUTPUT,
     ...(workspaceRoot ? { workingDirectory: workspaceRoot } : {}),
     requiredToolEvidence: {
       maxCorrectionAttempts: 1,
