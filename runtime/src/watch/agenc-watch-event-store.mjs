@@ -294,27 +294,26 @@ export function createWatchEventStore(dependencies = {}) {
     // drift. Empty bodies are still surfaced (as a small placeholder) so
     // the operator knows the turn finished even when the model produced
     // no text.
+    //
+    // CRITICAL: this function DELIBERATELY bypasses
+    // withPreservedManualTranscriptViewport for the force-snap. PR #310
+    // set transcriptFollowMode/transcriptScrollOffset INSIDE the wrapper,
+    // and the wrapper's cleanup re-applied preserveManualTranscriptViewport
+    // after the mutator returned, undoing the snap. The fix is to perform
+    // the body mutation directly and force-set the viewport AFTER any
+    // wrapper that might overwrite it. The lost-message bug is strictly
+    // worse than the small UX cost of a forced snap on agent reply.
     const target = findLatestStreamingAgentEvent();
+    const timestamp = nowStamp();
+    const createdAtMs = nowMs();
+    let result;
     if (!target) {
       const safeContent = content.length > 0 ? content : "(empty)";
-      const pushed = pushEvent("agent", "Agent Reply", safeContent, "cyan", {
+      result = pushEvent("agent", "Agent Reply", safeContent, "cyan", {
         renderMode: "markdown",
         streamState: "complete",
       });
-      // When a fresh agent reply lands without a streaming target it almost
-      // always represents the model finishing its turn. Force the
-      // transcript follow mode back on so the user is snapped to the new
-      // reply instead of leaving them staring at whatever they were
-      // scrolled to mid-tool-output. Losing a final message to a stale
-      // scroll position is worse than the small UX cost of a forced snap.
-      watchState.transcriptFollowMode = true;
-      watchState.transcriptScrollOffset = 0;
-      scheduleRender();
-      return pushed;
-    }
-    return withPreservedManualTranscriptViewport(({ shouldFollow }) => {
-      const timestamp = nowStamp();
-      const createdAtMs = nowMs();
+    } else {
       // Always overwrite the streaming target body with the canonical
       // commit content when it is non-empty. The previous fallback chain
       // (`content || storedEventBody(target) || "(empty)"`) could keep a
@@ -337,15 +336,16 @@ export function createWatchEventStore(dependencies = {}) {
       target.streamState = "complete";
       updateLatestAgentSummary(target);
       updateActivity(timestamp);
-      // Force re-engage follow mode on commit. See above note on the
-      // pushEvent path — committing a final agent reply is the moment the
-      // operator most needs to be looking at the bottom of the transcript.
-      watchState.transcriptFollowMode = true;
-      watchState.transcriptScrollOffset = 0;
-      followTranscriptIfNeeded(true);
-      scheduleRender();
-      return target;
-    });
+      result = target;
+    }
+    // Force-snap to the new reply AFTER any nested wrapper has run. This
+    // line MUST be outside withPreservedManualTranscriptViewport — the
+    // wrapper's cleanup overwrote it in PR #310, which is exactly why
+    // agent replies were still invisible despite landing in events[].
+    watchState.transcriptFollowMode = true;
+    watchState.transcriptScrollOffset = 0;
+    scheduleRender();
+    return result;
   }
 
   function cancelAgentStream(reason = "cancelled") {
