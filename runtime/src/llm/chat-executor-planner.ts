@@ -1529,6 +1529,471 @@ export function extractExplicitDeterministicToolRequirements(
   };
 }
 
+const AGENC_CREATE_TASK_TOOL_NAME = "agenc.createTask";
+const AGENC_CREATE_TASK_DESCRIPTION_BYTES = 64;
+const AGENC_CREATE_TASK_FIELDS = [
+  "description",
+  "reward",
+  "requiredCapabilities",
+  "rewardMint",
+  "maxWorkers",
+  "deadline",
+  "taskType",
+  "minReputation",
+  "constraintHash",
+  "validationMode",
+  "reviewWindowSecs",
+  "taskId",
+  "creatorAgentPda",
+  "jobSpec",
+  "fullDescription",
+  "acceptanceCriteria",
+  "deliverables",
+  "constraints",
+  "attachments",
+] as const;
+const AGENC_CREATE_TASK_NUMERIC_FIELDS = new Set<string>([
+  "maxWorkers",
+  "deadline",
+  "taskType",
+  "minReputation",
+  "reviewWindowSecs",
+]);
+const AGENC_CREATE_TASK_INTEGER_STRING_FIELDS = new Set<string>([
+  "reward",
+  "requiredCapabilities",
+]);
+const AGENC_CREATE_TASK_TOKEN_FIELDS = new Set<string>([
+  "rewardMint",
+  "constraintHash",
+  "taskId",
+  "creatorAgentPda",
+]);
+const AGENC_CREATE_TASK_OMITTABLE_FIELDS = new Set<
+  typeof AGENC_CREATE_TASK_FIELDS[number]
+>([
+  "rewardMint",
+  "maxWorkers",
+  "deadline",
+  "taskType",
+  "minReputation",
+  "constraintHash",
+  "validationMode",
+  "reviewWindowSecs",
+  "taskId",
+  "creatorAgentPda",
+  "jobSpec",
+  "fullDescription",
+  "acceptanceCriteria",
+  "deliverables",
+  "constraints",
+  "attachments",
+]);
+const AGENC_CREATE_TASK_FIELD_ALIASES = new Map<string, typeof AGENC_CREATE_TASK_FIELDS[number]>(
+  [
+    ["description", "description"],
+    ["taskDescription", "description"],
+    ["task_description", "description"],
+    ["reward", "reward"],
+    ["rewardLamports", "reward"],
+    ["reward_lamports", "reward"],
+    ["requiredCapabilities", "requiredCapabilities"],
+    ["required_capabilities", "requiredCapabilities"],
+    ["capabilities", "requiredCapabilities"],
+    ["rewardMint", "rewardMint"],
+    ["reward_mint", "rewardMint"],
+    ["maxWorkers", "maxWorkers"],
+    ["max_workers", "maxWorkers"],
+    ["deadline", "deadline"],
+    ["taskType", "taskType"],
+    ["task_type", "taskType"],
+    ["minReputation", "minReputation"],
+    ["min_reputation", "minReputation"],
+    ["constraintHash", "constraintHash"],
+    ["constraint_hash", "constraintHash"],
+    ["validationMode", "validationMode"],
+    ["validation_mode", "validationMode"],
+    ["reviewWindowSecs", "reviewWindowSecs"],
+    ["review_window_secs", "reviewWindowSecs"],
+    ["reviewWindowSeconds", "reviewWindowSecs"],
+    ["review_window_seconds", "reviewWindowSecs"],
+    ["taskId", "taskId"],
+    ["task_id", "taskId"],
+    ["creatorAgentPda", "creatorAgentPda"],
+    ["creator_agent_pda", "creatorAgentPda"],
+    ["jobSpec", "jobSpec"],
+    ["job_spec", "jobSpec"],
+    ["fullDescription", "fullDescription"],
+    ["full_description", "fullDescription"],
+    ["acceptanceCriteria", "acceptanceCriteria"],
+    ["acceptance_criteria", "acceptanceCriteria"],
+    ["deliverables", "deliverables"],
+    ["constraints", "constraints"],
+    ["attachments", "attachments"],
+  ],
+);
+
+const AGENC_CREATE_TASK_FIELD_LINE_RE = new RegExp(
+  `(?:^|.*?)(?:[-*]\\s*)?\\b(${[...AGENC_CREATE_TASK_FIELD_ALIASES.keys()]
+    .sort((left, right) => right.length - left.length)
+    .map(escapeAgencCreateTaskRegexLiteral)
+    .join("|")})\\s*(?:=|:)\\s*(.+?)\\s*,?\\s*$`,
+);
+const AGENC_CREATE_TASK_BARE_FIELD_RE = new RegExp(
+  `^\\s*(?:[-*]\\s*)?(${[...AGENC_CREATE_TASK_FIELD_ALIASES.keys()]
+    .sort((left, right) => right.length - left.length)
+    .map(escapeAgencCreateTaskRegexLiteral)
+    .join("|")})\\s+(.+?)\\s*,?\\s*$`,
+);
+const AGENC_CREATE_TASK_BARE_ARGS_PREFIX_RE =
+  /\b(?:args?|arguments|fields)\s*:\s*/gi;
+
+function escapeAgencCreateTaskRegexLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+export function repairExplicitAgencCreateTaskPlannerArgs(input: {
+  readonly plannerPlan: PlannerPlan;
+  readonly messageText: string;
+}): { readonly plannerPlan: PlannerPlan; readonly diagnostics: readonly PlannerDiagnostic[] } {
+  if (
+    !input.plannerPlan.steps.some(
+      (step) =>
+        step.stepType === "deterministic_tool" &&
+        step.tool === AGENC_CREATE_TASK_TOOL_NAME,
+    )
+  ) {
+    return { plannerPlan: input.plannerPlan, diagnostics: [] };
+  }
+
+  const extractedArgs = extractExplicitAgencCreateTaskArgs(input.messageText);
+  if (!extractedArgs) {
+    return { plannerPlan: input.plannerPlan, diagnostics: [] };
+  }
+
+  const repairedSteps = input.plannerPlan.steps.map((step) => {
+    if (
+      step.stepType !== "deterministic_tool" ||
+      step.tool !== AGENC_CREATE_TASK_TOOL_NAME
+    ) {
+      return step;
+    }
+
+    const nextArgs: Record<string, unknown> = { ...step.args };
+    for (const field of AGENC_CREATE_TASK_FIELDS) {
+      if (!(field in extractedArgs)) continue;
+      const extractedValue = extractedArgs[field];
+      if (extractedValue === undefined) continue;
+      if (
+        shouldRepairAgencCreateTaskArg(
+          field,
+          nextArgs[field],
+          extractedValue,
+        )
+      ) {
+        nextArgs[field] = extractedValue;
+      }
+    }
+    for (const field of AGENC_CREATE_TASK_OMITTABLE_FIELDS) {
+      if (messageForbidsAgencCreateTaskField(input.messageText, field)) {
+        delete nextArgs[field];
+      }
+    }
+
+    return { ...step, args: nextArgs };
+  });
+
+  const changedFields = new Set<string>();
+  for (const [index, step] of input.plannerPlan.steps.entries()) {
+    const repairedStep = repairedSteps[index];
+    if (
+      step.stepType !== "deterministic_tool" ||
+      repairedStep?.stepType !== "deterministic_tool" ||
+      step.tool !== AGENC_CREATE_TASK_TOOL_NAME ||
+      repairedStep.tool !== AGENC_CREATE_TASK_TOOL_NAME
+    ) {
+      continue;
+    }
+    for (const field of AGENC_CREATE_TASK_FIELDS) {
+      if (step.args[field] !== repairedStep.args[field]) {
+        changedFields.add(field);
+      }
+    }
+  }
+
+  if (changedFields.size === 0) {
+    return { plannerPlan: input.plannerPlan, diagnostics: [] };
+  }
+
+  return {
+    plannerPlan: {
+      ...input.plannerPlan,
+      steps: repairedSteps,
+    },
+    diagnostics: [
+      createPlannerDiagnostic(
+        "parse",
+        "planner_agenc_create_task_args_repaired",
+        "Planner createTask arguments were repaired from explicit prompt fields",
+        { fields: [...changedFields].sort().join(",") },
+      ),
+    ],
+  };
+}
+
+function extractExplicitAgencCreateTaskArgs(
+  messageText: string,
+): Record<string, unknown> | undefined {
+  if (!messageExplicitlyReferencesAgencCreateTask(messageText)) {
+    return undefined;
+  }
+
+  const extracted: Record<string, unknown> = {};
+  collectAgencCreateTaskJsonArgs(messageText, extracted);
+  collectAgencCreateTaskLineArgs(messageText, extracted);
+
+  return Object.keys(extracted).length > 0 ? extracted : undefined;
+}
+
+function messageExplicitlyReferencesAgencCreateTask(messageText: string): boolean {
+  return (
+    buildImperativeToolReferenceRegex(AGENC_CREATE_TASK_TOOL_NAME, "i").test(
+      messageText,
+    ) ||
+    (
+      /`?agenc\.createTask`?/i.test(messageText) &&
+      /\b(?:description|requiredCapabilities|required_capabilities|creatorAgentPda|creator_agent_pda|validationMode|validation_mode|jobSpec|job_spec|fullDescription|full_description|acceptanceCriteria|acceptance_criteria|deliverables|constraints|attachments)\b/i.test(messageText)
+    )
+  );
+}
+
+function messageForbidsAgencCreateTaskField(
+  messageText: string,
+  field: typeof AGENC_CREATE_TASK_FIELDS[number],
+): boolean {
+  const aliases = [...AGENC_CREATE_TASK_FIELD_ALIASES.entries()]
+    .filter(([, canonicalField]) => canonicalField === field)
+    .map(([alias]) => escapeAgencCreateTaskRegexLiteral(alias));
+  if (aliases.length === 0) return false;
+  const fieldPattern = `(?:${aliases.join("|")})`;
+  const directiveRe =
+    /\b(?:do\s+not|don't|dont|never)\s+(?:add|include|set|provide)\s+([^:.;\n]+)/gi;
+  const fieldRe = new RegExp(`\\b${fieldPattern}\\b`, "i");
+  for (const match of messageText.matchAll(directiveRe)) {
+    if (match[1] && fieldRe.test(match[1])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function collectAgencCreateTaskJsonArgs(
+  messageText: string,
+  target: Record<string, unknown>,
+): void {
+  const parsed = parseJsonObjectFromText(messageText);
+  if (!parsed || Array.isArray(parsed)) return;
+  const candidate = selectAgencCreateTaskJsonArgs(parsed as Record<string, unknown>);
+  if (!candidate) return;
+
+  for (const [key, value] of Object.entries(candidate)) {
+    const canonicalField = canonicalizeAgencCreateTaskFieldName(key);
+    if (!canonicalField) continue;
+    const normalized = normalizeAgencCreateTaskFieldValue(canonicalField, value);
+    if (normalized !== undefined) {
+      target[canonicalField] = normalized;
+    }
+  }
+}
+
+function selectAgencCreateTaskJsonArgs(
+  value: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const directFields = Object.keys(value).some((key) =>
+    canonicalizeAgencCreateTaskFieldName(key),
+  );
+  if (directFields) {
+    return value;
+  }
+
+  for (const key of ["args", "arguments", "params", "parameters", "input"]) {
+    const nested = value[key];
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      const selected = selectAgencCreateTaskJsonArgs(nested as Record<string, unknown>);
+      if (selected) return selected;
+    }
+    if (typeof nested === "string") {
+      const parsed = parseJsonObjectFromText(nested);
+      if (parsed && !Array.isArray(parsed)) {
+        const selected = selectAgencCreateTaskJsonArgs(
+          parsed as Record<string, unknown>,
+        );
+        if (selected) return selected;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function collectAgencCreateTaskLineArgs(
+  messageText: string,
+  target: Record<string, unknown>,
+): void {
+  for (const line of messageText.split(/\r?\n/)) {
+    const parsed = parseAgencCreateTaskFieldLine(line);
+    if (!parsed) continue;
+    if (messageForbidsAgencCreateTaskField(messageText, parsed.field)) continue;
+    target[parsed.field] = parsed.value;
+  }
+
+  for (const chunk of messageText.split(/[;,]/)) {
+    const parsed = parseAgencCreateTaskFieldLine(chunk);
+    if (!parsed) continue;
+    if (messageForbidsAgencCreateTaskField(messageText, parsed.field)) continue;
+    target[parsed.field] = parsed.value;
+  }
+}
+
+function parseAgencCreateTaskFieldLine(
+  line: string,
+): {
+  readonly field: typeof AGENC_CREATE_TASK_FIELDS[number];
+  readonly value: unknown;
+} | undefined {
+  const match =
+    AGENC_CREATE_TASK_FIELD_LINE_RE.exec(line) ??
+    AGENC_CREATE_TASK_BARE_FIELD_RE.exec(
+      stripAgencCreateTaskBareArgsPreamble(line),
+    );
+  if (!match) return undefined;
+  const field = canonicalizeAgencCreateTaskFieldName(match[1] ?? "");
+  if (!field) return undefined;
+  const value = normalizeAgencCreateTaskFieldValue(field, match[2] ?? "");
+  return value === undefined ? undefined : { field, value };
+}
+
+function stripAgencCreateTaskBareArgsPreamble(line: string): string {
+  AGENC_CREATE_TASK_BARE_ARGS_PREFIX_RE.lastIndex = 0;
+  let lastPrefixEnd = -1;
+  for (
+    let match = AGENC_CREATE_TASK_BARE_ARGS_PREFIX_RE.exec(line);
+    match;
+    match = AGENC_CREATE_TASK_BARE_ARGS_PREFIX_RE.exec(line)
+  ) {
+    lastPrefixEnd = match.index + match[0].length;
+  }
+  return lastPrefixEnd >= 0 ? line.slice(lastPrefixEnd) : line;
+}
+
+function canonicalizeAgencCreateTaskFieldName(
+  rawField: string,
+): typeof AGENC_CREATE_TASK_FIELDS[number] | undefined {
+  const trimmed = rawField.trim();
+  return (
+    AGENC_CREATE_TASK_FIELD_ALIASES.get(trimmed) ??
+    AGENC_CREATE_TASK_FIELD_ALIASES.get(
+      trimmed.replace(/-([a-z])/g, (_match, letter: string) =>
+        letter.toUpperCase(),
+      ),
+    ) ??
+    AGENC_CREATE_TASK_FIELD_ALIASES.get(trimmed.replace(/-/g, "_"))
+  );
+}
+
+function normalizeAgencCreateTaskFieldValue(
+  field: string,
+  rawValue: unknown,
+): unknown {
+  if (typeof rawValue === "number") {
+    return Number.isFinite(rawValue) ? Math.trunc(rawValue) : undefined;
+  }
+  if (typeof rawValue !== "string") {
+    return rawValue === null ? undefined : rawValue;
+  }
+
+  let value = rawValue.trim();
+  if (value.length === 0) return undefined;
+  value = unwrapPlannerQuotedLiteral(value);
+  if (field === "description") {
+    return new TextEncoder().encode(value).length <=
+      AGENC_CREATE_TASK_DESCRIPTION_BYTES
+      ? value
+      : undefined;
+  }
+  if (AGENC_CREATE_TASK_NUMERIC_FIELDS.has(field)) {
+    const match = /^(\d+)\b/.exec(value);
+    return match ? Number(match[1]) : undefined;
+  }
+  if (AGENC_CREATE_TASK_INTEGER_STRING_FIELDS.has(field)) {
+    const match = /^(\d+)\b/.exec(value);
+    return match?.[1];
+  }
+  if (field === "validationMode") {
+    return normalizeAgencCreateTaskValidationMode(value);
+  }
+  if (AGENC_CREATE_TASK_TOKEN_FIELDS.has(field)) {
+    return value.split(/\s+/)[0]?.replace(/[.,;:]+$/, "") || undefined;
+  }
+  return value;
+}
+
+function normalizeAgencCreateTaskValidationMode(
+  value: string,
+): "auto" | "creator-review" | undefined {
+  const tokenMatch = /^(auto|creator[-_\s]?review|manual(?:[-_\s]?validation)?)\b/i.exec(
+    value,
+  );
+  if (!tokenMatch) return undefined;
+  const token = (tokenMatch[1] ?? "").toLowerCase().replace(/[\s_]+/g, "-");
+  if (token === "auto") return "auto";
+  if (
+    token === "creator-review" ||
+    token === "creatorreview" ||
+    token === "manual" ||
+    token === "manual-validation"
+  ) {
+    return "creator-review";
+  }
+  return undefined;
+}
+
+function unwrapPlannerQuotedLiteral(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length < 2) return trimmed;
+  const first = trimmed[0];
+  const last = trimmed[trimmed.length - 1];
+  if (
+    (first === '"' && last === '"') ||
+    (first === "'" && last === "'") ||
+    (first === "`" && last === "`")
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+function shouldRepairAgencCreateTaskArg(
+  field: string,
+  currentValue: unknown,
+  extractedValue: unknown,
+): boolean {
+  if (currentValue === undefined || currentValue === null) {
+    return true;
+  }
+  if (typeof currentValue === "string" && currentValue.trim().length === 0) {
+    return true;
+  }
+  if (
+    field === "description" &&
+    typeof currentValue === "string" &&
+    new TextEncoder().encode(currentValue).length >
+      AGENC_CREATE_TASK_DESCRIPTION_BYTES
+  ) {
+    return true;
+  }
+  return currentValue !== extractedValue;
+}
+
 const EXACT_RESPONSE_LITERAL_DIRECTIVE_RE =
   /\b(?:return|reply|respond|output|answer)(?:\s+with)?\s+exactly(?:\s+as)?\s+/i;
 const GENERIC_EXACT_LITERAL_RE =

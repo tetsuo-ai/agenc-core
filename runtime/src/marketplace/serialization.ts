@@ -13,7 +13,11 @@ import {
 import { createProgram, createReadOnlyProgram } from "../idl.js";
 import { ReputationEconomyOperations } from "../reputation/economy.js";
 import { TaskOperations } from "../task/operations.js";
-import { taskStatusToString } from "../task/types.js";
+import {
+  taskStatusToString,
+  taskTypeToKey,
+  taskTypeToString,
+} from "../task/types.js";
 import { lamportsToSol } from "../utils/encoding.js";
 import { silentLogger } from "../utils/logger.js";
 
@@ -42,6 +46,9 @@ export interface SerializedMarketplaceTask {
   rewardSol: string | undefined;
   rewardMint: string | null;
   taskType: string;
+  taskTypeId: number;
+  taskTypeName: string;
+  taskTypeKey: string;
   currentWorkers: number;
   maxWorkers: number;
   requiredCompletions: number;
@@ -280,6 +287,9 @@ export function serializeMarketplaceTask(
     rewardSol: task.rewardMint ? undefined : lamportsToSol(task.rewardAmount),
     rewardMint: task.rewardMint?.toBase58() ?? null,
     taskType: String(task.taskType),
+    taskTypeId: task.taskType,
+    taskTypeName: taskTypeToString(task.taskType),
+    taskTypeKey: taskTypeToKey(task.taskType),
     currentWorkers: task.currentWorkers,
     maxWorkers: task.maxWorkers,
     requiredCompletions: task.requiredCompletions,

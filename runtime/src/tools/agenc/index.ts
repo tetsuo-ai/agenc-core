@@ -12,6 +12,7 @@ import {
   createListTasksTool,
   createGetTaskTool,
   createGetTokenBalanceTool,
+  createGetJobSpecTool,
   createRegisterAgentTool,
   createCreateTaskTool,
   createGetAgentTool,
@@ -43,6 +44,7 @@ export {
   createListTasksTool,
   createGetTaskTool,
   createGetTokenBalanceTool,
+  createGetJobSpecTool,
   createRegisterAgentTool,
   createCreateTaskTool,
   createGetAgentTool,
@@ -107,8 +109,9 @@ export function createAgencTools(context: ToolContext): Tool[] {
   });
 
   return [
-    createListTasksTool(ops, context.logger),
-    createGetTaskTool(ops, context.logger),
+    createListTasksTool(ops, context.logger, { program }),
+    createGetTaskTool(ops, context.logger, { program }),
+    createGetJobSpecTool(context.logger, { program }),
     createGetTokenBalanceTool(program, context.logger),
     createRegisterAgentTool(program, context.logger),
     createCreateTaskTool(program, context.logger),

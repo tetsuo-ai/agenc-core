@@ -972,27 +972,57 @@ export async function handleTasksCreate(
       ? (params as Record<string, unknown>).reward as number
       : 0;
     const rewardLamports = BigInt(Math.max(Math.round(rewardInput * 1_000_000_000), 10_000_000));
-    const { program } = await createProgramContext(deps);
-    const tool = createCreateTaskTool(program, silentLogger);
-    const result = await tool.execute({
+    const taskParams = params as Record<string, unknown>;
+    const createArgs: Record<string, unknown> = {
       description: descStr,
       reward: rewardLamports.toString(),
       requiredCapabilities: '1',
-    });
+    };
+    for (const field of [
+      'jobSpec',
+      'fullDescription',
+      'acceptanceCriteria',
+      'deliverables',
+      'constraints',
+      'attachments',
+    ]) {
+      if (taskParams[field] !== undefined) {
+        createArgs[field] = taskParams[field];
+      }
+    }
+    const { program } = await createProgramContext(deps);
+    const tool = createCreateTaskTool(program, silentLogger);
+    const result = await tool.execute(createArgs);
     if (result.isError) {
       send({ type: 'error', error: `Failed to create task: ${parseToolError(result)}`, id });
       return;
     }
     let createdTaskPda: string | undefined;
+    let createdJobSpecHash: string | undefined;
+    let createdJobSpecUri: string | undefined;
     try {
-      createdTaskPda = (JSON.parse(result.content) as { taskPda?: string }).taskPda;
+      const createdPayload = JSON.parse(result.content) as {
+        taskPda?: string;
+        jobSpecHash?: string | null;
+        jobSpecUri?: string | null;
+      };
+      createdTaskPda = createdPayload.taskPda;
+      createdJobSpecHash = createdPayload.jobSpecHash ?? undefined;
+      createdJobSpecUri = createdPayload.jobSpecUri ?? undefined;
     } catch {
       createdTaskPda = undefined;
+      createdJobSpecHash = undefined;
+      createdJobSpecUri = undefined;
     }
 
     // Auto-refresh task list after creation
     await sendTaskList(deps, id, send);
-    deps.broadcastEvent?.('task.created', { taskPda: createdTaskPda, description: descStr });
+    deps.broadcastEvent?.('task.created', {
+      taskPda: createdTaskPda,
+      description: descStr,
+      jobSpecHash: createdJobSpecHash,
+      jobSpecUri: createdJobSpecUri,
+    });
   } catch (err) {
     send({ type: 'error', error: `Failed to create task: ${(err as Error).message}`, id });
   }

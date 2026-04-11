@@ -8,6 +8,31 @@
  */
 
 /**
+ * JSON-safe representation of verified task marketplace metadata.
+ */
+export interface SerializedTaskJobSpec {
+  source: "on-chain" | "local-task-link";
+  taskJobSpecPda?: string | null;
+  creator?: string | null;
+  jobSpecHash: string;
+  jobSpecUri: string;
+  createdAt?: number;
+  updatedAt?: number;
+  verified: boolean;
+  error?: string;
+  jobSpecPath?: string | null;
+  jobSpecTaskLinkPath?: string | null;
+  transactionSignature?: string | null;
+  integrity?: {
+    algorithm: string;
+    canonicalization: string;
+    payloadHash: string;
+    uri: string;
+  } | null;
+  payload?: unknown;
+}
+
+/**
  * JSON-safe representation of an on-chain Task.
  */
 export interface SerializedTask {
@@ -16,6 +41,8 @@ export interface SerializedTask {
   creator: string;
   status: string;
   taskType: string;
+  taskTypeId: number;
+  taskTypeKey: string;
   rewardAmount: string;
   rewardSol: string;
   requiredCapabilities: string[];
@@ -24,12 +51,19 @@ export interface SerializedTask {
   deadline: number;
   isPrivate: boolean;
   createdAt: number;
+  completedAt: number;
   completions: number;
   requiredCompletions: number;
   description: string;
+  descriptionHex: string;
+  constraintHash: string;
+  result: string;
+  resultText: string | null;
   rewardMint: string | null;
   /** Optional symbol for known reward mints (SOL, USDC, USDT, etc.) */
   rewardSymbol?: string;
+  /** Optional verified marketplace job spec metadata for this task. */
+  jobSpec?: SerializedTaskJobSpec | null;
   /** Escrow token ATA (present when task is token-denominated and requested by detail view) */
   escrowTokenAccount?: string | null;
   /** Escrow token balance in base units (present when task is token-denominated and requested by detail view) */

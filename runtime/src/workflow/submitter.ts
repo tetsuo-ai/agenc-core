@@ -16,7 +16,7 @@ import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";
 import { sleep } from "../utils/async.js";
 import { generateAgentId, toAnchorBytes } from "../utils/encoding.js";
-import { findAgentPda, findProtocolPda } from "../agent/pda.js";
+import { findAgentPda, findProtocolPda, findAuthorityRateLimitPda } from "../agent/pda.js";
 import { findTaskPda, findEscrowPda } from "../task/pda.js";
 import { isAnchorError, AnchorErrorCodes } from "../types/errors.js";
 import { buildCreateTaskTokenAccounts } from "../utils/token.js";
@@ -227,8 +227,12 @@ export class DAGSubmitter {
       escrowPda,
       creator,
     );
+    const authorityRateLimitPda = findAuthorityRateLimitPda(
+      creator,
+      this.program.programId,
+    );
 
-    return this.program.methods
+    return (this.program.methods as any)
       .createTask(
         toAnchorBytes(taskId),
         new anchor.BN(template.requiredCapabilities.toString()),
@@ -246,6 +250,7 @@ export class DAGSubmitter {
         escrow: escrowPda,
         protocolConfig: this.protocolPda,
         creatorAgent: this.agentPda,
+        authorityRateLimit: authorityRateLimitPda,
         authority: creator,
         creator,
         systemProgram: SystemProgram.programId,
@@ -276,8 +281,12 @@ export class DAGSubmitter {
       escrowPda,
       creator,
     );
+    const authorityRateLimitPda = findAuthorityRateLimitPda(
+      creator,
+      this.program.programId,
+    );
 
-    return this.program.methods
+    return (this.program.methods as any)
       .createDependentTask(
         toAnchorBytes(taskId),
         new anchor.BN(template.requiredCapabilities.toString()),
@@ -297,6 +306,7 @@ export class DAGSubmitter {
         parentTask: parentTaskPda,
         protocolConfig: this.protocolPda,
         creatorAgent: this.agentPda,
+        authorityRateLimit: authorityRateLimitPda,
         authority: creator,
         creator,
         systemProgram: SystemProgram.programId,

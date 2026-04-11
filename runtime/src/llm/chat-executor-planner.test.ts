@@ -18,6 +18,7 @@ import {
   plannerRequestImplementsFromArtifact,
   plannerRequestNeedsWorkspaceGroundedArtifactUpdate,
   requestExplicitlyRequestsDelegation,
+  repairExplicitAgencCreateTaskPlannerArgs,
   salvagePlannerToolCallsAsPlan,
   validatePlannerVerificationRequirements,
   validatePlannerGraph,
@@ -1853,6 +1854,204 @@ describe("chat-executor-planner explicit orchestration requirements", () => {
         code: "planner_tool_call_salvaged",
       }),
     ]);
+  });
+
+  it("repairs explicit agenc.createTask args from prompt fields before execution", () => {
+    const plan = salvagePlannerToolCallsAsPlan([
+      {
+        id: "tc-1",
+        name: "agenc.createTask",
+        arguments: JSON.stringify({
+          reward: "50000000",
+          requiredCapabilities: "1",
+          creatorAgentPda: "39ke6gfjZMZt6mLFj9RH1BSqdFbMKPap1Dpqk7DZxKBW",
+        }),
+      },
+    ]).plan!;
+
+    const result = repairExplicitAgencCreateTaskPlannerArgs({
+      plannerPlan: plan,
+      messageText:
+        "Call `agenc.createTask` tool with these exact fields:\n" +
+        "description: Audit devnet market in 3 bullets A1.\n" +
+        "reward: 50000000\n" +
+        "requiredCapabilities: 1\n" +
+        "creatorAgentPda: 39ke6gfjZMZt6mLFj9RH1BSqdFbMKPap1Dpqk7DZxKBW\n" +
+        "validationMode: auto",
+    });
+
+    expect(result.plannerPlan.steps).toEqual([
+      expect.objectContaining({
+        stepType: "deterministic_tool",
+        tool: "agenc.createTask",
+        args: expect.objectContaining({
+          description: "Audit devnet market in 3 bullets A1.",
+          reward: "50000000",
+          requiredCapabilities: "1",
+          creatorAgentPda: "39ke6gfjZMZt6mLFj9RH1BSqdFbMKPap1Dpqk7DZxKBW",
+          validationMode: "auto",
+        }),
+      }),
+    ]);
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({
+        category: "parse",
+        code: "planner_agenc_create_task_args_repaired",
+      }),
+    ]);
+  });
+
+  it("repairs inline agenc.createTask descriptions after an arguments prefix", () => {
+    const plan = salvagePlannerToolCallsAsPlan([
+      {
+        id: "tc-1",
+        name: "agenc.createTask",
+        arguments: JSON.stringify({
+          reward: "1000000",
+          requiredCapabilities: "1",
+          creatorAgentPda: "ER7zVhwzPP5yTWiyYmgYLCbB4BARromC7thdDxJwSWKU",
+          validationMode: "auto",
+        }),
+      },
+    ]).plan!;
+
+    const result = repairExplicitAgencCreateTaskPlannerArgs({
+      plannerPlan: plan,
+      messageText:
+        "Use agenc.createTask exactly once with these arguments: " +
+        "description = Auto smoke 1905 A; reward = 1000000 lamports; " +
+        "requiredCapabilities = 1; creatorAgentPda = ER7zVhwzPP5yTWiyYmgYLCbB4BARromC7thdDxJwSWKU; " +
+        "validationMode = auto. Do not include taskId, rewardMint, or constraintHash.",
+    });
+
+    expect(result.plannerPlan.steps[0]).toEqual(
+      expect.objectContaining({
+        args: expect.objectContaining({
+          description: "Auto smoke 1905 A",
+          reward: "1000000",
+          validationMode: "auto",
+        }),
+      }),
+    );
+  });
+
+  it("repairs semicolon-delimited bare agenc.createTask args without treating instructions as fields", () => {
+    const plan = salvagePlannerToolCallsAsPlan([
+      {
+        id: "tc-1",
+        name: "agenc.createTask",
+        arguments: JSON.stringify({
+          reward: "10000000",
+          requiredCapabilities: "1",
+          taskId: "manual-smoke-exclusive-auto",
+          creatorAgentPda: "ER7zVhwzPP5yTWiyYmgYLCbB4BARromC7thdDxJwSWKU",
+        }),
+      },
+    ]).plan!;
+
+    const result = repairExplicitAgencCreateTaskPlannerArgs({
+      plannerPlan: plan,
+      messageText:
+        "Call agenc.createTask exactly once. Do not add taskId under any circumstances. " +
+        "Args: description manual smoke exclusive auto; reward 10000000; " +
+        "requiredCapabilities 1; maxWorkers 1; taskType 0; validationMode auto; " +
+        "creatorAgentPda ER7zVhwzPP5yTWiyYmgYLCbB4BARromC7thdDxJwSWKU; " +
+        "fullDescription Smoke test exclusive auto marketplace task on devnet.",
+    });
+
+    expect(result.plannerPlan.steps[0]).toEqual(
+      expect.objectContaining({
+        args: expect.objectContaining({
+          description: "manual smoke exclusive auto",
+          reward: "10000000",
+          requiredCapabilities: "1",
+          maxWorkers: 1,
+          taskType: 0,
+          validationMode: "auto",
+        }),
+      }),
+    );
+    const repairedStep = result.plannerPlan.steps[0];
+    expect(repairedStep?.stepType).toBe("deterministic_tool");
+    if (repairedStep?.stepType === "deterministic_tool") {
+      expect(repairedStep.args).not.toHaveProperty("taskId");
+    }
+  });
+
+  it("does not parse a forbidden taskId instruction as a taskId field before inline JSON", () => {
+    const plan = salvagePlannerToolCallsAsPlan([
+      {
+        id: "tc-1",
+        name: "agenc.createTask",
+        arguments: JSON.stringify({
+          taskId: "{\"description\":\"self",
+          constraintHash: "{\"description\":\"self",
+          reward: "10000000",
+          requiredCapabilities: "1",
+        }),
+      },
+    ]).plan!;
+
+    const result = repairExplicitAgencCreateTaskPlannerArgs({
+      plannerPlan: plan,
+      messageText:
+        "Call agenc.createTask with exactly this JSON. Do not add taskId or constraintHash: " +
+        '{"description":"self test exclusive checklist","reward":"10000000","requiredCapabilities":"1","maxWorkers":1,"taskType":0,"validationMode":"auto","creatorAgentPda":"ER7zVhwzPP5yTWiyYmgYLCbB4BARromC7thdDxJwSWKU"}',
+    });
+
+    expect(result.plannerPlan.steps[0]).toEqual(
+      expect.objectContaining({
+        args: expect.objectContaining({
+          description: "self test exclusive checklist",
+          reward: "10000000",
+          requiredCapabilities: "1",
+          maxWorkers: 1,
+          taskType: 0,
+          validationMode: "auto",
+          creatorAgentPda: "ER7zVhwzPP5yTWiyYmgYLCbB4BARromC7thdDxJwSWKU",
+        }),
+      }),
+    );
+    const repairedStep = result.plannerPlan.steps[0];
+    expect(repairedStep?.stepType).toBe("deterministic_tool");
+    if (repairedStep?.stepType === "deterministic_tool") {
+      expect(repairedStep.args).not.toHaveProperty("taskId");
+      expect(repairedStep.args).not.toHaveProperty("constraintHash");
+    }
+  });
+
+  it("replaces overlong agenc.createTask descriptions with explicit short field values", () => {
+    const plan = salvagePlannerToolCallsAsPlan([
+      {
+        id: "tc-1",
+        name: "agenc.createTask",
+        arguments: JSON.stringify({
+          description:
+            "creator-review-test - reward: 1000000 lamports - requiredCapabilities: 1 - validationMode: creator-review - reviewWindowSecs: 3600",
+          reward: "1000000",
+          requiredCapabilities: "1",
+        }),
+      },
+    ]).plan!;
+
+    const result = repairExplicitAgencCreateTaskPlannerArgs({
+      plannerPlan: plan,
+      messageText:
+        "Use `agenc.createTask` tool. " +
+        "description = Summarize claim evidence for review B1.; " +
+        "reward = 1000000; requiredCapabilities = 1; " +
+        "validationMode = creator-review; reviewWindowSecs = 3600",
+    });
+
+    expect(result.plannerPlan.steps[0]).toEqual(
+      expect.objectContaining({
+        args: expect.objectContaining({
+          description: "Summarize claim evidence for review B1.",
+          validationMode: "creator-review",
+          reviewWindowSecs: 3600,
+        }),
+      }),
+    );
   });
 
   it("flags salvaged raw tool calls that under-decompose structured implementation requests", () => {

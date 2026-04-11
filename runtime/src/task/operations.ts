@@ -19,7 +19,7 @@ import {
   getAssociatedTokenAddressSync,
 } from "@tetsuo-ai/sdk";
 import { toAnchorBytes } from "../utils/encoding.js";
-import type { Program } from "@coral-xyz/anchor";
+import { utils, type Program } from "@coral-xyz/anchor";
 import BN from "bn.js";
 import type { AgencCoordination } from "../types/agenc_coordination.js";
 import type { Logger } from "../utils/logger.js";
@@ -38,6 +38,8 @@ import {
   isManualValidationTask,
   parseOnChainTask,
   parseOnChainTaskClaim,
+  parseTaskStatus,
+  parseTaskType,
   OnChainTaskStatus,
 } from "./types.js";
 import {
@@ -80,6 +82,9 @@ export const TASK_STATUS_OFFSET = 186;
 
 const BINDING_SPEND_SEED = Buffer.from("binding_spend");
 const NULLIFIER_SPEND_SEED = Buffer.from("nullifier_spend");
+const TASK_ACCOUNT_DISCRIMINATOR = Buffer.from([
+  79, 34, 229, 55, 88, 90, 55, 84,
+]);
 const ROUTER_SEED = Buffer.from("router");
 const VERIFIER_SEED = Buffer.from("verifier");
 const TRUSTED_RISC0_ROUTER_PROGRAM_ID = new PublicKey(
@@ -103,6 +108,136 @@ export interface TaskOpsConfig {
   agentId: Uint8Array;
   /** Logger instance (defaults to silent logger) */
   logger?: Logger;
+}
+
+type ProgramAccountFilter = {
+  memcmp: {
+    offset: number;
+    bytes: string;
+  };
+};
+
+type RawAccountInfo = {
+  data: Buffer | Uint8Array;
+};
+
+type RawProgramAccount = {
+  pubkey: PublicKey;
+  account: RawAccountInfo;
+};
+
+type RawConnection = {
+  getAccountInfo(publicKey: PublicKey): Promise<RawAccountInfo | null>;
+  getProgramAccounts(
+    programId: PublicKey,
+    config?: { filters?: ProgramAccountFilter[] },
+  ): Promise<RawProgramAccount[]>;
+};
+
+function toAccountDataBuffer(data: Buffer | Uint8Array): Buffer {
+  if (Buffer.isBuffer(data)) {
+    return data;
+  }
+  return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+}
+
+function decodeRawTaskAccountData(data: Buffer | Uint8Array): OnChainTask {
+  const buffer = toAccountDataBuffer(data);
+
+  if (
+    buffer.length < TASK_ACCOUNT_DISCRIMINATOR.length ||
+    !buffer
+      .subarray(0, TASK_ACCOUNT_DISCRIMINATOR.length)
+      .equals(TASK_ACCOUNT_DISCRIMINATOR)
+  ) {
+    throw new Error("Invalid task account discriminator");
+  }
+
+  let offset = TASK_ACCOUNT_DISCRIMINATOR.length;
+  const ensure = (byteLength: number): void => {
+    if (offset + byteLength > buffer.length) {
+      throw new Error(`Task account data truncated at offset ${offset}`);
+    }
+  };
+  const readBytes = (byteLength: number): Uint8Array => {
+    ensure(byteLength);
+    const bytes = new Uint8Array(buffer.subarray(offset, offset + byteLength));
+    offset += byteLength;
+    return bytes;
+  };
+  const readPublicKey = (): PublicKey => new PublicKey(readBytes(32));
+  const readU8 = (): number => {
+    ensure(1);
+    const value = buffer.readUInt8(offset);
+    offset += 1;
+    return value;
+  };
+  const readU64 = (): bigint => {
+    ensure(8);
+    const value = buffer.readBigUInt64LE(offset);
+    offset += 8;
+    return value;
+  };
+  const readI64Number = (): number => {
+    ensure(8);
+    const value = buffer.readBigInt64LE(offset);
+    offset += 8;
+    const numberValue = Number(value);
+    if (!Number.isSafeInteger(numberValue)) {
+      throw new Error(`Task i64 field is outside safe integer range: ${value}`);
+    }
+    return numberValue;
+  };
+  const skip = (byteLength: number): void => {
+    ensure(byteLength);
+    offset += byteLength;
+  };
+
+  const task: OnChainTask = {
+    taskId: readBytes(32),
+    creator: readPublicKey(),
+    requiredCapabilities: readU64(),
+    description: readBytes(64),
+    constraintHash: readBytes(32),
+    rewardAmount: readU64(),
+    maxWorkers: readU8(),
+    currentWorkers: readU8(),
+    status: parseTaskStatus(readU8()),
+    taskType: parseTaskType(readU8()),
+    createdAt: readI64Number(),
+    deadline: readI64Number(),
+    completedAt: readI64Number(),
+    escrow: readPublicKey(),
+    result: readBytes(64),
+    completions: readU8(),
+    requiredCompletions: readU8(),
+    bump: readU8(),
+    rewardMint: null,
+  };
+
+  if (offset + 2 <= buffer.length) {
+    skip(2); // protocol_fee_bps
+  }
+  if (offset + 1 <= buffer.length) {
+    const hasDependency = readU8();
+    if (hasDependency === 1 && offset + 32 <= buffer.length) {
+      skip(32);
+    }
+  }
+  if (offset + 1 <= buffer.length) {
+    skip(1); // dependency_type
+  }
+  if (offset + 2 <= buffer.length) {
+    skip(2); // min_reputation
+  }
+  if (offset + 1 <= buffer.length) {
+    const hasRewardMint = readU8();
+    if (hasRewardMint === 1 && offset + 32 <= buffer.length) {
+      task.rewardMint = readPublicKey();
+    }
+  }
+
+  return task;
 }
 
 // ============================================================================
@@ -156,6 +291,11 @@ export class TaskOperations {
    * @returns Parsed task or null if not found
    */
   async fetchTask(taskPda: PublicKey): Promise<OnChainTask | null> {
+    const rawTask = await this.fetchRawTaskAccount(taskPda);
+    if (rawTask) {
+      return rawTask;
+    }
+
     try {
       const raw = await this.program.account.task.fetch(taskPda);
       return parseOnChainTask(raw);
@@ -199,11 +339,7 @@ export class TaskOperations {
   async fetchAllTasks(): Promise<
     Array<{ task: OnChainTask; taskPda: PublicKey }>
   > {
-    const accounts = await this.program.account.task.all();
-    return accounts.map((acc) => ({
-      task: parseOnChainTask(acc.account),
-      taskPda: acc.publicKey,
-    }));
+    return this.fetchTaskAccounts();
   }
 
   /**
@@ -222,7 +358,7 @@ export class TaskOperations {
     return queryWithFallback(
       async () => {
         const [openAccounts, inProgressAccounts] = await Promise.all([
-          this.program.account.task.all([
+          this.fetchTaskAccounts([
             {
               memcmp: {
                 offset: TASK_STATUS_OFFSET,
@@ -230,7 +366,7 @@ export class TaskOperations {
               },
             },
           ]),
-          this.program.account.task.all([
+          this.fetchTaskAccounts([
             {
               memcmp: {
                 offset: TASK_STATUS_OFFSET,
@@ -240,20 +376,7 @@ export class TaskOperations {
           ]),
         ]);
 
-        const results: Array<{ task: OnChainTask; taskPda: PublicKey }> = [];
-        for (const acc of openAccounts) {
-          results.push({
-            task: parseOnChainTask(acc.account),
-            taskPda: acc.publicKey,
-          });
-        }
-        for (const acc of inProgressAccounts) {
-          results.push({
-            task: parseOnChainTask(acc.account),
-            taskPda: acc.publicKey,
-          });
-        }
-        return results;
+        return [...openAccounts, ...inProgressAccounts];
       },
       async () => {
         const all = await this.fetchAllTasks();
@@ -1317,6 +1440,72 @@ export class TaskOperations {
   // ==========================================================================
   // Private Helpers
   // ==========================================================================
+
+  private async fetchTaskAccounts(
+    filters: ProgramAccountFilter[] = [],
+  ): Promise<Array<{ task: OnChainTask; taskPda: PublicKey }>> {
+    const rawAccounts = await this.fetchRawTaskAccounts(filters);
+    if (rawAccounts) {
+      return rawAccounts;
+    }
+
+    const accounts = await this.program.account.task.all(filters);
+    return accounts.map((acc) => ({
+      task: parseOnChainTask(acc.account),
+      taskPda: acc.publicKey,
+    }));
+  }
+
+  private async fetchRawTaskAccount(
+    taskPda: PublicKey,
+  ): Promise<OnChainTask | null> {
+    const connection = this.getRawConnection();
+    if (!connection) {
+      return null;
+    }
+
+    const accountInfo = await connection.getAccountInfo(taskPda);
+    if (!accountInfo) {
+      return null;
+    }
+    return decodeRawTaskAccountData(accountInfo.data);
+  }
+
+  private async fetchRawTaskAccounts(
+    filters: ProgramAccountFilter[] = [],
+  ): Promise<Array<{ task: OnChainTask; taskPda: PublicKey }> | null> {
+    const connection = this.getRawConnection();
+    if (!connection) {
+      return null;
+    }
+
+    const accounts = await connection.getProgramAccounts(this.program.programId, {
+      filters: [
+        {
+          memcmp: {
+            offset: 0,
+            bytes: utils.bytes.bs58.encode(TASK_ACCOUNT_DISCRIMINATOR),
+          },
+        },
+        ...filters,
+      ],
+    });
+
+    return accounts.map((acc) => ({
+      task: decodeRawTaskAccountData(acc.account.data),
+      taskPda: acc.pubkey,
+    }));
+  }
+
+  private getRawConnection(): RawConnection | null {
+    const connection = this.program.provider.connection as unknown as
+      | RawConnection
+      | undefined;
+    if (!connection?.getAccountInfo || !connection.getProgramAccounts) {
+      return null;
+    }
+    return connection;
+  }
 
   /**
    * Get the agent PDA, caching for reuse.

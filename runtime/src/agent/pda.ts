@@ -12,6 +12,14 @@ import { derivePda, validateIdLength } from "../utils/pda.js";
 export type { PdaWithBump } from "../utils/pda.js";
 import type { PdaWithBump } from "../utils/pda.js";
 
+type OptionalSeedRecord = Partial<Record<string, Buffer>>;
+
+// The runtime can be upgraded ahead of the published SDK package. Fall back to
+// the raw seed bytes locally until the matching SDK release is available.
+const optionalSeeds = SEEDS as OptionalSeedRecord;
+const AUTHORITY_RATE_LIMIT_SEED =
+  optionalSeeds.AUTHORITY_RATE_LIMIT ?? Buffer.from("authority_rate_limit");
+
 /**
  * Derives the agent PDA and bump seed from an agent ID.
  * Seeds: ["agent", agent_id]
@@ -91,6 +99,38 @@ export function findAgentPda(
  */
 export function findProtocolPda(programId: PublicKey = PROGRAM_ID): PublicKey {
   return deriveProtocolPda(programId).address;
+}
+
+/**
+ * Derives the wallet-scoped authority rate limit PDA and bump seed.
+ * Seeds: ["authority_rate_limit", authority]
+ *
+ * @param authority - Authority wallet public key
+ * @param programId - Program ID (defaults to PROGRAM_ID)
+ * @returns PDA address and bump seed
+ */
+export function deriveAuthorityRateLimitPda(
+  authority: PublicKey,
+  programId: PublicKey = PROGRAM_ID,
+): PdaWithBump {
+  return derivePda(
+    [AUTHORITY_RATE_LIMIT_SEED, authority.toBuffer()],
+    programId,
+  );
+}
+
+/**
+ * Finds the authority rate limit PDA address (without bump).
+ *
+ * @param authority - Authority wallet public key
+ * @param programId - Program ID (defaults to PROGRAM_ID)
+ * @returns PDA address
+ */
+export function findAuthorityRateLimitPda(
+  authority: PublicKey,
+  programId: PublicKey = PROGRAM_ID,
+): PublicKey {
+  return deriveAuthorityRateLimitPda(authority, programId).address;
 }
 
 /**

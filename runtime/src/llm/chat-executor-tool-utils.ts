@@ -607,10 +607,64 @@ export function repairToolCallArgumentsFromMessageText(
   args: Record<string, unknown>,
   messageText: string,
 ): ToolArgumentRepairResult {
+  if (toolName === "agenc.createTask") {
+    return repairAgencCreateTaskArgumentsFromMessageText(args, messageText);
+  }
   if (toolName !== "social.requestCollaboration") {
     return { args, repairedFields: [] };
   }
   return repairCollaborationArgumentsFromMessageText(args, messageText);
+}
+
+const AGENC_CREATE_TASK_OMITTABLE_REPAIR_FIELD_ALIASES: Record<
+  string,
+  readonly string[]
+> = {
+  constraintHash: ["constraintHash", "constraint_hash"],
+  rewardMint: ["rewardMint", "reward_mint"],
+  taskId: ["taskId", "task_id"],
+};
+
+function escapeToolArgumentRegexLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function messageForbidsAgencCreateTaskArgument(
+  messageText: string,
+  aliases: readonly string[],
+): boolean {
+  const fieldPattern = aliases.map(escapeToolArgumentRegexLiteral).join("|");
+  const directiveRe =
+    /\b(?:do\s+not|don't|dont|never)\s+(?:add|include|set|provide)\s+([^:.;\n]+)/gi;
+  const fieldRe = new RegExp(`\\b(?:${fieldPattern})\\b`, "i");
+  for (const match of messageText.matchAll(directiveRe)) {
+    if (match[1] && fieldRe.test(match[1])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function repairAgencCreateTaskArgumentsFromMessageText(
+  args: Record<string, unknown>,
+  messageText: string,
+): ToolArgumentRepairResult {
+  let nextArgs = args;
+  const repairedFields: string[] = [];
+  for (const [field, aliases] of Object.entries(
+    AGENC_CREATE_TASK_OMITTABLE_REPAIR_FIELD_ALIASES,
+  )) {
+    if (
+      field in args &&
+      messageForbidsAgencCreateTaskArgument(messageText, aliases)
+    ) {
+      if (nextArgs === args) nextArgs = { ...args };
+      delete nextArgs[field];
+      repairedFields.push(field);
+    }
+  }
+
+  return { args: nextArgs, repairedFields };
 }
 
 export function summarizeToolArgumentChanges(

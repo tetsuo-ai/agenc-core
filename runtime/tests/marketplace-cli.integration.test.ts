@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Connection } from "@solana/web3.js";
 import { Keypair, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
@@ -296,6 +299,66 @@ afterAll(() => {
 });
 
 describeIfProtocolWorkspace("marketplace CLI integration", () => {
+  it("surfaces local job spec metadata in task list and detail", async () => {
+    const jobSpecStoreDir = await mkdtemp(
+      join(tmpdir(), "agenc-market-job-spec-"),
+    );
+    const createPayload = await runMarketCommand(
+      runMarketTaskCreateCommand,
+      {
+        description: "LiteSVM job spec task",
+        reward: String(LAMPORTS_PER_SOL / 20),
+        requiredCapabilities: "1",
+        creatorAgentPda: creator.agentPda.toBase58(),
+        fullDescription: "Execute the extended marketplace job specification.",
+        acceptanceCriteria: ["reads local spec", "verifies integrity"],
+        deliverables: ["result report"],
+        constraints: { maxRuntimeSecs: 120 },
+        attachments: ["https://example.com/spec.md"],
+        jobSpecStoreDir,
+      },
+      creator.agentPda.toBase58(),
+    );
+    const createdTask = asRecord(createPayload.result);
+    const taskPda = expectString(createdTask.taskPda);
+    registerLiteSVMProgramAccount(baseCtx.connection, new PublicKey(taskPda));
+
+    const detailPayload = await runMarketCommand(runMarketTaskDetailCommand, {
+      taskPda,
+      jobSpecStoreDir,
+    });
+    const detailTask = asRecord(detailPayload.task);
+    const detailSpec = asRecord(detailTask.jobSpec);
+    expect(detailSpec.available).toBe(true);
+    expect(expectString(detailSpec.jobSpecHash)).toBe(
+      expectString(createdTask.jobSpecHash),
+    );
+    const payload = asRecord(detailSpec.payload);
+    expect(payload.fullDescription).toBe(
+      "Execute the extended marketplace job specification.",
+    );
+    expect(expectArray(payload.acceptanceCriteria)).toContain(
+      "reads local spec",
+    );
+
+    const listPayload = await runMarketCommand(runMarketTasksListCommand, {
+      statuses: ["open"],
+      jobSpecStoreDir,
+    });
+    const summary = asRecord(
+      expectArray(listPayload.tasks)
+        .map(asRecord)
+        .find((task) => expectString(task.taskPda) === taskPda),
+    );
+    const summarySpec = asRecord(summary.jobSpec);
+    expect(summarySpec.available).toBe(true);
+    expect(expectString(summarySpec.jobSpecHash)).toBe(
+      expectString(createdTask.jobSpecHash),
+    );
+    expect(expectString(summarySpec.jobSpecUri)).toBe(
+      expectString(createdTask.jobSpecUri),
+    );
+  });
   it("runs task lifecycle commands against LiteSVM", async () => {
     const createPayload = await runMarketCommand(
       runMarketTaskCreateCommand,

@@ -389,6 +389,10 @@ describe("runtime root CLI", () => {
         "50000000",
         "--required-capabilities",
         "1",
+        "--validation-mode",
+        "creator-review",
+        "--review-window-secs",
+        "120",
       ],
       stdout: stdout.stream,
       stderr: stderr.stream,
@@ -402,6 +406,8 @@ describe("runtime root CLI", () => {
         description: "Public task from CLI test",
         reward: "50000000",
         requiredCapabilities: "1",
+        validationMode: "creator-review",
+        reviewWindowSecs: 120,
       }),
     );
   });

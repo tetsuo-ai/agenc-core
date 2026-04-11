@@ -60,8 +60,30 @@ vi.mock("./risk-scoring.js", () => ({
   }),
 }));
 
+vi.mock("../marketplace/task-job-spec.js", () => ({
+  resolveOnChainTaskJobSpecForTask: vi.fn(),
+}));
+
+vi.mock("../marketplace/job-spec-store.js", () => ({
+  resolveMarketplaceJobSpecForTask: vi.fn(),
+  isMarketplaceJobSpecTaskLinkNotFoundError: vi.fn(
+    (error: unknown) =>
+      error instanceof Error &&
+      error.message.toLowerCase().includes("task link"),
+  ),
+}));
+
 import { scoreTaskRisk } from "./risk-scoring.js";
+import { resolveOnChainTaskJobSpecForTask } from "../marketplace/task-job-spec.js";
+import { resolveMarketplaceJobSpecForTask } from "../marketplace/job-spec-store.js";
+
 const mockedScoreTaskRisk = vi.mocked(scoreTaskRisk);
+const mockedResolveOnChainTaskJobSpecForTask = vi.mocked(
+  resolveOnChainTaskJobSpecForTask,
+);
+const mockedResolveMarketplaceJobSpecForTask = vi.mocked(
+  resolveMarketplaceJobSpecForTask,
+);
 
 describe("TaskDiscoveryAction", () => {
   let scanner: ReturnType<typeof createMockScanner>;
@@ -71,6 +93,8 @@ describe("TaskDiscoveryAction", () => {
     vi.clearAllMocks();
     scanner = createMockScanner();
     goalManager = createMockGoalManager();
+    mockedResolveOnChainTaskJobSpecForTask.mockResolvedValue(null as never);
+    mockedResolveMarketplaceJobSpecForTask.mockResolvedValue(null as never);
   });
 
   it("returns hasOutput=false when scanner returns empty", async () => {
@@ -102,6 +126,179 @@ describe("TaskDiscoveryAction", () => {
         priority: "medium", // low risk → medium priority
         source: "meta-planner",
       }),
+    );
+  });
+
+  it("includes resolved job spec details in queued goals", async () => {
+    const task = createMockTask();
+    (scanner.scan as ReturnType<typeof vi.fn>).mockResolvedValue([task]);
+    mockedScoreTaskRisk.mockReturnValue({
+      score: 0.2,
+      tier: "low",
+      features: {} as any,
+      contributions: [],
+      metadata: { mediumRiskThreshold: 0.35, highRiskThreshold: 0.7 },
+    });
+    const resolveJobSpecForTask = vi.fn().mockResolvedValue({
+      jobSpecHash: "a".repeat(64),
+      jobSpecUri: `agenc://job-spec/sha256/${"a".repeat(64)}`,
+      payload: {
+        title: "Build scraper",
+        fullDescription: "Scrape paginated pages and return normalized JSON.",
+        acceptanceCriteria: ["handles pagination", "verifies output schema"],
+        deliverables: ["source code", "README"],
+        constraints: { maxRuntimeSecs: 60 },
+        attachments: [{ uri: "https://example.com/spec.md", label: "Spec" }],
+      },
+    });
+
+    const action = createTaskDiscoveryAction({
+      scanner,
+      goalManager,
+      resolveJobSpecForTask,
+    });
+    const result = await action.execute(mockContext);
+
+    expect(result.hasOutput).toBe(true);
+    expect(resolveJobSpecForTask).toHaveBeenCalledWith(task.pda.toBase58());
+    const goalInput = (goalManager.addGoal as ReturnType<typeof vi.fn>).mock
+      .calls[0][0];
+    expect(goalInput.title).toBe("On-chain task: Build scraper");
+    expect(goalInput.description).toContain("Job spec URI: agenc://job-spec/sha256/");
+    expect(goalInput.description).toContain("Acceptance criteria:\n- handles pagination");
+    expect(goalInput.description).toContain("Deliverables:\n- source code");
+    expect(goalInput.description).toContain('Constraints: {"maxRuntimeSecs":60}');
+    expect(goalInput.description).toContain("Spec: https://example.com/spec.md");
+  });
+
+  it("prefers on-chain task job spec pointers when program metadata is available", async () => {
+    const task = createMockTask();
+    const mockProgram = {} as never;
+    (scanner.scan as ReturnType<typeof vi.fn>).mockResolvedValue([task]);
+    mockedScoreTaskRisk.mockReturnValue({
+      score: 0.2,
+      tier: "low",
+      features: {} as any,
+      contributions: [],
+      metadata: { mediumRiskThreshold: 0.35, highRiskThreshold: 0.7 },
+    });
+    mockedResolveOnChainTaskJobSpecForTask.mockResolvedValue({
+      jobSpecHash: "b".repeat(64),
+      jobSpecUri: `agenc://job-spec/sha256/${"b".repeat(64)}`,
+      payload: {
+        title: "Publish docs",
+        fullDescription: "Write and publish docs.",
+        acceptanceCriteria: ["docs published"],
+        deliverables: ["published docs"],
+        constraints: null,
+        attachments: [],
+      },
+    } as never);
+
+    const action = createTaskDiscoveryAction({
+      scanner,
+      goalManager,
+      program: mockProgram,
+    });
+    const result = await action.execute(mockContext);
+
+    expect(result.hasOutput).toBe(true);
+    expect(mockedResolveOnChainTaskJobSpecForTask).toHaveBeenCalledWith(
+      mockProgram,
+      expect.any(PublicKey),
+      {},
+    );
+    expect(mockedResolveMarketplaceJobSpecForTask).not.toHaveBeenCalled();
+    const goalInput = (goalManager.addGoal as ReturnType<typeof vi.fn>).mock
+      .calls[0][0];
+    expect(goalInput.title).toBe("On-chain task: Publish docs");
+    expect(goalInput.description).toContain(
+      "Job spec URI: agenc://job-spec/sha256/",
+    );
+  });
+
+  it("falls back to local task job spec links when on-chain metadata is absent", async () => {
+    const task = createMockTask();
+    const mockProgram = {} as never;
+    (scanner.scan as ReturnType<typeof vi.fn>).mockResolvedValue([task]);
+    mockedScoreTaskRisk.mockReturnValue({
+      score: 0.2,
+      tier: "low",
+      features: {} as any,
+      contributions: [],
+      metadata: { mediumRiskThreshold: 0.35, highRiskThreshold: 0.7 },
+    });
+    mockedResolveMarketplaceJobSpecForTask.mockResolvedValue({
+      jobSpecHash: "c".repeat(64),
+      jobSpecUri: `agenc://job-spec/sha256/${"c".repeat(64)}`,
+      payload: {
+        title: "Fallback sync",
+        fullDescription: "Sync the fallback data source.",
+        acceptanceCriteria: ["sync succeeds"],
+        deliverables: ["sync report"],
+        constraints: null,
+        attachments: [],
+      },
+    } as never);
+
+    const action = createTaskDiscoveryAction({
+      scanner,
+      goalManager,
+      program: mockProgram,
+    });
+    const result = await action.execute(mockContext);
+
+    expect(result.hasOutput).toBe(true);
+    expect(mockedResolveOnChainTaskJobSpecForTask).toHaveBeenCalledWith(
+      mockProgram,
+      expect.any(PublicKey),
+      {},
+    );
+    expect(mockedResolveMarketplaceJobSpecForTask).toHaveBeenCalledWith(
+      task.pda.toBase58(),
+      {},
+    );
+    const goalInput = (goalManager.addGoal as ReturnType<typeof vi.fn>).mock
+      .calls[0][0];
+    expect(goalInput.title).toBe("On-chain task: Fallback sync");
+    expect(goalInput.description).toContain(
+      "Sync the fallback data source.",
+    );
+  });
+
+  it("falls back to PDA and reward when job spec resolution fails", async () => {
+    const task = createMockTask();
+    (scanner.scan as ReturnType<typeof vi.fn>).mockResolvedValue([task]);
+    mockedScoreTaskRisk.mockReturnValue({
+      score: 0.2,
+      tier: "low",
+      features: {} as any,
+      contributions: [],
+      metadata: { mediumRiskThreshold: 0.35, highRiskThreshold: 0.7 },
+    });
+    const logger = { warn: vi.fn() } as any;
+    const resolveJobSpecForTask = vi
+      .fn()
+      .mockRejectedValue(new Error("invalid local job spec link"));
+
+    const action = createTaskDiscoveryAction({
+      scanner,
+      goalManager,
+      resolveJobSpecForTask,
+      logger,
+    });
+    const result = await action.execute(mockContext);
+
+    expect(result.hasOutput).toBe(true);
+    const goalInput = (goalManager.addGoal as ReturnType<typeof vi.fn>).mock
+      .calls[0][0];
+    expect(goalInput.title).toBe("On-chain task");
+    expect(goalInput.description).toBe(
+      `Task PDA: ${task.pda.toBase58()}, reward: ${task.reward}`,
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("Failed to resolve task job spec"),
+      expect.any(Error),
     );
   });
 

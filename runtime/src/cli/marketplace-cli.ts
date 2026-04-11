@@ -23,10 +23,23 @@ import {
   serializeMarketplaceTask,
   serializeMarketplaceTaskEntry,
 } from "../marketplace/serialization.js";
+import {
+  isMarketplaceJobSpecTaskLinkNotFoundError,
+  readMarketplaceJobSpecPointerForTask,
+  resolveMarketplaceJobSpecForTask,
+  type MarketplaceJobSpecStoreOptions,
+  type MarketplaceJobSpecTaskPointer,
+  type ResolvedMarketplaceJobSpec,
+} from "../marketplace/job-spec-store.js";
+import {
+  resolveOnChainTaskJobSpecForTask,
+  type ResolvedOnChainTaskJobSpec,
+} from "../marketplace/task-job-spec.js";
 import { OnChainSkillRegistryClient } from "../skills/registry/client.js";
 import { SkillPurchaseManager } from "../skills/registry/payment.js";
 import { TaskOperations } from "../task/operations.js";
 import { findEscrowPda } from "../task/pda.js";
+import { parseTaskTypeAlias } from "../task/types.js";
 import {
   loadKeypairFromFile,
   keypairToWallet,
@@ -49,20 +62,35 @@ import type { BaseCliOptions, CliRuntimeContext, CliStatusCode } from "./types.j
 
 export interface MarketTasksListOptions extends BaseCliOptions {
   statuses?: string[];
+  taskType?: string;
+  jobSpecStoreDir?: string;
 }
 
 export interface MarketTaskCreateOptions extends BaseCliOptions {
   description: string;
   reward: string;
   requiredCapabilities: string;
+  rewardMint?: string;
   maxWorkers?: number;
   deadline?: number;
-  taskType?: number;
+  taskType?: string;
+  minReputation?: number;
+  constraintHash?: string;
+  validationMode?: string;
+  reviewWindowSecs?: number;
   creatorAgentPda?: string;
+  jobSpec?: unknown;
+  fullDescription?: string;
+  acceptanceCriteria?: string[];
+  deliverables?: string[];
+  constraints?: unknown;
+  attachments?: unknown;
+  jobSpecStoreDir?: string;
 }
 
 export interface MarketTaskDetailOptions extends BaseCliOptions {
   taskPda: string;
+  jobSpecStoreDir?: string;
 }
 
 export interface MarketTaskCancelOptions extends MarketTaskDetailOptions {}
@@ -375,6 +403,10 @@ function mapTaskSummary(
     rewardLamports: task.rewardLamports,
     rewardSol: task.rewardSol,
     rewardMint: task.rewardMint,
+    taskType: task.taskType,
+    taskTypeId: task.taskTypeId,
+    taskTypeName: task.taskTypeName,
+    taskTypeKey: task.taskTypeKey,
     currentWorkers: task.currentWorkers,
     maxWorkers: task.maxWorkers,
     deadline: task.deadline,
@@ -385,6 +417,144 @@ function mapTaskSummary(
 function mapTaskDetail(taskPda: PublicKey, task: Awaited<ReturnType<TaskOperations["fetchTask"]>>) {
   if (!task) return null;
   return serializeMarketplaceTask(taskPda, task);
+}
+
+type SerializedJobSpecPointer =
+  | {
+      available: true;
+      jobSpecHash: string;
+      jobSpecUri: string;
+      jobSpecTaskLinkPath: string;
+      transactionSignature: string;
+    }
+  | { available: false; error?: string };
+
+type SerializedResolvedJobSpec = {
+  available: true;
+  jobSpecHash: string;
+  jobSpecUri: string;
+  jobSpecPath: string;
+  jobSpecTaskLinkPath: string | null;
+  transactionSignature: string | null;
+  integrity: ResolvedMarketplaceJobSpec["integrity"];
+  payload: ResolvedMarketplaceJobSpec["payload"];
+};
+
+function getJobSpecStoreOptions(
+  rootDir?: string,
+): MarketplaceJobSpecStoreOptions {
+  return rootDir ? { rootDir } : {};
+}
+
+function serializeJobSpecPointer(
+  pointer: MarketplaceJobSpecTaskPointer,
+): SerializedJobSpecPointer {
+  return {
+    available: true,
+    jobSpecHash: pointer.jobSpecHash,
+    jobSpecUri: pointer.jobSpecUri,
+    jobSpecTaskLinkPath: pointer.jobSpecTaskLinkPath,
+    transactionSignature: pointer.transactionSignature,
+  };
+}
+
+function serializeResolvedJobSpec(
+  spec: ResolvedMarketplaceJobSpec,
+): SerializedResolvedJobSpec {
+  return {
+    available: true,
+    jobSpecHash: spec.jobSpecHash,
+    jobSpecUri: spec.jobSpecUri,
+    jobSpecPath: spec.jobSpecPath,
+    jobSpecTaskLinkPath: spec.jobSpecTaskLinkPath,
+    transactionSignature: spec.transactionSignature,
+    integrity: spec.integrity,
+    payload: spec.payload,
+  };
+}
+
+function serializeResolvedOnChainJobSpec(
+  spec: ResolvedOnChainTaskJobSpec,
+  localPointer?: MarketplaceJobSpecTaskPointer | null,
+): SerializedResolvedJobSpec {
+  return {
+    available: true,
+    jobSpecHash: spec.jobSpecHash,
+    jobSpecUri: spec.jobSpecUri,
+    jobSpecPath: spec.jobSpecPath,
+    jobSpecTaskLinkPath: localPointer?.jobSpecTaskLinkPath ?? null,
+    transactionSignature: localPointer?.transactionSignature ?? null,
+    integrity: spec.integrity,
+    payload: spec.payload,
+  };
+}
+
+async function enrichTaskSummaryWithJobSpec<T extends { taskPda: string }>(
+  task: T,
+  rootDir?: string,
+): Promise<T & { jobSpec: SerializedJobSpecPointer }> {
+  try {
+    const pointer = await readMarketplaceJobSpecPointerForTask(
+      task.taskPda,
+      getJobSpecStoreOptions(rootDir),
+    );
+    return {
+      ...task,
+      jobSpec: pointer ? serializeJobSpecPointer(pointer) : { available: false },
+    };
+  } catch (error) {
+    return {
+      ...task,
+      jobSpec: {
+        available: false,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    };
+  }
+}
+
+async function enrichTaskDetailWithJobSpec<T extends { taskPda: string }>(
+  task: T,
+  rootDir?: string,
+  program?: MarketProgram,
+): Promise<T & { jobSpec: SerializedResolvedJobSpec | null }> {
+  const storeOptions = getJobSpecStoreOptions(rootDir);
+  if (program) {
+    const taskPda = new PublicKey(task.taskPda);
+    const onChainSpec = await resolveOnChainTaskJobSpecForTask(
+      program,
+      taskPda,
+      storeOptions,
+    );
+    if (onChainSpec) {
+      let localPointer: MarketplaceJobSpecTaskPointer | null = null;
+      try {
+        localPointer = await readMarketplaceJobSpecPointerForTask(
+          task.taskPda,
+          storeOptions,
+        );
+      } catch (error) {
+        if (!isMarketplaceJobSpecTaskLinkNotFoundError(error)) throw error;
+      }
+      return {
+        ...task,
+        jobSpec: serializeResolvedOnChainJobSpec(onChainSpec, localPointer),
+      };
+    }
+  }
+
+  try {
+    const spec = await resolveMarketplaceJobSpecForTask(
+      task.taskPda,
+      storeOptions,
+    );
+    return { ...task, jobSpec: serializeResolvedJobSpec(spec) };
+  } catch (error) {
+    if (isMarketplaceJobSpecTaskLinkNotFoundError(error)) {
+      return { ...task, jobSpec: null };
+    }
+    throw error;
+  }
 }
 
 function mapSkillSummary(entry: {
@@ -418,6 +588,17 @@ function filterByStatus<T extends { status: string }>(
   const filter = normalizeStatusFilter(statuses);
   if (!filter) return items;
   return items.filter((item) => filter.has(item.status));
+}
+
+function parseTaskTypeFilter(input?: string): number | undefined {
+  if (!input) return undefined;
+  const parsed = parseTaskTypeAlias(input);
+  if (parsed === null) {
+    throw new Error(
+      'taskType must be one of 0/exclusive, 1/collaborative, 2/competitive, or 3/bid-exclusive',
+    );
+  }
+  return parsed;
 }
 
 async function loadSkillAccount(
@@ -463,16 +644,26 @@ export async function runMarketTasksListCommand(
       agentId: ZERO_AGENT_ID,
       logger: silentLogger,
     });
+    const taskTypeFilter = parseTaskTypeFilter(options.taskType);
+    const entries = await ops.fetchAllTasks();
+    const filteredEntries = taskTypeFilter === undefined
+      ? entries
+      : entries.filter(({ task }) => task.taskType === taskTypeFilter);
     const items = filterByStatus(
-      (await ops.fetchAllTasks()).map(mapTaskSummary),
+      filteredEntries.map(mapTaskSummary),
       options.statuses,
+    );
+    const tasks = await Promise.all(
+      items.map((task) =>
+        enrichTaskSummaryWithJobSpec(task, options.jobSpecStoreDir),
+      ),
     );
     context.output({
       status: "ok",
       command: "market.tasks.list",
       schema: "market.tasks.list.output.v1",
-      count: items.length,
-      tasks: items,
+      count: tasks.length,
+      tasks,
     });
     return 0;
   } catch (error) {
@@ -493,15 +684,29 @@ export async function runMarketTaskCreateCommand(
 
   try {
     const { program } = await createSignerProgramContext(options);
-    const tool = createCreateTaskTool(program, silentLogger);
+    const createTaskOptions = options.jobSpecStoreDir
+      ? { jobSpecStoreDir: options.jobSpecStoreDir }
+      : undefined;
+    const tool = createCreateTaskTool(program, silentLogger, createTaskOptions);
     const result = await tool.execute({
       description: options.description,
       reward: options.reward,
       requiredCapabilities: options.requiredCapabilities,
+      rewardMint: options.rewardMint,
       maxWorkers: options.maxWorkers,
       deadline: options.deadline,
       taskType: options.taskType,
+      minReputation: options.minReputation,
+      constraintHash: options.constraintHash,
+      validationMode: options.validationMode,
+      reviewWindowSecs: options.reviewWindowSecs,
       creatorAgentPda: options.creatorAgentPda,
+      jobSpec: options.jobSpec,
+      fullDescription: options.fullDescription,
+      acceptanceCriteria: options.acceptanceCriteria,
+      deliverables: options.deliverables,
+      constraints: options.constraints,
+      attachments: options.attachments,
     });
     if (result.isError) {
       context.error({
@@ -551,11 +756,24 @@ export async function runMarketTaskDetailCommand(
       });
       return 1;
     }
+    const taskDetail = mapTaskDetail(taskPda, task);
+    if (!taskDetail) {
+      context.error({
+        status: "error",
+        code: "MARKET_TASK_NOT_FOUND",
+        message: `Task not found: ${options.taskPda}`,
+      });
+      return 1;
+    }
     context.output({
       status: "ok",
       command: "market.tasks.detail",
       schema: "market.tasks.detail.output.v1",
-      task: mapTaskDetail(taskPda, task),
+      task: await enrichTaskDetailWithJobSpec(
+        taskDetail,
+        options.jobSpecStoreDir,
+        program,
+      ),
     });
     return 0;
   } catch (error) {

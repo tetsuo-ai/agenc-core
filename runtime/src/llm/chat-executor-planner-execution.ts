@@ -42,6 +42,7 @@ import {
   extractPlannerStructuralDiagnostics,
   buildExplicitDeterministicToolRefinementHint,
   buildExplicitDeterministicToolFailureMessage,
+  repairExplicitAgencCreateTaskPlannerArgs,
   buildPlannerParseRefinementHint,
   buildPlannerStructuralRefinementHint,
   buildPlannerValidationFailureMessage,
@@ -659,7 +660,7 @@ export async function executePlannerPath(
       plannerWorkspaceRoot,
     });
     ctx.plannerSummaryState.diagnostics.push(...plannerParse.diagnostics);
-    const plannerPlan = plannerParse.plan;
+    let plannerPlan = plannerParse.plan;
     if (!plannerPlan) {
       if (explicitOrchestrationRequirements) {
         if (
@@ -811,6 +812,15 @@ export async function executePlannerPath(
       });
       return;
     }
+
+    const agencCreateTaskRepair = repairExplicitAgencCreateTaskPlannerArgs({
+      plannerPlan,
+      messageText: ctx.messageText,
+    });
+    plannerPlan = agencCreateTaskRepair.plannerPlan;
+    ctx.plannerSummaryState.diagnostics.push(
+      ...agencCreateTaskRepair.diagnostics,
+    );
 
     const salvagedToolPlanDiagnostics = validateSalvagedPlannerToolPlan({
       plannerPlan,
@@ -1351,6 +1361,7 @@ export async function executePlannerPath(
       });
       continue;
     }
+
     const hasExecutablePlannerSteps =
       (
         deterministicSteps.length > 0 &&

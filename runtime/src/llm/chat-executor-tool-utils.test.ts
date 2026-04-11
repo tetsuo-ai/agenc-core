@@ -241,6 +241,30 @@ describe("chat-executor-tool-utils", () => {
       expect(repaired.args.description).toBe("Existing description");
       expect(repaired.repairedFields).toEqual([]);
     });
+
+    it("removes model-invented agenc.createTask taskId when the prompt forbids it", () => {
+      const repaired = repairToolCallArgumentsFromMessageText(
+        "agenc.createTask",
+        {
+          description: "self test parser omitted task id after restart",
+          reward: "10000000",
+          requiredCapabilities: "1",
+          taskId: '{"description":"self',
+          constraintHash: '{"description":"self',
+          validationMode: "auto",
+        },
+        "Call agenc.createTask with exactly this JSON. Do not add taskId or constraintHash:\n" +
+          '{"description":"self test parser omitted task id after restart","reward":"10000000","requiredCapabilities":"1","validationMode":"auto"}',
+      );
+
+      expect(repaired.args).toEqual({
+        description: "self test parser omitted task id after restart",
+        reward: "10000000",
+        requiredCapabilities: "1",
+        validationMode: "auto",
+      });
+      expect(repaired.repairedFields).toEqual(["constraintHash", "taskId"]);
+    });
   });
 
   describe("summarizeToolArgumentChanges", () => {

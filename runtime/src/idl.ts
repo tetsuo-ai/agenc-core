@@ -22,6 +22,28 @@ import { PROGRAM_ID } from "@tetsuo-ai/sdk";
 export type { AgencCoordination };
 
 type NamedIdlEntry = { name: string };
+type IdlInstructionAccount = NamedIdlEntry & Record<string, unknown>;
+type IdlInstructionWithAccounts = NamedIdlEntry & {
+  accounts?: IdlInstructionAccount[];
+};
+
+const AUTHORITY_RATE_LIMIT_IDL_ACCOUNT = {
+  name: "authority_rate_limit",
+  docs: ["Wallet-scoped task/dispute rate limit state shared across all agents"],
+  writable: true,
+  pda: {
+    seeds: [
+      {
+        kind: "const",
+        value: [
+          97, 117, 116, 104, 111, 114, 105, 116, 121, 95, 114, 97, 116,
+          101, 95, 108, 105, 109, 105, 116,
+        ],
+      },
+      { kind: "account", path: "authority" },
+    ],
+  },
+} as const;
 
 // The published protocol package can lag behind the runtime's supported V2 flow.
 // Merge these entries in locally so Program.methods exposes the task validation
@@ -609,6 +631,51 @@ const TASK_VALIDATION_V2_INSTRUCTIONS = [
   },
 ] as const;
 
+const TASK_JOB_SPEC_INSTRUCTIONS = [
+  {
+    name: "set_task_job_spec",
+    docs: ["Attach or update verified marketplace job spec metadata for a task."],
+    discriminator: [134, 102, 102, 86, 31, 164, 202, 193],
+    accounts: [
+      {
+        name: "task",
+        writable: true,
+        pda: {
+          seeds: [
+            { kind: "const", value: [116, 97, 115, 107] },
+            { kind: "account", path: "task.creator", account: "Task" },
+            { kind: "account", path: "task.task_id", account: "Task" },
+          ],
+        },
+      },
+      {
+        name: "task_job_spec",
+        writable: true,
+        pda: {
+          seeds: [
+            {
+              kind: "const",
+              value: [
+                116, 97, 115, 107, 95, 106, 111, 98, 95, 115, 112, 101, 99,
+              ],
+            },
+            { kind: "account", path: "task" },
+          ],
+        },
+      },
+      { name: "creator", writable: true, signer: true },
+      {
+        name: "system_program",
+        address: "11111111111111111111111111111111",
+      },
+    ],
+    args: [
+      { name: "job_spec_hash", type: { array: ["u8", 32] } },
+      { name: "job_spec_uri", type: "string" },
+    ],
+  },
+] as const;
+
 const TASK_VALIDATION_V2_ACCOUNTS = [
   {
     name: "TaskValidationConfig",
@@ -625,6 +692,36 @@ const TASK_VALIDATION_V2_ACCOUNTS = [
   {
     name: "TaskValidationVote",
     discriminator: [48, 129, 51, 174, 154, 5, 68, 65],
+  },
+] as const;
+
+const TASK_JOB_SPEC_ACCOUNTS = [
+  {
+    name: "TaskJobSpec",
+    discriminator: [249, 63, 211, 94, 228, 165, 3, 196],
+  },
+] as const;
+
+const TASK_JOB_SPEC_TYPES = [
+  {
+    name: "TaskJobSpec",
+    docs: [
+      "Verified marketplace job spec metadata for a task.",
+      '["task_job_spec", task]',
+    ],
+    type: {
+      kind: "struct",
+      fields: [
+        { name: "task", docs: ["Task this metadata belongs to."], type: "pubkey" },
+        { name: "creator", docs: ["Task creator that published the metadata."], type: "pubkey" },
+        { name: "job_spec_hash", docs: ["Canonical sha256 hash for the off-chain job spec envelope payload."], type: { array: ["u8", 32] } },
+        { name: "job_spec_uri", docs: ["Canonical job spec URI."], type: "string" },
+        { name: "created_at", docs: ["Creation timestamp."], type: "i64" },
+        { name: "updated_at", docs: ["Last update timestamp."], type: "i64" },
+        { name: "bump", docs: ["PDA bump."], type: "u8" },
+        { name: "_reserved", docs: ["Reserved for future metadata extensions."], type: { array: ["u8", 7] } },
+      ],
+    },
   },
 ] as const;
 
@@ -862,20 +959,79 @@ function mergeIdlEntries<T extends NamedIdlEntry>(
   return Array.from(merged.values());
 }
 
+function needsAuthorityRateLimitAccount(instructionName: string): boolean {
+  return (
+    instructionName === "create_task" ||
+    instructionName === "create_dependent_task"
+  );
+}
+
+function addAuthorityRateLimitAccount(
+  instruction: IdlInstructionWithAccounts,
+): IdlInstructionWithAccounts {
+  if (!needsAuthorityRateLimitAccount(instruction.name) || !instruction.accounts) {
+    return instruction;
+  }
+  if (
+    instruction.accounts.some(
+      (account) => account.name === "authority_rate_limit",
+    )
+  ) {
+    return instruction;
+  }
+
+  const authorityIndex = instruction.accounts.findIndex(
+    (account) => account.name === "authority",
+  );
+  if (authorityIndex < 0) {
+    return instruction;
+  }
+
+  const accounts = [...instruction.accounts];
+  accounts.splice(
+    authorityIndex,
+    0,
+    AUTHORITY_RATE_LIMIT_IDL_ACCOUNT as unknown as IdlInstructionAccount,
+  );
+
+  return { ...instruction, accounts };
+}
+
+function addAuthorityRateLimitAccountsToInstructions(
+  instructions: NamedIdlEntry[] | undefined,
+): NamedIdlEntry[] | undefined {
+  return instructions?.map((instruction) =>
+    addAuthorityRateLimitAccount(
+      instruction as IdlInstructionWithAccounts,
+    ) as NamedIdlEntry,
+  );
+}
+
 function augmentIdl(baseIdl: Idl): Idl {
   return {
     ...baseIdl,
-    instructions: mergeIdlEntries(
-      baseIdl.instructions as NamedIdlEntry[] | undefined,
-      TASK_VALIDATION_V2_INSTRUCTIONS as unknown as NamedIdlEntry[],
+    instructions: addAuthorityRateLimitAccountsToInstructions(
+      mergeIdlEntries(
+        mergeIdlEntries(
+          baseIdl.instructions as NamedIdlEntry[] | undefined,
+          TASK_VALIDATION_V2_INSTRUCTIONS as unknown as NamedIdlEntry[],
+        ),
+        TASK_JOB_SPEC_INSTRUCTIONS as unknown as NamedIdlEntry[],
+      ),
     ) as Idl["instructions"],
     accounts: mergeIdlEntries(
-      baseIdl.accounts as NamedIdlEntry[] | undefined,
-      TASK_VALIDATION_V2_ACCOUNTS as unknown as NamedIdlEntry[],
+      mergeIdlEntries(
+        baseIdl.accounts as NamedIdlEntry[] | undefined,
+        TASK_VALIDATION_V2_ACCOUNTS as unknown as NamedIdlEntry[],
+      ),
+      TASK_JOB_SPEC_ACCOUNTS as unknown as NamedIdlEntry[],
     ) as Idl["accounts"],
     types: mergeIdlEntries(
-      baseIdl.types as NamedIdlEntry[] | undefined,
-      TASK_VALIDATION_V2_TYPES as unknown as NamedIdlEntry[],
+      mergeIdlEntries(
+        baseIdl.types as NamedIdlEntry[] | undefined,
+        TASK_VALIDATION_V2_TYPES as unknown as NamedIdlEntry[],
+      ),
+      TASK_JOB_SPEC_TYPES as unknown as NamedIdlEntry[],
     ) as Idl["types"],
   };
 }

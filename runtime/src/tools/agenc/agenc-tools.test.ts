@@ -1,3 +1,6 @@
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PublicKey } from '@solana/web3.js';
 import {
@@ -10,6 +13,7 @@ import {
   createListTasksTool,
   createGetTaskTool,
   createGetTokenBalanceTool,
+  createGetJobSpecTool,
   createRegisterAgentTool,
   createCreateTaskTool,
   createGetAgentTool,
@@ -18,8 +22,13 @@ import {
 } from './tools.js';
 import type { ToolContext } from '../types.js';
 import { silentLogger } from '../../utils/logger.js';
-import { OnChainTaskStatus } from '../../task/types.js';
+import {
+  OnChainTaskStatus,
+  TaskValidationMode,
+} from '../../task/types.js';
 import { TaskType } from '../../events/types.js';
+import { findAuthorityRateLimitPda } from '../../agent/pda.js';
+import { findTaskJobSpecPda } from '../../marketplace/task-job-spec.js';
 
 // ============================================================================
 // Mock Data Factories
@@ -31,6 +40,12 @@ const CREATOR = PublicKey.unique();
 const ESCROW = PublicKey.unique();
 const SIGNER = PublicKey.unique();
 const USDC_MINT = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+
+function fixedTextBytes(text: string, length = 64): Uint8Array {
+  const out = new Uint8Array(length);
+  out.set(new TextEncoder().encode(text));
+  return out;
+}
 
 function makeMockTask(overrides: Record<string, unknown> = {}) {
   return {
@@ -144,13 +159,41 @@ function createMockOps() {
 // ============================================================================
 
 function createMockProgram() {
+  const taskJobSpecAccounts = new Map<string, any>();
+  let lastSetTaskJobSpecArgs:
+    | { jobSpecHash: number[]; jobSpecUri: string }
+    | null = null;
+
   const createTaskMethodChain = {
     accountsPartial: vi.fn().mockReturnThis(),
     rpc: vi.fn(async () => 'mock-create-task-sig'),
   };
+  const configureTaskValidationMethodChain = {
+    accountsPartial: vi.fn().mockReturnThis(),
+    rpc: vi.fn(async () => 'mock-configure-validation-sig'),
+  };
   const registerAgentMethodChain = {
     accountsPartial: vi.fn().mockReturnThis(),
     rpc: vi.fn(async () => 'mock-register-agent-sig'),
+  };
+  const setTaskJobSpecMethodChain = {
+    accountsPartial: vi.fn().mockReturnThis(),
+    rpc: vi.fn(async () => {
+      const accounts = setTaskJobSpecMethodChain.accountsPartial.mock.calls.at(-1)?.[0];
+      if (!accounts || !lastSetTaskJobSpecArgs) {
+        throw new Error('Missing taskJobSpec accounts or args');
+      }
+      taskJobSpecAccounts.set(accounts.taskJobSpec.toBase58(), {
+        task: accounts.task,
+        creator: accounts.creator,
+        jobSpecHash: Uint8Array.from(lastSetTaskJobSpecArgs.jobSpecHash),
+        jobSpecUri: lastSetTaskJobSpecArgs.jobSpecUri,
+        createdAt: { toNumber: () => 1700000200 },
+        updatedAt: { toNumber: () => 1700000200 },
+        bump: 255,
+      });
+      return 'mock-set-task-job-spec-sig';
+    }),
   };
   const getProgramAccounts = vi.fn(async () => [{ pubkey: AGENT_PDA }]);
 
@@ -182,13 +225,28 @@ function createMockProgram() {
       protocolConfig: {
         fetch: vi.fn(async () => makeMockProtocolConfig()),
       },
+      taskJobSpec: {
+        fetch: vi.fn(async (pda: PublicKey) => {
+          const account = taskJobSpecAccounts.get(pda.toBase58());
+          if (account) return account;
+          throw new Error('Account does not exist');
+        }),
+      },
     },
     methods: {
       createTask: vi.fn().mockReturnValue(createTaskMethodChain),
+      configureTaskValidation: vi.fn().mockReturnValue(configureTaskValidationMethodChain),
       registerAgent: vi.fn().mockReturnValue(registerAgentMethodChain),
+      setTaskJobSpec: vi.fn().mockImplementation((jobSpecHash: number[], jobSpecUri: string) => {
+        lastSetTaskJobSpecArgs = { jobSpecHash, jobSpecUri };
+        return setTaskJobSpecMethodChain;
+      }),
     },
     _createTaskMethodChain: createTaskMethodChain,
+    _configureTaskValidationMethodChain: configureTaskValidationMethodChain,
     _registerAgentMethodChain: registerAgentMethodChain,
+    _setTaskJobSpecMethodChain: setTaskJobSpecMethodChain,
+    _taskJobSpecAccounts: taskJobSpecAccounts,
   };
 }
 
@@ -205,7 +263,7 @@ describe('createAgencTools', () => {
       logger: silentLogger,
     });
 
-    expect(tools).toHaveLength(18);
+    expect(tools).toHaveLength(19);
     expect(tools.map((t) => t.name).sort()).toEqual([
       'agenc.claimTask',
       'agenc.completeTask',
@@ -213,6 +271,7 @@ describe('createAgencTools', () => {
       'agenc.createTask',
       'agenc.delegateReputation',
       'agenc.getAgent',
+      'agenc.getJobSpec',
       'agenc.getProtocolConfig',
       'agenc.getTask',
       'agenc.getTokenBalance',
@@ -291,6 +350,30 @@ describe('agenc.listTasks', () => {
     expect(parsed.tasks[0]).toHaveProperty('isPrivate');
   });
 
+  it('returns agent-readable descriptions and task type metadata', async () => {
+    mockOps.fetchClaimableTasks.mockResolvedValueOnce([
+      {
+        task: makeMockTask({
+          description: fixedTextBytes('collab build'),
+          taskType: TaskType.Collaborative,
+        }),
+        taskPda: TASK_PDA,
+      },
+    ]);
+
+    const result = await tool.execute({});
+    const parsed = JSON.parse(result.content);
+
+    expect(parsed.tasks[0]).toMatchObject({
+      description: 'collab build',
+      taskType: 'Collaborative',
+      taskTypeId: TaskType.Collaborative,
+      taskTypeKey: 'collaborative',
+    });
+    expect(parsed.tasks[0].descriptionHex).toMatch(/^[a-f0-9]{128}$/);
+    expect(parsed.tasks[0].constraintHash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
   it('serializes rewardMint as null for SOL tasks', async () => {
     const result = await tool.execute({});
     const parsed = JSON.parse(result.content);
@@ -339,6 +422,95 @@ describe('agenc.listTasks', () => {
     expect(parsed.count).toBe(1);
     expect(parsed.tasks[0].rewardMint).toBeNull();
   });
+
+  it('filters list by task type alias', async () => {
+    mockOps.fetchAllTasks.mockResolvedValueOnce([
+      { task: makeMockTask({ taskType: TaskType.Exclusive }), taskPda: PublicKey.unique() },
+      { task: makeMockTask({ taskType: TaskType.Collaborative }), taskPda: PublicKey.unique() },
+    ]);
+
+    const result = await tool.execute({ status: 'all', taskType: 'collaborative' });
+    const parsed = JSON.parse(result.content);
+
+    expect(parsed.count).toBe(1);
+    expect(parsed.total).toBe(1);
+    expect(parsed.tasks[0].taskTypeKey).toBe('collaborative');
+  });
+
+  it('includes published job spec summaries when on-chain metadata exists', async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), 'agenc-job-spec-'));
+    const mockProgram = createMockProgram();
+    const createTool = createCreateTaskTool(mockProgram as never, silentLogger, {
+      jobSpecStoreDir: rootDir,
+    });
+    const createResult = await createTool.execute({
+      description: 'listed spec',
+      reward: '1000000',
+      requiredCapabilities: '1',
+      fullDescription: 'Metadata published for list queries.',
+    });
+    const created = JSON.parse(createResult.content);
+    const createdTaskPda = new PublicKey(created.taskPda);
+
+    mockOps.fetchAllTasks.mockResolvedValueOnce([
+      { task: makeMockTask(), taskPda: createdTaskPda },
+    ]);
+    tool = createListTasksTool(mockOps as never, silentLogger, {
+      program: mockProgram as never,
+      jobSpecStoreDir: rootDir,
+    });
+
+    const result = await tool.execute({ status: 'all' });
+    const parsed = JSON.parse(result.content);
+
+    expect(parsed.tasks[0].jobSpec).toMatchObject({
+      source: 'on-chain',
+      verified: false,
+      taskJobSpecPda: created.taskJobSpecPda,
+      creator: SIGNER.toBase58(),
+      jobSpecHash: created.jobSpecHash,
+      jobSpecUri: created.jobSpecUri,
+    });
+  });
+
+  it('can include full job spec payloads for listed tasks when requested', async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), 'agenc-job-spec-'));
+    const mockProgram = createMockProgram();
+    const createTool = createCreateTaskTool(mockProgram as never, silentLogger, {
+      jobSpecStoreDir: rootDir,
+    });
+    const createResult = await createTool.execute({
+      description: 'listed payload',
+      reward: '1000000',
+      requiredCapabilities: '1',
+      fullDescription: 'Agents should see this complete list payload.',
+    });
+    const created = JSON.parse(createResult.content);
+    const createdTaskPda = new PublicKey(created.taskPda);
+
+    mockOps.fetchAllTasks.mockResolvedValueOnce([
+      { task: makeMockTask(), taskPda: createdTaskPda },
+    ]);
+    tool = createListTasksTool(mockOps as never, silentLogger, {
+      program: mockProgram as never,
+      jobSpecStoreDir: rootDir,
+    });
+
+    const result = await tool.execute({
+      status: 'all',
+      includeJobSpecPayload: true,
+    });
+    const parsed = JSON.parse(result.content);
+
+    expect(parsed.tasks[0].jobSpec).toMatchObject({
+      source: 'on-chain',
+      verified: true,
+      taskJobSpecPda: created.taskJobSpecPda,
+    });
+    expect(parsed.tasks[0].jobSpec.payload.fullDescription).toBe(
+      'Agents should see this complete list payload.',
+    );
+  });
 });
 
 describe('agenc.getTask', () => {
@@ -357,6 +529,28 @@ describe('agenc.getTask', () => {
     expect(result.isError).toBeUndefined();
     expect(parsed.taskPda).toBe(TASK_PDA.toBase58());
     expect(parsed.status).toBe('Open');
+  });
+
+  it('returns completion and result details in agent-readable form', async () => {
+    mockOps.fetchTask.mockResolvedValueOnce(makeMockTask({
+      completedAt: 1700009999,
+      description: fixedTextBytes('verify build'),
+      result: fixedTextBytes('done proof'),
+      status: OnChainTaskStatus.Completed,
+      taskType: TaskType.Competitive,
+    }));
+
+    const result = await tool.execute({ taskPda: TASK_PDA.toBase58() });
+    const parsed = JSON.parse(result.content);
+
+    expect(parsed).toMatchObject({
+      completedAt: 1700009999,
+      description: 'verify build',
+      resultText: 'done proof',
+      status: 'Completed',
+      taskTypeKey: 'competitive',
+    });
+    expect(parsed.result).toMatch(/^[a-f0-9]{128}$/);
   });
 
   it('includes escrow token balance for token tasks', async () => {
@@ -389,9 +583,235 @@ describe('agenc.getTask', () => {
     const result = await tool.execute({});
     expect(result.isError).toBe(true);
   });
+
+  it('includes verified published job spec metadata when requested', async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), 'agenc-job-spec-'));
+    const mockProgram = createMockProgram();
+    const createTool = createCreateTaskTool(mockProgram as never, silentLogger, {
+      jobSpecStoreDir: rootDir,
+    });
+    const createResult = await createTool.execute({
+      description: 'detail spec',
+      reward: '1000000',
+      requiredCapabilities: '1',
+      fullDescription: 'Detailed metadata for getTask.',
+    });
+    const created = JSON.parse(createResult.content);
+    const createdTaskPda = new PublicKey(created.taskPda);
+
+    mockOps.fetchTask.mockImplementation(async (pda: PublicKey) => {
+      if (pda.equals(createdTaskPda)) return makeMockTask();
+      return null;
+    });
+    tool = createGetTaskTool(mockOps as never, silentLogger, {
+      program: mockProgram as never,
+      jobSpecStoreDir: rootDir,
+    });
+
+    const result = await tool.execute({ taskPda: created.taskPda });
+    const parsed = JSON.parse(result.content);
+
+    expect(parsed.jobSpec).toMatchObject({
+      source: 'on-chain',
+      verified: true,
+      taskJobSpecPda: created.taskJobSpecPda,
+      creator: SIGNER.toBase58(),
+      jobSpecHash: created.jobSpecHash,
+      jobSpecUri: created.jobSpecUri,
+    });
+    expect(parsed.jobSpec.payload.fullDescription).toBe('Detailed metadata for getTask.');
+  });
 });
 
-describe('agenc.getTokenBalance', () => {
+describe('agenc.getJobSpec', () => {
+  beforeEach(() => {
+    _resetCreateTaskDedup();
+  });
+
+  it('returns a verified full job spec by task PDA via the on-chain pointer', async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), 'agenc-job-spec-'));
+    const mockProgram = createMockProgram();
+    const createTool = createCreateTaskTool(mockProgram as never, silentLogger, {
+      jobSpecStoreDir: rootDir,
+    });
+    const getJobSpecTool = createGetJobSpecTool(silentLogger, {
+      program: mockProgram as never,
+      jobSpecStoreDir: rootDir,
+    });
+
+    const createResult = await createTool.execute({
+      description: 'worker spec',
+      reward: '1000000',
+      requiredCapabilities: '1',
+      fullDescription: 'Run the worker-side job spec resolver and return the payload.',
+      acceptanceCriteria: ['resolves by task PDA', 'verifies sha256 hash'],
+      deliverables: ['resolved payload'],
+    });
+    const created = JSON.parse(createResult.content);
+    const expectedTaskJobSpecPda = findTaskJobSpecPda(
+      new PublicKey(created.taskPda),
+      mockProgram.programId,
+    ).toBase58();
+
+    const result = await getJobSpecTool.execute({ taskPda: created.taskPda });
+    const parsed = JSON.parse(result.content);
+
+    expect(result.isError).toBeUndefined();
+    expect(parsed.source).toBe('on-chain');
+    expect(parsed.taskPda).toBe(created.taskPda);
+    expect(parsed.taskId).toBe(created.taskId);
+    expect(parsed.taskJobSpecPda).toBe(expectedTaskJobSpecPda);
+    expect(parsed.creator).toBe(SIGNER.toBase58());
+    expect(parsed.jobSpecHash).toBe(created.jobSpecHash);
+    expect(parsed.jobSpecUri).toBe(created.jobSpecUri);
+    expect(parsed.jobSpecPath).toBe(created.jobSpecPath);
+    expect(parsed.jobSpecTaskLinkPath).toBe(created.jobSpecTaskLinkPath);
+    expect(parsed.transactionSignature).toBe('mock-set-task-job-spec-sig');
+    expect(parsed.integrity.payloadHash).toBe(created.jobSpecHash);
+    expect(parsed.payload.fullDescription).toBe(
+      'Run the worker-side job spec resolver and return the payload.',
+    );
+    expect(parsed.payload.acceptanceCriteria).toEqual([
+      'resolves by task PDA',
+      'verifies sha256 hash',
+    ]);
+  });
+
+  it('returns isError when no task job spec metadata exists', async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), 'agenc-job-spec-'));
+    const tool = createGetJobSpecTool(silentLogger, {
+      program: createMockProgram() as never,
+      jobSpecStoreDir: rootDir,
+    });
+
+    const result = await tool.execute({ taskPda: TASK_PDA.toBase58() });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content).error).toContain(
+      'No task job spec metadata found',
+    );
+  });
+
+  it('returns isError when the job spec object is tampered', async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), 'agenc-job-spec-'));
+    const mockProgram = createMockProgram();
+    const createTool = createCreateTaskTool(mockProgram as never, silentLogger, {
+      jobSpecStoreDir: rootDir,
+    });
+    const getJobSpecTool = createGetJobSpecTool(silentLogger, {
+      program: mockProgram as never,
+      jobSpecStoreDir: rootDir,
+    });
+
+    const createResult = await createTool.execute({
+      description: 'tamper spec',
+      reward: '1000000',
+      requiredCapabilities: '1',
+      fullDescription: 'Original spec body.',
+    });
+    const created = JSON.parse(createResult.content);
+    const envelope = JSON.parse(await readFile(created.jobSpecPath, 'utf8'));
+    envelope.payload.fullDescription = 'Tampered spec body.';
+    await writeFile(created.jobSpecPath, JSON.stringify(envelope), 'utf8');
+
+    const result = await getJobSpecTool.execute({ taskPda: created.taskPda });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content).error).toContain(
+      'failed integrity verification',
+    );
+  });
+
+  it('fetches and verifies a public https job spec when the pointer uses a remote uri', async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), 'agenc-job-spec-'));
+    const mockProgram = createMockProgram();
+    const createTool = createCreateTaskTool(mockProgram as never, silentLogger, {
+      jobSpecStoreDir: rootDir,
+    });
+    const getJobSpecTool = createGetJobSpecTool(silentLogger, {
+      program: mockProgram as never,
+      jobSpecStoreDir: rootDir,
+    });
+
+    const createResult = await createTool.execute({
+      description: 'remote spec',
+      reward: '1000000',
+      requiredCapabilities: '1',
+      fullDescription: 'Resolve this job spec from public storage.',
+    });
+    const created = JSON.parse(createResult.content);
+    const envelope = JSON.parse(await readFile(created.jobSpecPath, 'utf8'));
+    const publicUri = 'https://example.com/agenc/job-spec.json';
+    const taskJobSpecPda = findTaskJobSpecPda(
+      new PublicKey(created.taskPda),
+      mockProgram.programId,
+    ).toBase58();
+    mockProgram._taskJobSpecAccounts.get(taskJobSpecPda).jobSpecUri = publicUri;
+    const link = JSON.parse(await readFile(created.jobSpecTaskLinkPath, 'utf8'));
+    link.jobSpecUri = publicUri;
+    await writeFile(created.jobSpecTaskLinkPath, JSON.stringify(link), 'utf8');
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        new Response(`${JSON.stringify(envelope)}\n`, {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+
+    try {
+      const result = await getJobSpecTool.execute({ taskPda: created.taskPda });
+      const parsed = JSON.parse(result.content);
+
+      expect(result.isError).toBeUndefined();
+      expect(fetchSpy).toHaveBeenCalledWith(publicUri, {
+        headers: { accept: 'application/json' },
+      });
+      expect(parsed.source).toBe('on-chain');
+      expect(parsed.jobSpecHash).toBe(created.jobSpecHash);
+      expect(parsed.jobSpecUri).toBe(publicUri);
+      expect(parsed.jobSpecPath).toBe(publicUri);
+      expect(parsed.integrity.uri).toBe(`agenc://job-spec/sha256/${created.jobSpecHash}`);
+      expect(parsed.payload.fullDescription).toBe(
+        'Resolve this job spec from public storage.',
+      );
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('returns isError when the task link uri no longer matches the hash', async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), 'agenc-job-spec-'));
+    const mockProgram = createMockProgram();
+    const createTool = createCreateTaskTool(mockProgram as never, silentLogger, {
+      jobSpecStoreDir: rootDir,
+    });
+    const getJobSpecTool = createGetJobSpecTool(silentLogger, {
+      program: mockProgram as never,
+      jobSpecStoreDir: rootDir,
+    });
+
+    const createResult = await createTool.execute({
+      description: 'mismatch spec',
+      reward: '1000000',
+      requiredCapabilities: '1',
+      fullDescription: 'Spec body.',
+    });
+    const created = JSON.parse(createResult.content);
+    const link = JSON.parse(await readFile(created.jobSpecTaskLinkPath, 'utf8'));
+    link.jobSpecUri = 'agenc://job-spec/sha256/' + '0'.repeat(64);
+    await writeFile(created.jobSpecTaskLinkPath, JSON.stringify(link), 'utf8');
+
+    const result = await getJobSpecTool.execute({ taskPda: created.taskPda });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content).error).toContain(
+      'task link uri does not match hash',
+    );
+  });
+});
+
+describe('agenc.getTokenBalance' , () => {
   it('returns token balance for mint and default owner', async () => {
     const mockProgram = createMockProgram();
     const tool = createGetTokenBalanceTool(mockProgram as never, silentLogger);
@@ -504,7 +924,219 @@ describe('agenc.createTask', () => {
     expect(parsed.taskPda).toBeTypeOf('string');
     expect(parsed.transactionSignature).toBe('mock-create-task-sig');
     expect(parsed.rewardMint).toBeNull();
+    expect(parsed.taskType).toBe('Exclusive');
+    expect(parsed.taskTypeId).toBe(TaskType.Exclusive);
+    expect(parsed.taskTypeKey).toBe('exclusive');
+    expect(parsed.validationMode).toBe('auto');
+    expect(parsed.validationConfigured).toBe(false);
     expect(mockProgram.methods.createTask).toHaveBeenCalledOnce();
+
+    const accounts = mockProgram._createTaskMethodChain.accountsPartial.mock.calls[0][0];
+    const expectedAuthorityRateLimit = findAuthorityRateLimitPda(
+      SIGNER,
+      mockProgram.programId,
+    );
+    expect(accounts.authorityRateLimit.equals(expectedAuthorityRateLimit)).toBe(true);
+    expect(parsed.authorityRateLimitPda).toBe(
+      expectedAuthorityRateLimit.toBase58(),
+    );
+  });
+
+  it('accepts task type aliases when creating tasks', async () => {
+    const mockProgram = createMockProgram();
+    const tool = createCreateTaskTool(mockProgram as never, silentLogger);
+
+    const result = await tool.execute({
+      description: 'collab task',
+      reward: '1000000',
+      requiredCapabilities: '1',
+      taskType: 'collaborative',
+      maxWorkers: 2,
+    });
+    const parsed = JSON.parse(result.content);
+    const createTaskArgs = mockProgram.methods.createTask.mock.calls[0];
+
+    expect(result.isError).toBeUndefined();
+    expect(parsed.taskType).toBe('Collaborative');
+    expect(parsed.taskTypeId).toBe(TaskType.Collaborative);
+    expect(parsed.taskTypeKey).toBe('collaborative');
+    expect(createTaskArgs[6]).toBe(TaskType.Collaborative);
+  });
+
+  it('treats placeholder strings on optional createTask fields as omitted', async () => {
+    const mockProgram = createMockProgram();
+    const tool = createCreateTaskTool(mockProgram as never, silentLogger);
+
+    const result = await tool.execute({
+      description: 'placeholder task',
+      reward: '1000000',
+      requiredCapabilities: '1',
+      taskId: 'None',
+      creatorAgentPda: 'None',
+      rewardMint: 'None',
+      constraintHash: 'None',
+      validationMode: 'None',
+      maxWorkers: 'None',
+      minReputation: 'None',
+      reviewWindowSecs: 'None',
+    });
+    const parsed = JSON.parse(result.content);
+
+    expect(result.isError).toBeUndefined();
+    expect(parsed.taskId).toMatch(/^[a-f0-9]{64}$/);
+    expect(parsed.creatorAgentPda).toBe(AGENT_PDA.toBase58());
+    expect(parsed.rewardMint).toBeNull();
+    expect(parsed.constraintHash).toBeNull();
+    expect(parsed.validationMode).toBe('auto');
+    expect(parsed.validationConfigured).toBe(false);
+    expect(parsed.minReputation).toBe(0);
+    expect(mockProgram.methods.createTask).toHaveBeenCalledOnce();
+  });
+
+  it('creates and configures a creator-review task', async () => {
+    const mockProgram = createMockProgram();
+    const tool = createCreateTaskTool(mockProgram as never, silentLogger);
+
+    const result = await tool.execute({
+      description: 'review task',
+      reward: '1000000',
+      requiredCapabilities: '1',
+      validationMode: 'creator-review',
+      reviewWindowSecs: 120,
+    });
+    const parsed = JSON.parse(result.content);
+    const createTaskArgs = mockProgram.methods.createTask.mock.calls[0];
+    const configureArgs = mockProgram.methods.configureTaskValidation.mock.calls[0];
+
+    expect(result.isError).toBeUndefined();
+    expect(parsed.validationMode).toBe('creator-review');
+    expect(parsed.validationConfigured).toBe(true);
+    expect(parsed.reviewWindowSecs).toBe(120);
+    expect(parsed.constraintHash).toBeNull();
+    expect(parsed.validationTransactionSignature).toBe('mock-configure-validation-sig');
+    expect(createTaskArgs[7]).toBeNull();
+    expect(configureArgs[0]).toBe(TaskValidationMode.CreatorReview);
+    expect(configureArgs[1].toString()).toBe('120');
+    expect(configureArgs[2]).toBe(0);
+    expect(configureArgs[3]).toBeNull();
+  });
+
+  it('stores full marketplace job specs by hash, publishes an on-chain pointer, and links them to the task', async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), 'agenc-job-spec-'));
+    const mockProgram = createMockProgram();
+    const tool = createCreateTaskTool(mockProgram as never, silentLogger, {
+      jobSpecStoreDir: rootDir,
+    });
+
+    const result = await tool.execute({
+      description: 'build scraper',
+      reward: '1000000',
+      requiredCapabilities: '1',
+      fullDescription: 'Build a scraper with pagination, retries, and JSON output.',
+      acceptanceCriteria: ['handles pagination', 'writes JSON report'],
+      deliverables: ['source code', 'README'],
+      constraints: { noSecrets: true, maxRuntimeSecs: 60 },
+      attachments: [{ uri: 'https://example.com/spec.md', label: 'Spec' }],
+    });
+    const parsed = JSON.parse(result.content);
+    const expectedTaskJobSpecPda = findTaskJobSpecPda(
+      new PublicKey(parsed.taskPda),
+      mockProgram.programId,
+    ).toBase58();
+
+    expect(result.isError).toBeUndefined();
+    expect(parsed.jobSpecHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(parsed.jobSpecUri).toBe(`agenc://job-spec/sha256/${parsed.jobSpecHash}`);
+    expect(parsed.jobSpecPath).toContain(`${parsed.jobSpecHash}.json`);
+    expect(parsed.jobSpecTaskLinkPath).toContain(`${parsed.taskPda}.json`);
+    expect(parsed.taskJobSpecPda).toBe(expectedTaskJobSpecPda);
+    expect(parsed.jobSpecTransactionSignature).toBe('mock-set-task-job-spec-sig');
+    expect(parsed.jobSpecIntegrity).toEqual({
+      algorithm: 'sha256',
+      canonicalization: 'json-stable-v1',
+    });
+    expect(mockProgram.methods.setTaskJobSpec).toHaveBeenCalledOnce();
+
+    const envelope = JSON.parse(await readFile(parsed.jobSpecPath, 'utf8'));
+    expect(envelope.integrity.payloadHash).toBe(parsed.jobSpecHash);
+    expect(envelope.payload.shortDescription).toBe('build scraper');
+    expect(envelope.payload.fullDescription).toBe(
+      'Build a scraper with pagination, retries, and JSON output.',
+    );
+    expect(envelope.payload.acceptanceCriteria).toEqual([
+      'handles pagination',
+      'writes JSON report',
+    ]);
+    expect(envelope.payload.constraints).toEqual({
+      maxRuntimeSecs: 60,
+      noSecrets: true,
+    });
+    expect(envelope.payload.attachments).toEqual([
+      { uri: 'https://example.com/spec.md', label: 'Spec' },
+    ]);
+
+    const link = JSON.parse(await readFile(parsed.jobSpecTaskLinkPath, 'utf8'));
+    expect(link.taskPda).toBe(parsed.taskPda);
+    expect(link.taskId).toBe(parsed.taskId);
+    expect(link.jobSpecHash).toBe(parsed.jobSpecHash);
+    expect(link.jobSpecUri).toBe(parsed.jobSpecUri);
+    expect(link.transactionSignature).toBe('mock-set-task-job-spec-sig');
+  });
+
+  it('rejects unsafe job spec metadata before sending the createTask RPC' , async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), 'agenc-job-spec-'));
+    const mockProgram = createMockProgram();
+    const tool = createCreateTaskTool(mockProgram as never, silentLogger, {
+      jobSpecStoreDir: rootDir,
+    });
+
+    const result = await tool.execute({
+      description: 'unsafe spec',
+      reward: '1000000',
+      requiredCapabilities: '1',
+      attachments: ['file:///etc/passwd'],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content).error).toContain('Invalid jobSpec metadata');
+    expect(mockProgram.methods.createTask).not.toHaveBeenCalled();
+  });
+
+  it('rejects explicit constraint hashes for creator-review tasks', async () => {
+    const mockProgram = createMockProgram();
+    const tool = createCreateTaskTool(mockProgram as never, silentLogger);
+
+    const result = await tool.execute({
+      description: 'bad review task',
+      reward: '1000000',
+      requiredCapabilities: '1',
+      validationMode: 'creator-review',
+      constraintHash: '00'.repeat(32),
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content).error).toContain('Do not provide constraintHash');
+    expect(mockProgram.methods.createTask).not.toHaveBeenCalled();
+  });
+
+  it('rejects creator-review for non-exclusive task types before sending the createTask RPC', async () => {
+    const mockProgram = createMockProgram();
+    const tool = createCreateTaskTool(mockProgram as never, silentLogger);
+
+    const result = await tool.execute({
+      description: 'bad competitive review task',
+      reward: '1000000',
+      requiredCapabilities: '1',
+      taskType: TaskType.Competitive,
+      validationMode: 'creator-review',
+      fullDescription: 'This should not be persisted or created before validation fails.',
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content).error).toContain(
+      'validationMode="creator-review" is only supported when taskType is 0/exclusive',
+    );
+    expect(mockProgram.methods.createTask).not.toHaveBeenCalled();
   });
 
   it('rejects requiredCapabilities of zero', async () => {
