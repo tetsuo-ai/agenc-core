@@ -598,17 +598,30 @@ type MarketCommand =
   | "tui";
 
 const MARKET_COMMAND_OPTIONS: Record<MarketCommand, Set<string>> = {
-  "tasks.list": new Set(["status"]),
+  "tasks.list": new Set(["status", "task-type", "job-spec-store-dir"]),
   "tasks.create": new Set([
     "description",
     "reward",
+    "reward-mint",
     "required-capabilities",
     "max-workers",
     "deadline",
     "task-type",
+    "min-reputation",
+    "constraint-hash",
+    "validation-mode",
+    "review-window-secs",
     "creator-agent-pda",
+    "job-spec",
+    "full-description",
+    "acceptance-criteria",
+    "deliverables",
+    "constraints",
+    "attachment",
+    "attachments",
+    "job-spec-store-dir",
   ]),
-  "tasks.detail": new Set(),
+  "tasks.detail": new Set(["job-spec-store-dir"]),
   "tasks.cancel": new Set(),
   "tasks.claim": new Set(["worker-agent-pda"]),
   "tasks.complete": new Set(["proof-hash", "result-data", "worker-agent-pda"]),
@@ -1074,11 +1087,23 @@ function buildHelp(): string {
     "      --status <s1,s2>                      Status filter for tasks/disputes list",
     "      --description <text>                  Task description for market tasks create",
     "      --reward <lamports>                   Task reward for market tasks create",
+    "      --reward-mint <mint>                  Optional SPL reward mint for task creation",
     "      --required-capabilities <u64>         Required capability bitmask for task creation (default: 1)",
     "      --max-workers <n>                     Max workers for task creation",
     "      --deadline <unix>                     Task deadline for task creation",
-    "      --task-type <0|1|2>                   Task type for task creation",
+    "      --task-type <type>                    Task type for task list/create: 0/exclusive, 1/collaborative, 2/competitive, 3/bid-exclusive",
+    "      --min-reputation <n>                  Minimum worker reputation for task creation",
+    "      --constraint-hash <hex>               Optional 32-byte private-task constraint hash",
+    "      --validation-mode auto|creator-review Hold payout until creator approval when creator-review",
+    "      --review-window-secs <n>              Review window for creator-review task creation",
     "      --creator-agent-pda <pda>             Explicit creator agent PDA for task creation",
+    "      --job-spec <text>                    Full off-chain job spec text for task creation",
+    "      --full-description <text>            Detailed off-chain task description",
+    "      --acceptance-criteria <items>        Comma/newline-separated acceptance criteria",
+    "      --deliverables <items>               Comma/newline-separated deliverables",
+    "      --constraints <json>                 JSON constraints stored in the off-chain job spec",
+    "      --attachment <url>                   Off-chain job spec attachment URL (repeatable)",
+    "      --job-spec-store-dir <path>          Local content-addressed job spec store override",
     "      --query <text>                        Text filter for skills list",
     "      --tags <t1,t2>                        Tag filter for skills list",
     "      --limit <n>                           Limit skills list results",
@@ -1136,6 +1161,7 @@ function buildHelp(): string {
     "  agenc-runtime plugin list",
     "  agenc-runtime market tasks list --status open,in_progress",
     "  agenc-runtime market tasks create --description 'public task' --reward 50000000",
+    "  agenc-runtime market tasks create --description 'reviewed task' --reward 50000000 --validation-mode creator-review --review-window-secs 3600 --creator-agent-pda <agentPda>",
     "  agenc-runtime market tasks claim <taskPda>",
     "  agenc-runtime market tasks cancel <taskPda>",
     "  agenc-runtime market tasks complete <taskPda> --result-data 'completed via cli'",
@@ -2697,6 +2723,10 @@ function normalizeAndValidateMarketCommand(
       options = {
         ...base,
         statuses: parseStringListFlag(parsed.flags.status),
+        taskType: parseOptionalScalarFlag(parsed.flags["task-type"]),
+        jobSpecStoreDir: parseOptionalStringFlag(
+          parsed.flags["job-spec-store-dir"],
+        ),
       } as MarketTasksListOptions;
       break;
     case "tasks.create": {
@@ -2718,12 +2748,28 @@ function normalizeAndValidateMarketCommand(
         ...base,
         description,
         reward,
+        rewardMint: parseOptionalStringFlag(parsed.flags["reward-mint"]),
         requiredCapabilities:
           parseOptionalScalarFlag(parsed.flags["required-capabilities"]) ?? "1",
         maxWorkers: parseOptionalNumberFlag(parsed.flags["max-workers"]),
         deadline: parseOptionalNumberFlag(parsed.flags.deadline),
-        taskType: parseOptionalNumberFlag(parsed.flags["task-type"]),
+        taskType: parseOptionalScalarFlag(parsed.flags["task-type"]),
+        minReputation: parseOptionalNumberFlag(parsed.flags["min-reputation"]),
+        constraintHash: parseOptionalStringFlag(parsed.flags["constraint-hash"]),
+        validationMode: parseOptionalStringFlag(parsed.flags["validation-mode"]),
+        reviewWindowSecs: parseOptionalNumberFlag(parsed.flags["review-window-secs"]),
         creatorAgentPda: parseOptionalStringFlag(parsed.flags["creator-agent-pda"]),
+        jobSpec: parseOptionalStringFlag(parsed.flags["job-spec"]),
+        fullDescription: parseOptionalStringFlag(parsed.flags["full-description"]),
+        acceptanceCriteria: parseStringListFlag(parsed.flags["acceptance-criteria"]),
+        deliverables: parseStringListFlag(parsed.flags.deliverables),
+        constraints: parseOptionalStringFlag(parsed.flags.constraints),
+        attachments:
+          parseStringListFlag(parsed.flags.attachment) ??
+          parseStringListFlag(parsed.flags.attachments),
+        jobSpecStoreDir: parseOptionalStringFlag(
+          parsed.flags["job-spec-store-dir"],
+        ),
       } as MarketTaskCreateOptions;
       break;
     }
@@ -2735,7 +2781,13 @@ function normalizeAndValidateMarketCommand(
           ERROR_CODES.MISSING_TARGET,
         );
       }
-      options = { ...base, taskPda } as MarketTaskDetailOptions;
+      options = {
+        ...base,
+        taskPda,
+        jobSpecStoreDir: parseOptionalStringFlag(
+          parsed.flags["job-spec-store-dir"],
+        ),
+      } as MarketTaskDetailOptions;
       break;
     }
     case "tasks.cancel": {

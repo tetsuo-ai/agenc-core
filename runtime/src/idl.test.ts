@@ -15,6 +15,11 @@ import {
 } from './idl';
 
 describe('IDL exports', () => {
+  type InstructionWithAccounts = {
+    name: string;
+    accounts?: Array<{ name: string }>;
+  };
+
   it('exports a valid IDL object', () => {
     expect(IDL).toBeDefined();
     expect(typeof IDL).toBe('object');
@@ -77,6 +82,23 @@ describe('IDL exports', () => {
     expect(instructionNames).toContain('auto_accept_task_result');
     expect(instructionNames).toContain('validate_task_result');
     expect(instructionNames).toContain('register_agent');
+  });
+
+  it('adds authority rate limit accounts to task creation instructions', () => {
+    const instructions = IDL.instructions as InstructionWithAccounts[];
+
+    for (const instructionName of ['create_task', 'create_dependent_task']) {
+      const instruction = instructions.find((ix) => ix.name === instructionName);
+      expect(instruction).toBeDefined();
+
+      const accountNames = instruction?.accounts?.map((account) => account.name) ?? [];
+      const authorityRateLimitIndex = accountNames.indexOf('authority_rate_limit');
+      const authorityIndex = accountNames.indexOf('authority');
+
+      expect(authorityRateLimitIndex).toBeGreaterThanOrEqual(0);
+      expect(authorityIndex).toBeGreaterThanOrEqual(0);
+      expect(authorityRateLimitIndex).toBeLessThan(authorityIndex);
+    }
   });
 
   it('has accounts array with entries', () => {

@@ -20,6 +20,7 @@ import {
   createGetDisputeTool,
   createGetReputationSummaryTool,
   createGetTokenBalanceTool,
+  createGetJobSpecTool,
   createRegisterAgentTool,
   createCreateTaskTool,
   createGetAgentTool,
@@ -65,6 +66,7 @@ export {
   createGetDisputeTool,
   createGetReputationSummaryTool,
   createGetTokenBalanceTool,
+  createGetJobSpecTool,
   createRegisterAgentTool,
   createCreateTaskTool,
   createGetAgentTool,
@@ -130,8 +132,9 @@ export function createAgencTools(context: ToolContext): Tool[] {
 
   return [
     createInspectMarketplaceTool(program, context.logger),
-    createListTasksTool(ops, context.logger),
-    createGetTaskTool(ops, context.logger),
+    createListTasksTool(ops, context.logger, { program }),
+    createGetTaskTool(ops, context.logger, { program }),
+    createGetJobSpecTool(context.logger, { program }),
     createListSkillsTool(program, context.logger),
     createGetSkillTool(program, context.logger),
     createListGovernanceProposalsTool(program, context.logger),

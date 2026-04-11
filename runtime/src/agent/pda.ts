@@ -5,20 +5,20 @@
 
 import { PublicKey } from "@solana/web3.js";
 import { PROGRAM_ID, SEEDS } from "@tetsuo-ai/sdk";
-
-type OptionalSeedRecord = Partial<Record<string, Buffer>>;
-
-// The runtime can move ahead of the published SDK package. Fall back to raw
-// seed bytes locally until the matching SDK release is available.
-const optionalSeeds = SEEDS as OptionalSeedRecord;
-const AUTHORITY_RATE_LIMIT_SEED =
-  optionalSeeds.AUTHORITY_RATE_LIMIT ?? Buffer.from("authority_rate_limit");
 import { AGENT_ID_LENGTH } from "./types.js";
 import { derivePda, validateIdLength } from "../utils/pda.js";
 
 // Re-export PdaWithBump from utils — existing consumers import from here
 export type { PdaWithBump } from "../utils/pda.js";
 import type { PdaWithBump } from "../utils/pda.js";
+
+type OptionalSeedRecord = Partial<Record<string, Buffer>>;
+
+// The runtime can be upgraded ahead of the published SDK package. Fall back to
+// the raw seed bytes locally until the matching SDK release is available.
+const optionalSeeds = SEEDS as OptionalSeedRecord;
+const AUTHORITY_RATE_LIMIT_SEED =
+  optionalSeeds.AUTHORITY_RATE_LIMIT ?? Buffer.from("authority_rate_limit");
 
 /**
  * Derives the agent PDA and bump seed from an agent ID.

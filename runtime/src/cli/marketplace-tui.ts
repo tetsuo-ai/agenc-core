@@ -158,6 +158,15 @@ async function promptOptional(
   return value.length > 0 ? value : undefined;
 }
 
+function parseCommaSeparatedOptional(value: string | undefined): string[] | undefined {
+  if (!value) return undefined;
+  const items = value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return items.length > 0 ? items : undefined;
+}
+
 async function promptRequired(
   rl: ReturnType<typeof createInterface>,
   label: string,
@@ -360,7 +369,12 @@ async function runTasksLoop(
     if (action === "back") return "back";
     if (action === "quit" || action === "exit") return "quit";
     if (action === "create") {
-      const description = await promptRequired(rl, "description");
+      const description = await promptRequired(rl, "short on-chain description");
+      const fullDescription = await promptOptional(rl, "full job description");
+      const acceptanceCriteriaRaw = await promptOptional(rl, "acceptance criteria (comma-separated)");
+      const deliverablesRaw = await promptOptional(rl, "deliverables (comma-separated)");
+      const attachmentsRaw = await promptOptional(rl, "attachment URLs (comma-separated)");
+      const constraints = await promptOptional(rl, "constraints / safety notes");
       const reward = await promptRequired(rl, "reward lamports");
       const requiredCapabilities = await promptRequired(
         rl,
@@ -370,6 +384,16 @@ async function runTasksLoop(
       const maxWorkersRaw = await promptOptional(rl, "max workers");
       const deadlineRaw = await promptOptional(rl, "deadline (unix seconds)");
       const taskTypeRaw = await promptOptional(rl, "task type (0 exclusive, 1 collaborative, 2 competitive)");
+      const validationModeRaw = await promptRequired(
+        rl,
+        "validation mode (auto, creator-review)",
+        "auto",
+      );
+      const reviewWindowRaw =
+        validationModeRaw.trim().toLowerCase().replace(/_/g, "-") ===
+        "creator-review"
+          ? await promptRequired(rl, "review window seconds", "3600")
+          : "";
       await showRunnerResult(
         rl,
         stdout,
@@ -384,6 +408,13 @@ async function runTasksLoop(
           maxWorkers: maxWorkersRaw ? Number.parseInt(maxWorkersRaw, 10) : undefined,
           deadline: deadlineRaw ? Number.parseInt(deadlineRaw, 10) : undefined,
           taskType: taskTypeRaw ? Number.parseInt(taskTypeRaw, 10) : undefined,
+          validationMode: validationModeRaw,
+          reviewWindowSecs: reviewWindowRaw ? Number.parseInt(reviewWindowRaw, 10) : undefined,
+          fullDescription,
+          acceptanceCriteria: parseCommaSeparatedOptional(acceptanceCriteriaRaw),
+          deliverables: parseCommaSeparatedOptional(deliverablesRaw),
+          constraints,
+          attachments: parseCommaSeparatedOptional(attachmentsRaw),
         } as MarketTaskCreateOptions,
       );
       continue;

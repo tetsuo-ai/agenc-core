@@ -948,6 +948,51 @@ const TASK_VALIDATION_V2_INSTRUCTIONS = [
   },
 ] as const;
 
+const TASK_JOB_SPEC_INSTRUCTIONS = [
+  {
+    name: "set_task_job_spec",
+    docs: ["Attach or update verified marketplace job spec metadata for a task."],
+    discriminator: [134, 102, 102, 86, 31, 164, 202, 193],
+    accounts: [
+      {
+        name: "task",
+        writable: true,
+        pda: {
+          seeds: [
+            { kind: "const", value: [116, 97, 115, 107] },
+            { kind: "account", path: "task.creator", account: "Task" },
+            { kind: "account", path: "task.task_id", account: "Task" },
+          ],
+        },
+      },
+      {
+        name: "task_job_spec",
+        writable: true,
+        pda: {
+          seeds: [
+            {
+              kind: "const",
+              value: [
+                116, 97, 115, 107, 95, 106, 111, 98, 95, 115, 112, 101, 99,
+              ],
+            },
+            { kind: "account", path: "task" },
+          ],
+        },
+      },
+      { name: "creator", writable: true, signer: true },
+      {
+        name: "system_program",
+        address: "11111111111111111111111111111111",
+      },
+    ],
+    args: [
+      { name: "job_spec_hash", type: { array: ["u8", 32] } },
+      { name: "job_spec_uri", type: "string" },
+    ],
+  },
+] as const;
+
 const TASK_VALIDATION_V2_ACCOUNTS = [
   {
     name: "TaskValidationConfig",
@@ -964,6 +1009,36 @@ const TASK_VALIDATION_V2_ACCOUNTS = [
   {
     name: "TaskValidationVote",
     discriminator: [48, 129, 51, 174, 154, 5, 68, 65],
+  },
+] as const;
+
+const TASK_JOB_SPEC_ACCOUNTS = [
+  {
+    name: "TaskJobSpec",
+    discriminator: [249, 63, 211, 94, 228, 165, 3, 196],
+  },
+] as const;
+
+const TASK_JOB_SPEC_TYPES = [
+  {
+    name: "TaskJobSpec",
+    docs: [
+      "Verified marketplace job spec metadata for a task.",
+      '["task_job_spec", task]',
+    ],
+    type: {
+      kind: "struct",
+      fields: [
+        { name: "task", docs: ["Task this metadata belongs to."], type: "pubkey" },
+        { name: "creator", docs: ["Task creator that published the metadata."], type: "pubkey" },
+        { name: "job_spec_hash", docs: ["Canonical sha256 hash for the off-chain job spec envelope payload."], type: { array: ["u8", 32] } },
+        { name: "job_spec_uri", docs: ["Canonical job spec URI."], type: "string" },
+        { name: "created_at", docs: ["Creation timestamp."], type: "i64" },
+        { name: "updated_at", docs: ["Last update timestamp."], type: "i64" },
+        { name: "bump", docs: ["PDA bump."], type: "u8" },
+        { name: "_reserved", docs: ["Reserved for future metadata extensions."], type: { array: ["u8", 7] } },
+      ],
+    },
   },
 ] as const;
 
@@ -1223,18 +1298,27 @@ function augmentIdl(baseIdl: Idl): Idl {
   return {
     ...baseIdl,
     instructions: mergeIdlEntries(
-      overrideInstructionAccounts(
-        baseIdl.instructions as NamedIdlInstruction[] | undefined,
-      ) as unknown as NamedIdlEntry[],
-      TASK_VALIDATION_V2_INSTRUCTIONS as unknown as NamedIdlEntry[],
+      mergeIdlEntries(
+        overrideInstructionAccounts(
+          baseIdl.instructions as NamedIdlInstruction[] | undefined,
+        ) as unknown as NamedIdlEntry[],
+        TASK_VALIDATION_V2_INSTRUCTIONS as unknown as NamedIdlEntry[],
+      ),
+      TASK_JOB_SPEC_INSTRUCTIONS as unknown as NamedIdlEntry[],
     ) as Idl["instructions"],
     accounts: mergeIdlEntries(
-      baseIdl.accounts as NamedIdlEntry[] | undefined,
-      TASK_VALIDATION_V2_ACCOUNTS as unknown as NamedIdlEntry[],
+      mergeIdlEntries(
+        baseIdl.accounts as NamedIdlEntry[] | undefined,
+        TASK_VALIDATION_V2_ACCOUNTS as unknown as NamedIdlEntry[],
+      ),
+      TASK_JOB_SPEC_ACCOUNTS as unknown as NamedIdlEntry[],
     ) as Idl["accounts"],
     types: mergeIdlEntries(
-      baseIdl.types as NamedIdlEntry[] | undefined,
-      TASK_VALIDATION_V2_TYPES as unknown as NamedIdlEntry[],
+      mergeIdlEntries(
+        baseIdl.types as NamedIdlEntry[] | undefined,
+        TASK_VALIDATION_V2_TYPES as unknown as NamedIdlEntry[],
+      ),
+      TASK_JOB_SPEC_TYPES as unknown as NamedIdlEntry[],
     ) as Idl["types"],
   };
 }

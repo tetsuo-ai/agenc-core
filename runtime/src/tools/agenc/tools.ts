@@ -4,6 +4,7 @@
  * Query tools:
  * - agenc.listTasks — list tasks with optional status filter
  * - agenc.getTask — fetch a single task by PDA
+ * - agenc.getJobSpec — resolve a task PDA to its verified off-chain marketplace job spec
  * - agenc.listSkills — list marketplace skills with optional filtering
  * - agenc.getSkill — fetch a single marketplace skill by PDA
  * - agenc.listGovernanceProposals — list governance proposals with optional status filter
@@ -37,8 +38,12 @@ import { findTaskPda, findEscrowPda } from '../../task/pda.js';
 import {
   taskStatusToString,
   taskTypeToString,
+  taskTypeToKey,
   isPrivateTask,
   OnChainTaskStatus,
+  TaskType,
+  TaskValidationMode,
+  parseTaskTypeAlias,
 } from '../../task/types.js';
 import { parseAgentState, agentStatusToString } from '../../agent/types.js';
 import { getCapabilityNames } from '../../agent/capabilities.js';
@@ -65,6 +70,18 @@ import type {
 import { parseProtocolConfig } from '../../types/protocol.js';
 import { buildCreateTaskTokenAccounts } from '../../utils/token.js';
 import {
+  hasMarketplaceJobSpecInput,
+  linkMarketplaceJobSpecToTask,
+  persistMarketplaceJobSpec,
+  readMarketplaceJobSpecPointerForTask,
+  resolveMarketplaceJobSpecReference,
+} from '../../marketplace/job-spec-store.js';
+import {
+  fetchTaskJobSpecPointer,
+  resolveOnChainTaskJobSpecForTask,
+  setTaskJobSpecPointer,
+} from '../../marketplace/task-job-spec.js';
+import {
   lamportsToSol,
   bytesToHex,
   generateAgentId,
@@ -85,13 +102,18 @@ import type {
   SerializedReputationSummary,
   SerializedSkill,
   SerializedTask,
+  SerializedTaskJobSpec,
 } from './types.js';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 const DESCRIPTION_BYTES = 64;
 const TASK_ID_BYTES = 32;
+const DEFAULT_CREATOR_REVIEW_WINDOW_SECS = 3600;
 const MAX_U64 = (1n << 64n) - 1n;
+const MAX_REPUTATION = 10_000;
+const TASK_TYPE_INPUT_ERROR =
+  'taskType must be one of 0/exclusive, 1/collaborative, 2/competitive, or 3/bid-exclusive';
 const DUMMY_AGENT_ID = new Uint8Array(32);
 const AGENT_DISCRIMINATOR = Buffer.from([130, 53, 100, 103, 121, 77, 148, 19]);
 const AGENT_ID_OFFSET = 8;
@@ -105,7 +127,18 @@ const AGENT_AUTHORITY_OFFSET = AGENT_ID_OFFSET + TASK_ID_BYTES;
 const recentCreateTaskCalls = new Map<string, number>();
 const CREATE_TASK_DEDUP_TTL_MS = 30_000;
 
-/** @internal Exposed for testing only. */
+export interface CreateTaskToolOptions {
+  readonly jobSpecStoreDir?: string;
+}
+
+export interface GetJobSpecToolOptions {
+  readonly jobSpecStoreDir?: string;
+}
+export interface TaskJobSpecQueryToolOptions {
+  readonly program?: Program<AgencCoordination>;
+  readonly jobSpecStoreDir?: string;
+}
+
 const KNOWN_MINTS: Record<string, { symbol: string; decimals: number }> = {
   EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: { symbol: 'USDC', decimals: 6 },
   Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB: { symbol: 'USDT', decimals: 6 },
@@ -148,6 +181,29 @@ function parseRewardMintFilter(input: unknown): [PublicKey | null | undefined, T
   return [mint, null];
 }
 
+function parseTaskTypeInput(
+  input: unknown,
+  defaultValue: TaskType,
+): [TaskType, ToolResult | null] {
+  if (isOptionalPlaceholder(input)) return [defaultValue, null];
+  if (typeof input !== 'string' && typeof input !== 'number') {
+    return [defaultValue, errorResult(TASK_TYPE_INPUT_ERROR)];
+  }
+  const parsed = parseTaskTypeAlias(input);
+  if (parsed === null) return [defaultValue, errorResult(TASK_TYPE_INPUT_ERROR)];
+  return [parsed, null];
+}
+
+function parseOptionalTaskTypeFilter(input: unknown): [TaskType | undefined, ToolResult | null] {
+  if (isOptionalPlaceholder(input)) return [undefined, null];
+  if (typeof input !== 'string' && typeof input !== 'number') {
+    return [undefined, errorResult(TASK_TYPE_INPUT_ERROR)];
+  }
+  const parsed = parseTaskTypeAlias(input);
+  if (parsed === null) return [undefined, errorResult(TASK_TYPE_INPUT_ERROR)];
+  return [parsed, null];
+}
+
 function parseBigIntInput(value: unknown, field: string): [bigint | null, ToolResult | null] {
   if (typeof value === 'number') {
     if (!Number.isFinite(value) || value < 0) {
@@ -172,7 +228,7 @@ function parseBoundedNumber(
   max: number,
   defaultValue: number,
 ): [number, ToolResult | null] {
-  if (value === undefined) return [defaultValue, null];
+  if (isOptionalPlaceholder(value)) return [defaultValue, null];
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return [defaultValue, errorResult(`${field} must be a number`)];
   }
@@ -205,6 +261,87 @@ function validateU64(value: bigint, field: string): ToolResult | null {
   return null;
 }
 
+function isOptionalPlaceholder(input: unknown): boolean {
+  if (input === undefined || input === null) return true;
+  if (typeof input !== 'string') return false;
+  const normalized = input.trim().toLowerCase();
+  return (
+    normalized === '' ||
+    normalized === 'none' ||
+    normalized === 'null' ||
+    normalized === 'undefined' ||
+    normalized === 'n/a' ||
+    normalized === 'na' ||
+    normalized === 'omit' ||
+    normalized === 'omitted'
+  );
+}
+
+function parseOptionalHexBytes(
+  input: unknown,
+  field: string,
+  expectedBytes: number,
+): [Uint8Array | null, ToolResult | null] {
+  if (isOptionalPlaceholder(input)) return [null, null];
+  if (typeof input !== 'string' || input.trim().length === 0) {
+    return [null, errorResult(`${field} must be a ${expectedBytes}-byte hex string if provided`)];
+  }
+  try {
+    const bytes = hexToBytes(input.trim());
+    if (bytes.length !== expectedBytes) {
+      return [null, errorResult(`${field} must be ${expectedBytes} bytes (${expectedBytes * 2} hex chars)`)];
+    }
+    return [bytes, null];
+  } catch {
+    return [null, errorResult(`${field} must be a valid hex string`)];
+  }
+}
+
+function parseTaskValidationMode(input: unknown): [TaskValidationMode, ToolResult | null] {
+  if (isOptionalPlaceholder(input)) return [TaskValidationMode.Auto, null];
+  if (typeof input === 'number') {
+    if (input === TaskValidationMode.Auto || input === TaskValidationMode.CreatorReview) {
+      return [input, null];
+    }
+    return [
+      TaskValidationMode.Auto,
+      errorResult('validationMode must be "auto" or "creator-review"'),
+    ];
+  }
+  if (typeof input !== 'string') {
+    return [
+      TaskValidationMode.Auto,
+      errorResult('validationMode must be "auto" or "creator-review"'),
+    ];
+  }
+
+  const normalized = input
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, '-')
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  if (normalized === '' || normalized === 'auto' || normalized === '0' || normalized.startsWith('auto-')) {
+    return [TaskValidationMode.Auto, null];
+  }
+  if (
+    normalized === 'creator-review' ||
+    normalized === 'creatorreview' ||
+    normalized.startsWith('creator-review-') ||
+    normalized === 'manual' ||
+    normalized === 'manual-validation' ||
+    normalized.startsWith('manual-validation-') ||
+    normalized === '1'
+  ) {
+    return [TaskValidationMode.CreatorReview, null];
+  }
+
+  return [
+    TaskValidationMode.Auto,
+    errorResult('validationMode must be "auto" or "creator-review"'),
+  ];
+}
+
 function parseTaskDescription(input: unknown): [Uint8Array | null, ToolResult | null] {
   if (typeof input !== 'string' || input.trim().length === 0) {
     return [null, errorResult('description must be a non-empty string')];
@@ -219,7 +356,7 @@ function parseTaskDescription(input: unknown): [Uint8Array | null, ToolResult | 
 }
 
 function parseTaskId(input: unknown): [Uint8Array | null, ToolResult | null] {
-  if (input === undefined) return [generateAgentId(), null];
+  if (isOptionalPlaceholder(input)) return [generateAgentId(), null];
   if (typeof input !== 'string' || input.trim().length === 0) {
     return [null, errorResult('taskId must be a 64-char hex string if provided')];
   }
@@ -235,7 +372,7 @@ function parseTaskId(input: unknown): [Uint8Array | null, ToolResult | null] {
 }
 
 function parseAgentId(input: unknown): [Uint8Array | null, ToolResult | null] {
-  if (input === undefined) return [generateAgentId(), null];
+  if (isOptionalPlaceholder(input)) return [generateAgentId(), null];
   if (typeof input !== 'string' || input.trim().length === 0) {
     return [null, errorResult('agentId must be a 64-char hex string if provided')];
   }
@@ -251,7 +388,7 @@ function parseAgentId(input: unknown): [Uint8Array | null, ToolResult | null] {
 }
 
 function parseKnownRewardMint(input: unknown): [PublicKey | null, ToolResult | null] {
-  if (input === undefined || input === null) return [null, null];
+  if (isOptionalPlaceholder(input)) return [null, null];
   const [mint, err] = parseBase58(input);
   if (err || !mint) return [null, errorResult('Invalid rewardMint address')];
   if (!KNOWN_MINTS[mint.toBase58()]) {
@@ -325,7 +462,7 @@ async function resolveCreatorAgentPda(
   creator: PublicKey,
   providedCreatorAgentPda?: unknown,
 ): Promise<[PublicKey | null, ToolResult | null]> {
-  if (providedCreatorAgentPda !== undefined) {
+  if (!isOptionalPlaceholder(providedCreatorAgentPda)) {
     const [pda, err] = parseBase58(providedCreatorAgentPda);
     return [pda, err];
   }
@@ -351,6 +488,185 @@ function isMissingAccountError(err: unknown): boolean {
     lower.includes('invalid param') ||
     lower.includes('not found')
   );
+}
+
+
+function getJobSpecStoreOptions(rootDir?: string): { rootDir: string } | undefined {
+  return rootDir ? { rootDir } : undefined;
+}
+
+function formatUnknownError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function buildVerifiedTaskJobSpec(
+  source: SerializedTaskJobSpec['source'],
+  base: Omit<SerializedTaskJobSpec, 'source' | 'verified' | 'jobSpecPath' | 'integrity' | 'payload' | 'error'>,
+  resolved: {
+    jobSpecPath: string;
+    integrity: {
+      algorithm: string;
+      canonicalization: string;
+      payloadHash: string;
+      uri: string;
+    };
+    payload: unknown;
+  },
+): SerializedTaskJobSpec {
+  return {
+    source,
+    ...base,
+    verified: true,
+    jobSpecPath: resolved.jobSpecPath,
+    integrity: resolved.integrity,
+    payload: resolved.payload,
+  };
+}
+
+async function buildTaskJobSpecView(
+  taskPda: PublicKey,
+  options: TaskJobSpecQueryToolOptions,
+  includePayload: boolean,
+): Promise<SerializedTaskJobSpec | null> {
+  const storeOptions = getJobSpecStoreOptions(options.jobSpecStoreDir);
+
+  if (options.program) {
+    const onChainPointer = await fetchTaskJobSpecPointer(options.program, taskPda);
+    if (onChainPointer) {
+      const base: Omit<SerializedTaskJobSpec, 'source' | 'verified' | 'jobSpecPath' | 'integrity' | 'payload' | 'error'> = {
+        taskJobSpecPda: onChainPointer.taskJobSpecPda,
+        creator: onChainPointer.creator,
+        jobSpecHash: onChainPointer.jobSpecHash,
+        jobSpecUri: onChainPointer.jobSpecUri,
+        createdAt: onChainPointer.createdAt,
+        updatedAt: onChainPointer.updatedAt,
+      };
+
+      if (!includePayload) {
+        return { source: 'on-chain', ...base, verified: false };
+      }
+
+      try {
+        const resolved = await resolveOnChainTaskJobSpecForTask(
+          options.program,
+          taskPda,
+          storeOptions ?? {},
+        );
+        if (!resolved) {
+          return { source: 'on-chain', ...base, verified: false };
+        }
+        return buildVerifiedTaskJobSpec('on-chain', base, resolved);
+      } catch (error) {
+        return {
+          source: 'on-chain',
+          ...base,
+          verified: false,
+          error: formatUnknownError(error),
+        };
+      }
+    }
+  }
+
+  const localPointer = await readMarketplaceJobSpecPointerForTask(
+    taskPda.toBase58(),
+    storeOptions,
+  );
+  if (!localPointer) return null;
+
+  const base: Omit<SerializedTaskJobSpec, 'source' | 'verified' | 'jobSpecPath' | 'integrity' | 'payload' | 'error'> = {
+    taskJobSpecPda: null,
+    creator: null,
+    jobSpecHash: localPointer.jobSpecHash,
+    jobSpecUri: localPointer.jobSpecUri,
+    jobSpecTaskLinkPath: localPointer.jobSpecTaskLinkPath,
+    transactionSignature: localPointer.transactionSignature,
+  };
+
+  if (!includePayload) {
+    return { source: 'local-task-link', ...base, verified: false };
+  }
+
+  try {
+    const resolved = await resolveMarketplaceJobSpecReference(
+      localPointer,
+      storeOptions,
+    );
+    return buildVerifiedTaskJobSpec('local-task-link', base, resolved);
+  } catch (error) {
+    return {
+      source: 'local-task-link',
+      ...base,
+      verified: false,
+      error: formatUnknownError(error),
+    };
+  }
+}
+
+async function resolveTaskJobSpecPayloadOrThrow(
+  taskPda: PublicKey,
+  options: TaskJobSpecQueryToolOptions,
+): Promise<Record<string, unknown>> {
+  const storeOptions = getJobSpecStoreOptions(options.jobSpecStoreDir);
+  const taskAddress = taskPda.toBase58();
+  const localPointer = await readMarketplaceJobSpecPointerForTask(
+    taskAddress,
+    storeOptions,
+  );
+
+  if (options.program) {
+    const onChainPointer = await fetchTaskJobSpecPointer(options.program, taskPda);
+    if (onChainPointer) {
+      const resolved = await resolveOnChainTaskJobSpecForTask(
+        options.program,
+        taskPda,
+        storeOptions ?? {},
+      );
+      if (!resolved) {
+        throw new Error(`No verified task job spec metadata found for task ${taskAddress}`);
+      }
+      return {
+        taskPda: taskAddress,
+        taskId: localPointer?.taskId ?? null,
+        source: 'on-chain',
+        taskJobSpecPda: resolved.taskJobSpecPda,
+        creator: resolved.creator,
+        jobSpecHash: resolved.jobSpecHash,
+        jobSpecUri: resolved.jobSpecUri,
+        createdAt: resolved.createdAt,
+        updatedAt: resolved.updatedAt,
+        verified: true,
+        jobSpecPath: resolved.jobSpecPath,
+        jobSpecTaskLinkPath: localPointer?.jobSpecTaskLinkPath ?? null,
+        transactionSignature: localPointer?.transactionSignature ?? null,
+        integrity: resolved.integrity,
+        payload: resolved.payload,
+      };
+    }
+  }
+
+  if (localPointer) {
+    const resolved = await resolveMarketplaceJobSpecReference(
+      localPointer,
+      storeOptions,
+    );
+    return {
+      taskPda: taskAddress,
+      taskId: localPointer.taskId,
+      source: 'local-task-link',
+      taskJobSpecPda: null,
+      creator: null,
+      jobSpecHash: resolved.jobSpecHash,
+      jobSpecUri: resolved.jobSpecUri,
+      verified: true,
+      jobSpecPath: resolved.jobSpecPath,
+      jobSpecTaskLinkPath: localPointer.jobSpecTaskLinkPath,
+      transactionSignature: localPointer.transactionSignature,
+      integrity: resolved.integrity,
+      payload: resolved.payload,
+    };
+  }
+
+  throw new Error(`No task job spec metadata found for task ${taskAddress}`);
 }
 
 async function fetchProtocolConfigForAction(
@@ -418,17 +734,28 @@ function getRewardSymbol(rewardMint: PublicKey | null): string | undefined {
   return KNOWN_MINTS[rewardMint.toBase58()]?.symbol;
 }
 
+function decodeFixedBytes(bytes: Uint8Array): string {
+  const nullIndex = bytes.indexOf(0);
+  const slice = nullIndex === -1 ? bytes : bytes.subarray(0, nullIndex);
+  return new TextDecoder().decode(slice).trim();
+}
+
 function serializeTask(
   task: OnChainTask,
   taskPda: PublicKey,
-  extras?: Partial<Pick<SerializedTask, 'escrowTokenAccount' | 'escrowTokenBalance'>>,
+  extras?: Partial<Pick<SerializedTask, 'escrowTokenAccount' | 'escrowTokenBalance' | 'jobSpec'>>,
 ): SerializedTask {
+  const descriptionText = decodeFixedBytes(task.description);
+  const resultText = decodeFixedBytes(task.result);
+
   return {
     taskPda: taskPda.toBase58(),
     taskId: bytesToHex(task.taskId),
     creator: task.creator.toBase58(),
     status: taskStatusToString(task.status),
     taskType: taskTypeToString(task.taskType),
+    taskTypeId: task.taskType,
+    taskTypeKey: taskTypeToKey(task.taskType),
     rewardAmount: task.rewardAmount.toString(),
     rewardSol: lamportsToSol(task.rewardAmount),
     requiredCapabilities: getCapabilityNames(task.requiredCapabilities),
@@ -437,9 +764,14 @@ function serializeTask(
     deadline: task.deadline,
     isPrivate: isPrivateTask(task),
     createdAt: task.createdAt,
+    completedAt: task.completedAt,
     completions: task.completions,
     requiredCompletions: task.requiredCompletions,
-    description: bytesToHex(task.description),
+    description: descriptionText || 'untitled task',
+    descriptionHex: bytesToHex(task.description),
+    constraintHash: bytesToHex(task.constraintHash),
+    result: bytesToHex(task.result),
+    resultText: resultText || null,
     rewardMint: task.rewardMint?.toBase58() ?? null,
     rewardSymbol: getRewardSymbol(task.rewardMint),
     ...extras,
@@ -816,11 +1148,12 @@ async function buildMarketplaceReputationSurface(
 export function createListTasksTool(
   ops: TaskOperations,
   logger: Logger,
+  options: TaskJobSpecQueryToolOptions = {},
 ): Tool {
   return {
     name: 'agenc.listTasks',
     description:
-      'List tasks on the AgenC protocol. Filter by status (open, in_progress, all). Returns task details including reward, capabilities, and deadline.',
+      'List tasks on the AgenC protocol. Filter by status (open, in_progress, all). Returns task details including reward, capabilities, deadline, and any published marketplace job spec metadata.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -837,6 +1170,19 @@ export function createListTasksTool(
           type: 'string',
           description: 'Optional reward mint filter (base58), or "SOL" for native SOL rewards',
         },
+        taskType: {
+          anyOf: [
+            { type: 'number', enum: [0, 1, 2, 3] },
+            { type: 'string' },
+          ],
+          description:
+            'Optional task type filter: 0/exclusive, 1/collaborative, 2/competitive, or 3/bid-exclusive',
+        },
+        includeJobSpecPayload: {
+          type: 'boolean',
+          description:
+            'When true, verify and include the full off-chain marketplace job spec payload for each listed task.',
+        },
       },
     },
     async execute(args: Record<string, unknown>): Promise<ToolResult> {
@@ -846,18 +1192,19 @@ export function createListTasksTool(
         const limit = Math.min(Math.max(1, rawLimit), MAX_LIMIT);
         const [rewardMintFilter, rewardMintErr] = parseRewardMintFilter(args.rewardMint);
         if (rewardMintErr) return rewardMintErr;
+        const [taskTypeFilter, taskTypeFilterErr] = parseOptionalTaskTypeFilter(args.taskType);
+        if (taskTypeFilterErr) return taskTypeFilterErr;
+        const includeJobSpecPayload = args.includeJobSpecPayload === true;
 
         let tasks: Array<{ task: OnChainTask; taskPda: PublicKey }>;
 
         if (status === 'all') {
           tasks = await ops.fetchAllTasks();
         } else {
-          // fetchClaimableTasks uses memcmp filters (scalable)
           const claimable = await ops.fetchClaimableTasks();
           if (status === 'open') {
             tasks = claimable.filter((t) => t.task.status === OnChainTaskStatus.Open);
           } else {
-            // in_progress
             tasks = claimable.filter((t) => t.task.status === OnChainTaskStatus.InProgress);
           }
         }
@@ -869,8 +1216,21 @@ export function createListTasksTool(
           });
         }
 
+        if (taskTypeFilter !== undefined) {
+          tasks = tasks.filter(({ task }) => task.taskType === taskTypeFilter);
+        }
+
         const limited = tasks.slice(0, limit);
-        const serialized = limited.map((t) => serializeTask(t.task, t.taskPda));
+        const serialized = await Promise.all(
+          limited.map(async ({ task, taskPda }) => {
+            const jobSpec = await buildTaskJobSpecView(
+              taskPda,
+              options,
+              includeJobSpecPayload,
+            );
+            return serializeTask(task, taskPda, jobSpec ? { jobSpec } : undefined);
+          }),
+        );
 
         return {
           content: safeStringify({
@@ -894,11 +1254,12 @@ export function createListTasksTool(
 export function createGetTaskTool(
   ops: TaskOperations,
   logger: Logger,
+  options: TaskJobSpecQueryToolOptions = {},
 ): Tool {
   return {
     name: 'agenc.getTask',
     description:
-      'Get details for a specific AgenC task by its PDA address (base58).',
+      'Get details for a specific AgenC task by its PDA address (base58), including verified marketplace job spec metadata when available.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -918,6 +1279,8 @@ export function createGetTaskTool(
         if (!task) {
           return errorResult(`Task not found: ${pda!.toBase58()}`);
         }
+
+        const jobSpec = await buildTaskJobSpecView(pda!, options, true);
         if (task.rewardMint) {
           const escrowTokenAccount = getAssociatedTokenAddressSync(task.rewardMint, task.escrow, true);
           const escrowTokenBalance = await ops.fetchEscrowTokenBalance(pda!, task.rewardMint);
@@ -926,6 +1289,7 @@ export function createGetTaskTool(
               serializeTask(task, pda!, {
                 escrowTokenAccount: escrowTokenAccount.toBase58(),
                 escrowTokenBalance: escrowTokenBalance.toString(),
+                jobSpec,
               }),
             ),
           };
@@ -935,12 +1299,52 @@ export function createGetTaskTool(
             serializeTask(task, pda!, {
               escrowTokenAccount: null,
               escrowTokenBalance: null,
+              jobSpec,
             }),
           ),
         };
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         logger.error(`agenc.getTask failed: ${msg}`);
+        return errorResult(msg);
+      }
+    },
+  };
+}
+
+/**
+ * Create the agenc.getJobSpec tool.
+ */
+export function createGetJobSpecTool(
+  logger: Logger,
+  options: TaskJobSpecQueryToolOptions = {},
+): Tool {
+  return {
+    name: 'agenc.getJobSpec',
+    description:
+      'Resolve and verify the off-chain marketplace job spec for a task PDA. Prefers the on-chain task_job_spec pointer and falls back to the local task-link cache when needed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskPda: {
+          type: 'string',
+          description: 'Task account PDA address (base58)',
+        },
+      },
+      required: ['taskPda'],
+    },
+    async execute(args: Record<string, unknown>): Promise<ToolResult> {
+      const [pda, err] = parseBase58(args.taskPda);
+      if (err) return err;
+
+      try {
+        const resolved = await resolveTaskJobSpecPayloadOrThrow(pda!, options);
+        return {
+          content: safeStringify(resolved),
+        };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        logger.error(`agenc.getJobSpec failed: ${msg}`);
         return errorResult(msg);
       }
     },
@@ -1760,6 +2164,7 @@ export function createRegisterAgentTool(
 export function createCreateTaskTool(
   program: Program<AgencCoordination>,
   logger: Logger,
+  options: CreateTaskToolOptions = {},
 ): Tool {
   return {
     name: 'agenc.createTask',
@@ -1770,7 +2175,35 @@ export function createCreateTaskTool(
       properties: {
         description: {
           type: 'string',
-          description: `Task description (max ${DESCRIPTION_BYTES} UTF-8 bytes)`,
+          description: `Short on-chain task title/summary (max ${DESCRIPTION_BYTES} UTF-8 bytes). Put the long marketplace job details in jobSpec/fullDescription.`,
+        },
+        jobSpec: {
+          anyOf: [{ type: 'object' }, { type: 'string' }],
+          description:
+            'Optional full marketplace job spec. Stored off-chain as canonical JSON with a sha256 integrity hash; use for long requirements, scope, examples, and notes.',
+        },
+        fullDescription: {
+          type: 'string',
+          description: 'Optional long-form job description stored in the marketplace jobSpec object.',
+        },
+        acceptanceCriteria: {
+          anyOf: [{ type: 'array', items: { type: 'string' } }, { type: 'string' }],
+          description: 'Optional acceptance criteria stored in the marketplace jobSpec object.',
+        },
+        deliverables: {
+          anyOf: [{ type: 'array', items: { type: 'string' } }, { type: 'string' }],
+          description: 'Optional expected deliverables stored in the marketplace jobSpec object.',
+        },
+        constraints: {
+          anyOf: [{ type: 'object' }, { type: 'array' }, { type: 'string' }],
+          description: 'Optional constraints for the jobSpec, such as prohibited actions, required tooling, or security requirements.',
+        },
+        attachments: {
+          anyOf: [
+            { type: 'array', items: { anyOf: [{ type: 'string' }, { type: 'object' }] } },
+            { type: 'string' },
+          ],
+          description: 'Optional external attachment URLs. Only https, ipfs, ar, or arweave URLs are accepted; local file paths and insecure http URLs are rejected.',
         },
         reward: {
           type: 'string',
@@ -1793,9 +2226,12 @@ export function createCreateTaskTool(
           description: 'Unix timestamp seconds. Default now + 1 hour.',
         },
         taskType: {
-          type: 'number',
-          enum: [0, 1, 2, 3],
-          description: '0=Exclusive, 1=Collaborative, 2=Competitive, 3=BidExclusive (default 0)',
+          anyOf: [
+            { type: 'number', enum: [0, 1, 2, 3] },
+            { type: 'string' },
+          ],
+          description:
+            'Task type: 0/exclusive, 1/collaborative, 2/competitive, or 3/bid-exclusive (default exclusive)',
         },
         minReputation: {
           type: 'number',
@@ -1803,7 +2239,18 @@ export function createCreateTaskTool(
         },
         constraintHash: {
           type: 'string',
-          description: 'Optional 32-byte hex string for private tasks',
+          description:
+            'Optional 32-byte hex string for private tasks. Omit when validationMode="creator-review".',
+        },
+        validationMode: {
+          type: 'string',
+          enum: ['auto', 'creator-review'],
+          description: 'Task validation mode. Use "creator-review" to hold payout until creator approval.',
+        },
+        reviewWindowSecs: {
+          type: 'number',
+          description:
+            `Creator review window in seconds for validationMode="creator-review" (default ${DEFAULT_CREATOR_REVIEW_WINDOW_SECS}).`,
         },
         taskId: {
           type: 'string',
@@ -1859,10 +2306,30 @@ export function createCreateTaskTool(
         const requiredCapabilitiesRangeErr = validateU64(requiredCapabilities, 'requiredCapabilities');
         if (requiredCapabilitiesRangeErr) return requiredCapabilitiesRangeErr;
 
-        const [taskType, taskTypeErr] = parseBoundedNumber(args.taskType, 'taskType', 0, 3, 0);
+        const [taskType, taskTypeErr] = parseTaskTypeInput(args.taskType, TaskType.Exclusive);
         if (taskTypeErr) return taskTypeErr;
         const [maxWorkers, maxWorkersErr] = parseBoundedNumber(args.maxWorkers, 'maxWorkers', 1, 100, 1);
         if (maxWorkersErr) return maxWorkersErr;
+
+        const [minReputation, minReputationErr] = parseBoundedNumber(
+          args.minReputation,
+          'minReputation',
+          0,
+          MAX_REPUTATION,
+          0,
+        );
+        if (minReputationErr) return minReputationErr;
+
+        const [validationMode, validationModeErr] = parseTaskValidationMode(args.validationMode);
+        if (validationModeErr) return validationModeErr;
+        if (
+          validationMode === TaskValidationMode.CreatorReview &&
+          taskType !== TaskType.Exclusive
+        ) {
+          return errorResult(
+            'validationMode="creator-review" is only supported when taskType is 0/exclusive',
+          );
+        }
 
         const now = Math.floor(Date.now() / 1000);
         const [deadline, deadlineErr] = parseBoundedNumber(
@@ -1874,9 +2341,37 @@ export function createCreateTaskTool(
         );
         if (deadlineErr) return deadlineErr;
 
-        // The public CLI surface still restricts creation to public tasks with
-        // default reputation gating. We pass null/default values for the extra
-        // canonical fields unless the caller opts into a known public reward mint.
+        const [reviewWindowSecs, reviewWindowSecsErr] = parseBoundedNumber(
+          args.reviewWindowSecs,
+          'reviewWindowSecs',
+          1,
+          Number.MAX_SAFE_INTEGER,
+          DEFAULT_CREATOR_REVIEW_WINDOW_SECS,
+        );
+        if (reviewWindowSecsErr) return reviewWindowSecsErr;
+        if (
+          !isOptionalPlaceholder(args.reviewWindowSecs) &&
+          validationMode !== TaskValidationMode.CreatorReview
+        ) {
+          return errorResult('reviewWindowSecs is only valid when validationMode is "creator-review"');
+        }
+
+        const [customConstraintHash, constraintHashErr] = parseOptionalHexBytes(
+          args.constraintHash,
+          'constraintHash',
+          TASK_ID_BYTES,
+        );
+        if (constraintHashErr) return constraintHashErr;
+        if (
+          validationMode === TaskValidationMode.CreatorReview &&
+          customConstraintHash !== null
+        ) {
+          return errorResult(
+            'Do not provide constraintHash with validationMode="creator-review"; creator-review tasks are configured through validation settings',
+          );
+        }
+        const constraintHash = customConstraintHash;
+
         const [rewardMint, rewardMintErr] = parseKnownRewardMint(args.rewardMint);
         if (rewardMintErr) return rewardMintErr;
         const [creatorAgentPda, creatorAgentErr] = await resolveCreatorAgentPda(
@@ -1888,6 +2383,47 @@ export function createCreateTaskTool(
           return (
             creatorAgentErr ?? errorResult("Unable to resolve creatorAgentPda")
           );
+        }
+
+        let storedJobSpec: Awaited<ReturnType<typeof persistMarketplaceJobSpec>> | null = null;
+        if (hasMarketplaceJobSpecInput(args)) {
+          try {
+            storedJobSpec = await persistMarketplaceJobSpec(
+              {
+                description: args.description as string,
+                jobSpec: args.jobSpec,
+                fullDescription: args.fullDescription,
+                acceptanceCriteria: args.acceptanceCriteria,
+                deliverables: args.deliverables,
+                constraints: args.constraints,
+                attachments: args.attachments,
+                context: {
+                  rewardLamports: reward.toString(),
+                  requiredCapabilities: requiredCapabilities.toString(),
+                  rewardMint: rewardMint?.toBase58() ?? null,
+                  maxWorkers,
+                  deadline,
+                  taskType,
+                  minReputation,
+                  validationMode:
+                    validationMode === TaskValidationMode.CreatorReview
+                      ? 'creator-review'
+                      : 'auto',
+                  reviewWindowSecs:
+                    validationMode === TaskValidationMode.CreatorReview
+                      ? reviewWindowSecs
+                      : null,
+                  creatorAgentPda: creatorAgentPda.toBase58(),
+                },
+              },
+              options.jobSpecStoreDir
+                ? { rootDir: options.jobSpecStoreDir }
+                : undefined,
+            );
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return errorResult(`Invalid jobSpec metadata: ${message}`);
+          }
         }
 
         const taskPda = findTaskPda(creator, taskId, program.programId);
@@ -1909,8 +2445,8 @@ export function createCreateTaskTool(
             maxWorkers,
             new BN(deadline),
             taskType,
-            null,
-            0,
+            constraintHash ? toAnchorBytes(constraintHash) : null,
+            minReputation,
             rewardMint,
           )
           .accountsPartial({
@@ -1926,6 +2462,79 @@ export function createCreateTaskTool(
           })
           .rpc();
 
+        let validationTransactionSignature: string | null = null;
+        let taskValidationConfigPda: string | null = null;
+        let taskAttestorConfigPda: string | null = null;
+        if (validationMode === TaskValidationMode.CreatorReview) {
+          try {
+            const ops = new TaskOperations({
+              program,
+              agentId: new Uint8Array(TASK_ID_BYTES),
+              logger,
+            });
+            const validationResult = await ops.configureTaskValidation(
+              taskPda,
+              { taskId } as OnChainTask,
+              TaskValidationMode.CreatorReview,
+              reviewWindowSecs,
+            );
+            validationTransactionSignature =
+              validationResult.transactionSignature ?? null;
+            taskValidationConfigPda =
+              validationResult.taskValidationConfigPda.toBase58();
+            taskAttestorConfigPda =
+              validationResult.taskAttestorConfigPda?.toBase58() ?? null;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return errorResult(
+              `Task was created at ${taskPda.toBase58()} but creator-review validation configuration failed: ${message}`,
+            );
+          }
+        }
+
+        let taskJobSpecPda: string | null = null;
+        let jobSpecTransactionSignature: string | null = null;
+        if (storedJobSpec) {
+          try {
+            const published = await setTaskJobSpecPointer(
+              program,
+              creator,
+              taskPda,
+              storedJobSpec.hash,
+              storedJobSpec.uri,
+            );
+            taskJobSpecPda = published.taskJobSpecPda.toBase58();
+            jobSpecTransactionSignature = published.transactionSignature;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return errorResult(
+              `Task was created at ${taskPda.toBase58()} but job spec metadata publishing failed: ${message}`,
+            );
+          }
+        }
+
+        let jobSpecTaskLinkPath: string | null = null;
+        let jobSpecLinkWarning: string | null = null;
+        if (storedJobSpec) {
+          try {
+            jobSpecTaskLinkPath = await linkMarketplaceJobSpecToTask(
+              {
+                hash: storedJobSpec.hash,
+                uri: storedJobSpec.uri,
+                taskPda: taskPda.toBase58(),
+                taskId: bytesToHex(taskId),
+                transactionSignature: jobSpecTransactionSignature ?? txSignature,
+              },
+              options.jobSpecStoreDir
+                ? { rootDir: options.jobSpecStoreDir }
+                : undefined,
+            );
+          } catch (error) {
+            jobSpecLinkWarning =
+              error instanceof Error ? error.message : String(error);
+          }
+        }
+
         // Mark as created to prevent LLM from calling again
         recentCreateTaskCalls.set(dedupKey, Date.now());
         // Clean up old entries
@@ -1938,10 +2547,39 @@ export function createCreateTaskTool(
             taskPda: taskPda.toBase58(),
             escrowPda: escrowPda.toBase58(),
             taskId: bytesToHex(taskId),
+            taskType: taskTypeToString(taskType),
+            taskTypeId: taskType,
+            taskTypeKey: taskTypeToKey(taskType),
             creatorAgentPda: creatorAgentPda.toBase58(),
+            authorityRateLimitPda: authorityRateLimitPda.toBase58(),
             rewardMint: rewardMint?.toBase58() ?? null,
             rewardSymbol: getRewardSymbol(rewardMint),
+            constraintHash: constraintHash ? bytesToHex(constraintHash) : null,
+            minReputation,
+            validationMode:
+              validationMode === TaskValidationMode.CreatorReview
+                ? 'creator-review'
+                : 'auto',
+            reviewWindowSecs:
+              validationMode === TaskValidationMode.CreatorReview
+                ? reviewWindowSecs
+                : null,
+            validationConfigured:
+              validationMode === TaskValidationMode.CreatorReview,
+            taskValidationConfigPda,
+            taskAttestorConfigPda,
+            taskJobSpecPda,
+            jobSpecHash: storedJobSpec?.hash ?? null,
+            jobSpecUri: storedJobSpec?.uri ?? null,
+            jobSpecPath: storedJobSpec?.path ?? null,
+            jobSpecTaskLinkPath,
+            jobSpecIntegrity: storedJobSpec
+              ? { algorithm: 'sha256', canonicalization: 'json-stable-v1' }
+              : null,
+            jobSpecTransactionSignature,
+            jobSpecLinkWarning,
             transactionSignature: txSignature,
+            validationTransactionSignature,
           }),
         };
       } catch (error) {

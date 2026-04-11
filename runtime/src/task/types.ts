@@ -470,6 +470,54 @@ export function parseTaskType(
   throw new Error("Invalid task type format");
 }
 
+function normalizeTaskTypeAlias(input: string): string {
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, "-")
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/**
+ * Parses user-facing task type aliases used by CLIs and agent tools.
+ */
+export function parseTaskTypeAlias(input: string | number): TaskType | null {
+  if (typeof input === "number") {
+    if (!Number.isFinite(input)) return null;
+    const value = Math.trunc(input);
+    return value >= TaskType.Exclusive && value <= TaskType.BidExclusive
+      ? value
+      : null;
+  }
+
+  const normalized = normalizeTaskTypeAlias(input);
+  switch (normalized) {
+    case "0":
+    case "exclusive":
+    case "exclusive-task":
+      return TaskType.Exclusive;
+    case "1":
+    case "collaborative":
+    case "collab":
+    case "collaborative-task":
+      return TaskType.Collaborative;
+    case "2":
+    case "competitive":
+    case "competition":
+    case "competitive-task":
+      return TaskType.Competitive;
+    case "3":
+    case "bid-exclusive":
+    case "bidexclusive":
+    case "bid":
+    case "auction":
+      return TaskType.BidExclusive;
+    default:
+      return null;
+  }
+}
+
 /**
  * Parses raw Anchor task account data into a typed OnChainTask.
  *
@@ -813,6 +861,21 @@ export function taskTypeToString(type: TaskType): string {
       return "BidExclusive";
     default:
       return `Unknown (${type})`;
+  }
+}
+
+export function taskTypeToKey(type: TaskType): string {
+  switch (type) {
+    case TaskType.Exclusive:
+      return "exclusive";
+    case TaskType.Collaborative:
+      return "collaborative";
+    case TaskType.Competitive:
+      return "competitive";
+    case TaskType.BidExclusive:
+      return "bid-exclusive";
+    default:
+      return `unknown-${type}`;
   }
 }
 

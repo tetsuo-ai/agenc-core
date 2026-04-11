@@ -3,9 +3,11 @@ import { PublicKey } from "@solana/web3.js";
 import { PROGRAM_ID, SEEDS } from "@tetsuo-ai/sdk";
 import {
   deriveAgentPda,
+  deriveAuthorityRateLimitPda,
   deriveProtocolPda,
   deriveAuthorityRateLimitPda,
   findAgentPda,
+  findAuthorityRateLimitPda,
   findProtocolPda,
   findAuthorityRateLimitPda,
   type PdaWithBump,
@@ -254,6 +256,29 @@ describe("PDA derivation helpers", () => {
 
       const address = findProtocolPda(customProgramId);
       const { address: derivedAddress } = deriveProtocolPda(customProgramId);
+
+      expect(address.equals(derivedAddress)).toBe(true);
+    });
+  });
+
+  describe("deriveAuthorityRateLimitPda", () => {
+    it("uses authority_rate_limit and authority seeds", () => {
+      const authority = PublicKey.unique();
+      const result = deriveAuthorityRateLimitPda(authority);
+
+      const [expected, expectedBump] = PublicKey.findProgramAddressSync(
+        [Buffer.from("authority_rate_limit"), authority.toBuffer()],
+        PROGRAM_ID,
+      );
+
+      expect(result.address.equals(expected)).toBe(true);
+      expect(result.bump).toBe(expectedBump);
+    });
+
+    it("findAuthorityRateLimitPda returns the derived address", () => {
+      const authority = PublicKey.unique();
+      const address = findAuthorityRateLimitPda(authority);
+      const { address: derivedAddress } = deriveAuthorityRateLimitPda(authority);
 
       expect(address.equals(derivedAddress)).toBe(true);
     });
