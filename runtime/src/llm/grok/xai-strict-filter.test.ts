@@ -113,38 +113,48 @@ function functionCallBlock(name: string, args: string): Record<string, unknown> 
 
 describe("resolveDocumentedXaiModel", () => {
   it("returns canonical ID for known catalog entries", () => {
-    expect(resolveDocumentedXaiModel("grok-4.20-0309-reasoning")).toBe(
-      "grok-4.20-0309-reasoning",
+    expect(resolveDocumentedXaiModel("grok-4.20-beta-0309-reasoning")).toBe(
+      "grok-4.20-beta-0309-reasoning",
     );
     expect(resolveDocumentedXaiModel("grok-4-1-fast-non-reasoning")).toBe(
       "grok-4-1-fast-non-reasoning",
     );
-    expect(resolveDocumentedXaiModel("grok-4.20-multi-agent-0309")).toBe(
-      "grok-4.20-multi-agent-0309",
+    expect(resolveDocumentedXaiModel("grok-4.20-multi-agent-beta-0309")).toBe(
+      "grok-4.20-multi-agent-beta-0309",
     );
   });
 
   it("resolves bare-name aliases to canonical", () => {
     expect(resolveDocumentedXaiModel("grok-4.20-reasoning")).toBe(
-      "grok-4.20-0309-reasoning",
+      "grok-4.20-beta-0309-reasoning",
     );
     expect(resolveDocumentedXaiModel("grok-4.20-multi-agent")).toBe(
-      "grok-4.20-multi-agent-0309",
+      "grok-4.20-multi-agent-beta-0309",
     );
   });
 
   it("resolves -latest aliases to canonical", () => {
     expect(resolveDocumentedXaiModel("grok-4.20-reasoning-latest")).toBe(
-      "grok-4.20-0309-reasoning",
+      "grok-4.20-beta-0309-reasoning",
     );
     expect(
       resolveDocumentedXaiModel("grok-4-1-fast-non-reasoning-latest"),
     ).toBe("grok-4-1-fast-non-reasoning");
   });
 
+  it("resolves stale non-beta 4.20 IDs to current beta catalog IDs", () => {
+    expect(resolveDocumentedXaiModel("grok-4.20-0309-reasoning")).toBe(
+      "grok-4.20-beta-0309-reasoning",
+    );
+    expect(resolveDocumentedXaiModel("grok-4.20-0309-non-reasoning")).toBe(
+      "grok-4.20-beta-0309-non-reasoning",
+    );
+    expect(resolveDocumentedXaiModel("grok-4.20-multi-agent-0309")).toBe(
+      "grok-4.20-multi-agent-beta-0309",
+    );
+  });
+
   it("returns null for undocumented IDs", () => {
-    // The exact bug we hit on 2026-04-09: -beta variant doesn't exist.
-    expect(resolveDocumentedXaiModel("grok-4.20-beta-0309-reasoning")).toBeNull();
     expect(resolveDocumentedXaiModel("grok-9.99-flux-capacitor")).toBeNull();
     expect(resolveDocumentedXaiModel("gpt-4")).toBeNull();
     expect(resolveDocumentedXaiModel("claude-opus-4")).toBeNull();
@@ -174,7 +184,7 @@ describe("resolveDocumentedXaiModel", () => {
 
 describe("model capability flags", () => {
   it("modelSupportsFunctionCalling: text models yes, imagine-* no", () => {
-    expect(modelSupportsFunctionCalling("grok-4.20-0309-reasoning")).toBe(true);
+    expect(modelSupportsFunctionCalling("grok-4.20-beta-0309-reasoning")).toBe(true);
     expect(modelSupportsFunctionCalling("grok-4-1-fast-non-reasoning")).toBe(
       true,
     );
@@ -183,10 +193,10 @@ describe("model capability flags", () => {
   });
 
   it("modelSupportsReasoningEffort: only multi-agent", () => {
-    expect(modelSupportsReasoningEffort("grok-4.20-multi-agent-0309")).toBe(
+    expect(modelSupportsReasoningEffort("grok-4.20-multi-agent-beta-0309")).toBe(
       true,
     );
-    expect(modelSupportsReasoningEffort("grok-4.20-0309-reasoning")).toBe(false);
+    expect(modelSupportsReasoningEffort("grok-4.20-beta-0309-reasoning")).toBe(false);
     expect(modelSupportsReasoningEffort("grok-4-1-fast-reasoning")).toBe(false);
     expect(modelSupportsReasoningEffort("grok-4-1-fast-non-reasoning")).toBe(
       false,
@@ -194,10 +204,10 @@ describe("model capability flags", () => {
   });
 
   it("modelIsReasoningVariant catches reasoning + multi-agent", () => {
-    expect(modelIsReasoningVariant("grok-4.20-0309-reasoning")).toBe(true);
+    expect(modelIsReasoningVariant("grok-4.20-beta-0309-reasoning")).toBe(true);
     expect(modelIsReasoningVariant("grok-4-1-fast-reasoning")).toBe(true);
-    expect(modelIsReasoningVariant("grok-4.20-multi-agent-0309")).toBe(true);
-    expect(modelIsReasoningVariant("grok-4.20-0309-non-reasoning")).toBe(false);
+    expect(modelIsReasoningVariant("grok-4.20-multi-agent-beta-0309")).toBe(true);
+    expect(modelIsReasoningVariant("grok-4.20-beta-0309-non-reasoning")).toBe(false);
     expect(modelIsReasoningVariant("grok-4-1-fast-non-reasoning")).toBe(false);
   });
 });
@@ -219,7 +229,7 @@ describe("validateXaiRequestPreFlight (pass cases)", () => {
     expect(() =>
       validateXaiRequestPreFlight(
         plainTextRequest({
-          model: "grok-4.20-multi-agent-0309",
+          model: "grok-4.20-multi-agent-beta-0309",
           reasoning: { effort: "high" },
         }),
       ),
@@ -231,7 +241,7 @@ describe("validateXaiRequestPreFlight (pass cases)", () => {
       expect(() =>
         validateXaiRequestPreFlight(
           plainTextRequest({
-            model: "grok-4.20-multi-agent-0309",
+            model: "grok-4.20-multi-agent-beta-0309",
             reasoning: { effort },
           }),
         ),
@@ -286,10 +296,10 @@ describe("validateXaiRequestPreFlight (pass cases)", () => {
 // ---------------------------------------------------------------------------
 
 describe("validateXaiRequestPreFlight (reject cases)", () => {
-  it("throws XaiUnknownModelError for the exact bug we hit (-beta variant)", () => {
+  it("throws XaiUnknownModelError for unknown Grok variants", () => {
     expect(() =>
       validateXaiRequestPreFlight(
-        plainTextRequest({ model: "grok-4.20-beta-0309-reasoning" }),
+        plainTextRequest({ model: "grok-9.99-flux-capacitor" }),
       ),
     ).toThrow(XaiUnknownModelError);
   });
@@ -315,7 +325,6 @@ describe("validateXaiRequestPreFlight (reject cases)", () => {
       "claude-opus-4",
       "claude-sonnet-3.5",
       "grok-9.99-flux-capacitor",
-      "grok-4.20-beta-0309-reasoning",
     ]) {
       expect(() =>
         validateXaiRequestPreFlight(plainTextRequest({ model: bad })),
@@ -327,7 +336,7 @@ describe("validateXaiRequestPreFlight (reject cases)", () => {
     expect(() =>
       validateXaiRequestPreFlight(
         plainTextRequest({
-          model: "grok-4.20-0309-reasoning",
+          model: "grok-4.20-beta-0309-reasoning",
           reasoning: { effort: "high" },
         }),
       ),
@@ -346,7 +355,7 @@ describe("validateXaiRequestPreFlight (reject cases)", () => {
     expect(() =>
       validateXaiRequestPreFlight(
         plainTextRequest({
-          model: "grok-4.20-0309-reasoning",
+          model: "grok-4.20-beta-0309-reasoning",
           presence_penalty: 0.5,
         }),
       ),
@@ -357,7 +366,7 @@ describe("validateXaiRequestPreFlight (reject cases)", () => {
     expect(() =>
       validateXaiRequestPreFlight(
         plainTextRequest({
-          model: "grok-4.20-multi-agent-0309",
+          model: "grok-4.20-multi-agent-beta-0309",
           frequency_penalty: 1.0,
         }),
       ),
@@ -567,7 +576,7 @@ describe("validateXaiResponsePostFlight (clean cases)", () => {
   it("returns no anomaly when response.model is the documented alias of the requested model", () => {
     const result = validateXaiResponsePostFlight({
       request: { ...plainTextRequest(), model: "grok-4.20-reasoning" },
-      response: responseWith({ model: "grok-4.20-0309-reasoning" }),
+      response: responseWith({ model: "grok-4.20-beta-0309-reasoning" }),
     });
     expect(result).toEqual([]);
   });
@@ -703,7 +712,7 @@ describe("validateXaiResponsePostFlight (model aliasing)", () => {
   it("does NOT flag documented bare-name alias as silent aliasing", () => {
     const result = validateXaiResponsePostFlight({
       request: { ...plainTextRequest(), model: "grok-4.20-reasoning" },
-      response: responseWith({ model: "grok-4.20-0309-reasoning" }),
+      response: responseWith({ model: "grok-4.20-beta-0309-reasoning" }),
     });
     expect(
       result.find((a) => a.code === "model_silently_aliased"),
@@ -1034,11 +1043,11 @@ describe("DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS", () => {
 // ---------------------------------------------------------------------------
 
 describe("multi-agent specific restrictions", () => {
-  it("rejects max_output_tokens on grok-4.20-multi-agent-0309", () => {
+  it("rejects max_output_tokens on grok-4.20-multi-agent-beta-0309", () => {
     expect(() =>
       validateXaiRequestPreFlight(
         plainTextRequest({
-          model: "grok-4.20-multi-agent-0309",
+          model: "grok-4.20-multi-agent-beta-0309",
           max_output_tokens: 1024,
         }),
       ),
@@ -1060,7 +1069,7 @@ describe("multi-agent specific restrictions", () => {
     expect(() =>
       validateXaiRequestPreFlight(
         plainTextRequest({
-          model: "grok-4.20-multi-agent-0309",
+          model: "grok-4.20-multi-agent-beta-0309",
           tools: [functionTool("system.bash")],
         }),
       ),
@@ -1071,7 +1080,7 @@ describe("multi-agent specific restrictions", () => {
     expect(() =>
       validateXaiRequestPreFlight(
         plainTextRequest({
-          model: "grok-4.20-multi-agent-0309",
+          model: "grok-4.20-multi-agent-beta-0309",
           tools: [{ type: "web_search" }, { type: "x_search" }],
         }),
       ),

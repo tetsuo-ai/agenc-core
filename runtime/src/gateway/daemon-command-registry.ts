@@ -1541,12 +1541,19 @@ export function createDaemonCommandRegistry(
       }
 
       const normalized = normalizeGrokModel(arg) ?? arg;
-      let match = chatModels.find((m) => m.id === normalized);
+      const normalizedLower = normalized.toLowerCase();
+      let match =
+        chatModels.find((m) => m.id.toLowerCase() === argLower) ??
+        chatModels.find((m) => m.id.toLowerCase() === normalizedLower);
       if (!match) {
+        const argTokens = argLower.split(/[\s_]+/).filter(Boolean);
+        const matchesModelQuery = (value: string): boolean =>
+          value.includes(argLower) ||
+          (argTokens.length > 1 && argTokens.every((token) => value.includes(token)));
         // Try fuzzy: check if any model contains the input
         const fuzzy = chatModels.filter((m) =>
-          m.id.toLowerCase().includes(argLower) ||
-          m.aliases.some((a) => a.toLowerCase().includes(argLower)),
+          matchesModelQuery(m.id.toLowerCase()) ||
+          m.aliases.some((a) => matchesModelQuery(a.toLowerCase())),
         );
         if (fuzzy.length === 1) {
           match = fuzzy[0];

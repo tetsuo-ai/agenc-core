@@ -39,9 +39,8 @@
  *      this: tool-followup with empty tools throws
  *      `XaiSilentToolDropError("outgoing_followup_tools_empty")`.
  *
- *   2. Configured model `grok-4.20-beta-0309-reasoning` was silently
- *      aliased server-side because no `-beta` variant exists in the xAI
- *      catalog. Pre-flight rule 1 catches this: throws
+ *   2. Configured model IDs that are not in the current xAI catalog can be
+ *      silently aliased server-side. Pre-flight rule 1 catches this: throws
  *      `XaiUnknownModelError`.
  *
  *   3. Grok returned a response with `reasoning + message` blocks but zero
@@ -154,9 +153,9 @@ const SERVER_SIDE_TOOL_CALL_OUTPUT_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Documented xAI model catalog as of 2026-04-09.
+ * xAI model catalog as of 2026-04-11.
  *
- * Source: developers/models page via mcp__xai-docs__get_doc_page.
+ * Source: live daemon /model list response backed by xAI /models.
  *
  * The validator rejects any `model` value that does not appear here OR in
  * {@link DOCUMENTED_XAI_MODEL_ALIASES}. xAI silently aliases unknown model
@@ -165,11 +164,11 @@ const SERVER_SIDE_TOOL_CALL_OUTPUT_TYPES: ReadonlySet<string> = new Set([
  */
 const DOCUMENTED_XAI_MODEL_IDS: ReadonlySet<string> = new Set([
   // Grok 4 family — current
-  "grok-4.20-0309-reasoning",
-  "grok-4.20-0309-non-reasoning",
+  "grok-4.20-beta-0309-reasoning",
+  "grok-4.20-beta-0309-non-reasoning",
   "grok-4-1-fast-reasoning",
   "grok-4-1-fast-non-reasoning",
-  "grok-4.20-multi-agent-0309",
+  "grok-4.20-multi-agent-beta-0309",
   "grok-4-0709",
   // Grok 3 family — still in xAI catalog per release notes (April 2025)
   "grok-3",
@@ -193,20 +192,27 @@ const DOCUMENTED_XAI_MODEL_IDS: ReadonlySet<string> = new Set([
  *   - `<modelname>-<date>` → specific release
  *
  * For each documented model variant, we list the bare-name and `-latest`
- * aliases that resolve to the canonical 0309 release. New releases just
+ * aliases that resolve to the current canonical release. New releases just
  * add new entries to this map.
  */
 const DOCUMENTED_XAI_MODEL_ALIASES: ReadonlyMap<string, string> = new Map([
   // bare names → canonical
-  ["grok-4.20-reasoning", "grok-4.20-0309-reasoning"],
-  ["grok-4.20-non-reasoning", "grok-4.20-0309-non-reasoning"],
-  ["grok-4.20-multi-agent", "grok-4.20-multi-agent-0309"],
+  ["grok-4.20-reasoning", "grok-4.20-beta-0309-reasoning"],
+  ["grok-4.20-non-reasoning", "grok-4.20-beta-0309-non-reasoning"],
+  ["grok-4.20-multi-agent", "grok-4.20-multi-agent-beta-0309"],
   ["grok-4-fast-reasoning", "grok-4-1-fast-reasoning"],
   ["grok-4-fast-non-reasoning", "grok-4-1-fast-non-reasoning"],
   // -latest aliases → canonical
-  ["grok-4.20-reasoning-latest", "grok-4.20-0309-reasoning"],
-  ["grok-4.20-non-reasoning-latest", "grok-4.20-0309-non-reasoning"],
-  ["grok-4.20-multi-agent-latest", "grok-4.20-multi-agent-0309"],
+  ["grok-4.20-reasoning-latest", "grok-4.20-beta-0309-reasoning"],
+  ["grok-4.20-non-reasoning-latest", "grok-4.20-beta-0309-non-reasoning"],
+  ["grok-4.20-multi-agent-latest", "grok-4.20-multi-agent-beta-0309"],
+  ["grok-4.20-beta-latest-reasoning", "grok-4.20-beta-0309-reasoning"],
+  ["grok-4.20-beta-latest-non-reasoning", "grok-4.20-beta-0309-non-reasoning"],
+  ["grok-4.20-multi-agent-beta-latest", "grok-4.20-multi-agent-beta-0309"],
+  // Previous non-beta spelling seen in local autocomplete before xAI exposed beta IDs.
+  ["grok-4.20-0309-reasoning", "grok-4.20-beta-0309-reasoning"],
+  ["grok-4.20-0309-non-reasoning", "grok-4.20-beta-0309-non-reasoning"],
+  ["grok-4.20-multi-agent-0309", "grok-4.20-multi-agent-beta-0309"],
   ["grok-4-1-fast-reasoning-latest", "grok-4-1-fast-reasoning"],
   ["grok-4-1-fast-non-reasoning-latest", "grok-4-1-fast-non-reasoning"],
 ]);
@@ -246,7 +252,7 @@ export function modelSupportsFunctionCalling(canonicalModel: string): boolean {
  * automatically and **return an error** if `reasoning.effort` is sent.
  */
 export function modelSupportsReasoningEffort(canonicalModel: string): boolean {
-  return canonicalModel === "grok-4.20-multi-agent-0309";
+  return canonicalModel === "grok-4.20-multi-agent-beta-0309";
 }
 
 /**
@@ -290,11 +296,8 @@ export function modelIsMultiAgent(canonicalModel: string): boolean {
  * Thrown when the configured `model` is not in the documented xAI catalog.
  *
  * xAI silently aliases unknown model IDs server-side, which produces
- * unverifiable behavior. This is the failure mode that hit
- * `grok-4.20-beta-0309-reasoning` on 2026-04-09 — there is no `-beta`
- * variant in the catalog and no documented alias rule that produces it,
- * but xAI returned 200 anyway with `model: "grok-4.20-0309-reasoning"`
- * in the response payload.
+ * unverifiable behavior. This catches stale or mistyped model IDs before
+ * sending them to the provider.
  *
  * Maps to `failureClass: "provider_error"` via the existing
  * `classifyLLMFailure()` instanceof branch on `LLMProviderError`. Gets
@@ -312,7 +315,7 @@ export class XaiUnknownModelError extends LLMProviderError {
         `catalog (developers/models). xAI silently aliases unknown model IDs, ` +
         `which produces unverifiable behavior. Set llm.model in config.json to ` +
         `one of the documented IDs (e.g. "grok-4-1-fast-non-reasoning", ` +
-        `"grok-4.20-0309-reasoning", "grok-4.20-multi-agent-0309").`,
+        `"grok-4.20-beta-0309-reasoning", "grok-4.20-multi-agent-beta-0309").`,
       400,
     );
     this.name = "XaiUnknownModelError";
@@ -412,7 +415,7 @@ export class XaiSilentToolDropError extends LLMProviderError {
  *
  *   1. Undocumented or empty `model`.
  *   2. `reasoning` field on a model that doesn't accept `reasoning.effort`
- *      (everything except `grok-4.20-multi-agent-0309`).
+ *      (everything except `grok-4.20-multi-agent-beta-0309`).
  *   3. `presence_penalty` / `frequency_penalty` / `stop` on a reasoning
  *      variant.
  *   4. Any top-level field not in
@@ -442,7 +445,7 @@ export function validateXaiRequestPreFlight(
   if ("reasoning" in params && !modelSupportsReasoningEffort(canonicalModel)) {
     throw new XaiUndocumentedFieldError(
       "reasoning",
-      `is only supported on grok-4.20-multi-agent-0309 (where it controls ` +
+      `is only supported on grok-4.20-multi-agent-beta-0309 (where it controls ` +
         `agent count); current model is ${canonicalModel}, which reasons ` +
         `automatically and returns an error if reasoning.effort is sent`,
     );

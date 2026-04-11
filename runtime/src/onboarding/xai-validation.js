@@ -7,22 +7,26 @@ const LEGACY_GROK_MODEL_ALIASES = Object.freeze({
   "grok-4-fast-reasoning": "grok-4-1-fast-reasoning",
   "grok-4-fast-non-reasoning": "grok-4-1-fast-non-reasoning",
   "grok-4.20-experimental-beta-0304-reasoning":
-    "grok-4.20-0309-reasoning",
+    "grok-4.20-beta-0309-reasoning",
   "grok-4.20-experimental-beta-0304-non-reasoning":
-    "grok-4.20-0309-non-reasoning",
+    "grok-4.20-beta-0309-non-reasoning",
   "grok-4.20-multi-agent-experimental-beta-0304":
-    "grok-4.20-multi-agent-0309",
-  "grok-4.20-beta-0309-reasoning": "grok-4.20-0309-reasoning",
-  "grok-4.20-beta-0309-non-reasoning": "grok-4.20-0309-non-reasoning",
-  "grok-4.20-multi-agent-beta-0309": "grok-4.20-multi-agent-0309",
-  "grok-4.20-beta-latest-reasoning": "grok-4.20-0309-reasoning",
-  "grok-4.20-beta-latest-non-reasoning": "grok-4.20-0309-non-reasoning",
+    "grok-4.20-multi-agent-beta-0309",
+  "grok-4.20-0309-reasoning": "grok-4.20-beta-0309-reasoning",
+  "grok-4.20-0309-non-reasoning": "grok-4.20-beta-0309-non-reasoning",
+  "grok-4.20-multi-agent-0309": "grok-4.20-multi-agent-beta-0309",
+  "grok-4.20-reasoning": "grok-4.20-beta-0309-reasoning",
+  "grok-4.20-non-reasoning": "grok-4.20-beta-0309-non-reasoning",
+  "grok-4.20-multi-agent": "grok-4.20-multi-agent-beta-0309",
+  "grok-4.20-beta-latest-reasoning": "grok-4.20-beta-0309-reasoning",
+  "grok-4.20-beta-latest-non-reasoning": "grok-4.20-beta-0309-non-reasoning",
+  "grok-4.20-multi-agent-beta-latest": "grok-4.20-multi-agent-beta-0309",
 });
 
 const KNOWN_GROK_CHAT_MODELS = new Set([
-  "grok-4.20-multi-agent-0309",
-  "grok-4.20-0309-reasoning",
-  "grok-4.20-0309-non-reasoning",
+  "grok-4.20-multi-agent-beta-0309",
+  "grok-4.20-beta-0309-reasoning",
+  "grok-4.20-beta-0309-non-reasoning",
   "grok-4-1-fast-reasoning",
   "grok-4-1-fast-non-reasoning",
   "grok-4-fast-reasoning",

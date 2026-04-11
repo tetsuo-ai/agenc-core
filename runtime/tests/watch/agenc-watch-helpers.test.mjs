@@ -6,6 +6,7 @@ import {
   buildWatchCommands,
   createOperatorInputBatcher,
   findWatchCommandDefinition,
+  matchModelNames,
   matchWatchCommands,
   parseWatchSlashCommand,
   shouldAutoInspectRun,
@@ -89,6 +90,19 @@ test("matchWatchCommands filters by prefix and aliases", () => {
   assert.equal(findWatchCommandDefinition("/commands")?.name, "/help");
   assert.equal(findWatchCommandDefinition("/copy")?.name, "/export");
   assert.equal(findWatchCommandDefinition("/models")?.name, "/model");
+});
+
+test("matchModelNames suggests current Grok 4.20 beta catalog IDs", () => {
+  assert.deepEqual(matchModelNames("4.20", { limit: 3 }), [
+    "grok-4.20-multi-agent-beta-0309",
+    "grok-4.20-beta-0309-reasoning",
+    "grok-4.20-beta-0309-non-reasoning",
+  ]);
+  assert.deepEqual(matchModelNames("grok 4.20", { limit: 2 }), [
+    "grok-4.20-multi-agent-beta-0309",
+    "grok-4.20-beta-0309-reasoning",
+  ]);
+  assert.deepEqual(matchModelNames("4.20-0309", { limit: 3 }), []);
 });
 
 test("parseWatchSlashCommand resolves canonical command metadata and args", () => {

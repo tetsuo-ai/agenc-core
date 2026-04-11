@@ -21,9 +21,15 @@ describe("normalizeGrokModel", () => {
   });
 
   it("maps superseded 0304 experimental models to 0309 canonical models", () => {
-    expect(normalizeGrokModel("grok-4.20-experimental-beta-0304-reasoning")).toBe("grok-4.20-0309-reasoning");
-    expect(normalizeGrokModel("grok-4.20-experimental-beta-0304-non-reasoning")).toBe("grok-4.20-0309-non-reasoning");
-    expect(normalizeGrokModel("grok-4.20-multi-agent-experimental-beta-0304")).toBe("grok-4.20-multi-agent-0309");
+    expect(normalizeGrokModel("grok-4.20-experimental-beta-0304-reasoning")).toBe("grok-4.20-beta-0309-reasoning");
+    expect(normalizeGrokModel("grok-4.20-experimental-beta-0304-non-reasoning")).toBe("grok-4.20-beta-0309-non-reasoning");
+    expect(normalizeGrokModel("grok-4.20-multi-agent-experimental-beta-0304")).toBe("grok-4.20-multi-agent-beta-0309");
+  });
+
+  it("maps stale non-beta 4.20 IDs to the current beta catalog IDs", () => {
+    expect(normalizeGrokModel("grok-4.20-0309-reasoning")).toBe("grok-4.20-beta-0309-reasoning");
+    expect(normalizeGrokModel("grok-4.20-0309-non-reasoning")).toBe("grok-4.20-beta-0309-non-reasoning");
+    expect(normalizeGrokModel("grok-4.20-multi-agent-0309")).toBe("grok-4.20-multi-agent-beta-0309");
   });
 });
 
@@ -35,9 +41,10 @@ describe("inferGrokContextWindowTokens", () => {
     expect(inferGrokContextWindowTokens("grok-4-fast")).toBe(2_000_000);
     expect(inferGrokContextWindowTokens("grok-4-fast-reasoning")).toBe(2_000_000);
     expect(inferGrokContextWindowTokens("grok-4-fast-non-reasoning")).toBe(2_000_000);
+    expect(inferGrokContextWindowTokens("grok-4.20-beta-0309-reasoning")).toBe(2_000_000);
+    expect(inferGrokContextWindowTokens("grok-4.20-beta-0309-non-reasoning")).toBe(2_000_000);
+    expect(inferGrokContextWindowTokens("grok-4.20-multi-agent-beta-0309")).toBe(2_000_000);
     expect(inferGrokContextWindowTokens("grok-4.20-0309-reasoning")).toBe(2_000_000);
-    expect(inferGrokContextWindowTokens("grok-4.20-0309-non-reasoning")).toBe(2_000_000);
-    expect(inferGrokContextWindowTokens("grok-4.20-multi-agent-0309")).toBe(2_000_000);
   });
 
   it("resolves model-specific windows for non-fast variants", () => {
@@ -61,12 +68,13 @@ describe("listKnownGrokModels", () => {
     });
   });
 
-  it("includes 0309 models with aliases from superseded variants", () => {
+  it("includes current 0309 beta models with aliases from superseded variants", () => {
     const models = listKnownGrokModels();
-    const reasoning = models.find((e) => e.id === "grok-4.20-0309-reasoning");
+    const reasoning = models.find((e) => e.id === "grok-4.20-beta-0309-reasoning");
     expect(reasoning).toBeDefined();
     expect(reasoning!.contextWindowTokens).toBe(2_000_000);
-    expect(reasoning!.aliases).toContain("grok-4.20-beta-0309-reasoning");
+    expect(reasoning!.aliases).toContain("grok-4.20-0309-reasoning");
+    expect(reasoning!.aliases).toContain("grok-4.20-reasoning");
     expect(reasoning!.aliases).toContain("grok-4.20-experimental-beta-0304-reasoning");
   });
 

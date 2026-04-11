@@ -6108,6 +6108,12 @@ describe("background-run-supervisor", () => {
       chatStream: vi.fn(),
       healthCheck: vi.fn(async () => true),
     };
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () =>
+        new Response(JSON.stringify({ blockingError: "idle blocked" }), {
+          status: 200,
+        }),
+    );
     const supervisor = new BackgroundRunSupervisor({
       chatExecutor: { execute } as any,
       supervisorLlm,
@@ -6122,8 +6128,8 @@ describe("background-run-supervisor", () => {
             {
               id: "worker-idle-block",
               phase: "WorkerIdle",
-              kind: "command",
-              target: "printf '{\"blockingError\":\"idle blocked\"}'",
+              kind: "http",
+              target: "https://stop-hook.test/worker-idle",
             },
           ],
         }),

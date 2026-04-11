@@ -21,25 +21,29 @@ const LEGACY_GROK_MODEL_ALIASES: Record<string, string> = {
   "grok-4": "grok-4-1-fast-reasoning",
   "grok-4-fast-reasoning": "grok-4-1-fast-reasoning",
   "grok-4-fast-non-reasoning": "grok-4-1-fast-non-reasoning",
-  // Superseded Grok 4.20 aliases -> 0309 canonical models
+  // Superseded Grok 4.20 aliases -> current live 0309 beta catalog IDs.
   "grok-4.20-experimental-beta-0304-reasoning":
-    "grok-4.20-0309-reasoning",
+    "grok-4.20-beta-0309-reasoning",
   "grok-4.20-experimental-beta-0304-non-reasoning":
-    "grok-4.20-0309-non-reasoning",
+    "grok-4.20-beta-0309-non-reasoning",
   "grok-4.20-multi-agent-experimental-beta-0304":
-    "grok-4.20-multi-agent-0309",
-  "grok-4.20-beta-0309-reasoning": "grok-4.20-0309-reasoning",
-  "grok-4.20-beta-0309-non-reasoning": "grok-4.20-0309-non-reasoning",
-  "grok-4.20-multi-agent-beta-0309": "grok-4.20-multi-agent-0309",
-  "grok-4.20-beta-latest-reasoning": "grok-4.20-0309-reasoning",
-  "grok-4.20-beta-latest-non-reasoning": "grok-4.20-0309-non-reasoning",
+    "grok-4.20-multi-agent-beta-0309",
+  "grok-4.20-0309-reasoning": "grok-4.20-beta-0309-reasoning",
+  "grok-4.20-0309-non-reasoning": "grok-4.20-beta-0309-non-reasoning",
+  "grok-4.20-multi-agent-0309": "grok-4.20-multi-agent-beta-0309",
+  "grok-4.20-reasoning": "grok-4.20-beta-0309-reasoning",
+  "grok-4.20-non-reasoning": "grok-4.20-beta-0309-non-reasoning",
+  "grok-4.20-multi-agent": "grok-4.20-multi-agent-beta-0309",
+  "grok-4.20-beta-latest-reasoning": "grok-4.20-beta-0309-reasoning",
+  "grok-4.20-beta-latest-non-reasoning": "grok-4.20-beta-0309-non-reasoning",
+  "grok-4.20-multi-agent-beta-latest": "grok-4.20-multi-agent-beta-0309",
 };
 
 const KNOWN_GROK_MODEL_IDS = [
-  // Chat / language models (source: xAI docs, March 14 2026)
-  "grok-4.20-0309-reasoning",
-  "grok-4.20-0309-non-reasoning",
-  "grok-4.20-multi-agent-0309",
+  // Chat / language models (source: live /models catalog, April 11 2026)
+  "grok-4.20-beta-0309-reasoning",
+  "grok-4.20-beta-0309-non-reasoning",
+  "grok-4.20-multi-agent-beta-0309",
   "grok-4-1-fast-reasoning",
   "grok-4-1-fast-non-reasoning",
   "grok-4-fast-reasoning",
@@ -62,11 +66,11 @@ const GROK_CONTEXT_WINDOW_BY_PREFIX: ReadonlyArray<{
   readonly prefix: string;
   readonly contextWindowTokens: number;
 }> = [
-  // Source: xAI Docs MCP page developers/models (retrieved March 14, 2026)
-  { prefix: "grok-4.20-multi-agent-0309", contextWindowTokens: 2_000_000 },
-  { prefix: "grok-4.20-0309-reasoning", contextWindowTokens: 2_000_000 },
+  // Source: live /models catalog (retrieved April 11, 2026)
+  { prefix: "grok-4.20-multi-agent-beta-0309", contextWindowTokens: 2_000_000 },
+  { prefix: "grok-4.20-beta-0309-reasoning", contextWindowTokens: 2_000_000 },
   {
-    prefix: "grok-4.20-0309-non-reasoning",
+    prefix: "grok-4.20-beta-0309-non-reasoning",
     contextWindowTokens: 2_000_000,
   },
   { prefix: "grok-4-1-fast", contextWindowTokens: 2_000_000 },

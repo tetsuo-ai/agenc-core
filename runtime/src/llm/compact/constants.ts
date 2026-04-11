@@ -25,7 +25,7 @@ export const ESCALATED_MAX_TOKENS = 64_000;
  * The previous hardcoded 120K threshold was 6% of a 2M window, causing
  * the model to lose its working memory after ~30 tool calls. Scaling
  * by percentage means the threshold automatically adapts to any model:
- *   - grok-4.20-0309-reasoning (2M): 800K threshold
+ *   - grok-4.20-beta-0309-reasoning (2M): 800K threshold
  *   - grok-4-1-fast (2M): 800K threshold
  *   - grok-3-mini (128K): 51K threshold
  *   - ollama local (32K): 12.8K threshold

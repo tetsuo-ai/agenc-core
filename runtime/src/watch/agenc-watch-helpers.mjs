@@ -5,9 +5,9 @@ export const DEFAULT_INPUT_BATCH_DELAY_MS = 45;
  * Kept in sync with runtime/src/gateway/context-window.ts KNOWN_GROK_MODEL_IDS.
  */
 export const KNOWN_CHAT_MODELS = Object.freeze([
-  "grok-4.20-multi-agent-0309",
-  "grok-4.20-0309-reasoning",
-  "grok-4.20-0309-non-reasoning",
+  "grok-4.20-multi-agent-beta-0309",
+  "grok-4.20-beta-0309-reasoning",
+  "grok-4.20-beta-0309-non-reasoning",
   "grok-4-1-fast-reasoning",
   "grok-4-1-fast-non-reasoning",
   "grok-4-fast-reasoning",
@@ -18,11 +18,18 @@ export const KNOWN_CHAT_MODELS = Object.freeze([
   "grok-3-mini",
 ]);
 
+function modelIdMatchesQuery(id, query) {
+  const haystack = id.toLowerCase();
+  if (haystack.includes(query)) return true;
+  const tokens = query.split(/[\s_]+/).filter(Boolean);
+  return tokens.length > 1 && tokens.every((token) => haystack.includes(token));
+}
+
 export function matchModelNames(query, { limit = 8 } = {}) {
-  const q = (query ?? "").toLowerCase();
+  const q = (query ?? "").trim().toLowerCase();
   if (!q) return KNOWN_CHAT_MODELS.slice(0, limit);
   return KNOWN_CHAT_MODELS
-    .filter((id) => id.toLowerCase().includes(q))
+    .filter((id) => modelIdMatchesQuery(id, q))
     .slice(0, limit);
 }
 
