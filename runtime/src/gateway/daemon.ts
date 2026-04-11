@@ -43,6 +43,8 @@ import type {
 import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";
 import {
+  buildRuntimeContractVerifierTraceId,
+  buildRuntimeContractWorkerTraceId,
   logTraceErrorEvent,
   logTraceEvent,
   resolveTraceFanoutEnabled,
@@ -281,8 +283,14 @@ import {
   DurableSubrunOrchestrator,
   type DurableSubrunAdmissionDecision,
 } from "./durable-subrun-orchestrator.js";
-import { PersistentWorkerManager } from "./persistent-worker-manager.js";
-import { PersistentWorkerMailbox } from "./persistent-worker-mailbox.js";
+import {
+  PersistentWorkerManager,
+  type PersistentWorkerTraceEvent,
+} from "./persistent-worker-manager.js";
+import {
+  PersistentWorkerMailbox,
+  type PersistentWorkerMailboxTraceEvent,
+} from "./persistent-worker-mailbox.js";
 import { WorktreeIsolationManager } from "./worktree-isolation.js";
 import { evaluateAutonomyCanaryAdmission } from "./autonomy-rollout.js";
 import {
@@ -308,6 +316,7 @@ import {
 import {
   createDaemonToolRegistry,
 } from "./daemon-tool-registry.js";
+import type { TopLevelVerifierTraceEvent } from "./top-level-verifier.js";
 import {
   wireSocial as wireSocialStandalone,
   wireAutonomousFeatures as wireAutonomousFeaturesStandalone,
@@ -1270,6 +1279,7 @@ export class DaemonManager {
     config: GatewayConfig,
   ): Promise<void> {
     const flags = resolveRuntimeContractFlags(config.llm);
+    const traceConfig = resolveTraceLoggingConfig(config.logging);
     if (
       !flags.persistentWorkersEnabled ||
       !this._memoryBackend ||
@@ -1284,6 +1294,36 @@ export class DaemonManager {
       ? new PersistentWorkerMailbox({
           memoryBackend: this._memoryBackend,
           logger: this.logger,
+          ...(traceConfig.enabled
+            ? {
+                onTraceEvent: async (
+                  event: PersistentWorkerMailboxTraceEvent,
+                ) => {
+                  logTraceEvent(
+                    this.logger,
+                    `runtime_contract.mailbox.${event.action}`,
+                    {
+                      traceId: buildRuntimeContractWorkerTraceId(
+                        event.parentSessionId,
+                        event.workerId,
+                      ),
+                      sessionId: event.parentSessionId,
+                      workerId: event.workerId,
+                      messageId: event.messageId,
+                      messageType: event.messageType,
+                      direction: event.direction,
+                      status: event.status,
+                      timestamp: event.timestamp,
+                      ...(event.taskId ? { taskId: event.taskId } : {}),
+                      ...(event.correlationId
+                        ? { correlationId: event.correlationId }
+                        : {}),
+                    },
+                    traceConfig.maxChars,
+                  );
+                },
+              }
+            : {}),
         })
       : null;
 
@@ -1300,6 +1340,36 @@ export class DaemonManager {
       remoteIsolationEnabled: flags.workerIsolationRemote,
       remoteSessionManager: this._remoteSessionManager,
       logger: this.logger,
+      ...(traceConfig.enabled
+        ? {
+            onTraceEvent: async (event: PersistentWorkerTraceEvent) => {
+              logTraceEvent(
+                this.logger,
+                `runtime_contract.worker.${event.type}`,
+                {
+                  traceId: buildRuntimeContractWorkerTraceId(
+                    event.parentSessionId,
+                    event.workerId,
+                  ),
+                  sessionId: event.parentSessionId,
+                  workerId: event.workerId,
+                  timestamp: event.timestamp,
+                  ...(event.taskId ? { taskId: event.taskId } : {}),
+                  ...(event.workerState ? { workerState: event.workerState } : {}),
+                  ...(event.summary ? { summary: event.summary } : {}),
+                  ...(event.verifierVerdict
+                    ? { verifierVerdict: event.verifierVerdict }
+                    : {}),
+                  ...(event.executionLocation
+                    ? { executionLocation: event.executionLocation }
+                    : {}),
+                  ...(event.reason ? { reason: event.reason } : {}),
+                },
+                traceConfig.maxChars,
+              );
+            },
+          }
+        : {}),
     });
     await manager.repairRuntimeState();
     this._persistentWorkerManager = manager;
@@ -1977,6 +2047,7 @@ export class DaemonManager {
     const resolvedSubAgentConfig = resolveSubAgentRuntimeConfig(config.llm, {
       unsafeBenchmarkMode: this.yolo,
     });
+    const traceConfig = resolveTraceLoggingConfig(config.logging);
     await this.refreshHostToolingProfile({
       enabled: resolvedSubAgentConfig.enabled,
       logging: config.logging,
@@ -2026,6 +2097,30 @@ export class DaemonManager {
           logger: this.logger,
           taskStore: this._taskTrackerStore,
           remoteJobManager: this._remoteJobManager,
+          ...(traceConfig.enabled
+            ? {
+                onTraceEvent: async (event: TopLevelVerifierTraceEvent) => {
+                  logTraceEvent(
+                    this.logger,
+                    `runtime_contract.verifier.${event.type}`,
+                    {
+                      traceId: buildRuntimeContractVerifierTraceId(
+                        event.sessionId,
+                        event.taskId,
+                      ),
+                      sessionId: event.sessionId,
+                      ...(event.taskId ? { taskId: event.taskId } : {}),
+                      ...(event.launcherKind
+                        ? { launcherKind: event.launcherKind }
+                        : {}),
+                      ...(event.summary ? { summary: event.summary } : {}),
+                      ...(event.verdict ? { verdict: event.verdict } : {}),
+                    },
+                    traceConfig.maxChars,
+                  );
+                },
+              }
+            : {}),
         },
       },
     });
@@ -3517,6 +3612,7 @@ export class DaemonManager {
         newConfig.llm,
         { unsafeBenchmarkMode: this.yolo },
       );
+      const traceConfig = resolveTraceLoggingConfig(newConfig.logging);
       await this.refreshHostToolingProfile({
         enabled: resolvedSubAgentConfig.enabled,
         logging: newConfig.logging,
@@ -3567,6 +3663,30 @@ export class DaemonManager {
             logger: this.logger,
             taskStore: this._taskTrackerStore,
             remoteJobManager: this._remoteJobManager,
+            ...(traceConfig.enabled
+              ? {
+                  onTraceEvent: async (event: TopLevelVerifierTraceEvent) => {
+                    logTraceEvent(
+                      this.logger,
+                      `runtime_contract.verifier.${event.type}`,
+                      {
+                        traceId: buildRuntimeContractVerifierTraceId(
+                          event.sessionId,
+                          event.taskId,
+                        ),
+                        sessionId: event.sessionId,
+                        ...(event.taskId ? { taskId: event.taskId } : {}),
+                        ...(event.launcherKind
+                          ? { launcherKind: event.launcherKind }
+                          : {}),
+                        ...(event.summary ? { summary: event.summary } : {}),
+                        ...(event.verdict ? { verdict: event.verdict } : {}),
+                      },
+                      traceConfig.maxChars,
+                    );
+                  },
+                }
+              : {}),
           },
         },
       });

@@ -259,6 +259,7 @@ export interface RuntimeTaskLayerSnapshot {
 
 export interface TaskTrackerNotification {
   readonly type:
+    | "task_created"
     | "task_started"
     | "task_updated"
     | "task_output_ready"
@@ -271,6 +272,22 @@ export interface TaskTrackerNotification {
   readonly timestamp: number;
 }
 
+export interface TaskTrackerAccessNotification {
+  readonly type:
+    | "task_wait_started"
+    | "task_wait_finished"
+    | "task_output_read";
+  readonly listId: string;
+  readonly taskId: string;
+  readonly timestamp: number;
+  readonly until?: "terminal" | "output_ready";
+  readonly timeoutMs?: number;
+  readonly ready?: boolean;
+  readonly includeEvents?: boolean;
+  readonly maxBytes?: number;
+  readonly task?: Task;
+}
+
 export interface TaskTrackerToolOptions {
   readonly onBeforeTaskComplete?: (params: {
     readonly listId: string;
@@ -278,6 +295,9 @@ export interface TaskTrackerToolOptions {
     readonly task: Task;
     readonly patch: TaskUpdatePatch;
   }) => Promise<TaskCompletionGuardResult | void>;
+  readonly onTaskAccessEvent?: (
+    event: TaskTrackerAccessNotification,
+  ) => void | Promise<void>;
 }
 
 interface TaskStoreOptions {
@@ -1255,6 +1275,7 @@ export class TaskStore {
       list.tasks.push(task);
       await this.persistList(list);
       const cloned = cloneTask(task);
+      await this.emitTaskEvent("task_created", params.listId, cloned);
       await this.emitTaskEvent(
         task.status === "in_progress" ? "task_started" : "task_updated",
         params.listId,
@@ -1770,6 +1791,15 @@ export function createTaskTrackerTools(
   options: TaskTrackerToolOptions = {},
 ): Tool[] {
   const taskStore = store ?? new TaskStore();
+  const emitTaskAccessEvent = async (
+    event: TaskTrackerAccessNotification,
+  ): Promise<void> => {
+    try {
+      await options.onTaskAccessEvent?.(event);
+    } catch {
+      // Access tracing must not affect tool behavior.
+    }
+  };
 
   const taskCreate: Tool = {
     name: "task.create",
@@ -2056,11 +2086,34 @@ export function createTaskTrackerTools(
         args.until === "terminal" || args.until === "output_ready"
           ? args.until
           : undefined;
-      const task = await taskStore.waitForTask(resolveListId(args), taskId, {
+      const effectiveUntil = until ?? "terminal";
+      const listId = resolveListId(args);
+      await emitTaskAccessEvent({
+        type: "task_wait_started",
+        listId,
+        taskId,
+        timestamp: Date.now(),
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        until: effectiveUntil,
+      });
+      const task = await taskStore.waitForTask(listId, taskId, {
         ...(timeoutMs !== undefined ? { timeoutMs } : {}),
         ...(until ? { until } : {}),
       });
       if (!task) return errorResult(`task ${taskId} not found`);
+      await emitTaskAccessEvent({
+        type: "task_wait_finished",
+        listId,
+        taskId,
+        timestamp: Date.now(),
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        until: effectiveUntil,
+        ready:
+          effectiveUntil === "output_ready"
+            ? task.outputReady === true
+            : isTerminalTaskStatus(task.status),
+        task,
+      });
       return okResult({
         ready:
           (until ?? "terminal") === "output_ready"
@@ -2106,17 +2159,33 @@ export function createTaskTrackerTools(
     async execute(args) {
       const taskId = asNonEmptyString(args.taskId);
       if (!taskId) return errorResult("taskId must be a non-empty string");
-      const output = await taskStore.taskOutput(resolveListId(args), taskId, {
+      const listId = resolveListId(args);
+      const timeoutMs =
+        args.timeoutMs !== undefined ? asPositiveInt(args.timeoutMs) ?? 0 : undefined;
+      const includeEvents = args.includeEvents === true;
+      const maxBytes =
+        args.maxBytes !== undefined
+          ? asPositiveInt(args.maxBytes) ?? DEFAULT_OUTPUT_MAX_BYTES
+          : undefined;
+      const output = await taskStore.taskOutput(listId, taskId, {
         block: args.block === true,
-        ...(args.timeoutMs !== undefined
-          ? { timeoutMs: asPositiveInt(args.timeoutMs) ?? 0 }
-          : {}),
-        includeEvents: args.includeEvents === true,
-        ...(args.maxBytes !== undefined
-          ? { maxBytes: asPositiveInt(args.maxBytes) ?? DEFAULT_OUTPUT_MAX_BYTES }
-          : {}),
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        includeEvents,
+        ...(maxBytes !== undefined ? { maxBytes } : {}),
       });
       if (!output) return errorResult(`task ${taskId} not found`);
+      await emitTaskAccessEvent({
+        type: "task_output_read",
+        listId,
+        taskId,
+        timestamp: Date.now(),
+        ...(args.block === true ? { until: "output_ready" as const } : {}),
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        includeEvents,
+        ...(maxBytes !== undefined ? { maxBytes } : {}),
+        ready: output.ready === true,
+        task: (output.task as unknown as Task | undefined) ?? undefined,
+      });
       return okResult(output);
     },
   };

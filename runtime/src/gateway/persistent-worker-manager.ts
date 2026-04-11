@@ -115,6 +115,37 @@ interface PersistentWorkerManagerOptions {
   > | null;
   readonly logger?: Logger;
   readonly now?: () => number;
+  readonly onTraceEvent?: (
+    event: PersistentWorkerTraceEvent,
+  ) => void | Promise<void>;
+}
+
+export interface PersistentWorkerTraceEvent {
+  readonly type:
+    | "spawned"
+    | "reuse_selected"
+    | "assignment_queued"
+    | "assignment_claimed"
+    | "verifier_started"
+    | "verifier_result"
+    | "idle"
+    | "permission_blocked"
+    | "permission_resolved"
+    | "stop_requested"
+    | "stopped"
+    | "failed"
+    | "recovered_requeue"
+    | "execution_location_selected"
+    | "execution_location_fallback";
+  readonly parentSessionId: string;
+  readonly workerId: string;
+  readonly timestamp: number;
+  readonly taskId?: string;
+  readonly workerState?: PersistentWorkerState;
+  readonly summary?: string;
+  readonly verifierVerdict?: RuntimeVerifierVerdict["overall"];
+  readonly executionLocation?: RuntimeExecutionLocation;
+  readonly reason?: string;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -555,6 +586,7 @@ function buildRuntimeWorkerHandle(params: {
     id: params.worker.workerId,
     kind: "persistent_worker",
     status: params.worker.state,
+    updatedAt: params.worker.updatedAt,
     workerId: params.worker.workerId,
     workerName: params.worker.workerName,
     state: params.worker.state,
@@ -639,6 +671,7 @@ export class PersistentWorkerManager {
   private readonly logger: Logger;
   private readonly now: () => number;
   private readonly queue: KeyedAsyncQueue;
+  private readonly onTraceEvent?: PersistentWorkerManagerOptions["onTraceEvent"];
 
   constructor(options: PersistentWorkerManagerOptions) {
     this.memoryBackend = options.memoryBackend;
@@ -652,10 +685,28 @@ export class PersistentWorkerManager {
     this.remoteSessionManager = options.remoteSessionManager;
     this.logger = options.logger ?? silentLogger;
     this.now = options.now ?? (() => Date.now());
+    this.onTraceEvent = options.onTraceEvent;
     this.queue = new KeyedAsyncQueue({
       logger: this.logger,
       label: "persistent worker manager",
     });
+  }
+
+  private async emitTraceEvent(
+    event: Omit<PersistentWorkerTraceEvent, "timestamp">,
+  ): Promise<void> {
+    try {
+      await this.onTraceEvent?.({
+        ...event,
+        timestamp: this.now(),
+      });
+    } catch (error) {
+      this.logger.debug("Persistent worker trace listener failed", {
+        workerId: event.workerId,
+        type: event.type,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   updateRuntime(params: {
@@ -1037,6 +1088,13 @@ export class PersistentWorkerManager {
         return cloneWorkerRecord(record);
       },
     );
+    await this.emitTraceEvent({
+      type: "spawned",
+      parentSessionId: params.parentSessionId,
+      workerId: worker.workerId,
+      workerState: worker.state,
+      summary: worker.summary,
+    });
     return buildRuntimeWorkerHandle({
       worker,
       pendingTaskCount: 0,
@@ -1050,6 +1108,7 @@ export class PersistentWorkerManager {
     readonly workerId: string;
     readonly assignment: PreparedPersistentWorkerAssignment;
   }): Promise<{ readonly worker: RuntimeWorkerHandle; readonly task: Task }> {
+    let selectedExecutionLocation: RuntimeExecutionLocation | undefined;
     const worker = await this.mutateRegistry(
       params.parentSessionId,
       async (registry) => {
@@ -1078,6 +1137,9 @@ export class PersistentWorkerManager {
           record.executionLocation = cloneExecutionLocation(
             initialExecution.executionLocation,
           );
+          selectedExecutionLocation = cloneExecutionLocation(
+            initialExecution.executionLocation,
+          );
           if (initialExecution.remoteSessionHandleId) {
             record.remoteSessionHandleId = initialExecution.remoteSessionHandleId;
           }
@@ -1094,6 +1156,20 @@ export class PersistentWorkerManager {
         return cloneWorkerRecord(record);
       },
     );
+    if (selectedExecutionLocation) {
+      await this.emitTraceEvent({
+        type: selectedExecutionLocation.fallbackReason
+          ? "execution_location_fallback"
+          : "execution_location_selected",
+        parentSessionId: params.parentSessionId,
+        workerId: worker.workerId,
+        workerState: worker.state,
+        executionLocation: selectedExecutionLocation,
+        ...(selectedExecutionLocation.fallbackReason
+          ? { reason: selectedExecutionLocation.fallbackReason }
+          : {}),
+      });
+    }
 
     const task = await this.taskStore.createRuntimeTask({
       listId: params.parentSessionId,
@@ -1141,6 +1217,15 @@ export class PersistentWorkerManager {
         summary: `Queued for ${worker.workerName}.`,
       });
     }
+    await this.emitTraceEvent({
+      type: "assignment_queued",
+      parentSessionId: params.parentSessionId,
+      workerId: worker.workerId,
+      taskId: task.id,
+      workerState: worker.state,
+      summary: `Queued for ${worker.workerName}.`,
+      executionLocation: worker.executionLocation,
+    });
 
     void this.scheduleWorker(params.parentSessionId, worker.workerId);
 
@@ -1163,15 +1248,25 @@ export class PersistentWorkerManager {
     readonly assignment: PreparedPersistentWorkerAssignment;
   }): Promise<PersistentWorkerRecord | undefined> {
     const registry = await this.loadRegistry(params.parentSessionId);
-    if (params.workerIdOrSessionId) {
-      return registry.workers.find((worker) =>
+    const worker = params.workerIdOrSessionId
+      ? registry.workers.find((worker) =>
         (worker.workerId === params.workerIdOrSessionId ||
           worker.continuationSessionId === params.workerIdOrSessionId ||
           worker.activeSubagentSessionId === params.workerIdOrSessionId) &&
         this.isWorkerCompatible(worker, params.assignment)
-      );
+      )
+      : this.findReusableWorker(registry.workers, params.assignment);
+    if (worker) {
+      await this.emitTraceEvent({
+        type: "reuse_selected",
+        parentSessionId: params.parentSessionId,
+        workerId: worker.workerId,
+        workerState: worker.state,
+        executionLocation: worker.executionLocation,
+        summary: worker.summary,
+      });
     }
-    return this.findReusableWorker(registry.workers, params.assignment);
+    return worker;
   }
 
   async listMailboxMessages(params: {
@@ -1311,6 +1406,13 @@ export class PersistentWorkerManager {
     if (!worker) {
       return undefined;
     }
+    await this.emitTraceEvent({
+      type: "stop_requested",
+      parentSessionId: params.parentSessionId,
+      workerId: worker.workerId,
+      workerState: worker.state,
+      summary: worker.summary,
+    });
 
     const tasks = await this.taskStore.listTasks(params.parentSessionId);
     await Promise.all(
@@ -1333,6 +1435,14 @@ export class PersistentWorkerManager {
               }),
             },
           });
+          await this.emitTraceEvent({
+            type: "recovered_requeue",
+            parentSessionId: params.parentSessionId,
+            workerId: worker.workerId,
+            taskId: task.id,
+            workerState: worker.state,
+            reason: "worker_stop_requested",
+          });
         }),
     );
 
@@ -1344,6 +1454,16 @@ export class PersistentWorkerManager {
       parentSessionId: params.parentSessionId,
       workerId: worker.workerId,
     });
+    if (finalizedWorker && finalizedWorker.state === "cancelled") {
+      await this.emitTraceEvent({
+        type: "stopped",
+        parentSessionId: params.parentSessionId,
+        workerId: finalizedWorker.workerId,
+        workerState: finalizedWorker.state,
+        summary: finalizedWorker.summary,
+        executionLocation: finalizedWorker.executionLocation,
+      });
+    }
 
     return buildRuntimeWorkerHandle({
       worker: finalizedWorker ?? worker,
@@ -1602,6 +1722,13 @@ export class PersistentWorkerManager {
             approvalRequestId: params.message.approvalRequestId,
           });
         }
+        await this.emitTraceEvent({
+          type: "permission_resolved",
+          parentSessionId: params.parentSessionId,
+          workerId: params.workerId,
+          ...(params.message.taskId ? { taskId: params.message.taskId } : {}),
+          reason: params.message.disposition,
+        });
         return;
       }
       case "mode_change": {
@@ -1888,6 +2015,27 @@ export class PersistentWorkerManager {
         : "running";
       worker.summary = `Running ${assignment.objective}.`;
     });
+    await this.emitTraceEvent({
+      type: "assignment_claimed",
+      parentSessionId: params.parentSessionId,
+      workerId: params.workerId,
+      taskId: params.task.id,
+      workerState: assignment.verifierRequirement?.required === true
+        ? "verifying"
+        : "running",
+      summary: `Running ${assignment.objective}.`,
+      executionLocation,
+    });
+    if (assignment.verifierRequirement?.required === true) {
+      await this.emitTraceEvent({
+        type: "verifier_started",
+        parentSessionId: params.parentSessionId,
+        workerId: params.workerId,
+        taskId: params.task.id,
+        workerState: "verifying",
+        executionLocation,
+      });
+    }
 
     let childSessionId: string;
     try {
@@ -1959,6 +2107,16 @@ export class PersistentWorkerManager {
         worker.lastTaskId = params.task.id;
         worker.state = "idle";
         worker.summary = `Assignment failed to start: ${message}`;
+      });
+      await this.emitTraceEvent({
+        type: "failed",
+        parentSessionId: params.parentSessionId,
+        workerId: params.workerId,
+        taskId: params.task.id,
+        workerState: "failed",
+        summary: `Assignment failed to start: ${message}`,
+        executionLocation,
+        reason: message,
       });
       await this.emitMailboxMessage({
         type: "worker_summary",
@@ -2048,7 +2206,22 @@ export class PersistentWorkerManager {
                 : finalized.failureReason ?? `Assignment ${finalized.terminalStatus}.`;
           }
         });
+        const finalState = (await this.getWorkerRecord(
+          params.parentSessionId,
+          params.workerId,
+        ))?.state ?? "idle";
         if (finalized.verifierVerdict) {
+          await this.emitTraceEvent({
+            type: "verifier_result",
+            parentSessionId: params.parentSessionId,
+            workerId: params.workerId,
+            taskId: params.task.id,
+            workerState:
+              finalized.terminalStatus === "cancelled" ? "cancelled" : finalState,
+            verifierVerdict: finalized.verifierVerdict.overall,
+            summary: finalized.verifierVerdict.summary,
+            executionLocation,
+          });
           await this.emitMailboxMessage({
             type: "verifier_result",
             parentSessionId: params.parentSessionId,
@@ -2058,10 +2231,6 @@ export class PersistentWorkerManager {
             taskId: params.task.id,
           });
         }
-        const finalState = (await this.getWorkerRecord(
-          params.parentSessionId,
-          params.workerId,
-        ))?.state ?? "idle";
         let finalSummary = (await this.getWorkerRecord(
           params.parentSessionId,
           params.workerId,
@@ -2088,6 +2257,17 @@ export class PersistentWorkerManager {
           taskId: params.task.id,
         });
         if (finalState === "idle") {
+          await this.emitTraceEvent({
+            type: "idle",
+            parentSessionId: params.parentSessionId,
+            workerId: params.workerId,
+            taskId: params.task.id,
+            workerState: "idle",
+            summary: finalSummary,
+            executionLocation: (
+              await this.getWorkerRecord(params.parentSessionId, params.workerId)
+            )?.executionLocation,
+          });
           await this.reportRemoteSessionProgress({
             worker: await this.getWorkerRecord(
               params.parentSessionId,
@@ -2147,6 +2327,17 @@ export class PersistentWorkerManager {
           ? `Waiting for approval on ${assignment.objective}.`
           : `Running ${assignment.objective}.`;
       });
+      await this.emitTraceEvent({
+        type: approvalPending ? "permission_blocked" : "permission_resolved",
+        parentSessionId: params.parentSessionId,
+        workerId: params.workerId,
+        taskId: params.task.id,
+        workerState: nextState,
+        summary: approvalPending
+          ? `Waiting for approval on ${assignment.objective}.`
+          : `Running ${assignment.objective}.`,
+        executionLocation,
+      });
       await sleep(DEFAULT_POLL_INTERVAL_MS);
     }
   }
@@ -2168,6 +2359,14 @@ export class PersistentWorkerManager {
         const finalizedWorker = await this.finalizeWorkerExecutionLocation({
           parentSessionId,
           workerId,
+        });
+        await this.emitTraceEvent({
+          type: "stopped",
+          parentSessionId,
+          workerId,
+          workerState: finalizedWorker?.state ?? "cancelled",
+          summary: finalizedWorker?.summary ?? "Worker stopped.",
+          executionLocation: finalizedWorker?.executionLocation,
         });
         await this.emitMailboxMessage({
           type: "worker_summary",
@@ -2227,6 +2426,15 @@ export class PersistentWorkerManager {
             record.summary = "Worker ready for assignments.";
           }
         });
+        await this.emitTraceEvent({
+          type: "idle",
+          parentSessionId,
+          workerId,
+          workerState: "idle",
+          summary: "Worker ready for assignments.",
+          executionLocation: (await this.getWorkerRecord(parentSessionId, workerId))
+            ?.executionLocation,
+        });
         await this.emitMailboxMessage({
           type: "idle_notification",
           parentSessionId,
@@ -2241,13 +2449,22 @@ export class PersistentWorkerManager {
         workerId,
       });
       if (!claim) {
-        await this.updateWorker(parentSessionId, workerId, (record) => {
-          if (!record.stopRequested) {
-            record.state = "idle";
-            record.summary = "Worker ready for assignments.";
-          }
-        });
-        return;
+      await this.updateWorker(parentSessionId, workerId, (record) => {
+        if (!record.stopRequested) {
+          record.state = "idle";
+          record.summary = "Worker ready for assignments.";
+        }
+      });
+      await this.emitTraceEvent({
+        type: "idle",
+        parentSessionId,
+        workerId,
+        workerState: "idle",
+        summary: "Worker ready for assignments.",
+        executionLocation: (await this.getWorkerRecord(parentSessionId, workerId))
+          ?.executionLocation,
+      });
+      return;
       }
 
       await this.executeClaimedAssignment({
@@ -2293,9 +2510,20 @@ export class PersistentWorkerManager {
         }
       });
       for (const workerId of affectedWorkerIds) {
-        await this.finalizeWorkerExecutionLocation({
+        const finalizedWorker = await this.finalizeWorkerExecutionLocation({
           parentSessionId,
           workerId,
+        });
+        await this.emitTraceEvent({
+          type: "failed",
+          parentSessionId,
+          workerId,
+          workerState: finalizedWorker?.state ?? "failed",
+          summary:
+            finalizedWorker?.summary ??
+            "Worker runtime became unavailable before completion.",
+          executionLocation: finalizedWorker?.executionLocation,
+          reason: "runtime_repair",
         });
       }
       const tasks = await this.taskStore.listTasks(parentSessionId);
@@ -2316,6 +2544,13 @@ export class PersistentWorkerManager {
                 assignment: metadata.assignment,
               }),
             },
+          });
+          await this.emitTraceEvent({
+            type: "recovered_requeue",
+            parentSessionId,
+            workerId: targetedWorkerId ?? task.owner ?? "unknown",
+            taskId: task.id,
+            reason: "runtime_repair",
           });
         }
       }

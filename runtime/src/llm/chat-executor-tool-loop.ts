@@ -112,6 +112,7 @@ import {
 } from "./chat-executor-ctx-helpers.js";
 import type { DelegationOutputValidationCode } from "../utils/delegation-validation.js";
 import {
+  type CompletionValidatorId,
   updateRuntimeContractValidatorSnapshot,
   updateRuntimeContractVerifierStage,
   updateRuntimeContractToolProtocolSnapshot,
@@ -1515,11 +1516,31 @@ export async function executeToolCallLoop(
     readonly budgetReason: string;
     readonly exhaustedDetail: string;
     readonly validationCode?: DelegationOutputValidationCode;
+    readonly validatorId?: CompletionValidatorId;
+    readonly stopHookResult?: import("./hooks/stop-hooks.js").StopHookPhaseResult;
   }): Promise<boolean> => {
     const maxAttempts = Math.max(0, params.maxAttempts ?? 1);
     const attemptKey = params.attemptKey ?? params.reason;
     const attempts = completionValidationAttempts.get(attemptKey) ?? 0;
     if (!params.blockingMessage || attempts >= maxAttempts) {
+      if (params.stopHookResult) {
+        callbacks.emitExecutionTrace(ctx, {
+          type: "stop_hook_exhausted",
+          phase: "tool_followup",
+          callIndex: ctx.callIndex,
+          payload: {
+            validatorId: params.validatorId ?? attemptKey,
+            stopHookPhase: params.stopHookResult.phase,
+            outcome: params.stopHookResult.outcome,
+            reason: params.stopHookResult.reason,
+            stopReason: params.stopHookResult.stopReason,
+            exhaustedDetail: params.exhaustedDetail,
+            validationCode: params.validationCode,
+            attempts,
+            maxAttempts,
+          },
+        });
+      }
       callbacks.setStopReason(ctx, "validation_error", params.exhaustedDetail);
       if (params.validationCode) {
         ctx.validationCode = params.validationCode;
@@ -1535,6 +1556,23 @@ export async function executeToolCallLoop(
 
     completionValidationAttempts.set(attemptKey, attempts + 1);
     sealPendingToolProtocol(ctx, callbacks, "validation_recovery");
+    if (params.stopHookResult) {
+      callbacks.emitExecutionTrace(ctx, {
+        type: "stop_hook_retry_requested",
+        phase: "tool_followup",
+        callIndex: ctx.callIndex,
+        payload: {
+          validatorId: params.validatorId ?? attemptKey,
+          stopHookPhase: params.stopHookResult.phase,
+          outcome: params.stopHookResult.outcome,
+          reason: params.stopHookResult.reason,
+          stopReason: params.stopHookResult.stopReason,
+          attempt: attempts + 1,
+          maxAttempts,
+          validationCode: params.validationCode,
+        },
+      });
+    }
     callbacks.emitExecutionTrace(ctx, {
       type: "stop_gate_intervention",
       phase: "tool_followup",
@@ -1579,6 +1617,24 @@ export async function executeToolCallLoop(
       }),
     );
     if (!recoveryResponse) {
+      if (params.stopHookResult) {
+        callbacks.emitExecutionTrace(ctx, {
+          type: "stop_hook_exhausted",
+          phase: "tool_followup",
+          callIndex: ctx.callIndex,
+          payload: {
+            validatorId: params.validatorId ?? attemptKey,
+            stopHookPhase: params.stopHookResult.phase,
+            outcome: params.stopHookResult.outcome,
+            reason: params.stopHookResult.reason,
+            stopReason: params.stopHookResult.stopReason,
+            exhaustedDetail: params.exhaustedDetail,
+            validationCode: params.validationCode,
+            attempt: attempts + 1,
+            maxAttempts,
+          },
+        });
+      }
       if (ctx.stopReason === "completed") {
         callbacks.setStopReason(ctx, "validation_error", params.exhaustedDetail);
         if (params.validationCode) {
@@ -1907,6 +1963,16 @@ export async function executeToolCallLoop(
 
     let completionValidationStatus = "passed";
     for (const validator of validators) {
+      callbacks.emitExecutionTrace(ctx, {
+        type: "completion_validator_started",
+        phase: "tool_followup",
+        callIndex: ctx.callIndex,
+        payload: {
+          validatorId: validator.id,
+          enabled: validator.enabled,
+          runtimeContract: ctx.runtimeContractSnapshot,
+        },
+      });
       if (!validator.enabled) {
         if (validator.id === "top_level_verifier") {
           ctx.runtimeContractSnapshot = updateRuntimeContractVerifierStage({
@@ -1928,6 +1994,17 @@ export async function executeToolCallLoop(
           enabled: false,
           executed: false,
           outcome: "skipped",
+        });
+        callbacks.emitExecutionTrace(ctx, {
+          type: "completion_validator_finished",
+          phase: "tool_followup",
+          callIndex: ctx.callIndex,
+          payload: {
+            validatorId: validator.id,
+            enabled: false,
+            outcome: "skipped",
+            runtimeContract: ctx.runtimeContractSnapshot,
+          },
         });
         continue;
       }
@@ -1962,6 +2039,21 @@ export async function executeToolCallLoop(
             evidence: validation.stopHookResult.evidence,
           },
         });
+        if (validation.stopHookResult.outcome !== "pass") {
+          callbacks.emitExecutionTrace(ctx, {
+            type: "stop_hook_blocked",
+            phase: "tool_followup",
+            callIndex: ctx.callIndex,
+            payload: {
+              validatorId: validator.id,
+              stopHookPhase: validation.stopHookResult.phase,
+              outcome: validation.stopHookResult.outcome,
+              reason: validation.stopHookResult.reason,
+              stopReason: validation.stopHookResult.stopReason,
+              validationCode: validation.validationCode,
+            },
+          });
+        }
       }
       if (validation.probeRuns) {
         for (const run of validation.probeRuns) {
@@ -2028,6 +2120,21 @@ export async function executeToolCallLoop(
         reason: validation.reason,
         validationCode: validation.validationCode,
       });
+      callbacks.emitExecutionTrace(ctx, {
+        type: "completion_validator_finished",
+        phase: "tool_followup",
+        callIndex: ctx.callIndex,
+        payload: {
+          validatorId: validator.id,
+          outcome: validation.outcome,
+          reason: validation.reason,
+          validationCode: validation.validationCode,
+          verifierTaskId: validation.verifierTaskId,
+          verifierLauncherKind: validation.verifierLauncherKind,
+          exhaustedDetail: validation.exhaustedDetail,
+          runtimeContract: ctx.runtimeContractSnapshot,
+        },
+      });
 
       if (
         validation.outcome === "pass" ||
@@ -2079,6 +2186,8 @@ export async function executeToolCallLoop(
           validation.exhaustedDetail ??
           `${validator.id} recovery exhausted.`,
         validationCode: validation.validationCode,
+        validatorId: validator.id,
+        stopHookResult: validation.stopHookResult,
       });
       completionValidationStatus = shouldContinueAfterStopGate
         ? "recovery_requested"

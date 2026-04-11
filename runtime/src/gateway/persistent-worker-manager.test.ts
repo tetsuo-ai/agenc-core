@@ -179,6 +179,38 @@ function buildPreparedAssignment(
 }
 
 describe("PersistentWorkerManager", () => {
+  it("emits worker lifecycle trace events for spawn, queue, claim, and idle", async () => {
+    const memoryBackend = createMemoryBackendStub();
+    const taskStore = new TaskStore({ memoryBackend });
+    const subAgentManager = new SubAgentManager(makeManagerConfig());
+    const traceEvents: string[] = [];
+    const workerManager = new PersistentWorkerManager({
+      memoryBackend,
+      taskStore,
+      subAgentManager,
+      onTraceEvent: async (event) => {
+        traceEvents.push(event.type);
+      },
+    });
+
+    const worker = await workerManager.createWorker({
+      parentSessionId: "session-a",
+      workerName: "builder",
+    });
+    const queued = await workerManager.assignToWorker({
+      parentSessionId: "session-a",
+      workerId: worker.workerId,
+      assignment: buildPreparedAssignment(),
+    });
+
+    await waitForTaskTerminal(taskStore, "session-a", queued.task.id);
+
+    expect(traceEvents).toContain("spawned");
+    expect(traceEvents).toContain("assignment_queued");
+    expect(traceEvents).toContain("assignment_claimed");
+    expect(traceEvents).toContain("idle");
+  });
+
   it("creates named workers and runs queued worker_assignment tasks", async () => {
     const memoryBackend = createMemoryBackendStub();
     const taskStore = new TaskStore({ memoryBackend });

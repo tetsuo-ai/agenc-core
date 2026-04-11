@@ -182,4 +182,61 @@ describe("PersistentWorkerMailbox", () => {
       unackedCount: 1,
     });
   });
+
+  it("emits trace transitions only for persisted mailbox state changes", async () => {
+    const traceEvents: Array<Record<string, unknown>> = [];
+    const mailbox = new PersistentWorkerMailbox({
+      memoryBackend: createMemoryBackendStub(),
+      now: () => 400,
+      onTraceEvent: async (event) => {
+        traceEvents.push({
+          action: event.action,
+          messageId: event.messageId,
+          status: event.status,
+        });
+      },
+    });
+
+    const message = await mailbox.sendToWorker({
+      type: "task_assignment",
+      parentSessionId: "session-a",
+      workerId: "worker-1",
+      taskId: "9",
+      objective: "Inspect tracing",
+    });
+    await mailbox.acknowledgeMessage({
+      parentSessionId: "session-a",
+      messageId: message.messageId,
+    });
+    await mailbox.acknowledgeMessage({
+      parentSessionId: "session-a",
+      messageId: message.messageId,
+    });
+    await mailbox.markHandled({
+      parentSessionId: "session-a",
+      messageId: message.messageId,
+    });
+    await mailbox.markHandled({
+      parentSessionId: "session-a",
+      messageId: message.messageId,
+    });
+
+    expect(traceEvents).toEqual([
+      expect.objectContaining({
+        action: "sent",
+        messageId: message.messageId,
+        status: "pending",
+      }),
+      expect.objectContaining({
+        action: "acknowledged",
+        messageId: message.messageId,
+        status: "acknowledged",
+      }),
+      expect.objectContaining({
+        action: "handled",
+        messageId: message.messageId,
+        status: "handled",
+      }),
+    ]);
+  });
 });

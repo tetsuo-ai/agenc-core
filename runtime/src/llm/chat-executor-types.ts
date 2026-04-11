@@ -151,6 +151,8 @@ export interface ToolCallRecord {
 }
 
 type ChatExecutionTraceEventType =
+  | "completion_validator_finished"
+  | "completion_validator_started"
   | "completion_validation_finished"
   | "completion_validation_started"
   | "compaction_triggered"
@@ -159,7 +161,10 @@ type ChatExecutionTraceEventType =
   | "recovery_hints_injected"
   | "route_expanded"
   | "runtime_contract_snapshot"
+  | "stop_hook_blocked"
   | "stop_hook_execution_finished"
+  | "stop_hook_exhausted"
+  | "stop_hook_retry_requested"
   | "stop_gate_intervention"
   | "tool_arguments_invalid"
   | "tool_loop_stuck_detected"
@@ -538,6 +543,9 @@ export interface ChatExecutorConfig {
         SystemRemoteJobManager,
         "start" | "handleWebhook"
       > | null;
+      readonly onTraceEvent?: (
+        event: import("../gateway/top-level-verifier.js").TopLevelVerifierTraceEvent,
+      ) => void | Promise<void>;
     };
   };
 }

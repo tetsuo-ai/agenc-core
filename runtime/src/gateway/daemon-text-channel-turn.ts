@@ -25,11 +25,13 @@ import {
   isConcordiaGenerateAgentsMessage,
 } from "../llm/chat-executor-turn-contracts.js";
 import {
+  buildRuntimeContractStatusSnapshotForSession,
   buildSessionActiveTaskContext,
   buildSessionStatefulOptions,
   enrichRuntimeContractSnapshotForSession,
   persistSessionActiveTaskContext,
   persistSessionRuntimeContractSnapshot,
+  persistSessionRuntimeContractStatusSnapshot,
   persistSessionStatefulContinuation,
 } from "./daemon-session-state.js";
 import { applyLegacyTopLevelVerifier } from "./top-level-verifier.js";
@@ -40,6 +42,7 @@ import type { SubAgentManager } from "./sub-agent.js";
 import type { TaskStore } from "../tools/system/task-tracker.js";
 import { filterSystemPromptForToolRouting } from "./system-prompt-routing.js";
 import {
+  buildRuntimeContractSessionTraceId,
   logExecutionTraceEvent,
   logProviderPayloadTraceEvent,
   logTraceEvent,
@@ -327,7 +330,44 @@ export async function executeTextChannelTurn(
     workerManager: params.workerManager,
   });
   persistSessionRuntimeContractSnapshot(session, result);
+  const runtimeContractStatusSnapshot =
+    await buildRuntimeContractStatusSnapshotForSession({
+      sessionId: msg.sessionId,
+      turnTraceId,
+      result,
+      taskStore,
+      workerManager: params.workerManager,
+    });
+  persistSessionRuntimeContractStatusSnapshot(
+    session,
+    runtimeContractStatusSnapshot,
+  );
   recordToolRoutingOutcome(msg.sessionId, result.toolRoutingSummary);
+
+  if (traceConfig.enabled && runtimeContractStatusSnapshot) {
+    logTraceEvent(
+      logger,
+      "runtime_contract.session.snapshot_updated",
+      {
+        traceId: buildRuntimeContractSessionTraceId(msg.sessionId),
+        sessionId: msg.sessionId,
+        lastTurnTraceId: runtimeContractStatusSnapshot.lastTurnTraceId,
+        updatedAt: runtimeContractStatusSnapshot.updatedAt,
+        completionState: runtimeContractStatusSnapshot.completionState,
+        stopReason: runtimeContractStatusSnapshot.stopReason,
+        openTaskCount: runtimeContractStatusSnapshot.openTasks.length,
+        openWorkerCount: runtimeContractStatusSnapshot.openWorkers.length,
+        remainingMilestoneCount:
+          runtimeContractStatusSnapshot.remainingMilestones.length,
+        omittedTaskCount: runtimeContractStatusSnapshot.omittedTaskCount,
+        omittedWorkerCount: runtimeContractStatusSnapshot.omittedWorkerCount,
+        omittedMilestoneCount:
+          runtimeContractStatusSnapshot.omittedMilestoneCount,
+        snapshot: runtimeContractStatusSnapshot,
+      },
+      traceConfig.maxChars,
+    );
+  }
 
   if (traceConfig.enabled) {
     const responseTracePayload = {
@@ -355,6 +395,7 @@ export async function executeTextChannelTurn(
       completionState: result.completionState,
       verifierSnapshot: result.verifierSnapshot,
       runtimeContractSnapshot: result.runtimeContractSnapshot,
+      runtimeContractStatusSnapshot,
       stopReasonDetail: result.stopReasonDetail,
       response: truncateToolLogText(result.content, traceConfig.maxChars),
       toolCalls: result.toolCalls.map((toolCall) => ({
@@ -406,6 +447,7 @@ export async function executeTextChannelTurn(
               completionState: result.completionState,
               verifierSnapshot: result.verifierSnapshot,
               runtimeContractSnapshot: result.runtimeContractSnapshot,
+              runtimeContractStatusSnapshot,
               stopReasonDetail: result.stopReasonDetail,
               response: result.content,
               toolCalls: result.toolCalls.map((toolCall) => ({

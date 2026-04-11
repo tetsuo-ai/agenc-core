@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import type { MemoryBackend } from "../memory/types.js";
 import {
+  buildRuntimeContractStatusSnapshotForSession,
   buildSessionStatefulOptions,
   clearWebSessionRuntimeState,
   enrichRuntimeContractSnapshotForSession,
   hydrateWebSessionRuntimeState,
+  persistSessionRuntimeContractStatusSnapshot,
   persistWebSessionRuntimeState,
 } from "./daemon-session-state.js";
 import {
@@ -14,6 +16,7 @@ import {
   SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY,
   SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY,
   SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY,
+  SESSION_RUNTIME_CONTRACT_STATUS_SNAPSHOT_METADATA_KEY,
   type Session,
 } from "./session.js";
 import type {
@@ -287,6 +290,109 @@ describe("web session runtime state helpers", () => {
     ).toEqual(activeTaskContext);
   });
 
+  it("persists and hydrates runtime contract status snapshots across web-session resume", async () => {
+    const memoryBackend = createMemoryBackendStub();
+    const session = createSession();
+    persistSessionRuntimeContractStatusSnapshot(session, {
+      version: 1,
+      updatedAt: 123,
+      lastTurnTraceId: "turn-trace-1",
+      completionState: "blocked",
+      stopReason: "validation_error",
+      stopReasonDetail: "verification required",
+      taskLayer: createRuntimeContractSnapshot({
+        runtimeContractV2: true,
+        stopHooksEnabled: true,
+        asyncTasksEnabled: true,
+        persistentWorkersEnabled: true,
+        mailboxEnabled: true,
+        verifierRuntimeRequired: true,
+        verifierProjectBootstrap: true,
+        workerIsolationWorktree: false,
+        workerIsolationRemote: false,
+      }).taskLayer,
+      workerLayer: createRuntimeContractSnapshot({
+        runtimeContractV2: true,
+        stopHooksEnabled: true,
+        asyncTasksEnabled: true,
+        persistentWorkersEnabled: true,
+        mailboxEnabled: true,
+        verifierRuntimeRequired: true,
+        verifierProjectBootstrap: true,
+        workerIsolationWorktree: false,
+        workerIsolationRemote: false,
+      }).workerLayer,
+      mailboxLayer: createRuntimeContractSnapshot({
+        runtimeContractV2: true,
+        stopHooksEnabled: true,
+        asyncTasksEnabled: true,
+        persistentWorkersEnabled: true,
+        mailboxEnabled: true,
+        verifierRuntimeRequired: true,
+        verifierProjectBootstrap: true,
+        workerIsolationWorktree: false,
+        workerIsolationRemote: false,
+      }).mailboxLayer,
+      verifierStages: createRuntimeContractSnapshot({
+        runtimeContractV2: true,
+        stopHooksEnabled: true,
+        asyncTasksEnabled: true,
+        persistentWorkersEnabled: true,
+        mailboxEnabled: true,
+        verifierRuntimeRequired: true,
+        verifierProjectBootstrap: true,
+        workerIsolationWorktree: false,
+        workerIsolationRemote: false,
+      }).verifierStages,
+      openTasks: [
+        {
+          id: "1",
+          kind: "subagent",
+          status: "in_progress",
+          updatedAt: 120,
+          waitTool: "task.wait",
+          outputTool: "task.output",
+        },
+      ],
+      openWorkers: [
+        {
+          id: "worker-1",
+          kind: "persistent_worker",
+          status: "running",
+          updatedAt: 121,
+          workerId: "worker-1",
+          workerName: "worker-1",
+          state: "running",
+          pendingTaskCount: 1,
+          stopRequested: false,
+        },
+      ],
+      remainingMilestones: [{ id: "phase-1", description: "finish phase 1" }],
+      omittedTaskCount: 0,
+      omittedWorkerCount: 0,
+      omittedMilestoneCount: 0,
+    });
+
+    await persistWebSessionRuntimeState(memoryBackend, "web-session-status", session);
+
+    const hydrated = createSession();
+    await hydrateWebSessionRuntimeState(
+      memoryBackend,
+      "web-session-status",
+      hydrated,
+    );
+
+    expect(
+      hydrated.metadata[SESSION_RUNTIME_CONTRACT_STATUS_SNAPSHOT_METADATA_KEY],
+    ).toMatchObject({
+      version: 1,
+      lastTurnTraceId: "turn-trace-1",
+      completionState: "blocked",
+      openTasks: [expect.objectContaining({ id: "1" })],
+      openWorkers: [expect.objectContaining({ workerId: "worker-1" })],
+    });
+  });
+
 });
 
 describe("enrichRuntimeContractSnapshotForSession", () => {
@@ -324,5 +430,80 @@ describe("enrichRuntimeContractSnapshotForSession", () => {
       pendingWorkerToParent: 1,
       unackedCount: 1,
     });
+  });
+
+  it("builds a bounded runtime contract status snapshot from tasks, workers, and milestones", async () => {
+    const flags = {
+      runtimeContractV2: true,
+      stopHooksEnabled: true,
+      asyncTasksEnabled: true,
+      persistentWorkersEnabled: true,
+      mailboxEnabled: true,
+      verifierRuntimeRequired: true,
+      verifierProjectBootstrap: true,
+      workerIsolationWorktree: false,
+      workerIsolationRemote: false,
+    } as const;
+    const snapshot = await buildRuntimeContractStatusSnapshotForSession({
+      sessionId: "session:test",
+      turnTraceId: "turn-trace-2",
+      result: {
+        completionState: "partial",
+        stopReason: "completed",
+        stopReasonDetail: "needs more work",
+        runtimeContractSnapshot: createRuntimeContractSnapshot(flags),
+        completionProgress: {
+          remainingMilestones: Array.from({ length: 22 }, (_, index) => ({
+            id: `m-${index + 1}`,
+            description: `milestone ${index + 1}`,
+          })),
+        },
+      } as any,
+      taskStore: {
+        listTasks: async () =>
+          Array.from({ length: 22 }, (_, index) => ({
+            id: String(index + 1),
+            kind: "manual",
+            ownerSessionId: "session:test",
+            subject: `task ${index + 1}`,
+            description: `task ${index + 1}`,
+            status: "in_progress",
+            blocks: [],
+            blockedBy: [],
+            events: [],
+            outputReady: false,
+            createdAt: index,
+            updatedAt: index + 1,
+          })),
+      } as any,
+      workerManager: {
+        listWorkers: async () =>
+          Array.from({ length: 12 }, (_, index) => ({
+            id: `worker-${index + 1}`,
+            kind: "persistent_worker",
+            status: "running",
+            updatedAt: index + 1,
+            workerId: `worker-${index + 1}`,
+            workerName: `worker-${index + 1}`,
+            state: "running",
+            pendingTaskCount: 1,
+            stopRequested: false,
+          })),
+      } as any,
+    });
+
+    expect(snapshot).toMatchObject({
+      version: 1,
+      lastTurnTraceId: "turn-trace-2",
+      completionState: "partial",
+      stopReason: "completed",
+      omittedTaskCount: 2,
+      omittedWorkerCount: 2,
+      omittedMilestoneCount: 2,
+    });
+    expect(snapshot?.openTasks).toHaveLength(20);
+    expect(snapshot?.openTasks[0]).toMatchObject({ id: "22" });
+    expect(snapshot?.openWorkers).toHaveLength(10);
+    expect(snapshot?.remainingMilestones).toHaveLength(20);
   });
 });

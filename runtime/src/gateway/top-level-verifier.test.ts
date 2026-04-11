@@ -220,17 +220,22 @@ describe("runTopLevelVerifierValidation", () => {
   });
 
   it("fails closed when runtime-required verifier services are unavailable", async () => {
+    const traceEvents: string[] = [];
     const decision = await runTopLevelVerifierValidation({
       sessionId: "session:test",
       userRequest: "Implement every phase from PLAN.md",
       result: createResult(),
       subAgentManager: null,
       verifierService: null,
+      onTraceEvent: async (event) => {
+        traceEvents.push(event.type);
+      },
     });
 
     expect(decision.outcome).toBe("fail_closed");
     expect(decision.runtimeVerifier.overall).toBe("retry");
     expect(decision.summary).toContain("runtime is unavailable");
+    expect(traceEvents).toEqual(["unavailable"]);
   });
 
   it("blocks PASS verdicts that skip required probe coverage", async () => {
@@ -350,6 +355,61 @@ describe("runTopLevelVerifierValidation", () => {
     expect(decision.launcherKind).toBe("remote_job");
     expect(remoteJobManager.start).toHaveBeenCalled();
     expect(remoteJobManager.handleWebhook).toHaveBeenCalled();
+  });
+
+  it("emits spawned and verdict trace events for verifier runs", async () => {
+    const traceEvents: Array<Record<string, unknown>> = [];
+    const spawn = vi.fn(async () => "subagent:verify-trace");
+    const waitForResult = vi.fn(async () => ({
+      sessionId: "subagent:verify-trace",
+      output: "All good.\nVERDICT: PASS",
+      success: true,
+      durationMs: 12,
+      toolCalls: [
+        {
+          name: "verification.runProbe",
+          args: { probeId: "build:default" },
+          result:
+            '{"probeId":"build:default","category":"build","profile":"generic"}',
+          isError: false,
+          durationMs: 1,
+        },
+      ],
+      structuredOutput: {
+        type: "json_schema",
+        name: "agenc_top_level_verifier_decision",
+        parsed: {
+          verdict: "pass",
+          summary: "Verification passed.",
+        },
+      },
+      completionState: "completed",
+      stopReason: "completed",
+    }));
+
+    await runTopLevelVerifierValidation({
+      sessionId: "session:test",
+      userRequest: "Implement every phase from PLAN.md",
+      result: createResult(),
+      subAgentManager: { spawn, waitForResult },
+      verifierService: createVerifierService(
+        createVerifierRequirement({
+          profiles: ["generic"],
+          probeCategories: [],
+        }),
+      ),
+      onTraceEvent: async (event) => {
+        traceEvents.push({
+          type: event.type,
+          verdict: event.verdict,
+        });
+      },
+    });
+
+    expect(traceEvents).toEqual([
+      expect.objectContaining({ type: "spawned" }),
+      expect.objectContaining({ type: "verdict", verdict: "pass" }),
+    ]);
   });
 });
 

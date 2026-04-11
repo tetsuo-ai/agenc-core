@@ -444,6 +444,8 @@ export function buildCompletionValidators(params: {
           agentDefinitions:
             params.completionValidation?.topLevelVerifier?.agentDefinitions,
           logger: params.completionValidation?.topLevelVerifier?.logger,
+          onTraceEvent:
+            params.completionValidation?.topLevelVerifier?.onTraceEvent,
         });
         return {
           id: "top_level_verifier",

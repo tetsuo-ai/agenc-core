@@ -1,6 +1,9 @@
 import type { DelegationOutputValidationCode } from "../utils/delegation-validation.js";
 import type { AcceptanceProbeCategory } from "../gateway/subagent-orchestrator-types.js";
 import type { ApprovalDisposition } from "../gateway/approvals.js";
+import type { LLMPipelineStopReason } from "../llm/policy.js";
+import type { WorkflowCompletionState } from "../workflow/completion-state.js";
+import type { WorkflowRequestMilestone } from "../workflow/request-completion.js";
 import type {
   VerifierBootstrapSource,
   VerifierProfileKind,
@@ -186,6 +189,7 @@ export interface RuntimeWorkerHandle {
   readonly id: string;
   readonly kind: string;
   readonly status: string;
+  readonly updatedAt?: number;
   readonly workerId: string;
   readonly workerName: string;
   readonly state:
@@ -216,6 +220,7 @@ export interface RuntimeTaskHandle {
   readonly id: string;
   readonly kind: string;
   readonly status: string;
+  readonly updatedAt?: number;
   readonly summary?: string;
   readonly externalRef?: {
     readonly kind: string;
@@ -228,6 +233,25 @@ export interface RuntimeTaskHandle {
   readonly outputPath?: string;
   readonly waitTool?: "task.wait";
   readonly outputTool?: "task.output";
+}
+
+export interface RuntimeContractStatusSnapshot {
+  readonly version: 1;
+  readonly updatedAt: number;
+  readonly lastTurnTraceId?: string;
+  readonly completionState?: WorkflowCompletionState;
+  readonly stopReason?: LLMPipelineStopReason;
+  readonly stopReasonDetail?: string;
+  readonly taskLayer: RuntimeTaskLayerSnapshot;
+  readonly workerLayer: RuntimeWorkerLayerSnapshot;
+  readonly mailboxLayer: RuntimeMailboxLayerSnapshot;
+  readonly verifierStages: RuntimeVerifierStageSnapshot;
+  readonly openTasks: readonly RuntimeTaskHandle[];
+  readonly openWorkers: readonly RuntimeWorkerHandle[];
+  readonly remainingMilestones: readonly WorkflowRequestMilestone[];
+  readonly omittedTaskCount: number;
+  readonly omittedWorkerCount: number;
+  readonly omittedMilestoneCount: number;
 }
 
 export type RuntimeMailboxDirection = "parent_to_worker" | "worker_to_parent";

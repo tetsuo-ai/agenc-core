@@ -123,6 +123,9 @@ interface TopLevelVerifierParams {
   > | null;
   readonly agentDefinitions?: readonly AgentDefinition[];
   readonly logger?: Logger;
+  readonly onTraceEvent?: (
+    event: TopLevelVerifierTraceEvent,
+  ) => void | Promise<void>;
 }
 
 export interface TopLevelVerifierValidationResult {
@@ -139,6 +142,15 @@ export interface TopLevelVerifierValidationResult {
   readonly taskId?: string;
   readonly verifierRequirement?: VerifierRequirement;
   readonly launcherKind?: "subagent" | "remote_job";
+}
+
+export interface TopLevelVerifierTraceEvent {
+  readonly type: "spawned" | "skipped" | "unavailable" | "verdict";
+  readonly sessionId: string;
+  readonly taskId?: string;
+  readonly launcherKind?: "subagent" | "remote_job";
+  readonly summary?: string;
+  readonly verdict?: RuntimeVerifierVerdict["overall"];
 }
 
 function truncate(text: string, max: number): string {
@@ -366,7 +378,26 @@ function shouldRunTopLevelVerifier(params: TopLevelVerifierParams): boolean {
 export async function runTopLevelVerifierValidation(
   params: TopLevelVerifierParams,
 ): Promise<TopLevelVerifierValidationResult> {
+  const emitTraceEvent = async (
+    event: Omit<TopLevelVerifierTraceEvent, "sessionId">,
+  ): Promise<void> => {
+    try {
+      await params.onTraceEvent?.({
+        sessionId: params.sessionId,
+        ...event,
+      });
+    } catch (error) {
+      params.logger?.debug?.("Top-level verifier trace listener failed", {
+        sessionId: params.sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
   if (!shouldRunTopLevelVerifier(params)) {
+    await emitTraceEvent({
+      type: "skipped",
+      summary: "Top-level verifier skipped.",
+    });
     return {
       outcome: "skipped",
       verifier: { performed: false, overall: "skipped" },
@@ -375,6 +406,10 @@ export async function runTopLevelVerifierValidation(
     };
   }
   if (!params.verifierService) {
+    await emitTraceEvent({
+      type: "unavailable",
+      summary: "Top-level verifier runtime is unavailable.",
+    });
     return {
       outcome: "fail_closed",
       verifier: { performed: false, overall: "retry" },
@@ -389,6 +424,10 @@ export async function runTopLevelVerifierValidation(
   }
   const subAgentManager = params.subAgentManager;
   if (!subAgentManager) {
+    await emitTraceEvent({
+      type: "unavailable",
+      summary: "Top-level verifier worker is unavailable.",
+    });
     return {
       outcome: "fail_closed",
       verifier: { performed: false, overall: "retry" },
@@ -466,6 +505,11 @@ export async function runTopLevelVerifierValidation(
   const useRemoteJob =
     params.result.runtimeContractSnapshot?.flags.workerIsolationRemote === true;
   if (useRemoteJob && !params.remoteJobManager) {
+    await emitTraceEvent({
+      type: "unavailable",
+      launcherKind: "remote_job",
+      summary: "Remote verifier isolation is enabled but unavailable.",
+    });
     return {
       outcome: "fail_closed",
       verifier: { performed: false, overall: "retry" },
@@ -497,6 +541,11 @@ export async function runTopLevelVerifierValidation(
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      await emitTraceEvent({
+        type: "unavailable",
+        launcherKind: "remote_job",
+        summary: `Remote verifier handle could not be started: ${message}`,
+      });
       return {
         outcome: "fail_closed",
         verifier: { performed: false, overall: "retry" },
@@ -602,6 +651,12 @@ export async function runTopLevelVerifierValidation(
         error: error instanceof Error ? error.message : String(error),
       },
     );
+    await emitTraceEvent({
+      type: "unavailable",
+      ...(verifierTaskId ? { taskId: verifierTaskId } : {}),
+      launcherKind: remoteJobHandle ? "remote_job" : "subagent",
+      summary: "Top-level verifier worker could not be started.",
+    });
     return {
       outcome: "fail_closed",
       verifier: { performed: false, overall: "retry" },
@@ -617,6 +672,12 @@ export async function runTopLevelVerifierValidation(
       ...(verifierTaskId ? { taskId: verifierTaskId } : {}),
     };
   }
+  await emitTraceEvent({
+    type: "spawned",
+    ...(verifierTaskId ? { taskId: verifierTaskId } : {}),
+    launcherKind: remoteJobHandle ? "remote_job" : "subagent",
+    summary: "Runtime verifier is running.",
+  });
 
   if (remoteJobHandle && params.remoteJobManager) {
     await reportManagedRemoteJob({
@@ -665,6 +726,13 @@ export async function runTopLevelVerifierValidation(
       }
     : parsed;
   const runtimeVerifier = toRuntimeVerifierVerdict(effectiveParsed);
+  await emitTraceEvent({
+    type: "verdict",
+    ...(verifierTaskId ? { taskId: verifierTaskId } : {}),
+    launcherKind: remoteJobHandle ? "remote_job" : "subagent",
+    summary: effectiveParsed.summary,
+    verdict: runtimeVerifier.overall,
+  });
   if (params.taskStore && verifierTaskId) {
     await params.taskStore.finalizeRuntimeTask({
       listId: params.sessionId,

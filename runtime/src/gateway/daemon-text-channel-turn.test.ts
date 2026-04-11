@@ -7,6 +7,7 @@ import type { Logger } from "../utils/logger.js";
 import { executeTextChannelTurn } from "./daemon-text-channel-turn.js";
 import {
   SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY,
+  SESSION_RUNTIME_CONTRACT_STATUS_SNAPSHOT_METADATA_KEY,
   SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY,
   type Session,
 } from "./session.js";
@@ -571,5 +572,90 @@ describe("executeTextChannelTurn", () => {
 
     expect(sessionMgr.appendMessage).not.toHaveBeenCalled();
     expect(memoryBackend.addEntry).not.toHaveBeenCalled();
+  });
+
+  it("persists a bounded runtime contract status snapshot on successful turns", async () => {
+    const logger = createLoggerStub();
+    const memoryBackend = createMemoryBackendStub();
+    const session = createSession();
+    const sessionMgr = {
+      appendMessage: vi.fn(),
+    } as any;
+
+    await executeTextChannelTurn({
+      logger,
+      channelName: "telegram",
+      msg: {
+        sessionId: "session:test",
+        senderId: "user-1",
+        channel: "telegram",
+        content: "hello",
+      },
+      session,
+      sessionMgr,
+      systemPrompt: "system",
+      chatExecutor: {
+        execute: vi.fn(async () =>
+          createResult({
+            runtimeContractSnapshot: createRuntimeContractSnapshot({
+              runtimeContractV2: true,
+              stopHooksEnabled: true,
+              asyncTasksEnabled: true,
+              persistentWorkersEnabled: false,
+              mailboxEnabled: false,
+              verifierRuntimeRequired: false,
+              verifierProjectBootstrap: false,
+              workerIsolationWorktree: false,
+              workerIsolationRemote: false,
+            }),
+            completionState: "partial",
+            stopReasonDetail: "more work remains",
+            completionProgress: {
+              remainingMilestones: [
+                { id: "phase-1", description: "finish phase 1" },
+              ],
+            } as any,
+          })),
+      } as any,
+      toolHandler: vi.fn() as any,
+      defaultMaxToolRounds: 3,
+      traceConfig: {
+        enabled: false,
+        includeHistory: true,
+        includeSystemPrompt: true,
+        includeToolArgs: true,
+        includeToolResults: true,
+        includeProviderPayloads: false,
+        maxChars: 20_000,
+      },
+      turnTraceId: "trace-status",
+      memoryBackend,
+      buildToolRoutingDecision: () => undefined,
+      recordToolRoutingOutcome: vi.fn(),
+      taskStore: {
+        describeRuntimeTaskLayer: vi.fn(async () => ({
+          configured: true,
+          effective: true,
+          backend: "stub",
+          durability: "sync",
+          totalTasks: 0,
+          activeCount: 0,
+          publicHandleCount: 0,
+        })),
+        list: vi.fn(() => []),
+        listTasks: vi.fn(async () => []),
+      } as any,
+    });
+
+    expect(
+      session.metadata[SESSION_RUNTIME_CONTRACT_STATUS_SNAPSHOT_METADATA_KEY],
+    ).toMatchObject({
+      version: 1,
+      lastTurnTraceId: "trace-status",
+      completionState: "partial",
+      remainingMilestones: [
+        expect.objectContaining({ id: "phase-1" }),
+      ],
+    });
   });
 });

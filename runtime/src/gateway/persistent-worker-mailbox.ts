@@ -45,6 +45,27 @@ interface PersistentWorkerMailboxOptions {
   readonly memoryBackend: MemoryBackend;
   readonly logger?: Logger;
   readonly now?: () => number;
+  readonly onTraceEvent?: (
+    event: PersistentWorkerMailboxTraceEvent,
+  ) => void | Promise<void>;
+}
+
+export interface PersistentWorkerMailboxTraceEvent {
+  readonly action:
+    | "sent"
+    | "claimed"
+    | "acknowledged"
+    | "handled"
+    | "repaired";
+  readonly parentSessionId: string;
+  readonly workerId: string;
+  readonly messageId: string;
+  readonly messageType: RuntimeMailboxMessage["type"];
+  readonly direction: RuntimeMailboxDirection;
+  readonly status: RuntimeMailboxStatus;
+  readonly timestamp: number;
+  readonly taskId?: string;
+  readonly correlationId?: string;
 }
 
 function asPlainObject(
@@ -333,15 +354,43 @@ export class PersistentWorkerMailbox {
   private readonly logger: Logger;
   private readonly now: () => number;
   private readonly queue: KeyedAsyncQueue;
+  private readonly onTraceEvent?: PersistentWorkerMailboxOptions["onTraceEvent"];
 
   constructor(options: PersistentWorkerMailboxOptions) {
     this.memoryBackend = options.memoryBackend;
     this.logger = options.logger ?? silentLogger;
     this.now = options.now ?? (() => Date.now());
+    this.onTraceEvent = options.onTraceEvent;
     this.queue = new KeyedAsyncQueue({
       logger: this.logger,
       label: "persistent worker mailbox",
     });
+  }
+
+  private async emitTraceEvent(
+    action: PersistentWorkerMailboxTraceEvent["action"],
+    message: RuntimeMailboxMessage,
+  ): Promise<void> {
+    try {
+      await this.onTraceEvent?.({
+        action,
+        parentSessionId: message.parentSessionId,
+        workerId: message.workerId,
+        messageId: message.messageId,
+        messageType: message.type,
+        direction: message.direction,
+        status: message.status,
+        timestamp: this.now(),
+        ...(message.taskId ? { taskId: message.taskId } : {}),
+        ...(message.correlationId ? { correlationId: message.correlationId } : {}),
+      });
+    } catch (error) {
+      this.logger.debug("Persistent worker mailbox trace listener failed", {
+        action,
+        messageId: message.messageId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private sessionKey(parentSessionId: string): string {
@@ -394,7 +443,7 @@ export class PersistentWorkerMailbox {
   }
 
   async sendToWorker(draft: ParentToWorkerDraft): Promise<RuntimeMailboxMessage> {
-    return this.mutateSession(draft.parentSessionId, async (session) => {
+    const message = await this.mutateSession(draft.parentSessionId, async (session) => {
       const message = this.createMessage(session, {
         ...draft,
         direction: "parent_to_worker",
@@ -402,10 +451,12 @@ export class PersistentWorkerMailbox {
       session.messages.push(message);
       return cloneMessage(message);
     });
+    await this.emitTraceEvent("sent", message);
+    return message;
   }
 
   async sendToParent(draft: WorkerToParentDraft): Promise<RuntimeMailboxMessage> {
-    return this.mutateSession(draft.parentSessionId, async (session) => {
+    const message = await this.mutateSession(draft.parentSessionId, async (session) => {
       const message = this.createMessage(session, {
         ...draft,
         direction: "worker_to_parent",
@@ -413,6 +464,8 @@ export class PersistentWorkerMailbox {
       session.messages.push(message);
       return cloneMessage(message);
     });
+    await this.emitTraceEvent("sent", message);
+    return message;
   }
 
   async listMessages(params: {
@@ -458,34 +511,44 @@ export class PersistentWorkerMailbox {
     readonly parentSessionId: string;
     readonly messageId: string;
   }): Promise<RuntimeMailboxMessage | undefined> {
-    return this.mutateSession(params.parentSessionId, async (session) => {
+    const result = await this.mutateSession(params.parentSessionId, async (session) => {
       const message = session.messages.find(
         (entry) => entry.messageId === params.messageId,
       );
-      if (!message) return undefined;
+      if (!message) return { message: undefined, changed: false };
       if (message.status === "pending") {
         message.status = "acknowledged";
         message.updatedAt = this.now();
+        return { message: cloneMessage(message), changed: true };
       }
-      return cloneMessage(message);
+      return { message: cloneMessage(message), changed: false };
     });
+    if (result.changed && result.message) {
+      await this.emitTraceEvent("acknowledged", result.message);
+    }
+    return result.message;
   }
 
   async markHandled(params: {
     readonly parentSessionId: string;
     readonly messageId: string;
   }): Promise<RuntimeMailboxMessage | undefined> {
-    return this.mutateSession(params.parentSessionId, async (session) => {
+    const result = await this.mutateSession(params.parentSessionId, async (session) => {
       const message = session.messages.find(
         (entry) => entry.messageId === params.messageId,
       );
-      if (!message) return undefined;
+      if (!message) return { message: undefined, changed: false };
       if (message.status !== "handled") {
         message.status = "handled";
         message.updatedAt = this.now();
+        return { message: cloneMessage(message), changed: true };
       }
-      return cloneMessage(message);
+      return { message: cloneMessage(message), changed: false };
     });
+    if (result.changed && result.message) {
+      await this.emitTraceEvent("handled", result.message);
+    }
+    return result.message;
   }
 
   async claimNextWorkerMessage(params: {
@@ -493,7 +556,7 @@ export class PersistentWorkerMailbox {
     readonly workerId: string;
     readonly types?: readonly RuntimeMailboxMessage["type"][];
   }): Promise<RuntimeMailboxMessage | undefined> {
-    return this.mutateSession(params.parentSessionId, async (session) => {
+    const message = await this.mutateSession(params.parentSessionId, async (session) => {
       const matched = session.messages
         .filter((message) => {
           if (message.workerId !== params.workerId) return false;
@@ -513,6 +576,10 @@ export class PersistentWorkerMailbox {
       matched.updatedAt = this.now();
       return cloneMessage(matched);
     });
+    if (message) {
+      await this.emitTraceEvent("claimed", message);
+    }
+    return message;
   }
 
   async getWorkerMailboxCounts(params: {
@@ -588,8 +655,9 @@ export class PersistentWorkerMailbox {
       const parentSessionId = key.slice(
         PERSISTENT_WORKER_MAILBOX_KEY_PREFIX.length,
       );
-      await this.mutateSession(parentSessionId, async (session) => {
+      const repaired = await this.mutateSession(parentSessionId, async (session) => {
         const now = this.now();
+        const changed: RuntimeMailboxMessage[] = [];
         for (const message of session.messages) {
           if (
             message.direction === "parent_to_worker" &&
@@ -597,9 +665,14 @@ export class PersistentWorkerMailbox {
           ) {
             message.status = "pending";
             message.updatedAt = now;
+            changed.push(cloneMessage(message));
           }
         }
+        return changed;
       });
+      for (const message of repaired) {
+        await this.emitTraceEvent("repaired", message);
+      }
     }
   }
 }

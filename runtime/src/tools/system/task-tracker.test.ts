@@ -663,4 +663,82 @@ describe("task-tracker", () => {
       expect(store.list("ephemeral")).toHaveLength(0);
     });
   });
+
+  describe("runtime tracing hooks", () => {
+    it("emits lifecycle notifications including task_created for runtime tasks", async () => {
+      const events: string[] = [];
+      const tracedStore = new TaskStore({
+        now: (() => {
+          let now = 10;
+          return () => now++;
+        })(),
+        onTaskEvent: async (event) => {
+          events.push(event.type);
+        },
+      });
+
+      await tracedStore.createRuntimeTask({
+        listId: "session-trace",
+        kind: "subagent",
+        subject: "Run verifier",
+        description: "Run verifier",
+        status: "in_progress",
+      });
+
+      expect(events).toEqual(["task_created", "task_started"]);
+    });
+
+    it("emits bounded task.wait and task.output access events once per tool call", async () => {
+      const accessEvents: Array<Record<string, unknown>> = [];
+      const tracedStore = new TaskStore({
+        now: (() => {
+          let now = 100;
+          return () => now++;
+        })(),
+      });
+      const tracedTools = createTaskTrackerTools(tracedStore, {
+        onTaskAccessEvent: async (event) => {
+          accessEvents.push({
+            type: event.type,
+            taskId: event.taskId,
+            ready: event.ready,
+            until: event.until,
+          });
+        },
+      });
+      const tracedCreate = findTool(tracedTools, "task.create");
+      const tracedWait = findTool(tracedTools, "task.wait");
+      const tracedOutput = findTool(tracedTools, "task.output");
+
+      const created = await callTool(tracedCreate, {
+        subject: "Build",
+        description: "Run build",
+      });
+      await callTool(tracedWait, {
+        taskId: (created.body.task as Record<string, unknown>).id,
+        timeoutMs: 1,
+      });
+      await callTool(tracedOutput, {
+        taskId: (created.body.task as Record<string, unknown>).id,
+      });
+
+      expect(accessEvents).toEqual([
+        expect.objectContaining({
+          type: "task_wait_started",
+          taskId: "1",
+        }),
+        expect.objectContaining({
+          type: "task_wait_finished",
+          taskId: "1",
+          ready: false,
+          until: "terminal",
+        }),
+        expect.objectContaining({
+          type: "task_output_read",
+          taskId: "1",
+          ready: false,
+        }),
+      ]);
+    });
+  });
 });

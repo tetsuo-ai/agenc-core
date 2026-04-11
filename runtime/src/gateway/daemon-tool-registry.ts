@@ -43,6 +43,11 @@ import {
 } from "../tools/system/task-tracker.js";
 import { createVerificationTools } from "../tools/system/verification.js";
 import { runStopHookPhase, type StopHookRuntime } from "../llm/hooks/stop-hooks.js";
+import {
+  buildRuntimeContractTaskTraceId,
+  logTraceEvent,
+  resolveTraceLoggingConfig,
+} from "./daemon-trace.js";
 import { resolveBrowserToolMode } from "./browser-tool-mode.js";
 import { createExecuteWithAgentTool } from "./delegation-tool.js";
 import { createCoordinatorModeTool } from "./coordinator-tool.js";
@@ -136,6 +141,7 @@ export async function createDaemonToolRegistry(
 ): Promise<ToolRegistrySideEffects> {
   const { logger, configPath, yolo } = deps;
   const registry = new ToolRegistry({ logger });
+  const traceConfig = resolveTraceLoggingConfig(config.logging);
 
   // Security: Only expose a minimal host env to system.bash.
   // Token-like secrets are intentionally excluded by default.
@@ -323,6 +329,46 @@ export async function createDaemonToolRegistry(
     memoryBackend,
     persistenceRootDir: resolveRuntimePersistencePaths().rootDir,
     logger,
+    ...(traceConfig.enabled
+      ? {
+          onTaskEvent: async (event) => {
+            const eventType =
+              event.type === "task_created"
+                ? "created"
+                : event.type === "task_started"
+                  ? "started"
+                  : event.type === "task_updated"
+                    ? "updated"
+                    : event.type === "task_output_ready"
+                      ? "output_ready"
+                      : event.type === "task_completed"
+                        ? "completed"
+                        : event.type === "task_failed"
+                          ? "failed"
+                          : "cancelled";
+            logTraceEvent(
+              logger,
+              `runtime_contract.task.${eventType}`,
+              {
+                traceId: buildRuntimeContractTaskTraceId(
+                  event.listId,
+                  event.taskId,
+                ),
+                sessionId: event.listId,
+                taskId: event.taskId,
+                kind: event.task.kind,
+                status: event.task.status,
+                timestamp: event.timestamp,
+                ...(event.task.summary ? { summary: event.task.summary } : {}),
+                ...(event.task.executionLocation
+                  ? { executionLocation: event.task.executionLocation }
+                  : {}),
+              },
+              traceConfig.maxChars,
+            );
+          },
+        }
+      : {}),
   });
   registry.registerAll(
     createTaskTrackerTools(taskTrackerStore, {
@@ -354,6 +400,43 @@ export async function createDaemonToolRegistry(
               : hookResult.blockingMessage,
         };
       },
+      ...(traceConfig.enabled
+        ? {
+            onTaskAccessEvent: async (event) => {
+              logTraceEvent(
+                logger,
+                `runtime_contract.task.${event.type}`,
+                {
+                  traceId: buildRuntimeContractTaskTraceId(
+                    event.listId,
+                    event.taskId,
+                  ),
+                  sessionId: event.listId,
+                  taskId: event.taskId,
+                  timestamp: event.timestamp,
+                  ...(event.until ? { until: event.until } : {}),
+                  ...(event.timeoutMs !== undefined
+                    ? { timeoutMs: event.timeoutMs }
+                    : {}),
+                  ...(event.includeEvents !== undefined
+                    ? { includeEvents: event.includeEvents }
+                    : {}),
+                  ...(event.maxBytes !== undefined
+                    ? { maxBytes: event.maxBytes }
+                    : {}),
+                  ...(event.ready !== undefined ? { ready: event.ready } : {}),
+                  ...(event.task
+                    ? {
+                        taskStatus: event.task.status,
+                        taskOutputReady: event.task.outputReady === true,
+                      }
+                    : {}),
+                },
+                traceConfig.maxChars,
+              );
+            },
+          }
+        : {}),
     }),
   );
   registry.registerAll(createVerificationTools());
