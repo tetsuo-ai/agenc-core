@@ -70,7 +70,10 @@ type ToolResolutionStrategy =
   | "all_tools_empty_filter"
   | "subset_exact"
   | "subset_partial"
-  | "fallback_full_catalog_no_matches";
+  // Mirrors the Grok adapter's `subset_no_resolved_matches`: caller
+  // constrained the allowlist but no listed tool matched the catalog.
+  // Returns an empty tool set rather than the full catalog.
+  | "subset_no_resolved_matches";
 
 interface ToolSelectionDiagnostics {
   readonly tools: LLMTool[];
@@ -594,14 +597,22 @@ export class OllamaProvider implements LLMProvider {
       !resolvedToolNames.includes(name)
     );
     if (filtered.length === 0) {
+      // Mirror the Grok adapter fix: when zero tools resolve from a
+      // non-empty allowlist, return an empty tool set rather than the
+      // full catalog. The previous behavior silently bypassed the
+      // allowlist constraint and shipped under
+      // `fallback_full_catalog_no_matches`.
+      console.warn(
+        `[OllamaAdapter] Tool allowlist resolved to ${requestedToolNames.length} names but zero matched the provider catalog — suppressing all tools for this call (requested: ${requestedToolNames.join(", ")})`,
+      );
       return {
-        tools: this.tools,
+        tools: [],
         requestedToolNames,
-        resolvedToolNames: providerCatalogToolNames,
+        resolvedToolNames: [],
         missingRequestedToolNames: requestedToolNames,
         providerCatalogToolCount,
-        toolResolution: "fallback_full_catalog_no_matches",
-        toolsAttached: true,
+        toolResolution: "subset_no_resolved_matches",
+        toolsAttached: false,
       };
     }
 

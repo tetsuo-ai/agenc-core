@@ -13,6 +13,7 @@ import type { HookConfig } from "./hooks.js";
 import type { DesktopSandboxConfig } from "../desktop/types.js";
 import type { SocialPeerDirectoryEntry } from "../social/types.js";
 import type { LLMXaiCapabilitySurface } from "../llm/types.js";
+import type { StopHookRuntimeConfig } from "../llm/hooks/stop-hooks.js";
 
 // ============================================================================
 // Gateway Configuration
@@ -129,6 +130,32 @@ export interface GatewayLLMConfig extends LLMXaiCapabilitySurface {
   };
   /** Optional sub-agent orchestration controls. */
   subagents?: GatewaySubagentConfig;
+  /** Enable executor-owned completion authority and runtime-contract snapshots. */
+  runtimeContractV2?: boolean;
+  /** Runtime-owned stop-hook chain controls. */
+  stopHooks?: StopHookRuntimeConfig;
+  /** Async task-handle runtime controls. */
+  asyncTasks?: {
+    enabled?: boolean;
+  };
+  /** Persistent worker runtime controls. */
+  persistentWorkers?: {
+    enabled?: boolean;
+  };
+  /** Structured worker mailbox controls. */
+  mailbox?: {
+    enabled?: boolean;
+  };
+  /** Runtime verifier controls. */
+  verifier?: {
+    runtimeRequired?: boolean;
+    projectBootstrap?: boolean;
+  };
+  /** Worker isolation controls. */
+  workerIsolation?: {
+    worktree?: boolean;
+    remote?: boolean;
+  };
   /** Additional LLM providers for fallback (tried in order after primary fails). */
   fallback?: GatewayLLMConfig[];
 }
@@ -140,15 +167,15 @@ export type GatewaySubagentChildToolAllowlistStrategy =
 export type GatewaySubagentFallbackBehavior =
   | "continue_without_delegation"
   | "fail_request";
-export type GatewaySubagentChildProviderStrategy =
+type GatewaySubagentChildProviderStrategy =
   | "same_as_parent"
   | "capability_matched";
-export type GatewaySubagentDelegationAggressiveness =
+type GatewaySubagentDelegationAggressiveness =
   | "conservative"
   | "balanced"
   | "aggressive"
   | "adaptive";
-export type GatewaySubagentHardBlockedTaskClass =
+type GatewaySubagentHardBlockedTaskClass =
   | "wallet_signing"
   | "wallet_transfer"
   | "stake_or_rewards"
@@ -254,7 +281,7 @@ export interface GatewayTrustedPluginPackageConfig {
   allowedSubpaths?: string[];
 }
 
-export interface GatewayPluginsConfig {
+interface GatewayPluginsConfig {
   trustedPackages?: GatewayTrustedPluginPackageConfig[];
 }
 
@@ -273,33 +300,33 @@ export interface GatewayConnectionConfig {
   endpoints?: string[];
 }
 
-export type GatewayCliOutputFormat = "json" | "jsonl" | "table";
+type GatewayCliOutputFormat = "json" | "jsonl" | "table";
 
-export interface GatewayCliConfig {
+interface GatewayCliConfig {
   strictMode?: boolean;
   idempotencyWindow?: number;
   outputFormat?: GatewayCliOutputFormat;
 }
 
-export type GatewayReplayStoreType = "memory" | "sqlite";
+type GatewayReplayStoreType = "memory" | "sqlite";
 
-export interface GatewayReplayStoreConfig {
+interface GatewayReplayStoreConfig {
   type?: GatewayReplayStoreType;
   sqlitePath?: string;
 }
 
-export interface GatewayReplayBackfillConfig {
+interface GatewayReplayBackfillConfig {
   toSlot?: number;
   pageSize?: number;
 }
 
-export interface GatewayReplayTracingConfig {
+interface GatewayReplayTracingConfig {
   traceId?: string;
   sampleRate?: number;
   emitOtel?: boolean;
 }
 
-export interface GatewayReplayConfig {
+interface GatewayReplayConfig {
   enabled?: boolean;
   store?: GatewayReplayStoreConfig;
   tracing?: GatewayReplayTracingConfig;
@@ -340,7 +367,7 @@ export interface GatewayBindConfig {
   bind?: string;
 }
 
-export interface GatewayWorkspaceConfig {
+interface GatewayWorkspaceConfig {
   /**
    * Host workspace root used for filesystem allowlists, delegated working
    * directories, and any workspace-mounted sandbox/desktop tooling.
@@ -373,7 +400,7 @@ export interface GatewayTelemetryConfig {
   flushIntervalMs?: number;
 }
 
-export interface GatewayMCPConfig {
+interface GatewayMCPConfig {
   /** External MCP servers to connect to via stdio transport */
   servers: GatewayMCPServerConfig[];
 }
@@ -557,7 +584,7 @@ export interface GatewayApprovalConfig {
   resolverSigningKey?: string;
 }
 
-export interface GatewaySocialConfig {
+interface GatewaySocialConfig {
   enabled?: boolean;
   discoveryEnabled?: boolean;
   discoveryCacheTtlMs?: number;
@@ -584,7 +611,7 @@ export type GatewayBackgroundRunNotificationEvent =
   | "run_cancelled"
   | "run_controlled";
 
-export type GatewayBackgroundRunNotificationSinkType =
+type GatewayBackgroundRunNotificationSinkType =
   | "webhook"
   | "discord_webhook"
   | "email_webhook"
@@ -607,7 +634,7 @@ export interface GatewayBackgroundRunNotificationConfig {
   readonly sinks?: readonly GatewayBackgroundRunNotificationSink[];
 }
 
-export interface GatewayAutonomyFeatureFlags {
+interface GatewayAutonomyFeatureFlags {
   readonly backgroundRuns?: boolean;
   readonly multiAgent?: boolean;
   readonly notifications?: boolean;
@@ -615,7 +642,7 @@ export interface GatewayAutonomyFeatureFlags {
   readonly canaryRollout?: boolean;
 }
 
-export interface GatewayAutonomyKillSwitches {
+interface GatewayAutonomyKillSwitches {
   readonly backgroundRuns?: boolean;
   readonly multiAgent?: boolean;
   readonly notifications?: boolean;
@@ -623,7 +650,7 @@ export interface GatewayAutonomyKillSwitches {
   readonly canaryRollout?: boolean;
 }
 
-export interface GatewayAutonomySloTargets {
+interface GatewayAutonomySloTargets {
   readonly runStartLatencyMs?: number;
   readonly updateCadenceMs?: number;
   readonly completionAccuracyRate?: number;
@@ -632,7 +659,7 @@ export interface GatewayAutonomySloTargets {
   readonly eventLossRate?: number;
 }
 
-export interface GatewayAutonomyCanaryConfig {
+interface GatewayAutonomyCanaryConfig {
   readonly enabled?: boolean;
   readonly tenantAllowList?: readonly string[];
   readonly featureAllowList?: readonly string[];
@@ -723,9 +750,9 @@ export interface GatewayBackgroundRunAlert {
   readonly runId?: string;
 }
 
-export type GatewayRuntimeMode = "healthy" | "degraded" | "safe_mode";
+type GatewayRuntimeMode = "healthy" | "degraded" | "safe_mode";
 
-export interface GatewayBackgroundRunDependencyStatus {
+interface GatewayBackgroundRunDependencyStatus {
   readonly domain:
     | "provider"
     | "tool"
@@ -743,7 +770,7 @@ export interface GatewayBackgroundRunDependencyStatus {
   readonly runId?: string;
 }
 
-export interface GatewayBackgroundRunSloStatus {
+interface GatewayBackgroundRunSloStatus {
   readonly runCompletionRate?: number;
   readonly checkpointResumeSuccessRate?: number;
   readonly approvalResponseLatencyMs?: number;

@@ -10,6 +10,10 @@
 import { createHash } from "node:crypto";
 import type { LLMMessage } from "../llm/types.js";
 import type { ArtifactCompactionState } from "../memory/artifact-store.js";
+import type {
+  RuntimeContractSnapshot,
+  RuntimeContractStatusSnapshot,
+} from "../runtime-contract/types.js";
 import { compactHistoryIntoArtifactContext } from "../llm/context-compaction.js";
 
 export const SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY =
@@ -20,6 +24,12 @@ export const SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY =
   "statefulArtifactContext";
 export const SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY =
   "statefulArtifactRecords";
+export const SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY =
+  "activeTaskContext";
+export const SESSION_RUNTIME_CONTRACT_SNAPSHOT_METADATA_KEY =
+  "runtimeContractSnapshot";
+export const SESSION_RUNTIME_CONTRACT_STATUS_SNAPSHOT_METADATA_KEY =
+  "runtimeContractStatusSnapshot";
 
 export function clearStatefulContinuationMetadata(
   metadata: Record<string, unknown>,
@@ -28,6 +38,29 @@ export function clearStatefulContinuationMetadata(
   delete metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY];
   delete metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY];
   delete metadata[SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY];
+  delete metadata[SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY];
+  delete metadata[SESSION_RUNTIME_CONTRACT_SNAPSHOT_METADATA_KEY];
+  delete metadata[SESSION_RUNTIME_CONTRACT_STATUS_SNAPSHOT_METADATA_KEY];
+}
+
+export function buildSessionRuntimeContractSnapshot(
+  metadata: Record<string, unknown>,
+): RuntimeContractSnapshot | undefined {
+  const candidate = metadata[SESSION_RUNTIME_CONTRACT_SNAPSHOT_METADATA_KEY];
+  if (typeof candidate !== "object" || candidate === null) {
+    return undefined;
+  }
+  return candidate as RuntimeContractSnapshot;
+}
+
+export function buildSessionRuntimeContractStatusSnapshot(
+  metadata: Record<string, unknown>,
+): RuntimeContractStatusSnapshot | undefined {
+  const candidate = metadata[SESSION_RUNTIME_CONTRACT_STATUS_SNAPSHOT_METADATA_KEY];
+  if (typeof candidate !== "object" || candidate === null) {
+    return undefined;
+  }
+  return candidate as RuntimeContractStatusSnapshot;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +130,7 @@ export interface CompactionResult {
   readonly artifactCount?: number;
 }
 
-export type SessionCompactionPhase = "before" | "after" | "error";
+type SessionCompactionPhase = "before" | "after" | "error";
 
 export interface SessionCompactionHookPayload {
   readonly phase: SessionCompactionPhase;
@@ -109,7 +142,7 @@ export interface SessionCompactionHookPayload {
   readonly error?: string;
 }
 
-export type SessionCompactionHook = (
+type SessionCompactionHook = (
   payload: SessionCompactionHookPayload,
 ) => Promise<void> | void;
 
@@ -556,6 +589,7 @@ export class SessionManager {
             (resetCfg.idleMinutes ?? DEFAULT_IDLE_MINUTES) * 60_000;
           if (now - session.lastActiveAt >= idleMs) {
             session.history = [];
+            clearStatefulContinuationMetadata(session.metadata);
             session.lastActiveAt = now;
             resetIds.push(id);
           }
@@ -572,6 +606,7 @@ export class SessionManager {
           // and we are now past the reset time
           if (session.lastActiveAt < resetEpoch && now >= resetEpoch) {
             session.history = [];
+            clearStatefulContinuationMetadata(session.metadata);
             session.lastActiveAt = now;
             resetIds.push(id);
           }
@@ -589,6 +624,7 @@ export class SessionManager {
 
           if (lastDateStr !== nowDateStr && lastDay !== nowDay) {
             session.history = [];
+            clearStatefulContinuationMetadata(session.metadata);
             session.lastActiveAt = now;
             resetIds.push(id);
           }

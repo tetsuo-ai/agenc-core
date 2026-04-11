@@ -143,8 +143,7 @@ competing default.
 
 `web/` is the dashboard product surface.
 
-`demo-app/` is not a peer dashboard. It is a separate demo-only surface that
-must be moved out of the product path.
+`demo-app/` was not a peer dashboard. It has been retired per ADR-003.
 
 ## Connector and plugin contract
 
@@ -186,7 +185,7 @@ This contract is being implemented in `tetsuo-ai/agenc-core` through:
 
 - `#4` `feat(cli): converge agenc and agenc-runtime config/state defaults`
 - `#5` `feat(distribution): ship public agenc wrapper package and runtime install path`
-- `#6` `feat(web): lock agenc ui to the daemon-backed dashboard and retire demo-app from product surface`
+- `#6` `feat(web): lock agenc ui to the daemon-backed dashboard and retire demo-app from product surface` (demo-app removed)
 - `#7` `feat(connectors): freeze plugin/connector host ABI and ship Telegram lifecycle`
 - `#8` `feat(marketplace): define task/bid daemon contract before public marketplace UX`
 - `#9` `chore(repo): build agenc-core declassification disposition table and scrub plan`

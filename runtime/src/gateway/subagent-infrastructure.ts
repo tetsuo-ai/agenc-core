@@ -21,9 +21,7 @@ import {
   SubAgentLifecycleEmitter,
 } from "./delegation-runtime.js";
 import {
-  DelegationBanditPolicyTuner,
   InMemoryDelegationTrajectorySink,
-  type DelegationBanditArm,
 } from "../llm/delegation-learning.js";
 import type { LLMProvider } from "../llm/types.js";
 import type { Tool } from "../tools/types.js";
@@ -86,12 +84,6 @@ export interface ResolvedSubAgentRuntimeConfig {
   readonly childToolAllowlistStrategy: "inherit_intersection" | "explicit_only";
   readonly childProviderStrategy: SubagentChildProviderStrategy;
   readonly fallbackBehavior: "continue_without_delegation" | "fail_request";
-  readonly policyLearningEnabled: boolean;
-  readonly policyLearningEpsilon: number;
-  readonly policyLearningExplorationBudget: number;
-  readonly policyLearningMinSamplesPerArm: number;
-  readonly policyLearningUcbExplorationScale: number;
-  readonly policyLearningArms: readonly DelegationBanditArm[];
 }
 
 // ============================================================================
@@ -177,7 +169,6 @@ export function resolveSubAgentRuntimeConfig(
     1,
     Math.max(0, subagents?.spawnDecisionThreshold ?? 0.2),
   );
-  const policyLearning = subagents?.policyLearning;
   const normalizeCappedLimit = (
     value: number | undefined,
     fallback: number,
@@ -186,26 +177,8 @@ export function resolveSubAgentRuntimeConfig(
     const normalized = normalizeRuntimeLimit(value, fallback);
     return hasRuntimeLimit(normalized)
       ? Math.min(hardCap, normalized)
-      : 0;
+      : hardCap;
   };
-  const policyLearningArms =
-    Array.isArray(policyLearning?.arms) && policyLearning.arms.length > 0
-      ? policyLearning.arms
-          .map((arm: { id: string; thresholdOffset?: number; description?: string }) => ({
-            id: arm.id.trim(),
-            ...(typeof arm.thresholdOffset === "number"
-              ? { thresholdOffset: arm.thresholdOffset }
-              : {}),
-            ...(typeof arm.description === "string"
-              ? { description: arm.description }
-              : {}),
-          }))
-          .filter((arm: { id: string }) => arm.id.length > 0)
-      : [
-          { id: "conservative", thresholdOffset: 0.1 },
-          { id: "balanced", thresholdOffset: 0 },
-          { id: "aggressive", thresholdOffset: -0.1 },
-        ];
   return {
     enabled: subagents?.enabled !== false,
     unsafeBenchmarkMode,
@@ -286,25 +259,6 @@ export function resolveSubAgentRuntimeConfig(
         : "same_as_parent",
     fallbackBehavior:
       subagents?.fallbackBehavior ?? "continue_without_delegation",
-    policyLearningEnabled:
-      subagents?.enabled !== false && policyLearning?.enabled !== false,
-    policyLearningEpsilon: Math.min(
-      1,
-      Math.max(0, policyLearning?.epsilon ?? 0.1),
-    ),
-    policyLearningExplorationBudget: Math.max(
-      0,
-      Math.floor(policyLearning?.explorationBudget ?? 500),
-    ),
-    policyLearningMinSamplesPerArm: Math.max(
-      1,
-      Math.floor(policyLearning?.minSamplesPerArm ?? 2),
-    ),
-    policyLearningUcbExplorationScale: Math.max(
-      0,
-      policyLearning?.ucbExplorationScale ?? 1.2,
-    ),
-    policyLearningArms,
   };
 }
 
@@ -437,7 +391,7 @@ export function resolveDelegationScoreThreshold(
 // High-risk capability check
 // ============================================================================
 
-export function hasHighRiskDelegationCapabilities(
+function hasHighRiskDelegationCapabilities(
   capabilities: readonly string[],
 ): boolean {
   for (const capability of capabilities) {
@@ -556,12 +510,11 @@ export async function ensureSubAgentDefaultWorkspace(
 // Delegation runtime services configuration / teardown
 // ============================================================================
 
-export interface DelegationRuntimeServicesState {
+interface DelegationRuntimeServicesState {
   delegationPolicyEngine: DelegationPolicyEngine | null;
   delegationVerifierService: DelegationVerifierService | null;
   subAgentLifecycleEmitter: SubAgentLifecycleEmitter | null;
   delegationTrajectorySink: InMemoryDelegationTrajectorySink | null;
-  delegationBanditTuner: DelegationBanditPolicyTuner | null;
 }
 
 export function configureDelegationRuntimeServices(
@@ -608,16 +561,6 @@ export function configureDelegationRuntimeServices(
   const trajectorySink =
     state.delegationTrajectorySink ??
     new InMemoryDelegationTrajectorySink({ maxRecords: 50_000 });
-  const banditTuner = resolved.policyLearningEnabled
-    ? new DelegationBanditPolicyTuner({
-        enabled: true,
-        epsilon: resolved.policyLearningEpsilon,
-        explorationBudget: resolved.policyLearningExplorationBudget,
-        minSamplesPerArm: resolved.policyLearningMinSamplesPerArm,
-        ucbExplorationScale: resolved.policyLearningUcbExplorationScale,
-        arms: resolved.policyLearningArms,
-      })
-    : null;
 
   deps.attachLifecycleBridge();
 
@@ -626,7 +569,6 @@ export function configureDelegationRuntimeServices(
     delegationVerifierService: verifierService,
     subAgentLifecycleEmitter: lifecycleEmitter,
     delegationTrajectorySink: trajectorySink,
-    delegationBanditTuner: banditTuner,
   };
 }
 
@@ -641,7 +583,6 @@ export function clearDelegationRuntimeServices(
     delegationVerifierService: null,
     subAgentLifecycleEmitter: null,
     delegationTrajectorySink: null,
-    delegationBanditTuner: null,
   };
 }
 

@@ -35,11 +35,12 @@ import {
 import { deriveDisputePda, deriveVotePda } from "./pda.js";
 import {
   findAgentPda,
+  findAuthorityRateLimitPda,
   findProtocolPda,
   deriveAuthorityVotePda,
 } from "../agent/pda.js";
 import { fetchTreasury } from "../utils/treasury.js";
-import { deriveClaimPda, deriveEscrowPda } from "../task/pda.js";
+import { deriveClaimPda, deriveEscrowPda, deriveTaskSubmissionPda } from "../task/pda.js";
 import {
   buildResolveDisputeTokenAccounts,
   buildExpireDisputeTokenAccounts,
@@ -113,6 +114,7 @@ export class DisputeOperations {
   // Cached derived values
   private readonly agentPda: PublicKey;
   private readonly protocolPda: PublicKey;
+  private readonly authorityRateLimitPda: PublicKey;
   private cachedTreasury: PublicKey | null = null;
 
   constructor(config: DisputeOpsConfig) {
@@ -123,6 +125,30 @@ export class DisputeOperations {
 
     this.agentPda = findAgentPda(this.agentId, this.program.programId);
     this.protocolPda = findProtocolPda(this.program.programId);
+    this.authorityRateLimitPda = findAuthorityRateLimitPda(
+      this.program.provider.publicKey!,
+      this.program.programId,
+    );
+  }
+
+  private async resolveExistingTaskSubmissionPda(
+    claimPda: PublicKey | null,
+  ): Promise<PublicKey | null> {
+    if (!claimPda) return null;
+
+    const taskSubmissionPda = deriveTaskSubmissionPda(
+      claimPda,
+      this.program.programId,
+    ).address;
+    const taskSubmissionAccount = await (
+      this.program.account as unknown as {
+        taskSubmission?: {
+          fetchNullable?: (pda: PublicKey) => Promise<unknown>;
+        };
+      }
+    ).taskSubmission?.fetchNullable?.(taskSubmissionPda);
+
+    return taskSubmissionAccount ? taskSubmissionPda : null;
   }
 
   // ==========================================================================
@@ -324,6 +350,11 @@ export class DisputeOperations {
       params.initiatorClaimPda === undefined
         ? derivedClaimPda
         : params.initiatorClaimPda;
+    const taskSubmissionClaimPda =
+      params.workerClaimPda ?? initiatorClaimPda ?? null;
+    const taskSubmissionPda = await this.resolveExistingTaskSubmissionPda(
+      taskSubmissionClaimPda,
+    );
 
     this.logger.info(
       `Initiating dispute for task ${params.taskPda.toBase58()}`,
@@ -335,7 +366,10 @@ export class DisputeOperations {
         params.defendantWorkers,
       );
 
-      const builder = this.program.methods
+      // The runtime patches local IDL account layouts ahead of the published
+      // protocol typings, so this builder needs a narrow escape hatch until the
+      // package catches up.
+      const builder = (this.program.methods as any)
         .initiateDispute(
           toAnchorBytes(params.disputeId),
           toAnchorBytes(params.taskId),
@@ -347,10 +381,12 @@ export class DisputeOperations {
           dispute: disputePda,
           task: params.taskPda,
           agent: this.agentPda,
+          authorityRateLimit: this.authorityRateLimitPda,
           protocolConfig: this.protocolPda,
           initiatorClaim: initiatorClaimPda ?? null,
           workerAgent: params.workerAgentPda ?? null,
           workerClaim: params.workerClaimPda ?? null,
+          taskSubmission: taskSubmissionPda,
           authority: this.program.provider.publicKey,
           systemProgram: SystemProgram.programId,
         });

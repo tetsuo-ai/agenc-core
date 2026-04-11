@@ -556,7 +556,6 @@ export {
 
 // Autonomous Agent System
 export {
-  AutonomousAgent,
   TaskScanner,
   type TaskScannerConfig,
   type Task,
@@ -564,68 +563,7 @@ export {
   type TaskFilter,
   type ClaimStrategy,
   type AutonomousTaskExecutor,
-  type AutonomousAgentConfig,
-  type AutonomousAgentStats,
   type DiscoveryMode,
-  type SpeculationConfig,
-  VerifierExecutor,
-  VerifierLaneEscalationError,
-  VERIFIER_METRIC_NAMES,
-  extractTaskRiskFeatures,
-  scoreTaskRisk,
-  allocateVerificationBudget,
-  planVerifierSchedule,
-  resolveEscalationTransition,
-  generateExecutionCandidates,
-  detectCandidateInconsistencies,
-  arbitrateCandidates,
-  type VerifierLaneMetrics,
-  type VerifierExecutorConfig,
-  type RiskTier,
-  type RiskFeatureVector,
-  type RiskContribution,
-  type TaskRiskScoringContext,
-  type TaskRiskScoringConfig,
-  type TaskRiskScoreResult,
-  type VerificationBudgetDecision,
-  type VerifierRouteStrategy,
-  type VerifierScheduleInput,
-  type VerifierSchedulePlan,
-  type EscalationTransitionState,
-  type EscalationTransitionReason,
-  type EscalationGraphInput,
-  type EscalationGraphTransition,
-  type GeneratedExecutionCandidate,
-  type CandidateGenerationAttemptContext,
-  type CandidateGenerationInput,
-  type CandidateGenerationResult,
-  type CandidateDisagreementReasonCode,
-  type CandidateDisagreementReason,
-  type CandidateDisagreement,
-  type CandidateProvenanceLink,
-  type InconsistencyDetectionResult,
-  type InconsistencyDetectorInput,
-  type CandidateArbitrationScore,
-  type CandidateArbitrationDecision,
-  type CandidateArbitrationInput,
-  type VerifierReason,
-  type VerifierVerdict,
-  type VerifierVerdictPayload,
-  type VerifierInput,
-  type TaskVerifier,
-  type RevisionInput,
-  type RevisionCapableTaskExecutor,
-  type VerifierTaskTypePolicy,
-  type VerifierAdaptiveRiskWeights,
-  type VerifierAdaptiveRiskConfig,
-  type MultiCandidateArbitrationWeights,
-  type MultiCandidateEscalationPolicy,
-  type MultiCandidatePolicyBudget,
-  type MultiCandidateConfig,
-  type VerifierPolicyConfig,
-  type VerifierEscalationMetadata,
-  type VerifierLaneConfig,
-  type VerifierExecutionResult,
   DefaultClaimStrategy,
 } from "./autonomous/index.js";
 
@@ -881,7 +819,6 @@ export {
   computeAnomalySetHashFromContexts,
   REPLAY_OPERATIONAL_LIMITS,
   normalizePdaValue,
-  normalizePdaString,
   extractDisputePdaFromPayload,
 } from "./replay/index.js";
 
@@ -1021,30 +958,12 @@ export {
   DANGEROUS_SHELL_PATTERNS,
 } from "./tools/index.js";
 
-// ZK Proof Engine (Phase 7)
-export {
-  // Core types
-  type ProofEngineConfig,
-  type ProofCacheConfig,
-  type ProverBackend,
-  type ProverBackendConfig,
-  type RouterConfig,
-  type ProofInputs,
-  type EngineProofResult,
-  type ProofEngineStats,
-  type HashResult,
-  type ToolsStatus,
-  // Error classes
-  ProofGenerationError,
-  ProofVerificationError,
-  ProofCacheError,
-  // Cache
-  ProofCache,
-  deriveCacheKey,
-  // Engine
-  ProofEngine,
-  buildSdkProverConfig,
-} from "./proof/index.js";
+// ZK Proof Engine was removed in Phase L of the 16-phase refactor
+// (TODO.MD). The runtime-side proof/ directory was a historical
+// fragment duplicating agenc-sdk's proof support; zero external
+// consumers imported the ProofEngine / ProofCache / ProverBackend
+// symbols from the runtime barrel. The authoritative proving
+// surface lives in agenc-prover.
 
 // Memory Backends (Phase 6)
 export {
@@ -1911,9 +1830,6 @@ export {
   CollaborationProtocol,
 } from "./social/index.js";
 
-// Agent Builder (Phase 10)
-export { AgentBuilder, BuiltAgent } from "./builder.js";
-
 // Voice Support (Phase 9.3)
 export {
   // Types
@@ -1958,25 +1874,12 @@ export {
   type XaiRealtimeClientConfig,
 } from "./voice/index.js";
 
-// Cross-Protocol Bridges (Phase 10)
-export {
-  // Types
-  type LangChainTool,
-  type LangChainBridgeConfig,
-  type X402PaymentRequest,
-  type X402PaymentResponse,
-  type X402BridgeConfig,
-  type FarcasterPostParams,
-  type FarcasterPostResult,
-  type FarcasterBridgeConfig,
-  // Error classes
-  BridgeError,
-  BridgePaymentError,
-  // Bridge classes
-  LangChainBridge,
-  X402Bridge,
-  FarcasterBridge,
-} from "./bridges/index.js";
+// Cross-Protocol Bridges (LangChain / X402 / Farcaster) were removed
+// in Phase L of the 16-phase refactor (TODO.MD). The bridges/
+// directory shipped as a public subpath but had zero external
+// consumers across the AgenC workspace — farcaster and x402
+// integrations now live in dedicated plugin packages outside
+// @tetsuo-ai/runtime.
 
 // Reputation Economy (Phase 10.3)
 export {

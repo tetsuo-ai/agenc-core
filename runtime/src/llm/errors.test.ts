@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { RuntimeError, RuntimeErrorCodes } from "../types/errors.js";
 import {
   LLMAuthenticationError,
+  LLMContextWindowExceededError,
+  LLMInvalidResponseError,
   LLMMessageValidationError,
   LLMProviderError,
   LLMRateLimitError,
@@ -28,6 +30,11 @@ describe("classifyLLMFailure", () => {
     expect(classifyLLMFailure(new LLMProviderError("grok", "bad request", 400))).toBe(
       "provider_error",
     );
+    expect(
+      classifyLLMFailure(
+        new LLMInvalidResponseError("grok", "malformed response envelope"),
+      ),
+    ).toBe("provider_error");
   });
 
   it("classifies runtime budget errors", () => {
@@ -59,5 +66,43 @@ describe("mapLLMError", () => {
 
     expect(mapped).toBeInstanceOf(LLMServerError);
     expect((mapped as LLMServerError).statusCode).toBe(503);
+  });
+
+  // Phase I: context window overflow mapping
+  describe("context window overflow (Phase I)", () => {
+    it("maps HTTP 413 status to LLMContextWindowExceededError", () => {
+      const raw = { status: 413, message: "Payload Too Large" };
+      const mapped = mapLLMError("grok", raw, 30_000);
+      expect(mapped).toBeInstanceOf(LLMContextWindowExceededError);
+      expect((mapped as LLMContextWindowExceededError).statusCode).toBe(413);
+    });
+
+    it("maps 'context_length_exceeded' message to LLMContextWindowExceededError", () => {
+      const raw = new Error(
+        "This model's maximum context length is 200000 tokens. However, your messages resulted in 215000 tokens",
+      );
+      const mapped = mapLLMError("grok", raw, 30_000);
+      expect(mapped).toBeInstanceOf(LLMContextWindowExceededError);
+    });
+
+    it("maps 'prompt too long' message to LLMContextWindowExceededError", () => {
+      const mapped = mapLLMError(
+        "grok",
+        new Error("Prompt too long: tokens exceeds the model's window"),
+        30_000,
+      );
+      expect(mapped).toBeInstanceOf(LLMContextWindowExceededError);
+    });
+
+    it("passes LLMContextWindowExceededError through untouched", () => {
+      const err = new LLMContextWindowExceededError("grok", "context_length_exceeded");
+      const mapped = mapLLMError("grok", err, 30_000);
+      expect(mapped).toBe(err);
+    });
+
+    it("classifies LLMContextWindowExceededError as provider_error for cooldown purposes", () => {
+      const err = new LLMContextWindowExceededError("grok", "too long");
+      expect(classifyLLMFailure(err)).toBe("provider_error");
+    });
   });
 });

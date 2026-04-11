@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -7,22 +7,22 @@ import { BackgroundRunStore, type PersistedBackgroundRun } from "../gateway/back
 import { createEffectApprovalPolicy } from "../gateway/effect-approval-policy.js";
 import { SqliteBackend } from "../memory/sqlite/backend.js";
 import { ChatExecutor } from "../llm/chat-executor.js";
+import { executeChatToLegacyResult } from "../llm/execute-chat.js";
 import { LLMTimeoutError } from "../llm/errors.js";
 import type { LLMProvider, LLMResponse } from "../llm/types.js";
-import { runCommand } from "../utils/process.js";
-import type { DelegationValidationToolCall } from "../utils/delegation-validation.js";
 import { resolveWorkflowCompletionState } from "../workflow/completion-state.js";
 import type { WorkflowProgressSnapshot } from "../workflow/completion-progress.js";
 import type { WorkflowVerificationContract } from "../workflow/verification-obligations.js";
-import { validateRuntimeVerificationContract } from "../workflow/verification-contract.js";
 import { TrajectoryReplayEngine } from "./replay.js";
 import { parseTrajectoryTrace } from "./types.js";
 
 export type PipelineImplementationGateScenarioCategory =
   | "shell_stub_replay"
   | "deterministic_false_completion"
+  | "live_runtime_false_completion"
   | "scaffold_placeholder"
   | "implementation_repair"
+  | "wrong_artifact_verifier"
   | "resume_partial_completion"
   | "degraded_provider_retry"
   | "safety_incomplete_output";
@@ -70,127 +70,299 @@ function ratio(numerator: number, denominator: number): number {
   return numerator / denominator;
 }
 
-function stableJson(value: Record<string, unknown>): string {
-  return JSON.stringify(value);
-}
-
-function createWriteToolCall(targetPath: string, content: string): DelegationValidationToolCall {
+function createSequentialProvider(
+  name: string,
+  responses: readonly LLMResponse[],
+): LLMProvider {
+  const queue = [...responses];
+  const nextResponse = async (): Promise<LLMResponse> => {
+    const response = queue.shift();
+    if (!response) {
+      throw new Error(`No queued LLM response remained for ${name}`);
+    }
+    return response;
+  };
   return {
-    name: "system.writeFile",
-    args: {
-      path: targetPath,
-      content,
-    },
-    result: stableJson({
-      path: targetPath,
-      ok: true,
-    }),
-    isError: false,
+    name,
+    chat: async () => nextResponse(),
+    chatStream: async () => nextResponse(),
+    healthCheck: async () => true,
   };
 }
 
-function createReadToolCall(targetPath: string, content: string): DelegationValidationToolCall {
+function buildRuntimeRequiredToolEvidence(workspaceRoot: string, targetArtifacts: readonly string[]) {
   return {
-    name: "system.readFile",
-    args: { path: targetPath },
-    result: stableJson({
-      path: targetPath,
-      content,
-    }),
-    isError: false,
-  };
-}
-
-async function createVerificationToolCall(params: {
-  readonly cwd: string;
-  readonly command: string;
-  readonly args: readonly string[];
-  readonly category: "build" | "behavior";
-}): Promise<DelegationValidationToolCall> {
-  const execution = await runCommand(params.command, [...params.args], {
-    cwd: params.cwd,
-  });
-  const commandText = [params.command, ...params.args].join(" ");
-  const successPrefix =
-    params.category === "behavior"
-      ? "behavior test passed"
-      : "build verification passed";
-  const failurePrefix =
-    params.category === "behavior"
-      ? "behavior test failed"
-      : "build verification failed";
-  return {
-    name: "system.bash",
-    args: {
-      command: commandText,
-      cwd: params.cwd,
-    },
-    result: stableJson({
-      stdout:
-        execution.exitCode === 0
-          ? [
-              successPrefix,
-              execution.stdout,
-            ]
-              .filter(Boolean)
-              .join("\n")
-          : [
-              failurePrefix,
-              execution.stdout,
-            ]
-              .filter(Boolean)
-              .join("\n"),
-      stderr: execution.stderr || "",
-      exitCode: execution.exitCode,
-      __agencVerification: {
-        category: params.category,
-        repoLocal: true,
-        command: commandText,
-        cwd: params.cwd,
+    maxCorrectionAttempts: 0,
+    verificationContract: {
+      workspaceRoot,
+      targetArtifacts,
+      acceptanceCriteria: ["Grounded implementation and verification must both pass."],
+      completionContract: {
+        taskClass: "behavior_required" as const,
+        placeholdersAllowed: false,
+        partialCompletionAllowed: false,
+        placeholderTaxonomy: "implementation" as const,
       },
-    }),
-    isError: execution.exitCode !== 0,
+    },
   };
 }
 
-function resolveVerifiedCompletionState(params: {
-  readonly toolCalls: readonly DelegationValidationToolCall[];
-  readonly verificationContract: WorkflowVerificationContract;
-  readonly verifierPerformed: boolean;
-  readonly verifierPassed: boolean;
-}): string {
-  return resolveWorkflowCompletionState({
-    stopReason: "completed",
-    toolCalls: params.toolCalls.map((toolCall) => ({
-      name: toolCall.name ?? "",
-      args:
-        toolCall.args && typeof toolCall.args === "object" && !Array.isArray(toolCall.args)
-          ? (toolCall.args as Record<string, unknown>)
-          : {},
-      result: typeof toolCall.result === "string" ? toolCall.result : "",
-      isError: toolCall.isError === true,
-    })),
-    verificationContract: params.verificationContract,
-    verifier: {
-      performed: params.verifierPerformed,
-      overall: params.verifierPerformed
-        ? params.verifierPassed
-          ? "pass"
-          : "fail"
-        : "skipped",
-    },
-  });
+async function runLiveRuntimeFalseCompletionScenario(): Promise<PipelineImplementationGateScenarioArtifact> {
+  const workspaceRoot = await mkdtemp(
+    path.join(tmpdir(), "agenc-phase12-false-completion-"),
+  );
+  try {
+    const provider = createSequentialProvider("phase12-false-completion", [
+      {
+        content: "",
+        finishReason: "tool_calls",
+        toolCalls: [
+          {
+            id: "tc-1",
+            name: "system.writeFile",
+            arguments: JSON.stringify({
+              path: "src/lexer.c",
+              content: "int lex(void) { return 1; }\n",
+            }),
+          },
+        ],
+        usage: { promptTokens: 40, completionTokens: 20, totalTokens: 60 },
+        model: "phase12-model",
+      },
+      {
+        content:
+          "All requested phases are fully implemented, integrated, and production-ready.",
+        toolCalls: [],
+        usage: { promptTokens: 35, completionTokens: 18, totalTokens: 53 },
+        model: "phase12-model",
+        finishReason: "stop",
+      },
+    ]);
+    const toolHandler = async (name: string, args: Record<string, unknown>) => {
+      if (name === "system.writeFile") {
+        const relativePath =
+          typeof args.path === "string" ? args.path : "missing-path";
+        const content = typeof args.content === "string" ? args.content : "";
+        const absolutePath = path.join(workspaceRoot, relativePath);
+        await mkdir(path.dirname(absolutePath), { recursive: true });
+        await writeFile(absolutePath, content, "utf8");
+      }
+      return JSON.stringify({
+        ok: true,
+        path: args.path,
+      });
+    };
+    const executor = new ChatExecutor({
+      providers: [provider],
+      toolHandler,
+      runtimeContractFlags: {
+        runtimeContractV2: true,
+        stopHooksEnabled: true,
+        asyncTasksEnabled: false,
+        persistentWorkersEnabled: false,
+        mailboxEnabled: false,
+        verifierRuntimeRequired: false,
+        verifierProjectBootstrap: false,
+        workerIsolationWorktree: false,
+        workerIsolationRemote: false,
+      },
+    });
+    const targetArtifacts = [
+      path.join(workspaceRoot, "src/lexer.c"),
+      path.join(workspaceRoot, "src/parser.c"),
+    ];
+    const result = await executeChatToLegacyResult(executor, {
+      message: {
+        id: "phase12-false-completion",
+        channel: "eval",
+        senderId: "phase12",
+        senderName: "Phase 12",
+        sessionId: "phase12-false-completion",
+        content: "Implement every remaining file without stopping early.",
+        timestamp: Date.now(),
+        scope: "dm",
+      },
+      history: [],
+      systemPrompt: "You are an evaluation harness.",
+      sessionId: "phase12-false-completion",
+      runtimeContext: { workspaceRoot },
+      requiredToolEvidence: buildRuntimeRequiredToolEvidence(
+        workspaceRoot,
+        targetArtifacts,
+      ),
+    });
+
+    const observedOutcome = `${result.stopReason}:${result.completionState}`;
+    return {
+      scenarioId: "live_runtime_false_completion_gate",
+      title:
+        "Live runtime rejects partial writes followed by a polished completion summary",
+      category: "live_runtime_false_completion",
+      mandatory: true,
+      executionMode: "runtime",
+      passed:
+        result.stopReason === "validation_error" &&
+        result.completionState === "partial" &&
+        observedOutcome !== "completed:completed",
+      falseCompleted: result.completionState === "completed",
+      observedOutcome,
+      expectedOutcome: "validation_error:partial",
+      notes: `writes=${result.toolCalls.filter((call) => call.name === "system.writeFile").length}`,
+    };
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
 }
 
-async function withTempRepo<T>(
-  label: string,
-  fn: (repoDir: string) => Promise<T>,
-): Promise<T> {
-  const repoDir = await mkdtemp(path.join(tmpdir(), `agenc-phase8-${label}-`));
+async function runWrongArtifactVerifierScenario(): Promise<PipelineImplementationGateScenarioArtifact> {
+  const workspaceRoot = await mkdtemp(
+    path.join(tmpdir(), "agenc-phase12-wrong-artifact-"),
+  );
   try {
-    return await fn(repoDir);
+    const provider = createSequentialProvider("phase12-wrong-artifact", [
+      {
+        content: "",
+        finishReason: "tool_calls",
+        toolCalls: [
+          {
+            id: "tc-1",
+            name: "system.writeFile",
+            arguments: JSON.stringify({
+              path: "src/main.c",
+              content:
+                "int duplicate_symbol(void) { return 1; }\nint duplicate_symbol(void) { return 2; }\n",
+            }),
+          },
+        ],
+        usage: { promptTokens: 40, completionTokens: 24, totalTokens: 64 },
+        model: "phase12-model",
+      },
+      {
+        content:
+          "Implemented the requested runtime modules and verified the workspace state.",
+        toolCalls: [],
+        usage: { promptTokens: 36, completionTokens: 16, totalTokens: 52 },
+        model: "phase12-model",
+        finishReason: "stop",
+      },
+    ]);
+    const toolHandler = async (name: string, args: Record<string, unknown>) => {
+      if (name === "system.writeFile") {
+        const relativePath =
+          typeof args.path === "string" ? args.path : "missing-path";
+        const content = typeof args.content === "string" ? args.content : "";
+        const absolutePath = path.join(workspaceRoot, relativePath);
+        await mkdir(path.dirname(absolutePath), { recursive: true });
+        await writeFile(absolutePath, content, "utf8");
+      }
+      return JSON.stringify({
+        ok: true,
+        path: args.path,
+      });
+    };
+    const executor = new ChatExecutor({
+      providers: [provider],
+      toolHandler,
+      runtimeContractFlags: {
+        runtimeContractV2: true,
+        stopHooksEnabled: true,
+        asyncTasksEnabled: false,
+        persistentWorkersEnabled: false,
+        mailboxEnabled: false,
+        verifierRuntimeRequired: true,
+        verifierProjectBootstrap: false,
+        workerIsolationWorktree: false,
+        workerIsolationRemote: false,
+      },
+      completionValidation: {
+        topLevelVerifier: {
+          subAgentManager: {
+            spawn: async () => "subagent:verify-wrong-artifact",
+            waitForResult: async () => ({
+              sessionId: "subagent:verify-wrong-artifact",
+              output: "Build fails.\nVERDICT: FAIL",
+              success: false,
+              durationMs: 12,
+              toolCalls: [
+                {
+                  name: "verification.runProbe",
+                  args: { probeId: "build" },
+                  result:
+                    "{\"ok\":false,\"__agencVerification\":{\"probeId\":\"build\",\"category\":\"build\",\"profile\":\"generic\"}}",
+                  isError: false,
+                  durationMs: 2,
+                },
+              ],
+              structuredOutput: {
+                type: "json_schema" as const,
+                name: "agenc_top_level_verifier_decision",
+                parsed: {
+                  verdict: "fail",
+                  summary:
+                    "The artifact is non-empty, but the verifier caught duplicate symbol definitions.",
+                },
+              },
+              completionState: "completed" as const,
+              stopReason: "completed" as const,
+            }),
+          },
+          verifierService: {
+            resolveVerifierRequirement: () => ({
+              required: true,
+              profiles: ["generic"],
+              probeCategories: ["build"],
+              mutationPolicy: "read_only_workspace",
+              allowTempArtifacts: false,
+              bootstrapSource: "disabled",
+              rationale: ["Phase 12 wrong-artifact gate"],
+            }),
+            shouldVerifySubAgentResult: () => true,
+          },
+        },
+      },
+    });
+    const artifactPath = path.join(workspaceRoot, "src/main.c");
+    const result = await executeChatToLegacyResult(executor, {
+      message: {
+        id: "phase12-wrong-artifact",
+        channel: "eval",
+        senderId: "phase12",
+        senderName: "Phase 12",
+        sessionId: "phase12-wrong-artifact",
+        content: "Implement the requested runtime artifact and verify it.",
+        timestamp: Date.now(),
+        scope: "dm",
+      },
+      history: [],
+      systemPrompt: "You are an evaluation harness.",
+      sessionId: "phase12-wrong-artifact",
+      runtimeContext: { workspaceRoot },
+      requiredToolEvidence: buildRuntimeRequiredToolEvidence(
+        workspaceRoot,
+        [artifactPath],
+      ),
+    });
+    const artifactStats = await stat(artifactPath);
+    const observedOutcome = `${result.stopReason}:${result.completionState}:${result.verifierSnapshot?.overall ?? "missing"}`;
+    return {
+      scenarioId: "non_empty_wrong_artifact_verifier_gate",
+      title:
+        "Non-empty but incorrect artifacts are rejected by the runtime verifier contract",
+      category: "wrong_artifact_verifier",
+      mandatory: true,
+      executionMode: "runtime",
+      passed:
+        artifactStats.size > 0 &&
+        result.stopReason === "validation_error" &&
+        result.completionState === "partial" &&
+        result.verifierSnapshot?.overall === "fail",
+      falseCompleted: result.completionState === "completed",
+      observedOutcome,
+      expectedOutcome: "validation_error:partial:fail",
+      notes: `bytes=${artifactStats.size}`,
+    };
   } finally {
-    await rm(repoDir, { recursive: true, force: true });
+    await rm(workspaceRoot, { recursive: true, force: true });
   }
 }
 
@@ -225,174 +397,6 @@ async function runShellStubReplayScenario(
     expectedOutcome: expected.expectedReplay.finalStatus,
     notes: `errors=${replay.errors.length} warnings=${replay.warnings.length}`,
   };
-}
-
-async function runDeterministicImplementationScenario(): Promise<PipelineImplementationGateScenarioArtifact> {
-  return withTempRepo("deterministic-false-completion", async (repoDir) => {
-    await mkdir(path.join(repoDir, "src"), { recursive: true });
-    await writeFile(path.join(repoDir, "package.json"), '{"type":"module"}\n', "utf8");
-    const targetPath = path.join(repoDir, "src", "runner.js");
-    const stubContent = [
-      "export function runPipeline(input) {",
-      "  // placeholder stub",
-      "  return input;",
-      "}",
-      "",
-    ].join("\n");
-    await writeFile(targetPath, stubContent, "utf8");
-    const toolCalls: DelegationValidationToolCall[] = [
-      createWriteToolCall(targetPath, stubContent),
-      await createVerificationToolCall({
-        cwd: repoDir,
-        command: process.execPath,
-        args: ["--check", targetPath],
-        category: "build",
-      }),
-    ];
-    const verificationContract: WorkflowVerificationContract = {
-      workspaceRoot: repoDir,
-      targetArtifacts: [targetPath],
-      acceptanceCriteria: [
-        "Build succeeds cleanly.",
-        "Runtime behavior works for real scenario inputs.",
-      ],
-      completionContract: {
-        taskClass: "behavior_required",
-        placeholdersAllowed: false,
-        partialCompletionAllowed: false,
-        placeholderTaxonomy: "implementation",
-      },
-    };
-    const decision = validateRuntimeVerificationContract({
-      verificationContract,
-      output: "**Implemented** All shell runtime paths are done.",
-      toolCalls,
-    });
-    const completionState = resolveVerifiedCompletionState({
-      toolCalls,
-      verificationContract,
-      verifierPerformed: true,
-      verifierPassed: decision?.ok === true,
-    });
-    return {
-      scenarioId: "deterministic_impl_behavior_gap",
-      title: "Deterministic implementation cannot complete on build-only success with behavioral gaps",
-      category: "deterministic_false_completion",
-      mandatory: true,
-      executionMode: "temp_repo",
-      passed: decision?.ok === false && completionState !== "completed",
-      falseCompleted: completionState === "completed",
-      observedOutcome: completionState,
-      expectedOutcome: "partial",
-      notes: decision?.diagnostic?.code ?? "missing_decision",
-    };
-  });
-}
-
-async function runValidScaffoldScenario(): Promise<PipelineImplementationGateScenarioArtifact> {
-  return withTempRepo("valid-scaffold", async (repoDir) => {
-    await mkdir(path.join(repoDir, "src"), { recursive: true });
-    const targetPath = path.join(repoDir, "src", "feature.ts");
-    const scaffoldContent = [
-      "export interface FeatureConfig {",
-      "  // scaffold placeholder",
-      "}",
-      "",
-    ].join("\n");
-    await writeFile(targetPath, scaffoldContent, "utf8");
-    const toolCalls: DelegationValidationToolCall[] = [
-      createWriteToolCall(targetPath, scaffoldContent),
-    ];
-    const verificationContract: WorkflowVerificationContract = {
-      workspaceRoot: repoDir,
-      targetArtifacts: [targetPath],
-      acceptanceCriteria: ["Scaffold the module shape and leave clear placeholders."],
-      completionContract: {
-        taskClass: "scaffold_allowed",
-        placeholdersAllowed: true,
-        partialCompletionAllowed: true,
-        placeholderTaxonomy: "scaffold",
-      },
-    };
-    const decision = validateRuntimeVerificationContract({
-      verificationContract,
-      output: "Scaffolded the module with placeholders as requested.",
-      toolCalls,
-    });
-    const completionState = resolveVerifiedCompletionState({
-      toolCalls,
-      verificationContract,
-      verifierPerformed: true,
-      verifierPassed: decision?.ok === true,
-    });
-    return {
-      scenarioId: "valid_scaffold_placeholders",
-      title: "Scaffold tasks may keep explicit placeholders when the contract allows them",
-      category: "scaffold_placeholder",
-      mandatory: true,
-      executionMode: "temp_repo",
-      passed: decision?.ok === true && completionState === "completed",
-      falseCompleted: false,
-      observedOutcome: completionState,
-      expectedOutcome: "completed",
-      notes: decision?.channels[1]?.message,
-    };
-  });
-}
-
-async function runImplementationRepairScenario(): Promise<PipelineImplementationGateScenarioArtifact> {
-  return withTempRepo("implementation-repair", async (repoDir) => {
-    await mkdir(path.join(repoDir, "src"), { recursive: true });
-    const targetPath = path.join(repoDir, "src", "greeter.js");
-    const scaffoldContent = "export const greet = () => 'TODO placeholder';\n";
-    const finalContent = "export const greet = (name) => `hello ${name}`;\n";
-    await writeFile(targetPath, scaffoldContent, "utf8");
-    const toolCalls: DelegationValidationToolCall[] = [
-      createReadToolCall(targetPath, scaffoldContent),
-      createWriteToolCall(targetPath, finalContent),
-      await createVerificationToolCall({
-        cwd: repoDir,
-        command: process.execPath,
-        args: ["--check", targetPath],
-        category: "build",
-      }),
-    ];
-    const verificationContract: WorkflowVerificationContract = {
-      workspaceRoot: repoDir,
-      requiredSourceArtifacts: [targetPath],
-      targetArtifacts: [targetPath],
-      acceptanceCriteria: ["Build succeeds cleanly after replacing the scaffold placeholder."],
-      completionContract: {
-        taskClass: "build_required",
-        placeholdersAllowed: false,
-        partialCompletionAllowed: false,
-        placeholderTaxonomy: "repair",
-      },
-    };
-    const decision = validateRuntimeVerificationContract({
-      verificationContract,
-      output: "Implemented the real behavior and removed the scaffold placeholder.",
-      toolCalls,
-    });
-    const completionState = resolveVerifiedCompletionState({
-      toolCalls,
-      verificationContract,
-      verifierPerformed: true,
-      verifierPassed: decision?.ok === true,
-    });
-    return {
-      scenarioId: "implementation_replaces_scaffold",
-      title: "Implementation repair replaces scaffold placeholders and remains executable",
-      category: "implementation_repair",
-      mandatory: true,
-      executionMode: "temp_repo",
-      passed: decision?.ok === true && completionState === "completed",
-      falseCompleted: false,
-      observedOutcome: completionState,
-      expectedOutcome: "completed",
-      notes: decision?.channels.find((channel) => channel.channel === "executable_outcome")?.message,
-    };
-  });
 }
 
 async function runResumeAfterPartialScenario(): Promise<PipelineImplementationGateScenarioArtifact> {
@@ -541,7 +545,7 @@ async function runDegradedProviderRetryScenario(): Promise<PipelineImplementatio
   const executor = new ChatExecutor({
     providers: [primary, fallback],
   });
-  const result = await executor.execute({
+  const result = await executeChatToLegacyResult(executor, {
     message: {
       id: "phase8-reroute-message",
       channel: "eval",
@@ -567,11 +571,11 @@ async function runDegradedProviderRetryScenario(): Promise<PipelineImplementatio
       placeholderTaxonomy: "implementation",
     },
   };
-  const completionState = resolveVerifiedCompletionState({
+  const completionState = resolveWorkflowCompletionState({
+    stopReason: "completed",
     toolCalls: [],
     verificationContract,
-    verifierPerformed: false,
-    verifierPassed: false,
+    verifier: { performed: false, overall: "skipped" },
   });
   return {
     scenarioId: "degraded_provider_retry_without_false_completion",
@@ -616,11 +620,11 @@ async function runSafetyIncompleteOutputScenario(): Promise<PipelineImplementati
       placeholderTaxonomy: "implementation",
     },
   };
-  const completionState = resolveVerifiedCompletionState({
+  const completionState = resolveWorkflowCompletionState({
+    stopReason: "completed",
     toolCalls: [],
     verificationContract,
-    verifierPerformed: false,
-    verifierPassed: false,
+    verifier: { performed: false, overall: "skipped" },
   });
   const blocked = outcome.status === "deny" || outcome.status === "require_approval";
   return {
@@ -642,9 +646,8 @@ export async function runImplementationGateSuite(
 ): Promise<PipelineImplementationGateArtifact> {
   const scenarios = await Promise.all([
     runShellStubReplayScenario(config.incidentFixtureDir),
-    runDeterministicImplementationScenario(),
-    runValidScaffoldScenario(),
-    runImplementationRepairScenario(),
+    runLiveRuntimeFalseCompletionScenario(),
+    runWrongArtifactVerifierScenario(),
     runResumeAfterPartialScenario(),
     runDegradedProviderRetryScenario(),
     runSafetyIncompleteOutputScenario(),

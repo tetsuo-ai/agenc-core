@@ -17,19 +17,47 @@ import type {
   SkillInjector,
 } from "../llm/chat-executor-types.js";
 import type { LLMProvider, ToolHandler } from "../llm/types.js";
-import type {
-  DelegationBanditPolicyTuner,
-  DelegationTrajectorySink,
-} from "../llm/delegation-learning.js";
 import type { HostToolingProfile } from "./host-tooling.js";
 import type { ResolvedSubAgentRuntimeConfig } from "./subagent-infrastructure.js";
 import type { GatewayLLMConfig } from "./types.js";
+import {
+  ToolPermissionEvaluator,
+  evaluatorToCanUseTool,
+  type ToolRule,
+} from "../policy/tool-permission-evaluator.js";
+import { BudgetStateService } from "../policy/budget-state.js";
+import { resolveRuntimeContractFlags } from "../runtime-contract/flags.js";
+import { buildStopHookRuntime } from "../llm/hooks/stop-hooks.js";
+
+/**
+ * Cut 7: convert a gateway config tool allow/deny list into the
+ * ToolRule[] shape the ToolPermissionEvaluator consumes. Deny rules
+ * always win over allow rules; the evaluator preserves that ordering
+ * when it walks the rule list.
+ */
+export function buildPermissionRulesFromAllowDeny(input: {
+  readonly toolAllowList?: readonly string[];
+  readonly toolDenyList?: readonly string[];
+}): readonly ToolRule[] {
+  const rules: ToolRule[] = [];
+  for (const pattern of input.toolDenyList ?? []) {
+    rules.push({
+      pattern,
+      effect: "deny",
+      message: `Tool denied by gateway policy.toolDenyList rule: ${pattern}`,
+    });
+  }
+  for (const pattern of input.toolAllowList ?? []) {
+    rules.push({ pattern, effect: "allow" });
+  }
+  return rules;
+}
 
 // ---------------------------------------------------------------------------
 // Factory input
 // ---------------------------------------------------------------------------
 
-export interface CreateChatExecutorParams {
+interface CreateChatExecutorParams {
   /** LLM providers (if empty, returns null). */
   providers: LLMProvider[];
   /** Base tool handler from ToolRegistry. */
@@ -62,20 +90,25 @@ export interface CreateChatExecutorParams {
   providerConfigs?: readonly GatewayLLMConfig[];
   /** Resolved subagent runtime config. */
   subagentConfig: ResolvedSubAgentRuntimeConfig;
-  /** Callback to resolve dynamic delegation score threshold. */
-  resolveDelegationScoreThreshold: () => number;
-  /** Delegation learning sinks. */
-  delegationLearning?: {
-    trajectorySink?: DelegationTrajectorySink;
-    banditTuner?: DelegationBanditPolicyTuner;
-    defaultStrategyArmId?: string;
-  };
   /** Callback to resolve host tooling profile. */
   resolveHostToolingProfile: () => HostToolingProfile | null;
   /** Callback to resolve canonical host workspace root. */
   resolveHostWorkspaceRoot: () => string | null;
   /** Optional deterministic pipeline executor. */
   pipelineExecutor?: DeterministicPipelineExecutor;
+  /**
+   * Cut 7: optional permission rules. When provided, the factory
+   * builds a ToolPermissionEvaluator from the rules + a fresh
+   * BudgetStateService and wraps it as the chat-executor's
+   * canUseTool seam (Cut 5.7). Empty rules array opts out of the
+   * evaluator entirely; the existing approval flow continues to
+   * gate tool calls through tool-handler-factory.
+   */
+  permissionRules?: readonly ToolRule[];
+  /** Optional cap on tool call rate per minute (used by the budget service). */
+  maxToolCallRatePerMinute?: number;
+  /** Optional runtime completion-validation services. */
+  completionValidation?: ChatExecutorConfig["completionValidation"];
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +144,25 @@ export function createChatExecutor(
     providerConfigs: params.providerConfigs,
   });
 
+  // Cut 7: build a ToolPermissionEvaluator + BudgetStateService when
+  // the caller supplies permission rules, and adapt it to the
+  // chat-executor's canUseTool seam (Cut 5.7). With no rules
+  // configured the seam is not wired and the existing approval flow
+  // remains the only gate.
+  const canUseTool = (() => {
+    if (!params.permissionRules || params.permissionRules.length === 0) {
+      return undefined;
+    }
+    const evaluator = new ToolPermissionEvaluator({
+      rules: params.permissionRules,
+      budgetState: new BudgetStateService(),
+      maxToolCallRatePerMinute: params.maxToolCallRatePerMinute,
+    });
+    return evaluatorToCanUseTool(evaluator);
+  })();
+  const runtimeContractFlags = resolveRuntimeContractFlags(llmConfig);
+  const stopHookRuntime = buildStopHookRuntime(llmConfig?.stopHooks);
+
   return new ChatExecutor({
     providers: params.providers,
     toolHandler: params.toolHandler,
@@ -128,27 +180,6 @@ export function createChatExecutor(
     toolBudgetPerRequest: llmConfig?.toolBudgetPerRequest,
     maxModelRecallsPerRequest: llmConfig?.maxModelRecallsPerRequest,
     maxFailureBudgetPerRequest: llmConfig?.maxFailureBudgetPerRequest,
-    delegationDecision: {
-      enabled: subagentConfig.enabled,
-      mode: subagentConfig.mode,
-      scoreThreshold: subagentConfig.baseSpawnDecisionThreshold,
-      maxFanoutPerTurn: subagentConfig.maxFanoutPerTurn,
-      maxDepth: subagentConfig.maxDepth,
-      handoffMinPlannerConfidence:
-        subagentConfig.handoffMinPlannerConfidence,
-      hardBlockedTaskClasses: subagentConfig.hardBlockedTaskClasses,
-    },
-    resolveDelegationScoreThreshold: params.resolveDelegationScoreThreshold,
-    subagentVerifier: {
-      enabled: subagentConfig.enabled,
-      force: subagentConfig.forceVerifier,
-    },
-    delegationLearning: {
-      trajectorySink: params.delegationLearning?.trajectorySink,
-      banditTuner: params.delegationLearning?.banditTuner,
-      defaultStrategyArmId:
-        params.delegationLearning?.defaultStrategyArmId ?? "balanced",
-    },
     toolCallTimeoutMs: llmConfig?.toolCallTimeoutMs,
     requestTimeoutMs: llmConfig?.requestTimeoutMs,
     retryPolicyMatrix: llmConfig?.retryPolicy,
@@ -161,5 +192,9 @@ export function createChatExecutor(
     onCompaction: params.onCompaction,
     economicsPolicy,
     modelRoutingPolicy,
+    runtimeContractFlags,
+    ...(stopHookRuntime ? { stopHookRuntime } : {}),
+    completionValidation: params.completionValidation,
+    ...(canUseTool ? { canUseTool } : {}),
   });
 }

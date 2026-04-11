@@ -18,7 +18,7 @@ export type MessageRole = "system" | "user" | "assistant" | "tool";
  * Preserved in AgenC history so the runtime can distinguish working
  * commentary from the completed answer without assuming provider support.
  */
-export type LLMAssistantPhase = "commentary" | "final_answer";
+type LLMAssistantPhase = "commentary" | "final_answer";
 
 /**
  * A content part for multimodal messages (OpenAI/Grok-compatible format).
@@ -79,7 +79,7 @@ export interface ToolCallValidationFailure {
   readonly message: string;
 }
 
-export interface ToolCallValidationResult {
+interface ToolCallValidationResult {
   readonly toolCall: LLMToolCall | null;
   readonly failure?: ToolCallValidationFailure;
 }
@@ -133,7 +133,7 @@ export interface LLMRequestMetrics {
 /**
  * Stateful response fallback reasons when continuation cannot be used.
  */
-export const LLM_STATEFUL_FALLBACK_REASONS = [
+const LLM_STATEFUL_FALLBACK_REASONS = [
   "missing_previous_response_id",
   "store_disabled",
   "provider_retrieval_failure",
@@ -285,7 +285,7 @@ export interface LLMStatefulResponsesConfig {
   };
 }
 
-export interface LLMProviderStatefulCapabilities {
+interface LLMProviderStatefulCapabilities {
   /** Provider supports assistant `phase` replay metadata. */
   readonly assistantPhase: boolean;
   /** Provider supports `previous_response_id` / equivalent continuation. */
@@ -371,7 +371,7 @@ export interface LLMChatStatefulOptions {
 /**
  * Optional turn-time tool routing hints passed to provider calls.
  */
-export interface LLMChatToolRoutingOptions {
+interface LLMChatToolRoutingOptions {
   /**
    * Restrict provider-advertised tools for this call to this allowlist.
    * Unknown tool names are ignored by providers.
@@ -379,7 +379,7 @@ export interface LLMChatToolRoutingOptions {
   readonly allowedToolNames?: readonly string[];
 }
 
-export type LLMReasoningEffort = "low" | "medium" | "high" | "xhigh";
+type LLMReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
 export type LLMProviderNativeServerToolType =
   | "web_search"
@@ -390,7 +390,7 @@ export type LLMProviderNativeServerToolType =
   | "view_image"
   | "view_x_video";
 
-export type LLMProviderNativeServerToolCallType =
+type LLMProviderNativeServerToolCallType =
   | "web_search_call"
   | "x_search_call"
   | "code_interpreter_call"
@@ -452,7 +452,7 @@ export interface LLMStructuredOutputResult {
   readonly rawText?: string;
 }
 
-export interface LLMEncryptedReasoningDiagnostics {
+interface LLMEncryptedReasoningDiagnostics {
   /** True when the request explicitly asked for encrypted reasoning content. */
   readonly requested: boolean;
   /** True when encrypted reasoning content was present in the provider response. */
@@ -507,14 +507,14 @@ export interface LLMRemoteMcpServerConfig {
   readonly headers?: Readonly<Record<string, string>>;
 }
 
-export interface LLMRemoteMcpConfig {
+interface LLMRemoteMcpConfig {
   /** Enable provider-managed remote MCP tool injection. */
   readonly enabled?: boolean;
   /** Configured remote MCP servers exposed to the provider. */
   readonly servers?: readonly LLMRemoteMcpServerConfig[];
 }
 
-export interface LLMStructuredOutputsConfig {
+interface LLMStructuredOutputsConfig {
   /** Enable provider-level structured output support. */
   readonly enabled?: boolean;
   /** Default strictness applied when building provider schema requests. */
@@ -567,7 +567,7 @@ export interface LLMProviderTraceEvent {
   readonly context?: Record<string, unknown>;
 }
 
-export interface LLMChatTraceOptions {
+interface LLMChatTraceOptions {
   /** Emit raw provider request/response/error/stream-event payloads through the trace callback. */
   readonly includeProviderPayloads?: boolean;
   /** Callback invoked with provider-native request/response/error/stream-event payloads. */
@@ -606,6 +606,14 @@ export interface LLMChatOptions {
   readonly timeoutMs?: number;
   /** Abort signal propagated from the runtime when the request is cancelled. */
   readonly signal?: AbortSignal;
+  /**
+   * Disable provider-side parallel tool calls for this request. Used by the
+   * meta-planner and other goal-only flows that intentionally do not want the
+   * model to fan out into multiple concurrent tool invocations on a single
+   * planning turn. Honored by providers that expose the OpenAI-compatible
+   * `parallel_tool_calls` request flag (Grok, OpenAI, etc.).
+   */
+  readonly parallelToolCalls?: boolean;
 }
 
 export interface LLMProviderEvidence {

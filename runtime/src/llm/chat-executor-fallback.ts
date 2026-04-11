@@ -9,6 +9,7 @@ import type {
   LLMProvider,
   LLMMessage,
   LLMStatefulResumeAnchor,
+  LLMStreamChunk,
   LLMToolChoice,
   StreamProgressCallback,
 } from "./types.js";
@@ -17,6 +18,8 @@ import {
   LLMRateLimitError,
   classifyLLMFailure,
 } from "./errors.js";
+import { RuntimeError, RuntimeErrorCodes } from "../types/errors.js";
+import { assertValidLLMResponse } from "./response-validation.js";
 import {
   applyPromptBudget,
   type PromptBudgetConfig,
@@ -40,6 +43,7 @@ import {
 import {
   estimatePromptShape,
 } from "./chat-executor-text.js";
+import { normalizeMessagesForAPI } from "./messages.js";
 import { getProviderRouteKey } from "./model-routing-policy.js";
 import type { RuntimeFaultInjector } from "../eval/fault-injection.js";
 
@@ -72,11 +76,30 @@ function shouldBypassStreamingForModelCall(
   return isExplicitToolTurn;
 }
 
+function createRequestDeadlineExceededError(
+  callPhase: ChatCallUsageRecord["phase"] | undefined,
+  requestTimeoutMs: number | undefined,
+): RuntimeError {
+  const stage = callPhase ? `${callPhase} model call` : "model call";
+  const normalizedTimeoutMs =
+    typeof requestTimeoutMs === "number" &&
+    Number.isFinite(requestTimeoutMs) &&
+    requestTimeoutMs > 0
+      ? Math.floor(requestTimeoutMs)
+      : undefined;
+  return new RuntimeError(
+    normalizedTimeoutMs === undefined
+      ? `Request exceeded end-to-end timeout during ${stage}`
+      : `Request exceeded end-to-end timeout (${normalizedTimeoutMs}ms) during ${stage}`,
+    RuntimeErrorCodes.LLM_TIMEOUT,
+  );
+}
+
 // ============================================================================
 // Configuration interface for callWithFallback
 // ============================================================================
 
-export interface CallWithFallbackDeps {
+interface CallWithFallbackDeps {
   readonly providers: readonly LLMProvider[];
   readonly cooldowns: Map<string, CooldownEntry>;
   readonly promptBudget: PromptBudgetConfig;
@@ -85,15 +108,24 @@ export interface CallWithFallbackDeps {
   readonly maxCooldownMs: number;
 }
 
-export interface CallWithFallbackOptions {
+interface CallWithFallbackOptions {
   statefulSessionId?: string;
   statefulResumeAnchor?: LLMStatefulResumeAnchor;
   statefulHistoryCompacted?: boolean;
   reconciliationMessages?: readonly LLMMessage[];
   routedToolNames?: readonly string[];
   toolChoice?: LLMToolChoice;
+  /**
+   * Pre-Phase-F behavior: the class wrapper accepted this field but
+   * the module silently dropped it before handing `baseChatOptions`
+   * to the provider. Kept on the type so explicit call sites still
+   * type-check; threading it through is tracked as a separate bug
+   * out of scope for the Phase F refactor.
+   */
+  parallelToolCalls?: boolean;
   structuredOutput?: LLMChatOptions["structuredOutput"];
   requestDeadlineAt?: number;
+  requestTimeoutMs?: number;
   signal?: AbortSignal;
   trace?: ChatExecuteParams["trace"];
   callIndex?: number;
@@ -125,7 +157,17 @@ export async function callWithFallback(
     })),
     deps.promptBudget,
   );
-  const boundedMessages = budgeted.messages;
+  // Cut 5.8: pass the budgeted history through normalizeMessagesForAPI
+  // before handing it to the provider. This drops boundary/snip system
+  // messages, merges consecutive user messages, and drops empty
+  // assistant content (except the last message). Orphan tool results
+  // stay in the history here so downstream tool-turn repair can
+  // close the protocol instead of silently discarding evidence.
+  const boundedMessages: LLMMessage[] = [
+    ...normalizeMessagesForAPI(budgeted.messages, {
+      dropOrphanToolMessages: false,
+    }),
+  ];
   const afterBudget = estimatePromptShape(boundedMessages);
   const budgetDiagnostics = budgeted.diagnostics;
   const hasStatefulSessionId = Boolean(options?.statefulSessionId);
@@ -198,6 +240,7 @@ export async function callWithFallback(
       ? "chat_stream"
       : "chat";
 
+  const skipReasons: string[] = [];
   for (let i = 0; i < deps.providers.length; i++) {
     const provider = deps.providers[i];
     const providerRouteKey = getProviderRouteKey(provider);
@@ -205,6 +248,9 @@ export async function callWithFallback(
     const cooldown = deps.cooldowns.get(providerRouteKey);
 
     if (cooldown && cooldown.availableAt > now) {
+      skipReasons.push(
+        `${provider.name}: cooldown until ${new Date(cooldown.availableAt).toISOString()} (${cooldown.failures} failures, ${Math.max(0, cooldown.availableAt - now)}ms remaining)`,
+      );
       emitProviderTraceEvent(options, {
         kind: "error",
         transport,
@@ -225,20 +271,34 @@ export async function callWithFallback(
     let attempts = 0;
     while (true) {
       try {
-        const streamChunkCallback = onStreamChunk;
+        let streamedContent = "";
+        const streamChunkCallback = onStreamChunk
+          ? (chunk: LLMStreamChunk) => {
+            if (chunk.content.length > 0) {
+              streamedContent += chunk.content;
+            }
+            onStreamChunk(chunk);
+          }
+          : undefined;
         const shouldStream =
           transport === "chat_stream" && streamChunkCallback !== undefined;
         const remainingProviderMs =
           options?.requestDeadlineAt !== undefined &&
             Number.isFinite(options.requestDeadlineAt)
-            ? Math.max(1, options.requestDeadlineAt - Date.now())
+            ? options.requestDeadlineAt - Date.now()
             : undefined;
+        if (remainingProviderMs !== undefined && remainingProviderMs <= 0) {
+          throw createRequestDeadlineExceededError(
+            options?.callPhase,
+            options?.requestTimeoutMs,
+          );
+        }
         const providerChatOptions: LLMChatOptions | undefined =
           baseChatOptions || remainingProviderMs !== undefined
             ? {
               ...(baseChatOptions ?? {}),
               ...(remainingProviderMs !== undefined
-                ? { timeoutMs: remainingProviderMs }
+                ? { timeoutMs: Math.max(1, Math.floor(remainingProviderMs)) }
                 : {}),
             }
             : undefined;
@@ -246,13 +306,14 @@ export async function callWithFallback(
           provider: provider.name,
           stage: transport,
         });
-        const response = shouldStream
+        const rawResponse = shouldStream
           ? await provider.chatStream(
             boundedMessages,
             streamChunkCallback,
             providerChatOptions,
           )
           : await provider.chat(boundedMessages, providerChatOptions);
+        const response = assertValidLLMResponse(provider.name, rawResponse);
 
         if (response.finishReason === "error") {
           throw (
@@ -289,6 +350,7 @@ export async function callWithFallback(
           beforeBudget,
           afterBudget,
           budgetDiagnostics,
+          streamedContent,
         };
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
@@ -377,6 +439,6 @@ export async function callWithFallback(
   // All providers were skipped (in cooldown) — no provider was attempted
   throw new LLMProviderError(
     "chat-executor",
-    "All providers are in cooldown",
+    `All providers are in cooldown${skipReasons.length > 0 ? `: ${skipReasons.join("; ")}` : ""}`,
   );
 }

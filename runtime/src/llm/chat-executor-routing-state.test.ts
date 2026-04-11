@@ -10,24 +10,24 @@ describe("chat-executor-routing-state", () => {
   it("prefers the active routed subset for evidence checks", () => {
     expect(
       getAllowedToolNamesForEvidence(
-        ["mcp.doom.get_situation_report"],
-        ["desktop.bash", "mcp.doom.start_game"],
+        ["mcp.example.status"],
+        ["desktop.bash", "mcp.example.start"],
       ),
-    ).toEqual(["mcp.doom.get_situation_report"]);
+    ).toEqual(["mcp.example.status"]);
   });
 
   it("keeps the broader turn universe available for contract guidance", () => {
     expect(
       getAllowedToolNamesForContractGuidance({
-        activeRoutedToolNames: ["mcp.doom.set_objective"],
-        initialRoutedToolNames: ["desktop.bash", "mcp.doom.start_game"],
-        expandedRoutedToolNames: ["mcp.doom.set_objective", "mcp.doom.get_state"],
+        activeRoutedToolNames: ["mcp.example.set_objective"],
+        initialRoutedToolNames: ["desktop.bash", "mcp.example.start"],
+        expandedRoutedToolNames: ["mcp.example.set_objective", "mcp.example.get_state"],
       }),
     ).toEqual([
       "desktop.bash",
-      "mcp.doom.start_game",
-      "mcp.doom.set_objective",
-      "mcp.doom.get_state",
+      "mcp.example.start",
+      "mcp.example.set_objective",
+      "mcp.example.get_state",
     ]);
   });
 
@@ -35,10 +35,10 @@ describe("chat-executor-routing-state", () => {
     expect(
       resolveEffectiveRoutedToolNames({
         hasToolRouting: true,
-        activeRoutedToolNames: ["mcp.doom.get_situation_report"],
-        allowedTools: ["desktop.bash", "mcp.doom.start_game"],
+        activeRoutedToolNames: ["mcp.example.status"],
+        allowedTools: ["desktop.bash", "mcp.example.start"],
       }),
-    ).toEqual(["mcp.doom.get_situation_report"]);
+    ).toEqual(["mcp.example.status"]);
   });
 
   it("normalizes and applies the active routed subset in one place", () => {
@@ -48,11 +48,11 @@ describe("chat-executor-routing-state", () => {
 
     expect(
       applyActiveRoutedToolNames(ctx, [
-        " mcp.doom.get_situation_report ",
-        "mcp.doom.get_situation_report",
+        " mcp.example.status ",
+        "mcp.example.status",
         "",
       ]),
-    ).toEqual(["mcp.doom.get_situation_report"]);
-    expect(ctx.activeRoutedToolNames).toEqual(["mcp.doom.get_situation_report"]);
+    ).toEqual(["mcp.example.status"]);
+    expect(ctx.activeRoutedToolNames).toEqual(["mcp.example.status"]);
   });
 });

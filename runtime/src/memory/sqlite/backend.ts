@@ -37,6 +37,15 @@ export class SqliteBackend implements MemoryBackend {
   readonly name: string = "sqlite";
 
   protected db: any = null;
+  /**
+   * Memoized init promise (audit S2.3). Concurrent callers of
+   * `ensureDb()` await the same in-flight init instead of racing on
+   * the `if (this.db)` check, which previously could let two callers
+   * both run `createSchema()` and `cleanupExpired()` against the
+   * same DB instance. Cleared on init failure so a retry can
+   * re-initialize.
+   */
+  private dbInitPromise: Promise<any> | null = null;
   private readonly config: Required<
     Pick<SqliteBackendConfig, "dbPath" | "walMode" | "cleanupOnConnect">
   > &
@@ -361,6 +370,9 @@ export class SqliteBackend implements MemoryBackend {
 
   async close(): Promise<void> {
     this.closed = true;
+    // Audit S2.3: also clear the memoized init promise so a stale
+    // init can't resurrect the connection after close.
+    this.dbInitPromise = null;
     if (this.db) {
       this.db.close();
       this.db = null;
@@ -410,23 +422,43 @@ export class SqliteBackend implements MemoryBackend {
       throw new MemoryBackendError(this.name, "Backend is closed");
     }
     if (this.db) return this.db;
+    if (this.dbInitPromise) return this.dbInitPromise;
 
-    this.db = await ensureLazyBackend("better-sqlite3", this.name, (mod) => {
-      const Database = (mod.default ?? mod) as any;
-      return new Database(this.config.dbPath);
-    });
+    // Audit S2.3: memoize the in-flight init Promise so concurrent
+    // callers do not race on the `if (this.db)` check above. The
+    // previous code could have two callers both pass the check, both
+    // call ensureLazyBackend(), and both run createSchema() +
+    // cleanupExpired() against the same DB instance.
+    this.dbInitPromise = (async () => {
+      const db = await ensureLazyBackend("better-sqlite3", this.name, (mod) => {
+        const Database = (mod.default ?? mod) as any;
+        return new Database(this.config.dbPath);
+      });
 
-    if (this.config.walMode && this.config.dbPath !== ":memory:") {
-      this.db.pragma("journal_mode = WAL");
+      this.db = db;
+
+      if (this.config.walMode && this.config.dbPath !== ":memory:") {
+        db.pragma("journal_mode = WAL");
+      }
+
+      this.createSchema();
+
+      if (this.config.cleanupOnConnect) {
+        this.cleanupExpired();
+      }
+
+      return db;
+    })();
+
+    try {
+      return await this.dbInitPromise;
+    } catch (err) {
+      // Clear so a retry can re-initialize. Otherwise the second
+      // caller would await a permanently-rejected Promise forever.
+      this.dbInitPromise = null;
+      this.db = null;
+      throw err;
     }
-
-    this.createSchema();
-
-    if (this.config.cleanupOnConnect) {
-      this.cleanupExpired();
-    }
-
-    return this.db;
   }
 
   private createSchema(): void {
@@ -483,8 +515,18 @@ export class SqliteBackend implements MemoryBackend {
           CREATE INDEX IF NOT EXISTS idx_entries_workspace_session ON memory_entries(workspace_id, session_id, timestamp);
         `);
       }
-    } catch {
-      // Migration not needed or already applied
+    } catch (err) {
+      // Audit S3.2: log instead of silently swallowing the migration
+      // failure. The previous comment "Migration not needed or
+      // already applied" was correct ONLY for ALTER TABLE failures
+      // caused by the column already existing. Any other failure
+      // (locked DB, corrupted file, schema mismatch) was silently
+      // dropped, leaving the backend running against an under-
+      // migrated schema. The catch is kept (so a benign re-migration
+      // doesn't crash startup) but a warning is now emitted.
+      this.logger.warn(
+        `[sqlite] schema migration check failed: ${(err as Error).message}`,
+      );
     }
   }
 

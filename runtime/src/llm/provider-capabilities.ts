@@ -1,9 +1,10 @@
 import type {
   LLMCompactionDiagnostics,
-  LLMProviderCapabilities,
   LLMStatefulDiagnostics,
   LLMStatefulResponsesConfig,
 } from "./types.js";
+import { LLMProviderError } from "./errors.js";
+import { supportsXaiStructuredOutputsWithTools } from "./structured-output.js";
 
 const DEFAULT_STATEFUL_RECONCILIATION_WINDOW = 48;
 const MAX_STATEFUL_RECONCILIATION_WINDOW = 256;
@@ -22,16 +23,6 @@ export interface ResolvedLLMStatefulResponsesConfig {
   readonly reconciliationWindow: number;
   readonly compaction: ResolvedLLMCompactionConfig;
 }
-
-export const UNSUPPORTED_STATEFUL_CAPABILITIES: LLMProviderCapabilities["stateful"] = {
-  assistantPhase: false,
-  previousResponseId: false,
-  encryptedReasoning: false,
-  storedResponseRetrieval: false,
-  storedResponseDeletion: false,
-  opaqueCompaction: false,
-  deterministicFallback: true,
-};
 
 export function resolveLLMStatefulResponsesConfig(
   config: LLMStatefulResponsesConfig | undefined,
@@ -103,4 +94,23 @@ export function buildUnsupportedCompactionDiagnostics(input: {
     observedItemCount: 0,
     fallbackReason: "unsupported",
   };
+}
+
+export function assertXaiStructuredOutputToolCompatibility(input: {
+  readonly providerName: string;
+  readonly model?: string;
+  readonly structuredOutputRequested: boolean;
+  readonly toolsRequested: boolean;
+}): void {
+  if (!input.structuredOutputRequested || !input.toolsRequested) {
+    return;
+  }
+  if (supportsXaiStructuredOutputsWithTools(input.model)) {
+    return;
+  }
+  throw new LLMProviderError(
+    input.providerName,
+    `xAI structured outputs with tools require a Grok 4 model; requested ${input.model ?? "unknown model"}`,
+    400,
+  );
 }

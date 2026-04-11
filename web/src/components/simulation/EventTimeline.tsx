@@ -3,7 +3,7 @@
  * Phase 4 of CONCORDIA_TODO.MD.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SimulationEvent } from "./useSimulation";
 
 interface EventTimelineProps {
@@ -45,10 +45,13 @@ export function EventTimeline({ events }: EventTimelineProps) {
   const [filter, setFilter] = useState<string>("all");
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
 
-  const filtered =
-    filter === "all"
-      ? events
-      : events.filter((e) => e.type === filter || e.agent_name === filter);
+  const filtered = useMemo(
+    () =>
+      filter === "all"
+        ? events
+        : events.filter((e) => e.type === filter || e.agent_name === filter),
+    [events, filter],
+  );
 
   const updateStickToBottom = useCallback(() => {
     const container = containerRef.current;
@@ -69,8 +72,14 @@ export function EventTimeline({ events }: EventTimelineProps) {
     endRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
   }, [autoScrollEnabled, filtered]);
 
-  const uniqueAgents = [...new Set(events.map((e) => e.agent_name).filter(Boolean))];
-  const uniqueTypes = [...new Set(events.map((e) => e.type))];
+  const uniqueAgents = useMemo(
+    () => [...new Set(events.map((e) => e.agent_name).filter(Boolean))],
+    [events],
+  );
+  const uniqueTypes = useMemo(
+    () => [...new Set(events.map((e) => e.type))],
+    [events],
+  );
 
   const handleToggleAutoScroll = () => {
     const next = !autoScrollEnabled;

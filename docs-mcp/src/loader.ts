@@ -23,7 +23,6 @@ const PACKAGE_DOC_ROOTS = [
   'programs',
   'web',
   'mobile',
-  'demo-app',
   'demo',
   'demos',
   'containers',
@@ -174,7 +173,7 @@ function loadNamedFiles(dirPath: string, repoRoot: string, allowedNames: Readonl
   return entries;
 }
 
-export interface LoadedDocs {
+interface LoadedDocs {
   docs: Map<string, DocEntry>;
   repoRoot: string;
 }

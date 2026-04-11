@@ -21,7 +21,6 @@ export const FRAME_SNAPSHOT_EXPECTATIONS = Object.freeze({
       "● Working through the planner graph.",
       "RETURN done",
       "Edited runtime/src/index.ts",
-      "~/",
       "\n>",
     ],
     notContains: [

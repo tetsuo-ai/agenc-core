@@ -72,6 +72,7 @@ describe("cli config contract", () => {
       connection: {
         rpcUrl: "https://rpc.example",
         programId: "AGENT1111111111111111111111111111111111111",
+        keypairPath: "/tmp/agenc/configured-id.json",
       },
       logging: { level: "info" },
       replay: {
@@ -97,6 +98,7 @@ describe("cli config contract", () => {
     expect(contract.fileConfig.programId).toBe(
       "AGENT1111111111111111111111111111111111111",
     );
+    expect(contract.fileConfig.keypairPath).toBe("/tmp/agenc/configured-id.json");
     expect(contract.fileConfig.storeType).toBe("sqlite");
     expect(contract.fileConfig.sqlitePath).toBe("/tmp/replay.sqlite");
     expect(contract.fileConfig.traceId).toBe("trace-123");

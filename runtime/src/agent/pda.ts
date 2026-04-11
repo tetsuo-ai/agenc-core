@@ -102,10 +102,11 @@ export function findProtocolPda(programId: PublicKey = PROGRAM_ID): PublicKey {
 }
 
 /**
- * Derives the wallet-scoped authority rate limit PDA and bump seed.
+ * Derives the authority rate-limit PDA and bump seed.
+ * Used by task creation and dispute initiation cooldown logic.
  * Seeds: ["authority_rate_limit", authority]
  *
- * @param authority - Authority wallet public key
+ * @param authority - Authority (wallet) public key
  * @param programId - Program ID (defaults to PROGRAM_ID)
  * @returns PDA address and bump seed
  */
@@ -113,16 +114,15 @@ export function deriveAuthorityRateLimitPda(
   authority: PublicKey,
   programId: PublicKey = PROGRAM_ID,
 ): PdaWithBump {
-  return derivePda(
-    [AUTHORITY_RATE_LIMIT_SEED, authority.toBuffer()],
-    programId,
-  );
+  return derivePda([AUTHORITY_RATE_LIMIT_SEED, authority.toBuffer()], programId);
 }
 
 /**
- * Finds the authority rate limit PDA address (without bump).
+ * Finds the authority rate-limit PDA address (without bump).
+ * Convenience wrapper around deriveAuthorityRateLimitPda for when only the
+ * address is needed.
  *
- * @param authority - Authority wallet public key
+ * @param authority - Authority (wallet) public key
  * @param programId - Program ID (defaults to PROGRAM_ID)
  * @returns PDA address
  */

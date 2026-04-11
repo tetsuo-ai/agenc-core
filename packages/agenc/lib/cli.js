@@ -1,9 +1,11 @@
 import process from "node:process";
 import {
   describeRuntimeInstall,
+  ensureRuntimeFromSource,
   ensureRuntimeInstalled,
   RuntimeInstallError,
   spawnInstalledRuntimeBin,
+  spawnInstalledRuntimeBinFromSource,
   uninstallRuntime,
 } from "./runtime-manager.js";
 
@@ -23,6 +25,22 @@ function buildAgencHelp() {
     "  agenc status",
     "  agenc logs",
     "  agenc runtime where",
+    "",
+    "Marketplace / devnet examples:",
+    "  agenc agent register --rpc https://api.devnet.solana.com",
+    "  agenc market tasks create --description 'public task' --reward 50000000 --rpc https://api.devnet.solana.com",
+    "  agenc market tui",
+    "",
+    "Supported public wrapper tuple:",
+    "  Linux x64, Node >=18.0.0",
+    "",
+    "Compatibility alias:",
+    "  agenc-runtime remains available after install, but public docs should use agenc.",
+    "",
+    "Dev / from-source:",
+    "  agenc start --from-source",
+    "  agenc start --from-source --source-dir /path/to/agenc-core/runtime",
+    "    Builds runtime/dist locally and points ~/.agenc/runtime/current at it.",
   ].join("\n");
 }
 
@@ -31,6 +49,11 @@ function buildAgencRuntimeHelp() {
     "agenc-runtime [runtime-command] [options]",
     "",
     "Compatibility alias for the installed AgenC runtime CLI.",
+    "",
+    "Dev flags:",
+    "  --from-source              build the local agenc-core/runtime tree",
+    "                             and run the daemon from there",
+    "  --source-dir <path>        explicit runtime/ source path",
   ].join("\n");
 }
 
@@ -116,10 +139,43 @@ async function runRuntimeAdmin(argv, io, deps, runtimeOptions) {
 
 const DEFAULT_DEPS = {
   ensureRuntimeInstalled,
+  ensureRuntimeFromSource,
   describeRuntimeInstall,
   uninstallRuntime,
   spawnInstalledRuntimeBin,
+  spawnInstalledRuntimeBinFromSource,
 };
+
+/**
+ * Cut 6.1: detect and strip the `--from-source` flag (and the optional
+ * `--source-dir <path>`) from the wrapper argv. Returns the remaining argv
+ * plus the parsed flag values so the rest of the dispatcher can continue
+ * to operate on a clean argument list.
+ */
+function extractFromSourceFlags(argv) {
+  const remaining = [];
+  let fromSource = false;
+  let sourceDir;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--from-source") {
+      fromSource = true;
+      continue;
+    }
+    if (arg === "--source-dir" && i + 1 < argv.length) {
+      sourceDir = argv[++i];
+      fromSource = true;
+      continue;
+    }
+    if (typeof arg === "string" && arg.startsWith("--source-dir=")) {
+      sourceDir = arg.slice("--source-dir=".length);
+      fromSource = true;
+      continue;
+    }
+    remaining.push(arg);
+  }
+  return { argv: remaining, fromSource, sourceDir };
+}
 
 function formatRuntimeInstallError(error) {
   if (error instanceof RuntimeInstallError) {
@@ -129,7 +185,8 @@ function formatRuntimeInstallError(error) {
 }
 
 export async function runAgencWrapper(options = {}, deps = DEFAULT_DEPS) {
-  const argv = options.argv ?? process.argv.slice(2);
+  const rawArgv = options.argv ?? process.argv.slice(2);
+  const { argv, fromSource, sourceDir } = extractFromSourceFlags(rawArgv);
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
   const runtimeOptions = {
@@ -137,6 +194,7 @@ export async function runAgencWrapper(options = {}, deps = DEFAULT_DEPS) {
     cwd: options.cwd ?? process.cwd(),
     homeDir: options.homeDir,
     packageRoot: options.packageRoot,
+    sourceDir,
   };
 
   try {
@@ -152,6 +210,13 @@ export async function runAgencWrapper(options = {}, deps = DEFAULT_DEPS) {
       writeLine(stdout, buildAgencHelp());
       return 0;
     }
+    if (fromSource) {
+      return await deps.spawnInstalledRuntimeBinFromSource(
+        "agenc",
+        argv,
+        runtimeOptions,
+      );
+    }
     return await deps.spawnInstalledRuntimeBin("agenc", argv, runtimeOptions);
   } catch (error) {
     writeLine(stderr, formatRuntimeInstallError(error));
@@ -160,7 +225,8 @@ export async function runAgencWrapper(options = {}, deps = DEFAULT_DEPS) {
 }
 
 export async function runAgencRuntimeWrapper(options = {}, deps = DEFAULT_DEPS) {
-  const argv = options.argv ?? process.argv.slice(2);
+  const rawArgv = options.argv ?? process.argv.slice(2);
+  const { argv, fromSource, sourceDir } = extractFromSourceFlags(rawArgv);
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
   const runtimeOptions = {
@@ -168,12 +234,20 @@ export async function runAgencRuntimeWrapper(options = {}, deps = DEFAULT_DEPS) 
     cwd: options.cwd ?? process.cwd(),
     homeDir: options.homeDir,
     packageRoot: options.packageRoot,
+    sourceDir,
   };
 
   try {
     if (argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") {
       writeLine(stdout, buildAgencRuntimeHelp());
       return 0;
+    }
+    if (fromSource) {
+      return await deps.spawnInstalledRuntimeBinFromSource(
+        "agenc-runtime",
+        argv,
+        runtimeOptions,
+      );
     }
     return await deps.spawnInstalledRuntimeBin(
       "agenc-runtime",

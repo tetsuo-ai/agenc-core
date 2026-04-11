@@ -25,7 +25,7 @@ export type FakeBackfillFetcher = {
   }>;
 };
 
-export type TestRuntime = {
+type TestRuntime = {
   store: FakeReplayStore;
   fetcher?: FakeBackfillFetcher;
   trace?: string;

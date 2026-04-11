@@ -23,7 +23,8 @@ Complete all items before proceeding with mainnet deployment:
 **Steps**
 1. Run readiness check:
    ```bash
-   ./scripts/check-deployment-readiness.sh --network mainnet
+   # check-deployment-readiness.sh has been removed (see cleanup/dead-code-audit).
+   # Use npm run validate:runtime (step 2) as the primary pre-deploy gate.
    ```
 2. Run the default required runtime validation lane from the `agenc-core` root:
    ```bash
@@ -59,7 +60,7 @@ Complete all items before proceeding with mainnet deployment:
 **Troubleshooting**
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| readiness check fails | missing env/toolchain/config | follow the printed remediation and rerun |
+| readiness check fails | script removed; use `npm run validate:runtime` instead | see cleanup/dead-code-audit |
 | `npm run validate:runtime` fails | runtime unit, mutation, quality, delegation, background-run, or rollout gate regression | inspect the failing lane summary, fix the underlying runtime regression, and rerun the wrapper lane from the `agenc-core` root |
 | `npm run test:fast` fails | regression in on-chain/LiteSVM flows | fix failing test before deploy |
 | `solana-verify` missing | solana-verify not installed | install solana-verify and rerun |

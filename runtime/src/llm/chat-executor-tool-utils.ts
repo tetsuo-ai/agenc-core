@@ -30,15 +30,8 @@ const NON_JSON_FAILURE_PREFIXES = [
   "error executing tool",
   "tool not found:",
 ];
-const DOOM_VALIDATION_FAILURE_RE =
-  /^unknown\s+(?:resolution|screen resolution|scenario|map|skill(?:\s+level)?|wad)\b.*\bvalid:/i;
-const DOOM_RUNTIME_FAILURE_RE =
-  /^(?:executor not running\b|no game is running\b|game is not running\b)/i;
 const SHELL_EXECUTION_ANOMALY_RE =
   /(?:^|\n)(?:[^:\n]+:\s+line\s+\d+:\s+)?(?:(?:ba|z|k)?sh|cd|pushd|popd|source|\.)[^:\n]*:\s+.*(?:no such file or directory|command not found|not found|permission denied|not a directory)/i;
-const DOOM_SCREEN_RESOLUTION_RE = /^(?:RES_)?(\d{2,4})[xX](\d{2,4})$/i;
-const NULLISH_STRING_RE = /^(?:null|none|undefined)$/i;
-const DEFAULT_VISIBLE_DOOM_SCREEN_RESOLUTION = "RES_1280X720";
 const COLLABORATION_PAYOUT_MODES = new Set(["fixed", "weighted", "milestone"]);
 
 function truncateText(value: string, maxChars: number): string {
@@ -47,7 +40,7 @@ function truncateText(value: string, maxChars: number): string {
   return value.slice(0, maxChars - 3) + "...";
 }
 
-export interface ToolArgumentRepairResult {
+interface ToolArgumentRepairResult {
   readonly args: Record<string, unknown>;
   readonly repairedFields: readonly string[];
 }
@@ -195,7 +188,7 @@ export function resolveRetryPolicyMatrix(
   return merged;
 }
 
-export function hasExplicitIdempotencyKey(args: Record<string, unknown>): boolean {
+function hasExplicitIdempotencyKey(args: Record<string, unknown>): boolean {
   const value = args.idempotencyKey;
   return typeof value === "string" && value.trim().length > 0;
 }
@@ -227,19 +220,19 @@ export function sanitizeToolCallsForReplay(
   }));
 }
 
-export function isHighRiskToolCall(
+function isHighRiskToolCall(
   toolName: string,
 ): boolean {
   if (HIGH_RISK_TOOLS.has(toolName)) return true;
   return HIGH_RISK_TOOL_PREFIXES.some((prefix) => toolName.startsWith(prefix));
 }
 
-export function isToolRetrySafe(toolName: string): boolean {
+function isToolRetrySafe(toolName: string): boolean {
   if (SAFE_TOOL_RETRY_TOOLS.has(toolName)) return true;
   return SAFE_TOOL_RETRY_PREFIXES.some((prefix) => toolName.startsWith(prefix));
 }
 
-export function isLikelyToolTransportFailure(
+function isLikelyToolTransportFailure(
   errorText: string,
 ): boolean {
   const lower = errorText.toLowerCase();
@@ -274,8 +267,6 @@ function isLikelyFailureText(result: string): boolean {
   if (text.length === 0) return false;
   if (text.startsWith("mcp tool \"") && text.includes("\" failed:")) return true;
   if (text.includes("requires desktop session")) return true;
-  if (DOOM_VALIDATION_FAILURE_RE.test(result)) return true;
-  if (DOOM_RUNTIME_FAILURE_RE.test(result)) return true;
   return NON_JSON_FAILURE_PREFIXES.some((prefix) => text.startsWith(prefix));
 }
 
@@ -284,7 +275,7 @@ function isLikelyFailureText(result: string): boolean {
 // ============================================================================
 
 /** Result of checking whether a tool call is permitted. */
-export interface ToolCallPermissionResult {
+interface ToolCallPermissionResult {
   readonly action: ToolCallAction;
   readonly errorResult?: string;
   readonly expandAfterRound?: boolean;
@@ -327,7 +318,7 @@ export function checkToolCallPermission(
 }
 
 /** Result of parsing tool call arguments. */
-export type ParseToolCallArgsResult =
+type ParseToolCallArgsResult =
   | { readonly ok: true; readonly args: Record<string, unknown> }
   | { readonly ok: false; readonly error: string };
 
@@ -355,63 +346,11 @@ export function parseToolCallArguments(
   }
 }
 
-export function normalizeDoomScreenResolution(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  if (trimmed.length === 0) return trimmed;
-  const match = trimmed.match(DOOM_SCREEN_RESOLUTION_RE);
-  if (!match) return trimmed;
-  return `RES_${match[1]}X${match[2]}`;
-}
-
 export function normalizeToolCallArguments(
   toolName: string,
   args: Record<string, unknown>,
 ): Record<string, unknown> {
-  const normalizedFilesystemArgs = normalizeFilesystemToolCallArguments(
-    toolName,
-    args,
-  );
-  if (toolName !== "mcp.doom.start_game") return normalizedFilesystemArgs;
-
-  let nextArgs = normalizedFilesystemArgs;
-  const normalizedResolution = normalizeDoomScreenResolution(
-    args.screen_resolution,
-  );
-  if (
-    typeof normalizedResolution === "string" &&
-    normalizedResolution !== args.screen_resolution
-  ) {
-    nextArgs = {
-      ...nextArgs,
-      screen_resolution: normalizedResolution,
-    };
-  }
-
-  if (nextArgs.screen_resolution === undefined) {
-    if (nextArgs === args) nextArgs = { ...args };
-    nextArgs.screen_resolution = DEFAULT_VISIBLE_DOOM_SCREEN_RESOLUTION;
-  }
-
-  if (nextArgs.window_visible !== true) {
-    if (nextArgs === args) nextArgs = { ...args };
-    nextArgs.window_visible = true;
-  }
-
-  if (nextArgs.render_hud !== true) {
-    if (nextArgs === args) nextArgs = { ...args };
-    nextArgs.render_hud = true;
-  }
-
-  if (
-    typeof nextArgs.recording_path === "string" &&
-    NULLISH_STRING_RE.test(nextArgs.recording_path.trim())
-  ) {
-    if (nextArgs === args) nextArgs = { ...args };
-    delete nextArgs.recording_path;
-  }
-
-  return nextArgs;
+  return normalizeFilesystemToolCallArguments(toolName, args);
 }
 
 const TOOL_ARG_ALIASES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
@@ -682,7 +621,7 @@ export function summarizeToolArgumentChanges(
 }
 
 /** Configuration for tool execution with retry. */
-export interface ToolExecutionConfig {
+interface ToolExecutionConfig {
   readonly toolCallTimeoutMs: number;
   readonly retryPolicyMatrix: LLMRetryPolicyMatrix;
   readonly signal?: AbortSignal;
@@ -690,7 +629,7 @@ export interface ToolExecutionConfig {
 }
 
 /** Result of executing a tool with retry logic. */
-export interface ToolExecutionResult {
+interface ToolExecutionResult {
   result: string;
   isError: boolean;
   toolFailed: boolean;
@@ -868,197 +807,9 @@ export interface RoundStuckState {
 }
 
 /** Result of stuck-loop detection check. */
-export interface StuckDetectionResult {
+interface StuckDetectionResult {
   readonly shouldBreak: boolean;
   readonly reason?: string;
-}
-
-export interface ToolRoundProgressSummary {
-  readonly durationMs: number;
-  readonly totalCalls: number;
-  readonly successfulCalls: number;
-  readonly newSuccessfulSemanticKeys: number;
-  readonly newVerificationFailureDiagnosticKeys: number;
-  readonly hadSuccessfulMutation: boolean;
-  readonly hadVerificationCall: boolean;
-  readonly hadMaterialProgress: boolean;
-}
-
-const ANSI_ESCAPE_RE =
-  // eslint-disable-next-line no-control-regex
-  /\u001b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
-const VERIFICATION_TOKENS = new Set([
-  "build",
-  "check",
-  "compile",
-  "coverage",
-  "lint",
-  "test",
-  "typecheck",
-  "verify",
-]);
-const VERIFICATION_COMMANDS = new Set([
-  "cargo",
-  "deno",
-  "go",
-  "gradle",
-  "jest",
-  "mvn",
-  "node",
-  "npm",
-  "npx",
-  "pnpm",
-  "python",
-  "python3",
-  "pytest",
-  "ruff",
-  "tsc",
-  "uv",
-  "vitest",
-  "yarn",
-  "bun",
-]);
-const INTERPRETER_VERIFICATION_FLAGS = new Set([
-  "-c",
-  "-e",
-  "--eval",
-]);
-const INTERPRETER_VERIFICATION_ARTIFACT_RE =
-  /\b(?:build\/|coverage\/|dist\/|package\.json|src\/|test(?:s)?\/|tsconfig(?:\.[a-z]+)?|vite\.config(?:\.[a-z]+)?|vitest\.config(?:\.[a-z]+)?|\.spec\.|\.test\.)\b/i;
-const NODE_RUNTIME_VERIFICATION_SOURCE_RE =
-  /\b(?:await\s+import\s*\(|console\.(?:error|log)\s*\(|import\s*\(|require\s*\()\b/i;
-const MUTATING_COMMANDS = new Set([
-  "cp",
-  "git",
-  "install",
-  "mkdir",
-  "mv",
-  "perl",
-  "rm",
-  "sed",
-  "touch",
-]);
-
-function normalizeFailureDiagnosticText(text: string): string {
-  return text
-    .replace(ANSI_ESCAPE_RE, "")
-    .trim()
-    .replace(/\s+/g, " ")
-    .toLowerCase()
-    .slice(0, 600);
-}
-
-function buildFailureDiagnosticKey(call: ToolCallRecord): string | null {
-  if (!didToolCallFail(call.isError, call.result)) return null;
-  const normalizedFailure = normalizeFailureDiagnosticText(
-    extractToolFailureText(call),
-  );
-  if (normalizedFailure.length === 0) return null;
-  return `${call.name}:${normalizedFailure}`;
-}
-
-function extractCommandTokens(args: Record<string, unknown>): string[] {
-  const tokens: string[] = [];
-  const command = typeof args.command === "string" ? args.command : "";
-  if (command.trim().length > 0) {
-    tokens.push(...command.trim().split(/\s+/));
-  }
-  const rawArgs = Array.isArray(args.args) ? args.args : [];
-  for (const value of rawArgs) {
-    if (typeof value === "string" && value.trim().length > 0) {
-      tokens.push(value.trim());
-    }
-  }
-  return tokens.map((token) => token.toLowerCase());
-}
-
-function isInterpreterVerificationInvocation(tokens: readonly string[]): boolean {
-  if (tokens.length === 0) return false;
-  const [command, ...rest] = tokens;
-  if (
-    command !== "deno" &&
-    command !== "node" &&
-    command !== "python" &&
-    command !== "python3"
-  ) {
-    return false;
-  }
-  if (rest.length === 0) return false;
-
-  const joined = rest.join(" ");
-  if (
-    INTERPRETER_VERIFICATION_FLAGS.has(rest[0] ?? "") &&
-    (
-      INTERPRETER_VERIFICATION_ARTIFACT_RE.test(joined) ||
-      (command === "node" && NODE_RUNTIME_VERIFICATION_SOURCE_RE.test(joined))
-    )
-  ) {
-    return true;
-  }
-
-  return rest.some((token) => INTERPRETER_VERIFICATION_ARTIFACT_RE.test(token));
-}
-
-function isVerificationToolCall(call: ToolCallRecord): boolean {
-  if (call.name !== "system.bash" && call.name !== "desktop.bash") {
-    return false;
-  }
-  const tokens = extractCommandTokens(call.args);
-  if (tokens.length === 0) return false;
-  const [command, ...rest] = tokens;
-  if (
-    (command === "deno" || command === "node" || command === "python" ||
-      command === "python3") &&
-    isInterpreterVerificationInvocation(tokens)
-  ) {
-    return true;
-  }
-  if (VERIFICATION_COMMANDS.has(command)) {
-    if (command === "npm" || command === "pnpm" || command === "yarn" || command === "bun") {
-      return rest.some((token) => VERIFICATION_TOKENS.has(token));
-    }
-    if (command === "npx" || command === "uv") {
-      return rest.some((token) =>
-        VERIFICATION_COMMANDS.has(token) || VERIFICATION_TOKENS.has(token)
-      );
-    }
-    if (
-      command === "deno" || command === "node" || command === "python" ||
-      command === "python3"
-    ) {
-      return isInterpreterVerificationInvocation(tokens);
-    }
-    return true;
-  }
-  return tokens.some((token) => VERIFICATION_TOKENS.has(token));
-}
-
-function isSuccessfulMutationToolCall(call: ToolCallRecord): boolean {
-  if (didToolCallFail(call.isError, call.result)) return false;
-  if (call.name === "system.writeFile" || call.name === "system.delete") {
-    return true;
-  }
-  if (call.name !== "system.bash" && call.name !== "desktop.bash") {
-    return false;
-  }
-  const tokens = extractCommandTokens(call.args);
-  if (tokens.length === 0) return false;
-  const [command, ...rest] = tokens;
-  if (command === "git") {
-    return rest.some((token) => ["apply", "checkout", "mv", "restore", "rm"].includes(token));
-  }
-  if (command === "npm" || command === "pnpm" || command === "yarn" || command === "bun") {
-    return rest.some((token) =>
-      ["add", "dedupe", "install", "remove", "uninstall", "update"].includes(token)
-    );
-  }
-  if (command === "sed") {
-    return rest.some((token) => token === "-i" || token.startsWith("-i"));
-  }
-  if (command === "perl") {
-    return rest.some((token) => token === "-i" || token.startsWith("-i"));
-  }
-  return MUTATING_COMMANDS.has(command);
 }
 
 /** Check for stuck tool loop patterns across rounds. */
@@ -1121,57 +872,6 @@ export function checkToolLoopStuckDetection(
   }
 
   return { shouldBreak: false };
-}
-
-export function summarizeToolRoundProgress(
-  roundCalls: readonly ToolCallRecord[],
-  durationMs: number,
-  seenSuccessfulSemanticKeys: Set<string>,
-  seenVerificationFailureDiagnosticKeys: Set<string>,
-): ToolRoundProgressSummary {
-  let successfulCalls = 0;
-  let newSuccessfulSemanticKeys = 0;
-  let newVerificationFailureDiagnosticKeys = 0;
-  let hadSuccessfulMutation = false;
-  let hadVerificationCall = false;
-  for (const call of roundCalls) {
-    if (isVerificationToolCall(call)) {
-      hadVerificationCall = true;
-      if (didToolCallFail(call.isError, call.result)) {
-        const diagnosticKey = buildFailureDiagnosticKey(call);
-        if (
-          diagnosticKey &&
-          !seenVerificationFailureDiagnosticKeys.has(diagnosticKey)
-        ) {
-          seenVerificationFailureDiagnosticKeys.add(diagnosticKey);
-          newVerificationFailureDiagnosticKeys++;
-        }
-      }
-    }
-    if (isSuccessfulMutationToolCall(call)) {
-      hadSuccessfulMutation = true;
-    }
-    if (didToolCallFail(call.isError, call.result)) {
-      continue;
-    }
-    successfulCalls++;
-    const semanticKey = buildSemanticToolCallKey(call.name, call.args);
-    if (!seenSuccessfulSemanticKeys.has(semanticKey)) {
-      seenSuccessfulSemanticKeys.add(semanticKey);
-      newSuccessfulSemanticKeys++;
-    }
-  }
-  return {
-    durationMs,
-    totalCalls: roundCalls.length,
-    successfulCalls,
-    newSuccessfulSemanticKeys,
-    newVerificationFailureDiagnosticKeys,
-    hadSuccessfulMutation,
-    hadVerificationCall,
-    hadMaterialProgress:
-      newSuccessfulSemanticKeys > 0 || newVerificationFailureDiagnosticKeys > 0,
-  };
 }
 
 /** Build recovery hint messages for injection after a tool round. */

@@ -42,11 +42,15 @@ const {
   runMarketTaskCreateCommand,
   runMarketTaskClaimCommand,
   runMarketGovernanceVoteCommand,
+  runMarketInspectCommand,
+  runMarketReputationSummaryCommand,
 } = vi.hoisted(() => ({
   runMarketTasksListCommand: vi.fn(async () => 0),
   runMarketTaskCreateCommand: vi.fn(async () => 0),
   runMarketTaskClaimCommand: vi.fn(async () => 0),
   runMarketGovernanceVoteCommand: vi.fn(async () => 0),
+  runMarketInspectCommand: vi.fn(async () => 0),
+  runMarketReputationSummaryCommand: vi.fn(async () => 0),
 }));
 const { runMarketTuiCommand } = vi.hoisted(() => ({
   runMarketTuiCommand: vi.fn(async () => 0),
@@ -85,6 +89,8 @@ vi.mock("./marketplace-cli.js", async () => {
     runMarketTaskCreateCommand,
     runMarketTaskClaimCommand,
     runMarketGovernanceVoteCommand,
+    runMarketInspectCommand,
+    runMarketReputationSummaryCommand,
   };
 });
 
@@ -224,7 +230,11 @@ describe("runtime root CLI", () => {
     expect(stdout.data()).toContain("init [--help] [options]");
     expect(stdout.data()).toContain("agent [--help] <command> [options]");
     expect(stdout.data()).toContain("market [--help] <domain> <command> [options]");
+    expect(stdout.data()).toContain("market inspect <surface> [subject]");
     expect(stdout.data()).toContain("market tui");
+    expect(stdout.data()).toContain(
+      "inspect <surface> [subject]                  Inspect a shared marketplace surface",
+    );
     expect(stdout.data()).toContain(
       "init      Generate an AGENC.md contributor guide for the current repo",
     );
@@ -408,6 +418,68 @@ describe("runtime root CLI", () => {
         requiredCapabilities: "1",
         validationMode: "creator-review",
         reviewWindowSecs: 120,
+      }),
+    );
+  });
+
+  it("routes market inspect through the root CLI command surface", async () => {
+    const stdout = captureStream();
+    const stderr = captureStream();
+
+    const code = await runCli({
+      argv: [
+        "market",
+        "inspect",
+        "tasks",
+        "--status",
+        "open,in_progress",
+      ],
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+    });
+
+    expect(code).toBe(0);
+    expect(stderr.data()).toBe("");
+    expect(runMarketInspectCommand).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        surface: "tasks",
+        statuses: ["open", "in_progress"],
+      }),
+    );
+  });
+
+  it("routes market reputation summaries through the root CLI command surface with configured keypair paths", async () => {
+    const stdout = captureStream();
+    const stderr = captureStream();
+    const configuredKeypairPath = join(workspace, "configured-id.json");
+    writeFileSync(
+      process.env.AGENC_CONFIG!,
+      JSON.stringify({
+        gateway: { port: 3100 },
+        agent: { name: "cli-root-test-agent" },
+        connection: {
+          rpcUrl: "https://api.devnet.solana.com",
+          keypairPath: configuredKeypairPath,
+        },
+        replay: { store: { type: "memory" } },
+      }),
+      "utf8",
+    );
+
+    const code = await runCli({
+      argv: ["market", "reputation", "summary"],
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+    });
+
+    expect(code).toBe(0);
+    expect(stderr.data()).toBe("");
+    expect(runMarketReputationSummaryCommand).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        rpcUrl: "https://api.devnet.solana.com",
+        keypairPath: configuredKeypairPath,
       }),
     );
   });

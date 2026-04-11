@@ -26,12 +26,15 @@ Before mainnet deployment, private completion must use only the router-verificat
 ### Readiness check
 
 **Prerequisites**
-- [ ] `./scripts/check-deployment-readiness.sh` exists and is executable
+- [ ] Node toolchain installed
+- [ ] Dependencies installed
 
 **Steps**
 1. Run:
    ```bash
-   ./scripts/check-deployment-readiness.sh --network mainnet
+   # check-deployment-readiness.sh has been removed (see cleanup/dead-code-audit).
+   # Use npm run validate:runtime as the primary pre-deploy readiness gate.
+   npm run validate:runtime
    ```
 
 **Expected Output**

@@ -1,6 +1,6 @@
 import type { DisputeDriftPromptOutput } from "./dispute-drift.js";
 
-export interface PayoutMismatchPromptInput {
+interface PayoutMismatchPromptInput {
   task_pda: string;
   expected_payout_lamports?: string;
   trace_id?: string;

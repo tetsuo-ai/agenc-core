@@ -477,7 +477,7 @@ async function parsePollResponse(
   };
 }
 
-export interface SystemRemoteSessionWebhookInput {
+interface SystemRemoteSessionWebhookInput {
   readonly sessionHandleId: string;
   readonly headers: Readonly<Record<string, string>>;
   readonly body: unknown;

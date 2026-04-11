@@ -308,7 +308,7 @@ async function parsePollResponse(
   };
 }
 
-export interface SystemRemoteJobWebhookInput {
+interface SystemRemoteJobWebhookInput {
   readonly jobHandleId: string;
   readonly headers: Readonly<Record<string, string>>;
   readonly body: unknown;

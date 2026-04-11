@@ -258,7 +258,7 @@ export function materializePlannerSynthesisResult(
   });
 }
 
-export function summarizeDependencyShellCommand(
+function summarizeDependencyShellCommand(
   args: Record<string, unknown> | undefined,
 ): string | undefined {
   if (!args) return undefined;
@@ -274,12 +274,12 @@ export function summarizeDependencyShellCommand(
   return rendered.length > 0 ? rendered : undefined;
 }
 
-export function isDependencyVerificationCommand(command: string): boolean {
+function isDependencyVerificationCommand(command: string): boolean {
   return /\b(?:npm|pnpm|yarn|bun|vitest|jest|tsc)\b/i.test(command) &&
     /\b(?:build|test|coverage|verify|check|install|run)\b/i.test(command);
 }
 
-export function extractDependencyCommandExitCode(result: string): number | undefined {
+function extractDependencyCommandExitCode(result: string): number | undefined {
   if (result.trim().length === 0) return undefined;
   try {
     const parsed = JSON.parse(result) as Record<string, unknown>;
@@ -291,7 +291,7 @@ export function extractDependencyCommandExitCode(result: string): number | undef
   }
 }
 
-export function summarizeDependencyOutputText(output: string): string {
+function summarizeDependencyOutputText(output: string): string {
   const lines = output
     .split(/\r?\n/)
     .map((line) => line.trim())

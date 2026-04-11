@@ -10,7 +10,7 @@
 import { silentLogger, type Logger } from "../utils/logger.js";
 
 /** Memory trace event types. */
-export type MemoryTraceEventType =
+type MemoryTraceEventType =
   | "memory.retrieval"
   | "memory.retrieval.scoring"
   | "memory.ingestion.turn"
@@ -28,15 +28,6 @@ export type MemoryTraceEventType =
   | "memory.graph.update"
   | "memory.trust.filter"
   | "memory.error";
-
-export interface MemoryTraceEvent {
-  readonly type: MemoryTraceEventType;
-  readonly sessionId?: string;
-  readonly workspaceId?: string;
-  readonly agentId?: string;
-  readonly timestamp: number;
-  readonly payload: Record<string, unknown>;
-}
 
 /**
  * Memory trace logger — emits structured trace events for memory operations.

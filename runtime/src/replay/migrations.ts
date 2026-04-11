@@ -11,8 +11,8 @@ import {
   type SchemaMigrationResult,
 } from "../workflow/schema-version.js";
 
-export const REPLAY_EVENT_CURSOR_SCHEMA_VERSION = 1 as const;
-export const REPLAY_TIMELINE_RECORD_SCHEMA_VERSION = 1 as const;
+const REPLAY_EVENT_CURSOR_SCHEMA_VERSION = 1 as const;
+const REPLAY_TIMELINE_RECORD_SCHEMA_VERSION = 1 as const;
 export const REPLAY_FILE_STATE_SCHEMA_VERSION = 1 as const;
 
 export interface PersistedReplayTimelineState {
@@ -21,7 +21,7 @@ export interface PersistedReplayTimelineState {
   readonly records: readonly ReplayTimelineRecord[];
 }
 
-export function migrateReplayEventCursor(
+function migrateReplayEventCursor(
   value: unknown,
 ): SchemaMigrationResult<ReplayEventCursor | null> {
   if (value === null || value === undefined) {
@@ -66,7 +66,7 @@ export function migrateReplayEventCursor(
   });
 }
 
-export function migrateReplayTimelineRecord(
+function migrateReplayTimelineRecord(
   value: unknown,
 ): SchemaMigrationResult<ReplayTimelineRecord> {
   const raw = assertObjectRecord(value, "ReplayTimelineRecord");

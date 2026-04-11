@@ -353,7 +353,7 @@ function buildTransferResponse(
   };
 }
 
-export class BrowserSessionManager {
+class BrowserSessionManager {
   private readonly registryPath: string;
   private readonly rootDir: string;
   private readonly logger: Logger;
@@ -1616,10 +1616,6 @@ export function createBrowserSessionTools(
 
 export async function closeBrowserSessions(): Promise<void> {
   await defaultBrowserSessionManager.closeAll();
-}
-
-export async function resetBrowserSessionsForTesting(): Promise<void> {
-  await defaultBrowserSessionManager.resetForTesting();
 }
 
 export function resetBrowserSessionsForTestingSync(): void {

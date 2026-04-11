@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ChatExecutorResult } from "../llm/chat-executor.js";
+import { buildStopHookRuntime } from "../llm/hooks/stop-hooks.js";
 import type { LLMProvider, ToolHandler } from "../llm/types.js";
 import { InMemoryBackend } from "../memory/in-memory/backend.js";
 import { SqliteBackend } from "../memory/sqlite/backend.js";
@@ -389,7 +390,7 @@ describe("background-run-supervisor", () => {
   it("detects explicit long-running intent", () => {
     expect(
       inferBackgroundRunIntent(
-        "Start Doom and keep playing until I tell you to stop.",
+        "Start the long-running probe and keep it running until I tell you to stop.",
       ),
     ).toBe(true);
     expect(
@@ -404,7 +405,7 @@ describe("background-run-supervisor", () => {
     ).toBe(true);
     expect(
       inferBackgroundRunIntent(
-        "Play Doom defending the center, keep it smooth and aggressive, and provide periodic status updates.",
+        "Run the soak workload, keep it stable, and provide periodic status updates.",
       ),
     ).toBe(true);
     expect(inferBackgroundRunIntent("What is 2+2?")).toBe(false);
@@ -539,10 +540,10 @@ describe("background-run-supervisor", () => {
     const publishUpdate = vi.fn(async () => undefined);
     const execute = vi.fn(async () =>
       makeResult({
-        content: "Doom launched and verified.",
+        content: "Soak workload launched and verified.",
         toolCalls: [
           {
-            name: "mcp.doom.start_game",
+            name: "mcp.example.start",
             args: { async_player: true },
             result: '{"status":"running"}',
             isError: false,
@@ -555,7 +556,7 @@ describe("background-run-supervisor", () => {
       name: "supervisor",
       chat: vi.fn(async () => ({
         content:
-          '{"state":"working","userUpdate":"Doom is still running in the background.","internalSummary":"verified running","nextCheckMs":4000,"shouldNotifyUser":true}',
+          '{"state":"working","userUpdate":"Soak workload is still running in the background.","internalSummary":"verified running","nextCheckMs":4000,"shouldNotifyUser":true}',
         toolCalls: [],
         usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
         model: "supervisor-model",
@@ -576,7 +577,7 @@ describe("background-run-supervisor", () => {
 
     await supervisor.startRun({
       sessionId: "session-1",
-      objective: "Play Doom until I say stop and keep me updated.",
+      objective: "Run the soak workload until I say stop and keep me updated.",
     });
     await vi.advanceTimersByTimeAsync(0);
     await eventually(() => {
@@ -598,7 +599,7 @@ describe("background-run-supervisor", () => {
     expect(publishUpdate).toHaveBeenNthCalledWith(
       2,
       "session-1",
-      "Doom is still running in the background.",
+      "Soak workload is still running in the background.",
     );
 
     const snapshot = supervisor.getStatusSnapshot("session-1");
@@ -845,12 +846,12 @@ describe("background-run-supervisor", () => {
     const publishUpdate = vi.fn(async () => undefined);
     const execute = vi.fn(async () =>
       makeResult({
-        content: "Game not started yet. Launching Doom now.",
+        content: "Workload not started yet. Launching the soak workload now.",
         toolCalls: [
           {
-            name: "mcp.doom.get_situation_report",
+            name: "mcp.example.status",
             args: {},
-            result: "No game is running. Call start_game first.",
+            result: "No workload is running. Call start first.",
             isError: true,
             durationMs: 15,
           },
@@ -864,7 +865,7 @@ describe("background-run-supervisor", () => {
         name: "supervisor",
         chat: vi.fn(async () => ({
           content:
-            '{"state":"working","userUpdate":"Doom is running in the background.","internalSummary":"verified running","nextCheckMs":4000,"shouldNotifyUser":true}',
+            '{"state":"working","userUpdate":"Soak workload is running in the background.","internalSummary":"verified running","nextCheckMs":4000,"shouldNotifyUser":true}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -881,7 +882,7 @@ describe("background-run-supervisor", () => {
 
     await supervisor.startRun({
       sessionId: "session-grounded",
-      objective: "Play Doom until I say stop and keep me updated.",
+      objective: "Run the soak workload until I say stop and keep me updated.",
     });
     await vi.advanceTimersByTimeAsync(0);
 
@@ -890,8 +891,8 @@ describe("background-run-supervisor", () => {
       "session-grounded",
       expect.stringContaining("Latest cycle hit only tool errors and will retry"),
     );
-    expect(publishUpdate.mock.calls[1]?.[1]).toContain("No game is running");
-    expect(publishUpdate.mock.calls[1]?.[1]).not.toContain("Doom is running in the background.");
+    expect(publishUpdate.mock.calls[1]?.[1]).toContain("No workload is running");
+    expect(publishUpdate.mock.calls[1]?.[1]).not.toContain("Soak workload is running in the background.");
 
     const snapshot = supervisor.getStatusSnapshot("session-grounded");
     expect(snapshot?.state).toBe("working");
@@ -1843,162 +1844,6 @@ describe("background-run-supervisor", () => {
     );
   });
 
-  it("preserves partial completion progress across pause and resume without redoing grounded evidence", async () => {
-    const publishUpdate = vi.fn(async () => undefined);
-    const execute = vi
-      .fn()
-      .mockResolvedValueOnce(
-        makeResult({
-          content: "Implemented the shell changes and ran the repo-local build.",
-          toolCalls: [
-            {
-              name: "system.bash",
-              args: { command: "make test" },
-              result: JSON.stringify({
-                stdout: "ok",
-                stderr: "",
-                exitCode: 0,
-                __agencVerification: {
-                  category: "build",
-                  repoLocal: true,
-                  command: "make test",
-                },
-              }),
-              isError: false,
-              durationMs: 5,
-            },
-          ],
-          completionState: "needs_verification",
-          completionProgress: {
-            completionState: "needs_verification",
-            stopReason: "completed",
-            requiredRequirements: [
-              "build_verification",
-              "workflow_verifier_pass",
-            ],
-            satisfiedRequirements: ["build_verification"],
-            remainingRequirements: ["workflow_verifier_pass"],
-            reusableEvidence: [
-              {
-                requirement: "build_verification",
-                summary: "make test",
-                observedAt: 10,
-              },
-            ],
-            updatedAt: 10,
-          },
-        }),
-      )
-      .mockResolvedValueOnce(
-        makeResult({
-          content: "Resumed from the prior grounded build and finished the remaining verification.",
-          completionState: "completed",
-          completionProgress: {
-            completionState: "completed",
-            stopReason: "completed",
-            requiredRequirements: ["workflow_verifier_pass"],
-            satisfiedRequirements: ["workflow_verifier_pass"],
-            remainingRequirements: [],
-            reusableEvidence: [],
-            updatedAt: 20,
-          },
-        }),
-      );
-    const supervisor = new BackgroundRunSupervisor({
-      chatExecutor: { execute } as any,
-      supervisorLlm: {
-        name: "supervisor",
-        chat: vi
-          .fn()
-          .mockResolvedValueOnce({
-            content:
-              '{"kind":"finite","successCriteria":["finish the implementation truthfully"],"completionCriteria":["pass the remaining verifier obligations"],"blockedCriteria":["missing runtime evidence"],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":false}',
-            toolCalls: [],
-            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-            model: "supervisor-model",
-            finishReason: "stop",
-          })
-          .mockResolvedValueOnce({
-            content:
-              '{"state":"completed","userUpdate":"Shell implementation completed.","internalSummary":"done","shouldNotifyUser":true}',
-            toolCalls: [],
-            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-            model: "supervisor-model",
-            finishReason: "stop",
-          })
-          .mockResolvedValueOnce({
-            content:
-              '{"summary":"Implementation is partially complete.","verifiedFacts":["Repo-local build succeeded."],"openLoops":["Finish the remaining verifier pass."],"nextFocus":"Resume from the grounded build evidence instead of repeating it."}',
-            toolCalls: [],
-            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-            model: "supervisor-model",
-            finishReason: "stop",
-          })
-          .mockResolvedValueOnce({
-            content:
-              '{"state":"completed","userUpdate":"Shell implementation verified and complete.","internalSummary":"verified complete","shouldNotifyUser":true}',
-            toolCalls: [],
-            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-            model: "supervisor-model",
-            finishReason: "stop",
-          })
-          .mockResolvedValueOnce({
-            content:
-              '{"summary":"Implementation verified and complete.","verifiedFacts":["Repo-local build succeeded.","Remaining verification completed."],"openLoops":[],"nextFocus":"None."}',
-            toolCalls: [],
-            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-            model: "supervisor-model",
-            finishReason: "stop",
-          }),
-        chatStream: vi.fn(),
-        healthCheck: vi.fn(async () => true),
-      },
-      getSystemPrompt: () => "base system prompt",
-      runStore: createRunStore(),
-      createToolHandler: (): ToolHandler => vi.fn(async () => "ok"),
-      publishUpdate,
-    });
-
-    await supervisor.startRun({
-      sessionId: "session-partial-resume",
-      objective: "Implement the shell fully and keep going until the remaining verification passes.",
-    });
-    await vi.advanceTimersByTimeAsync(0);
-
-    let detail = await supervisor.getOperatorDetail("session-partial-resume");
-    expect(detail?.state).toBe("working");
-    expect(detail?.completionProgress).toMatchObject({
-      completionState: "needs_verification",
-      satisfiedRequirements: ["build_verification"],
-      remainingRequirements: ["workflow_verifier_pass"],
-    });
-    expect(supervisor.getStatusSnapshot("session-partial-resume")).toMatchObject({
-      state: "working",
-      completionState: "needs_verification",
-      remainingRequirements: ["workflow_verifier_pass"],
-    });
-
-    await supervisor.pauseRun("session-partial-resume");
-    await supervisor.resumeRun("session-partial-resume");
-    await vi.advanceTimersByTimeAsync(0);
-
-    const resumedPrompt = execute.mock.calls[1]?.[0]?.message?.content;
-    expect(resumedPrompt).toContain("Current completion state: needs_verification");
-    expect(resumedPrompt).toContain("Already satisfied: build_verification");
-    expect(resumedPrompt).toContain("Reusable grounded evidence: make test");
-
-    detail = await supervisor.getOperatorDetail("session-partial-resume");
-    expect(detail?.state).toBe("completed");
-    expect(detail?.completionProgress).toMatchObject({
-      completionState: "completed",
-      satisfiedRequirements: expect.arrayContaining([
-        "build_verification",
-        "workflow_verifier_pass",
-      ]),
-      remainingRequirements: [],
-    });
-  });
-
   it("preserves the latest deterministic update while a stable background run waits for the next verification", async () => {
     const publishUpdate = vi.fn(async () => undefined);
     const execute = vi
@@ -2243,10 +2088,10 @@ describe("background-run-supervisor", () => {
       chatExecutor: {
         execute: vi.fn(async () =>
           makeResult({
-            content: "Doom is launched and verified.",
+            content: "Soak workload is launched and verified.",
             toolCalls: [
               {
-                name: "mcp.doom.start_game",
+                name: "mcp.example.start",
                 args: { async_player: true },
                 result: '{"status":"running"}',
                 isError: false,
@@ -2270,7 +2115,7 @@ describe("background-run-supervisor", () => {
           })
           .mockResolvedValueOnce({
             content:
-              '{"state":"completed","userUpdate":"Doom setup complete.","internalSummary":"done","shouldNotifyUser":true}',
+              '{"state":"completed","userUpdate":"Soak workload setup complete.","internalSummary":"done","shouldNotifyUser":true}',
             toolCalls: [],
             usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
             model: "supervisor-model",
@@ -2287,7 +2132,7 @@ describe("background-run-supervisor", () => {
 
     await supervisor.startRun({
       sessionId: "session-until-stop",
-      objective: "Keep playing Doom until I tell you to stop.",
+      objective: "Keep running the soak workload until I tell you to stop.",
     });
     await vi.runOnlyPendingTimersAsync();
 
@@ -6230,6 +6075,80 @@ describe("background-run-supervisor", () => {
     expect(publishUpdate).toHaveBeenLastCalledWith(
       "session-token-budget",
       "Background run exhausted its token budget before the objective completed.",
+    );
+  });
+
+  it("parks a run after repeated worker-idle hook blocks", async () => {
+    const publishUpdate = vi.fn(async () => undefined);
+    const execute = vi.fn().mockResolvedValue(
+      makeResult({
+        content: "Still monitoring.",
+      }),
+    );
+    const supervisorLlm: LLMProvider = {
+      name: "supervisor",
+      chat: vi
+        .fn()
+        .mockResolvedValueOnce({
+          content:
+            '{"domain":"generic","kind":"finite","successCriteria":["Keep checking."],"completionCriteria":["Observe deterministic completion."],"blockedCriteria":["Runtime unavailable."],"nextCheckMs":2000,"heartbeatMs":12000,"requiresUserStop":false}',
+          toolCalls: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "supervisor-model",
+          finishReason: "stop",
+        })
+        .mockResolvedValue({
+          content:
+            '{"state":"working","userUpdate":"Still monitoring.","internalSummary":"waiting","nextCheckMs":2000,"shouldNotifyUser":true}',
+          toolCalls: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "supervisor-model",
+          finishReason: "stop",
+        }),
+      chatStream: vi.fn(),
+      healthCheck: vi.fn(async () => true),
+    };
+    const supervisor = new BackgroundRunSupervisor({
+      chatExecutor: { execute } as any,
+      supervisorLlm,
+      getSystemPrompt: () => "base system prompt",
+      runStore: createRunStore(),
+      createToolHandler: (): ToolHandler => vi.fn(async () => "ok"),
+      publishUpdate,
+      resolveStopHookRuntime: () =>
+        buildStopHookRuntime({
+          enabled: true,
+          handlers: [
+            {
+              id: "worker-idle-block",
+              phase: "WorkerIdle",
+              kind: "command",
+              target: "printf '{\"blockingError\":\"idle blocked\"}'",
+            },
+          ],
+        }),
+    });
+
+    await supervisor.startRun({
+      sessionId: "session-worker-idle",
+      objective: "Keep monitoring in the background.",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await eventually(() => {
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+
+    await vi.advanceTimersByTimeAsync(120_000);
+    await eventuallyAsync(async () => {
+      const snapshot = await supervisor.getRecentSnapshot("session-worker-idle");
+      expect(snapshot?.state).toBe("blocked");
+    });
+
+    const snapshot = await supervisor.getRecentSnapshot("session-worker-idle");
+    expect(snapshot?.state).toBe("blocked");
+    expect(snapshot?.lastUserUpdate).toBe("idle blocked");
+    expect(supervisor.getStatusSnapshot("session-worker-idle")?.state).toBe(
+      "blocked",
     );
   });
 

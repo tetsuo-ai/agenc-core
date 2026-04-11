@@ -1,3 +1,7 @@
+import { readWatchDaemonErrorRate } from "./agenc-watch-log-tail.mjs";
+
+const ERROR_RATE_REFRESH_MS = 15_000;
+
 export function createWatchSurfaceStateController(dependencies = {}) {
   const {
     watchState,
@@ -22,6 +26,35 @@ export function createWatchSurfaceStateController(dependencies = {}) {
 
   let cachedSurfaceSummaryKey = null;
   let cachedSurfaceSummary = null;
+
+  // Cut 6.3: rolling error-rate signal cached for ERROR_RATE_REFRESH_MS so we
+  // don't stat the daemon error log on every render. Re-read at most once per
+  // ~15s and on every cache miss for the surface summary.
+  let cachedErrorRate = null;
+  let cachedErrorRateAt = 0;
+  function refreshDaemonErrorRate() {
+    const currentMs = typeof nowMs === "function" ? nowMs() : Date.now();
+    if (
+      cachedErrorRate &&
+      currentMs - cachedErrorRateAt < ERROR_RATE_REFRESH_MS
+    ) {
+      return cachedErrorRate;
+    }
+    try {
+      cachedErrorRate = readWatchDaemonErrorRate({ now: currentMs });
+    } catch {
+      cachedErrorRate = {
+        present: false,
+        windowMs: 0,
+        windowCount: 0,
+        totalCount: 0,
+        lastTimestamp: null,
+        lastLine: null,
+      };
+    }
+    cachedErrorRateAt = currentMs;
+    return cachedErrorRate;
+  }
 
   function defaultWorkingGlyphFrames() {
     // AgenC_Logo.svg resolves to a diamond / inner-cross silhouette.
@@ -238,6 +271,7 @@ export function createWatchSurfaceStateController(dependencies = {}) {
       maintenanceStatus: watchState.maintenanceSnapshot ?? null,
       workspaceIndex: workspaceIndex ?? null,
       voiceCompanion: watchState.voiceCompanion ?? null,
+      daemonErrorRate: refreshDaemonErrorRate(),
     });
     cachedSurfaceSummaryKey = summaryKey;
     return cachedSurfaceSummary;

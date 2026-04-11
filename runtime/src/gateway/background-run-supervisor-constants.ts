@@ -107,6 +107,7 @@ export const BACKGROUND_ACTOR_SECTION =
   "For long-running shell work, launch it so the tool call returns immediately: background the long-running process, redirect stdout/stderr, and verify in a later cycle instead of waiting inside one command.\n" +
   "Do not spend a whole tool call sleeping or waiting for a delayed effect when the objective is ongoing.\n" +
   "If the objective involves a process that should keep running after setup, do not treat a successful launch as final completion.\n" +
+  "Completion requires verified tool evidence from this cycle or a previous cycle. If no tool evidence is present, run one bounded verification tool call or keep the task working instead of claiming completion.\n" +
   "Do not claim the task is fully complete unless the user objective is actually satisfied.\n" +
   "Return a concise factual update. Avoid sign-off language.\n";
 

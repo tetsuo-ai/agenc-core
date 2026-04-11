@@ -186,6 +186,12 @@ describe("context compaction integration", () => {
       systemPrompt: "You are a helpful assistant.",
       sessionId: "session-1",
       stateful,
+      // After the regex pre-call classifier rip-out, implementation-class
+      // detection on the message text alone now triggers a workflow-
+      // implementation contract that fails-close on missing workspace.
+      // Pass an explicit workspace root so the executor falls through to
+      // the dialogue path the test was originally exercising.
+      runtimeContext: { workspaceRoot: "/workspace" },
     });
 
     const messages = (provider.chat as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as

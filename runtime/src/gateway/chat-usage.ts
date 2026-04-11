@@ -1,7 +1,7 @@
 import type { ChatCallUsageRecord } from "../llm/chat-executor.js";
 import type { RuntimeEconomicsSummary } from "../llm/run-budget.js";
 
-export type ChatUsageSectionId =
+type ChatUsageSectionId =
   | "system"
   | "memory"
   | "history"
@@ -10,14 +10,14 @@ export type ChatUsageSectionId =
   | "assistant_runtime"
   | "other";
 
-export interface ChatUsageSection {
+interface ChatUsageSection {
   readonly id: ChatUsageSectionId;
   readonly label: string;
   readonly tokens: number;
   readonly percent: number;
 }
 
-export interface ChatUsagePayload {
+interface ChatUsagePayload {
   readonly totalTokens: number;
   readonly budget: number;
   readonly compacted: boolean;

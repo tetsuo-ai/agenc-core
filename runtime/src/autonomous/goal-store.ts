@@ -19,7 +19,7 @@ import { migrateStrategicMemoryState } from "../gateway/state-migrations.js";
 
 export type StrategicGoalPriority = "critical" | "high" | "medium" | "low";
 
-export type StrategicGoalSource =
+type StrategicGoalSource =
   | "meta-planner"
   | "awareness"
   | "user"
@@ -42,7 +42,7 @@ export interface StrategicGoalResult {
   readonly durationMs: number;
 }
 
-export interface StrategicGoalFreshness {
+interface StrategicGoalFreshness {
   readonly score: number;
   readonly lastObservedAt: number;
   readonly expiresAt: number;
@@ -262,25 +262,23 @@ export class GoalStore {
       }
     }
 
+    // Create the new goal first so we have a real ID to point at,
+    // instead of using a `"pending"` placeholder string that the
+    // audit (S1.7) flagged as a corruption risk: if the placeholder
+    // ever leaked to disk via a partial write or an exception thrown
+    // between the two maps, the eviction logic would treat
+    // `"pending"` as a real ID forever and never clear those rows.
+    const created = this.createGoalRecord(input, now);
     if (consolidation.supersededGoalIds.length > 0) {
       goals = goals.map((goal) =>
         consolidation.supersededGoalIds.includes(goal.id)
           ? {
               ...goal,
               status: "superseded",
-              supersededByGoalId: "pending",
+              supersededByGoalId: created.id,
               updatedAt: now,
               freshness: { ...goal.freshness, score: 0 },
             }
-          : goal,
-      );
-    }
-
-    const created = this.createGoalRecord(input, now);
-    if (consolidation.supersededGoalIds.length > 0) {
-      goals = goals.map((goal) =>
-        goal.supersededByGoalId === "pending"
-          ? { ...goal, supersededByGoalId: created.id }
           : goal,
       );
     }

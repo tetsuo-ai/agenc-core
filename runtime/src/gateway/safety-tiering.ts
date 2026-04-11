@@ -44,7 +44,7 @@ export type EffectApprovalReasonCode =
   | "irreversible_financial_action"
   | "untrusted_mcp_tool";
 
-export interface ApprovalSafetyAssessment {
+interface ApprovalSafetyAssessment {
   readonly reasonCode: EffectApprovalReasonCode;
   readonly riskLevel: ApprovalRiskLevel;
   readonly targetSensitivity: TargetSensitivity;
@@ -54,7 +54,7 @@ export interface ApprovalSafetyAssessment {
   readonly shellIntent?: "read_only" | "mutating" | "open_world" | "unknown";
 }
 
-export interface ApprovalSafetyAssessmentInput {
+interface ApprovalSafetyAssessmentInput {
   readonly toolName: string;
   readonly args: Record<string, unknown>;
   readonly effectClass?: ExecutionEffectClass;

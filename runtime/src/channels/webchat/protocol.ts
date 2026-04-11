@@ -30,7 +30,6 @@ export const WS_CHAT_CANCELLED = "chat.cancelled" as const;
 export const WS_CHAT_CANCEL = "chat.cancel" as const;
 export const WS_CHAT_RESUME = "chat.resume" as const;
 export const WS_CHAT_USAGE = "chat.usage" as const;
-export const WS_SOCIAL_MESSAGE = "social.message" as const;
 
 // Events
 export const WS_EVENTS_SUBSCRIBE = "events.subscribe" as const;
@@ -41,7 +40,7 @@ export const WS_EVENTS_EVENT = "events.event" as const;
 
 // Subagent lifecycle
 export const WS_SUBAGENTS_PLANNED = "subagents.planned" as const;
-export const WS_SUBAGENTS_POLICY_BYPASSED = "subagents.policy_bypassed" as const;
+const WS_SUBAGENTS_POLICY_BYPASSED = "subagents.policy_bypassed" as const;
 export const WS_SUBAGENTS_SPAWNED = "subagents.spawned" as const;
 export const WS_SUBAGENTS_STARTED = "subagents.started" as const;
 export const WS_SUBAGENTS_PROGRESS = "subagents.progress" as const;
@@ -105,29 +104,6 @@ export const WS_AGENT_STATUS = "agent.status" as const;
 // Shared payload shapes (drift-prone messages first)
 // ============================================================================
 
-export interface ChatSessionPayload {
-  sessionId: string;
-  workspaceRoot?: string;
-}
-
-export interface ChatOwnerPayload {
-  ownerToken: string;
-}
-
-export interface ChatSessionSummary {
-  sessionId: string;
-  label: string;
-  messageCount: number;
-  lastActiveAt: number;
-  workspaceRoot?: string;
-}
-
-export type ChatSessionsPayload = ChatSessionSummary[];
-
-export interface ChatCancelledPayload {
-  cancelled: boolean;
-}
-
 export interface SocialMessagePayload {
   messageId: string;
   sender: string;
@@ -137,19 +113,6 @@ export interface SocialMessagePayload {
   timestamp: number;
   onChain: boolean;
   threadId?: string | null;
-}
-
-export interface EventsSubscriptionPayload {
-  active: boolean;
-  filters: string[];
-}
-
-export interface EventsEventPayload {
-  eventType: string;
-  data: Record<string, unknown>;
-  timestamp: number;
-  traceId?: string;
-  parentTraceId?: string;
 }
 
 export const WS_SUBAGENT_LIFECYCLE_TYPES = [
@@ -179,7 +142,7 @@ export interface SubagentLifecyclePayload {
   parentTraceId?: string;
 }
 
-export type WebChatFilterList = readonly string[] | null;
+type WebChatFilterList = readonly string[] | null;
 
 export function matchesEventFilters(
   eventType: string,

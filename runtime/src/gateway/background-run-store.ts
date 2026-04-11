@@ -45,8 +45,8 @@ const BACKGROUND_RUN_DISPATCH_LOCK_KEY = "__background-run-dispatch__";
 const BACKGROUND_RUN_WORKER_REGISTRY_LOCK_KEY = "__background-run-workers__";
 const DEFAULT_LEASE_DURATION_MS = 45_000;
 const DEFAULT_DISPATCH_CLAIM_DURATION_MS = 45_000;
-export const DEFAULT_BACKGROUND_RUN_MAX_RUNTIME_MS = 7 * 24 * 60 * 60_000;
-export const DEFAULT_BACKGROUND_RUN_MAX_CYCLES = 512;
+const DEFAULT_BACKGROUND_RUN_MAX_RUNTIME_MS = 7 * 24 * 60 * 60_000;
+const DEFAULT_BACKGROUND_RUN_MAX_CYCLES = 512;
 export const DEFAULT_BACKGROUND_RUN_MAX_IDLE_MS = 60 * 60_000;
 const DEFAULT_CYCLE_BUDGET_INTERVAL_FLOOR_MS = 30_000;
 const DEFAULT_CYCLE_BUDGET_HEADROOM_MULTIPLIER = 2;
@@ -59,7 +59,7 @@ const DEFAULT_WAKE_QUEUE_MAX_EVENTS = 256;
 const DEFAULT_DISPATCH_QUEUE_MAX_ITEMS = 512;
 const DEFAULT_WORKER_HEARTBEAT_TTL_MS = 20_000;
 
-export type BackgroundRunKind = AgentRunKind;
+type BackgroundRunKind = AgentRunKind;
 export type BackgroundRunState = AgentRunState;
 export type BackgroundRunContract = AgentRunContract;
 export type BackgroundRunManagedProcessPolicy = AgentRunManagedProcessPolicy;
@@ -149,13 +149,13 @@ export interface BackgroundRunWakeEvent {
   readonly data?: Record<string, unknown>;
 }
 
-export interface BackgroundRunWakeDeadLetter {
+interface BackgroundRunWakeDeadLetter {
   readonly event: BackgroundRunWakeEvent;
   readonly failedAt: number;
   readonly reason: string;
 }
 
-export interface PersistedBackgroundRunWakeQueue {
+interface PersistedBackgroundRunWakeQueue {
   readonly version: typeof AGENT_RUN_SCHEMA_VERSION;
   readonly sessionId: string;
   readonly nextSequence: number;
@@ -164,7 +164,7 @@ export interface PersistedBackgroundRunWakeQueue {
   readonly deadLetters: readonly BackgroundRunWakeDeadLetter[];
 }
 
-export interface BackgroundRunObservedManagedProcessTarget {
+interface BackgroundRunObservedManagedProcessTarget {
   readonly kind: "managed_process";
   readonly processId: string;
   readonly label?: string;
@@ -229,7 +229,7 @@ export interface BackgroundRunProviderContinuation {
   readonly mode: "previous_response_id";
 }
 
-export interface BackgroundRunSummaryHealth {
+interface BackgroundRunSummaryHealth {
   readonly status: "healthy" | "repairing";
   readonly driftCount: number;
   readonly lastDriftAt?: number;
@@ -274,6 +274,7 @@ export interface BackgroundRunBudgetState {
   readonly runtimeStartedAt: number;
   readonly lastActivityAt: number;
   readonly lastProgressAt: number;
+  readonly idleHookBlockStreak?: number;
   readonly totalTokens: number;
   readonly lastCycleTokens: number;
   readonly managedProcessCount: number;
@@ -391,13 +392,13 @@ export interface BackgroundRunDispatchItem {
   readonly data?: Record<string, unknown>;
 }
 
-export interface BackgroundRunDispatchDeadLetter {
+interface BackgroundRunDispatchDeadLetter {
   readonly item: BackgroundRunDispatchItem;
   readonly failedAt: number;
   readonly reason: string;
 }
 
-export interface PersistedBackgroundRunDispatchQueue {
+interface PersistedBackgroundRunDispatchQueue {
   readonly version: typeof AGENT_RUN_SCHEMA_VERSION;
   readonly nextSequence: number;
   readonly updatedAt: number;
@@ -405,7 +406,7 @@ export interface PersistedBackgroundRunDispatchQueue {
   readonly deadLetters: readonly BackgroundRunDispatchDeadLetter[];
 }
 
-export interface PersistedBackgroundRunDispatchBeacon {
+interface PersistedBackgroundRunDispatchBeacon {
   readonly version: typeof AGENT_RUN_SCHEMA_VERSION;
   readonly revision: number;
   readonly updatedAt: number;
@@ -436,7 +437,7 @@ export function isBackgroundRunFenceConflictError(
   return error instanceof BackgroundRunFenceConflictError;
 }
 
-export interface BackgroundRunWorkerRecord {
+interface BackgroundRunWorkerRecord {
   readonly version: typeof AGENT_RUN_SCHEMA_VERSION;
   readonly workerId: string;
   readonly pools: readonly BackgroundRunWorkerPool[];
@@ -450,7 +451,7 @@ export interface BackgroundRunWorkerRecord {
   readonly affinityKeys: readonly string[];
 }
 
-export interface PersistedBackgroundRunWorkerRegistry {
+interface PersistedBackgroundRunWorkerRegistry {
   readonly version: typeof AGENT_RUN_SCHEMA_VERSION;
   readonly updatedAt: number;
   readonly workers: readonly BackgroundRunWorkerRecord[];
@@ -493,12 +494,12 @@ export interface BackgroundRunEvent {
   readonly data?: Record<string, unknown>;
 }
 
-export interface BackgroundRunLeaseResult {
+interface BackgroundRunLeaseResult {
   readonly claimed: boolean;
   readonly run?: PersistedBackgroundRun;
 }
 
-export interface BackgroundRunGarbageCollectOptions {
+interface BackgroundRunGarbageCollectOptions {
   readonly now?: number;
   readonly terminalSnapshotRetentionMs?: number;
   readonly corruptRecordRetentionMs?: number;
@@ -506,7 +507,7 @@ export interface BackgroundRunGarbageCollectOptions {
   readonly dispatchDeadLetterRetentionMs?: number;
 }
 
-export interface BackgroundRunGarbageCollectResult {
+interface BackgroundRunGarbageCollectResult {
   readonly releasedExpiredLeases: number;
   readonly deletedTerminalSnapshots: number;
   readonly deletedCorruptRecords: number;
@@ -537,7 +538,7 @@ export interface DequeueBackgroundRunWakeEventsResult {
   readonly nextAvailableAt?: number;
 }
 
-export interface EnqueueBackgroundRunDispatchParams {
+interface EnqueueBackgroundRunDispatchParams {
   readonly sessionId: string;
   readonly runId?: string;
   readonly pool: BackgroundRunWorkerPool;
@@ -557,25 +558,25 @@ export interface EnqueueBackgroundRunDispatchParams {
   readonly data?: Record<string, unknown>;
 }
 
-export interface BackgroundRunDispatchClaimResult {
+interface BackgroundRunDispatchClaimResult {
   readonly claimed: boolean;
   readonly item?: BackgroundRunDispatchItem;
   readonly queueDepth: number;
 }
 
-export interface BackgroundRunPruneDispatchResult {
+interface BackgroundRunPruneDispatchResult {
   readonly removedCount: number;
   readonly queueDepth: number;
 }
 
-export interface BackgroundRunDispatchStats {
+interface BackgroundRunDispatchStats {
   readonly totalQueued: number;
   readonly totalClaimed: number;
   readonly queuedByPool: Record<BackgroundRunWorkerPool, number>;
   readonly claimedByPool: Record<BackgroundRunWorkerPool, number>;
 }
 
-export interface BackgroundRunStoreConfig {
+interface BackgroundRunStoreConfig {
   readonly memoryBackend: MemoryBackend;
   readonly logger?: Logger;
   readonly leaseDurationMs?: number;
@@ -1395,6 +1396,7 @@ function buildDefaultBudgetState(params: {
     runtimeStartedAt: params.createdAt,
     lastActivityAt: params.updatedAt,
     lastProgressAt: params.updatedAt,
+    idleHookBlockStreak: 0,
     totalTokens: 0,
     lastCycleTokens: 0,
     managedProcessCount: 0,
@@ -1531,6 +1533,9 @@ function coerceBudgetState(
       typeof raw.lastProgressAt === "number"
         ? raw.lastProgressAt
         : defaults.lastProgressAt,
+    idleHookBlockStreak:
+      coerceNonNegativeInteger(raw.idleHookBlockStreak) ??
+      defaults.idleHookBlockStreak,
     totalTokens:
       coerceNonNegativeInteger(raw.totalTokens) ?? defaults.totalTokens,
     lastCycleTokens:
@@ -1813,6 +1818,10 @@ function coerceCompletionProgress(
       typeof raw.stopReasonDetail === "string" ? raw.stopReasonDetail : undefined,
     validationCode:
       typeof raw.validationCode === "string" ? raw.validationCode as never : undefined,
+    contractFingerprint:
+      typeof raw.contractFingerprint === "string"
+        ? raw.contractFingerprint
+        : undefined,
     verificationContract:
       raw.verificationContract && typeof raw.verificationContract === "object"
         ? raw.verificationContract as never

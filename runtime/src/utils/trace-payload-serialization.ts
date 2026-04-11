@@ -28,7 +28,7 @@ interface TraceSerializationOptions {
   readonly transformString: (value: string, maxChars: number) => unknown;
 }
 
-export interface TracePreviewSerializationOptions {
+interface TracePreviewSerializationOptions {
   readonly maxChars?: number;
   readonly maxDepth?: number;
   readonly maxArrayItems?: number;
@@ -119,7 +119,7 @@ function summarizeBinaryStringForPreview(
   }
 
   const compact = value.replace(/\s+/g, "");
-  if (compact.length >= 512 && /^[A-Za-z0-9+/=\r\n]+$/.test(value)) {
+  if (compact.length >= 512 && /^[A-Za-z0-9+/=]+$/.test(compact)) {
     return {
       artifactType: "base64_blob",
       digest: `sha256:${createHash("sha256").update(value).digest("hex")}`,

@@ -17,7 +17,7 @@ export type ChaosScenarioCategory =
   | "network"
   | "partial_write";
 
-export interface ChaosScenarioExpectedAnomaly {
+interface ChaosScenarioExpectedAnomaly {
   /**
    * Replay comparator anomaly code (when applicable).
    */
@@ -30,7 +30,7 @@ export interface ChaosScenarioExpectedAnomaly {
   kind: ReplayAlertKind;
 }
 
-export interface ChaosScenario {
+interface ChaosScenario {
   id: string; // e.g. "chaos.store_write_failure"
   category: ChaosScenarioCategory;
   trigger: string;

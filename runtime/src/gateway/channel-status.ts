@@ -8,7 +8,7 @@ function configsEqual(a: unknown, b: unknown): boolean {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 }
 
-export function inferGatewayChannelMode(
+function inferGatewayChannelMode(
   name: string,
   config: GatewayChannelConfig | undefined,
 ): GatewayChannelStatus["mode"] | undefined {

@@ -15,7 +15,7 @@ export interface MutationGateThresholds {
   maxChaosScenarioFailRate: number;
 }
 
-export interface MutationGatingPolicyManifest {
+interface MutationGatingPolicyManifest {
   schemaVersion: 1;
   name: string;
   updatedAt: string;

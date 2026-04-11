@@ -1,6 +1,6 @@
 import type { TracePayloadArtifactRef } from "../utils/trace-payload-store.js";
 
-export type ObservabilityEventLevel = "info" | "error";
+type ObservabilityEventLevel = "info" | "error";
 export type ObservabilityTraceStatus = "open" | "completed" | "error";
 
 export interface ObservabilityEventInput {
@@ -54,7 +54,7 @@ export interface ObservabilityTraceSummary {
   readonly stopReason?: string;
 }
 
-export interface ObservabilityTraceCompleteness {
+interface ObservabilityTraceCompleteness {
   readonly complete: boolean;
   readonly issues: readonly string[];
 }
@@ -65,12 +65,7 @@ export interface ObservabilityTraceDetail {
   readonly events: readonly ObservabilityEventRecord[];
 }
 
-export interface ObservabilitySummaryMetric {
-  readonly label: string;
-  readonly value: number;
-}
-
-export interface ObservabilityNamedCount {
+interface ObservabilityNamedCount {
   readonly name: string;
   readonly count: number;
 }

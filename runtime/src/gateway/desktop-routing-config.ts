@@ -21,7 +21,7 @@ import {
 } from "./background-run-wake-adapters.js";
 
 /** Minimal callback surface the desktop routing needs from the daemon. */
-export interface DesktopRoutingDeps {
+interface DesktopRoutingDeps {
   /** Desktop sandbox manager (already initialized). */
   desktopManager: DesktopSandboxManager;
   /** Per-session REST bridge map. */

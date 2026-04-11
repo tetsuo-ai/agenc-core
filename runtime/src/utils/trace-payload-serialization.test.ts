@@ -8,7 +8,7 @@ import {
 
 describe("trace-payload-serialization", () => {
   it("preserves repeated references in preview mode and only marks true cycles", () => {
-    const shared = ["mcp.doom.start_game"];
+    const shared = ["mcp.example.start"];
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
 
@@ -25,9 +25,9 @@ describe("trace-payload-serialization", () => {
       cyclic: { self: string };
     };
 
-    expect(preview.requestedToolNames).toEqual(["mcp.doom.start_game"]);
+    expect(preview.requestedToolNames).toEqual(["mcp.example.start"]);
     expect(preview.missingRequestedToolNames).toEqual([
-      "mcp.doom.start_game",
+      "mcp.example.start",
     ]);
     expect(preview.cyclic.self).toBe("[circular]");
   });

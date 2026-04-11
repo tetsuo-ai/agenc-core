@@ -163,7 +163,7 @@ export function buildArtifactRelevanceTerms(
 /*  Downstream requirement lines                                       */
 /* ------------------------------------------------------------------ */
 
-export function summarizeDownstreamRequirementStep(
+function summarizeDownstreamRequirementStep(
   step: PipelinePlannerStep,
 ): readonly string[] {
   if (step.stepType === "subagent_task") {
@@ -184,7 +184,7 @@ export function summarizeDownstreamRequirementStep(
   return [];
 }
 
-export function summarizeDeterministicVerificationStep(
+function summarizeDeterministicVerificationStep(
   step: PipelinePlannerDeterministicStep,
 ): string | undefined {
   if (step.tool !== "system.bash" && step.tool !== "desktop.bash") {
@@ -469,7 +469,7 @@ function dependencyProvidesWorkspaceInspectionEvidence(params: {
 function collectDependencyWorkspaceInspectionToolCalls(params: {
   readonly dependencyStep: PipelinePlannerStep | undefined;
   readonly result: string | null;
-}): readonly Array<{
+}): ReadonlyArray<{
   readonly name?: string;
   readonly args?: unknown;
   readonly result?: string;
@@ -544,7 +544,7 @@ export function buildEffectiveAcceptanceCriteria(
     );
 }
 
-export function buildDerivedWorkspaceAcceptanceCriteria(
+function buildDerivedWorkspaceAcceptanceCriteria(
   step: PipelinePlannerSubagentStep,
   pipeline: Pipeline,
   delegatedWorkingDirectory?: string,
@@ -604,7 +604,7 @@ export function buildDerivedWorkspaceAcceptanceCriteria(
 /*  Node workspace authoring detection                                 */
 /* ------------------------------------------------------------------ */
 
-export function stepAuthorsNodeWorkspaceManifestOrConfig(
+function stepAuthorsNodeWorkspaceManifestOrConfig(
   step: PipelinePlannerSubagentStep,
   pipeline?: Pipeline,
 ): boolean {
@@ -633,7 +633,7 @@ export function stepAuthorsNodeWorkspaceManifestOrConfig(
     hasAuthoringVerb;
 }
 
-export function isPreInstallNodeWorkspaceStep(
+function isPreInstallNodeWorkspaceStep(
   step: PipelinePlannerSubagentStep,
   pipeline: Pipeline,
 ): boolean {
@@ -651,7 +651,7 @@ export function isPreInstallNodeWorkspaceStep(
   return isNodeWorkspaceRelevant([combined]);
 }
 
-export function hasReachableNodeInstallStep(
+function hasReachableNodeInstallStep(
   step: PipelinePlannerSubagentStep,
   pipeline: Pipeline,
 ): boolean {
@@ -717,7 +717,7 @@ export function isNodeInstallPlannerStep(
 /*  Downstream root npm scripts                                        */
 /* ------------------------------------------------------------------ */
 
-export function collectDownstreamRootNpmScripts(
+function collectDownstreamRootNpmScripts(
   step: PipelinePlannerSubagentStep,
   pipeline: Pipeline,
   delegatedWorkingDirectory?: string,
@@ -762,7 +762,7 @@ export function collectDownstreamRootNpmScripts(
   return scripts;
 }
 
-export function extractDownstreamRootNpmRunScripts(
+function extractDownstreamRootNpmRunScripts(
   step: PipelinePlannerDeterministicStep,
   delegatedWorkingDirectory?: string,
 ): readonly string[] {
@@ -799,7 +799,7 @@ export function extractDownstreamRootNpmRunScripts(
   return collectRootNpmScriptsFromTokens(tokens);
 }
 
-export function collectRootNpmScriptsFromTokens(
+function collectRootNpmScriptsFromTokens(
   tokens: readonly string[],
 ): readonly string[] {
   if (tokens.length === 0) {

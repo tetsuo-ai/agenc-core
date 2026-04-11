@@ -10,6 +10,7 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { MemoryBackend } from "../memory/types.js";
 import type { Logger } from "../utils/logger.js";
 import { toErrorMessage } from "../utils/async.js";
 import type { GatewayConfig, GatewayMCPServerConfig } from "./types.js";
@@ -36,6 +37,17 @@ import { createSandboxTools } from "../tools/system/sandbox-handle.js";
 import { createServerTools } from "../tools/system/server.js";
 import { createSqliteTools } from "../tools/system/sqlite.js";
 import { createSpreadsheetTools } from "../tools/system/spreadsheet.js";
+import {
+  createTaskTrackerTools,
+  TaskStore,
+} from "../tools/system/task-tracker.js";
+import { createVerificationTools } from "../tools/system/verification.js";
+import { runStopHookPhase, type StopHookRuntime } from "../llm/hooks/stop-hooks.js";
+import {
+  buildRuntimeContractTaskTraceId,
+  logTraceEvent,
+  resolveTraceLoggingConfig,
+} from "./daemon-trace.js";
 import { resolveBrowserToolMode } from "./browser-tool-mode.js";
 import { createExecuteWithAgentTool } from "./delegation-tool.js";
 import { createCoordinatorModeTool } from "./coordinator-tool.js";
@@ -44,12 +56,14 @@ import {
   buildAllowedFilesystemPaths,
   resolveHostWorkspacePath,
 } from "./host-workspace.js";
+import { resolveRuntimePersistencePaths } from "./runtime-persistence.js";
 import {
   validateMCPServerBinaryIntegrity,
   validateMCPServerStaticPolicy,
 } from "../policy/index.js";
 import { ConnectionManager } from "../connection/manager.js";
 import type { UnifiedTelemetryCollector } from "../telemetry/collector.js";
+import { PublicKey } from "@solana/web3.js";
 import {
   resolveBashToolEnv,
   resolveBashDenyExclusions,
@@ -80,20 +94,21 @@ function prependPathEntry(
 // Side-effect result type
 // ============================================================================
 
-export interface ToolRegistrySideEffects {
+interface ToolRegistrySideEffects {
   registry: ToolRegistry;
   remoteJobManager: SystemRemoteJobManager;
   remoteSessionManager: SystemRemoteSessionManager;
   containerMCPConfigs: GatewayMCPServerConfig[];
   mcpManager: import("../mcp-client/manager.js").MCPManager | null;
   connectionManager: ConnectionManager | null;
+  taskTrackerStore: TaskStore;
 }
 
 // ============================================================================
 // Deps interface
 // ============================================================================
 
-export interface ToolRegistryDeps {
+interface ToolRegistryDeps {
   readonly logger: Logger;
   readonly configPath: string;
   readonly yolo: boolean;
@@ -111,6 +126,7 @@ export interface ToolRegistryDeps {
   getAgentMessaging(): unknown;
   getAgentFeed(): unknown;
   getCollaborationProtocol(): unknown;
+  resolveStopHookRuntime?(): StopHookRuntime | undefined;
 }
 
 // ============================================================================
@@ -120,10 +136,12 @@ export interface ToolRegistryDeps {
 export async function createDaemonToolRegistry(
   config: GatewayConfig,
   deps: ToolRegistryDeps,
+  memoryBackend: MemoryBackend,
   metrics?: UnifiedTelemetryCollector,
 ): Promise<ToolRegistrySideEffects> {
   const { logger, configPath, yolo } = deps;
   const registry = new ToolRegistry({ logger });
+  const traceConfig = resolveTraceLoggingConfig(config.logging);
 
   // Security: Only expose a minimal host env to system.bash.
   // Token-like secrets are intentionally excluded by default.
@@ -307,6 +325,121 @@ export async function createDaemonToolRegistry(
       logger,
     ),
   );
+  const taskTrackerStore = new TaskStore({
+    memoryBackend,
+    persistenceRootDir: resolveRuntimePersistencePaths().rootDir,
+    logger,
+    ...(traceConfig.enabled
+      ? {
+          onTaskEvent: async (event) => {
+            const eventType =
+              event.type === "task_created"
+                ? "created"
+                : event.type === "task_started"
+                  ? "started"
+                  : event.type === "task_updated"
+                    ? "updated"
+                    : event.type === "task_output_ready"
+                      ? "output_ready"
+                      : event.type === "task_completed"
+                        ? "completed"
+                        : event.type === "task_failed"
+                          ? "failed"
+                          : "cancelled";
+            logTraceEvent(
+              logger,
+              `runtime_contract.task.${eventType}`,
+              {
+                traceId: buildRuntimeContractTaskTraceId(
+                  event.listId,
+                  event.taskId,
+                ),
+                sessionId: event.listId,
+                taskId: event.taskId,
+                kind: event.task.kind,
+                status: event.task.status,
+                timestamp: event.timestamp,
+                ...(event.task.summary ? { summary: event.task.summary } : {}),
+                ...(event.task.executionLocation
+                  ? { executionLocation: event.task.executionLocation }
+                  : {}),
+              },
+              traceConfig.maxChars,
+            );
+          },
+        }
+      : {}),
+  });
+  registry.registerAll(
+    createTaskTrackerTools(taskTrackerStore, {
+      onBeforeTaskComplete: async ({ listId, taskId, task, patch }) => {
+        const hookResult = await runStopHookPhase({
+          runtime: deps.resolveStopHookRuntime?.(),
+          phase: "TaskCompleted",
+          matchKey: taskId,
+          context: {
+            phase: "TaskCompleted",
+            sessionId: listId,
+            taskCompleted: {
+              listId,
+              taskId,
+              task,
+              patch: patch as Record<string, unknown>,
+            },
+          },
+        });
+        if (hookResult.outcome === "pass") {
+          return { outcome: "allow" as const };
+        }
+        return {
+          outcome: "block" as const,
+          message:
+            hookResult.outcome === "prevent_continuation"
+              ? hookResult.stopReason ??
+                "Task completion was blocked by the runtime stop-hook chain."
+              : hookResult.blockingMessage,
+        };
+      },
+      ...(traceConfig.enabled
+        ? {
+            onTaskAccessEvent: async (event) => {
+              logTraceEvent(
+                logger,
+                `runtime_contract.task.${event.type}`,
+                {
+                  traceId: buildRuntimeContractTaskTraceId(
+                    event.listId,
+                    event.taskId,
+                  ),
+                  sessionId: event.listId,
+                  taskId: event.taskId,
+                  timestamp: event.timestamp,
+                  ...(event.until ? { until: event.until } : {}),
+                  ...(event.timeoutMs !== undefined
+                    ? { timeoutMs: event.timeoutMs }
+                    : {}),
+                  ...(event.includeEvents !== undefined
+                    ? { includeEvents: event.includeEvents }
+                    : {}),
+                  ...(event.maxBytes !== undefined
+                    ? { maxBytes: event.maxBytes }
+                    : {}),
+                  ...(event.ready !== undefined ? { ready: event.ready } : {}),
+                  ...(event.task
+                    ? {
+                        taskStatus: event.task.status,
+                        taskOutputReady: event.task.outputReady === true,
+                      }
+                    : {}),
+                },
+                traceConfig.maxChars,
+              );
+            },
+          }
+        : {}),
+    }),
+  );
+  registry.registerAll(createVerificationTools());
   registry.register(createExecuteWithAgentTool());
   registry.register(createCoordinatorModeTool());
   const walletResult = await loadWallet(config);
@@ -569,12 +702,16 @@ export async function createDaemonToolRegistry(
         metrics,
       });
       connectionManager = connMgr;
+      const configuredProgramId = config.connection.programId?.trim()
+        ? new PublicKey(config.connection.programId.trim())
+        : undefined;
 
       const { createAgencTools } = await import("../tools/agenc/index.js");
       registry.registerAll(
         createAgencTools({
           connection: connMgr.getConnection(),
           wallet: walletResult?.wallet,
+          ...(configuredProgramId ? { programId: configuredProgramId } : {}),
           logger,
         }),
       );
@@ -624,5 +761,6 @@ export async function createDaemonToolRegistry(
     containerMCPConfigs,
     mcpManager,
     connectionManager,
+    taskTrackerStore,
   };
 }

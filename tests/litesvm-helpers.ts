@@ -23,7 +23,7 @@ import * as path from "path";
 import { extendLiteSVMConnectionProxy } from "./litesvm-connection-proxy.ts";
 import { syncAgencProgramBinary } from "./litesvm-program-artifact.ts";
 import {
-  loadProtocolIdl,
+  loadLocalProtocolIdl,
   type AgencCoordination,
 } from "./protocol-artifacts.ts";
 import {
@@ -65,7 +65,7 @@ export function createLiteSVMContext(opts?: {
   // the IDL-declared address so the client, PDA derivations, and on-chain
   // execution all target the same program id.
   const svm = fromWorkspace(protocolWorkspaceRoot);
-  const idl = loadProtocolIdl() as {
+  const idl = loadLocalProtocolIdl() as {
     address: string;
   };
   const canonicalProgramId = new PublicKey(idl.address);

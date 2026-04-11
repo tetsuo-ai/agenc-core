@@ -17,7 +17,7 @@ import { silentLogger } from "../utils/logger.js";
 // Types
 // ============================================================================
 
-export interface ProactiveCommunicatorConfig {
+interface ProactiveCommunicatorConfig {
   /** Map of channel name → plugin instance (only active channels). */
   channels: Map<string, ChannelPlugin>;
   /** Default target sessions per channel (channel name → session ID). */

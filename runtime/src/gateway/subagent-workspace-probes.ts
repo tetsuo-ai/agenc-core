@@ -24,7 +24,7 @@ import { normalizeDependencyArtifactPath, sanitizeExecutionPromptText } from "./
 import type {
   PipelinePlannerDeterministicStep as DeterministicStep,
 } from "../workflow/pipeline.js";
-import { safeStepStringArray } from "../llm/chat-executor-planner.js";
+import { safeStepStringArray } from "../llm/chat-executor-step-utils.js";
 
 function isNodeInstallPlannerStep(
   step: { stepType: string; tool?: string; args?: Record<string, unknown> },
@@ -61,7 +61,7 @@ import { resolvePlannerStepWorkingDirectory } from "./subagent-failure-classific
 /*  JSON / manifest helpers                                            */
 /* ------------------------------------------------------------------ */
 
-export function readJsonFileObject(path: string): Record<string, unknown> | undefined {
+function readJsonFileObject(path: string): Record<string, unknown> | undefined {
   try {
     const raw = readFileSync(path, "utf8");
     const parsed = JSON.parse(raw) as unknown;
@@ -74,13 +74,13 @@ export function readJsonFileObject(path: string): Record<string, unknown> | unde
   return undefined;
 }
 
-export function readPackageManifest(
+function readPackageManifest(
   packageDirectory: string,
 ): Record<string, unknown> | undefined {
   return readJsonFileObject(resolvePath(packageDirectory, "package.json"));
 }
 
-export function readPackageScripts(
+function readPackageScripts(
   manifest: Record<string, unknown> | undefined,
 ): Partial<Record<AcceptanceProbeCategory, string>> | undefined {
   if (!manifest) return undefined;
@@ -102,7 +102,7 @@ export function readPackageScripts(
   return Object.keys(scripts).length > 0 ? scripts : undefined;
 }
 
-export function isWorkspaceRootManifest(manifestPath: string): boolean {
+function isWorkspaceRootManifest(manifestPath: string): boolean {
   const manifest = readJsonFileObject(manifestPath);
   if (!manifest) return false;
   return Array.isArray(manifest.workspaces) ||
@@ -117,7 +117,7 @@ export function isWorkspaceRootManifest(manifestPath: string): boolean {
 /*  File-path and package-directory discovery                          */
 /* ------------------------------------------------------------------ */
 
-export function findNearestPackageDirectory(startDirectory: string): string | undefined {
+function findNearestPackageDirectory(startDirectory: string): string | undefined {
   let current = resolvePath(startDirectory);
   while (true) {
     const manifestPath = resolvePath(current, "package.json");
@@ -132,7 +132,7 @@ export function findNearestPackageDirectory(startDirectory: string): string | un
   }
 }
 
-export function resolvePackageDirectoryFromFilePath(
+function resolvePackageDirectoryFromFilePath(
   filePath: string,
   delegatedWorkingDirectory?: string,
 ): string | undefined {
@@ -148,7 +148,7 @@ export function resolvePackageDirectoryFromFilePath(
   return findNearestPackageDirectory(dirname(absolutePath));
 }
 
-export function collectMutatedFilePaths(
+function collectMutatedFilePaths(
   toolCalls: readonly SubAgentResult["toolCalls"][number][],
 ): readonly string[] {
   const paths: string[] = [];
@@ -202,13 +202,13 @@ export function collectMutatedFilePaths(
   return paths;
 }
 
-export function hasFileMutationToolCalls(
+function hasFileMutationToolCalls(
   toolCalls: readonly SubAgentResult["toolCalls"][number][],
 ): boolean {
   return collectMutatedFilePaths(toolCalls).length > 0;
 }
 
-export function collectAcceptanceProbePackageDirectories(
+function collectAcceptanceProbePackageDirectories(
   toolCalls: SubAgentResult["toolCalls"],
   delegatedWorkingDirectory?: string,
 ): readonly string[] {
@@ -249,7 +249,7 @@ export function collectAcceptanceProbePackageDirectories(
 /*  Acceptance test probe eligibility                                  */
 /* ------------------------------------------------------------------ */
 
-export function shouldRunAcceptanceTestProbe(
+function shouldRunAcceptanceTestProbe(
   step: PipelinePlannerSubagentStep,
   toolCalls: readonly SubAgentResult["toolCalls"][number][],
   testScript: string | undefined,
@@ -272,7 +272,7 @@ export function shouldRunAcceptanceTestProbe(
   );
 }
 
-export function hasCompletedNodeInstallDependency(
+function hasCompletedNodeInstallDependency(
   step: PipelinePlannerSubagentStep,
   pipeline: Pipeline,
 ): boolean {
@@ -307,7 +307,7 @@ export function hasCompletedNodeInstallDependency(
 /*  Deterministic verification classification                         */
 /* ------------------------------------------------------------------ */
 
-export function classifyDeterministicVerificationCategories(
+function classifyDeterministicVerificationCategories(
   step: PipelinePlannerDeterministicStep,
 ): readonly AcceptanceProbeCategory[] {
   if (step.tool !== "system.bash" && step.tool !== "desktop.bash") {
@@ -526,7 +526,7 @@ export function buildSubagentAcceptanceProbePlans(
 /*  Package authoring state inspection                                 */
 /* ------------------------------------------------------------------ */
 
-export function inspectPackageAuthoringState(
+function inspectPackageAuthoringState(
   packageDirectory: string,
   workspaceRoot: string,
 ): PackageAuthoringState | undefined {
@@ -616,7 +616,7 @@ export function inspectPackageAuthoringState(
 /*  Workspace ecosystem detection                                      */
 /* ------------------------------------------------------------------ */
 
-export function scoreWorkspaceEcosystem(
+function scoreWorkspaceEcosystem(
   texts: readonly string[],
   patterns: readonly { pattern: RegExp; weight: number }[],
 ): number {
@@ -626,7 +626,7 @@ export function scoreWorkspaceEcosystem(
   }, 0);
 }
 
-export function resolveWorkspaceEcosystem(
+function resolveWorkspaceEcosystem(
   texts: readonly string[],
 ): "node" | "rust" | "unknown" {
   const normalized = texts
@@ -672,7 +672,7 @@ export function isNodeWorkspaceRelevant(texts: readonly string[]): boolean {
 /*  Workspace state guidance for prompts                               */
 /* ------------------------------------------------------------------ */
 
-export function collectPromptArtifactPackageDirectories(
+function collectPromptArtifactPackageDirectories(
   promptArtifactCandidates: readonly { path: string }[],
   workspaceRoot: string,
 ): readonly string[] {

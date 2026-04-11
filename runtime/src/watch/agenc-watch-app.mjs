@@ -135,6 +135,16 @@ import {
   resolveWatchSessionLabel,
   setWatchSessionLabel,
 } from "./agenc-watch-session-indexing.mjs";
+import {
+  formatMarketTaskBrowserTimestamp,
+  marketBrowserKind,
+  marketTaskBrowserDefaultTitle,
+  marketTaskBrowserItemKey,
+  marketTaskBrowserItemLabel,
+  marketTaskBrowserNoun,
+  marketTaskBrowserUsesStatuses,
+  normalizeMarketTaskBrowserItems,
+} from "../marketplace/surfaces.mjs";
 
 // ─── Extracted modules ──────────────────────────────────────────────
 import {
@@ -1695,6 +1705,8 @@ watchCommandController = createWatchCommandController({
   clearPendingAttachments,
   prepareChatMessagePayload,
   applyOptimisticModelSelection,
+  openMarketTaskBrowser,
+  dismissMarketTaskBrowser,
   openLatestDiffDetail,
   currentDiffNavigationState: () =>
     watchFrameController?.currentDiffNavigationState() ?? {
@@ -1753,7 +1765,178 @@ function currentExpandedEvent() {
       : null);
 }
 
+function currentMarketTaskBrowser() {
+
+  const browser = watchState.marketTaskBrowser;
+  return browser && typeof browser === "object" && browser.open === true
+    ? browser
+    : null;
+}
+
+function hasActiveMarketTaskBrowser({ requireBlankComposer = false } = {}) {
+  const browser = currentMarketTaskBrowser();
+  if (!browser) {
+    return false;
+  }
+  if (!requireBlankComposer) {
+    return true;
+  }
+  return String(watchState.composerInput ?? "").trim().length === 0;
+}
+
+function openMarketTaskBrowser({
+  title = "Marketplace Tasks",
+  statuses = [],
+  kind = "tasks",
+  query = "",
+  activeOnly = true,
+} = {}) {
+  const browserKind = marketBrowserKind(kind);
+  const current = currentMarketTaskBrowser();
+  const currentKind = marketBrowserKind(current);
+  const normalizedStatuses = marketTaskBrowserUsesStatuses(browserKind) && Array.isArray(statuses)
+    ? statuses.map((value) => String(value ?? "").trim()).filter(Boolean)
+    : [];
+  const normalizedQuery = browserKind === "skills"
+    ? String(query ?? "").trim()
+    : "";
+  const defaultTitle = marketTaskBrowserDefaultTitle(browserKind);
+  watchState.expandedEventId = null;
+  watchState.detailScrollOffset = 0;
+  watchState.marketTaskBrowser = {
+    open: true,
+    kind: browserKind,
+    title: String(title ?? defaultTitle).trim() || defaultTitle,
+    statuses: marketTaskBrowserUsesStatuses(browserKind)
+      ? normalizedStatuses
+      : [],
+    query: browserKind === "skills" ? normalizedQuery : "",
+    activeOnly: browserKind === "skills" ? activeOnly !== false : true,
+    loading: true,
+    items:
+      browserKind === currentKind && Array.isArray(current?.items)
+        ? current.items
+        : [],
+    selectedIndex:
+      browserKind === currentKind && Number.isFinite(Number(current?.selectedIndex))
+        ? Number(current.selectedIndex)
+        : 0,
+    expandedTaskKey:
+      browserKind === currentKind ? current?.expandedTaskKey ?? null : null,
+    updatedAtMs: nowMs(),
+  };
+  return watchState.marketTaskBrowser;
+}
+
+function hydrateMarketTaskBrowser({ title = "Marketplace Tasks", items = [], kind = "tasks" } = {}) {
+  const browserKind = marketBrowserKind(kind);
+  const normalizedItems = normalizeMarketTaskBrowserItems(items, browserKind);
+  const current = currentMarketTaskBrowser();
+  const currentKind = marketBrowserKind(current);
+  const currentSelectedKey =
+    current && browserKind === currentKind && Array.isArray(current.items) && current.items.length > 0
+      ? current.items[Math.max(0, Math.min(current.items.length - 1, Number(current.selectedIndex) || 0))]?.key ?? null
+      : null;
+  let selectedIndex = normalizedItems.findIndex((item) => item.key === currentSelectedKey);
+  if (selectedIndex < 0) {
+    selectedIndex = Math.max(
+      0,
+      Math.min(
+        normalizedItems.length - 1,
+        browserKind === currentKind ? Number(current?.selectedIndex) || 0 : 0,
+      ),
+    );
+  }
+  const expandedTaskKey =
+    current?.expandedTaskKey && browserKind === currentKind && normalizedItems.some((item) => item.key === current.expandedTaskKey)
+      ? current.expandedTaskKey
+      : null;
+  const defaultTitle = marketTaskBrowserDefaultTitle(browserKind);
+  watchState.expandedEventId = null;
+  watchState.detailScrollOffset = 0;
+  watchState.marketTaskBrowser = {
+    open: true,
+    kind: browserKind,
+    title: String(title ?? current?.title ?? defaultTitle).trim() || defaultTitle,
+    statuses: marketTaskBrowserUsesStatuses(browserKind) && browserKind === currentKind && Array.isArray(current?.statuses)
+      ? current.statuses
+      : [],
+    query: browserKind === "skills" && browserKind === currentKind
+      ? String(current?.query ?? "").trim()
+      : "",
+    activeOnly: browserKind === "skills" && browserKind === currentKind
+      ? current?.activeOnly !== false
+      : true,
+    loading: false,
+    items: normalizedItems,
+    selectedIndex: normalizedItems.length > 0 ? selectedIndex : 0,
+    expandedTaskKey,
+    updatedAtMs: nowMs(),
+  };
+  return watchState.marketTaskBrowser;
+}
+
+function navigateMarketTaskBrowser(direction) {
+
+  const browser = currentMarketTaskBrowser();
+  if (!browser || !Array.isArray(browser.items) || browser.items.length === 0) {
+    return false;
+  }
+  const delta = direction < 0 ? -1 : 1;
+  const nextIndex = Math.max(0, Math.min(browser.items.length - 1, browser.selectedIndex + delta));
+  if (nextIndex === browser.selectedIndex) {
+    return false;
+  }
+  browser.selectedIndex = nextIndex;
+  if (browser.expandedTaskKey) {
+    browser.expandedTaskKey = browser.items[nextIndex]?.key ?? null;
+  }
+  return true;
+}
+
+function toggleMarketTaskBrowserExpansion() {
+  const browser = currentMarketTaskBrowser();
+  const browserKind = marketBrowserKind(browser);
+  const noun = marketTaskBrowserNoun(browserKind);
+  if (!browser || !Array.isArray(browser.items) || browser.items.length === 0) {
+    setTransientStatus(`no marketplace ${noun} selected`);
+    return false;
+  }
+  const item = browser.items[Math.max(0, Math.min(browser.items.length - 1, browser.selectedIndex))];
+  if (!item) {
+    setTransientStatus(`no marketplace ${noun} selected`);
+    return false;
+  }
+  const label = String(marketTaskBrowserItemLabel(item, browserKind) ?? "").trim() || `selected ${noun}`;
+  if (browser.expandedTaskKey === item.key) {
+    browser.expandedTaskKey = null;
+    setTransientStatus(`${noun} details collapsed`);
+    return true;
+  }
+  browser.expandedTaskKey = item.key;
+  setTransientStatus(`${noun} details open: ${label}`);
+  return true;
+}
+
+function dismissMarketTaskBrowser() {
+  const browser = currentMarketTaskBrowser();
+  if (!browser) {
+    return false;
+  }
+  const browserKind = marketBrowserKind(browser);
+  const noun = marketTaskBrowserNoun(browserKind);
+  if (browser.expandedTaskKey) {
+    browser.expandedTaskKey = null;
+    setTransientStatus(`${noun} details collapsed`);
+    return true;
+  }
+  watchState.marketTaskBrowser = null;
+  setTransientStatus(`market ${noun} browser closed`);
+  return true;
+}
+
 function openLatestDiffDetail() {
+
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
     if (!isDiffRenderableEvent(event)) {
@@ -2283,6 +2466,7 @@ watchTransportController = createWatchTransportController({
     handlePlannerTraceEvent,
     handleSubagentLifecycleMessage,
     hydratePlannerDagFromTraceArtifacts,
+    hydrateMarketTaskBrowser,
     isExpectedMissingRunInspect,
     isUnavailableBackgroundRunInspect,
     isRetryableBootstrapError,
@@ -2429,6 +2613,10 @@ watchInputController = createWatchInputController({
   autocompleteComposerInput,
   acceptComposerPaletteSelection,
   navigateComposer,
+  hasActiveMarketTaskBrowser: () => hasActiveMarketTaskBrowser({ requireBlankComposer: true }),
+  navigateMarketTaskBrowser,
+  toggleMarketTaskBrowserExpansion,
+  dismissMarketTaskBrowser,
   hasActiveComposerPalette,
   navigateComposerPalette,
   moveComposerCursorByCharacter: moveComposerCursorHorizontally,

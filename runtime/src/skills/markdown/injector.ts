@@ -18,7 +18,7 @@ import type { DiscoveredSkill } from "./discovery.js";
 // Types
 // ============================================================================
 
-export interface SkillDiscoveryProvider {
+interface SkillDiscoveryProvider {
   readonly getAvailable: () => Promise<DiscoveredSkill[]>;
 }
 

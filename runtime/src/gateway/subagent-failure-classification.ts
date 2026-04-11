@@ -12,10 +12,7 @@
 import type { PipelinePlannerSubagentStep } from "../workflow/pipeline.js";
 import type { Pipeline } from "../workflow/pipeline.js";
 import type { SubAgentResult } from "./sub-agent.js";
-import {
-  type DelegatedWorkingDirectoryResolution,
-  resolveDelegatedWorkingDirectory,
-} from "./delegation-tool.js";
+import type { DelegatedWorkingDirectoryResolution } from "./delegation-tool.js";
 import {
   isLegacyDelegatedScopeRequirement,
   sanitizeDelegationContextRequirements,
@@ -32,9 +29,9 @@ import {
   isConcreteExecutableEnvelopeRoot,
   normalizeWorkspaceRoot,
 } from "../workflow/path-normalization.js";
-import { safeStepStringArray } from "../llm/chat-executor-planner.js";
+import { safeStepStringArray } from "../llm/chat-executor-step-utils.js";
 
-export type DelegatedScopeTrustSignal =
+type DelegatedScopeTrustSignal =
   | "trusted_runtime_envelope_mismatch"
   | "model_authored_invalid_root_attempt"
   | "informational_untrusted_cwd_mention"
@@ -232,7 +229,7 @@ export function classifySpawnFailure(message: string): SubagentFailureClass {
   return "spawn_error";
 }
 
-export function classifySubagentFailureMessage(message: string): SubagentFailureClass {
+function classifySubagentFailureMessage(message: string): SubagentFailureClass {
   const lower = message.toLowerCase();
   if (
     lower.includes("timed out") ||
@@ -299,20 +296,6 @@ export function classifySubagentFailureResult(
 /* ------------------------------------------------------------------ */
 /*  Delegated working directory resolution                             */
 /* ------------------------------------------------------------------ */
-
-export function resolveEffectiveDelegatedWorkingDirectory(input: {
-  readonly executionContext?: PipelinePlannerSubagentStep["executionContext"];
-}): (DelegatedWorkingDirectoryResolution & { readonly anchored: boolean }) | undefined {
-  const delegatedWorkingDirectory = resolveDelegatedWorkingDirectory(input);
-  if (!delegatedWorkingDirectory) {
-    return undefined;
-  }
-
-  return {
-    ...delegatedWorkingDirectory,
-    anchored: isAnchoredDelegatedWorkingDirectory(delegatedWorkingDirectory.path),
-  };
-}
 
 export function isAnchoredDelegatedWorkingDirectory(path: string): boolean {
   const normalized = path.trim();

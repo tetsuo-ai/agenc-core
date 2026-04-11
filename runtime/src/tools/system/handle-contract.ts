@@ -1,11 +1,11 @@
 import type { ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 
-export interface StructuredHandleErrorDetails {
+interface StructuredHandleErrorDetails {
   readonly [key: string]: unknown;
 }
 
-export type StructuredHandleErrorKind =
+type StructuredHandleErrorKind =
   | "validation"
   | "not_found"
   | "idempotency_conflict"
@@ -29,7 +29,7 @@ export interface StructuredHandleResourceEnvelope {
   readonly enforcement?: "none" | "best_effort";
 }
 
-export interface NormalizedHandleIdentity {
+interface NormalizedHandleIdentity {
   readonly label?: string;
   readonly idempotencyKey?: string;
 }

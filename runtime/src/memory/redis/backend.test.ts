@@ -19,6 +19,10 @@ const mockSet = vi.fn().mockResolvedValue("OK");
 const mockGet = vi.fn().mockResolvedValue(null);
 const mockExists = vi.fn().mockResolvedValue(0);
 const mockKeys = vi.fn().mockResolvedValue([]);
+// `scan` replaces `keys` for production safety on large keysets. The mock
+// returns one batch then signals completion with cursor "0", matching the
+// shape `[nextCursor, batchKeys]` that ioredis emits.
+const mockScan = vi.fn().mockResolvedValue(["0", []]);
 const mockPing = vi.fn().mockResolvedValue("PONG");
 const mockQuit = vi.fn().mockResolvedValue("OK");
 const mockConnect = vi.fn().mockResolvedValue(undefined);
@@ -37,6 +41,7 @@ const mockClient = {
   get: mockGet,
   exists: mockExists,
   keys: mockKeys,
+  scan: mockScan,
   ping: mockPing,
   quit: mockQuit,
   connect: mockConnect,
@@ -484,9 +489,12 @@ describe("RedisBackend", () => {
     });
 
     it("listKeys strips prefix", async () => {
-      mockKeys.mockResolvedValueOnce([
-        "agenc:memory:kv:a",
-        "agenc:memory:kv:b",
+      // listKeys now uses cursor-based scan() instead of keys() to avoid
+      // blocking Redis on large keysets. Mock the scan response shape:
+      // `[nextCursor, batchKeys]` with cursor "0" indicating completion.
+      mockScan.mockResolvedValueOnce([
+        "0",
+        ["agenc:memory:kv:a", "agenc:memory:kv:b"],
       ]);
 
       const backend = new RedisBackend();
@@ -496,21 +504,27 @@ describe("RedisBackend", () => {
     });
 
     it("listKeys with prefix filters pattern", async () => {
-      mockKeys.mockResolvedValueOnce(["agenc:memory:kv:cache:1"]);
+      mockScan.mockResolvedValueOnce(["0", ["agenc:memory:kv:cache:1"]]);
 
       const backend = new RedisBackend();
       await backend.listKeys("cache:");
 
-      expect(mockKeys).toHaveBeenCalledWith("agenc:memory:kv:cache:*");
+      expect(mockScan).toHaveBeenCalledWith(
+        "0",
+        "MATCH",
+        "agenc:memory:kv:cache:*",
+        "COUNT",
+        100,
+      );
     });
   });
 
   describe("lifecycle", () => {
     it("clear deletes all thread and KV keys", async () => {
       mockSmembers.mockResolvedValueOnce(["s1", "s2"]);
-      mockKeys.mockResolvedValueOnce([
-        "agenc:memory:kv:a",
-        "agenc:memory:kv:b",
+      mockScan.mockResolvedValueOnce([
+        "0",
+        ["agenc:memory:kv:a", "agenc:memory:kv:b"],
       ]);
 
       const backend = new RedisBackend();

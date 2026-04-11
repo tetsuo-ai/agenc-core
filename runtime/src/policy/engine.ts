@@ -31,17 +31,11 @@ const DEFAULT_POLICY: RuntimePolicyConfig = {
   enabled: false,
 };
 
+// Cut 7.1: glob matching is unified through policy/glob.ts.
+import { matchGlob } from "./glob.js";
+
 function globMatch(pattern: string, value: string): boolean {
-  if (pattern === "*") return true;
-  const normalizedPattern = pattern.trim().toLowerCase();
-  const normalizedValue = value.trim().toLowerCase();
-  if (!normalizedPattern.includes("*")) {
-    return normalizedPattern === normalizedValue;
-  }
-  const escaped = normalizedPattern
-    .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*/g, ".*");
-  return new RegExp(`^${escaped}$`, "i").test(normalizedValue);
+  return matchGlob(pattern.trim().toLowerCase(), value.trim().toLowerCase());
 }
 
 function pathMatchesRoot(candidate: string, root: string): boolean {
@@ -755,12 +749,6 @@ export class PolicyEngine {
     const currentTokens = bucket.reduce((sum, event) => sum + event.amount, 0);
     const projected = currentTokens + action.tokenCount;
     if (projected > budget.limitTokens) {
-      if (consume) {
-        if (action.budgetConsumptionMode === "post_hoc_actual") {
-          bucket.push({ atMs: now, amount: action.tokenCount });
-        }
-        this.tokenEvents.set(eventKey, bucket);
-      }
       return this.buildViolation(
         "token_budget_exceeded",
         action,
@@ -964,9 +952,6 @@ export class PolicyEngine {
     const currentSpend = bucket.reduce((sum, event) => sum + event.amount, 0n);
     const projected = currentSpend + action.spendLamports;
     if (projected > budget.limitLamports) {
-      if (consume) {
-        this.spendEvents.set(eventKey, bucket);
-      }
       return this.buildViolation(
         "spend_budget_exceeded",
         action,

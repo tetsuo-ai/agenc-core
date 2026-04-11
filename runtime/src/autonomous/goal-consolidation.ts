@@ -1,7 +1,7 @@
 import type { GoalStoreInput, StrategicGoalPriority, StrategicGoalRecord } from "./goal-store.js";
 import { ACTIVE_GOAL_TTL_MS, isActiveGoalStatus, isTerminalGoalStatus } from "./goal-hygiene.js";
 
-export const GOAL_DUPLICATE_SUPPRESSION_MS = 24 * 60 * 60 * 1000;
+const GOAL_DUPLICATE_SUPPRESSION_MS = 24 * 60 * 60 * 1000;
 export const GOAL_REOPEN_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
 
 const PRIORITY_WEIGHT: Record<StrategicGoalPriority, number> = {
@@ -11,7 +11,7 @@ const PRIORITY_WEIGHT: Record<StrategicGoalPriority, number> = {
   low: 1,
 };
 
-export interface GoalConsolidationMatch {
+interface GoalConsolidationMatch {
   readonly kind:
     | "exact_active"
     | "fuzzy_active"
@@ -21,7 +21,7 @@ export interface GoalConsolidationMatch {
   readonly goal: StrategicGoalRecord;
 }
 
-export interface GoalConsolidationResult {
+interface GoalConsolidationResult {
   readonly created: boolean;
   readonly accepted: boolean;
   readonly refreshedExisting?: StrategicGoalRecord;
@@ -39,7 +39,7 @@ export function normalizeGoalIdentity(title: string, description: string): strin
     .trim();
 }
 
-export function normalizeGoalWords(text: string): Set<string> {
+function normalizeGoalWords(text: string): Set<string> {
   return new Set(
     text
       .toLowerCase()
@@ -107,9 +107,19 @@ export function findGoalConsolidationMatch(params: {
     return { kind: "fuzzy_active", goal: fuzzyActive };
   }
 
+  // Audit S1.7: the recent_terminal filter must include any terminal
+  // goal updated within the REOPEN window (3 days), not just within
+  // the SUPPRESSION window (1 day). The previous code skipped any
+  // goal older than SUPPRESSION which made the canReopen branch in
+  // consolidateGoalUpdate dead code (canReopen requires updatedAt
+  // older than SUPPRESSION but the filter required it newer). The
+  // intended semantic is:
+  //   - Within 1 day of termination: hot duplicate, suppress entirely
+  //   - 1–3 days after termination: reopen the existing terminal goal
+  //   - After 3 days: create a fresh goal
   const recentTerminal = params.existingGoals.find((goal) => {
     if (goal.supersededByGoalId || !isTerminalGoalStatus(goal.status)) return false;
-    if (goal.updatedAt < params.now - GOAL_DUPLICATE_SUPPRESSION_MS) return false;
+    if (goal.updatedAt < params.now - GOAL_REOPEN_WINDOW_MS) return false;
     return goal.canonicalId === inputIdentity ||
       (titleSimilarity(goal.title, params.input.title) >= 0.7 &&
         goalSimilarity(
@@ -166,8 +176,16 @@ export function consolidateGoalUpdate(params: {
   }
 
   if (params.match.kind === "recent_terminal") {
+    // Audit S1.7: canReopen must use SUPPRESSION (1 day) as the floor,
+    // not REOPEN_WINDOW (3 days). The recent_terminal filter already
+    // restricts the candidate to within REOPEN_WINDOW, so the question
+    // here is whether enough time has elapsed to allow a reopen
+    // instead of treating it as a hot duplicate. Within SUPPRESSION:
+    // suppress entirely. Past SUPPRESSION but within REOPEN_WINDOW:
+    // reopen the existing terminal goal (fall through to the default
+    // branch which marks it refreshed and creates a new active goal).
     const canReopen =
-      params.match.goal.updatedAt < params.now - GOAL_REOPEN_WINDOW_MS;
+      params.match.goal.updatedAt < params.now - GOAL_DUPLICATE_SUPPRESSION_MS;
     if (!canReopen) {
       return {
         created: false,

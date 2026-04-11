@@ -65,6 +65,9 @@ export function computeTranscriptPreviewMaxLines({
       Math.floor(viewport * (latestIsCurrent ? 0.42 : 0.24)),
     );
   }
+  if (eventKind === "market") {
+    return latestIsCurrent ? 8 : 6;
+  }
   if (eventKind === "subagent") {
     return 2;
   }

@@ -10,7 +10,7 @@
 
 import type { BackgroundRunArtifactRef } from "./background-run-store.js";
 
-export const SUBRUN_ROLES = [
+const SUBRUN_ROLES = [
   "planner",
   "worker",
   "critic",
@@ -18,18 +18,18 @@ export const SUBRUN_ROLES = [
   "aggregator",
 ] as const;
 
-export type SubrunRole = (typeof SUBRUN_ROLES)[number];
+type SubrunRole = (typeof SUBRUN_ROLES)[number];
 
-export const SUBRUN_JOIN_STRATEGIES = [
+const SUBRUN_JOIN_STRATEGIES = [
   "all_success",
   "first_success",
   "majority_vote",
   "reduce",
 ] as const;
 
-export type SubrunJoinStrategy = (typeof SUBRUN_JOIN_STRATEGIES)[number];
+type SubrunJoinStrategy = (typeof SUBRUN_JOIN_STRATEGIES)[number];
 
-export const SUBRUN_REDUNDANCY_PATTERNS = [
+const SUBRUN_REDUNDANCY_PATTERNS = [
   "none",
   "critic",
   "verifier",
@@ -122,7 +122,7 @@ export function isSubrunRedundancyPattern(
   );
 }
 
-export function assertValidSubrunScope(
+function assertValidSubrunScope(
   scope: SubrunScope,
   context = "subrun scope",
 ): void {
@@ -176,7 +176,7 @@ export function assertValidSubrunScope(
   }
 }
 
-export function assertValidSubrunBudget(
+function assertValidSubrunBudget(
   budget: SubrunBudget,
   context = "subrun budget",
 ): void {
@@ -200,7 +200,7 @@ export function assertValidSubrunBudget(
   }
 }
 
-export function assertValidSubrunArtifactContract(
+function assertValidSubrunArtifactContract(
   contract: SubrunArtifactContract,
   context = "subrun artifact contract",
 ): void {

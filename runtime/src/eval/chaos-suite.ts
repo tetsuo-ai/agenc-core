@@ -10,6 +10,7 @@ import { join } from "node:path";
 import type { ChatExecutorResult } from "../llm/chat-executor.js";
 import { callWithFallback } from "../llm/chat-executor-fallback.js";
 import { DEFAULT_LLM_RETRY_POLICY_MATRIX } from "../llm/policy.js";
+import { createSyntheticDialogueTurnExecutionContract } from "../llm/turn-execution-contract.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -120,6 +121,7 @@ function makeChatResult(
     compacted: false,
     stopReason: "completed",
     completionState: "completed",
+    turnExecutionContract: createSyntheticDialogueTurnExecutionContract(),
     ...overrides,
   };
 }

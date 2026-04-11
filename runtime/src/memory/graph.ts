@@ -516,10 +516,6 @@ export class MemoryGraph {
       }
     }
 
-    for (const nodeId of toRemove) {
-      await this.backend.delete(this.nodeKey(nodeId));
-    }
-
     const edges = await this.listEdges();
     let removedEdges = 0;
     for (const edge of edges) {
@@ -527,6 +523,10 @@ export class MemoryGraph {
         await this.backend.delete(this.edgeKey(edge.id));
         removedEdges++;
       }
+    }
+
+    for (const nodeId of toRemove) {
+      await this.backend.delete(this.nodeKey(nodeId));
     }
 
     return { removedNodes: toRemove.size, removedEdges };

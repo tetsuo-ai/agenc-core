@@ -11,9 +11,15 @@ import {
   SUB_AGENT_SESSION_PREFIX,
   type SubAgentManager,
 } from "./sub-agent.js";
+import type { PersistentWorkerManager } from "./persistent-worker-manager.js";
 import type { GatewaySubagentFallbackBehavior } from "./types.js";
+import {
+  createVerifierRequirement,
+  type VerifierRequirement,
+  type ProjectVerifierBootstrap,
+} from "./verifier-probes.js";
 
-export interface DelegationPolicyRuntimeConfig {
+interface DelegationPolicyRuntimeConfig {
   readonly enabled: boolean;
   readonly spawnDecisionThreshold: number;
   readonly allowedParentTools?: readonly string[];
@@ -22,14 +28,14 @@ export interface DelegationPolicyRuntimeConfig {
   readonly unsafeBenchmarkMode?: boolean;
 }
 
-export interface DelegationPolicyInput {
+interface DelegationPolicyInput {
   readonly sessionId: string;
   readonly toolName: string;
   readonly args: Record<string, unknown>;
   readonly isSubAgentSession: boolean;
 }
 
-export interface DelegationPolicyDecision {
+interface DelegationPolicyDecision {
   readonly allowed: boolean;
   readonly reason?: string;
   readonly matchedRule?:
@@ -38,7 +44,6 @@ export interface DelegationPolicyDecision {
     | "subagent_delegation_blocked"
     | "forbidden_tool"
     | "tool_not_allowlisted"
-    | "score_below_threshold"
     | "unsafe_benchmark_bypass"
     | "allowed";
   readonly threshold: number;
@@ -48,7 +53,7 @@ export function isSubAgentSessionId(sessionId: string): boolean {
   return sessionId.startsWith(SUB_AGENT_SESSION_PREFIX);
 }
 
-export function isDelegationToolName(toolName: string): boolean {
+function isDelegationToolName(toolName: string): boolean {
   return (
     toolName === "execute_with_agent" ||
     toolName === "coordinator_mode" ||
@@ -130,15 +135,6 @@ export class DelegationPolicyEngine {
       };
     }
 
-    if (input.isSubAgentSession) {
-      return {
-        allowed: false,
-        reason: "Sub-agent sessions cannot invoke delegation tools",
-        matchedRule: "subagent_delegation_blocked",
-        threshold: this.config.spawnDecisionThreshold,
-      };
-    }
-
     // Parent sessions may be constrained by explicit allow/deny lists.
     const forbidden = new Set(this.config.forbiddenParentTools ?? []);
     if (forbidden.has(input.toolName)) {
@@ -168,13 +164,14 @@ export class DelegationPolicyEngine {
   }
 }
 
-export interface DelegationVerifierRuntimeConfig {
+interface DelegationVerifierRuntimeConfig {
   readonly enabled: boolean;
   readonly forceVerifier: boolean;
 }
 
 export class DelegationVerifierService {
   private config: DelegationVerifierRuntimeConfig;
+  private bootstrapCache = new Map<string, ProjectVerifierBootstrap>();
 
   constructor(config: DelegationVerifierRuntimeConfig) {
     this.config = { ...config };
@@ -188,15 +185,31 @@ export class DelegationVerifierService {
     return { ...this.config };
   }
 
+  resolveVerifierRequirement(params?: {
+    readonly requested?: boolean;
+    readonly runtimeRequired?: boolean;
+    readonly projectBootstrap?: boolean;
+    readonly workspaceRoot?: string;
+  }): VerifierRequirement {
+    return createVerifierRequirement({
+      enabled: this.config.enabled,
+      requested:
+        params?.requested === true || this.config.forceVerifier === true,
+      runtimeRequired: params?.runtimeRequired,
+      projectBootstrap: params?.projectBootstrap,
+      workspaceRoot: params?.workspaceRoot,
+      bootstrapCache: this.bootstrapCache,
+    });
+  }
+
   shouldVerifySubAgentResult(
     requested = false,
   ): boolean {
-    if (!this.config.enabled) return false;
-    return this.config.forceVerifier || requested;
+    return this.resolveVerifierRequirement({ requested }).required;
   }
 }
 
-export type SubAgentLifecycleEventType =
+type SubAgentLifecycleEventType =
   | "subagents.planned"
   | "subagents.policy_bypassed"
   | "subagents.spawned"
@@ -251,6 +264,7 @@ export class SubAgentLifecycleEmitter {
 
 export interface DelegationToolCompositionContext {
   readonly subAgentManager: SubAgentManager | null;
+  readonly workerManager?: PersistentWorkerManager | null;
   readonly policyEngine: DelegationPolicyEngine | null;
   readonly verifier: DelegationVerifierService | null;
   readonly lifecycleEmitter: SubAgentLifecycleEmitter | null;

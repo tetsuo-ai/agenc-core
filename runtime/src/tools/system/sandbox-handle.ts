@@ -853,7 +853,24 @@ export class SystemSandboxManager {
     }
     for (const job of this.jobs.values()) {
       if (job.sandboxId === record.sandboxId && job.state === "running") {
-        await this.sandboxJobStop({ sandboxJobId: job.sandboxJobId }).catch(() => undefined);
+        // Audit S3.1: log per-job stop failures so an operator can
+        // observe orphaned sandbox jobs. The error is intentionally
+        // not propagated because the parent stop sequence still
+        // needs to call stopContainer below; a single job failing
+        // to stop should not block the container from being torn
+        // down. Without this log, the original code silently dropped
+        // the failure and the operator only noticed when the
+        // resource leak surfaced later.
+        await this.sandboxJobStop({ sandboxJobId: job.sandboxJobId }).catch(
+          (err: unknown) => {
+            this.logger?.warn?.(
+              `[system.sandbox] failed to stop job ${job.sandboxJobId} during sandbox stop: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+            return undefined;
+          },
+        );
       }
     }
     try {

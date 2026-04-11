@@ -39,7 +39,7 @@ export interface PersistedWebChatOwnerCredential {
   readonly lastSeenAt: number;
 }
 
-export interface WebChatSessionStoreConfig {
+interface WebChatSessionStoreConfig {
   readonly memoryBackend: MemoryBackend;
   readonly logger?: Logger;
 }

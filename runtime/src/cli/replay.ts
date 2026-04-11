@@ -36,17 +36,17 @@ interface ParsedAnchorEvent {
   data: unknown;
 }
 
-export interface CliReplayStoreOptions {
+interface CliReplayStoreOptions {
   storeType: "memory" | "sqlite";
   sqlitePath?: string;
 }
 
-export interface CliReplayBackfillConfig {
+interface CliReplayBackfillConfig {
   rpcUrl: string;
   programId?: string;
 }
 
-export interface CliReplayIncidentEvent {
+interface CliReplayIncidentEvent {
   seq: number;
   slot: number;
   signature: string;
@@ -59,7 +59,7 @@ export interface CliReplayIncidentEvent {
   traceSpanId?: string;
 }
 
-export interface CliReplayIncidentSummary {
+interface CliReplayIncidentSummary {
   totalEvents: number;
   taskPdaFilters: ReadonlyArray<string | undefined>;
   disputePdaFilters: ReadonlyArray<string | undefined>;

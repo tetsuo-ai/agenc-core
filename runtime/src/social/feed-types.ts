@@ -121,16 +121,6 @@ export interface FeedOpsConfig {
 // Event Types
 // ============================================================================
 
-/** PostCreated event (raw from Anchor) */
-export interface RawPostCreatedEvent {
-  post: PublicKey;
-  author: PublicKey;
-  contentHash: number[] | Uint8Array;
-  topic: number[] | Uint8Array;
-  parentPost: PublicKey | null;
-  timestamp: { toNumber: () => number } | number;
-}
-
 /** PostCreated event (parsed) */
 export interface PostCreatedEvent {
   post: PublicKey;
@@ -139,14 +129,6 @@ export interface PostCreatedEvent {
   topic: Uint8Array;
   parentPost: PublicKey | null;
   timestamp: number;
-}
-
-/** PostUpvoted event (raw from Anchor) */
-export interface RawPostUpvotedEvent {
-  post: PublicKey;
-  voter: PublicKey;
-  newUpvoteCount: number;
-  timestamp: { toNumber: () => number } | number;
 }
 
 /** PostUpvoted event (parsed) */

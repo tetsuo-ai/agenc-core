@@ -23,14 +23,14 @@ import {
 } from "./schema-version.js";
 
 export const PIPELINE_CHECKPOINT_SCHEMA_VERSION = 1 as const;
-export const TASK_CHECKPOINT_SCHEMA_VERSION = 1 as const;
-export const EXECUTION_ENVELOPE_SCHEMA_VERSION = "v1" as const;
+const TASK_CHECKPOINT_SCHEMA_VERSION = 1 as const;
+const EXECUTION_ENVELOPE_SCHEMA_VERSION = "v1" as const;
 
-export interface PersistedPipelineCheckpoint extends PipelineCheckpoint {
+interface PersistedPipelineCheckpoint extends PipelineCheckpoint {
   readonly schemaVersion: typeof PIPELINE_CHECKPOINT_SCHEMA_VERSION;
 }
 
-export interface PersistedTaskCheckpoint extends TaskCheckpoint {
+interface PersistedTaskCheckpoint extends TaskCheckpoint {
   readonly schemaVersion: typeof TASK_CHECKPOINT_SCHEMA_VERSION;
 }
 
@@ -40,7 +40,7 @@ function isSubagentStep(
   return step.stepType === "subagent_task";
 }
 
-export function migrateExecutionEnvelope(
+function migrateExecutionEnvelope(
   value: unknown,
 ): SchemaMigrationResult<ExecutionEnvelope | undefined> {
   if (value === undefined || value === null) {

@@ -55,6 +55,7 @@ function deserializePersistentValue<T>(value: string): T {
 
 export class SqliteCheckpointStore implements CheckpointStore {
   private db: any = null;
+  private dbPromise: Promise<any> | null = null;
 
   constructor(private readonly dbPath: string) {}
 
@@ -139,11 +140,24 @@ export class SqliteCheckpointStore implements CheckpointStore {
     if (this.db) {
       return this.db;
     }
+    if (this.dbPromise) {
+      return this.dbPromise;
+    }
+    this.dbPromise = this.initDb();
+    try {
+      this.db = await this.dbPromise;
+    } finally {
+      this.dbPromise = null;
+    }
+    return this.db;
+  }
+
+  private async initDb(): Promise<any> {
     await mkdir(dirname(this.dbPath), { recursive: true });
-    this.db = new Database(this.dbPath);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("foreign_keys = ON");
-    this.db.exec(`
+    const db = new Database(this.dbPath);
+    db.pragma("journal_mode = WAL");
+    db.pragma("foreign_keys = ON");
+    db.exec(`
       CREATE TABLE IF NOT EXISTS task_checkpoint_meta (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         schema_version INTEGER NOT NULL
@@ -161,7 +175,7 @@ export class SqliteCheckpointStore implements CheckpointStore {
       CREATE INDEX IF NOT EXISTS idx_task_checkpoints_updated_at
         ON task_checkpoints(updated_at ASC);
     `);
-    const versionRow = this.db
+    const versionRow = db
       .prepare(`SELECT schema_version FROM task_checkpoint_meta WHERE id = 1`)
       .get() as { schema_version?: number } | undefined;
     if (
@@ -174,6 +188,6 @@ export class SqliteCheckpointStore implements CheckpointStore {
         supportedVersions: [SQL_SCHEMA_VERSION],
       });
     }
-    return this.db;
+    return db;
   }
 }

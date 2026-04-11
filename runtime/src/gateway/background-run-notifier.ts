@@ -18,7 +18,7 @@ import type {
 import type { BackgroundRunOperatorSummary } from "./background-run-operator.js";
 import type { BackgroundRunEventType } from "./background-run-store.js";
 
-export interface BackgroundRunNotificationDelivery {
+interface BackgroundRunNotificationDelivery {
   readonly sinkId: string;
   readonly eventId: string;
   readonly ok: boolean;
@@ -26,7 +26,7 @@ export interface BackgroundRunNotificationDelivery {
   readonly error?: string;
 }
 
-export interface BackgroundRunNotificationContext {
+interface BackgroundRunNotificationContext {
   readonly occurredAt: number;
   readonly internalEventType: BackgroundRunEventType;
   readonly summary: string;

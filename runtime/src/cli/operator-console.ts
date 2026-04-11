@@ -27,7 +27,7 @@ export interface OperatorConsoleOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-export interface GatewayPidInfo {
+interface GatewayPidInfo {
   readonly pid: number;
   readonly port: number;
   readonly configPath: string;
@@ -75,7 +75,7 @@ export interface OperatorConsoleDeps {
   readonly createLogger: typeof createLogger;
 }
 
-export type DaemonEnsureDeps = Pick<
+type DaemonEnsureDeps = Pick<
   OperatorConsoleDeps,
   | "loadGatewayConfig"
   | "readPidFile"
@@ -258,6 +258,9 @@ async function launchConsoleProcess(
     AGENC_WATCH_WS_URL: `ws://127.0.0.1:${port}`,
     AGENC_WATCH_PROJECT_ROOT: launchCwd,
   };
+  if (mergedEnv.AGENC_WATCH_ENABLE_REMOTE_TOOLS == null) {
+    mergedEnv.AGENC_WATCH_ENABLE_REMOTE_TOOLS = "true";
+  }
   const explicitClientKey = mergedEnv.AGENC_WATCH_CLIENT_KEY?.trim();
   if (!explicitClientKey) {
     mergedEnv.AGENC_WATCH_CLIENT_KEY = deriveProjectWatchClientKey(launchCwd);

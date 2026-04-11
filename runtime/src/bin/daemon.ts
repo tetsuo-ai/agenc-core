@@ -7,6 +7,7 @@ import "./node-compat.js";
 import { DaemonManager } from '../gateway/daemon.js';
 import { createLogger } from '../utils/logger.js';
 import { toErrorMessage } from '../utils/async.js';
+import { readBuildInfo, formatBuildBanner } from '../utils/build-info.js';
 import type { LogLevel } from '../utils/logger.js';
 
 function notifyParent(message: Record<string, unknown>): void {
@@ -81,6 +82,20 @@ void (async () => {
 
   const logLevel = (args.logLevel ?? 'info') as LogLevel;
   const logger = createLogger(logLevel, '[AgenC Daemon]');
+
+  // Cut 6.2: emit a build banner so the running daemon can be checked against
+  // the source commit. This is the verification primitive for "did my fix
+  // actually land on the running daemon" — without it the next 2-month
+  // silent-failure window is just as likely as the last one.
+  const buildInfo = readBuildInfo();
+  const banner = formatBuildBanner(buildInfo, {
+    configPath: args.config,
+    entryPath: process.argv[1] ?? undefined,
+  });
+  // Emit on stdout so the lifetime of the banner matches the lifetime of the
+  // daemon log file (`~/.agenc/daemon.log` is the tee target of the forked
+  // process's stdout/stderr).
+  console.log(banner);
 
   const dm = new DaemonManager({
     configPath: args.config,

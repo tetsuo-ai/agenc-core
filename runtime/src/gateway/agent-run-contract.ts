@@ -1,6 +1,6 @@
 export const AGENT_RUN_SCHEMA_VERSION = 2 as const;
 
-export const AGENT_RUN_KINDS = [
+const AGENT_RUN_KINDS = [
   "finite",
   "until_condition",
   "until_stopped",
@@ -8,7 +8,7 @@ export const AGENT_RUN_KINDS = [
 
 export type AgentRunKind = (typeof AGENT_RUN_KINDS)[number];
 
-export const AGENT_RUN_DOMAINS = [
+const AGENT_RUN_DOMAINS = [
   "generic",
   "managed_process",
   "approval",
@@ -23,7 +23,7 @@ export const AGENT_RUN_DOMAINS = [
 
 export type AgentRunDomain = (typeof AGENT_RUN_DOMAINS)[number];
 
-export const AGENT_RUN_STATES = [
+const AGENT_RUN_STATES = [
   "pending",
   "running",
   "working",
@@ -37,7 +37,7 @@ export const AGENT_RUN_STATES = [
 
 export type AgentRunState = (typeof AGENT_RUN_STATES)[number];
 
-export const AGENT_RUN_WAKE_REASONS = [
+const AGENT_RUN_WAKE_REASONS = [
   "start",
   "timer",
   "busy_retry",
@@ -53,14 +53,14 @@ export const AGENT_RUN_WAKE_REASONS = [
 
 export type AgentRunWakeReason = (typeof AGENT_RUN_WAKE_REASONS)[number];
 
-export const AGENT_MANAGED_PROCESS_POLICY_MODES = [
+const AGENT_MANAGED_PROCESS_POLICY_MODES = [
   "none",
   "until_exit",
   "keep_running",
   "restart_on_exit",
 ] as const;
 
-export type AgentManagedProcessPolicyMode =
+type AgentManagedProcessPolicyMode =
   (typeof AGENT_MANAGED_PROCESS_POLICY_MODES)[number];
 
 export interface AgentRunManagedProcessPolicy {

@@ -24,6 +24,7 @@ function parseArgs(argv) {
     releaseRepository: "tetsuo-ai/agenc-core",
     releaseTag: null,
     runtimeVersionOverride: null,
+    allowMissingBundledExternalPlugins: false,
     skipBuild: false,
   };
 
@@ -50,6 +51,9 @@ function parseArgs(argv) {
         break;
       case "--runtime-version-override":
         options.runtimeVersionOverride = argv[++index];
+        break;
+      case "--allow-missing-bundled-external-plugins":
+        options.allowMissingBundledExternalPlugins = true;
         break;
       case "--skip-build":
         options.skipBuild = true;
@@ -127,6 +131,74 @@ async function resolveLocalWorkspaceDependencyDirs(runtimePackage) {
   }
 
   return localWorkspaceDeps;
+}
+
+async function resolveBundledExternalPlugins(
+  runtimePackage,
+  { allowMissing = false } = {},
+) {
+  const declared = runtimePackage.agenc?.bundledExternalPlugins ?? [];
+  if (!Array.isArray(declared) || declared.length === 0) {
+    return [];
+  }
+
+  const resolved = [];
+  for (const entry of declared) {
+    if (!entry || typeof entry !== "object") {
+      throw new Error(
+        `[public-runtime] runtime/package.json#agenc.bundledExternalPlugins entries must be objects with name + siblingRepoPath`,
+      );
+    }
+    const name = typeof entry.name === "string" ? entry.name.trim() : "";
+    const siblingRepoPath =
+      typeof entry.siblingRepoPath === "string"
+        ? entry.siblingRepoPath.trim()
+        : "";
+    if (!name || !siblingRepoPath) {
+      throw new Error(
+        `[public-runtime] bundledExternalPlugins entry missing required name or siblingRepoPath: ${JSON.stringify(entry)}`,
+      );
+    }
+    const directory = path.resolve(repoRoot, siblingRepoPath);
+    if (!existsSync(directory)) {
+      if (allowMissing) {
+        process.stdout.write(
+          `[public-runtime] skipping bundled external plugin "${name}" because ${directory} is not present in this checkout\n`,
+        );
+        continue;
+      }
+      throw new Error(
+        `[public-runtime] bundled external plugin "${name}" expected at ${directory} but the directory does not exist. ` +
+          `Clone the sibling repo next to agenc-core or remove the entry from runtime/package.json#agenc.bundledExternalPlugins.`,
+      );
+    }
+    const pluginPackagePath = path.join(directory, "package.json");
+    if (!existsSync(pluginPackagePath)) {
+      throw new Error(
+        `[public-runtime] bundled external plugin "${name}" at ${directory} is missing package.json`,
+      );
+    }
+    const pluginPackage = await readJson(pluginPackagePath);
+    if (pluginPackage.name !== name) {
+      throw new Error(
+        `[public-runtime] bundled external plugin name mismatch: runtime/package.json declares "${name}" but ${pluginPackagePath} reports "${pluginPackage.name}"`,
+      );
+    }
+    resolved.push({
+      name,
+      directory,
+      version: pluginPackage.version,
+    });
+  }
+  return resolved;
+}
+
+function buildBundledExternalPlugin(plugin) {
+  process.stdout.write(
+    `[public-runtime] preparing bundled external plugin ${plugin.name} from ${plugin.directory}\n`,
+  );
+  run("npm", ["install", "--no-fund", "--no-audit"], plugin.directory);
+  run("npm", ["run", "build"], plugin.directory);
 }
 
 async function buildKeys(options) {
@@ -221,18 +293,47 @@ async function main() {
       );
     }
 
+    const bundledExternalPlugins = await resolveBundledExternalPlugins(
+      runtimePackage,
+      {
+        allowMissing: options.allowMissingBundledExternalPlugins,
+      },
+    );
+    if (!options.skipBuild) {
+      for (const plugin of bundledExternalPlugins) {
+        buildBundledExternalPlugin(plugin);
+      }
+    } else {
+      for (const plugin of bundledExternalPlugins) {
+        const distEntry = path.join(plugin.directory, "dist", "index.js");
+        if (!existsSync(distEntry)) {
+          throw new Error(
+            `[public-runtime] bundled external plugin "${plugin.name}" has no dist/index.js at ${distEntry}; ` +
+              `build it before using --skip-build`,
+          );
+        }
+      }
+    }
+
     const installRoot = path.join(tempRoot, "install-root");
     await mkdir(installRoot, { recursive: true });
     run("npm", ["init", "-y"], installRoot);
+    // --install-links forces npm to materialize copies for any local file: or
+    // directory installs (the bundled external plugin sibling repos) instead
+    // of writing symlinks back to the source tree. Symlinks are unsafe here:
+    // npm computes them relative to the temp install root, and once the
+    // tarball is extracted on a user machine the symlink target is meaningless.
     run(
       "npm",
       [
         "install",
+        "--install-links",
         "--omit=dev",
         "--no-fund",
         "--no-audit",
         ...localDependencyTarballs,
         runtimeTarballPath,
+        ...bundledExternalPlugins.map((plugin) => plugin.directory),
       ],
       installRoot,
     );
@@ -250,6 +351,10 @@ async function main() {
         daemon: "node_modules/@tetsuo-ai/runtime/dist/bin/daemon.js",
         "agenc-watch": "node_modules/@tetsuo-ai/runtime/dist/bin/agenc-watch.js",
       },
+      bundledExternalPlugins: bundledExternalPlugins.map((plugin) => ({
+        name: plugin.name,
+        version: plugin.version,
+      })),
     };
     await writeFile(
       path.join(installRoot, "agenc-runtime-installation.json"),
@@ -348,6 +453,10 @@ async function main() {
           wrapperVersion: wrapperPackage.version,
           artifactSha256: artifactSha,
           artifactUrl,
+          bundledExternalPlugins: bundledExternalPlugins.map((plugin) => ({
+            name: plugin.name,
+            version: plugin.version,
+          })),
         },
         null,
         2,

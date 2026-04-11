@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
-import { type Program } from '@coral-xyz/anchor';
-import BN from 'bn.js';
+import { BN, type Program } from '@coral-xyz/anchor';
 import { PublicKey, SystemProgram } from '@solana/web3.js';
 import {
   getAssociatedTokenAddressSync,
@@ -27,6 +26,7 @@ import {
   findBidderMarketStatePda,
   findClaimPda,
 } from '../../task/pda.js';
+import { parseOnChainTaskClaim } from '../../task/types.js';
 import type { Logger } from '../../utils/logger.js';
 import { bytesToHex, generateAgentId, hexToBytes } from '../../utils/encoding.js';
 import type { Tool, ToolResult } from '../types.js';
@@ -39,6 +39,9 @@ const NAME_BYTES = 32;
 const TAG_BYTES = 64;
 const RESULT_BYTES = 64;
 const PROPOSAL_PAYLOAD_BYTES = 64;
+const AGENT_DISCRIMINATOR = Buffer.from([130, 53, 100, 103, 121, 77, 148, 19]);
+const AGENT_ID_OFFSET = 8;
+const AGENT_AUTHORITY_OFFSET = AGENT_ID_OFFSET + 32;
 
 interface ResolvedSignerAgent {
   authority: PublicKey;
@@ -46,8 +49,47 @@ interface ResolvedSignerAgent {
   agentId: Uint8Array;
 }
 
+interface SignerAgentChoice {
+  registered: true;
+  authority: string;
+  agentPda: string;
+  agentId: string;
+}
+
 function errorResult(message: string): ToolResult {
   return { content: safeStringify({ error: message }), isError: true };
+}
+
+function ambiguousSignerAgentsResult(
+  authority: PublicKey,
+  agents: SignerAgentChoice[],
+  field: string,
+): ToolResult {
+  return {
+    content: safeStringify({
+      error: `Multiple agent registrations found for signer wallet. Provide ${field} with one of the listed agentPda values.`,
+      code: 'MULTIPLE_AGENT_REGISTRATIONS',
+      status: 'requires_input',
+      authority: authority.toBase58(),
+      count: agents.length,
+      agents,
+    }),
+    isError: true,
+  };
+}
+
+function signerAgentChoicesFromMatches(
+  authority: PublicKey,
+  matches: ReadonlyArray<{ pubkey: PublicKey; account: { data: Uint8Array } }>,
+): SignerAgentChoice[] {
+  return matches
+    .map((match) => ({
+      registered: true as const,
+      authority: authority.toBase58(),
+      agentPda: match.pubkey.toBase58(),
+      agentId: bytesToHex(match.account.data.subarray(AGENT_ID_OFFSET, AGENT_AUTHORITY_OFFSET)),
+    }))
+    .sort((left, right) => left.agentPda.localeCompare(right.agentPda));
 }
 
 function parseBase58(input: unknown, field: string): [PublicKey | null, ToolResult | null] {
@@ -261,14 +303,13 @@ async function resolveAuthorityAgentPda(
   program: Program<AgencCoordination>,
   authority: PublicKey,
   providedAgentPda?: unknown,
+  field = 'agentPda',
 ): Promise<[PublicKey | null, ToolResult | null]> {
   if (providedAgentPda !== undefined) {
-    return parseBase58(providedAgentPda, 'agentPda');
+    return parseBase58(providedAgentPda, field);
   }
 
   const bs58 = await import('bs58');
-  const AGENT_DISCRIMINATOR = Buffer.from([130, 53, 100, 103, 121, 77, 148, 19]);
-  const AGENT_AUTHORITY_OFFSET = 40;
   const matches = await program.provider.connection.getProgramAccounts(program.programId, {
     filters: [
       { memcmp: { offset: 0, bytes: bs58.default.encode(AGENT_DISCRIMINATOR) } },
@@ -277,25 +318,31 @@ async function resolveAuthorityAgentPda(
   });
 
   if (matches.length === 0) {
-    return [null, errorResult('No agent registration found for signer. Provide the explicit agent PDA.')];
+    return [null, errorResult('No agent registration found for signer wallet. Run `agenc-runtime agent register --rpc <url>` first, or provide the explicit agent PDA.')];
   }
   if (matches.length > 1) {
-    return [null, errorResult('Multiple agent registrations found. Provide the explicit agent PDA.')];
+    return [null, ambiguousSignerAgentsResult(authority, signerAgentChoicesFromMatches(authority, matches), field)];
   }
 
-  return [matches[0].pubkey, null];
+  return [matches[0]!.pubkey, null];
 }
 
 async function resolveSignerAgentContext(
   program: Program<AgencCoordination>,
   providedAgentPda: unknown,
+  providedAgentPdaField = 'agentPda',
 ): Promise<[ResolvedSignerAgent | null, ToolResult | null]> {
   const authority = program.provider.publicKey;
   if (!authority) {
     return [null, errorResult('This action requires a signer-backed program context')];
   }
 
-  const [agentPda, agentErr] = await resolveAuthorityAgentPda(program, authority, providedAgentPda);
+  const [agentPda, agentErr] = await resolveAuthorityAgentPda(
+    program,
+    authority,
+    providedAgentPda,
+    providedAgentPdaField,
+  );
   if (agentErr || !agentPda) return [null, agentErr ?? errorResult('Unable to resolve signer agent')];
 
   try {
@@ -486,6 +533,41 @@ function parseWorkerPairs(
   return [pairs, null];
 }
 
+async function resolveUniqueWorkerClaimForTask(
+  program: Program<AgencCoordination>,
+  taskPda: PublicKey,
+): Promise<
+  | { workerAgentPda: PublicKey; workerClaimPda: PublicKey }
+  | { error: string }
+> {
+  const taskClaims = await program.account.taskClaim.all();
+  const matchingClaims = taskClaims
+    .map((account) => ({
+      claimPda: account.publicKey,
+      claim: parseOnChainTaskClaim(account.account),
+    }))
+    .filter(({ claim }) => claim.task.equals(taskPda));
+
+  if (matchingClaims.length === 0) {
+    return {
+      error:
+        'workerAgentPda is required when creator initiates dispute and no worker claim exists for the task.',
+    };
+  }
+
+  if (matchingClaims.length > 1) {
+    return {
+      error:
+        'workerAgentPda is required when creator initiates dispute for a task with multiple worker claims.',
+    };
+  }
+
+  return {
+    workerAgentPda: matchingClaims[0].claim.worker,
+    workerClaimPda: matchingClaims[0].claimPda,
+  };
+}
+
 export function createClaimTaskTool(
   program: Program<AgencCoordination>,
   logger: Logger,
@@ -511,7 +593,11 @@ export function createClaimTaskTool(
       const [taskPda, taskErr] = parseBase58(args.taskPda, 'taskPda');
       if (taskErr || !taskPda) return taskErr ?? errorResult('Invalid taskPda');
 
-      const [signerAgent, signerErr] = await resolveSignerAgentContext(program, args.workerAgentPda);
+      const [signerAgent, signerErr] = await resolveSignerAgentContext(
+        program,
+        args.workerAgentPda,
+        'workerAgentPda',
+      );
       if (signerErr || !signerAgent) return signerErr ?? errorResult('Unable to resolve worker agent');
 
       try {
@@ -579,7 +665,11 @@ export function createCompleteTaskTool(
       const [proofHash, proofErr] = parseFixedHexBytes(args.proofHash, 'proofHash', HASH_BYTES);
       if (proofErr || !proofHash) return proofErr ?? errorResult('Invalid proofHash');
 
-      const [signerAgent, signerErr] = await resolveSignerAgentContext(program, args.workerAgentPda);
+      const [signerAgent, signerErr] = await resolveSignerAgentContext(
+        program,
+        args.workerAgentPda,
+        'workerAgentPda',
+      );
       if (signerErr || !signerAgent) return signerErr ?? errorResult('Unable to resolve worker agent');
 
       let resultData: Uint8Array | null = null;
@@ -677,7 +767,11 @@ export function createRegisterSkillTool(
       required: ['name', 'contentHash', 'price'],
     },
     async execute(args: Record<string, unknown>): Promise<ToolResult> {
-      const [signerAgent, signerErr] = await resolveSignerAgentContext(program, args.authorAgentPda);
+      const [signerAgent, signerErr] = await resolveSignerAgentContext(
+        program,
+        args.authorAgentPda,
+        'authorAgentPda',
+      );
       if (signerErr || !signerAgent) return signerErr ?? errorResult('Unable to resolve author agent');
 
       const [skillId, skillIdErr] = parseFixedHexBytes(args.skillId, 'skillId', HASH_BYTES, true);
@@ -774,7 +868,11 @@ export function createPurchaseSkillTool(
       const [skillPda, skillErr] = parseBase58(args.skillPda, 'skillPda');
       if (skillErr || !skillPda) return skillErr ?? errorResult('Invalid skillPda');
 
-      const [signerAgent, signerErr] = await resolveSignerAgentContext(program, args.buyerAgentPda);
+      const [signerAgent, signerErr] = await resolveSignerAgentContext(
+        program,
+        args.buyerAgentPda,
+        'buyerAgentPda',
+      );
       if (signerErr || !signerAgent) return signerErr ?? errorResult('Unable to resolve buyer agent');
 
       let expectedPrice: bigint | null = null;
@@ -883,7 +981,11 @@ export function createRateSkillTool(
       const [rating, ratingErr] = parseNumberInRange(args.rating, 'rating', 1, 5);
       if (ratingErr || rating === null) return ratingErr ?? errorResult('Invalid rating');
 
-      const [signerAgent, signerErr] = await resolveSignerAgentContext(program, args.raterAgentPda);
+      const [signerAgent, signerErr] = await resolveSignerAgentContext(
+        program,
+        args.raterAgentPda,
+        'raterAgentPda',
+      );
       if (signerErr || !signerAgent) return signerErr ?? errorResult('Unable to resolve rater agent');
 
       const ratingPda = deriveSkillRatingPda(skillPda, signerAgent.agentPda, program.programId);
@@ -967,7 +1069,11 @@ export function createCreateProposalTool(
       required: ['proposalType', 'title'],
     },
     async execute(args: Record<string, unknown>): Promise<ToolResult> {
-      const [signerAgent, signerErr] = await resolveSignerAgentContext(program, args.proposerAgentPda);
+      const [signerAgent, signerErr] = await resolveSignerAgentContext(
+        program,
+        args.proposerAgentPda,
+        'proposerAgentPda',
+      );
       if (signerErr || !signerAgent) return signerErr ?? errorResult('Unable to resolve proposer agent');
 
       const [proposalType, typeErr] = parseProposalType(args.proposalType);
@@ -1074,7 +1180,11 @@ export function createVoteProposalTool(
       const [approve, approveErr] = parseBooleanInput(args.approve, 'approve');
       if (approveErr || approve === null) return approveErr ?? errorResult('Invalid approve value');
 
-      const [signerAgent, signerErr] = await resolveSignerAgentContext(program, args.voterAgentPda);
+      const [signerAgent, signerErr] = await resolveSignerAgentContext(
+        program,
+        args.voterAgentPda,
+        'voterAgentPda',
+      );
       if (signerErr || !signerAgent) return signerErr ?? errorResult('Unable to resolve voter agent');
 
       try {
@@ -1172,7 +1282,11 @@ export function createInitiateDisputeTool(
       const [disputeId, disputeIdErr] = parseFixedHexBytes(args.disputeId, 'disputeId', HASH_BYTES, true);
       if (disputeIdErr || !disputeId) return disputeIdErr ?? errorResult('Invalid disputeId');
 
-      const [signerAgent, signerErr] = await resolveSignerAgentContext(program, args.initiatorAgentPda);
+      const [signerAgent, signerErr] = await resolveSignerAgentContext(
+        program,
+        args.initiatorAgentPda,
+        'initiatorAgentPda',
+      );
       if (signerErr || !signerAgent) return signerErr ?? errorResult('Unable to resolve initiator agent');
 
       let workerAgentPda: PublicKey | null = null;
@@ -1209,6 +1323,18 @@ export function createInitiateDisputeTool(
         const initiatorClaimPda = initiatedByCreator
           ? null
           : findClaimPda(taskPda, signerAgent.agentPda, program.programId);
+
+        if (initiatedByCreator && workerAgentPda === null) {
+          const resolvedWorker = await resolveUniqueWorkerClaimForTask(
+            program,
+            taskPda,
+          );
+          if ('error' in resolvedWorker) {
+            return errorResult(resolvedWorker.error);
+          }
+          workerAgentPda = resolvedWorker.workerAgentPda;
+          workerClaimPda = workerClaimPda ?? resolvedWorker.workerClaimPda;
+        }
 
         const derivedWorkerClaimPda =
           workerClaimPda ?? (workerAgentPda ? findClaimPda(taskPda, workerAgentPda, program.programId) : undefined);
@@ -1394,7 +1520,11 @@ export function createStakeReputationTool(
       const amountRangeErr = validateU64(amount, 'amount');
       if (amountRangeErr) return amountRangeErr;
 
-      const [signerAgent, signerErr] = await resolveSignerAgentContext(program, args.stakerAgentPda);
+      const [signerAgent, signerErr] = await resolveSignerAgentContext(
+        program,
+        args.stakerAgentPda,
+        'stakerAgentPda',
+      );
       if (signerErr || !signerAgent) return signerErr ?? errorResult('Unable to resolve staker agent');
 
       try {
@@ -1463,7 +1593,11 @@ export function createDelegateReputationTool(
       );
       if (amountErr || amount === null) return amountErr ?? errorResult('Invalid amount');
 
-      const [signerAgent, signerErr] = await resolveSignerAgentContext(program, args.delegatorAgentPda);
+      const [signerAgent, signerErr] = await resolveSignerAgentContext(
+        program,
+        args.delegatorAgentPda,
+        'delegatorAgentPda',
+      );
       if (signerErr || !signerAgent) return signerErr ?? errorResult('Unable to resolve delegator agent');
 
       let delegateeAgentId: Uint8Array | null = null;

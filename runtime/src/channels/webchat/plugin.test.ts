@@ -1620,6 +1620,25 @@ describe("WebChatChannel", () => {
       );
     });
 
+    it("should handle tasks.detail with informative error (no Solana connection)", () => {
+      const send = vi.fn<(response: ControlResponse) => void>();
+
+      channel.handleMessage(
+        "client_1",
+        "tasks.detail",
+        msg("tasks.detail", { taskPda: "task-1" }, "req-task-detail"),
+        send,
+      );
+
+      expect(send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "error",
+          error: expect.stringContaining("Solana connection"),
+          id: "req-task-detail",
+        }),
+      );
+    });
+
     it("should handle task mutations with informative errors when no Solana connection", () => {
       const send = vi.fn<(response: ControlResponse) => void>();
 
@@ -2234,6 +2253,32 @@ describe("WebChatChannel", () => {
         }),
       );
     });
+
+    it("should handle dispute resolution with informative error when no Solana connection", () => {
+      const send = vi.fn<(response: ControlResponse) => void>();
+
+      channel.handleMessage(
+        "client_1",
+        "market.disputes.resolve",
+        msg(
+          "market.disputes.resolve",
+          {
+            disputePda: "dispute-1",
+            arbiterVotes: [{ votePda: "vote-1", arbiterAgentPda: "agent-1" }],
+          },
+          "req-market-resolve",
+        ),
+        send,
+      );
+
+      expect(send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "error",
+          error: expect.stringContaining("Solana connection"),
+          id: "req-market-resolve",
+        }),
+      );
+    });
   });
 
   describe("event subscriptions", () => {
@@ -2379,7 +2424,7 @@ describe("WebChatChannel", () => {
           routeMisses: 0,
           completionGateFailures: 0,
         },
-        topTools: [{ name: 'mcp.doom.start_game', count: 1 }],
+        topTools: [{ name: 'mcp.example.start', count: 1 }],
         topStopReasons: [{ name: 'completed', count: 1 }],
       }));
       const listObservabilityTraces = vi.fn(async () => [traceDetail.summary]);

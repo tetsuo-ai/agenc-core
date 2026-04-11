@@ -15,10 +15,10 @@ Shared source of truth:
 
 - `scripts/fender-baseline-shared.mjs`
 
-The gate script is:
+The gate scripts (`scripts/check-fender-baseline.mjs` and
+`scripts/generate-fender-baselines.mjs`) have been removed
+(see cleanup/dead-code-audit). Use the npm run wrappers if they are still wired:
 
-- `scripts/check-fender-baseline.mjs`
-- `scripts/generate-fender-baselines.mjs`
 - `npm run -s fender:baseline:generate`
 - `npm run -s fender:gate:program`
 - `npm run -s fender:gate:full`

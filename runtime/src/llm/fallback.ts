@@ -5,6 +5,7 @@
  */
 
 import { LLMProviderError, LLMServerError, LLMTimeoutError } from "./errors.js";
+import { assertValidLLMResponse } from "./response-validation.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -46,7 +47,10 @@ export class FallbackLLMProvider implements LLMProvider {
 
     for (const provider of this.providers) {
       try {
-        const response = await provider.chat(messages, options);
+        const response = assertValidLLMResponse(
+          provider.name,
+          await provider.chat(messages, options),
+        );
         if (response.finishReason === "error" && response.error) {
           throw response.error;
         }
@@ -71,7 +75,10 @@ export class FallbackLLMProvider implements LLMProvider {
 
     for (const provider of this.providers) {
       try {
-        const response = await provider.chatStream(messages, onChunk, options);
+        const response = assertValidLLMResponse(
+          provider.name,
+          await provider.chatStream(messages, onChunk, options),
+        );
         if (response.finishReason === "error" && response.error) {
           throw response.error;
         }

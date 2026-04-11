@@ -10,7 +10,7 @@
  * and transport lifecycle rules for paused and terminal simulations.
  */
 
-import { useCallback, useEffect, useReducer, useRef } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 
 export interface SimulationCheckpointStatus {
   checkpoint_id: string;
@@ -102,6 +102,8 @@ export interface SimulationEvent {
   resolved_event?: string | null;
   scene?: string | null;
   metadata?: Record<string, unknown> | null;
+  intent?: Record<string, unknown> | null;
+  outcome?: Record<string, unknown> | null;
 }
 
 export interface AgentState {
@@ -191,6 +193,8 @@ export type SimulationTransportState =
 
 export interface SimulationState {
   events: SimulationEvent[];
+  /** Internal dedup set — not exposed to consumers. */
+  _seenEventKeys: Set<string>;
   agentStates: Record<string, AgentState>;
   status: SimulationStatus;
   connected: boolean;
@@ -223,6 +227,7 @@ const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const MAX_RECONNECT_DELAY_MS = 10_000;
 const PAUSED_STATUS_HEARTBEAT_MS = 5_000;
 const EVENT_BUFFER_LIMIT = 1_000;
+const REPLAY_PAGE_SIZE = 200;
 
 const initialStatus: SimulationStatus = {
   simulation_id: "",
@@ -268,6 +273,7 @@ function getSelectionInitialState(
 ): SimulationState {
   return {
     events: [],
+    _seenEventKeys: new Set(),
     agentStates: {},
     status: status ?? initialStatus,
     connected: false,
@@ -292,13 +298,22 @@ function buildEventKey(event: SimulationEvent): string {
     ].join("::");
 }
 
+/**
+ * Merge a batch of replay/catch-up events into the existing event list.
+ * Rebuilds the dedup set to account for buffer trimming.
+ */
 function mergeReplayEvents(
   existing: readonly SimulationEvent[],
+  existingSeen: ReadonlySet<string>,
   incoming: readonly SimulationEvent[],
-): SimulationEvent[] {
+): { events: SimulationEvent[]; seen: Set<string> } {
   const merged: SimulationEvent[] = [];
-  const seen = new Set<string>();
-  for (const event of [...existing, ...incoming]) {
+  const seen = new Set<string>(existingSeen);
+  for (const event of existing) {
+    // Re-add existing — they are already in `seen`.
+    merged.push(event);
+  }
+  for (const event of incoming) {
     const key = buildEventKey(event);
     if (seen.has(key)) {
       continue;
@@ -306,31 +321,79 @@ function mergeReplayEvents(
     seen.add(key);
     merged.push(event);
   }
-  return merged.slice(-EVENT_BUFFER_LIMIT);
+  // Trim to buffer limit and rebuild the seen set from the surviving entries.
+  if (merged.length > EVENT_BUFFER_LIMIT) {
+    const trimmed = merged.slice(-EVENT_BUFFER_LIMIT);
+    const trimmedSeen = new Set<string>();
+    for (const event of trimmed) {
+      trimmedSeen.add(buildEventKey(event));
+    }
+    return { events: trimmed, seen: trimmedSeen };
+  }
+  return { events: merged, seen };
+}
+
+/**
+ * O(1) dedup-and-append for a single live SSE event.
+ * Avoids rebuilding the full dedup set on every message.
+ */
+function appendSingleEvent(
+  existing: readonly SimulationEvent[],
+  existingSeen: Set<string>,
+  event: SimulationEvent,
+): { events: SimulationEvent[]; seen: Set<string> } | null {
+  const key = buildEventKey(event);
+  if (existingSeen.has(key)) {
+    return null; // Already seen — no state change needed.
+  }
+  const seen = new Set(existingSeen);
+  seen.add(key);
+  let events: SimulationEvent[];
+  if (existing.length >= EVENT_BUFFER_LIMIT) {
+    events = [...existing.slice(-(EVENT_BUFFER_LIMIT - 1)), event];
+    // Remove the evicted entry from the dedup set.
+    const evictedKey = buildEventKey(existing[existing.length - EVENT_BUFFER_LIMIT]!);
+    seen.delete(evictedKey);
+  } else {
+    events = [...existing, event];
+  }
+  return { events, seen };
 }
 
 function reducer(state: SimulationState, action: SimAction): SimulationState {
   switch (action.type) {
     case "RESET_SELECTION":
       return getSelectionInitialState(action.status ?? null);
-    case "HYDRATE_REPLAY":
+    case "HYDRATE_REPLAY": {
+      const result = mergeReplayEvents([], new Set(), action.events);
       return {
         ...state,
-        events: mergeReplayEvents([], action.events),
+        events: result.events,
+        _seenEventKeys: result.seen,
         error: null,
         notFound: false,
       };
-    case "CATCH_UP_REPLAY":
+    }
+    case "CATCH_UP_REPLAY": {
+      const result = mergeReplayEvents(state.events, state._seenEventKeys, action.events);
       return {
         ...state,
-        events: mergeReplayEvents(state.events, action.events),
+        events: result.events,
+        _seenEventKeys: result.seen,
         error: null,
       };
-    case "APPEND_LIVE_EVENT":
+    }
+    case "APPEND_LIVE_EVENT": {
+      const result = appendSingleEvent(state.events, state._seenEventKeys, action.event);
+      if (!result) {
+        return state; // Duplicate — skip re-render entirely.
+      }
       return {
         ...state,
-        events: mergeReplayEvents(state.events, [action.event]),
+        events: result.events,
+        _seenEventKeys: result.seen,
       };
+    }
     case "HYDRATE_STATUS":
       return {
         ...state,
@@ -343,12 +406,16 @@ function reducer(state: SimulationState, action: SimAction): SimulationState {
         agentStates: { ...state.agentStates, [action.agentId]: action.state },
       };
     case "SET_CONNECTED":
+      if (state.connected === action.connected) return state;
       return { ...state, connected: action.connected };
     case "SET_ERROR":
+      if (state.error === action.error) return state;
       return { ...state, error: action.error };
     case "SET_NOT_FOUND":
+      if (state.notFound === action.notFound) return state;
       return { ...state, notFound: action.notFound };
     case "SET_TRANSPORT_STATE":
+      if (state.transportState === action.transportState) return state;
       return { ...state, transportState: action.transportState };
     default:
       return state;
@@ -403,11 +470,18 @@ export function useSimulation(config: {
   const {
     simulationId = null,
     bridgeUrl = "http://localhost:3200",
-    agentIds = [],
+    agentIds: rawAgentIds = [],
     pollIntervalMs = 2_000,
     active = true,
     initialStatus: seedStatus = null,
   } = config;
+
+  // Stabilize agentIds reference: only change when the sorted content changes.
+  // Without this, every render creates a new array reference which re-fires
+  // both the initial agent-load and polling effects, causing runaway fetches.
+  const agentIdsKey = rawAgentIds.slice().sort().join(",");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const agentIds = useMemo(() => rawAgentIds, [agentIdsKey]);
 
   const [state, dispatch] = useReducer(
     reducer,
@@ -472,48 +546,74 @@ export function useSimulation(config: {
     }
 
     const controller = registerController();
+    let isFirstPage = true;
+    let cursor: string | null = mode === "catch-up" ? lastEventIdRef.current : null;
+
     try {
-      const eventsUrl = new URL(
-        `/simulations/${encodeURIComponent(simulationId)}/events`,
-        bridgeUrl,
-      );
-      if (mode === "catch-up" && lastEventIdRef.current) {
-        eventsUrl.searchParams.set("cursor", lastEventIdRef.current);
+      // Paginate through all available replay events.
+      while (true) {
+        if (controller.signal.aborted || !isCurrentSelection(epoch, simulationId)) {
+          return false;
+        }
+
+        const eventsUrl = new URL(
+          `/simulations/${encodeURIComponent(simulationId)}/events`,
+          bridgeUrl,
+        );
+        eventsUrl.searchParams.set("limit", String(REPLAY_PAGE_SIZE));
+        if (cursor) {
+          eventsUrl.searchParams.set("cursor", cursor);
+        }
+
+        const response = await fetch(eventsUrl.toString(), { signal: controller.signal });
+        if (controller.signal.aborted || !isCurrentSelection(epoch, simulationId)) {
+          return false;
+        }
+
+        if (response.status === 404) {
+          dispatch({ type: "SET_NOT_FOUND", notFound: true });
+          dispatch({ type: "SET_CONNECTED", connected: false });
+          dispatch({ type: "SET_TRANSPORT_STATE", transportState: "disconnected" });
+          return false;
+        }
+
+        if (!response.ok) {
+          throw new Error(`Replay hydration failed: ${response.status}`);
+        }
+
+        const payload = (await response.json()) as SimulationEventsResponse;
+        payload.events.forEach(markEventSeen);
+        cursor = updateCursorFromEvents(payload.events, payload.next_cursor);
+        lastEventIdRef.current = cursor;
+
+        // First page of initial hydration resets events; subsequent pages merge.
+        const actionType = (mode === "hydrate" && isFirstPage)
+          ? "HYDRATE_REPLAY"
+          : "CATCH_UP_REPLAY";
+
+        dispatch({ type: actionType, events: payload.events });
+        dispatch({ type: "SET_ERROR", error: null });
+
+        if (mode === "hydrate" && isFirstPage) {
+          dispatch({
+            type: "SET_TRANSPORT_STATE",
+            transportState: shouldMaintainLiveTransport(statusRef.current.status)
+              ? "replay-hydrating"
+              : "disconnected",
+          });
+        }
+
+        isFirstPage = false;
+
+        // Stop if no more pages or the page was smaller than requested.
+        if (!payload.next_cursor || payload.events.length < REPLAY_PAGE_SIZE) {
+          break;
+        }
+
+        // Yield to the main thread between pages to keep the UI responsive.
+        await new Promise((resolve) => setTimeout(resolve, 0));
       }
 
-      const response = await fetch(eventsUrl.toString(), { signal: controller.signal });
-      if (controller.signal.aborted || !isCurrentSelection(epoch, simulationId)) {
-        return false;
-      }
-
-      if (response.status === 404) {
-        dispatch({ type: "SET_NOT_FOUND", notFound: true });
-        dispatch({ type: "SET_CONNECTED", connected: false });
-        dispatch({ type: "SET_TRANSPORT_STATE", transportState: "disconnected" });
-        return false;
-      }
-
-      if (!response.ok) {
-        throw new Error(`Replay hydration failed: ${response.status}`);
-      }
-
-      const payload = (await response.json()) as SimulationEventsResponse;
-      payload.events.forEach(markEventSeen);
-      lastEventIdRef.current = updateCursorFromEvents(payload.events, payload.next_cursor);
-
-      dispatch({
-        type: mode === "hydrate" ? "HYDRATE_REPLAY" : "CATCH_UP_REPLAY",
-        events: payload.events,
-      });
-      dispatch({ type: "SET_ERROR", error: null });
-      if (mode === "hydrate") {
-        dispatch({
-          type: "SET_TRANSPORT_STATE",
-          transportState: shouldMaintainLiveTransport(statusRef.current.status)
-            ? "replay-hydrating"
-            : "disconnected",
-        });
-      }
       return true;
     } catch (error) {
       if (!controller.signal.aborted && isCurrentSelection(epoch, simulationId)) {
@@ -716,15 +816,19 @@ export function useSimulation(config: {
     simulationId,
   ]);
 
+  // Derive a boolean so this effect only fires when the transport-needed
+  // decision changes, not on every status object update.
+  const shouldKeepLive = shouldMaintainLiveTransport(state.status.status);
+
   useEffect(() => {
-    if (!active || !simulationId || shouldMaintainLiveTransport(state.status.status)) {
+    if (!active || !simulationId || shouldKeepLive) {
       return;
     }
     clearReconnectTimer();
     closeEventStream();
     dispatch({ type: "SET_CONNECTED", connected: false });
     dispatch({ type: "SET_TRANSPORT_STATE", transportState: "disconnected" });
-  }, [active, clearReconnectTimer, closeEventStream, simulationId, state.status.status]);
+  }, [active, clearReconnectTimer, closeEventStream, shouldKeepLive, simulationId]);
 
   useEffect(() => {
     if (!simulationId || !active) {
@@ -782,12 +886,14 @@ export function useSimulation(config: {
     simulationId,
   ]);
 
+  // Derive the effective poll interval so the effect only restarts when it
+  // truly changes (e.g. running->paused doubles the interval, terminal->null
+  // stops it). Without this, every status poll response that returns a new
+  // `updated_at` would trigger a state change -> effect restart loop.
+  const effectivePollIntervalMs = getStatusPollInterval(state.status.status, pollIntervalMs);
+
   useEffect(() => {
-    if (!simulationId || !active) {
-      return;
-    }
-    const intervalMs = getStatusPollInterval(state.status.status, pollIntervalMs);
-    if (intervalMs === null) {
+    if (!simulationId || !active || effectivePollIntervalMs === null) {
       return;
     }
 
@@ -835,7 +941,7 @@ export function useSimulation(config: {
 
     const interval = setInterval(() => {
       void pollStatus().catch(ignoreHandledAsyncRejection);
-    }, intervalMs);
+    }, effectivePollIntervalMs);
 
     return () => {
       disposed = true;
@@ -850,11 +956,10 @@ export function useSimulation(config: {
     bridgeUrl,
     clearReconnectTimer,
     closeEventStream,
+    effectivePollIntervalMs,
     isCurrentSelection,
-    pollIntervalMs,
     registerController,
     simulationId,
-    state.status.status,
   ]);
 
   useEffect(() => {
@@ -899,8 +1004,12 @@ export function useSimulation(config: {
     };
   }, [active, agentIds, bridgeUrl, isCurrentSelection, registerController, simulationId]);
 
+  // Derive a boolean so the effect only restarts when the should-poll
+  // decision actually changes, not on every status field update.
+  const shouldPollAgents = shouldPollAgentStates(state.status.status);
+
   useEffect(() => {
-    if (!simulationId || !active || agentIds.length === 0 || !shouldPollAgentStates(state.status.status)) {
+    if (!simulationId || !active || agentIds.length === 0 || !shouldPollAgents) {
       return;
     }
     const epoch = selectionEpochRef.current;
@@ -950,8 +1059,8 @@ export function useSimulation(config: {
     isCurrentSelection,
     pollIntervalMs,
     registerController,
+    shouldPollAgents,
     simulationId,
-    state.status.status,
   ]);
 
   const sendControlCommand = useCallback(async (command: "play" | "pause" | "step" | "stop") => {

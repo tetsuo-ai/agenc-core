@@ -6,7 +6,6 @@
 
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import type { RiskTier } from "../autonomous/risk-scoring.js";
 import {
   stableStringifyJson,
   type JsonObject,
@@ -14,6 +13,8 @@ import {
 } from "./types.js";
 
 export const BENCHMARK_MANIFEST_SCHEMA_VERSION = 1 as const;
+
+type RiskTier = "low" | "medium" | "high";
 
 export interface BenchmarkScenarioManifest {
   id: string;

@@ -164,6 +164,10 @@ export class InMemoryBackend implements MemoryBackend {
         if (query.before !== undefined && entry.timestamp >= query.before)
           continue;
         if (query.role && entry.role !== query.role) continue;
+        if (query.workspaceId && entry.workspaceId !== query.workspaceId) continue;
+        if (query.agentId && entry.agentId !== query.agentId) continue;
+        if (query.userId && entry.userId !== query.userId) continue;
+        if (query.worldId && entry.worldId !== query.worldId) continue;
         results.push(this.stripInternal(entry));
       }
     }

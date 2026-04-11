@@ -40,7 +40,7 @@ const REVIEW_SIGNAL_RE =
 const DECISION_SIGNAL_RE =
   /\b(?:decision|decided|root cause|resolved|fix(ed)?|mitigation)\b/i;
 
-export interface ArtifactCompactionInput {
+interface ArtifactCompactionInput {
   readonly sessionId: string;
   readonly history: readonly LLMMessage[];
   readonly keepTailCount?: number;
@@ -50,7 +50,7 @@ export interface ArtifactCompactionInput {
   readonly narrativeSummary?: string;
 }
 
-export interface ArtifactCompactionOutput {
+interface ArtifactCompactionOutput {
   readonly compactedHistory: readonly LLMMessage[];
   readonly state: ArtifactCompactionState;
   readonly records: readonly ContextArtifactRecord[];

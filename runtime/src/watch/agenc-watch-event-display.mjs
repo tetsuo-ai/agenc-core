@@ -153,6 +153,7 @@ export function normalizeEventBody(body, maxStoredBodyChars) {
         ? `${normalizedBody.slice(0, maxStoredBodyChars - 1)}\u2026`
         : normalizedBody,
     bodyTruncated: normalizedBody.length > maxStoredBodyChars,
+    fullBody: normalizedBody,
   };
 }
 

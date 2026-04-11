@@ -150,28 +150,30 @@ export class ToolPolicyEvaluator {
     if (pattern === "*") return true;
 
     if (!pattern.includes("*")) {
-      return toolName === pattern;
+      return toolName.toLowerCase() === pattern.toLowerCase();
     }
 
-    const parts = pattern.split("*");
+    const lowerTool = toolName.toLowerCase();
+    const lowerPattern = pattern.toLowerCase();
+    const parts = lowerPattern.split("*");
     const [prefix, ...rest] = parts;
 
-    if (!toolName.startsWith(prefix ?? "")) return false;
+    if (!lowerTool.startsWith(prefix ?? "")) return false;
     let cursor = (prefix ?? "").length;
 
     for (const segment of rest) {
       if (segment.length === 0) continue;
-      const segmentStart = toolName.indexOf(segment, cursor);
+      const segmentStart = lowerTool.indexOf(segment, cursor);
       if (segmentStart < 0) return false;
 
       // `*` in this policy syntax does not cross dot boundaries.
-      const wildcardSlice = toolName.slice(cursor, segmentStart);
+      const wildcardSlice = lowerTool.slice(cursor, segmentStart);
       if (wildcardSlice.includes(".")) return false;
       cursor = segmentStart + segment.length;
     }
 
-    const tail = toolName.slice(cursor);
-    if (pattern.endsWith("*")) {
+    const tail = lowerTool.slice(cursor);
+    if (lowerPattern.endsWith("*")) {
       return !tail.includes(".");
     }
     return tail.length === 0;

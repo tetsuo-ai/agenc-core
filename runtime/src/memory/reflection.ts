@@ -24,7 +24,7 @@ If nothing notable, return empty arrays/objects.`;
 
 const MIN_MESSAGES_FOR_REFLECTION = 10;
 
-export interface ReflectionResult {
+interface ReflectionResult {
   readonly learnedTraits: readonly string[];
   readonly beliefs: ReadonlyArray<{
     readonly topic: string;

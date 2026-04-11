@@ -2,7 +2,7 @@ import type { Logger } from "./logger.js";
 import { silentLogger } from "./logger.js";
 import { toErrorMessage } from "./async.js";
 
-export interface KeyedAsyncQueueConfig {
+interface KeyedAsyncQueueConfig {
   readonly logger?: Logger;
   readonly label?: string;
 }

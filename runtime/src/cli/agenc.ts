@@ -8,7 +8,7 @@ import {
 import { runUiCommand, resolveOpenPreference, type UiCommandDeps } from "./ui.js";
 import type { CliStatusCode } from "./types.js";
 
-export interface AgencRunOptions {
+interface AgencRunOptions {
   argv?: string[];
   stdout?: Writable;
   stderr?: Writable;

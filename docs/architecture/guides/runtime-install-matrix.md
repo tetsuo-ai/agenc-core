@@ -52,6 +52,16 @@ pipeline, and the release gate now proves:
 Other tuples must fail clearly as unsupported until explicit release coverage is
 added.
 
+Public first-use marketplace write rehearsal is only documented for that same
+wrapper tuple. It assumes:
+
+- Solana CLI installed separately from the wrapper
+- funded devnet signer keypair(s)
+- explicit devnet RPC configuration
+
+See [public-wrapper-devnet-marketplace-rehearsal.md](public-wrapper-devnet-marketplace-rehearsal.md)
+for the release-path runbook.
+
 ## Operating system support
 
 ### Linux

@@ -36,7 +36,7 @@ import {
 import { generateDefaultConfig } from "./wizard.js";
 
 /** Onboard configuration output. */
-export interface OnboardResult {
+interface OnboardResult {
   configPath: string;
   configGenerated: boolean;
   backupPath?: string;
@@ -52,7 +52,7 @@ export interface OnboardResult {
   exitCode: 0 | 1 | 2;
 }
 
-export interface PreparedOnboardWorkspace {
+interface PreparedOnboardWorkspace {
   readonly workspacePath?: string;
   readonly files: Record<string, string>;
   readonly overwrite?: boolean;

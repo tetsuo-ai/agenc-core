@@ -34,14 +34,6 @@ export interface ReplayTimelineRecord extends Omit<
   payload: ProjectedTimelineEvent["payload"];
 }
 
-export interface ReplayTimelineRecordInput {
-  slot: number;
-  signature: string;
-  sourceEventName: string;
-  sourceEventType: string;
-  event: ProjectedTimelineEvent;
-}
-
 export interface ReplayTimelineQuery {
   taskPda?: string;
   disputePda?: string;
@@ -151,11 +143,6 @@ export interface ReplayHealth {
   uniqueEvents: number;
   lastCursor: ReplayEventCursor | null;
   taskCount: number;
-}
-
-export interface ReplayComparatorInput {
-  events: ReadonlyArray<ReplayTimelineRecord>;
-  traceTaskIds?: ReadonlyArray<string>;
 }
 
 export function stableReplayCursorString(

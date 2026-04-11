@@ -374,7 +374,9 @@ export class ReplayEventBridge {
         traceId: input.traceContext?.traceId ?? this.traceId,
       });
     }
-    this.sourceEventLastSlot.set(input.eventName, input.slot);
+    if (typeof previousSlot !== "number" || input.slot >= previousSlot) {
+      this.sourceEventLastSlot.set(input.eventName, input.slot);
+    }
 
     const traceContext =
       input.traceContext ??

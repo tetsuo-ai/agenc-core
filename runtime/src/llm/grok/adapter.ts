@@ -31,8 +31,17 @@ import type {
 } from "../types.js";
 import { validateToolCallDetailed } from "../types.js";
 import { LLMProviderError, mapLLMError } from "../errors.js";
+import {
+  assertNoSilentToolDropOnFollowup,
+  DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS,
+  validateXaiRequestPreFlight,
+  validateXaiResponsePostFlight,
+  XaiSilentToolDropError,
+  XAI_RESPONSES_MAX_TOOL_COUNT,
+} from "./xai-strict-filter.js";
 import { ensureLazyImport } from "../lazy-import.js";
 import {
+  assertXaiStructuredOutputToolCompatibility,
   resolveLLMStatefulResponsesConfig,
   type ResolvedLLMStatefulResponsesConfig,
 } from "../provider-capabilities.js";
@@ -40,10 +49,7 @@ import {
   getProviderNativeToolDefinitions,
   type ProviderNativeToolDefinition,
 } from "../provider-native-search.js";
-import {
-  parseStructuredOutputText,
-  supportsXaiStructuredOutputsWithTools,
-} from "../structured-output.js";
+import { parseStructuredOutputText } from "../structured-output.js";
 import { withTimeout } from "../timeout.js";
 import { repairToolTurnSequence, validateToolTurnSequence } from "../tool-turn-validator.js";
 import type { GrokProviderConfig } from "./types.js";
@@ -67,41 +73,28 @@ import {
 const DEFAULT_BASE_URL = "https://api.x.ai/v1";
 const DEFAULT_MODEL = "grok-4-1-fast-reasoning";
 const DEFAULT_VISION_MODEL = "grok-4-0709";
-const DEFAULT_TIMEOUT_MS = 60_000;
+const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_MESSAGES_PAYLOAD_CHARS = 80_000;
 const MAX_SYSTEM_MESSAGE_CHARS = 16_000;
 const MAX_MESSAGE_CHARS_PER_ENTRY = 4_000;
-const MAX_TOOL_SCHEMA_CHARS_FOLLOWUP = 20_000;
-const DOCUMENTED_XAI_RESPONSES_FIELDS = new Set([
-  "include",
-  "input",
-  "logprobs",
-  "max_output_tokens",
-  "max_turns",
-  "model",
-  "parallel_tool_calls",
-  "previous_response_id",
-  "prompt_cache_key",
-  "reasoning",
-  "store",
-  "stream",
-  "temperature",
-  "text",
-  "tool_choice",
-  "tools",
-  "top_logprobs",
-  "top_p",
-  "user",
-]);
+// MAX_TOOL_SCHEMA_CHARS_FOLLOWUP removed 2026-04-09: see buildParams() comment
+// near `selectedTools.tools.length > 0`. The 20K limit was silently dropping
+// the entire tools array on every tool-followup request.
+//
+// The canonical /v1/responses field allowlist now lives in
+// `xai-strict-filter.ts` as `DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS` and is
+// imported above. Single source of truth — both the strict pre-flight
+// validator and `sanitizeToDocumentedXaiResponsesParams()` use the same set.
+const DOCUMENTED_XAI_RESPONSES_FIELDS = DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS;
 
 /** Vision models known to support function-calling alongside image understanding. */
 const VISION_MODELS_WITH_TOOLS = new Set([
   "grok-4-0709",
   "grok-4-1-fast-reasoning",
   "grok-4-1-fast-non-reasoning",
-  "grok-4.20-beta-0309-reasoning",
-  "grok-4.20-beta-0309-non-reasoning",
-  "grok-4.20-multi-agent-beta-0309",
+  "grok-4.20-0309-reasoning",
+  "grok-4.20-0309-non-reasoning",
+  "grok-4.20-multi-agent-0309",
 ]);
 
 interface StatefulSessionAnchor {
@@ -862,6 +855,7 @@ export class GrokProvider implements LLMProvider {
   ): Promise<LLMResponse> {
     const client = await this.ensureClient();
     let plan = this.buildRequestPlan(messages, options);
+    let lastAttemptTimeoutMs: number | undefined;
     const requestTimeout = resolveRequestTimeoutMs(
       this.configuredTimeoutMs,
       options?.timeoutMs,
@@ -879,6 +873,7 @@ export class GrokProvider implements LLMProvider {
             timeoutMs: Math.max(1, requestDeadlineAt - Date.now()),
           }
           : requestTimeout;
+      lastAttemptTimeoutMs = activeRequestTimeout.timeoutMs;
       emitProviderTraceEvent(options, {
         kind: "request",
         transport: "chat",
@@ -908,7 +903,18 @@ export class GrokProvider implements LLMProvider {
           this.name,
           options?.signal,
         );
-        const response = result.data;
+        const originalResponse = result.data;
+        // Auto-mitigate the xAI mid-sentence truncation bug by
+        // replaying with tool_choice="none" when the strict filter
+        // detects the trigger pattern. See report.txt §4.4.
+        const mitigatedResponse = await this.maybeRetryMidSentenceTruncation(
+          client,
+          activePlan.params as Record<string, unknown>,
+          originalResponse as Record<string, unknown>,
+          options,
+          "chat",
+        );
+        const response = (mitigatedResponse ?? originalResponse) as typeof originalResponse;
         const responseMeta = buildProviderResponseMeta({
           response: result.response,
           requestId: result.requestId,
@@ -916,6 +922,7 @@ export class GrokProvider implements LLMProvider {
         });
         const parsed = this.parseResponse(
           response,
+          activePlan.params,
           activePlan.requestMetrics,
           activePlan.statefulDiagnostics,
           activePlan.compactionDiagnostics,
@@ -967,7 +974,10 @@ export class GrokProvider implements LLMProvider {
           });
           continue;
         }
-        const mapped = this.mapError(err, Math.max(1, requestDeadlineAt - Date.now()));
+        const mapped = this.mapError(
+          err,
+          lastAttemptTimeoutMs ?? requestTimeout.timeoutMs,
+        );
         this.logPromptOverflowDiagnostics(mapped, plan.params);
         throw mapped;
       }
@@ -1092,6 +1102,7 @@ export class GrokProvider implements LLMProvider {
       streamIterator = stream[Symbol.asyncIterator]();
       let streamEventIndex = 0;
       const streamOpenedAt = Date.now();
+      let receivedTerminalEvent = false;
 
       while (true) {
         const remainingStreamMs = Number.isFinite(streamDeadlineAt)
@@ -1103,7 +1114,7 @@ export class GrokProvider implements LLMProvider {
         ) {
           throw createStreamTimeoutError(
             this.name,
-            streamTimeout.timeoutMs ?? 0,
+            streamTimeout.timeoutMs ?? options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
           );
         }
         const iterResult = await nextStreamChunkWithTimeout(
@@ -1164,7 +1175,53 @@ export class GrokProvider implements LLMProvider {
         }
 
         if (event.type === "response.completed") {
-          const response = event.response ?? {};
+          receivedTerminalEvent = true;
+          let response = event.response ?? {};
+
+          // Auto-mitigate the xAI mid-sentence truncation bug on the
+          // streaming terminal payload. The user has already seen the
+          // truncated deltas via onChunk; the mitigation replaces the
+          // accumulated content with the retry result so the final
+          // LLMResponse returned to the executor carries the corrected
+          // text. A secondary onChunk is emitted with the corrected
+          // content so UIs that re-render on the latest delta show
+          // the corrected version. See report.txt §4.4.
+          const mitigatedResponse = await this.maybeRetryMidSentenceTruncation(
+            client,
+            params,
+            response as Record<string, unknown>,
+            options,
+            "chat_stream",
+          );
+          if (mitigatedResponse) {
+            response = mitigatedResponse;
+            // Reset stream-accumulated tool calls; the mitigation
+            // retry ran with tool_choice="none" so it cannot have
+            // emitted a function_call, but we still clear the map
+            // so any lingering partial deltas from the original
+            // stream don't leak into the final response.
+            toolCallAccum.clear();
+            // Replace streamed content with the corrected text so
+            // the returned LLMResponse has the full response.
+            const correctedText = String(
+              (mitigatedResponse as { output_text?: unknown }).output_text ??
+                "",
+            );
+            const correctedFromOutput = this.extractOutputText(
+              mitigatedResponse,
+            );
+            const effectiveCorrected =
+              correctedText.length > 0
+                ? correctedText
+                : correctedFromOutput ?? "";
+            if (effectiveCorrected.length > 0) {
+              // Signal the correction as a delta replacing the
+              // truncated stream the UI has already rendered.
+              onChunk({ content: effectiveCorrected, done: false });
+              content = effectiveCorrected;
+            }
+          }
+
           streamResponseMeta = {
             ...(streamResponseMeta ?? {}),
             ...(buildProviderResponseMeta({ payload: response }) ?? {}),
@@ -1187,6 +1244,36 @@ export class GrokProvider implements LLMProvider {
           for (const toolCall of completedToolCalls) {
             toolCallAccum.set(toolCall.id, toolCall);
           }
+
+          // Strict post-flight on the streaming terminal payload. Same
+          // contract as the non-streaming parseResponse() path: error-level
+          // anomalies throw, warn-level anomalies log via console.warn.
+          // Mid-sentence truncation is handled above (via the mitigation
+          // retry) so it is skipped here — if the retry succeeded, the
+          // anomaly is no longer present; if the retry failed, the
+          // original anomaly was already logged inside the mitigation
+          // path and re-logging would be noise.
+          const xaiAnomalies = validateXaiResponsePostFlight({
+            request: params,
+            response: response as Record<string, unknown>,
+          });
+          for (const anomaly of xaiAnomalies) {
+            if (
+              anomaly.severity === "error" &&
+              anomaly.code === "silent_tool_drop_promised_in_text"
+            ) {
+              throw new XaiSilentToolDropError(
+                "incoming_promised_tools_missing",
+                anomaly.evidence,
+              );
+            }
+            if (anomaly.code === "truncated_response_mid_sentence") continue;
+            console.warn(
+              `[GrokProvider] xAI post-flight anomaly (${anomaly.code}): ${anomaly.message}`,
+              anomaly.evidence,
+            );
+          }
+
           this.emitToolCallNormalizationIssues(
             normalizationIssues,
             options,
@@ -1210,6 +1297,7 @@ export class GrokProvider implements LLMProvider {
         }
 
         if (event.type === "response.failed") {
+          receivedTerminalEvent = true;
           const failedResponse =
             event.response && typeof event.response === "object"
               ? (event.response as Record<string, unknown>)
@@ -1240,6 +1328,14 @@ export class GrokProvider implements LLMProvider {
         }
       }
 
+      if (!receivedTerminalEvent && finishReason === "stop") {
+        finishReason = "error";
+        responseError = responseError ?? new LLMProviderError(
+          this.name,
+          "Stream closed without a response.completed or response.failed event",
+        );
+      }
+
       const toolCalls = Array.from(toolCallAccum.values());
       if (toolCalls.length > 0 && finishReason === "stop") finishReason = "tool_calls";
 
@@ -1256,11 +1352,13 @@ export class GrokProvider implements LLMProvider {
         providerEvidence,
         structuredOutput:
           options?.structuredOutput?.enabled === false ||
-            !options?.structuredOutput?.schema
+            !options?.structuredOutput?.schema ||
+            content.trim().length === 0
             ? undefined
             : parseStructuredOutputText(
               content,
               options.structuredOutput.schema.name,
+              options.structuredOutput.schema.schema,
             ),
         encryptedReasoning,
         finishReason,
@@ -1306,11 +1404,13 @@ export class GrokProvider implements LLMProvider {
           providerEvidence,
           structuredOutput:
             options?.structuredOutput?.enabled === false ||
-              !options?.structuredOutput?.schema
+              !options?.structuredOutput?.schema ||
+              content.trim().length === 0
               ? undefined
               : parseStructuredOutputText(
                 content,
                 options.structuredOutput.schema.name,
+                options.structuredOutput.schema.schema,
               ),
           finishReason: "error",
           error: mappedError,
@@ -1461,6 +1561,7 @@ export class GrokProvider implements LLMProvider {
         includeEncryptedReasoning: options?.includeEncryptedReasoning,
         structuredOutput: options?.structuredOutput,
         toolSelection,
+        promptCacheKey: options?.stateful?.sessionId?.trim() || undefined,
       });
       return {
         params: built.params,
@@ -1547,6 +1648,7 @@ export class GrokProvider implements LLMProvider {
           detail: `session=${sessionId}`,
         });
         this.statefulSessions.delete(sessionId);
+        previousResponseId = undefined;
         if (!this.statefulConfig.fallbackToStateless) {
           throw new LLMProviderError(
             this.name,
@@ -1602,6 +1704,7 @@ export class GrokProvider implements LLMProvider {
       includeEncryptedReasoning: options?.includeEncryptedReasoning,
       structuredOutput: options?.structuredOutput,
       toolSelection,
+      promptCacheKey: sessionId,
     });
 
     return {
@@ -1721,6 +1824,7 @@ export class GrokProvider implements LLMProvider {
       includeEncryptedReasoning?: boolean;
       structuredOutput?: LLMChatOptions["structuredOutput"];
       toolSelection?: ToolSelectionDiagnostics;
+      promptCacheKey?: string;
     },
   ): {
     params: Record<string, unknown>;
@@ -1797,19 +1901,27 @@ export class GrokProvider implements LLMProvider {
     const params: Record<string, unknown> = {
       model,
       input,
-      store: options?.store ?? false,
+      store: options?.store ?? this.statefulConfig?.store ?? false,
     };
     if (options?.previousResponseId) {
       params.previous_response_id = options.previousResponseId;
     }
+    // Cut 5.10: xAI prompt caching is prefix-based and is maximized by
+    // routing requests with the same conversation ID to the same
+    // server. For the Responses API, that routing hint is the
+    // `prompt_cache_key` request field. Feed it the session ID so
+    // every turn in the same AgenC session lands on the same backend
+    // and reuses the previously-cached system + history prefix.
+    if (options?.promptCacheKey) {
+      params.prompt_cache_key = options.promptCacheKey;
+    }
     if (this.config.temperature !== undefined)
       params.temperature = this.config.temperature;
-    if (
-      typeof this.config.maxTokens === "number" &&
-      Number.isFinite(this.config.maxTokens) &&
-      this.config.maxTokens > 0
-    )
-      params.max_output_tokens = this.config.maxTokens;
+    // Output-token cap removed intentionally. AgenC never sends
+    // max_output_tokens on /v1/responses — the whole point of routing
+    // through a 2M-context model is that the runtime lets the model
+    // finish its thought. Any config value that previously would have
+    // become max_output_tokens is now ignored for this field.
     const maxTurns = options?.maxTurns ?? this.config.maxTurns;
     if (
       typeof maxTurns === "number" &&
@@ -1837,12 +1949,54 @@ export class GrokProvider implements LLMProvider {
       options?.structuredOutput?.enabled !== false &&
       structuredOutputSchema !== undefined;
     // Enable tools unless the vision model is known to not support them.
+    //
+    // Removed 2026-04-09: the previous logic also dropped the entire tools
+    // array on any follow-up turn whose tool-schema serialized to more than
+    // MAX_TOOL_SCHEMA_CHARS_FOLLOWUP (= 20_000) characters, on the
+    // assumption that this would save tokens. With AgenC's full system tool
+    // catalog (40+ tools, verbose descriptions) the schema sits well above
+    // 20K, so every chat turn that produced a tool result was followed by a
+    // model call with `tools: []`. The model would then return text-only
+    // (because there were no tools to call), the tool loop would exit
+    // because `finishReason !== "tool_calls"`, and from the user's
+    // perspective the agent would do exactly one tool call per chat turn
+    // and then "give up". xAI's prompt cache deduplicates the tool schema
+    // across requests in the same session, so always sending the tools
+    // array is cheap; the previous guard was a token-saving theory that
+    // silently broke multi-step tool sequences end-to-end.
     if (selectedTools.tools.length > 0) {
-      const hasToolResults = messages.some((m) => m.role === "tool");
-      if (
-        (!hasImages || VISION_MODELS_WITH_TOOLS.has(visionModel)) &&
-        (!hasToolResults || selectedTools.chars <= MAX_TOOL_SCHEMA_CHARS_FOLLOWUP)
-      ) {
+      if (!hasImages || VISION_MODELS_WITH_TOOLS.has(visionModel)) {
+        // Enforce the documented xAI Responses API maximum of 128
+        // tools (developers/rest-api-reference/inference/chat). The
+        // strict pre-flight validator throws on any request with more
+        // than XAI_RESPONSES_MAX_TOOL_COUNT tools; trim here so a
+        // local catalog that legitimately exceeds the limit (e.g.
+        // many MCP servers enabled) stays functional instead of
+        // failing closed at every request. The trim is deterministic
+        // (tail of the registry order) and the dropped tool names
+        // are logged so operators can reorder their tool registry
+        // or drop unused MCP servers to reclaim the dropped slots.
+        if (selectedTools.tools.length > XAI_RESPONSES_MAX_TOOL_COUNT) {
+          const dropped = selectedTools.tools.slice(
+            XAI_RESPONSES_MAX_TOOL_COUNT,
+          );
+          const droppedNames = dropped
+            .map((t) => String((t as { name?: unknown }).name ?? "<unnamed>"))
+            .join(", ");
+          console.warn(
+            `[GrokProvider] Tool catalog has ${selectedTools.tools.length} ` +
+              `tools but xAI Responses API documents a maximum of ` +
+              `${XAI_RESPONSES_MAX_TOOL_COUNT}. Trimming the tail of the ` +
+              `registry to stay within the contract. Dropped tools (last ` +
+              `in registry order): ${droppedNames}. Reorder your tool ` +
+              `registry or disable unused MCP servers if these should be ` +
+              `retained.`,
+          );
+          selectedTools.tools = selectedTools.tools.slice(
+            0,
+            XAI_RESPONSES_MAX_TOOL_COUNT,
+          ) as typeof selectedTools.tools;
+        }
         params.tools = selectedTools.tools;
         selectedTools.toolsAttached = true;
         params.parallel_tool_calls = this.config.parallelToolCalls;
@@ -1850,26 +2004,25 @@ export class GrokProvider implements LLMProvider {
         if (toolChoice !== undefined) {
           params.tool_choice = toolChoice;
         }
-      } else if (hasImages && !VISION_MODELS_WITH_TOOLS.has(visionModel)) {
+      } else {
         selectedTools.toolSuppressionReason = "vision_model_without_tool_support";
-      } else if (hasToolResults) {
-        selectedTools.toolSuppressionReason = "followup_tool_schema_limit";
       }
     }
     if (structuredOutputEnabled && structuredOutputSchema) {
-      if (
-        selectedTools.toolsAttached &&
-        !supportsXaiStructuredOutputsWithTools(
-          typeof params.model === "string" ? params.model : this.config.model,
-        )
-      ) {
-        delete params.tools;
-        delete params.tool_choice;
-        delete params.parallel_tool_calls;
-        selectedTools.toolsAttached = false;
-        selectedTools.toolSuppressionReason =
-          "structured_output_with_tools_unsupported_model";
-      }
+      // Fail closed when the configured model cannot honor structured outputs
+      // with tools. The previous "graceful fallback" silently stripped the
+      // structured output and continued, which masked configuration errors
+      // (e.g. a planner step routed to grok-code-fast-1 instead of a Grok 4
+      // model). The CLAUDE.md learned rule "xAI Compatibility: Treat
+      // undocumented 200s as untrusted until semantics are proven" applies:
+      // raise the assertion at the adapter boundary so the user fixes the
+      // config instead of getting a degraded run.
+      assertXaiStructuredOutputToolCompatibility({
+        providerName: this.name,
+        model: typeof params.model === "string" ? params.model : this.config.model,
+        structuredOutputRequested: true,
+        toolsRequested: selectedTools.toolsAttached,
+      });
       params.text = {
         format: {
           type: structuredOutputSchema.type,
@@ -1882,6 +2035,35 @@ export class GrokProvider implements LLMProvider {
         },
       };
     }
+    // Strict pre-flight: validate the outgoing /v1/responses request body
+    // against the documented xAI contract before it leaves the runtime.
+    // Throws XaiUnknownModelError / XaiUndocumentedFieldError on rejection.
+    // The throws map to provider_error via classifyLLMFailure() and flow
+    // through the existing retry-with-fallback policy. Runs BEFORE
+    // sanitizeToDocumentedXaiResponsesParams() so the validator sees the
+    // params as the runtime intends to send them, including any field
+    // that the sanitize step would silently strip.
+    validateXaiRequestPreFlight(params);
+
+    // Inline silent-tool-drop assertion. Catches the legacy
+    // MAX_TOOL_SCHEMA_CHARS_FOLLOWUP bug pattern: the runtime selected
+    // tools (`selectedTools.tools.length > 0`) but the final params has
+    // no `tools` field. The pre-flight validator can't catch this with
+    // the params alone — it needs the runtime's selection intent.
+    //
+    // The `toolSuppressionReason` argument tells the assertion when an
+    // empty `tools` field is *intentional* (e.g.
+    // `vision_model_without_tool_support` when an image is sent to a
+    // vision model that lacks tool support, or `empty_allowlist` when
+    // the routed tool subset resolves to zero matches). In those cases
+    // the assertion is a no-op — the runtime deliberately suppressed
+    // tools and that is not a bug.
+    assertNoSilentToolDropOnFollowup({
+      runtimeIntendedToolCount: selectedTools.tools.length,
+      toolSuppressionReason: selectedTools.toolSuppressionReason,
+      outgoingParams: params,
+    });
+
     return {
       params: sanitizeToDocumentedXaiResponsesParams(params),
       toolSelection: selectedTools,
@@ -1916,6 +2098,7 @@ export class GrokProvider implements LLMProvider {
     }
 
     if (allowedToolNames.length === 0) {
+      console.warn("[GrokProvider] Tool allowlist resolved to empty set — all tools suppressed for this call");
       return {
         tools: [],
         chars: 0,
@@ -1980,15 +2163,28 @@ export class GrokProvider implements LLMProvider {
     );
 
     if (selected.length === 0) {
+      // The caller explicitly constrained the allowlist to a set of tool
+      // names, but none of those names resolved against the provider
+      // catalog (typo, removed tool, role mismatch, etc.). Returning the
+      // FULL catalog here would silently bypass the allowlist constraint
+      // — exactly the fail-open behavior the audit flagged. Instead emit
+      // an empty tool set with a diagnostic resolution code so the
+      // executor can decide to abort, retry without tools, or surface a
+      // clear error to the operator. The previous behavior shipped under
+      // `fallback_full_catalog_no_matches` is removed.
+      console.warn(
+        `[GrokProvider] Tool allowlist resolved to ${requestedToolNames.length} names but zero matched the provider catalog — suppressing all tools for this call (requested: ${requestedToolNames.join(", ")})`,
+      );
       return {
-        tools: fullCatalogTools,
-        chars: this.toolChars,
+        tools: [],
+        chars: 0,
         requestedToolNames,
-        resolvedToolNames: providerCatalogToolNames,
+        resolvedToolNames: [],
         missingRequestedToolNames: requestedToolNames,
         providerCatalogToolCount,
-        toolResolution: "fallback_full_catalog_no_matches",
+        toolResolution: "subset_no_resolved_matches",
         toolsAttached: false,
+        toolSuppressionReason: "no_allowlist_matches",
       };
     }
 
@@ -2154,8 +2350,122 @@ export class GrokProvider implements LLMProvider {
     return parts;
   }
 
+  /**
+   * Auto-mitigate the documented xAI /v1/responses mid-sentence
+   * truncation bug (report.txt §4.4). When a response matches the
+   * known trigger — status="completed", incomplete_details=null,
+   * zero tool-call blocks, tools sent, tool_choice="auto", input has
+   * prior function_call_output turns, text ends mid-sentence — this
+   * method re-issues the SAME request with tool_choice="none" to
+   * force xAI's text-mode decoder path, which the reproduction matrix
+   * proves is not affected by the bug.
+   *
+   * Returns the corrected response payload on successful mitigation,
+   * or `undefined` if the original response was not truncated, the
+   * retry failed, or the retry itself also truncated (a second
+   * truncation would indicate a different failure mode and the
+   * original response is returned upstream).
+   *
+   * The retry is single-shot (no loops), non-streaming (simpler to
+   * buffer), and does not propagate any client-side AbortSignal so a
+   * user-initiated cancel still fires at the higher level.
+   */
+  private async maybeRetryMidSentenceTruncation(
+    client: unknown,
+    originalParams: Record<string, unknown>,
+    originalResponse: Record<string, unknown>,
+    options: LLMChatOptions | undefined,
+    transport: "chat" | "chat_stream",
+  ): Promise<Record<string, unknown> | undefined> {
+    const anomalies = validateXaiResponsePostFlight({
+      request: originalParams,
+      response: originalResponse,
+    });
+    const truncation = anomalies.find(
+      (a) => a.code === "truncated_response_mid_sentence",
+    );
+    if (!truncation) return undefined;
+
+    // Clone params and force the mitigating tool_choice. Keep the
+    // retry non-streaming so the caller doesn't have to re-buffer
+    // SSE deltas. parallel_tool_calls is meaningless with
+    // tool_choice="none" — drop it so the strict pre-flight doesn't
+    // see a redundant field on the retry.
+    const retryParams: Record<string, unknown> = {
+      ...originalParams,
+      tool_choice: "none",
+      stream: false,
+    };
+    delete retryParams.parallel_tool_calls;
+
+    emitProviderTraceEvent(options, {
+      kind: "request",
+      transport,
+      provider: this.name,
+      model: String(retryParams.model ?? this.config.model),
+      payload:
+        cloneProviderTracePayload(retryParams) ??
+        { error: "provider_retry_request_trace_unavailable" },
+      context: {
+        retryReason: "xai_mid_sentence_truncation_mitigation",
+        originalEvidence: truncation.evidence,
+      } as unknown as ReturnType<typeof buildProviderRequestTraceContext>,
+    });
+
+    try {
+      const retryResult = await createWithResponseMetadata<
+        Record<string, unknown>
+      >(client, retryParams, undefined);
+      const retryResponse = retryResult.data;
+
+      emitProviderTraceEvent(options, {
+        kind: "response",
+        transport,
+        provider: this.name,
+        model: String(
+          (retryResponse as { model?: unknown }).model ?? retryParams.model,
+        ),
+        payload:
+          cloneProviderTracePayload(retryResponse) ??
+          { error: "provider_retry_response_trace_unavailable" },
+        context: {
+          retryReason: "xai_mid_sentence_truncation_mitigation",
+        } as unknown as ReturnType<typeof buildProviderResponseTraceContext>,
+      });
+
+      // Re-run post-flight on the retry. If the retry ALSO truncated
+      // (a second hit of the same bug on the mitigation path), give
+      // up and let the caller surface the original response so the
+      // failure stays visible rather than hanging on mitigation.
+      const retryAnomalies = validateXaiResponsePostFlight({
+        request: retryParams,
+        response: retryResponse,
+      });
+      const retryTruncated = retryAnomalies.some(
+        (a) => a.code === "truncated_response_mid_sentence",
+      );
+      if (retryTruncated) {
+        console.warn(
+          `[GrokProvider] xAI mid-sentence truncation retry with ` +
+            `tool_choice="none" also returned a truncated response; ` +
+            `falling through to original.`,
+        );
+        return undefined;
+      }
+
+      return retryResponse;
+    } catch (err) {
+      console.warn(
+        `[GrokProvider] xAI mid-sentence truncation retry failed:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return undefined;
+    }
+  }
+
   private parseResponse(
     response: any,
+    request: Record<string, unknown> | undefined,
     requestMetrics?: LLMRequestMetrics,
     statefulDiagnostics?: LLMStatefulDiagnostics,
     compactionDiagnostics?: LLMCompactionDiagnostics,
@@ -2166,6 +2476,42 @@ export class GrokProvider implements LLMProvider {
     const { toolCalls, normalizationIssues } = this.extractToolCallsFromOutput(
       response.output,
     );
+
+    // Strict post-flight: detect xAI silent-degradation patterns. Error-
+    // level anomalies throw so the executor sees them as provider_error.
+    // Warn-level anomalies (model silent aliasing, incomplete responses)
+    // log via console.warn for observability without failing the turn.
+    // Pass-through path when no request context is available (e.g. parsing
+    // a stored response by ID).
+    if (request) {
+      const anomalies = validateXaiResponsePostFlight({
+        request,
+        response: response as Record<string, unknown>,
+      });
+      for (const anomaly of anomalies) {
+        if (
+          anomaly.severity === "error" &&
+          anomaly.code === "silent_tool_drop_promised_in_text"
+        ) {
+          throw new XaiSilentToolDropError(
+            "incoming_promised_tools_missing",
+            anomaly.evidence,
+          );
+        }
+        // truncated_response_mid_sentence is handled upstream by
+        // maybeRetryMidSentenceTruncation() BEFORE parseResponse is
+        // called. If it surfaces here, it means the retry ran and
+        // also truncated, OR parseResponse was called on a stored
+        // response that bypassed the mitigation. Either way the
+        // truncation has already been logged; don't re-log here.
+        if (anomaly.code === "truncated_response_mid_sentence") continue;
+        console.warn(
+          `[GrokProvider] xAI post-flight anomaly (${anomaly.code}): ${anomaly.message}`,
+          anomaly.evidence,
+        );
+      }
+    }
+
     const finishReason = this.mapResponseFinishReason(response, toolCalls);
     const responseId =
       typeof response?.id === "string" ? String(response.id) : undefined;
@@ -2179,7 +2525,7 @@ export class GrokProvider implements LLMProvider {
     const parsedError = this.extractResponseError(response, finishReason);
 
     return {
-      content: this.extractOutputText(response),
+      content: this.extractOutputText(response) ?? "",
       toolCalls,
       usage: this.parseUsage(response),
       model: String(response.model ?? this.config.model),
@@ -2201,7 +2547,9 @@ export class GrokProvider implements LLMProvider {
   }
 
   private toStoredResponse(response: Record<string, unknown>): LLMStoredResponse {
-    const parsed = this.parseResponse(response);
+    // Stored responses are retrieved by ID; we don't have the original
+    // request body, so the post-flight validator runs in pass-through mode.
+    const parsed = this.parseResponse(response, undefined);
     const encryptedReasoning = this.extractEncryptedReasoningDiagnostics(response, {
       requested: undefined,
     });
@@ -2248,7 +2596,7 @@ export class GrokProvider implements LLMProvider {
     };
   }
 
-  private extractOutputText(response: Record<string, unknown>): string {
+  private extractOutputText(response: Record<string, unknown>): string | undefined {
     const direct = response.output_text;
     if (typeof direct === "string") return direct;
 
@@ -2256,7 +2604,10 @@ export class GrokProvider implements LLMProvider {
       ? (response.output as Array<Record<string, unknown>>)
       : [];
     const chunks: string[] = [];
+    let hasReasoningItems = false;
     for (const item of output) {
+      if (!item || typeof item !== "object") continue;
+      if (item.type === "reasoning") hasReasoningItems = true;
       if (item.type !== "message") continue;
       const content = Array.isArray(item.content)
         ? (item.content as Array<Record<string, unknown>>)
@@ -2270,7 +2621,7 @@ export class GrokProvider implements LLMProvider {
         }
       }
     }
-    return chunks.join("");
+    return chunks.length > 0 ? chunks.join("") : (hasReasoningItems ? undefined : "");
   }
 
   private extractStructuredOutputResult(
@@ -2282,7 +2633,8 @@ export class GrokProvider implements LLMProvider {
       return undefined;
     }
     const rawText = this.extractOutputText(response);
-    return parseStructuredOutputText(rawText, schema.name);
+    if (rawText === undefined || rawText.trim().length === 0) return undefined;
+    return parseStructuredOutputText(rawText, schema.name, schema.schema);
   }
 
   private parseUsage(response: Record<string, unknown>): LLMUsage {
@@ -2325,6 +2677,7 @@ export class GrokProvider implements LLMProvider {
       : [];
     const available = output.some(
       (item) =>
+        item && typeof item === "object" &&
         item.type === "reasoning" &&
         typeof item.encrypted_content === "string" &&
         item.encrypted_content.length > 0,
@@ -2368,6 +2721,7 @@ export class GrokProvider implements LLMProvider {
       ? (response.output as Array<Record<string, unknown>>)
       : [];
     for (const item of output) {
+      if (!item || typeof item !== "object") continue;
       if (item.type !== "message") continue;
       const content = Array.isArray(item.content)
         ? (item.content as Array<Record<string, unknown>>)
@@ -2396,6 +2750,7 @@ export class GrokProvider implements LLMProvider {
       : [];
     const calls: LLMProviderNativeServerToolCall[] = [];
     for (const item of output) {
+      if (!item || typeof item !== "object") continue;
       if (
         item.type !== "web_search_call" &&
         item.type !== "x_search_call" &&

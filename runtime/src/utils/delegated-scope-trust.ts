@@ -1,11 +1,11 @@
 import { safeStringify } from "../tools/types.js";
 
-export type DelegatedScopeTrustClass =
+type DelegatedScopeTrustClass =
   | "trusted_authoritative"
   | "informational_untrusted"
   | "rejected_invalid_scope";
 
-export interface DelegatedScopeTrustAssessment {
+interface DelegatedScopeTrustAssessment {
   readonly delegatedScopeTrust: DelegatedScopeTrustClass;
   readonly delegatedScopeTrustReason: string;
   readonly delegatedScopeContainsEnvironmentFact: boolean;
@@ -110,7 +110,7 @@ function isInvalidScopeFailure(parsed: Record<string, unknown>): boolean {
   return INVALID_SCOPE_MESSAGE_RE.test(pieces);
 }
 
-export function isDelegatedEnvironmentClaimOutput(params: {
+function isDelegatedEnvironmentClaimOutput(params: {
   readonly args?: Record<string, unknown>;
   readonly output: string;
 }): boolean {
@@ -125,7 +125,7 @@ export function isDelegatedEnvironmentClaimOutput(params: {
   );
 }
 
-export function isDelegatedAssistantEnvironmentSummary(
+function isDelegatedAssistantEnvironmentSummary(
   content: string,
 ): boolean {
   return ASSISTANT_DELEGATED_SCOPE_SUMMARY_RE.test(content);

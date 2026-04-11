@@ -13,6 +13,7 @@ import type {
   LLMProviderTraceEvent,
 } from "./types.js";
 import {
+  LLMInvalidResponseError,
   LLMProviderError,
   LLMRateLimitError,
   classifyLLMFailure,
@@ -85,6 +86,9 @@ export function shouldFallbackForFailureClass(
     case "cancelled":
       return false;
     case "provider_error":
+      if (error instanceof LLMInvalidResponseError) {
+        return true;
+      }
       return !(error instanceof LLMProviderError);
     default:
       return true;

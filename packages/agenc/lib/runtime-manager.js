@@ -1,7 +1,8 @@
 import { createHash, verify } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
   copyFile,
+  lstat,
   mkdir,
   mkdtemp,
   open,
@@ -34,6 +35,27 @@ export class RuntimeInstallError extends Error {
     this.name = "RuntimeInstallError";
     this.code = code;
   }
+}
+
+/**
+ * Remove a filesystem path regardless of whether it's a symlink, a
+ * regular file, or a directory. `fs.rm` with `recursive: true`
+ * follows symlinks to directories (removing the TARGET, not the
+ * link), so we `lstat` first and use `unlink` for the symlink case.
+ */
+async function removePathSafe(targetPath) {
+  let info;
+  try {
+    info = await lstat(targetPath);
+  } catch (error) {
+    if ((error && error.code) === "ENOENT") return;
+    throw error;
+  }
+  if (info.isSymbolicLink() || info.isFile()) {
+    await unlink(targetPath);
+    return;
+  }
+  await rm(targetPath, { recursive: true, force: true });
 }
 
 function sleep(ms) {
@@ -828,4 +850,262 @@ export async function prefetchRuntimeOnInstall(options = {}) {
     force: false,
   });
   return { prefetched: true };
+}
+
+// ---------------------------------------------------------------------------
+// Cut 6.1: --from-source dev mode
+//
+// The published-tarball install path lives above. This block adds a parallel
+// path that builds the runtime from a local source checkout and points
+// `~/.agenc/runtime/current` at it. Without this, the only way to land
+// changes on the running daemon is to publish a new tarball — which is
+// exactly the failure mode that left a 2-month silent-failure window in
+// place. The dev path is opt-in via `--from-source` and never runs by
+// default.
+// ---------------------------------------------------------------------------
+
+const FROM_SOURCE_PLATFORM_ARCH = "from-source";
+
+function resolveSourceRoot({
+  env = process.env,
+  cwd = process.cwd(),
+  explicit,
+} = {}) {
+  const candidates = [];
+  if (typeof explicit === "string" && explicit.trim().length > 0) {
+    candidates.push(path.resolve(explicit.trim()));
+  }
+  const envValue = env?.AGENC_RUNTIME_SOURCE_DIR;
+  if (typeof envValue === "string" && envValue.trim().length > 0) {
+    candidates.push(path.resolve(envValue.trim()));
+  }
+  // Walk upward from cwd looking for `runtime/package.json` whose name is
+  // `@tetsuo-ai/runtime` — that's the agenc-core monorepo root.
+  let current = path.resolve(cwd);
+  for (let i = 0; i < 8; i++) {
+    candidates.push(path.join(current, "runtime"));
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const pkgPath = path.join(candidate, "package.json");
+      const raw = readFileSync(pkgPath, "utf8");
+      const parsed = JSON.parse(raw);
+      if (parsed?.name === "@tetsuo-ai/runtime") {
+        return candidate;
+      }
+    } catch {
+      // try next
+    }
+  }
+  return null;
+}
+
+async function readJsonSafe(filePath) {
+  try {
+    const raw = await readFile(filePath, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function runBuildScript(sourceRoot, env) {
+  const result = spawn("npm", ["run", "build"], {
+    cwd: sourceRoot,
+    stdio: ["ignore", "inherit", "inherit"],
+    env: { ...env },
+  });
+  return new Promise((resolvePromise, rejectPromise) => {
+    result.on("error", rejectPromise);
+    result.on("exit", (code) => {
+      if (code === 0) {
+        resolvePromise();
+      } else {
+        rejectPromise(
+          new RuntimeInstallError(
+            `from-source build failed with exit code ${code}`,
+            "from_source_build_failed",
+          ),
+        );
+      }
+    });
+  });
+}
+
+async function readBuildVersion(sourceRoot) {
+  const versionPath = path.join(sourceRoot, "dist", "VERSION");
+  return await readJsonSafe(versionPath);
+}
+
+function buildFromSourceArtifactDescriptor(sourceRoot, packageJson, versionFile) {
+  const runtimeVersion =
+    typeof packageJson?.version === "string" ? packageJson.version : "0.0.0";
+  const distRoot = path.join(sourceRoot, "dist");
+  const bins = {
+    agenc: "bin/agenc.js",
+    "agenc-runtime": "bin/agenc-runtime.js",
+    daemon: "bin/daemon.js",
+    "agenc-watch": "bin/agenc-watch.js",
+  };
+  return {
+    runtimeVersion,
+    platform: FROM_SOURCE_PLATFORM_ARCH,
+    arch: "local",
+    bins,
+    sha256: versionFile?.commit ?? "from-source",
+    distRoot,
+  };
+}
+
+async function ensureFromSourceCurrentPointer({
+  homeDir = os.homedir(),
+  distRoot,
+}) {
+  const runtimeHome = getWrapperRuntimeHome(homeDir);
+  const releaseDir = path.join(
+    runtimeHome,
+    "releases",
+    "from-source",
+    FROM_SOURCE_PLATFORM_ARCH,
+  );
+  const currentDir = path.join(runtimeHome, "current");
+  const statePath = path.join(runtimeHome, "install-state.json");
+
+  await mkdir(path.dirname(releaseDir), { recursive: true });
+  await removePathSafe(releaseDir);
+  await mkdir(path.dirname(releaseDir), { recursive: true });
+
+  // The release dir is a directory containing a single symlink (`dist`)
+  // pointing back at the local source dist. The wrapper's bin paths look
+  // for `<releaseDir>/bin/<binName>`, so we lay out the same shape using
+  // a symlink for the entire `dist` tree.
+  await symlink(distRoot, releaseDir, "dir");
+
+  // Use removePathSafe (lstat-based) so we delete the SYMLINK at
+  // `currentDir`, not the target it points at. The previous `rm
+  // recursive` call followed the symlink and either failed silently
+  // or removed the target dir contents while leaving the link intact,
+  // causing the from-source flag to silently keep pointing at a
+  // stale release.
+  await removePathSafe(currentDir);
+  await symlink(releaseDir, currentDir, "dir");
+
+  await mkdir(path.dirname(statePath), { recursive: true });
+  await writeFile(
+    statePath,
+    `${JSON.stringify(
+      {
+        installedAt: new Date().toISOString(),
+        manifestSource: "from-source",
+        runtimeVersion: path.basename(distRoot),
+        platform: FROM_SOURCE_PLATFORM_ARCH,
+        arch: "local",
+        releaseDir,
+        currentDir,
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+
+  return { runtimeHome, releaseDir, currentDir, statePath };
+}
+
+export async function ensureRuntimeFromSource(options = {}) {
+  const env = options.env ?? process.env;
+  const homeDir = options.homeDir ?? os.homedir();
+  const cwd = options.cwd ?? process.cwd();
+  const sourceRoot = resolveSourceRoot({
+    env,
+    cwd,
+    explicit: options.sourceDir,
+  });
+  if (!sourceRoot) {
+    throw new RuntimeInstallError(
+      "could not locate the agenc-core runtime source directory; pass --source-dir <path> or set AGENC_RUNTIME_SOURCE_DIR",
+      "from_source_root_not_found",
+    );
+  }
+  const distRoot = path.join(sourceRoot, "dist");
+  const skipBuild =
+    options.skipBuild === true || env?.AGENC_FROM_SOURCE_SKIP_BUILD === "1";
+
+  if (!skipBuild) {
+    await runBuildScript(sourceRoot, env);
+  }
+  if (!existsSync(distRoot)) {
+    throw new RuntimeInstallError(
+      `from-source build did not produce ${distRoot}`,
+      "from_source_dist_missing",
+    );
+  }
+
+  const packageJson = await readJsonSafe(path.join(sourceRoot, "package.json"));
+  const versionFile = await readBuildVersion(sourceRoot);
+  const selectedArtifact = buildFromSourceArtifactDescriptor(
+    sourceRoot,
+    packageJson,
+    versionFile,
+  );
+
+  const installPaths = await ensureFromSourceCurrentPointer({
+    homeDir,
+    distRoot,
+  });
+
+  return {
+    releaseDir: installPaths.releaseDir,
+    currentDir: installPaths.currentDir,
+    runtimeHome: installPaths.runtimeHome,
+    statePath: installPaths.statePath,
+    manifestSource: "from-source",
+    selectedArtifact,
+    fromSource: true,
+    sourceRoot,
+    versionFile,
+    bins: {
+      agenc: path.join(installPaths.currentDir, selectedArtifact.bins.agenc),
+      "agenc-runtime": path.join(
+        installPaths.currentDir,
+        selectedArtifact.bins["agenc-runtime"],
+      ),
+      daemon: path.join(installPaths.currentDir, selectedArtifact.bins.daemon),
+      watch: path.join(
+        installPaths.currentDir,
+        selectedArtifact.bins["agenc-watch"],
+      ),
+    },
+  };
+}
+
+export async function spawnInstalledRuntimeBinFromSource(
+  binName,
+  args,
+  options = {},
+) {
+  const runtime = await ensureRuntimeFromSource(options);
+  const scriptPath = runtime.bins[binName];
+  if (!scriptPath) {
+    throw new RuntimeInstallError(
+      `from-source runtime does not expose ${binName}`,
+      "missing_runtime_bin",
+    );
+  }
+  const env = {
+    ...(options.env ?? process.env),
+    AGENC_WRAPPER_ACTIVE: "1",
+    AGENC_WRAPPER_RUNTIME_HOME: runtime.runtimeHome,
+    AGENC_WRAPPER_RELEASE_DIR: runtime.releaseDir,
+    AGENC_WRAPPER_CURRENT_DIR: runtime.currentDir,
+    AGENC_WRAPPER_FROM_SOURCE: "1",
+    AGENC_WRAPPER_SOURCE_ROOT: runtime.sourceRoot,
+    AGENC_DAEMON_ENTRY: runtime.bins.daemon,
+    AGENC_WATCH_ENTRY: runtime.bins.watch,
+  };
+  return spawnNodeScript(scriptPath, args, env, options.cwd);
 }

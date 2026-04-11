@@ -1,8 +1,13 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MarketplaceView } from './MarketplaceView';
+import type { MarketplaceViewProps } from './MarketplaceView';
 
-function createProps() {
+afterEach(() => {
+  cleanup();
+});
+
+function createProps(): MarketplaceViewProps {
   return {
     tasks: [
       {
@@ -10,6 +15,8 @@ function createProps() {
         status: 'open',
         description: 'Open marketplace task',
         reward: '1.5',
+        viewerAgentPda: 'viewer-agent-pda',
+        ownedBySigner: true,
       },
     ],
     onTaskRefresh: vi.fn(),
@@ -64,6 +71,46 @@ describe('MarketplaceView', () => {
 
     expect(screen.getByText('Open marketplace task')).toBeTruthy();
     expect(screen.getByRole('button', { name: '[REFRESH]' })).toBeTruthy();
+  });
+
+  it('defaults task scope to yours and can switch to all tasks', () => {
+    const props = createProps();
+    props.tasks = [
+      {
+        id: 'task-owned',
+        status: 'open',
+        description: 'Owned task',
+        reward: '1.5',
+        viewerAgentPda: 'viewer-agent-pda',
+        ownedBySigner: true,
+      },
+      {
+        id: 'task-foreign',
+        status: 'open',
+        description: 'Other task',
+        reward: '3',
+        viewerAgentPda: 'viewer-agent-pda',
+        ownedBySigner: false,
+        assignedToSigner: false,
+        claimableBySigner: true,
+      },
+    ];
+
+    render(<MarketplaceView {...props} />);
+
+    const scopeControls = screen.getByText('scope:').parentElement;
+    if (!scopeControls) {
+      throw new Error('Task scope controls not found');
+    }
+
+    expect(screen.getByText('Owned task')).toBeTruthy();
+    expect(screen.queryByText('Other task')).toBeNull();
+
+    fireEvent.click(within(scopeControls).getAllByRole('button', { name: '[all:2]' })[0]);
+    expect(screen.getByText('Other task')).toBeTruthy();
+
+    fireEvent.click(within(scopeControls).getByRole('button', { name: '[yours:1]' }));
+    expect(screen.queryByText('Other task')).toBeNull();
   });
 
   it('switches panes across the marketplace workspace', () => {

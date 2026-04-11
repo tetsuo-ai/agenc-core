@@ -48,6 +48,10 @@ import { formatForChannel } from "./format.js";
 import { executeTextChannelTurn } from "./daemon-text-channel-turn.js";
 import type { ToolRoutingDecision } from "./tool-routing.js";
 import { loadConfiguredPluginChannel } from "../plugins/channel-loader.js";
+import type { AgentDefinition } from "./agent-loader.js";
+import type { DelegationVerifierService } from "./delegation-runtime.js";
+import type { PersistentWorkerManager } from "./persistent-worker-manager.js";
+import type { SubAgentManager } from "./sub-agent.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -113,6 +117,14 @@ export interface ChannelWiringDeps {
     sessionId: string,
     summary: ChatToolRoutingSummary | undefined,
   ): void;
+
+  readonly subAgentManager?: Pick<SubAgentManager, "spawn" | "waitForResult"> | null;
+  readonly workerManager?: PersistentWorkerManager | null;
+  readonly verifierService?: Pick<
+    DelegationVerifierService,
+    "resolveVerifierRequirement" | "shouldVerifySubAgentResult"
+  > | null;
+  readonly agentDefinitions?: readonly AgentDefinition[];
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +190,7 @@ async function stopExternalChannelRegistry(
 // wireTelegram
 // ---------------------------------------------------------------------------
 
-export async function wireTelegram(
+async function wireTelegram(
   config: GatewayConfig,
   deps: ChannelWiringDeps,
 ): Promise<TelegramChannel | null> {
@@ -330,6 +342,10 @@ export async function wireTelegram(
         recordToolRoutingOutcome: (sessionId, summary) => {
           deps.recordToolRoutingOutcome(sessionId, summary);
         },
+        subAgentManager: deps.subAgentManager ?? null,
+        workerManager: deps.workerManager ?? null,
+        verifierService: deps.verifierService ?? null,
+        agentDefinitions: deps.agentDefinitions,
       });
 
       deps.logger.debug("Telegram reply ready", {
@@ -521,6 +537,10 @@ export async function wireExternalChannel(
         recordToolRoutingOutcome: (sessionId, summary) => {
           deps.recordToolRoutingOutcome(sessionId, summary);
         },
+        subAgentManager: deps.subAgentManager ?? null,
+        workerManager: deps.workerManager ?? null,
+        verifierService: deps.verifierService ?? null,
+        agentDefinitions: deps.agentDefinitions,
       });
 
       const formatted = formatForChannel(

@@ -5,6 +5,14 @@
  * - agenc.listTasks — list tasks with optional status filter
  * - agenc.getTask — fetch a single task by PDA
  * - agenc.getJobSpec — resolve a task PDA to its verified off-chain marketplace job spec
+ * - agenc.listSkills — list marketplace skills with optional filtering
+ * - agenc.getSkill — fetch a single marketplace skill by PDA
+ * - agenc.listGovernanceProposals — list governance proposals with optional status filter
+ * - agenc.getGovernanceProposal — fetch a single governance proposal by PDA
+ * - agenc.listDisputes — list marketplace disputes with optional status filter
+ * - agenc.getDispute — fetch a single marketplace dispute by PDA
+ * - agenc.getReputationSummary — fetch marketplace reputation for an agent or the connected signer
+ * - agenc.inspectMarketplace — inspect a marketplace surface (overview, tasks, skills, governance, disputes, reputation)
  * - agenc.getAgent — fetch agent registration by PDA
  * - agenc.getProtocolConfig — fetch protocol configuration
  * - agenc.getTokenBalance — fetch token ATA balance for owner+mint
@@ -17,14 +25,15 @@
  */
 
 import { PublicKey, SystemProgram } from '@solana/web3.js';
-import { type Program } from '@coral-xyz/anchor';
-import BN from 'bn.js';
+import { BN, type Program } from '@coral-xyz/anchor';
 import { getAssociatedTokenAddressSync } from '@tetsuo-ai/sdk';
 import type { AgencCoordination } from '../../types/agenc_coordination.js';
 import type { Tool, ToolResult } from '../types.js';
 import { safeStringify } from '../types.js';
 import { TaskOperations } from '../../task/operations.js';
-import { findAgentPda, findProtocolPda, findAuthorityRateLimitPda } from '../../agent/pda.js';
+import { GovernanceOperations } from '../../governance/operations.js';
+import { DisputeOperations } from '../../dispute/operations.js';
+import { findAgentPda, findAuthorityRateLimitPda, findProtocolPda } from '../../agent/pda.js';
 import { findTaskPda, findEscrowPda } from '../../task/pda.js';
 import {
   taskStatusToString,
@@ -38,6 +47,26 @@ import {
 } from '../../task/types.js';
 import { parseAgentState, agentStatusToString } from '../../agent/types.js';
 import { getCapabilityNames } from '../../agent/capabilities.js';
+import {
+  buildMarketplaceReputationSummaryForAgent,
+  buildMarketplaceUnregisteredSummary,
+  serializeMarketplaceDisputeDetail,
+  serializeMarketplaceDisputeSummary,
+  serializeMarketplaceProposalDetail,
+  serializeMarketplaceProposalSummary,
+  serializeMarketplaceSkill,
+  serializeMarketplaceTaskEntry,
+} from '../../marketplace/serialization.js';
+import {
+  buildMarketplaceInspectOverview,
+  buildMarketplaceInspectSurface,
+  buildMarketplaceReputationInspectPlaceholder,
+  resolveMarketplaceInspectSurface,
+} from '../../marketplace/surfaces.mjs';
+import type {
+  MarketplaceInspectOverview,
+  MarketplaceInspectSurface,
+} from '../../marketplace/surfaces.mjs';
 import { parseProtocolConfig } from '../../types/protocol.js';
 import { buildCreateTaskTokenAccounts } from '../../utils/token.js';
 import {
@@ -63,7 +92,18 @@ import type { Logger } from '../../utils/logger.js';
 import type { OnChainTask } from '../../task/types.js';
 import type { AgentState } from '../../agent/types.js';
 import type { ProtocolConfig } from '../../types/protocol.js';
-import type { SerializedTask, SerializedTaskJobSpec, SerializedAgent, SerializedProtocolConfig } from './types.js';
+import type {
+  SerializedAgent,
+  SerializedDisputeDetail,
+  SerializedDisputeSummary,
+  SerializedGovernanceProposalDetail,
+  SerializedGovernanceProposalSummary,
+  SerializedProtocolConfig,
+  SerializedReputationSummary,
+  SerializedSkill,
+  SerializedTask,
+  SerializedTaskJobSpec,
+} from './types.js';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
@@ -74,6 +114,10 @@ const MAX_U64 = (1n << 64n) - 1n;
 const MAX_REPUTATION = 10_000;
 const TASK_TYPE_INPUT_ERROR =
   'taskType must be one of 0/exclusive, 1/collaborative, 2/competitive, or 3/bid-exclusive';
+const DUMMY_AGENT_ID = new Uint8Array(32);
+const AGENT_DISCRIMINATOR = Buffer.from([130, 53, 100, 103, 121, 77, 148, 19]);
+const AGENT_ID_OFFSET = 8;
+const AGENT_AUTHORITY_OFFSET = AGENT_ID_OFFSET + TASK_ID_BYTES;
 
 /**
  * Dedup guard for createTask — prevents the LLM from calling createTask
@@ -93,12 +137,6 @@ export interface GetJobSpecToolOptions {
 export interface TaskJobSpecQueryToolOptions {
   readonly program?: Program<AgencCoordination>;
   readonly jobSpecStoreDir?: string;
-}
-
-
-/** @internal Exposed for testing only. */
-export function _resetCreateTaskDedup(): void {
-  recentCreateTaskCalls.clear();
 }
 
 const KNOWN_MINTS: Record<string, { symbol: string; decimals: number }> = {
@@ -359,6 +397,66 @@ function parseKnownRewardMint(input: unknown): [PublicKey | null, ToolResult | n
   return [mint, null];
 }
 
+interface SignerAgentChoice {
+  registered: true;
+  authority: string;
+  agentPda: string;
+  agentId: string;
+}
+
+function ambiguousSignerAgentsResult(authority: PublicKey, agents: SignerAgentChoice[]): ToolResult {
+  return {
+    content: safeStringify({
+      error:
+        'Multiple agent registrations found for signer wallet. Provide creatorAgentPda with one of the listed agentPda values.',
+      code: 'MULTIPLE_AGENT_REGISTRATIONS',
+      status: 'requires_input',
+      authority: authority.toBase58(),
+      count: agents.length,
+      agents,
+    }),
+    isError: true,
+  };
+}
+
+async function findSignerAgentChoices(
+  program: Program<AgencCoordination>,
+  authority: PublicKey,
+): Promise<SignerAgentChoice[]> {
+  // Use raw getProgramAccounts to bypass Anchor deserialization bug with enum repr.
+  const bs58 = await import('bs58');
+  const matches = await program.provider.connection.getProgramAccounts(program.programId, {
+    filters: [
+      { memcmp: { offset: 0, bytes: bs58.default.encode(AGENT_DISCRIMINATOR) } },
+      { memcmp: { offset: AGENT_AUTHORITY_OFFSET, bytes: authority.toBase58() } },
+    ],
+  });
+
+  return matches
+    .map((match) => ({
+      registered: true as const,
+      authority: authority.toBase58(),
+      agentPda: match.pubkey.toBase58(),
+      agentId: bytesToHex(match.account.data.subarray(AGENT_ID_OFFSET, AGENT_AUTHORITY_OFFSET)),
+    }))
+    .sort((left, right) => left.agentPda.localeCompare(right.agentPda));
+}
+
+function buildAmbiguousSignerAgentsSurface(
+  authority: PublicKey,
+  agents: SignerAgentChoice[],
+): MarketplaceInspectSurface {
+  return buildMarketplaceInspectSurface({
+    surface: 'reputation',
+    status: 'requires_input',
+    subject: authority.toBase58(),
+    message:
+      'Multiple agent registrations found for signer wallet. Provide one of the listed agentPda values to inspect reputation deterministically.',
+    items: agents,
+    count: agents.length,
+  });
+}
+
 async function resolveCreatorAgentPda(
   program: Program<AgencCoordination>,
   creator: PublicKey,
@@ -369,25 +467,16 @@ async function resolveCreatorAgentPda(
     return [pda, err];
   }
 
-  // Use raw getProgramAccounts to bypass Anchor deserialization bug with enum repr
-  const bs58 = await import('bs58');
-  const AGENT_DISCRIMINATOR = Buffer.from([130, 53, 100, 103, 121, 77, 148, 19]);
-  const AGENT_AUTHORITY_OFFSET = 40; // 8 (disc) + 32 (agent_id)
-  const matches = await program.provider.connection.getProgramAccounts(program.programId, {
-    filters: [
-      { memcmp: { offset: 0, bytes: bs58.default.encode(AGENT_DISCRIMINATOR) } },
-      { memcmp: { offset: AGENT_AUTHORITY_OFFSET, bytes: creator.toBase58() } },
-    ],
-  });
+  const matches = await findSignerAgentChoices(program, creator);
 
   if (matches.length === 0) {
-    return [null, errorResult('No agent registration found for signer. Provide creatorAgentPda.')];
+    return [null, errorResult('No agent registration found for signer wallet. Run `agenc-runtime agent register --rpc <url>` first, or provide creatorAgentPda.')];
   }
   if (matches.length > 1) {
-    return [null, errorResult('Multiple agent registrations found. Provide creatorAgentPda.')];
+    return [null, ambiguousSignerAgentsResult(creator, matches)];
   }
 
-  return [matches[0].pubkey, null];
+  return [new PublicKey(matches[0]!.agentPda), null];
 }
 
 function isMissingAccountError(err: unknown): boolean {
@@ -732,6 +821,323 @@ function serializeProtocolConfig(config: ProtocolConfig): SerializedProtocolConf
   };
 }
 
+function parseOptionalString(value: unknown, field: string): [string | undefined, ToolResult | null] {
+  if (value === undefined || value === null) return [undefined, null];
+  if (typeof value !== 'string') {
+    return [undefined, errorResult(`${field} must be a string`)];
+  }
+  const normalized = value.trim();
+  return [normalized.length > 0 ? normalized : undefined, null];
+}
+
+function parseOptionalStringArray(value: unknown, field: string): [string[] | undefined, ToolResult | null] {
+  if (value === undefined || value === null) return [undefined, null];
+  if (!Array.isArray(value)) {
+    return [undefined, errorResult(`${field} must be an array of strings`)];
+  }
+  const normalized = value
+    .map((entry) => String(entry ?? '').trim())
+    .filter(Boolean);
+  return [normalized, null];
+}
+
+function parseMarketplaceStatusFilter(value: unknown): [string[] | undefined, ToolResult | null] {
+  if (value === undefined || value === null) return [undefined, null];
+  if (typeof value !== 'string') {
+    return [undefined, errorResult('status must be a string')];
+  }
+  const normalized = value
+    .split(',')
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+  if (normalized.length === 0 || normalized.includes('all')) {
+    return [undefined, null];
+  }
+  return [normalized, null];
+}
+
+function filterMarketplaceItemsByStatus<T extends { status: string }>(items: T[], statuses?: string[]): T[] {
+  if (!statuses || statuses.length === 0) {
+    return items;
+  }
+  const allowed = new Set(statuses.map((status) => status.trim().toLowerCase()).filter(Boolean));
+  if (allowed.size === 0) {
+    return items;
+  }
+  return items.filter((item) => allowed.has(String(item.status ?? '').trim().toLowerCase()));
+}
+
+function queryTaskOperations(program: Program<AgencCoordination>, logger: Logger): TaskOperations {
+  return new TaskOperations({
+    program,
+    agentId: DUMMY_AGENT_ID,
+    logger,
+  });
+}
+
+function queryGovernanceOperations(program: Program<AgencCoordination>, logger: Logger): GovernanceOperations {
+  return new GovernanceOperations({
+    program,
+    agentId: DUMMY_AGENT_ID,
+    logger,
+  });
+}
+
+function queryDisputeOperations(program: Program<AgencCoordination>, logger: Logger): DisputeOperations {
+  return new DisputeOperations({
+    program,
+    agentId: DUMMY_AGENT_ID,
+    logger,
+  });
+}
+
+async function enrichSerializedDisputeSummary(
+  entry: Awaited<ReturnType<DisputeOperations['fetchAllDisputes']>>[number],
+  taskOps: TaskOperations,
+): Promise<SerializedDisputeSummary> {
+  const summary = serializeMarketplaceDisputeSummary(entry) as Omit<
+    SerializedDisputeSummary,
+    'claimant' | 'respondent' | 'amountAtStake' | 'amountAtStakeSol' | 'amountAtStakeMint'
+  >;
+  const relatedTask = await taskOps.fetchTask(entry.dispute.task);
+  return {
+    ...summary,
+    claimant: summary.initiator,
+    respondent: summary.defendant,
+    amountAtStake: relatedTask?.rewardAmount?.toString() ?? summary.workerStakeAtDispute,
+    amountAtStakeSol: relatedTask && !relatedTask.rewardMint
+      ? lamportsToSol(relatedTask.rewardAmount)
+      : undefined,
+    amountAtStakeMint: relatedTask?.rewardMint?.toBase58() ?? summary.rewardMint,
+  };
+}
+
+async function enrichSerializedDisputeDetail(
+  disputePda: PublicKey,
+  dispute: Awaited<ReturnType<DisputeOperations['fetchDispute']>>,
+  taskOps: TaskOperations,
+): Promise<SerializedDisputeDetail> {
+  const detail = serializeMarketplaceDisputeDetail(disputePda, dispute!) as Omit<
+    SerializedDisputeDetail,
+    'claimant' | 'respondent' | 'amountAtStake' | 'amountAtStakeSol' | 'amountAtStakeMint' | 'relatedTask'
+  >;
+  const relatedTask = await taskOps.fetchTask(dispute!.task);
+  return {
+    ...detail,
+    claimant: detail.initiator,
+    respondent: detail.defendant,
+    amountAtStake: relatedTask?.rewardAmount?.toString() ?? detail.workerStakeAtDispute,
+    amountAtStakeSol: relatedTask && !relatedTask.rewardMint
+      ? lamportsToSol(relatedTask.rewardAmount)
+      : undefined,
+    amountAtStakeMint: relatedTask?.rewardMint?.toBase58() ?? detail.rewardMint,
+    relatedTask: relatedTask ? serializeTask(relatedTask, dispute!.task) : null,
+  };
+}
+
+async function loadReputationSummary(
+  program: Program<AgencCoordination>,
+  requestedAgentPda: unknown,
+): Promise<[SerializedReputationSummary | null, ToolResult | null]> {
+  if (requestedAgentPda !== undefined && requestedAgentPda !== null) {
+    const [agentPda, agentErr] = parseBase58(requestedAgentPda);
+    if (agentErr || !agentPda) return [null, agentErr ?? errorResult('Invalid agentPda')];
+    const summary = await buildMarketplaceReputationSummaryForAgent(program, agentPda, DUMMY_AGENT_ID);
+    return [summary ?? buildMarketplaceUnregisteredSummary({ agentPda: agentPda.toBase58() }), null];
+  }
+
+  const authority = program.provider.publicKey;
+  if (!authority) {
+    return [null, errorResult('agentPda is required when no signer-backed agent context is available')];
+  }
+
+  const [agentPda, agentErr] = await resolveCreatorAgentPda(program, authority);
+  if (agentPda) {
+    const summary = await buildMarketplaceReputationSummaryForAgent(program, agentPda, DUMMY_AGENT_ID);
+    return [
+      summary ??
+        buildMarketplaceUnregisteredSummary({
+          authority: authority.toBase58(),
+          agentPda: agentPda.toBase58(),
+        }),
+      null,
+    ];
+  }
+
+  if (isNoRegistrationError(agentErr)) {
+    return [
+      buildMarketplaceUnregisteredSummary({
+        authority: authority.toBase58(),
+      }),
+      null,
+    ];
+  }
+
+  return [null, agentErr ?? errorResult('Unable to resolve reputation summary target')];
+}
+
+async function buildMarketplaceTasksSurface(
+  program: Program<AgencCoordination>,
+  logger: Logger,
+  options: { statuses?: string[]; limit: number },
+): Promise<MarketplaceInspectSurface> {
+  const taskOps = queryTaskOperations(program, logger);
+  const items = filterMarketplaceItemsByStatus(
+    (await taskOps.fetchAllTasks()).map((entry) => serializeMarketplaceTaskEntry(entry)),
+    options.statuses,
+  );
+  items.sort((left, right) => Number(right.createdAt ?? 0) - Number(left.createdAt ?? 0));
+  const total = items.length;
+  const limited = items.slice(0, options.limit);
+  return buildMarketplaceInspectSurface({
+    surface: 'tasks',
+    items: limited,
+    count: total,
+    filters: { statuses: options.statuses },
+  });
+}
+
+async function buildMarketplaceSkillsSurface(
+  program: Program<AgencCoordination>,
+  options: { query?: string; tags?: string[]; activeOnly: boolean; limit: number },
+): Promise<MarketplaceInspectSurface> {
+  const rawSkills = await (program.account as any).skillRegistration.all();
+  let items = rawSkills.map((entry: { publicKey: PublicKey; account: Record<string, unknown> }) =>
+    serializeMarketplaceSkill(entry),
+  ) as SerializedSkill[];
+
+  if (options.activeOnly) {
+    items = items.filter((skill) => skill.isActive);
+  }
+  if (options.query) {
+    const query = options.query.toLowerCase();
+    items = items.filter((skill) =>
+      skill.name.toLowerCase().includes(query) ||
+      skill.author.toLowerCase().includes(query) ||
+      skill.skillId.toLowerCase().includes(query) ||
+      skill.tags.some((tag) => tag.toLowerCase().includes(query)),
+    );
+  }
+  if (options.tags && options.tags.length > 0) {
+    const requiredTags = new Set(options.tags.map((tag) => tag.toLowerCase()));
+    items = items.filter((skill) =>
+      skill.tags.some((tag) => requiredTags.has(tag.toLowerCase())),
+    );
+  }
+
+  items.sort((left, right) =>
+    right.rating - left.rating ||
+    right.downloads - left.downloads ||
+    left.name.localeCompare(right.name),
+  );
+  const total = items.length;
+  const limited = items.slice(0, options.limit);
+  return buildMarketplaceInspectSurface({
+    surface: 'skills',
+    items: limited,
+    count: total,
+    filters: {
+      query: options.query,
+      tags: options.tags,
+      activeOnly: options.activeOnly,
+      limit: options.limit,
+    },
+  });
+}
+
+async function buildMarketplaceGovernanceSurface(
+  program: Program<AgencCoordination>,
+  logger: Logger,
+  options: { statuses?: string[]; limit: number },
+): Promise<MarketplaceInspectSurface> {
+  const governance = queryGovernanceOperations(program, logger);
+  const items = filterMarketplaceItemsByStatus(
+    (await governance.fetchAllProposals()).map((entry) => serializeMarketplaceProposalSummary(entry)),
+    options.statuses,
+  ) as SerializedGovernanceProposalSummary[];
+  items.sort((left, right) => Number(right.createdAt ?? 0) - Number(left.createdAt ?? 0));
+  const total = items.length;
+  const limited = items.slice(0, options.limit);
+  return buildMarketplaceInspectSurface({
+    surface: 'governance',
+    items: limited,
+    count: total,
+    filters: { statuses: options.statuses },
+  });
+}
+
+async function buildMarketplaceDisputesSurface(
+  program: Program<AgencCoordination>,
+  logger: Logger,
+  options: { statuses?: string[]; limit: number },
+): Promise<MarketplaceInspectSurface> {
+  const disputeOps = queryDisputeOperations(program, logger);
+  const taskOps = queryTaskOperations(program, logger);
+  const summaries = await Promise.all(
+    (await disputeOps.fetchAllDisputes()).map((entry) => enrichSerializedDisputeSummary(entry, taskOps)),
+  );
+  const items = filterMarketplaceItemsByStatus(summaries, options.statuses);
+  items.sort((left, right) => Number(right.createdAt ?? 0) - Number(left.createdAt ?? 0));
+  const total = items.length;
+  const limited = items.slice(0, options.limit);
+  return buildMarketplaceInspectSurface({
+    surface: 'disputes',
+    items: limited,
+    count: total,
+    filters: { statuses: options.statuses },
+  });
+}
+
+async function buildMarketplaceReputationSurface(
+  program: Program<AgencCoordination>,
+  requestedAgentPda: unknown,
+): Promise<MarketplaceInspectSurface> {
+  const requestedSubject =
+    typeof requestedAgentPda === 'string' ? requestedAgentPda.trim() : requestedAgentPda;
+  if (requestedSubject === undefined || requestedSubject === null || requestedSubject === '') {
+    const authority = program.provider.publicKey;
+    if (!authority) {
+      return buildMarketplaceReputationInspectPlaceholder();
+    }
+
+    const matches = await findSignerAgentChoices(program, authority);
+    if (matches.length === 0) {
+      return buildMarketplaceInspectSurface({
+        surface: 'reputation',
+        status: 'not_found',
+        subject: authority.toBase58(),
+        message: 'No agent registration found for signer wallet.',
+        items: [buildMarketplaceUnregisteredSummary({ authority: authority.toBase58() })],
+        count: 0,
+      });
+    }
+    if (matches.length > 1) {
+      return buildAmbiguousSignerAgentsSurface(authority, matches);
+    }
+
+    const [summary, summaryErr] = await loadReputationSummary(program, matches[0]!.agentPda);
+    if (summaryErr || !summary) {
+      throw new Error(parseToolErrorMessage(summaryErr) ?? 'Unable to inspect marketplace reputation');
+    }
+    return buildMarketplaceInspectSurface({
+      surface: 'reputation',
+      subject: summary.agentPda ?? summary.authority ?? null,
+      items: [summary],
+      count: 1,
+    });
+  }
+  const [summary, summaryErr] = await loadReputationSummary(program, requestedSubject);
+  if (summaryErr || !summary) {
+    throw new Error(parseToolErrorMessage(summaryErr) ?? 'Unable to inspect marketplace reputation');
+  }
+  return buildMarketplaceInspectSurface({
+    surface: 'reputation',
+    subject: summary.agentPda ?? summary.authority ?? null,
+    items: [summary],
+    count: 1,
+  });
+}
+
 // ============================================================================
 // Tool Factory Functions
 // ============================================================================
@@ -1015,6 +1421,578 @@ export function createGetTokenBalanceTool(
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         logger.error(`agenc.getTokenBalance failed: ${msg}`);
+        return errorResult(msg);
+      }
+    },
+  };
+}
+
+/**
+ * Create the agenc.listSkills tool.
+ */
+export function createListSkillsTool(
+  program: Program<AgencCoordination>,
+  logger: Logger,
+): Tool {
+  return {
+    name: 'agenc.listSkills',
+    description:
+      'List marketplace skills registered on AgenC. Filter by query text and optionally only show active skills.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Optional search text matched against skill name, tags, author, or skill id.',
+        },
+        activeOnly: {
+          type: 'boolean',
+          description: 'When true, only return active marketplace skills.',
+        },
+        limit: {
+          type: 'number',
+          description: `Maximum skills to return (default: ${DEFAULT_LIMIT}, max: ${MAX_LIMIT})`,
+        },
+      },
+    },
+    async execute(args: Record<string, unknown>): Promise<ToolResult> {
+      const [limit, limitErr] = parseBoundedNumber(
+        args.limit,
+        'limit',
+        1,
+        MAX_LIMIT,
+        DEFAULT_LIMIT,
+      );
+      if (limitErr) return limitErr;
+
+      if (args.query !== undefined && typeof args.query !== 'string') {
+        return errorResult('query must be a string');
+      }
+      if (args.activeOnly !== undefined && typeof args.activeOnly !== 'boolean') {
+        return errorResult('activeOnly must be a boolean');
+      }
+
+      const query = String(args.query ?? '').trim().toLowerCase();
+      const activeOnly = Boolean(args.activeOnly ?? false);
+
+      try {
+        const rawSkills = await (program.account as any).skillRegistration.all();
+        let skills = rawSkills.map((entry: { publicKey: PublicKey; account: Record<string, unknown> }) =>
+          serializeMarketplaceSkill(entry),
+        ) as SerializedSkill[];
+
+        if (activeOnly) {
+          skills = skills.filter((skill) => skill.isActive);
+        }
+
+        if (query) {
+          skills = skills.filter((skill) =>
+            skill.name.toLowerCase().includes(query) ||
+            skill.author.toLowerCase().includes(query) ||
+            skill.skillId.toLowerCase().includes(query) ||
+            skill.tags.some((tag) => tag.toLowerCase().includes(query)),
+          );
+        }
+
+        skills.sort(
+          (left, right) =>
+            right.rating - left.rating ||
+            right.downloads - left.downloads ||
+            left.name.localeCompare(right.name),
+        );
+
+        return {
+          content: safeStringify({
+            count: Math.min(skills.length, limit),
+            total: skills.length,
+            skills: skills.slice(0, limit),
+          }),
+        };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        logger.error(`agenc.listSkills failed: ${msg}`);
+        return errorResult(msg);
+      }
+    },
+  };
+}
+
+/**
+ * Create the agenc.getSkill tool.
+ */
+export function createGetSkillTool(
+  program: Program<AgencCoordination>,
+  logger: Logger,
+): Tool {
+  return {
+    name: 'agenc.getSkill',
+    description:
+      'Get details for a specific marketplace skill by its PDA address (base58).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        skillPda: {
+          type: 'string',
+          description: 'Skill registration PDA address (base58)',
+        },
+      },
+      required: ['skillPda'],
+    },
+    async execute(args: Record<string, unknown>): Promise<ToolResult> {
+      const [pda, err] = parseBase58(args.skillPda);
+      if (err) return err;
+
+      try {
+        const fetchNullable = (program.account as any).skillRegistration.fetchNullable;
+        const raw =
+          typeof fetchNullable === 'function'
+            ? await fetchNullable(pda!)
+            : await program.account.skillRegistration.fetch(pda!);
+        if (!raw) {
+          return errorResult(`Skill not found: ${pda!.toBase58()}`);
+        }
+
+        const skill = serializeMarketplaceSkill({
+          publicKey: pda!,
+          account: raw as Record<string, unknown>,
+        }) as SerializedSkill;
+        return { content: safeStringify(skill) };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        if (msg.includes('Account does not exist') || msg.includes('could not find')) {
+          return errorResult(`Skill not found: ${pda!.toBase58()}`);
+        }
+        logger.error(`agenc.getSkill failed: ${msg}`);
+        return errorResult(msg);
+      }
+    },
+  };
+}
+
+/**
+ * Create the agenc.listGovernanceProposals tool.
+ */
+export function createListGovernanceProposalsTool(
+  program: Program<AgencCoordination>,
+  logger: Logger,
+): Tool {
+  return {
+    name: 'agenc.listGovernanceProposals',
+    description:
+      'List governance proposals on AgenC. Filter by proposal status to inspect active or historical governance state.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        status: {
+          type: 'string',
+          enum: ['active', 'executed', 'defeated', 'cancelled', 'all'],
+          description: 'Proposal status filter (default: all)',
+        },
+        limit: {
+          type: 'number',
+          description: `Maximum proposals to return (default: ${DEFAULT_LIMIT}, max: ${MAX_LIMIT})`,
+        },
+      },
+    },
+    async execute(args: Record<string, unknown>): Promise<ToolResult> {
+      const [limit, limitErr] = parseBoundedNumber(
+        args.limit,
+        'limit',
+        1,
+        MAX_LIMIT,
+        DEFAULT_LIMIT,
+      );
+      if (limitErr) return limitErr;
+
+      const status = String(args.status ?? 'all').trim().toLowerCase();
+      if (!['active', 'executed', 'defeated', 'cancelled', 'all'].includes(status)) {
+        return errorResult('status must be one of: active, executed, defeated, cancelled, all');
+      }
+
+      try {
+        const governance = new GovernanceOperations({
+          program,
+          agentId: DUMMY_AGENT_ID,
+          logger,
+        });
+        const rawProposals =
+          status === 'active'
+            ? await governance.fetchActiveProposals()
+            : await governance.fetchAllProposals();
+
+        let proposals = rawProposals.map((entry) =>
+          serializeMarketplaceProposalSummary(entry),
+        ) as SerializedGovernanceProposalSummary[];
+
+        if (status !== 'all' && status !== 'active') {
+          proposals = proposals.filter((proposal) => proposal.status === status);
+        }
+
+        proposals.sort(
+          (left, right) =>
+            right.createdAt - left.createdAt ||
+            left.proposalPda.localeCompare(right.proposalPda),
+        );
+
+        return {
+          content: safeStringify({
+            count: Math.min(proposals.length, limit),
+            total: proposals.length,
+            proposals: proposals.slice(0, limit),
+          }),
+        };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        logger.error(`agenc.listGovernanceProposals failed: ${msg}`);
+        return errorResult(msg);
+      }
+    },
+  };
+}
+
+/**
+ * Create the agenc.getGovernanceProposal tool.
+ */
+export function createGetGovernanceProposalTool(
+  program: Program<AgencCoordination>,
+  logger: Logger,
+): Tool {
+  return {
+    name: 'agenc.getGovernanceProposal',
+    description:
+      'Get details for a specific governance proposal by its PDA address (base58), including recorded votes.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        proposalPda: {
+          type: 'string',
+          description: 'Proposal PDA address (base58)',
+        },
+      },
+      required: ['proposalPda'],
+    },
+    async execute(args: Record<string, unknown>): Promise<ToolResult> {
+      const [pda, err] = parseBase58(args.proposalPda);
+      if (err) return err;
+
+      try {
+        const governance = new GovernanceOperations({
+          program,
+          agentId: DUMMY_AGENT_ID,
+          logger,
+        });
+        const proposal = await governance.getProposal(pda!);
+        if (!proposal) {
+          return errorResult(`Governance proposal not found: ${pda!.toBase58()}`);
+        }
+
+        const serialized = serializeMarketplaceProposalDetail(
+          pda!,
+          proposal,
+        ) as SerializedGovernanceProposalDetail;
+        return { content: safeStringify(serialized) };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        logger.error(`agenc.getGovernanceProposal failed: ${msg}`);
+        return errorResult(msg);
+      }
+    },
+  };
+}
+
+/**
+ * Create the agenc.inspectMarketplace tool.
+ */
+export function createInspectMarketplaceTool(
+  program: Program<AgencCoordination>,
+  logger: Logger,
+): Tool {
+  return {
+    name: 'agenc.inspectMarketplace',
+    description:
+      'Inspect a marketplace surface on AgenC. Use this first for prompts like "inspect the marketplace disputes surface", "show the top skills", "review governance proposals", "marketplace overview", or "inspect reputation".',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        surface: {
+          type: 'string',
+          description: 'Marketplace surface to inspect. Aliases accepted: market|overview, task|tasks, skill|skills, governance|gov|proposal|proposals, dispute|disputes, reputation|rep.',
+        },
+        subject: {
+          type: 'string',
+          description: 'Optional subject for the surface, primarily an agent PDA for reputation inspection.',
+        },
+        agentPda: {
+          type: 'string',
+          description: 'Optional alias for subject when inspecting reputation.',
+        },
+        status: {
+          type: 'string',
+          description: 'Optional comma-separated status filter. Applies to tasks, governance, and disputes surfaces.',
+        },
+        query: {
+          type: 'string',
+          description: 'Optional search text for skills.',
+        },
+        tags: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional tag filter for skills.',
+        },
+        activeOnly: {
+          type: 'boolean',
+          description: 'Optional active-only filter for skills. Defaults to false.',
+        },
+        limit: {
+          type: 'number',
+          description: `Maximum items to include per surface (default: ${DEFAULT_LIMIT}, max: ${MAX_LIMIT})`,
+        },
+      },
+    },
+    async execute(args: Record<string, unknown>): Promise<ToolResult> {
+      const [limit, limitErr] = parseBoundedNumber(
+        args.limit,
+        'limit',
+        1,
+        MAX_LIMIT,
+        DEFAULT_LIMIT,
+      );
+      if (limitErr) return limitErr;
+
+      const surface = resolveMarketplaceInspectSurface(args.surface ?? 'marketplace', null);
+      if (!surface) {
+        return errorResult(
+          'surface must be one of: marketplace, tasks, skills, governance, disputes, reputation',
+        );
+      }
+
+      const [statuses, statusesErr] = parseMarketplaceStatusFilter(args.status);
+      if (statusesErr) return statusesErr;
+      const [query, queryErr] = parseOptionalString(args.query, 'query');
+      if (queryErr) return queryErr;
+      const [tags, tagsErr] = parseOptionalStringArray(args.tags, 'tags');
+      if (tagsErr) return tagsErr;
+      if (args.activeOnly !== undefined && typeof args.activeOnly !== 'boolean') {
+        return errorResult('activeOnly must be a boolean');
+      }
+
+      const activeOnly = Boolean(args.activeOnly ?? false);
+      const subject = args.subject ?? args.agentPda;
+
+      try {
+        let inspectSurface: MarketplaceInspectOverview | MarketplaceInspectSurface;
+        switch (surface) {
+          case 'tasks':
+            inspectSurface = await buildMarketplaceTasksSurface(program, logger, {
+              statuses,
+              limit,
+            });
+            break;
+          case 'skills':
+            inspectSurface = await buildMarketplaceSkillsSurface(program, {
+              query,
+              tags,
+              activeOnly,
+              limit,
+            });
+            break;
+          case 'governance':
+            inspectSurface = await buildMarketplaceGovernanceSurface(program, logger, {
+              statuses,
+              limit,
+            });
+            break;
+          case 'disputes':
+            inspectSurface = await buildMarketplaceDisputesSurface(program, logger, {
+              statuses,
+              limit,
+            });
+            break;
+          case 'reputation':
+            inspectSurface = await buildMarketplaceReputationSurface(program, subject);
+            break;
+          case 'marketplace': {
+            const surfaces = await Promise.all([
+              buildMarketplaceTasksSurface(program, logger, {
+                statuses,
+                limit,
+              }),
+              buildMarketplaceSkillsSurface(program, {
+                query,
+                tags,
+                activeOnly,
+                limit,
+              }),
+              buildMarketplaceGovernanceSurface(program, logger, {
+                statuses,
+                limit,
+              }),
+              buildMarketplaceDisputesSurface(program, logger, {
+                statuses,
+                limit,
+              }),
+              buildMarketplaceReputationSurface(program, subject),
+            ]);
+            inspectSurface = buildMarketplaceInspectOverview({
+              surfaces,
+              subject: typeof subject === 'string' ? subject.trim() || null : null,
+            });
+            break;
+          }
+        }
+
+        return { content: safeStringify(inspectSurface) };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        logger.error(`agenc.inspectMarketplace failed: ${msg}`);
+        return errorResult(msg);
+      }
+    },
+  };
+}
+
+/**
+ * Create the agenc.listDisputes tool.
+ */
+export function createListDisputesTool(
+  program: Program<AgencCoordination>,
+  logger: Logger,
+): Tool {
+  return {
+    name: 'agenc.listDisputes',
+    description:
+      'List marketplace disputes on AgenC. Use this for claimant/respondent summaries, dispute status review, and dispute queue inspection.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        status: {
+          type: 'string',
+          description: 'Optional comma-separated dispute status filter (active, resolved, expired, cancelled, or all).',
+        },
+        limit: {
+          type: 'number',
+          description: `Maximum disputes to return (default: ${DEFAULT_LIMIT}, max: ${MAX_LIMIT})`,
+        },
+      },
+    },
+    async execute(args: Record<string, unknown>): Promise<ToolResult> {
+      const [limit, limitErr] = parseBoundedNumber(
+        args.limit,
+        'limit',
+        1,
+        MAX_LIMIT,
+        DEFAULT_LIMIT,
+      );
+      if (limitErr) return limitErr;
+
+      const [statuses, statusesErr] = parseMarketplaceStatusFilter(args.status);
+      if (statusesErr) return statusesErr;
+
+      try {
+        const disputeOps = queryDisputeOperations(program, logger);
+        const taskOps = queryTaskOperations(program, logger);
+        let disputes = await Promise.all(
+          (await disputeOps.fetchAllDisputes()).map((entry) =>
+            enrichSerializedDisputeSummary(entry, taskOps),
+          ),
+        );
+        disputes = filterMarketplaceItemsByStatus(disputes, statuses);
+        disputes.sort(
+          (left, right) =>
+            Number(right.createdAt ?? 0) - Number(left.createdAt ?? 0) ||
+            left.disputePda.localeCompare(right.disputePda),
+        );
+        const limited = disputes.slice(0, limit);
+
+        return {
+          content: safeStringify({
+            count: limited.length,
+            total: disputes.length,
+            disputes: limited,
+          }),
+        };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        logger.error(`agenc.listDisputes failed: ${msg}`);
+        return errorResult(msg);
+      }
+    },
+  };
+}
+
+/**
+ * Create the agenc.getDispute tool.
+ */
+export function createGetDisputeTool(
+  program: Program<AgencCoordination>,
+  logger: Logger,
+): Tool {
+  return {
+    name: 'agenc.getDispute',
+    description:
+      'Get details for a specific marketplace dispute by its PDA address (base58), including claimant/respondent aliases and amount at stake when available.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        disputePda: {
+          type: 'string',
+          description: 'Dispute PDA address (base58)',
+        },
+      },
+      required: ['disputePda'],
+    },
+    async execute(args: Record<string, unknown>): Promise<ToolResult> {
+      const [pda, err] = parseBase58(args.disputePda);
+      if (err) return err;
+
+      try {
+        const disputeOps = queryDisputeOperations(program, logger);
+        const taskOps = queryTaskOperations(program, logger);
+        const dispute = await disputeOps.fetchDispute(pda!);
+        if (!dispute) {
+          return errorResult(`Dispute not found: ${pda!.toBase58()}`);
+        }
+        const serialized = await enrichSerializedDisputeDetail(pda!, dispute, taskOps);
+        return { content: safeStringify(serialized) };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        logger.error(`agenc.getDispute failed: ${msg}`);
+        return errorResult(msg);
+      }
+    },
+  };
+}
+
+/**
+ * Create the agenc.getReputationSummary tool.
+ */
+export function createGetReputationSummaryTool(
+  program: Program<AgencCoordination>,
+  logger: Logger,
+): Tool {
+  return {
+    name: 'agenc.getReputationSummary',
+    description:
+      "Get marketplace reputation for a specific agent PDA or, when signer-backed context is available, for the connected signer's agent.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentPda: {
+          type: 'string',
+          description: 'Optional agent PDA address (base58). Required when no signer-backed context is available.',
+        },
+      },
+    },
+    async execute(args: Record<string, unknown>): Promise<ToolResult> {
+      try {
+        const [summary, summaryErr] = await loadReputationSummary(program, args.agentPda);
+        if (summaryErr || !summary) {
+          return summaryErr ?? errorResult('Unable to load reputation summary');
+        }
+        return { content: safeStringify(summary) };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        logger.error(`agenc.getReputationSummary failed: ${msg}`);
         return errorResult(msg);
       }
     },
@@ -1674,7 +2652,7 @@ export function createGetProtocolConfigTool(
   return {
     name: 'agenc.getProtocolConfig',
     description:
-      'Get the AgenC protocol configuration including fees, stake requirements, rate limits, and protocol version.',
+      'Get AgenC protocol fees, thresholds, rate limits, and versioning. Do not use this for marketplace tasks, skills, governance, disputes, or reputation surfaces.',
     inputSchema: {
       type: 'object',
       properties: {},

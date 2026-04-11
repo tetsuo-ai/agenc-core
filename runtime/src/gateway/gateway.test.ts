@@ -1812,6 +1812,117 @@ describe("config loading", () => {
     );
   });
 
+  it("validateGatewayConfig accepts runtime-contract flags", () => {
+    const result = validateGatewayConfig(
+      makeConfig({
+        llm: {
+          provider: "grok",
+          apiKey: "test",
+          runtimeContractV2: true,
+          stopHooks: {
+            enabled: true,
+            maxAttempts: 2,
+            handlers: [
+              {
+                id: "verification-ready-hook",
+                phase: "VerificationReady",
+                kind: "command",
+                target: "scripts/verify-ready.sh",
+                timeoutMs: 5_000,
+              },
+            ],
+          },
+          asyncTasks: { enabled: true },
+          persistentWorkers: { enabled: true },
+          mailbox: { enabled: true },
+          verifier: {
+            runtimeRequired: true,
+            projectBootstrap: true,
+          },
+          workerIsolation: {
+            worktree: true,
+            remote: true,
+          },
+        },
+      }),
+    );
+
+    expect(result.valid).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
+  it("validateGatewayConfig rejects invalid runtime-contract flags", () => {
+    const result = validateGatewayConfig(
+      makeConfig({
+        llm: {
+          provider: "grok",
+          apiKey: "test",
+          runtimeContractV2: "yes" as unknown as boolean,
+          stopHooks: { enabled: "yes" as unknown as boolean },
+          asyncTasks: { enabled: "yes" as unknown as boolean },
+          persistentWorkers: { enabled: "yes" as unknown as boolean },
+          mailbox: { enabled: "yes" as unknown as boolean },
+          verifier: {
+            runtimeRequired: "yes" as unknown as boolean,
+            projectBootstrap: "yes" as unknown as boolean,
+          },
+          workerIsolation: {
+            worktree: "yes" as unknown as boolean,
+            remote: "yes" as unknown as boolean,
+          },
+        },
+      }),
+    );
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("llm.runtimeContractV2 must be a boolean");
+    expect(result.errors).toContain("llm.stopHooks.enabled must be a boolean");
+    expect(result.errors).toContain("llm.asyncTasks.enabled must be a boolean");
+    expect(result.errors).toContain(
+      "llm.persistentWorkers.enabled must be a boolean",
+    );
+    expect(result.errors).toContain("llm.mailbox.enabled must be a boolean");
+    expect(result.errors).toContain(
+      "llm.verifier.runtimeRequired must be a boolean",
+    );
+    expect(result.errors).toContain(
+      "llm.verifier.projectBootstrap must be a boolean",
+    );
+    expect(result.errors).toContain(
+      "llm.workerIsolation.worktree must be a boolean",
+    );
+    expect(result.errors).toContain(
+      "llm.workerIsolation.remote must be a boolean",
+    );
+  });
+
+  it("validateGatewayConfig rejects reserved stop-hook ids", () => {
+    const result = validateGatewayConfig(
+      makeConfig({
+        llm: {
+          provider: "grok",
+          apiKey: "test",
+          stopHooks: {
+            enabled: true,
+            handlers: [
+              {
+                id: "builtin:turn_end_stop_gate",
+                phase: "Stop",
+                kind: "command",
+                target: "echo blocked",
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain(
+      'llm.stopHooks.handlers[0].id must not start with "builtin:"',
+    );
+  });
+
   it("diffGatewayConfig detects changed sections", () => {
     const oldConfig = makeConfig();
     const newConfig = makeConfig({

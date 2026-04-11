@@ -3,6 +3,7 @@ import type {
   ChatExecutorResult,
   ChatToolRoutingSummary,
 } from "../llm/chat-executor.js";
+import { executeChatToLegacyResult } from "../llm/execute-chat.js";
 import type {
   LLMProviderTraceEvent,
   LLMStructuredOutputRequest,
@@ -24,11 +25,23 @@ import {
   isConcordiaGenerateAgentsMessage,
 } from "../llm/chat-executor-turn-contracts.js";
 import {
+  buildRuntimeContractStatusSnapshotForSession,
+  buildSessionActiveTaskContext,
   buildSessionStatefulOptions,
+  enrichRuntimeContractSnapshotForSession,
+  persistSessionActiveTaskContext,
+  persistSessionRuntimeContractSnapshot,
+  persistSessionRuntimeContractStatusSnapshot,
   persistSessionStatefulContinuation,
 } from "./daemon-session-state.js";
+import type { AgentDefinition } from "./agent-loader.js";
+import type { DelegationVerifierService } from "./delegation-runtime.js";
+import type { PersistentWorkerManager } from "./persistent-worker-manager.js";
+import type { SubAgentManager } from "./sub-agent.js";
+import type { TaskStore } from "../tools/system/task-tracker.js";
 import { filterSystemPromptForToolRouting } from "./system-prompt-routing.js";
 import {
+  buildRuntimeContractSessionTraceId,
   logExecutionTraceEvent,
   logProviderPayloadTraceEvent,
   logTraceEvent,
@@ -90,7 +103,7 @@ function buildConcordiaGenerateAgentsStructuredOutput(
   };
 }
 
-export interface ExecuteTextChannelTurnParams {
+interface ExecuteTextChannelTurnParams {
   readonly logger: Logger;
   readonly channelName: string;
   readonly msg: GatewayMessage;
@@ -115,6 +128,14 @@ export interface ExecuteTextChannelTurnParams {
     summary: ChatToolRoutingSummary | undefined,
   ) => void;
   readonly persistToDaemonMemory?: boolean;
+  readonly subAgentManager?: Pick<SubAgentManager, "spawn" | "waitForResult"> | null;
+  readonly verifierService?: Pick<
+    DelegationVerifierService,
+    "resolveVerifierRequirement" | "shouldVerifySubAgentResult"
+  > | null;
+  readonly workerManager?: PersistentWorkerManager | null;
+  readonly agentDefinitions?: readonly AgentDefinition[];
+  readonly taskStore?: TaskStore | null;
 }
 
 export async function executeTextChannelTurn(
@@ -138,6 +159,7 @@ export async function executeTextChannelTurn(
     buildToolRoutingDecision,
     recordToolRoutingOutcome,
     persistToDaemonMemory = shouldPersistToDaemonMemory(msg),
+    taskStore = null,
   } = params;
 
   const toolRoutingDecision = buildToolRoutingDecision(
@@ -218,6 +240,7 @@ export async function executeTextChannelTurn(
   }
 
   const sessionStateful = buildSessionStatefulOptions(session);
+  const sessionActiveTaskContext = buildSessionActiveTaskContext(session);
   const isConcordiaGenerateAgentsTurn = isConcordiaGenerateAgentsMessage(msg);
   const structuredOutput =
     buildConcordiaGenerateAgentsStructuredOutput(msg);
@@ -225,11 +248,19 @@ export async function executeTextChannelTurn(
     defaultMaxToolRounds,
     toolRoutingDecision,
   );
-  const result = await chatExecutor.execute({
+  // Phase E: text-channel caller now drains the Phase C generator
+  // via executeChatToLegacyResult. Identical semantics to the
+  // direct chatExecutor.execute() call under the adapter shape —
+  // Phase F will swap the underlying orchestration without
+  // touching this call site.
+  const rawResult = await executeChatToLegacyResult(chatExecutor, {
     message: msg,
     history: session.history,
     systemPrompt: effectiveSystemPrompt,
     sessionId: msg.sessionId,
+    ...(sessionActiveTaskContext
+      ? { runtimeContext: { activeTaskContext: sessionActiveTaskContext } }
+      : {}),
     toolHandler,
     maxToolRounds: effectiveMaxToolRounds,
     ...(sessionStateful ? { stateful: sessionStateful } : {}),
@@ -276,7 +307,51 @@ export async function executeTextChannelTurn(
         }
       : {}),
   });
+  const result = await enrichRuntimeContractSnapshotForSession({
+    sessionId: msg.sessionId,
+    result: rawResult,
+    taskStore,
+    workerManager: params.workerManager,
+  });
+  persistSessionRuntimeContractSnapshot(session, result);
+  const runtimeContractStatusSnapshot =
+    await buildRuntimeContractStatusSnapshotForSession({
+      sessionId: msg.sessionId,
+      turnTraceId,
+      result,
+      taskStore,
+      workerManager: params.workerManager,
+    });
+  persistSessionRuntimeContractStatusSnapshot(
+    session,
+    runtimeContractStatusSnapshot,
+  );
   recordToolRoutingOutcome(msg.sessionId, result.toolRoutingSummary);
+
+  if (traceConfig.enabled && runtimeContractStatusSnapshot) {
+    logTraceEvent(
+      logger,
+      "runtime_contract.session.snapshot_updated",
+      {
+        traceId: buildRuntimeContractSessionTraceId(msg.sessionId),
+        sessionId: msg.sessionId,
+        lastTurnTraceId: runtimeContractStatusSnapshot.lastTurnTraceId,
+        updatedAt: runtimeContractStatusSnapshot.updatedAt,
+        completionState: runtimeContractStatusSnapshot.completionState,
+        stopReason: runtimeContractStatusSnapshot.stopReason,
+        openTaskCount: runtimeContractStatusSnapshot.openTasks.length,
+        openWorkerCount: runtimeContractStatusSnapshot.openWorkers.length,
+        remainingMilestoneCount:
+          runtimeContractStatusSnapshot.remainingMilestones.length,
+        omittedTaskCount: runtimeContractStatusSnapshot.omittedTaskCount,
+        omittedWorkerCount: runtimeContractStatusSnapshot.omittedWorkerCount,
+        omittedMilestoneCount:
+          runtimeContractStatusSnapshot.omittedMilestoneCount,
+        snapshot: runtimeContractStatusSnapshot,
+      },
+      traceConfig.maxChars,
+    );
+  }
 
   if (traceConfig.enabled) {
     const responseTracePayload = {
@@ -301,6 +376,10 @@ export async function executeTextChannelTurn(
         result.toolRoutingSummary,
       ),
       stopReason: result.stopReason,
+      completionState: result.completionState,
+      verifierSnapshot: result.verifierSnapshot,
+      runtimeContractSnapshot: result.runtimeContractSnapshot,
+      runtimeContractStatusSnapshot,
       stopReasonDetail: result.stopReasonDetail,
       response: truncateToolLogText(result.content, traceConfig.maxChars),
       toolCalls: result.toolCalls.map((toolCall) => ({
@@ -349,6 +428,10 @@ export async function executeTextChannelTurn(
               toolRoutingDecision,
               toolRoutingSummary: result.toolRoutingSummary,
               stopReason: result.stopReason,
+              completionState: result.completionState,
+              verifierSnapshot: result.verifierSnapshot,
+              runtimeContractSnapshot: result.runtimeContractSnapshot,
+              runtimeContractStatusSnapshot,
               stopReasonDetail: result.stopReasonDetail,
               response: result.content,
               toolCalls: result.toolCalls.map((toolCall) => ({
@@ -375,6 +458,7 @@ export async function executeTextChannelTurn(
   }
 
   persistSessionStatefulContinuation(session, result);
+  persistSessionActiveTaskContext(session, result);
   sessionMgr.appendMessage(session.id, {
     role: "user",
     content: msg.content,

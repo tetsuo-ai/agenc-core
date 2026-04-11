@@ -89,7 +89,7 @@ function getExecErrorMessage(error: unknown): string {
 // Config
 // ============================================================================
 
-export interface MacOSToolsConfig {
+interface MacOSToolsConfig {
   logger?: Logger;
   /** Max execution time in ms (default: 30000). */
   timeoutMs?: number;

@@ -5,7 +5,7 @@
  * @module
  */
 
-import type { PublicKey, TransactionSignature } from "@solana/web3.js";
+import { PublicKey, type TransactionSignature } from "@solana/web3.js";
 import { TaskType } from "../events/types.js";
 import type { Logger } from "../utils/logger.js";
 import { toUint8Array } from "../utils/encoding.js";
@@ -126,6 +126,14 @@ export interface OnChainTask {
   bump: number;
   /** SPL token mint for reward denomination (null = SOL) */
   rewardMint: PublicKey | null;
+  /** Locked protocol fee basis points at creation time. */
+  protocolFeeBps?: number;
+  /** Minimum reputation score required to claim the task. */
+  minReputation?: number;
+  /** Optional parent task PDA for dependency-aware workflows. */
+  dependsOn?: PublicKey | null;
+  /** Optional on-chain dependency type ordinal. */
+  dependencyType?: number | null;
 }
 
 /**
@@ -202,6 +210,10 @@ export interface RawOnChainTask {
   requiredCompletions: number;
   bump: number;
   rewardMint: PublicKey | null;
+  protocolFeeBps?: number;
+  dependsOn?: PublicKey | null;
+  dependencyType?: number | null;
+  minReputation?: number;
 }
 
 /**
@@ -253,7 +265,7 @@ function isBNLikeWithToNumber(
  * Type guard for RawOnChainTask data.
  * Validates all required fields are present with correct types.
  */
-export function isRawOnChainTask(data: unknown): data is RawOnChainTask {
+function isRawOnChainTask(data: unknown): data is RawOnChainTask {
   if (typeof data !== "object" || data === null) {
     return false;
   }
@@ -325,7 +337,7 @@ export function isRawOnChainTask(data: unknown): data is RawOnChainTask {
  * Type guard for RawOnChainTaskClaim data.
  * Validates all required fields are present with correct types.
  */
-export function isRawOnChainTaskClaim(
+function isRawOnChainTaskClaim(
   data: unknown,
 ): data is RawOnChainTaskClaim {
   if (typeof data !== "object" || data === null) {
@@ -525,6 +537,13 @@ export function parseOnChainTask(data: unknown): OnChainTask {
     throw new Error("Invalid task data: missing required fields");
   }
 
+  const dependencyType =
+    typeof data.dependencyType === "number"
+      ? data.dependencyType === 0
+        ? null
+        : data.dependencyType
+      : null;
+
   return {
     taskId: toUint8Array(data.taskId),
     creator: data.creator,
@@ -545,6 +564,108 @@ export function parseOnChainTask(data: unknown): OnChainTask {
     requiredCompletions: data.requiredCompletions,
     bump: data.bump,
     rewardMint: data.rewardMint ?? null,
+    protocolFeeBps:
+      typeof data.protocolFeeBps === "number" ? data.protocolFeeBps : undefined,
+    minReputation:
+      typeof data.minReputation === "number" ? data.minReputation : undefined,
+    dependsOn: data.dependsOn ?? null,
+    dependencyType,
+  };
+}
+
+const TASK_ACCOUNT_DISCRIMINATOR_LEN = 8;
+const TASK_ACCOUNT_MIN_DATA_LEN = 372;
+
+/**
+ * Parses raw task account bytes directly.
+ *
+ * This bypasses Anchor's account enum decoding, which can fail when the
+ * deployed program has newer enum variants than the local IDL. The parser
+ * reads the stable binary layout for task listings and ignores trailing
+ * reserved bytes.
+ *
+ * @param data - Raw account data including the 8-byte discriminator
+ * @returns Parsed OnChainTask
+ */
+export function parseOnChainTaskAccountData(
+  data: Buffer | Uint8Array,
+): OnChainTask {
+  const buffer = Buffer.from(data);
+  if (buffer.length < TASK_ACCOUNT_MIN_DATA_LEN) {
+    throw new Error(
+      `Invalid task account data length: expected at least ${TASK_ACCOUNT_MIN_DATA_LEN} bytes, received ${buffer.length}`,
+    );
+  }
+
+  let offset = TASK_ACCOUNT_DISCRIMINATOR_LEN;
+
+  const readBytes = (length: number): Uint8Array => {
+    const value = Uint8Array.from(buffer.subarray(offset, offset + length));
+    offset += length;
+    return value;
+  };
+
+  const taskId = readBytes(32);
+  const creator = new PublicKey(buffer.subarray(offset, offset + 32));
+  offset += 32;
+  const requiredCapabilities = buffer.readBigUInt64LE(offset);
+  offset += 8;
+  const description = readBytes(64);
+  const constraintHash = readBytes(32);
+  const rewardAmount = buffer.readBigUInt64LE(offset);
+  offset += 8;
+  const maxWorkers = buffer[offset++] ?? 0;
+  const currentWorkers = buffer[offset++] ?? 0;
+  const status = parseTaskStatus(buffer[offset++] ?? 0);
+  const taskType = parseTaskType(buffer[offset++] ?? 0);
+  const createdAt = Number(buffer.readBigInt64LE(offset));
+  offset += 8;
+  const deadline = Number(buffer.readBigInt64LE(offset));
+  offset += 8;
+  const completedAt = Number(buffer.readBigInt64LE(offset));
+  offset += 8;
+  const escrow = new PublicKey(buffer.subarray(offset, offset + 32));
+  offset += 32;
+  const result = readBytes(64);
+  const completions = buffer[offset++] ?? 0;
+  const requiredCompletions = buffer[offset++] ?? 0;
+  const bump = buffer[offset++] ?? 0;
+  const protocolFeeBps = buffer.readUInt16LE(offset);
+  offset += 2;
+  const dependsOnBytes = buffer.subarray(offset, offset + 32);
+  offset += 32;
+  const dependencyTypeValue = buffer[offset++] ?? 0;
+  const minReputation = buffer.readUInt16LE(offset);
+  offset += 2;
+  const rewardMintTag = buffer[offset++] ?? 0;
+  const rewardMintBytes = buffer.subarray(offset, offset + 32);
+
+  return {
+    taskId,
+    creator,
+    requiredCapabilities,
+    description,
+    constraintHash,
+    rewardAmount,
+    maxWorkers,
+    currentWorkers,
+    status,
+    taskType,
+    createdAt,
+    deadline,
+    completedAt,
+    escrow,
+    result,
+    completions,
+    requiredCompletions,
+    bump,
+    rewardMint: rewardMintTag === 0 ? null : new PublicKey(rewardMintBytes),
+    protocolFeeBps,
+    minReputation,
+    dependsOn: dependsOnBytes.every((byte) => byte === 0)
+      ? null
+      : new PublicKey(dependsOnBytes),
+    dependencyType: dependencyTypeValue === 0 ? null : dependencyTypeValue,
   };
 }
 
@@ -1072,7 +1193,7 @@ export interface DeadLetterQueueConfig {
 /**
  * Pipeline stage recorded in a checkpoint.
  */
-export type CheckpointStage = "claimed" | "executed" | "submitted";
+type CheckpointStage = "claimed" | "executed" | "submitted";
 
 export interface TaskExecutionResultAttestation {
   /** Persisted schema version for trust evaluation. */

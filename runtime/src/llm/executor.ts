@@ -21,6 +21,7 @@ import type { MetricsProvider } from "../task/types.js";
 import { TELEMETRY_METRIC_NAMES } from "../telemetry/metric-names.js";
 import type { MemoryGraph, MemoryGraphResult } from "../memory/graph.js";
 import { createProviderTraceEventLogger } from "./provider-trace-logger.js";
+import { assertValidLLMResponse } from "./response-validation.js";
 import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";
 
@@ -176,13 +177,19 @@ export class LLMTaskExecutor implements TaskExecutor {
         phase: "initial",
       });
       if (this.streaming && this.onStreamChunk) {
-        response = await this.provider.chatStream(
-          messages,
-          this.onStreamChunk,
-          initialTrace,
+        response = assertValidLLMResponse(
+          this.provider.name,
+          await this.provider.chatStream(
+            messages,
+            this.onStreamChunk,
+            initialTrace,
+          ),
         );
       } else {
-        response = await this.provider.chat(messages, initialTrace);
+        response = assertValidLLMResponse(
+          this.provider.name,
+          await this.provider.chat(messages, initialTrace),
+        );
       }
       this.recordLLMMetrics(response, Date.now() - chatStart);
     } catch (err) {
@@ -286,13 +293,19 @@ export class LLMTaskExecutor implements TaskExecutor {
           round: rounds,
         });
         if (this.streaming && this.onStreamChunk) {
-          response = await this.provider.chatStream(
-            messages,
-            this.onStreamChunk,
-            followupTrace,
+          response = assertValidLLMResponse(
+            this.provider.name,
+            await this.provider.chatStream(
+              messages,
+              this.onStreamChunk,
+              followupTrace,
+            ),
           );
         } else {
-          response = await this.provider.chat(messages, followupTrace);
+          response = assertValidLLMResponse(
+            this.provider.name,
+            await this.provider.chat(messages, followupTrace),
+          );
         }
         this.recordLLMMetrics(response, Date.now() - chatStart);
       } catch (err) {

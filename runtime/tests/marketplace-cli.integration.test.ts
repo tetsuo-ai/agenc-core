@@ -493,6 +493,11 @@ describeIfProtocolWorkspace("marketplace CLI integration", () => {
     const claimPda = new PublicKey(
       expectString(asRecord(claimPayload.result).claimPda),
     );
+    // LiteSVM program-account scans only see explicitly registered accounts.
+    // Register the claim on the creator-side proxy so creator-initiated
+    // disputes can resolve the unique worker claim for this task.
+    registerLiteSVMProgramAccount(baseCtx.connection, claimPda);
+    registerLiteSVMProgramAccount(creator.runtime.connection, claimPda);
 
     const disputePayload = await runMarketCommand(
       runMarketTaskDisputeCommand,
@@ -501,7 +506,6 @@ describeIfProtocolWorkspace("marketplace CLI integration", () => {
         evidence: VALID_EVIDENCE,
         resolutionType: "refund",
         initiatorAgentPda: creator.agentPda.toBase58(),
-        workerAgentPda: worker.agentPda.toBase58(),
       },
       creator.agentPda.toBase58(),
     );

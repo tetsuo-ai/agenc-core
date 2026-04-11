@@ -313,6 +313,8 @@ export class DesktopSandboxManager {
   private readonly authTokens = new Map<string, string>();
   /** Cached Docker availability check */
   private dockerAvailable: boolean | null = null;
+  /** Serializes pool-limited container creation to prevent TOCTOU races */
+  private createLock: Promise<void> = Promise.resolve();
 
   constructor(
     config: DesktopSandboxConfig,
@@ -401,6 +403,22 @@ export class DesktopSandboxManager {
   async create(
     options: CreateDesktopSandboxOptions,
   ): Promise<DesktopSandboxHandle> {
+    // Serialize creation through the lock to prevent TOCTOU races on pool limits
+    let releaseLock!: () => void;
+    const lockPromise = this.createLock;
+    this.createLock = new Promise<void>((resolve) => { releaseLock = resolve; });
+    await lockPromise;
+
+    try {
+      return await this.createInner(options);
+    } finally {
+      releaseLock();
+    }
+  }
+
+  private async createInner(
+    options: CreateDesktopSandboxOptions,
+  ): Promise<DesktopSandboxHandle> {
     if (this.activeCount >= this.config.maxConcurrent) {
       await this.reclaimCapacity();
     }
@@ -468,6 +486,16 @@ export class DesktopSandboxManager {
       this.logger.error(
         `Desktop sandbox ${containerId} failed to become ready: ${toErrorMessage(err)}`,
       );
+      // Clean up the failed container so it doesn't leak resources.
+      // Audit S3.1: log forceRemove failures so an orphaned container
+      // is observable instead of silently leaking. The forceRemove
+      // promise is intentionally not awaited (the caller already has
+      // a failed handle to inspect), but we attach a logging catch.
+      this.forceRemove(containerId).catch((cleanupErr) => {
+        this.logger.warn(
+          `Desktop sandbox ${containerId} forceRemove cleanup failed after readiness failure: ${toErrorMessage(cleanupErr)}`,
+        );
+      });
       // Don't throw — the handle is tracked, caller can check status
     }
 

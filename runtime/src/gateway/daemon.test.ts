@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { PublicKey } from "@solana/web3.js";
 import { mkdtemp, rm, readFile, writeFile, stat, mkdir, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,9 @@ const mockDesktopManagerStart = vi.fn(async () => {});
 const mockDesktopManagerStop = vi.fn(async () => {});
 const mockWatchdogStart = vi.fn();
 const mockWatchdogStop = vi.fn();
+const { mockCreateAgencTools } = vi.hoisted(() => ({
+  mockCreateAgencTools: vi.fn(() => []),
+}));
 
 // Provide real async utils (no dependency chain)
 vi.mock("../utils/async.js", () => ({
@@ -73,6 +77,10 @@ vi.mock("./wallet-loader.js", () => ({
   loadWallet: vi.fn(async () => null),
 }));
 
+vi.mock("../tools/agenc/index.js", () => ({
+  createAgencTools: mockCreateAgencTools,
+}));
+
 vi.mock("../desktop/manager.js", () => {
   class DesktopSandboxManager {
     start = mockDesktopManagerStart;
@@ -131,15 +139,17 @@ import { LLMTimeoutError, LLMAuthenticationError } from "../llm/errors.js";
 import { loadGatewayConfig } from "./config-watcher.js";
 import { loadWallet } from "./wallet-loader.js";
 import { WorkspaceValidationError } from "./workspace.js";
-import { ToolRouter } from "./tool-routing.js";
 import { createSessionToolHandler } from "./tool-handler-factory.js";
 import type { ToolCallRecord } from "../llm/chat-executor.js";
 import type { ChatExecutorResult } from "../llm/chat-executor.js";
 import { didToolCallFail } from "../llm/chat-executor-tool-utils.js";
-import { resolveToolContractExecutionBlock } from "../llm/chat-executor-contract-guidance.js";
 import { PolicyEngine } from "../policy/engine.js";
 import { createPolicyGateHook } from "../policy/policy-gate.js";
-import { SESSION_ALLOWED_ROOTS_ARG } from "../tools/system/filesystem.js";
+import {
+  SESSION_ALLOWED_ROOTS_ARG,
+  SESSION_ID_ARG,
+} from "../tools/system/filesystem.js";
+import { TaskStore } from "../tools/system/task-tracker.js";
 import {
   SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY,
   SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY,
@@ -177,6 +187,8 @@ describe("DaemonManager host workspace prompt and memory resolution", () => {
       expect(prompt).toContain("local engineering and automation tasks");
       expect(prompt).toContain("Start executing immediately");
       expect(prompt).toContain("Never end the turn with only a plan");
+      expect(prompt).toContain("metadata._runtime.milestoneIds");
+      expect(prompt).toContain("metadata._runtime.verification");
       expect(prompt).not.toContain("AgenC protocol");
       expect(prompt).not.toContain("Solana");
       expect(prompt).not.toContain("# Identity");
@@ -217,6 +229,47 @@ describe("DaemonManager host workspace prompt and memory resolution", () => {
 
       expect(result.content).toContain("host workspace fact");
       expect(result.content).not.toContain("(Add persistent context here)");
+    } finally {
+      await rm(hostPath, { recursive: true, force: true });
+    }
+  });
+
+  it("appends marketplace reputation tool-call guidance for host workspace prompts", async () => {
+    const hostPath = await mkdtemp(join(tmpdir(), "agenc-host-marketplace-prompt-"));
+    try {
+      await writeFile(
+        join(hostPath, "AGENT.md"),
+        "# Agent\n\nHost workspace agent\n",
+        "utf-8",
+      );
+      await writeFile(
+        join(hostPath, "TOOLS.md"),
+        "# Tools\n\nHost workspace tools\n",
+        "utf-8",
+      );
+
+      const noop = () => {};
+      const silentLog = {
+        debug: noop,
+        info: noop,
+        warn: noop,
+        error: noop,
+        setLevel: noop,
+      } as any;
+      const prompt = await buildSystemPrompt(
+        {
+          gateway: { port: 9000 },
+          agent: { name: "host-test" },
+          connection: { rpcUrl: "http://localhost:8899" },
+          workspace: { hostPath },
+        } as any,
+        { yolo: false, configPath: "/tmp/config.json", logger: silentLog },
+      );
+
+      expect(prompt).toContain("Host workspace agent");
+      expect(prompt).toContain("For `agenc.inspectMarketplace` reputation requests");
+      expect(prompt).toContain("Never invent aliases, labels, or placeholder names for `agentPda`");
+      expect(prompt).toContain("not proof that no agent is registered");
     } finally {
       await rm(hostPath, { recursive: true, force: true });
     }
@@ -548,235 +601,6 @@ describe("resolveSessionStatefulContinuation", () => {
       },
       preserveHistoryCompacted: true,
     });
-  });
-
-  it("clears stale anchors after planner-driven turns", () => {
-    const result = createResult({
-      callUsage: [
-        {
-          callIndex: 1,
-          phase: "planner",
-          provider: "grok",
-          finishReason: "stop",
-          usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
-          beforeBudget: {
-            messageCount: 2,
-            systemMessages: 1,
-            userMessages: 1,
-            assistantMessages: 0,
-            toolMessages: 0,
-            estimatedChars: 100,
-            systemPromptChars: 50,
-          },
-          afterBudget: {
-            messageCount: 2,
-            systemMessages: 1,
-            userMessages: 1,
-            assistantMessages: 0,
-            toolMessages: 0,
-            estimatedChars: 100,
-            systemPromptChars: 50,
-          },
-        },
-        {
-          callIndex: 2,
-          phase: "planner_synthesis",
-          provider: "grok",
-          finishReason: "stop",
-          usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
-          beforeBudget: {
-            messageCount: 4,
-            systemMessages: 3,
-            userMessages: 1,
-            assistantMessages: 0,
-            toolMessages: 0,
-            estimatedChars: 200,
-            systemPromptChars: 120,
-          },
-          afterBudget: {
-            messageCount: 4,
-            systemMessages: 3,
-            userMessages: 1,
-            assistantMessages: 0,
-            toolMessages: 0,
-            estimatedChars: 200,
-            systemPromptChars: 120,
-          },
-        },
-      ],
-    });
-
-    expect(resolveSessionStatefulContinuation(result)).toEqual({
-      mode: "clear",
-    });
-  });
-
-  it("persists the latest lineage anchor after planner phases when a stored response follows", () => {
-    const result = createResult({
-      callUsage: [
-        {
-          callIndex: 1,
-          phase: "planner",
-          provider: "grok",
-          finishReason: "tool_calls",
-          usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
-          beforeBudget: {
-            messageCount: 2,
-            systemMessages: 1,
-            userMessages: 1,
-            assistantMessages: 0,
-            toolMessages: 0,
-            estimatedChars: 100,
-            systemPromptChars: 50,
-          },
-          afterBudget: {
-            messageCount: 2,
-            systemMessages: 1,
-            userMessages: 1,
-            assistantMessages: 0,
-            toolMessages: 0,
-            estimatedChars: 100,
-            systemPromptChars: 50,
-          },
-        },
-        {
-          callIndex: 2,
-          phase: "initial",
-          provider: "grok",
-          finishReason: "tool_calls",
-          usage: { promptTokens: 20, completionTokens: 10, totalTokens: 30 },
-          beforeBudget: {
-            messageCount: 4,
-            systemMessages: 2,
-            userMessages: 2,
-            assistantMessages: 0,
-            toolMessages: 0,
-            estimatedChars: 200,
-            systemPromptChars: 100,
-          },
-          afterBudget: {
-            messageCount: 4,
-            systemMessages: 2,
-            userMessages: 2,
-            assistantMessages: 0,
-            toolMessages: 0,
-            estimatedChars: 200,
-            systemPromptChars: 100,
-          },
-          statefulDiagnostics: {
-            enabled: true,
-            attempted: false,
-            continued: false,
-            store: true,
-            fallbackToStateless: true,
-            responseId: "resp-initial",
-            reconciliationHash: "hash-initial",
-            fallbackReason: "missing_previous_response_id",
-            events: [],
-          },
-        },
-        {
-          callIndex: 3,
-          phase: "tool_followup",
-          provider: "grok",
-          finishReason: "stop",
-          usage: { promptTokens: 30, completionTokens: 15, totalTokens: 45 },
-          beforeBudget: {
-            messageCount: 6,
-            systemMessages: 3,
-            userMessages: 2,
-            assistantMessages: 1,
-            toolMessages: 0,
-            estimatedChars: 300,
-            systemPromptChars: 150,
-          },
-          afterBudget: {
-            messageCount: 6,
-            systemMessages: 3,
-            userMessages: 2,
-            assistantMessages: 1,
-            toolMessages: 0,
-            estimatedChars: 300,
-            systemPromptChars: 150,
-          },
-          statefulDiagnostics: {
-            enabled: true,
-            attempted: true,
-            continued: true,
-            store: true,
-            fallbackToStateless: true,
-            previousResponseId: "resp-initial",
-            responseId: "resp-followup",
-            reconciliationHash: "hash-followup",
-            previousReconciliationHash: "hash-initial",
-            events: [],
-          },
-        },
-      ],
-    });
-
-    expect(resolveSessionStatefulContinuation(result)).toEqual({
-      mode: "persist",
-      anchor: {
-        previousResponseId: "resp-followup",
-        reconciliationHash: "hash-followup",
-      },
-    });
-  });
-
-  it("clears persisted session metadata when planner turns break lineage", () => {
-    const session: Session = {
-      id: "session-1",
-      workspaceId: "workspace-1",
-      history: [],
-      createdAt: Date.now(),
-      lastActiveAt: Date.now(),
-      metadata: {
-        [SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY]: {
-          previousResponseId: "resp-prev",
-          reconciliationHash: "hash-prev",
-        },
-        [SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY]: true,
-      },
-    };
-    const result = createResult({
-      callUsage: [
-        {
-          callIndex: 1,
-          phase: "planner",
-          provider: "grok",
-          finishReason: "stop",
-          usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
-          beforeBudget: {
-            messageCount: 2,
-            systemMessages: 1,
-            userMessages: 1,
-            assistantMessages: 0,
-            toolMessages: 0,
-            estimatedChars: 100,
-            systemPromptChars: 50,
-          },
-          afterBudget: {
-            messageCount: 2,
-            systemMessages: 1,
-            userMessages: 1,
-            assistantMessages: 0,
-            toolMessages: 0,
-            estimatedChars: 100,
-            systemPromptChars: 50,
-          },
-        },
-      ],
-    });
-
-    persistSessionStatefulContinuation(session, result);
-
-    expect(
-      session.metadata[SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY],
-    ).toBeUndefined();
-    expect(
-      session.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY],
-    ).toBeUndefined();
   });
 
   it("keeps persisted compaction trust when the latest anchor relied on a trusted compaction boundary", () => {
@@ -1327,7 +1151,7 @@ describe("formatTracePayloadForLog", () => {
       callUsage: [
         {
           providerRequestMetrics: {
-            toolNames: ["mcp.doom.start_game"],
+            toolNames: ["mcp.example.start"],
             toolChoice: "required",
           },
           nested: {
@@ -1700,29 +1524,27 @@ describe("project init", () => {
 });
 
 describe("webchat background-run routing", () => {
-  it("routes durable server prompts with natural until-stop phrasing into background supervision", async () => {
+  it("does NOT auto-route until-stop phrasing into background supervision", async () => {
+    // Regression test for the 2026-04-09 auto-route disable.
+    //
+    // Previous behavior: any chat message matching `inferBackgroundRunIntent`
+    // (UNTIL_STOP_RE / KEEP_UPDATING_RE / BACKGROUND_RE / CONTINUOUS_RE)
+    // was silently rerouted to `BackgroundRunSupervisor.startRun(...)` and
+    // the synchronous chat executor was bypassed entirely. Combined with a
+    // broken decision resolver that declared "objective satisfied" after a
+    // single `system.readFile`, the user-facing symptom was: chat message
+    // goes in, nothing happens, no UI feedback, no error.
+    //
+    // The auto-route was disabled in `daemon.ts` (look for the
+    // `void inferBackgroundRunIntent;` marker). Background runs are still
+    // available via the supervisor's explicit start surface, but chat
+    // messages must always fall through to the synchronous executor.
+    //
+    // This test verifies the supervisor's `startRun` is NOT invoked even
+    // when the message contains classic auto-route phrasing.
     const dm = new DaemonManager({ configPath: "/tmp/config.json" });
     const startRun = vi.fn(async () => undefined);
     const getStatusSnapshot = vi.fn(() => undefined);
-    const execute = vi.fn();
-    const session = { metadata: {} as Record<string, unknown> };
-    const webChat = {
-      send: vi.fn(async () => undefined),
-      pushToSession: vi.fn(),
-      broadcastEvent: vi.fn(),
-    } as any;
-    const commandRegistry = {
-      dispatch: vi.fn(async () => false),
-    } as any;
-    const hooks = {
-      dispatch: vi.fn(async () => ({ completed: true, payload: {} })),
-    } as any;
-    const sessionMgr = {
-      getOrCreate: vi.fn(() => session),
-    } as any;
-    const memoryBackend = {
-      addEntry: vi.fn(async () => undefined),
-    } as any;
 
     (dm as any).gateway = {
       config: {
@@ -1737,18 +1559,38 @@ describe("webchat background-run routing", () => {
       startRun,
     };
 
+    // Stub out the synchronous executor path so this test focuses on
+    // routing only.
+    const executeWebChatConversationTurnSpy = vi
+      .spyOn(dm as any, "executeWebChatConversationTurn")
+      .mockResolvedValue(undefined);
+
+    const webChat = {
+      send: vi.fn(async () => undefined),
+      pushToSession: vi.fn(),
+      broadcastEvent: vi.fn(),
+    } as any;
+    const commandRegistry = { dispatch: vi.fn(async () => false) } as any;
+    const hooks = {
+      dispatch: vi.fn(async () => ({ completed: true, payload: {} })),
+    } as any;
+    const sessionMgr = {
+      getOrCreate: vi.fn(() => ({ metadata: {} })),
+    } as any;
+    const memoryBackend = { addEntry: vi.fn(async () => undefined) } as any;
+
     await (dm as any).handleWebChatInboundMessage(
       {
         sessionId: "session-background-server",
         senderId: "operator-1",
         channel: "webchat",
         content:
-          "Start a durable HTTP server on port 8774 serving /home/tetsuo/git/AgenC. Use the typed server handle tools, verify it is ready, and keep it running until I tell you to stop.",
+          "Start a durable HTTP server on port 8774 and keep it running until I tell you to stop.",
       },
       {
         webChat,
         commandRegistry,
-        getChatExecutor: () => ({ execute }),
+        getChatExecutor: () => ({ execute: vi.fn() }),
         getLoggingConfig: () => ({}),
         hooks,
         sessionMgr,
@@ -1762,326 +1604,11 @@ describe("webchat background-run routing", () => {
       },
     );
 
-    expect(commandRegistry.dispatch).toHaveBeenCalledOnce();
-    expect(hooks.dispatch).toHaveBeenCalledWith("message:inbound", {
-      sessionId: "session-background-server",
-      content:
-        "Start a durable HTTP server on port 8774 serving /home/tetsuo/git/AgenC. Use the typed server handle tools, verify it is ready, and keep it running until I tell you to stop.",
-      senderId: "operator-1",
-    });
-    expect(getStatusSnapshot).toHaveBeenCalledWith("session-background-server");
-    expect(memoryBackend.addEntry).toHaveBeenCalledWith({
-      sessionId: "session-background-server",
-      role: "user",
-      content:
-        "Start a durable HTTP server on port 8774 serving /home/tetsuo/git/AgenC. Use the typed server handle tools, verify it is ready, and keep it running until I tell you to stop.",
-    });
-    expect(startRun).toHaveBeenCalledWith({
-      sessionId: "session-background-server",
-      objective:
-        "Start a durable HTTP server on port 8774 serving /home/tetsuo/git/AgenC. Use the typed server handle tools, verify it is ready, and keep it running until I tell you to stop.",
-    });
-    expect(execute).not.toHaveBeenCalled();
-    expect(webChat.send).not.toHaveBeenCalled();
+    expect(startRun).not.toHaveBeenCalled();
+    expect(executeWebChatConversationTurnSpy).toHaveBeenCalledOnce();
+    executeWebChatConversationTurnSpy.mockRestore();
   });
 
-  it("hands successful Doom until-stop setup turns off to background supervision", async () => {
-    const dm = new DaemonManager({ configPath: "/tmp/config.json" });
-    const startRun = vi.fn(async () => undefined);
-    const getStatusSnapshot = vi.fn(() => undefined);
-    const executeWebChatConversationTurn = vi
-      .spyOn(dm as any, "executeWebChatConversationTurn")
-      .mockImplementation(async (params: any) => {
-        await params.sessionToolHandler("mcp.doom.start_game", {
-          scenario: "defend_the_center",
-          god_mode: true,
-          async_player: true,
-        });
-        await params.sessionToolHandler("mcp.doom.set_objective", {
-          objective_type: "hold_position",
-        });
-        await params.sessionToolHandler("mcp.doom.get_situation_report", {});
-        return {
-          provider: "test",
-          model: "test-model",
-          usedFallback: false,
-          durationMs: 10,
-          compacted: false,
-          content: "Doom is running and will continue until stopped.",
-          stopReason: "completed",
-          tokenUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
-          toolCalls: [],
-          callUsage: [],
-          toolRoutingSummary: undefined,
-        } as any;
-      });
-    const webChat = {
-      send: vi.fn(async () => undefined),
-      pushToSession: vi.fn(),
-      broadcastEvent: vi.fn(),
-      createAbortController: vi.fn(() => new AbortController()),
-      clearAbortController: vi.fn(),
-    } as any;
-    const commandRegistry = {
-      dispatch: vi.fn(async () => false),
-    } as any;
-    const hooks = {
-      dispatch: vi.fn(async () => ({ completed: true, payload: {} })),
-    } as any;
-    const sessionMgr = {
-      getOrCreate: vi.fn(() => ({ history: [] })),
-      appendMessage: vi.fn(),
-      compact: vi.fn(),
-    } as any;
-    const memoryBackend = {
-      addEntry: vi.fn(async () => undefined),
-    } as any;
-    const baseToolHandler = vi.fn(async (name: string) => {
-      if (name === "mcp.doom.start_game") {
-        return JSON.stringify({
-          status: "running",
-          scenario: "defend_the_center",
-          god_mode_enabled: true,
-        });
-      }
-      if (name === "mcp.doom.set_objective") {
-        return JSON.stringify({
-          status: "objective_set",
-          objective: { type: "hold_position" },
-        });
-      }
-      if (name === "mcp.doom.get_situation_report") {
-        return JSON.stringify({
-          executor_state: "fighting",
-          objectives: [{ type: "hold_position" }],
-          god_mode_enabled: true,
-        });
-      }
-      return JSON.stringify({ status: "ok" });
-    });
-
-    (dm as any).gateway = {
-      config: {
-        autonomy: {
-          enabled: true,
-          featureFlags: { backgroundRuns: true, canaryRollout: false },
-        },
-        desktop: {
-          resolution: {
-            width: 1024,
-            height: 768,
-          },
-        },
-      },
-    };
-    (dm as any)._backgroundRunSupervisor = {
-      getStatusSnapshot,
-      startRun,
-    };
-
-    await (dm as any).handleWebChatInboundMessage(
-      {
-        sessionId: "session-doom-until-stop",
-        senderId: "operator-1",
-        channel: "webchat",
-        content:
-          "Start Doom in a desktop container with god mode enabled, defend the center, and keep playing until I tell you to stop. Use the Doom MCP tools and verify that the game is running.",
-      },
-      {
-        webChat,
-        commandRegistry,
-        getChatExecutor: () => ({ execute: vi.fn() }),
-        getLoggingConfig: () => ({ enabled: false }),
-        hooks,
-        sessionMgr,
-        getSystemPrompt: () => "",
-        baseToolHandler,
-        approvalEngine: undefined,
-        memoryBackend,
-        signals: { signalThinking: vi.fn(), signalIdle: vi.fn() } as any,
-        sessionTokenBudget: 16_000,
-        contextWindowTokens: 64_000,
-      },
-    );
-
-    expect(commandRegistry.dispatch).toHaveBeenCalledOnce();
-    expect(getStatusSnapshot).toHaveBeenCalledWith("session-doom-until-stop");
-    expect(startRun).toHaveBeenCalledOnce();
-    expect(startRun.mock.calls[0]?.[0]).toMatchObject({
-      sessionId: "session-doom-until-stop",
-      options: {
-        silent: true,
-        contract: expect.objectContaining({
-          kind: "until_stopped",
-          requiresUserStop: true,
-        }),
-      },
-    });
-    expect(startRun.mock.calls[0]?.[0]?.objective).toContain(
-      "Supervise the existing ViZDoom session for this user.",
-    );
-    expect(startRun.mock.calls[0]?.[0]?.objective).toContain(
-      'Recovery objective JSON: {"objective_type":"hold_position"}',
-    );
-    expect(memoryBackend.addEntry).not.toHaveBeenCalled();
-    expect(executeWebChatConversationTurn).toHaveBeenCalledOnce();
-  });
-
-  it("hands Doom autoplay turns with periodic status updates off to background supervision", async () => {
-    const dm = new DaemonManager({ configPath: "/tmp/config.json" });
-    const startRun = vi.fn(async () => undefined);
-    const getStatusSnapshot = vi.fn(() => undefined);
-    const executeWebChatConversationTurn = vi
-      .spyOn(dm as any, "executeWebChatConversationTurn")
-      .mockImplementation(async (params: any) => {
-        await params.sessionToolHandler("mcp.doom.start_game", {
-          scenario: "defend_the_center",
-          god_mode: true,
-          async_player: true,
-        });
-        await params.sessionToolHandler("mcp.doom.set_objective", {
-          objective_type: "hold_position",
-          params: {
-            no_strafe: true,
-            smooth_movement: true,
-            aggressive: true,
-          },
-          priority: 5,
-        });
-        await params.sessionToolHandler("mcp.doom.get_situation_report", {});
-        return {
-          provider: "test",
-          model: "test-model",
-          usedFallback: false,
-          durationMs: 10,
-          compacted: false,
-          content: "Doom is running and status updates will continue.",
-          stopReason: "completed",
-          tokenUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
-          toolCalls: [],
-          callUsage: [],
-          toolRoutingSummary: undefined,
-        } as any;
-      });
-    const webChat = {
-      send: vi.fn(async () => undefined),
-      pushToSession: vi.fn(),
-      broadcastEvent: vi.fn(),
-      createAbortController: vi.fn(() => new AbortController()),
-      clearAbortController: vi.fn(),
-    } as any;
-    const commandRegistry = {
-      dispatch: vi.fn(async () => false),
-    } as any;
-    const hooks = {
-      dispatch: vi.fn(async () => ({ completed: true, payload: {} })),
-    } as any;
-    const sessionMgr = {
-      getOrCreate: vi.fn(() => ({ history: [] })),
-      appendMessage: vi.fn(),
-      compact: vi.fn(),
-    } as any;
-    const memoryBackend = {
-      addEntry: vi.fn(async () => undefined),
-    } as any;
-    const baseToolHandler = vi.fn(async (name: string) => {
-      if (name === "mcp.doom.start_game") {
-        return JSON.stringify({
-          status: "running",
-          scenario: "defend_the_center",
-          god_mode_enabled: true,
-        });
-      }
-      if (name === "mcp.doom.set_objective") {
-        return JSON.stringify({
-          status: "objective_set",
-          objective: { type: "hold_position" },
-        });
-      }
-      if (name === "mcp.doom.get_situation_report") {
-        return JSON.stringify({
-          executor_state: "fighting",
-          objectives: [{ type: "hold_position" }],
-          god_mode_enabled: true,
-        });
-      }
-      return JSON.stringify({ status: "ok" });
-    });
-
-    (dm as any).gateway = {
-      config: {
-        autonomy: {
-          enabled: true,
-          featureFlags: { backgroundRuns: true, canaryRollout: false },
-        },
-        desktop: {
-          resolution: {
-            width: 1024,
-            height: 768,
-          },
-        },
-      },
-    };
-    (dm as any)._backgroundRunSupervisor = {
-      getStatusSnapshot,
-      startRun,
-    };
-
-    await (dm as any).handleWebChatInboundMessage(
-      {
-        sessionId: "session-doom-periodic-updates",
-        senderId: "operator-1",
-        channel: "webchat",
-        content:
-          "Play Doom defending the center without any strafing or back-and-forth movement. Keep it smooth and aggressive. God mode active. Provide periodic status updates.",
-      },
-      {
-        webChat,
-        commandRegistry,
-        getChatExecutor: () => ({ execute: vi.fn() }),
-        getLoggingConfig: () => ({ enabled: false }),
-        hooks,
-        sessionMgr,
-        getSystemPrompt: () => "",
-        baseToolHandler,
-        approvalEngine: undefined,
-        memoryBackend,
-        signals: { signalThinking: vi.fn(), signalIdle: vi.fn() } as any,
-        sessionTokenBudget: 16_000,
-        contextWindowTokens: 64_000,
-      },
-    );
-
-    expect(commandRegistry.dispatch).toHaveBeenCalledOnce();
-    expect(getStatusSnapshot).toHaveBeenCalledWith(
-      "session-doom-periodic-updates",
-    );
-    expect(startRun).toHaveBeenCalledOnce();
-    expect(startRun.mock.calls[0]?.[0]).toMatchObject({
-      sessionId: "session-doom-periodic-updates",
-      options: {
-        silent: true,
-        contract: expect.objectContaining({
-          kind: "until_stopped",
-          requiresUserStop: true,
-        }),
-      },
-    });
-    expect(startRun.mock.calls[0]?.[0]?.objective).toContain(
-      "Supervise the existing ViZDoom session for this user.",
-    );
-    expect(startRun.mock.calls[0]?.[0]?.objective).toContain(
-      '"objective_type":"hold_position"',
-    );
-    expect(startRun.mock.calls[0]?.[0]?.objective).toContain(
-      '"no_strafe":true',
-    );
-    expect(startRun.mock.calls[0]?.[0]?.objective).toContain(
-      '"smooth_movement":true',
-    );
-    expect(memoryBackend.addEntry).not.toHaveBeenCalled();
-    expect(executeWebChatConversationTurn).toHaveBeenCalledOnce();
-  });
 });
 
 describe("ensureChromiumCompatShims", () => {
@@ -2699,15 +2226,146 @@ describe("DaemonManager", () => {
     expect(directResult).toContain("session-scoped tool handler");
   });
 
+  it("forwards the configured programId when registering agenc tools", async () => {
+    const programId = "11111111111111111111111111111111";
+    const dm = new DaemonManager({ configPath: "/tmp/config.json" });
+
+    await (dm as any).createToolRegistry({
+      desktop: { enabled: false },
+      connection: {
+        rpcUrl: "http://localhost:8899",
+        programId,
+      },
+    });
+
+    expect(mockCreateAgencTools).toHaveBeenCalledTimes(1);
+    expect(mockCreateAgencTools).toHaveBeenCalledWith(
+      expect.objectContaining({
+        programId: expect.any(PublicKey),
+      }),
+    );
+    const registrationArgs = mockCreateAgencTools.mock.calls[0]?.[0] as {
+      programId?: PublicKey;
+    };
+    expect(registrationArgs.programId?.toBase58()).toBe(programId);
+  });
+
+  it("preserves durable web-session task tracker state during session reset", async () => {
+    const dm = new DaemonManager({ configPath: "/tmp/config.json" });
+    const taskStore = new TaskStore();
+    await taskStore.createTask("web-session-1", {
+      subject: "Existing task",
+      description: "Should be dropped on reset",
+    });
+    (dm as any)._taskTrackerStore = taskStore;
+
+    const sessionMgr = {
+      reset: vi.fn(),
+    };
+    const memoryBackend = {
+      deleteThread: vi.fn(async () => undefined),
+      get: vi.fn(async () => undefined),
+      delete: vi.fn(async () => undefined),
+    };
+    const progressTracker = {
+      clear: vi.fn(async () => undefined),
+    };
+
+    await (dm as any).resetWebSessionContext({
+      webSessionId: "web-session-1",
+      sessionMgr,
+      resolveSessionId: (sessionKey: string) => `history:${sessionKey}`,
+      memoryBackend,
+      progressTracker,
+    });
+
+    expect(sessionMgr.reset).toHaveBeenCalledWith("history:web-session-1");
+    expect((await taskStore.createTask("web-session-1", {
+      subject: "Replacement task",
+      description: "Fresh list after reset",
+    })).id).toBe("2");
+  });
+
+  it("preserves durable subagent task tracker state when subagent contexts are destroyed", async () => {
+    const dm = new DaemonManager({ configPath: "/tmp/config.json" });
+    const taskStore = new TaskStore();
+    await taskStore.createTask("subagent:child-1", {
+      subject: "Subagent task",
+      description: "Should be dropped during teardown",
+    });
+    (dm as any)._taskTrackerStore = taskStore;
+    (dm as any)._llmProviders = [{}];
+    vi.spyOn(dm as any, "ensureSubAgentDefaultWorkspace").mockResolvedValue(undefined);
+    vi.spyOn(dm as any, "resolveLlmContextWindowTokens").mockResolvedValue(128_000);
+
+    await (dm as any).configureSubAgentInfrastructure({
+      llm: {
+        provider: "grok",
+        subagents: {
+          enabled: true,
+        },
+      },
+    });
+
+    const destroyContext = vi.fn(async () => undefined);
+    (dm as any)._sessionIsolationManager = {
+      destroyContext,
+      listActiveContexts: () => [],
+    };
+
+    const destroySubagentContext = ((dm as any)._subAgentManager as any).config
+      .destroyContext as (sessionIdentity: {
+        parentSessionId: string;
+        subagentSessionId: string;
+      }) => Promise<void>;
+
+    await destroySubagentContext({
+      parentSessionId: "parent-session-1",
+      subagentSessionId: "subagent:child-1",
+    });
+
+    expect(destroyContext).toHaveBeenCalledWith({
+      parentSessionId: "parent-session-1",
+      subagentSessionId: "subagent:child-1",
+    });
+    expect((await taskStore.createTask("subagent:child-1", {
+      subject: "Replacement subagent task",
+      description: "Fresh list after teardown",
+    })).id).toBe("2");
+
+    await (dm as any).destroySubAgentInfrastructure();
+  });
+
+  it("leaves durable task tracker state intact when the daemon stops", async () => {
+    const dm = new DaemonManager({ configPath: "/tmp/config.json" });
+    const taskStore = new TaskStore();
+    await taskStore.createTask("session-stop-1", {
+      subject: "Stop cleanup",
+      description: "Should be cleared during daemon shutdown",
+    });
+    (dm as any)._taskTrackerStore = taskStore;
+
+    await dm.stop();
+
+    expect((dm as any)._taskTrackerStore).toBeNull();
+    expect((await taskStore.createTask("session-stop-1", {
+      subject: "Replacement stop cleanup",
+      description: "Fresh list after stop",
+    })).id).toBe("2");
+  });
+
   it("disables host execution deny lists when yolo mode is enabled", async () => {
+    // Baseline: pick a command that's still in the (pruned) default
+    // deny list. `socat` is a reverse-shell vector and stays denied
+    // even after the prune.
     const baseline = new DaemonManager({ configPath: "/tmp/config.json" });
     const baselineRegistry = await (baseline as any).createToolRegistry({
       desktop: { enabled: false },
     });
     const baselineHandler = baselineRegistry.createToolHandler();
     const denied = await baselineHandler("system.bash", {
-      command: process.execPath,
-      args: ["-e", "process.stdout.write('blocked')"],
+      command: "socat",
+      args: ["-"],
     });
     expect(denied).toContain("is denied");
 
@@ -2719,6 +2377,9 @@ describe("DaemonManager", () => {
       desktop: { enabled: false },
     });
     const handler = registry.createToolHandler();
+    // In yolo mode the deny list is disabled, so any command — even
+    // one that was on the pruned default deny list — is allowed.
+    // Use the node interpreter so we get a deterministic stdout.
     const allowed = await handler("system.bash", {
       command: process.execPath,
       args: ["-e", "process.stdout.write('yolo-ok')"],
@@ -2811,86 +2472,6 @@ describe("DaemonManager", () => {
     ]);
   });
 
-  it("blocks desktop bash detours before Doom launch evidence exists in webchat turns", async () => {
-    const dm = new DaemonManager({ configPath: "/tmp/config.json" });
-    const baseToolHandler = vi.fn(async (name: string) => {
-      if (name === "mcp.doom.start_game") {
-        return JSON.stringify({ status: "running" });
-      }
-      return JSON.stringify({ stdout: "ok", stderr: "", exitCode: 0 });
-    });
-    const hooks = {
-      dispatch: vi.fn(async () => ({ completed: true, payload: {} })),
-    } as any;
-    const webChat = {
-      pushToSession: vi.fn(),
-      broadcastEvent: vi.fn(),
-    } as any;
-    const toolCalls: ToolCallRecord[] = [];
-
-    const handler = (dm as any).createWebChatSessionToolHandler({
-      sessionId: "session-doom",
-      webChat,
-      hooks,
-      baseToolHandler,
-      traceLabel: "webchat",
-      traceConfig: { enabled: false },
-      traceId: "trace-doom",
-      beforeHandle: (toolName: string) => {
-        const block = resolveToolContractExecutionBlock({
-          phase: toolCalls.length === 0 ? "initial" : "tool_followup",
-          messageText:
-            "I want you to play doom on defend the center with godmode on so i can watch in a desktop container.",
-          toolCalls,
-          allowedToolNames: ["desktop.bash", "mcp.doom.start_game"],
-          candidateToolName: toolName,
-        });
-        return block ? JSON.stringify({ error: block }) : undefined;
-      },
-      onToolEnd: (
-        toolName: string,
-        args: Record<string, unknown>,
-        result: string,
-        durationMs: number,
-      ) => {
-        toolCalls.push({
-          name: toolName,
-          args,
-          result,
-          isError: didToolCallFail(false, result),
-          durationMs,
-        });
-      },
-    });
-
-    const blocked = await handler("desktop.bash", { command: "which doom" });
-    expect(JSON.parse(blocked)).toEqual({
-      error:
-        "This Doom turn must begin with `mcp.doom.start_game`. " +
-        "Do not launch or inspect Doom with `desktop.bash`, `desktop.process_start`, `system.bash`, or direct binary commands before the MCP launch succeeds. " +
-        "Allowed now: `mcp.doom.start_game`. " +
-        "Do not use `desktop.bash` yet.",
-    });
-    expect(baseToolHandler).not.toHaveBeenCalled();
-
-    await handler("mcp.doom.start_game", {
-      scenario: "defend_the_center",
-      async_player: true,
-    });
-    await handler("desktop.bash", { command: "echo ok" });
-
-    expect(baseToolHandler).toHaveBeenNthCalledWith(
-      1,
-      "mcp.doom.start_game",
-      expect.objectContaining({
-        scenario: "defend_the_center",
-        async_player: true,
-      }),
-    );
-    expect(baseToolHandler).toHaveBeenNthCalledWith(2, "desktop.bash", {
-      command: "echo ok",
-    });
-  });
 
   it("blocks package manifest writes with unsupported workspace protocol before execution", async () => {
     const dm = new DaemonManager({ configPath: "/tmp/config.json" });
@@ -3019,6 +2600,7 @@ describe("DaemonManager", () => {
         null,
         2,
       ),
+      [SESSION_ID_ARG]: "session-host-tooling-supported",
     });
   });
 
@@ -3063,6 +2645,7 @@ describe("DaemonManager", () => {
       path: `${sessionWorkspaceRoot}/src/app.ts`,
       content: "export const ok = true;\n",
       [SESSION_ALLOWED_ROOTS_ARG]: [sessionWorkspaceRoot],
+      [SESSION_ID_ARG]: "session-project-root",
     });
   });
 
@@ -3213,162 +2796,6 @@ describe("DaemonManager", () => {
       }),
     );
     expect(webChat.loadSessionWorkspaceRoot).not.toHaveBeenCalled();
-  });
-
-  it("adds provider-native web_search to research routing but not interactive browser routing", () => {
-    const dm = new DaemonManager({ configPath: "/tmp/config.json" });
-    (dm as any)._primaryLlmConfig = {
-      provider: "grok",
-      model: "grok-4-1-fast-reasoning",
-      webSearch: true,
-      searchMode: "auto",
-    };
-    (dm as any)._toolRouter = new ToolRouter([
-      {
-        type: "function",
-        function: {
-          name: "desktop.bash",
-          description: "run commands",
-          parameters: { type: "object", properties: {} },
-        },
-      },
-      {
-        type: "function",
-        function: {
-          name: "mcp.browser.browser_navigate",
-          description: "navigate browser to a URL",
-          parameters: { type: "object", properties: {} },
-        },
-      },
-      {
-        type: "function",
-        function: {
-          name: "mcp.browser.browser_snapshot",
-          description: "inspect browser page content",
-          parameters: { type: "object", properties: {} },
-        },
-      },
-    ]);
-
-    const researchDecision = (dm as any).buildToolRoutingDecision(
-      "s-research",
-      "Compare Phaser and PixiJS from official docs and cite sources",
-      [],
-    );
-    const browserDecision = (dm as any).buildToolRoutingDecision(
-      "s-browser",
-      "Open localhost:4173, click the start button, and inspect the console",
-      [],
-    );
-
-    expect(researchDecision?.routedToolNames).toContain("web_search");
-    expect(browserDecision?.routedToolNames).not.toContain("web_search");
-  });
-
-  it("does not route provider-native web_search for unsupported Grok models or generic current-state turns", () => {
-    const dm = new DaemonManager({ configPath: "/tmp/config.json" });
-    (dm as any)._toolRouter = new ToolRouter([
-      {
-        type: "function",
-        function: {
-          name: "desktop.bash",
-          description: "run commands",
-          parameters: { type: "object", properties: {} },
-        },
-      },
-      {
-        type: "function",
-        function: {
-          name: "mcp.browser.browser_navigate",
-          description: "navigate browser to a URL",
-          parameters: { type: "object", properties: {} },
-        },
-      },
-    ]);
-
-    (dm as any)._primaryLlmConfig = {
-      provider: "grok",
-      model: "grok-code-fast-1",
-      webSearch: true,
-      searchMode: "auto",
-    };
-    const unsupportedDecision = (dm as any).buildToolRoutingDecision(
-      "s-unsupported-search",
-      "Compare Phaser and PixiJS from official docs",
-      [],
-    );
-    expect(unsupportedDecision?.routedToolNames).not.toContain("web_search");
-
-    (dm as any)._primaryLlmConfig = {
-      provider: "grok",
-      model: "grok-4-1-fast-reasoning",
-      webSearch: true,
-      searchMode: "auto",
-    };
-    const genericDecision = (dm as any).buildToolRoutingDecision(
-      "s-generic-current",
-      "What is the current working directory?",
-      [],
-    );
-    expect(genericDecision?.routedToolNames).not.toContain("web_search");
-  });
-
-  it("augments tool routing with xAI-native x_search, file_search, code_interpreter, and remote MCP tools", () => {
-    const dm = new DaemonManager({ configPath: "/tmp/config.json" });
-    (dm as any)._toolRouter = new ToolRouter([
-      {
-        type: "function",
-        function: {
-          name: "desktop.bash",
-          description: "run commands",
-          parameters: { type: "object", properties: {} },
-        },
-      },
-    ]);
-
-    (dm as any)._primaryLlmConfig = {
-      provider: "grok",
-      model: "grok-4-1-fast-reasoning",
-      xSearch: true,
-      codeExecution: true,
-      collectionsSearch: {
-        enabled: true,
-        vectorStoreIds: ["collection-123"],
-      },
-      remoteMcp: {
-        enabled: true,
-        servers: [
-          {
-            serverUrl: "https://mcp.deepwiki.com/mcp",
-            serverLabel: "deepwiki",
-            serverDescription: "DeepWiki repository and documentation explorer",
-            allowedTools: ["search_docs"],
-          },
-        ],
-      },
-    };
-
-    const xDecision = (dm as any).buildToolRoutingDecision(
-      "s-x-search",
-      "What are people saying about xAI on X right now?",
-      [],
-    );
-    const fileAndCodeDecision = (dm as any).buildToolRoutingDecision(
-      "s-file-code",
-      "Using the uploaded knowledge base, calculate totals from the internal documents and show your working.",
-      [],
-    );
-    const remoteMcpDecision = (dm as any).buildToolRoutingDecision(
-      "s-remote-mcp",
-      "Use DeepWiki to search docs for the repository adapter behavior.",
-      [],
-    );
-
-    expect(xDecision?.routedToolNames).toContain("x_search");
-    expect(fileAndCodeDecision?.routedToolNames).toEqual(
-      expect.arrayContaining(["file_search", "code_interpreter"]),
-    );
-    expect(remoteMcpDecision?.routedToolNames).toContain("mcp:deepwiki");
   });
 
   it("registers social tools when enabled", async () => {
@@ -3778,48 +3205,6 @@ describe("DaemonManager", () => {
     expect(dm.delegationPolicyEngine?.snapshot().spawnDecisionThreshold).toBe(
       0.77,
     );
-
-    await dm.stop();
-  });
-
-  it("start configures delegation learning runtime (trajectory sink + bandit tuner)", async () => {
-    vi.mocked(loadGatewayConfig).mockResolvedValueOnce({
-      gateway: { port: 9000 },
-      agent: { name: "test" },
-      connection: { rpcUrl: "http://localhost:8899" },
-      llm: {
-        provider: "grok",
-        subagents: {
-          enabled: true,
-          policyLearning: {
-            enabled: true,
-            epsilon: 0.2,
-            explorationBudget: 123,
-            minSamplesPerArm: 3,
-            ucbExplorationScale: 1.5,
-            arms: [
-              { id: "conservative", thresholdOffset: 0.1 },
-              { id: "balanced", thresholdOffset: 0 },
-              { id: "aggressive", thresholdOffset: -0.1 },
-            ],
-          },
-        },
-      },
-    } as any);
-
-    const pidPath = join(tempDir, "subagent-learning.pid");
-    const dm = new DaemonManager({ configPath: "/tmp/config.json", pidPath });
-    vi.spyOn(dm, "setupSignalHandlers").mockImplementation(() => {});
-
-    await dm.start();
-
-    expect(dm.delegationTrajectorySink).not.toBeNull();
-    expect(dm.delegationBanditTuner).not.toBeNull();
-    expect(dm.subAgentRuntimeConfig?.policyLearningEnabled).toBe(true);
-    expect(dm.subAgentRuntimeConfig?.policyLearningExplorationBudget).toBe(123);
-    expect(dm.subAgentRuntimeConfig?.policyLearningMinSamplesPerArm).toBe(3);
-    expect(dm.subAgentRuntimeConfig?.policyLearningUcbExplorationScale).toBe(1.5);
-    expect(dm.subAgentRuntimeConfig?.policyLearningArms).toHaveLength(3);
 
     await dm.stop();
   });

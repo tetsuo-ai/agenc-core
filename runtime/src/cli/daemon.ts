@@ -650,6 +650,17 @@ export async function runStatusCommand(
   context: CliRuntimeContext,
   options: DaemonStatusOptions,
 ): Promise<CliStatusCode> {
+  // Cut 6.2: include the daemon's build info (commit/buildTime/runtimeVersion)
+  // so the operator can verify which build is actually running.
+  const { readBuildInfo } = await import("../utils/build-info.js");
+  const build = readBuildInfo();
+  const buildPayload = {
+    commit: build.shortCommit,
+    buildTime: build.buildTime,
+    runtimeVersion: build.runtimeVersion,
+    versionPath: build.versionPath,
+  };
+
   const info = await readPidFile(options.pidPath);
 
   if (info === null) {
@@ -657,6 +668,7 @@ export async function runStatusCommand(
       status: "ok",
       command: "status",
       running: false,
+      build: buildPayload,
     });
     return 0;
   }
@@ -669,6 +681,7 @@ export async function runStatusCommand(
       running: false,
       message: "Stale PID file cleaned up",
       stalePid: info.pid,
+      build: buildPayload,
     });
     return 0;
   }
@@ -691,6 +704,7 @@ export async function runStatusCommand(
     port: info.port,
     configPath: info.configPath,
     gatewayStatus,
+    build: buildPayload,
   });
   return 0;
 }

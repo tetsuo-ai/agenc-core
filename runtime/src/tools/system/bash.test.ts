@@ -207,8 +207,8 @@ describe("system.bash tool", () => {
   it("merges custom deny list with default deny list", async () => {
     const tool = createBashTool({ denyList: ["custom-bad"] });
 
-    // Default deny list still works
-    const result1 = await tool.execute({ command: "rm" });
+    // Default deny list still works (sudo is in the pruned default).
+    const result1 = await tool.execute({ command: "sudo" });
     expect(result1.isError).toBe(true);
 
     // Custom deny list also works
@@ -218,12 +218,12 @@ describe("system.bash tool", () => {
 
   // ---- Deny list: absolute path bypass prevention ----
 
-  it("blocks /bin/rm via basename check", async () => {
+  it("blocks /usr/bin/sudo via basename check", async () => {
     const tool = createBashTool();
 
     const result = await tool.execute({
-      command: "/bin/rm",
-      args: ["-rf", "/"],
+      command: "/usr/bin/sudo",
+      args: ["ls"],
     });
     expect(result.isError).toBe(true);
     expect(parseContent(result).error).toContain("denied");
@@ -247,12 +247,13 @@ describe("system.bash tool", () => {
     expect(parseContent(result).stdout).toBe("test\n");
   });
 
-  it("blocks /usr/local/bin/python3 via basename check", async () => {
+  it("allows /usr/local/bin/python3 — script interpreters are no longer blocked", async () => {
     const tool = createBashTool();
+    mockSuccess("Python 3.12.3\n");
 
-    const result = await tool.execute({ command: "/usr/local/bin/python3" });
-    expect(result.isError).toBe(true);
-    expect(parseContent(result).error).toContain("denied");
+    const result = await tool.execute({ command: "/usr/local/bin/python3", args: ["--version"] });
+    expect(result.isError).toBeUndefined();
+    expect(parseContent(result).stdout).toContain("Python");
   });
 
   // ---- Shell wrapper execution ----
@@ -359,37 +360,26 @@ describe("system.bash tool", () => {
     }
   });
 
-  // ---- Download-and-execute prevention ----
+  // ---- Network tools (curl/wget/ssh now allowed) ----
 
-  it("blocks curl and wget", async () => {
+  it("allows curl and wget — needed for fetching docs and testing API endpoints", async () => {
     const tool = createBashTool();
+    mockSuccess();
 
     for (const cmd of ["curl", "wget"]) {
       const result = await tool.execute({
         command: cmd,
         args: ["https://example.com"],
       });
-      expect(result.isError).toBe(true);
-      expect(parseContent(result).error).toContain("denied");
+      expect(result.isError).toBeUndefined();
     }
   });
 
-  // ---- Environment exfiltration prevention ----
+  // ---- Script interpreters (now allowed) ----
 
-  it("blocks env and printenv", async () => {
+  it("allows python, node, perl, ruby — agent must be able to run scripts it writes", async () => {
     const tool = createBashTool();
-
-    for (const cmd of ["env", "printenv"]) {
-      const result = await tool.execute({ command: cmd });
-      expect(result.isError).toBe(true);
-      expect(parseContent(result).error).toContain("denied");
-    }
-  });
-
-  // ---- Script interpreter prevention ----
-
-  it("blocks python, node, perl, ruby interpreters", async () => {
-    const tool = createBashTool();
+    mockSuccess();
 
     for (const cmd of [
       "python",
@@ -404,16 +394,14 @@ describe("system.bash tool", () => {
       "bun",
       "tclsh",
     ]) {
-      const result = await tool.execute({ command: cmd });
-      expect(result.isError).toBe(true);
-      expect(parseContent(result).error).toContain("denied");
+      const result = await tool.execute({ command: cmd, args: ["--version"] });
+      expect(result.isError).toBeUndefined();
     }
   });
 
-  // ---- Version-specific interpreter prevention (prefix matching) ----
-
-  it("blocks version-specific python binaries via prefix matching", async () => {
+  it("allows version-specific python binaries (no more prefix matching)", async () => {
     const tool = createBashTool();
+    mockSuccess();
 
     for (const cmd of [
       "python3.11",
@@ -422,101 +410,41 @@ describe("system.bash tool", () => {
       "pypy3",
       "pypy",
     ]) {
-      const result = await tool.execute({ command: cmd });
-      expect(result.isError).toBe(true);
-      expect(parseContent(result).error).toContain("denied");
+      const result = await tool.execute({ command: cmd, args: ["--version"] });
+      expect(result.isError).toBeUndefined();
     }
-
-    expect(mockExecFile).not.toHaveBeenCalled();
   });
 
-  it("blocks version-specific node/ruby/perl/php/lua via prefix matching", async () => {
+  // ---- Reverse-shell-specific tools still denied ----
+
+  it("blocks nc, netcat, ncat, socat — reverse shell vectors", async () => {
     const tool = createBashTool();
 
-    for (const cmd of ["nodejs18", "ruby3.2", "perl5.38", "php8.2", "lua5.4"]) {
-      const result = await tool.execute({ command: cmd });
-      expect(result.isError).toBe(true);
-      expect(parseContent(result).error).toContain("denied");
-    }
-
-    expect(mockExecFile).not.toHaveBeenCalled();
-  });
-
-  it("blocks absolute-path version-specific binaries via prefix matching", async () => {
-    const tool = createBashTool();
-
-    const result = await tool.execute({ command: "/usr/bin/python3.11" });
-    expect(result.isError).toBe(true);
-    expect(parseContent(result).error).toContain("denied");
-    expect(mockExecFile).not.toHaveBeenCalled();
-  });
-
-  it("allows exact interpreter commands when explicitly excluded from deny list", async () => {
-    const tool = createBashTool({ denyExclusions: ["python3"] });
-    mockSuccess("Python 3.11.9\n");
-
-    const result = await tool.execute({
-      command: "python3",
-      args: ["--version"],
-    });
-
-    expect(result.isError).toBeUndefined();
-    const parsed = parseContent(result);
-    expect(parsed.exitCode).toBe(0);
-    expect(parsed.stdout).toContain("Python");
-  });
-
-  it("still blocks versioned interpreter binaries when only base command is excluded", async () => {
-    const tool = createBashTool({ denyExclusions: ["python3"] });
-
-    const result = await tool.execute({ command: "python3.11" });
-    expect(result.isError).toBe(true);
-    expect(parseContent(result).error).toContain("matches deny prefix");
-    expect(mockExecFile).not.toHaveBeenCalled();
-  });
-
-  // ---- Command execution wrapper prevention ----
-
-  it("blocks xargs, nohup, and awk", async () => {
-    const tool = createBashTool();
-
-    for (const cmd of ["xargs", "nohup", "awk", "gawk", "nawk"]) {
+    for (const cmd of ["nc", "netcat", "ncat", "socat"]) {
       const result = await tool.execute({ command: cmd });
       expect(result.isError).toBe(true);
       expect(parseContent(result).error).toContain("denied");
     }
   });
 
-  // ---- Network access prevention ----
+  // ---- Filesystem-level tools that need root anyway ----
 
-  it("blocks ssh, scp, sftp, rsync, telnet, socat", async () => {
+  it("blocks dd, mkfs, mount, umount — disk-level destructive ops", async () => {
     const tool = createBashTool();
 
-    for (const cmd of ["ssh", "scp", "sftp", "rsync", "telnet", "socat"]) {
+    for (const cmd of ["dd", "mkfs", "mount", "umount"]) {
       const result = await tool.execute({ command: cmd });
       expect(result.isError).toBe(true);
       expect(parseContent(result).error).toContain("denied");
     }
   });
 
-  // ---- File writing / system tools prevention ----
+  // ---- System-halt tools that need root anyway ----
 
-  it("blocks tee, install, mount, crontab, at", async () => {
+  it("blocks shutdown, reboot, halt, poweroff, init", async () => {
     const tool = createBashTool();
 
-    for (const cmd of ["tee", "install", "mount", "umount", "crontab", "at"]) {
-      const result = await tool.execute({ command: cmd });
-      expect(result.isError).toBe(true);
-      expect(parseContent(result).error).toContain("denied");
-    }
-  });
-
-  // ---- Debugging tool prevention ----
-
-  it("blocks strace, ltrace, gdb", async () => {
-    const tool = createBashTool();
-
-    for (const cmd of ["strace", "ltrace", "gdb"]) {
+    for (const cmd of ["shutdown", "reboot", "halt", "poweroff", "init"]) {
       const result = await tool.execute({ command: cmd });
       expect(result.isError).toBe(true);
       expect(parseContent(result).error).toContain("denied");
@@ -545,9 +473,9 @@ describe("system.bash tool", () => {
   // ---- Deny-over-allow precedence ----
 
   it("deny list takes precedence over allow list", async () => {
-    const tool = createBashTool({ allowList: ["rm", "ls"], denyList: [] });
+    const tool = createBashTool({ allowList: ["sudo", "ls"], denyList: [] });
 
-    const result = await tool.execute({ command: "rm" });
+    const result = await tool.execute({ command: "sudo" });
     expect(result.isError).toBe(true);
     expect(parseContent(result).error).toContain("denied");
     expect(mockExecFile).not.toHaveBeenCalled();
@@ -916,7 +844,7 @@ describe("system.bash tool", () => {
     const logger = createMockLogger();
     const tool = createBashTool({ logger });
 
-    await tool.execute({ command: "rm", args: ["-rf", "/"] });
+    await tool.execute({ command: "sudo", args: ["ls"] });
 
     expect(logger.warn).toHaveBeenCalledOnce();
     expect(
@@ -1210,7 +1138,7 @@ describe("system.bash tool", () => {
       const tool = createBashTool();
 
       const result = await tool.execute({
-        command: "echo safe && python3 --version",
+        command: "echo safe && socat -",
       });
       expect(result.isError).toBe(true);
       expect(parseContent(result).error).toContain("denied");
@@ -1219,14 +1147,14 @@ describe("system.bash tool", () => {
 
     it("blocks variable-expanded executables in shell mode", async () => {
       await expectShellModeExecutionError(
-        "PY=python3 $PY --version",
+        "SC=socat $SC -",
         "Variable-expanded executables are not allowed",
       );
     });
 
     it.each([
-      "$(printf python3) --version",
-      "`printf python3` --version",
+      "$(printf socat) -",
+      "`printf socat` -",
     ])(
       "blocks command-substitution executables in shell mode (issue #1334 regression): %s",
       async (command) => {
@@ -1251,39 +1179,44 @@ describe("system.bash tool", () => {
 
     // ---- Shell mode safe commands ----
 
-    it("blocks rm in shell mode via deny list", async () => {
+    it("allows rm in shell mode (deny list pruned to real threats)", async () => {
       const tool = createBashTool();
+      mockSpawnSuccess("");
 
       const result = await tool.execute({ command: "rm /tmp/test.txt" });
-      expect(result.isError).toBe(true);
-      expect(parseContent(result).error).toContain("denied");
-      expect(mockSpawn).not.toHaveBeenCalled();
+      expect(result.isError).toBeUndefined();
     });
 
-    it("blocks curl in shell mode via deny list", async () => {
+    it("allows curl in shell mode (deny list pruned)", async () => {
       const tool = createBashTool();
+      mockSpawnSuccess("");
 
       const result = await tool.execute({ command: "curl -sS https://api.example.com | grep name" });
-      expect(result.isError).toBe(true);
-      expect(parseContent(result).error).toContain("denied");
-      expect(mockSpawn).not.toHaveBeenCalled();
+      expect(result.isError).toBeUndefined();
     });
 
-    it("blocks python3 in shell mode", async () => {
+    it("allows python3 in shell mode (script interpreters re-enabled)", async () => {
       const tool = createBashTool();
+      mockSpawnSuccess("Python 3.12.3\n");
 
       const result = await tool.execute({ command: "python3 --version" });
-      expect(result.isError).toBe(true);
-      expect(parseContent(result).error).toContain("denied");
-      expect(mockSpawn).not.toHaveBeenCalled();
+      expect(result.isError).toBeUndefined();
     });
 
-    it("blocks pkill in shell mode", async () => {
+    it("allows pkill in shell mode (process management re-enabled)", async () => {
       const tool = createBashTool();
+      mockSpawnSuccess("");
 
       const result = await tool.execute({ command: "pkill -f 'http.server'" });
+      expect(result.isError).toBeUndefined();
+    });
+
+    it("still blocks sudo in shell mode (privilege escalation stays blocked)", async () => {
+      const tool = createBashTool();
+
+      const result = await tool.execute({ command: "sudo systemctl restart nginx" });
       expect(result.isError).toBe(true);
-      expect(parseContent(result).error).toContain("denied");
+      expect(parseContent(result).error).toMatch(/blocked|denied/);
       expect(mockSpawn).not.toHaveBeenCalled();
     });
 
@@ -1416,20 +1349,19 @@ describe("isCommandAllowed", () => {
     expect(result.allowed).toBe(false);
   });
 
-  it("denies version-specific python via prefix matching", () => {
+  it("allows version-specific python now that DEFAULT_DENY_PREFIXES is empty", () => {
     const result = isCommandAllowed("python3.11", new Set(), null);
-    expect(result.allowed).toBe(false);
-    expect((result as { reason: string }).reason).toContain("deny prefix");
+    expect(result.allowed).toBe(true);
   });
 
-  it("denies pypy3 via prefix matching", () => {
+  it("allows pypy3 now that the prefix list is empty", () => {
     const result = isCommandAllowed("pypy3", new Set(), null);
-    expect(result.allowed).toBe(false);
+    expect(result.allowed).toBe(true);
   });
 
-  it("denies absolute path to version-specific binary via prefix matching", () => {
+  it("allows absolute path to version-specific binary", () => {
     const result = isCommandAllowed("/usr/bin/ruby3.2", new Set(), null);
-    expect(result.allowed).toBe(false);
+    expect(result.allowed).toBe(true);
   });
 
   it("denies variable-expanded executable names", () => {
@@ -1440,25 +1372,16 @@ describe("isCommandAllowed", () => {
     );
   });
 
-  it("allows exact excluded command even if it matches deny prefix", () => {
+  it("exact excluded command still bypasses any explicit deny entry", () => {
+    // python3 isn't in the new default deny set, but the exclusion API
+    // still works for callers who add commands to a custom denyList.
     const result = isCommandAllowed(
       "python3",
-      new Set(),
+      new Set(["python3"]),
       null,
       new Set(["python3"]),
     );
     expect(result.allowed).toBe(true);
-  });
-
-  it("still denies versioned command when only exact base is excluded", () => {
-    const result = isCommandAllowed(
-      "python3.11",
-      new Set(),
-      null,
-      new Set(["python3"]),
-    );
-    expect(result.allowed).toBe(false);
-    expect((result as { reason: string }).reason).toContain("deny prefix");
   });
 
   it("allows commands that do not match any deny prefix", () => {

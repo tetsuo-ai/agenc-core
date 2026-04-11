@@ -23,6 +23,7 @@ import type { RuntimeIncidentDiagnostics } from "../telemetry/incident-diagnosti
 import type { BackgroundRunNotifier } from "./background-run-notifier.js";
 import type { EffectLedger } from "../workflow/effect-ledger.js";
 import type { RuntimeFaultInjector } from "../eval/fault-injection.js";
+import type { StopHookRuntime } from "../llm/hooks/stop-hooks.js";
 import {
   AGENT_RUN_SCHEMA_VERSION,
 } from "./agent-run-contract.js";
@@ -173,6 +174,7 @@ export interface BackgroundRunSupervisorConfig {
   readonly workerPools?: readonly BackgroundRunWorkerPool[];
   readonly workerMaxConcurrentRuns?: number;
   readonly notifier?: BackgroundRunNotifier;
+  readonly resolveStopHookRuntime?: () => StopHookRuntime | undefined;
   readonly traceProviderPayloads?: boolean;
   readonly effectLedger?: EffectLedger;
   readonly incidentDiagnostics?: RuntimeIncidentDiagnostics;

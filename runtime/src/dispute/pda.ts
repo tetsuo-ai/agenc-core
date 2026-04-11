@@ -12,7 +12,7 @@ export type { PdaWithBump } from "../utils/pda.js";
 import type { PdaWithBump } from "../utils/pda.js";
 
 /** Length of dispute_id field (bytes) */
-export const DISPUTE_ID_LENGTH = 32;
+const DISPUTE_ID_LENGTH = 32;
 
 /**
  * Derives the dispute PDA and bump seed.

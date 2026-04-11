@@ -84,7 +84,7 @@ function makeRecord(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 describe('SimulationWorkspace', () => {
-  const fetchMock = vi.fn<typeof fetch>();
+  const fetchMock = vi.fn();
 
   beforeEach(() => {
     viewerSimulationId = null;
@@ -151,7 +151,7 @@ describe('SimulationWorkspace', () => {
   });
 
   it('hydrates detail mode from the selected simulation record and lists active/recent cards', async () => {
-    fetchMock.mockImplementation(async (input) => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith('/simulations')) {
         return new Response(JSON.stringify({
@@ -196,7 +196,7 @@ describe('SimulationWorkspace', () => {
   });
 
   it('shows sim-not-found state when the selected simulation disappears', async () => {
-    fetchMock.mockImplementation(async (input) => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith('/simulations')) {
         return new Response(JSON.stringify({ simulations: [] }), {

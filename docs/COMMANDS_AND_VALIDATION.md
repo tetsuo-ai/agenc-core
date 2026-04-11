@@ -26,7 +26,7 @@ npm run pack:smoke:skip-build
 - runtime, MCP, or docs-mcp change: `npm run build`, `npm run typecheck`, `npm run test`
 - cross-repo runtime/protocol contract change: `npm run test:cross-repo-integration`
 - terminal marketplace flow change: `npm --prefix runtime run test:marketplace-integration`
-- dashboard, mobile, or demo-app change: `npm run build:product-surfaces`, `npm run typecheck:product-surfaces`, `npm run test:product-surfaces`
+- dashboard or mobile change: `npm run build:product-surfaces`, `npm run typecheck:product-surfaces`, `npm run test:product-surfaces`
 - internal example change: `npm run typecheck:runtime-examples`
 - packaging or distribution change: `npm run check:private-kernel-distribution` and `npm run pack:smoke:skip-build`
 - proof-harness surface change: `npm run check:proof-harness-boundary`
@@ -62,6 +62,32 @@ agenc-runtime market disputes list --rpc <url>
 agenc-runtime market reputation summary --rpc <url>
 ```
 
+## Public Wrapper Release Rehearsal
+
+When validating the supported public install surface from `@tetsuo-ai/agenc`,
+release-path docs and manual rehearsal commands should use `agenc`, not the
+compatibility alias `agenc-runtime`. The currently supported wrapper tuple is:
+
+- Linux `x64`
+- Node `>=18.0.0`
+
+Useful first-use commands:
+
+```bash
+agenc onboard
+agenc runtime install
+agenc start
+agenc agent register --rpc <url>
+agenc market tasks create --description "public task" --reward 50000000 --rpc <url>
+agenc market tasks list --rpc <url>
+agenc market tui --rpc <url>
+```
+
+Claim and complete from a second signer-backed agent when you need the full
+creator/worker rehearsal. See
+[architecture/guides/public-wrapper-devnet-marketplace-rehearsal.md](./architecture/guides/public-wrapper-devnet-marketplace-rehearsal.md)
+for the supported boundary and manual prerequisites.
+
 ## Solana Security Sweep
 
 For Codex-assisted Solana work, especially non-ZK marketplace changes, use the
@@ -76,9 +102,9 @@ The minimum security stack is:
 Useful commands:
 
 ```bash
-node scripts/check-security-mcp-stack.mjs --config mcp/security-stack.mcp.json --verbose
-node scripts/solana-fender-mcp.mjs check-program programs/agenc-coordination
-node scripts/gitguardian-mcp-scan.mjs --profile mcp/security-stack.mcp.json --scope . --output .tmp/security-mcp-sweep/gitguardian-mcp.json --fail-on-error
+# The following scripts have been removed (see cleanup/dead-code-audit):
+#   check-security-mcp-stack.mjs, solana-fender-mcp.mjs, gitguardian-mcp-scan.mjs
+# Use the npm run wrappers or the /security-mcp-sweep skill instead.
 npm run smoke:marketplace:devnet
 ```
 

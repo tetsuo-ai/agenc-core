@@ -1,4 +1,4 @@
-export type ToolTextResponse = { content: [{ type: "text"; text: string }] };
+type ToolTextResponse = { content: [{ type: "text"; text: string }] };
 
 export function toolTextResponse(text: string): ToolTextResponse {
   return {

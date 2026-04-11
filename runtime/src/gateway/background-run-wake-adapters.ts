@@ -12,13 +12,13 @@ import type { BackgroundRunSupervisor } from "./background-run-supervisor.js";
 import type { HookHandler } from "./hooks.js";
 import type { WebhookRequest, WebhookResponse, WebhookRoute } from "./webhooks.js";
 
-export interface BackgroundRunWakeSignalDescriptor {
+interface BackgroundRunWakeSignalDescriptor {
   readonly type: "tool_result" | "process_exit" | "external_event" | "webhook";
   readonly content: string;
   readonly data?: Record<string, unknown>;
 }
 
-export interface BackgroundRunToolResultPayload {
+interface BackgroundRunToolResultPayload {
   readonly sessionId: string;
   readonly toolName: string;
   readonly args: Record<string, unknown>;
@@ -28,7 +28,7 @@ export interface BackgroundRunToolResultPayload {
   readonly backgroundRunId?: string;
 }
 
-export interface BackgroundRunWebhookPayload {
+interface BackgroundRunWebhookPayload {
   readonly sessionId: string;
   readonly content: string;
   readonly eventId?: string;
@@ -36,7 +36,7 @@ export interface BackgroundRunWebhookPayload {
   readonly data?: Record<string, unknown>;
 }
 
-export interface CreateBackgroundRunToolAfterHookOptions {
+interface CreateBackgroundRunToolAfterHookOptions {
   readonly getSupervisor: () => Pick<
     BackgroundRunSupervisor,
     "hasActiveRun" | "signalRun"
@@ -44,7 +44,7 @@ export interface CreateBackgroundRunToolAfterHookOptions {
   readonly logger?: Logger;
 }
 
-export interface CreateBackgroundRunWebhookRouteOptions {
+interface CreateBackgroundRunWebhookRouteOptions {
   readonly getSupervisor: () => Pick<
     BackgroundRunSupervisor,
     "hasActiveRun" | "signalRun"

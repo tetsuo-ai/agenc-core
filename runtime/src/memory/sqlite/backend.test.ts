@@ -67,6 +67,27 @@ describe("SqliteBackend", () => {
 
       expect(mockPragma).toHaveBeenCalledWith("journal_mode = WAL");
     });
+
+    it("memoizes init across concurrent ensureDb callers", async () => {
+      // Audit S2.3: concurrent callers used to race on the
+      // `if (this.db) return this.db;` check, both call into
+      // ensureLazyBackend, and both run createSchema() +
+      // cleanupExpired() against the same DB instance. The init
+      // promise is now memoized so only one initializer runs.
+      MockDatabase.mockClear();
+      mockExec.mockClear();
+      const backend = new SqliteBackend({ dbPath: "/tmp/test-concurrent.db" });
+      // Fire 5 concurrent operations that all hit ensureDb().
+      await Promise.all([
+        backend.getThread("s1"),
+        backend.getThread("s2"),
+        backend.getThread("s3"),
+        backend.getThread("s4"),
+        backend.getThread("s5"),
+      ]);
+      // Database constructor must be invoked exactly once.
+      expect(MockDatabase).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("missing dependency", () => {

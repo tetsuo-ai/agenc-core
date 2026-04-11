@@ -15,7 +15,7 @@ function deriveTraceChannel(traceLabel: string): string | undefined {
   return channel && channel.length > 0 ? channel : undefined;
 }
 
-export function formatProviderTracePayloadForLog(
+function formatProviderTracePayloadForLog(
   payload: Record<string, unknown>,
   maxChars = DEFAULT_MAX_CHARS,
 ): string {

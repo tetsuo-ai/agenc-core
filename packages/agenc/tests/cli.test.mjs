@@ -77,6 +77,7 @@ test("runAgencWrapper forwards product commands to the installed agenc bin", asy
         cwd: process.cwd(),
         homeDir: undefined,
         packageRoot: undefined,
+        sourceDir: undefined,
       },
     },
   ]);
@@ -102,7 +103,11 @@ test("runAgencWrapper help includes the dashboard entrypoint", async () => {
   );
 
   assert.equal(code, 0);
-  assert.match(stdout.read(), /agenc ui/u);
+  const help = stdout.read();
+  assert.match(help, /agenc ui/u);
+  assert.match(help, /agenc agent register/u);
+  assert.match(help, /agenc market tasks create/u);
+  assert.match(help, /Linux x64/u);
 });
 
 test("runAgencWrapper uses force install semantics for runtime update", async () => {
@@ -134,6 +139,7 @@ test("runAgencWrapper uses force install semantics for runtime update", async ()
       cwd: process.cwd(),
       homeDir: undefined,
       packageRoot: undefined,
+      sourceDir: undefined,
       force: true,
     },
   ]);
@@ -166,6 +172,7 @@ test("runAgencRuntimeWrapper forwards directly to the installed agenc-runtime bi
         cwd: process.cwd(),
         homeDir: undefined,
         packageRoot: undefined,
+        sourceDir: undefined,
       },
     },
   ]);

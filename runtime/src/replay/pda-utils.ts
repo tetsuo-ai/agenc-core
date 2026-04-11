@@ -71,11 +71,6 @@ export function normalizePdaValue(value: unknown): string | undefined {
 }
 
 /**
- * @deprecated Use {@link normalizePdaValue} which also handles byte arrays.
- */
-export const normalizePdaString = normalizePdaValue;
-
-/**
  * Extract a dispute PDA from an event payload.
  *
  * Checks `payload.disputeId` first, then falls back to

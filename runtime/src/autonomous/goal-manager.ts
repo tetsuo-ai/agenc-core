@@ -53,7 +53,13 @@ export class GoalManager {
   async addGoal(input: GoalStoreInput): Promise<ManagedGoal> {
     const activeGoals = await this.goalStore.getActiveGoals();
     if (activeGoals.length >= this.maxActiveGoals) {
-      const lowestPriority = [...activeGoals].sort((left, right) => {
+      const evictable = activeGoals.filter(g => g.status !== "executing");
+      const lowestPriority = [...evictable].sort((left, right) => {
+        // Audit S1.7: include a default branch so an unrecognized
+        // priority value (e.g. from a future schema migration or a
+        // corrupted persisted goal) does not return undefined and
+        // produce NaN inside the comparator. NaN comparators break
+        // sort stability and can drop or duplicate elements.
         const weight = (priority: ManagedGoal["priority"]): number => {
           switch (priority) {
             case "critical":
@@ -64,6 +70,8 @@ export class GoalManager {
               return 2;
             case "low":
               return 1;
+            default:
+              return 0;
           }
         };
         const delta = weight(left.priority) - weight(right.priority);

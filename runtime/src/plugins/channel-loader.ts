@@ -20,13 +20,13 @@ import {
   parsePluginModuleSpecifier,
 } from "./channel-policy.js";
 
-export interface PluginChannelWrapperConfig extends GatewayChannelConfig {
+interface PluginChannelWrapperConfig extends GatewayChannelConfig {
   readonly type: "plugin";
   readonly moduleSpecifier: string;
   readonly config?: Readonly<Record<string, unknown>>;
 }
 
-export interface LoadedConfiguredPluginChannel {
+interface LoadedConfiguredPluginChannel {
   readonly manifest: ChannelAdapterManifest;
   readonly channel: ChannelPlugin;
   readonly moduleSpecifier: string;

@@ -5,21 +5,7 @@ import { useWebSocket } from './useWebSocket';
 const CONNECTING = 0;
 const OPEN = 1;
 
-interface WsMockInstance {
-  url: string;
-  readyState: number;
-  sent: string[];
-  onopen: ((ev?: Event) => void) | null;
-  onmessage: ((ev: MessageEvent) => void) | null;
-  onclose: (() => void) | null;
-  onerror: (() => void) | null;
-  triggerOpen: () => void;
-  triggerMessage: (data: unknown) => void;
-  triggerClose: () => void;
-  close: ReturnType<typeof vi.fn>;
-}
-
-const instances: WsMockInstance[] = [];
+const instances: WsMock[] = [];
 
 class WsMock {
   static CONNECTING = CONNECTING;

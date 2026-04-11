@@ -2,7 +2,7 @@ import { didToolCallFail } from "../llm/chat-executor-tool-utils.js";
 import type { DelegationOutputValidationCode } from "../utils/delegation-validation.js";
 import type { ImplementationCompletionContract } from "./completion-contract.js";
 import { resolveWorkflowRequestCompletionStatus } from "./request-completion.js";
-import { deriveVerificationObligations, type WorkflowVerificationContract } from "./verification-obligations.js";
+import type { WorkflowVerificationContract } from "./verification-obligations.js";
 
 export type WorkflowCompletionState =
   | "completed"
@@ -15,11 +15,24 @@ export interface PlannerVerificationSnapshot {
   readonly overall: "pass" | "retry" | "fail" | "skipped";
 }
 
-export interface CompletionStateToolCall {
+interface CompletionStateToolCall {
   readonly name: string;
   readonly args: Record<string, unknown>;
   readonly result: string;
   readonly isError: boolean;
+}
+
+function requiresPassedVerificationForCompletion(
+  completionContract: ImplementationCompletionContract | undefined,
+): boolean {
+  switch (completionContract?.taskClass) {
+    case "behavior_required":
+    case "build_required":
+    case "review_required":
+      return true;
+    default:
+      return false;
+  }
 }
 
 export function resolvePipelineCompletionState(input: {
@@ -44,44 +57,30 @@ export function resolveWorkflowCompletionState(input: {
   readonly validationCode?: DelegationOutputValidationCode;
   readonly verifier?: PlannerVerificationSnapshot;
 }): WorkflowCompletionState {
-  const verificationContract = mergeVerificationContract(input);
-  const obligations = verificationContract
-    ? deriveVerificationObligations(verificationContract)
-    : undefined;
   const verifier = input.verifier;
+  const completionContract =
+    input.completionContract ?? input.verificationContract?.completionContract;
   const successfulToolCalls = input.toolCalls.filter(
     (toolCall) => !didToolCallFail(toolCall.isError, toolCall.result),
   );
   const hasProgress = successfulToolCalls.length > 0;
   const requestCompletion = resolveWorkflowRequestCompletionStatus({
-    contract: verificationContract?.requestCompletion,
+    contract: input.verificationContract?.requestCompletion,
     completedMilestoneIds: input.completedRequestMilestoneIds,
   });
-  const requiresExplicitVerification = Boolean(
-    obligations &&
-      (
-        obligations.requiresBuildVerification ||
-        obligations.requiresBehaviorVerification ||
-        obligations.requiresReviewVerification
-      ),
-  );
-  const requiresVerificationBeforeCompletion =
-    requiresExplicitVerification;
 
   if (input.stopReason === "completed") {
     if ((requestCompletion?.remainingMilestones.length ?? 0) > 0) {
       return hasProgress ? "partial" : "blocked";
     }
+    if (verifier?.overall === "retry" || verifier?.overall === "fail") {
+      return hasProgress ? "partial" : "blocked";
+    }
     if (
-      requiresVerificationBeforeCompletion &&
-      (!verifier || verifier.performed !== true || verifier.overall === "skipped")
+      requiresPassedVerificationForCompletion(completionContract) &&
+      verifier?.overall !== "pass"
     ) {
       return "needs_verification";
-    }
-    if (verifier?.overall === "retry" || verifier?.overall === "fail") {
-      return hasProgress || obligations?.partialCompletionAllowed === true
-        ? "partial"
-        : "blocked";
     }
     return "completed";
   }
@@ -90,30 +89,9 @@ export function resolveWorkflowCompletionState(input: {
     return "blocked";
   }
 
-  if (
-    input.validationCode === "missing_behavior_harness" &&
-    (hasProgress || obligations?.requiresBehaviorVerification)
-  ) {
+  if (input.validationCode === "missing_behavior_harness" && hasProgress) {
     return "needs_verification";
   }
 
-  if (hasProgress || obligations?.partialCompletionAllowed === true) {
-    return "partial";
-  }
-  return "blocked";
-}
-
-function mergeVerificationContract(input: {
-  readonly verificationContract?: WorkflowVerificationContract;
-  readonly completionContract?: ImplementationCompletionContract;
-}): WorkflowVerificationContract | undefined {
-  if (!input.verificationContract && !input.completionContract) {
-    return undefined;
-  }
-  return {
-    ...(input.verificationContract ?? {}),
-    ...(input.completionContract
-      ? { completionContract: input.completionContract }
-      : {}),
-  };
+  return hasProgress ? "partial" : "blocked";
 }

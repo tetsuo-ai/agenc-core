@@ -22,7 +22,7 @@ import {
 } from "./daemon.js";
 import type { CliStatusCode } from "./types.js";
 
-export interface UiCommandOptions {
+interface UiCommandOptions {
   configPath?: string;
   pidPath?: string;
   logLevel?: string;
@@ -169,7 +169,7 @@ function spawnDetached(
   });
 }
 
-export async function openExternalUrl(
+async function openExternalUrl(
   url: string,
   options: UiOpenUrlOptions,
 ): Promise<void> {

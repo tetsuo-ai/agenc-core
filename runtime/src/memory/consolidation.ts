@@ -24,7 +24,7 @@ import type { MemoryGraph } from "./graph.js";
 import type { Logger } from "../utils/logger.js";
 
 /** Configuration for the consolidation pipeline. */
-export interface ConsolidationConfig {
+interface ConsolidationConfig {
   readonly memoryBackend: MemoryBackend;
   readonly vectorStore: VectorMemoryBackend;
   readonly embeddingProvider: EmbeddingProvider;
@@ -41,7 +41,7 @@ export interface ConsolidationConfig {
 }
 
 /** Result of a consolidation run. */
-export interface ConsolidationResult {
+interface ConsolidationResult {
   readonly processed: number;
   readonly consolidated: number;
   readonly skippedDuplicates: number;
@@ -227,7 +227,7 @@ export async function runConsolidation(
 }
 
 /** Retention configuration. */
-export interface RetentionConfig {
+interface RetentionConfig {
   readonly memoryBackend: MemoryBackend;
   readonly logger?: Logger;
   /** Max age for daily logs in ms. Default: 90 days. */
@@ -294,57 +294,132 @@ export async function runRetention(
  * Per edge case X7: uses incremental_vacuum, not full VACUUM (blocks writes).
  * Should be called periodically (e.g., every 24h).
  */
-export async function runSqliteVacuum(
-  memoryBackend: MemoryBackend,
-  logger?: Logger,
-): Promise<void> {
-  try {
-    // Try to access the underlying SQLite connection for VACUUM.
-    // This only works if the backend is SQLite-based.
-    const backend = memoryBackend as unknown as {
-      ensureDb?: () => Promise<{ pragma: (sql: string) => unknown }>;
-    };
-    if (typeof backend.ensureDb === "function") {
-      const db = await backend.ensureDb();
-      // Per edge case X7: incremental_vacuum is non-blocking
-      // Full VACUUM locks the database during the entire operation
-      db.pragma("incremental_vacuum(1000)");
-      logger?.info?.("SQLite incremental vacuum completed (1000 pages)");
-    }
-  } catch (err) {
-    logger?.debug?.("SQLite vacuum failed or not applicable (non-blocking)", err);
-  }
-}
-
 /**
  * Phase 4.5: Feed consolidation results into self-learning system.
  * After consolidation produces semantic facts, store them as learning
  * evidence that the self-learning heartbeat can reference.
  */
-export async function feedConsolidationToLearning(
-  result: ConsolidationResult,
-  memoryBackend: MemoryBackend,
-  workspaceId?: string,
-  logger?: Logger,
-): Promise<void> {
-  if (result.consolidated === 0) return;
 
-  const learningKey = workspaceId
-    ? `${workspaceId}:consolidation:latest`
-    : "consolidation:latest";
+// ============================================================================
+// Phase N (16-phase refactor): in-memory slice consolidation
+// ============================================================================
 
-  try {
-    await memoryBackend.set(learningKey, {
-      timestamp: Date.now(),
-      consolidated: result.consolidated,
-      processed: result.processed,
-      skippedDuplicates: result.skippedDuplicates,
-      durationMs: result.durationMs,
-    });
-    logger?.debug?.(
-      `Consolidation results stored for self-learning (key: ${learningKey})`,
-    );
-  } catch (err) {
-    logger?.debug?.("Failed to store consolidation results for self-learning", err);
+import type { LLMMessage } from "../llm/types.js";
+
+/**
+ * Deterministic message-window consolidation used by the layered
+ * compaction chain (Phase N of the 16-phase refactor in TODO.MD).
+ *
+ * Unlike `runConsolidation` — which mutates the memory store and
+ * runs as a background job — this helper is a pure function on an
+ * `LLMMessage[]` slice. It walks a window of cold messages, pulls
+ * the most frequent meaningful tokens, and produces a single
+ * synthetic `system` message that captures the gist of the slice.
+ * The caller decides whether to splice the summary into the live
+ * history and whether to drop the original slice.
+ *
+ * No LLM call. No embedding call. No memory backend access. The
+ * goal is to ship a deterministic, side-effect-free consolidation
+ * primitive that the compact chain can invoke inside the per-
+ * iteration wire-up without pulling memory infrastructure into
+ * `chat-executor-tool-loop.ts`.
+ *
+ * A fancier v2 can replace the heuristic with an actual
+ * summarization LLM call gated behind the same feature flag.
+ */
+export interface ConsolidateSliceInput {
+  readonly messages: readonly LLMMessage[];
+  /**
+   * Minimum window length before consolidation fires. Windows
+   * shorter than this return `"noop"` to keep short conversations
+   * untouched. Defaults to 20.
+   */
+  readonly minWindowMessages?: number;
+  /**
+   * Maximum tokens to include in the synthesized summary. Defaults
+   * to 12 so the summary stays compact and does not itself blow
+   * past the autocompact threshold on the next iteration.
+   */
+  readonly maxSummaryTokens?: number;
+}
+
+export interface ConsolidateSliceResult {
+  readonly action: "noop" | "consolidated";
+  readonly summaryMessage?: LLMMessage;
+  readonly tokensKept?: number;
+}
+
+const SLICE_STOPWORDS = new Set([
+  "the", "and", "for", "with", "this", "that", "from", "into", "have",
+  "has", "had", "been", "were", "was", "will", "would", "could", "should",
+  "can", "may", "might", "must", "shall", "does", "did", "your", "you",
+  "our", "their", "them", "its", "it's", "what", "which", "who", "how",
+  "why", "when", "where", "there", "here", "than", "then", "some", "any",
+  "all", "one", "two", "three", "about", "after", "before", "over",
+  "under", "above", "below", "let", "please", "also", "only", "just",
+  "very", "more", "less", "much", "many", "few",
+]);
+
+const SLICE_TOKEN_RE = /[a-z][a-z0-9_-]{2,}/gi;
+
+function extractTextFromMessage(message: LLMMessage): string {
+  if (typeof message.content === "string") return message.content;
+  const parts = message.content as readonly { type?: string; text?: string }[];
+  return parts
+    .map((p) => (p.type === "text" && typeof p.text === "string" ? p.text : ""))
+    .join(" ");
+}
+
+/**
+ * Walk a message window and produce a deterministic summary
+ * message for the compact chain's consolidation layer. Returns
+ * `"noop"` when the window is too short or produces no
+ * meaningful tokens.
+ */
+export function consolidateEpisodicSlice(
+  input: ConsolidateSliceInput,
+): ConsolidateSliceResult {
+  const minWindow = input.minWindowMessages ?? 20;
+  const maxSummaryTokens = input.maxSummaryTokens ?? 12;
+
+  if (input.messages.length < minWindow) {
+    return { action: "noop" };
   }
+
+  const frequencies = new Map<string, number>();
+  for (const message of input.messages) {
+    const text = extractTextFromMessage(message).toLowerCase();
+    if (text.length === 0) continue;
+    for (const match of text.matchAll(SLICE_TOKEN_RE)) {
+      const token = match[0];
+      if (SLICE_STOPWORDS.has(token)) continue;
+      if (token.length < 4) continue;
+      frequencies.set(token, (frequencies.get(token) ?? 0) + 1);
+    }
+  }
+
+  if (frequencies.size === 0) {
+    return { action: "noop" };
+  }
+
+  const ranked = [...frequencies.entries()]
+    .filter(([, count]) => count >= 2)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, maxSummaryTokens)
+    .map(([token]) => token);
+
+  if (ranked.length < 3) {
+    return { action: "noop" };
+  }
+
+  const summaryMessage: LLMMessage = {
+    role: "system",
+    content: `[consolidation] recurring topics in the prior ${input.messages.length} messages: ${ranked.join(", ")}`,
+  };
+
+  return {
+    action: "consolidated",
+    summaryMessage,
+    tokensKept: ranked.length,
+  };
 }

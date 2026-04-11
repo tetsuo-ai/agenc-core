@@ -19,7 +19,7 @@ import { resolveWorldDbPath } from "../memory/world-db-resolver.js";
 // Factory
 // ---------------------------------------------------------------------------
 
-export interface CreateMemoryBackendParams {
+interface CreateMemoryBackendParams {
   config: GatewayConfig;
   metrics?: UnifiedTelemetryCollector;
   logger: Logger;

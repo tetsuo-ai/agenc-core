@@ -193,13 +193,6 @@ export function deriveTaskValidationConfigPda(
  * @param programId - Program ID (defaults to PROGRAM_ID)
  * @returns PDA address
  */
-export function findTaskValidationConfigPda(
-  taskPda: PublicKey,
-  programId: PublicKey = PROGRAM_ID,
-): PublicKey {
-  return deriveTaskValidationConfigPda(taskPda, programId).address;
-}
-
 /**
  * Derives the task attestor config PDA and bump seed.
  * Seeds: ["task_attestor", task_pda]
@@ -222,13 +215,6 @@ export function deriveTaskAttestorConfigPda(
  * @param programId - Program ID (defaults to PROGRAM_ID)
  * @returns PDA address
  */
-export function findTaskAttestorConfigPda(
-  taskPda: PublicKey,
-  programId: PublicKey = PROGRAM_ID,
-): PublicKey {
-  return deriveTaskAttestorConfigPda(taskPda, programId).address;
-}
-
 /**
  * Derives the task submission PDA and bump seed.
  * Seeds: ["task_submission", claim_pda]
@@ -251,13 +237,6 @@ export function deriveTaskSubmissionPda(
  * @param programId - Program ID (defaults to PROGRAM_ID)
  * @returns PDA address
  */
-export function findTaskSubmissionPda(
-  claimPda: PublicKey,
-  programId: PublicKey = PROGRAM_ID,
-): PublicKey {
-  return deriveTaskSubmissionPda(claimPda, programId).address;
-}
-
 /**
  * Derives the task validation vote PDA and bump seed.
  * Seeds: ["task_validation_vote", task_submission_pda, reviewer]
@@ -290,18 +269,6 @@ export function deriveTaskValidationVotePda(
  * @param programId - Program ID (defaults to PROGRAM_ID)
  * @returns PDA address
  */
-export function findTaskValidationVotePda(
-  taskSubmissionPda: PublicKey,
-  reviewer: PublicKey,
-  programId: PublicKey = PROGRAM_ID,
-): PublicKey {
-  return deriveTaskValidationVotePda(
-    taskSubmissionPda,
-    reviewer,
-    programId,
-  ).address;
-}
-
 /**
  * Derives the bid book PDA and bump seed.
  * Seeds: ["bid_book", task_pda]

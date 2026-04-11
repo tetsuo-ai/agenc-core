@@ -8,7 +8,8 @@ This is the repo-level developer-documentation entrypoint for `agenc-core`.
 - [./CODEBASE_MAP.md](./CODEBASE_MAP.md) - full repo map across workspaces, tools, tests, scripts, and docs
 - [./COMMANDS_AND_VALIDATION.md](./COMMANDS_AND_VALIDATION.md) - local validation and release-sensitive commands
 - [../runtime/docs/MODULE_MAP.md](../runtime/docs/MODULE_MAP.md) - runtime module navigation guide
-- [../runtime/docs/MARKETPLACE_OPERATOR_SURFACE.md](../runtime/docs/MARKETPLACE_OPERATOR_SURFACE.md) - MARKET/TOOLS split and `agenc-runtime market` / `agenc-runtime market tui` routing
+- [../runtime/docs/MARKETPLACE_OPERATOR_SURFACE.md](../runtime/docs/MARKETPLACE_OPERATOR_SURFACE.md) - MARKET/TOOLS split and runtime marketplace routing
+- [./architecture/guides/public-wrapper-devnet-marketplace-rehearsal.md](./architecture/guides/public-wrapper-devnet-marketplace-rehearsal.md) - supported public-wrapper devnet marketplace rehearsal path
 - [./architecture/README.md](./architecture/README.md) - architecture-focused reading path
 
 ## Primary Package Docs
@@ -22,7 +23,6 @@ This is the repo-level developer-documentation entrypoint for `agenc-core`.
 
 - [../web/README.md](../web/README.md) - web dashboard surface
 - [../mobile/README.md](../mobile/README.md) - mobile client surface
-- [../demo-app/README.md](../demo-app/README.md) - demo UI surface
 - [../containers/desktop/server/README.md](../containers/desktop/server/README.md) - desktop control server
 - `../examples/*/README.md` - runtime-dependent internal examples
 - [../test-fixtures/plugin-kit-channel-adapter/README.md](../test-fixtures/plugin-kit-channel-adapter/README.md) - plugin-kit fixture package
@@ -42,6 +42,7 @@ This is the repo-level developer-documentation entrypoint for `agenc-core`.
 - I need the repo layout: [CODEBASE_MAP.md](./CODEBASE_MAP.md)
 - I need runtime module ownership: [../runtime/docs/MODULE_MAP.md](../runtime/docs/MODULE_MAP.md)
 - I need the MARKET/TOOLS split or terminal marketplace commands: [../runtime/docs/MARKETPLACE_OPERATOR_SURFACE.md](../runtime/docs/MARKETPLACE_OPERATOR_SURFACE.md)
+- I need the public wrapper devnet rehearsal path: [architecture/guides/public-wrapper-devnet-marketplace-rehearsal.md](./architecture/guides/public-wrapper-devnet-marketplace-rehearsal.md)
 - I need build or CI commands: [COMMANDS_AND_VALIDATION.md](./COMMANDS_AND_VALIDATION.md)
 - I need runtime task-validation behavior: [RUNTIME_API.md](./RUNTIME_API.md) and [architecture/flows/task-lifecycle.md](./architecture/flows/task-lifecycle.md)
 - I need the Codex Solana security stack and gate order: [security/CODEX_SOLANA_SECURITY_CHECKLIST.md](./security/CODEX_SOLANA_SECURITY_CHECKLIST.md)

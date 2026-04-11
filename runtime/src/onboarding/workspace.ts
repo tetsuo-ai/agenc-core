@@ -7,7 +7,7 @@ import {
   type WorkspaceFileName,
 } from "../gateway/workspace-files.js";
 
-export interface OnboardingWorkspaceWriteResult {
+interface OnboardingWorkspaceWriteResult {
   readonly created: string[];
   readonly overwritten: string[];
   readonly preserved: string[];

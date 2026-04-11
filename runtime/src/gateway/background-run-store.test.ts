@@ -69,6 +69,7 @@ function makeRun(
       runtimeStartedAt: 1,
       lastActivityAt: 1,
       lastProgressAt: 1,
+      idleHookBlockStreak: 0,
       totalTokens: 8,
       lastCycleTokens: 3,
       managedProcessCount: 1,
@@ -192,6 +193,48 @@ describe("BackgroundRunStore", () => {
         },
       },
     });
+  });
+
+  it("defaults and preserves idle hook block streak across persistence", async () => {
+    const backend = new InMemoryBackend();
+    const store = new BackgroundRunStore({ memoryBackend: backend });
+    const legacyRun = makeRun({
+      id: "legacy-run",
+      sessionId: "legacy-session",
+      budgetState: {
+        runtimeStartedAt: 1,
+        lastActivityAt: 1,
+        lastProgressAt: 1,
+        totalTokens: 8,
+        lastCycleTokens: 3,
+        managedProcessCount: 1,
+        maxRuntimeMs: 604_800_000,
+        maxCycles: 512,
+        maxIdleMs: 3_600_000,
+        nextCheckIntervalMs: 4_000,
+        heartbeatIntervalMs: 12_000,
+        firstAcknowledgedAt: 2,
+        firstVerifiedUpdateAt: 3,
+        stopRequestedAt: undefined,
+      },
+    });
+    const streakRun = makeRun({
+      id: "streak-run",
+      sessionId: "streak-session",
+      budgetState: {
+        ...makeRun().budgetState,
+        idleHookBlockStreak: 2,
+      },
+    });
+
+    await store.saveRun(legacyRun);
+    await store.saveRun(streakRun);
+
+    const loadedLegacy = await store.loadRun("legacy-session");
+    const loadedStreak = await store.loadRun("streak-session");
+
+    expect(loadedLegacy?.budgetState.idleHookBlockStreak).toBe(0);
+    expect(loadedStreak?.budgetState.idleHookBlockStreak).toBe(2);
   });
 
   it("enforces lease ownership until the lease expires", async () => {

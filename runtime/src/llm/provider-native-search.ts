@@ -12,19 +12,14 @@ import { normalizeGrokModel } from "../gateway/context-window.js";
 
 export const PROVIDER_NATIVE_WEB_SEARCH_TOOL = "web_search";
 export const PROVIDER_NATIVE_X_SEARCH_TOOL = "x_search";
-export const PROVIDER_NATIVE_CODE_INTERPRETER_TOOL = "code_interpreter";
+const PROVIDER_NATIVE_CODE_INTERPRETER_TOOL = "code_interpreter";
 export const PROVIDER_NATIVE_FILE_SEARCH_TOOL = "file_search";
-export const PROVIDER_NATIVE_MCP_TOOL_PREFIX = "mcp:";
+const PROVIDER_NATIVE_MCP_TOOL_PREFIX = "mcp:";
 export const PROVIDER_NATIVE_RESEARCH_TOOL_NAMES = [
   PROVIDER_NATIVE_WEB_SEARCH_TOOL,
   PROVIDER_NATIVE_X_SEARCH_TOOL,
   PROVIDER_NATIVE_FILE_SEARCH_TOOL,
 ] as const;
-export const PROVIDER_NATIVE_GROUNDED_INFORMATION_TOOL_NAMES = [
-  ...PROVIDER_NATIVE_RESEARCH_TOOL_NAMES,
-  PROVIDER_NATIVE_CODE_INTERPRETER_TOOL,
-] as const;
-
 const RESEARCH_LIKE_RE =
   /\b(?:research|compare|comparison|official docs?|primary sources?|reference|references|citation|citations|look up|latest|up[- ]to[- ]date|news)\b/i;
 const INTERACTIVE_BROWSER_RE =
@@ -40,9 +35,9 @@ const CODE_EXECUTION_CUE_RE =
 const SIGNIFICANT_TOKEN_RE = /[a-z0-9][a-z0-9_-]{2,}/gi;
 const GROK_SERVER_SIDE_TOOL_PREFIX = "grok-4";
 
-export type ProviderNativeSearchMode = "auto" | "on" | "off";
+type ProviderNativeSearchMode = "auto" | "on" | "off";
 
-export interface ProviderNativeSearchRoutingDecision {
+interface ProviderNativeSearchRoutingDecision {
   readonly toolName: string;
   readonly schemaChars: number;
 }
@@ -66,7 +61,7 @@ export function supportsGrokServerSideTools(model: string | undefined): boolean 
   return normalized.startsWith(GROK_SERVER_SIDE_TOOL_PREFIX);
 }
 
-export function resolveProviderNativeSearchMode(
+function resolveProviderNativeSearchMode(
   llmConfig: Pick<
     GatewayLLMConfig,
     "provider" | "model" | "webSearch" | "searchMode"
@@ -262,48 +257,17 @@ export function isResearchLikeText(value: string): boolean {
   return RESEARCH_LIKE_RE.test(value);
 }
 
-export function isInteractiveBrowserText(value: string): boolean {
+function isInteractiveBrowserText(value: string): boolean {
   return INTERACTIVE_BROWSER_RE.test(value);
 }
 
-export function isXSearchLikeText(value: string): boolean {
-  return X_SEARCH_CUE_RE.test(value);
-}
-
-export function isCollectionsSearchLikeText(value: string): boolean {
+function isCollectionsSearchLikeText(value: string): boolean {
   return FILE_SEARCH_CUE_RE.test(value);
 }
 
-export function isCodeExecutionLikeText(value: string): boolean {
+function isCodeExecutionLikeText(value: string): boolean {
   return CODE_EXECUTION_CUE_RE.test(value) ||
     (/\b(?:data|numbers?)\b/i.test(value) && /\[[^\]]+\]/.test(value));
-}
-
-export function selectPreferredProviderNativeResearchToolName(params: {
-  readonly messageText: string;
-  readonly allowedToolNames: readonly string[];
-}): string | undefined {
-  const normalizedTools = params.allowedToolNames
-    .map((toolName) => toolName.trim())
-    .filter((toolName) => toolName.length > 0);
-  const combined = params.messageText.toLowerCase();
-  if (
-    isXSearchLikeText(combined) &&
-    normalizedTools.includes(PROVIDER_NATIVE_X_SEARCH_TOOL)
-  ) {
-    return PROVIDER_NATIVE_X_SEARCH_TOOL;
-  }
-  if (
-    isCollectionsSearchLikeText(combined) &&
-    normalizedTools.includes(PROVIDER_NATIVE_FILE_SEARCH_TOOL)
-  ) {
-    return PROVIDER_NATIVE_FILE_SEARCH_TOOL;
-  }
-  return normalizedTools.find((toolName) =>
-    PROVIDER_NATIVE_RESEARCH_TOOL_NAMES.includes(
-      toolName as (typeof PROVIDER_NATIVE_RESEARCH_TOOL_NAMES)[number],
-    )
-  );
 }
 
 function collectRoutingText(

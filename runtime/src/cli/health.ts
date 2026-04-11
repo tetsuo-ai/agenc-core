@@ -32,14 +32,14 @@ export interface HealthCheckResult {
 }
 
 /** Aggregate health report. */
-export interface HealthReport {
+interface HealthReport {
   status: "healthy" | "degraded" | "unhealthy";
   checks: HealthCheckResult[];
   timestamp: string; // ISO-8601
   exitCode: 0 | 1 | 2;
 }
 
-export function aggregateHealthReport(
+function aggregateHealthReport(
   checks: HealthCheckResult[],
 ): HealthReport {
   const hasErrors = checks.some((check) => check.status === "fail");
@@ -134,7 +134,7 @@ async function checkRpcLatency(
   }
 }
 
-export function checkReplayStore(
+function checkReplayStore(
   options: { storeType: "memory" | "sqlite"; sqlitePath?: string },
   checks: HealthCheckResult[],
 ): void {
@@ -274,7 +274,7 @@ export async function checkWalletAvailability(
   return true;
 }
 
-export function checkProgramAvailability(
+function checkProgramAvailability(
   programId: string | undefined,
   checks: HealthCheckResult[],
 ): void {
@@ -384,7 +384,7 @@ function resolveConfiguredWalletPath(options: {
   }
 }
 
-export async function runAllHealthChecks(
+async function runAllHealthChecks(
   options: Pick<
     HealthOptions,
     | "rpcUrl"

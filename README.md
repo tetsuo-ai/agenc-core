@@ -21,7 +21,6 @@ This repository currently owns the implementation for:
 - `containers/private-registry/`
 - `web/`
 - `mobile/`
-- `demo-app/`
 - runtime-dependent internal examples
 - `tools/localnet-social/`
 - `tools/proof-harness/`
@@ -38,12 +37,14 @@ product contract is public-framework-first:
 - one daemon/gateway is the runtime authority
 - TUI and web are sibling clients of that daemon
 
-Current operator product routing inside that daemon-backed surface is:
+Current public operator routing inside that daemon-backed surface is:
 
-- `agenc-runtime market ...` for non-interactive terminal marketplace flows
-- `agenc-runtime market tui` for the interactive terminal marketplace workspace
+- `agenc agent register` to register the signer wallet as an on-chain agent
+- `agenc market ...` for non-interactive terminal marketplace flows
+- `agenc market tui` for the interactive terminal marketplace workspace
 - dashboard `MARKET` for tasks, skills, governance, disputes, and reputation
 - dashboard `TOOLS` for the internal runtime tool registry
+- `agenc-runtime ...` remains a compatibility alias after runtime install, but the public release-path docs should use `agenc ...`
 
 ### Public Builder Entry Points
 
@@ -75,6 +76,7 @@ See:
 - [docs/architecture/product-contract.md](docs/architecture/product-contract.md)
 - [docs/architecture/guides/public-runtime-release-channel.md](docs/architecture/guides/public-runtime-release-channel.md)
 - [docs/architecture/guides/runtime-install-matrix.md](docs/architecture/guides/runtime-install-matrix.md)
+- [docs/architecture/guides/public-wrapper-devnet-marketplace-rehearsal.md](docs/architecture/guides/public-wrapper-devnet-marketplace-rehearsal.md)
 
 ## Package Policy
 
@@ -96,7 +98,6 @@ agenc-core/
   containers/private-registry/
   web/
   mobile/
-  demo-app/
   examples/
   tools/
   test-fixtures/

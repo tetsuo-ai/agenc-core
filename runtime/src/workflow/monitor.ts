@@ -41,7 +41,7 @@ interface MonitoredWorkflow {
   timeoutHandle?: ReturnType<typeof setTimeout>;
 }
 
-export interface DAGMonitorConfig {
+interface DAGMonitorConfig {
   program: Program<AgencCoordination>;
   logger?: Logger;
   pollIntervalMs?: number;

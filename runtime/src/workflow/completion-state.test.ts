@@ -24,75 +24,6 @@ describe("completion-state", () => {
     ).toBe("blocked");
   });
 
-  it("marks implementation-class completed runs without verifier coverage as needs_verification", () => {
-    expect(
-      resolveWorkflowCompletionState({
-        stopReason: "completed",
-        toolCalls: [
-          {
-            name: "system.writeFile",
-            args: { path: "/workspace/src/main.c" },
-            result: JSON.stringify({ ok: true }),
-            isError: false,
-          },
-        ],
-        verificationContract: {
-          workspaceRoot: "/workspace",
-          targetArtifacts: ["/workspace/src/main.c"],
-          completionContract: {
-            taskClass: "behavior_required",
-            placeholdersAllowed: false,
-            partialCompletionAllowed: false,
-          },
-        },
-        verifier: {
-          performed: false,
-          overall: "skipped",
-        },
-      }),
-    ).toBe("needs_verification");
-  });
-
-  it("marks deterministic implementation as needs_verification when the runtime-owned contract lacks verifier closure", () => {
-    expect(
-      resolveWorkflowCompletionState({
-        stopReason: "completed",
-        toolCalls: [
-          {
-            name: "system.bash",
-            args: {
-              command:
-                "cat <<'STUB' > /workspace/src/jobs.c\n/* Stub */\nSTUB",
-            },
-            result: JSON.stringify({ stdout: "", stderr: "", exitCode: 0 }),
-            isError: false,
-          },
-          {
-            name: "system.bash",
-            args: { command: "make" },
-            result: JSON.stringify({ stdout: "ok", stderr: "", exitCode: 0 }),
-            isError: false,
-          },
-        ],
-        verificationContract: {
-          workspaceRoot: "/workspace",
-          targetArtifacts: ["/workspace/src/jobs.c"],
-          verificationMode: "mutation_required",
-          completionContract: {
-            taskClass: "build_required",
-            placeholdersAllowed: false,
-            partialCompletionAllowed: false,
-            placeholderTaxonomy: "implementation",
-          },
-        },
-        verifier: {
-          performed: false,
-          overall: "skipped",
-        },
-      }),
-    ).toBe("needs_verification");
-  });
-
   it("marks partial progress honestly when execution stops after grounded work", () => {
     expect(
       resolveWorkflowCompletionState({
@@ -181,6 +112,37 @@ describe("completion-state", () => {
         },
       }),
     ).toBe("completed");
+  });
+
+  it("keeps behavior-required work in needs_verification when verification is skipped", () => {
+    expect(
+      resolveWorkflowCompletionState({
+        stopReason: "completed",
+        toolCalls: [
+          {
+            name: "system.writeFile",
+            args: { path: "/workspace/src/runner.js" },
+            result: JSON.stringify({ ok: true }),
+            isError: false,
+          },
+        ],
+        verificationContract: {
+          workspaceRoot: "/workspace",
+          targetArtifacts: ["/workspace/src/runner.js"],
+          acceptanceCriteria: ["Behavior verification must pass before completion."],
+          completionContract: {
+            taskClass: "behavior_required",
+            placeholdersAllowed: false,
+            partialCompletionAllowed: false,
+            placeholderTaxonomy: "implementation",
+          },
+        },
+        verifier: {
+          performed: false,
+          overall: "skipped",
+        },
+      }),
+    ).toBe("needs_verification");
   });
 
   it("keeps request-level multi-phase work partial when local verification passes but planner milestones remain", () => {

@@ -21,7 +21,7 @@ import type {
 const MAX_INSTALL_SIZE = 1_048_576; // 1 MB
 const BODY_PREVIEW_LENGTH = 500;
 
-export function getDefaultDiscoveryPaths(): DiscoveryPaths {
+function getDefaultDiscoveryPaths(): DiscoveryPaths {
   return {
     userSkills: join(homedir(), ".agenc", "skills"),
     projectSkills: join(process.cwd(), "skills"),

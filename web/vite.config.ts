@@ -7,6 +7,12 @@ const REACT_VENDOR_MATCHERS = [
   'scheduler',
 ];
 
+const PIXI_VENDOR_MATCHERS = [
+  'pixi.js',
+  '@pixi/',
+  'pixi',
+];
+
 const MARKDOWN_VENDOR_MATCHERS = [
   'react-markdown',
   'remark-',
@@ -36,6 +42,7 @@ function matchesAny(id: string, matchers: string[]): boolean {
 function manualChunks(id: string): string | undefined {
   if (!id.includes('node_modules')) return undefined;
   if (matchesAny(id, REACT_VENDOR_MATCHERS)) return 'react-vendor';
+  if (matchesAny(id, PIXI_VENDOR_MATCHERS)) return 'pixi-vendor';
   if (matchesAny(id, MARKDOWN_VENDOR_MATCHERS)) return 'markdown-vendor';
   return undefined;
 }

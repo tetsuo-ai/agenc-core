@@ -345,7 +345,7 @@ export async function wireAutonomousFeatures(
     // --- HeartbeatScheduler for short-cycle actions ---
     const { HeartbeatScheduler } = await import("./heartbeat.js");
     const heartbeatScheduler = new HeartbeatScheduler(
-      { enabled: true, intervalMs, timeoutMs: 60_000 },
+      { enabled: true, intervalMs, timeoutMs: 180_000 },
       { logger: ctx.logger },
     );
     heartbeatScheduler.registerAction(metaPlannerAction);

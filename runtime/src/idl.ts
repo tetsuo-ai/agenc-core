@@ -22,27 +22,344 @@ import { PROGRAM_ID } from "@tetsuo-ai/sdk";
 export type { AgencCoordination };
 
 type NamedIdlEntry = { name: string };
-type IdlInstructionAccount = NamedIdlEntry & Record<string, unknown>;
-type IdlInstructionWithAccounts = NamedIdlEntry & {
-  accounts?: IdlInstructionAccount[];
-};
+type NamedIdlInstruction = NamedIdlEntry & { accounts?: unknown[] };
 
-const AUTHORITY_RATE_LIMIT_IDL_ACCOUNT = {
-  name: "authority_rate_limit",
-  docs: ["Wallet-scoped task/dispute rate limit state shared across all agents"],
-  writable: true,
-  pda: {
-    seeds: [
-      {
-        kind: "const",
-        value: [
-          97, 117, 116, 104, 111, 114, 105, 116, 121, 95, 114, 97, 116,
-          101, 95, 108, 105, 109, 105, 116,
+// The published protocol package currently lags behind the deployed
+// marketplace/task-dispute account layouts on devnet. Override the stale
+// account metadata here so Anchor derives and validates the correct accounts
+// without requiring a package release first.
+const MARKETPLACE_ACCOUNT_LAYOUT_OVERRIDES = {
+  create_task: [
+    {
+      name: "task",
+      writable: true,
+      pda: {
+        seeds: [
+          { kind: "const", value: [116, 97, 115, 107] },
+          { kind: "account", path: "creator" },
+          { kind: "arg", path: "task_id" },
         ],
       },
-      { kind: "account", path: "authority" },
-    ],
-  },
+    },
+    {
+      name: "escrow",
+      writable: true,
+      pda: {
+        seeds: [
+          { kind: "const", value: [101, 115, 99, 114, 111, 119] },
+          { kind: "account", path: "task" },
+        ],
+      },
+    },
+    {
+      name: "protocol_config",
+      writable: true,
+      pda: {
+        seeds: [{ kind: "const", value: [112, 114, 111, 116, 111, 99, 111, 108] }],
+      },
+    },
+    {
+      name: "creator_agent",
+      docs: ["Creator's agent registration for identity/authorization checks"],
+      pda: {
+        seeds: [
+          { kind: "const", value: [97, 103, 101, 110, 116] },
+          {
+            kind: "account",
+            path: "creator_agent.agent_id",
+            account: "AgentRegistration",
+          },
+        ],
+      },
+    },
+    {
+      name: "authority_rate_limit",
+      docs: ["Wallet-scoped task/dispute rate limit state shared across all agents"],
+      writable: true,
+      pda: {
+        seeds: [
+          {
+            kind: "const",
+            value: [
+              97, 117, 116, 104, 111, 114, 105, 116, 121, 95, 114, 97, 116, 101, 95, 108, 105,
+              109, 105, 116,
+            ],
+          },
+          { kind: "account", path: "authority" },
+        ],
+      },
+    },
+    {
+      name: "authority",
+      docs: ["The authority that owns the creator_agent"],
+      signer: true,
+      relations: ["creator_agent"],
+    },
+    {
+      name: "creator",
+      docs: [
+        "The creator who pays for and owns the task",
+        "Must match authority to prevent social engineering attacks (#375)",
+      ],
+      writable: true,
+      signer: true,
+    },
+    {
+      name: "system_program",
+      address: "11111111111111111111111111111111",
+    },
+    {
+      name: "reward_mint",
+      docs: ["SPL token mint for reward denomination (optional)"],
+      optional: true,
+    },
+    {
+      name: "creator_token_account",
+      docs: ["Creator's token account holding reward tokens (optional)"],
+      writable: true,
+      optional: true,
+    },
+    {
+      name: "token_escrow_ata",
+      docs: [
+        "Escrow's associated token account for holding reward tokens (optional).",
+        "Created via ATA CPI during handler if token task.",
+      ],
+      writable: true,
+      optional: true,
+    },
+    {
+      name: "token_program",
+      docs: ["SPL Token program (optional, required for token tasks)"],
+      optional: true,
+      address: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    },
+    {
+      name: "associated_token_program",
+      docs: [
+        "Associated Token Account program (optional, required for token tasks)",
+      ],
+      optional: true,
+      address: "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+    },
+  ],
+  create_dependent_task: [
+    {
+      name: "task",
+      writable: true,
+      pda: {
+        seeds: [
+          { kind: "const", value: [116, 97, 115, 107] },
+          { kind: "account", path: "creator" },
+          { kind: "arg", path: "task_id" },
+        ],
+      },
+    },
+    {
+      name: "escrow",
+      writable: true,
+      pda: {
+        seeds: [
+          { kind: "const", value: [101, 115, 99, 114, 111, 119] },
+          { kind: "account", path: "task" },
+        ],
+      },
+    },
+    {
+      name: "parent_task",
+      docs: [
+        "The parent task this new task depends on",
+        "Note: Uses Box to reduce stack usage for this large account",
+      ],
+    },
+    {
+      name: "protocol_config",
+      docs: ["Note: Uses Box to reduce stack usage for this large account"],
+      writable: true,
+      pda: {
+        seeds: [{ kind: "const", value: [112, 114, 111, 116, 111, 99, 111, 108] }],
+      },
+    },
+    {
+      name: "creator_agent",
+      docs: ["Creator's agent registration for identity/authorization checks"],
+      pda: {
+        seeds: [
+          { kind: "const", value: [97, 103, 101, 110, 116] },
+          {
+            kind: "account",
+            path: "creator_agent.agent_id",
+            account: "AgentRegistration",
+          },
+        ],
+      },
+    },
+    {
+      name: "authority_rate_limit",
+      docs: ["Wallet-scoped task/dispute rate limit state shared across all agents"],
+      writable: true,
+      pda: {
+        seeds: [
+          {
+            kind: "const",
+            value: [
+              97, 117, 116, 104, 111, 114, 105, 116, 121, 95, 114, 97, 116, 101, 95, 108, 105,
+              109, 105, 116,
+            ],
+          },
+          { kind: "account", path: "authority" },
+        ],
+      },
+    },
+    {
+      name: "authority",
+      docs: ["The authority that owns the creator_agent"],
+      signer: true,
+      relations: ["creator_agent"],
+    },
+    {
+      name: "creator",
+      docs: [
+        "The creator who pays for and owns the task",
+        "Must match authority to prevent social engineering attacks (#375)",
+      ],
+      writable: true,
+      signer: true,
+    },
+    {
+      name: "system_program",
+      address: "11111111111111111111111111111111",
+    },
+    {
+      name: "reward_mint",
+      docs: ["SPL token mint for reward denomination (optional)"],
+      optional: true,
+    },
+    {
+      name: "creator_token_account",
+      docs: ["Creator's token account holding reward tokens (optional)"],
+      writable: true,
+      optional: true,
+    },
+    {
+      name: "token_escrow_ata",
+      docs: ["Escrow's associated token account for holding reward tokens (optional)."],
+      writable: true,
+      optional: true,
+    },
+    {
+      name: "token_program",
+      docs: ["SPL Token program (optional, required for token tasks)"],
+      optional: true,
+      address: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    },
+    {
+      name: "associated_token_program",
+      docs: [
+        "Associated Token Account program (optional, required for token tasks)",
+      ],
+      optional: true,
+      address: "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+    },
+  ],
+  initiate_dispute: [
+    {
+      name: "dispute",
+      writable: true,
+      pda: {
+        seeds: [
+          { kind: "const", value: [100, 105, 115, 112, 117, 116, 101] },
+          { kind: "arg", path: "dispute_id" },
+        ],
+      },
+    },
+    {
+      name: "task",
+      writable: true,
+      pda: {
+        seeds: [
+          { kind: "const", value: [116, 97, 115, 107] },
+          { kind: "account", path: "task.creator", account: "Task" },
+          { kind: "account", path: "task.task_id", account: "Task" },
+        ],
+      },
+    },
+    {
+      name: "agent",
+      writable: true,
+      pda: {
+        seeds: [
+          { kind: "const", value: [97, 103, 101, 110, 116] },
+          { kind: "account", path: "agent.agent_id", account: "AgentRegistration" },
+        ],
+      },
+    },
+    {
+      name: "authority_rate_limit",
+      docs: ["Wallet-scoped task/dispute rate limit state shared across all agents"],
+      writable: true,
+      pda: {
+        seeds: [
+          {
+            kind: "const",
+            value: [
+              97, 117, 116, 104, 111, 114, 105, 116, 121, 95, 114, 97, 116, 101, 95, 108, 105,
+              109, 105, 116,
+            ],
+          },
+          { kind: "account", path: "authority" },
+        ],
+      },
+    },
+    {
+      name: "protocol_config",
+      pda: {
+        seeds: [{ kind: "const", value: [112, 114, 111, 116, 111, 99, 111, 108] }],
+      },
+    },
+    {
+      name: "initiator_claim",
+      docs: ["Optional: Initiator's claim if they are a worker (not the creator)"],
+      optional: true,
+      pda: {
+        seeds: [
+          { kind: "const", value: [99, 108, 97, 105, 109] },
+          { kind: "account", path: "task" },
+          { kind: "account", path: "agent" },
+        ],
+      },
+    },
+    {
+      name: "worker_agent",
+      docs: [
+        "Optional: Worker agent to be disputed (required when initiator is task creator)",
+      ],
+      writable: true,
+      optional: true,
+    },
+    {
+      name: "worker_claim",
+      docs: ["Optional: Worker's claim (required when worker_agent is provided)"],
+      optional: true,
+    },
+    {
+      name: "task_submission",
+      docs: [
+        "Optional durable submission record used once the claim slot has been released.",
+      ],
+      optional: true,
+    },
+    {
+      name: "authority",
+      writable: true,
+      signer: true,
+      relations: ["agent"],
+    },
+    {
+      name: "system_program",
+      address: "11111111111111111111111111111111",
+    },
+  ],
 } as const;
 
 // The published protocol package can lag behind the runtime's supported V2 flow.
@@ -959,65 +1276,35 @@ function mergeIdlEntries<T extends NamedIdlEntry>(
   return Array.from(merged.values());
 }
 
-function needsAuthorityRateLimitAccount(instructionName: string): boolean {
-  return (
-    instructionName === "create_task" ||
-    instructionName === "create_dependent_task"
-  );
-}
-
-function addAuthorityRateLimitAccount(
-  instruction: IdlInstructionWithAccounts,
-): IdlInstructionWithAccounts {
-  if (!needsAuthorityRateLimitAccount(instruction.name) || !instruction.accounts) {
-    return instruction;
-  }
-  if (
-    instruction.accounts.some(
-      (account) => account.name === "authority_rate_limit",
-    )
-  ) {
-    return instruction;
-  }
-
-  const authorityIndex = instruction.accounts.findIndex(
-    (account) => account.name === "authority",
-  );
-  if (authorityIndex < 0) {
-    return instruction;
-  }
-
-  const accounts = [...instruction.accounts];
-  accounts.splice(
-    authorityIndex,
-    0,
-    AUTHORITY_RATE_LIMIT_IDL_ACCOUNT as unknown as IdlInstructionAccount,
-  );
-
-  return { ...instruction, accounts };
-}
-
-function addAuthorityRateLimitAccountsToInstructions(
-  instructions: NamedIdlEntry[] | undefined,
-): NamedIdlEntry[] | undefined {
-  return instructions?.map((instruction) =>
-    addAuthorityRateLimitAccount(
-      instruction as IdlInstructionWithAccounts,
-    ) as NamedIdlEntry,
-  );
+function overrideInstructionAccounts(
+  existing: readonly NamedIdlInstruction[] | undefined,
+): NamedIdlInstruction[] {
+  return (existing ?? []).map((instruction) => {
+    const override =
+      MARKETPLACE_ACCOUNT_LAYOUT_OVERRIDES[
+        instruction.name as keyof typeof MARKETPLACE_ACCOUNT_LAYOUT_OVERRIDES
+      ];
+    if (!override) {
+      return instruction;
+    }
+    return {
+      ...instruction,
+      accounts: override as unknown as NamedIdlInstruction["accounts"],
+    };
+  });
 }
 
 function augmentIdl(baseIdl: Idl): Idl {
   return {
     ...baseIdl,
-    instructions: addAuthorityRateLimitAccountsToInstructions(
+    instructions: mergeIdlEntries(
       mergeIdlEntries(
-        mergeIdlEntries(
-          baseIdl.instructions as NamedIdlEntry[] | undefined,
-          TASK_VALIDATION_V2_INSTRUCTIONS as unknown as NamedIdlEntry[],
-        ),
-        TASK_JOB_SPEC_INSTRUCTIONS as unknown as NamedIdlEntry[],
+        overrideInstructionAccounts(
+          baseIdl.instructions as NamedIdlInstruction[] | undefined,
+        ) as unknown as NamedIdlEntry[],
+        TASK_VALIDATION_V2_INSTRUCTIONS as unknown as NamedIdlEntry[],
       ),
+      TASK_JOB_SPEC_INSTRUCTIONS as unknown as NamedIdlEntry[],
     ) as Idl["instructions"],
     accounts: mergeIdlEntries(
       mergeIdlEntries(

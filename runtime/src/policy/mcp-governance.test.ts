@@ -50,8 +50,8 @@ describe("mcp governance", () => {
     expect(
       validateMCPServerStaticPolicy(
         {
-          name: "doom",
-          command: "doom-mcp-server",
+          name: "example",
+          command: "example-mcp-server",
           args: [],
           container: "desktop",
           supplyChain: {

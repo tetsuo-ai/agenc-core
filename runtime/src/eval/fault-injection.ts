@@ -18,7 +18,7 @@ export type FaultInjectionPoint =
   | "child_run_crash"
   | "daemon_restart";
 
-export interface FaultInjectionEvent {
+interface FaultInjectionEvent {
   readonly point: FaultInjectionPoint;
   readonly sessionId?: string;
   readonly runId?: string;
@@ -26,7 +26,7 @@ export interface FaultInjectionEvent {
   readonly provider?: string;
 }
 
-export interface FaultInjectionRule {
+interface FaultInjectionRule {
   readonly point: FaultInjectionPoint;
   readonly triggerAt?: number;
   readonly maxTriggers?: number;
@@ -37,7 +37,7 @@ export interface FaultInjectionRule {
   readonly message?: string;
 }
 
-export interface FaultInjectionRecord extends FaultInjectionEvent {
+interface FaultInjectionRecord extends FaultInjectionEvent {
   readonly triggeredAt: number;
   readonly triggerCount: number;
 }
@@ -128,7 +128,7 @@ function buildFaultError(
   }
 }
 
-export interface RuntimeFaultInjectorConfig {
+interface RuntimeFaultInjectorConfig {
   readonly enabled?: boolean;
   readonly rules?: readonly FaultInjectionRule[];
   readonly now?: () => number;

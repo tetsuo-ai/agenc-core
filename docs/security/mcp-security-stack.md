@@ -36,11 +36,9 @@ Recommended environment variables:
 
 ## Healthcheck
 
-Use the bundled checker to validate server connectivity:
-
-```bash
-node scripts/check-security-mcp-stack.mjs --config mcp/security-stack.mcp.json --verbose
-```
+The bundled checker script (`check-security-mcp-stack.mjs`) has been removed
+(see cleanup/dead-code-audit). Use the `/security-mcp-sweep` skill or verify
+MCP server connectivity manually.
 
 ## Skill Workflow
 

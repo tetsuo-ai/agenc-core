@@ -28,7 +28,7 @@ export type EffectKind =
   | "desktop_editor"
   | "other_mutation";
 
-export type EffectTargetKind =
+type EffectTargetKind =
   | "path"
   | "process"
   | "server"
@@ -81,7 +81,7 @@ export interface EffectFilesystemSnapshot {
   readonly base64?: string;
 }
 
-export type EffectCompensationActionKind =
+type EffectCompensationActionKind =
   | "restore_snapshot"
   | "delete_created_path"
   | "reverse_move"
@@ -230,15 +230,6 @@ export function summarizeToolResult(result: string, maxChars = 400): string {
     return normalized;
   }
   return `${normalized.slice(0, maxChars)}...`;
-}
-
-export function buildEffectTargetFingerprint(target: EffectTarget): string {
-  if (target.path) return `path:${target.path}`;
-  if (target.processId) return `process:${target.processId}`;
-  if (target.serverId) return `server:${target.serverId}`;
-  if (target.command) return `command:${target.command}`;
-  if (target.label) return `label:${target.label}`;
-  return target.kind;
 }
 
 export function buildEffectIntentSummary(params: {

@@ -22,9 +22,9 @@ const PACKAGE_MANIFEST_DEPENDENCY_FIELDS = [
 ] as const;
 const RAW_WORKSPACE_PROTOCOL_LITERAL_RE = /"(?<specifier>workspace:[^"]+)"/gi;
 
-export type HostWorkspaceProtocolSupport = "supported" | "unsupported" | "unknown";
+type HostWorkspaceProtocolSupport = "supported" | "unsupported" | "unknown";
 
-export interface HostNpmToolingProfile {
+interface HostNpmToolingProfile {
   readonly version: string;
   readonly workspaceProtocolSupport: HostWorkspaceProtocolSupport;
   readonly workspaceProtocolEvidence?: string;
@@ -38,7 +38,7 @@ export interface HostToolingProfile {
   readonly pythonVersion?: string;
 }
 
-export interface PackageManifestWorkspaceProtocolSpecifier {
+interface PackageManifestWorkspaceProtocolSpecifier {
   readonly dependencyField: string;
   readonly packageName?: string;
   readonly specifier: string;
@@ -50,7 +50,7 @@ interface CommandExecutionResult {
   readonly exitCode: number;
 }
 
-export interface HostToolingProbeOptions {
+interface HostToolingProbeOptions {
   readonly runCommand?: (params: {
     command: string;
     args: readonly string[];

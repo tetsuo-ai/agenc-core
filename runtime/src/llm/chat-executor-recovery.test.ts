@@ -4,47 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
-  buildWorkflowRecoveryStateLines,
   buildRecoveryHints,
-  computeQualityProxy,
   inferRecoveryHint,
   preflightStaleCopiedCmakeHarnessInvocation,
 } from "./chat-executor-recovery.js";
 
 describe("chat-executor-recovery", () => {
-  it("suggests the correct Doom resolution enum after invalid start_game input", () => {
-    const hint = inferRecoveryHint({
-      name: "mcp.doom.start_game",
-      args: {
-        screen_resolution: "1920x1080",
-      },
-      result: "Unknown resolution '1920x1080'. Valid: ['RES_1920X1080']",
-      isError: false,
-      durationMs: 18,
-    });
-
-    expect(hint).toBeDefined();
-    expect(hint?.key).toBe("doom-start-game-invalid-resolution");
-    expect(hint?.message).toContain("RES_1920X1080");
-  });
-
-  it("requires verification after a successful async Doom launch", () => {
-    const hint = inferRecoveryHint({
-      name: "mcp.doom.start_game",
-      args: {
-        async_player: true,
-        screen_resolution: "RES_1920X1080",
-      },
-      result: JSON.stringify({ status: "running" }),
-      isError: false,
-      durationMs: 812,
-    });
-
-    expect(hint).toBeDefined();
-    expect(hint?.key).toBe("doom-async-start-verify");
-    expect(hint?.message).toContain("mcp.doom.get_situation_report");
-    expect(hint?.message).toContain("hold_position");
-  });
 
   it("redirects long-running desktop shell work to structured process tools", () => {
     const hint = inferRecoveryHint({
@@ -67,43 +32,6 @@ describe("chat-executor-recovery", () => {
     expect(hint?.message).toContain("desktop.process_stop");
   });
 
-  it("redirects Doom stop attempts to mcp.doom.stop_game", () => {
-    const hints = buildRecoveryHints(
-      [
-        {
-          name: "desktop.bash",
-          args: {
-            command: "ps aux | grep -i doom",
-          },
-          result: JSON.stringify({
-            stdout: "root 234 vizdoom\n",
-            stderr: "",
-            exitCode: 0,
-          }),
-          isError: false,
-          durationMs: 9,
-        },
-        {
-          name: "desktop.process_stop",
-          args: {
-            pid: 234,
-          },
-          result: JSON.stringify({
-            error: "process_stop failed: Managed process not found",
-          }),
-          isError: true,
-          durationMs: 3,
-        },
-      ],
-      new Set(),
-    );
-
-    expect(hints.some((hint) => hint.key === "doom-stop-via-mcp")).toBe(true);
-    expect(
-      hints.some((hint) => hint.message.includes("mcp.doom.stop_game")),
-    ).toBe(true);
-  });
-
   it("redirects failed raw docker shell attempts to durable sandbox handles", () => {
     const hint = inferRecoveryHint({
       name: "system.bash",
@@ -121,6 +49,37 @@ describe("chat-executor-recovery", () => {
     expect(hint?.key).toBe("system-bash-sandbox-handle");
     expect(hint?.message).toContain("system.sandboxStart");
     expect(hint?.message).toContain("system.sandboxJobStart");
+  });
+
+  it("tells the model to ask for required input instead of retrying requires_input tools", () => {
+    const hint = inferRecoveryHint({
+      name: "agenc.registerAgent",
+      args: {
+        capabilities: ["marketplace"],
+      },
+      result: JSON.stringify({
+        status: "requires_input",
+        code: "MULTIPLE_AGENT_REGISTRATIONS",
+        error:
+          "Multiple agent registrations found for signer wallet. Provide creatorAgentPda with one of the listed agentPda values.",
+        agents: [
+          {
+            agentPda: "11111111111111111111111111111111",
+          },
+        ],
+      }),
+      isError: true,
+      durationMs: 5,
+    });
+
+    expect(hint).toBeDefined();
+    expect(hint?.key).toBe(
+      "agenc.registerAgent-requires-input:multiple_agent_registrations",
+    );
+    expect(hint?.message).toContain('status: "requires_input"');
+    expect(hint?.message).toContain("Do not retry the same tool call");
+    expect(hint?.message).toContain("agentPda");
+    expect(hint?.message).toContain("creatorAgentPda");
   });
 
   it("injects a recovery hint for stale CMake cache path mismatches", () => {
@@ -996,48 +955,4 @@ describe("chat-executor-recovery", () => {
     expect(hint?.message).toContain("shell mode");
   });
 
-  it("scores completed workflow states higher than needs-verification states", () => {
-    expect(
-      computeQualityProxy({
-        completionState: "completed",
-        verifierPerformed: true,
-        verifierOverall: "pass",
-        failedToolCalls: 0,
-      }),
-    ).toBeGreaterThan(
-      computeQualityProxy({
-        completionState: "needs_verification",
-        verifierPerformed: false,
-        verifierOverall: "skipped",
-        failedToolCalls: 0,
-      }),
-    );
-  });
-
-  it("preserves workflow-owned remaining requirements in recovery state lines", () => {
-    const lines = buildWorkflowRecoveryStateLines({
-      completionState: "needs_verification",
-      stopReason: "completed",
-      requiredRequirements: ["build_verification", "workflow_verifier_pass"],
-      satisfiedRequirements: ["build_verification"],
-      remainingRequirements: ["workflow_verifier_pass"],
-      reusableEvidence: [
-        {
-          requirement: "build_verification",
-          summary: "make test",
-          observedAt: 10,
-        },
-      ],
-      updatedAt: 10,
-    });
-
-    expect(lines).toEqual(
-      expect.arrayContaining([
-        "Workflow state: needs_verification",
-        "Still required before completion: workflow_verifier_pass",
-        "Reusable grounded evidence: make test",
-        "Do not mark this implementation complete until the remaining verifier requirements pass.",
-      ]),
-    );
-  });
 });

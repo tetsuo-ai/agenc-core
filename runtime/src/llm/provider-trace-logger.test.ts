@@ -81,7 +81,7 @@ describe("createProviderTraceEventLogger", () => {
       setLevel: vi.fn(),
     };
 
-    const shared = ["mcp.doom.start_game"];
+    const shared = ["mcp.example.start"];
     const logEvent = createProviderTraceEventLogger({
       logger,
       traceLabel: "webchat.provider",
@@ -99,7 +99,7 @@ describe("createProviderTraceEventLogger", () => {
         requestedToolNames: shared,
         resolvedToolNames: [],
         missingRequestedToolNames: shared,
-        toolResolution: "fallback_full_catalog_no_matches",
+        toolResolution: "subset_no_resolved_matches",
       },
     });
 
@@ -118,10 +118,10 @@ describe("createProviderTraceEventLogger", () => {
       };
     };
     expect(artifact.payload.context?.requestedToolNames).toEqual([
-      "mcp.doom.start_game",
+      "mcp.example.start",
     ]);
     expect(artifact.payload.context?.missingRequestedToolNames).toEqual([
-      "mcp.doom.start_game",
+      "mcp.example.start",
     ]);
     rmSync(artifactPath, { force: true });
   });
@@ -147,7 +147,7 @@ describe("createProviderTraceEventLogger", () => {
       phase: "tool_followup",
       callIndex: 3,
       payload: {
-        tool: "mcp.doom.new_episode",
+        tool: "mcp.example.new_episode",
         routingMiss: true,
       },
     });
@@ -158,7 +158,7 @@ describe("createProviderTraceEventLogger", () => {
     expect(line).toContain('"traceId":"trace-2"');
     expect(line).toContain('"callIndex":3');
     expect(line).toContain('"callPhase":"tool_followup"');
-    expect(line).toContain('"mcp.doom.new_episode"');
+    expect(line).toContain('"mcp.example.new_episode"');
     expect(line).not.toContain("[Object]");
     const payloadArtifactMatch = line.match(
       /"payloadArtifact":\{"path":"([^"]+)"/,

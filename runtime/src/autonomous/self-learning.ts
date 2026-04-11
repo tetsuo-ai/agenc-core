@@ -22,7 +22,7 @@ import { entryToMessage } from "../memory/types.js";
 // Types
 // ============================================================================
 
-export interface SelfLearningConfig {
+interface SelfLearningConfig {
   /** LLM provider for analysis. */
   llm: LLMProvider;
   /** Memory backend for reading history and storing learnings. */

@@ -20,7 +20,7 @@ import type { MemoryRetriever } from "../llm/chat-executor.js";
 import type { Logger } from "../utils/logger.js";
 
 /** Persistent agent identity. */
-export interface AgentIdentity {
+interface AgentIdentity {
   readonly agentId: string;
   readonly name: string;
   /** Core personality from config — versioned, can be updated. */
@@ -46,7 +46,7 @@ export interface AgentBelief {
   readonly formedAt: number;
 }
 
-export interface AgentIdentityConfig {
+interface AgentIdentityConfig {
   readonly memoryBackend: MemoryBackend;
   readonly logger?: Logger;
   readonly keyPrefix?: string;

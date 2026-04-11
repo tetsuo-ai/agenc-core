@@ -250,7 +250,7 @@ export function createPollingAction(
 // Proactive communication action
 // ============================================================================
 
-export interface ProactiveCommsActionConfig {
+interface ProactiveCommsActionConfig {
   memory: MemoryBackend;
   llm: LLMProvider;
   communicator: {

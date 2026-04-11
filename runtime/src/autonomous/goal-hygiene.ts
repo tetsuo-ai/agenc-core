@@ -1,9 +1,9 @@
 import type { StrategicExecutionSummary, StrategicGoalRecord, StrategicWorkingNote } from "./goal-store.js";
 
 export const ACTIVE_GOAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-export const TERMINAL_GOAL_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-export const EXECUTION_SUMMARY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-export const WORKING_NOTE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const TERMINAL_GOAL_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const EXECUTION_SUMMARY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const WORKING_NOTE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 const ACTIVE_STATUSES: ReadonlySet<StrategicGoalRecord["status"]> = new Set([
   "proposed",
@@ -32,7 +32,7 @@ export function isTerminalGoalStatus(
   return TERMINAL_STATUSES.has(status);
 }
 
-export function calculateGoalFreshnessScore(params: {
+function calculateGoalFreshnessScore(params: {
   readonly status: StrategicGoalRecord["status"];
   readonly now: number;
   readonly lastObservedAt: number;

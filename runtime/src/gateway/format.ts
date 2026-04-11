@@ -26,7 +26,7 @@ export function escapeHtml(text: string): string {
 // ============================================================================
 
 /** Strip common Markdown formatting to produce plain text. */
-export function stripMarkdown(text: string): string {
+function stripMarkdown(text: string): string {
   return text
     // Code blocks: ```lang\n...\n``` → content only
     .replace(/```[\s\S]*?```/g, (m) => {

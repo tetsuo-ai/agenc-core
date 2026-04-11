@@ -86,7 +86,7 @@ forked product brain.
 For the public product path:
 
 - `web/` is the dashboard surface
-- `demo-app/` is not a peer dashboard candidate
+- `demo-app/` is not a peer dashboard candidate (retired)
 
 ### Package/install rule
 
@@ -174,7 +174,7 @@ Tracked implementation issues in `tetsuo-ai/agenc-core`:
 
 - `#4` CLI/config convergence
 - `#5` public `@tetsuo-ai/agenc` wrapper and runtime install path
-- `#6` daemon-backed web dashboard and `demo-app` retirement from product path
+- `#6` daemon-backed web dashboard and `demo-app` retirement from product path (demo-app removed)
 - `#7` connector/plugin ABI freeze plus Telegram lifecycle
 - `#8` task/bid daemon contract before marketplace UX
 - `#9` declassification disposition table and scrub plan

@@ -19,11 +19,11 @@ import type {
   CliOutputFormat,
 } from "./types.js";
 
-export const LEGACY_RUNTIME_CONFIG_BASENAME = ".agenc-runtime.json";
-export const DEFAULT_CLI_OUTPUT_FORMAT: CliOutputFormat = "json";
-export const DEFAULT_CLI_STORE_TYPE: "memory" | "sqlite" = "sqlite";
-export const DEFAULT_CLI_LOG_LEVEL: CliLogLevel = "warn";
-export const DEFAULT_CLI_IDEMPOTENCY_WINDOW = 900;
+const LEGACY_RUNTIME_CONFIG_BASENAME = ".agenc-runtime.json";
+const DEFAULT_CLI_OUTPUT_FORMAT: CliOutputFormat = "json";
+const DEFAULT_CLI_STORE_TYPE: "memory" | "sqlite" = "sqlite";
+const DEFAULT_CLI_LOG_LEVEL: CliLogLevel = "warn";
+const DEFAULT_CLI_IDEMPOTENCY_WINDOW = 900;
 
 const LEGACY_TOP_LEVEL_KEYS = new Set([
   "configVersion",
@@ -50,12 +50,12 @@ export type CliConfigPathSource =
   | "env:AGENC_RUNTIME_CONFIG"
   | "canonical";
 
-export type LoadedCliConfigShape =
+type LoadedCliConfigShape =
   | "missing"
   | "canonical-gateway"
   | "legacy-flat";
 
-export interface ResolvedCliConfigPath {
+interface ResolvedCliConfigPath {
   configPath: string;
   configPathSource: CliConfigPathSource;
   canonicalConfigPath: string;
@@ -70,7 +70,7 @@ export interface LoadedCliConfigContract {
   gatewayConfig?: GatewayConfig;
 }
 
-export interface LoadCliConfigContractOptions {
+interface LoadCliConfigContractOptions {
   strictModeEnabled?: boolean;
   configPathSource?: CliConfigPathSource;
 }
@@ -159,6 +159,7 @@ function parseCanonicalCliConfig(value: GatewayConfig): CliFileConfig {
   return {
     rpcUrl: parseOptionalString(value.connection.rpcUrl),
     programId: parseOptionalString(value.connection.programId),
+    keypairPath: parseOptionalString(value.connection.keypairPath),
     storeType:
       normalizeStoreType(value.replay?.store?.type) ?? DEFAULT_CLI_STORE_TYPE,
     sqlitePath: parseOptionalString(value.replay?.store?.sqlitePath),
@@ -185,7 +186,7 @@ function looksLikeLegacyCliConfig(value: Record<string, unknown>): boolean {
   return Object.keys(value).some((key) => LEGACY_TOP_LEVEL_KEYS.has(key));
 }
 
-export function getCanonicalOperatorHome(): string {
+function getCanonicalOperatorHome(): string {
   return join(homedir(), ".agenc");
 }
 
@@ -193,7 +194,7 @@ export function getCanonicalDefaultConfigPath(): string {
   return join(getCanonicalOperatorHome(), "config.json");
 }
 
-export function getLegacyRuntimeConfigPath(cwd = process.cwd()): string {
+function getLegacyRuntimeConfigPath(cwd = process.cwd()): string {
   return resolve(cwd, LEGACY_RUNTIME_CONFIG_BASENAME);
 }
 

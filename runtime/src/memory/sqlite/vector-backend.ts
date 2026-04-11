@@ -70,7 +70,7 @@ interface VectorRecord {
   norm: number;
 }
 
-export interface SqliteVectorBackendConfig extends SqliteBackendConfig {
+interface SqliteVectorBackendConfig extends SqliteBackendConfig {
   dimension?: number;
 }
 
@@ -92,6 +92,7 @@ export class SqliteVectorBackend
   private readonly vectors = new Map<string, VectorRecord>();
   private readonly entryCacheMap = new Map<string, MemoryEntry>();
   private vectorsLoaded = false;
+  private loadPromise: Promise<number> | null = null;
 
   constructor(config: SqliteVectorBackendConfig = {}) {
     super(config);
@@ -114,6 +115,12 @@ export class SqliteVectorBackend
   /** Load all vectors from SQLite into the in-memory search index. */
   async loadVectors(): Promise<number> {
     if (this.vectorsLoaded) return this.vectors.size;
+    if (this.loadPromise) return this.loadPromise;
+    this.loadPromise = this._doLoadVectors();
+    return this.loadPromise;
+  }
+
+  private async _doLoadVectors(): Promise<number> {
     await this.ensureDb();
     this.ensureVectorSchema();
 

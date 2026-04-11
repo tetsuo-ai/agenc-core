@@ -1,9 +1,13 @@
 import { existsSync } from "node:fs";
 
 import type { DelegationExecutionContext } from "../utils/delegation-execution-context.js";
-import { isPathWithinAnyRoot, isPathWithinRoot } from "../workflow/path-normalization.js";
+import {
+  isPathWithinAnyRoot,
+  isPathWithinRoot,
+  normalizeWorkspaceRoot,
+} from "../workflow/path-normalization.js";
 
-export type DelegatedScopePreflightIssueCode =
+type DelegatedScopePreflightIssueCode =
   | "missing_execution_context"
   | "missing_workspace_root"
   | "workspace_root_mismatch"
@@ -16,13 +20,13 @@ export type DelegatedScopePreflightIssueCode =
   | "workspace_root_missing_for_required_sources"
   | "required_source_missing";
 
-export interface DelegatedScopePreflightIssue {
+interface DelegatedScopePreflightIssue {
   readonly code: DelegatedScopePreflightIssueCode;
   readonly message: string;
   readonly path?: string;
 }
 
-export type DelegatedScopePreflightResult =
+type DelegatedScopePreflightResult =
   | { ok: true }
   | {
       ok: false;
@@ -126,7 +130,11 @@ export function preflightDelegatedLocalFileScope(params: {
     };
   }
 
-  const workspaceRoot = context?.workspaceRoot?.trim() || workingDirectory;
+  // Audit S1.6: normalize so the within-root checks below compare
+  // canonical paths from both sides instead of mixing trim-only and
+  // resolve-based forms.
+  const workspaceRoot =
+    normalizeWorkspaceRoot(context?.workspaceRoot) ?? workingDirectory;
   const issues: DelegatedScopePreflightIssue[] = [];
 
   if (!workspaceRoot) {
@@ -140,7 +148,8 @@ export function preflightDelegatedLocalFileScope(params: {
   if (
     workspaceRoot &&
     workingDirectory &&
-    workspaceRoot !== workingDirectory
+    !isPathWithinRoot(workingDirectory, workspaceRoot) &&
+    !isPathWithinRoot(workspaceRoot, workingDirectory)
   ) {
     addUniqueIssue(issues, {
       code: "workspace_root_mismatch",

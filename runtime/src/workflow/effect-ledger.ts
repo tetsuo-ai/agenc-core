@@ -1,4 +1,4 @@
-import type { ApprovalResponse, ApprovalResolverIdentity } from "../gateway/approvals.js";
+import type { ApprovalResponse } from "../gateway/approvals.js";
 import type { ToolHandler } from "../llm/types.js";
 import type {
   EffectCompensationState,
@@ -289,18 +289,3 @@ export class EffectLedger {
   }
 }
 
-export function approvalResolverToMetadata(
-  resolver: ApprovalResolverIdentity | undefined,
-): Record<string, unknown> | undefined {
-  if (!resolver) {
-    return undefined;
-  }
-  return {
-    ...(resolver.actorId ? { actorId: resolver.actorId } : {}),
-    ...(resolver.sessionId ? { sessionId: resolver.sessionId } : {}),
-    ...(resolver.channel ? { channel: resolver.channel } : {}),
-    ...(resolver.roles ? { roles: [...resolver.roles] } : {}),
-    resolvedAt: resolver.resolvedAt,
-    ...(resolver.assertion ? { assertion: resolver.assertion } : {}),
-  };
-}

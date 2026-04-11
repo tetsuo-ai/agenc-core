@@ -11,7 +11,6 @@ import type {
   PipelinePlannerContextMemorySource,
   PipelineStopReasonHint,
 } from "../workflow/pipeline.js";
-import type { ContextArtifactRef } from "../memory/artifact-store.js";
 import type { LLMUsage } from "../llm/types.js";
 import type {
   DelegationOutputValidationCode,
@@ -135,6 +134,8 @@ export type SubagentFailureOutcome = {
   readonly durationMs?: number;
   readonly toolCallCount?: number;
   readonly tokenUsage?: LLMUsage;
+  /** Original subagent output preserved when an acceptance probe converts a completed outcome to failed. */
+  readonly originalOutput?: string;
 };
 
 export interface CuratedSection {
@@ -154,8 +155,6 @@ export interface DependencyArtifactCandidate {
   readonly depth: number;
 }
 
-export interface SessionArtifactContextCandidate extends ContextArtifactRef {}
-
 export interface DependencyContextEntry {
   readonly dependencyName: string;
   readonly result: string | null;
@@ -171,7 +170,15 @@ export interface PackageAuthoringState {
   readonly testFileCount: number;
 }
 
-export type AcceptanceProbeCategory = "build" | "typecheck" | "lint" | "test";
+export type AcceptanceProbeCategory =
+  | "build"
+  | "typecheck"
+  | "lint"
+  | "test"
+  | "smoke"
+  | "api_smoke"
+  | "browser_e2e"
+  | "infra_validate";
 
 export interface AcceptanceProbePlan {
   readonly name: string;
@@ -290,22 +297,6 @@ export const SUBAGENT_FAILURE_STOP_REASON: Readonly<
 /* ------------------------------------------------------------------ */
 /*  Standalone helper functions                                        */
 /* ------------------------------------------------------------------ */
-
-export function isPipelineStopReasonHint(
-  value: unknown,
-): value is PipelineStopReasonHint {
-  return (
-    value === "validation_error" ||
-    value === "provider_error" ||
-    value === "authentication_error" ||
-    value === "rate_limited" ||
-    value === "timeout" ||
-    value === "tool_error" ||
-    value === "budget_exceeded" ||
-    value === "no_progress" ||
-    value === "cancelled"
-  );
-}
 
 export function toPipelineStopReasonHint(
   value: unknown,

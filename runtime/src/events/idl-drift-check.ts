@@ -34,7 +34,7 @@ interface IdlRoot {
   types?: IdlType[];
 }
 
-export interface IdlDriftMismatch {
+interface IdlDriftMismatch {
   path: string;
   line?: number;
   message: string;
@@ -45,13 +45,13 @@ export interface IdlDriftCheckResult {
   mismatches: IdlDriftMismatch[];
 }
 
-export interface IdlDriftCheckerOptions {
+interface IdlDriftCheckerOptions {
   contract?: readonly EventContract[];
   idl?: IdlRoot;
   overrides?: ReadonlyArray<IdlDriftFieldOverride>;
 }
 
-export interface IdlDriftFieldOverride {
+interface IdlDriftFieldOverride {
   eventName: string;
   fieldName: string;
   reason?: string;
@@ -170,7 +170,7 @@ function nonAgentEventNamesFromIdl(idl: IdlRoot): string[] {
  * Dynamic fields that should be ignored intentionally during drift checks.
  * Kept as an explicit allowlist for schema evolution.
  */
-export const IDL_DRIFT_FIELD_OVERRIDES = Object.freeze<
+const IDL_DRIFT_FIELD_OVERRIDES = Object.freeze<
   ReadonlyArray<IdlDriftFieldOverride>
 >([]);
 
@@ -337,31 +337,3 @@ export async function checkIdlDrift(
   };
 }
 
-export interface DriftCheckOutput {
-  header: string;
-  details: string[];
-}
-
-/**
- * Formats a deterministic mismatch report for CLI output.
- */
-export function formatDriftCheckOutput(
-  result: IdlDriftCheckResult,
-): DriftCheckOutput {
-  if (result.passed) {
-    return {
-      header: "IDL contract drift check passed.",
-      details: [],
-    };
-  }
-
-  const lines = result.mismatches.map((item) => {
-    const location = item.line ? `${item.path}:${item.line}` : item.path;
-    return `${location} => ${item.message}`;
-  });
-
-  return {
-    header: "IDL contract drift check failed.",
-    details: lines,
-  };
-}

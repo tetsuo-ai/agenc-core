@@ -1,11 +1,11 @@
 import { clone, safeStringify } from "./json.js";
 
-export type TruncationReason =
+type TruncationReason =
   | "trimmed_to_minimum"
   | "payload_limit_exceeded"
   | null;
 
-export interface TruncationResult<T> {
+interface TruncationResult<T> {
   payload: T;
   truncated: boolean;
   reason: TruncationReason;

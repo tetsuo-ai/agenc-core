@@ -11,27 +11,15 @@ import type {
   RecoveryHint,
   ChatCallUsageRecord,
   ChatStatefulSummary,
-  ChatPlannerSummary,
-  EvaluationResult,
-  ExecutionContext,
-  FullPlannerSummaryState,
 } from "./chat-executor-types.js";
 import type { LLMStatefulDiagnostics, LLMStatefulFallbackReason } from "./types.js";
-import type {
-  DelegationTrajectoryFinalReward,
-  DelegationTrajectoryRecord,
-} from "./delegation-learning.js";
-import type { WorkflowCompletionState } from "../workflow/completion-state.js";
-import type { WorkflowProgressSnapshot } from "../workflow/completion-progress.js";
 import { createLLMStatefulFallbackReasonCounts } from "./types.js";
 import { SHELL_BUILTIN_COMMANDS } from "./chat-executor-constants.js";
 import {
   didToolCallFail,
   extractToolFailureText,
-  normalizeDoomScreenResolution,
   parseToolResultObject,
 } from "./chat-executor-tool-utils.js";
-import { assessExecuteWithAgentResult } from "../utils/delegated-scope-trust.js";
 
 const NON_ACTIONABLE_STATEFUL_FALLBACK_REASONS = new Set<LLMStatefulFallbackReason>(["store_disabled"]);
 
@@ -43,6 +31,22 @@ const DESKTOP_BIASED_SYSTEM_COMMANDS = new Set([
   "playwright",
   "gdb",
 ]);
+
+function isRequiresInputToolResult(
+  parsedResult: Record<string, unknown> | null,
+): boolean {
+  return parsedResult?.status === "requires_input";
+}
+
+function extractRequiresInputCode(
+  parsedResult: Record<string, unknown> | null,
+): string {
+  const code = parsedResult?.code;
+  return typeof code === "string" && code.trim().length > 0
+    ? code.trim()
+    : "requires_input";
+}
+
 function extractDeniedCommand(failureText: string): string | undefined {
   const quotedDouble = failureText.match(/command\s+"([^"]+)"\s+is denied/i);
   if (quotedDouble && quotedDouble[1]?.trim().length) {
@@ -1095,7 +1099,7 @@ export function buildSemanticToolCallKey(
   return `${name}:${normalizeSemanticValue(args)}`;
 }
 
-export function normalizeSemanticValue(value: unknown): string {
+function normalizeSemanticValue(value: unknown): string {
   if (value === null || value === undefined) return "null";
   if (typeof value === "string") {
     return value.trim().replace(/\s+/g, " ").toLowerCase();
@@ -1295,72 +1299,13 @@ function inferRoundRecoveryHint(
       };
     }
   }
-  const failedManagedStop = roundCalls.some((call) => {
-    if (call.name !== "desktop.process_stop") return false;
-    if (!didToolCallFail(call.isError, call.result)) return false;
-    return extractToolFailureText(call)
-      .toLowerCase()
-      .includes("managed process not found");
-  });
-  if (!failedManagedStop) return undefined;
-
-  const usedDoomShellStopFallback = roundCalls.some((call) => {
-    if (call.name !== "desktop.bash") return false;
-    const command = String(call.args?.command ?? "");
-    if (!/\b(?:doom|vizdoom)\b/i.test(command)) return false;
-    return /\b(?:ps|pgrep|pkill|kill)\b/i.test(command);
-  });
-  if (!usedDoomShellStopFallback) return undefined;
-
-  return {
-    key: "doom-stop-via-mcp",
-    message:
-      "To stop Doom, call `mcp.doom.stop_game` directly. Do not inspect or kill ViZDoom with " +
-      "`desktop.process_stop`, `kill`, or `pkill`; the running game is owned by the Doom MCP, " +
-      "not the managed desktop-process registry.",
-  };
+  return undefined;
 }
 
 export function inferRecoveryHint(
   call: ToolCallRecord,
 ): RecoveryHint | undefined {
   const parsedResult = parseToolResultObject(call.result);
-  if (
-    call.name === "mcp.doom.start_game" &&
-    didToolCallFail(call.isError, call.result) &&
-    typeof call.args?.screen_resolution === "string"
-  ) {
-    const normalizedResolution = normalizeDoomScreenResolution(
-      call.args.screen_resolution,
-    );
-    if (
-      typeof normalizedResolution === "string" &&
-      normalizedResolution !== call.args.screen_resolution
-    ) {
-      return {
-        key: "doom-start-game-invalid-resolution",
-        message:
-          "Doom screen resolutions must use the exact ViZDoom enum string. " +
-          `Retry with \`${normalizedResolution}\` instead of \`${call.args.screen_resolution}\`.`,
-      };
-    }
-  }
-
-  if (
-    call.name === "mcp.doom.start_game" &&
-    !didToolCallFail(call.isError, call.result) &&
-    parsedResult &&
-    parsedResult.status === "running" &&
-    call.args?.async_player === true
-  ) {
-    return {
-      key: "doom-async-start-verify",
-      message:
-        "The async Doom executor started, but you still need evidence before claiming success. " +
-        "Call `mcp.doom.set_objective` with `objective_type: \"hold_position\"` when the task is stationary defense, " +
-        "then verify with `mcp.doom.get_situation_report` or `mcp.doom.get_state`.",
-    };
-  }
 
   if (
     !didToolCallFail(call.isError, call.result) &&
@@ -1395,6 +1340,17 @@ export function inferRecoveryHint(
   }
 
   if (!didToolCallFail(call.isError, call.result)) return undefined;
+
+  if (isRequiresInputToolResult(parsedResult)) {
+    const code = extractRequiresInputCode(parsedResult);
+    return {
+      key: `${call.name}-requires-input:${code.toLowerCase()}`,
+      message:
+        `The tool returned \`status: "requires_input"\` (${code}). ` +
+        "Do not retry the same tool call with the same arguments. Ask the user for the missing input explicitly, using any choices listed in the tool result. " +
+        "For multiple AgenC agent registrations, ask the user to choose one listed `agentPda`/`creatorAgentPda` instead of selecting one automatically.",
+    };
+  }
 
   const failureText = extractToolFailureText(call);
   const failureTextLower = failureText.toLowerCase();
@@ -1437,142 +1393,6 @@ export function inferRecoveryHint(
         "Keep the command in single-run mode (`vitest run` or `vitest --run`). " +
         "If worker strategy matters for the installed Vitest version, use the supported `--pool=<threads|forks>` option or project config instead.",
     };
-  }
-  if (call.name === "execute_with_agent" && parsedResult) {
-    const delegatedScopeAssessment = assessExecuteWithAgentResult({
-      args:
-        call.args && typeof call.args === "object" && !Array.isArray(call.args)
-          ? call.args
-          : undefined,
-      result: call.result,
-    });
-    if (delegatedScopeAssessment?.delegatedScopeTrust === "rejected_invalid_scope") {
-      return {
-        key: "execute-with-agent-invalid-scope",
-        message:
-          "The previous `execute_with_agent` attempt was rejected because delegated scope/root authority was invalid. " +
-          "Do not invent or widen child cwd/workspace roots in the next attempt. " +
-          "Use the parent tool path for trivial cwd/ls introspection, or rely only on runtime-provided delegated scope.",
-      };
-    }
-    const status =
-      typeof parsedResult.status === "string"
-        ? parsedResult.status.trim().toLowerCase()
-        : "";
-    const validationCode =
-      typeof parsedResult.validationCode === "string"
-        ? parsedResult.validationCode.trim().toLowerCase()
-        : "";
-    const decomposition =
-      typeof parsedResult.decomposition === "object" &&
-        parsedResult.decomposition !== null &&
-        !Array.isArray(parsedResult.decomposition)
-        ? parsedResult.decomposition as {
-          phases?: unknown;
-          suggestedSteps?: unknown;
-        }
-        : null;
-    if (status === "needs_decomposition" || decomposition) {
-      const phases = Array.isArray(decomposition?.phases)
-        ? decomposition.phases.filter(
-          (phase): phase is string =>
-            typeof phase === "string" && phase.trim().length > 0,
-        )
-        : [];
-      const suggestedSteps = Array.isArray(decomposition?.suggestedSteps)
-        ? decomposition.suggestedSteps
-            .filter(
-              (entry): entry is { name: string } =>
-                typeof entry === "object" &&
-                entry !== null &&
-                typeof (entry as { name?: unknown }).name === "string" &&
-                (entry as { name: string }).name.trim().length > 0,
-            )
-            .map((entry) => entry.name.trim())
-        : [];
-      const phasesText =
-        phases.length > 0 ? ` (${phases.join(" -> ")})` : "";
-      const splitText =
-        suggestedSteps.length > 0
-          ? ` Suggested split: ${suggestedSteps.join(", ")}.`
-          : "";
-      return {
-        key:
-          `execute-with-agent-needs-decomposition:` +
-          `${phases.join(",")}:${suggestedSteps.join(",")}`,
-        message:
-          `The previous \`execute_with_agent\` objective was too large${phasesText}. ` +
-          "Do not retry the same combined task. Split it into smaller " +
-          "`execute_with_agent` calls that each own one phase with explicit dependencies " +
-          "and distinct acceptance criteria." +
-          splitText,
-      };
-    }
-    if (validationCode === "low_signal_browser_evidence") {
-      return {
-        key: "execute-with-agent-low-signal-browser",
-        message:
-          "The previous `execute_with_agent` attempt used low-signal browser state checks. " +
-          "Retry with concrete browser navigation/snapshot or run_code steps against real URLs or localhost targets. " +
-          "Do not rely on `browser_tabs` or about:blank tab listings as evidence.",
-      };
-    }
-    if (validationCode === "missing_file_mutation_evidence") {
-      return {
-        key: "execute-with-agent-missing-file-mutation",
-        message:
-          "The previous `execute_with_agent` attempt did not create or edit files with real mutation tools. " +
-          "Retry only after explicitly using file-writing tools and naming the changed files in the result.",
-      };
-    }
-    if (validationCode === "missing_required_source_evidence") {
-      return {
-        key: "execute-with-agent-missing-required-source-evidence",
-        message:
-          "The previous `execute_with_agent` attempt wrote derived files without first inspecting the named source artifacts from its delegated input contract. " +
-          "Retry only after reading those source files and preserving the distinction between planned structure and files that actually exist.",
-      };
-    }
-    if (validationCode === "missing_workspace_inspection_evidence") {
-      return {
-        key: "execute-with-agent-missing-workspace-inspection-evidence",
-        message:
-          "The previous `execute_with_agent` attempt updated a derived documentation artifact without first inspecting the current workspace state beyond the target artifact itself. " +
-          "Retry only after collecting concrete repo/layout inspection evidence and grounding the rewrite in that evidence.",
-      };
-    }
-    if (validationCode === "forbidden_phase_action") {
-      return {
-        key: "execute-with-agent-forbidden-phase-action",
-        message:
-          "The previous `execute_with_agent` attempt violated the delegated phase contract by running or claiming a forbidden action for that phase. " +
-          "Retry only with the scoped file-authoring or inspection work, and leave install/build/test verification for the later step.",
-      };
-    }
-    if (validationCode === "blocked_phase_output") {
-      return {
-        key: "execute-with-agent-blocked-phase-output",
-        message:
-          "The previous `execute_with_agent` attempt returned a success-path answer that still said the phase was blocked or could not be completed. " +
-          "Retry only after fixing and verifying the blocking issue, or let the failure propagate instead of presenting the phase as completed.",
-      };
-    }
-    if (validationCode === "contradictory_completion_claim") {
-      return {
-        key: "execute-with-agent-contradictory-completion",
-        message:
-          "The previous `execute_with_agent` attempt claimed completion while still admitting unresolved mismatches or follow-up work. " +
-          "Retry only after fixing and verifying the issue, or report the phase as blocked instead of successful.",
-      };
-    }
-    if (validationCode === "expected_json_object") {
-      return {
-        key: "execute-with-agent-expected-json-object",
-        message:
-          "The previous `execute_with_agent` attempt returned the wrong shape. " +
-          "Retry with a single JSON object only, with no markdown or surrounding prose.",
-      };
-    }
   }
   if (
     isDesktopSessionUnavailable(failureTextLower) &&
@@ -1930,11 +1750,14 @@ export function inferRecoveryHint(
     };
   }
 
-  if (failureTextLower.includes("delegated workspace root violation")) {
+  if (
+    failureTextLower.includes("outside the execution envelope roots for this turn") ||
+    failureTextLower.includes("delegated workspace root violation")
+  ) {
     return {
       key: "delegated-workspace-root-violation",
       message:
-        "This child task is scoped to a delegated workspace root. " +
+        "This child task is scoped to a delegated workspace root and execution envelope. " +
         "Keep file paths under the assigned root, prefer relative paths from that cwd, " +
         "and do not create fallback workspaces elsewhere (for example under `/tmp`).",
       };
@@ -1994,186 +1817,4 @@ export function inferRecoveryHint(
   }
 
   return undefined;
-}
-
-// ============================================================================
-// Quality & trajectory helpers (extracted from recordOutcomeAndFinalize)
-// ============================================================================
-
-/** Input for computing quality proxy score. */
-export interface QualityProxyInput {
-  readonly completionState: WorkflowCompletionState;
-  readonly verifierPerformed: boolean;
-  readonly verifierOverall: "pass" | "retry" | "fail" | "skipped";
-  readonly evaluation?: EvaluationResult;
-  readonly failedToolCalls: number;
-}
-
-export function buildWorkflowRecoveryStateLines(
-  progress?: WorkflowProgressSnapshot,
-): readonly string[] {
-  if (!progress || progress.completionState === "completed") {
-    return [];
-  }
-
-  const lines = [`Workflow state: ${progress.completionState}`];
-  if (progress.remainingRequirements.length > 0) {
-    lines.push(
-      `Still required before completion: ${progress.remainingRequirements.join(", ")}`,
-    );
-  }
-  if (progress.reusableEvidence.length > 0) {
-    lines.push(
-      `Reusable grounded evidence: ${progress.reusableEvidence
-        .slice(-3)
-        .map((entry) => entry.summary)
-        .join(" | ")}`,
-    );
-  }
-  if (progress.completionState === "needs_verification") {
-    lines.push(
-      "Do not mark this implementation complete until the remaining verifier requirements pass.",
-    );
-  } else if (progress.completionState === "partial") {
-    lines.push(
-      "Do not present the work as finished; continue from the grounded evidence and close the remaining requirements.",
-    );
-  } else if (progress.completionState === "blocked") {
-    lines.push(
-      "Do not present the work as complete; address the blocking condition or report it explicitly.",
-    );
-  }
-  return lines;
-}
-
-/** Compute a 0–1 quality proxy score from execution outcome signals. */
-export function computeQualityProxy(input: QualityProxyInput): number {
-  const completionStateQualityBase = input.completionState === "completed"
-    ? 0.85
-    : input.completionState === "needs_verification"
-      ? 0.6
-      : input.completionState === "partial"
-        ? 0.45
-        : 0.25;
-  const verifierBonus = input.verifierPerformed
-    ? (
-      input.verifierOverall === "pass"
-        ? 0.1
-        : input.verifierOverall === "retry"
-          ? 0
-          : -0.15
-    )
-    : 0;
-  const evaluatorBonus = input.evaluation
-    ? (input.evaluation.passed ? 0.1 : -0.1)
-    : 0;
-  const failurePenalty = Math.min(0.25, input.failedToolCalls * 0.05);
-  return Math.max(
-    0,
-    Math.min(
-      1,
-      completionStateQualityBase +
-        verifierBonus +
-        evaluatorBonus -
-        failurePenalty,
-    ),
-  );
-}
-
-/** Input for building a delegation trajectory record. */
-export interface DelegationTrajectoryInput {
-  readonly ctx: ExecutionContext;
-  readonly qualityProxy: number;
-  readonly durationMs: number;
-  readonly rewardSignal: DelegationTrajectoryFinalReward;
-  readonly usefulnessProxy: { readonly useful: boolean; readonly score: number };
-  readonly selectedTools: readonly string[];
-  readonly defaultStrategyArmId: string;
-  readonly delegationMaxDepth: number;
-  readonly delegationMaxFanoutPerTurn: number;
-  readonly requestTimeoutMs: number;
-  readonly usefulDelegationProxyVersion: string;
-}
-
-/** Build a trajectory sink record object from execution context. */
-export function buildDelegationTrajectoryEntry(input: DelegationTrajectoryInput): DelegationTrajectoryRecord {
-  const { ctx } = input;
-  return {
-    schemaVersion: 1,
-    traceId: ctx.trajectoryTraceId,
-    turnId: ctx.parentTurnId,
-    turnType: "parent",
-    timestampMs: Date.now(),
-    stateFeatures: {
-      sessionId: ctx.sessionId,
-      contextClusterId: ctx.trajectoryContextClusterId,
-      complexityScore: ctx.plannerDecision.score,
-      plannerStepCount: ctx.plannerSummaryState.plannedSteps,
-      subagentStepCount: ctx.plannedSubagentSteps,
-      deterministicStepCount: ctx.plannedDeterministicSteps,
-      synthesisStepCount: ctx.plannedSynthesisSteps,
-      dependencyDepth: ctx.plannedDependencyDepth,
-      fanout: ctx.plannedFanout,
-    },
-    action: {
-      delegated:
-        ctx.plannerSummaryState.delegationDecision?.shouldDelegate === true,
-      strategyArmId:
-        ctx.selectedBanditArm?.armId ?? input.defaultStrategyArmId,
-      threshold: ctx.tunedDelegationThreshold,
-      selectedTools: [...input.selectedTools],
-      childConfig: {
-        maxDepth: input.delegationMaxDepth,
-        maxFanoutPerTurn: input.delegationMaxFanoutPerTurn,
-        timeoutMs: input.requestTimeoutMs,
-      },
-    },
-    immediateOutcome: {
-      qualityProxy: input.qualityProxy,
-      tokenCost: ctx.cumulativeUsage.totalTokens,
-      latencyMs: input.durationMs,
-      errorCount:
-        ctx.failedToolCalls + (ctx.completionState === "completed" ? 0 : 1),
-      ...(ctx.completionState !== "completed"
-        ? { errorClass: ctx.completionState }
-        : {}),
-    },
-    finalReward: input.rewardSignal,
-    metadata: {
-      plannerUsed: ctx.plannerSummaryState.used,
-      routeReason: ctx.plannerSummaryState.routeReason ?? "none",
-      completionState: ctx.completionState,
-      stopReason: ctx.stopReason,
-      usefulDelegation: input.usefulnessProxy.useful,
-      usefulDelegationScore: Number(input.usefulnessProxy.score.toFixed(4)),
-      usefulDelegationProxyVersion: input.usefulDelegationProxyVersion,
-    },
-  };
-}
-
-/** Build the final ChatPlannerSummary from mutable summary state. */
-export function buildPlannerSummary(
-  state: FullPlannerSummaryState,
-  estimatedRecallsAvoided: number,
-): ChatPlannerSummary {
-  return {
-    enabled: state.enabled,
-    used: state.used,
-    routeReason: state.routeReason,
-    complexityScore: state.complexityScore,
-    plannerCalls: state.plannerCalls,
-    plannedSteps: state.plannedSteps,
-    deterministicStepsExecuted: state.deterministicStepsExecuted,
-    estimatedRecallsAvoided: state.used ? estimatedRecallsAvoided : 0,
-    diagnostics: state.diagnostics.length > 0
-      ? state.diagnostics
-      : undefined,
-    delegationDecision: state.delegationDecision,
-    subagentVerification: state.subagentVerification.enabled
-      ? state.subagentVerification
-      : undefined,
-    delegationPolicyTuning: state.delegationPolicyTuning.enabled
-      ? state.delegationPolicyTuning
-      : undefined,
-  };
 }

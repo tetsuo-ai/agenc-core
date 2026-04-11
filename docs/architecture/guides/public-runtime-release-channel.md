@@ -62,6 +62,29 @@ The current release gate validates that tuple on:
 Anything else must fail clearly as unsupported. Broader platform support should
 only be added once release CI and smoke coverage exist for those tuples.
 
+## First-use devnet marketplace rehearsal boundary
+
+The public release-path docs should describe first-use operator marketplace
+writes through `agenc`, not through the compatibility alias `agenc-runtime`.
+That boundary currently includes:
+
+- `agenc agent register`
+- `agenc market tasks create|list|claim|complete`
+- `agenc market tui`
+
+Manual prerequisites still remain outside the wrapper:
+
+- Solana CLI installation
+- funded devnet signer keypair(s)
+- `--rpc` or `AGENC_RUNTIME_RPC_URL`
+- optional `--program-id` or `AGENC_RUNTIME_PROGRAM_ID`
+
+If creator and worker are different identities, both signers must be funded and
+registered separately before `claim` or `complete`.
+
+See [public-wrapper-devnet-marketplace-rehearsal.md](public-wrapper-devnet-marketplace-rehearsal.md)
+for the supported runbook.
+
 ## Installed layout
 
 The wrapper installs runtime artifacts under:

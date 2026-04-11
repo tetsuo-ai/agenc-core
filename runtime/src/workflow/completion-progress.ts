@@ -5,11 +5,11 @@ import {
   resolveWorkflowRequestCompletionStatus,
   type WorkflowRequestMilestone,
 } from "./request-completion.js";
-import type { WorkflowCompletionState } from "./completion-state.js";
-import {
-  deriveVerificationObligations,
-  type WorkflowVerificationContract,
-} from "./verification-obligations.js";
+import type {
+  PlannerVerificationSnapshot,
+  WorkflowCompletionState,
+} from "./completion-state.js";
+import type { WorkflowVerificationContract } from "./verification-obligations.js";
 
 export type WorkflowProgressRequirement =
   | "workflow_verifier_pass"
@@ -18,7 +18,7 @@ export type WorkflowProgressRequirement =
   | "review_verification"
   | "request_milestones";
 
-export interface WorkflowProgressEvidence {
+interface WorkflowProgressEvidence {
   readonly requirement:
     | "build_verification"
     | "behavior_verification"
@@ -71,24 +71,14 @@ export function deriveWorkflowProgressSnapshot(params: {
   readonly completionContract?: ImplementationCompletionContract;
   readonly completedRequestMilestoneIds?: readonly string[];
   readonly updatedAt: number;
+  readonly contractFingerprint?: string;
+  readonly verifier?: PlannerVerificationSnapshot;
 }): WorkflowProgressSnapshot | undefined {
   const mergedContract = mergeVerificationContract({
     verificationContract: params.verificationContract,
     completionContract: params.completionContract,
   });
-  const obligations = mergedContract
-    ? deriveVerificationObligations(mergedContract)
-    : undefined;
   const requiredRequirements = new Set<WorkflowProgressRequirement>();
-  if (obligations?.requiresBuildVerification) {
-    requiredRequirements.add("build_verification");
-  }
-  if (obligations?.requiresBehaviorVerification) {
-    requiredRequirements.add("behavior_verification");
-  }
-  if (obligations?.requiresReviewVerification) {
-    requiredRequirements.add("review_verification");
-  }
   if (params.completionState === "needs_verification") {
     requiredRequirements.add("workflow_verifier_pass");
   }
@@ -119,7 +109,10 @@ export function deriveWorkflowProgressSnapshot(params: {
   const satisfiedRequirements = new Set<WorkflowProgressRequirement>(
     reusableEvidence.map((entry) => entry.requirement),
   );
-  if (params.completionState === "completed") {
+  if (
+    params.completionState === "completed" &&
+    (!params.verifier || params.verifier.overall === "pass")
+  ) {
     satisfiedRequirements.add("workflow_verifier_pass");
   }
   if (requestCompletion && requestCompletion.remainingMilestones.length === 0) {
@@ -142,10 +135,12 @@ export function deriveWorkflowProgressSnapshot(params: {
     stopReason: params.stopReason,
     stopReasonDetail: params.stopReasonDetail,
     validationCode: params.validationCode,
-    contractFingerprint: buildProgressContractFingerprint({
-      verificationContract: mergedContract,
-      completionContract: mergedContract?.completionContract,
-    }),
+    contractFingerprint:
+      params.contractFingerprint ??
+      buildProgressContractFingerprint({
+        verificationContract: mergedContract,
+        completionContract: mergedContract?.completionContract,
+      }),
     verificationContract: mergedContract,
     completionContract: mergedContract?.completionContract,
     requiredRequirements: [...requiredRequirements],
@@ -297,7 +292,7 @@ function canReuseProgress(
   const nextSignature =
     next.contractFingerprint ?? buildProgressContractFingerprint(next);
   if (!previousSignature || !nextSignature) {
-    return true;
+    return false;
   }
   return previousSignature === nextSignature;
 }

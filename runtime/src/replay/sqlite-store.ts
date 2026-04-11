@@ -278,6 +278,13 @@ export class SqliteReplayTimelineStore implements ReplayTimelineStore {
     db.pragma("wal_checkpoint(TRUNCATE)");
   }
 
+  close(): void {
+    if (this.db) {
+      this.db.close();
+      this.db = null;
+    }
+  }
+
   private async getDb(): Promise<any> {
     if (this.db) {
       return this.db;

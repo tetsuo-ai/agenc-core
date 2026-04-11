@@ -26,7 +26,7 @@ import {
   isConcreteExecutableEnvelopeRoot,
   normalizeWorkspaceRoot,
 } from "../workflow/path-normalization.js";
-import { safeStepStringArray } from "../llm/chat-executor-planner.js";
+import { safeStepStringArray } from "../llm/chat-executor-step-utils.js";
 import {
   type CuratedSection,
   type DependencyArtifactCandidate,
@@ -70,7 +70,7 @@ import {
 /*  Sensitive-data redaction                                            */
 /* ------------------------------------------------------------------ */
 
-export interface SensitiveTextSanitizationOptions {
+interface SensitiveTextSanitizationOptions {
   readonly preserveAbsolutePathsWithin?: readonly string[];
   readonly absolutePathReplacement?: string;
 }
@@ -99,7 +99,7 @@ function shouldPreserveExecutionAbsolutePath(
   });
 }
 
-export function sanitizeSensitiveText(
+function sanitizeSensitiveText(
   value: string,
   options: SensitiveTextSanitizationOptions = {},
 ): string {
@@ -172,7 +172,7 @@ export function buildRelevanceTerms(
   return new Set(extractTerms(aggregate));
 }
 
-export function singularizeContextTerm(value: string): string {
+function singularizeContextTerm(value: string): string {
   if (value.endsWith("ies") && value.length > 3) {
     return `${value.slice(0, -3)}y`;
   }
@@ -182,7 +182,7 @@ export function singularizeContextTerm(value: string): string {
   return value;
 }
 
-export function expandContextQueryTerms(terms: ReadonlySet<string>): string[] {
+function expandContextQueryTerms(terms: ReadonlySet<string>): string[] {
   const expanded = new Set<string>();
   for (const term of terms) {
     const normalized = term.trim().toLowerCase();
@@ -198,7 +198,7 @@ export function expandContextQueryTerms(terms: ReadonlySet<string>): string[] {
   return [...expanded].filter((term) => term.length >= CONTEXT_TERM_MIN_LENGTH);
 }
 
-export function scoreText(text: string, terms: ReadonlySet<string>): number {
+function scoreText(text: string, terms: ReadonlySet<string>): number {
   if (terms.size === 0) return 0;
   const lower = text.toLowerCase();
   let score = 0;
@@ -208,7 +208,7 @@ export function scoreText(text: string, terms: ReadonlySet<string>): number {
   return score;
 }
 
-export function computeBm25Scores(
+function computeBm25Scores(
   documents: readonly { id: string; text: string }[],
   queryTerms: readonly string[],
 ): ReadonlyMap<string, number> {
@@ -286,7 +286,7 @@ export function truncateText(value: string, maxChars: number): string {
   return value.slice(0, maxChars - 3) + "...";
 }
 
-export function applySectionCaps(
+function applySectionCaps(
   lines: readonly string[],
   maxChars: number,
   sanitizeLine: (value: string) => string = redactSensitiveData,
@@ -784,7 +784,7 @@ export function isDependencyArtifactPathCandidate(path: string): boolean {
   return /\.(?:[cm]?[jt]sx?|json|md|txt|toml|lock|ya?ml)$/i.test(normalized);
 }
 
-export function extractDependencyArtifactsFromToolCall(
+function extractDependencyArtifactsFromToolCall(
   toolCall: unknown,
 ): readonly { path: string; content: string }[] {
   if (!toolCall || typeof toolCall !== "object" || Array.isArray(toolCall)) {
@@ -959,7 +959,7 @@ export function collectDependencyArtifactCandidates(
 /*  Workspace artifact collection                                      */
 /* ------------------------------------------------------------------ */
 
-export function isWorkspaceBootstrapArtifact(path: string): boolean {
+function isWorkspaceBootstrapArtifact(path: string): boolean {
   const normalized = path.trim().toLowerCase();
   return (
     normalized.endsWith("package.json") ||
@@ -973,7 +973,7 @@ export function isWorkspaceBootstrapArtifact(path: string): boolean {
   );
 }
 
-export function collectWorkspaceArtifactPaths(
+function collectWorkspaceArtifactPaths(
   directory: string,
   depth: number,
   collected: string[],

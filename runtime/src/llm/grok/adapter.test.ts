@@ -86,7 +86,10 @@ describe("GrokProvider", () => {
     await provider.chat([{ role: "user", content: "test" }]);
 
     expect(mockOpenAIConstructor).toHaveBeenCalledOnce();
-    expect(mockOpenAIConstructor.mock.calls[0][0].timeout).toBe(60_000);
+    // Default timeout was raised from 60s to 120s in the runtime hardening
+    // batch (PR #174) because the planner-verifier phase on reasoning models
+    // routinely exceeded 60s. This test pins the new default.
+    expect(mockOpenAIConstructor.mock.calls[0][0].timeout).toBe(120_000);
   });
 
   it("reports execution profile from explicit context window overrides", async () => {
@@ -577,9 +580,10 @@ describe("GrokProvider", () => {
       context: {
         configuredProviderTimeoutMs: null,
         callOverrideTimeoutMs: null,
-        effectiveTimeoutMs: 60_000,
+        // Default timeout was raised from 60s to 120s in PR #174.
+        effectiveTimeoutMs: 120_000,
         timeoutSource: "provider_default",
-        timeoutMs: 60_000,
+        timeoutMs: 120_000,
       },
     });
   });
@@ -746,7 +750,7 @@ describe("GrokProvider", () => {
     });
   });
 
-  it("records provider tool-resolution fallback when routed tools cannot be resolved", async () => {
+  it("suppresses tools when routed allowlist resolves to zero matches (fail-closed)", async () => {
     mockCreate.mockResolvedValueOnce(makeCompletion());
 
     const events: Array<Record<string, unknown>> = [];
@@ -770,7 +774,7 @@ describe("GrokProvider", () => {
     const response = await provider.chat(
       [{ role: "user", content: "inspect the repo" }],
       {
-        toolRouting: { allowedToolNames: ["mcp.doom.start_game"] },
+        toolRouting: { allowedToolNames: ["mcp.example.start"] },
         trace: {
           includeProviderPayloads: true,
           onProviderTraceEvent: (event) => {
@@ -780,21 +784,25 @@ describe("GrokProvider", () => {
       },
     );
 
+    // Previously the adapter fell back to the full catalog here, silently
+    // bypassing the allowlist constraint (audit S1.2). It now returns an
+    // empty tool set with the diagnostic resolution code so the executor
+    // can decide how to recover.
     expect(response.requestMetrics).toMatchObject({
-      toolCount: 1,
-      toolNames: ["system.bash"],
-      requestedToolNames: ["mcp.doom.start_game"],
-      missingRequestedToolNames: ["mcp.doom.start_game"],
-      toolResolution: "fallback_full_catalog_no_matches",
+      toolCount: 0,
+      toolNames: [],
+      requestedToolNames: ["mcp.example.start"],
+      missingRequestedToolNames: ["mcp.example.start"],
+      toolResolution: "subset_no_resolved_matches",
       providerCatalogToolCount: 1,
     });
     expect(events[0]).toMatchObject({
       kind: "request",
       context: {
-        requestedToolNames: ["mcp.doom.start_game"],
-        resolvedToolNames: ["system.bash"],
-        missingRequestedToolNames: ["mcp.doom.start_game"],
-        toolResolution: "fallback_full_catalog_no_matches",
+        requestedToolNames: ["mcp.example.start"],
+        resolvedToolNames: [],
+        missingRequestedToolNames: ["mcp.example.start"],
+        toolResolution: "subset_no_resolved_matches",
         providerCatalogToolCount: 1,
       },
     });
@@ -871,8 +879,8 @@ describe("GrokProvider", () => {
         {
           type: "function",
           function: {
-            name: "mcp.doom.start_game",
-            description: "start doom",
+            name: "mcp.example.start",
+            description: "start the example tool",
             parameters: {
               type: "object",
               properties: {
@@ -886,18 +894,18 @@ describe("GrokProvider", () => {
     });
 
     const response = await provider.chat(
-      [{ role: "user", content: "start doom" }],
-      { toolRouting: { allowedToolNames: ["mcp.doom.start_game"] } },
+      [{ role: "user", content: "start the example tool" }],
+      { toolRouting: { allowedToolNames: ["mcp.example.start"] } },
     );
 
     const params = mockCreate.mock.calls[0][0];
     expect(params.tools).toBeDefined();
     expect(params.tools).toHaveLength(1);
-    expect(params.tools[0].name).toBe("mcp.doom.start_game");
+    expect(params.tools[0].name).toBe("mcp.example.start");
     expect(response.requestMetrics).toMatchObject({
       toolCount: 1,
-      toolNames: ["mcp.doom.start_game"],
-      requestedToolNames: ["mcp.doom.start_game"],
+      toolNames: ["mcp.example.start"],
+      requestedToolNames: ["mcp.example.start"],
       missingRequestedToolNames: [],
       toolResolution: "subset_exact",
     });
@@ -1178,8 +1186,13 @@ describe("GrokProvider", () => {
   it("wires max_turns, reasoning effort, and encrypted reasoning include from config", async () => {
     mockCreate.mockResolvedValueOnce(makeCompletion());
 
+    // Per developers/model-capabilities/text/reasoning, the `reasoning`
+    // parameter is only supported on `grok-4.20-multi-agent-0309` (where
+    // it controls agent count). All other Grok 4 variants reject it.
+    // The strict pre-flight validator enforces this.
     const provider = new GrokProvider({
       apiKey: "test-key",
+      model: "grok-4.20-multi-agent-0309",
       maxTurns: 4,
       reasoningEffort: "high",
       includeEncryptedReasoning: true,
@@ -1276,24 +1289,7 @@ describe("GrokProvider", () => {
     });
   });
 
-  it("suppresses tools when structured outputs are combined with tools on non-Grok-4 models", async () => {
-    mockCreate.mockResolvedValueOnce(
-      makeCompletion({
-        output_text: '{"summary":"repo looks healthy"}',
-        output: [
-          {
-            type: "message",
-            content: [
-              {
-                type: "output_text",
-                text: '{"summary":"repo looks healthy"}',
-              },
-            ],
-          },
-        ],
-      }),
-    );
-
+  it("rejects structured outputs with tools on non-Grok-4 models instead of silently degrading", async () => {
     const provider = new GrokProvider({
       apiKey: "test-key",
       model: "grok-code-fast-1",
@@ -1312,63 +1308,70 @@ describe("GrokProvider", () => {
       ],
     });
 
-    const response = await provider.chat(
-      [{ role: "user", content: "inspect the repo and summarize findings" }],
-      {
-        structuredOutput: {
-          enabled: true,
-          schema: {
-            type: "json_schema",
-            name: "repo_summary",
+    await expect(
+      provider.chat(
+        [{ role: "user", content: "inspect the repo and summarize findings" }],
+        {
+          structuredOutput: {
+            enabled: true,
             schema: {
-              type: "object",
-              properties: {
-                summary: { type: "string" },
+              type: "json_schema",
+              name: "repo_summary",
+              schema: {
+                type: "object",
+                properties: {
+                  summary: { type: "string" },
+                },
+                required: ["summary"],
               },
-              required: ["summary"],
             },
           },
         },
-      },
+      ),
+    ).rejects.toThrow(/structured outputs with tools require a Grok 4 model/i);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed structured output payloads instead of treating them as success", async () => {
+    mockCreate.mockResolvedValueOnce(
+      makeCompletion({
+        output_text: '["repo looks healthy"]',
+        output: [
+          {
+            type: "message",
+            content: [
+              {
+                type: "output_text",
+                text: '["repo looks healthy"]',
+              },
+            ],
+          },
+        ],
+      }),
     );
 
-    const params = mockCreate.mock.calls[0][0];
-    expect(params.tools).toBeUndefined();
-    expect(params.tool_choice).toBeUndefined();
-    expect(params.parallel_tool_calls).toBeUndefined();
-    expect(params.text).toEqual({
-      format: {
-        type: "json_schema",
-        name: "repo_summary",
-        schema: {
-          type: "object",
-          properties: {
-            summary: { type: "string" },
+    const provider = new GrokProvider({ apiKey: "test-key" });
+    await expect(
+      provider.chat(
+        [{ role: "user", content: "inspect the repo and summarize findings" }],
+        {
+          structuredOutput: {
+            enabled: true,
+            schema: {
+              type: "json_schema",
+              name: "repo_summary",
+              schema: {
+                type: "object",
+                properties: {
+                  summary: { type: "string" },
+                },
+                required: ["summary"],
+              },
+            },
           },
-          required: ["summary"],
         },
-        strict: true,
-      },
-    });
-    expect(response.structuredOutput).toEqual({
-      type: "json_schema",
-      name: "repo_summary",
-      rawText: '{"summary":"repo looks healthy"}',
-      parsed: { summary: "repo looks healthy" },
-    });
-    expect(response.requestMetrics).toMatchObject({
-      toolCount: 0,
-      toolNames: ["system.bash"],
-      providerCatalogToolCount: 1,
-      toolsAttached: false,
-      toolSuppressionReason:
-        "structured_output_with_tools_unsupported_model",
-      structuredOutputEnabled: true,
-      structuredOutputName: "repo_summary",
-      structuredOutputStrict: true,
-      store: false,
-    });
-    expect(response.requestMetrics.toolChoice).toBeUndefined();
+      ),
+    ).rejects.toThrow(/must return a top-level JSON object/i);
   });
 
   it("disables parallel tool calls by default when tools are present", async () => {
@@ -1453,7 +1456,16 @@ describe("GrokProvider", () => {
     expect(paramsJson.includes("description")).toBe(false);
   });
 
-  it("omits tools on follow-up turns when tool payload is large", async () => {
+  it("keeps tools on follow-up turns even when tool payload is large", async () => {
+    // Regression test for the legacy `MAX_TOOL_SCHEMA_CHARS_FOLLOWUP = 20_000`
+    // bug. The previous behavior dropped the entire `tools` array on every
+    // follow-up turn whose serialized tool schema exceeded 20K chars,
+    // which made the Grok agent loop exit after exactly one tool call per
+    // chat turn (the model would have no tools to call on the followup).
+    // The fix removed the budget guard; now tools are always sent. The
+    // strict-filter `assertNoSilentToolDropOnFollowup` enforces this
+    // structurally — if the runtime selects tools and they get stripped
+    // before send, the adapter throws.
     mockCreate.mockResolvedValueOnce(makeCompletion());
 
     const manyTools: LLMTool[] = Array.from({ length: 120 }, (_, i) => ({
@@ -1502,7 +1514,102 @@ describe("GrokProvider", () => {
     ]);
 
     const params = mockCreate.mock.calls[0][0];
-    expect(params.tools).toBeUndefined();
+    expect(Array.isArray(params.tools)).toBe(true);
+    expect((params.tools as unknown[]).length).toBe(120);
+  });
+
+  it("auto-trims tool catalog to documented xAI 128-tool maximum", async () => {
+    // AgenC's live tool registry has 129 tools (77 system + 20 doom MCP
+    // + 18 agenc protocol + 6 social + 4 task + execute_with_agent +
+    // coordinator_mode + 2 solana-fender). xAI docs cap tools at 128.
+    // The adapter must auto-trim to stay functional; the strict filter's
+    // 128-tool rejection is a defense-in-depth catch below this layer.
+    mockCreate.mockResolvedValueOnce(makeCompletion());
+
+    const overLimitTools: LLMTool[] = Array.from(
+      { length: 129 },
+      (_, i) => ({
+        type: "function",
+        function: {
+          name: `tool_${String(i).padStart(3, "0")}`,
+          description: `Tool ${i}`,
+          parameters: {
+            type: "object",
+            properties: { a: { type: "string" } },
+            required: ["a"],
+          },
+        },
+      }),
+    );
+
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+      tools: overLimitTools,
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let capturedWarnCalls: unknown[][] = [];
+    try {
+      await provider.chat([{ role: "user", content: "hello" }]);
+      // Capture before mockRestore() below clears mock.calls.
+      capturedWarnCalls = warnSpy.mock.calls.map((call) => [...call]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    const params = mockCreate.mock.calls[0][0];
+    expect(Array.isArray(params.tools)).toBe(true);
+    // Trimmed to exactly 128; the last tool (tool_128) is dropped.
+    expect((params.tools as unknown[]).length).toBe(128);
+    const sentNames = (params.tools as Array<{ name?: unknown }>).map((t) =>
+      String(t.name),
+    );
+    expect(sentNames[0]).toBe("tool_000");
+    expect(sentNames[127]).toBe("tool_127");
+    expect(sentNames).not.toContain("tool_128");
+
+    // Operator-visible warning naming the dropped tool.
+    const warnCall = capturedWarnCalls.find((call) =>
+      String(call[0] ?? "").includes("Tool catalog has 129 tools"),
+    );
+    expect(warnCall).toBeDefined();
+    expect(String(warnCall?.[0] ?? "")).toContain("tool_128");
+  });
+
+  it("does NOT trim when tool catalog is exactly at the 128 limit", async () => {
+    mockCreate.mockResolvedValueOnce(makeCompletion());
+
+    const atLimitTools: LLMTool[] = Array.from({ length: 128 }, (_, i) => ({
+      type: "function",
+      function: {
+        name: `tool_${i}`,
+        description: `Tool ${i}`,
+        parameters: {
+          type: "object",
+          properties: { a: { type: "string" } },
+          required: ["a"],
+        },
+      },
+    }));
+
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+      tools: atLimitTools,
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let capturedWarnCalls: unknown[][] = [];
+    try {
+      await provider.chat([{ role: "user", content: "hello" }]);
+      capturedWarnCalls = warnSpy.mock.calls.map((call) => [...call]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    const params = mockCreate.mock.calls[0][0];
+    expect((params.tools as unknown[]).length).toBe(128);
+    const trimWarns = capturedWarnCalls.filter((call) =>
+      String(call[0] ?? "").includes("Tool catalog has"),
+    );
+    expect(trimWarns).toHaveLength(0);
   });
 
   it("passes usage information", async () => {
@@ -1639,12 +1746,14 @@ describe("GrokProvider", () => {
     );
 
     const provider = new GrokProvider({ apiKey: "test-key", timeoutMs: 60_000 });
-    await expect(
-      provider.chat(
-        [{ role: "user", content: "test" }],
-        { timeoutMs: 5 },
-      ),
-    ).rejects.toThrow(LLMTimeoutError);
+    const timeoutError = await provider.chat(
+      [{ role: "user", content: "test" }],
+      { timeoutMs: 5 },
+    ).catch((error: unknown) => error);
+
+    expect(timeoutError).toBeInstanceOf(LLMTimeoutError);
+    expect((timeoutError as LLMTimeoutError).timeoutMs).toBe(5);
+    expect((timeoutError as LLMTimeoutError).message).toContain("5ms");
 
     expect(mockCreate).toHaveBeenCalledOnce();
     expect(mockCreate.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);

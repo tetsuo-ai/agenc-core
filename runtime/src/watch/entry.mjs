@@ -7,6 +7,9 @@ function applyDefaultWatchCliEnvironment(env) {
   if (env.AGENC_WATCH_ENABLE_ATTACHMENTS == null) {
     env.AGENC_WATCH_ENABLE_ATTACHMENTS = "true";
   }
+  if (env.AGENC_WATCH_ENABLE_REMOTE_TOOLS == null) {
+    env.AGENC_WATCH_ENABLE_REMOTE_TOOLS = "true";
+  }
 }
 
 export async function runAgencWatchCli({ runWatchApp = defaultRunWatchApp, processLike = process } = {}) {

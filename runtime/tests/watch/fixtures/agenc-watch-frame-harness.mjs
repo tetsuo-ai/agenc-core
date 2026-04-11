@@ -39,6 +39,7 @@ export function createWatchFrameHarness(overrides = {}) {
     lastUsageSummary: null,
     activeRunStartedAtMs: null,
     bootstrapAttempts: 0,
+    marketTaskBrowser: null,
     ...overrides.watchState,
   };
   const transportState = {

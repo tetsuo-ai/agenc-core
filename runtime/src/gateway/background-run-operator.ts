@@ -105,7 +105,7 @@ export interface BackgroundRunOperatorDetail
   readonly completionProgress?: WorkflowProgressSnapshot;
 }
 
-export type BackgroundRunVerificationOverrideMode =
+type BackgroundRunVerificationOverrideMode =
   | "continue"
   | "complete"
   | "fail";

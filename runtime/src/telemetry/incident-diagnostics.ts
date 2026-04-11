@@ -17,7 +17,7 @@ export type RuntimeDependencyDomain =
 
 export type RuntimeDependencyMode = "healthy" | "degraded" | "safe_mode";
 
-export interface RuntimeIncidentRecord {
+interface RuntimeIncidentRecord {
   readonly id: string;
   readonly domain: RuntimeDependencyDomain;
   readonly mode: Exclude<RuntimeDependencyMode, "healthy">;
@@ -30,7 +30,7 @@ export interface RuntimeIncidentRecord {
   readonly runId?: string;
 }
 
-export interface RuntimeDependencySnapshot {
+interface RuntimeDependencySnapshot {
   readonly domain: RuntimeDependencyDomain;
   readonly mode: Exclude<RuntimeDependencyMode, "healthy">;
   readonly since: number;
@@ -42,13 +42,13 @@ export interface RuntimeDependencySnapshot {
   readonly runId?: string;
 }
 
-export interface RuntimeIncidentSnapshot {
+interface RuntimeIncidentSnapshot {
   readonly runtimeMode: RuntimeDependencyMode;
   readonly dependencies: readonly RuntimeDependencySnapshot[];
   readonly recentIncidents: readonly RuntimeIncidentRecord[];
 }
 
-export interface RuntimeIncidentDiagnosticsConfig {
+interface RuntimeIncidentDiagnosticsConfig {
   readonly telemetry?: TelemetryCollector;
   readonly now?: () => number;
   readonly maxIncidents?: number;

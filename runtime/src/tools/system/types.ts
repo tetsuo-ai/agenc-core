@@ -384,98 +384,59 @@ export interface BashExecutionResult {
 }
 
 /**
- * Default deny list of dangerous commands.
- * Blocks privilege escalation, destructive ops, reverse shells,
- * download-and-execute, and script interpreters.
- * Merged with any user-provided deny list.
+ * Default deny list of commands that grant capabilities BEYOND what the
+ * daemon-running user already has. The agent already has full read/write
+ * access to the user's files via `system.writeFile` and `system.readFile`,
+ * so denying ordinary developer tools (rm, chmod, python, node, curl,
+ * tee, awk, etc.) is security theater: the agent could trash files just
+ * as easily by writing garbage with `system.writeFile`. The only useful
+ * denials are commands that escalate privilege or damage the system in
+ * ways file I/O cannot.
+ *
+ * Merged with any user-provided deny list. Users can still narrow
+ * further via `denyList` config; users can opt out of individual entries
+ * via `denyExclusions`.
  */
 export const DEFAULT_DENY_LIST: readonly string[] = [
-  // Destructive operations
-  "rm",
+  // Privilege escalation — these would let the agent escape its UID.
+  "sudo",
+  "su",
+  "doas",
+  // Raw block-device write / filesystem create — these can corrupt
+  // disks beyond what file I/O can do, and on most systems require
+  // root anyway, but block them at the source as defense in depth.
   "dd",
   "mkfs",
+  // Filesystem mount manipulation — can mask or expose sensitive
+  // mounts; usually requires root, blocked defensively.
+  "mount",
+  "umount",
+  // System halt — irreversible and disruptive; usually requires root,
+  // blocked defensively.
   "shutdown",
   "reboot",
   "halt",
   "poweroff",
   "init",
-  // Privilege escalation
-  "sudo",
-  "su",
-  "doas",
-  // Process termination
-  "kill",
-  "killall",
-  "pkill",
-  // Reverse shells / network tools
+  // Reverse shell vectors — these tools exist almost exclusively for
+  // creating outbound shell connections to attacker-controlled hosts.
+  // Plain network access (curl/wget/ssh) is allowed; only the
+  // reverse-shell-specific tools stay denied.
   "nc",
   "netcat",
   "ncat",
   "socat",
-  // Download-and-execute vectors
-  "curl",
-  "wget",
-  // Network access / data exfiltration
-  "ssh",
-  "scp",
-  "sftp",
-  "rsync",
-  "telnet",
-  // Script interpreters (can bypass all restrictions)
-  "python",
-  "python3",
-  "node",
-  "nodejs",
-  "perl",
-  "ruby",
-  "php",
-  "lua",
-  "deno",
-  "bun",
-  "tclsh",
-  // Command execution wrappers
-  "xargs",
-  "env",
-  "nohup",
-  // Dangerous text processing (can write files / execute commands)
-  "awk",
-  "gawk",
-  "nawk",
-  // Environment exfiltration
-  "printenv",
-  // Permission changes
-  "chmod",
-  "chown",
-  "chgrp",
-  // File writing via non-obvious tools
-  "tee",
-  "install",
-  // Process inspection / debugging
-  "strace",
-  "ltrace",
-  "gdb",
-  // Filesystem manipulation
-  "mount",
-  "umount",
-  // Scheduled execution
-  "crontab",
-  "at",
 ];
 
 /**
- * Deny list prefixes for version-specific interpreter binaries.
- * E.g. "python3.11", "python3.12", "pypy3", "nodejs18".
- * Checked via `basename.startsWith(prefix)` in addition to exact deny set matches.
+ * Deny list prefixes for version-specific binaries of the denied
+ * commands above. Currently empty — the previous prefix list blocked
+ * `python`, `node`, `ruby`, `perl`, `php`, `lua`, `pypy` along with
+ * every version-specific binary, which prevented the agent from
+ * running its own scripts. Script interpreters are now allowed; the
+ * agent needs them to actually test the code it writes.
  */
-export const DEFAULT_DENY_PREFIXES: readonly string[] = [
-  "python",
-  "pypy",
-  "ruby",
-  "perl",
-  "php",
-  "lua",
-  "node",
-];
+export const DEFAULT_DENY_PREFIXES: readonly string[] = [];
 
 // Default direct bash timeout. Daemon desktop mode lifts this ceiling via
 // resolveBashToolTimeoutConfig(), but the standalone tool stays short by default.

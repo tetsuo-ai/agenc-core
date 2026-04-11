@@ -1,12 +1,11 @@
 import type { GatewayLLMConfig } from "../gateway/types.js";
 import type { LLMProvider } from "./types.js";
 import type {
-  RuntimeBudgetPressure,
   RuntimeEconomicsPolicy,
   RuntimeRunClass,
 } from "./run-budget.js";
 
-export interface ProviderRouteDescriptor {
+interface ProviderRouteDescriptor {
   readonly index: number;
   readonly providerName: string;
   readonly model?: string;
@@ -15,7 +14,8 @@ export interface ProviderRouteDescriptor {
   readonly reasoning: boolean;
   readonly costWeight: number;
   readonly latencyWeight: number;
-  readonly parallelToolCallsConfigured: boolean;
+  readonly parallelToolCallsConfigured?: boolean;
+  readonly supportsStructuredOutputWithTools: boolean;
 }
 
 export interface ModelRoutingPolicy {
@@ -23,7 +23,7 @@ export interface ModelRoutingPolicy {
   readonly economicsPolicy: RuntimeEconomicsPolicy;
 }
 
-export interface ModelRouteDecision {
+interface ModelRouteDecision {
   readonly runClass: RuntimeRunClass;
   readonly providers: readonly LLMProvider[];
   readonly selectedProviderName: string;
@@ -34,66 +34,29 @@ export interface ModelRouteDecision {
   readonly reason: string;
 }
 
-export type ModelRoutingWorkflowPhase =
-  | "compaction"
-  | "initial"
-  | "planner"
-  | "planner_verifier"
-  | "planner_synthesis"
-  | "tool_followup"
-  | "evaluator"
-  | "evaluator_retry";
-
-export interface ModelRouteRequirements {
+interface ModelRouteRequirements {
   readonly statefulContinuationRequired?: boolean;
   readonly structuredOutputRequired?: boolean;
   readonly routedToolNames?: readonly string[];
 }
 
-function clamp01(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  if (value <= 0) return 0;
-  if (value >= 1) return 1;
-  return value;
+interface ProviderRoutingConfigLike {
+  readonly provider?: string;
+  readonly model?: string;
+  readonly parallelToolCalls?: boolean;
+  readonly structuredOutputs?: {
+    readonly enabled?: boolean;
+  };
+  readonly reasoningEffort?: string;
 }
 
-function modelLooksReasoning(model: string | undefined): boolean {
-  const normalized = model?.toLowerCase() ?? "";
-  return normalized.includes("reasoning") && !normalized.includes("non-reasoning");
-}
-
-function estimateCostWeight(provider: string, model?: string): number {
-  const normalizedProvider = provider.toLowerCase();
-  const normalizedModel = model?.toLowerCase() ?? "";
-  if (normalizedProvider === "ollama") return 0.2;
-  if (modelLooksReasoning(model)) return 1.35;
-  if (normalizedModel.includes("fast") || normalizedModel.includes("non-reasoning")) {
-    return 0.7;
-  }
-  return 0.9;
-}
-
-function estimateLatencyWeight(provider: string, model?: string): number {
-  const normalizedProvider = provider.toLowerCase();
-  const normalizedModel = model?.toLowerCase() ?? "";
-  if (normalizedProvider === "ollama") return 1.2;
-  if (modelLooksReasoning(model)) return normalizedModel.includes("fast") ? 1 : 1.15;
-  if (normalizedModel.includes("fast")) return 0.8;
-  return 0.95;
-}
-
-function normalizeRouteKeyPart(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed.toLowerCase() : undefined;
-}
-
-export function buildProviderRouteKey(
+function buildProviderRouteKey(
   providerName: string,
   model?: string,
 ): string {
-  const providerPart = normalizeRouteKeyPart(providerName) ?? "unknown";
-  const modelPart = normalizeRouteKeyPart(model);
-  return modelPart ? `${providerPart}:${modelPart}` : providerPart;
+  const providerPart = providerName.trim().toLowerCase() || "unknown";
+  const modelPart = model?.trim().toLowerCase();
+  return modelPart ? providerPart + ":" + modelPart : providerPart;
 }
 
 export function getProviderRouteKey(
@@ -108,188 +71,236 @@ export function getProviderRouteKey(
   return buildProviderRouteKey(provider.name, providerModel);
 }
 
+function asProviderRoutingConfigLike(
+  value: unknown,
+): ProviderRoutingConfigLike | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  return value as ProviderRoutingConfigLike;
+}
+
+function selectProviderConfig(
+  providerName: string,
+  index: number,
+  llmConfig: GatewayLLMConfig | undefined,
+  providerConfigs: readonly unknown[] | undefined,
+): ProviderRoutingConfigLike | undefined {
+  const direct = asProviderRoutingConfigLike(providerConfigs?.[index]);
+  if (direct?.provider === providerName) {
+    return direct;
+  }
+
+  if (providerConfigs && providerConfigs.length > 0) {
+    for (const candidate of providerConfigs) {
+      const config = asProviderRoutingConfigLike(candidate);
+      if (config?.provider === providerName) {
+        return config;
+      }
+    }
+  }
+
+  if (index === 0 && llmConfig?.provider === providerName) {
+    return llmConfig;
+  }
+
+  return undefined;
+}
+
+function buildProviderDescriptor(
+  provider: LLMProvider,
+  index: number,
+  llmConfig: GatewayLLMConfig | undefined,
+  providerConfigs: readonly unknown[] | undefined,
+): ProviderRouteDescriptor {
+  const config = selectProviderConfig(
+    provider.name,
+    index,
+    llmConfig,
+    providerConfigs,
+  );
+  const model = config?.model;
+  const supportsStructuredOutputWithTools =
+    provider.name === "grok" ||
+    config?.structuredOutputs?.enabled !== false;
+
+  return {
+    index,
+    providerName: provider.name,
+    model,
+    routeKey: buildProviderRouteKey(provider.name, model),
+    provider,
+    reasoning: Boolean(config?.reasoningEffort),
+    costWeight: provider.name === "ollama" ? 0.9 : 1,
+    latencyWeight: provider.name === "ollama" ? 1.1 : 1,
+    parallelToolCallsConfigured: config?.parallelToolCalls,
+    supportsStructuredOutputWithTools,
+  };
+}
+
 export function buildModelRoutingPolicy(params: {
   readonly providers: readonly LLMProvider[];
   readonly economicsPolicy: RuntimeEconomicsPolicy;
   readonly llmConfig?: GatewayLLMConfig;
-  readonly providerConfigs?: readonly GatewayLLMConfig[];
+  readonly providerConfigs?: readonly unknown[];
 }): ModelRoutingPolicy {
-  const configs = params.providerConfigs && params.providerConfigs.length > 0
-    ? [...params.providerConfigs]
-    : params.llmConfig
-    ? [params.llmConfig, ...(params.llmConfig.fallback ?? [])]
-    : [];
+  const descriptors = params.providers.map((provider, index) =>
+    buildProviderDescriptor(
+      provider,
+      index,
+      params.llmConfig,
+      params.providerConfigs,
+    ),
+  );
   return {
+    providers: descriptors,
     economicsPolicy: params.economicsPolicy,
-    providers: params.providers.map((provider, index) => {
-      const config = configs[index];
-      const model = config?.model;
-      return {
-        index,
-        providerName: provider.name,
-        model,
-        routeKey: buildProviderRouteKey(provider.name, model),
-        provider,
-        reasoning: modelLooksReasoning(model),
-        costWeight: estimateCostWeight(provider.name, model),
-        latencyWeight: estimateLatencyWeight(provider.name, model),
-        parallelToolCallsConfigured: config?.parallelToolCalls === true,
-      };
-    }),
   };
 }
 
-function sortByOriginalOrder(
-  providers: readonly ProviderRouteDescriptor[],
-): ProviderRouteDescriptor[] {
-  return [...providers].sort((left, right) => left.index - right.index);
-}
-
-function chooseDefaultCandidate(
-  runClass: RuntimeRunClass,
-  candidates: readonly ProviderRouteDescriptor[],
-  requiredCapabilities?: readonly string[],
+function findProviderDescriptor(
+  policy: ModelRoutingPolicy,
+  params: {
+    readonly selectedProviderRouteKey?: string;
+    readonly selectedProviderName?: string;
+  },
 ): ProviderRouteDescriptor | undefined {
-  if (candidates.length === 0) return undefined;
-  if (runClass === "child") {
-    const highRisk = (requiredCapabilities ?? []).some((capability) =>
-      /wallet|solana|desktop|system\.(?:bash|writeFile|delete|execute|applescript)/i.test(
-        capability,
-      )
-    );
-    if (highRisk) {
-      return sortByOriginalOrder(candidates)[0];
+  return policy.providers.find((descriptor) => {
+    if (
+      params.selectedProviderRouteKey &&
+      descriptor.routeKey === params.selectedProviderRouteKey
+    ) {
+      return true;
     }
-    return [...candidates].sort((left, right) =>
-      left.costWeight - right.costWeight ||
-      left.latencyWeight - right.latencyWeight ||
-      left.index - right.index
-    )[0];
-  }
-  if (runClass === "planner" || runClass === "verifier") {
-    return [...candidates].sort((left, right) => {
-      if (left.reasoning !== right.reasoning) return left.reasoning ? -1 : 1;
-      return left.index - right.index;
-    })[0];
-  }
-  return sortByOriginalOrder(candidates)[0];
-}
-
-function chooseDowngradedCandidate(
-  candidates: readonly ProviderRouteDescriptor[],
-): ProviderRouteDescriptor | undefined {
-  return [...candidates].sort((left, right) =>
-    left.costWeight - right.costWeight ||
-    left.latencyWeight - right.latencyWeight ||
-    left.index - right.index
-  )[0];
+    return (
+      params.selectedProviderName !== undefined &&
+      descriptor.providerName === params.selectedProviderName
+    );
+  });
 }
 
 export function resolveParallelToolCallPolicy(params: {
   readonly policy: ModelRoutingPolicy;
-  readonly selectedProviderName: string;
+  readonly selectedProviderName?: string;
   readonly selectedProviderRouteKey?: string;
-  readonly phase: ModelRoutingWorkflowPhase;
-}): boolean {
-  const descriptor =
-    params.policy.providers.find(
-      (entry) =>
-        params.selectedProviderRouteKey !== undefined &&
-        entry.routeKey === params.selectedProviderRouteKey,
-    ) ??
-    params.policy.providers.find(
-      (entry) => entry.providerName === params.selectedProviderName,
-    );
-  switch (params.phase) {
-    case "initial":
-    case "tool_followup":
-      return descriptor?.parallelToolCallsConfigured === true;
-    case "compaction":
-    case "planner":
-    case "planner_verifier":
-    case "planner_synthesis":
-    case "evaluator":
-    case "evaluator_retry":
-    default:
-      return false;
+  readonly phase: string;
+}): boolean | undefined {
+  const descriptor = findProviderDescriptor(params.policy, {
+    selectedProviderName: params.selectedProviderName,
+    selectedProviderRouteKey: params.selectedProviderRouteKey,
+  });
+  if (!descriptor) {
+    return undefined;
   }
+  return descriptor.parallelToolCallsConfigured;
+}
+
+function prioritizeStructuredOutputProviders(
+  descriptors: readonly ProviderRouteDescriptor[],
+): readonly ProviderRouteDescriptor[] {
+  const preferred = descriptors.filter(
+    (descriptor) => descriptor.supportsStructuredOutputWithTools,
+  );
+  if (preferred.length === 0 || preferred.length === descriptors.length) {
+    return descriptors;
+  }
+  const deferred = descriptors.filter(
+    (descriptor) => !descriptor.supportsStructuredOutputWithTools,
+  );
+  return [...preferred, ...deferred];
+}
+
+function prioritizeHealthyProviders(
+  descriptors: readonly ProviderRouteDescriptor[],
+  degradedProviderNames: readonly string[] | undefined,
+): readonly ProviderRouteDescriptor[] {
+  if (!degradedProviderNames || degradedProviderNames.length === 0) {
+    return descriptors;
+  }
+  const degraded = new Set(
+    degradedProviderNames.map((providerName) => providerName.trim()),
+  );
+  const healthy = descriptors.filter(
+    (descriptor) => !degraded.has(descriptor.providerName),
+  );
+  if (healthy.length === 0 || healthy.length === descriptors.length) {
+    return descriptors;
+  }
+  const cooledDown = descriptors.filter((descriptor) =>
+    degraded.has(descriptor.providerName),
+  );
+  return [...healthy, ...cooledDown];
 }
 
 export function resolveModelRoute(params: {
   readonly policy: ModelRoutingPolicy;
   readonly runClass: RuntimeRunClass;
-  readonly pressure: RuntimeBudgetPressure;
+  readonly pressure?: unknown;
   readonly degradedProviderNames?: readonly string[];
-  readonly requiredCapabilities?: readonly string[];
   readonly requirements?: ModelRouteRequirements;
+  readonly requiredCapabilities?: readonly string[];
 }): ModelRouteDecision {
-  void params.requirements;
-  const degraded = new Set(
-    (params.degradedProviderNames ?? []).map((entry) => entry.toLowerCase()),
-  );
-  const healthyCandidates = params.policy.providers.filter((candidate) =>
-    !degraded.has(candidate.routeKey.toLowerCase()) &&
-      !degraded.has(candidate.providerName.toLowerCase())
-  );
-  const routePool = healthyCandidates.length > 0
-    ? healthyCandidates
-    : params.policy.providers;
-  const defaultCandidate = chooseDefaultCandidate(
-    params.runClass,
-    routePool,
-    params.requiredCapabilities,
-  );
-  const downgradedCandidate = params.pressure.shouldDowngrade
-    ? chooseDowngradedCandidate(routePool)
-    : undefined;
-  const chosen = downgradedCandidate ?? defaultCandidate ?? routePool[0];
+  const baseline = params.policy.providers;
+  let ordered = baseline;
+  let reason = "default";
 
-  if (!chosen) {
-    throw new Error("Model routing policy requires at least one provider");
+  if (params.requirements?.structuredOutputRequired) {
+    const prioritized = prioritizeStructuredOutputProviders(ordered);
+    if (prioritized[0]?.routeKey !== ordered[0]?.routeKey) {
+      ordered = prioritized;
+      reason = "structured_output_capability";
+    }
   }
 
-  const firstProvider = params.policy.providers[0];
-  const rerouted =
-    chosen.index !== 0 ||
-    degraded.has(firstProvider?.routeKey.toLowerCase() ?? "") ||
-    degraded.has(firstProvider?.providerName.toLowerCase() ?? "");
-  const downgraded = Boolean(
-    downgradedCandidate &&
-      (downgradedCandidate.index !== defaultCandidate?.index ||
-        downgradedCandidate.model !== defaultCandidate?.model),
+  const healthyFirst = prioritizeHealthyProviders(
+    ordered,
+    params.degradedProviderNames,
   );
-  const reason = downgraded
-    ? "budget_pressure_downgrade"
-    : rerouted
-    ? "degraded_provider_reroute"
-    : "default_route";
-  const orderedFallbacks = [
-    chosen,
-    ...params.policy.providers.filter((candidate) => candidate.index !== chosen.index),
-  ];
+  if (healthyFirst[0]?.routeKey !== ordered[0]?.routeKey) {
+    ordered = healthyFirst;
+    reason = "degraded_provider";
+  }
+
+  const selected = ordered[0] ?? baseline[0];
+  const rerouted =
+    Boolean(selected) &&
+    Boolean(baseline[0]) &&
+    selected.routeKey !== baseline[0].routeKey;
 
   return {
     runClass: params.runClass,
-    providers: orderedFallbacks.map((candidate) => candidate.provider),
-    selectedProviderName: chosen.providerName,
-    selectedModel: chosen.model,
-    selectedProviderRouteKey: chosen.routeKey,
+    providers: ordered.map((descriptor) => descriptor.provider),
+    selectedProviderName: selected?.providerName ?? "unknown",
+    selectedModel: selected?.model,
+    selectedProviderRouteKey: selected?.routeKey ?? "unknown",
     rerouted,
-    downgraded,
-    reason,
+    downgraded: false,
+    reason: rerouted ? reason : "default",
   };
 }
 
-export function estimateDelegationStepSpendUnits(input: {
-  readonly budgetMinutes: number;
-  readonly mutable: boolean;
-  readonly shellObservationOnly: boolean;
-  readonly verifierCost: number;
-  readonly retryCost: number;
-}): number {
-  const minuteWeight = Math.max(0.2, Math.min(4, input.budgetMinutes / 4));
-  const mutationWeight = input.mutable ? 1.1 : input.shellObservationOnly ? 0.7 : 0.5;
-  const verifierWeight = 1 + clamp01(input.verifierCost) * 0.4;
-  const retryWeight = 1 + clamp01(input.retryCost) * 0.35;
-  return Number((minuteWeight * mutationWeight * verifierWeight * retryWeight).toFixed(4));
+function asFiniteNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+export function estimateDelegationStepSpendUnits(
+  input: Record<string, unknown>,
+): number {
+  const budgetMinutes = Math.max(1, asFiniteNumber(input.budgetMinutes, 5));
+  const mutable = input.mutable === true;
+  const shellObservationOnly = input.shellObservationOnly === true;
+  const verifierCost = Math.max(0, Math.min(1, asFiniteNumber(input.verifierCost, 0)));
+  const retryCost = Math.max(0, Math.min(1, asFiniteNumber(input.retryCost, 0)));
+
+  let spendUnits = budgetMinutes * 0.06;
+  if (mutable) {
+    spendUnits += 0.35;
+  }
+  if (shellObservationOnly) {
+    spendUnits *= 0.5;
+  }
+  spendUnits += verifierCost * 0.2;
+  spendUnits += retryCost * 0.2;
+
+  return Number(Math.max(0.05, spendUnits).toFixed(4));
 }

@@ -15,6 +15,7 @@ import type {
 } from "./session-isolation.js";
 import { createGatewayMessage } from "./message.js";
 import { ChatExecutor } from "../llm/chat-executor.js";
+import { runSubagentToLegacyResult } from "./subagent-query.js";
 import { buildModelRoutingPolicy } from "../llm/model-routing-policy.js";
 import type { GatewayLLMConfig } from "./types.js";
 import type { PromptBudgetConfig } from "../llm/prompt-budget.js";
@@ -23,6 +24,7 @@ import {
   type RuntimeBudgetMode,
 } from "../llm/run-budget.js";
 import type {
+  ChatExecuteParams,
   ChatExecutorResult,
   ToolCallRecord,
 } from "../llm/chat-executor-types.js";
@@ -31,6 +33,7 @@ import type {
   LLMProviderExecutionProfile,
   LLMMessage,
   LLMProviderEvidence,
+  LLMStructuredOutputResult,
   LLMUsage,
   ToolHandler,
 } from "../llm/types.js";
@@ -52,16 +55,22 @@ import type {
   DelegationContractSpec,
   DelegationOutputValidationCode,
 } from "../utils/delegation-validation.js";
+import type { VerifierRequirement } from "./verifier-probes.js";
 import { SubAgentSpawnError } from "./errors.js";
 
 // ============================================================================
 // Constants
 // ============================================================================
 
-export const DEFAULT_SUB_AGENT_TIMEOUT_MS = 0; // unlimited
-export const DEFAULT_SUB_AGENT_CONTEXT_STARTUP_TIMEOUT_MS = 15_000;
+// 0 = unlimited execution deadline. Sub-agents inherit any explicit timeout
+// from their config or parent envelope; the default is "no deadline" because
+// long-running implementation phases routinely exceed any fixed budget.
+// Reverted from a 5-minute cap added by PR #174 because the cap silently
+// killed legitimate long-horizon child phases.
+export const DEFAULT_SUB_AGENT_TIMEOUT_MS = 0;
+const DEFAULT_SUB_AGENT_CONTEXT_STARTUP_TIMEOUT_MS = 15_000;
 export const MAX_CONCURRENT_SUB_AGENTS = 16;
-export const DEFAULT_MAX_SUB_AGENT_DEPTH = 4;
+const DEFAULT_MAX_SUB_AGENT_DEPTH = 4;
 export const DEFAULT_MAX_RETAINED_TERMINAL_SUB_AGENTS = 256;
 export const DEFAULT_TERMINAL_SUB_AGENT_RETENTION_MS = 6 * 60 * 60 * 1000; // 6h
 export const SUB_AGENT_SESSION_PREFIX = "subagent:";
@@ -141,6 +150,7 @@ export interface SubAgentConfig {
   readonly parentSessionId: string;
   readonly task: string;
   readonly prompt?: string;
+  readonly systemPrompt?: string;
   readonly continuationSessionId?: string;
   readonly timeoutMs?: number;
   readonly toolBudgetPerRequest?: number;
@@ -150,7 +160,10 @@ export interface SubAgentConfig {
   readonly tools?: readonly string[];
   readonly requiredCapabilities?: readonly string[];
   readonly requireToolCall?: boolean;
+  readonly structuredOutput?: ChatExecuteParams["structuredOutput"];
   readonly delegationSpec?: DelegationContractSpec;
+  readonly verifierRequirement?: VerifierRequirement;
+  readonly requiredToolEvidence?: ChatExecuteParams["requiredToolEvidence"];
   readonly unsafeBenchmarkMode?: boolean;
   /**
    * Phase 2.8: Memory inheritance policy for sub-agents.
@@ -168,10 +181,13 @@ export interface SubAgentResult {
   readonly durationMs: number;
   readonly toolCalls: readonly ToolCallRecord[];
   readonly providerEvidence?: LLMProviderEvidence;
+  readonly structuredOutput?: LLMStructuredOutputResult;
   readonly tokenUsage?: LLMUsage;
   readonly providerName?: string;
   readonly completionState?: ChatExecutorResult["completionState"];
   readonly completionProgress?: ChatExecutorResult["completionProgress"];
+  readonly verifierSnapshot?: ChatExecutorResult["verifierSnapshot"];
+  readonly contractFingerprint?: string;
   readonly stopReason?: ChatExecutorResult["stopReason"];
   readonly stopReasonDetail?: string;
   readonly validationCode?: DelegationOutputValidationCode;
@@ -230,7 +246,7 @@ export interface SubAgentManagerConfig {
   readonly onCompaction?: (sessionId: string, summary: string) => void;
 }
 
-export interface ResolvedSubAgentExecutionBudget {
+interface ResolvedSubAgentExecutionBudget {
   readonly promptBudget?: PromptBudgetConfig;
   readonly sessionTokenBudget?: number;
   readonly sessionCompactionThreshold?: number;
@@ -274,6 +290,118 @@ function mapChatCompletionToSubAgentStatus(input: {
   if (input.stopReason === "cancelled") return "cancelled";
   if (input.completionState === "completed") return "completed";
   return "failed";
+}
+
+function normalizeStringList(values: readonly string[] | undefined): readonly string[] {
+  return (values ?? [])
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function stableConfigFragment(value: unknown): string {
+  if (value === null || value === undefined) {
+    return String(value);
+  }
+  if (typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableConfigFragment(entry)).join(",")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, entry]) => entry !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right));
+  return `{${entries
+    .map(([key, entry]) => `${JSON.stringify(key)}:${stableConfigFragment(entry)}`)
+    .join(",")}}`;
+}
+
+function normalizeVerifierRequirement(
+  requirement: VerifierRequirement | undefined,
+): string | undefined {
+  if (!requirement) return undefined;
+  return stableConfigFragment({
+    required: requirement.required,
+    profiles: normalizeStringList(requirement.profiles),
+    probeCategories: normalizeStringList(requirement.probeCategories),
+    mutationPolicy: requirement.mutationPolicy,
+    allowTempArtifacts: requirement.allowTempArtifacts,
+    bootstrapSource: requirement.bootstrapSource,
+  });
+}
+
+function normalizeExecutionContextFingerprint(
+  executionContext: DelegationContractSpec["executionContext"] | undefined,
+): string | undefined {
+  if (!executionContext) return undefined;
+  return stableConfigFragment({
+    workspaceRoot: executionContext.workspaceRoot,
+    allowedTools: normalizeStringList(executionContext.allowedTools),
+    allowedReadRoots: normalizeStringList(executionContext.allowedReadRoots),
+    allowedWriteRoots: normalizeStringList(executionContext.allowedWriteRoots),
+    inputArtifacts: normalizeStringList(executionContext.inputArtifacts),
+    requiredSourceArtifacts: normalizeStringList(
+      executionContext.requiredSourceArtifacts,
+    ),
+    targetArtifacts: normalizeStringList(executionContext.targetArtifacts),
+    effectClass: executionContext.effectClass,
+    verificationMode: executionContext.verificationMode,
+    stepKind: executionContext.stepKind,
+    fallbackPolicy: executionContext.fallbackPolicy,
+    resumePolicy: executionContext.resumePolicy,
+    approvalProfile: executionContext.approvalProfile,
+  });
+}
+
+function validateContinuationCompatibility(params: {
+  readonly existing: SubAgentConfig;
+  readonly next: SubAgentConfig;
+}): string | undefined {
+  const existingWorkingDirectory = params.existing.workingDirectory?.trim();
+  const nextWorkingDirectory = params.next.workingDirectory?.trim();
+  if (existingWorkingDirectory !== nextWorkingDirectory) {
+    return "continuationSessionId cannot change the delegated working directory";
+  }
+
+  const existingTools = normalizeStringList(params.existing.tools);
+  const nextTools = normalizeStringList(params.next.tools);
+  if (
+    existingTools.length > 0 &&
+    (nextTools.length === 0 ||
+      nextTools.some((toolName) => !existingTools.includes(toolName)))
+  ) {
+    return "continuationSessionId cannot widen the delegated tool scope";
+  }
+
+  if (
+    params.existing.requireToolCall === true &&
+    params.next.requireToolCall !== true
+  ) {
+    return "continuationSessionId must preserve required child tool evidence";
+  }
+
+  const existingContext = normalizeExecutionContextFingerprint(
+    params.existing.delegationSpec?.executionContext,
+  );
+  const nextContext = normalizeExecutionContextFingerprint(
+    params.next.delegationSpec?.executionContext,
+  );
+  if (existingContext !== nextContext) {
+    return "continuationSessionId cannot change the delegated execution envelope";
+  }
+
+  const existingVerifier = normalizeVerifierRequirement(
+    params.existing.verifierRequirement,
+  );
+  const nextVerifier = normalizeVerifierRequirement(
+    params.next.verifierRequirement,
+  );
+  if (existingVerifier !== nextVerifier) {
+    return "continuationSessionId must preserve verifier obligations";
+  }
+
+  return undefined;
 }
 
 // ============================================================================
@@ -400,6 +528,14 @@ export class SubAgentManager {
     return handle.result;
   }
 
+  async waitForResult(sessionId: string): Promise<SubAgentResult | null> {
+    this.pruneTerminalHandles();
+    const handle = this.handles.get(sessionId);
+    if (!handle) return null;
+    await handle.execution;
+    return handle.result;
+  }
+
   getInfo(sessionId: string): SubAgentInfo | null {
     this.pruneTerminalHandles();
     const handle = this.handles.get(sessionId);
@@ -419,6 +555,13 @@ export class SubAgentManager {
   ): DelegationContractSpec["executionContext"] | undefined {
     this.pruneTerminalHandles();
     return this.handles.get(sessionId)?.config.delegationSpec?.executionContext;
+  }
+
+  getVerifierRequirement(
+    sessionId: string,
+  ): VerifierRequirement | undefined {
+    this.pruneTerminalHandles();
+    return this.handles.get(sessionId)?.config.verifierRequirement;
   }
 
   cancel(sessionId: string): boolean {
@@ -743,7 +886,9 @@ export class SubAgentManager {
       });
 
       const systemPrompt =
-        this.config.systemPrompt ?? DEFAULT_SUB_AGENT_SYSTEM_PROMPT;
+        handle.config.systemPrompt ??
+        this.config.systemPrompt ??
+        DEFAULT_SUB_AGENT_SYSTEM_PROMPT;
       const subAgentTraceId = `subagent:${handle.sessionId}:${Date.now()}`;
       const unsafeBenchmarkMode = handle.config.unsafeBenchmarkMode === true;
       const traceEnabled =
@@ -809,6 +954,26 @@ export class SubAgentManager {
         });
       }
 
+      const inheritedRequiredToolEvidence = handle.config.delegationSpec
+        ? {
+            maxCorrectionAttempts: handle.config.requireToolCall ? 1 : 0,
+            delegationSpec: handle.config.delegationSpec,
+            unsafeBenchmarkMode,
+          }
+        : undefined;
+      const explicitRequiredToolEvidence = handle.config.requiredToolEvidence;
+      const requiredToolEvidence =
+        inheritedRequiredToolEvidence || explicitRequiredToolEvidence
+          ? {
+              ...(inheritedRequiredToolEvidence ?? {}),
+              ...(explicitRequiredToolEvidence ?? {}),
+              maxCorrectionAttempts:
+                explicitRequiredToolEvidence?.maxCorrectionAttempts ??
+                inheritedRequiredToolEvidence?.maxCorrectionAttempts ??
+                0,
+            }
+          : undefined;
+
       // When the spawn comes from the orchestrator pipeline (has an
       // execution context with explicit tool scope), pass the resolved
       // tools as routedToolNames so the sub-agent's ChatExecutor uses
@@ -822,36 +987,62 @@ export class SubAgentManager {
           ? [...handle.config.tools]
           : undefined;
 
-      const resultOrAbort = await raceAbort(
-        executor.execute({
-          message,
-          history: handle.history,
-          systemPrompt,
+      // Phase K: subagent spawn now routes through the generator
+      // surface via runSubagentToLegacyResult. Same semantics as
+      // the old direct executor.execute() call under the Phase C
+      // adapter shape (the helper drains executeChat and returns
+      // the legacy result), but the call site is now the stable
+      // entry point that a follow-up can swap to a direct
+      // helper-orchestration implementation without touching
+      // this file.
+      const spawnedResult = await raceAbort(
+        runSubagentToLegacyResult(executor, {
           sessionId: handle.sessionId,
-          ...(spawnRoutedTools
-            ? { toolRouting: { routedToolNames: spawnRoutedTools } }
-            : {}),
-          ...(handle.config.workingDirectory
-            ? {
-              runtimeContext: {
-                workspaceRoot: handle.config.workingDirectory,
-              },
-            }
-            : {}),
-          ...(typeof effectiveToolBudgetPerRequest === "number"
-            ? { toolBudgetPerRequest: effectiveToolBudgetPerRequest }
-            : {}),
-          requiredToolEvidence: handle.config.delegationSpec
-            ? {
-              maxCorrectionAttempts: handle.config.requireToolCall ? 1 : 0,
-              delegationSpec: handle.config.delegationSpec,
-              unsafeBenchmarkMode,
-            }
-            : undefined,
-          ...(providerTrace ? { trace: providerTrace } : {}),
+          parentSessionId: handle.parentSessionId,
+          params: {
+            message,
+            history: handle.history,
+            systemPrompt,
+            sessionId: handle.sessionId,
+            ...(spawnRoutedTools
+              ? { toolRouting: { routedToolNames: spawnRoutedTools } }
+              : {}),
+            ...(handle.config.workingDirectory
+              ? {
+                runtimeContext: {
+                  workspaceRoot: handle.config.workingDirectory,
+                },
+              }
+              : {}),
+            ...(typeof effectiveToolBudgetPerRequest === "number"
+              ? { toolBudgetPerRequest: effectiveToolBudgetPerRequest }
+              : {}),
+            ...(requiredToolEvidence
+              ? { requiredToolEvidence }
+              : {}),
+            ...(handle.config.structuredOutput
+              ? { structuredOutput: handle.config.structuredOutput }
+              : {}),
+            ...(providerTrace ? { trace: providerTrace } : {}),
+          },
         }),
         handle.abortController.signal,
       );
+      // runSubagentToLegacyResult guarantees legacyResult is set
+      // on the happy path (Phase C adapter populates
+      // Terminal.legacyResult from the underlying
+      // ChatExecutorResult). If legacyResult is missing on a
+      // non-aborted spawn, the adapter contract was violated —
+      // surface as a hard error so the incident is visible.
+      const resultOrAbort =
+        spawnedResult === ABORT_SENTINEL
+          ? ABORT_SENTINEL
+          : (spawnedResult.legacyResult ??
+            (() => {
+              throw new Error(
+                "sub-agent: runSubagentToLegacyResult returned without a legacyResult",
+              );
+            })());
 
       // Guard: don't overwrite if cancelled/timed_out during execution
       if (resultOrAbort === ABORT_SENTINEL || handle.status !== "running")
@@ -882,10 +1073,13 @@ export class SubAgentManager {
         durationMs: Date.now() - handle.startedAt,
         toolCalls: resultOrAbort.toolCalls,
         providerEvidence: resultOrAbort.providerEvidence,
+        structuredOutput: resultOrAbort.structuredOutput,
         tokenUsage: resultOrAbort.tokenUsage,
         providerName: selectedProvider.name,
         completionState: resultOrAbort.completionState,
         completionProgress: resultOrAbort.completionProgress,
+        verifierSnapshot: resultOrAbort.verifierSnapshot,
+        contractFingerprint: resultOrAbort.turnExecutionContract?.contractFingerprint,
         stopReason: resultOrAbort.stopReason,
         stopReasonDetail: resultOrAbort.stopReasonDetail,
         validationCode: resultOrAbort.validationCode,
@@ -1014,6 +1208,16 @@ export class SubAgentManager {
       throw new SubAgentSpawnError(
         config.parentSessionId,
         `continuationSessionId "${continuationSessionId}" belongs to a different parent session`,
+      );
+    }
+    const compatibilityError = validateContinuationCompatibility({
+      existing: existing.config,
+      next: config,
+    });
+    if (compatibilityError) {
+      throw new SubAgentSpawnError(
+        config.parentSessionId,
+        `${compatibilityError} (${continuationSessionId})`,
       );
     }
     return existing;

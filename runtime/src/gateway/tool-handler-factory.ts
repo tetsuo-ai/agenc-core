@@ -11,13 +11,22 @@ import type { ControlResponse } from './types.js';
 import { existsSync } from 'node:fs';
 import { isAbsolute, relative, resolve as resolvePath } from 'node:path';
 import type { ToolHandler } from '../llm/types.js';
-import { SESSION_ALLOWED_ROOTS_ARG } from "../tools/system/filesystem.js";
+import {
+  SESSION_ALLOWED_ROOTS_ARG,
+  SESSION_ID_ARG,
+} from "../tools/system/filesystem.js";
+import {
+  TASK_LIST_ARG,
+  TASK_TRACKER_TOOL_NAMES,
+} from "../tools/system/task-tracker.js";
+import type { TaskStore } from "../tools/system/task-tracker.js";
 import {
   didToolCallFail,
   enrichToolResultMetadata,
   extractToolFailureTextFromResult,
   normalizeToolCallArguments,
 } from '../llm/chat-executor-tool-utils.js';
+import { TEST_FILE_PATH_RE } from "../llm/verification-target-guard.js";
 import type { HookDispatcher } from './hooks.js';
 import type { ApprovalEffectRef, ApprovalEngine } from './approvals.js';
 import {
@@ -32,7 +41,7 @@ import {
 import { executeDelegationTool } from "./tool-handler-factory-delegation.js";
 import type { PolicyEvaluationScope } from "../policy/types.js";
 import type { SessionCredentialBroker } from "../policy/session-credentials.js";
-import { buildArtifactContract, isArtifactAccessAllowed, type ArtifactAccessMode } from "../workflow/artifact-contract.js";
+import { type ArtifactAccessMode } from "../workflow/artifact-contract.js";
 import { buildCompensationState, captureFilesystemSnapshot } from "../workflow/compensation.js";
 import type { EffectLedger } from "../workflow/effect-ledger.js";
 import {
@@ -49,11 +58,13 @@ import {
   isPathWithinRoot,
   normalizeEnvelopePath,
   normalizeEnvelopeRoots,
+  normalizeWorkspaceRoot,
 } from "../workflow/path-normalization.js";
 import {
   resolveExecutionEnvelopeArtifactRelations,
   type ExecutionEnvelope,
 } from "../workflow/execution-envelope.js";
+import type { RuntimeContractFlags } from "../runtime-contract/types.js";
 import type { RuntimeIncidentDiagnostics } from "../telemetry/incident-diagnostics.js";
 import {
   FaultInjectionError,
@@ -68,7 +79,6 @@ const DESKTOP_FILE_MANAGER_LAUNCH_RE = /\b(?:thunar|nautilus)\b/i;
 const DESKTOP_EDITOR_LAUNCH_RE = /\b(?:mousepad|gedit)\b/i;
 const COLLAPSE_WHITESPACE_RE = /\s+/g;
 const APPROVAL_TASK_PREVIEW_MAX_CHARS = 180;
-const DOOM_TOOL_PREFIX = 'mcp.doom.';
 const TOOL_NAME_ALIASES: Readonly<Record<string, string>> = {
   "system.makeDir": "system.mkdir",
   "system.listFiles": "system.listDir",
@@ -78,11 +88,14 @@ const TOOL_DEFAULT_CWD_NAMES = new Set([
   "desktop.bash",
   "system.processStart",
   "system.serverStart",
+  "verification.listProbes",
+  "verification.runProbe",
 ]);
 const SESSION_ALLOWED_ROOT_TOOL_NAMES = new Set([
   "system.readFile",
   "system.writeFile",
   "system.appendFile",
+  "system.editFile",
   "system.listDir",
   "system.stat",
   "system.mkdir",
@@ -101,11 +114,27 @@ const SESSION_ALLOWED_ROOT_TOOL_NAMES = new Set([
   "system.spreadsheetInfo",
   "system.spreadsheetRead",
 ]);
+
+/**
+ * Filesystem tool names that need a session-scoped readFileState entry
+ * for the Read-before-Write rule. The gateway injects `SESSION_ID_ARG`
+ * into the args of every call to one of these tools so the per-session
+ * read tracker in `runtime/src/tools/system/filesystem.ts` can record
+ * (for readFile) and check (for writeFile/editFile) which paths the
+ * model has seen in the current chat session.
+ */
+const SESSION_ID_TOOL_NAMES = new Set([
+  "system.readFile",
+  "system.writeFile",
+  "system.appendFile",
+  "system.editFile",
+]);
 const TOOL_PATH_ARG_KEYS: Readonly<Record<string, readonly string[]>> = {
   "desktop.text_editor": ["path"],
   "system.readFile": ["path"],
   "system.writeFile": ["path"],
   "system.appendFile": ["path"],
+  "system.editFile": ["path"],
   "system.listDir": ["path"],
   "system.stat": ["path"],
   "system.mkdir": ["path"],
@@ -145,16 +174,11 @@ const WRITE_FILESYSTEM_TOOL_MODES: Readonly<Record<string, ArtifactAccessMode>> 
   "desktop.text_editor": "write",
   "system.writeFile": "write",
   "system.appendFile": "append",
+  "system.editFile": "write",
   "system.mkdir": "mkdir",
   "system.delete": "write",
   "system.move": "write",
 };
-const ROOT_SCOPED_COMMAND_TOOLS = new Set([
-  "system.bash",
-  "desktop.bash",
-  "system.processStart",
-  "system.serverStart",
-]);
 const ABSOLUTE_PATH_ARG_RE = /^(?:~\/|\/)/;
 const HEAD_TAIL_OPTION_VALUE_FLAGS = new Set([
   "-c",
@@ -185,8 +209,6 @@ const SED_OPTION_VALUE_FLAGS = new Set([
   "--file",
 ]);
 const WORKSPACE_ALIAS_ROOT = "/workspace";
-const TEST_FILE_PATH_RE =
-  /(?:^|\/)(?:test|tests|spec|specs|__tests__)(?:\/|$)|\.(?:test|spec)\.[^/]+$/i;
 const BEHAVIOR_COMMAND_RE =
   /\b(?:test|tests|vitest|jest|pytest|playwright|ctest|cargo test|go test|smoke|scenario|e2e|end-to-end)\b/i;
 const BUILD_COMMAND_RE =
@@ -209,12 +231,40 @@ function normalizeToolName(name: string): string {
 function stripInternalToolArgs(
   args: Record<string, unknown>,
 ): Record<string, unknown> {
-  if (!(SESSION_ALLOWED_ROOTS_ARG in args)) {
+  const hasAllowedRoots = SESSION_ALLOWED_ROOTS_ARG in args;
+  const hasTaskListId = TASK_LIST_ARG in args;
+  const hasSessionId = SESSION_ID_ARG in args;
+  if (!hasAllowedRoots && !hasTaskListId && !hasSessionId) {
     return args;
   }
   const nextArgs = { ...args };
-  delete nextArgs[SESSION_ALLOWED_ROOTS_ARG];
+  if (hasAllowedRoots) {
+    delete nextArgs[SESSION_ALLOWED_ROOTS_ARG];
+  }
+  if (hasTaskListId) {
+    delete nextArgs[TASK_LIST_ARG];
+  }
+  if (hasSessionId) {
+    delete nextArgs[SESSION_ID_ARG];
+  }
   return nextArgs;
+}
+
+function applySessionTaskListId(
+  toolName: string,
+  args: Record<string, unknown>,
+  sessionId: string | undefined,
+): Record<string, unknown> {
+  if (!TASK_TRACKER_TOOL_NAMES.has(toolName)) {
+    return args;
+  }
+  if (!sessionId || sessionId.trim().length === 0) {
+    return args;
+  }
+  return {
+    ...args,
+    [TASK_LIST_ARG]: sessionId,
+  };
 }
 
 function applySessionAllowedRoots(
@@ -232,6 +282,30 @@ function applySessionAllowedRoots(
   return {
     ...args,
     [SESSION_ALLOWED_ROOTS_ARG]: [...additionalAllowedPaths],
+  };
+}
+
+/**
+ * Inject the chat session ID into the args of filesystem tools that
+ * participate in the Read-before-Write rule. The injected value is
+ * consumed by the per-session readFileState map in
+ * `runtime/src/tools/system/filesystem.ts` and stripped from any
+ * user-visible serialization by `stripInternalToolArgs`.
+ */
+function applySessionId(
+  toolName: string,
+  args: Record<string, unknown>,
+  sessionId: string | undefined,
+): Record<string, unknown> {
+  if (!SESSION_ID_TOOL_NAMES.has(toolName)) {
+    return args;
+  }
+  if (!sessionId || sessionId.trim().length === 0) {
+    return args;
+  }
+  return {
+    ...args,
+    [SESSION_ID_ARG]: sessionId,
   };
 }
 
@@ -860,7 +934,11 @@ function enforceSubAgentExecutionEnvelope(params: {
   const pathKeys = TOOL_PATH_ARG_KEYS[params.toolName] ?? [];
   if (pathKeys.length === 0) return undefined;
 
-  const workspaceRoot = executionContext.workspaceRoot?.trim() || params.defaultWorkingDirectory;
+  // Audit S1.6: normalize so the filesystem-effect handler enforces
+  // allowed-roots membership against the same canonical root that
+  // verifier and contract guidance use.
+  const workspaceRoot =
+    normalizeWorkspaceRoot(executionContext.workspaceRoot) ?? params.defaultWorkingDirectory;
   const readRoots = normalizeEnvelopeRoots(
     executionContext.allowedReadRoots ?? [],
     workspaceRoot,
@@ -869,12 +947,6 @@ function enforceSubAgentExecutionEnvelope(params: {
     executionContext.allowedWriteRoots ?? [],
     workspaceRoot,
   );
-  const artifactContract = buildArtifactContract({
-    requiredSourceArtifacts:
-      executionContext.requiredSourceArtifacts ??
-      executionContext.inputArtifacts,
-    targetArtifacts: executionContext.targetArtifacts,
-  });
   const explicitlyWritableArtifacts = collectExplicitWritableExecutionArtifacts(
     executionContext,
     workspaceRoot,
@@ -893,17 +965,6 @@ function enforceSubAgentExecutionEnvelope(params: {
     const allowedRoots = mode === "read" ? readRoots : writeRoots;
     if (allowedRoots.length > 0 && !isPathWithinAnyRoot(resolvedPath, allowedRoots)) {
       return `Delegated ${mode} path "${resolvedPath}" is outside the execution envelope roots`;
-    }
-    if (
-      mode !== "read" &&
-      artifactContract.targetArtifacts.length > 0 &&
-      !isArtifactAccessAllowed({
-        contract: artifactContract,
-        path: resolvedPath,
-        mode,
-      })
-    ) {
-      return `Delegated ${mode} path "${resolvedPath}" is not permitted by the execution envelope target artifacts`;
     }
     if (
       mode !== "read" &&
@@ -1133,10 +1194,6 @@ function expandHomeDirectory(rawPath: string): string {
   return rawPath;
 }
 
-function normalizeScopedRootPath(rootPath: string): string {
-  return resolvePath(expandHomeDirectory(rootPath.trim()));
-}
-
 function isWithinRoot(rootPath: string, candidatePath: string): boolean {
   const rel = relative(rootPath, candidatePath);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
@@ -1363,16 +1420,6 @@ function validateDelegatedCanonicalToolPaths(
   }
 
   return undefined;
-}
-
-function buildScopedRootViolationMessage(
-  detail: string,
-  scopedFilesystemRoot: string,
-): string {
-  return (
-    `Delegated workspace root violation: ${detail}. ` +
-    `Keep all filesystem paths under ${scopedFilesystemRoot}.`
-  );
 }
 
 type ShellToken =
@@ -1680,138 +1727,7 @@ function extractDirectCommandPathArgs(
   }
 }
 
-function isAllowedOutOfRootShellSinkPath(candidatePath: string): boolean {
-  return candidatePath === "/dev/null";
-}
-
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function validateScopedFilesystemRoot(
-  toolName: string,
-  args: Record<string, unknown>,
-  scopedFilesystemRoot?: string,
-): string | undefined {
-  const root = scopedFilesystemRoot?.trim();
-  if (!root) return undefined;
-  const normalizedRoot = normalizeScopedRootPath(root);
-
-  const pathArgKeys = TOOL_PATH_ARG_KEYS[toolName];
-  if (pathArgKeys) {
-    for (const key of pathArgKeys) {
-      const value = args[key];
-      if (typeof value !== "string" || value.trim().length === 0) continue;
-      const candidatePath = normalizeScopedPathCandidate(value);
-      if (!isWithinRoot(normalizedRoot, candidatePath)) {
-        return buildScopedRootViolationMessage(
-          `${key} must stay under the delegated workspace root`,
-          normalizedRoot,
-        );
-      }
-    }
-  }
-
-  if (ROOT_SCOPED_COMMAND_TOOLS.has(toolName)) {
-    const cwdValue = typeof args.cwd === "string" ? args.cwd.trim() : undefined;
-    if (cwdValue) {
-      const candidateCwd = normalizeScopedPathCandidate(cwdValue);
-      if (
-        !isWithinRoot(normalizedRoot, candidateCwd) &&
-        !allowsMissingRootBootstrapCwd(
-          toolName,
-          args,
-          normalizedRoot,
-          candidateCwd,
-        )
-      ) {
-        return buildScopedRootViolationMessage(
-          "cwd must stay under the delegated workspace root",
-          normalizedRoot,
-        );
-      }
-    }
-  }
-
-  if (
-    (toolName === "system.bash" || toolName === "desktop.bash") &&
-    Array.isArray(args.args)
-  ) {
-    for (const arg of extractDirectCommandPathArgs(args.command, args.args)) {
-      const candidatePath = normalizeScopedPathCandidate(arg);
-      if (isAllowedOutOfRootShellSinkPath(candidatePath)) {
-        continue;
-      }
-      if (!isWithinRoot(normalizedRoot, candidatePath)) {
-        return buildScopedRootViolationMessage(
-          "command arguments reference a path outside the delegated workspace root",
-          normalizedRoot,
-        );
-      }
-    }
-  }
-
-  if (
-    (toolName === "system.bash" || toolName === "desktop.bash") &&
-    !Array.isArray(args.args) &&
-    typeof args.command === "string"
-  ) {
-    for (const pathValue of extractAbsoluteShellPaths(args.command)) {
-      const candidatePath = normalizeScopedPathCandidate(pathValue);
-      if (isAllowedOutOfRootShellSinkPath(candidatePath)) {
-        continue;
-      }
-      if (!isWithinRoot(normalizedRoot, candidatePath)) {
-        return buildScopedRootViolationMessage(
-          "shell mode command references a path outside the delegated workspace root",
-          normalizedRoot,
-        );
-      }
-    }
-  }
-
-  return undefined;
-}
-
-function allowsMissingRootBootstrapCwd(
-  toolName: string,
-  args: Record<string, unknown>,
-  normalizedRoot: string,
-  candidateCwd: string,
-): boolean {
-  if (pathExists(normalizedRoot)) {
-    return false;
-  }
-  if (isWithinRoot(normalizedRoot, candidateCwd)) {
-    return false;
-  }
-  return referencesAbsolutePathWithinRoot(toolName, args, normalizedRoot);
-}
-
-function isDoomTool(name: string): boolean {
-  return name.startsWith(DOOM_TOOL_PREFIX);
-}
-
-function canonicalizeToolFailureResult(
-  toolName: string,
-  result: string,
-): string {
-  if (!isDoomTool(toolName) || !didToolCallFail(false, result)) {
-    return result;
-  }
-
-  try {
-    const parsed = JSON.parse(result) as unknown;
-    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-      return result;
-    }
-  } catch {
-    // Wrap known Doom plain-text failures below.
-  }
-
-  const trimmed = result.trim();
-  return JSON.stringify({
-    error: trimmed.length > 0 ? trimmed : `Tool "${toolName}" failed`,
-  });
-}
-
 function normalizeDesktopBashCommand(
   name: string,
   args: Record<string, unknown>,
@@ -2375,7 +2291,7 @@ async function runApprovalGate(params: {
 // Config
 // ============================================================================
 
-export interface SessionToolHandlerConfig {
+interface SessionToolHandlerConfig {
   /** Session ID for hook context and approval scoping. */
   sessionId: string;
   /** Base tool handler (from ToolRegistry). */
@@ -2445,6 +2361,10 @@ export interface SessionToolHandlerConfig {
   effectLedger?: EffectLedger;
   /** Optional channel/source label attached to emitted effect records. */
   effectChannel?: string;
+  /** Durable task registry used for public task handles. */
+  taskStore?: TaskStore | null;
+  /** Runtime-contract feature flags that gate handle-first delegation. */
+  runtimeContractFlags?: RuntimeContractFlags;
 }
 
 // ============================================================================
@@ -2486,6 +2406,8 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
     resolvePolicyScope,
     effectLedger,
     effectChannel,
+    taskStore,
+    runtimeContractFlags,
     resolveWorkspaceContext,
   } = config;
   let toolCallSeq = 0;
@@ -2548,11 +2470,9 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
         ),
       });
     }
-    // Scoped root validation removed — subagents and delegated children
-    // need full filesystem access to work in the parent's workspace.
-    void validateScopedFilesystemRoot;
     const delegationContext = delegation?.();
     const subAgentManager = delegationContext?.subAgentManager ?? null;
+    const workerManager = delegationContext?.workerManager ?? null;
     const policyEngine = delegationContext?.policyEngine ?? null;
     const verifier = delegationContext?.verifier ?? null;
     const lifecycleEmitter = delegationContext?.lifecycleEmitter ?? null;
@@ -2990,6 +2910,8 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
       executionArgs,
       delegatedParentAllowedRoots,
     );
+    executionArgs = applySessionTaskListId(toolName, executionArgs, sessionId);
+    executionArgs = applySessionId(toolName, executionArgs, sessionId);
 
     const subAgentEnvelopeError = isSubAgentSession
       ? enforceSubAgentExecutionEnvelope({
@@ -3021,6 +2943,8 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
             subAgentManager,
             lifecycleEmitter,
             verifier,
+            taskStore,
+            runtimeContractFlags,
             availableToolNames,
             defaultWorkingDirectory: effectiveDefaultWorkingDirectory,
             parentAllowedReadRoots: delegatedParentAllowedRoots,
@@ -3037,8 +2961,11 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
               sessionId,
               toolCallId,
               subAgentManager,
+              workerManager,
               lifecycleEmitter,
               verifier,
+              taskStore,
+              runtimeContractFlags,
               availableToolNames,
               defaultWorkingDirectory: effectiveDefaultWorkingDirectory,
               parentAllowedReadRoots: delegatedParentAllowedRoots,
@@ -3133,7 +3060,6 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
     }
     const durationMs = Date.now() - start;
     incidentDiagnostics?.clearDomain("tool");
-    result = canonicalizeToolFailureResult(toolName, result);
     const isError = didToolCallFail(false, result);
     if (!isError) {
       if (toolName === 'system.readFile') {
@@ -3247,6 +3173,11 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
     });
 
     if (isSubAgentSession && lifecycleEmitter) {
+      const verifierRequirement = verifier?.resolveVerifierRequirement({
+        runtimeRequired: runtimeContractFlags?.verifierRuntimeRequired,
+        projectBootstrap: runtimeContractFlags?.verifierProjectBootstrap,
+        workspaceRoot: defaultWorkingDirectory ?? scopedFilesystemRoot,
+      });
       lifecycleEmitter.emit({
         type: 'subagents.tool.result',
         timestamp: Date.now(),
@@ -3258,7 +3189,9 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
           durationMs,
           isError,
           toolCallId,
-          verifyRequested: verifier?.shouldVerifySubAgentResult() ?? false,
+          ...(verifierRequirement
+            ? { verifierRequirement }
+            : {}),
         },
       });
     }

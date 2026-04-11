@@ -5,9 +5,11 @@ import {
   deriveAgentPda,
   deriveAuthorityRateLimitPda,
   deriveProtocolPda,
+  deriveAuthorityRateLimitPda,
   findAgentPda,
   findAuthorityRateLimitPda,
   findProtocolPda,
+  findAuthorityRateLimitPda,
   type PdaWithBump,
 } from "./pda";
 import { AGENT_ID_LENGTH } from "./types";
@@ -198,6 +200,40 @@ describe("PDA derivation helpers", () => {
       const shortId = new Uint8Array(10);
 
       expect(() => findAgentPda(shortId)).toThrow("Invalid agentId length");
+    });
+  });
+
+  describe("deriveAuthorityRateLimitPda", () => {
+    it("returns address and bump for an authority wallet", () => {
+      const authority = PublicKey.unique();
+      const result = deriveAuthorityRateLimitPda(authority);
+
+      expect(result.address).toBeInstanceOf(PublicKey);
+      expect(typeof result.bump).toBe("number");
+      expect(result.bump).toBeGreaterThanOrEqual(0);
+      expect(result.bump).toBeLessThanOrEqual(255);
+    });
+
+    it("uses the authority_rate_limit seed bytes even before the SDK exports it", () => {
+      const authority = PublicKey.unique();
+      const result = deriveAuthorityRateLimitPda(authority);
+      const [expected, expectedBump] = PublicKey.findProgramAddressSync(
+        [Buffer.from("authority_rate_limit"), authority.toBuffer()],
+        PROGRAM_ID,
+      );
+
+      expect(result.address.equals(expected)).toBe(true);
+      expect(result.bump).toBe(expectedBump);
+    });
+  });
+
+  describe("findAuthorityRateLimitPda", () => {
+    it("matches deriveAuthorityRateLimitPda address", () => {
+      const authority = PublicKey.unique();
+      const address = findAuthorityRateLimitPda(authority);
+      const { address: derivedAddress } = deriveAuthorityRateLimitPda(authority);
+
+      expect(address.equals(derivedAddress)).toBe(true);
     });
   });
 

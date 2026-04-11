@@ -1,28 +1,11 @@
 import type { WorkflowGraphEdge } from "../workflow/types.js";
 import type { DelegationExecutionContext } from "../utils/delegation-execution-context.js";
-import { sanitizeDelegationContextRequirements } from "../utils/delegation-execution-context.js";
 import {
-  collectWorkflowArtifactRelationPaths,
   isMutationLikeVerificationMode,
   resolveExecutionEnvelopeArtifactRelations,
+  resolveExecutionEnvelopeRole,
   type WorkflowArtifactRelation,
 } from "../workflow/execution-envelope.js";
-import { normalizeArtifactPaths } from "../workflow/path-normalization.js";
-import { safeStepStringArray } from "../llm/chat-executor-planner.js";
-
-const EXPLICIT_FILE_ARTIFACT_GLOBAL_RE =
-  /(?:^|[\s`'"])(?:\/[^\s`'"]*?\.[a-z0-9]{1,10}|\.{1,2}\/[^\s`'"]*?\.[a-z0-9]{1,10}|(?:[a-z0-9_.-]+\/)+[a-z0-9_.-]+\.[a-z0-9]{1,10}|[a-z0-9_.-]+\.[a-z0-9]{1,10})(?=$|[\s`'"])/gi;
-
-const READ_ONLY_CAPABILITY_RE =
-  /(?:read|list|search|snapshot|navigate|inspect|find|grep|glob|browser|documentation|trace|observe)/i;
-const WRITE_CAPABILITY_RE =
-  /(?:write|append|edit|save|modify|patch|delete|mkdir|scaffold|code_generation|file_write)/i;
-const SHELL_CAPABILITY_RE =
-  /(?:bash|shell|package_manager|build|test|compile|run|execute|command)/i;
-const TEST_TRIAGE_TEXT_RE =
-  /\b(?:test|tests|ci|failure|failures|failing|flaky|error|errors|stack\s+trace|logs?)\b/i;
-const EXPLORATION_TEXT_RE =
-  /\b(?:explore|inventory|map|locate|find|inspect|survey|trace|understand|catalog|analy[sz]e|review|audit)\b/i;
 
 export interface DelegationCandidateStep {
   readonly name: string;
@@ -64,170 +47,90 @@ export interface DelegationEconomics {
 }
 
 function clamp01(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  if (value <= 0) return 0;
-  if (value >= 1) return 1;
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  if (value <= 0) {
+    return 0;
+  }
+  if (value >= 1) {
+    return 1;
+  }
   return value;
 }
 
-function average(values: readonly number[]): number {
-  if (values.length === 0) return 0;
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
+function uniqueStrings(values: readonly string[]): readonly string[] {
+  return [...new Set(values.filter((value) => value.trim().length > 0))];
 }
 
-function parseBudgetHintMinutes(raw: string): number {
-  const normalized = raw.trim().toLowerCase();
-  if (normalized.length === 0) return 5;
-  const match = normalized.match(/^(\d+(?:\.\d+)?)(ms|s|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)?$/);
-  if (!match) return 5;
-  const value = Number(match[1]);
-  if (!Number.isFinite(value) || value <= 0) return 5;
+function parseBudgetMinutes(maxBudgetHint: string | undefined): number {
+  const raw = maxBudgetHint?.trim().toLowerCase() ?? "";
+  if (raw.length === 0) {
+    return 5;
+  }
+  const match = raw.match(/^(\d+)(ms|s|m|h)?$/u);
+  if (!match) {
+    return 5;
+  }
+  const value = Math.max(1, Number.parseInt(match[1] ?? "5", 10));
   const unit = match[2] ?? "m";
-  if (unit === "ms") return value / 60_000;
-  if (unit === "s") return value / 60;
-  if (unit === "h" || unit === "hr" || unit === "hrs" || unit === "hour" || unit === "hours") {
-    return value * 60;
+  switch (unit) {
+    case "ms":
+      return Math.max(1, Math.ceil(value / 60_000));
+    case "s":
+      return Math.max(1, Math.ceil(value / 60));
+    case "h":
+      return value * 60;
+    default:
+      return value;
   }
-  return value;
 }
 
-function isWriteCapability(capability: string): boolean {
-  return WRITE_CAPABILITY_RE.test(capability);
+function hasWriteLikeCapability(step: DelegationCandidateStep): boolean {
+  return step.requiredToolCapabilities.some((capability) =>
+    /(?:write|edit|patch|scaffold|mkdir|rename|delete|remove|move|copy)/iu.test(
+      capability,
+    ),
+  );
 }
 
-function isShellCapability(capability: string): boolean {
-  return SHELL_CAPABILITY_RE.test(capability);
+function hasShellCapability(step: DelegationCandidateStep): boolean {
+  return step.requiredToolCapabilities.some((capability) =>
+    /(?:bash|shell|exec|terminal|command)/iu.test(capability),
+  );
 }
 
-function isReadCapability(capability: string): boolean {
-  return READ_ONLY_CAPABILITY_RE.test(capability);
-}
-
-function isReadOnlyEnvelope(effectClass?: DelegationExecutionContext["effectClass"]): boolean {
-  return effectClass === "read_only";
-}
-
-function hasArtifactRelationType(
-  artifactRelations: readonly WorkflowArtifactRelation[],
-  relationType: WorkflowArtifactRelation["relationType"],
-): boolean {
-  return artifactRelations.some((relation) => relation.relationType === relationType);
-}
-
-function isTypedVerificationOnlyStep(params: {
-  readonly step: DelegationCandidateStep;
-  readonly artifactRelations: readonly WorkflowArtifactRelation[];
-  readonly shellCapabilityCount: number;
-  readonly writeCapabilityCount: number;
-}): boolean {
-  const { step, artifactRelations, shellCapabilityCount, writeCapabilityCount } =
-    params;
+function buildAnalysis(step: DelegationCandidateStep): DelegationStepAnalysis {
   const executionContext = step.executionContext;
-  if (!executionContext) return false;
-  if (hasArtifactRelationType(artifactRelations, "write_owner")) {
-    return false;
-  }
-  if (writeCapabilityCount > 0) {
-    return false;
-  }
-  if (executionContext.role !== "validator") {
-    return false;
-  }
-  return (
-    executionContext.verificationMode === "deterministic_followup" ||
-    hasArtifactRelationType(artifactRelations, "verification_subject") ||
-    shellCapabilityCount > 0
+  const artifactRelations = resolveExecutionEnvelopeArtifactRelations(
+    executionContext,
   );
-}
-
-function extractExplicitFileArtifacts(
-  segments: readonly string[],
-  workspaceRoot?: string,
-): readonly string[] {
-  const matches = new Set<string>();
-  for (const segment of segments) {
-    if (typeof segment !== "string" || segment.trim().length === 0) continue;
-    for (const match of segment.matchAll(EXPLICIT_FILE_ARTIFACT_GLOBAL_RE)) {
-      const normalized = match[0]?.trim().replace(/^[`'"]+|[`'"]+$/g, "")
-        .replace(/[),.;:]+$/g, "");
-      if (normalized) {
-        for (const artifact of normalizeArtifactPaths([normalized], workspaceRoot)) {
-          matches.add(artifact);
-        }
-      }
-    }
-  }
-  return [...matches];
-}
-
-function collectArtifactRelations(
-  step: DelegationCandidateStep,
-): readonly WorkflowArtifactRelation[] {
-  return resolveExecutionEnvelopeArtifactRelations(step.executionContext);
-}
-
-function collectOwnedArtifacts(
-  artifactRelations: readonly WorkflowArtifactRelation[],
-): readonly string[] {
-  return collectWorkflowArtifactRelationPaths({
-    relations: artifactRelations,
-    relationTypes: ["write_owner"],
-  });
-}
-
-function collectReferencedArtifacts(
-  step: DelegationCandidateStep,
-  artifactRelations: readonly WorkflowArtifactRelation[],
-): readonly string[] {
-  const relationArtifacts = collectWorkflowArtifactRelationPaths({
-    relations: artifactRelations,
-  });
-  const explicitTextArtifacts = extractExplicitFileArtifacts([
-    step.objective ?? "",
-    step.inputContract ?? "",
-    ...safeStepStringArray(step.acceptanceCriteria),
-    ...sanitizeDelegationContextRequirements(step.contextRequirements),
-  ], step.executionContext?.workspaceRoot);
-  return [...new Set([...relationArtifacts, ...explicitTextArtifacts])];
-}
-
-function analyzeStep(step: DelegationCandidateStep): DelegationStepAnalysis {
-  const capabilities = safeStepStringArray(step.requiredToolCapabilities).map((capability) =>
-    capability.trim()
-  ).filter((capability) => capability.length > 0);
-  const writeCapabilityCount = capabilities.filter(isWriteCapability).length;
-  const shellCapabilityCount = capabilities.filter(isShellCapability).length;
-  const readCapabilityCount = capabilities.filter(isReadCapability).length;
-  const envelope = step.executionContext;
-  const artifactRelations = collectArtifactRelations(step);
-  const ownedArtifacts = collectOwnedArtifacts(artifactRelations);
-  const referencedArtifacts = collectReferencedArtifacts(step, artifactRelations);
-  const typedVerificationOnly = isTypedVerificationOnlyStep({
-    step,
-    artifactRelations,
-    shellCapabilityCount,
-    writeCapabilityCount,
-  });
-  const readOnly = isReadOnlyEnvelope(envelope?.effectClass) ||
-    (
-      writeCapabilityCount === 0 &&
-      shellCapabilityCount === 0 &&
-      capabilities.length > 0 &&
-      readCapabilityCount === capabilities.length
-    );
-  const shellObservationOnly = typedVerificationOnly || (
-    writeCapabilityCount === 0 &&
-    shellCapabilityCount > 0 &&
-    (envelope?.targetArtifacts?.length ?? 0) === 0 &&
-    (envelope?.effectClass === "read_only" || readOnly)
+  const role = resolveExecutionEnvelopeRole(executionContext);
+  const ownedArtifacts = uniqueStrings(
+    artifactRelations
+      .filter((relation) => relation.relationType === "write_owner")
+      .map((relation) => relation.artifactPath),
   );
-  const mutable = !typedVerificationOnly && (
-    envelope?.effectClass === "filesystem_write" ||
-    envelope?.effectClass === "filesystem_scaffold" ||
-    envelope?.effectClass === "mixed" ||
-    writeCapabilityCount > 0 ||
-    (!readOnly && shellCapabilityCount > 0)
+  const referencedArtifacts = uniqueStrings(
+    artifactRelations
+      .filter((relation) => relation.relationType !== "write_owner")
+      .map((relation) => relation.artifactPath),
   );
+  const mutable =
+    role === "writer" ||
+    executionContext?.effectClass === "filesystem_write" ||
+    executionContext?.effectClass === "filesystem_scaffold" ||
+    executionContext?.effectClass === "mixed" ||
+    isMutationLikeVerificationMode(executionContext?.verificationMode) ||
+    ownedArtifacts.length > 0 ||
+    hasWriteLikeCapability(step) ||
+    ((executionContext?.targetArtifacts?.length ?? 0) > 0 &&
+      executionContext?.effectClass !== "read_only");
+  const shellObservationOnly =
+    !mutable &&
+    executionContext?.effectClass === "shell" &&
+    hasShellCapability(step) &&
+    (executionContext?.targetArtifacts?.length ?? 0) === 0;
 
   return {
     step,
@@ -235,256 +138,227 @@ function analyzeStep(step: DelegationCandidateStep): DelegationStepAnalysis {
     ownedArtifacts,
     referencedArtifacts,
     mutable,
-    readOnly: readOnly && !mutable,
+    readOnly: !mutable && !shellObservationOnly,
     shellObservationOnly,
-    budgetMinutes: parseBudgetHintMinutes(step.maxBudgetHint),
+    budgetMinutes: parseBudgetMinutes(step.maxBudgetHint),
   };
 }
 
-function jaccard(left: ReadonlySet<string>, right: ReadonlySet<string>): number {
-  if (left.size === 0 && right.size === 0) return 0;
-  let intersection = 0;
-  for (const value of left) {
-    if (right.has(value)) intersection += 1;
-  }
-  return intersection / (left.size + right.size - intersection);
-}
-
-function hasDependency(
-  from: string,
-  to: string,
-  dependencyGraph: ReadonlyMap<string, ReadonlySet<string>>,
-): boolean {
-  if (from === to) return true;
-  const visited = new Set<string>();
-  const queue = [to];
-  while (queue.length > 0) {
-    const current = queue.shift();
-    if (!current || visited.has(current)) continue;
-    visited.add(current);
-    const deps = dependencyGraph.get(current);
-    if (!deps) continue;
-    if (deps.has(from)) return true;
-    for (const dep of deps) queue.push(dep);
-  }
-  return false;
-}
-
-function buildDependencyGraph(
+function buildDependencyMap(
   steps: readonly DelegationCandidateStep[],
   edges: readonly WorkflowGraphEdge[],
 ): Map<string, Set<string>> {
-  const stepNames = new Set(steps.map((step) => step.name));
-  const graph = new Map<string, Set<string>>();
+  const byName = new Map<string, Set<string>>();
   for (const step of steps) {
-    graph.set(step.name, new Set(
-      (step.dependsOn ?? []).filter((dep) => stepNames.has(dep)),
-    ));
+    byName.set(step.name, new Set(step.dependsOn ?? []));
   }
   for (const edge of edges) {
-    if (!stepNames.has(edge.from) || !stepNames.has(edge.to)) continue;
-    graph.get(edge.to)?.add(edge.from);
+    if (!byName.has(edge.to) || !byName.has(edge.from)) {
+      continue;
+    }
+    byName.get(edge.to)?.add(edge.from);
   }
-  return graph;
+  return byName;
 }
 
-function estimateDependencyDepth(
+function computeDependencyDepth(
   steps: readonly DelegationCandidateStep[],
   edges: readonly WorkflowGraphEdge[],
 ): number {
-  if (steps.length === 0) return 0;
-  const graph = buildDependencyGraph(steps, edges);
+  const dependencies = buildDependencyMap(steps, edges);
   const memo = new Map<string, number>();
-  const visiting = new Set<string>();
-  const visit = (name: string): number => {
-    if (memo.has(name)) return memo.get(name)!;
-    if (visiting.has(name)) return Number.POSITIVE_INFINITY;
-    visiting.add(name);
-    let depth = 1;
-    for (const dependency of graph.get(name) ?? []) {
-      depth = Math.max(depth, visit(dependency) + 1);
+
+  const visit = (stepName: string, trail: Set<string>): number => {
+    if (memo.has(stepName)) {
+      return memo.get(stepName) ?? 0;
     }
-    visiting.delete(name);
-    memo.set(name, depth);
+    if (trail.has(stepName)) {
+      return 0;
+    }
+    const nextTrail = new Set(trail);
+    nextTrail.add(stepName);
+    const parents = [...(dependencies.get(stepName) ?? [])];
+    const depth =
+      parents.length === 0
+        ? 0
+        : Math.max(...parents.map((parent) => visit(parent, nextTrail) + 1));
+    memo.set(stepName, depth);
     return depth;
   };
-  let maxDepth = 1;
-  for (const step of steps) {
-    maxDepth = Math.max(maxDepth, visit(step.name));
-  }
-  return maxDepth;
+
+  return steps.reduce((maxDepth, step) => Math.max(maxDepth, visit(step.name, new Set())), 0);
 }
 
-function countIndependentParallelPairs(
-  analyses: readonly DelegationStepAnalysis[],
-  dependencyGraph: ReadonlyMap<string, ReadonlySet<string>>,
-): { readonly independentPairs: number; readonly totalPairs: number } {
-  let independentPairs = 0;
-  let totalPairs = 0;
-  for (let index = 0; index < analyses.length; index += 1) {
-    const left = analyses[index];
-    if (!left?.step.canRunParallel) continue;
-    for (let inner = index + 1; inner < analyses.length; inner += 1) {
-      const right = analyses[inner];
-      if (!right?.step.canRunParallel) continue;
-      totalPairs += 1;
-      if (
-        hasDependency(left.step.name, right.step.name, dependencyGraph) ||
-        hasDependency(right.step.name, left.step.name, dependencyGraph)
-      ) {
-        continue;
-      }
-      const leftOwned = new Set(left.ownedArtifacts);
-      const rightOwned = new Set(right.ownedArtifacts);
-      const overlap = jaccard(leftOwned, rightOwned);
-      if (overlap <= 0.2) {
-        independentPairs += 1;
-      }
+function jaccardSimilarity(left: readonly string[], right: readonly string[]): number {
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  const union = new Set([...leftSet, ...rightSet]);
+  if (union.size === 0) {
+    return 0;
+  }
+  let intersection = 0;
+  for (const value of leftSet) {
+    if (rightSet.has(value)) {
+      intersection += 1;
     }
   }
-  return { independentPairs, totalPairs };
+  return intersection / union.size;
 }
 
-function averageOwnershipOverlap(
-  analyses: readonly DelegationStepAnalysis[],
+function computeToolOverlap(stepAnalyses: readonly DelegationStepAnalysis[]): number {
+  if (stepAnalyses.length <= 1) {
+    return 0;
+  }
+  let pairs = 0;
+  let overlap = 0;
+  for (let index = 0; index < stepAnalyses.length; index += 1) {
+    for (let inner = index + 1; inner < stepAnalyses.length; inner += 1) {
+      pairs += 1;
+      overlap += jaccardSimilarity(
+        stepAnalyses[index]?.step.requiredToolCapabilities ?? [],
+        stepAnalyses[inner]?.step.requiredToolCapabilities ?? [],
+      );
+    }
+  }
+  return pairs === 0 ? 0 : clamp01(overlap / pairs);
+}
+
+function computeDependencyCoupling(
+  stepAnalyses: readonly DelegationStepAnalysis[],
+  edges: readonly WorkflowGraphEdge[],
 ): number {
-  const mutable = analyses.filter((analysis) => analysis.mutable);
-  if (mutable.length < 2) return 0;
-  const overlaps: number[] = [];
-  for (let index = 0; index < mutable.length; index += 1) {
-    const left = mutable[index]!;
-    for (let inner = index + 1; inner < mutable.length; inner += 1) {
-      const right = mutable[inner]!;
-      const leftOwned = new Set(left.ownedArtifacts);
-      const rightOwned = new Set(right.ownedArtifacts);
-      if (
-        leftOwned.size === 0 &&
-        rightOwned.size === 0 &&
-        left.step.executionContext?.workspaceRoot &&
-        left.step.executionContext.workspaceRoot ===
-          right.step.executionContext?.workspaceRoot
-      ) {
-        overlaps.push(1);
-        continue;
-      }
-      overlaps.push(jaccard(leftOwned, rightOwned));
-    }
+  if (stepAnalyses.length <= 1) {
+    return 0;
   }
-  return average(overlaps);
-}
-
-function averageToolOverlap(
-  analyses: readonly DelegationStepAnalysis[],
-): number {
-  if (analyses.length < 2) return 0;
-  const overlaps: number[] = [];
-  for (let index = 0; index < analyses.length; index += 1) {
-    const left = analyses[index]!;
-    const leftCapabilities = new Set(safeStepStringArray(left.step.requiredToolCapabilities));
-    for (let inner = index + 1; inner < analyses.length; inner += 1) {
-      const rightCapabilities = new Set(safeStepStringArray(analyses[inner]!.step.requiredToolCapabilities));
-      overlaps.push(jaccard(leftCapabilities, rightCapabilities));
-    }
-  }
-  return average(overlaps);
-}
-
-function computeVerifierCost(analyses: readonly DelegationStepAnalysis[]): number {
-  const weights = analyses.map((analysis) => {
-    const verificationMode = analysis.step.executionContext?.verificationMode;
-    const modeWeight =
-      verificationMode === "deterministic_followup"
-        ? 0.45
-        : isMutationLikeVerificationMode(verificationMode)
-        ? 0.32
-        : verificationMode === "grounded_read"
-        ? 0.18
-        : 0.08;
-    return clamp01(
-      modeWeight +
-        Math.min(0.25, safeStepStringArray(analysis.step.acceptanceCriteria).length * 0.05) +
-        Math.min(0.2, analysis.ownedArtifacts.length * 0.06),
+  const dependencyCount =
+    edges.length +
+    stepAnalyses.reduce(
+      (sum, analysis) => sum + (analysis.step.dependsOn?.length ?? 0),
+      0,
     );
-  });
-  return average(weights);
-}
-
-function computeRetryCost(analyses: readonly DelegationStepAnalysis[]): number {
-  const weights = analyses.map((analysis) => {
-    let base = clamp01(analysis.budgetMinutes / 20);
-    if (analysis.mutable) base += 0.22;
-    if (analysis.shellObservationOnly) base += 0.08;
-    if (analysis.step.executionContext?.effectClass === "mixed") base += 0.18;
-    return clamp01(base);
-  });
-  return average(weights);
-}
-
-function computeContextFootprint(analyses: readonly DelegationStepAnalysis[]): number {
-  const weights = analyses.map((analysis) =>
-    clamp01(
-      Math.min(0.35, analysis.referencedArtifacts.length * 0.06) +
-        Math.min(
-          0.25,
-          sanitizeDelegationContextRequirements(
-            analysis.step.contextRequirements,
-          ).length * 0.04,
-        ),
-    )
+  const possiblePairs = Math.max(
+    1,
+    (stepAnalyses.length * (stepAnalyses.length - 1)) / 2,
   );
-  return average(weights);
+  let sharedArtifactPairs = 0;
+  for (let index = 0; index < stepAnalyses.length; index += 1) {
+    for (let inner = index + 1; inner < stepAnalyses.length; inner += 1) {
+      const leftArtifacts = new Set([
+        ...stepAnalyses[index]!.ownedArtifacts,
+        ...stepAnalyses[index]!.referencedArtifacts,
+      ]);
+      const rightArtifacts = [
+        ...stepAnalyses[inner]!.ownedArtifacts,
+        ...stepAnalyses[inner]!.referencedArtifacts,
+      ];
+      if (rightArtifacts.some((artifact) => leftArtifacts.has(artifact))) {
+        sharedArtifactPairs += 1;
+      }
+    }
+  }
+  return clamp01(
+    dependencyCount / possiblePairs + (sharedArtifactPairs / possiblePairs) * 0.35,
+  );
 }
 
-export function deriveDelegationEconomics(input: {
-  readonly messageText: string;
-  readonly steps: readonly DelegationCandidateStep[];
-  readonly edges: readonly WorkflowGraphEdge[];
-}): DelegationEconomics {
-  const analyses = input.steps.map(analyzeStep);
-  const dependencyGraph = buildDependencyGraph(input.steps, input.edges);
-  const dependencyDepth = estimateDependencyDepth(input.steps, input.edges);
-  const dependencyDepthRisk = clamp01((dependencyDepth - 1) / 3);
-  const ownershipOverlap = averageOwnershipOverlap(analyses);
-  const toolOverlap = averageToolOverlap(analyses);
-  const verifierCost = computeVerifierCost(analyses);
-  const retryCost = computeRetryCost(analyses);
-  const contextFootprint = computeContextFootprint(analyses);
-  const parallelizableCount = analyses.filter((analysis) =>
-    analysis.step.canRunParallel
+function computeVerifierCost(stepAnalyses: readonly DelegationStepAnalysis[]): number {
+  if (stepAnalyses.length === 0) {
+    return 0;
+  }
+  const total = stepAnalyses.reduce((sum, analysis) => {
+    switch (analysis.step.executionContext?.verificationMode) {
+      case "mutation_required":
+        return sum + 1;
+      case "conditional_mutation":
+        return sum + 0.8;
+      case "deterministic_followup":
+        return sum + 0.7;
+      case "grounded_read":
+        return sum + 0.25;
+      default:
+        return sum;
+    }
+  }, 0);
+  return clamp01(total / stepAnalyses.length);
+}
+
+function computeOwnershipCoverage(stepAnalyses: readonly DelegationStepAnalysis[]): number {
+  if (stepAnalyses.length === 0) {
+    return 0;
+  }
+  const covered = stepAnalyses.filter((analysis) =>
+    analysis.ownedArtifacts.length > 0 ||
+    analysis.referencedArtifacts.length > 0 ||
+    Boolean(analysis.step.executionContext?.workspaceRoot),
   ).length;
-  const { independentPairs, totalPairs } = countIndependentParallelPairs(
-    analyses,
-    dependencyGraph,
-  );
-  const explicitOwnershipCoverage = analyses.length > 0
-    ? analyses.filter((analysis) => analysis.ownedArtifacts.length > 0).length /
-      analyses.length
-    : 0;
+  return clamp01(covered / stepAnalyses.length);
+}
+
+function computeOwnershipOverlap(stepAnalyses: readonly DelegationStepAnalysis[]): number {
+  const mutableAnalyses = stepAnalyses.filter((analysis) => analysis.mutable);
+  if (mutableAnalyses.length <= 1) {
+    return 0;
+  }
+  let overlappingPairs = 0;
+  let pairs = 0;
+  for (let index = 0; index < mutableAnalyses.length; index += 1) {
+    for (let inner = index + 1; inner < mutableAnalyses.length; inner += 1) {
+      pairs += 1;
+      const left = new Set(mutableAnalyses[index]!.ownedArtifacts);
+      if (mutableAnalyses[inner]!.ownedArtifacts.some((artifact) => left.has(artifact))) {
+        overlappingPairs += 1;
+      }
+    }
+  }
+  return pairs === 0 ? 0 : clamp01(overlappingPairs / pairs);
+}
+
+export function deriveDelegationEconomics(
+  input: Record<string, unknown> & {
+    readonly steps: readonly DelegationCandidateStep[];
+    readonly edges?: readonly WorkflowGraphEdge[];
+  },
+): DelegationEconomics {
+  const stepAnalyses = input.steps.map(buildAnalysis);
+  const dependencyDepth = computeDependencyDepth(stepAnalyses.map((analysis) => analysis.step), input.edges ?? []);
+  const dependencyCoupling = computeDependencyCoupling(stepAnalyses, input.edges ?? []);
+  const parallelizableCount = input.steps.filter((step) => step.canRunParallel).length;
   const parallelGain = clamp01(
-    Math.min(0.35, parallelizableCount / Math.max(1, analyses.length) * 0.45) +
-      Math.min(0.35, totalPairs > 0 ? (independentPairs / totalPairs) * 0.45 : 0) +
-      Math.min(0.15, explicitOwnershipCoverage * 0.2) +
-      (TEST_TRIAGE_TEXT_RE.test(input.messageText) || EXPLORATION_TEXT_RE.test(input.messageText)
-        ? 0.08
-        : 0),
+    (parallelizableCount / Math.max(1, input.steps.length)) *
+      (1 - dependencyCoupling * 0.5),
   );
-  const dependencyCoupling = clamp01(
-    dependencyDepthRisk * 0.35 +
-      ownershipOverlap * 0.4 +
-      toolOverlap * 0.15 +
-      contextFootprint * 0.1,
+  const toolOverlap = computeToolOverlap(stepAnalyses);
+  const verifierCost = computeVerifierCost(stepAnalyses);
+  const ownershipOverlap = computeOwnershipOverlap(stepAnalyses);
+  const explicitOwnershipCoverage = computeOwnershipCoverage(stepAnalyses);
+  const mutableFraction =
+    stepAnalyses.filter((analysis) => analysis.mutable).length /
+    Math.max(1, stepAnalyses.length);
+  const retryCost = clamp01(
+    mutableFraction * 0.45 + verifierCost * 0.35 + dependencyCoupling * 0.2,
+  );
+  const contextFootprint = stepAnalyses.reduce(
+    (sum, analysis) =>
+      sum +
+      analysis.artifactRelations.length +
+      analysis.step.acceptanceCriteria.length +
+      analysis.step.contextRequirements.length +
+      analysis.step.requiredToolCapabilities.length,
+    0,
   );
   const utilityScore = clamp01(
-    parallelGain * 0.55 +
+    0.55 +
+      parallelGain * 0.2 +
       explicitOwnershipCoverage * 0.15 -
-      dependencyCoupling * 0.35 -
-      verifierCost * 0.1 -
-      retryCost * 0.1 +
-      0.5,
+      dependencyCoupling * 0.15 -
+      toolOverlap * 0.1 -
+      verifierCost * 0.05 -
+      retryCost * 0.05 -
+      ownershipOverlap * 0.2,
   );
 
   return {
-    stepAnalyses: analyses,
+    stepAnalyses,
     contextFootprint,
     dependencyDepth,
     dependencyCoupling,

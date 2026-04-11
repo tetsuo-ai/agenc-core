@@ -16,6 +16,7 @@ import {
 import {
   createClaimTaskTool,
   createCompleteTaskTool,
+  createInitiateDisputeTool,
   createRegisterSkillTool,
   createPurchaseSkillTool,
   createCreateProposalTool,
@@ -27,6 +28,7 @@ import {
 const SIGNER = PublicKey.unique();
 const AGENT_PDA = PublicKey.unique();
 const TASK_PDA = PublicKey.unique();
+const CLAIM_PDA = PublicKey.unique();
 const DISPUTE_PDA = PublicKey.unique();
 const SKILL_PDA = PublicKey.unique();
 const DEFENDANT_AGENT_PDA = PublicKey.unique();
@@ -67,6 +69,12 @@ function makeRawAgent(authority: PublicKey) {
     disputesAsDefendant: 0,
     bump: 254,
   };
+}
+
+function makeAgentRegistrationData(agentIdSeed: number) {
+  const data = new Uint8Array(72);
+  data.set(new Uint8Array(32).fill(agentIdSeed), 8);
+  return data;
 }
 
 function createRpcChain(signature: string) {
@@ -112,6 +120,9 @@ function createMockProgram(options: { signer?: PublicKey | null } = {}) {
           throw new Error(`Unknown skill: ${pda.toBase58()}`);
         }),
       },
+      taskClaim: {
+        all: vi.fn(async () => []),
+      },
     },
     methods: {
       registerSkill: vi.fn().mockReturnValue(registerSkillChain),
@@ -139,6 +150,42 @@ describe('agenc mutation tools', () => {
     expect(parseJson(result)).toEqual({
       error: 'This action requires a signer-backed program context',
     });
+  });
+
+  it('agenc.claimTask tells the caller to register an agent when auto-discovery finds none', async () => {
+    const program = createMockProgram();
+    const tool = createClaimTaskTool(program as never, silentLogger);
+
+    const result = await tool.execute({ taskPda: TASK_PDA.toBase58() });
+
+    expect(result.isError).toBe(true);
+    expect(String(parseJson(result).error)).toContain('agenc-runtime agent register');
+  });
+
+  it('agenc.claimTask lists signer agent choices when auto-discovery finds multiple registrations', async () => {
+    const program = createMockProgram();
+    const firstAgentPda = PublicKey.unique();
+    const secondAgentPda = PublicKey.unique();
+    program.provider.connection.getProgramAccounts.mockResolvedValue([
+      { pubkey: secondAgentPda, account: { data: makeAgentRegistrationData(2) } },
+      { pubkey: firstAgentPda, account: { data: makeAgentRegistrationData(1) } },
+    ]);
+    const tool = createClaimTaskTool(program as never, silentLogger);
+
+    const result = await tool.execute({ taskPda: TASK_PDA.toBase58() });
+    const parsed = parseJson(result) as { agents: Array<Record<string, unknown>> } & Record<string, unknown>;
+    const expectedAgentPdas = [firstAgentPda.toBase58(), secondAgentPda.toBase58()].sort();
+
+    expect(result.isError).toBe(true);
+    expect(parsed).toMatchObject({
+      code: 'MULTIPLE_AGENT_REGISTRATIONS',
+      status: 'requires_input',
+      authority: SIGNER.toBase58(),
+      count: 2,
+    });
+    expect(String(parsed.error)).toContain('workerAgentPda');
+    expect(parsed.agents.map((agent) => agent.agentPda)).toEqual(expectedAgentPdas);
+    expect(parsed.agents.every((agent) => agent.registered === true)).toBe(true);
   });
 
   it('agenc.completeTask validates proofHash length', async () => {
@@ -215,6 +262,9 @@ describe('agenc mutation tools', () => {
     expect(parsed.price).toBe('42');
     expect(parsed.transactionSignature).toBe('register-skill-sig');
     expect(program.methods.registerSkill).toHaveBeenCalledTimes(1);
+    const registerArgs = program.methods.registerSkill.mock.calls[0];
+    expect(registerArgs[3]?.constructor?.name).toBe('BN');
+    expect(registerArgs[3]?.toString()).toBe('42');
     expect(program._registerSkillChain.accountsPartial).toHaveBeenCalledTimes(1);
   });
 
@@ -268,7 +318,64 @@ describe('agenc mutation tools', () => {
     expect(parsed.priceMint).toBeNull();
     expect(parsed.transactionSignature).toBe('purchase-skill-sig');
     expect(program.methods.purchaseSkill).toHaveBeenCalledTimes(1);
+    const purchaseArg = program.methods.purchaseSkill.mock.calls[0][0];
+    expect(purchaseArg?.constructor?.name).toBe('BN');
+    expect(purchaseArg?.toString()).toBe('42');
     expect(program._purchaseSkillChain.accountsPartial).toHaveBeenCalledTimes(1);
+  });
+
+
+  it('agenc.initiateDispute auto-discovers the sole worker claim for creator-initiated disputes', async () => {
+    const program = createMockProgram();
+    vi.spyOn(TaskOperations.prototype, 'fetchTask').mockResolvedValue({
+      creator: SIGNER,
+      taskId: new Uint8Array(32).fill(9),
+    } as never);
+    program.account.taskClaim.all.mockResolvedValue([
+      {
+        publicKey: CLAIM_PDA,
+        account: {
+          task: TASK_PDA,
+          worker: DEFENDANT_AGENT_PDA,
+          claimedAt: { toNumber: () => 1700000000 },
+          expiresAt: { toNumber: () => 1700003600 },
+          completedAt: { toNumber: () => 0 },
+          proofHash: new Uint8Array(32),
+          resultData: new Uint8Array(64),
+          isCompleted: false,
+          isValidated: false,
+          rewardPaid: { toString: () => '0' },
+          bump: 1,
+        },
+      },
+    ]);
+    const initiateSpy = vi
+      .spyOn(DisputeOperations.prototype, 'initiateDispute')
+      .mockResolvedValue({
+        disputePda: DISPUTE_PDA,
+        transactionSignature: 'dispute-sig',
+      });
+
+    const tool = createInitiateDisputeTool(program as never, silentLogger);
+    const result = await tool.execute({
+      taskPda: TASK_PDA.toBase58(),
+      evidence: 'creator dispute evidence',
+      resolutionType: 'refund',
+      initiatorAgentPda: AGENT_PDA.toBase58(),
+    });
+
+    const parsed = parseJson(result);
+
+    expect(result.isError).toBeUndefined();
+    expect(parsed.disputePda).toBe(DISPUTE_PDA.toBase58());
+    expect(parsed.transactionSignature).toBe('dispute-sig');
+    expect(initiateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        initiatorClaimPda: null,
+        workerAgentPda: DEFENDANT_AGENT_PDA,
+        workerClaimPda: CLAIM_PDA,
+      }),
+    );
   });
 
   it('agenc.resolveDispute returns transaction details when the dispute resolves', async () => {

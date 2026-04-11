@@ -1,7 +1,7 @@
-export type RuntimeSchemaVersion = number | string;
+type RuntimeSchemaVersion = number | string;
 export const LEGACY_UNVERSIONED_SCHEMA = "legacy_unversioned" as const;
 
-export type RuntimeSchemaSourceVersion =
+type RuntimeSchemaSourceVersion =
   | RuntimeSchemaVersion
   | typeof LEGACY_UNVERSIONED_SCHEMA;
 

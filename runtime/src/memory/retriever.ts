@@ -52,7 +52,7 @@ const TOKEN_RE = /[a-z0-9]{3,}/g;
 // Types
 // ============================================================================
 
-export type RetrievalMemoryRole = "working" | "episodic" | "semantic";
+type RetrievalMemoryRole = "working" | "episodic" | "semantic";
 
 export interface SemanticMemoryRetrieverConfig {
   vectorBackend: VectorMemoryBackend;
@@ -155,7 +155,7 @@ export function computeRetrievalScore(
  * Combined with recency of last access: decays if not accessed recently.
  * Per skeptic: use recency-weighted activation, not just raw count.
  */
-export function computeActivationBoost(
+function computeActivationBoost(
   accessCount: number,
   lastAccessTime: number | undefined,
   now: number,

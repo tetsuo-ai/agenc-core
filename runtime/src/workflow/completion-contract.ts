@@ -5,7 +5,7 @@ export type ImplementationCompletionTaskClass =
   | "review_required"
   | "scaffold_allowed";
 
-export type PlaceholderTaxonomy =
+type PlaceholderTaxonomy =
   | "scaffold"
   | "implementation"
   | "documentation"

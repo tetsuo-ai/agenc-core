@@ -3,48 +3,6 @@ export const LOW_SIGNAL_BROWSER_TOOL_NAMES = new Set([
   "playwright.browser_tabs",
 ]);
 
-export const HIGH_SIGNAL_BROWSER_TOOL_NAMES = new Set([
-  "system.browserAction",
-  "system.browserSessionStart",
-  "system.browserSessionStatus",
-  "system.browserSessionResume",
-  "system.browserSessionArtifacts",
-  "system.browserSessionStop",
-  "mcp.browser.browser_navigate",
-  "mcp.browser.browser_snapshot",
-  "mcp.browser.browser_click",
-  "mcp.browser.browser_type",
-  "mcp.browser.browser_wait_for",
-  "mcp.browser.browser_run_code",
-  "mcp.browser.browser_evaluate",
-  "playwright.browser_navigate",
-  "playwright.browser_snapshot",
-  "playwright.browser_click",
-  "playwright.browser_type",
-  "playwright.browser_wait_for",
-  "playwright.browser_run_code",
-  "playwright.browser_evaluate",
-]);
-
-export const PRIMARY_BROWSER_START_TOOL_NAMES = new Set([
-  "system.browserSessionStart",
-  "system.browserAction",
-  "mcp.browser.browser_navigate",
-  "playwright.browser_navigate",
-]);
-
-export const PRIMARY_BROWSER_READ_TOOL_NAMES = new Set([
-  "system.browse",
-  "system.browserSessionStatus",
-  "system.browserSessionArtifacts",
-  "mcp.browser.browser_snapshot",
-  "mcp.browser.browser_run_code",
-  "mcp.browser.browser_evaluate",
-  "playwright.browser_snapshot",
-  "playwright.browser_run_code",
-  "playwright.browser_evaluate",
-]);
-
 export const DELEGATION_MEANINGFUL_BROWSER_TOOL_NAMES = new Set([
   "system.browserAction",
   "system.browserSessionStart",
@@ -114,18 +72,6 @@ export const PREFERRED_VALIDATION_BROWSER_TOOL_NAMES = new Set([
   "playwright.browser_console_messages",
   "playwright.browser_network_requests",
 ]);
-
-export const INITIAL_BROWSER_NAVIGATION_TOOL_NAMES = [
-  "system.browserSessionStart",
-  "system.browserAction",
-  "mcp.browser.browser_navigate",
-  "playwright.browser_navigate",
-] as const;
-
-export const INITIAL_RESEARCH_TOOL_NAMES = [
-  "system.browse",
-  ...INITIAL_BROWSER_NAVIGATION_TOOL_NAMES,
-] as const;
 
 function normalizeAllowedToolNames(
   toolNames: readonly string[],

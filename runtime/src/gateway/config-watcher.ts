@@ -18,6 +18,12 @@ import {
 } from "../utils/validation.js";
 import { isRecord, isStringArray } from "../utils/type-guards.js";
 import {
+  BUILTIN_STOP_HOOK_IDS,
+  STOP_HOOK_CONFIG_KINDS,
+  STOP_HOOK_PHASES,
+  STOP_HOOK_RESERVED_ID_PREFIX,
+} from "../llm/hooks/stop-hooks.js";
+import {
   RESERVED_CHANNEL_NAMES,
   isValidPluginModuleSpecifier,
   isValidTrustedPackageName,
@@ -80,6 +86,9 @@ const VALID_LLM_PROVIDERS: ReadonlySet<string> = new Set([
   "grok",
   "ollama",
 ]);
+const VALID_STOP_HOOK_PHASES = new Set<string>(STOP_HOOK_PHASES);
+const VALID_STOP_HOOK_KINDS = new Set<string>(STOP_HOOK_CONFIG_KINDS);
+const RESERVED_STOP_HOOK_IDS = new Set<string>(BUILTIN_STOP_HOOK_IDS);
 const VALID_LLM_SEARCH_MODES: ReadonlySet<string> = new Set([
   "auto",
   "on",
@@ -2165,6 +2174,84 @@ function validateLlmRemoteMcpSection(
   }
 }
 
+function validateStopHooksConfig(
+  stopHooksValue: unknown,
+  errors: string[],
+): void {
+  if (stopHooksValue === undefined) return;
+  if (!isRecord(stopHooksValue)) {
+    errors.push("llm.stopHooks must be an object");
+    return;
+  }
+  if (
+    stopHooksValue.enabled !== undefined &&
+    typeof stopHooksValue.enabled !== "boolean"
+  ) {
+    errors.push("llm.stopHooks.enabled must be a boolean");
+  }
+  if (stopHooksValue.maxAttempts !== undefined) {
+    requireIntRange(
+      stopHooksValue.maxAttempts,
+      "llm.stopHooks.maxAttempts",
+      1,
+      16,
+      errors,
+    );
+  }
+  if (stopHooksValue.handlers !== undefined && !Array.isArray(stopHooksValue.handlers)) {
+    errors.push("llm.stopHooks.handlers must be an array");
+    return;
+  }
+  if (!Array.isArray(stopHooksValue.handlers)) {
+    return;
+  }
+  const seenIds = new Set<string>();
+  stopHooksValue.handlers.forEach((entry, index) => {
+    const path = `llm.stopHooks.handlers[${index}]`;
+    if (!isRecord(entry)) {
+      errors.push(`${path} must be an object`);
+      return;
+    }
+    if (typeof entry.id !== "string" || entry.id.trim().length === 0) {
+      errors.push(`${path}.id must be a non-empty string`);
+    } else {
+      const id = entry.id.trim();
+      if (id.startsWith(STOP_HOOK_RESERVED_ID_PREFIX)) {
+        errors.push(`${path}.id must not start with "${STOP_HOOK_RESERVED_ID_PREFIX}"`);
+      }
+      if (RESERVED_STOP_HOOK_IDS.has(id)) {
+        errors.push(`${path}.id collides with a reserved stop hook id`);
+      }
+      if (seenIds.has(id)) {
+        errors.push(`${path}.id must be unique`);
+      }
+      seenIds.add(id);
+    }
+    if (typeof entry.phase !== "string" || !VALID_STOP_HOOK_PHASES.has(entry.phase)) {
+      errors.push(
+        `${path}.phase must be one of: ${[...VALID_STOP_HOOK_PHASES].join(", ")}`,
+      );
+    }
+    if (typeof entry.kind !== "string" || !VALID_STOP_HOOK_KINDS.has(entry.kind)) {
+      errors.push(
+        `${path}.kind must be one of: ${[...VALID_STOP_HOOK_KINDS].join(", ")}`,
+      );
+    }
+    if (typeof entry.target !== "string" || entry.target.trim().length === 0) {
+      errors.push(`${path}.target must be a non-empty string`);
+    }
+    if (
+      entry.matcher !== undefined &&
+      typeof entry.matcher !== "string"
+    ) {
+      errors.push(`${path}.matcher must be a string`);
+    }
+    if (entry.timeoutMs !== undefined) {
+      requireIntRange(entry.timeoutMs, `${path}.timeoutMs`, 1, 120_000, errors);
+    }
+  });
+}
+
 function validateLlmStructuredOutputsSection(
   structuredOutputsValue: unknown,
   errors: string[],
@@ -2319,101 +2406,6 @@ function validateLlmToolRoutingSection(
     errors.push(
       "llm.toolRouting.maxExpandedToolsPerTurn must be greater than or equal to llm.toolRouting.maxToolsPerTurn",
     );
-  }
-}
-
-function validateLlmSubagentPolicyLearningSection(
-  policyLearningValue: unknown,
-  errors: string[],
-): void {
-  if (policyLearningValue === undefined) return;
-  if (!isRecord(policyLearningValue)) {
-    errors.push("llm.subagents.policyLearning must be an object");
-    return;
-  }
-
-  if (
-    policyLearningValue.enabled !== undefined &&
-    typeof policyLearningValue.enabled !== "boolean"
-  ) {
-    errors.push("llm.subagents.policyLearning.enabled must be a boolean");
-  }
-  if (policyLearningValue.epsilon !== undefined) {
-    if (
-      typeof policyLearningValue.epsilon !== "number" ||
-      !Number.isFinite(policyLearningValue.epsilon) ||
-      policyLearningValue.epsilon < 0 ||
-      policyLearningValue.epsilon > 1
-    ) {
-      errors.push(
-        "llm.subagents.policyLearning.epsilon must be a number between 0 and 1",
-      );
-    }
-  }
-  if (policyLearningValue.explorationBudget !== undefined) {
-    requireIntRange(
-      policyLearningValue.explorationBudget,
-      "llm.subagents.policyLearning.explorationBudget",
-      0,
-      1_000_000,
-      errors,
-    );
-  }
-  if (policyLearningValue.minSamplesPerArm !== undefined) {
-    requireIntRange(
-      policyLearningValue.minSamplesPerArm,
-      "llm.subagents.policyLearning.minSamplesPerArm",
-      1,
-      10_000,
-      errors,
-    );
-  }
-  if (policyLearningValue.ucbExplorationScale !== undefined) {
-    if (
-      typeof policyLearningValue.ucbExplorationScale !== "number" ||
-      !Number.isFinite(policyLearningValue.ucbExplorationScale) ||
-      policyLearningValue.ucbExplorationScale < 0
-    ) {
-      errors.push(
-        "llm.subagents.policyLearning.ucbExplorationScale must be a non-negative number",
-      );
-    }
-  }
-  if (policyLearningValue.arms === undefined) return;
-  if (!Array.isArray(policyLearningValue.arms)) {
-    errors.push("llm.subagents.policyLearning.arms must be an array");
-    return;
-  }
-
-  for (let i = 0; i < policyLearningValue.arms.length; i++) {
-    const arm = policyLearningValue.arms[i];
-    if (!isRecord(arm)) {
-      errors.push(`llm.subagents.policyLearning.arms[${i}] must be an object`);
-      continue;
-    }
-    if (typeof arm.id !== "string" || arm.id.trim().length === 0) {
-      errors.push(
-        `llm.subagents.policyLearning.arms[${i}].id must be a non-empty string`,
-      );
-    }
-    if (
-      arm.thresholdOffset !== undefined &&
-      (
-        typeof arm.thresholdOffset !== "number" ||
-        !Number.isFinite(arm.thresholdOffset) ||
-        arm.thresholdOffset < -1 ||
-        arm.thresholdOffset > 1
-      )
-    ) {
-      errors.push(
-        `llm.subagents.policyLearning.arms[${i}].thresholdOffset must be a number between -1 and 1`,
-      );
-    }
-    if (arm.description !== undefined && typeof arm.description !== "string") {
-      errors.push(
-        `llm.subagents.policyLearning.arms[${i}].description must be a string`,
-      );
-    }
   }
 }
 
@@ -2598,11 +2590,6 @@ function validateLlmSubagentsSection(
       errors,
     );
   }
-
-  validateLlmSubagentPolicyLearningSection(
-    subagentsValue.policyLearning,
-    errors,
-  );
 
   if (
     subagentsValue.maxFanoutPerTurn !== undefined &&
@@ -2816,6 +2803,79 @@ function validateLlmSection(llm: unknown, errors: string[]): void {
   if (llm.parallelToolCalls !== undefined && typeof llm.parallelToolCalls !== "boolean") {
     errors.push("llm.parallelToolCalls must be a boolean");
   }
+  if (
+    llm.runtimeContractV2 !== undefined &&
+    typeof llm.runtimeContractV2 !== "boolean"
+  ) {
+    errors.push("llm.runtimeContractV2 must be a boolean");
+  }
+  validateStopHooksConfig(llm.stopHooks, errors);
+  if (llm.asyncTasks !== undefined) {
+    if (!isRecord(llm.asyncTasks)) {
+      errors.push("llm.asyncTasks must be an object");
+    } else if (
+      llm.asyncTasks.enabled !== undefined &&
+      typeof llm.asyncTasks.enabled !== "boolean"
+    ) {
+      errors.push("llm.asyncTasks.enabled must be a boolean");
+    }
+  }
+  if (llm.persistentWorkers !== undefined) {
+    if (!isRecord(llm.persistentWorkers)) {
+      errors.push("llm.persistentWorkers must be an object");
+    } else if (
+      llm.persistentWorkers.enabled !== undefined &&
+      typeof llm.persistentWorkers.enabled !== "boolean"
+    ) {
+      errors.push("llm.persistentWorkers.enabled must be a boolean");
+    }
+  }
+  if (llm.mailbox !== undefined) {
+    if (!isRecord(llm.mailbox)) {
+      errors.push("llm.mailbox must be an object");
+    } else if (
+      llm.mailbox.enabled !== undefined &&
+      typeof llm.mailbox.enabled !== "boolean"
+    ) {
+      errors.push("llm.mailbox.enabled must be a boolean");
+    }
+  }
+  if (llm.verifier !== undefined) {
+    if (!isRecord(llm.verifier)) {
+      errors.push("llm.verifier must be an object");
+    } else {
+      if (
+        llm.verifier.runtimeRequired !== undefined &&
+        typeof llm.verifier.runtimeRequired !== "boolean"
+      ) {
+        errors.push("llm.verifier.runtimeRequired must be a boolean");
+      }
+      if (
+        llm.verifier.projectBootstrap !== undefined &&
+        typeof llm.verifier.projectBootstrap !== "boolean"
+      ) {
+        errors.push("llm.verifier.projectBootstrap must be a boolean");
+      }
+    }
+  }
+  if (llm.workerIsolation !== undefined) {
+    if (!isRecord(llm.workerIsolation)) {
+      errors.push("llm.workerIsolation must be an object");
+    } else {
+      if (
+        llm.workerIsolation.worktree !== undefined &&
+        typeof llm.workerIsolation.worktree !== "boolean"
+      ) {
+        errors.push("llm.workerIsolation.worktree must be a boolean");
+      }
+      if (
+        llm.workerIsolation.remote !== undefined &&
+        typeof llm.workerIsolation.remote !== "boolean"
+      ) {
+        errors.push("llm.workerIsolation.remote must be a boolean");
+      }
+    }
+  }
 
   const llmProvider =
     typeof llm.provider === "string" && VALID_LLM_PROVIDERS.has(llm.provider)
@@ -2919,6 +2979,17 @@ export function validateGatewayConfig(obj: unknown): ValidationResult {
   validateLlmSection(obj.llm, errors);
 
   validateMemorySection(obj.memory, errors);
+  if (
+    isRecord(obj.llm) &&
+    isRecord(obj.llm.asyncTasks) &&
+    obj.llm.asyncTasks.enabled === true &&
+    isRecord(obj.memory) &&
+    obj.memory.backend === "memory"
+  ) {
+    errors.push(
+      "memory.backend=memory is invalid when llm.asyncTasks.enabled is true",
+    );
+  }
   validateAuthSection(obj.auth, errors);
   validateAuthSecretRequirement(obj.gateway, obj.auth, errors);
   validateDesktopSection(obj.desktop, errors);

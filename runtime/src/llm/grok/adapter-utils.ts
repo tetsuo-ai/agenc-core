@@ -46,7 +46,11 @@ export type ToolResolutionStrategy =
   | "all_tools_empty_filter"
   | "subset_exact"
   | "subset_partial"
-  | "fallback_full_catalog_no_matches";
+  // The caller constrained the allowlist to a set of tool names but none
+  // of those names matched the provider catalog. Returns an empty tool
+  // set rather than the full catalog (the previous fail-open behavior
+  // shipped under `fallback_full_catalog_no_matches`).
+  | "subset_no_resolved_matches";
 
 export interface ToolSelectionDiagnostics {
   readonly tools: Record<string, unknown>[];

@@ -154,7 +154,7 @@ interface ResolveEvalScriptPathOptions {
   readonly canRead?: (candidate: string) => Promise<boolean>;
 }
 
-export function getEvalScriptPathCandidates(options: ResolveEvalScriptPathOptions = {}): string[] {
+function getEvalScriptPathCandidates(options: ResolveEvalScriptPathOptions = {}): string[] {
   const cwd = options.cwd ?? process.cwd();
   const workspacePath = options.workspacePath ?? getDefaultWorkspacePath();
   return [
@@ -192,7 +192,7 @@ function formatEvalScriptCandidateList(options: ResolveEvalScriptPathOptions = {
   return candidates.map((candidate) => `- ${candidate}`).join("\n");
 }
 
-export async function resolveEvalScriptForReply(
+async function resolveEvalScriptForReply(
   options: ResolveEvalScriptPathOptions = {},
 ): Promise<{ scriptPath: string | undefined; candidateList: string }> {
   const scriptPath = await resolveEvalScriptPathCandidates(options);

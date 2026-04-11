@@ -483,6 +483,3 @@ export const RUNTIME_EVENT_CONTRACT: readonly EventContract[] = [
   },
 ] as const;
 
-export const RUNTIME_EVENT_BY_NAME = new Map(
-  RUNTIME_EVENT_CONTRACT.map((event) => [event.eventName, event]),
-);

@@ -230,7 +230,8 @@ export type PipelineLongHorizonScenarioCategory =
   | "hundred_step"
   | "crash_resume"
   | "compact_continue"
-  | "background_persistence";
+  | "background_persistence"
+  | "multi_worker_completion";
 
 export interface PipelineLongHorizonScenarioArtifact {
   scenarioId: string;
@@ -262,8 +263,10 @@ export interface PipelineLongHorizonArtifact {
 export type PipelineImplementationGateScenarioCategory =
   | "shell_stub_replay"
   | "deterministic_false_completion"
+  | "live_runtime_false_completion"
   | "scaffold_placeholder"
   | "implementation_repair"
+  | "wrong_artifact_verifier"
   | "resume_partial_completion"
   | "degraded_provider_retry"
   | "safety_incomplete_output";

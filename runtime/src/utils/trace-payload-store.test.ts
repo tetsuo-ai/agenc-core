@@ -35,7 +35,7 @@ describe("persistTracePayloadArtifact", () => {
   });
 
   it("preserves repeated references and only marks true cycles as circular", () => {
-    const shared = ["mcp.doom.start_game"];
+    const shared = ["mcp.example.start"];
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
 
@@ -57,9 +57,9 @@ describe("persistTracePayloadArtifact", () => {
         cyclic: { self: string };
       };
     };
-    expect(artifact.payload.requestedToolNames).toEqual(["mcp.doom.start_game"]);
+    expect(artifact.payload.requestedToolNames).toEqual(["mcp.example.start"]);
     expect(artifact.payload.missingRequestedToolNames).toEqual([
-      "mcp.doom.start_game",
+      "mcp.example.start",
     ]);
     expect(artifact.payload.cyclic.self).toBe("[circular]");
 

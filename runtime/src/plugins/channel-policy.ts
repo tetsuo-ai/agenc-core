@@ -17,7 +17,7 @@ export const RESERVED_CHANNEL_NAMES = Object.freeze(
   ]),
 );
 
-export interface ParsedPluginModuleSpecifier {
+interface ParsedPluginModuleSpecifier {
   readonly packageName: string;
   readonly subpath: string | null;
 }

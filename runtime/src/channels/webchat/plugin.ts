@@ -118,7 +118,11 @@ export class WebChatChannel
   /** Create and track an AbortController for a session's in-flight execution. */
   createAbortController(sessionId: string): AbortController {
     // Abort any existing in-flight execution for this session
-    this.sessionAbortControllers.get(sessionId)?.abort();
+    const existing = this.sessionAbortControllers.get(sessionId);
+    if (existing) {
+      existing.abort();
+      this.sessionAbortControllers.delete(sessionId);
+    }
     const controller = new AbortController();
     this.sessionAbortControllers.set(sessionId, controller);
     return controller;

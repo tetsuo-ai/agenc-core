@@ -335,6 +335,30 @@ describe("ReputationEconomyOperations - delegation", () => {
     expect(result.transactionSignature).toBe("mock-tx-signature");
   });
 
+  it("delegateReputation rejects when the delegation already exists", async () => {
+    const program = createMockProgram({
+      reputationDelegation: {
+        delegator: Keypair.generate().publicKey,
+        delegatee: Keypair.generate().publicKey,
+        amount: 1000,
+        expiresAt: new BN(0),
+        createdAt: new BN(1700000000),
+        bump: 253,
+      },
+    });
+    const ops = new ReputationEconomyOperations({
+      program,
+      agentId: createAgentId(),
+    });
+
+    await expect(
+      ops.delegateReputation({
+        delegateeId: new Uint8Array(32).fill(4),
+        amount: 1000,
+      }),
+    ).rejects.toThrow(/Delegation already exists for this delegator\/delegatee pair\./);
+  });
+
   it("getDelegation returns null when not found", async () => {
     const program = createMockProgram();
     const ops = new ReputationEconomyOperations({

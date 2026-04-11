@@ -58,6 +58,7 @@ function deserializePersistentValue<T>(value: string): T {
 
 export class SqliteDeadLetterQueue implements DeadLetterQueueStore {
   private db: any = null;
+  private initializing = false;
   private readonly dbPath: string;
   private readonly maxSize: number;
 
@@ -164,27 +165,35 @@ export class SqliteDeadLetterQueue implements DeadLetterQueueStore {
     if (this.db) {
       return this.db;
     }
-    mkdirSync(dirname(this.dbPath), { recursive: true });
-    this.db = new Database(this.dbPath);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("foreign_keys = ON");
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS dead_letter_queue_meta (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        schema_version INTEGER NOT NULL
-      );
-      INSERT OR IGNORE INTO dead_letter_queue_meta (id, schema_version)
-      VALUES (1, ${SQL_SCHEMA_VERSION});
+    if (this.initializing) {
+      throw new Error("SqliteDeadLetterQueue: concurrent initialization detected");
+    }
+    this.initializing = true;
+    try {
+      mkdirSync(dirname(this.dbPath), { recursive: true });
+      this.db = new Database(this.dbPath);
+      this.db.pragma("journal_mode = WAL");
+      this.db.pragma("foreign_keys = ON");
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS dead_letter_queue_meta (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          schema_version INTEGER NOT NULL
+        );
+        INSERT OR IGNORE INTO dead_letter_queue_meta (id, schema_version)
+        VALUES (1, ${SQL_SCHEMA_VERSION});
 
-      CREATE TABLE IF NOT EXISTS dead_letter_queue (
-        task_pda TEXT PRIMARY KEY,
-        failed_at INTEGER NOT NULL,
-        payload TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_dead_letter_queue_failed_at
-        ON dead_letter_queue(failed_at ASC);
-    `);
-    return this.db;
+        CREATE TABLE IF NOT EXISTS dead_letter_queue (
+          task_pda TEXT PRIMARY KEY,
+          failed_at INTEGER NOT NULL,
+          payload TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_dead_letter_queue_failed_at
+          ON dead_letter_queue(failed_at ASC);
+      `);
+      return this.db;
+    } finally {
+      this.initializing = false;
+    }
   }
 }

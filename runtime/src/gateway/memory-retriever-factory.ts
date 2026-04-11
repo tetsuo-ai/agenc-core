@@ -23,14 +23,13 @@ import {
   createIngestionHooks,
 } from "../memory/ingestion.js";
 import { CuratedMemoryManager, DailyLogManager, NoopEntityExtractor } from "../memory/structured.js";
-import { LLMEntityExtractor } from "../memory/llm-entity-extractor.js";
 import { sanitizeDelegatedAssistantEnvironmentSummary } from "../utils/delegated-scope-trust.js";
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 /** Semantic memory retriever defaults. */
-export const SEMANTIC_MEMORY_DEFAULTS = {
+const SEMANTIC_MEMORY_DEFAULTS = {
   MAX_TOKEN_BUDGET: 2000,
   MAX_RESULTS: 5,
   RECENCY_WEIGHT: 0.3,
@@ -48,18 +47,16 @@ const BASIC_MAX_TOTAL_CHARS = 6_000;
 // Factory input
 // ---------------------------------------------------------------------------
 
-export interface CreateMemoryRetrieversParams {
+interface CreateMemoryRetrieversParams {
   config: GatewayConfig;
   hooks: HookDispatcher;
   memoryBackend: MemoryBackend;
   /** Resolved host workspace path for semantic memory. */
   workspacePath: string;
   logger: Logger;
-  /** Optional LLM provider for entity extraction (Phase 3). */
-  llmProvider?: import("../llm/types.js").LLMProvider;
 }
 
-export interface MemoryRetrieversResult {
+interface MemoryRetrieversResult {
   memoryRetriever: MemoryRetriever;
   learningProvider: MemoryRetriever;
 }
@@ -109,7 +106,7 @@ export async function createMemoryRetrievers(
   const isSemanticAvailable = embeddingProvider.name !== "noop";
 
   const memoryRetriever = isSemanticAvailable
-    ? await createSemanticRetriever(embeddingProvider, hooks, workspacePath, logger, params)
+    ? await createSemanticRetriever(embeddingProvider, hooks, workspacePath, logger)
     : createBasicHistoryRetriever(memoryBackend);
 
   if (!isSemanticAvailable) {
@@ -133,7 +130,6 @@ async function createSemanticRetriever(
   hooks: HookDispatcher,
   workspacePath: string,
   logger: Logger,
-  params: CreateMemoryRetrieversParams,
 ): Promise<MemoryRetriever> {
   // Use SqliteVectorBackend for persistent vector storage.
   // Per TODO Phase 1: vectors must survive daemon restarts.
@@ -153,22 +149,15 @@ async function createSemanticRetriever(
   const curatedMemory = new CuratedMemoryManager(curatedMemoryPath);
   const logManager = new DailyLogManager(dailyLogPath);
 
-  // Phase 3: enable entity extraction when LLM provider is available.
-  // Uses substring grounding + low default confidence (skeptic findings).
-  const entityExtractor = params.llmProvider
-    ? new LLMEntityExtractor({ llmProvider: params.llmProvider, logger })
-    : new NoopEntityExtractor();
-  const enableEntityExtraction = params.llmProvider !== undefined;
-
   const ingestionEngine = new MemoryIngestionEngine({
     embeddingProvider,
     vectorStore,
     logManager,
     curatedMemory,
-    entityExtractor,
+    entityExtractor: new NoopEntityExtractor(),
     generateSummaries: false,
     enableDailyLogs: true,
-    enableEntityExtraction,
+    enableEntityExtraction: false,
     logger,
   });
 
@@ -201,7 +190,7 @@ async function createSemanticRetriever(
 // Basic history retriever (fallback when no embedding provider)
 // ---------------------------------------------------------------------------
 
-export function createBasicHistoryRetriever(
+function createBasicHistoryRetriever(
   memoryBackend: MemoryBackend,
 ): MemoryRetriever {
   return {
@@ -246,7 +235,7 @@ export function createBasicHistoryRetriever(
 // Learning provider (reads learned patterns from KV store)
 // ---------------------------------------------------------------------------
 
-export function createLearningRetriever(
+function createLearningRetriever(
   memoryBackend: MemoryBackend,
   workspacePath?: string,
 ): MemoryRetriever {

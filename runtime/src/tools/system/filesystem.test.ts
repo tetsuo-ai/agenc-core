@@ -232,12 +232,13 @@ describe("isPathAllowed", () => {
 // ============================================================================
 
 describe("createFilesystemTools", () => {
-  it("returns all 8 filesystem tools", () => {
+  it("returns all 9 filesystem tools", () => {
     const tools = createFilesystemTools(CONFIG);
-    expect(tools).toHaveLength(8);
+    expect(tools).toHaveLength(9);
     expect(tools.map((t) => t.name).sort()).toEqual([
       "system.appendFile",
       "system.delete",
+      "system.editFile",
       "system.listDir",
       "system.mkdir",
       "system.move",
@@ -451,6 +452,16 @@ describe("system.writeFile", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRealpath.mockImplementation(async (p: string) => p as never);
+    // Default the stat mock to ENOENT so the Read-before-Write check
+    // sees the file as not-yet-existent (creating a new file). Tests
+    // that need to test the existing-file path override per-call.
+    mockStat.mockImplementation(async () => {
+      const err: NodeJS.ErrnoException = new Error(
+        "ENOENT: no such file or directory",
+      );
+      err.code = "ENOENT";
+      throw err;
+    });
     tool = findTool(createFilesystemTools(CONFIG), "system.writeFile");
   });
 
@@ -469,6 +480,92 @@ describe("system.writeFile", () => {
     expect(mockMkdir).toHaveBeenCalledWith("/workspace/subdir", {
       recursive: true,
     });
+  });
+
+  it("rejects writing an existing file when not previously read in session", async () => {
+    // File exists at the target path
+    mockStat.mockResolvedValueOnce({
+      isFile: () => true,
+      isDirectory: () => false,
+      size: 100,
+    } as never);
+
+    const result = await tool.execute({
+      path: "/workspace/existing.c",
+      content: "new content",
+      __agencSessionId: "session-A",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(parseResult(result).error).toContain("File has not been read yet");
+    expect(mockWriteFile).not.toHaveBeenCalled();
+  });
+
+  it("allows writing an existing file when previously read in same session", async () => {
+    // First: read the file (records the read for session-A)
+    const readTool = findTool(createFilesystemTools(CONFIG), "system.readFile");
+    mockStat.mockResolvedValueOnce({
+      isFile: () => true,
+      isDirectory: () => false,
+      size: 5,
+    } as never);
+    mockReadFile.mockResolvedValueOnce(Buffer.from("hello"));
+    await readTool.execute({
+      path: "/workspace/existing.c",
+      __agencSessionId: "session-A",
+    });
+
+    // Then: write the same file from the same session — must succeed
+    mockStat.mockResolvedValueOnce({
+      isFile: () => true,
+      isDirectory: () => false,
+      size: 5,
+    } as never);
+    mockMkdir.mockResolvedValueOnce(undefined);
+    mockWriteFile.mockResolvedValueOnce(undefined);
+
+    const result = await tool.execute({
+      path: "/workspace/existing.c",
+      content: "world",
+      __agencSessionId: "session-A",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(mockWriteFile).toHaveBeenCalled();
+  });
+
+  it("allows writing an existing file when no session id is provided (test/eval harness path)", async () => {
+    // No __agencSessionId in args -> Read-before-Write check is skipped
+    mockStat.mockResolvedValueOnce({
+      isFile: () => true,
+      isDirectory: () => false,
+      size: 100,
+    } as never);
+    mockMkdir.mockResolvedValueOnce(undefined);
+    mockWriteFile.mockResolvedValueOnce(undefined);
+
+    const result = await tool.execute({
+      path: "/workspace/existing.c",
+      content: "new content",
+    });
+
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("allows writing a new (non-existent) file without a prior read", async () => {
+    // Default stat mock throws ENOENT -> file does not exist -> no
+    // Read-before-Write enforcement (creating a new file is allowed)
+    mockMkdir.mockResolvedValueOnce(undefined);
+    mockWriteFile.mockResolvedValueOnce(undefined);
+
+    const result = await tool.execute({
+      path: "/workspace/brand-new.c",
+      content: "fresh content",
+      __agencSessionId: "session-A",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(mockWriteFile).toHaveBeenCalled();
   });
 
   it("rejects content exceeding size limit", async () => {
@@ -519,6 +616,314 @@ describe("system.writeFile", () => {
 
     expect(result.isError).toBeUndefined();
     expect(parsed.bytesWritten).toBe(11); // 'binary data'.length
+  });
+});
+
+// ============================================================================
+// system.editFile (Claude-Code-style string replace, Read-before-Edit
+// enforced at the tool boundary)
+// ============================================================================
+
+describe("system.editFile", () => {
+  let tool: Tool;
+  let readTool: Tool;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRealpath.mockImplementation(async (p: string) => p as never);
+    tool = findTool(createFilesystemTools(CONFIG), "system.editFile");
+    readTool = findTool(createFilesystemTools(CONFIG), "system.readFile");
+  });
+
+  function setupExistingFile(content: string): void {
+    const buf = Buffer.from(content);
+    mockStat.mockResolvedValue({
+      isFile: () => true,
+      isDirectory: () => false,
+      size: buf.length,
+    } as never);
+    mockReadFile.mockResolvedValue(buf);
+  }
+
+  function readFirst(path: string, sessionId = "session-edit"): Promise<unknown> {
+    return readTool.execute({ path, __agencSessionId: sessionId });
+  }
+
+  it("replaces a unique substring on first call after read", async () => {
+    const before =
+      `#include <stdio.h>\n` +
+      `int main(void) { printf("hi\\n"); return 0; }\n`;
+    setupExistingFile(before);
+    await readFirst("/workspace/main.c");
+
+    setupExistingFile(before);
+    mockWriteFile.mockResolvedValueOnce(undefined);
+
+    const result = await tool.execute({
+      path: "/workspace/main.c",
+      old_string: 'printf("hi\\n")',
+      new_string: 'printf("hello world\\n")',
+      __agencSessionId: "session-edit",
+    });
+    const parsed = parseResult(result);
+
+    expect(result.isError).toBeUndefined();
+    expect(parsed.replacements).toBe(1);
+    expect(parsed.replaceAll).toBe(false);
+    expect(mockWriteFile).toHaveBeenCalledTimes(1);
+    const [, written] = mockWriteFile.mock.calls[0];
+    expect((written as Buffer).toString()).toBe(
+      `#include <stdio.h>\n` +
+        `int main(void) { printf("hello world\\n"); return 0; }\n`,
+    );
+  });
+
+  it("rejects edit when file has not been read in this session", async () => {
+    const before = `int main(void) { return 0; }\n`;
+    setupExistingFile(before);
+
+    const result = await tool.execute({
+      path: "/workspace/no-read.c",
+      old_string: "return 0",
+      new_string: "return 1",
+      __agencSessionId: "session-no-read",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(parseResult(result).error).toContain("File has not been read yet");
+    expect(mockWriteFile).not.toHaveBeenCalled();
+  });
+
+  it("rejects edit when file does not exist", async () => {
+    mockStat.mockRejectedValueOnce(
+      Object.assign(new Error("ENOENT"), { code: "ENOENT" }) as never,
+    );
+
+    const result = await tool.execute({
+      path: "/workspace/missing.c",
+      old_string: "x",
+      new_string: "y",
+      __agencSessionId: "session-edit",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(parseResult(result).error).toContain("File not found");
+    expect(parseResult(result).error).toContain("system.writeFile");
+  });
+
+  it("rejects empty old_string", async () => {
+    const result = await tool.execute({
+      path: "/workspace/main.c",
+      old_string: "",
+      new_string: "anything",
+      __agencSessionId: "session-edit",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(parseResult(result).error).toContain("non-empty string");
+  });
+
+  it("rejects identical old_string and new_string (no-op edit)", async () => {
+    const result = await tool.execute({
+      path: "/workspace/main.c",
+      old_string: "return 0",
+      new_string: "return 0",
+      __agencSessionId: "session-edit",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(parseResult(result).error).toContain("identical");
+  });
+
+  it("rejects when old_string is not unique without replace_all", async () => {
+    const before = `foo\nfoo\nfoo\n`;
+    setupExistingFile(before);
+    await readFirst("/workspace/main.c");
+
+    setupExistingFile(before);
+
+    const result = await tool.execute({
+      path: "/workspace/main.c",
+      old_string: "foo",
+      new_string: "bar",
+      __agencSessionId: "session-edit",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(parseResult(result).error).toContain("not unique");
+    expect(parseResult(result).error).toContain("replace_all");
+  });
+
+  it("replace_all replaces every occurrence", async () => {
+    const before = `foo\nfoo\nfoo\n`;
+    setupExistingFile(before);
+    await readFirst("/workspace/main.c");
+
+    setupExistingFile(before);
+    mockWriteFile.mockResolvedValueOnce(undefined);
+
+    const result = await tool.execute({
+      path: "/workspace/main.c",
+      old_string: "foo",
+      new_string: "bar",
+      replace_all: true,
+      __agencSessionId: "session-edit",
+    });
+    const parsed = parseResult(result);
+
+    expect(result.isError).toBeUndefined();
+    expect(parsed.replacements).toBe(3);
+    expect(parsed.replaceAll).toBe(true);
+    const [, written] = mockWriteFile.mock.calls[0];
+    expect((written as Buffer).toString()).toBe(`bar\nbar\nbar\n`);
+  });
+
+  it("rejects when old_string does not appear in the file", async () => {
+    const before = `int main(void) { return 0; }\n`;
+    setupExistingFile(before);
+    await readFirst("/workspace/main.c");
+
+    setupExistingFile(before);
+
+    const result = await tool.execute({
+      path: "/workspace/main.c",
+      old_string: "return 42",
+      new_string: "return 0",
+      __agencSessionId: "session-edit",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(parseResult(result).error).toContain("not found");
+    expect(parseResult(result).error).toContain("Re-read the file");
+  });
+
+  it("rejects edit on a binary file", async () => {
+    const buf = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]);
+    mockStat.mockResolvedValueOnce({
+      isFile: () => true,
+      isDirectory: () => false,
+      size: buf.length,
+    } as never);
+    mockReadFile.mockResolvedValueOnce(buf);
+    await readTool.execute({
+      path: "/workspace/image.png",
+      __agencSessionId: "session-edit",
+    });
+
+    mockStat.mockResolvedValueOnce({
+      isFile: () => true,
+      isDirectory: () => false,
+      size: buf.length,
+    } as never);
+    mockReadFile.mockResolvedValueOnce(buf);
+
+    const result = await tool.execute({
+      path: "/workspace/image.png",
+      old_string: "\x89",
+      new_string: "X",
+      __agencSessionId: "session-edit",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(parseResult(result).error).toContain("binary");
+  });
+
+  it("rejects edit when target path is a directory", async () => {
+    mockStat.mockResolvedValueOnce({
+      isFile: () => false,
+      isDirectory: () => true,
+      size: 0,
+    } as never);
+
+    const result = await tool.execute({
+      path: "/workspace/somedir",
+      old_string: "x",
+      new_string: "y",
+      __agencSessionId: "session-edit",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(parseResult(result).error).toContain("not a regular file");
+  });
+
+  it("post-edit content is auto-recorded as read so chained edits work", async () => {
+    const original = `line one\nline two\nline three\n`;
+    setupExistingFile(original);
+    await readFirst("/workspace/chain.c");
+
+    // First edit
+    setupExistingFile(original);
+    mockWriteFile.mockResolvedValueOnce(undefined);
+    const first = await tool.execute({
+      path: "/workspace/chain.c",
+      old_string: "line one",
+      new_string: "LINE ONE",
+      __agencSessionId: "session-edit",
+    });
+    expect(first.isError).toBeUndefined();
+
+    // Second edit on the same file in the same session — must NOT
+    // require another readFile call (the first edit auto-recorded
+    // the post-edit content as read)
+    const afterFirst = `LINE ONE\nline two\nline three\n`;
+    setupExistingFile(afterFirst);
+    mockWriteFile.mockResolvedValueOnce(undefined);
+    const second = await tool.execute({
+      path: "/workspace/chain.c",
+      old_string: "line two",
+      new_string: "LINE TWO",
+      __agencSessionId: "session-edit",
+    });
+    expect(second.isError).toBeUndefined();
+    expect(parseResult(second).replacements).toBe(1);
+  });
+
+  it("rejects edit when result exceeds max write size", async () => {
+    const before = "small";
+    setupExistingFile(before);
+    await readFirst("/workspace/grow.c");
+
+    setupExistingFile(before);
+
+    const huge = "x".repeat(11_000_000);
+    const result = await tool.execute({
+      path: "/workspace/grow.c",
+      old_string: "small",
+      new_string: huge,
+      __agencSessionId: "session-edit",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(parseResult(result).error).toContain("exceeds limit");
+  });
+
+  it("respects path allowlist", async () => {
+    const result = await tool.execute({
+      path: "/etc/passwd",
+      old_string: "root",
+      new_string: "evil",
+      __agencSessionId: "session-edit",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(parseResult(result).error).toContain("Access denied");
+  });
+
+  it("session isolation: read in session-A does NOT satisfy edit in session-B", async () => {
+    const before = `int main(void) { return 0; }\n`;
+    setupExistingFile(before);
+    await readFirst("/workspace/iso.c", "session-A");
+
+    setupExistingFile(before);
+    const result = await tool.execute({
+      path: "/workspace/iso.c",
+      old_string: "return 0",
+      new_string: "return 1",
+      __agencSessionId: "session-B",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(parseResult(result).error).toContain("File has not been read yet");
   });
 });
 

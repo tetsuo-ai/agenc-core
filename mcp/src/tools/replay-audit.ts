@@ -1,7 +1,7 @@
 import type { ResolvedActor } from "./replay-actor.js";
 import type { RiskLevel, ToolRiskCaps } from "./replay-risk.js";
 
-export interface ReplayAuditEntry {
+interface ReplayAuditEntry {
   timestamp: string;
   tool: string;
   actor: ResolvedActor;

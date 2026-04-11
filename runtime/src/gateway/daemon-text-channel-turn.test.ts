@@ -2,9 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { ChatExecutorResult } from "../llm/chat-executor.js";
 import type { MemoryBackend } from "../memory/types.js";
+import { createRuntimeContractSnapshot } from "../runtime-contract/types.js";
 import type { Logger } from "../utils/logger.js";
 import { executeTextChannelTurn } from "./daemon-text-channel-turn.js";
 import {
+  SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY,
+  SESSION_RUNTIME_CONTRACT_STATUS_SNAPSHOT_METADATA_KEY,
   SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY,
   type Session,
 } from "./session.js";
@@ -55,6 +58,19 @@ function createSession(): Session {
   };
 }
 
+function createSyntheticDialogueTurnExecutionContract() {
+  return {
+    version: 1 as const,
+    turnClass: "dialogue" as const,
+    ownerMode: "none" as const,
+    sourceArtifacts: [],
+    targetArtifacts: [],
+    delegationPolicy: "forbid" as const,
+    contractFingerprint: "synthetic-dialogue-contract",
+    taskLineageId: "synthetic-dialogue-task",
+  };
+}
+
 function createResult(
   overrides: Partial<ChatExecutorResult> = {},
 ): ChatExecutorResult {
@@ -68,6 +84,19 @@ function createResult(
     durationMs: 10,
     compacted: false,
     stopReason: "completed",
+    completionState: "completed",
+    runtimeContractSnapshot: createRuntimeContractSnapshot({
+      runtimeContractV2: false,
+      stopHooksEnabled: false,
+      asyncTasksEnabled: false,
+      persistentWorkersEnabled: false,
+      mailboxEnabled: false,
+      verifierRuntimeRequired: false,
+      verifierProjectBootstrap: false,
+      workerIsolationWorktree: false,
+      workerIsolationRemote: false,
+    }),
+    turnExecutionContract: createSyntheticDialogueTurnExecutionContract(),
     ...overrides,
   };
 }
@@ -216,7 +245,11 @@ describe("executeTextChannelTurn", () => {
       recordToolRoutingOutcome,
     });
 
-    expect(returned).toBe(result);
+    expect(returned).not.toBe(result);
+    expect(returned).toMatchObject(result);
+    expect(returned.runtimeContractSnapshot).not.toHaveProperty(
+      "legacyTopLevelVerifierMode",
+    );
     expect(execute).toHaveBeenCalledOnce();
     expect(execute).toHaveBeenCalledWith(
       expect.objectContaining({ maxToolRounds: 3 }),
@@ -259,6 +292,177 @@ describe("executeTextChannelTurn", () => {
       previousResponseId: "resp-next",
       reconciliationHash: "hash-next",
     });
+  });
+
+  it("does not rerun top-level verification after the executor returns", async () => {
+    const logger = createLoggerStub();
+    const memoryBackend = createMemoryBackendStub();
+    const session = createSession();
+    const sessionMgr = {
+      appendMessage: vi.fn(),
+    } as any;
+    const result = createResult({
+      content: "reply",
+      runtimeContractSnapshot: createRuntimeContractSnapshot({
+        runtimeContractV2: true,
+        stopHooksEnabled: false,
+        asyncTasksEnabled: false,
+        persistentWorkersEnabled: false,
+        mailboxEnabled: false,
+        verifierRuntimeRequired: true,
+        verifierProjectBootstrap: false,
+        workerIsolationWorktree: false,
+        workerIsolationRemote: false,
+      }),
+      turnExecutionContract: {
+        version: 1,
+        turnClass: "workflow_implementation",
+        ownerMode: "workflow_owner",
+        workspaceRoot: "/workspace",
+        sourceArtifacts: ["/workspace/PLAN.md"],
+        targetArtifacts: ["/workspace/src/main.c"],
+        delegationPolicy: "direct_owner",
+        contractFingerprint: "contract-1",
+        taskLineageId: "task-1",
+      },
+    });
+    const execute = vi.fn(async () => result);
+    const spawn = vi.fn(async () => "subagent:verify");
+
+    const returned = await executeTextChannelTurn({
+      logger,
+      channelName: "telegram",
+      msg: {
+        sessionId: "session:test",
+        senderId: "user-1",
+        channel: "telegram",
+        content: "hello",
+      },
+      session,
+      sessionMgr,
+      systemPrompt: "system",
+      chatExecutor: { execute } as any,
+      toolHandler: vi.fn() as any,
+      defaultMaxToolRounds: 3,
+      traceConfig: {
+        enabled: false,
+        includeHistory: true,
+        includeSystemPrompt: true,
+        includeToolArgs: true,
+        includeToolResults: true,
+        includeProviderPayloads: false,
+        maxChars: 20_000,
+      },
+      turnTraceId: "trace-1",
+      memoryBackend,
+      buildToolRoutingDecision: () => undefined,
+      recordToolRoutingOutcome: vi.fn(),
+      subAgentManager: {
+        spawn,
+        waitForResult: vi.fn(async () => ({
+          sessionId: "subagent:verify",
+          output: "VERDICT: FAIL",
+          success: false,
+          durationMs: 1,
+          toolCalls: [],
+          completionState: "completed",
+          stopReason: "completed",
+        })),
+      },
+      verifierService: {
+        resolveVerifierRequirement: vi.fn(() => ({
+          required: true,
+          profiles: ["generic"],
+          probeCategories: ["build"],
+          mutationPolicy: "read_only_workspace",
+          allowTempArtifacts: false,
+          bootstrapSource: "disabled",
+          rationale: ["test"],
+        })),
+        shouldVerifySubAgentResult: vi.fn(() => true),
+      },
+    });
+
+    expect(returned).toMatchObject(result);
+    expect(returned.completionState).toBe("completed");
+    expect(returned.content).toBe("reply");
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("passes persisted active task context into the executor and stores the updated lineage", async () => {
+    const logger = createLoggerStub();
+    const session = createSession();
+    session.metadata[SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY] = {
+      version: 1,
+      taskLineageId: "task-phase-0",
+      contractFingerprint: "phase-0-contract",
+      turnClass: "workflow_implementation",
+      ownerMode: "workflow_owner",
+      workspaceRoot: "/workspace",
+      sourceArtifacts: ["/workspace/PLAN.md"],
+      targetArtifacts: ["/workspace/src/main.c"],
+    };
+    const sessionMgr = {
+      appendMessage: vi.fn(),
+    } as any;
+    const nextActiveTaskContext = {
+      version: 1 as const,
+      taskLineageId: "task-phase-0",
+      contractFingerprint: "phase-1-contract",
+      turnClass: "workflow_implementation" as const,
+      ownerMode: "workflow_owner" as const,
+      workspaceRoot: "/workspace",
+      sourceArtifacts: ["/workspace/PLAN.md"],
+      targetArtifacts: ["/workspace/src/main.c"],
+    };
+    const execute = vi.fn(async () =>
+      createResult({
+        activeTaskContext: nextActiveTaskContext,
+      }),
+    );
+
+    await executeTextChannelTurn({
+      logger,
+      channelName: "telegram",
+      msg: {
+        sessionId: "session:test",
+        senderId: "user-1",
+        channel: "telegram",
+        content: "implement phase 0",
+      },
+      session,
+      sessionMgr,
+      systemPrompt: "system",
+      chatExecutor: { execute } as any,
+      toolHandler: vi.fn() as any,
+      defaultMaxToolRounds: 3,
+      traceConfig: {
+        enabled: false,
+        includeHistory: true,
+        includeSystemPrompt: true,
+        includeToolArgs: true,
+        includeToolResults: true,
+        includeProviderPayloads: false,
+        maxChars: 20_000,
+      },
+      turnTraceId: "trace-active-task",
+      buildToolRoutingDecision: () => undefined,
+      recordToolRoutingOutcome: vi.fn(),
+    });
+
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtimeContext: expect.objectContaining({
+          activeTaskContext: expect.objectContaining({
+            contractFingerprint: "phase-0-contract",
+            taskLineageId: "task-phase-0",
+          }),
+        }),
+      }),
+    );
+    expect(session.metadata[SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY]).toEqual(
+      nextActiveTaskContext,
+    );
   });
 
   it("passes a strict structured-output contract for Concordia agent generation turns", async () => {
@@ -368,5 +572,90 @@ describe("executeTextChannelTurn", () => {
 
     expect(sessionMgr.appendMessage).not.toHaveBeenCalled();
     expect(memoryBackend.addEntry).not.toHaveBeenCalled();
+  });
+
+  it("persists a bounded runtime contract status snapshot on successful turns", async () => {
+    const logger = createLoggerStub();
+    const memoryBackend = createMemoryBackendStub();
+    const session = createSession();
+    const sessionMgr = {
+      appendMessage: vi.fn(),
+    } as any;
+
+    await executeTextChannelTurn({
+      logger,
+      channelName: "telegram",
+      msg: {
+        sessionId: "session:test",
+        senderId: "user-1",
+        channel: "telegram",
+        content: "hello",
+      },
+      session,
+      sessionMgr,
+      systemPrompt: "system",
+      chatExecutor: {
+        execute: vi.fn(async () =>
+          createResult({
+            runtimeContractSnapshot: createRuntimeContractSnapshot({
+              runtimeContractV2: true,
+              stopHooksEnabled: true,
+              asyncTasksEnabled: true,
+              persistentWorkersEnabled: false,
+              mailboxEnabled: false,
+              verifierRuntimeRequired: false,
+              verifierProjectBootstrap: false,
+              workerIsolationWorktree: false,
+              workerIsolationRemote: false,
+            }),
+            completionState: "partial",
+            stopReasonDetail: "more work remains",
+            completionProgress: {
+              remainingMilestones: [
+                { id: "phase-1", description: "finish phase 1" },
+              ],
+            } as any,
+          })),
+      } as any,
+      toolHandler: vi.fn() as any,
+      defaultMaxToolRounds: 3,
+      traceConfig: {
+        enabled: false,
+        includeHistory: true,
+        includeSystemPrompt: true,
+        includeToolArgs: true,
+        includeToolResults: true,
+        includeProviderPayloads: false,
+        maxChars: 20_000,
+      },
+      turnTraceId: "trace-status",
+      memoryBackend,
+      buildToolRoutingDecision: () => undefined,
+      recordToolRoutingOutcome: vi.fn(),
+      taskStore: {
+        describeRuntimeTaskLayer: vi.fn(async () => ({
+          configured: true,
+          effective: true,
+          backend: "stub",
+          durability: "sync",
+          totalTasks: 0,
+          activeCount: 0,
+          publicHandleCount: 0,
+        })),
+        list: vi.fn(() => []),
+        listTasks: vi.fn(async () => []),
+      } as any,
+    });
+
+    expect(
+      session.metadata[SESSION_RUNTIME_CONTRACT_STATUS_SNAPSHOT_METADATA_KEY],
+    ).toMatchObject({
+      version: 1,
+      lastTurnTraceId: "trace-status",
+      completionState: "partial",
+      remainingMilestones: [
+        expect.objectContaining({ id: "phase-1" }),
+      ],
+    });
   });
 });

@@ -74,6 +74,33 @@ const DEFAULT_TRACE_LOGGING_CONFIG: ResolvedTraceLoggingConfig = {
   maxChars: TRACE_LOG_DEFAULT_MAX_CHARS,
 };
 
+export function buildRuntimeContractSessionTraceId(sessionId: string): string {
+  return `contract:session:${sessionId}`;
+}
+
+export function buildRuntimeContractTaskTraceId(
+  sessionId: string,
+  taskId: string,
+): string {
+  return `contract:task:${sessionId}:${taskId}`;
+}
+
+export function buildRuntimeContractWorkerTraceId(
+  sessionId: string,
+  workerId: string,
+): string {
+  return `contract:worker:${sessionId}:${workerId}`;
+}
+
+export function buildRuntimeContractVerifierTraceId(
+  sessionId: string,
+  taskId?: string,
+): string {
+  return taskId
+    ? buildRuntimeContractTaskTraceId(sessionId, taskId)
+    : `contract:verifier:${sessionId}`;
+}
+
 export function truncateToolLogText(
   value: string,
   maxChars = TOOL_LOG_SNIPPET_MAX_CHARS,

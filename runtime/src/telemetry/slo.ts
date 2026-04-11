@@ -8,7 +8,7 @@ import type { HistogramEntry } from "../task/metrics.js";
 import type { PipelineQualityArtifact } from "../eval/pipeline-quality.js";
 import type { TelemetrySnapshot } from "./types.js";
 
-export interface RuntimeSloSnapshot {
+interface RuntimeSloSnapshot {
   readonly runCompletionRate?: number;
   readonly checkpointResumeSuccessRate?: number;
   readonly approvalResponseLatencyMs?: number;

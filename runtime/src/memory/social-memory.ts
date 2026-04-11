@@ -20,13 +20,13 @@ import type { Logger } from "../utils/logger.js";
 import { computeTrustScore, type TrustSource } from "./trust-scoring.js";
 
 /** Visibility level for a memory entry. */
-export type MemoryVisibility =
+type MemoryVisibility =
   | "private"
   | "shared"
   | "world-visible"
   | "lineage-shared";
 
-export interface WorldFactProvenance {
+interface WorldFactProvenance {
   readonly type: string;
   readonly source: TrustSource;
   readonly sourceId: string;
@@ -40,14 +40,14 @@ export interface WorldFactProvenance {
   readonly metadata?: Record<string, unknown>;
 }
 
-export interface WorldFactTrust {
+interface WorldFactTrust {
   readonly source: TrustSource;
   readonly score: number;
   readonly confidence: number;
   readonly threshold: number;
 }
 
-export interface WorldFactAuditEntry {
+interface WorldFactAuditEntry {
   readonly timestamp: number;
   readonly action: "write" | "confirm" | "promote_visibility";
   readonly actor: string;
@@ -56,7 +56,7 @@ export interface WorldFactAuditEntry {
 }
 
 /** A social memory record — what one agent knows about another. */
-export interface SocialMemoryEntry {
+interface SocialMemoryEntry {
   readonly id: string;
   readonly agentId: string;
   readonly otherAgentId: string;
@@ -71,14 +71,14 @@ export interface SocialMemoryEntry {
   readonly createdAt: number;
 }
 
-export interface SocialInteraction {
+interface SocialInteraction {
   readonly timestamp: number;
   readonly summary: string;
   readonly context?: string;
 }
 
 /** A shared world state fact — observable by all agents in the world. */
-export interface WorldStateFact {
+interface WorldStateFact {
   readonly id: string;
   readonly worldId: string;
   readonly content: string;
@@ -97,7 +97,7 @@ export interface WorldStateFact {
   readonly auditTrail: readonly WorldFactAuditEntry[];
 }
 
-export interface SocialMemoryConfig {
+interface SocialMemoryConfig {
   readonly memoryBackend: MemoryBackend;
   readonly logger?: Logger;
   readonly keyPrefix?: string;

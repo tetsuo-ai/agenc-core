@@ -10,7 +10,7 @@ interface DashboardRootOptions {
   currentFile?: string;
 }
 
-export interface DashboardHttpResponse {
+interface DashboardHttpResponse {
   status: number;
   headers?: Record<string, string>;
   body?: Buffer;

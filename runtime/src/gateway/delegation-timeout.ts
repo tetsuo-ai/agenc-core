@@ -11,10 +11,10 @@
 // sometimes emits aggressive budgets (e.g. "30s") that starve coding tasks
 // before the first tool call even completes.  Complex multi-file tasks
 // regularly need 3-4 minutes per sub-agent.  0 = unlimited (no timer).
-export const MIN_DELEGATION_TIMEOUT_MS = 300_000;
+const MIN_DELEGATION_TIMEOUT_MS = 300_000;
 // Ceiling: 0 = unlimited.  The runtime should support indefinite sub-agent
 // work for long-running coding tasks.
-export const MAX_DELEGATION_TIMEOUT_MS = 0;
+const MAX_DELEGATION_TIMEOUT_MS = 0;
 
 const EXPLICIT_BUDGET_HINT_RE =
   /^(\d+(?:\.\d+)?)\s*(ms|s|sec|m|min|h|hr)$/i;
@@ -22,7 +22,7 @@ const BARE_NUMERIC_BUDGET_HINT_RE = /^(\d+(?:\.\d+)?)$/;
 const QUALITATIVE_BUDGET_HINT_RE =
   /^(minimal|small|medium|large|short|long)$/i;
 
-export type DelegationBudgetHintInspection =
+type DelegationBudgetHintInspection =
   | {
     readonly kind: "explicit";
     readonly durationMs: number;
@@ -54,7 +54,7 @@ function convertBudgetHintToMs(value: number, unit: string): number {
   return value * 60 * 1_000;
 }
 
-export function inspectDelegationBudgetHint(
+function inspectDelegationBudgetHint(
   hint: string,
 ): DelegationBudgetHintInspection {
   const normalized = hint.trim().toLowerCase();
@@ -100,7 +100,7 @@ export function inspectDelegationBudgetHint(
   return { kind: "invalid" };
 }
 
-export function normalizeDelegationTimeoutMs(
+function normalizeDelegationTimeoutMs(
   timeoutMs: number | undefined,
 ): number | undefined {
   if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs)) {

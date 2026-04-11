@@ -3,7 +3,7 @@ import type { GatewayLLMConfig } from "./types.js";
 const DEFAULT_GROK_COMPACTION_THRESHOLD_FALLBACK = 16_000;
 const DEFAULT_GROK_COMPACTION_CONTEXT_WINDOW_RATIO = 0.3;
 
-export interface GatewayStatefulResponsesResolution {
+interface GatewayStatefulResponsesResolution {
   readonly config: GatewayLLMConfig["statefulResponses"];
   readonly usedDefaults: boolean;
 }

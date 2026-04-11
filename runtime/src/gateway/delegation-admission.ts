@@ -4,10 +4,6 @@ import type { DelegationBudgetSnapshot } from "../llm/run-budget.js";
 import { estimateDelegationStepSpendUnits } from "../llm/model-routing-policy.js";
 import { hasRuntimeLimit } from "../llm/runtime-limit-policy.js";
 import {
-  allowsUserMandatedSubagentCardinalityOverride,
-  extractRequiredSubagentOrchestrationRequirements,
-} from "../workflow/subagent-orchestration-requirements.js";
-import {
   deriveDelegationEconomics,
   type DelegationCandidateStep,
   type DelegationEconomics,
@@ -18,7 +14,8 @@ import {
   resolveExecutionEnvelopeArtifactRelations,
   resolveExecutionEnvelopeRole,
 } from "../workflow/execution-envelope.js";
-import { safeStepStringArray } from "../llm/chat-executor-planner.js";
+import { normalizeWorkspaceRoot } from "../workflow/path-normalization.js";
+import { safeStepStringArray } from "../llm/chat-executor-step-utils.js";
 
 const REVIEW_TEXT_RE =
   /\b(?:review|critique|audit|inspect|assess|evaluate|docs?|documentation|security|architecture)\b/i;
@@ -31,7 +28,7 @@ const BUILD_OR_TEST_OBLIGATION_RE =
 const LOCAL_INSPECTION_TEXT_RE =
   /\b(?:catalog|check|explore|find|git status|inspect|inventory|list|locate|ls|map|read|readme|review|status|survey|trace|understand)\b/i;
 
-export type DelegationAdmissionShape =
+type DelegationAdmissionShape =
   | "repo_exploration"
   | "test_triage"
   | "independent_parallel_branches"
@@ -64,7 +61,7 @@ export interface DelegationStepAdmission {
   readonly verifierObligations: readonly string[];
 }
 
-export interface DelegationAdmissionDecision {
+interface DelegationAdmissionDecision {
   readonly allowed: boolean;
   readonly reason: DelegationAdmissionReason;
   readonly shape: DelegationAdmissionShape | null;
@@ -73,7 +70,7 @@ export interface DelegationAdmissionDecision {
   readonly diagnostics: Readonly<Record<string, number | boolean | string>>;
 }
 
-export interface DelegationAdmissionInput {
+interface DelegationAdmissionInput {
   readonly messageText: string;
   readonly totalSteps: number;
   readonly synthesisSteps: number;
@@ -533,7 +530,10 @@ function ownsRemainingRequestEndToEnd(
   analysis: DelegationStepAnalysis,
 ): boolean {
   const executionContext = analysis.step.executionContext;
-  const workspaceRoot = executionContext?.workspaceRoot?.trim();
+  // Audit S1.6: normalize before string-comparing the workspace root
+  // to relation/target artifact paths so trailing-slash and ~ aliasing
+  // cannot make identical roots compare unequal.
+  const workspaceRoot = normalizeWorkspaceRoot(executionContext?.workspaceRoot);
   const role = resolveExecutionEnvelopeRole(executionContext);
   if (!workspaceRoot || role !== "writer") {
     return false;
@@ -543,9 +543,9 @@ function ownsRemainingRequestEndToEnd(
   );
   const ownsWorkspaceRoot = artifactRelations.some((relation) =>
     relation.relationType === "write_owner" &&
-      relation.artifactPath.trim() === workspaceRoot
+      normalizeWorkspaceRoot(relation.artifactPath) === workspaceRoot
   ) || (executionContext?.targetArtifacts ?? []).some((artifactPath) =>
-    artifactPath.trim() === workspaceRoot
+    normalizeWorkspaceRoot(artifactPath) === workspaceRoot
   );
   if (!ownsWorkspaceRoot) {
     return false;
@@ -789,15 +789,9 @@ export function assessDelegationAdmission(
     });
   }
 
-  const requiredOrchestration =
-    extractRequiredSubagentOrchestrationRequirements(input.messageText);
-  const allowUserMandatedCardinality =
-    allowsUserMandatedSubagentCardinalityOverride(requiredOrchestration);
-
   if (
     hasRuntimeLimit(input.maxFanoutPerTurn) &&
-    input.steps.length > input.maxFanoutPerTurn &&
-    !allowUserMandatedCardinality
+    input.steps.length > input.maxFanoutPerTurn
   ) {
     return buildDecision({
       allowed: false,
@@ -886,17 +880,6 @@ export function assessDelegationAdmission(
         ...diagnostics,
         parentSafeReadOnlyInspection: true,
       },
-    });
-  }
-
-  if (isSharedContextReadOnlyReview(input, economics)) {
-    return buildDecision({
-      allowed: false,
-      reason: "shared_context_review",
-      shape,
-      economics,
-      stepAdmissions,
-      diagnostics,
     });
   }
 

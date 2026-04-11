@@ -15,7 +15,7 @@ import type {
 import { GatewayConnectionError } from "../gateway/errors.js";
 import { isRecord } from "../utils/type-guards.js";
 
-export interface HostedChannelPluginOptions<
+interface HostedChannelPluginOptions<
   TConfig extends Record<string, unknown> = Record<string, unknown>,
 > {
   readonly manifest: ChannelAdapterManifest;

@@ -11,6 +11,8 @@ import type {
   LLMCompactionDiagnostics,
   LLMProviderTraceEvent,
   LLMResponse,
+  LLMStructuredOutputRequest,
+  LLMStructuredOutputResult,
   LLMUsage,
   LLMRequestMetrics,
   LLMStatefulDiagnostics,
@@ -33,34 +35,23 @@ import type {
 import type {
   Pipeline,
   PipelineExecutionOptions,
-  PipelinePlannerContext,
   PipelineResult,
-  PipelineStep,
 } from "../workflow/pipeline.js";
 import type { ArtifactCompactionState } from "../memory/artifact-store.js";
-import type { WorkflowGraphEdge } from "../workflow/types.js";
+import type { ExecutionEnvelope } from "../workflow/execution-envelope.js";
 import type { ImplementationCompletionContract } from "../workflow/completion-contract.js";
-import type {
-  ExecutionEnvelope,
-  WorkflowArtifactRelation,
-  WorkflowStepRole,
-} from "../workflow/execution-envelope.js";
 import type { WorkflowCompletionState } from "../workflow/completion-state.js";
 import type { WorkflowProgressSnapshot } from "../workflow/completion-progress.js";
 import type {
   WorkflowVerificationContract,
 } from "../workflow/verification-obligations.js";
-import type { DelegationDecision, DelegationDecisionConfig } from "./delegation-decision.js";
-import type { DelegationExecutionContext } from "../utils/delegation-execution-context.js";
 import type {
-  DelegationBudgetSnapshot,
   RuntimeEconomicsPolicy,
   RuntimeEconomicsState,
   RuntimeEconomicsSummary,
   RuntimeRunClass,
 } from "./run-budget.js";
 import {
-  buildDelegationBudgetSnapshot,
   createRuntimeEconomicsState,
 } from "./run-budget.js";
 import type { ModelRoutingPolicy } from "./model-routing-policy.js";
@@ -69,14 +60,31 @@ import type {
   DelegationOutputValidationCode,
 } from "../utils/delegation-validation.js";
 import type { HostToolingProfile } from "../gateway/host-tooling.js";
-import type { ArtifactTaskContract } from "./chat-executor-artifact-task.js";
+import type { AgentDefinition } from "../gateway/agent-loader.js";
+import type { DelegationVerifierService } from "../gateway/delegation-runtime.js";
+import type { SubAgentManager } from "../gateway/sub-agent.js";
+import type { TaskStore } from "../tools/system/task-tracker.js";
+import type { SystemRemoteJobManager } from "../tools/system/remote-job.js";
+import type { ActiveTaskContext, TurnExecutionContract } from "./turn-execution-contract-types.js";
 import type {
-  DelegationBanditPolicyTuner,
-  DelegationBanditSelection,
-  DelegationTrajectorySink,
-} from "./delegation-learning.js";
-import { deriveDelegationContextClusterId } from "./delegation-learning.js";
+  RuntimeContractFlags,
+  RuntimeContractSnapshot,
+} from "../runtime-contract/types.js";
+import type { StopHookRuntime } from "./hooks/stop-hooks.js";
+import { createRuntimeContractSnapshot } from "../runtime-contract/types.js";
 import { RuntimeError, RuntimeErrorCodes } from "../types/errors.js";
+import {
+  createToolProtocolState,
+  type ToolProtocolState,
+} from "./tool-protocol-state.js";
+import {
+  createPerIterationCompactionState,
+  type PerIterationCompactionState,
+} from "./compact/index.js";
+import {
+  createRequestTaskProgressState,
+  type RequestTaskProgressState,
+} from "./request-task-progress.js";
 
 // ============================================================================
 // Error classes
@@ -137,31 +145,35 @@ export interface ToolCallRecord {
   readonly result: string;
   readonly isError: boolean;
   readonly durationMs: number;
+  readonly toolCallId?: string;
+  readonly synthetic?: boolean;
+  readonly protocolRepairReason?: string;
 }
 
-export type ChatExecutionTraceEventType =
-  | "completion_gate_checked"
-  | "contract_guidance_resolved"
+type ChatExecutionTraceEventType =
+  | "completion_validator_finished"
+  | "completion_validator_started"
+  | "completion_validation_finished"
+  | "completion_validation_started"
+  | "compaction_triggered"
   | "context_injected"
   | "model_call_prepared"
-  | "planner_path_finished"
-  | "planner_pipeline_finished"
-  | "planner_synthesis_fallback_applied"
-  | "planner_pipeline_started"
-  | "planner_plan_parsed"
-  | "planner_refinement_requested"
-  | "planner_step_state_changed"
-  | "planner_verifier_retry_scheduled"
-  | "planner_verifier_round_finished"
   | "recovery_hints_injected"
   | "route_expanded"
+  | "runtime_contract_snapshot"
+  | "stop_hook_blocked"
+  | "stop_hook_execution_finished"
+  | "stop_hook_exhausted"
+  | "stop_hook_retry_requested"
+  | "stop_gate_intervention"
   | "tool_arguments_invalid"
   | "tool_loop_stuck_detected"
-  | "tool_round_budget_finalization_finished"
-  | "tool_round_budget_extension_evaluated"
-  | "tool_round_budget_extended"
   | "tool_dispatch_finished"
   | "tool_dispatch_started"
+  | "tool_protocol_opened"
+  | "tool_protocol_repaired"
+  | "tool_protocol_result_recorded"
+  | "tool_protocol_violation"
   | "tool_rejected";
 
 export interface ChatExecutionTraceEvent {
@@ -177,10 +189,14 @@ export interface ChatExecuteParams {
   readonly history: readonly LLMMessage[];
   readonly systemPrompt: string;
   readonly sessionId: string;
+  /** Optional request-scoped structured output contract. */
+  readonly structuredOutput?: LLMStructuredOutputRequest;
   /** Runtime-owned execution context resolved before model/planner execution. */
   readonly runtimeContext?: {
     /** Authoritative workspace root for planning/execution when known. */
     readonly workspaceRoot?: string;
+    /** Typed active-task carryover used only when the current turn explicitly continues that task. */
+    readonly activeTaskContext?: ActiveTaskContext;
   };
   /** Per-call tool handler — overrides the constructor handler for this call. */
   readonly toolHandler?: ToolHandler;
@@ -224,8 +240,6 @@ export interface ChatExecuteParams {
     readonly verificationContract?: WorkflowVerificationContract;
     /** Optional completion contract for implementation-class tasks. */
     readonly completionContract?: ImplementationCompletionContract;
-    /** Optional direct-owner artifact update contract for explicit artifact tasks. */
-    readonly artifactTaskContract?: ArtifactTaskContract;
     /** Optional execution envelope used to bound top-level tool access for explicit artifact tasks. */
     readonly executionEnvelope?: ExecutionEnvelope;
   };
@@ -261,12 +275,7 @@ export interface ChatCallUsageRecord {
   readonly phase:
     | "compaction"
     | "initial"
-    | "planner"
-    | "planner_verifier"
-    | "planner_synthesis"
-    | "tool_followup"
-    | "evaluator"
-    | "evaluator_retry";
+    | "tool_followup";
   readonly provider: string;
   readonly model?: string;
   readonly finishReason: LLMResponse["finishReason"];
@@ -297,30 +306,6 @@ export interface ChatPlannerSummary {
   readonly estimatedRecallsAvoided: number;
   /** Structured planner parse/validation/policy diagnostics for this turn. */
   readonly diagnostics?: readonly PlannerDiagnostic[];
-  /** Sub-agent delegation utility decision for planner-emitted subagent tasks. */
-  readonly delegationDecision?: DelegationDecision;
-  /** Sub-agent verification/critic pass summary. */
-  readonly subagentVerification?: {
-    readonly enabled: boolean;
-    readonly performed: boolean;
-    readonly rounds: number;
-    readonly overall: "pass" | "retry" | "fail" | "skipped";
-    readonly confidence: number;
-    readonly unresolvedItems: readonly string[];
-  };
-  /** Online policy tuning diagnostics for delegation arm selection. */
-  readonly delegationPolicyTuning?: {
-    readonly enabled: boolean;
-    readonly contextClusterId?: string;
-    readonly selectedArmId?: string;
-    readonly selectedArmReason?: string;
-    readonly tunedThreshold?: number;
-    readonly exploration: boolean;
-    readonly finalReward?: number;
-    readonly usefulDelegation?: boolean;
-    readonly usefulDelegationScore?: number;
-    readonly rewardProxyVersion?: string;
-  };
 }
 
 export interface PlannerDiagnostic {
@@ -357,6 +342,8 @@ export interface ChatExecutorResult {
   readonly usedFallback: boolean;
   readonly toolCalls: readonly ToolCallRecord[];
   readonly providerEvidence?: LLMProviderEvidence;
+  /** Structured output returned by the provider when requested. */
+  readonly structuredOutput?: LLMStructuredOutputResult;
   readonly tokenUsage: LLMUsage;
   /** Per-call token and prompt-shape attribution for this execution. */
   readonly callUsage: readonly ChatCallUsageRecord[];
@@ -377,12 +364,18 @@ export interface ChatExecutorResult {
   readonly completionState: WorkflowCompletionState;
   /** Structured progress snapshot for long-horizon resume/recovery flows. */
   readonly completionProgress?: WorkflowProgressSnapshot;
+  /** Verifier snapshot observed by the executor-owned completion chain. */
+  readonly verifierSnapshot?: import("../workflow/completion-state.js").PlannerVerificationSnapshot;
+  /** Runtime-contract flags, validator outcomes, and verifier state for this turn. */
+  readonly runtimeContractSnapshot?: RuntimeContractSnapshot;
+  /** Single preflight execution contract that governed this turn. */
+  readonly turnExecutionContract: TurnExecutionContract;
+  /** Typed task carryover emitted for the next compatible turn, when applicable. */
+  readonly activeTaskContext?: ActiveTaskContext;
   /** Optional detail for non-completed stop reasons. */
   readonly stopReasonDetail?: string;
   /** Optional delegated-output validation code associated with a validation_error stop. */
   readonly validationCode?: DelegationOutputValidationCode;
-  /** Result of response evaluation, if evaluator is configured. */
-  readonly evaluation?: EvaluationResult;
 }
 
 /** Minimal pipeline executor interface required by ChatExecutor planner path. */
@@ -420,6 +413,52 @@ export interface ChatExecutorConfig {
   readonly memoryRetriever?: MemoryRetriever;
   readonly allowedTools?: readonly string[];
   /**
+   * Cut 5.2: optional hook registry. When provided, the chat-executor
+   * fires PreToolUse / PostToolUse / PostToolUseFailure hooks at the
+   * tool dispatch boundary. With no registry the hook code paths
+   * short-circuit and behavior is unchanged.
+   */
+  readonly hookRegistry?: import("./hooks/index.js").HookRegistry;
+  /**
+   * Cut 5.7: optional canUseTool seam. When provided, the runtime
+   * calls this before every tool dispatch and honors deny/ask/allow
+   * with optional updatedInput. Callers can wrap a
+   * ToolPermissionEvaluator via `evaluatorToCanUseTool()` to plug the
+   * unified policy pipeline through this single hook.
+   */
+  readonly canUseTool?: import("./can-use-tool.js").CanUseToolFn;
+  /**
+   * Cut 5.5: optional concurrency-safety predicate. When provided,
+   * the tool loop emits a per-round partition trace identifying which
+   * batches could have been dispatched in parallel. Dispatch itself
+   * remains serial.
+   */
+  readonly isConcurrencySafe?: import("./tool-orchestration.js").IsConcurrencySafeFn;
+  /**
+   * Cut 5.3: tool result budget config. When set, oversized tool
+   * results are persisted to disk and replaced in the message history
+   * with a `<persisted-output>` placeholder pointing at the file
+   * path. Per-session ContentReplacementState is owned by the
+   * executor; callers only need to supply the budget config.
+   */
+  readonly toolResultBudget?: import("./tool-result-budget.js").ToolBudgetConfig;
+  /**
+   * Phase N: optional memory consolidation hook. When set, the
+   * per-iteration compaction chain invokes the hook after the
+   * autocompact decision layer and appends any synthetic summary
+   * message it returns to the boundary list. The executor threads
+   * this through to `runPerIterationCompactionBeforeModelCall`
+   * and ultimately `applyPerIterationCompaction`. Callers wire
+   * `memory/consolidation.ts:consolidateEpisodicSlice` here for
+   * deterministic in-memory slice consolidation. Off by default.
+   */
+  readonly consolidationHook?: (
+    messages: readonly import("./types.js").LLMMessage[],
+  ) => {
+    readonly action: "noop" | "consolidated";
+    readonly summaryMessage?: import("./types.js").LLMMessage;
+  };
+  /**
    * Maximum token budget per session. When cumulative usage meets or exceeds
    * this value, the executor attempts to compact conversation history by
    * summarizing older messages. If compaction fails, falls back to
@@ -434,8 +473,6 @@ export interface ChatExecutorConfig {
   readonly sessionCompactionThreshold?: number;
   /** Callback when context compaction occurs (budget recovery). */
   readonly onCompaction?: (sessionId: string, summary: string) => void;
-  /** Optional response evaluator/critic configuration. */
-  readonly evaluator?: EvaluatorConfig;
   /** Optional provider that injects self-learning context per message. */
   readonly learningProvider?: MemoryRetriever;
   /** Optional provider that injects cross-session progress context per message. */
@@ -463,27 +500,6 @@ export interface ChatExecutorConfig {
   readonly delegationNestingDepth?: number;
   /** Optional deterministic workflow executor used when planner emits executable steps. */
   readonly pipelineExecutor?: DeterministicPipelineExecutor;
-  /** Delegation utility scoring controls for planner-emitted subagent tasks. */
-  readonly delegationDecision?: DelegationDecisionConfig;
-  /** Optional live resolver for delegation threshold overrides. */
-  readonly resolveDelegationScoreThreshold?: () => number | undefined;
-  /** Optional verifier/critic loop for planner-emitted subagent outputs. */
-  readonly subagentVerifier?: {
-    /** Enable verifier flow for planner-emitted subagent steps. */
-    readonly enabled?: boolean;
-    /** Enforce verification whenever subagent steps execute. */
-    readonly force?: boolean;
-    /** Minimum confidence required to accept child outputs. */
-    readonly minConfidence?: number;
-    /** Max verification rounds (initial verification included). */
-    readonly maxRounds?: number;
-  };
-  /** Optional delegation learning hooks (trajectory sink + online bandit tuner). */
-  readonly delegationLearning?: {
-    readonly trajectorySink?: DelegationTrajectorySink;
-    readonly banditTuner?: DelegationBanditPolicyTuner;
-    readonly defaultStrategyArmId?: string;
-  };
   /** Maximum tool calls allowed for a single execute() invocation. */
   readonly toolBudgetPerRequest?: number;
   /** Maximum model recalls (calls after the first) for a single execute() invocation. 0 = unlimited. */
@@ -508,27 +524,30 @@ export interface ChatExecutorConfig {
   readonly modelRoutingPolicy?: ModelRoutingPolicy;
   /** Force all calls in this executor instance into one run class (used for child runs). */
   readonly defaultRunClass?: RuntimeRunClass;
-}
-
-// ============================================================================
-// Evaluator types
-// ============================================================================
-
-/** Configuration for optional response evaluation/critic. */
-export interface EvaluatorConfig {
-  readonly rubric?: string;
-  /** Minimum score (0.0–1.0) to accept the response. Default: 0.7. */
-  readonly minScore?: number;
-  /** Maximum retry attempts when score is below threshold. Default: 1. */
-  readonly maxRetries?: number;
-}
-
-/** Result of a response evaluation. */
-export interface EvaluationResult {
-  readonly score: number;
-  readonly feedback: string;
-  readonly passed: boolean;
-  readonly retryCount: number;
+  /** Resolved runtime-contract flags active for this executor instance. */
+  readonly runtimeContractFlags?: RuntimeContractFlags;
+  /** Optional runtime-owned stop-hook chain used by validators and task/worker gates. */
+  readonly stopHookRuntime?: StopHookRuntime;
+  /** Optional runtime services for executor-owned completion validation. */
+  readonly completionValidation?: {
+    readonly topLevelVerifier?: {
+      readonly subAgentManager?: Pick<SubAgentManager, "spawn" | "waitForResult"> | null;
+      readonly verifierService?: Pick<
+        DelegationVerifierService,
+        "resolveVerifierRequirement" | "shouldVerifySubAgentResult"
+      > | null;
+      readonly agentDefinitions?: readonly AgentDefinition[];
+      readonly logger?: import("../utils/logger.js").Logger;
+      readonly taskStore?: TaskStore | null;
+      readonly remoteJobManager?: Pick<
+        SystemRemoteJobManager,
+        "start" | "handleWebhook"
+      > | null;
+      readonly onTraceEvent?: (
+        event: import("../gateway/top-level-verifier.js").TopLevelVerifierTraceEvent,
+      ) => void | Promise<void>;
+    };
+  };
 }
 
 // ============================================================================
@@ -559,6 +578,7 @@ export interface FallbackResult {
   afterBudget: ChatPromptShape;
   budgetDiagnostics: PromptBudgetDiagnostics;
   durationMs: number;
+  streamedContent: string;
 }
 
 export interface RecoveryHint {
@@ -573,215 +593,13 @@ export interface PlannerDecision {
   artifactTargets?: readonly string[];
 }
 
-export type PlannerStepType = "deterministic_tool" | "subagent_task" | "synthesis";
-
-export interface PlannerStepBaseIntent {
-  name: string;
-  stepType: PlannerStepType;
-  dependsOn?: readonly string[];
-}
-
-export type WorkflowContractClass =
-  | "artifact_review_and_rewrite"
-  | "implementation_with_verification"
-  | "validation_only"
-  | "read_only_review"
-  | "research_and_synthesis";
-
-export interface WorkflowStepContract {
-  readonly name: string;
-  readonly role: WorkflowStepRole;
-  readonly objective: string;
-  readonly inputContract: string;
-  readonly acceptanceCriteria: readonly string[];
-  readonly requiredToolCapabilities: readonly string[];
-  readonly contextRequirements: readonly string[];
-  readonly executionContext?: ExecutionEnvelope;
-  readonly artifactRelations: readonly WorkflowArtifactRelation[];
-}
-
-export interface WorkflowContract {
-  readonly workflowClass: WorkflowContractClass;
-  readonly steps: readonly WorkflowStepContract[];
-  readonly requiredChildren?: {
-    readonly cardinality?: number;
-    readonly roles?: readonly WorkflowStepRole[];
-    readonly exactNames?: readonly string[];
-  };
-}
-
-export interface PlannerDeterministicToolStepIntent extends PlannerStepBaseIntent {
-  stepType: "deterministic_tool";
-  tool: string;
-  args: Record<string, unknown>;
-  onError?: PipelineStep["onError"];
-  maxRetries?: number;
-}
-
-export interface PlannerSubAgentTaskStepIntent extends PlannerStepBaseIntent {
-  stepType: "subagent_task";
-  objective: string;
-  inputContract: string;
-  acceptanceCriteria: readonly string[];
-  requiredToolCapabilities: readonly string[];
-  contextRequirements: readonly string[];
-  executionContext?: DelegationExecutionContext;
-  workflowStep?: WorkflowStepContract;
-  maxBudgetHint: string;
-  canRunParallel: boolean;
-}
-
-export interface PlannerVerifierWorkItem {
-  readonly name: string;
-  readonly verificationKind: "subagent_output" | "deterministic_implementation";
-  readonly objective: string;
-  readonly inputContract: string;
-  readonly acceptanceCriteria: readonly string[];
-  readonly requiredToolCapabilities: readonly string[];
-  readonly resultStepNames?: readonly string[];
-  readonly verificationContract?: WorkflowVerificationContract;
-}
-
-export type PlannerWorkflowTaskClassification =
-  | "implementation_class"
-  | "docs_research_plan_only"
-  | "invalid";
-
-export interface PlannerWorkflowAdmission {
-  readonly taskClassification: PlannerWorkflowTaskClassification;
-  readonly verificationContract?: WorkflowVerificationContract;
-  readonly completionContract?: ImplementationCompletionContract;
-  readonly verifierWorkItems: readonly PlannerVerifierWorkItem[];
-  readonly requiresMandatoryImplementationVerification: boolean;
-  readonly requiresMandatorySubagentOutputVerification: boolean;
-  readonly invalidReason?: string;
-}
-
-export interface PlannerSynthesisStepIntent extends PlannerStepBaseIntent {
-  stepType: "synthesis";
-  objective?: string;
-}
-
-export type PlannerStepIntent =
-  | PlannerDeterministicToolStepIntent
-  | PlannerSubAgentTaskStepIntent
-  | PlannerSynthesisStepIntent;
-
-export interface PlannerPlan {
-  reason?: string;
-  requiresSynthesis?: boolean;
-  confidence?: number;
-  steps: PlannerStepIntent[];
-  edges: readonly WorkflowGraphEdge[];
-  workflowContract?: WorkflowContract;
-}
-
-export interface PlannerParseResult {
-  readonly plan?: PlannerPlan;
-  readonly diagnostics: readonly PlannerDiagnostic[];
-}
-
-export interface PlannerGraphValidationConfig {
-  readonly maxSubagentFanout: number;
-  readonly maxSubagentDepth: number;
-  readonly workspaceRoot?: string;
-}
-
-export type SubagentVerifierStepVerdict = "pass" | "retry" | "fail";
-
-export interface SubagentVerifierStepAssessment {
-  readonly name: string;
-  readonly verdict: SubagentVerifierStepVerdict;
-  readonly confidence: number;
-  readonly retryable: boolean;
-  readonly issues: readonly string[];
-  readonly summary: string;
-}
-
-export interface SubagentVerifierDecision {
-  readonly overall: "pass" | "retry" | "fail";
-  readonly confidence: number;
-  readonly unresolvedItems: readonly string[];
-  readonly steps: readonly SubagentVerifierStepAssessment[];
-  readonly source: "deterministic" | "model" | "merged";
-}
-
-export interface ResolvedSubagentVerifierConfig {
-  readonly enabled: boolean;
-  readonly force: boolean;
-  readonly minConfidence: number;
-  readonly maxRounds: number;
-}
-
-export interface MutablePlannerVerificationSummary {
-  enabled: boolean;
-  performed: boolean;
-  rounds: number;
-  overall: "pass" | "retry" | "fail" | "skipped";
-  confidence: number;
-  unresolvedItems: string[];
-}
-
-export interface MutablePlannerSummaryState {
+interface MutablePlannerSummaryState {
   deterministicStepsExecuted: number;
   diagnostics: PlannerDiagnostic[];
-  subagentVerification: MutablePlannerVerificationSummary;
-}
-
-export interface PlannerPipelineVerifierLoopInput {
-  pipeline: Pipeline;
-  plannerPlan: PlannerPlan;
-  verifierWorkItems: readonly PlannerVerifierWorkItem[];
-  deterministicSteps: readonly PlannerDeterministicToolStepIntent[];
-  plannerExecutionContext: PipelinePlannerContext;
-  shouldRunPlannerVerifier: boolean;
-  requiresMandatoryImplementationVerification: boolean;
-  requiresMandatorySubagentOutputVerification: boolean;
-  plannerSummaryState: MutablePlannerSummaryState;
-  checkRequestTimeout: (stage: string) => boolean;
-  runPipelineWithGlobalTimeout: (
-    pipeline: Pipeline,
-  ) => Promise<PipelineResult | undefined>;
-  runPlannerVerifierRound: (input: {
-    plannerPlan: PlannerPlan;
-    verifierWorkItems: readonly PlannerVerifierWorkItem[];
-    pipelineResult: PipelineResult;
-    plannerToolCalls: readonly ToolCallRecord[];
-    plannerContext: PipelinePlannerContext;
-    round: number;
-    requiresMandatoryImplementationVerification: boolean;
-  }) => Promise<SubagentVerifierDecision>;
-  onVerifierRoundFinished?: (payload: {
-    executionRound: number;
-    verifierRound: number;
-    overall: SubagentVerifierDecision["overall"];
-    confidence: number;
-    minConfidence: number;
-    belowConfidence: boolean;
-    retryable: boolean;
-    canRetry: boolean;
-    unresolvedItems: readonly string[];
-    pipelineStatus: PipelineResult["status"];
-    completedSteps: number;
-    totalSteps: number;
-  }) => void;
-  onVerifierRetryScheduled?: (payload: {
-    executionRound: number;
-    verifierRound: number;
-    nextExecutionRound: number;
-    overall: SubagentVerifierDecision["overall"];
-    confidence: number;
-    minConfidence: number;
-    unresolvedItems: readonly string[];
-    completedSteps: number;
-    totalSteps: number;
-  }) => void;
-  appendToolRecord: (record: ToolCallRecord) => void;
-  setStopReason: (reason: LLMPipelineStopReason, detail?: string) => void;
 }
 
 /** Full planner summary state — extends the subset used by executePlannerPipelineWithVerifier. */
-export interface FullPlannerSummaryState extends MutablePlannerSummaryState {
+interface FullPlannerSummaryState extends MutablePlannerSummaryState {
   enabled: boolean;
   used: boolean;
   routeReason: string;
@@ -789,19 +607,6 @@ export interface FullPlannerSummaryState extends MutablePlannerSummaryState {
   plannerCalls: number;
   plannedSteps: number;
   estimatedRecallsAvoided: number;
-  delegationDecision: DelegationDecision | undefined;
-  delegationPolicyTuning: {
-    enabled: boolean;
-    contextClusterId: string | undefined;
-    selectedArmId: string | undefined;
-    selectedArmReason: string | undefined;
-    tunedThreshold: number | undefined;
-    exploration: boolean;
-    finalReward: number | undefined;
-    usefulDelegation: boolean | undefined;
-    usefulDelegationScore: number | undefined;
-    rewardProxyVersion: string | undefined;
-  };
 }
 
 /** Loop-local mutable state shared across tool calls within a single round. */
@@ -828,7 +633,9 @@ export interface ExecutionContext {
   readonly messageText: string;
   readonly systemPrompt: string;
   readonly sessionId: string;
+  readonly structuredOutput?: ChatExecuteParams["structuredOutput"];
   readonly runtimeWorkspaceRoot?: string;
+  readonly turnExecutionContract: TurnExecutionContract;
   readonly signal?: AbortSignal;
   readonly activeToolHandler?: ToolHandler;
   readonly activeStreamCallback?: StreamProgressCallback;
@@ -839,14 +646,11 @@ export interface ExecutionContext {
   readonly effectiveRequestTimeoutMs: number;
   readonly startTime: number;
   readonly requestDeadlineAt: number;
-  readonly parentTurnId: string;
-  readonly trajectoryTraceId: string;
   readonly initialRoutedToolNames: readonly string[];
   readonly expandedRoutedToolNames: readonly string[];
   readonly canExpandOnRoutingMiss: boolean;
   readonly hasHistory: boolean;
   readonly plannerDecision: PlannerDecision;
-  readonly baseDelegationThreshold: number;
   readonly toolRouting?: ChatExecuteParams["toolRouting"];
   readonly stateful?: ChatExecuteParams["stateful"];
   readonly requiredToolEvidence?: {
@@ -855,11 +659,12 @@ export interface ExecutionContext {
     readonly unsafeBenchmarkMode?: boolean;
     readonly verificationContract?: WorkflowVerificationContract;
     readonly completionContract?: ImplementationCompletionContract;
-    readonly artifactTaskContract?: ArtifactTaskContract;
     readonly executionEnvelope?: ExecutionEnvelope;
   };
   readonly trace?: ChatExecuteParams["trace"];
   readonly defaultRunClass?: RuntimeRunClass;
+  readonly runtimeContractFlags: RuntimeContractFlags;
+  readonly completionValidation?: ChatExecutorConfig["completionValidation"];
 
   // --- Mutable accumulator state ---
   history: readonly LLMMessage[];
@@ -873,51 +678,40 @@ export interface ExecutionContext {
   allToolCalls: ToolCallRecord[];
   failedToolCalls: number;
   activeRecoveryHintKeys: string[];
+  activeRuntimeReminderKeys: Set<string>;
   providerEvidence: LLMProviderEvidence | undefined;
   usedFallback: boolean;
   providerName: string;
   responseModel?: string;
   response?: LLMResponse;
-  evaluation?: EvaluationResult;
   finalContent: string;
+  lastModelStreamedContent: string;
   compacted: boolean;
   compactedArtifactContext?: ArtifactCompactionState;
   stopReason: LLMPipelineStopReason;
   completionState: WorkflowCompletionState;
+  verifierSnapshot?: import("../workflow/completion-state.js").PlannerVerificationSnapshot;
+  runtimeContractSnapshot: RuntimeContractSnapshot;
+  toolProtocolState: ToolProtocolState;
   stopReasonDetail?: string;
   validationCode?: DelegationOutputValidationCode;
   activeRoutedToolNames: readonly string[];
   transientRoutedToolNames: readonly string[] | undefined;
   routedToolsExpanded: boolean;
   routedToolMisses: number;
-  plannerHandled: boolean;
-  plannerImplementationFallbackBlocked: boolean;
-  plannerWorkflowTaskClassification?: PlannerWorkflowTaskClassification;
-  plannerVerificationContract?: WorkflowVerificationContract;
-  plannerCompletionContract?: ImplementationCompletionContract;
-  plannerFailedStep?: {
-    readonly stepName?: string;
-    readonly stepIndex?: number;
-    readonly tool?: string;
-    readonly error?: string;
-  };
-  plannerTerminalFallback?: {
-    readonly kind: "planner_synthesis_fallback";
-    readonly reason: string;
-  };
   plannerSummaryState: FullPlannerSummaryState;
-  trajectoryContextClusterId: string;
-  selectedBanditArm?: DelegationBanditSelection;
-  tunedDelegationThreshold: number;
-  plannedSubagentSteps: number;
-  plannedDeterministicSteps: number;
-  plannedSynthesisSteps: number;
-  plannedDependencyDepth: number;
-  plannedFanout: number;
+  requestTaskState: RequestTaskProgressState;
   completedRequestMilestoneIds: readonly string[];
-  requiredToolEvidenceCorrectionAttempts: number;
   economicsState: RuntimeEconomicsState;
-  delegationBudgetSnapshot?: DelegationBudgetSnapshot;
+  /**
+   * Per-iteration compaction state composed across snip, microcompact,
+   * and autocompact layers. Replaced on every provider call in
+   * `executeToolCallLoop` via `applyPerIterationCompaction`. Persisted
+   * across requests via the executor's session state map so cold-
+   * session snip and microcompact layers can observe the inter-request
+   * idle gap. See `runtime/src/llm/compact/index.ts`.
+   */
+  perIterationCompaction: PerIterationCompactionState;
 }
 
 // ============================================================================
@@ -925,12 +719,14 @@ export interface ExecutionContext {
 // ============================================================================
 
 /** Parameters for building the default ExecutionContext object. */
-export interface BuildExecutionContextParams {
+interface BuildExecutionContextParams {
   readonly message: GatewayMessage;
   readonly messageText: string;
   readonly systemPrompt: string;
   readonly sessionId: string;
+  readonly structuredOutput?: ChatExecuteParams["structuredOutput"];
   readonly runtimeContext?: ChatExecuteParams["runtimeContext"];
+  readonly turnExecutionContract: TurnExecutionContract;
   readonly signal?: AbortSignal;
   readonly history: readonly LLMMessage[];
   readonly plannerDecision: PlannerDecision;
@@ -943,11 +739,10 @@ export interface BuildExecutionContextParams {
   readonly trace?: ChatExecuteParams["trace"];
   readonly initialRoutedToolNames: readonly string[];
   readonly expandedRoutedToolNames: readonly string[];
-  readonly baseDelegationThreshold: number;
 }
 
 /** Configuration values from ChatExecutor instance needed for context building. */
-export interface BuildExecutionContextConfig {
+interface BuildExecutionContextConfig {
   readonly maxToolRounds: number;
   readonly toolBudgetPerRequest: number;
   readonly maxModelRecallsPerRequest: number;
@@ -956,11 +751,10 @@ export interface BuildExecutionContextConfig {
   readonly requestTimeoutMs: number;
   readonly providerName: string;
   readonly plannerEnabled: boolean;
-  readonly subagentVerifierEnabled: boolean;
-  readonly delegationBanditTunerEnabled: boolean;
-  readonly delegationScoreThreshold: number;
   readonly defaultRunClass?: RuntimeRunClass;
   readonly economicsPolicy: RuntimeEconomicsPolicy;
+  readonly runtimeContractFlags: RuntimeContractFlags;
+  readonly completionValidation?: ChatExecutorConfig["completionValidation"];
 }
 
 /** Build the default ExecutionContext object with all mutable state initialized. */
@@ -977,7 +771,10 @@ export function buildDefaultExecutionContext(
     messageText: params.messageText,
     systemPrompt: params.systemPrompt,
     sessionId: params.sessionId,
-    runtimeWorkspaceRoot: params.runtimeContext?.workspaceRoot,
+    structuredOutput: params.structuredOutput,
+    runtimeWorkspaceRoot:
+      params.turnExecutionContract.workspaceRoot ?? params.runtimeContext?.workspaceRoot,
+    turnExecutionContract: params.turnExecutionContract,
     signal: params.signal,
     activeToolHandler: params.toolHandler,
     activeStreamCallback: params.streamCallback,
@@ -991,8 +788,6 @@ export function buildDefaultExecutionContext(
       config.requestTimeoutMs > 0
         ? startTime + config.requestTimeoutMs
         : Number.POSITIVE_INFINITY,
-    parentTurnId: `parent:${params.sessionId}:${startTime}`,
-    trajectoryTraceId: `trace:${params.sessionId}:${startTime}`,
     initialRoutedToolNames: params.initialRoutedToolNames,
     expandedRoutedToolNames: params.expandedRoutedToolNames,
     canExpandOnRoutingMiss: Boolean(
@@ -1001,7 +796,6 @@ export function buildDefaultExecutionContext(
     ),
     hasHistory,
     plannerDecision: params.plannerDecision,
-    baseDelegationThreshold: params.baseDelegationThreshold,
     toolRouting: params.toolRouting,
     stateful: params.stateful,
     trace: params.trace,
@@ -1016,10 +810,11 @@ export function buildDefaultExecutionContext(
         unsafeBenchmarkMode: params.requiredToolEvidence.unsafeBenchmarkMode,
         verificationContract: params.requiredToolEvidence.verificationContract,
         completionContract: params.requiredToolEvidence.completionContract,
-        artifactTaskContract: params.requiredToolEvidence.artifactTaskContract,
         executionEnvelope: params.requiredToolEvidence.executionEnvelope,
       }
       : undefined,
+    runtimeContractFlags: config.runtimeContractFlags,
+    completionValidation: config.completionValidation,
 
     // --- Mutable accumulator state ---
     history: params.history,
@@ -1037,30 +832,29 @@ export function buildDefaultExecutionContext(
     allToolCalls: [],
     failedToolCalls: 0,
     activeRecoveryHintKeys: [],
+    activeRuntimeReminderKeys: new Set<string>(),
     providerEvidence: undefined,
     usedFallback: false,
     providerName: config.providerName,
     responseModel: undefined,
     response: undefined,
-    evaluation: undefined,
     finalContent: "",
+    lastModelStreamedContent: "",
     compacted: params.compacted,
     compactedArtifactContext: params.stateful?.artifactContext,
     stopReason: "completed",
     completionState: "completed",
+    verifierSnapshot: undefined,
+    runtimeContractSnapshot: createRuntimeContractSnapshot(
+      config.runtimeContractFlags,
+    ),
+    toolProtocolState: createToolProtocolState(),
     stopReasonDetail: undefined,
     validationCode: undefined,
     activeRoutedToolNames: params.initialRoutedToolNames,
     transientRoutedToolNames: undefined,
     routedToolsExpanded: false,
     routedToolMisses: 0,
-    plannerHandled: false,
-    plannerImplementationFallbackBlocked: false,
-    plannerWorkflowTaskClassification: undefined,
-    plannerVerificationContract: undefined,
-    plannerCompletionContract: undefined,
-    plannerFailedStep: undefined,
-    plannerTerminalFallback: undefined,
     plannerSummaryState: {
       enabled: config.plannerEnabled,
       used: false,
@@ -1071,47 +865,10 @@ export function buildDefaultExecutionContext(
       deterministicStepsExecuted: 0,
       estimatedRecallsAvoided: 0,
       diagnostics: [] as PlannerDiagnostic[],
-      delegationDecision: undefined as DelegationDecision | undefined,
-      subagentVerification: {
-        enabled: config.subagentVerifierEnabled,
-        performed: false,
-        rounds: 0,
-        overall: "skipped" as "pass" | "retry" | "fail" | "skipped",
-        confidence: 1,
-        unresolvedItems: [] as string[],
-      },
-      delegationPolicyTuning: {
-        enabled: config.delegationBanditTunerEnabled,
-        contextClusterId: undefined as string | undefined,
-        selectedArmId: undefined as string | undefined,
-        selectedArmReason: undefined as string | undefined,
-        tunedThreshold: undefined as number | undefined,
-        exploration: false,
-        finalReward: undefined as number | undefined,
-        usefulDelegation: undefined as boolean | undefined,
-        usefulDelegationScore: undefined as number | undefined,
-        rewardProxyVersion: undefined as string | undefined,
-      },
     },
-    trajectoryContextClusterId: deriveDelegationContextClusterId({
-      complexityScore: params.plannerDecision.score,
-      subagentStepCount: 0,
-      hasHistory,
-      highRiskPlan: false,
-    }),
-    selectedBanditArm: undefined,
-    tunedDelegationThreshold: params.baseDelegationThreshold,
-    plannedSubagentSteps: 0,
-    plannedDeterministicSteps: 0,
-    plannedSynthesisSteps: 0,
-    plannedDependencyDepth: 0,
-    plannedFanout: 0,
+    requestTaskState: createRequestTaskProgressState(),
     completedRequestMilestoneIds: [],
-    requiredToolEvidenceCorrectionAttempts: 0,
     economicsState,
-    delegationBudgetSnapshot: buildDelegationBudgetSnapshot(
-      config.economicsPolicy,
-      economicsState,
-    ),
+    perIterationCompaction: createPerIterationCompactionState(),
   };
 }

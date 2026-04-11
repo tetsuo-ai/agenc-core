@@ -43,6 +43,8 @@ import type {
 import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";
 import {
+  buildRuntimeContractVerifierTraceId,
+  buildRuntimeContractWorkerTraceId,
   logTraceErrorEvent,
   logTraceEvent,
   resolveTraceFanoutEnabled,
@@ -87,22 +89,22 @@ import type {
   LLMTool,
   ToolHandler,
   StreamProgressCallback,
-  LLMMessage,
 } from "../llm/types.js";
 import { type Tool } from "../tools/types.js";
 import type { GatewayMessage } from "./message.js";
 import { createGatewayMessage } from "./message.js";
 import { ChatExecutor } from "../llm/chat-executor.js";
-import { createChatExecutor } from "./chat-executor-factory.js";
 import {
-  didToolCallFail,
+  createChatExecutor,
+  buildPermissionRulesFromAllowDeny,
+} from "./chat-executor-factory.js";
+import { resolveRuntimeContractFlags } from "../runtime-contract/flags.js";
+import {
   normalizeToolCallArguments,
-  parseToolResultObject,
 } from "../llm/chat-executor-tool-utils.js";
-import { resolveToolContractExecutionBlock } from "../llm/chat-executor-contract-guidance.js";
+import { buildStopHookRuntime } from "../llm/hooks/stop-hooks.js";
 import {
   getProviderNativeAdvertisedToolNames,
-  getProviderNativeToolRoutingDecisions,
 } from "../llm/provider-native-search.js";
 import {
   createLLMProviders as createLLMProvidersStandalone,
@@ -119,11 +121,8 @@ import type {
   DeterministicPipelineExecutor,
   SkillInjector,
   MemoryRetriever,
-  ToolCallRecord,
-  ChatToolRoutingSummary,
 } from "../llm/chat-executor.js";
 import {
-  DelegationBanditPolicyTuner,
   InMemoryDelegationTrajectorySink,
 } from "../llm/delegation-learning.js";
 import { DEFAULT_TOOL_CALL_TIMEOUT_MS } from "../llm/chat-executor-constants.js";
@@ -134,6 +133,7 @@ import {
 import { ToolRegistry } from "../tools/registry.js";
 import { SystemRemoteJobManager } from "../tools/system/remote-job.js";
 import { SystemRemoteSessionManager } from "../tools/system/remote-session.js";
+import { TaskStore } from "../tools/system/task-tracker.js";
 import { DEFAULT_TIMEOUT_MS as DEFAULT_BASH_TOOL_TIMEOUT_MS } from "../tools/system/types.js";
 import {
   SkillDiscovery,
@@ -222,8 +222,12 @@ import {
   type ExternalChannelRegistry,
 } from "./channel-wiring.js";
 import { createChannelHostServices } from "../plugins/channel-host-services.js";
+import { buildStaticToolRoutingDecision } from "./tool-routing.js";
 import type { ProactiveCommunicator } from "./proactive.js";
-import { ToolRouter, type ToolRoutingDecision } from "./tool-routing.js";
+import {
+  loadAgentDefinitions,
+  type AgentDefinition,
+} from "./agent-loader.js";
 import {
   filterLlmToolsByEnvironment,
   type ToolEnvironmentMode,
@@ -267,7 +271,6 @@ function firstSurfaceSummaryLine(value: unknown): string | undefined {
 import { BackgroundRunNotifier } from "./background-run-notifier.js";
 import { BackgroundRunStore } from "./background-run-store.js";
 import type {
-  BackgroundRunContract,
   PersistedBackgroundRun,
 } from "./background-run-store.js";
 import type {
@@ -280,6 +283,15 @@ import {
   DurableSubrunOrchestrator,
   type DurableSubrunAdmissionDecision,
 } from "./durable-subrun-orchestrator.js";
+import {
+  PersistentWorkerManager,
+  type PersistentWorkerTraceEvent,
+} from "./persistent-worker-manager.js";
+import {
+  PersistentWorkerMailbox,
+  type PersistentWorkerMailboxTraceEvent,
+} from "./persistent-worker-mailbox.js";
+import { WorktreeIsolationManager } from "./worktree-isolation.js";
 import { evaluateAutonomyCanaryAdmission } from "./autonomy-rollout.js";
 import {
   formatBackgroundRunAdmissionDenied,
@@ -291,11 +303,6 @@ import {
   createBackgroundRunToolAfterHook,
   createBackgroundRunWebhookRoute,
 } from "./background-run-wake-adapters.js";
-import {
-  getMissingDoomEvidenceGap,
-  inferDoomTurnContract,
-  summarizeDoomToolEvidence,
-} from "../llm/chat-executor-doom.js";
 import { parseBackgroundRunQualityArtifact } from "../eval/background-run-quality.js";
 import type { DelegationBenchmarkSummary } from "../eval/delegation-benchmark.js";
 import {
@@ -309,15 +316,12 @@ import {
 import {
   createDaemonToolRegistry,
 } from "./daemon-tool-registry.js";
+import type { TopLevelVerifierTraceEvent } from "./top-level-verifier.js";
 import {
   wireSocial as wireSocialStandalone,
   wireAutonomousFeatures as wireAutonomousFeaturesStandalone,
   type FeatureWiringContext,
 } from "./daemon-feature-wiring.js";
-import {
-  blockUntilDoomStopTool,
-  isDoomStopRequest,
-} from "./doom-stop-guard.js";
 import {
   ObservabilityService,
   setDefaultObservabilityService,
@@ -365,120 +369,8 @@ export {
 // ============================================================================
 
 // DEFAULT_GROK_MODEL imported from ./llm-provider-manager.js (DEFAULT_GROK_FALLBACK_MODEL moved to system-prompt-builder.ts)
-const DEFAULT_DOOM_FIT_RESOLUTION = "RES_1024X768";
 const SIGNAL_SHUTDOWN_FORCE_EXIT_MS = 8_000;
 // STATIC_SUBAGENT_DESKTOP_TOOLS moved to ./subagent-infrastructure.ts
-
-function chooseDoomResolutionForDisplay(width: number, height: number): string {
-  if (width >= 1280 && height >= 720) return "RES_1280X720";
-  if (width >= 1024 && height >= 768) return "RES_1024X768";
-  if (width >= 800 && height >= 600) return "RES_800X600";
-  return "RES_640X480";
-}
-
-function buildDoomAutoplayBackgroundContract(): BackgroundRunContract {
-  return {
-    domain: "generic",
-    kind: "until_stopped",
-    successCriteria: [
-      "The active ViZDoom session is verified and continues making progress under supervision.",
-    ],
-    completionCriteria: [
-      "The user explicitly stops Doom or cancels the background supervision run.",
-    ],
-    blockedCriteria: [
-      "Doom MCP tools cannot verify or control the session after bounded retries.",
-      "The session needs user input that cannot be inferred safely.",
-    ],
-    nextCheckMs: 8_000,
-    heartbeatMs: 15_000,
-    requiresUserStop: true,
-    managedProcessPolicy: { mode: "none" },
-  };
-}
-
-function extractDoomRecoveryObjective(
-  toolCalls: readonly ToolCallRecord[],
-): Record<string, unknown> {
-  for (let index = toolCalls.length - 1; index >= 0; index -= 1) {
-    const toolCall = toolCalls[index];
-    if (
-      !toolCall ||
-      toolCall.name !== "mcp.doom.set_objective" ||
-      toolCall.isError
-    ) {
-      continue;
-    }
-    const objectiveType = toolCall.args.objective_type;
-    if (typeof objectiveType !== "string" || objectiveType.trim().length === 0) {
-      continue;
-    }
-
-    const recoveryObjective: Record<string, unknown> = {
-      objective_type: objectiveType,
-    };
-    if (
-      toolCall.args.params &&
-      typeof toolCall.args.params === "object" &&
-      !Array.isArray(toolCall.args.params)
-    ) {
-      recoveryObjective.params = toolCall.args.params;
-    }
-    if (typeof toolCall.args.priority === "number") {
-      recoveryObjective.priority = toolCall.args.priority;
-    }
-    return recoveryObjective;
-  }
-
-  return {
-    objective_type: "explore",
-    priority: 1,
-  };
-}
-
-function buildDoomAutoplaySupervisionObjective(params: {
-  readonly toolCalls: readonly ToolCallRecord[];
-}): string {
-  const successfulStart = params.toolCalls.find(
-    (toolCall) => toolCall.name === "mcp.doom.start_game" && !toolCall.isError,
-  );
-  const startPayload = successfulStart
-    ? parseToolResultObject(successfulStart.result)
-    : undefined;
-  const evidence = summarizeDoomToolEvidence(params.toolCalls);
-  const recoveryObjective = extractDoomRecoveryObjective(params.toolCalls);
-  const contextLines: string[] = [];
-
-  if (typeof startPayload?.scenario === "string") {
-    contextLines.push("A scenario-based session is already configured.");
-  }
-  if (typeof startPayload?.wad === "string") {
-    contextLines.push("A campaign session is already configured.");
-  }
-  if (evidence.confirmedGodMode) {
-    contextLines.push("Requested invulnerability is already active.");
-  }
-  if (evidence.confirmedHoldPosition) {
-    contextLines.push(
-      "The current session already has a user-requested movement constraint; preserve it unless the user changes the task.",
-    );
-  } else if (evidence.confirmedActiveObjective) {
-    contextLines.push(
-      "A non-idle gameplay objective is already configured; keep it unless verification shows it is no longer progressing.",
-    );
-  }
-
-  return [
-    "Supervise the existing ViZDoom session for this user.",
-    ...contextLines,
-    `Recovery objective JSON: ${JSON.stringify(recoveryObjective)}`,
-    "Use Doom MCP tools for verification and steering instead of shell or desktop process inspection.",
-    "If verification shows no live episode, recover with Doom MCP tools instead of narrating.",
-    "If the executor becomes idle or stalls, restore forward progress with an active objective such as `explore`, or use tactical Doom tools directly.",
-    "If the episode ends or the player dies, use `mcp.doom.new_episode` and continue supervision.",
-    "Keep the session visibly active until the user explicitly stops it.",
-  ].join("\n");
-}
 
 /** Minimum confidence score for injecting learned patterns into conversations. */
 
@@ -1041,7 +933,6 @@ export class DaemonManager {
   private _targetChannelConfigs: Record<string, GatewayChannelConfig> = {};
   private readonly _pendingConnectorRestarts = new Set<string>();
   private _proactiveCommunicator: ProactiveCommunicator | null = null;
-  private _heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private _heartbeatScheduler:
     | import("./heartbeat.js").HeartbeatScheduler
     | null = null;
@@ -1074,7 +965,6 @@ export class DaemonManager {
   private _subAgentLifecycleEmitter: SubAgentLifecycleEmitter | null = null;
   private _delegationTrajectorySink: InMemoryDelegationTrajectorySink | null =
     null;
-  private _delegationBanditTuner: DelegationBanditPolicyTuner | null = null;
   private _subAgentLifecycleUnsubscribe: (() => void) | null = null;
   private readonly _activeSessionTraceIds = new Map<string, string>();
   private readonly _activeSlashInitBySession = new Map<
@@ -1115,8 +1005,15 @@ export class DaemonManager {
   >();
   private _llmProviderConfigCatalog: LLMProviderConfigCatalogEntry[] = [];
   private _primaryLlmConfig: GatewayLLMConfig | undefined = undefined;
-  private _toolRouter: ToolRouter | null = null;
   private _baseToolHandler: ToolHandler | null = null;
+  /**
+   * Cut 5.6: declarative agent definitions loaded from
+   * runtime/src/gateway/agent-definitions/, ~/.agenc/agents/, and
+   * project-level .agenc/agents/. The orchestrator will consume these
+   * in a follow-up commit; today they're loaded for visibility so
+   * operators can confirm which agents are available.
+   */
+  private _agentDefinitions: readonly AgentDefinition[] = [];
   private _defaultForegroundMaxToolRounds = 10;
   private _desktopManager:
     | import("../desktop/manager.js").DesktopSandboxManager
@@ -1145,6 +1042,8 @@ export class DaemonManager {
   private _durableSubrunOrchestrator: DurableSubrunOrchestrator | null = null;
   private _remoteJobManager: SystemRemoteJobManager | null = null;
   private _remoteSessionManager: SystemRemoteSessionManager | null = null;
+  private _taskTrackerStore: TaskStore | null = null;
+  private _persistentWorkerManager: PersistentWorkerManager | null = null;
   private _sessionModelInfo = new Map<
     string,
     {
@@ -1199,6 +1098,7 @@ export class DaemonManager {
         this._subAgentRuntimeConfig?.unsafeBenchmarkMode === true;
       return {
         subAgentManager: this._subAgentManager,
+        workerManager: this._persistentWorkerManager,
         policyEngine: this._delegationPolicyEngine,
         verifier: this._delegationVerifierService,
         lifecycleEmitter: this._subAgentLifecycleEmitter,
@@ -1329,7 +1229,6 @@ export class DaemonManager {
         delegationVerifierService: this._delegationVerifierService,
         subAgentLifecycleEmitter: this._subAgentLifecycleEmitter,
         delegationTrajectorySink: this._delegationTrajectorySink,
-        delegationBanditTuner: this._delegationBanditTuner,
       },
       {
         subAgentRuntimeConfig: this._subAgentRuntimeConfig,
@@ -1345,7 +1244,6 @@ export class DaemonManager {
     this._delegationVerifierService = result.delegationVerifierService;
     this._subAgentLifecycleEmitter = result.subAgentLifecycleEmitter;
     this._delegationTrajectorySink = result.delegationTrajectorySink;
-    this._delegationBanditTuner = result.delegationBanditTuner;
   }
 
   private clearDelegationRuntimeServices(): void {
@@ -1355,12 +1253,17 @@ export class DaemonManager {
     );
     this._delegationPolicyEngine = result.delegationPolicyEngine;
     this._delegationVerifierService = result.delegationVerifierService;
-    this._delegationBanditTuner = result.delegationBanditTuner;
     this._delegationTrajectorySink = result.delegationTrajectorySink;
     this._subAgentLifecycleEmitter = result.subAgentLifecycleEmitter;
   }
 
   private async destroySubAgentInfrastructure(): Promise<void> {
+    if (this._persistentWorkerManager) {
+      await this._persistentWorkerManager.handleRuntimeReset(
+        "subagent_infrastructure_destroyed",
+      );
+      this._persistentWorkerManager = null;
+    }
     const subAgentManager = this._subAgentManager;
     this._subAgentManager = null;
     const isolationManager = this._sessionIsolationManager;
@@ -1370,6 +1273,106 @@ export class DaemonManager {
       isolationManager,
       this.logger,
     );
+  }
+
+  private async configurePersistentWorkerManager(
+    config: GatewayConfig,
+  ): Promise<void> {
+    const flags = resolveRuntimeContractFlags(config.llm);
+    const traceConfig = resolveTraceLoggingConfig(config.logging);
+    if (
+      !flags.persistentWorkersEnabled ||
+      !this._memoryBackend ||
+      !this._taskTrackerStore ||
+      !this._subAgentManager
+    ) {
+      this._persistentWorkerManager = null;
+      return;
+    }
+
+    const mailbox = flags.mailboxEnabled
+      ? new PersistentWorkerMailbox({
+          memoryBackend: this._memoryBackend,
+          logger: this.logger,
+          ...(traceConfig.enabled
+            ? {
+                onTraceEvent: async (
+                  event: PersistentWorkerMailboxTraceEvent,
+                ) => {
+                  logTraceEvent(
+                    this.logger,
+                    `runtime_contract.mailbox.${event.action}`,
+                    {
+                      traceId: buildRuntimeContractWorkerTraceId(
+                        event.parentSessionId,
+                        event.workerId,
+                      ),
+                      sessionId: event.parentSessionId,
+                      workerId: event.workerId,
+                      messageId: event.messageId,
+                      messageType: event.messageType,
+                      direction: event.direction,
+                      status: event.status,
+                      timestamp: event.timestamp,
+                      ...(event.taskId ? { taskId: event.taskId } : {}),
+                      ...(event.correlationId
+                        ? { correlationId: event.correlationId }
+                        : {}),
+                    },
+                    traceConfig.maxChars,
+                  );
+                },
+              }
+            : {}),
+        })
+      : null;
+
+    const manager = new PersistentWorkerManager({
+      memoryBackend: this._memoryBackend,
+      taskStore: this._taskTrackerStore,
+      subAgentManager: this._subAgentManager,
+      approvalEngine: this._approvalEngine,
+      mailbox,
+      worktreeIsolation: flags.workerIsolationWorktree
+        ? new WorktreeIsolationManager({ logger: this.logger })
+        : null,
+      worktreeIsolationEnabled: flags.workerIsolationWorktree,
+      remoteIsolationEnabled: flags.workerIsolationRemote,
+      remoteSessionManager: this._remoteSessionManager,
+      logger: this.logger,
+      ...(traceConfig.enabled
+        ? {
+            onTraceEvent: async (event: PersistentWorkerTraceEvent) => {
+              logTraceEvent(
+                this.logger,
+                `runtime_contract.worker.${event.type}`,
+                {
+                  traceId: buildRuntimeContractWorkerTraceId(
+                    event.parentSessionId,
+                    event.workerId,
+                  ),
+                  sessionId: event.parentSessionId,
+                  workerId: event.workerId,
+                  timestamp: event.timestamp,
+                  ...(event.taskId ? { taskId: event.taskId } : {}),
+                  ...(event.workerState ? { workerState: event.workerState } : {}),
+                  ...(event.summary ? { summary: event.summary } : {}),
+                  ...(event.verifierVerdict
+                    ? { verifierVerdict: event.verifierVerdict }
+                    : {}),
+                  ...(event.executionLocation
+                    ? { executionLocation: event.executionLocation }
+                    : {}),
+                  ...(event.reason ? { reason: event.reason } : {}),
+                },
+                traceConfig.maxChars,
+              );
+            },
+          }
+        : {}),
+    });
+    await manager.repairRuntimeState();
+    this._persistentWorkerManager = manager;
   }
 
   private async configureSubAgentInfrastructure(
@@ -1510,6 +1513,8 @@ export class DaemonManager {
         createSessionToolHandler({
           sessionId: sessionIdentity.subagentSessionId,
           baseHandler: baseToolHandler,
+          taskStore: this._taskTrackerStore,
+          runtimeContractFlags: resolveRuntimeContractFlags(config.llm),
           availableToolNames: allowedToolNames,
           defaultWorkingDirectory: workingDirectory,
           workspaceAliasRoot: this._hostWorkspacePath ?? undefined,
@@ -1556,6 +1561,32 @@ export class DaemonManager {
         this.getActiveDelegationAggressiveness(resolved),
       childProviderStrategy: resolved.childProviderStrategy,
     });
+    await this.configurePersistentWorkerManager(config);
+
+    // Cut 5.6: load declarative agent definitions from the built-in
+    // runtime/src/gateway/agent-definitions/ directory and from the
+    // user-level ~/.agenc/agents/ directory. Each .md file declares
+    // an agent with a name, description, allowed tools, and a system
+    // prompt in the markdown body. The definitions are logged for
+    // visibility so operators can confirm which agents are loaded.
+    // Future work will wire them into the sub-agent orchestrator as a
+    // replacement for the economics-based spawn decision path.
+    try {
+      this._agentDefinitions = loadAgentDefinitions();
+      if (this._agentDefinitions.length > 0) {
+        this.logger.info("Agent definitions loaded", {
+          count: this._agentDefinitions.length,
+          names: this._agentDefinitions.map((definition) => definition.name),
+          sources: Array.from(
+            new Set(this._agentDefinitions.map((definition) => definition.source)),
+          ),
+        });
+      }
+    } catch (error) {
+      this.logger.warn("Failed to load agent definitions", {
+        error: toErrorMessage(error),
+      });
+    }
   }
 
   async start(): Promise<void> {
@@ -1787,11 +1818,6 @@ export class DaemonManager {
 
     this._allLlmTools = [...llmTools];
     this._llmTools = filterLlmToolsByEnvironment(llmTools, environment);
-    this._toolRouter = new ToolRouter(
-      this._llmTools,
-      config.llm?.toolRouting,
-      this.logger,
-    );
     this._baseToolHandler = baseToolHandler;
     const providers = await this.createLLMProviders(config, this._llmTools);
     this._llmProviders = providers;
@@ -2021,6 +2047,7 @@ export class DaemonManager {
     const resolvedSubAgentConfig = resolveSubAgentRuntimeConfig(config.llm, {
       unsafeBenchmarkMode: this.yolo,
     });
+    const traceConfig = resolveTraceLoggingConfig(config.logging);
     await this.refreshHostToolingProfile({
       enabled: resolvedSubAgentConfig.enabled,
       logging: config.logging,
@@ -2050,16 +2077,52 @@ export class DaemonManager {
       llmConfig: config.llm,
       providerConfigs: this._llmProviderConfigCatalog.map((entry) => entry.config),
       subagentConfig: resolvedSubAgentConfig,
-      resolveDelegationScoreThreshold: () =>
-        this.resolveDelegationScoreThreshold(),
-      delegationLearning: {
-        trajectorySink: this._delegationTrajectorySink ?? undefined,
-        banditTuner: this._delegationBanditTuner ?? undefined,
-        defaultStrategyArmId: "balanced",
-      },
       resolveHostToolingProfile: () => this._hostToolingProfile,
       resolveHostWorkspaceRoot: () => this._hostWorkspacePath,
       pipelineExecutor: plannerPipelineExecutor,
+      // Cut 7: wire ToolPermissionEvaluator through the canUseTool
+      // seam. The evaluator runs every tool call through the gateway
+      // policy.toolAllowList / policy.toolDenyList rules before the
+      // existing approval flow. With no policy configured the rules
+      // array is empty and the seam is skipped.
+      permissionRules: buildPermissionRulesFromAllowDeny({
+        toolAllowList: config.policy?.toolAllowList,
+        toolDenyList: config.policy?.toolDenyList,
+      }),
+      completionValidation: {
+        topLevelVerifier: {
+          subAgentManager: this._subAgentManager,
+          verifierService: this._delegationVerifierService,
+          agentDefinitions: this._agentDefinitions,
+          logger: this.logger,
+          taskStore: this._taskTrackerStore,
+          remoteJobManager: this._remoteJobManager,
+          ...(traceConfig.enabled
+            ? {
+                onTraceEvent: async (event: TopLevelVerifierTraceEvent) => {
+                  logTraceEvent(
+                    this.logger,
+                    `runtime_contract.verifier.${event.type}`,
+                    {
+                      traceId: buildRuntimeContractVerifierTraceId(
+                        event.sessionId,
+                        event.taskId,
+                      ),
+                      sessionId: event.sessionId,
+                      ...(event.taskId ? { taskId: event.taskId } : {}),
+                      ...(event.launcherKind
+                        ? { launcherKind: event.launcherKind }
+                        : {}),
+                      ...(event.summary ? { summary: event.summary } : {}),
+                      ...(event.verdict ? { verdict: event.verdict } : {}),
+                    },
+                    traceConfig.maxChars,
+                  );
+                },
+              }
+            : {}),
+        },
+      },
     });
 
     const sessionMgr = this.createSessionManager(hooks);
@@ -2089,6 +2152,7 @@ export class DaemonManager {
       hooks,
       approvalEngine: approvalEngine ?? undefined,
       memoryBackend,
+      taskStore: this._taskTrackerStore,
       delegation: this.resolveDelegationToolContext,
     };
     const voiceBridge = this.createOptionalVoiceBridge(
@@ -2267,8 +2331,11 @@ export class DaemonManager {
             traceId: `background:${sessionId}:${runId}:${cycleIndex}`,
             hookMetadata: { backgroundRunId: runId },
           }),
-        buildToolRoutingDecision: (sessionId, messageText, history) =>
-          this.buildToolRoutingDecision(sessionId, messageText, history),
+        buildToolRoutingDecision: (_sessionId, content, _history) =>
+          buildStaticToolRoutingDecision({
+            content,
+            availableToolNames: this.getAdvertisedToolNames(),
+          }),
         seedHistoryForSession: (sessionId) =>
           sessionMgr.get(sessionId)?.history ?? [],
         isSessionBusy: (sessionId) =>
@@ -2295,6 +2362,8 @@ export class DaemonManager {
         logger: this.logger,
         notifier,
         traceProviderPayloads,
+        resolveStopHookRuntime: () =>
+          buildStopHookRuntime(gateway.config.llm?.stopHooks),
       });
       this._durableSubrunOrchestrator = new DurableSubrunOrchestrator({
         supervisor: this._backgroundRunSupervisor,
@@ -3091,6 +3160,15 @@ export class DaemonManager {
       const subAgentChanged = diff.safe.some((key) =>
         key.startsWith("llm.subagents."),
       );
+      if (llmChanged) {
+        void this.configurePersistentWorkerManager(gateway.config).catch(
+          (error) => {
+            this.logger.error(
+              `Failed to reconfigure persistent workers: ${toErrorMessage(error)}`,
+            );
+          },
+        );
+      }
       if (subAgentChanged) {
         void this.configureSubAgentInfrastructure(gateway.config).catch(
           (error) => {
@@ -3259,10 +3337,18 @@ export class DaemonManager {
         this.registerTextApprovalDispatcher(sessionId, channelName, send),
       createTextChannelSessionToolHandler: (params) =>
         this.createTextChannelSessionToolHandler(params),
-      buildToolRoutingDecision: (sessionId, content, history) =>
-        this.buildToolRoutingDecision(sessionId, content, history),
-      recordToolRoutingOutcome: (sessionId, summary) =>
-        this.recordToolRoutingOutcome(sessionId, summary),
+      buildToolRoutingDecision: (_sessionId, content, _history) =>
+        buildStaticToolRoutingDecision({
+          content,
+          availableToolNames: this.getAdvertisedToolNames(),
+        }),
+      recordToolRoutingOutcome: () => {
+        /* no-op: static routing, nothing to record */
+      },
+      subAgentManager: this._subAgentManager,
+      workerManager: this._persistentWorkerManager,
+      verifierService: this._delegationVerifierService,
+      agentDefinitions: this._agentDefinitions,
     };
   }
 
@@ -3506,11 +3592,6 @@ export class DaemonManager {
     pipelineExecutor?: PipelineExecutor,
   ): Promise<void> {
     try {
-      this._toolRouter = new ToolRouter(
-        this._llmTools,
-        newConfig.llm?.toolRouting,
-        this.logger,
-      );
       const contextWindowTokens = await this.resolveLlmContextWindowTokens(
         newConfig.llm,
       );
@@ -3531,6 +3612,7 @@ export class DaemonManager {
         newConfig.llm,
         { unsafeBenchmarkMode: this.yolo },
       );
+      const traceConfig = resolveTraceLoggingConfig(newConfig.logging);
       await this.refreshHostToolingProfile({
         enabled: resolvedSubAgentConfig.enabled,
         logging: newConfig.logging,
@@ -3566,16 +3648,47 @@ export class DaemonManager {
         llmConfig: newConfig.llm,
         providerConfigs: this._llmProviderConfigCatalog.map((entry) => entry.config),
         subagentConfig: resolvedSubAgentConfig,
-        resolveDelegationScoreThreshold: () =>
-          this.resolveDelegationScoreThreshold(),
-        delegationLearning: {
-          trajectorySink: this._delegationTrajectorySink ?? undefined,
-          banditTuner: this._delegationBanditTuner ?? undefined,
-          defaultStrategyArmId: "balanced",
-        },
         resolveHostToolingProfile: () => this._hostToolingProfile,
         resolveHostWorkspaceRoot: () => this._hostWorkspacePath,
         pipelineExecutor: plannerPipelineExecutor,
+        permissionRules: buildPermissionRulesFromAllowDeny({
+          toolAllowList: newConfig.policy?.toolAllowList,
+          toolDenyList: newConfig.policy?.toolDenyList,
+        }),
+        completionValidation: {
+          topLevelVerifier: {
+            subAgentManager: this._subAgentManager,
+            verifierService: this._delegationVerifierService,
+            agentDefinitions: this._agentDefinitions,
+            logger: this.logger,
+            taskStore: this._taskTrackerStore,
+            remoteJobManager: this._remoteJobManager,
+            ...(traceConfig.enabled
+              ? {
+                  onTraceEvent: async (event: TopLevelVerifierTraceEvent) => {
+                    logTraceEvent(
+                      this.logger,
+                      `runtime_contract.verifier.${event.type}`,
+                      {
+                        traceId: buildRuntimeContractVerifierTraceId(
+                          event.sessionId,
+                          event.taskId,
+                        ),
+                        sessionId: event.sessionId,
+                        ...(event.taskId ? { taskId: event.taskId } : {}),
+                        ...(event.launcherKind
+                          ? { launcherKind: event.launcherKind }
+                          : {}),
+                        ...(event.summary ? { summary: event.summary } : {}),
+                        ...(event.verdict ? { verdict: event.verdict } : {}),
+                      },
+                      traceConfig.maxChars,
+                    );
+                  },
+                }
+              : {}),
+          },
+        },
       });
 
       const providerNames = providers.map((p) => p.name).join(" → ") || "none";
@@ -3683,9 +3796,14 @@ export class DaemonManager {
       getAgentMessaging: () => this._agentMessaging,
       getAgentFeed: () => this._agentFeed,
       getCollaborationProtocol: () => this._collaborationProtocol,
-    }, metrics);
+      resolveStopHookRuntime: () =>
+        buildStopHookRuntime(this.gateway?.config.llm?.stopHooks),
+    }, this._memoryBackend!, metrics);
     this._remoteJobManager = result.remoteJobManager;
     this._remoteSessionManager = result.remoteSessionManager;
+    this._taskTrackerStore = result.taskTrackerStore;
+    await this._taskTrackerStore.repairRuntimeState();
+    await this.configurePersistentWorkerManager(config);
     this._containerMCPConfigs = result.containerMCPConfigs;
     this._mcpManager = result.mcpManager;
     this._connectionManager = result.connectionManager;
@@ -3800,7 +3918,6 @@ export class DaemonManager {
     const historySessionId = resolveSessionId(webSessionId);
     sessionMgr.reset(historySessionId);
     this._chatExecutor?.resetSessionTokens(webSessionId);
-    this._toolRouter?.resetSession(webSessionId);
     this._sessionModelInfo.delete(webSessionId);
     await progressTracker?.clear(webSessionId);
     await this._sessionCredentialBroker?.revoke({
@@ -4167,6 +4284,7 @@ export class DaemonManager {
       approvalEngine?: ApprovalEngine;
       memoryBackend?: MemoryBackend;
       delegation?: DelegationToolCompositionResolver;
+      taskStore?: TaskStore | null;
     },
     voiceSystemPrompt?: string,
   ): VoiceBridge | undefined {
@@ -4212,6 +4330,8 @@ export class DaemonManager {
       hooks: resolvedDeps.hooks,
       approvalEngine: resolvedDeps.approvalEngine,
       memoryBackend: resolvedDeps.memoryBackend,
+      taskStore: resolvedDeps.taskStore ?? null,
+      runtimeContractFlags: resolveRuntimeContractFlags(config.llm),
       sessionTokenBudget: resolveSessionTokenBudget(
         config.llm,
         contextWindowTokens,
@@ -4826,42 +4946,10 @@ export class DaemonManager {
     return true;
   }
 
-  private buildToolRoutingDecision(
-    sessionId: string,
-    messageText: string,
-    history: readonly LLMMessage[],
-  ): ToolRoutingDecision | undefined {
-    if (!this._toolRouter) return undefined;
-    try {
-      const decision = this._toolRouter.route({
-        sessionId,
-        messageText,
-        history,
-      });
-      return this.maybeAugmentToolRoutingDecisionWithNativeTools(
-        decision,
-        messageText,
-        history,
-      );
-    } catch (error) {
-      this.logger.warn?.(
-        "Tool routing decision failed; falling back to full toolset",
-        {
-          sessionId,
-          error: toErrorMessage(error),
-        },
-      );
-      return undefined;
-    }
-  }
-
-  private recordToolRoutingOutcome(
-    sessionId: string,
-    summary: ChatToolRoutingSummary | undefined,
-  ): void {
-    if (!this._toolRouter) return;
-    this._toolRouter.recordOutcome(sessionId, summary);
-  }
+  // Phase M: `buildToolRoutingDecision` and `recordToolRoutingOutcome`
+  // were planner-era stubs (always returned undefined / no-op).
+  // Deleted as of the 16-phase refactor; callers now inline the
+  // static undefined/no-op at their contract boundaries.
 
   private resolveLifecycleParentSessionId(
     event: SubAgentLifecycleEvent,
@@ -4889,66 +4977,6 @@ export class DaemonManager {
         ...getProviderNativeAdvertisedToolNames(this._primaryLlmConfig),
       ]),
     );
-  }
-
-  private maybeAugmentToolRoutingDecisionWithNativeTools(
-    decision: ToolRoutingDecision,
-    messageText: string,
-    history: readonly LLMMessage[],
-  ): ToolRoutingDecision {
-    const nativeTools = getProviderNativeToolRoutingDecisions({
-      llmConfig: this._primaryLlmConfig,
-      messageText,
-      history,
-    });
-    if (nativeTools.length === 0) return decision;
-
-    const addedRoutedTools = nativeTools
-      .map((tool) => tool.toolName)
-      .filter((toolName) => !decision.routedToolNames.includes(toolName));
-    const addedExpandedTools = nativeTools
-      .map((tool) => tool.toolName)
-      .filter((toolName) => !decision.expandedToolNames.includes(toolName));
-    if (addedRoutedTools.length === 0 && addedExpandedTools.length === 0) {
-      return decision;
-    }
-
-    const routedToolNames = Array.from(
-      new Set([...decision.routedToolNames, ...addedRoutedTools]),
-    );
-    const expandedToolNames = Array.from(
-      new Set([...decision.expandedToolNames, ...addedExpandedTools]),
-    );
-    const routedAdded = nativeTools
-      .filter((tool) => addedRoutedTools.includes(tool.toolName))
-      .reduce((sum, tool) => sum + tool.schemaChars, 0);
-    const expandedAdded = nativeTools
-      .filter((tool) => addedExpandedTools.includes(tool.toolName))
-      .reduce((sum, tool) => sum + tool.schemaChars, 0);
-    const schemaCharsFull =
-      decision.diagnostics.schemaCharsFull +
-      nativeTools.reduce((sum, tool) => sum + tool.schemaChars, 0);
-    const schemaCharsRouted =
-      decision.diagnostics.schemaCharsRouted + routedAdded;
-    const schemaCharsExpanded =
-      decision.diagnostics.schemaCharsExpanded + expandedAdded;
-
-    return {
-      routedToolNames,
-      expandedToolNames,
-      diagnostics: {
-        ...decision.diagnostics,
-        totalToolCount:
-          decision.diagnostics.totalToolCount +
-          nativeTools.length,
-        routedToolCount: routedToolNames.length,
-        expandedToolCount: expandedToolNames.length,
-        schemaCharsFull,
-        schemaCharsRouted,
-        schemaCharsExpanded,
-        schemaCharsSaved: Math.max(0, schemaCharsFull - schemaCharsRouted),
-      },
-    };
   }
 
   private relaySubAgentLifecycleEvent(
@@ -5356,6 +5384,8 @@ export class DaemonManager {
     const baseSessionHandler = createSessionToolHandler({
       sessionId,
       baseHandler: baseToolHandler,
+      taskStore: this._taskTrackerStore,
+      runtimeContractFlags: resolveRuntimeContractFlags(this.gateway?.config.llm),
       availableToolNames: this.getAdvertisedToolNames(),
       defaultWorkingDirectory: this._hostWorkspacePath ?? undefined,
       workspaceAliasRoot: this._hostWorkspacePath ?? undefined,
@@ -5449,6 +5479,8 @@ export class DaemonManager {
     const baseSessionHandler = createSessionToolHandler({
       sessionId,
       baseHandler: this._baseToolHandler!,
+      taskStore: this._taskTrackerStore,
+      runtimeContractFlags: resolveRuntimeContractFlags(this.gateway?.config.llm),
       availableToolNames: this.getAdvertisedToolNames(),
       defaultWorkingDirectory: this._hostWorkspacePath ?? undefined,
       workspaceAliasRoot: this._hostWorkspacePath ?? undefined,
@@ -5621,8 +5653,6 @@ export class DaemonManager {
     }
 
     webChat.broadcastEvent("chat.inbound", { sessionId: msg.sessionId });
-    const isDoomStopTurn = isDoomStopRequest(msg.content);
-    const doomTurnContract = inferDoomTurnContract(msg.content);
 
     const activeBackgroundRun =
       this._backgroundRunSupervisor?.getStatusSnapshot(msg.sessionId);
@@ -5632,7 +5662,7 @@ export class DaemonManager {
           msg.sessionId,
           "Stopped the active background run for this session.",
         );
-        if (!isDoomStopTurn) return;
+        return;
       }
       if (isBackgroundRunPauseRequest(msg.content)) {
         const paused = await this._backgroundRunSupervisor?.pauseRun(
@@ -5682,7 +5712,7 @@ export class DaemonManager {
       }
     }
 
-    if (!isDoomStopTurn && this._backgroundRunSupervisor) {
+    if (this._backgroundRunSupervisor) {
       if (isBackgroundRunStatusRequest(msg.content)) {
         const recentSnapshot =
           await this._backgroundRunSupervisor.getRecentSnapshot(msg.sessionId);
@@ -5717,49 +5747,38 @@ export class DaemonManager {
       }
     }
 
-    if (
-      !doomTurnContract &&
-      inferBackgroundRunIntent(msg.content) &&
-      this._backgroundRunSupervisor
-    ) {
-      const admission = this.evaluateBackgroundRunAdmission({
-        sessionId: msg.sessionId,
-        domain: "generic",
-      });
-      if (!admission.allowed) {
-        this.logger.info("Background run canary admission denied", {
-          sessionId: msg.sessionId,
-          cohort: admission.cohort,
-          reason: admission.reason,
-        });
-        await webChat.send({
-          sessionId: msg.sessionId,
-          content: formatBackgroundRunAdmissionDenied(admission.reason),
-        });
-        return;
-      } else {
-        await memoryBackend
-          .addEntry({
-            sessionId: msg.sessionId,
-            role: "user",
-            content: msg.content,
-          })
-          .catch((error) => {
-            this.logger.debug(
-              "Background run user message memory write failed",
-              {
-                sessionId: msg.sessionId,
-                error: toErrorMessage(error),
-              },
-            );
-          });
-        await this._backgroundRunSupervisor.startRun({
-          sessionId: msg.sessionId,
-          objective: msg.content,
-        });
-        return;
-      }
-    }
+    // Auto-routing of chat messages to background runs disabled 2026-04-09.
+    //
+    // The previous behavior here was: if `inferBackgroundRunIntent(msg.content)`
+    // matched any of UNTIL_STOP_RE / KEEP_UPDATING_RE / BACKGROUND_RE /
+    // CONTINUOUS_RE, the daemon would silently reroute the chat message to
+    // `BackgroundRunSupervisor.startRun(...)` and return without ever invoking
+    // the synchronous chat executor. From the user's perspective the chat
+    // would simply hang — no streaming response, no tool dispatch in the
+    // chat lane, no UI status update — because:
+    //
+    //   1. The regex was over-aggressive: prompts like "implement every
+    //      phase in one continuous run without stopping" matched
+    //      CONTINUOUS_RE / UNTIL_STOP_RE and got auto-routed even when
+    //      the user clearly wanted a synchronous chat turn.
+    //   2. The background-run cycle decision resolver fired after the
+    //      first tool call and falsely classified the run as
+    //      `state: "completed"` whenever any filesystem activity was
+    //      observed (e.g. a single `system.readFile` of PLAN.md), so the
+    //      run terminated immediately without doing any real work.
+    //   3. No `webchat.ws.outbound` event was pushed back to the chat UI
+    //      to tell the user a background run had been started or had
+    //      finished, so the chat appeared frozen.
+    //
+    // Until both the intent classifier and the decision resolver are
+    // fixed, all chat messages fall through to the synchronous chat
+    // executor below. Background runs are still available via the
+    // supervisor's explicit start/control surface for callers that
+    // genuinely want them; they just are not auto-inferred from message
+    // text anymore.
+    void inferBackgroundRunIntent;
+    void formatBackgroundRunAdmissionDenied;
+    void this.evaluateBackgroundRunAdmission;
 
     const sessionStreamCallback: StreamProgressCallback = (chunk) => {
       webChat.pushToSession(msg.sessionId, {
@@ -5767,19 +5786,6 @@ export class DaemonManager {
         payload: { content: chunk.content, done: chunk.done },
       });
     };
-
-    const requestedDesktopResolution =
-      this._desktopManager?.getHandleBySession(msg.sessionId)?.resolution ??
-      this.gateway?.config.desktop?.resolution;
-    const requestedDoomResolution = requestedDesktopResolution
-      ? chooseDoomResolutionForDisplay(
-          requestedDesktopResolution.width,
-          requestedDesktopResolution.height,
-        )
-      : DEFAULT_DOOM_FIT_RESOLUTION;
-    const doomTurnToolCalls: ToolCallRecord[] = [];
-    let doomStopIssued = false;
-    const advertisedToolNames = this.getAdvertisedToolNames();
 
     const sessionToolHandler = this.createWebChatSessionToolHandler({
       sessionId: msg.sessionId,
@@ -5790,74 +5796,9 @@ export class DaemonManager {
       traceLabel: "webchat",
       traceConfig,
       traceId: turnTraceId,
-      normalizeArgs: (toolName, normalizedArgs) => {
-        if (toolName !== "mcp.doom.start_game") return normalizedArgs;
-        let nextArgs = normalizedArgs;
-        if (
-          doomTurnContract?.requiresAutonomousPlay &&
-          nextArgs.async_player !== true
-        ) {
-          nextArgs = { ...nextArgs, async_player: true };
-        }
-        if (
-          nextArgs.screen_resolution === "RES_1280X720" &&
-          requestedDoomResolution !== "RES_1280X720"
-        ) {
-          nextArgs = {
-            ...nextArgs,
-            screen_resolution: requestedDoomResolution,
-          };
-        }
-        return nextArgs;
-      },
-      beforeHandle: (toolName) => {
-        if (isDoomStopTurn) {
-          const blockedResult = blockUntilDoomStopTool(
-            toolName,
-            doomStopIssued,
-          );
-          if (toolName === "mcp.doom.stop_game" && !blockedResult) {
-            doomStopIssued = true;
-          }
-          if (blockedResult) return blockedResult;
-        }
-        const contractBlock = resolveToolContractExecutionBlock({
-          phase: doomTurnToolCalls.length === 0 ? "initial" : "tool_followup",
-          messageText: msg.content,
-          toolCalls: doomTurnToolCalls,
-          allowedToolNames: advertisedToolNames,
-          candidateToolName: toolName,
-        });
-        if (contractBlock) {
-          return JSON.stringify({ error: contractBlock });
-        }
-        return undefined;
-      },
-      onToolEnd: (toolName, args, result, durationMs) => {
-        doomTurnToolCalls.push({
-          name: toolName,
-          args,
-          result,
-          isError: didToolCallFail(false, result),
-          durationMs,
-        });
-      },
     });
 
-    if (isDoomStopTurn) {
-      await this.executeWebChatDoomStopTurn({
-        msg,
-        webChat,
-        hooks,
-        sessionMgr,
-        sessionToolHandler,
-        memoryBackend,
-        signals,
-      });
-      return;
-    }
-
-    const conversationResult = await this.executeWebChatConversationTurn({
+    await this.executeWebChatConversationTurn({
       msg,
       webChat,
       chatExecutor,
@@ -5873,121 +5814,8 @@ export class DaemonManager {
       contextWindowTokens,
       traceConfig,
       turnTraceId,
+      workerManager: this._persistentWorkerManager,
     });
-
-    if (
-      conversationResult &&
-      conversationResult.stopReason === "completed" &&
-      doomTurnContract?.requiresAutonomousPlay &&
-      this._backgroundRunSupervisor
-    ) {
-      const doomEvidence = summarizeDoomToolEvidence(doomTurnToolCalls);
-      if (!getMissingDoomEvidenceGap(doomTurnContract, doomEvidence)) {
-        try {
-          await this._backgroundRunSupervisor.startRun({
-            sessionId: msg.sessionId,
-            objective: buildDoomAutoplaySupervisionObjective({
-              toolCalls: doomTurnToolCalls,
-            }),
-            options: {
-              silent: true,
-              contract: buildDoomAutoplayBackgroundContract(),
-            },
-          });
-        } catch (error) {
-          this.logger.warn("Failed to start Doom background supervision", {
-            sessionId: msg.sessionId,
-            error: toErrorMessage(error),
-          });
-        }
-      }
-    }
-  }
-
-  private async executeWebChatDoomStopTurn(params: {
-    msg: GatewayMessage;
-    webChat: WebChatChannel;
-    hooks: HookDispatcher;
-    sessionMgr: SessionManager;
-    sessionToolHandler: ToolHandler;
-    memoryBackend: MemoryBackend;
-    signals: WebChatSignals;
-  }): Promise<void> {
-    const {
-      msg,
-      webChat,
-      hooks,
-      sessionMgr,
-      sessionToolHandler,
-      memoryBackend,
-      signals,
-    } = params;
-
-    const session = sessionMgr.getOrCreate({
-      channel: "webchat",
-      senderId: msg.sessionId,
-      scope: "dm",
-      workspaceId: "default",
-    });
-
-    signals.signalThinking(msg.sessionId);
-    let content = "Doom stopped.";
-    try {
-      const result = await sessionToolHandler("mcp.doom.stop_game", {});
-      const parsed = parseToolResultObject(result);
-      const error =
-        parsed &&
-        typeof parsed.error === "string" &&
-        parsed.error.trim().length > 0
-          ? parsed.error.trim()
-          : undefined;
-      if (error) {
-        content = `Failed to stop Doom: ${error}`;
-      } else if (parsed?.status === "stopped") {
-        content = "Doom stopped.";
-      } else {
-        content = "Doom stop requested.";
-      }
-    } catch (error) {
-      content = `Failed to stop Doom: ${toErrorMessage(error)}`;
-    } finally {
-      signals.signalIdle(msg.sessionId);
-    }
-
-    sessionMgr.appendMessage(session.id, {
-      role: "user",
-      content: msg.content,
-    });
-    sessionMgr.appendMessage(session.id, { role: "assistant", content });
-
-    await webChat.send({
-      sessionId: msg.sessionId,
-      content,
-    });
-    webChat.broadcastEvent("chat.response", { sessionId: msg.sessionId });
-
-    await hooks.dispatch("message:outbound", {
-      sessionId: msg.sessionId,
-      content,
-      provider: "runtime",
-      userMessage: msg.content,
-      agentResponse: content,
-    });
-
-    try {
-      await memoryBackend.addEntry({
-        sessionId: msg.sessionId,
-        role: "user",
-        content: msg.content,
-      });
-      await memoryBackend.addEntry({
-        sessionId: msg.sessionId,
-        role: "assistant",
-        content,
-      });
-    } catch (error) {
-      this.logger.warn?.("Failed to persist messages to memory:", error);
-    }
   }
 
   private async executeWebChatConversationTurn(params: {
@@ -6006,6 +5834,7 @@ export class DaemonManager {
     contextWindowTokens?: number;
     traceConfig: ResolvedTraceLoggingConfig;
     turnTraceId: string;
+    workerManager?: PersistentWorkerManager | null;
   }): Promise<ChatExecutorResult | undefined> {
     const {
       msg,
@@ -6023,6 +5852,7 @@ export class DaemonManager {
       contextWindowTokens,
       traceConfig,
       turnTraceId,
+      workerManager,
     } = params;
 
     this._activeSessionTraceIds.set(msg.sessionId, turnTraceId);
@@ -6045,10 +5875,13 @@ export class DaemonManager {
         contextWindowTokens,
         traceConfig,
         turnTraceId,
-        buildToolRoutingDecision: (sessionId, content, history) =>
-          this.buildToolRoutingDecision(sessionId, content, history),
-        recordToolRoutingOutcome: (sessionId, summary) => {
-          this.recordToolRoutingOutcome(sessionId, summary);
+        buildToolRoutingDecision: (_sessionId, content, _history) =>
+          buildStaticToolRoutingDecision({
+            content,
+            availableToolNames: this.getAdvertisedToolNames(),
+          }),
+        recordToolRoutingOutcome: () => {
+          /* no-op */
         },
         getSessionTokenUsage: (sessionId) =>
           chatExecutor.getSessionTokenUsage(sessionId),
@@ -6061,6 +5894,8 @@ export class DaemonManager {
             updatedAt: Date.now(),
           });
         },
+        taskStore: this._taskTrackerStore,
+        workerManager,
         onSubagentSynthesis: (result) => {
           if (
             this._subagentActivityTraceBySession.get(msg.sessionId) !== turnTraceId
@@ -6093,6 +5928,9 @@ export class DaemonManager {
           this._subagentActivityTraceBySession.delete(msg.sessionId);
           this._latestDelegationSurfaceContextBySession.delete(msg.sessionId);
         },
+        subAgentManager: this._subAgentManager,
+        verifierService: this._delegationVerifierService,
+        agentDefinitions: this._agentDefinitions,
       });
     } finally {
       this._foregroundSessionLocks.delete(msg.sessionId);
@@ -6178,10 +6016,6 @@ export class DaemonManager {
       this._cronScheduler.stop();
       this._cronScheduler = null;
     }
-    if (this._heartbeatTimer !== null) {
-      clearInterval(this._heartbeatTimer);
-      this._heartbeatTimer = null;
-    }
     if (this._desktopExecutor !== null) {
       this._desktopExecutor.cancel();
       this._desktopExecutor = null;
@@ -6238,8 +6072,6 @@ export class DaemonManager {
         this._telemetry.destroy();
         this._telemetry = null;
       }
-      this._toolRouter?.clear();
-      this._toolRouter = null;
       await this.destroySubAgentInfrastructure();
       this._subAgentRuntimeConfig = null;
       this.clearDelegationRuntimeServices();
@@ -6287,6 +6119,9 @@ export class DaemonManager {
         this._connectionManager.destroy();
         this._connectionManager = null;
       }
+      if (this._taskTrackerStore !== null) {
+        this._taskTrackerStore = null;
+      }
       if (this._memoryBackend !== null) {
         await this._memoryBackend.close();
         this._memoryBackend = null;
@@ -6305,11 +6140,6 @@ export class DaemonManager {
       if (this._cronScheduler !== null) {
         this._cronScheduler.stop();
         this._cronScheduler = null;
-      }
-      // Stop legacy heartbeat timer (if still in use)
-      if (this._heartbeatTimer !== null) {
-        clearInterval(this._heartbeatTimer);
-        this._heartbeatTimer = null;
       }
       // Stop desktop executor
       if (this._desktopExecutor !== null) {
@@ -6394,10 +6224,6 @@ export class DaemonManager {
 
   get delegationTrajectorySink(): InMemoryDelegationTrajectorySink | null {
     return this._delegationTrajectorySink;
-  }
-
-  get delegationBanditTuner(): DelegationBanditPolicyTuner | null {
-    return this._delegationBanditTuner;
   }
 
   getStatus(): DaemonStatus {

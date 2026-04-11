@@ -1,6 +1,6 @@
 import type { DisputeDriftPromptOutput } from "./dispute-drift.js";
 
-export interface ReplayAnomalyPromptInput {
+interface ReplayAnomalyPromptInput {
   anomaly_id: string;
   task_pda?: string;
   dispute_pda?: string;

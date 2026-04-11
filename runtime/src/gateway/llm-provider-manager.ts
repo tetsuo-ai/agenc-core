@@ -78,7 +78,7 @@ export interface LLMProviderConfigCatalogEntry {
  * along with the config-to-instance mapping and catalog metadata needed
  * for downstream budget resolution and hot-swap.
  */
-export interface CreateLLMProvidersResult {
+interface CreateLLMProvidersResult {
   readonly providers: LLMProvider[];
   readonly primaryLlmConfig: GatewayLLMConfig | undefined;
   readonly providerConfigByInstance: WeakMap<LLMProvider, GatewayLLMConfig>;
@@ -89,7 +89,7 @@ export interface CreateLLMProvidersResult {
  * Resolved execution budget for a single provider, used by
  * SubAgentManager and ChatExecutor factory wiring.
  */
-export interface ResolvedProviderExecutionBudget {
+interface ResolvedProviderExecutionBudget {
   readonly promptBudget?: ReturnType<typeof buildPromptBudgetConfig>;
   readonly sessionTokenBudget?: number;
   readonly sessionCompactionThreshold?: number;
@@ -217,7 +217,7 @@ export async function resolveLlmContextWindowTokens(
 // Provider catalog helpers
 // ============================================================================
 
-export function normalizeProviderCatalogModel(
+function normalizeProviderCatalogModel(
   provider: string,
   model: string | undefined,
 ): string | undefined {
@@ -229,7 +229,7 @@ export function normalizeProviderCatalogModel(
   return trimmed.toLowerCase();
 }
 
-export function buildProviderConfigCatalogEntry(
+function buildProviderConfigCatalogEntry(
   config: GatewayLLMConfig,
 ): LLMProviderConfigCatalogEntry {
   return {
@@ -239,7 +239,7 @@ export function buildProviderConfigCatalogEntry(
   };
 }
 
-export function findConfiguredLlmConfigForProvider(
+function findConfiguredLlmConfigForProvider(
   provider: LLMProvider,
   profile: LLMProviderExecutionProfile | undefined,
   providerConfigByInstance: WeakMap<LLMProvider, GatewayLLMConfig>,

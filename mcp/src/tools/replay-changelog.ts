@@ -1,4 +1,4 @@
-export interface SchemaChangeEntry {
+interface SchemaChangeEntry {
   schema: string;
   version: string;
   date: string;

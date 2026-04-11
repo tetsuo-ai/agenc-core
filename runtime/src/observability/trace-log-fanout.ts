@@ -3,20 +3,20 @@ import { basename, dirname, extname, join } from "node:path";
 import { formatTracePayloadForLog } from "../utils/trace-payload-serialization.js";
 import type { ObservabilityEventRecord } from "./types.js";
 
-export type TraceLogFanoutCategory =
+type TraceLogFanoutCategory =
   | "errors"
   | "provider"
   | "executor"
   | "subagents";
 
-export interface TraceLogFanoutPaths {
+interface TraceLogFanoutPaths {
   readonly errors: string;
   readonly provider: string;
   readonly executor: string;
   readonly subagents: string;
 }
 
-export interface TraceLogFanoutConfig {
+interface TraceLogFanoutConfig {
   readonly enabled?: boolean;
   readonly daemonLogPath: string;
 }
@@ -97,7 +97,7 @@ export function classifyTraceLogFanoutCategories(
   return [...categories];
 }
 
-export function renderTraceLogFanoutLine(
+function renderTraceLogFanoutLine(
   event: Pick<
     ObservabilityEventRecord,
     "timestampMs" | "level" | "eventName" | "payloadPreview"

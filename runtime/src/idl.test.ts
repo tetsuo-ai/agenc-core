@@ -46,6 +46,29 @@ describe('IDL exports', () => {
     expect(IDL.instructions.length).toBeGreaterThan(0);
   });
 
+  it('overrides devnet marketplace account layouts for task/dispute instructions', () => {
+    const createTask = IDL.instructions.find((ix) => ix.name === 'create_task');
+    const createDependentTask = IDL.instructions.find(
+      (ix) => ix.name === 'create_dependent_task',
+    );
+    const initiateDispute = IDL.instructions.find(
+      (ix) => ix.name === 'initiate_dispute',
+    );
+
+    expect(createTask?.accounts.map((account) => account.name)).toContain(
+      'authority_rate_limit',
+    );
+    expect(
+      createDependentTask?.accounts.map((account) => account.name),
+    ).toContain('authority_rate_limit');
+    expect(
+      initiateDispute?.accounts.map((account) => account.name),
+    ).toContain('authority_rate_limit');
+    expect(
+      initiateDispute?.accounts.map((account) => account.name),
+    ).toContain('task_submission');
+  });
+
   it('has expected instruction names', () => {
     const instructionNames = IDL.instructions.map((ix) => ix.name);
     // Verify some key instructions exist

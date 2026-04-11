@@ -78,6 +78,9 @@ export class TelegramChannel extends BaseChannelPlugin {
   private pollingTimer: ReturnType<typeof setTimeout> | undefined;
   private pollingPromise: Promise<void> | undefined;
 
+  // -- Polling generation (guards against stale setTimeout callbacks) --
+  private pollGeneration = 0;
+
   // -- Health --
   private healthy = true;
 
@@ -151,6 +154,7 @@ export class TelegramChannel extends BaseChannelPlugin {
 
   override async stop(): Promise<void> {
     this.pollingActive = false;
+    this.pollGeneration++;
 
     if (this.pollingTimer !== undefined) {
       clearTimeout(this.pollingTimer);
@@ -176,7 +180,7 @@ export class TelegramChannel extends BaseChannelPlugin {
 
     this.chatBuckets.clear();
     this.sessionToChatId.clear();
-    this.healthy = true;
+    this.healthy = false;
     this.bot = undefined;
     this.globalBucket.tokens = GLOBAL_RATE_LIMIT;
     this.globalBucket.lastRefill = Date.now();
@@ -302,7 +306,9 @@ export class TelegramChannel extends BaseChannelPlugin {
     }
 
     if (this.pollingActive) {
+      const generation = this.pollGeneration;
       this.pollingTimer = setTimeout(() => {
+        if (this.pollGeneration !== generation) return;
         this.pollingPromise = this.pollUpdates();
       }, this.config.pollingIntervalMs);
     }

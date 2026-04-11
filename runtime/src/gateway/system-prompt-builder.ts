@@ -86,7 +86,7 @@ export function buildDesktopContext(
       "- `browser_click`, `browser_type`, `browser_run_code`, `browser_wait_for` — Interact with and inspect the page.\n" +
       "- `browser_tabs` is only for tab management/debugging after navigation. It is NOT evidence of browsing and must not be your first step.\n\n" +
       "CRITICAL RULES:\n" +
-      "- To create/edit files: use desktop.text_editor as the default. Only fall back to shell-based file writes when an editor action cannot express the change.\n" +
+      "- To create/edit files: use desktop.text_editor as the default. Do not use shell heredocs, redirection, or `tee` to author workspace source files.\n" +
       '- To install packages: desktop.bash with "pip install flask" or "sudo apt-get install -y pkg"\n' +
       '- To run scripts: desktop.bash with "python app.py" or "node server.js"\n' +
       "- For durable code-execution environments, isolated workspace/container jobs, or sandbox lifecycle management, prefer system.sandboxStart plus system.sandboxJob* tools over desktop.process_* or raw shell commands.\n" +
@@ -167,7 +167,7 @@ export function buildDesktopContext(
       "- `browser_tabs` is only for tab management/debugging after navigation. It is NOT evidence of browsing and must not be your first step.\n" +
       "Playwright uses bundled Chromium. The desktop container also has Chromium aliases (`chromium`, `chromium-browser`) and the Epiphany GUI browser.\n\n" +
       "CRITICAL RULES:\n" +
-      "- To create/edit files: use desktop.text_editor as the default. Only fall back to shell-based file writes when an editor action cannot express the change.\n" +
+      "- To create/edit files: use desktop.text_editor as the default. Do not use shell heredocs, redirection, or `tee` to author workspace source files.\n" +
       '- To install packages: desktop.bash with "pip install flask" or "sudo apt-get install -y pkg"\n' +
       '- To run scripts: desktop.bash with "python app.py" or "node server.js"\n' +
       "- For durable code-execution environments, prefer system.sandboxStart plus system.sandboxJob* tools over raw docker shell commands.\n" +
@@ -213,7 +213,7 @@ export function buildDesktopContext(
       "- Press Enter: osascript -e 'tell application \"System Events\" to key code 36'\n" +
       "- Click coordinates: osascript -e 'tell application \"System Events\" to click at {x, y}'\n" +
       "- Get frontmost app: osascript -e 'tell application \"System Events\" to get name of first process whose frontmost is true'\n" +
-      "- Create file: Use the system.writeFile tool or echo via bash\n" +
+      "- Create file: Use the system.writeFile tool or desktop.text_editor\n" +
       "Be helpful, direct, and action-oriented. Execute tasks immediately without hesitation.";
   } else {
     ctx +=
@@ -228,7 +228,7 @@ export function buildDesktopContext(
  * Build the model-disclosure section of the system prompt so the agent
  * can answer "which model are you?" questions accurately.
  */
-export function buildModelDisclosureContext(config: GatewayConfig): string {
+function buildModelDisclosureContext(config: GatewayConfig): string {
   const primaryProvider = config.llm?.provider ?? "none";
   const primaryModel =
     normalizeGrokModel(config.llm?.model) ??
@@ -287,17 +287,41 @@ export async function buildSystemPrompt(
       "Do NOT list steps. Do NOT explain what you will do. Just act."
     : "\n\n## Task Execution Protocol\n\n" +
       "When the user asks you to create files, edit code, run commands, validate output, or otherwise use tools:\n" +
-      "1. Start executing immediately\n" +
+      "1. Start executing immediately. Before declaring that any file or path \"does not exist\" / \"is not found\" / \"is missing\", you MUST first call a tool to look (`system.listDir`, `system.readFile`, `system.stat`, `system.bash 'find . -name X -maxdepth 3'`, etc). Never declare a file missing from inference alone — check first. The same rule applies to commands and binaries: run `which` / `command -v` / `ls` before saying something is unavailable.\n" +
       "2. If a brief preamble helps, keep it to one short sentence and continue into tool use in the same turn\n" +
-      "3. Never end the turn with only a plan when execution was requested\n" +
-      "4. If a command fails (build error, test failure, etc), read the error, fix the code, and retry — do NOT stop and report the error as a blocker\n" +
-      "5. Keep iterating until the task succeeds or you have genuinely exhausted your options\n" +
+      "3. Never end the turn with only a plan when execution was requested. NEVER end the turn with a status update plus a permission question (`Continue?`, `Should I proceed?`, `Continue to Phase N after the build is clean?`, `Move on to the next step?`) when the user has explicitly told you to keep going until the work is done (phrases like \"do not stop\", \"don't stop until\", \"implement all phases\", \"iterate until complete\", \"keep going until\"). The user has pre-authorized continuation. Asking permission to continue in autonomous mode is a violation of the user's instructions and wastes a full chat round-trip. Continue making tool calls until the task is genuinely complete OR you are genuinely blocked by something only the user can resolve (credentials they must provide, a decision between two valid alternatives, external infrastructure that needs human intervention). When you finish a unit of work, the next action is to call the next tool — not to ask for permission.\n" +
+      "4. If an approach fails, diagnose why before switching tactics — read the error, check your assumptions, try a focused fix. Do not retry the identical action blindly, but do not abandon a viable approach after a single failure either. Escalate to the user only when you are genuinely stuck after investigation, not as a first response to friction.\n" +
+      "5. Before declaring an environmental blocker (missing system package, missing dev header, missing command), VERIFY the system state with a tool call instead of inferring it from the error text alone. Run `dpkg -l <pkg>` / `dpkg -L <pkg>` / `which <cmd>` / `pkg-config --exists <pkg>` / `ls /usr/include/<header>` / `ldconfig -p | grep <lib>` to confirm the dependency is actually missing before blaming it. If the dependency IS already installed but a build tool still cannot find it, the failure is NOT environmental — it is a broken build script. The most common case: cmake's `find_package(X REQUIRED)` failing not because the package is missing but because cmake does not ship a `FindX.cmake` module for that library. The fix is to rewrite the build script to use `pkg_check_modules(X x)` via pkg-config, or `find_library(X_LIB x)` plus `find_path(X_INCLUDE x.h)` directly — NOT to tell the user to install a package they already have. Only escalate with an install command after you have verified what is actually missing on the host, and that command must reflect what the verification proved. Never retry the same failing configure/build step without first inspecting the error literally and checking your assumption.\n" +
       "6. Finish with grounded results or a specific blocker backed by the tool evidence\n" +
       "7. NEVER run interactive programs (games, TUI apps, editors, REPLs) via system.bash — they block the terminal. To test a GUI/TUI program, just compile it and confirm the binary exists\n\n" +
+      "### Task tracking for multi-phase work\n\n" +
+      "When the runtime provides a multi-phase milestone contract, use `task.create` / `task.update` to track real progress. Link milestone work with `metadata._runtime.milestoneIds` and mark verification steps with `metadata._runtime.verification: true`. Keep at least one task `in_progress` while milestone-linked work remains open.\n\n" +
+      "### Report outcomes faithfully\n\n" +
+      "Report outcomes faithfully: if tests fail, say so with the relevant output; if you did not run a verification step, say that rather than implying it succeeded. Never claim \"all tests pass\" when output shows failures, never suppress or simplify failing checks (tests, lints, type errors) to manufacture a green result, and never characterize incomplete or broken work as done. Before reporting a task complete, verify it actually works: run the test, execute the script, check the output. If you can't verify (no test exists, can't run the code), say so explicitly rather than claiming success.\n\n" +
+      "Do not silently rewrite a failing test, assertion, or verification harness to make it pass. If a test is genuinely wrong, stop and explain the discrepancy in your final response so the user can review the change before you modify the harness. Do not use `--no-verify` or otherwise bypass pre-commit / CI hooks to move past a failing check. Do not replace a real test body with `echo PASSED` / `exit 0` / `return true` / `assert true` stubs. Fixing the real failure is the only acceptable path to green.\n\n" +
+      "### File modification: prefer editFile over writeFile\n\n" +
+      "For modifying an existing file, ALWAYS prefer `system.editFile` over `system.writeFile`. `system.editFile` takes `{path, old_string, new_string, replace_all?}` and only sends the diff — it does NOT require you to JSON-encode the entire file. Reserve `system.writeFile` for creating new files or for truly full rewrites where editFile cannot express the change.\n\n" +
+      "Why this matters: `system.writeFile` content is JSON-encoded as a tool argument. Every nested `\"` (double-quote) in the file content has to be escaped as `\\\"` in the JSON, every `\\` becomes `\\\\`, every newline becomes `\\n`. For a 200-line C source file with `#include \"shell.h\"` directives, printf format strings, and inline string literals, that is hundreds of escape opportunities. Even one mistake produces a literal `\\\"` (backslash + quote) in the output file, which the C compiler rejects with `error: #include expects \"FILENAME\" or <FILENAME>`. `system.editFile` with an `old_string` of ~50 chars and a `new_string` of ~50 chars has ~100x fewer escape opportunities and is reliable on every model.\n\n" +
+      "Read-before-Write rule: BOTH `system.writeFile` (for existing files) AND `system.editFile` REQUIRE that you have called `system.readFile` on the same path earlier in this session. The runtime enforces this at the tool boundary — calls without a prior read are rejected with the message \"File has not been read yet. Read it first before writing to it.\" The reason is that the read puts the LITERAL current bytes of the file into your context (including any escape characters or stray backslashes from prior failed attempts). Without reading first, you are guessing at the current state and the next edit will likely repeat whatever bug is already in the file. Read first, then edit.\n\n" +
+      "Creating a new file: `system.writeFile` does NOT require a prior read because there is nothing to read yet (the file does not exist). The Read-before-Write rule only kicks in when the target path already exists.\n\n" +
+      "### Tool calls must be real tool calls, not narrated prose\n\n" +
+      "When you intend to run a command, edit a file, create a directory, build a binary, run a test, or otherwise modify the workspace, you MUST call the corresponding tool (`system.bash`, `system.writeFile`, `system.editFile`, `system.appendFile`, `system.move`, `system.readFile`, `system.listDir`, etc.) as a real tool invocation. NEVER write a shell command inside a markdown code block as a substitute for calling the tool. NEVER write the contents of a file inline in your reply and claim you created it. The user does not run code blocks from your reply — only your tool calls actually execute.\n\n" +
+      "NEVER narrate \"the command above was executed\", \"Created src/main.c\", \"Compiled successfully\", \"Test passed\", \"Phase N complete\", \"Wrote tests/foo.sh\", or any equivalent phrase unless your immediately preceding model turn contained an actual tool_use call whose tool result you observed in this same conversation. Tool results appear as structured tool messages in your context — if you cannot point to one for a claim, you have no basis to make the claim. If you find yourself about to type \"I ran X\", \"X was created\", \"the build succeeded\", or \"all phases complete\", stop and call the tool instead.\n\n" +
+      "If you genuinely have nothing more to do because the task is complete, your final reply should describe what you actually verified via tool results — not what you would have done. If a task is too large to fit in one turn, keep calling tools until you run out of useful actions; do not summarize fake progress to end the turn early.\n\n" +
       "For simple questions or explanation-only requests, respond directly without tools.";
 
+  const marketplaceToolInstruction =
+    "\n\n## Marketplace Tool Calling Rules\n\n" +
+    "For marketplace read prompts, use `agenc.inspectMarketplace` first.\n" +
+    "For `agenc.inspectMarketplace` reputation requests, only pass `subject` or `agentPda` when the user or a prior tool result provides a real base58 agent PDA.\n" +
+    "Never invent aliases, labels, or placeholder names for `agentPda`.\n" +
+    "If no explicit agent PDA is available, omit `subject` and `agentPda`; treat a `requires_input` reputation result as a request for a listed agent PDA, not proof that no agent is registered.";
+
   const additionalContext =
-    desktopContext + planningInstruction + modelDisclosureContext;
+    desktopContext +
+    planningInstruction +
+    marketplaceToolInstruction +
+    modelDisclosureContext;
   const workspacePath = resolveActiveHostWorkspacePath(config, opts.configPath);
   const loader = new WorkspaceLoader(workspacePath);
 
@@ -367,7 +391,7 @@ export function resolveActiveHostWorkspacePath(
  * Build generic workspace prompt files when no AGENT.md / AGENC.md
  * exists but the workspace path differs from the default.
  */
-export function buildGenericHostWorkspacePromptFiles(
+function buildGenericHostWorkspacePromptFiles(
   config: GatewayConfig,
 ): WorkspaceFiles {
   const agentName = config.agent?.name?.trim() || "AgenC";

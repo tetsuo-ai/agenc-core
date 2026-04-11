@@ -87,7 +87,7 @@ function deriveEventRecord(input: ObservabilityEventInput): ObservabilityEventRe
   };
 }
 
-export interface ObservabilityServiceConfig {
+interface ObservabilityServiceConfig {
   readonly logger?: Logger;
   readonly dbPath?: string;
   readonly daemonLogPath?: string;
@@ -99,6 +99,8 @@ export class ObservabilityService {
   private readonly store: SqliteObservabilityStore;
   private readonly traceLogFanout: TraceLogFanout;
   private writeChain: Promise<void> = Promise.resolve();
+  private eventBuffer: ObservabilityEventRecord[] = [];
+  private flushInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: ObservabilityServiceConfig = {}) {
     this.logger = config.logger ?? silentLogger;
@@ -110,29 +112,46 @@ export class ObservabilityService {
       enabled: config.traceFanoutEnabled,
       daemonLogPath: config.daemonLogPath ?? this.store.getDaemonLogPath(),
     });
+    this.flushInterval = setInterval(() => this.flushBuffer(), 100);
+    if (this.flushInterval.unref) {
+      this.flushInterval.unref();
+    }
   }
 
   recordEvent(input: ObservabilityEventInput): void {
     const record = deriveEventRecord(input);
     if (!record) return;
+    this.eventBuffer.push(record);
+    if (this.eventBuffer.length >= 50) {
+      this.flushBuffer();
+    }
+  }
+
+  private flushBuffer(): void {
+    if (this.eventBuffer.length === 0) return;
+    const batch = this.eventBuffer.splice(0);
     this.writeChain = this.writeChain
       .then(async () => {
-        await Promise.all([
-          this.store.recordEvent(record).catch((error) => {
-            this.logger.warn?.(
-              `Observability event persistence failed: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            );
-          }),
-          this.traceLogFanout.writeEvent(record).catch((error) => {
-            this.logger.warn?.(
-              `Observability trace fan-out failed: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            );
-          }),
-        ]);
+        await Promise.all(
+          batch.map((record) =>
+            Promise.all([
+              this.store.recordEvent(record).catch((error) => {
+                this.logger.warn?.(
+                  `Observability event persistence failed: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`,
+                );
+              }),
+              this.traceLogFanout.writeEvent(record).catch((error) => {
+                this.logger.warn?.(
+                  `Observability trace fan-out failed: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`,
+                );
+              }),
+            ]),
+          ),
+        );
       })
       .catch((error) => {
         this.logger.warn?.(
@@ -144,11 +163,13 @@ export class ObservabilityService {
   }
 
   async listTraces(query?: ObservabilityTraceQuery) {
+    this.flushBuffer();
     await this.writeChain;
     return this.store.listTraces(query);
   }
 
   async getTrace(traceId: string): Promise<ObservabilityTraceDetail | null> {
+    this.flushBuffer();
     await this.writeChain;
     return this.store.getTrace(traceId);
   }
@@ -156,11 +177,13 @@ export class ObservabilityService {
   async getSummary(
     query: ObservabilitySummaryQuery = {},
   ): Promise<ObservabilitySummary> {
+    this.flushBuffer();
     await this.writeChain;
     return this.store.getSummary(query);
   }
 
   async getArtifact(path: string): Promise<ObservabilityArtifactResponse> {
+    this.flushBuffer();
     await this.writeChain;
     return this.store.getArtifact(path);
   }
@@ -174,6 +197,11 @@ export class ObservabilityService {
   }
 
   async close(): Promise<void> {
+    if (this.flushInterval) {
+      clearInterval(this.flushInterval);
+      this.flushInterval = null;
+    }
+    this.flushBuffer();
     await this.writeChain;
     await this.traceLogFanout.close();
     await this.store.close();
@@ -194,6 +222,3 @@ export function recordObservabilityTraceEvent(
   defaultObservabilityService?.recordEvent(input);
 }
 
-export function getDefaultObservabilityService(): ObservabilityService | null {
-  return defaultObservabilityService;
-}

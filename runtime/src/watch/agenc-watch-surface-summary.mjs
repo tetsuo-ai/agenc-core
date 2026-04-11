@@ -186,6 +186,13 @@ function buildFooterStatuslineSegments(
   } else if (formatCount(attention.errorAlertCount, 0) > 0) {
     segments.push(`GUARD ${attention.errorAlertCount} error`);
   }
+  // Cut 6.3: surface the daemon error log error-rate. The transcript-based
+  // errorAlertCount only sees errors emitted while the watch is connected;
+  // ERR is the persistent rolling counter from `~/.agenc/daemon.errors.log`.
+  const errRate = attention.daemonErrorRate;
+  if (errRate && errRate.present && formatCount(errRate.windowCount, 0) > 0) {
+    segments.push(`ERR ${errRate.windowCount}/1h`);
+  }
   if (checkpointSummary?.id) {
     segments.push(`CKPT ${checkpointSummary.id}`);
   }
@@ -536,6 +543,17 @@ export function buildWatchFooterSummary({
   ) {
     leftDetails.push(`runtime ${surfaceSummary.overview.runtimeState}`);
   }
+  // Cut 6.3: always-on daemon error-rate indicator. Shown in non-statusline
+  // mode so a fresh watch session reveals accumulated daemon errors even
+  // when the in-session transcript has none yet.
+  const footerErrorRate = surfaceSummary?.attention?.daemonErrorRate;
+  if (
+    footerErrorRate &&
+    footerErrorRate.present &&
+    formatCount(footerErrorRate.windowCount, 0) > 0
+  ) {
+    leftDetails.push(`daemon-errors ${footerErrorRate.windowCount}/1h`);
+  }
   if (detailOpen) {
     leftDetails.push("detail");
   } else if (transcriptMode === "follow") {
@@ -688,6 +706,7 @@ export function buildWatchSurfaceSummary({
   workspaceIndex = null,
   voiceCompanion = null,
   detail = null,
+  daemonErrorRate = null,
 }) {
   const recentEvents = events.slice(-24);
   const recentTools = recentEvents
@@ -995,6 +1014,22 @@ export function buildWatchSurfaceSummary({
       queuedInputCount: formatCount(queuedInputCount, 0),
       pendingAttachmentCount: formatCount(pendingAttachmentCount, 0),
       items: recentAlerts,
+      // Cut 6.3: rolling daemon-error-rate signal so the footer can show
+      // a red badge when ~/.agenc/daemon.errors.log accumulates entries.
+      // Null when the log file is missing on a fresh install.
+      daemonErrorRate:
+        daemonErrorRate && typeof daemonErrorRate === "object"
+          ? {
+              present: Boolean(daemonErrorRate.present),
+              windowMs: formatCount(daemonErrorRate.windowMs, 0),
+              windowCount: formatCount(daemonErrorRate.windowCount, 0),
+              totalCount: formatCount(daemonErrorRate.totalCount, 0),
+              lastTimestamp:
+                typeof daemonErrorRate.lastTimestamp === "number"
+                  ? daemonErrorRate.lastTimestamp
+                  : null,
+            }
+          : null,
     },
     recentTools,
     detail: detail && typeof detail === "object"

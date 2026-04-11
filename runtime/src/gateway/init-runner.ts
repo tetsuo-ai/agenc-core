@@ -5,7 +5,7 @@ import { access, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { join, resolve as resolvePath } from "node:path";
 import type { ChatExecutorResult } from "../llm/chat-executor.js";
 
-export const INIT_GUIDE_FILENAME = "AGENC.md";
+const INIT_GUIDE_FILENAME = "AGENC.md";
 const MAX_FILE_EXCERPT_CHARS = 4_000;
 const MAX_ROOT_ENTRIES = 60;
 const MAX_SUBDIRECTORY_SAMPLES = 5;
@@ -18,7 +18,7 @@ const REQUIRED_SECTION_HEADINGS = [
   "## Commit & Pull Request Guidelines",
 ] as const;
 
-export interface ModelBackedProjectGuideParams {
+interface ModelBackedProjectGuideParams {
   readonly workspaceRoot: string;
   readonly sessionId: string;
   readonly force?: boolean;
@@ -36,7 +36,7 @@ export interface ModelBackedProjectGuideParams {
   }) => void;
 }
 
-export interface ModelBackedProjectGuideResult {
+interface ModelBackedProjectGuideResult {
   readonly status: "created" | "updated" | "skipped";
   readonly filePath: string;
   readonly content: string;
@@ -83,9 +83,15 @@ const KEY_FILE_PATTERNS = [
   /^jest\.config\..+$/i,
   /^playwright\.config\..+$/i,
   /^vite\.config\..+$/i,
-  /^plan\.md$/i,
   /^claude\.md$/i,
   /^agents\.md$/i,
+  // Generic planning/spec markdown files at the repo root. Replaces a
+  // hard-coded `^plan\.md$` pattern that special-cased a single filename and
+  // violated the global CLAUDE.md learned rule "Never make runtime behavior
+  // depend on a filename like PLAN.md". Anything matching `*.md` at the root
+  // that is not README/CLAUDE/AGENTS will be picked up as a candidate
+  // planning document and filtered downstream in synthesizeInitGuide.
+  /^[A-Za-z0-9._-]+\.md$/i,
 ] as const;
 
 const STRUCTURE_DIR_PATTERNS = [
@@ -173,7 +179,7 @@ export function buildModelBackedInitPrompt(params: {
     `- Include these section headings:\n  ${REQUIRED_SECTION_HEADINGS.join("\n  ")}`,
     "- Be concise and specific to what you actually found in the repo.",
     "- Return only the Markdown document. Do not wrap it in code fences.",
-    "- Distinguish existing structure from planned structure. If PLAN.md describes intended files, describe them as planned, not already present.",
+    "- Distinguish existing structure from planned structure. When a planning or specification file describes intended files that are not yet present, describe them as planned, not already present.",
     "",
     "Use only the grounded repository evidence below. Do not invent files, commands, tests, or conventions that are not supported by this evidence.",
     "",
@@ -297,9 +303,21 @@ function synthesizeInitGuide(params: {
   const cargoToml = params.evidence.keyFiles.find((file) => file.path === "Cargo.toml");
   const cmakeLists = params.evidence.keyFiles.find((file) => file.path === "CMakeLists.txt");
   const makefile = params.evidence.keyFiles.find((file) => /^Makefile$/i.test(file.path));
-  const plan = params.evidence.keyFiles.find((file) => /^PLAN\.md$/i.test(file.path));
   const claude = params.evidence.keyFiles.find((file) => /^CLAUDE\.md$/i.test(file.path));
   const agents = params.evidence.keyFiles.find((file) => /^AGENTS\.md$/i.test(file.path));
+  // Markdown files at the repo root that look like planning/spec documents,
+  // generically. Discovered by extension, not by a hard-coded filename — the
+  // previous code special-cased PLAN.md and emitted C-shell-specific strings
+  // like "PLAN.md specifies K&R-style C function definitions for the planned
+  // shell implementation", which violated the global CLAUDE.md learned rule
+  // "Never make runtime behavior depend on a filename like PLAN.md".
+  const planningDocs = params.evidence.keyFiles.filter(
+    (file) =>
+      /\.md$/i.test(file.path) &&
+      !/^readme(?:\..+)?$/i.test(file.path) &&
+      !/^claude\.md$/i.test(file.path) &&
+      !/^agents\.md$/i.test(file.path),
+  );
 
   const structureLines = [
     ...(
@@ -318,11 +336,13 @@ function synthesizeInitGuide(params: {
         )
       : []),
   ];
-  const plannedStructure = extractPlannedStructure(plan?.content);
-  if (plannedStructure.length > 0) {
-    structureLines.push(
-      `PLAN.md describes planned future structure including ${plannedStructure.join(", ")}; those paths are not all present yet.`,
-    );
+  for (const doc of planningDocs) {
+    const planned = extractPlannedStructure(doc.content);
+    if (planned.length > 0) {
+      structureLines.push(
+        `${doc.path} describes planned future structure including ${planned.join(", ")}; those paths are not all present yet.`,
+      );
+    }
   }
 
   const buildLines: string[] = [];
@@ -338,11 +358,6 @@ function synthesizeInitGuide(params: {
   if (makefile) {
     buildLines.push("make");
   }
-  if (buildLines.length === 0 && plan?.content?.match(/\bcmake\b/i)) {
-    buildLines.push(
-      "PLAN.md references a future CMake-based build, but no CMakeLists.txt exists in the repository yet.",
-    );
-  }
   if (buildLines.length === 0) {
     buildLines.push("No executable build or test commands were discovered from the current repository contents.");
   }
@@ -353,9 +368,6 @@ function synthesizeInitGuide(params: {
   }
   if (agents) {
     styleLines.push("AGENTS.md is present and should be treated as an additional local instruction source.");
-  }
-  if (plan?.content?.match(/\bK&R\b/i)) {
-    styleLines.push("PLAN.md specifies K&R-style C function definitions for the planned shell implementation.");
   }
   if (styleLines.length === 0) {
     styleLines.push("No explicit coding-style document was discovered in the current repository contents.");
@@ -370,11 +382,6 @@ function synthesizeInitGuide(params: {
   }
   if (cargoToml) {
     testingLines.push("cargo test");
-  }
-  if (plan?.content?.match(/\btest/i)) {
-    testingLines.push(
-      "PLAN.md includes testing expectations for the planned shell implementation; keep those checks aligned with the code as files are added.",
-    );
   }
   if (testingLines.length === 0) {
     testingLines.push("No runnable test command was discovered from the current repository contents.");

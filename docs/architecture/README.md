@@ -50,6 +50,7 @@ For whole-repo navigation, start with [../CODEBASE_MAP.md](../CODEBASE_MAP.md) a
 |----------|-------------|
 | [guides/cli-runtime-migration-map.md](guides/cli-runtime-migration-map.md) | Current `agenc` / `agenc-runtime` surface mapping into the public product contract |
 | [guides/public-runtime-release-channel.md](guides/public-runtime-release-channel.md) | Public `agenc` wrapper release channel, trust model, and runtime artifact contract |
+| [guides/public-wrapper-devnet-marketplace-rehearsal.md](guides/public-wrapper-devnet-marketplace-rehearsal.md) | Supported first-use devnet marketplace rehearsal from the public `agenc` wrapper path |
 | [guides/runtime-install-matrix.md](guides/runtime-install-matrix.md) | Current Node/OS/service-mode support and canonical local operator state layout |
 | [guides/runtime-completion-semantics.md](guides/runtime-completion-semantics.md) | Final completion-state rules, implementation verifier authority, and the only allowed legacy compatibility classes |
 | [guides/delegated-workspace-semantics.md](guides/delegated-workspace-semantics.md) | Canonical delegated local-file scope, `/workspace` presentation-only rules, shared-artifact denial, and preflight debugging |

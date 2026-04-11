@@ -13,7 +13,7 @@ import type { EmbeddingProvider } from "./embeddings.js";
 import type { MemoryGraph } from "./graph.js";
 
 /** Snapshot of memory system health. */
-export interface MemoryHealthReport {
+interface MemoryHealthReport {
   /** Memory backend type. */
   readonly backendType: string;
   /** Backend durability level. */

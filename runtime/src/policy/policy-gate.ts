@@ -43,6 +43,7 @@ export function createPolicyGateHook(
       const toolName =
         typeof payload.toolName === "string" ? payload.toolName : undefined;
       if (!toolName) {
+        options.logger?.warn?.("Policy gate bypassed: no toolName in payload");
         return { continue: true };
       }
 

@@ -249,7 +249,7 @@ export interface PipelineExecutionOptions {
   readonly onEvent?: (event: PipelineExecutionEvent) => void;
 }
 
-export type PipelineExecutionEventType =
+type PipelineExecutionEventType =
   | "pipeline_halted"
   | "step_state_changed"
   | "step_finished"

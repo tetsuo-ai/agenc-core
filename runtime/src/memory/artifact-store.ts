@@ -52,7 +52,7 @@ export interface ArtifactCompactionState {
   readonly artifactRefs: readonly ContextArtifactRef[];
 }
 
-export interface PersistedArtifactSnapshot {
+interface PersistedArtifactSnapshot {
   readonly state: ArtifactCompactionState;
   readonly records: readonly ContextArtifactRecord[];
 }

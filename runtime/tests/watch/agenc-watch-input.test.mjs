@@ -79,6 +79,19 @@ function createInputHarness(overrides = {}) {
     navigateComposer(direction) {
       calls.push({ type: "navigate", direction });
     },
+    hasActiveMarketTaskBrowser: overrides.hasActiveMarketTaskBrowser ?? (() => false),
+    navigateMarketTaskBrowser(direction) {
+      calls.push({ type: "navigateMarketTaskBrowser", direction });
+      return true;
+    },
+    toggleMarketTaskBrowserExpansion() {
+      calls.push({ type: "toggleMarketTaskBrowserExpansion" });
+      return true;
+    },
+    dismissMarketTaskBrowser() {
+      calls.push({ type: "dismissMarketTaskBrowser" });
+      return true;
+    },
     hasActiveComposerPalette: overrides.hasActiveComposerPalette ?? (() => false),
     navigateComposerPalette(direction) {
       calls.push({ type: "navigatePalette", direction });
@@ -254,6 +267,52 @@ test("input controller routes arrow keys to palette navigation while the compose
     ],
   );
   assert.equal(calls.some((entry) => entry.type === "navigate"), false);
+});
+
+test("input controller routes arrow keys to the market browser before palette navigation", () => {
+  const { controller, calls } = createInputHarness({
+    hasActiveMarketTaskBrowser: () => true,
+    hasActiveComposerPalette: () => true,
+  });
+
+  controller.handleTerminalInput("\x1b[A\x1b[B");
+
+  assert.deepEqual(
+    calls.filter((entry) => entry.type === "navigateMarketTaskBrowser"),
+    [
+      { type: "navigateMarketTaskBrowser", direction: -1 },
+      { type: "navigateMarketTaskBrowser", direction: 1 },
+    ],
+  );
+  assert.equal(calls.some((entry) => entry.type === "navigatePalette"), false);
+  assert.equal(calls.some((entry) => entry.type === "navigate"), false);
+});
+
+test("input controller toggles market task details instead of submitting when the browser is active", () => {
+  const { controller, watchState, calls } = createInputHarness({
+    hasActiveMarketTaskBrowser: () => true,
+  });
+  watchState.composerInput = "leave me alone";
+  watchState.composerCursor = watchState.composerInput.length;
+
+  controller.handleTerminalInput("\r");
+
+  assert.equal(watchState.composerInput, "leave me alone");
+  assert.ok(calls.some((entry) => entry.type === "toggleMarketTaskBrowserExpansion"));
+  assert.equal(calls.some((entry) => entry.type === "submit"), false);
+});
+
+test("input controller dismisses the market task browser before closing detail or cancelling chat", () => {
+  const { controller, watchState, calls } = createInputHarness({
+    hasActiveMarketTaskBrowser: () => true,
+  });
+  watchState.expandedEventId = "evt-1";
+
+  controller.handleTerminalEscapeSequence("\x1b", 0);
+
+  assert.ok(calls.some((entry) => entry.type === "dismissMarketTaskBrowser"));
+  assert.equal(watchState.expandedEventId, "evt-1");
+  assert.equal(calls.some((entry) => entry.type === "cancelActiveChat"), false);
 });
 
 test("input controller routes ctrl+p and ctrl+n to diff hunk navigation only in diff detail mode", () => {

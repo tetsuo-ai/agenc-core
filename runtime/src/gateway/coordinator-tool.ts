@@ -9,6 +9,7 @@
 
 import type { Tool } from "../tools/types.js";
 import { safeStringify } from "../tools/types.js";
+import type { ApprovalDisposition } from "./approvals.js";
 import type { ExecuteWithAgentInput } from "./delegation-tool.js";
 import { parseExecuteWithAgentInput } from "./delegation-tool.js";
 
@@ -17,20 +18,32 @@ export const COORDINATOR_MODE_TOOL_NAME = "coordinator_mode";
 const DIRECT_EXECUTION_ERROR =
   "coordinator_mode must run through a session-scoped tool handler";
 
-export type CoordinatorModeAction =
+type CoordinatorModeAction =
   | "list"
   | "spawn"
   | "reuse"
   | "follow_up"
-  | "stop";
+  | "stop"
+  | "messages"
+  | "ack"
+  | "respond_permission"
+  | "message";
 
 export interface CoordinatorModeInput {
   readonly action: CoordinatorModeAction;
-  readonly workerSessionId?: string;
+  readonly workerId?: string;
+  readonly workerName?: string;
   readonly request?: ExecuteWithAgentInput;
+  readonly messageId?: string;
+  readonly direction?: "parent_to_worker" | "worker_to_parent";
+  readonly status?: "pending" | "acknowledged" | "handled";
+  readonly limit?: number;
+  readonly disposition?: ApprovalDisposition;
+  readonly subject?: string;
+  readonly body?: string;
 }
 
-export type ParseCoordinatorModeResult =
+type ParseCoordinatorModeResult =
   | { ok: true; value: CoordinatorModeInput }
   | { ok: false; error: string };
 
@@ -48,7 +61,14 @@ const ACTION_ALIASES: Readonly<Record<string, CoordinatorModeAction>> = {
   followup: "follow_up",
   "follow-up": "follow_up",
   reply: "follow_up",
-  message: "follow_up",
+  messages: "messages",
+  inbox: "messages",
+  ack: "ack",
+  acknowledge: "ack",
+  respond_permission: "respond_permission",
+  permission_response: "respond_permission",
+  message: "message",
+  note: "message",
   stop: "stop",
   cancel: "stop",
   terminate: "stop",
@@ -71,13 +91,49 @@ function normalizeDelegationError(error: string): string {
   return error.replaceAll("execute_with_agent", COORDINATOR_MODE_TOOL_NAME);
 }
 
-function resolveWorkerSessionId(args: Record<string, unknown>): string | undefined {
+function resolveWorkerId(args: Record<string, unknown>): string | undefined {
   return (
+    toNonEmptyString(args.workerId) ??
     toNonEmptyString(args.workerSessionId) ??
     toNonEmptyString(args.worker_session_id) ??
     toNonEmptyString(args.subagentSessionId) ??
     toNonEmptyString(args.subagent_session_id)
   );
+}
+
+function normalizeDirection(
+  value: unknown,
+): CoordinatorModeInput["direction"] | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase().replace(/\s+/g, "_");
+  return normalized === "parent_to_worker" || normalized === "worker_to_parent"
+    ? normalized
+    : undefined;
+}
+
+function normalizeStatus(
+  value: unknown,
+): CoordinatorModeInput["status"] | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase().replace(/\s+/g, "_");
+  return normalized === "pending" ||
+      normalized === "acknowledged" ||
+      normalized === "handled"
+    ? normalized
+    : undefined;
+}
+
+function normalizeLimit(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  return Math.max(1, Math.floor(value));
+}
+
+function normalizeDisposition(value: unknown): ApprovalDisposition | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "yes" || normalized === "no" || normalized === "always"
+    ? normalized
+    : undefined;
 }
 
 export function parseCoordinatorModeInput(
@@ -88,11 +144,28 @@ export function parseCoordinatorModeInput(
     return {
       ok: false,
       error:
-        'coordinator_mode requires an "action" of "list", "spawn", "reuse", "follow_up", or "stop"',
+        'coordinator_mode requires an "action" of "list", "spawn", "reuse", "follow_up", "stop", "messages", "ack", "respond_permission", or "message"',
     };
   }
 
-  const workerSessionId = resolveWorkerSessionId(args);
+  const workerId = resolveWorkerId(args);
+  const workerName =
+    toNonEmptyString(args.workerName) ??
+    toNonEmptyString(args.worker_name);
+  const messageId =
+    toNonEmptyString(args.messageId) ??
+    toNonEmptyString(args.message_id);
+  const direction = normalizeDirection(args.direction);
+  const status = normalizeStatus(args.status);
+  const limit = normalizeLimit(args.limit);
+  const disposition = normalizeDisposition(args.disposition);
+  const subject =
+    toNonEmptyString(args.subject) ??
+    toNonEmptyString(args.title);
+  const body =
+    toNonEmptyString(args.body) ??
+    toNonEmptyString(args.message_body) ??
+    toNonEmptyString(args.text);
 
   if (action === "list") {
     return {
@@ -101,28 +174,128 @@ export function parseCoordinatorModeInput(
     };
   }
 
-  if (action === "stop") {
-    if (!workerSessionId) {
+  if (action === "messages") {
+    return {
+      ok: true,
+      value: {
+        action,
+        ...(workerId ? { workerId } : {}),
+        ...(direction ? { direction } : {}),
+        ...(status ? { status } : {}),
+        ...(limit ? { limit } : {}),
+      },
+    };
+  }
+
+  if (action === "ack") {
+    if (!messageId) {
       return {
         ok: false,
         error:
-          'coordinator_mode action "stop" requires a non-empty "workerSessionId"',
+          'coordinator_mode action "ack" requires a non-empty "messageId"',
       };
     }
     return {
       ok: true,
       value: {
         action,
-        workerSessionId,
+        messageId,
       },
     };
   }
 
-  if (action === "spawn" && workerSessionId) {
+  if (action === "respond_permission") {
+    if (!messageId) {
+      return {
+        ok: false,
+        error:
+          'coordinator_mode action "respond_permission" requires a non-empty "messageId"',
+      };
+    }
+    if (!disposition) {
+      return {
+        ok: false,
+        error:
+          'coordinator_mode action "respond_permission" requires a "disposition" of "yes", "no", or "always"',
+      };
+    }
+    return {
+      ok: true,
+      value: {
+        action,
+        messageId,
+        disposition,
+      },
+    };
+  }
+
+  if (action === "message") {
+    if (!workerId) {
+      return {
+        ok: false,
+        error:
+          'coordinator_mode action "message" requires a non-empty "workerId"',
+      };
+    }
+    if (!body) {
+      return {
+        ok: false,
+        error:
+          'coordinator_mode action "message" requires a non-empty "body"',
+      };
+    }
+    return {
+      ok: true,
+      value: {
+        action,
+        workerId,
+        ...(subject ? { subject } : {}),
+        body,
+      },
+    };
+  }
+
+  if (action === "stop") {
+    if (!workerId) {
+      return {
+        ok: false,
+        error:
+          'coordinator_mode action "stop" requires a non-empty "workerId"',
+      };
+    }
+    return {
+      ok: true,
+      value: {
+        action,
+        workerId,
+      },
+    };
+  }
+
+  if (action === "spawn" && workerId) {
     return {
       ok: false,
       error:
-        'coordinator_mode action "spawn" does not accept "workerSessionId"; use "reuse" or "follow_up" instead',
+        'coordinator_mode action "spawn" does not accept "workerId"; use "reuse" or "follow_up" instead',
+    };
+  }
+
+  const hasDelegationRequest =
+    typeof args.task === "string" ||
+    typeof args.objective === "string";
+  if (!hasDelegationRequest) {
+    if (action === "spawn") {
+      return {
+        ok: true,
+        value: {
+        action,
+        ...(workerName ? { workerName } : {}),
+      },
+    };
+    }
+    return {
+      ok: false,
+          error: `coordinator_mode action "${action}" requires a child request`,
     };
   }
 
@@ -142,16 +315,17 @@ export function parseCoordinatorModeInput(
     };
   }
 
-  const resolvedWorkerSessionId =
-    workerSessionId ?? parsedRequest.value.continuationSessionId;
+  const resolvedWorkerId =
+    workerId ?? parsedRequest.value.continuationSessionId;
 
   return {
     ok: true,
     value: {
-      action,
-      ...(resolvedWorkerSessionId ? { workerSessionId: resolvedWorkerSessionId } : {}),
-      request: parsedRequest.value,
-    },
+        action,
+        ...(resolvedWorkerId ? { workerId: resolvedWorkerId } : {}),
+        ...(workerName ? { workerName } : {}),
+        request: parsedRequest.value,
+      },
   };
 }
 
@@ -166,12 +340,57 @@ export function createCoordinatorModeTool(): Tool {
         action: {
           type: "string",
           description:
-            'Worker coordination action: "list", "spawn", "reuse", "follow_up", or "stop".',
+            'Worker coordination action: "list", "spawn", "reuse", "follow_up", "stop", "messages", "ack", "respond_permission", or "message".',
+        },
+        workerId: {
+          type: "string",
+          description:
+            "Optional persistent worker id to reuse, follow up, or stop. Legacy workerSessionId aliases still resolve.",
         },
         workerSessionId: {
           type: "string",
           description:
-            "Optional existing worker session to reuse, follow up, or stop. If omitted on reuse/follow_up, the latest successful worker is selected.",
+            "Legacy alias for workerId. Existing child session ids also resolve to the owning persistent worker when possible.",
+        },
+        workerName: {
+          type: "string",
+          description:
+            "Optional stable worker name when spawning a persistent worker.",
+        },
+        messageId: {
+          type: "string",
+          description:
+            "Mailbox message id for ack/respond_permission actions.",
+        },
+        direction: {
+          type: "string",
+          description:
+            'Optional mailbox direction filter for "messages": "parent_to_worker" or "worker_to_parent".',
+        },
+        status: {
+          type: "string",
+          description:
+            'Optional mailbox status filter for "messages": "pending", "acknowledged", or "handled".',
+        },
+        limit: {
+          type: "number",
+          description:
+            'Optional maximum number of mailbox messages to return for "messages".',
+        },
+        disposition: {
+          type: "string",
+          description:
+            'Approval disposition for "respond_permission": "yes", "no", or "always".',
+        },
+        subject: {
+          type: "string",
+          description:
+            'Optional coordinator subject for "message".',
+        },
+        body: {
+          type: "string",
+          description:
+            'Coordinator message body for "message".',
         },
         task: {
           type: "string",

@@ -33,10 +33,12 @@ export class FileReplayTimelineStore implements ReplayTimelineStore {
   ): Promise<ReplayStorageWriteResult> {
     await this.getState();
     const result = await this.fallback.save(records);
+    const cursor = await this.fallback.getCursor();
+    const allRecords = [...(await this.fallback.query())];
     await this.persist({
       schemaVersion: REPLAY_FILE_STATE_SCHEMA_VERSION,
-      cursor: await this.fallback.getCursor(),
-      records: [...(await this.fallback.query())],
+      cursor,
+      records: allRecords,
     });
     return result;
   }

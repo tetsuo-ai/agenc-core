@@ -18,7 +18,7 @@ import { NoopEmbeddingProvider } from "../embeddings.js";
 import { MemoryIngestionEngine } from "../ingestion.js";
 import { DailyLogManager } from "../structured.js";
 
-export interface LocomoBenchResult {
+interface LocomoBenchResult {
   readonly name: string;
   readonly category: "qa_accuracy" | "event_summarization" | "multi_session_reasoning";
   readonly passed: boolean;
@@ -27,7 +27,7 @@ export interface LocomoBenchResult {
   readonly durationMs: number;
 }
 
-export interface LocomoBenchSuite {
+interface LocomoBenchSuite {
   readonly name: string;
   readonly results: readonly LocomoBenchResult[];
   readonly overallAccuracy: number;

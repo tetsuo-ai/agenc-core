@@ -1,11 +1,5 @@
+import { hasRuntimeLimit } from "./runtime-limit-policy.js";
 import type { LLMUsage } from "./types.js";
-import {
-  hasRuntimeLimit,
-  isRuntimeLimitReached,
-  normalizeRuntimeLimit,
-  remainingRuntimeLimit,
-  UNLIMITED_RUNTIME_LIMIT,
-} from "./runtime-limit-policy.js";
 
 export type RuntimeBudgetMode = "report_only" | "enforce";
 
@@ -15,7 +9,7 @@ export type RuntimeRunClass =
   | "verifier"
   | "child";
 
-export interface RuntimeRunBudget {
+interface RuntimeRunBudget {
   readonly runClass: RuntimeRunClass;
   readonly tokenCeiling: number;
   readonly latencyCeilingMs: number;
@@ -25,7 +19,7 @@ export interface RuntimeRunBudget {
   readonly downgradeLatencyRatio: number;
 }
 
-export interface RuntimeRouteTelemetry {
+interface RuntimeRouteTelemetry {
   readonly runClass: RuntimeRunClass;
   readonly phase: string;
   readonly provider: string;
@@ -35,7 +29,7 @@ export interface RuntimeRouteTelemetry {
   readonly reason?: string;
 }
 
-export interface RuntimeRunBudgetLedger {
+interface RuntimeRunBudgetLedger {
   readonly runClass: RuntimeRunClass;
   tokens: number;
   latencyMs: number;
@@ -69,7 +63,7 @@ export interface RuntimeEconomicsState {
   budgetViolationCount: number;
 }
 
-export interface RuntimeBudgetPressure {
+interface RuntimeBudgetPressure {
   readonly tokenRatio: number;
   readonly latencyRatio: number;
   readonly spendRatio: number;
@@ -77,7 +71,7 @@ export interface RuntimeBudgetPressure {
   readonly shouldDowngrade: boolean;
 }
 
-export interface RuntimeRunBudgetSummary {
+interface RuntimeRunBudgetSummary {
   readonly budget: RuntimeRunBudget;
   readonly usage: {
     readonly tokens: number;
@@ -121,21 +115,125 @@ export interface DelegationBudgetSnapshot {
   readonly negativeDelegationMarginTokens: number;
 }
 
-function clamp01(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  if (value <= 0) return 0;
-  if (value >= 1) return 1;
-  return value;
+const DEFAULT_DOWNGRADE_RATIO = 0.7;
+const DEFAULT_NEGATIVE_DELEGATION_MARGIN_UNITS = 0.2;
+const DEFAULT_NEGATIVE_DELEGATION_MARGIN_TOKENS = 64;
+const DEFAULT_MIN_SPEND_UNITS = 0.25;
+const TOKEN_TO_SPEND_UNIT_DIVISOR = 256;
+
+function normalizeLimitedNumber(value: number | undefined): number {
+  return hasRuntimeLimit(value)
+    ? Math.max(1, Math.floor(Number(value)))
+    : Number.POSITIVE_INFINITY;
+}
+
+function resolveBudgetCeiling(
+  primary: number | undefined,
+  fallback?: number,
+): number {
+  const resolvedPrimary = normalizeLimitedNumber(primary);
+  if (hasRuntimeLimit(resolvedPrimary)) {
+    return resolvedPrimary;
+  }
+  const resolvedFallback = normalizeLimitedNumber(fallback);
+  return hasRuntimeLimit(resolvedFallback)
+    ? resolvedFallback
+    : Number.POSITIVE_INFINITY;
+}
+
+function resolveRatio(used: number, limit: number): number {
+  if (!hasRuntimeLimit(limit)) {
+    return 0;
+  }
+  return used / Math.max(1, limit);
+}
+
+function normalizeNonNegative(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, value);
+}
+
+function estimateSpendUnits(totalTokens: number): number {
+  if (!Number.isFinite(totalTokens) || totalTokens <= 0) {
+    return 0;
+  }
+  return Number((totalTokens / TOKEN_TO_SPEND_UNIT_DIVISOR).toFixed(4));
+}
+
+function createRuntimeRunBudget(
+  runClass: RuntimeRunClass,
+  params: {
+    readonly tokenCeiling: number;
+    readonly latencyCeilingMs: number;
+    readonly spendCeilingUnits: number;
+  },
+): RuntimeRunBudget {
+  return {
+    runClass,
+    tokenCeiling: params.tokenCeiling,
+    latencyCeilingMs: params.latencyCeilingMs,
+    spendCeilingUnits: params.spendCeilingUnits,
+    downgradeTokenRatio: DEFAULT_DOWNGRADE_RATIO,
+    downgradeSpendRatio: DEFAULT_DOWNGRADE_RATIO,
+    downgradeLatencyRatio: DEFAULT_DOWNGRADE_RATIO,
+  };
+}
+
+function createRuntimeRunBudgetLedger(
+  runClass: RuntimeRunClass,
+): RuntimeRunBudgetLedger {
+  return {
+    runClass,
+    tokens: 0,
+    latencyMs: 0,
+    spendUnits: 0,
+    calls: 0,
+    reroutes: 0,
+    downgrades: 0,
+    ceilingBreaches: 0,
+    denialCount: 0,
+  };
+}
+
+function createRuntimeBudgetPressure(
+  budget: RuntimeRunBudget,
+  ledger: RuntimeRunBudgetLedger,
+): RuntimeBudgetPressure {
+  const tokenRatio = resolveRatio(ledger.tokens, budget.tokenCeiling);
+  const latencyRatio = resolveRatio(ledger.latencyMs, budget.latencyCeilingMs);
+  const spendRatio = resolveRatio(ledger.spendUnits, budget.spendCeilingUnits);
+  const hardExceeded =
+    (hasRuntimeLimit(budget.tokenCeiling) && ledger.tokens >= budget.tokenCeiling) ||
+    (hasRuntimeLimit(budget.latencyCeilingMs) &&
+      ledger.latencyMs >= budget.latencyCeilingMs) ||
+    (hasRuntimeLimit(budget.spendCeilingUnits) &&
+      ledger.spendUnits >= budget.spendCeilingUnits);
+  const shouldDowngrade =
+    !hardExceeded &&
+    (tokenRatio >= budget.downgradeTokenRatio ||
+      latencyRatio >= budget.downgradeLatencyRatio ||
+      spendRatio >= budget.downgradeSpendRatio);
+  return {
+    tokenRatio,
+    latencyRatio,
+    spendRatio,
+    hardExceeded,
+    shouldDowngrade,
+  };
 }
 
 export function mapPhaseToRunClass(phase: string): RuntimeRunClass {
-  switch (phase) {
+  switch (phase.trim().toLowerCase()) {
+    case "compaction":
     case "planner":
     case "planner_synthesis":
       return "planner";
     case "planner_verifier":
     case "evaluator":
     case "evaluator_retry":
+    case "review":
       return "verifier";
     default:
       return "executor";
@@ -151,196 +249,86 @@ export function buildRuntimeEconomicsPolicy(params: {
   readonly maxFanoutPerTurn?: number;
   readonly mode?: RuntimeBudgetMode;
 }): RuntimeEconomicsPolicy {
-  const sessionTokenBudget = normalizeRuntimeLimit(
-    params.sessionTokenBudget,
-    UNLIMITED_RUNTIME_LIMIT,
-  );
-  const plannerMaxTokens = normalizeRuntimeLimit(
+  const sessionTokenBudget = resolveBudgetCeiling(params.sessionTokenBudget);
+  const plannerTokenCeiling = resolveBudgetCeiling(
     params.plannerMaxTokens,
-    UNLIMITED_RUNTIME_LIMIT,
+    sessionTokenBudget,
   );
-  const requestTimeoutMs = normalizeRuntimeLimit(
-    params.requestTimeoutMs,
-    UNLIMITED_RUNTIME_LIMIT,
+  const verifierTokenCeiling = resolveBudgetCeiling(
+    params.plannerMaxTokens,
+    sessionTokenBudget,
   );
-  const childTimeoutMs = normalizeRuntimeLimit(
-    params.childTimeoutMs,
-    requestTimeoutMs,
-  );
-  const childTokenBudget = normalizeRuntimeLimit(
+  const childTokenCeiling = resolveBudgetCeiling(
     params.childTokenBudget,
     sessionTokenBudget,
   );
-  const maxFanoutPerTurn = normalizeRuntimeLimit(
-    params.maxFanoutPerTurn,
-    UNLIMITED_RUNTIME_LIMIT,
+  const requestTimeoutMs = resolveBudgetCeiling(params.requestTimeoutMs);
+  const childTimeoutMs = resolveBudgetCeiling(
+    params.childTimeoutMs,
+    requestTimeoutMs,
   );
 
-  const plannerTokenCeiling =
-    hasRuntimeLimit(sessionTokenBudget) && hasRuntimeLimit(plannerMaxTokens)
-      ? Math.min(
-          sessionTokenBudget,
-          Math.max(
-            plannerMaxTokens * 4,
-            Math.floor(sessionTokenBudget * 0.28),
-          ),
-        )
-      : UNLIMITED_RUNTIME_LIMIT;
-  const plannerLatencyCeilingMs =
-    hasRuntimeLimit(requestTimeoutMs)
-      ? Math.min(
-          requestTimeoutMs,
-          Math.max(20_000, Math.floor(requestTimeoutMs * 0.45)),
-        )
-      : UNLIMITED_RUNTIME_LIMIT;
-  const plannerSpendCeilingUnits =
-    hasRuntimeLimit(sessionTokenBudget) || hasRuntimeLimit(plannerMaxTokens)
-      ? Math.max(
-          6,
-          Number(
-            (
-              Math.max(
-                hasRuntimeLimit(plannerMaxTokens) ? plannerMaxTokens * 4 : 0,
-                hasRuntimeLimit(sessionTokenBudget)
-                  ? sessionTokenBudget * 0.18
-                  : 0,
-              ) /
-              1_000 *
-              1.35
-            ).toFixed(3),
-          ),
-        )
-      : UNLIMITED_RUNTIME_LIMIT;
-
-  const plannerBudget: RuntimeRunBudget = {
-    runClass: "planner",
-    tokenCeiling: plannerTokenCeiling,
-    latencyCeilingMs: plannerLatencyCeilingMs,
-    spendCeilingUnits: plannerSpendCeilingUnits,
-    downgradeTokenRatio: 0.82,
-    downgradeSpendRatio: 0.72,
-    downgradeLatencyRatio: 0.85,
-  };
-
-  const executorBudget: RuntimeRunBudget = {
-    runClass: "executor",
-    tokenCeiling: sessionTokenBudget,
-    latencyCeilingMs: requestTimeoutMs,
-    spendCeilingUnits: hasRuntimeLimit(sessionTokenBudget)
-      ? Math.max(10, Number((sessionTokenBudget / 1_000 * 0.95).toFixed(3)))
-      : UNLIMITED_RUNTIME_LIMIT,
-    downgradeTokenRatio: 0.88,
-    downgradeSpendRatio: 0.78,
-    downgradeLatencyRatio: 0.88,
-  };
-
-  const verifierBudget: RuntimeRunBudget = {
-    runClass: "verifier",
-    tokenCeiling:
-      hasRuntimeLimit(sessionTokenBudget) && hasRuntimeLimit(plannerMaxTokens)
-        ? Math.min(
-            sessionTokenBudget,
-            Math.max(
-              plannerMaxTokens * 2,
-              Math.floor(sessionTokenBudget * 0.16),
-            ),
-          )
-        : UNLIMITED_RUNTIME_LIMIT,
-    latencyCeilingMs: hasRuntimeLimit(requestTimeoutMs)
-      ? Math.min(
-          requestTimeoutMs,
-          Math.max(10_000, Math.floor(requestTimeoutMs * 0.25)),
-        )
-      : UNLIMITED_RUNTIME_LIMIT,
-    spendCeilingUnits:
-      hasRuntimeLimit(sessionTokenBudget) || hasRuntimeLimit(plannerMaxTokens)
+  const budgets = {
+    planner: createRuntimeRunBudget("planner", {
+      tokenCeiling: plannerTokenCeiling,
+      latencyCeilingMs: requestTimeoutMs,
+      spendCeilingUnits: hasRuntimeLimit(plannerTokenCeiling)
         ? Math.max(
-            4,
-            Number(
-              (
-                Math.max(
-                  hasRuntimeLimit(plannerMaxTokens)
-                    ? plannerMaxTokens * 2
-                    : 0,
-                  hasRuntimeLimit(sessionTokenBudget)
-                    ? sessionTokenBudget * 0.1
-                    : 0,
-                ) /
-                1_000 *
-                1.1
-              ).toFixed(3),
-            ),
+            DEFAULT_MIN_SPEND_UNITS,
+            estimateSpendUnits(plannerTokenCeiling),
           )
-        : UNLIMITED_RUNTIME_LIMIT,
-    downgradeTokenRatio: 0.75,
-    downgradeSpendRatio: 0.68,
-    downgradeLatencyRatio: 0.8,
-  };
-
-  const childBudget: RuntimeRunBudget = {
-    runClass: "child",
-    tokenCeiling: childTokenBudget,
-    latencyCeilingMs: childTimeoutMs,
-    spendCeilingUnits: hasRuntimeLimit(childTokenBudget)
-      ? Math.max(5, Number((childTokenBudget / 1_000 * 0.8).toFixed(3)))
-      : UNLIMITED_RUNTIME_LIMIT,
-    downgradeTokenRatio: 0.72,
-    downgradeSpendRatio: 0.65,
-    downgradeLatencyRatio: 0.75,
-  };
+        : Number.POSITIVE_INFINITY,
+    }),
+    executor: createRuntimeRunBudget("executor", {
+      tokenCeiling: sessionTokenBudget,
+      latencyCeilingMs: requestTimeoutMs,
+      spendCeilingUnits: hasRuntimeLimit(sessionTokenBudget)
+        ? Math.max(
+            DEFAULT_MIN_SPEND_UNITS,
+            estimateSpendUnits(sessionTokenBudget),
+          )
+        : Number.POSITIVE_INFINITY,
+    }),
+    verifier: createRuntimeRunBudget("verifier", {
+      tokenCeiling: verifierTokenCeiling,
+      latencyCeilingMs: requestTimeoutMs,
+      spendCeilingUnits: hasRuntimeLimit(verifierTokenCeiling)
+        ? Math.max(
+            DEFAULT_MIN_SPEND_UNITS,
+            estimateSpendUnits(verifierTokenCeiling),
+          )
+        : Number.POSITIVE_INFINITY,
+    }),
+    child: createRuntimeRunBudget("child", {
+      tokenCeiling: childTokenCeiling,
+      latencyCeilingMs: childTimeoutMs,
+      spendCeilingUnits: hasRuntimeLimit(childTokenCeiling)
+        ? Math.max(
+            DEFAULT_MIN_SPEND_UNITS,
+            estimateSpendUnits(childTokenCeiling),
+          )
+        : Number.POSITIVE_INFINITY,
+    }),
+  } satisfies Record<RuntimeRunClass, RuntimeRunBudget>;
 
   return {
-    mode: params.mode ?? "enforce",
-    budgets: {
-      planner: plannerBudget,
-      executor: executorBudget,
-      verifier: verifierBudget,
-      child: childBudget,
-    },
-    childFanoutSoftCap:
-      hasRuntimeLimit(maxFanoutPerTurn) && hasRuntimeLimit(childBudget.spendCeilingUnits)
-        ? Math.max(
-            1,
-            Math.min(maxFanoutPerTurn, Math.floor(childBudget.spendCeilingUnits / 2)),
-          )
-        : UNLIMITED_RUNTIME_LIMIT,
-    negativeDelegationMarginUnits: Number(
-      (
-        hasRuntimeLimit(childBudget.spendCeilingUnits)
-          ? Math.max(0.5, childBudget.spendCeilingUnits * 0.12)
-          : 0
-      ).toFixed(3),
-    ),
-    negativeDelegationMarginTokens: hasRuntimeLimit(childBudget.tokenCeiling)
-      ? Math.max(
-          512,
-          Math.floor(childBudget.tokenCeiling * 0.12),
-        )
-      : UNLIMITED_RUNTIME_LIMIT,
-  };
-}
-
-function createLedger(runClass: RuntimeRunClass): RuntimeRunBudgetLedger {
-  return {
-    runClass,
-    tokens: 0,
-    latencyMs: 0,
-    spendUnits: 0,
-    calls: 0,
-    reroutes: 0,
-    downgrades: 0,
-    ceilingBreaches: 0,
-    denialCount: 0,
+    mode: params.mode ?? "report_only",
+    budgets,
+    childFanoutSoftCap: hasRuntimeLimit(params.maxFanoutPerTurn)
+      ? Math.max(1, Math.floor(Number(params.maxFanoutPerTurn)))
+      : Number.POSITIVE_INFINITY,
+    negativeDelegationMarginUnits: DEFAULT_NEGATIVE_DELEGATION_MARGIN_UNITS,
+    negativeDelegationMarginTokens: DEFAULT_NEGATIVE_DELEGATION_MARGIN_TOKENS,
   };
 }
 
 export function createRuntimeEconomicsState(): RuntimeEconomicsState {
   return {
     perRunClass: {
-      planner: createLedger("planner"),
-      executor: createLedger("executor"),
-      verifier: createLedger("verifier"),
-      child: createLedger("child"),
+      planner: createRuntimeRunBudgetLedger("planner"),
+      executor: createRuntimeRunBudgetLedger("executor"),
+      verifier: createRuntimeRunBudgetLedger("verifier"),
+      child: createRuntimeRunBudgetLedger("child"),
     },
     routes: [],
     totalTokens: 0,
@@ -353,58 +341,15 @@ export function createRuntimeEconomicsState(): RuntimeEconomicsState {
   };
 }
 
-export function estimateSpendUnitsForUsage(params: {
-  readonly provider: string;
-  readonly model?: string;
-  readonly usage: LLMUsage;
-}): number {
-  const model = params.model?.toLowerCase() ?? "";
-  const provider = params.provider.toLowerCase();
-  let perThousand = 0.9;
-  if (provider === "ollama") {
-    perThousand = 0.18;
-  } else if (model.includes("reasoning") && !model.includes("non-reasoning")) {
-    perThousand = 1.45;
-  } else if (model.includes("non-reasoning") || model.includes("fast")) {
-    perThousand = 0.7;
-  }
-  const promptUnits = (Math.max(0, params.usage.promptTokens) / 1_000) * perThousand;
-  const completionUnits =
-    (Math.max(0, params.usage.completionTokens) / 1_000) * perThousand * 1.15;
-  return Number((promptUnits + completionUnits).toFixed(4));
-}
-
 export function getRuntimeBudgetPressure(
   policy: RuntimeEconomicsPolicy,
   state: RuntimeEconomicsState,
   runClass: RuntimeRunClass,
 ): RuntimeBudgetPressure {
-  const budget = policy.budgets[runClass];
-  const ledger = state.perRunClass[runClass];
-  const tokenRatio = budget.tokenCeiling > 0
-    ? clamp01(ledger.tokens / budget.tokenCeiling)
-    : 0;
-  const latencyRatio = budget.latencyCeilingMs > 0
-    ? clamp01(ledger.latencyMs / budget.latencyCeilingMs)
-    : 0;
-  const spendRatio = budget.spendCeilingUnits > 0
-    ? clamp01(ledger.spendUnits / budget.spendCeilingUnits)
-    : 0;
-  const hardExceeded =
-    isRuntimeLimitReached(ledger.tokens, budget.tokenCeiling) ||
-    isRuntimeLimitReached(ledger.latencyMs, budget.latencyCeilingMs) ||
-    isRuntimeLimitReached(ledger.spendUnits, budget.spendCeilingUnits);
-  const shouldDowngrade =
-    tokenRatio >= budget.downgradeTokenRatio ||
-    latencyRatio >= budget.downgradeLatencyRatio ||
-    spendRatio >= budget.downgradeSpendRatio;
-  return {
-    tokenRatio,
-    latencyRatio,
-    spendRatio,
-    hardExceeded,
-    shouldDowngrade,
-  };
+  return createRuntimeBudgetPressure(
+    policy.budgets[runClass],
+    state.perRunClass[runClass],
+  );
 }
 
 export function recordRuntimeModelCall(params: {
@@ -421,13 +366,16 @@ export function recordRuntimeModelCall(params: {
   readonly reason?: string;
 }): void {
   const ledger = params.state.perRunClass[params.runClass];
-  const spendUnits = estimateSpendUnitsForUsage({
-    provider: params.provider,
-    model: params.model,
-    usage: params.usage,
-  });
-  ledger.tokens += Math.max(0, params.usage.totalTokens);
-  ledger.latencyMs += Math.max(0, Math.floor(params.durationMs));
+  const pressureBefore = createRuntimeBudgetPressure(
+    params.policy.budgets[params.runClass],
+    ledger,
+  );
+  const totalTokens = normalizeNonNegative(params.usage.totalTokens);
+  const durationMs = normalizeNonNegative(params.durationMs);
+  const spendUnits = estimateSpendUnits(totalTokens);
+
+  ledger.tokens += totalTokens;
+  ledger.latencyMs += durationMs;
   ledger.spendUnits = Number((ledger.spendUnits + spendUnits).toFixed(4));
   ledger.calls += 1;
   if (params.rerouted) {
@@ -440,17 +388,12 @@ export function recordRuntimeModelCall(params: {
   }
   ledger.lastProvider = params.provider;
   ledger.lastModel = params.model;
-  params.state.totalTokens += Math.max(0, params.usage.totalTokens);
-  params.state.totalLatencyMs += Math.max(0, Math.floor(params.durationMs));
+
+  params.state.totalTokens += totalTokens;
+  params.state.totalLatencyMs += durationMs;
   params.state.totalSpendUnits = Number(
     (params.state.totalSpendUnits + spendUnits).toFixed(4),
   );
-
-  const pressure = getRuntimeBudgetPressure(params.policy, params.state, params.runClass);
-  if (pressure.hardExceeded) {
-    ledger.ceilingBreaches += 1;
-    params.state.budgetViolationCount += 1;
-  }
   params.state.routes.push({
     runClass: params.runClass,
     phase: params.phase,
@@ -458,55 +401,44 @@ export function recordRuntimeModelCall(params: {
     model: params.model,
     rerouted: params.rerouted,
     downgraded: params.downgraded,
-    ...(params.reason ? { reason: params.reason } : {}),
+    reason: params.reason,
   });
-}
 
-export function recordRuntimeDenial(
-  state: RuntimeEconomicsState,
-  runClass: RuntimeRunClass,
-): void {
-  state.denialCount += 1;
-  state.perRunClass[runClass].denialCount += 1;
-}
-
-export function buildDelegationBudgetSnapshot(
-  policy: RuntimeEconomicsPolicy,
-  state: RuntimeEconomicsState,
-): DelegationBudgetSnapshot {
-  const childBudget = policy.budgets.child;
-  const childLedger = state.perRunClass.child;
-  const parentPressure = getRuntimeBudgetPressure(policy, state, "executor");
-  return {
-    mode: policy.mode,
-    childBudget,
-    remainingTokens: remainingRuntimeLimit(
-      childLedger.tokens,
-      childBudget.tokenCeiling,
-    ),
-    remainingLatencyMs: remainingRuntimeLimit(
-      childLedger.latencyMs,
-      childBudget.latencyCeilingMs,
-    ),
-    remainingSpendUnits: Number(
-      remainingRuntimeLimit(
-        childLedger.spendUnits,
-        childBudget.spendCeilingUnits,
-      ).toFixed(4),
-    ),
-    parentTokenRatio: parentPressure.tokenRatio,
-    parentLatencyRatio: parentPressure.latencyRatio,
-    parentSpendRatio: parentPressure.spendRatio,
-    childFanoutSoftCap: policy.childFanoutSoftCap,
-    negativeDelegationMarginUnits: policy.negativeDelegationMarginUnits,
-    negativeDelegationMarginTokens: policy.negativeDelegationMarginTokens,
-  };
+  const pressureAfter = createRuntimeBudgetPressure(
+    params.policy.budgets[params.runClass],
+    ledger,
+  );
+  if (!pressureBefore.hardExceeded && pressureAfter.hardExceeded) {
+    ledger.ceilingBreaches += 1;
+    params.state.budgetViolationCount += 1;
+  }
 }
 
 export function buildRuntimeEconomicsSummary(
   policy: RuntimeEconomicsPolicy,
   state: RuntimeEconomicsState,
 ): RuntimeEconomicsSummary {
+  const buildSummary = (runClass: RuntimeRunClass): RuntimeRunBudgetSummary => {
+    const ledger = state.perRunClass[runClass];
+    const budget = policy.budgets[runClass];
+    return {
+      budget,
+      usage: {
+        tokens: ledger.tokens,
+        latencyMs: ledger.latencyMs,
+        spendUnits: ledger.spendUnits,
+        calls: ledger.calls,
+        reroutes: ledger.reroutes,
+        downgrades: ledger.downgrades,
+        ceilingBreaches: ledger.ceilingBreaches,
+        denials: ledger.denialCount,
+      },
+      pressure: createRuntimeBudgetPressure(budget, ledger),
+      lastProvider: ledger.lastProvider,
+      lastModel: ledger.lastModel,
+    };
+  };
+
   return {
     mode: policy.mode,
     totalTokens: state.totalTokens,
@@ -517,36 +449,11 @@ export function buildRuntimeEconomicsSummary(
     denialCount: state.denialCount,
     budgetViolationCount: state.budgetViolationCount,
     runClasses: {
-      planner: buildRunBudgetSummary(policy, state, "planner"),
-      executor: buildRunBudgetSummary(policy, state, "executor"),
-      verifier: buildRunBudgetSummary(policy, state, "verifier"),
-      child: buildRunBudgetSummary(policy, state, "child"),
+      planner: buildSummary("planner"),
+      executor: buildSummary("executor"),
+      verifier: buildSummary("verifier"),
+      child: buildSummary("child"),
     },
-    routes: state.routes.slice(),
-  };
-}
-
-function buildRunBudgetSummary(
-  policy: RuntimeEconomicsPolicy,
-  state: RuntimeEconomicsState,
-  runClass: RuntimeRunClass,
-): RuntimeRunBudgetSummary {
-  const budget = policy.budgets[runClass];
-  const ledger = state.perRunClass[runClass];
-  return {
-    budget,
-    usage: {
-      tokens: ledger.tokens,
-      latencyMs: ledger.latencyMs,
-      spendUnits: Number(ledger.spendUnits.toFixed(4)),
-      calls: ledger.calls,
-      reroutes: ledger.reroutes,
-      downgrades: ledger.downgrades,
-      ceilingBreaches: ledger.ceilingBreaches,
-      denials: ledger.denialCount,
-    },
-    pressure: getRuntimeBudgetPressure(policy, state, runClass),
-    lastProvider: ledger.lastProvider,
-    lastModel: ledger.lastModel,
+    routes: [...state.routes],
   };
 }

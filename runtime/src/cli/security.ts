@@ -13,9 +13,9 @@ import type { CliRuntimeContext, SecurityOptions } from "./types.js";
 // Types
 // ---------------------------------------------------------------------------
 
-export type SecuritySeverity = "critical" | "high" | "medium" | "low" | "info";
+type SecuritySeverity = "critical" | "high" | "medium" | "low" | "info";
 
-export type SecurityCategory =
+type SecurityCategory =
   | "secrets"
   | "webhook"
   | "model"
@@ -24,7 +24,7 @@ export type SecurityCategory =
   | "policy"
   | "filesystem";
 
-export interface SecurityCheck {
+interface SecurityCheck {
   id: string;
   severity: SecuritySeverity;
   category: SecurityCategory;
@@ -55,7 +55,7 @@ export interface SecurityCheckResult {
   details?: Record<string, unknown>;
 }
 
-export interface SecurityReport {
+interface SecurityReport {
   status: "secure" | "at_risk" | "vulnerable";
   totalChecks: number;
   passed: number;

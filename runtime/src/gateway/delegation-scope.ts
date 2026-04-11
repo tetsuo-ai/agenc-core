@@ -9,7 +9,7 @@
  * @module
  */
 
-export interface DelegationScopeSpec {
+interface DelegationScopeSpec {
   readonly task?: string;
   readonly objective?: string;
   readonly inputContract?: string;
@@ -17,14 +17,14 @@ export interface DelegationScopeSpec {
   readonly requiredToolCapabilities?: readonly string[];
 }
 
-export type DelegationScopePhase =
+type DelegationScopePhase =
   | "setup"
   | "implementation"
   | "validation"
   | "research"
   | "browser";
 
-export interface DelegationDecompositionSuggestion {
+interface DelegationDecompositionSuggestion {
   readonly phase: DelegationScopePhase;
   readonly name: string;
   readonly objective: string;
@@ -38,7 +38,7 @@ export interface DelegationDecompositionSignal {
   readonly guidance: string;
 }
 
-export interface DelegationScopeAssessment {
+interface DelegationScopeAssessment {
   readonly ok: boolean;
   readonly phases: readonly DelegationScopePhase[];
   readonly error?: string;
@@ -181,7 +181,7 @@ function buildDecompositionSuggestions(
   return suggestions;
 }
 
-export function buildDelegationDecompositionSignal(params: {
+function buildDelegationDecompositionSignal(params: {
   phases: readonly DelegationScopePhase[];
   error: string;
 }): DelegationDecompositionSignal {

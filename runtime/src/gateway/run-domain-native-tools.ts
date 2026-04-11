@@ -1,5 +1,6 @@
 import { didToolCallFail } from "../llm/chat-executor-tool-utils.js";
 import type { ChatExecutorResult } from "../llm/chat-executor.js";
+import { createSyntheticDialogueTurnExecutionContract } from "../llm/turn-execution-contract.js";
 import type { ToolHandler } from "../llm/types.js";
 import { toErrorMessage } from "../utils/async.js";
 
@@ -48,5 +49,6 @@ export function buildNativeActorResult(
     compacted: false,
     stopReason: "completed",
     completionState: "completed",
+    turnExecutionContract: createSyntheticDialogueTurnExecutionContract(),
   };
 }

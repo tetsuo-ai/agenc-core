@@ -719,18 +719,10 @@ export function getCachedDesktopToolDefinitions(): readonly Tool[] | null {
  * Returns the cached Playwright tool definitions discovered from the first MCP bridge.
  * Returns null if no Playwright bridge has connected yet.
  */
-export function getCachedPlaywrightToolDefinitions(): readonly Tool[] | null {
-  return cachedPlaywrightTools;
-}
-
 /**
  * Returns the cached container MCP tool definitions by server name.
  * Returns null for a given server if no bridge has connected yet.
  */
-export function getCachedContainerMCPToolDefinitions(): ReadonlyMap<string, readonly Tool[]> {
-  return cachedContainerMCPTools;
-}
-
 /**
  * Disconnect and remove the bridge for a session.
  * Called on session reset, /desktop stop, etc.

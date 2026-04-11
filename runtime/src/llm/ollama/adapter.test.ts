@@ -346,7 +346,7 @@ describe("OllamaProvider", () => {
     );
   });
 
-  it("records tool-resolution fallback when routed Ollama tools cannot be resolved", async () => {
+  it("suppresses tools when routed Ollama allowlist resolves to zero matches (fail-closed)", async () => {
     mockChat.mockResolvedValueOnce(makeResponse());
 
     const provider = new OllamaProvider({
@@ -365,16 +365,20 @@ describe("OllamaProvider", () => {
     const result = await provider.chat(
       [{ role: "user", content: "test" }],
       {
-        toolRouting: { allowedToolNames: ["mcp.doom.start_game"] },
+        toolRouting: { allowedToolNames: ["mcp.example.start"] },
       },
     );
 
+    // Previously the adapter fell back to the full catalog here, silently
+    // bypassing the allowlist constraint (audit S1.2). It now returns an
+    // empty tool set with the diagnostic resolution code so the executor
+    // can decide how to recover.
     expect(result.requestMetrics).toMatchObject({
-      toolCount: 1,
-      toolNames: ["lookup"],
-      requestedToolNames: ["mcp.doom.start_game"],
-      missingRequestedToolNames: ["mcp.doom.start_game"],
-      toolResolution: "fallback_full_catalog_no_matches",
+      toolCount: 0,
+      toolNames: [],
+      requestedToolNames: ["mcp.example.start"],
+      missingRequestedToolNames: ["mcp.example.start"],
+      toolResolution: "subset_no_resolved_matches",
       providerCatalogToolCount: 1,
     });
   });

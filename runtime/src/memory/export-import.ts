@@ -13,7 +13,7 @@ import type { Logger } from "../utils/logger.js";
 const EXPORT_SCHEMA_VERSION = 1;
 
 /** Exported memory snapshot. */
-export interface MemoryExport {
+interface MemoryExport {
   readonly schemaVersion: number;
   readonly exportedAt: number;
   readonly workspaceId?: string;

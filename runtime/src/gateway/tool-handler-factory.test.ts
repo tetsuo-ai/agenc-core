@@ -13,7 +13,15 @@ import {
 import type { SubAgentResult } from "./sub-agent.js";
 import { createSessionToolHandler } from "./tool-handler-factory.js";
 import { SessionCredentialBroker } from "../policy/session-credentials.js";
-import { SESSION_ALLOWED_ROOTS_ARG } from "../tools/system/filesystem.js";
+import {
+  SESSION_ALLOWED_ROOTS_ARG,
+  SESSION_ID_ARG,
+} from "../tools/system/filesystem.js";
+import {
+  createTaskTrackerTools,
+  TASK_LIST_ARG,
+  TaskStore,
+} from "../tools/system/task-tracker.js";
 import { createMockMemoryBackend } from "../memory/test-utils.js";
 import { EffectLedger } from "../workflow/effect-ledger.js";
 
@@ -45,110 +53,6 @@ function makeCompletedChildResult(
 }
 
 describe("createSessionToolHandler", () => {
-  it("normalizes Doom start_game args before execution and notifications", async () => {
-    const sentMessages: ControlResponse[] = [];
-    const send = vi.fn((msg: ControlResponse): void => {
-      sentMessages.push(msg);
-    });
-
-    const baseHandler = vi.fn(async () =>
-      JSON.stringify({ status: "running" }),
-    );
-    const handler = createSessionToolHandler({
-      sessionId: "session-1",
-      baseHandler,
-      routerId: "router-a",
-      send,
-    });
-
-    await handler("mcp.doom.start_game", {
-      screen_resolution: "1920x1080",
-      async_player: true,
-    });
-
-    expect(baseHandler).toHaveBeenCalledWith("mcp.doom.start_game", {
-      screen_resolution: "RES_1920X1080",
-      async_player: true,
-      window_visible: true,
-      render_hud: true,
-    });
-    expect(sentMessages[0]).toMatchObject({
-      type: "tools.executing",
-      payload: {
-        toolName: "mcp.doom.start_game",
-        args: {
-          screen_resolution: "RES_1920X1080",
-          async_player: true,
-          window_visible: true,
-          render_hud: true,
-        },
-      },
-    });
-  });
-
-  it("defaults Doom launch requests to a visible HUD-on window when args omit display settings", async () => {
-    const sentMessages: ControlResponse[] = [];
-    const send = vi.fn((msg: ControlResponse): void => {
-      sentMessages.push(msg);
-    });
-
-    const baseHandler = vi.fn(async () =>
-      JSON.stringify({ status: "running" }),
-    );
-    const handler = createSessionToolHandler({
-      sessionId: "session-1",
-      baseHandler,
-      routerId: "router-a",
-      send,
-    });
-
-    await handler("mcp.doom.start_game", {
-      scenario: "defend_the_center",
-      god_mode: true,
-    });
-
-    expect(baseHandler).toHaveBeenCalledWith("mcp.doom.start_game", {
-      scenario: "defend_the_center",
-      god_mode: true,
-      screen_resolution: "RES_1280X720",
-      window_visible: true,
-      render_hud: true,
-    });
-    expect(sentMessages[0]).toMatchObject({
-      type: "tools.executing",
-      payload: {
-        toolName: "mcp.doom.start_game",
-        args: {
-          scenario: "defend_the_center",
-          god_mode: true,
-          screen_resolution: "RES_1280X720",
-          window_visible: true,
-          render_hud: true,
-        },
-      },
-    });
-  });
-
-  it("wraps plain-text Doom execution failures as JSON errors", async () => {
-    const send = vi.fn();
-    const baseHandler = vi.fn(async () =>
-      "Executor not running. Start game with async_player=True.",
-    );
-    const handler = createSessionToolHandler({
-      sessionId: "session-1",
-      baseHandler,
-      routerId: "router-a",
-      send,
-    });
-
-    const result = await handler("mcp.doom.set_objective", {
-      objective_type: "hold_position",
-    });
-
-    expect(JSON.parse(result)).toEqual({
-      error: "Executor not running. Start game with async_player=True.",
-    });
-  });
 
   it("marks non-zero exitCode tool results as isError in client and subagent lifecycle events", async () => {
     const sentMessages: ControlResponse[] = [];
@@ -200,49 +104,7 @@ describe("createSessionToolHandler", () => {
     expect(lifecyclePayload?.toolCallId).toBeDefined();
   });
 
-  it("does not block same-turn Doom follow-up calls after a failed launch", async () => {
-    const sentMessages: ControlResponse[] = [];
-    const send = vi.fn((msg: ControlResponse): void => {
-      sentMessages.push(msg);
-    });
-
-    const baseHandler = vi.fn(async (name: string) => {
-      if (name === "mcp.doom.start_game") {
-        return "Unknown resolution 'banana'. Valid: ['RES_1280X720']";
-      }
-      return "Executor not running. Start game with async_player=True.";
-    });
-    const handler = createSessionToolHandler({
-      sessionId: "session-1",
-      baseHandler,
-      routerId: "router-a",
-      send,
-    });
-
-    const startResult = await handler("mcp.doom.start_game", {
-      screen_resolution: "banana",
-      async_player: true,
-    });
-    const blockedResult = await handler("mcp.doom.set_objective", {
-      objective_type: "hold_position",
-    });
-
-    expect(JSON.parse(startResult)).toEqual({
-      error: "Unknown resolution 'banana'. Valid: ['RES_1280X720']",
-    });
-    expect(JSON.parse(blockedResult)).toEqual({
-      error: "Executor not running. Start game with async_player=True.",
-    });
-    expect(baseHandler).toHaveBeenCalledTimes(2);
-    expect(sentMessages.at(-1)).toMatchObject({
-      type: "tools.result",
-      payload: {
-        toolName: "mcp.doom.set_objective",
-      },
-    });
-  });
-
-  it("does not block duplicate same-turn Doom launches after a successful start", async () => {
+  it("does not block duplicate same-turn tool launches after a successful start", async () => {
     const sentMessages: ControlResponse[] = [];
     const send = vi.fn((msg: ControlResponse): void => {
       sentMessages.push(msg);
@@ -258,10 +120,10 @@ describe("createSessionToolHandler", () => {
       send,
     });
 
-    const firstResult = await handler("mcp.doom.start_game", {
+    const firstResult = await handler("mcp.example.start", {
       scenario: "defend_the_center",
     });
-    const secondResult = await handler("mcp.doom.start_game", {
+    const secondResult = await handler("mcp.example.start", {
       scenario: "defend_the_center",
     });
 
@@ -271,7 +133,7 @@ describe("createSessionToolHandler", () => {
     expect(sentMessages.at(-1)).toMatchObject({
       type: "tools.result",
       payload: {
-        toolName: "mcp.doom.start_game",
+        toolName: "mcp.example.start",
       },
     });
   });
@@ -386,6 +248,7 @@ describe("createSessionToolHandler", () => {
       path: "/tmp/project-root/src/grid.ts",
       content: "export const grid = true;\n",
       [SESSION_ALLOWED_ROOTS_ARG]: ["/tmp/project-root"],
+      [SESSION_ID_ARG]: "session-1",
     });
     expect(sentMessages[0]).toMatchObject({
       type: "tools.executing",
@@ -433,6 +296,7 @@ describe("createSessionToolHandler", () => {
       path: `${sessionWorkspaceRoot}/src/session.ts`,
       content: "export const sessionScoped = true;\n",
       [SESSION_ALLOWED_ROOTS_ARG]: [sessionWorkspaceRoot],
+      [SESSION_ID_ARG]: "session-1",
     });
     expect(sentMessages[0]).toMatchObject({
       type: "tools.executing",
@@ -472,6 +336,7 @@ describe("createSessionToolHandler", () => {
     expect(baseHandler).toHaveBeenCalledWith("system.readFile", {
       path: `${workspaceRoot}/PLAN.md`,
       [SESSION_ALLOWED_ROOTS_ARG]: [workspaceRoot],
+      [SESSION_ID_ARG]: "session-1",
     });
   });
 
@@ -500,6 +365,149 @@ describe("createSessionToolHandler", () => {
       path: `${workspaceRoot}/src/index.ts`,
       content: "export const safe = true;\n",
       [SESSION_ALLOWED_ROOTS_ARG]: [workspaceRoot],
+      [SESSION_ID_ARG]: "session-1",
+    });
+  });
+
+  it("injects session task-list ids on the gateway path and strips spoofed internal args", async () => {
+    const taskStore = new TaskStore();
+    const taskTools = new Map(
+      createTaskTrackerTools(taskStore).map((tool) => [tool.name, tool]),
+    );
+    const sentMessages: ControlResponse[] = [];
+    const send = vi.fn((msg: ControlResponse): void => {
+      sentMessages.push(msg);
+    });
+    const baseHandler = vi.fn(
+      async (toolName: string, args: Record<string, unknown>) => {
+        const tool = taskTools.get(toolName);
+        if (!tool) {
+          throw new Error(`Unexpected tool: ${toolName}`);
+        }
+        const result = await tool.execute(args);
+        return result.content;
+      },
+    );
+
+    const sessionAHandler = createSessionToolHandler({
+      sessionId: "session-a",
+      baseHandler,
+      routerId: "router-a",
+      send,
+    });
+    const sessionBHandler = createSessionToolHandler({
+      sessionId: "session-b",
+      baseHandler,
+      routerId: "router-a",
+      send,
+    });
+
+    const sessionACreate = JSON.parse(await sessionAHandler("task.create", {
+      subject: "Session A task",
+      description: "Created through the gateway handler",
+      [TASK_LIST_ARG]: "spoofed-a",
+    })) as Record<string, unknown>;
+    const sessionBCreate = JSON.parse(await sessionBHandler("task.create", {
+      subject: "Session B task",
+      description: "Created through the gateway handler",
+      [TASK_LIST_ARG]: "spoofed-b",
+    })) as Record<string, unknown>;
+    const sessionATasks = JSON.parse(await sessionAHandler("task.list", {})) as {
+      count: number;
+      tasks: Array<{ subject: string }>;
+    };
+    const sessionBTasks = JSON.parse(await sessionBHandler("task.list", {})) as {
+      count: number;
+      tasks: Array<{ subject: string }>;
+    };
+
+    expect(baseHandler).toHaveBeenNthCalledWith(1, "task.create", {
+      subject: "Session A task",
+      description: "Created through the gateway handler",
+      [TASK_LIST_ARG]: "session-a",
+    });
+    expect(baseHandler).toHaveBeenNthCalledWith(2, "task.create", {
+      subject: "Session B task",
+      description: "Created through the gateway handler",
+      [TASK_LIST_ARG]: "session-b",
+    });
+    expect(baseHandler).toHaveBeenNthCalledWith(3, "task.list", {
+      [TASK_LIST_ARG]: "session-a",
+    });
+    expect(baseHandler).toHaveBeenNthCalledWith(4, "task.list", {
+      [TASK_LIST_ARG]: "session-b",
+    });
+    expect(sessionACreate.taskRuntime).toMatchObject({
+      fullTask: expect.objectContaining({
+        subject: "Session A task",
+      }),
+      runtimeMetadata: expect.objectContaining({
+        hasRuntimeMetadata: false,
+      }),
+    });
+    expect(sessionBCreate.taskRuntime).toMatchObject({
+      fullTask: expect.objectContaining({
+        subject: "Session B task",
+      }),
+      runtimeMetadata: expect.objectContaining({
+        hasRuntimeMetadata: false,
+      }),
+    });
+
+    const executingMessages = sentMessages.filter(
+      (msg) => msg.type === "tools.executing",
+    );
+    expect(executingMessages).toHaveLength(4);
+    expect(executingMessages[0]).toMatchObject({
+      payload: {
+        toolName: "task.create",
+        args: {
+          subject: "Session A task",
+          description: "Created through the gateway handler",
+        },
+      },
+    });
+    expect((executingMessages[0]?.payload as { args?: Record<string, unknown> }).args).not.toHaveProperty(
+      TASK_LIST_ARG,
+    );
+    expect(executingMessages[1]).toMatchObject({
+      payload: {
+        toolName: "task.create",
+        args: {
+          subject: "Session B task",
+          description: "Created through the gateway handler",
+        },
+      },
+    });
+    expect((executingMessages[1]?.payload as { args?: Record<string, unknown> }).args).not.toHaveProperty(
+      TASK_LIST_ARG,
+    );
+    expect(executingMessages[2]).toMatchObject({
+      payload: {
+        toolName: "task.list",
+        args: {},
+      },
+    });
+    expect((executingMessages[2]?.payload as { args?: Record<string, unknown> }).args).not.toHaveProperty(
+      TASK_LIST_ARG,
+    );
+    expect(executingMessages[3]).toMatchObject({
+      payload: {
+        toolName: "task.list",
+        args: {},
+      },
+    });
+    expect((executingMessages[3]?.payload as { args?: Record<string, unknown> }).args).not.toHaveProperty(
+      TASK_LIST_ARG,
+    );
+
+    expect(sessionATasks).toMatchObject({
+      count: 1,
+      tasks: [{ subject: "Session A task" }],
+    });
+    expect(sessionBTasks).toMatchObject({
+      count: 1,
+      tasks: [{ subject: "Session B task" }],
     });
   });
 
@@ -610,6 +618,7 @@ describe("createSessionToolHandler", () => {
       path: `${workspaceRoot}/project/package.json`,
       content: "{\n}\n",
       [SESSION_ALLOWED_ROOTS_ARG]: [workspaceRoot],
+      [SESSION_ID_ARG]: "session-1",
     });
     expect(baseHandler).toHaveBeenNthCalledWith(2, "system.bash", {
       command: "mkdir",
@@ -645,6 +654,7 @@ describe("createSessionToolHandler", () => {
       path: `${hostWorkspaceRoot}/signal-cartography-ts-57/package.json`,
       content: "{\n}\n",
       [SESSION_ALLOWED_ROOTS_ARG]: [delegatedWorkspaceRoot],
+      [SESSION_ID_ARG]: "session-1",
     });
   });
 
@@ -821,6 +831,7 @@ describe("createSessionToolHandler", () => {
       path: "/tmp/other-project/src/index.ts",
       content: "export const broken = true;\n",
       [SESSION_ALLOWED_ROOTS_ARG]: ["/tmp/project-root"],
+      [SESSION_ID_ARG]: "session-1",
     });
   });
 
@@ -1684,6 +1695,15 @@ describe("createSessionToolHandler", () => {
       snapshot: vi.fn(() => ({ spawnDecisionThreshold: 0.7 })),
     };
     const verifier = {
+      resolveVerifierRequirement: vi.fn(() => ({
+        required: true,
+        profiles: ["generic"],
+        probeCategories: ["build"],
+        mutationPolicy: "read_only_workspace",
+        allowTempArtifacts: false,
+        bootstrapSource: "disabled",
+        rationale: ["test"],
+      })),
       shouldVerifySubAgentResult: vi.fn(() => true),
     };
     const lifecycleEmitter = {
@@ -1719,9 +1739,11 @@ describe("createSessionToolHandler", () => {
     expect(lifecycleEmitter.emit).toHaveBeenCalledTimes(2);
     expect(lifecycleEvents[0].type).toBe("subagents.tool.executing");
     expect(lifecycleEvents[1].type).toBe("subagents.tool.result");
-    expect((lifecycleEvents[1].payload as { verifyRequested?: boolean }).verifyRequested).toBe(
-      true,
-    );
+    expect(
+      (lifecycleEvents[1].payload as {
+        verifierRequirement?: { required?: boolean };
+      }).verifierRequirement?.required,
+    ).toBe(true);
 
     const executingCount = sentMessages.filter((m) => m.type === "tools.executing").length;
     const resultCount = sentMessages.filter((m) => m.type === "tools.result").length;
@@ -1761,6 +1783,11 @@ describe("createSessionToolHandler", () => {
           updatedAt: 1_700_000_000_000,
         },
         stopReason: "completed",
+        verifierSnapshot: {
+          performed: true,
+          overall: "pass",
+          summary: "Build probe passed.",
+        },
         durationMs: 42,
         toolCalls: [
           {
@@ -1787,6 +1814,15 @@ describe("createSessionToolHandler", () => {
       })),
     };
     const verifier = {
+      resolveVerifierRequirement: vi.fn(() => ({
+        required: true,
+        profiles: ["generic"],
+        probeCategories: ["build"],
+        mutationPolicy: "read_only_workspace",
+        allowTempArtifacts: false,
+        bootstrapSource: "disabled",
+        rationale: ["test"],
+      })),
       shouldVerifySubAgentResult: vi.fn(() => true),
     };
     const lifecycleEmitter = {
@@ -1822,6 +1858,12 @@ describe("createSessionToolHandler", () => {
       subagentSessionId?: string;
       objective?: string;
       completionState?: string;
+      runtimeResult?: {
+        status?: string;
+        completionState?: string;
+        verifierVerdict?: { overall?: string };
+        continuationSessionId?: string;
+      };
     };
 
     expect(baseHandler).not.toHaveBeenCalled();
@@ -1850,6 +1892,12 @@ describe("createSessionToolHandler", () => {
     expect(parsed.completionState).toBe("completed");
     expect(parsed.subagentSessionId).toBe("subagent:child-1");
     expect(parsed.objective).toBe("Inspect file");
+    expect(parsed.runtimeResult).toMatchObject({
+      status: "completed",
+      completionState: "completed",
+      verifierVerdict: { overall: "pass" },
+      continuationSessionId: "subagent:child-1",
+    });
 
     const executingCount = sentMessages.filter((msg) => msg.type === "tools.executing").length;
     const resultCount = sentMessages.filter((msg) => msg.type === "tools.result").length;
@@ -1865,6 +1913,190 @@ describe("createSessionToolHandler", () => {
     expect(lifecycleEvents.some((event) => event.type === "subagents.completed")).toBe(
       true,
     );
+  });
+
+  it("allows explicitly scoped nested delegation from a sub-agent session", async () => {
+    const subAgentManager = {
+      getInfo: vi.fn((sessionId: string) => ({
+        sessionId,
+        parentSessionId: "session-parent",
+        depth: 1,
+        status: "completed",
+        startedAt: Date.now() - 100,
+        task: "Parent child task",
+      })),
+      getExecutionContext: vi.fn(() => ({
+        workspaceRoot: "/tmp/project-root",
+        allowedTools: ["execute_with_agent", "system.readFile"],
+        allowedReadRoots: ["/tmp/project-root"],
+        allowedWriteRoots: ["/tmp/project-root"],
+        targetArtifacts: ["/tmp/project-root/src/nested.ts"],
+        verificationMode: "mutation_required",
+        stepKind: "delegated_write",
+      })),
+      getVerifierRequirement: vi.fn(() => undefined),
+      spawn: vi.fn(async () => "subagent:grandchild-1"),
+      getResult: vi.fn(() => makeCompletedChildResult({
+        sessionId: "subagent:grandchild-1",
+        output: '{"summary":"grandchild completed"}',
+        success: true,
+        durationMs: 20,
+        toolCalls: [],
+      })),
+    };
+
+    const handler = createSessionToolHandler({
+      sessionId: "subagent:child-1",
+      baseHandler: vi.fn(async () => "should-not-run"),
+      availableToolNames: ["execute_with_agent", "system.readFile"],
+      routerId: "router-a",
+      send: vi.fn(),
+      defaultWorkingDirectory: "/tmp/project-root",
+      delegation: () => ({
+        subAgentManager: subAgentManager as any,
+        policyEngine: new DelegationPolicyEngine({
+          enabled: true,
+          spawnDecisionThreshold: 0.2,
+          fallbackBehavior: "fail_request",
+        }),
+        verifier: null,
+        lifecycleEmitter: null,
+      }),
+    });
+
+    const result = await handler("execute_with_agent", {
+      task: "Implement the nested child step for src/nested.ts only",
+      objective: "Own /tmp/project-root/src/nested.ts and delegate the bounded child step only for that file",
+      tools: ["execute_with_agent", "system.readFile"],
+      acceptanceCriteria: ["Only /tmp/project-root/src/nested.ts is owned by this nested child"],
+      executionContext: {
+        allowedTools: ["execute_with_agent", "system.readFile"],
+        targetArtifacts: ["/tmp/project-root/src/nested.ts"],
+        verificationMode: "mutation_required",
+        stepKind: "delegated_write",
+      },
+      delegationAdmission: {
+        shape: "bounded_sequential_handoff",
+        isolationReason: "Nested child owns /tmp/project-root/src/nested.ts only.",
+        ownedArtifacts: ["/tmp/project-root/src/nested.ts"],
+        verifierObligations: ["Preserve verifier obligations for nested child"],
+      },
+    });
+    const parsed = JSON.parse(result) as {
+      success?: boolean;
+      subagentSessionId?: string;
+    };
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.subagentSessionId).toBe("subagent:grandchild-1");
+    expect(subAgentManager.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parentSessionId: "subagent:child-1",
+        tools: ["execute_with_agent", "system.readFile"],
+      }),
+    );
+  });
+
+  it("returns a durable task handle for execute_with_agent when async task handles are enabled", async () => {
+    const outputRoot = createTempDir("agenc-task-handle-");
+    const taskStore = new TaskStore({
+      memoryBackend: createMockMemoryBackend(),
+      persistenceRootDir: outputRoot,
+    });
+
+    try {
+      const childResult = makeCompletedChildResult({
+        sessionId: "subagent:child-async",
+        output: '{"summary":"child completed"}',
+        success: true,
+        durationMs: 42,
+        toolCalls: [],
+        tokenUsage: {
+          promptTokens: 10,
+          completionTokens: 20,
+          totalTokens: 30,
+        },
+      });
+      const subAgentManager = {
+        spawn: vi.fn(async () => "subagent:child-async"),
+        waitForResult: vi.fn(async () => childResult),
+      };
+
+      const handler = createSessionToolHandler({
+        sessionId: "session-parent",
+        baseHandler: vi.fn(async () => "should-not-run"),
+        taskStore,
+        runtimeContractFlags: {
+          runtimeContractV2: true,
+          stopHooksEnabled: false,
+          asyncTasksEnabled: true,
+          persistentWorkersEnabled: false,
+          mailboxEnabled: false,
+          verifierRuntimeRequired: false,
+          verifierProjectBootstrap: false,
+          workerIsolationWorktree: false,
+          workerIsolationRemote: false,
+        },
+        availableToolNames: ["system.readFile"],
+        routerId: "router-a",
+        send: vi.fn(),
+        defaultWorkingDirectory: "/tmp/project-root",
+        delegation: () => ({
+          subAgentManager: subAgentManager as any,
+          policyEngine: null,
+          verifier: null,
+          lifecycleEmitter: null,
+        }),
+      });
+
+      const result = await handler("execute_with_agent", {
+        task: "Inspect file",
+        tools: ["system.readFile"],
+      });
+      const parsed = JSON.parse(result) as {
+        readonly success?: boolean;
+        readonly status?: string;
+        readonly taskId?: string;
+        readonly task?: Record<string, unknown>;
+        readonly runtimeResult?: {
+          readonly status?: string;
+          readonly taskId?: string;
+          readonly outputReady?: boolean;
+        };
+      };
+
+      expect(parsed.success).toBe(true);
+      expect(parsed.status).toBe("in_progress");
+      expect(parsed.taskId).toBeTruthy();
+      expect(parsed.runtimeResult).toMatchObject({
+        status: "in_progress",
+        taskId: parsed.taskId,
+        outputReady: false,
+      });
+      expect(parsed.task).toMatchObject({
+        id: parsed.taskId,
+        kind: "subagent",
+        status: "in_progress",
+        waitTool: "task.wait",
+        outputTool: "task.output",
+      });
+
+      const waited = await taskStore.waitForTask("session-parent", parsed.taskId!, {
+        timeoutMs: 1_000,
+        until: "terminal",
+      });
+      expect(waited?.status).toBe("completed");
+      const output = await taskStore.readTaskOutput("session-parent", parsed.taskId!);
+      expect(output?.summary).toBe("Delegated worker completed successfully.");
+      expect(output?.output).toBe('{"summary":"child completed"}');
+      expect(output?.runtimeResult).toMatchObject({
+        status: "completed",
+        completionState: "completed",
+        continuationSessionId: "subagent:child-async",
+      });
+    } finally {
+      rmSync(outputRoot, { recursive: true, force: true });
+    }
   });
 
   it("does not surface delegated child success when completion state still needs verification", async () => {
@@ -1940,6 +2172,95 @@ describe("createSessionToolHandler", () => {
     ]);
     expect(parsed.error).toContain("did not reach a completed workflow state");
     expect(parsed.error).toContain("workflow_verifier_pass");
+  });
+
+  it("blocks delegated child success when verification is required but the child never passed it", async () => {
+    const verifier = {
+      resolveVerifierRequirement: vi.fn(() => ({
+        required: true,
+        profiles: ["generic"],
+        probeCategories: ["build"],
+        mutationPolicy: "read_only_workspace",
+        allowTempArtifacts: false,
+        bootstrapSource: "disabled",
+        rationale: ["test"],
+      })),
+    };
+
+    const handler = createSessionToolHandler({
+      sessionId: "session-parent",
+      baseHandler: vi.fn(async () => "should-not-run"),
+      availableToolNames: ["system.writeFile", "system.bash"],
+      routerId: "router-a",
+      send: vi.fn(),
+      defaultWorkingDirectory: "/tmp/project",
+      delegation: () => ({
+        subAgentManager: {
+          spawn: vi.fn(async () => "subagent:child-verify-missing"),
+          getResult: vi.fn(() => ({
+            sessionId: "subagent:child-verify-missing",
+            output: "Implemented the requested files.",
+            success: true,
+            completionState: "completed",
+            completionProgress: {
+              completionState: "completed",
+              stopReason: "completed",
+              requiredRequirements: [],
+              satisfiedRequirements: [],
+              remainingRequirements: [],
+              reusableEvidence: [],
+              updatedAt: 1_700_000_000_000,
+            },
+            stopReason: "completed",
+            durationMs: 42,
+            toolCalls: [
+              {
+                name: "system.writeFile",
+                args: { path: "/tmp/project/src/main.ts" },
+                result: '{"ok":true}',
+                isError: false,
+                durationMs: 5,
+              },
+            ],
+          })),
+          getInfo: vi.fn(() => ({
+            sessionId: "subagent:child-verify-missing",
+            parentSessionId: "session-parent",
+            depth: 1,
+            status: "completed",
+            startedAt: Date.now() - 100,
+            task: "Implement the CLI",
+          })),
+        } as any,
+        policyEngine: null,
+        verifier: verifier as any,
+        lifecycleEmitter: null,
+      }),
+    });
+
+    const result = await handler("execute_with_agent", {
+      task: "Implement the CLI",
+      tools: ["system.writeFile", "system.bash"],
+    });
+    const parsed = JSON.parse(result) as {
+      success?: boolean;
+      status?: string;
+      error?: string;
+      completionState?: string;
+      runtimeResult?: {
+        completionState?: string;
+        verifierRequirement?: { required?: boolean };
+      };
+    };
+
+    expect(parsed.success).toBe(false);
+    expect(parsed.status).toBe("failed");
+    expect(parsed.completionState).toBe("needs_verification");
+    expect(parsed.runtimeResult).toMatchObject({
+      completionState: "needs_verification",
+      verifierRequirement: { required: true },
+    });
+    expect(parsed.error).toContain("requires a passing verifier result");
   });
 
   it("allows non-filesystem execute_with_agent delegation without a structured execution envelope", async () => {
@@ -2490,7 +2811,7 @@ describe("createSessionToolHandler", () => {
     });
   });
 
-  it("blocks delegated child writes inside the workspace when the target artifact contract does not authorize the path", async () => {
+  it("allows delegated child writes inside the workspace even when target artifact contract does not list the path (advisory only)", async () => {
     const baseHandler = vi.fn(async () => JSON.stringify({ ok: true }));
     const subAgentManager = {
       getInfo: vi.fn(() => ({
@@ -2530,11 +2851,8 @@ describe("createSessionToolHandler", () => {
       content: "# nope\n",
     });
 
-    expect(baseHandler).not.toHaveBeenCalled();
-    expect(JSON.parse(result)).toEqual({
-      error:
-        'Delegated write path "/tmp/workspace/README.md" is not permitted by the execution envelope target artifacts',
-    });
+    expect(baseHandler).toHaveBeenCalled();
+    expect(JSON.parse(result)).toEqual({ ok: true });
   });
 
   it("blocks delegated child rewrites of repo-local verification harnesses unless explicitly writable", async () => {
@@ -2640,6 +2958,7 @@ describe("createSessionToolHandler", () => {
       path: "/tmp/workspace/tests/run_tests.sh",
       content: "#!/bin/bash\nbash tests/run_tests.sh\n",
       [SESSION_ALLOWED_ROOTS_ARG]: ["/tmp/workspace"],
+      [SESSION_ID_ARG]: "subagent:child-harness-allow",
     });
   });
 
@@ -2692,6 +3011,7 @@ describe("createSessionToolHandler", () => {
       path: "/tmp/shell-workspace/src/main.c",
       content: "int main(void) { return 0; }\n",
       [SESSION_ALLOWED_ROOTS_ARG]: ["/tmp/shell-workspace"],
+      [SESSION_ID_ARG]: "subagent:child-2",
     });
   });
 
@@ -2736,6 +3056,7 @@ describe("createSessionToolHandler", () => {
         expect(args).toEqual({
           path: planPath,
           [SESSION_ALLOWED_ROOTS_ARG]: [workspaceRoot],
+          [SESSION_ID_ARG]: "session-parent",
         });
         return JSON.stringify({ path: planPath, content: originalPlan });
       }
@@ -3260,7 +3581,6 @@ describe("createSessionToolHandler", () => {
       failedToolCalls?: number;
     };
 
-    // hasDelegationFailureSignal is disabled (always returns false) and
     // countFailedChildToolCalls only counts isError: true (the mock has isError: false),
     // so the child reports success with no failed tool calls.
     expect(parsed.success).toBe(true);
@@ -4341,7 +4661,7 @@ describe("createSessionToolHandler", () => {
     expect(sentMessages.some((msg) => msg.type === "tools.result")).toBe(false);
   });
 
-  it("blocks delegation tools from sub-agent sessions to prevent privilege expansion", async () => {
+  it("fails closed when nested delegation is requested without a sub-agent manager", async () => {
     const sentMessages: ControlResponse[] = [];
     const send = vi.fn((msg: ControlResponse): void => {
       sentMessages.push(msg);
@@ -4369,10 +4689,10 @@ describe("createSessionToolHandler", () => {
     const result = await handler("execute_with_agent", { task: "expand scope" });
     const parsed = JSON.parse(result) as { error?: string };
 
-    expect(parsed.error).toContain("cannot invoke delegation tools");
+    expect(parsed.error).toContain("sub-agent manager is not initialized");
     expect(baseHandler).not.toHaveBeenCalled();
-    expect(sentMessages.some((msg) => msg.type === "tools.executing")).toBe(false);
-    expect(sentMessages.some((msg) => msg.type === "tools.result")).toBe(false);
+    expect(sentMessages.some((msg) => msg.type === "tools.executing")).toBe(true);
+    expect(sentMessages.some((msg) => msg.type === "tools.result")).toBe(true);
   });
 
   it("allows nested delegation from sub-agent sessions in unsafe benchmark mode", async () => {

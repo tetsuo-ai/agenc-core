@@ -18,7 +18,7 @@ import { createProviderTraceEventLogger } from "../llm/provider-trace-logger.js"
 import type { MemoryBackend } from "../memory/types.js";
 import { StrategicMemory } from "./strategic-memory.js";
 
-export interface MetaPlannerConfig {
+interface MetaPlannerConfig {
   readonly llm: LLMProvider;
   readonly memory: MemoryBackend;
   readonly strategicMemory?: StrategicMemory;
@@ -28,7 +28,7 @@ export interface MetaPlannerConfig {
   readonly traceProviderPayloads?: boolean;
 }
 
-export interface GeneratedGoal {
+interface GeneratedGoal {
   id: string;
   title: string;
   description: string;

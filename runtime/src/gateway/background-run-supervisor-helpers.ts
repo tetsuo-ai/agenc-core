@@ -96,7 +96,7 @@ export function clampPollIntervalMs(
   return Math.max(MIN_POLL_INTERVAL_MS, Math.min(maxMs, Math.floor(value)));
 }
 
-export function truncateList(
+function truncateList(
   values: readonly string[],
   maxItems: number,
   maxChars = 100,
@@ -131,11 +131,11 @@ export function normalizeOperatorStringList(
   return normalized.length > 0 ? normalized : [...fallback];
 }
 
-export function hashOpaqueValue(value: string): string {
+function hashOpaqueValue(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
 
-export function sanitizeMemoryText(text: string, maxChars: number): string {
+function sanitizeMemoryText(text: string, maxChars: number): string {
   const dataUriMatch = text.match(/data:[^;]+;base64,[A-Za-z0-9+/=\r\n]+/);
   if (dataUriMatch) {
     const digest = hashOpaqueValue(dataUriMatch[0]);
@@ -153,7 +153,7 @@ export function sanitizeMemoryText(text: string, maxChars: number): string {
 // JSON extraction and parsing
 // ---------------------------------------------------------------------------
 
-export function extractJsonObject(text: string): string | undefined {
+function extractJsonObject(text: string): string | undefined {
   const start = text.indexOf("{");
   if (start === -1) return undefined;
   let depth = 0;
@@ -360,7 +360,7 @@ export function summarizeToolCalls(toolCalls: readonly ChatExecutorResult["toolC
     .join("\n");
 }
 
-export function extractArtifactRefsFromToolCalls(
+function extractArtifactRefsFromToolCalls(
   toolCalls: readonly ChatExecutorResult["toolCalls"][number][],
   observedAt: number,
 ): BackgroundRunArtifactRef[] {
@@ -450,7 +450,7 @@ export function extractArtifactRefsFromToolCalls(
   });
 }
 
-export function extractProviderCompactionArtifacts(
+function extractProviderCompactionArtifacts(
   actorResult: ChatExecutorResult,
   observedAt: number,
 ): BackgroundRunArtifactRef[] {
@@ -478,7 +478,7 @@ export function extractProviderCompactionArtifacts(
   });
 }
 
-export function mergeArtifactRefs(
+function mergeArtifactRefs(
   previous: readonly BackgroundRunArtifactRef[],
   next: readonly BackgroundRunArtifactRef[],
 ): BackgroundRunArtifactRef[] {
@@ -498,7 +498,7 @@ export function mergeArtifactRefs(
   return merged.slice(-MAX_MEMORY_ARTIFACTS);
 }
 
-export function mergeArtifactsIntoRun(
+function mergeArtifactsIntoRun(
   run: ActiveBackgroundRun,
   artifacts: readonly BackgroundRunArtifactRef[],
   observedAt: number,
@@ -642,7 +642,7 @@ export function buildFallbackCarryForwardState(params: {
   };
 }
 
-export function buildMemoryAnchor(
+function buildMemoryAnchor(
   kind: BackgroundRunMemoryAnchor["kind"],
   reference: string,
   summary: string,
@@ -656,7 +656,7 @@ export function buildMemoryAnchor(
   };
 }
 
-export function mergeMemoryAnchors(
+function mergeMemoryAnchors(
   previous: readonly BackgroundRunMemoryAnchor[],
   additions: readonly BackgroundRunMemoryAnchor[],
 ): BackgroundRunMemoryAnchor[] {
@@ -952,7 +952,7 @@ export function recordRunActivity(
   };
 }
 
-export function countRunningManagedProcesses(
+function countRunningManagedProcesses(
   observedTargets: readonly BackgroundRunObservedTarget[],
 ): number {
   return observedTargets.reduce((count, target) => {
@@ -1127,7 +1127,7 @@ export function buildBlockerState(
 // Decision building
 // ---------------------------------------------------------------------------
 
-export function shouldTreatStopReasonAsBoundedStep(
+function shouldTreatStopReasonAsBoundedStep(
   actorResult: ChatExecutorResult,
 ): boolean {
   if (!actorResult.toolCalls.some((toolCall) => !toolCall.isError)) return false;

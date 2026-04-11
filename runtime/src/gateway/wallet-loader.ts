@@ -12,7 +12,7 @@ import type { GatewayConfig } from "./types.js";
 // Types
 // ---------------------------------------------------------------------------
 
-export interface WalletResult {
+interface WalletResult {
   keypair: import("@solana/web3.js").Keypair;
   agentId: Uint8Array;
   wallet: {

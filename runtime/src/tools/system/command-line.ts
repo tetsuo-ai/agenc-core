@@ -24,7 +24,7 @@ const SINGLE_EXECUTABLE_RE = /^[A-Za-z0-9_./+-]+$/;
 const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=.*/;
 const DIRECT_MODE_REDIRECT_TOKEN_RE = /^\d*(?:>|>>|<|<<|<>|>&|<&|>\|)$/;
 
-export interface ParsedDirectCommandLine {
+interface ParsedDirectCommandLine {
   readonly command: string;
   readonly args: string[];
 }
@@ -131,7 +131,7 @@ export function tokenizeShellCommand(command: string): string[] {
   return tokens;
 }
 
-export function collectDirectModeShellControlTokens(
+function collectDirectModeShellControlTokens(
   tokens: readonly string[],
 ): string[] {
   const detected = new Set<string>();
@@ -148,7 +148,7 @@ export function collectDirectModeShellControlTokens(
   return [...detected];
 }
 
-export function containsDirectModeShellControlTokens(
+function containsDirectModeShellControlTokens(
   tokens: readonly string[],
 ): boolean {
   return collectDirectModeShellControlTokens(tokens).length > 0;

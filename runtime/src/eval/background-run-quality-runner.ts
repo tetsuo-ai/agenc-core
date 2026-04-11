@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChatExecutorResult } from "../llm/chat-executor.js";
+import { createSyntheticDialogueTurnExecutionContract } from "../llm/turn-execution-contract.js";
 import type { LLMProvider, ToolHandler } from "../llm/types.js";
 import { InMemoryBackend } from "../memory/in-memory/backend.js";
 import { SqliteBackend } from "../memory/sqlite/backend.js";
@@ -48,6 +49,7 @@ function makeActorResult(
     compacted: false,
     stopReason: "completed",
     completionState: "completed",
+    turnExecutionContract: createSyntheticDialogueTurnExecutionContract(),
   };
 }
 

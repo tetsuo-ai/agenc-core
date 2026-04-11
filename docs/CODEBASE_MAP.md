@@ -15,7 +15,6 @@ agenc-core/
   containers/private-registry/       registry support container assets
   web/                               operator dashboard surface
   mobile/                            mobile client
-  demo-app/                          demo UI
   examples/                          runtime-dependent internal examples
   tools/                             localnet and proof-harness tools
   test-fixtures/                     workspace fixtures
@@ -41,7 +40,6 @@ agenc-core/
 
 - `web/` - operator dashboard with separate `MARKET` and `TOOLS` workspaces
 - `mobile/` - mobile client
-- `demo-app/` - demo UI
 - `containers/desktop/server/` - desktop control server
 
 Each of these surfaces now has a local `README.md` entrypoint.

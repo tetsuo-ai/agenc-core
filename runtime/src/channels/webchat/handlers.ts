@@ -28,10 +28,12 @@ import { createProgram, createReadOnlyProgram } from '../../idl.js';
 import {
   buildMarketplaceReputationSummaryForAgent,
   buildMarketplaceUnregisteredSummary,
+  serializeMarketplaceDisputeDetail,
   serializeMarketplaceDisputeSummary,
   serializeMarketplaceProposalDetail,
   serializeMarketplaceProposalSummary,
   serializeMarketplaceSkill,
+  serializeMarketplaceTask,
   serializeMarketplaceTaskEntry,
 } from '../../marketplace/serialization.js';
 import { TaskOperations } from '../../task/operations.js';
@@ -56,6 +58,7 @@ import {
   createDelegateReputationTool,
   createInitiateDisputeTool,
   createRateSkillTool,
+  createResolveDisputeTool,
   createStakeReputationTool,
   createVoteProposalTool,
 } from '../../tools/agenc/mutation-tools.js';
@@ -64,6 +67,7 @@ import { PublicKey, SystemProgram } from '@solana/web3.js';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { parseAgentState } from '../../agent/types.js';
 
 export type SendFn = (response: ControlResponse) => void;
 export interface HandlerRequestContext {
@@ -172,6 +176,41 @@ function createReadOnlyProgramContext(deps: WebChatDeps): ReturnType<typeof crea
   return createReadOnlyProgram(deps.connection);
 }
 
+interface SignerAgentChoice {
+  registered: true;
+  authority: string;
+  agentPda: string;
+  agentId: string;
+}
+
+class MultipleSignerAgentsError extends Error {
+  readonly authority: string;
+  readonly agents: SignerAgentChoice[];
+
+  constructor(authority: PublicKey, agents: SignerAgentChoice[]) {
+    super(
+      'Multiple agent registrations found for signer wallet. Provide agentPda with one of the listed agentPda values.',
+    );
+    this.name = 'MultipleSignerAgentsError';
+    this.authority = authority.toBase58();
+    this.agents = agents;
+  }
+}
+
+function signerAgentChoicesFromMatches(
+  authority: PublicKey,
+  matches: ReadonlyArray<{ pubkey: PublicKey; account: { data: Uint8Array } }>,
+): SignerAgentChoice[] {
+  return matches
+    .map((match) => ({
+      registered: true as const,
+      authority: authority.toBase58(),
+      agentPda: match.pubkey.toBase58(),
+      agentId: Buffer.from(match.account.data.subarray(AGENT_ID_OFFSET, AGENT_AUTHORITY_OFFSET)).toString('hex'),
+    }))
+    .sort((left, right) => left.agentPda.localeCompare(right.agentPda));
+}
+
 async function resolveSignerAgent(program: ReturnType<typeof createProgram>): Promise<{
   agentPda: PublicKey;
   agentId: Uint8Array;
@@ -186,7 +225,7 @@ async function resolveSignerAgent(program: ReturnType<typeof createProgram>): Pr
   const matches = await program.provider.connection.getProgramAccounts(program.programId, {
     filters: [
       { memcmp: { offset: 0, bytes: bs58.default.encode(AGENT_ACCT_DISCRIMINATOR) } },
-      { memcmp: { offset: 40, bytes: authority.toBase58() } },
+      { memcmp: { offset: AGENT_AUTHORITY_OFFSET, bytes: authority.toBase58() } },
     ],
   });
 
@@ -194,30 +233,53 @@ async function resolveSignerAgent(program: ReturnType<typeof createProgram>): Pr
     throw new Error('No agent registration found for signer wallet');
   }
   if (matches.length > 1) {
-    throw new Error('Multiple agent registrations found for signer wallet');
+    throw new MultipleSignerAgentsError(authority, signerAgentChoicesFromMatches(authority, matches));
   }
 
-  const agentData = matches[0].account.data as Buffer;
+  const agentData = matches[0]!.account.data as Buffer;
   if (agentData.length < 72) {
     throw new Error('Signer agent registration account is truncated');
   }
 
   return {
-    agentPda: matches[0].pubkey,
-    agentId: new Uint8Array(agentData.subarray(8, 40)),
+    agentPda: matches[0]!.pubkey,
+    agentId: new Uint8Array(agentData.subarray(AGENT_ID_OFFSET, AGENT_AUTHORITY_OFFSET)),
     authority,
   };
 }
 
-function mapTaskSummary(entry: Awaited<ReturnType<TaskOperations['fetchAllTasks']>>[number]) {
+interface TaskViewerContext {
+  viewerAgentPda: string;
+  claimedTaskIds: Set<string>;
+}
+
+function mapTaskSummary(
+  entry: Awaited<ReturnType<TaskOperations['fetchAllTasks']>>[number],
+  viewerContext?: TaskViewerContext,
+) {
   const task = serializeMarketplaceTaskEntry(entry);
-  return {
+  const summary = {
     id: task.taskPda,
     status: task.status,
     reward: lamportsToSol(BigInt(task.rewardLamports)),
     creator: task.creator,
     description: task.description,
     worker: task.currentWorkers > 0 ? `${task.currentWorkers} worker(s)` : undefined,
+  };
+
+  if (!viewerContext) {
+    return summary;
+  }
+
+  const ownedBySigner = task.creator === viewerContext.viewerAgentPda;
+  const assignedToSigner = viewerContext.claimedTaskIds.has(task.taskPda);
+
+  return {
+    ...summary,
+    viewerAgentPda: viewerContext.viewerAgentPda,
+    ownedBySigner,
+    assignedToSigner,
+    claimableBySigner: task.status === 'open' && !ownedBySigner && !assignedToSigner,
   };
 }
 
@@ -249,11 +311,41 @@ function parseToolError(result: { content: string; isError?: boolean }): string 
   }
 }
 
+function parseToolPayload(result: { content: string }): unknown {
+  try {
+    return JSON.parse(result.content);
+  } catch {
+    return { raw: result.content };
+  }
+}
+
+function readTaskIdentifier(payload: Record<string, unknown> | undefined): string {
+  const taskId = typeof payload?.taskId === 'string' ? payload.taskId.trim() : '';
+  if (taskId) return taskId;
+  const taskPda = typeof payload?.taskPda === 'string' ? payload.taskPda.trim() : '';
+  return taskPda;
+}
+
+function readStatusFilters(payload: Record<string, unknown> | undefined): string[] {
+  if (Array.isArray(payload?.statuses)) {
+    return payload.statuses
+      .map((entry) => String(entry ?? '').trim().toLowerCase())
+      .filter(Boolean);
+  }
+  if (typeof payload?.status === 'string') {
+    return payload.status
+      .split(',')
+      .map((entry) => entry.trim().toLowerCase())
+      .filter(Boolean);
+  }
+  return [];
+}
+
 // ============================================================================
 // Status handlers
 // ============================================================================
 
-export function handleStatusGet(
+function handleStatusGet(
   deps: WebChatDeps,
   _payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -359,7 +451,7 @@ function toggleTool(
   sendToolList(deps, id, send, responseType);
 }
 
-export function handleSkillsList(
+function handleSkillsList(
   deps: WebChatDeps,
   _payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -368,7 +460,7 @@ export function handleSkillsList(
   sendToolList(deps, id, send, 'skills.list');
 }
 
-export function handleSkillsToggle(
+function handleSkillsToggle(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -377,7 +469,7 @@ export function handleSkillsToggle(
   toggleTool(deps, payload, id, send, 'skills.list');
 }
 
-export function handleToolsList(
+function handleToolsList(
   deps: WebChatDeps,
   _payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -386,7 +478,7 @@ export function handleToolsList(
   sendToolList(deps, id, send, 'tools.list');
 }
 
-export function handleHooksList(
+function handleHooksList(
   deps: WebChatDeps,
   _payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -395,7 +487,7 @@ export function handleHooksList(
   sendHookList(deps, id, send);
 }
 
-export function handleToolsToggle(
+function handleToolsToggle(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -408,7 +500,7 @@ export function handleToolsToggle(
 // Marketplace handlers
 // ============================================================================
 
-export async function handleMarketSkillsList(
+async function handleMarketSkillsList(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -450,7 +542,7 @@ export async function handleMarketSkillsList(
   });
 }
 
-export async function handleMarketSkillsDetail(
+async function handleMarketSkillsDetail(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -511,20 +603,15 @@ export async function handleMarketSkillsDetail(
   });
 }
 
-export async function handleMarketSkillsPurchase(
+async function handleMarketSkillsPurchase(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
   send: SendFn,
 ): Promise<void> {
   const skillPda = payload?.skillPda;
-  const skillId = payload?.skillId;
   if (!skillPda || typeof skillPda !== 'string') {
     send({ type: 'error', error: 'Missing skillPda in payload', id });
-    return;
-  }
-  if (!skillId || typeof skillId !== 'string') {
-    send({ type: 'error', error: 'Missing skillId in payload', id });
     return;
   }
   if (!deps.connection) {
@@ -535,6 +622,19 @@ export async function handleMarketSkillsPurchase(
   try {
     const connection = deps.connection!;
     const { program } = await createProgramContext(deps);
+    const skillPublicKey = new PublicKey(skillPda);
+    let skillId = typeof payload?.skillId === 'string' ? payload.skillId.trim() : '';
+    if (!skillId) {
+      const account = await (program.account as any).skillRegistration.fetchNullable(skillPublicKey);
+      if (!account) {
+        send({ type: 'error', error: `Skill not found: ${skillPda}`, id });
+        return;
+      }
+      skillId = serializeMarketplaceSkill({
+        publicKey: skillPublicKey,
+        account: account as Record<string, unknown>,
+      }).skillId;
+    }
     const signerAgent = await resolveSignerAgent(program);
     const registryClient = new OnChainSkillRegistryClient({
       connection,
@@ -547,7 +647,7 @@ export async function handleMarketSkillsPurchase(
       logger: silentLogger,
     });
     const result = await purchaseManager.purchase(
-      new PublicKey(skillPda),
+      skillPublicKey,
       skillId,
       join(homedir(), '.agenc', 'skills', `${skillId}.md`),
     );
@@ -574,7 +674,7 @@ export async function handleMarketSkillsPurchase(
   }
 }
 
-export async function handleMarketSkillsRate(
+async function handleMarketSkillsRate(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -614,7 +714,7 @@ export async function handleMarketSkillsRate(
   }
 }
 
-export async function handleMarketGovernanceList(
+async function handleMarketGovernanceList(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -643,7 +743,7 @@ export async function handleMarketGovernanceList(
   });
 }
 
-export async function handleMarketGovernanceDetail(
+async function handleMarketGovernanceDetail(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -682,7 +782,7 @@ export async function handleMarketGovernanceDetail(
   });
 }
 
-export async function handleMarketGovernanceVote(
+async function handleMarketGovernanceVote(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -718,7 +818,7 @@ export async function handleMarketGovernanceVote(
   }
 }
 
-export async function handleMarketDisputesList(
+async function handleMarketDisputesList(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -736,18 +836,17 @@ export async function handleMarketDisputesList(
       agentId: new Uint8Array(32),
       logger: silentLogger,
     });
-    const statusFilter =
-      typeof payload?.status === 'string' ? payload.status.trim().toLowerCase() : '';
+    const statusFilters = readStatusFilters(payload);
     const disputes = (await ops.fetchAllDisputes())
       .map(mapDisputeSummary)
-      .filter((entry) => !statusFilter || entry.status === statusFilter)
+      .filter((entry) => statusFilters.length === 0 || statusFilters.includes(entry.status))
       .sort((left, right) => right.createdAt - left.createdAt);
 
     send({ type: 'market.disputes.list', payload: disputes, id });
   });
 }
 
-export async function handleMarketDisputesDetail(
+async function handleMarketDisputesDetail(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -777,18 +876,62 @@ export async function handleMarketDisputesDetail(
     }
     send({
       type: 'market.disputes.detail',
-      payload: serializeMarketplaceDisputeSummary({
-        dispute,
-        disputePda: new PublicKey(disputePda),
-      }),
+      payload: serializeMarketplaceDisputeDetail(new PublicKey(disputePda), dispute),
       id,
     });
   });
 }
 
-export async function handleMarketReputationSummary(
+async function handleMarketDisputesResolve(
   deps: WebChatDeps,
-  _payload: Record<string, unknown> | undefined,
+  payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): Promise<void> {
+  const disputePda = typeof payload?.disputePda === 'string' ? payload.disputePda.trim() : '';
+  if (!disputePda) {
+    send({ type: 'error', error: 'Missing disputePda in payload', id });
+    return;
+  }
+  if (!Array.isArray(payload?.arbiterVotes) || payload.arbiterVotes.length === 0) {
+    send({ type: 'error', error: 'Missing arbiterVotes in payload', id });
+    return;
+  }
+  if (!deps.connection) {
+    send({ type: 'error', error: SOLANA_NOT_CONFIGURED, id });
+    return;
+  }
+
+  try {
+    const { program } = await createProgramContext(deps);
+    const tool = createResolveDisputeTool(program, silentLogger);
+    const result = await tool.execute({
+      disputePda,
+      arbiterVotes: payload.arbiterVotes,
+      ...(Array.isArray(payload?.extraWorkers) ? { extraWorkers: payload.extraWorkers } : {}),
+    });
+    if (result.isError) {
+      send({ type: 'error', error: `Failed to resolve dispute: ${parseToolError(result)}`, id });
+      return;
+    }
+    const resolvedPayload = {
+      disputePda,
+      result: parseToolPayload(result),
+    };
+    send({
+      type: 'market.disputes.resolved',
+      payload: resolvedPayload,
+      id,
+    });
+    deps.broadcastEvent?.('market.dispute.resolved', resolvedPayload);
+  } catch (err) {
+    send({ type: 'error', error: `Failed to resolve dispute: ${(err as Error).message}`, id });
+  }
+}
+
+async function handleMarketReputationSummary(
+  deps: WebChatDeps,
+  payload: Record<string, unknown> | undefined,
   id: string | undefined,
   send: SendFn,
 ): Promise<void> {
@@ -798,13 +941,57 @@ export async function handleMarketReputationSummary(
   }
 
   await safeAsync(send, id, 'error', 'Failed to load reputation summary', async () => {
+    const requestedAgentPda =
+      typeof payload?.agentPda === 'string' ? payload.agentPda.trim() : '';
+    if (requestedAgentPda) {
+      const program = createReadOnlyProgramContext(deps);
+      const agentPda = new PublicKey(requestedAgentPda);
+      const rawAgent = await (program.account as any).agentRegistration.fetchNullable(agentPda);
+      if (!rawAgent) {
+        send({ type: 'error', error: `Agent not found: ${requestedAgentPda}`, id });
+        return;
+      }
+      const agent = parseAgentState(rawAgent as Record<string, unknown>);
+      const summary = await buildMarketplaceReputationSummaryForAgent(
+        program,
+        agentPda,
+        agent.agentId,
+      );
+      if (!summary) {
+        send({ type: 'error', error: `Reputation summary unavailable: ${requestedAgentPda}`, id });
+        return;
+      }
+      const { agentId: _agentId, ...summaryPayload } = summary;
+      send({
+        type: 'market.reputation.summary',
+        payload: summaryPayload,
+        id,
+      });
+      return;
+    }
+
     const { program } = await createProgramContext(deps);
     const authority = program.provider.publicKey?.toBase58() ?? '';
 
     let signerAgent: Awaited<ReturnType<typeof resolveSignerAgent>> | null = null;
     try {
       signerAgent = await resolveSignerAgent(program);
-    } catch {
+    } catch (error) {
+      if (error instanceof MultipleSignerAgentsError) {
+        send({
+          type: 'market.reputation.summary',
+          payload: {
+            status: 'requires_input',
+            registered: false,
+            authority: error.authority,
+            message: error.message,
+            count: error.agents.length,
+            agents: error.agents,
+          },
+          id,
+        });
+        return;
+      }
       send({
         type: 'market.reputation.summary',
         payload: buildMarketplaceUnregisteredSummary({ authority }),
@@ -826,17 +1013,17 @@ export async function handleMarketReputationSummary(
       });
       return;
     }
-    const { agentId: _agentId, ...payload } = summary;
+    const { agentId: _agentId, ...summaryPayload } = summary;
 
     send({
       type: 'market.reputation.summary',
-      payload,
+      payload: summaryPayload,
       id,
     });
   });
 }
 
-export async function handleMarketReputationStake(
+async function handleMarketReputationStake(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -867,7 +1054,7 @@ export async function handleMarketReputationStake(
   }
 }
 
-export async function handleMarketReputationDelegate(
+async function handleMarketReputationDelegate(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -921,7 +1108,12 @@ export async function handleMarketReputationDelegate(
  *       + 1 (max_workers) + 1 (current_workers) + 1 (status)
  */
 /** Helper: send a refreshed task list to the client using typed task operations. */
-async function sendTaskList(deps: WebChatDeps, id: string | undefined, send: SendFn): Promise<void> {
+async function sendTaskList(
+  deps: WebChatDeps,
+  id: string | undefined,
+  send: SendFn,
+  { statuses = [] }: { statuses?: string[] } = {},
+): Promise<void> {
   const program = createReadOnlyProgramContext(deps);
   const ops = new TaskOperations({
     program,
@@ -929,15 +1121,35 @@ async function sendTaskList(deps: WebChatDeps, id: string | undefined, send: Sen
     logger: silentLogger,
   });
   const allTasks = await ops.fetchAllTasks();
+
+  let viewerContext: TaskViewerContext | undefined;
+  try {
+    const { program: signerProgram } = await createProgramContext(deps);
+    const signerAgent = await resolveSignerAgent(signerProgram);
+    const signerTaskOps = new TaskOperations({
+      program: signerProgram,
+      agentId: signerAgent.agentId,
+      logger: silentLogger,
+    });
+    const activeClaims = await signerTaskOps.fetchActiveClaims();
+    viewerContext = {
+      viewerAgentPda: signerAgent.agentPda.toBase58(),
+      claimedTaskIds: new Set(activeClaims.map(({ taskPda }) => taskPda.toBase58())),
+    };
+  } catch {
+    viewerContext = undefined;
+  }
+
   const payload = allTasks
     .sort((left, right) => right.task.createdAt - left.task.createdAt)
-    .map(mapTaskSummary);
+    .map((entry) => mapTaskSummary(entry, viewerContext))
+    .filter((entry) => statuses.length === 0 || statuses.includes(entry.status));
   send({ type: 'tasks.list', payload, id });
 }
 
 export async function handleTasksList(
   deps: WebChatDeps,
-  _payload: Record<string, unknown> | undefined,
+  payload: Record<string, unknown> | undefined,
   id: string | undefined,
   send: SendFn,
 ): Promise<void> {
@@ -945,10 +1157,47 @@ export async function handleTasksList(
     send({ type: 'error', error: SOLANA_NOT_CONFIGURED, id });
     return;
   }
-  await safeAsync(send, id, 'error', 'Failed to list tasks', () => sendTaskList(deps, id, send));
+  const statuses = readStatusFilters(payload);
+  await safeAsync(send, id, 'error', 'Failed to list tasks', () => sendTaskList(deps, id, send, { statuses }));
 }
 
-export async function handleTasksCreate(
+async function handleTasksDetail(
+  deps: WebChatDeps,
+  payload: Record<string, unknown> | undefined,
+  id: string | undefined,
+  send: SendFn,
+): Promise<void> {
+  const taskPda = readTaskIdentifier(payload);
+  if (!taskPda) {
+    send({ type: 'error', error: 'Missing taskPda in payload', id });
+    return;
+  }
+  if (!deps.connection) {
+    send({ type: 'error', error: SOLANA_NOT_CONFIGURED, id });
+    return;
+  }
+  await safeAsync(send, id, 'error', 'Failed to inspect task', async () => {
+    const program = createReadOnlyProgramContext(deps);
+    const taskOps = new TaskOperations({
+      program,
+      agentId: new Uint8Array(32),
+      logger: silentLogger,
+    });
+    const publicKey = new PublicKey(taskPda);
+    const task = await taskOps.fetchTask(publicKey);
+    if (!task) {
+      send({ type: 'error', error: `Task not found: ${taskPda}`, id });
+      return;
+    }
+    send({
+      type: 'tasks.detail',
+      payload: serializeMarketplaceTask(publicKey, task),
+      id,
+    });
+  });
+}
+
+async function handleTasksCreate(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -968,10 +1217,15 @@ export async function handleTasksCreate(
     const descStr = typeof (params as Record<string, unknown>).description === 'string'
       ? (params as Record<string, unknown>).description as string
       : 'Task from WebUI';
+    const explicitRewardLamports = typeof (params as Record<string, unknown>).rewardLamports === 'string'
+      ? (params as Record<string, unknown>).rewardLamports as string
+      : '';
     const rewardInput = typeof (params as Record<string, unknown>).reward === 'number'
       ? (params as Record<string, unknown>).reward as number
       : 0;
-    const rewardLamports = BigInt(Math.max(Math.round(rewardInput * 1_000_000_000), 10_000_000));
+    const rewardLamports = explicitRewardLamports
+      ? BigInt(explicitRewardLamports)
+      : BigInt(Math.max(Math.round(rewardInput * 1_000_000_000), 10_000_000));
     const taskParams = params as Record<string, unknown>;
     const createArgs: Record<string, unknown> = {
       description: descStr,
@@ -1028,14 +1282,14 @@ export async function handleTasksCreate(
   }
 }
 
-export async function handleTasksCancel(
+async function handleTasksCancel(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
   send: SendFn,
 ): Promise<void> {
-  const taskId = payload?.taskId;
-  if (!taskId || typeof taskId !== 'string') {
+  const taskId = readTaskIdentifier(payload);
+  if (!taskId) {
     send({ type: 'error', error: 'Missing taskId in payload', id });
     return;
   }
@@ -1068,14 +1322,14 @@ export async function handleTasksCancel(
   }
 }
 
-export async function handleTasksClaim(
+async function handleTasksClaim(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
   send: SendFn,
 ): Promise<void> {
-  const taskId = payload?.taskId;
-  if (!taskId || typeof taskId !== 'string') {
+  const taskId = readTaskIdentifier(payload);
+  if (!taskId) {
     send({ type: 'error', error: 'Missing taskId in payload', id });
     return;
   }
@@ -1100,14 +1354,14 @@ export async function handleTasksClaim(
   }
 }
 
-export async function handleTasksComplete(
+async function handleTasksComplete(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
   send: SendFn,
 ): Promise<void> {
-  const taskId = payload?.taskId;
-  if (!taskId || typeof taskId !== 'string') {
+  const taskId = readTaskIdentifier(payload);
+  if (!taskId) {
     send({ type: 'error', error: 'Missing taskId in payload', id });
     return;
   }
@@ -1140,14 +1394,14 @@ export async function handleTasksComplete(
   }
 }
 
-export async function handleTasksDispute(
+async function handleTasksDispute(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
   send: SendFn,
 ): Promise<void> {
-  const taskId = payload?.taskId;
-  if (!taskId || typeof taskId !== 'string') {
+  const taskId = readTaskIdentifier(payload);
+  if (!taskId) {
     send({ type: 'error', error: 'Missing taskId in payload', id });
     return;
   }
@@ -1278,7 +1532,7 @@ function summarizeMaintenanceSync(
   };
 }
 
-export async function handleMemorySearch(
+async function handleMemorySearch(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -1328,7 +1582,7 @@ export async function handleMemorySearch(
   }
 }
 
-export async function handleMemorySessions(
+async function handleMemorySessions(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -1348,7 +1602,7 @@ export async function handleMemorySessions(
   }
 }
 
-export async function handleMaintenanceStatus(
+async function handleMaintenanceStatus(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -1400,7 +1654,7 @@ export async function handleMaintenanceStatus(
 // Approval handlers
 // ============================================================================
 
-export async function handleApprovalRespond(
+async function handleApprovalRespond(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -1447,7 +1701,7 @@ export async function handleApprovalRespond(
   });
 }
 
-export async function handlePolicySimulate(
+async function handlePolicySimulate(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -1501,6 +1755,8 @@ export async function handlePolicySimulate(
  * so we parse sequentially rather than using fixed offsets.
  */
 const AGENT_ACCT_DISCRIMINATOR = Buffer.from([130, 53, 100, 103, 121, 77, 148, 19]);
+const AGENT_ID_OFFSET = 8;
+const AGENT_AUTHORITY_OFFSET = 40;
 /** Minimum byte length for an agent account (all variable-length strings empty). */
 const AGENT_ACCT_MIN_LENGTH = 132;
 
@@ -1598,7 +1854,7 @@ function parseRawAgentAccount(data: Buffer): {
   };
 }
 
-export async function handleAgentsList(
+async function handleAgentsList(
   deps: WebChatDeps,
   _payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -1658,7 +1914,7 @@ export async function handleAgentsList(
 // Desktop sandbox handlers
 // ============================================================================
 
-export async function handleDesktopList(
+async function handleDesktopList(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -1695,7 +1951,7 @@ export async function handleDesktopList(
   });
 }
 
-export async function handleDesktopCreate(
+async function handleDesktopCreate(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -1753,7 +2009,7 @@ export async function handleDesktopCreate(
   });
 }
 
-export async function handleDesktopAttach(
+async function handleDesktopAttach(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -1802,7 +2058,7 @@ export async function handleDesktopAttach(
   });
 }
 
-export async function handleDesktopDestroy(
+async function handleDesktopDestroy(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -1858,7 +2114,7 @@ function buildBackgroundRunErrorPayload(
     : { code, sessionId };
 }
 
-export async function handleRunsList(
+async function handleRunsList(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -1894,7 +2150,7 @@ export async function handleRunsList(
   });
 }
 
-export async function handleRunInspect(
+async function handleRunInspect(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -1941,7 +2197,7 @@ export async function handleRunInspect(
   });
 }
 
-export async function handleRunControl(
+async function handleRunControl(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -2003,7 +2259,7 @@ export async function handleRunControl(
   });
 }
 
-export async function handleObservabilitySummary(
+async function handleObservabilitySummary(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -2030,7 +2286,7 @@ export async function handleObservabilitySummary(
   });
 }
 
-export async function handleObservabilityTraces(
+async function handleObservabilityTraces(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -2069,7 +2325,7 @@ export async function handleObservabilityTraces(
   });
 }
 
-export async function handleObservabilityTrace(
+async function handleObservabilityTrace(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -2095,7 +2351,7 @@ export async function handleObservabilityTrace(
   });
 }
 
-export async function handleObservabilityArtifact(
+async function handleObservabilityArtifact(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -2132,7 +2388,7 @@ export async function handleObservabilityArtifact(
   });
 }
 
-export async function handleObservabilityLogs(
+async function handleObservabilityLogs(
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -2192,7 +2448,7 @@ async function safeAsync(
 // Handler map
 // ============================================================================
 
-export type HandlerFn = (
+type HandlerFn = (
   deps: WebChatDeps,
   payload: Record<string, unknown> | undefined,
   id: string | undefined,
@@ -2217,10 +2473,12 @@ export const HANDLER_MAP: Readonly<Record<string, HandlerFn>> = {
   'market.governance.vote': handleMarketGovernanceVote,
   'market.disputes.list': handleMarketDisputesList,
   'market.disputes.detail': handleMarketDisputesDetail,
+  'market.disputes.resolve': handleMarketDisputesResolve,
   'market.reputation.summary': handleMarketReputationSummary,
   'market.reputation.stake': handleMarketReputationStake,
   'market.reputation.delegate': handleMarketReputationDelegate,
   'tasks.list': handleTasksList,
+  'tasks.detail': handleTasksDetail,
   'tasks.create': handleTasksCreate,
   'tasks.claim': handleTasksClaim,
   'tasks.complete': handleTasksComplete,

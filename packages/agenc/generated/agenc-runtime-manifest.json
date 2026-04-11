@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "wrapperVersion": "0.1.0",
   "keyId": "local-dev",
-  "generatedAt": "2026-04-03T09:09:48.396Z",
+  "generatedAt": "2026-04-07T11:30:20.736Z",
   "releaseChannel": "local-dev",
   "releaseRepository": "tetsuo-ai/agenc-core",
   "releaseTag": "agenc-v0.1.0",
@@ -13,7 +13,7 @@
       "nodeRange": ">=18.0.0",
       "runtimeVersion": "0.1.0",
       "url": "file:///home/tetsuo/git/AgenC/agenc-core/artifacts/public-runtime/agenc-runtime-0.1.0-linux-x64.tar.gz",
-      "sha256": "af4384f2e95875ab34584269b3a1fb8cbfc85b1350783d2e216b62118d81eda0",
+      "sha256": "ca325d3d8c2bc4bf67749d0b9623f0e5b010f38731adc5b91dcfa2bbcdf84e0b",
       "bins": {
         "agenc": "node_modules/@tetsuo-ai/runtime/dist/bin/agenc.js",
         "agenc-runtime": "node_modules/@tetsuo-ai/runtime/dist/bin/agenc-runtime.js",

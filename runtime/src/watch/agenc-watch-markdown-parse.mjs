@@ -1,4 +1,5 @@
 import markdownit from "markdown-it";
+import { buildDiffDisplayLines } from "./agenc-watch-diff-render.mjs";
 
 const MARKDOWN = markdownit({
   html: false,
@@ -75,6 +76,67 @@ function truncateCell(value, maxWidth = 24) {
   return `${text.slice(0, Math.max(1, maxWidth - 1)).trimEnd()}…`;
 }
 
+function normalizeTableMatrix(headers, rows) {
+  const columnCount = Math.max(
+    headers.length,
+    ...rows.map((row) => row.length),
+    0,
+  );
+  return {
+    columnCount,
+    headers: Array.from({ length: columnCount }, (_, index) => headers[index] ?? `column ${index + 1}`),
+    rows: rows.map((row) =>
+      Array.from({ length: columnCount }, (_, index) => String(row[index] ?? "").trim()),
+    ),
+  };
+}
+
+function shouldStackTable(headers, rows) {
+  const matrix = normalizeTableMatrix(headers, rows);
+  if (matrix.columnCount > 4) {
+    return true;
+  }
+  const widths = Array.from({ length: matrix.columnCount }, (_, index) =>
+    Math.max(
+      3,
+      ...[matrix.headers, ...matrix.rows].map((row) => String(row[index] ?? "").length),
+    ),
+  );
+  const estimatedWidth = widths.reduce((sum, width) => sum + width, 0) + Math.max(0, matrix.columnCount - 1) * 3;
+  return estimatedWidth > 88;
+}
+
+function buildStackedTableDisplayLines(headers, rows) {
+  const matrix = normalizeTableMatrix(headers, rows);
+  const headerText = matrix.headers.join(" · ");
+  const divider = "─".repeat(Math.max(12, Math.min(88, headerText.length)));
+  const lines = [
+    createDisplayLine(headerText, "table-header"),
+    createDisplayLine(divider, "table-divider"),
+  ];
+
+  for (const [rowIndex, row] of matrix.rows.entries()) {
+    lines.push(
+      createDisplayLine(
+        `${rowIndex + 1}. ${matrix.headers[0]}: ${row[0] || "—"}`,
+        "table-row",
+        { continuationPrefix: "   " },
+      ),
+    );
+    for (let index = 1; index < matrix.columnCount; index += 1) {
+      lines.push(
+        createDisplayLine(
+          `   ${matrix.headers[index]}: ${row[index] || "—"}`,
+          "table-row",
+          { continuationPrefix: "   " },
+        ),
+      );
+    }
+  }
+
+  return lines;
+}
+
 export function parseTableRow(rawLine) {
   if (typeof rawLine !== "string" || !rawLine.includes("|")) {
     return null;
@@ -95,6 +157,10 @@ export function isTableSeparator(rawLine) {
 }
 
 export function buildTableDisplayLines(headers, rows) {
+  if (shouldStackTable(headers, rows)) {
+    return buildStackedTableDisplayLines(headers, rows);
+  }
+
   const matrix = [headers, ...rows].map((row) =>
     row.map((cell) => truncateCell(cell)),
   );
@@ -349,12 +415,20 @@ function appendCodeFenceLines(lines, token, lastSourceEnd) {
     String(token.info ?? "")
       .trim()
       .split(/\s+/)[0] || "text";
+  const content = String(token.content ?? "").replace(/\r\n/g, "\n");
+  if (language === "diff" || language === "patch") {
+    const diffLines = buildDiffDisplayLines({ kind: "tool", body: content });
+    if (diffLines.length > 0) {
+      lines.push(...diffLines);
+      return nextSourceEnd(token.map, lastSourceEnd);
+    }
+  }
+
   lines.push(
     createDisplayLine(`code · ${language}`, "code-meta", {
       language,
     }),
   );
-  const content = String(token.content ?? "").replace(/\r\n/g, "\n");
   const contentLines = content.endsWith("\n")
     ? content.slice(0, -1).split("\n")
     : content.split("\n");

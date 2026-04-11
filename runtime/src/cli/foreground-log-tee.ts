@@ -13,7 +13,7 @@ export interface WritableWriteTarget {
   ): boolean;
 }
 
-export interface ForegroundLogTee {
+interface ForegroundLogTee {
   readonly logPath: string;
   dispose(): Promise<void>;
 }

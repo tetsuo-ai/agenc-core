@@ -1,193 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  assessDelegationAdmission,
-  assessDirectDelegationAdmission,
-} from "./delegation-admission.js";
+import { assessDelegationAdmission } from "./delegation-admission.js";
 
 describe("assessDelegationAdmission", () => {
-  it("denies shared-primary-artifact plans when multiple mutable child steps target the same file", () => {
-    const decision = assessDelegationAdmission({
-      messageText:
-        "Review PLAN.md from multiple angles, update PLAN.md in parallel, then synthesize the result.",
-      totalSteps: 4,
-      synthesisSteps: 1,
-      steps: [
-        {
-          name: "architecture_writer",
-          objective: "Update PLAN.md with architecture feedback",
-          inputContract: "Write the architecture changes into PLAN.md",
-          acceptanceCriteria: ["PLAN.md includes architecture updates"],
-          requiredToolCapabilities: ["system.writeFile"],
-          contextRequirements: [],
-          executionContext: {
-            version: "v1",
-            workspaceRoot: "/tmp/project",
-            allowedReadRoots: ["/tmp/project"],
-            allowedWriteRoots: ["/tmp/project"],
-            requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
-            targetArtifacts: ["/tmp/project/PLAN.md"],
-            effectClass: "filesystem_write",
-            verificationMode: "mutation_required",
-            stepKind: "delegated_execution",
-          },
-          maxBudgetHint: "3m",
-          canRunParallel: true,
-        },
-        {
-          name: "security_writer",
-          objective: "Update PLAN.md with security feedback",
-          inputContract: "Write the security changes into PLAN.md",
-          acceptanceCriteria: ["PLAN.md includes security updates"],
-          requiredToolCapabilities: ["system.writeFile"],
-          contextRequirements: [],
-          executionContext: {
-            version: "v1",
-            workspaceRoot: "/tmp/project",
-            allowedReadRoots: ["/tmp/project"],
-            allowedWriteRoots: ["/tmp/project"],
-            requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
-            targetArtifacts: ["/tmp/project/PLAN.md"],
-            effectClass: "filesystem_write",
-            verificationMode: "mutation_required",
-            stepKind: "delegated_execution",
-          },
-          maxBudgetHint: "3m",
-          canRunParallel: true,
-        },
-      ],
-      edges: [],
-      threshold: 0,
-      maxFanoutPerTurn: 4,
-      maxDepth: 4,
-    });
-
-    expect(decision.allowed).toBe(false);
-    expect(decision.reason).toBe("shared_artifact_writer_inline");
-    expect(decision.diagnostics).toMatchObject({
-      sharedPrimaryArtifact: "/tmp/project/PLAN.md",
-    });
-    expect(decision.stepAdmissions.map((entry) => entry.ownedArtifacts)).toEqual([
-      ["/tmp/project/PLAN.md"],
-      ["/tmp/project/PLAN.md"],
-    ]);
-  });
-
-  it("keeps owned artifacts as structural runtime data for safe disjoint branches", () => {
-    const decision = assessDelegationAdmission({
-      messageText:
-        "Implement the parser in one branch and the docs in another, then summarize.",
-      totalSteps: 3,
-      synthesisSteps: 1,
-      steps: [
-        {
-          name: "parser_branch",
-          objective: "Implement the parser",
-          inputContract: "Update src/parser.c only",
-          acceptanceCriteria: ["src/parser.c compiles"],
-          requiredToolCapabilities: ["system.writeFile"],
-          contextRequirements: [],
-          executionContext: {
-            version: "v1",
-            workspaceRoot: "/tmp/project",
-            allowedReadRoots: ["/tmp/project"],
-            allowedWriteRoots: ["/tmp/project"],
-            requiredSourceArtifacts: ["/tmp/project/src/parser.c"],
-            targetArtifacts: ["/tmp/project/src/parser.c"],
-            effectClass: "filesystem_write",
-            verificationMode: "mutation_required",
-            stepKind: "delegated_execution",
-          },
-          maxBudgetHint: "4m",
-          canRunParallel: true,
-        },
-        {
-          name: "docs_branch",
-          objective: "Update the guide",
-          inputContract: "Update docs/AGENC.md only",
-          acceptanceCriteria: ["docs/AGENC.md reflects the parser work"],
-          requiredToolCapabilities: ["system.writeFile"],
-          contextRequirements: [],
-          executionContext: {
-            version: "v1",
-            workspaceRoot: "/tmp/project",
-            allowedReadRoots: ["/tmp/project"],
-            allowedWriteRoots: ["/tmp/project"],
-            requiredSourceArtifacts: ["/tmp/project/docs/AGENC.md"],
-            targetArtifacts: ["/tmp/project/docs/AGENC.md"],
-            effectClass: "filesystem_write",
-            verificationMode: "mutation_required",
-            stepKind: "delegated_execution",
-          },
-          maxBudgetHint: "4m",
-          canRunParallel: true,
-        },
-      ],
-      edges: [],
-      threshold: 0,
-      maxFanoutPerTurn: 4,
-      maxDepth: 4,
-    });
-
-    expect(decision.allowed).toBe(true);
-    expect(decision.stepAdmissions.map((entry) => entry.ownedArtifacts)).toEqual([
-      ["/tmp/project/src/parser.c"],
-      ["/tmp/project/docs/AGENC.md"],
-    ]);
-  });
-
-  it("rejects parent-safe read-only inspection handoffs even when planner context is larger", () => {
-    const decision = assessDelegationAdmission({
-      messageText:
-        "Repair git if needed, then inspect the workspace state and tell me what is there.",
-      totalSteps: 4,
-      synthesisSteps: 1,
-      steps: [
-        {
-          name: "repair_git_and_check_state",
-          objective:
-            "Repair git repository defect if needed by initializing it, then check current workspace state via listing files, git status, and reading README",
-          inputContract:
-            "Return grounded workspace state with file listing, git status, and README summary",
-          acceptanceCriteria: [
-            "Git repository is initialized if missing",
-            "Workspace root entries are listed",
-            "Current git status is reported",
-            "README content is summarized from grounded evidence",
-          ],
-          requiredToolCapabilities: [
-            "system.bash",
-            "system.readFile",
-            "system.listDir",
-          ],
-          contextRequirements: ["repo_context"],
-          executionContext: {
-            version: "v1",
-            workspaceRoot: "/tmp/project",
-            allowedReadRoots: ["/tmp/project"],
-            allowedWriteRoots: ["/tmp/project"],
-            requiredSourceArtifacts: ["/tmp/project/README.md"],
-            effectClass: "read_only",
-            verificationMode: "grounded_read",
-            stepKind: "delegated_review",
-          },
-          maxBudgetHint: "2m",
-          canRunParallel: false,
-        },
-      ],
-      edges: [],
-      threshold: 0,
-      maxFanoutPerTurn: 4,
-      maxDepth: 4,
-    });
-
-    expect(decision.allowed).toBe(false);
-    expect(decision.reason).toBe("single_hop_request");
-    expect(decision.diagnostics).toMatchObject({
-      parentSafeReadOnlyInspection: true,
-    });
-  });
-
   it("keeps explicitly requested read-only delegation admissible", () => {
     const decision = assessDelegationAdmission({
       messageText:
@@ -232,99 +47,74 @@ describe("assessDelegationAdmission", () => {
     expect(decision.shape).toBe("test_triage");
   });
 
-  it("allows user-mandated multi-agent reviewer cardinality to bypass the generic fanout veto", () => {
+  it("denies parallel mutable writers that target the same artifact", () => {
+    const workspaceRoot = "/tmp/project";
+    const sharedArtifact = workspaceRoot + "/PLAN.md";
     const decision = assessDelegationAdmission({
-      messageText:
-        "Read PLAN.md, create 2 agents with different roles to review architecture and QA, then update PLAN.md with the synthesized result.",
+      messageText: "Review PLAN.md in parallel and rewrite the same file twice.",
       totalSteps: 3,
       synthesisSteps: 1,
-      explicitDelegationRequested: true,
       steps: [
         {
-          name: "architecture_review",
-          objective:
-            "Review architecture alignment against the current repo and PLAN.md",
-          inputContract:
-            "Return grounded architecture findings for the final PLAN.md update.",
-          acceptanceCriteria: [
-            "Architecture findings are grounded in the repo and PLAN.md",
-          ],
-          requiredToolCapabilities: ["system.readFile", "system.listDir"],
-          contextRequirements: ["repo_context", "read_plan_md"],
+          name: "review_plan",
+          objective: "Inspect PLAN.md for issues.",
+          acceptanceCriteria: ["Read PLAN.md and report grounded issues."],
+          requiredToolCapabilities: ["system.readFile"],
+          contextRequirements: [],
           executionContext: {
-            version: "v1",
-            workspaceRoot: "/tmp/project",
-            allowedReadRoots: ["/tmp/project"],
-            allowedWriteRoots: ["/tmp/project"],
-            requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
+            workspaceRoot,
+            allowedReadRoots: [workspaceRoot],
+            allowedWriteRoots: [workspaceRoot],
+            requiredSourceArtifacts: [sharedArtifact],
+            targetArtifacts: [sharedArtifact],
             effectClass: "read_only",
-            verificationMode: "grounded_read",
-            stepKind: "delegated_review",
           },
-          maxBudgetHint: "2m",
-          canRunParallel: false,
+          maxBudgetHint: "5m",
+          canRunParallel: true,
         },
         {
-          name: "qa_review",
-          objective:
-            "Review QA and testing gaps against the current repo and PLAN.md",
-          inputContract:
-            "Return grounded QA findings for the final PLAN.md update.",
-          acceptanceCriteria: [
-            "QA findings are grounded in the repo and PLAN.md",
-          ],
-          requiredToolCapabilities: ["system.readFile", "system.listDir"],
-          contextRequirements: ["repo_context", "read_plan_md"],
+          name: "rewrite_plan",
+          objective: "Rewrite PLAN.md with requested edits.",
+          acceptanceCriteria: ["Update PLAN.md directly."],
+          requiredToolCapabilities: ["system.writeFile"],
+          contextRequirements: [],
           executionContext: {
-            version: "v1",
-            workspaceRoot: "/tmp/project",
-            allowedReadRoots: ["/tmp/project"],
-            allowedWriteRoots: ["/tmp/project"],
-            requiredSourceArtifacts: ["/tmp/project/PLAN.md"],
-            effectClass: "read_only",
-            verificationMode: "grounded_read",
-            stepKind: "delegated_review",
+            workspaceRoot,
+            allowedReadRoots: [workspaceRoot],
+            allowedWriteRoots: [workspaceRoot],
+            requiredSourceArtifacts: [sharedArtifact],
+            targetArtifacts: [sharedArtifact],
+            effectClass: "filesystem_write",
           },
-          maxBudgetHint: "2m",
-          canRunParallel: false,
+          maxBudgetHint: "10m",
+          canRunParallel: true,
+        },
+        {
+          name: "second_rewrite",
+          objective: "Apply a second parallel rewrite to PLAN.md.",
+          acceptanceCriteria: ["Also update PLAN.md directly."],
+          requiredToolCapabilities: ["system.writeFile"],
+          contextRequirements: [],
+          executionContext: {
+            workspaceRoot,
+            allowedReadRoots: [workspaceRoot],
+            allowedWriteRoots: [workspaceRoot],
+            requiredSourceArtifacts: [sharedArtifact],
+            targetArtifacts: [sharedArtifact],
+            effectClass: "filesystem_write",
+          },
+          maxBudgetHint: "10m",
+          canRunParallel: true,
         },
       ],
       edges: [],
-      threshold: 0,
-      maxFanoutPerTurn: 1,
+      threshold: 0.5,
+      maxFanoutPerTurn: 4,
       maxDepth: 4,
     });
 
-    expect(decision.allowed).toBe(true);
-    expect(decision.reason).toBe("approved");
-  });
-
-  it("keeps explicit execute_with_agent read-only introspection delegation compatible", () => {
-    const decision = assessDirectDelegationAdmission({
-      input: {
-        objective:
-          "Inspect the local workspace, list files, run git status, and read README before reporting back.",
-        inputContract:
-          "Return a grounded state check for the current repo.",
-        acceptanceCriteria: [
-          "Workspace root entries are listed",
-          "Git status is reported",
-          "README summary is grounded in observed content",
-        ],
-        requiredToolCapabilities: [
-          "system.bash",
-          "system.readFile",
-          "system.listDir",
-        ],
-        timeoutMs: 120_000,
-      },
-      threshold: 0,
-    });
-
-    expect(decision.allowed).toBe(true);
-    expect(decision.reason).toBe("approved");
-    expect(decision.diagnostics).toMatchObject({
-      explicitDelegationCompatibilityOverride: true,
-    });
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).toBe("shared_artifact_writer_inline");
+    expect(decision.diagnostics.sharedPrimaryArtifact).toBe(sharedArtifact);
   });
 });

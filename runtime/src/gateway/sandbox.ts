@@ -65,7 +65,7 @@ export const DEFAULT_MAX_CPU = "1.0";
 export const DEFAULT_DOCKER_TIMEOUT_MS = 30_000;
 
 /** Default timeout for command execution inside the container in ms. */
-export const DEFAULT_EXECUTE_TIMEOUT_MS = 120_000;
+const DEFAULT_EXECUTE_TIMEOUT_MS = 120_000;
 
 /** Default maximum output bytes before truncation (100KB, matching bash tool). */
 export const DEFAULT_MAX_OUTPUT_BYTES = 100 * 1024;

@@ -84,6 +84,7 @@ function createHarness(overrides = {}) {
       calls.push(["handlePlannerTraceEvent", ...args]);
       return true;
     },
+    hydrateMarketTaskBrowser: (value) => calls.push(["hydrateMarketTaskBrowser", value]),
     handleSubagentLifecycleMessage: (...args) => {
       calls.push(["handleSubagentLifecycleMessage", ...args]);
       return true;
@@ -254,6 +255,296 @@ test("dispatchOperatorSurfaceEvent filters manual session lists with the active 
       "teal",
     ],
     ["status", "session filter loaded: 1 match(es)"],
+  ]);
+});
+
+test("dispatchOperatorSurfaceEvent preserves full marketplace task lists in detail metadata", () => {
+  const { api, calls } = createHarness();
+  const tasks = Array.from({ length: 7 }, (_, index) => ({
+    status: index % 2 === 0 ? "open" : "claimed",
+    description: `Task ${index + 1}`,
+    reward: `${index + 1}`,
+  }));
+
+  dispatchOperatorSurfaceEvent(
+    {
+      family: "market",
+      type: "tasks.list",
+      payload: tasks,
+      payloadRecord: {},
+      payloadList: tasks,
+      isSessionScoped: true,
+      message: {},
+    },
+    null,
+    api,
+  );
+
+  assert.deepEqual(calls, [
+    [
+      "hydrateMarketTaskBrowser",
+      {
+        title: "Marketplace Tasks",
+        items: tasks,
+        kind: "tasks",
+      },
+    ],
+    ["status", "market tasks loaded"],
+    [
+      "pushEvent",
+      "market",
+      "Marketplace Tasks",
+      [
+        "1. [open] Task 1 (1 SOL)",
+        "2. [claimed] Task 2 (2 SOL)",
+        "3. [open] Task 3 (3 SOL)",
+        "4. [claimed] Task 4 (4 SOL)",
+        "5. [open] Task 5 (5 SOL)",
+        "... 2 more",
+      ].join("\n"),
+      "teal",
+      {
+        detailBody: [
+          "1. [open] Task 1 (1 SOL)",
+          "2. [claimed] Task 2 (2 SOL)",
+          "3. [open] Task 3 (3 SOL)",
+          "4. [claimed] Task 4 (4 SOL)",
+          "5. [open] Task 5 (5 SOL)",
+          "6. [claimed] Task 6 (6 SOL)",
+          "7. [open] Task 7 (7 SOL)",
+        ].join("\n"),
+      },
+    ],
+  ]);
+});
+
+test("dispatchOperatorSurfaceEvent preserves full marketplace skill lists in detail metadata", () => {
+  const { api, calls } = createHarness();
+  const skills = Array.from({ length: 6 }, (_, index) => ({
+    skillId: `skill-${index + 1}`,
+    skillPda: `skill-pda-${index + 1}`,
+    name: `Skill ${index + 1}`,
+    priceSol: `${index + 1}`,
+    rating: 4.5,
+    downloads: index + 10,
+  }));
+
+  dispatchOperatorSurfaceEvent(
+    {
+      family: "market",
+      type: "market.skills.list",
+      payload: skills,
+      payloadRecord: {},
+      payloadList: skills,
+      isSessionScoped: true,
+      message: {},
+    },
+    null,
+    api,
+  );
+
+  assert.deepEqual(calls, [
+    [
+      "hydrateMarketTaskBrowser",
+      {
+        title: "Marketplace Skills",
+        items: skills,
+        kind: "skills",
+      },
+    ],
+    ["status", "market skills loaded"],
+    [
+      "pushEvent",
+      "market",
+      "Marketplace Skills",
+      [
+        "1. Skill 1 · [active] · 1 SOL · rating 4.5 · downloads 10",
+        "2. Skill 2 · [active] · 2 SOL · rating 4.5 · downloads 11",
+        "3. Skill 3 · [active] · 3 SOL · rating 4.5 · downloads 12",
+        "4. Skill 4 · [active] · 4 SOL · rating 4.5 · downloads 13",
+        "5. Skill 5 · [active] · 5 SOL · rating 4.5 · downloads 14",
+        "... 1 more",
+      ].join("\n"),
+      "teal",
+      {
+        detailBody: [
+          "1. Skill 1 · [active] · 1 SOL · rating 4.5 · downloads 10",
+          "2. Skill 2 · [active] · 2 SOL · rating 4.5 · downloads 11",
+          "3. Skill 3 · [active] · 3 SOL · rating 4.5 · downloads 12",
+          "4. Skill 4 · [active] · 4 SOL · rating 4.5 · downloads 13",
+          "5. Skill 5 · [active] · 5 SOL · rating 4.5 · downloads 14",
+          "6. Skill 6 · [active] · 6 SOL · rating 4.5 · downloads 15",
+        ].join("\n"),
+      },
+    ],
+  ]);
+});
+
+test("dispatchOperatorSurfaceEvent preserves governance lists in browser hydration and detail metadata", () => {
+  const { api, calls } = createHarness();
+  const proposals = [
+    {
+      proposalPda: "proposal-pda-1",
+      status: "active",
+      payloadPreview: "Upgrade validator set",
+      votesFor: "12",
+      votesAgainst: "3",
+    },
+    {
+      proposalPda: "proposal-pda-2",
+      status: "approved",
+      proposalType: "budget",
+      votesFor: "20",
+      votesAgainst: "1",
+    },
+  ];
+
+  dispatchOperatorSurfaceEvent(
+    {
+      family: "market",
+      type: "market.governance.list",
+      payload: proposals,
+      payloadRecord: {},
+      payloadList: proposals,
+      isSessionScoped: true,
+      message: {},
+    },
+    null,
+    api,
+  );
+
+  assert.deepEqual(calls, [
+    [
+      "hydrateMarketTaskBrowser",
+      {
+        title: "Governance Proposals",
+        items: proposals,
+        kind: "governance",
+      },
+    ],
+    ["status", "governance proposals loaded"],
+    [
+      "pushEvent",
+      "market",
+      "Governance Proposals",
+      [
+        "1. [active] Upgrade validator set · for 12 · against 3",
+        "2. [approved] budget · for 20 · against 1",
+      ].join("\n"),
+      "teal",
+      {},
+    ],
+  ]);
+});
+
+test("dispatchOperatorSurfaceEvent preserves dispute lists in browser hydration and detail metadata", () => {
+  const { api, calls } = createHarness();
+  const disputes = [
+    {
+      disputePda: "dispute-pda-1",
+      status: "pending",
+      resolutionType: "refund",
+      votesFor: "2",
+      votesAgainst: "1",
+    },
+    {
+      disputePda: "dispute-pda-2",
+      status: "resolved",
+      resolutionType: "slash",
+      votesFor: "5",
+      votesAgainst: "0",
+    },
+  ];
+
+  dispatchOperatorSurfaceEvent(
+    {
+      family: "market",
+      type: "market.disputes.list",
+      payload: disputes,
+      payloadRecord: {},
+      payloadList: disputes,
+      isSessionScoped: true,
+      message: {},
+    },
+    null,
+    api,
+  );
+
+  assert.deepEqual(calls, [
+    [
+      "hydrateMarketTaskBrowser",
+      {
+        title: "Marketplace Disputes",
+        items: disputes,
+        kind: "disputes",
+      },
+    ],
+    ["status", "market disputes loaded"],
+    [
+      "pushEvent",
+      "market",
+      "Marketplace Disputes",
+      [
+        "1. [pending] refund · dispute-pda-1 · for 2 · against 1",
+        "2. [resolved] slash · dispute-pda-2 · for 5 · against 0",
+      ].join("\n"),
+      "amber",
+      {},
+    ],
+  ]);
+});
+
+test("dispatchOperatorSurfaceEvent hydrates reputation summaries into the inline browser", () => {
+  const { api, calls } = createHarness();
+  const summary = {
+    authority: "agent-authority-1",
+    agentPda: "agent-pda-1",
+    registered: true,
+    effectiveReputation: 98,
+    tasksCompleted: 14,
+    totalEarnedSol: "4.2",
+    stakedAmountSol: "1.5",
+  };
+
+  dispatchOperatorSurfaceEvent(
+    {
+      family: "market",
+      type: "market.reputation.summary",
+      payload: summary,
+      payloadRecord: summary,
+      payloadList: [],
+      isSessionScoped: true,
+      message: {},
+    },
+    null,
+    api,
+  );
+
+  assert.deepEqual(calls, [
+    [
+      "hydrateMarketTaskBrowser",
+      {
+        title: "Reputation Summary",
+        items: [summary],
+        kind: "reputation",
+      },
+    ],
+    ["status", "reputation summary loaded"],
+    [
+      "pushEvent",
+      "market",
+      "Reputation Summary",
+      "1. [registered] agent-authority-1 · effective 98 · tasks 14 · earned 4.2 SOL",
+      "teal",
+      {
+        detailBody: [
+          "authority: agent-authority-1",
+          "agent: agent-pda-1",
+          "scorecard: effective 98 · 14 tasks",
+          "activity: 4.2 SOL earned · 1.5 SOL staked",
+        ].join("\n"),
+      },
+    ],
   ]);
 });
 

@@ -122,7 +122,77 @@ function createParsedTask(overrides: Partial<OnChainTask> = {}): OnChainTask {
     requiredCompletions: 1,
     bump: 255,
     rewardMint: null,
+    protocolFeeBps: 101,
+    minReputation: 0,
+    dependsOn: null,
+    dependencyType: null,
     ...overrides,
+  };
+}
+
+function createSerializedTaskAccountData(
+  overrides: Partial<OnChainTask> = {},
+): Buffer {
+  const task = createParsedTask(overrides);
+  const buffer = Buffer.alloc(382);
+  let offset = 8;
+
+  const writeFixedBytes = (value: Uint8Array, length: number) => {
+    const bytes = Buffer.from(value);
+    bytes.copy(buffer, offset, 0, Math.min(bytes.length, length));
+    offset += length;
+  };
+
+  writeFixedBytes(task.taskId, 32);
+  task.creator.toBuffer().copy(buffer, offset);
+  offset += 32;
+  buffer.writeBigUInt64LE(task.requiredCapabilities, offset);
+  offset += 8;
+  writeFixedBytes(task.description, 64);
+  writeFixedBytes(task.constraintHash, 32);
+  buffer.writeBigUInt64LE(task.rewardAmount, offset);
+  offset += 8;
+  buffer[offset++] = task.maxWorkers;
+  buffer[offset++] = task.currentWorkers;
+  buffer[offset++] = task.status;
+  buffer[offset++] = task.taskType;
+  buffer.writeBigInt64LE(BigInt(task.createdAt), offset);
+  offset += 8;
+  buffer.writeBigInt64LE(BigInt(task.deadline), offset);
+  offset += 8;
+  buffer.writeBigInt64LE(BigInt(task.completedAt), offset);
+  offset += 8;
+  task.escrow.toBuffer().copy(buffer, offset);
+  offset += 32;
+  writeFixedBytes(task.result, 64);
+  buffer[offset++] = task.completions;
+  buffer[offset++] = task.requiredCompletions;
+  buffer[offset++] = task.bump;
+  buffer.writeUInt16LE(task.protocolFeeBps ?? 101, offset);
+  offset += 2;
+  if (task.dependsOn) {
+    task.dependsOn.toBuffer().copy(buffer, offset);
+  }
+  offset += 32;
+  buffer[offset++] = task.dependencyType ?? 0;
+  buffer.writeUInt16LE(task.minReputation ?? 0, offset);
+  offset += 2;
+  if (task.rewardMint) {
+    buffer[offset++] = 1;
+    task.rewardMint.toBuffer().copy(buffer, offset);
+  } else {
+    buffer[offset++] = 0;
+  }
+
+  return buffer;
+}
+
+function createProgramTaskAccount(overrides: Partial<OnChainTask> = {}) {
+  return {
+    pubkey: Keypair.generate().publicKey,
+    account: {
+      data: createSerializedTaskAccountData(overrides),
+    },
   };
 }
 
@@ -150,8 +220,19 @@ function createMockRawAgentRegistration(authority: PublicKey) {
  */
 function createMockProgram() {
   const providerPublicKey = Keypair.generate().publicKey;
+  const getProgramAccounts = vi.fn().mockResolvedValue([]);
+  const getAccountInfo = vi.fn().mockResolvedValue(null);
+  const getTokenAccountBalance = vi.fn();
+  const coderAccountsMemcmp = vi
+    .fn()
+    .mockReturnValue({ offset: 0, bytes: "task-discriminator" });
   const mockProvider = {
     publicKey: providerPublicKey,
+    connection: {
+      getProgramAccounts,
+      getAccountInfo,
+      getTokenAccountBalance,
+    },
   };
 
   const taskFetch = vi.fn();
@@ -243,6 +324,11 @@ function createMockProgram() {
   const program = {
     programId: PROGRAM_ID,
     provider: mockProvider,
+    coder: {
+      accounts: {
+        memcmp: coderAccountsMemcmp,
+      },
+    },
     account: {
       task: { fetch: taskFetch, all: taskAll },
       taskClaim: { fetch: taskClaimFetch, all: taskClaimAll },
@@ -271,6 +357,10 @@ function createMockProgram() {
       taskClaimAll,
       protocolConfigFetch,
       agentRegistrationFetch,
+      getProgramAccounts,
+      getAccountInfo,
+      getTokenAccountBalance,
+      coderAccountsMemcmp,
       claimTaskRpc,
       completeTaskRpc,
       completeTaskPrivateRpc,
@@ -374,16 +464,9 @@ describe("TaskOperations", () => {
 
   describe("fetchAllTasks", () => {
     it("returns all tasks from chain", async () => {
-      const rawTask1 = createMockRawTask({
-        rewardAmount: { toString: () => "1000" },
-      });
-      const rawTask2 = createMockRawTask({
-        rewardAmount: { toString: () => "2000" },
-      });
-
-      mocks.taskAll.mockResolvedValue([
-        { publicKey: Keypair.generate().publicKey, account: rawTask1 },
-        { publicKey: Keypair.generate().publicKey, account: rawTask2 },
+      mocks.getProgramAccounts.mockResolvedValue([
+        createProgramTaskAccount({ rewardAmount: 1_000n }),
+        createProgramTaskAccount({ rewardAmount: 2_000n }),
       ]);
 
       const results = await ops.fetchAllTasks();
@@ -392,10 +475,11 @@ describe("TaskOperations", () => {
       expect(results[0].task.rewardAmount).toBe(1_000n);
       expect(results[1].task.rewardAmount).toBe(2_000n);
       expect(results[0].taskPda).toBeInstanceOf(PublicKey);
+      expect(mocks.coderAccountsMemcmp).toHaveBeenCalledWith("task");
     });
 
     it("returns empty array when no tasks", async () => {
-      mocks.taskAll.mockResolvedValue([]);
+      mocks.getProgramAccounts.mockResolvedValue([]);
 
       const results = await ops.fetchAllTasks();
 
@@ -405,78 +489,81 @@ describe("TaskOperations", () => {
 
   describe("fetchClaimableTasks", () => {
     it("issues two memcmp-filtered queries for Open and InProgress", async () => {
-      const openTask = createMockRawTask({ status: { open: {} } });
-      const inProgressTask = createMockRawTask({ status: { inProgress: {} } });
-
-      const openPda = Keypair.generate().publicKey;
-      const inProgressPda = Keypair.generate().publicKey;
-
-      // Return different results depending on the filter argument
-      mocks.taskAll.mockImplementation((filters?: unknown[]) => {
-        if (!filters || !Array.isArray(filters) || filters.length === 0) {
-          return Promise.resolve([]);
-        }
-        const filter = filters[0] as {
-          memcmp: { offset: number; bytes: string };
-        };
-        if (
-          filter.memcmp.bytes ===
-          utils.bytes.bs58.encode(Buffer.from([OnChainTaskStatus.Open]))
-        ) {
-          return Promise.resolve([{ publicKey: openPda, account: openTask }]);
-        }
-        if (
-          filter.memcmp.bytes ===
-          utils.bytes.bs58.encode(Buffer.from([OnChainTaskStatus.InProgress]))
-        ) {
-          return Promise.resolve([
-            { publicKey: inProgressPda, account: inProgressTask },
-          ]);
-        }
-        return Promise.resolve([]);
+      const openAccount = createProgramTaskAccount({
+        status: OnChainTaskStatus.Open,
       });
+      const inProgressAccount = createProgramTaskAccount({
+        status: OnChainTaskStatus.InProgress,
+      });
+
+      mocks.getProgramAccounts.mockImplementation(
+        (_programId: PublicKey, config?: { filters?: unknown[] }) => {
+          const filters = config?.filters;
+          if (!Array.isArray(filters) || filters.length < 2) {
+            return Promise.resolve([]);
+          }
+          const filter = filters[1] as {
+            memcmp: { offset: number; bytes: string };
+          };
+          if (
+            filter.memcmp.bytes ===
+            utils.bytes.bs58.encode(Buffer.from([OnChainTaskStatus.Open]))
+          ) {
+            return Promise.resolve([openAccount]);
+          }
+          if (
+            filter.memcmp.bytes ===
+            utils.bytes.bs58.encode(Buffer.from([OnChainTaskStatus.InProgress]))
+          ) {
+            return Promise.resolve([inProgressAccount]);
+          }
+          return Promise.resolve([]);
+        },
+      );
 
       const results = await ops.fetchClaimableTasks();
 
       expect(results.length).toBe(2);
       expect(results[0].task.status).toBe(OnChainTaskStatus.Open);
-      expect(results[0].taskPda.equals(openPda)).toBe(true);
+      expect(results[0].taskPda.equals(openAccount.pubkey)).toBe(true);
       expect(results[1].task.status).toBe(OnChainTaskStatus.InProgress);
-      expect(results[1].taskPda.equals(inProgressPda)).toBe(true);
+      expect(results[1].taskPda.equals(inProgressAccount.pubkey)).toBe(true);
 
-      // Verify two calls with correct memcmp filters
-      expect(mocks.taskAll).toHaveBeenCalledTimes(2);
-      expect(mocks.taskAll).toHaveBeenCalledWith([
-        {
-          memcmp: {
-            offset: TASK_STATUS_OFFSET,
-            bytes: utils.bytes.bs58.encode(
-              Buffer.from([OnChainTaskStatus.Open]),
-            ),
-          },
+      expect(mocks.getProgramAccounts).toHaveBeenCalledTimes(2);
+      const firstCall = mocks.getProgramAccounts.mock.calls[0];
+      const secondCall = mocks.getProgramAccounts.mock.calls[1];
+      expect(firstCall[0]).toEqual(PROGRAM_ID);
+      expect(secondCall[0]).toEqual(PROGRAM_ID);
+      expect(firstCall[1].filters[0]).toEqual({
+        memcmp: { offset: 0, bytes: "task-discriminator" },
+      });
+      expect(firstCall[1].filters[1]).toEqual({
+        memcmp: {
+          offset: TASK_STATUS_OFFSET,
+          bytes: utils.bytes.bs58.encode(
+            Buffer.from([OnChainTaskStatus.Open]),
+          ),
         },
-      ]);
-      expect(mocks.taskAll).toHaveBeenCalledWith([
-        {
-          memcmp: {
-            offset: TASK_STATUS_OFFSET,
-            bytes: utils.bytes.bs58.encode(
-              Buffer.from([OnChainTaskStatus.InProgress]),
-            ),
-          },
+      });
+      expect(secondCall[1].filters[0]).toEqual({
+        memcmp: { offset: 0, bytes: "task-discriminator" },
+      });
+      expect(secondCall[1].filters[1]).toEqual({
+        memcmp: {
+          offset: TASK_STATUS_OFFSET,
+          bytes: utils.bytes.bs58.encode(
+            Buffer.from([OnChainTaskStatus.InProgress]),
+          ),
         },
-      ]);
+      });
     });
 
     it("uses correct offset 186 for status field", () => {
-      // 8 (discriminator) + 32 (task_id) + 32 (creator) + 8 (required_capabilities)
-      // + 64 (description) + 32 (constraint_hash) + 8 (reward_amount)
-      // + 1 (max_workers) + 1 (current_workers) = 186
       expect(TASK_STATUS_OFFSET).toBe(186);
     });
 
     it("returns empty array when no claimable tasks exist", async () => {
-      mocks.taskAll.mockResolvedValue([]);
+      mocks.getProgramAccounts.mockResolvedValue([]);
 
       const results = await ops.fetchClaimableTasks();
 
@@ -484,78 +571,64 @@ describe("TaskOperations", () => {
     });
 
     it("falls back to fetchAllTasks on memcmp filter failure", async () => {
-      const openTask = createMockRawTask({ status: { open: {} } });
-      const completedTask = createMockRawTask({ status: { completed: {} } });
-      const openPda = Keypair.generate().publicKey;
-      const completedPda = Keypair.generate().publicKey;
-
-      let callCount = 0;
-      mocks.taskAll.mockImplementation((filters?: unknown[]) => {
-        callCount++;
-        // First two calls (memcmp) fail
-        if (
-          callCount <= 2 &&
-          filters &&
-          Array.isArray(filters) &&
-          filters.length > 0
-        ) {
-          return Promise.reject(
-            new Error("RPC does not support memcmp filters"),
-          );
-        }
-        // Third call (fallback, no filters) returns all tasks
-        return Promise.resolve([
-          { publicKey: openPda, account: openTask },
-          { publicKey: completedPda, account: completedTask },
-        ]);
+      const openAccount = createProgramTaskAccount({
+        status: OnChainTaskStatus.Open,
       });
+      const completedAccount = createProgramTaskAccount({
+        status: OnChainTaskStatus.Completed,
+      });
+
+      mocks.getProgramAccounts.mockImplementation(
+        (_programId: PublicKey, config?: { filters?: unknown[] }) => {
+          const filters = config?.filters;
+          if (Array.isArray(filters) && filters.length > 1) {
+            return Promise.reject(
+              new Error("RPC does not support memcmp filters"),
+            );
+          }
+          return Promise.resolve([openAccount, completedAccount]);
+        },
+      );
 
       const results = await ops.fetchClaimableTasks();
 
-      // Should only return the Open task (fallback filters client-side)
       expect(results.length).toBe(1);
       expect(results[0].task.status).toBe(OnChainTaskStatus.Open);
+      expect(mocks.getProgramAccounts).toHaveBeenCalledTimes(3);
     });
 
     it("combines results from both filtered queries", async () => {
-      const openTasks = Array.from({ length: 3 }, () =>
-        createMockRawTask({ status: { open: {} } }),
+      const openAccounts = Array.from({ length: 3 }, () =>
+        createProgramTaskAccount({ status: OnChainTaskStatus.Open }),
       );
-      const inProgressTasks = Array.from({ length: 2 }, () =>
-        createMockRawTask({ status: { inProgress: {} } }),
+      const inProgressAccounts = Array.from({ length: 2 }, () =>
+        createProgramTaskAccount({ status: OnChainTaskStatus.InProgress }),
       );
 
-      mocks.taskAll.mockImplementation((filters?: unknown[]) => {
-        if (!filters || !Array.isArray(filters) || filters.length === 0) {
+      mocks.getProgramAccounts.mockImplementation(
+        (_programId: PublicKey, config?: { filters?: unknown[] }) => {
+          const filters = config?.filters;
+          if (!Array.isArray(filters) || filters.length < 2) {
+            return Promise.resolve([]);
+          }
+          const filter = filters[1] as {
+            memcmp: { offset: number; bytes: string };
+          };
+          if (
+            filter.memcmp.bytes ===
+            utils.bytes.bs58.encode(Buffer.from([OnChainTaskStatus.Open]))
+          ) {
+            return Promise.resolve(openAccounts);
+          }
+          if (
+            filter.memcmp.bytes ===
+            utils.bytes.bs58.encode(Buffer.from([OnChainTaskStatus.InProgress]))
+          ) {
+            return Promise.resolve(inProgressAccounts);
+          }
           return Promise.resolve([]);
-        }
-        const filter = filters[0] as {
-          memcmp: { offset: number; bytes: string };
-        };
-        if (
-          filter.memcmp.bytes ===
-          utils.bytes.bs58.encode(Buffer.from([OnChainTaskStatus.Open]))
-        ) {
-          return Promise.resolve(
-            openTasks.map((t) => ({
-              publicKey: Keypair.generate().publicKey,
-              account: t,
-            })),
-          );
-        }
-        if (
-          filter.memcmp.bytes ===
-          utils.bytes.bs58.encode(Buffer.from([OnChainTaskStatus.InProgress]))
-        ) {
-          return Promise.resolve(
-            inProgressTasks.map((t) => ({
-              publicKey: Keypair.generate().publicKey,
-              account: t,
-            })),
-          );
-        }
-        return Promise.resolve([]);
-      });
+        },
+      );
 
       const results = await ops.fetchClaimableTasks();
 

@@ -10,7 +10,7 @@ import {
   type StrategicWorkingNote,
 } from "./goal-store.js";
 
-export interface StrategicMemoryConfig extends GoalStoreConfig {}
+interface StrategicMemoryConfig extends GoalStoreConfig {}
 
 export class StrategicMemory {
   readonly goalStore: GoalStore;

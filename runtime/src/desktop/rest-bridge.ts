@@ -259,6 +259,10 @@ export class DesktopRESTBridge {
       return;
     }
 
+    if (this.eventStreamAbort) {
+      this.eventStreamAbort.abort();
+    }
+
     const controller = new AbortController();
     this.eventStreamAbort = controller;
     this.eventStreamLoop = this.runEventStreamLoop(controller).finally(() => {

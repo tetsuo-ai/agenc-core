@@ -5,11 +5,13 @@ export const DEFAULT_INPUT_BATCH_DELAY_MS = 45;
  * Kept in sync with runtime/src/gateway/context-window.ts KNOWN_GROK_MODEL_IDS.
  */
 export const KNOWN_CHAT_MODELS = Object.freeze([
-  "grok-4.20-multi-agent-beta-0309",
-  "grok-4.20-beta-0309-reasoning",
-  "grok-4.20-beta-0309-non-reasoning",
+  "grok-4.20-multi-agent-0309",
+  "grok-4.20-0309-reasoning",
+  "grok-4.20-0309-non-reasoning",
   "grok-4-1-fast-reasoning",
   "grok-4-1-fast-non-reasoning",
+  "grok-4-fast-reasoning",
+  "grok-4-fast-non-reasoning",
   "grok-code-fast-1",
   "grok-4-0709",
   "grok-3",
@@ -332,6 +334,11 @@ const REMOTE_TOOL_COMMANDS = Object.freeze([
     name: "/desktop",
     usage: "/desktop <start|stop|status|vnc|list|attach>",
     description: "Manage remote desktop/browser sandboxes from the watch TUI.",
+  }),
+  Object.freeze({
+    name: "/market",
+    usage: "/market <tasks|skills|governance|disputes|reputation> ...",
+    description: "Inspect and mutate marketplace tasks, skills, governance, disputes, and reputation from the main watch TUI.",
   }),
 ]);
 

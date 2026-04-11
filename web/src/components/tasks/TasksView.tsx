@@ -13,6 +13,8 @@ const FILTERS = [
   { label: 'cancelled', value: 'cancelled' },
 ] as const;
 
+type TaskScope = 'yours' | 'all';
+
 interface TasksViewProps {
   tasks: TaskInfo[];
   onRefresh: () => void;
@@ -33,15 +35,35 @@ export function TasksView({
   onCancel,
 }: TasksViewProps) {
   const [filter, setFilter] = useState('');
+  const [scope, setScope] = useState<TaskScope>('yours');
 
   useEffect(() => {
     onRefresh();
   }, [onRefresh]);
 
+  const hasViewerScope = useMemo(
+    () => tasks.some((task) => Boolean(task.viewerAgentPda)),
+    [tasks],
+  );
+
+  const yoursCount = useMemo(
+    () => tasks.filter((task) => task.ownedBySigner || task.assignedToSigner).length,
+    [tasks],
+  );
+
+  const effectiveScope: TaskScope = hasViewerScope ? scope : 'all';
+
   const filtered = useMemo(() => {
-    if (!filter) return tasks;
-    return tasks.filter((task) => task.status.toLowerCase() === filter);
-  }, [tasks, filter]);
+    const scopedTasks = effectiveScope === 'yours'
+      ? tasks.filter((task) => task.ownedBySigner || task.assignedToSigner)
+      : tasks;
+
+    if (!filter) {
+      return scopedTasks;
+    }
+
+    return scopedTasks.filter((task) => task.status.toLowerCase() === filter);
+  }, [tasks, filter, effectiveScope]);
 
   const counts = useMemo(() => {
     const map: Record<string, number> = {};
@@ -51,8 +73,6 @@ export function TasksView({
     }
     return map;
   }, [tasks]);
-
-  const filterLabel = FILTERS.find((item) => item.value === filter)?.label ?? 'all';
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-bbs-black font-mono text-bbs-lightgray animate-chat-enter">
@@ -89,7 +109,37 @@ export function TasksView({
       {tasks.length > 0 && (
         <div className="border-b border-bbs-border bg-bbs-dark/80 px-4 py-3 md:px-6">
           <div className="flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.14em]">
-            <span className="mr-2 text-bbs-gray">filter:</span>
+            {hasViewerScope && (
+              <>
+                <span className="mr-2 text-bbs-gray">scope:</span>
+                <button
+                  type="button"
+                  onClick={() => setScope('yours')}
+                  className={[
+                    'border px-3 py-2 transition-colors',
+                    effectiveScope === 'yours'
+                      ? 'border-bbs-purple-dim bg-bbs-surface text-bbs-white'
+                      : 'border-bbs-border bg-bbs-dark text-bbs-gray hover:border-bbs-purple-dim hover:text-bbs-white',
+                  ].join(' ')}
+                >
+                  [yours:{yoursCount}]
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setScope('all')}
+                  className={[
+                    'border px-3 py-2 transition-colors',
+                    effectiveScope === 'all'
+                      ? 'border-bbs-purple-dim bg-bbs-surface text-bbs-white'
+                      : 'border-bbs-border bg-bbs-dark text-bbs-gray hover:border-bbs-purple-dim hover:text-bbs-white',
+                  ].join(' ')}
+                >
+                  [all:{tasks.length}]
+                </button>
+                <span className="ml-4 mr-2 text-bbs-gray">filter:</span>
+              </>
+            )}
+            {!hasViewerScope && <span className="mr-2 text-bbs-gray">filter:</span>}
             {FILTERS.map((item) => {
               const count = item.value ? (counts[item.value] ?? 0) : tasks.length;
               const active = filter === item.value;
@@ -121,7 +171,7 @@ export function TasksView({
 
           {filtered.length === 0 ? (
             <div className="animate-list-item border border-dashed border-bbs-border bg-bbs-dark px-5 py-8 text-center text-xs uppercase tracking-[0.16em] text-bbs-gray">
-              [no {filterLabel} tasks]
+              [no matching tasks]
             </div>
           ) : (
             filtered.map((task, index) => (

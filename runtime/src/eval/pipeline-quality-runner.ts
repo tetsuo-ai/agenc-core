@@ -16,6 +16,7 @@ import {
   ChatExecutor,
   type ChatExecutorConfig,
 } from "../llm/chat-executor.js";
+import { executeChatToLegacyResult } from "../llm/execute-chat.js";
 import { LLMMessageValidationError } from "../llm/errors.js";
 import {
   validateToolTurnSequence,
@@ -52,7 +53,6 @@ import {
   type EconomicsScenarioRecord,
 } from "./economics-scorecard.js";
 import { buildRuntimeEconomicsPolicy } from "../llm/run-budget.js";
-import { assessDelegationDecision } from "../llm/delegation-decision.js";
 
 const DEFAULT_CONTEXT_BENCHMARK_TURNS = 24;
 const DEFAULT_DESKTOP_RUNS = 1;
@@ -279,7 +279,7 @@ async function runEconomicsBenchmark(): Promise<ReturnType<typeof computeEconomi
       maxToolRounds: 3,
       economicsPolicy: tinyExecutorPolicy,
     });
-    const result = await executor.execute({
+    const result = await executeChatToLegacyResult(executor, {
       message: createBenchmarkMessage("stay within runtime budget", "economics-budget", 0),
       history: [],
       systemPrompt: "Budget test",
@@ -296,80 +296,6 @@ async function runEconomicsBenchmark(): Promise<ReturnType<typeof computeEconomi
       degradedProviderRerouteApplicable: false,
       reroutedUnderDegradedProvider: false,
       spendUnits: result.economicsSummary?.totalSpendUnits ?? 0,
-      latencyMs: 1,
-    });
-  }
-
-  {
-    const decision = assessDelegationDecision({
-      messageText:
-        "Explore the repo in parallel and produce a follow-up patch plan.",
-      plannerConfidence: 0.94,
-      complexityScore: 8,
-      totalSteps: 3,
-      synthesisSteps: 1,
-      edges: [],
-      subagentSteps: [
-        {
-          name: "explore_repo",
-          objective: "Explore the repository and collect findings.",
-          acceptanceCriteria: ["Read PLAN.md", "Return grounded findings"],
-          requiredToolCapabilities: ["system.readFile", "system.listDir"],
-          contextRequirements: [],
-          executionContext: {
-            workspaceRoot: "/workspace",
-            effectClass: "read_only",
-            verificationMode: "grounded_read",
-            requiredSourceArtifacts: ["PLAN.md"],
-            targetArtifacts: [],
-            inputArtifacts: [],
-            allowedReadRoots: ["/workspace"],
-            allowedWriteRoots: [],
-          },
-          maxBudgetHint: "15m",
-          canRunParallel: true,
-        },
-      ],
-      config: {
-        enabled: true,
-        scoreThreshold: 0,
-        maxFanoutPerTurn: 4,
-        maxDepth: 2,
-      },
-      budgetSnapshot: {
-        mode: "enforce",
-        childBudget: {
-          runClass: "child",
-          tokenCeiling: 4_000,
-          latencyCeilingMs: 120_000,
-          spendCeilingUnits: 3,
-          downgradeTokenRatio: 0.7,
-          downgradeSpendRatio: 0.7,
-          downgradeLatencyRatio: 0.7,
-        },
-        remainingTokens: 200,
-        remainingLatencyMs: 20_000,
-        remainingSpendUnits: 0.1,
-        parentTokenRatio: 0.95,
-        parentLatencyRatio: 0.2,
-        parentSpendRatio: 0.95,
-        childFanoutSoftCap: 1,
-        negativeDelegationMarginUnits: 0.3,
-        negativeDelegationMarginTokens: 128,
-      },
-    });
-    scenarios.push({
-      scenarioId: "negative_economics_delegation_denial",
-      passed: decision.reason === "negative_economics" && !decision.shouldDelegate,
-      tokenCeilingRespected: true,
-      latencyCeilingRespected: true,
-      spendCeilingRespected: true,
-      negativeEconomicsApplicable: true,
-      delegationDeniedOnNegativeEconomics:
-        decision.reason === "negative_economics" && !decision.shouldDelegate,
-      degradedProviderRerouteApplicable: false,
-      reroutedUnderDegradedProvider: false,
-      spendUnits: 0.1,
       latencyMs: 1,
     });
   }
@@ -395,13 +321,13 @@ async function runEconomicsBenchmark(): Promise<ReturnType<typeof computeEconomi
         mode: "enforce",
       }),
     });
-    await executor.execute({
+    await executeChatToLegacyResult(executor, {
       message: createBenchmarkMessage("trip provider cooldown", "economics-reroute", 0),
       history: [],
       systemPrompt: "Reroute test",
       sessionId: "economics-reroute",
     });
-    const rerouted = await executor.execute({
+    const rerouted = await executeChatToLegacyResult(executor, {
       message: createBenchmarkMessage("run on healthy provider", "economics-reroute", 1),
       history: [],
       systemPrompt: "Reroute test",
@@ -484,7 +410,7 @@ async function runContextAndTokenBenchmark(
     const content =
       `Phase 9 context turn ${turn}: keep PLAN.md, src/main.c, parser.test.ts, ` +
       "and the active implementation notes aligned; respond with a compact ack.";
-    const result = await executor.execute({
+    const result = await executeChatToLegacyResult(executor, {
       message: createBenchmarkMessage(content, sessionId, turn),
       history: session.history,
       systemPrompt,

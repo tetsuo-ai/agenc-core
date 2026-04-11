@@ -10,13 +10,13 @@
 
 import { SystemProgram } from "@solana/web3.js";
 import type { PublicKey } from "@solana/web3.js";
-import anchor, { type Program } from "@coral-xyz/anchor";
+import { BN, type Program } from "@coral-xyz/anchor";
 import type { AgencCoordination } from "../types/agenc_coordination.js";
 import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";
 import { sleep } from "../utils/async.js";
 import { generateAgentId, toAnchorBytes } from "../utils/encoding.js";
-import { findAgentPda, findProtocolPda, findAuthorityRateLimitPda } from "../agent/pda.js";
+import { findAgentPda, findAuthorityRateLimitPda, findProtocolPda } from "../agent/pda.js";
 import { findTaskPda, findEscrowPda } from "../task/pda.js";
 import { isAnchorError, AnchorErrorCodes } from "../types/errors.js";
 import { buildCreateTaskTokenAccounts } from "../utils/token.js";
@@ -32,7 +32,7 @@ const DEFAULT_MAX_RETRIES = 3;
 /** Rate limit cooldown wait in ms (slightly over 1s to account for clock skew) */
 const RATE_LIMIT_WAIT_MS = 1500;
 
-export interface DAGSubmitterConfig {
+interface DAGSubmitterConfig {
   program: Program<AgencCoordination>;
   agentId: Uint8Array;
   logger?: Logger;
@@ -54,6 +54,7 @@ export class DAGSubmitter {
   private readonly retryDelayMs: number;
   private readonly agentPda;
   private readonly protocolPda;
+  private readonly authorityRateLimitPda;
 
   constructor(config: DAGSubmitterConfig) {
     this.program = config.program;
@@ -61,8 +62,16 @@ export class DAGSubmitter {
     this.logger = config.logger ?? silentLogger;
     this.maxRetries = config.maxRetries ?? DEFAULT_MAX_RETRIES;
     this.retryDelayMs = config.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
+    const authority = this.program.provider.publicKey;
+    if (!authority) {
+      throw new Error("Signer-backed program required for workflow submission");
+    }
     this.agentPda = findAgentPda(this.agentId, this.program.programId);
     this.protocolPda = findProtocolPda(this.program.programId);
+    this.authorityRateLimitPda = findAuthorityRateLimitPda(
+      authority,
+      this.program.programId,
+    );
   }
 
   /**
@@ -227,19 +236,18 @@ export class DAGSubmitter {
       escrowPda,
       creator,
     );
-    const authorityRateLimitPda = findAuthorityRateLimitPda(
-      creator,
-      this.program.programId,
-    );
 
+    // The runtime patches local IDL account layouts ahead of the published
+    // protocol typings, so these builders need a narrow escape hatch until the
+    // package catches up.
     return (this.program.methods as any)
       .createTask(
         toAnchorBytes(taskId),
-        new anchor.BN(template.requiredCapabilities.toString()),
+        new BN(template.requiredCapabilities.toString()),
         toAnchorBytes(template.description),
-        new anchor.BN(template.rewardAmount.toString()),
+        new BN(template.rewardAmount.toString()),
         template.maxWorkers,
-        new anchor.BN(template.deadline),
+        new BN(template.deadline),
         template.taskType,
         constraintHash,
         template.minReputation ?? 0,
@@ -250,7 +258,7 @@ export class DAGSubmitter {
         escrow: escrowPda,
         protocolConfig: this.protocolPda,
         creatorAgent: this.agentPda,
-        authorityRateLimit: authorityRateLimitPda,
+        authorityRateLimit: this.authorityRateLimitPda,
         authority: creator,
         creator,
         systemProgram: SystemProgram.programId,
@@ -281,19 +289,18 @@ export class DAGSubmitter {
       escrowPda,
       creator,
     );
-    const authorityRateLimitPda = findAuthorityRateLimitPda(
-      creator,
-      this.program.programId,
-    );
 
+    // The runtime patches local IDL account layouts ahead of the published
+    // protocol typings, so these builders need a narrow escape hatch until the
+    // package catches up.
     return (this.program.methods as any)
       .createDependentTask(
         toAnchorBytes(taskId),
-        new anchor.BN(template.requiredCapabilities.toString()),
+        new BN(template.requiredCapabilities.toString()),
         toAnchorBytes(template.description),
-        new anchor.BN(template.rewardAmount.toString()),
+        new BN(template.rewardAmount.toString()),
         template.maxWorkers,
-        new anchor.BN(template.deadline),
+        new BN(template.deadline),
         template.taskType,
         constraintHash,
         dependencyType,
@@ -306,7 +313,7 @@ export class DAGSubmitter {
         parentTask: parentTaskPda,
         protocolConfig: this.protocolPda,
         creatorAgent: this.agentPda,
-        authorityRateLimit: authorityRateLimitPda,
+        authorityRateLimit: this.authorityRateLimitPda,
         authority: creator,
         creator,
         systemProgram: SystemProgram.programId,

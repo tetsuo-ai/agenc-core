@@ -16,35 +16,12 @@ import {
   type SchemaMigrationResult,
 } from "../workflow/schema-version.js";
 
-export const STRATEGIC_MEMORY_SCHEMA_VERSION = "v1" as const;
+const STRATEGIC_MEMORY_SCHEMA_VERSION = "v1" as const;
 
 export function isCompatibleBackgroundRunStateVersion(
   value: unknown,
 ): value is 1 | typeof AGENT_RUN_SCHEMA_VERSION {
   return value === 1 || value === AGENT_RUN_SCHEMA_VERSION;
-}
-
-export function migrateBackgroundRunStateVersion(
-  value: unknown,
-  schemaName: string,
-): SchemaMigrationResult<typeof AGENT_RUN_SCHEMA_VERSION> {
-  if (!isCompatibleBackgroundRunStateVersion(value)) {
-    throw new RuntimeSchemaCompatibilityError({
-      schemaName,
-      receivedVersion:
-        typeof value === "number" || typeof value === "string"
-          ? value
-          : value === undefined
-            ? "missing"
-            : "invalid",
-      supportedVersions: [1, AGENT_RUN_SCHEMA_VERSION],
-    });
-  }
-  return createSchemaMigrationResult({
-    value: AGENT_RUN_SCHEMA_VERSION,
-    fromVersion: value,
-    toVersion: AGENT_RUN_SCHEMA_VERSION,
-  });
 }
 
 export function migrateStrategicMemoryState(

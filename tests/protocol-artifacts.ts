@@ -36,3 +36,26 @@ export function loadProtocolIdl(options?: {
     );
   }
 }
+
+/**
+ * Returns the local Anchor target IDL and fails closed when it is unavailable.
+ *
+ * Use this for test harnesses that boot a local workspace binary in LiteSVM.
+ * Those harnesses must load the IDL generated from the same local build so the
+ * client program id and instruction schema stay aligned with the loaded `.so`.
+ */
+export function loadLocalProtocolIdl(): typeof AGENC_COORDINATION_IDL {
+  const localTargetIdlPath = resolveProtocolTargetIdlPath();
+
+  try {
+    return JSON.parse(
+      readFileSync(localTargetIdlPath, "utf8"),
+    ) as typeof AGENC_COORDINATION_IDL;
+  } catch (error) {
+    throw new Error(
+      `Local protocol target IDL is unavailable at ${localTargetIdlPath}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}

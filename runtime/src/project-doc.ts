@@ -14,8 +14,6 @@ import { access, lstat, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, resolve as resolvePath } from "node:path";
 
 export const REPOSITORY_GUIDELINES_FILENAME = "AGENC.md";
-export const PROJECT_GUIDE_FILE_NAME = REPOSITORY_GUIDELINES_FILENAME;
-
 const TOP_LEVEL_EXCLUDES = new Set([
   ".git",
   "node_modules",
@@ -75,24 +73,24 @@ const KNOWN_MANIFESTS = [
 type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
 type CommitStyle = "conventional" | "generic" | "unknown";
 
-export interface RepositoryCommandHint {
+interface RepositoryCommandHint {
   readonly command: string;
   readonly description: string;
 }
 
-export interface MarkdownSection {
+interface MarkdownSection {
   readonly level: number;
   readonly heading: string;
   readonly body: string;
 }
 
-export interface RepositoryDocSource {
+interface RepositoryDocSource {
   readonly path: string;
   readonly content: string;
   readonly sections: readonly MarkdownSection[];
 }
 
-export interface RepositoryPackageSurface {
+interface RepositoryPackageSurface {
   readonly path: string;
   readonly manifest: "package.json" | "Cargo.toml";
   readonly name?: string;
@@ -100,7 +98,7 @@ export interface RepositoryPackageSurface {
   readonly scripts: readonly string[];
 }
 
-export interface RepositorySnapshot {
+interface RepositorySnapshot {
   readonly rootPath: string;
   readonly topDirectories: readonly string[];
   readonly topFiles: readonly string[];
@@ -118,12 +116,12 @@ export interface RepositorySnapshot {
   readonly packageSurfaces?: readonly RepositoryPackageSurface[];
 }
 
-export interface InitRepositoryGuidelinesOptions {
+interface InitRepositoryGuidelinesOptions {
   readonly rootPath: string;
   readonly force?: boolean;
 }
 
-export interface InitRepositoryGuidelinesResult {
+interface InitRepositoryGuidelinesResult {
   readonly status: "created" | "overwritten" | "skipped";
   readonly rootPath: string;
   readonly outputPath: string;
@@ -131,13 +129,13 @@ export interface InitRepositoryGuidelinesResult {
   readonly snapshot: RepositorySnapshot;
 }
 
-export type ProjectGuideSnapshot = RepositorySnapshot;
+type ProjectGuideSnapshot = RepositorySnapshot;
 
-export interface WriteProjectGuideOptions {
+interface WriteProjectGuideOptions {
   readonly force?: boolean;
 }
 
-export interface WriteProjectGuideResult {
+interface WriteProjectGuideResult {
   readonly filePath: string;
   readonly status: "created" | "updated" | "skipped";
   readonly content: string;
@@ -948,11 +946,7 @@ export function buildRepositoryGuidelines(snapshot: RepositorySnapshot): string 
   );
 }
 
-export function renderProjectGuide(snapshot: ProjectGuideSnapshot): string {
-  return buildRepositoryGuidelines(snapshot);
-}
-
-export async function initRepositoryGuidelines(
+async function initRepositoryGuidelines(
   options: InitRepositoryGuidelinesOptions,
   deps: InspectRepositoryDeps = {},
 ): Promise<InitRepositoryGuidelinesResult> {
@@ -981,13 +975,6 @@ export async function initRepositoryGuidelines(
     content,
     snapshot,
   };
-}
-
-export async function inspectProjectGuideWorkspace(
-  rootPath: string,
-  deps: InspectRepositoryDeps = {},
-): Promise<ProjectGuideSnapshot> {
-  return inspectRepository(rootPath, deps);
 }
 
 export async function writeProjectGuide(

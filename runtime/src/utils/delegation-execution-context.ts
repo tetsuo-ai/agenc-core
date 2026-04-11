@@ -12,7 +12,6 @@ import {
   type WorkflowStepRole,
 } from "../workflow/execution-envelope.js";
 import type { ImplementationCompletionContract } from "../workflow/completion-contract.js";
-import { migrateExecutionEnvelope } from "../workflow/migrations.js";
 import { buildCanonicalDelegatedFilesystemScope } from "../workflow/delegated-filesystem-scope.js";
 import {
   isConcreteExecutableEnvelopeRoot,
@@ -58,7 +57,7 @@ export function sanitizeDelegationContextRequirements(
   return sanitized;
 }
 
-export function extractLegacyDelegatedWorkspaceRoot(
+function extractLegacyDelegatedWorkspaceRoot(
   contextRequirements?: readonly (string | undefined | null)[],
 ): string | undefined {
   return (contextRequirements ?? [])
@@ -97,12 +96,6 @@ function legacyWorkspaceRootNeedsConcreteFallback(path: string): boolean {
     trimmed.startsWith("~") ||
     /^[a-zA-Z]:[\\/]/.test(trimmed)
   );
-}
-
-export function coerceDelegationExecutionContext(
-  value: unknown,
-): DelegationExecutionContext | undefined {
-  return migrateExecutionEnvelope(value).value;
 }
 
 export function buildDelegationExecutionContext(params: {
@@ -224,7 +217,7 @@ export function buildLegacyDelegationExecutionContext(params: {
   });
 }
 
-export function canonicalizeDelegationExecutionContext(
+function canonicalizeDelegationExecutionContext(
   context: DelegationExecutionContext | undefined,
   params: {
     readonly inheritedWorkspaceRoot?: string | null;
@@ -254,11 +247,11 @@ export function canonicalizeDelegationExecutionContext(
   });
 }
 
-export type DelegatedExecutionEnvelopeDerivationSource =
+type DelegatedExecutionEnvelopeDerivationSource =
   | "direct_live_path"
   | "internal_planner_path";
 
-export type DelegatedExecutionEnvelopeDerivationIssueCode =
+type DelegatedExecutionEnvelopeDerivationIssueCode =
   | "missing_parent_workspace_authority"
   | "workspace_root_outside_parent_workspace"
   | "read_root_outside_parent_workspace"
@@ -267,7 +260,7 @@ export type DelegatedExecutionEnvelopeDerivationIssueCode =
   | "required_source_outside_parent_workspace"
   | "target_outside_parent_workspace";
 
-export interface DelegatedExecutionEnvelopeDerivationIssue {
+interface DelegatedExecutionEnvelopeDerivationIssue {
   readonly code: DelegatedExecutionEnvelopeDerivationIssueCode;
   readonly message: string;
   readonly path?: string;
@@ -318,7 +311,7 @@ function normalizeParentRoots(
   return filtered.length > 0 ? filtered : [parentWorkspaceRoot];
 }
 
-function normalizeRequestedReadRoots(
+function normalizeRequestedRoots(
   roots: readonly string[] | undefined,
   childWorkspaceRoot: string,
 ): readonly string[] | undefined {
@@ -391,24 +384,29 @@ export function deriveDelegatedExecutionEnvelopeFromParent(params: {
   const requestedWorkspaceRoot = normalizeWorkspaceRoot(
     requestedContext?.workspaceRoot,
   );
-  if (
+  // When the planner emits a workspace root outside the parent's authority,
+  // correct it to the parent workspace root instead of hard-failing.
+  // The model's intent is to work in the session workspace; it sometimes
+  // hallucinates a different path from its context window.
+  const workspaceRootCorrected = Boolean(
     requestedWorkspaceRoot &&
-    !isPathWithinRoot(requestedWorkspaceRoot, parentWorkspaceRoot)
-  ) {
-    return buildDerivationFailure({
-      code: "workspace_root_outside_parent_workspace",
-      message:
-        `Requested delegated workspace root "${requestedWorkspaceRoot}" is outside the trusted parent workspace root "${parentWorkspaceRoot}".`,
-      path: requestedWorkspaceRoot,
-    });
-  }
-
-  const childWorkspaceRoot = requestedWorkspaceRoot ?? parentWorkspaceRoot;
-
-  const requestedReadRoots = normalizeRequestedReadRoots(
-    requestedContext?.allowedReadRoots,
-    childWorkspaceRoot,
+    !isPathWithinRoot(requestedWorkspaceRoot, parentWorkspaceRoot),
   );
+  const childWorkspaceRoot =
+    requestedWorkspaceRoot && !workspaceRootCorrected
+      ? requestedWorkspaceRoot
+      : parentWorkspaceRoot;
+
+  // When the workspace root was corrected, the requested read/write roots and
+  // artifacts were specified against the hallucinated workspace path.  They are
+  // no longer meaningful relative to the corrected workspace, so we discard
+  // them and let the derivation fall through to parent defaults.
+  const requestedReadRoots = workspaceRootCorrected
+    ? undefined
+    : normalizeRequestedRoots(
+        requestedContext?.allowedReadRoots,
+        childWorkspaceRoot,
+      );
   if (
     requestedReadRoots?.some(
       (path) =>
@@ -429,10 +427,12 @@ export function deriveDelegatedExecutionEnvelopeFromParent(params: {
     });
   }
 
-  const requestedWriteRoots = normalizeRequestedReadRoots(
-    requestedContext?.allowedWriteRoots,
-    childWorkspaceRoot,
-  );
+  const requestedWriteRoots = workspaceRootCorrected
+    ? undefined
+    : normalizeRequestedRoots(
+        requestedContext?.allowedWriteRoots,
+        childWorkspaceRoot,
+      );
   if (
     requestedWriteRoots?.some(
       (path) =>
@@ -453,10 +453,12 @@ export function deriveDelegatedExecutionEnvelopeFromParent(params: {
     });
   }
 
-  const inputArtifacts = normalizeRequestedArtifacts(
-    requestedContext?.inputArtifacts,
-    childWorkspaceRoot,
-  );
+  const inputArtifacts = workspaceRootCorrected
+    ? undefined
+    : normalizeRequestedArtifacts(
+        requestedContext?.inputArtifacts,
+        childWorkspaceRoot,
+      );
   if (
     inputArtifacts?.some(
       (path) =>
@@ -477,10 +479,12 @@ export function deriveDelegatedExecutionEnvelopeFromParent(params: {
     });
   }
 
-  const requiredSourceArtifacts = normalizeRequestedArtifacts(
-    requestedContext?.requiredSourceArtifacts ?? requestedContext?.inputArtifacts,
-    childWorkspaceRoot,
-  );
+  const requiredSourceArtifacts = workspaceRootCorrected
+    ? undefined
+    : normalizeRequestedArtifacts(
+        requestedContext?.requiredSourceArtifacts ?? requestedContext?.inputArtifacts,
+        childWorkspaceRoot,
+      );
   if (
     requiredSourceArtifacts?.some(
       (path) =>
@@ -501,10 +505,12 @@ export function deriveDelegatedExecutionEnvelopeFromParent(params: {
     });
   }
 
-  const targetArtifacts = normalizeRequestedArtifacts(
-    requestedContext?.targetArtifacts,
-    childWorkspaceRoot,
-  );
+  const targetArtifacts = workspaceRootCorrected
+    ? undefined
+    : normalizeRequestedArtifacts(
+        requestedContext?.targetArtifacts,
+        childWorkspaceRoot,
+      );
   if (
     targetArtifacts?.some(
       (path) =>
@@ -560,6 +566,9 @@ export function deriveDelegatedExecutionEnvelopeFromParent(params: {
   return {
     ok: true,
     executionContext,
-    workingDirectory: executionContext?.workspaceRoot?.trim() || undefined,
+    // Audit S1.6: normalize so the working directory passed to spawned
+    // child processes uses path.resolve + ~ expansion, matching the
+    // upstream parent workspace root used elsewhere in this file.
+    workingDirectory: normalizeWorkspaceRoot(executionContext?.workspaceRoot),
   };
 }

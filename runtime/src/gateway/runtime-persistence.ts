@@ -7,19 +7,19 @@ const DEFAULT_REPLAY_DB_FILENAME = "replay-events.sqlite";
 const DEFAULT_TASK_CHECKPOINT_DB_FILENAME = "task-checkpoints.sqlite";
 const DEFAULT_TASK_DLQ_DB_FILENAME = "task-dlq.sqlite";
 
-export interface RuntimePersistencePaths {
+interface RuntimePersistencePaths {
   readonly rootDir: string;
   readonly memoryDbPath: string;
   readonly replayDbPath: string;
 }
 
-export interface TaskExecutorPersistencePaths extends RuntimePersistencePaths {
+interface TaskExecutorPersistencePaths extends RuntimePersistencePaths {
   readonly taskRootDir: string;
   readonly checkpointDbPath: string;
   readonly deadLetterDbPath: string;
 }
 
-export type TaskExecutorPersistenceMode = "memory" | "sqlite";
+type TaskExecutorPersistenceMode = "memory" | "sqlite";
 
 export interface TaskExecutorPersistenceConfig {
   readonly mode?: TaskExecutorPersistenceMode;

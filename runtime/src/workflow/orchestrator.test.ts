@@ -33,6 +33,7 @@ import type {
   WorkflowState,
 } from "./types.js";
 import { RuntimeErrorCodes } from "../types/errors.js";
+import { findAuthorityRateLimitPda } from "../agent/pda.js";
 
 // ============================================================================
 // Test Helpers
@@ -472,6 +473,10 @@ describe("DAGSubmitter", () => {
 
     expect(methodChain.accountsPartial).toHaveBeenCalledWith(
       expect.objectContaining({
+        authorityRateLimit: findAuthorityRateLimitPda(
+          program.provider.publicKey,
+          program.programId,
+        ),
         authority: program.provider.publicKey,
         creator: program.provider.publicKey,
       }),

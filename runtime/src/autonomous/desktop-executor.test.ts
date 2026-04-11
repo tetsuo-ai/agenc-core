@@ -486,7 +486,7 @@ describe("DesktopExecutor", () => {
         }),
       );
 
-      const result = await executor.executeGoal("Doomed task", "user");
+      const result = await executor.executeGoal("Stuck task", "user");
 
       expect(result.status).toBe("stuck");
       expect(result.success).toBe(false);
@@ -945,6 +945,9 @@ describe("DesktopExecutor", () => {
       expect(second.summary).toContain("Another goal is already executing");
 
       // Clean up: resolve the first promise
+      await vi.waitFor(() => {
+        expect(typeof resolveFirst).toBe("function");
+      });
       resolveFirst({
         content: "[]",
         provider: "mock",

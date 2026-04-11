@@ -83,7 +83,8 @@ function isCompletedTraceEventName(eventName: string): boolean {
     eventName.endsWith(".chat.response") ||
     eventName.endsWith(".command.handled") ||
     eventName === "background_run.cycle.working_applied" ||
-    eventName === "background_run.cycle.terminal_applied"
+    eventName === "background_run.cycle.terminal_applied" ||
+    eventName === "trace.completed"
   );
 }
 
@@ -94,7 +95,7 @@ function isTerminalTraceEventName(eventName: string): boolean {
   );
 }
 
-export interface SqliteObservabilityStoreConfig {
+interface SqliteObservabilityStoreConfig {
   readonly dbPath?: string;
   readonly daemonLogPath?: string;
 }
@@ -431,6 +432,35 @@ export class SqliteObservabilityStore {
       path: basename(this.daemonLogPath),
       lines: filtered.slice(-lineLimit),
     };
+  }
+
+  async completeTrace(traceId: string, status: string): Promise<void> {
+    const db = await this.getDb();
+    const now = Date.now();
+    db.prepare(`
+      INSERT OR REPLACE INTO observability_events (
+        id, event_name, level, trace_id, timestamp_ms, routing_miss, payload_preview
+      ) VALUES (
+        @id, @eventName, @level, @traceId, @timestampMs, @routingMiss, @payloadPreview
+      )
+    `).run({
+      id: `${traceId}:trace.completed:${now}`,
+      eventName: "trace.completed",
+      level: "info",
+      traceId,
+      timestampMs: now,
+      routingMiss: 0,
+      payloadPreview: JSON.stringify({ status }),
+    });
+  }
+
+  async pruneOldTraces(maxAgeDays: number = 7): Promise<number> {
+    const db = await this.getDb();
+    const cutoffMs = Date.now() - maxAgeDays * 86_400_000;
+    const result = db.prepare(`
+      DELETE FROM observability_events WHERE timestamp_ms < @cutoffMs
+    `).run({ cutoffMs });
+    return result.changes;
   }
 
   async close(): Promise<void> {

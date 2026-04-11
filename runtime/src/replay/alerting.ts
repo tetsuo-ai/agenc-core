@@ -56,11 +56,11 @@ export interface ReplayAlertAdapter {
   emit(alert: ReplayAnomalyAlert): Promise<void> | void;
 }
 
-export interface ReplayLoggerAdapterConfig {
+interface ReplayLoggerAdapterConfig {
   enabled?: boolean;
 }
 
-export interface ReplayWebhookAdapterConfig {
+interface ReplayWebhookAdapterConfig {
   url: string;
   timeoutMs?: number;
   headers?: Record<string, string>;
@@ -72,7 +72,7 @@ interface ReplayAlertHistoryEntry {
   occurrences: number;
 }
 
-export interface ReplayAlertingPolicy {
+interface ReplayAlertingPolicy {
   enabled: boolean;
   dedupeWindowMs: number;
   dedupeScope: ReadonlyArray<

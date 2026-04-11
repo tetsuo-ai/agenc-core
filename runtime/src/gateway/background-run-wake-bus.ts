@@ -10,7 +10,7 @@ import {
 
 const DEFAULT_WAKE_BATCH_LIMIT = 32;
 
-export interface BackgroundRunWakeBusConfig {
+interface BackgroundRunWakeBusConfig {
   readonly runStore: BackgroundRunStore;
   readonly onWakeReady: (sessionId: string) => void | Promise<void>;
   readonly logger?: Logger;

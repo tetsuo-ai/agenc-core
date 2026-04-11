@@ -65,7 +65,7 @@ function filterAuthorityPathCandidates(
   });
 }
 
-export interface CanonicalDelegatedFilesystemScope {
+interface CanonicalDelegatedFilesystemScope {
   readonly workspaceRoot?: string;
   readonly allowedReadRoots: readonly string[];
   readonly allowedWriteRoots: readonly string[];

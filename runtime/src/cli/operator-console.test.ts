@@ -95,6 +95,7 @@ describe("operator console launcher", () => {
         stdio: "inherit",
         cwd: "/repo",
         env: expect.objectContaining({
+          AGENC_WATCH_ENABLE_REMOTE_TOOLS: "true",
           AGENC_WATCH_WS_URL: "ws://127.0.0.1:3100",
           AGENC_WATCH_PROJECT_ROOT: "/repo",
           AGENC_WATCH_CLIENT_KEY: expect.stringMatching(
@@ -133,6 +134,7 @@ describe("operator console launcher", () => {
       ["/repo/runtime/dist/bin/agenc-watch.js"],
       expect.objectContaining({
         env: expect.objectContaining({
+          AGENC_WATCH_ENABLE_REMOTE_TOOLS: "true",
           AGENC_WATCH_WS_URL: "ws://127.0.0.1:4100",
           AGENC_WATCH_PROJECT_ROOT: "/repo",
           AGENC_WATCH_CLIENT_KEY: expect.stringMatching(
@@ -171,7 +173,43 @@ describe("operator console launcher", () => {
       ["/repo/runtime/dist/bin/agenc-watch.js"],
       expect.objectContaining({
         env: expect.objectContaining({
+          AGENC_WATCH_ENABLE_REMOTE_TOOLS: "true",
           AGENC_WATCH_CLIENT_KEY: "manual-watch-key",
+          AGENC_WATCH_PROJECT_ROOT: "/repo",
+        }),
+      }),
+    );
+  });
+
+  it("preserves an explicit remote tools override", async () => {
+    const child = new FakeChildProcess();
+    const spawnProcess = vi.fn().mockImplementation(() => {
+      queueMicrotask(() => child.exit(0));
+      return child;
+    });
+    const deps = createDeps({
+      readPidFile: vi.fn().mockResolvedValue({
+        pid: 7654,
+        port: 4100,
+        configPath: "/tmp/agenc.json",
+      }),
+      isProcessAlive: vi.fn().mockReturnValue(true),
+      spawnProcess,
+      env: {
+        PATH: process.env.PATH ?? "",
+        AGENC_WATCH_ENABLE_REMOTE_TOOLS: "false",
+      },
+    });
+
+    const code = await runOperatorConsole({}, deps);
+
+    expect(code).toBe(0);
+    expect(spawnProcess).toHaveBeenCalledWith(
+      process.execPath,
+      ["/repo/runtime/dist/bin/agenc-watch.js"],
+      expect.objectContaining({
+        env: expect.objectContaining({
+          AGENC_WATCH_ENABLE_REMOTE_TOOLS: "false",
           AGENC_WATCH_PROJECT_ROOT: "/repo",
         }),
       }),

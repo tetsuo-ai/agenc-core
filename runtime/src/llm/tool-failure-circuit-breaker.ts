@@ -27,7 +27,7 @@ const DEFAULT_MAX_TRACKED_SESSIONS = 256;
 // Circuit Breaker
 // ---------------------------------------------------------------------------
 
-export interface ToolFailureCircuitBreakerOptions {
+interface ToolFailureCircuitBreakerOptions {
   enabled: boolean;
   windowMs?: number;
   threshold?: number;

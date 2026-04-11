@@ -77,6 +77,5 @@ export {
 
 export {
   normalizePdaValue,
-  normalizePdaString,
   extractDisputePdaFromPayload,
 } from "./pda-utils.js";

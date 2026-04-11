@@ -145,15 +145,18 @@ export class ReplayBackfillService {
       });
     }
 
+    let globalSequenceOffset = 0;
+
     while (true) {
       const page = await this.options.fetcher.fetchPage(
         cursor,
         this.options.toSlot,
         pageSize,
       );
+      const pageSequenceOffset = globalSequenceOffset;
       const pageEvents: OnChainProjectionInput[] = page.events.map(
         (event, index) => {
-          const sourceEventSequence = event.sourceEventSequence ?? index;
+          const sourceEventSequence = event.sourceEventSequence ?? (pageSequenceOffset + index);
           const eventTraceContext =
             (event as ProjectedTimelineInput).traceContext ??
             buildReplayTraceContext({
@@ -243,8 +246,11 @@ export class ReplayBackfillService {
           processed += writeResult.inserted;
           duplicates += writeResult.duplicates;
 
-          // Track duplicate keys deterministically
-          if (writeResult.duplicates > 0) {
+          // Track duplicate keys (approximate: store only reports aggregate
+          // duplicate count, not per-record status, so we cannot identify
+          // exactly which records were duplicates)
+          if (writeResult.duplicates > 0 && writeResult.inserted === 0) {
+            // All records in this page were duplicates — safe to track all keys
             for (const record of records) {
               const key = buildReplayKey(
                 record.slot,
@@ -253,7 +259,13 @@ export class ReplayBackfillService {
               );
               duplicateKeys.push(key);
             }
+          }
+          // Mixed page (duplicates > 0 && inserted > 0): cannot determine
+          // which specific records were duplicates from aggregate counts
+          // alone; skip key tracking to avoid falsely marking inserted
+          // records as duplicates.
 
+          if (writeResult.duplicates > 0) {
             void this.options.alertDispatcher?.emit({
               code: "replay.backfill.duplicates",
               severity: "info",
@@ -316,6 +328,7 @@ export class ReplayBackfillService {
         };
       }
       cursor = page.nextCursor;
+      globalSequenceOffset += page.events.length;
 
       if (page.done) {
         return {

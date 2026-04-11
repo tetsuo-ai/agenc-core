@@ -17,7 +17,7 @@ import type { EmbeddingProvider } from "./embeddings.js";
 import type { Logger } from "../utils/logger.js";
 
 /** A recorded procedure — a normalized sequence of tool steps. */
-export interface ProceduralMemoryEntry {
+interface ProceduralMemoryEntry {
   readonly id: string;
   readonly name: string;
   /** Natural language description of when this procedure applies. */
@@ -37,7 +37,7 @@ export interface ProceduralMemoryEntry {
   readonly createdAt: number;
 }
 
-export interface ProceduralStep {
+interface ProceduralStep {
   readonly toolName: string;
   /** Normalized argument patterns (specific paths replaced with {workspace}/...). */
   readonly argsPattern: string;
@@ -45,7 +45,7 @@ export interface ProceduralStep {
   readonly description: string;
 }
 
-export interface RecordProcedureInput {
+interface RecordProcedureInput {
   /** Brief name for the procedure. */
   readonly name: string;
   /** When to apply (natural language trigger). */
@@ -62,7 +62,7 @@ export interface RecordProcedureInput {
   readonly workspaceId?: string;
 }
 
-export interface ProceduralMemoryConfig {
+interface ProceduralMemoryConfig {
   readonly memoryBackend: MemoryBackend;
   readonly embeddingProvider?: EmbeddingProvider;
   readonly logger?: Logger;

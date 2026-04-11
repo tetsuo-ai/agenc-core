@@ -35,33 +35,13 @@ export interface MCPServerPolicyViolation {
   readonly message: string;
 }
 
-export interface ValidateMCPServerPolicyOptions {
+interface ValidateMCPServerPolicyOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly desktopImage?: string;
 }
 
-function globMatch(pattern: string, value: string): boolean {
-  if (pattern === "*") return true;
-  if (!pattern.includes("*")) return value === pattern;
-  const parts = pattern.split("*");
-  let cursor = 0;
-  const [first, ...rest] = parts;
-  if (!value.startsWith(first ?? "")) {
-    return false;
-  }
-  cursor = (first ?? "").length;
-  for (let i = 0; i < rest.length; i += 1) {
-    const part = rest[i] ?? "";
-    if (part.length === 0) continue;
-    if (i === rest.length - 1) {
-      return value.slice(cursor).endsWith(part);
-    }
-    const next = value.indexOf(part, cursor);
-    if (next === -1) return false;
-    cursor = next + part.length;
-  }
-  return true;
-}
+// Cut 7.1: glob matching is unified through policy/glob.ts.
+import { matchGlob as globMatch } from "./glob.js";
 
 async function resolveExecutablePath(
   command: string,

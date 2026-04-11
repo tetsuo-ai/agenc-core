@@ -34,7 +34,7 @@ export interface ReplayTraceEnvelope {
   sampled: boolean;
 }
 
-export interface ReplaySpanEvent {
+interface ReplaySpanEvent {
   code: string;
   slot?: number;
   signature?: string;
@@ -43,7 +43,7 @@ export interface ReplaySpanEvent {
   disputePda?: string;
 }
 
-export interface ReplaySpanContext {
+interface ReplaySpanContext {
   name: string;
   trace: ReplayTraceContext;
   attributes?: ReplaySpanEvent;

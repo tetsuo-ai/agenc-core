@@ -114,3 +114,130 @@ export interface SerializedProtocolConfig {
   protocolVersion: number;
   minSupportedVersion: number;
 }
+
+/**
+ * JSON-safe representation of a marketplace skill registration.
+ */
+export interface SerializedSkill {
+  skillPda: string;
+  skillId: string;
+  author: string;
+  name: string;
+  tags: string[];
+  priceLamports: string;
+  priceSol?: string;
+  priceMint: string | null;
+  rating: number;
+  ratingCount: number;
+  downloads: number;
+  version: number;
+  isActive: boolean;
+  createdAt: number;
+  updatedAt: number;
+  contentHash: string;
+}
+
+/**
+ * JSON-safe representation of a governance proposal summary.
+ */
+export interface SerializedGovernanceProposalSummary {
+  proposalPda: string;
+  proposer: string;
+  proposalType: string;
+  status: string;
+  titleHash: string;
+  descriptionHash: string;
+  payloadPreview?: string;
+  votesFor: string;
+  votesAgainst: string;
+  totalVoters: number;
+  quorum: string;
+  createdAt: number;
+  votingDeadline: number;
+  executionAfter: number;
+}
+
+/**
+ * JSON-safe representation of a governance proposal with vote detail.
+ */
+export interface SerializedGovernanceProposalDetail
+  extends SerializedGovernanceProposalSummary {
+  executedAt: number;
+  votes: Array<{
+    voter: string;
+    approved: boolean;
+    votedAt: number;
+    voteWeight: string;
+  }>;
+}
+
+/**
+ * JSON-safe representation of a marketplace dispute summary.
+ */
+export interface SerializedDisputeSummary {
+  disputePda: string;
+  taskPda: string;
+  initiator: string;
+  defendant: string;
+  claimant: string;
+  respondent: string;
+  status: string;
+  resolutionType: string;
+  evidenceHash: string;
+  votesFor: string;
+  votesAgainst: string;
+  totalVoters: number;
+  createdAt: number;
+  votingDeadline: number;
+  expiresAt: number;
+  resolvedAt: number;
+  slashApplied: boolean;
+  initiatorSlashApplied: boolean;
+  workerStakeAtDispute: string;
+  initiatedByCreator: boolean;
+  rewardMint: string | null;
+  amountAtStake: string | null;
+  amountAtStakeSol?: string;
+  amountAtStakeMint: string | null;
+}
+
+/**
+ * JSON-safe representation of a marketplace dispute with additional detail.
+ */
+export interface SerializedDisputeDetail extends SerializedDisputeSummary {
+  disputeId: string;
+  initiatorAuthority: string;
+  relatedTask?: SerializedTask | null;
+}
+
+/**
+ * JSON-safe representation of a marketplace reputation summary.
+ */
+export interface SerializedReputationSummary {
+  registered: boolean;
+  authority?: string;
+  agentPda?: string;
+  agentId?: string;
+  baseReputation?: number;
+  effectiveReputation?: number;
+  tasksCompleted?: string;
+  totalEarned?: string;
+  totalEarnedSol?: string;
+  stakedAmount?: string;
+  stakedAmountSol?: string;
+  lockedUntil?: number;
+  inboundDelegations?: Array<{
+    amount: number;
+    expiresAt: number;
+    createdAt: number;
+    delegator?: string;
+    delegatee?: string;
+  }>;
+  outboundDelegations?: Array<{
+    amount: number;
+    expiresAt: number;
+    createdAt: number;
+    delegator?: string;
+    delegatee?: string;
+  }>;
+}

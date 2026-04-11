@@ -20,18 +20,18 @@ import type { Logger } from "../utils/logger.js";
 import { computeTrustScore, type TrustSource } from "./trust-scoring.js";
 
 /** Scope categories for shared memory. */
-export type SharedMemoryScope = "user" | "organization" | "capability";
-export type SharedMemoryVisibility =
+type SharedMemoryScope = "user" | "organization" | "capability";
+type SharedMemoryVisibility =
   | "private"
   | "shared"
   | "world-visible"
   | "lineage-shared";
-export type SharedMemoryAuthorizationMode =
+type SharedMemoryAuthorizationMode =
   | "auto"
   | "requires-user-authorization"
   | "requires-system-authorization";
 
-export interface SharedFactProvenance {
+interface SharedFactProvenance {
   readonly type: string;
   readonly source: TrustSource;
   readonly sourceId: string;
@@ -45,7 +45,7 @@ export interface SharedFactProvenance {
   readonly metadata?: Record<string, unknown>;
 }
 
-export interface SharedFactAuthorization {
+interface SharedFactAuthorization {
   readonly mode: SharedMemoryAuthorizationMode;
   readonly approved: boolean;
   readonly approvedBy?: string | null;
@@ -54,7 +54,7 @@ export interface SharedFactAuthorization {
 }
 
 /** A shared memory fact accessible across worlds. */
-export interface SharedFact {
+interface SharedFact {
   readonly id: string;
   readonly scope: SharedMemoryScope;
   readonly content: string;
@@ -80,7 +80,7 @@ export interface SharedFact {
 }
 
 /** Audit trail entry for shared memory writes. */
-export interface SharedMemoryAuditEntry {
+interface SharedMemoryAuditEntry {
   readonly timestamp: number;
   readonly action: "write" | "update" | "delete";
   readonly factId: string;
@@ -94,7 +94,7 @@ export interface SharedMemoryAuditEntry {
   readonly provenance?: SharedFactProvenance | null;
 }
 
-export interface SharedMemoryConfig {
+interface SharedMemoryConfig {
   readonly memoryBackend: MemoryBackend;
   readonly logger?: Logger;
   readonly keyPrefix?: string;

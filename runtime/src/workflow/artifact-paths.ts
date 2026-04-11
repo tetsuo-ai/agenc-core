@@ -2,7 +2,7 @@ const DOC_ONLY_PATH_RE = /\.(?:md|mdx|txt|rst|adoc)$/i;
 const DOC_BASENAME_RE =
   /(?:^|\/)(?:README|CHANGELOG|CONTRIBUTING|LICENSE|COPYING|NOTES|AGENTS|AGENC|PLAN)(?:\.[^/]+)?$/i;
 
-export function isDocumentationArtifactPath(value: string): boolean {
+function isDocumentationArtifactPath(value: string): boolean {
   const trimmed = value.trim();
   if (trimmed.length === 0) {
     return false;

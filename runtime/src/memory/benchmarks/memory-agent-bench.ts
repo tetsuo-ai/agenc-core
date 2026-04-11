@@ -16,7 +16,7 @@ import { InMemoryBackend } from "../in-memory/backend.js";
 import { InMemoryVectorStore } from "../vector-store.js";
 import { NoopEmbeddingProvider } from "../embeddings.js";
 
-export interface BenchmarkResult {
+interface BenchmarkResult {
   readonly name: string;
   readonly dimension: string;
   readonly passed: boolean;
@@ -25,7 +25,7 @@ export interface BenchmarkResult {
   readonly durationMs: number;
 }
 
-export interface BenchmarkSuite {
+interface BenchmarkSuite {
   readonly name: string;
   readonly results: readonly BenchmarkResult[];
   readonly overallScore: number;

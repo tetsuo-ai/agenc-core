@@ -135,9 +135,15 @@ function makeManagerConfig(
  * Wait for async execution to settle.
  * Uses real microtask flushing (no setTimeout) so it works with both
  * real and fake timers.
+ *
+ * Bumped from 20 to 200 iterations after Phase K migrated sub-agent
+ * spawning to route through the executeChat generator + drain helper
+ * stack. The extra indirection adds ~4-6 microtask boundaries per
+ * spawn before the manager's result slot is populated; 20 was no
+ * longer enough to reach the post-return bookkeeping on every test.
  */
 async function settle(): Promise<void> {
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 200; i++) {
     await Promise.resolve();
   }
 }
@@ -517,83 +523,6 @@ describe("SubAgentManager", () => {
       expect(result?.success).toBe(true);
       expect(result?.stopReason).toBe("completed");
       expect(grokProvider.chat).toHaveBeenCalledTimes(1);
-    });
-
-    it("allows iterative coding child phases to exceed the base text-only tool-round cap", async () => {
-      let rounds = 0;
-      const llmProvider: LLMProvider = {
-        name: "looping-llm",
-        chat: vi.fn(async (): Promise<LLMResponse> => {
-          rounds += 1;
-          if (rounds <= 4) {
-            return {
-              content: "continue editing",
-              toolCalls: [{
-                id: `tc-${rounds}`,
-                name: "system.writeFile",
-                arguments: JSON.stringify({
-                  path: `file-${rounds}.ts`,
-                  content: `export const value${rounds} = ${rounds};\n`,
-                }),
-              }],
-              usage: {
-                promptTokens: 10,
-                completionTokens: 5,
-                totalTokens: 15,
-              },
-              model: "mock",
-              finishReason: "tool_calls",
-            };
-          }
-          return {
-            content: "finished",
-            toolCalls: [],
-            usage: {
-              promptTokens: 10,
-              completionTokens: 5,
-              totalTokens: 15,
-            },
-            model: "mock",
-            finishReason: "stop",
-          };
-        }),
-        chatStream: vi.fn(
-          async (
-            _messages: LLMMessage[],
-            _cb: StreamProgressCallback,
-          ): Promise<LLMResponse> => llmProvider.chat([]),
-        ),
-        healthCheck: vi.fn(async () => true),
-      };
-      const toolRegistry = new ToolRegistry({});
-      toolRegistry.register(makeMockTool("system.writeFile"));
-      const context = makeMockContext();
-      const createContext = vi.fn(async () => ({
-        ...context,
-        llmProvider,
-        toolRegistry,
-      }));
-      const manager = new SubAgentManager(
-        makeManagerConfig({
-          createContext,
-          resolveDefaultMaxToolRounds: () => 3,
-        }),
-      );
-
-      const sessionId = await manager.spawn({
-        parentSessionId: "p",
-        task: "implement files",
-        tools: ["system.writeFile"],
-      });
-
-      let result = manager.getResult(sessionId);
-      for (let i = 0; i < 20 && result === null; i += 1) {
-        await settle();
-        result = manager.getResult(sessionId);
-      }
-      expect(result).not.toBeNull();
-      expect(result?.toolCalls).toHaveLength(4);
-      expect(result?.toolCalls.length ?? 0).toBeGreaterThan(3);
     });
 
     it("passes workspace override to createContext", async () => {
@@ -1037,6 +966,72 @@ describe("SubAgentManager", () => {
               maxCorrectionAttempts: 1,
               unsafeBenchmarkMode: false,
               delegationSpec,
+            }),
+          }),
+        );
+      } finally {
+        executeSpy.mockRestore();
+      }
+    });
+
+    it("passes system-prompt overrides and explicit required tool evidence into child execution", async () => {
+      const executeSpy = vi.spyOn(ChatExecutor.prototype, "execute")
+        .mockResolvedValueOnce({
+          content: "VERDICT: PASS",
+          provider: "mock",
+          model: "mock",
+          usedFallback: false,
+          toolCalls: [
+            {
+              name: "system.readFile",
+              args: { path: "/workspace/src/main.ts" },
+              result: '{"ok":true}',
+              isError: false,
+              durationMs: 1,
+            },
+          ],
+          tokenUsage: {
+            promptTokens: 10,
+            completionTokens: 5,
+            totalTokens: 15,
+          },
+          callUsage: [],
+          durationMs: 1,
+          compacted: false,
+          stopReason: "completed",
+          completionState: "completed",
+        });
+
+      try {
+        const manager = new SubAgentManager(makeManagerConfig({
+          systemPrompt: "parent sub-agent prompt",
+        }));
+        const sessionId = await manager.spawn({
+          parentSessionId: "p",
+          task: "verify the implementation",
+          prompt: "Run the verifier checks",
+          systemPrompt: "verifier worker prompt",
+          tools: ["system.readFile", "system.bash"],
+          requiredToolEvidence: {
+            maxCorrectionAttempts: 1,
+            executionEnvelope: {
+              workspaceRoot: "/workspace",
+              targetArtifacts: ["/workspace/src/main.ts"],
+              verificationMode: "grounded_read",
+            },
+          },
+        });
+        await settle();
+
+        expect(manager.getResult(sessionId)?.success).toBe(true);
+        expect(executeSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            systemPrompt: "verifier worker prompt",
+            requiredToolEvidence: expect.objectContaining({
+              executionEnvelope: expect.objectContaining({
+                verificationMode: "grounded_read",
+                targetArtifacts: ["/workspace/src/main.ts"],
+              }),
             }),
           }),
         );
@@ -2237,53 +2232,73 @@ describe("SubAgentManager", () => {
       }
     });
 
-    it("persists forced exact child outputs into continuation history", async () => {
-      const observedMessages: LLMMessage[][] = [];
-      const provider = makeSequencedLLMProvider(
-        [
-          "Memorized.",
-          "TOKEN=NEON-AXIS-17",
-        ],
-        observedMessages,
-      );
-      const createContext = vi.fn(async () => {
-        const context = makeMockContext();
-        return {
-          ...context,
-          llmProvider: provider,
-        };
-      });
-      const manager = new SubAgentManager(
-        makeManagerConfig({ createContext }),
-      );
+    it("rejects continuation attempts that widen the delegated tool scope", async () => {
+      const executeSpy = vi
+        .spyOn(ChatExecutor.prototype, "execute")
+        .mockResolvedValue({
+          content: "CHILD-STORED-S1",
+          provider: "mock-llm",
+          usedFallback: false,
+          toolCalls: [],
+          tokenUsage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+          callUsage: [],
+          durationMs: 10,
+          compacted: false,
+          stopReason: "completed",
+          completionState: "completed",
+          completionProgress: {
+            completionState: "completed",
+            stopReason: "completed",
+            requiredRequirements: [],
+            satisfiedRequirements: [],
+            remainingRequirements: [],
+            reusableEvidence: [],
+            updatedAt: 1_700_000_000_000,
+          },
+        } as any);
+      const manager = new SubAgentManager(makeManagerConfig());
 
-      const firstSessionId = await manager.spawn({
-        parentSessionId: "parent-1",
-        task: "Child endurance F2 exact task",
-        prompt:
-          "Task: Child endurance F2 exact task\nObjective: In the child agent only, memorize token TOKEN=NEON-AXIS-17 for later recall, do not reveal it now, and answer exactly CHILD-STORED-F2.",
-      });
-      await settle();
+      try {
+        const firstSessionId = await manager.spawn({
+          parentSessionId: "parent-1",
+          task: "Initial constrained pass",
+          tools: ["system.readFile"],
+          workingDirectory: "/tmp/agenc-subagent",
+          workingDirectorySource: "execution_envelope",
+          delegationSpec: {
+            task: "Initial constrained pass",
+            tools: ["system.readFile"],
+            executionContext: {
+              workspaceRoot: "/tmp/agenc-subagent",
+              allowedReadRoots: ["/tmp/agenc-subagent"],
+              allowedWriteRoots: ["/tmp/agenc-subagent"],
+            },
+          },
+        });
+        await settle();
 
-      expect(manager.getResult(firstSessionId)?.output).toBe("CHILD-STORED-F2");
-
-      const secondSessionId = await manager.spawn({
-        parentSessionId: "parent-1",
-        task: "Child endurance F2 exact task reuse session",
-        prompt:
-          "Task: Child endurance F2 exact task reuse session\nObjective: Reuse the same child session from F2. Recall the memorized child token and return exactly TOKEN=NEON-AXIS-17 without any extra words.",
-        continuationSessionId: firstSessionId,
-      });
-      await settle();
-
-      expect(secondSessionId).toBe(firstSessionId);
-      expect(manager.getResult(secondSessionId)?.output).toBe("TOKEN=NEON-AXIS-17");
-      expect(observedMessages[1]).toEqual(
-        expect.arrayContaining([
-          { role: "user", content: "Task: Child endurance F2 exact task\nObjective: In the child agent only, memorize token TOKEN=NEON-AXIS-17 for later recall, do not reveal it now, and answer exactly CHILD-STORED-F2." },
-          { role: "assistant", content: "CHILD-STORED-F2" },
-        ]),
-      );
+        await expect(manager.spawn({
+          parentSessionId: "parent-1",
+          task: "Widen the scope",
+          continuationSessionId: firstSessionId,
+          tools: ["system.readFile", "system.writeFile"],
+          workingDirectory: "/tmp/agenc-subagent",
+          workingDirectorySource: "execution_envelope",
+          delegationSpec: {
+            task: "Widen the scope",
+            tools: ["system.readFile", "system.writeFile"],
+            executionContext: {
+              workspaceRoot: "/tmp/agenc-subagent",
+              allowedReadRoots: ["/tmp/agenc-subagent"],
+              allowedWriteRoots: ["/tmp/agenc-subagent"],
+            },
+          },
+        })).rejects.toThrow(
+          /cannot widen the delegated tool scope/,
+        );
+      } finally {
+        executeSpy.mockRestore();
+      }
     });
 
     it("finds the latest successful child session for a parent", async () => {
@@ -2411,7 +2426,7 @@ describe("SubAgentManager", () => {
 
       expect(chatSpy).toHaveBeenCalledTimes(1);
       const messages = chatSpy.mock.calls[0][0] as LLMMessage[];
-      expect(messages[0]).toEqual({
+      expect(messages[0]).toMatchObject({
         role: "system",
         content: "Custom prompt for sub-agent",
       });

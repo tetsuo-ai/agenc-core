@@ -18,7 +18,7 @@ export type XaiVoice = "Ara" | "Rex" | "Sal" | "Eve" | "Leo";
 export type XaiAudioFormat = "audio/pcm" | "audio/pcmu" | "audio/pcma";
 
 /** PCM sample rates supported by xAI realtime session audio config. */
-export type XaiPcmSampleRate =
+type XaiPcmSampleRate =
   | 8000
   | 16000
   | 22050
@@ -28,14 +28,14 @@ export type XaiPcmSampleRate =
   | 48000;
 
 /** Audio format settings for input/output stream configuration. */
-export interface VoiceAudioFormatConfig {
+interface VoiceAudioFormatConfig {
   readonly type: XaiAudioFormat;
   /** Only applies to audio/pcm. */
   readonly rate?: XaiPcmSampleRate;
 }
 
 /** Session audio block used by xAI Voice Agent session.update. */
-export interface VoiceAudioConfig {
+interface VoiceAudioConfig {
   readonly input?: {
     readonly format: VoiceAudioFormatConfig;
   };
@@ -81,30 +81,30 @@ export interface VoiceSessionConfig {
 // Client → Server Events
 // ============================================================================
 
-export interface SessionUpdateEvent {
+interface SessionUpdateEvent {
   readonly type: "session.update";
   readonly session: VoiceSessionConfig;
 }
 
-export interface InputAudioBufferAppendEvent {
+interface InputAudioBufferAppendEvent {
   readonly type: "input_audio_buffer.append";
   readonly audio: string; // base64-encoded PCM
 }
 
-export interface InputAudioBufferCommitEvent {
+interface InputAudioBufferCommitEvent {
   readonly type: "input_audio_buffer.commit";
 }
 
-export interface ResponseCreateEvent {
+interface ResponseCreateEvent {
   readonly type: "response.create";
 }
 
-export interface ResponseCancelEvent {
+interface ResponseCancelEvent {
   readonly type: "response.cancel";
 }
 
 /** Conversation item for injecting function call results. */
-export interface ConversationItemCreateFunctionOutputEvent {
+interface ConversationItemCreateFunctionOutputEvent {
   readonly type: "conversation.item.create";
   readonly item: {
     readonly type: "function_call_output";
@@ -114,7 +114,7 @@ export interface ConversationItemCreateFunctionOutputEvent {
 }
 
 /** Conversation item for injecting documented user text history. */
-export interface ConversationItemCreateMessageEvent {
+interface ConversationItemCreateMessageEvent {
   readonly type: "conversation.item.create";
   readonly item: {
     readonly type: "message";
@@ -126,7 +126,7 @@ export interface ConversationItemCreateMessageEvent {
   };
 }
 
-export type ConversationItemCreateEvent =
+type ConversationItemCreateEvent =
   | ConversationItemCreateFunctionOutputEvent
   | ConversationItemCreateMessageEvent;
 
@@ -142,17 +142,17 @@ export type ClientEvent =
 // Server → Client Events
 // ============================================================================
 
-export interface SessionCreatedServerEvent {
+interface SessionCreatedServerEvent {
   readonly type: "session.created";
   readonly session: Record<string, unknown>;
 }
 
-export interface SessionUpdatedServerEvent {
+interface SessionUpdatedServerEvent {
   readonly type: "session.updated";
   readonly session: Record<string, unknown>;
 }
 
-export interface ResponseAudioDeltaEvent {
+interface ResponseAudioDeltaEvent {
   readonly type: "response.output_audio.delta";
   readonly delta: string; // base64-encoded PCM
   readonly response_id: string;
@@ -161,39 +161,39 @@ export interface ResponseAudioDeltaEvent {
   readonly content_index: number;
 }
 
-export interface ResponseAudioDoneEvent {
+interface ResponseAudioDoneEvent {
   readonly type: "response.output_audio.done";
   readonly response_id: string;
   readonly item_id: string;
 }
 
-export interface ResponseAudioTranscriptDeltaEvent {
+interface ResponseAudioTranscriptDeltaEvent {
   readonly type: "response.output_audio_transcript.delta";
   readonly delta: string;
   readonly response_id: string;
   readonly item_id: string;
 }
 
-export interface ResponseAudioTranscriptDoneEvent {
+interface ResponseAudioTranscriptDoneEvent {
   readonly type: "response.output_audio_transcript.done";
   readonly transcript: string;
   readonly response_id: string;
   readonly item_id: string;
 }
 
-export interface ResponseTextDeltaEvent {
+interface ResponseTextDeltaEvent {
   readonly type: "response.text.delta";
   readonly delta: string;
   readonly response_id: string;
 }
 
-export interface ResponseTextDoneEvent {
+interface ResponseTextDoneEvent {
   readonly type: "response.text.done";
   readonly text: string;
   readonly response_id: string;
 }
 
-export interface ResponseFunctionCallArgumentsDeltaEvent {
+interface ResponseFunctionCallArgumentsDeltaEvent {
   readonly type: "response.function_call_arguments.delta";
   readonly delta: string;
   readonly call_id: string;
@@ -201,7 +201,7 @@ export interface ResponseFunctionCallArgumentsDeltaEvent {
   readonly item_id: string;
 }
 
-export interface ResponseFunctionCallArgumentsDoneEvent {
+interface ResponseFunctionCallArgumentsDoneEvent {
   readonly type: "response.function_call_arguments.done";
   readonly arguments: string;
   readonly call_id: string;
@@ -209,41 +209,41 @@ export interface ResponseFunctionCallArgumentsDoneEvent {
   readonly item_id: string;
 }
 
-export interface ResponseDoneEvent {
+interface ResponseDoneEvent {
   readonly type: "response.done";
   readonly response: Record<string, unknown>;
 }
 
-export interface InputAudioBufferSpeechStartedEvent {
+interface InputAudioBufferSpeechStartedEvent {
   readonly type: "input_audio_buffer.speech_started";
   readonly audio_start_ms: number;
   readonly item_id: string;
 }
 
-export interface InputAudioBufferSpeechStoppedEvent {
+interface InputAudioBufferSpeechStoppedEvent {
   readonly type: "input_audio_buffer.speech_stopped";
   readonly audio_end_ms: number;
   readonly item_id: string;
 }
 
-export interface InputAudioBufferCommittedEvent {
+interface InputAudioBufferCommittedEvent {
   readonly type: "input_audio_buffer.committed";
   readonly item_id: string;
 }
 
-export interface ConversationItemAddedEvent {
+interface ConversationItemAddedEvent {
   readonly type: "conversation.item.added";
   readonly item: Record<string, unknown>;
 }
 
-export interface InputAudioTranscriptionCompletedEvent {
+interface InputAudioTranscriptionCompletedEvent {
   readonly type: "conversation.item.input_audio_transcription.completed";
   readonly item_id: string;
   readonly content_index: number;
   readonly transcript: string;
 }
 
-export interface ErrorServerEvent {
+interface ErrorServerEvent {
   readonly type: "error";
   readonly error: {
     readonly type: string;

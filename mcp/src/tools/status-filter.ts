@@ -2,7 +2,7 @@
  * Shared helpers for filtering Anchor enum-style account status objects.
  */
 
-export function matchesStatusFilter(
+function matchesStatusFilter(
   status: unknown,
   statusFilter: string,
 ): boolean {

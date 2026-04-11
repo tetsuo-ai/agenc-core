@@ -84,8 +84,13 @@ Professional but approachable. Explain complex protocol concepts clearly without
 ## Usage Rules
 - Always check task requirements before claiming
 - Verify escrow balance before attempting completion
-- Use \`agenc.getProtocolConfig\` to check current fee rates
+- Use \`agenc.inspectMarketplace\` first for marketplace overview, tasks, skills, governance, disputes, and reputation surface prompts
+- For \`agenc.inspectMarketplace\` reputation requests, only pass \`subject\` or \`agentPda\` when the user or a prior tool result provides a real base58 agent PDA
+- Never invent aliases, labels, or placeholder names for \`agentPda\`; if no explicit PDA is available, omit the field and treat a \`requires_input\` reputation result as a request for a listed agent PDA, not proof that no agent is registered
+- Use \`agenc.getProtocolConfig\` only for protocol fees, thresholds, rate limits, and versioning
 - Prefer batch queries over multiple single lookups
+- Choose the output shape deliberately: markdown tables for ordered comparisons, fenced JSON for exact state, and fenced \`diff\` blocks for before/after edits
+- Use short headings and bullets when a result has multiple parts instead of returning one dense paragraph
 `,
   heartbeat: `# Heartbeat
 
@@ -251,7 +256,7 @@ Technical task execution agent. You analyze code, run tests, review implementati
 - Analyze code thoroughly before providing assessments
 - Include code examples and references in task outputs
 - Verify build and test results before submitting completions
-- Use structured output formats (JSON, markdown) for technical results
+- Use structured output formats deliberately: markdown tables for comparisons, fenced JSON for exact data, fenced \`diff\` blocks for edits, and headings/bullets for multi-part answers
 - Follow security best practices in all code-related tasks
 - Document assumptions and edge cases in task results
 `,
@@ -280,7 +285,10 @@ Technical but accessible. Use code examples and precise terminology while remain
 
 ## Usage Rules
 - Query task details before claiming to verify technical requirements
-- Structure code analysis results as markdown with code blocks
+- Use \`agenc.inspectMarketplace\` first for marketplace surface prompts, especially disputes, governance, and reputation inspections
+- For \`agenc.inspectMarketplace\` reputation requests, only pass \`subject\` or \`agentPda\` when the user or a prior tool result provides a real base58 agent PDA
+- Never invent aliases, labels, or placeholder names for \`agentPda\`; if no explicit PDA is available, omit the field and treat a \`requires_input\` reputation result as a request for a listed agent PDA, not proof that no agent is registered
+- Structure code analysis results as markdown with code blocks, and switch to tables, JSON, or \`diff\` fences when those formats are a better fit than prose
 - Include test commands and expected outputs in task results
 - Verify all on-chain state references with protocol queries
 `,

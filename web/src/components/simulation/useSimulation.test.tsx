@@ -115,7 +115,7 @@ class MockEventSource {
 }
 
 describe('useSimulation', () => {
-  const fetchMock = vi.fn<typeof fetch>();
+  const fetchMock = vi.fn();
 
   beforeEach(() => {
     fetchMock.mockReset();
@@ -133,26 +133,26 @@ describe('useSimulation', () => {
   it('ignores late responses from a previously selected simulation', async () => {
     const staleStatus = deferred<Response>();
 
-    fetchMock.mockImplementation(async (input) => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.endsWith('/simulations/sim-1/events')) {
+      if (url.includes('/simulations/sim-1/events') && !url.includes('/stream')) {
         return jsonResponse({
           simulation_id: 'sim-1',
           events: [makeEvent('evt-1', { simulation_id: 'sim-1', world_id: 'world-1' })],
-          next_cursor: 'evt-1',
+          next_cursor: null,
         });
       }
-      if (url.endsWith('/simulations/sim-1/status')) {
+      if (url.includes('/simulations/sim-1/status')) {
         return staleStatus.promise;
       }
-      if (url.endsWith('/simulations/sim-2/events')) {
+      if (url.includes('/simulations/sim-2/events') && !url.includes('/stream')) {
         return jsonResponse({
           simulation_id: 'sim-2',
           events: [makeEvent('evt-2', { simulation_id: 'sim-2', world_id: 'world-2' })],
-          next_cursor: 'evt-2',
+          next_cursor: null,
         });
       }
-      if (url.endsWith('/simulations/sim-2/status')) {
+      if (url.includes('/simulations/sim-2/status')) {
         return jsonResponse(
           makeStatus({
             simulation_id: 'sim-2',
@@ -229,12 +229,12 @@ describe('useSimulation', () => {
   it('swallows aborted replay hydration during selection changes', async () => {
     const aborted = deferred<Response>();
 
-    fetchMock.mockImplementation(async (input) => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.endsWith('/simulations/sim-1/events')) {
+      if (url.includes('/simulations/sim-1/events') && !url.includes('/stream')) {
         return aborted.promise;
       }
-      if (url.endsWith('/simulations/sim-1/status')) {
+      if (url.includes('/simulations/sim-1/status')) {
         return jsonResponse(makeStatus({
           simulation_id: 'sim-1',
           world_id: 'world-1',
@@ -242,14 +242,14 @@ describe('useSimulation', () => {
           running: true,
         }));
       }
-      if (url.endsWith('/simulations/sim-2/events')) {
+      if (url.includes('/simulations/sim-2/events') && !url.includes('/stream')) {
         return jsonResponse({
           simulation_id: 'sim-2',
           events: [makeEvent('evt-2', { simulation_id: 'sim-2', world_id: 'world-2' })],
-          next_cursor: 'evt-2',
+          next_cursor: null,
         });
       }
-      if (url.endsWith('/simulations/sim-2/status')) {
+      if (url.includes('/simulations/sim-2/status')) {
         return jsonResponse(makeStatus({
           simulation_id: 'sim-2',
           world_id: 'world-2',
@@ -313,26 +313,26 @@ describe('useSimulation', () => {
 
   it('hydrates replay, catches up after reconnect, and deduplicates repeated live events', async () => {
 
-    fetchMock.mockImplementation(async (input) => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.endsWith('/simulations/sim-live/events')) {
+      if (url.includes('/simulations/sim-live/events') && !url.includes('/stream') && url.includes('cursor=evt-3')) {
+        return jsonResponse({
+          simulation_id: 'sim-live',
+          events: [makeEvent('evt-4', { simulation_id: 'sim-live', step: 4 })],
+          next_cursor: null,
+        });
+      }
+      if (url.includes('/simulations/sim-live/events') && !url.includes('/stream')) {
         return jsonResponse({
           simulation_id: 'sim-live',
           events: [
             makeEvent('evt-1', { simulation_id: 'sim-live' }),
             makeEvent('evt-2', { simulation_id: 'sim-live', step: 2 }),
           ],
-          next_cursor: 'evt-2',
+          next_cursor: null,
         });
       }
-      if (url.includes('/simulations/sim-live/events?cursor=evt-3')) {
-        return jsonResponse({
-          simulation_id: 'sim-live',
-          events: [makeEvent('evt-4', { simulation_id: 'sim-live', step: 4 })],
-          next_cursor: 'evt-4',
-        });
-      }
-      if (url.endsWith('/simulations/sim-live/status')) {
+      if (url.includes('/simulations/sim-live/status')) {
         return jsonResponse(makeStatus({
           simulation_id: 'sim-live',
           status: 'running',
@@ -390,12 +390,12 @@ describe('useSimulation', () => {
   it('keeps paused sims on heartbeat status polling while disabling repeated agent polling', async () => {
     vi.useFakeTimers();
 
-    fetchMock.mockImplementation(async (input) => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.endsWith('/simulations/sim-paused/events')) {
+      if (url.includes('/simulations/sim-paused/events') && !url.includes('/stream')) {
         return jsonResponse({ simulation_id: 'sim-paused', events: [], next_cursor: null });
       }
-      if (url.endsWith('/simulations/sim-paused/status')) {
+      if (url.includes('/simulations/sim-paused/status')) {
         return jsonResponse(makeStatus({
           simulation_id: 'sim-paused',
           status: 'paused',
@@ -403,7 +403,7 @@ describe('useSimulation', () => {
           paused: true,
         }));
       }
-      if (url.endsWith('/simulations/sim-paused/agents/agent-1/state')) {
+      if (url.includes('/simulations/sim-paused/agents/agent-1/state')) {
         return jsonResponse(makeAgentState({ turnCount: 1 }));
       }
       throw new Error('unexpected fetch ' + url);
@@ -457,16 +457,16 @@ describe('useSimulation', () => {
 
   it('keeps archived sims disconnected after initial hydration', async () => {
 
-    fetchMock.mockImplementation(async (input) => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.endsWith('/simulations/sim-archived/events')) {
+      if (url.includes('/simulations/sim-archived/events') && !url.includes('/stream')) {
         return jsonResponse({
           simulation_id: 'sim-archived',
           events: [makeEvent('evt-archived', { simulation_id: 'sim-archived' })],
-          next_cursor: 'evt-archived',
+          next_cursor: null,
         });
       }
-      if (url.endsWith('/simulations/sim-archived/status')) {
+      if (url.includes('/simulations/sim-archived/status')) {
         return jsonResponse(makeStatus({
           simulation_id: 'sim-archived',
           status: 'archived',
@@ -474,7 +474,7 @@ describe('useSimulation', () => {
           paused: false,
         }));
       }
-      if (url.endsWith('/simulations/sim-archived/agents/agent-1/state')) {
+      if (url.includes('/simulations/sim-archived/agents/agent-1/state')) {
         return jsonResponse(makeAgentState({ turnCount: 9 }));
       }
       throw new Error('unexpected fetch ' + url);

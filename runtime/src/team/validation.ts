@@ -12,7 +12,7 @@ import type {
   TeamTemplate,
 } from "./types.js";
 
-export interface TeamTemplateValidationOptions {
+interface TeamTemplateValidationOptions {
   requireSingleParent?: boolean;
 }
 

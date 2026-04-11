@@ -1,9 +1,9 @@
 import type { GatewayConfig } from "../gateway/types.js";
 import type { WorkspaceFileName } from "../gateway/workspace-files.js";
 
-export type OnboardingVerbosity = "tight" | "balanced" | "detailed";
-export type OnboardingAutonomy = "conservative" | "balanced" | "aggressive";
-export type OnboardingToolPosture = "guarded" | "balanced" | "broad";
+type OnboardingVerbosity = "tight" | "balanced" | "detailed";
+type OnboardingAutonomy = "conservative" | "balanced" | "aggressive";
+type OnboardingToolPosture = "guarded" | "balanced" | "broad";
 
 export interface OnboardingAnswers {
   readonly apiKey: string;

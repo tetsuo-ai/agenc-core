@@ -37,7 +37,7 @@ export interface SessionCredentialLease {
   revokedAt?: number;
 }
 
-export interface PreparedSessionCredentialInjection {
+interface PreparedSessionCredentialInjection {
   readonly sessionId: string;
   readonly toolName: string;
   readonly url: string;
@@ -73,7 +73,7 @@ export interface SessionCredentialLeaseEvent {
   readonly lease: SessionCredentialLease;
 }
 
-export interface SessionCredentialRevokeEvent {
+interface SessionCredentialRevokeEvent {
   readonly sessionId: string;
   readonly credentialId: string;
   readonly scope?: PolicyEvaluationScope;
