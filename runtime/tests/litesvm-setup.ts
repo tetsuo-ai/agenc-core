@@ -22,7 +22,7 @@ import * as bs58Module from 'bs58';
 import type { AgencCoordination } from '@tetsuo-ai/protocol';
 import { extendLiteSVMConnectionProxy } from '../../tests/litesvm-connection-proxy.ts';
 import { syncAgencProgramBinary } from '../../tests/litesvm-program-artifact.ts';
-import { loadProtocolIdl } from '../../tests/protocol-artifacts.ts';
+import { loadLocalProtocolIdl } from '../../tests/protocol-artifacts.ts';
 import {
   resolveProtocolProgramBinaryPath,
   resolveProtocolWorkspaceRoot,
@@ -127,7 +127,7 @@ export function createRuntimeSignerContext(
 ): RuntimeTestContext {
   const provider = createProviderForWallet(svm, payer);
 
-  const idl = loadProtocolIdl();
+  const idl = loadLocalProtocolIdl();
   const canonicalProgramId = new PublicKey(idl.address);
   if (!svm.getAccount(canonicalProgramId)) {
     const programBinaryPath = resolveProtocolProgramBinaryPath();
