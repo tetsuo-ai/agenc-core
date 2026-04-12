@@ -44,7 +44,7 @@ async function createFixtureContext(t) {
   return {
     packageRoot,
     homeDir,
-    async stageEmbeddedRelease(runtimeVersion) {
+    async stageEmbeddedRelease(runtimeVersion, artifactTargets = [{ platform: "linux", arch: "x64" }]) {
       const artifactStageDir = path.join(root, `artifact-stage-${runtimeVersion}`);
       const runtimeBinDir = path.join(
         artifactStageDir,
@@ -70,37 +70,42 @@ async function createFixtureContext(t) {
         });
       }
 
-      const artifactPath = path.join(
-        root,
-        `agenc-runtime-${runtimeVersion}-linux-x64.tar.gz`,
-      );
-      execFileSync("tar", ["-czf", artifactPath, "-C", artifactStageDir, "."], {
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      const artifactSha = sha256(await readFile(artifactPath));
+      const artifacts = [];
+      const artifactPaths = [];
+      for (const { platform, arch } of artifactTargets) {
+        const platformArch = `${platform}-${arch}`;
+        const artifactPath = path.join(
+          root,
+          `agenc-runtime-${runtimeVersion}-${platformArch}.tar.gz`,
+        );
+        execFileSync("tar", ["-czf", artifactPath, "-C", artifactStageDir, "."], {
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        const artifactSha = sha256(await readFile(artifactPath));
+        artifactPaths.push(artifactPath);
+        artifacts.push({
+          platform,
+          arch,
+          nodeRange: ">=18.0.0",
+          runtimeVersion,
+          url: pathToFileURL(artifactPath).href,
+          sha256: artifactSha,
+          bins: {
+            agenc: "node_modules/@tetsuo-ai/runtime/dist/bin/agenc.js",
+            "agenc-runtime":
+              "node_modules/@tetsuo-ai/runtime/dist/bin/agenc-runtime.js",
+            daemon: "node_modules/@tetsuo-ai/runtime/dist/bin/daemon.js",
+            "agenc-watch":
+              "node_modules/@tetsuo-ai/runtime/dist/bin/agenc-watch.js",
+          },
+        });
+      }
 
       const manifest = {
         manifestVersion: 1,
         wrapperVersion: "0.1.0",
         keyId: "local-dev",
-        artifacts: [
-          {
-            platform: "linux",
-            arch: "x64",
-            nodeRange: ">=18.0.0",
-            runtimeVersion,
-            url: pathToFileURL(artifactPath).href,
-            sha256: artifactSha,
-            bins: {
-              agenc: "node_modules/@tetsuo-ai/runtime/dist/bin/agenc.js",
-              "agenc-runtime":
-                "node_modules/@tetsuo-ai/runtime/dist/bin/agenc-runtime.js",
-              daemon: "node_modules/@tetsuo-ai/runtime/dist/bin/daemon.js",
-              "agenc-watch":
-                "node_modules/@tetsuo-ai/runtime/dist/bin/agenc-watch.js",
-            },
-          },
-        ],
+        artifacts,
       };
       const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
       const signature = sign(null, manifestBytes, privateKey).toString("base64");
@@ -129,7 +134,7 @@ async function createFixtureContext(t) {
         "utf8",
       );
 
-      return { artifactPath, runtimeVersion };
+      return { artifactPath: artifactPaths[0], artifactPaths, runtimeVersion };
     },
   };
 }
@@ -169,6 +174,29 @@ test("ensureRuntimeInstalled installs the runtime artifact under ~/.agenc/runtim
     installed.releaseDir,
   );
   assert.ok(installed.bins.agenc.startsWith(installed.currentDir));
+});
+
+test("ensureRuntimeInstalled selects darwin-arm64 from a multi-artifact manifest", async (t) => {
+  const fixture = await createFixtureContext(t);
+  await fixture.stageEmbeddedRelease("0.1.0", [
+    { platform: "linux", arch: "x64" },
+    { platform: "darwin", arch: "arm64" },
+  ]);
+
+  const installed = await ensureRuntimeInstalled({
+    packageRoot: fixture.packageRoot,
+    homeDir: fixture.homeDir,
+    platform: "darwin",
+    arch: "arm64",
+    nodeVersion: "20.0.0",
+  });
+
+  await stat(installed.bins.agenc);
+  await stat(installed.bins["agenc-runtime"]);
+  assert.equal(installed.selectedArtifact.platform, "darwin");
+  assert.equal(installed.selectedArtifact.arch, "arm64");
+  assert.match(installed.releaseDir, /releases\/0\.1\.0\/darwin-arm64$/u);
+  assert.equal(await readlink(installed.currentDir), installed.releaseDir);
 });
 
 test("ensureRuntimeInstalled force=true advances the stable current pointer on upgrade", async (t) => {

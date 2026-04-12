@@ -77,19 +77,18 @@ Evidence in the current repo:
 
 ### macOS
 
-Status: source/runtime development is plausible, but the public
-`@tetsuo-ai/agenc` wrapper install path is **not yet** claimed as supported.
+Status: supported for local CLI/daemon operation and for the public
+`@tetsuo-ai/agenc` wrapper install path on Apple Silicon `arm64`.
 
 Evidence in the current repo:
 
 - service install flow emits `launchd` plists
 - operator/runtime paths support standard macOS home-directory layout
+- package smoke validates the public wrapper install path on macOS `arm64` CI
 
-Why it is not yet claimed publicly:
+Still not claimed publicly:
 
-- the public wrapper/runtime artifact flow is not validated on macOS release CI
-- Phase 2 intentionally avoids overclaiming support beyond the tested release
-  tuple
+- macOS `x64` / Intel wrapper install artifacts
 
 ### Windows
 

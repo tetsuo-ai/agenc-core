@@ -14,20 +14,22 @@ It is intentionally narrower than the full runtime/operator surface:
 `agenc-runtime` still exists as a compatibility alias after the runtime is
 installed, but public release and onboarding docs should use `agenc ...`.
 
-## Supported target
+## Supported targets
 
 Current public wrapper support is intentionally narrow:
 
 - Linux `x64`
+- macOS `arm64` (Apple Silicon)
 - Node `>=18.0.0`
 
-Current release gates validate that tuple on:
+Current release gates validate:
 
-- Node `18` minimum-floor CI
-- Node `20` mainline CI
+- Linux `x64` on Node `18` minimum-floor CI
+- Linux `x64` on Node `20` mainline CI
+- macOS `arm64` on Node `20` CI
 
-Do not present macOS or Windows wrapper install as supported for this rehearsal
-until release CI proves those tuples.
+Do not present Windows or macOS `x64` wrapper install as supported
+for this rehearsal until release CI proves those tuples.
 
 ## Manual prerequisites
 
@@ -134,7 +136,7 @@ Use a second signer when the rehearsal specifically needs to prove:
 
 This guide does not claim support for:
 
-- macOS or Windows public wrapper install
+- Windows or macOS `x64` public wrapper install
 - private task or `constraintHash` flows
 - dispute resolution from the public wrapper using creator/worker keys
 - source-checkout-only commands as part of the public release path

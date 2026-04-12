@@ -13,7 +13,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const runtimeDir = path.join(repoRoot, "runtime");
 const wrapperDir = path.join(repoRoot, "packages", "agenc");
 const wrapperGeneratedDir = path.join(wrapperDir, "generated");
-const supportedPlatformArch = new Set(["linux-x64"]);
+const supportedPlatformArch = new Set(["darwin-arm64", "linux-x64"]);
 
 function parseArgs(argv) {
   const options = {
@@ -24,6 +24,7 @@ function parseArgs(argv) {
     releaseRepository: "tetsuo-ai/agenc-core",
     releaseTag: null,
     runtimeVersionOverride: null,
+    mergeManifestFiles: [],
     allowMissingBundledExternalPlugins: false,
     skipBuild: false,
   };
@@ -52,6 +53,9 @@ function parseArgs(argv) {
       case "--runtime-version-override":
         options.runtimeVersionOverride = argv[++index];
         break;
+      case "--merge-manifest":
+        options.mergeManifestFiles.push(path.resolve(argv[++index]));
+        break;
       case "--allow-missing-bundled-external-plugins":
         options.allowMissingBundledExternalPlugins = true;
         break;
@@ -76,6 +80,91 @@ function run(command, args, cwd, env = process.env) {
 
 function sha256(buffer) {
   return createHash("sha256").update(buffer).digest("hex");
+}
+
+function toPlatformArch(platform, arch) {
+  return `${platform}-${arch}`;
+}
+
+const requiredRuntimeBins = ["agenc", "agenc-runtime", "daemon", "agenc-watch"];
+
+function validateArtifactEntry(artifact, source, { runtimeVersion }) {
+  if (typeof artifact !== "object" || artifact === null || Array.isArray(artifact)) {
+    throw new Error(`[public-runtime] artifact from ${source} must be an object`);
+  }
+
+  const platform = typeof artifact.platform === "string" ? artifact.platform.trim() : "";
+  const arch = typeof artifact.arch === "string" ? artifact.arch.trim() : "";
+  const platformArch = toPlatformArch(platform, arch);
+  if (!supportedPlatformArch.has(platformArch)) {
+    throw new Error(
+      `[public-runtime] artifact from ${source} targets unsupported tuple ${platformArch}; supported public runtime artifact targets: ${Array.from(supportedPlatformArch).sort().join(", ")}`,
+    );
+  }
+
+  if (artifact.runtimeVersion !== runtimeVersion) {
+    throw new Error(
+      `[public-runtime] artifact ${platformArch} from ${source} has runtimeVersion ${artifact.runtimeVersion}; expected ${runtimeVersion}`,
+    );
+  }
+
+  const url = typeof artifact.url === "string" ? artifact.url.trim() : "";
+  const sha256Digest = typeof artifact.sha256 === "string" ? artifact.sha256.trim() : "";
+  if (!url || !sha256Digest) {
+    throw new Error(`[public-runtime] artifact ${platformArch} from ${source} must declare url and sha256`);
+  }
+
+  if (typeof artifact.bins !== "object" || artifact.bins === null || Array.isArray(artifact.bins)) {
+    throw new Error(`[public-runtime] artifact ${platformArch} from ${source} must declare bins`);
+  }
+  for (const binName of requiredRuntimeBins) {
+    if (typeof artifact.bins[binName] !== "string" || artifact.bins[binName].length === 0) {
+      throw new Error(`[public-runtime] artifact ${platformArch} from ${source} must declare bins.${binName}`);
+    }
+  }
+
+  return {
+    platform,
+    arch,
+    nodeRange: artifact.nodeRange ?? ">=18.0.0",
+    runtimeVersion: artifact.runtimeVersion,
+    url,
+    sha256: sha256Digest,
+    bins: Object.fromEntries(requiredRuntimeBins.map((binName) => [binName, artifact.bins[binName]])),
+  };
+}
+
+async function readMergedManifestArtifacts(options, { runtimeVersion, wrapperVersion }) {
+  const artifacts = [];
+  for (const manifestPath of options.mergeManifestFiles) {
+    const manifest = await readJson(manifestPath);
+    if (manifest.wrapperVersion !== wrapperVersion) {
+      throw new Error(
+        `[public-runtime] merge manifest ${manifestPath} has wrapperVersion ${manifest.wrapperVersion}; expected ${wrapperVersion}`,
+      );
+    }
+    if (!Array.isArray(manifest.artifacts)) {
+      throw new Error(`[public-runtime] merge manifest ${manifestPath} must declare artifacts`);
+    }
+    for (const artifact of manifest.artifacts) {
+      artifacts.push(
+        validateArtifactEntry(artifact, manifestPath, { runtimeVersion }),
+      );
+    }
+  }
+  return artifacts;
+}
+
+function mergeArtifactEntries(artifacts) {
+  const merged = new Map();
+  for (const artifact of artifacts) {
+    merged.set(toPlatformArch(artifact.platform, artifact.arch), artifact);
+  }
+  return [...merged.values()].sort((left, right) =>
+    toPlatformArch(left.platform, left.arch).localeCompare(
+      toPlatformArch(right.platform, right.arch),
+    ),
+  );
 }
 
 async function readJson(filePath) {
@@ -230,7 +319,7 @@ async function main() {
     options.runtimeVersionOverride ?? runtimePackage.version;
   const platform = process.platform;
   const arch = process.arch;
-  const platformArch = `${platform}-${arch}`;
+  const platformArch = toPlatformArch(platform, arch);
 
   if (!supportedPlatformArch.has(platformArch)) {
     throw new Error(
@@ -371,6 +460,23 @@ async function main() {
       : pathToFileURL(artifactPath).href;
 
     const keys = await buildKeys(options);
+    const currentArtifact = {
+      platform,
+      arch,
+      nodeRange: runtimePackage.engines?.node ?? ">=18.0.0",
+      runtimeVersion,
+      url: artifactUrl,
+      sha256: artifactSha,
+      bins: metadata.bins,
+    };
+    const mergedArtifacts = mergeArtifactEntries([
+      ...(await readMergedManifestArtifacts(options, {
+        runtimeVersion,
+        wrapperVersion: wrapperPackage.version,
+      })),
+      currentArtifact,
+    ]);
+
     const manifest = {
       manifestVersion: 1,
       wrapperVersion: wrapperPackage.version,
@@ -379,17 +485,7 @@ async function main() {
       releaseChannel: options.artifactBaseUrl ? "github-releases" : "local-dev",
       releaseRepository: options.releaseRepository,
       releaseTag: options.releaseTag ?? `agenc-v${wrapperPackage.version}`,
-      artifacts: [
-        {
-          platform,
-          arch,
-          nodeRange: runtimePackage.engines?.node ?? ">=18.0.0",
-          runtimeVersion,
-          url: artifactUrl,
-          sha256: artifactSha,
-          bins: metadata.bins,
-        },
-      ],
+      artifacts: mergedArtifacts,
     };
     const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
     const signature = sign(null, manifestBytes, keys.privateKeyPem).toString("base64");
@@ -453,6 +549,14 @@ async function main() {
           wrapperVersion: wrapperPackage.version,
           artifactSha256: artifactSha,
           artifactUrl,
+          artifactCount: manifest.artifacts.length,
+          artifacts: manifest.artifacts.map((artifact) => ({
+            platform: artifact.platform,
+            arch: artifact.arch,
+            runtimeVersion: artifact.runtimeVersion,
+            url: artifact.url,
+            sha256: artifact.sha256,
+          })),
           bundledExternalPlugins: bundledExternalPlugins.map((plugin) => ({
             name: plugin.name,
             version: plugin.version,

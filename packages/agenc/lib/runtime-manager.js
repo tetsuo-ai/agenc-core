@@ -27,7 +27,7 @@ const GENERATED_PUBLIC_KEY_BASENAME = "agenc-runtime-public-key.pem";
 const GENERATED_TRUST_POLICY_BASENAME = "agenc-runtime-trust-policy.json";
 const DEFAULT_LOCK_TIMEOUT_MS = 30_000;
 const LOCK_POLL_INTERVAL_MS = 100;
-const SUPPORTED_PLATFORM_ARCH = new Set(["linux-x64"]);
+const SUPPORTED_PLATFORM_ARCH = new Set(["darwin-arm64", "linux-x64"]);
 
 export class RuntimeInstallError extends Error {
   constructor(message, code = "runtime_install_error") {

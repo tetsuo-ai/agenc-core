@@ -96,6 +96,34 @@ jobs:
       - name: Run public agenc install smoke test
         run: npm run smoke:public-agenc-install -- --skip-build
 
+  public-install-macos-arm64:
+    runs-on: macos-14
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install workspace dependencies
+        run: npm install --no-fund
+
+      - name: Build private-kernel packages
+        run: AGENC_SKIP_DASHBOARD_BUILD=1 npm run build:private-kernel
+
+      - name: Build dashboard surface
+        run: AGENC_DASHBOARD_BASE=/ui/ npm run build --workspace=@tetsuo-ai/web
+
+      - name: Sync dashboard assets
+        run: npm run sync:dashboard-assets
+
+      - name: Run public agenc install smoke test on macOS arm64
+        run: npm run smoke:public-agenc-install -- --skip-build
+
   public-install-min-node:
     runs-on: ubuntu-latest
     permissions:

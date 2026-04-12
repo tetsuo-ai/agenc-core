@@ -35,29 +35,30 @@ The public runtime artifact channel is:
 
 Release flow:
 
-1. `agenc-core` CI builds the runtime artifact for the supported tuple.
+1. `agenc-core` CI builds runtime artifacts for each supported tuple.
 2. CI builds the dashboard bundle with base `/ui/` and syncs it into
    `runtime/dist/dashboard/`.
-3. CI signs the manifest for that artifact.
-4. CI attaches the artifact to the corresponding GitHub Release.
+3. CI signs the manifest for the complete artifact set.
+4. CI attaches the artifacts to the corresponding GitHub Release.
 5. CI embeds the signed manifest, signature, public key, and trust policy into
    the published `@tetsuo-ai/agenc` wrapper package.
 
 Phase 2 keeps local smoke/rehearsal on `file://` manifests, but the production
 release contract is GitHub Releases.
 
-## Supported tuple
+## Supported tuples
 
 Current public wrapper support is intentionally narrow:
 
-- platform: `linux`
-- arch: `x64`
+- Linux `x64`
+- macOS `arm64` (Apple Silicon)
 - Node: `>=18.0.0`
 
-The current release gate validates that tuple on:
+The current release gate validates:
 
-- Node `18` minimum-floor CI
-- Node `20` mainline CI
+- Linux `x64` on Node `18` minimum-floor CI
+- Linux `x64` on Node `20` mainline CI
+- macOS `arm64` on Node `20` CI
 
 Anything else must fail clearly as unsupported. Broader platform support should
 only be added once release CI and smoke coverage exist for those tuples.

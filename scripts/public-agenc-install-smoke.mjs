@@ -173,6 +173,9 @@ async function main() {
   );
   const initialRuntimeVersion = runtimePackage.version;
   const upgradedRuntimeVersion = bumpPatchVersion(initialRuntimeVersion);
+  const expectedPlatform = process.platform;
+  const expectedArch = process.arch;
+  const expectedPlatformArch = expectedPlatform + "-" + expectedArch;
 
   try {
     if (!options.skipBuild) {
@@ -235,8 +238,8 @@ async function main() {
     assert.equal(wherePayload.installed, true);
     assert.equal(typeof wherePayload.releaseDir, "string");
     assert.equal(typeof wherePayload.currentDir, "string");
-    assert.equal(wherePayload.selectedArtifact?.platform, "linux");
-    assert.equal(wherePayload.selectedArtifact?.arch, "x64");
+    assert.equal(wherePayload.selectedArtifact?.platform, expectedPlatform);
+    assert.equal(wherePayload.selectedArtifact?.arch, expectedArch);
     assert.equal(wherePayload.selectedArtifact?.runtimeVersion, initialRuntimeVersion);
     assert.equal(wherePayload.trustPolicy?.releaseChannel, "local-dev");
 
@@ -307,7 +310,7 @@ async function main() {
     assert.notEqual(upgradedWherePayload.releaseDir, currentSymlinkTargetV1);
     assert.match(
       upgradedWherePayload.releaseDir,
-      new RegExp(`releases/${upgradedRuntimeVersion.replace(/\./gu, "\\.")}/linux-x64$`, "u"),
+      new RegExp("releases/" + upgradedRuntimeVersion.replace(/\./gu, "\\.") + "/" + expectedPlatformArch + "$", "u"),
     );
     const upgradedCurrentDirStat = await lstat(upgradedWherePayload.currentDir);
     assert.equal(upgradedCurrentDirStat.isSymbolicLink(), true);
