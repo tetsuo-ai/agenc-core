@@ -32,8 +32,9 @@ From strongest to weakest:
 
 ## Shared runtime authority
 
-`agenc shell`, the operator console, the dashboard, and other daemon clients all
-attach to the same runtime authority:
+Bare `agenc`, `agenc shell`, the explicit `agenc console` compatibility path,
+the dashboard, and other daemon clients all attach to the same runtime
+authority:
 
 - one daemon
 - one policy engine
@@ -42,3 +43,18 @@ attach to the same runtime authority:
 - one tool and connector surface
 
 The coding shell is therefore a mode of AgenC, not a separate runtime product.
+
+## Phase 1 Surface Inventory
+
+Phase 1 reuses the existing daemon surfaces instead of introducing a parallel
+stack:
+
+- `agenc` and `agenc shell [profile]` for shell-first terminal sessions
+- `agenc console` for the explicit operator-console compatibility surface
+- `agenc ui` for the dashboard client
+- `agenc-runtime sessions list|kill` for control-plane session inspection
+- the existing watch/operator runtime surfaces for deeper observability and
+  lifecycle work
+
+Later phases should extend these surfaces rather than fork a second coding-only
+runtime path.

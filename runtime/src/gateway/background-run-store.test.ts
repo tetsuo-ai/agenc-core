@@ -15,6 +15,7 @@ function makeRun(
     id: "bg-test",
     sessionId: "session-1",
     objective: "Monitor a process until it completes.",
+    shellProfile: "operator",
     policyScope: {
       tenantId: "tenant-a",
       projectId: "project-x",
@@ -159,6 +160,7 @@ describe("BackgroundRunStore", () => {
       lineage: {
         rootRunId: "bg-test",
         parentRunId: "bg-parent",
+        shellProfile: "validation",
         role: "worker",
         depth: 1,
         scope: {
@@ -183,7 +185,9 @@ describe("BackgroundRunStore", () => {
     await store.saveRun(run);
 
     await expect(store.loadRun(run.sessionId)).resolves.toMatchObject({
+      shellProfile: "operator",
       lineage: {
+        shellProfile: "validation",
         scope: {
           workspaceRoot: "/home/tetsuo/git/AgenC/agenc-core",
           allowedReadRoots: ["/home/tetsuo/git/AgenC/agenc-core"],
@@ -192,6 +196,24 @@ describe("BackgroundRunStore", () => {
           targetArtifacts: ["/home/tetsuo/git/AgenC/agenc-core/docs/AGENC.md"],
         },
       },
+    });
+  });
+
+  it("defaults legacy runs without shell profiles to general", async () => {
+    const backend = new InMemoryBackend();
+    const store = new BackgroundRunStore({ memoryBackend: backend });
+    const legacyRun = {
+      ...makeRun({
+        id: "legacy-no-profile",
+        sessionId: "legacy-no-profile",
+      }),
+    } as Record<string, unknown>;
+    delete legacyRun.shellProfile;
+
+    await backend.set("background-run:session:legacy-no-profile", legacyRun);
+
+    await expect(store.loadRun("legacy-no-profile")).resolves.toMatchObject({
+      shellProfile: "general",
     });
   });
 

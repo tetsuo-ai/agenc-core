@@ -177,6 +177,7 @@ import { computeRuntimeSloSnapshot } from "../telemetry/slo.js";
 import {
   DEFAULT_SESSION_SHELL_PROFILE,
   SESSION_SHELL_PROFILE_METADATA_KEY,
+  type SessionShellProfile,
   resolveSessionShellProfile,
   SessionManager,
 } from "./session.js";
@@ -2322,7 +2323,7 @@ export class DaemonManager {
         incidentDiagnostics: this._incidentDiagnostics ?? undefined,
         effectLedger: this._effectLedger ?? undefined,
         faultInjector: this.faultInjector,
-        createToolHandler: ({ sessionId, runId, cycleIndex }) =>
+        createToolHandler: ({ sessionId, runId, cycleIndex, shellProfile }) =>
           this.createWebChatSessionToolHandler({
             sessionId,
             webChat,
@@ -2333,14 +2334,17 @@ export class DaemonManager {
             traceConfig: resolveTraceLoggingConfig(gateway.config.logging),
             traceId: `background:${sessionId}:${runId}:${cycleIndex}`,
             hookMetadata: { backgroundRunId: runId },
+            shellProfile,
           }),
-        buildToolRoutingDecision: (sessionId, content, _history) =>
+        buildToolRoutingDecision: (sessionId, content, _history, shellProfile) =>
           buildStaticToolRoutingDecision({
             content,
             availableToolNames: this.getAdvertisedToolNames(),
-            shellProfile: resolveSessionShellProfile(
-              sessionMgr.get(sessionId)?.metadata ?? {},
-            ),
+            shellProfile:
+              shellProfile ??
+              resolveSessionShellProfile(
+                sessionMgr.get(sessionId)?.metadata ?? {},
+              ),
           }),
         seedHistoryForSession: (sessionId) =>
           sessionMgr.get(sessionId)?.history ?? [],
@@ -3343,11 +3347,12 @@ export class DaemonManager {
         this.registerTextApprovalDispatcher(sessionId, channelName, send),
       createTextChannelSessionToolHandler: (params) =>
         this.createTextChannelSessionToolHandler(params),
-      buildToolRoutingDecision: (_sessionId, content, _history) =>
+      buildToolRoutingDecision: (_sessionId, content, _history, shellProfile) =>
         buildStaticToolRoutingDecision({
           content,
           availableToolNames: this.getAdvertisedToolNames(),
-          shellProfile: resolveSessionShellProfile({}),
+          shellProfile:
+            shellProfile ?? resolveSessionShellProfile({}),
         }),
       recordToolRoutingOutcome: () => {
         /* no-op: static routing, nothing to record */
@@ -4595,6 +4600,9 @@ export class DaemonManager {
       args,
       params.sessionId,
       {
+        shellProfile: resolveSessionShellProfile(
+          this._webSessionManager?.get(params.sessionId)?.metadata ?? {},
+        ),
         message: `Policy simulation preview for ${params.toolName}`,
       },
     ) ?? {
@@ -5428,6 +5436,7 @@ export class DaemonManager {
       toolName: string,
       args: Record<string, unknown>,
     ) => string | undefined;
+    shellProfile?: SessionShellProfile;
     onToolEnd?: (
       toolName: string,
       args: Record<string, unknown>,
@@ -5448,15 +5457,18 @@ export class DaemonManager {
       normalizeArgs,
       hookMetadata,
       beforeHandle,
+      shellProfile,
       onToolEnd,
     } = params;
     const inFlightToolArgs = new Map<string, Record<string, unknown>>();
 
     const baseSessionHandler = createSessionToolHandler({
       sessionId,
-      shellProfile: resolveSessionShellProfile(
-        this._webSessionManager?.get(sessionId)?.metadata ?? {},
-      ),
+      shellProfile:
+        shellProfile ??
+        resolveSessionShellProfile(
+          this._webSessionManager?.get(sessionId)?.metadata ?? {},
+        ),
       baseHandler: baseToolHandler,
       taskStore: this._taskTrackerStore,
       runtimeContractFlags: resolveRuntimeContractFlags(this.gateway?.config.llm),
@@ -5547,12 +5559,20 @@ export class DaemonManager {
     send: (content: string) => Promise<void>;
     traceConfig: ResolvedTraceLoggingConfig;
     traceId: string;
+    shellProfile?: SessionShellProfile;
   }): ToolHandler {
-    const { sessionId, channelName, send, traceConfig, traceId } = params;
+    const {
+      sessionId,
+      channelName,
+      send,
+      traceConfig,
+      traceId,
+      shellProfile,
+    } = params;
 
     const baseSessionHandler = createSessionToolHandler({
       sessionId,
-      shellProfile: DEFAULT_SESSION_SHELL_PROFILE,
+      shellProfile: shellProfile ?? DEFAULT_SESSION_SHELL_PROFILE,
       baseHandler: this._baseToolHandler!,
       taskStore: this._taskTrackerStore,
       runtimeContractFlags: resolveRuntimeContractFlags(this.gateway?.config.llm),

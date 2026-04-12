@@ -171,6 +171,7 @@ function buildPreparedAssignment(
       },
     },
     allowedTools: ["system.readFile"],
+    shellProfile: "coding",
     workingDirectory: "/tmp/project",
     executionContextFingerprint:
       '{"allowedReadRoots":["/tmp/project"],"allowedTools":["system.readFile"],"allowedWriteRoots":["/tmp/project"]}',
@@ -244,6 +245,7 @@ describe("PersistentWorkerManager", () => {
       expect.objectContaining({
         workerId: worker.workerId,
         workerName: "builder",
+        shellProfile: "coding",
         state: "idle",
         lastTaskId: queued.task.id,
       }),
@@ -457,6 +459,16 @@ describe("PersistentWorkerManager", () => {
       mode: "remote_session",
       handleId: "rsess_123",
     });
+    expect(workers[0]?.shellProfile).toBe("coding");
+    expect(remoteSessionManager.start).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          parentSessionId: "session-a",
+          workerId: "worker-1",
+          shellProfile: "coding",
+        }),
+      }),
+    );
     expect(remoteSessionManager.handleWebhook).toHaveBeenCalled();
   });
 });

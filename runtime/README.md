@@ -56,7 +56,10 @@ Useful internal entrypoints:
 
 Current shell entrypoint:
 
-- `agenc-runtime shell [profile]`
+- `agenc` opens the `general` shell on the public wrapper path
+- `agenc shell [profile]`
+- `agenc-runtime shell [profile]` as the compatibility alias
+- `agenc console` for the explicit operator-console compatibility path
 
 Current operator marketplace entrypoint:
 

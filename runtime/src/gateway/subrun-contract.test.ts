@@ -11,6 +11,7 @@ describe("subrun-contract", () => {
   it("validates durable subrun specs and session ids", () => {
     expect(() =>
       assertValidDurableSubrunSpec({
+        shellProfile: "research",
         objective: "Gather evidence for the failing job.",
         role: "worker",
         scope: {
@@ -67,6 +68,19 @@ describe("subrun-contract", () => {
         childRunIds: [],
       }),
     ).toThrow(/depth/i);
+
+    expect(() =>
+      assertValidBackgroundRunLineage({
+        rootRunId: "root",
+        shellProfile: "invalid-profile" as never,
+        role: "worker",
+        depth: 0,
+        scope: { allowedTools: ["system.processStatus"] },
+        artifactContract: { requiredKinds: [] },
+        budget: { maxRuntimeMs: 10_000 },
+        childRunIds: [],
+      }),
+    ).toThrow(/shellProfile/i);
 
     expect(() =>
       assertValidDurableSubrunSpec({

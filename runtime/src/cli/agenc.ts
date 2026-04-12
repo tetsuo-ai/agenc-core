@@ -36,24 +36,35 @@ const DEFAULT_DEPS: AgencDeps = {
 
 function buildHelp(): string {
   return [
-    "agenc [console] [--config <path>] [--pid-path <path>] [--log-level <level>] [--yolo]",
+    "agenc [--profile <name>] [--config <path>] [--pid-path <path>] [--new] [--session <id>]",
+    "agenc console [--config <path>] [--pid-path <path>] [--log-level <level>] [--yolo]",
+    "agenc shell [profile] [--config <path>] [--pid-path <path>] [--port <n>] [--new] [--session <id>]",
     "agenc <runtime-command> [options]",
     "",
     "Default behavior:",
-    "  With no subcommand, AgenC ensures the daemon is running and opens the operator console.",
+    "  With no subcommand, AgenC ensures the daemon is running and opens the general shell.",
     "",
-    "Console options:",
+    "Shell options:",
+    "      --profile <name>     Shell profile (default: general)",
+    "      --port <n>           Control-plane port override",
+    "      --new                Start a fresh shell session instead of resuming",
+    "      --session <id>       Resume an explicit daemon session id",
+    "",
+    "Console compatibility options:",
     "      --config <path>      Config file path (default: ~/.agenc/config.json)",
     "      --pid-path <path>    PID file path override",
     "      --log-level <level>  Daemon startup log level",
     "      --yolo               Unsafe benchmark mode for delegated-agent flows",
     "",
     "Runtime passthrough:",
-    "  Any explicit subcommand other than `console` is forwarded to agenc-runtime.",
+    "  Any explicit subcommand other than `console`, `shell`, or `ui` is forwarded to agenc-runtime.",
     "",
     "Examples:",
     "  agenc",
+    "  agenc --profile coding",
     "  agenc --config ~/.agenc/config.json",
+    "  agenc shell coding",
+    "  agenc shell --new",
     "  agenc console --yolo",
     "  agenc ui",
     "  agenc ui --no-open",
@@ -164,6 +175,14 @@ export async function runAgencCli(
 
     if (command === "ui") {
       return deps.runUiCommand(buildUiOptions(argv, options));
+    }
+
+    if (command === undefined) {
+      return deps.runCli({
+        argv: ["shell", ...argv],
+        stdout,
+        stderr,
+      });
     }
 
     return deps.runOperatorConsole(buildOperatorConsoleOptions(argv, options));

@@ -49,7 +49,9 @@ binary remains `agenc`.
 
 `agenc` exposes two primary local operator surfaces against the same daemon:
 
+- bare `agenc` opens the `general` shell by default
 - `agenc shell [profile]` opens a line-oriented terminal shell over the daemon's WebChat/control-plane path
+- `agenc console` opens the explicit operator console compatibility surface
 - `agenc ui` opens or prints the local dashboard URL on `/ui/`
 
 Supported shell profiles:

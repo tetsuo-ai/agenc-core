@@ -13,6 +13,7 @@ import type { HookHandler, HookContext, HookResult } from "./hooks.js";
 import { createHmac } from "node:crypto";
 import type { EffectApprovalPolicy } from "./effect-approval-policy.js";
 import type { EffectFilesystemEntryType } from "../workflow/effects.js";
+import type { SessionShellProfile } from "./shell-profile.js";
 
 // ============================================================================
 // Types
@@ -93,6 +94,8 @@ export interface ApprovalRequest {
   readonly parentSessionId?: string;
   /** Optional delegated child session identifier. */
   readonly subagentSessionId?: string;
+  /** Optional shell profile active when the request was created. */
+  readonly shellProfile?: SessionShellProfile;
   /** Human-readable message describing what needs approval. */
   readonly message: string;
   /** Timestamp when the request was created. */
@@ -460,6 +463,7 @@ export class ApprovalEngine {
     context?: {
       parentSessionId?: string;
       subagentSessionId?: string;
+      shellProfile?: SessionShellProfile;
       effect?: ApprovalEffectRef;
       approvalScopeKey?: string;
       reasonCode?: string;
@@ -487,6 +491,7 @@ export class ApprovalEngine {
     context?: {
       parentSessionId?: string;
       subagentSessionId?: string;
+      shellProfile?: SessionShellProfile;
       effect?: ApprovalEffectRef;
       approvalScopeKey?: string;
       reasonCode?: string;
@@ -504,6 +509,7 @@ export class ApprovalEngine {
       context.subagentSessionId.trim().length > 0
         ? context.subagentSessionId.trim()
         : undefined;
+    const shellProfile = context?.shellProfile;
     const deadlineAt = createdAt + this.timeoutMs;
     const slaMs =
       rule.slaMs !== undefined
@@ -528,6 +534,7 @@ export class ApprovalEngine {
       sessionId,
       ...(parentSessionId ? { parentSessionId } : {}),
       ...(subagentSessionId ? { subagentSessionId } : {}),
+      ...(shellProfile ? { shellProfile } : {}),
       message,
       createdAt,
       deadlineAt,
@@ -576,6 +583,7 @@ export class ApprovalEngine {
     context?: {
       parentSessionId?: string;
       subagentSessionId?: string;
+      shellProfile?: SessionShellProfile;
       message?: string;
       effect?: ApprovalEffectRef;
     },
@@ -689,6 +697,7 @@ export class ApprovalEngine {
         ...(context?.subagentSessionId
           ? { subagentSessionId: context.subagentSessionId }
           : {}),
+        ...(context?.shellProfile ? { shellProfile: context.shellProfile } : {}),
         ...(context?.effect ? { effect: context.effect } : {}),
         approvalScopeKey: outcome.approvalScopeKey,
         reasonCode: outcome.reasonCode,
@@ -715,6 +724,7 @@ export class ApprovalEngine {
     context?: {
       parentSessionId?: string;
       subagentSessionId?: string;
+      shellProfile?: SessionShellProfile;
       message?: string;
       effect?: ApprovalEffectRef;
     },

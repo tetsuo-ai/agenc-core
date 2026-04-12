@@ -17,10 +17,10 @@ function captureStream(): { stream: Writable; data: () => string } {
 }
 
 describe("agenc launcher CLI", () => {
-  it("launches the operator console by default", async () => {
+  it("launches the general shell by default", async () => {
     const runOperatorConsole = vi.fn().mockResolvedValue(0);
     const runUiCommand = vi.fn().mockResolvedValue(0);
-    const runCli = vi.fn().mockResolvedValue(1);
+    const runCli = vi.fn().mockResolvedValue(0);
 
     const code = await runAgencCli(
       {
@@ -34,33 +34,30 @@ describe("agenc launcher CLI", () => {
     );
 
     expect(code).toBe(0);
-    expect(runOperatorConsole).toHaveBeenCalledWith({
-      configPath: undefined,
-      pidPath: undefined,
-      logLevel: undefined,
-      yolo: undefined,
-      cwd: undefined,
-      env: undefined,
+    expect(runCli).toHaveBeenCalledWith({
+      argv: ["shell"],
+      stdout: expect.any(Writable),
+      stderr: expect.any(Writable),
     });
-    expect(runCli).not.toHaveBeenCalled();
+    expect(runOperatorConsole).not.toHaveBeenCalled();
     expect(runUiCommand).not.toHaveBeenCalled();
   });
 
-  it("passes console flags through to the operator console launcher", async () => {
+  it("passes shell flags through to the runtime shell command when no subcommand is provided", async () => {
     const runOperatorConsole = vi.fn().mockResolvedValue(0);
     const runUiCommand = vi.fn().mockResolvedValue(0);
-    const runCli = vi.fn().mockResolvedValue(1);
+    const runCli = vi.fn().mockResolvedValue(0);
 
     await runAgencCli(
       {
         argv: [
+          "--profile",
+          "coding",
           "--config",
           "/tmp/agenc.json",
           "--pid-path",
           "/tmp/agenc.pid",
-          "--log-level",
-          "info",
-          "--yolo",
+          "--new",
         ],
         cwd: "/workspace/demo",
         env: {
@@ -74,17 +71,51 @@ describe("agenc launcher CLI", () => {
       },
     );
 
-    expect(runOperatorConsole).toHaveBeenCalledWith({
-      configPath: "/tmp/agenc.json",
-      pidPath: "/tmp/agenc.pid",
-      logLevel: "info",
-      yolo: true,
-      cwd: "/workspace/demo",
-      env: {
-        DEMO: "1",
-      },
+    expect(runCli).toHaveBeenCalledWith({
+      argv: [
+        "shell",
+        "--profile",
+        "coding",
+        "--config",
+        "/tmp/agenc.json",
+        "--pid-path",
+        "/tmp/agenc.pid",
+        "--new",
+      ],
+      stdout: expect.any(Writable),
+      stderr: expect.any(Writable),
     });
-    expect(runCli).not.toHaveBeenCalled();
+    expect(runOperatorConsole).not.toHaveBeenCalled();
+    expect(runUiCommand).not.toHaveBeenCalled();
+  });
+
+  it("forwards explicit agenc shell subcommands to agenc-runtime", async () => {
+    const runOperatorConsole = vi.fn().mockResolvedValue(0);
+    const runUiCommand = vi.fn().mockResolvedValue(0);
+    const runCli = vi.fn().mockResolvedValue(0);
+    const stdout = captureStream();
+    const stderr = captureStream();
+
+    const code = await runAgencCli(
+      {
+        argv: ["shell", "coding", "--new"],
+        stdout: stdout.stream,
+        stderr: stderr.stream,
+      },
+      {
+        runOperatorConsole,
+        runUiCommand,
+        runCli,
+      },
+    );
+
+    expect(code).toBe(0);
+    expect(runCli).toHaveBeenCalledWith({
+      argv: ["shell", "coding", "--new"],
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+    });
+    expect(runOperatorConsole).not.toHaveBeenCalled();
     expect(runUiCommand).not.toHaveBeenCalled();
   });
 
@@ -175,7 +206,8 @@ describe("agenc launcher CLI", () => {
     );
 
     expect(code).toBe(0);
-    expect(stdout.data()).toContain("agenc [console]");
+    expect(stdout.data()).toContain("agenc [--profile <name>]");
+    expect(stdout.data()).toContain("agenc shell [profile]");
     expect(stdout.data()).toContain("agenc ui");
     expect(stdout.data()).toContain("agenc init");
     expect(stdout.data()).toContain("agenc status");

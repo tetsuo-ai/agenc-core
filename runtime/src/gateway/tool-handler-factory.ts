@@ -20,7 +20,10 @@ import {
   TASK_TRACKER_TOOL_NAMES,
 } from "../tools/system/task-tracker.js";
 import type { TaskStore } from "../tools/system/task-tracker.js";
-import type { SessionShellProfile } from "./shell-profile.js";
+import {
+  buildShellProfileApprovalContext,
+  type SessionShellProfile,
+} from "./shell-profile.js";
 import {
   didToolCallFail,
   enrichToolResultMetadata,
@@ -1830,6 +1833,7 @@ function buildApprovalMessage(params: {
   sessionId: string;
   isSubAgentSession: boolean;
   subAgentInfo: DelegationSubAgentInfo | null;
+  shellProfile?: SessionShellProfile;
 }): string {
   const {
     ruleDescription,
@@ -1837,19 +1841,28 @@ function buildApprovalMessage(params: {
     sessionId,
     isSubAgentSession,
     subAgentInfo,
+    shellProfile,
   } = params;
   const baseMessage = ruleDescription ?? `Approval required for ${toolName}`;
-  if (!isSubAgentSession || !subAgentInfo) return baseMessage;
+  const shellProfileContext = shellProfile
+    ? buildShellProfileApprovalContext(shellProfile)
+    : undefined;
+  if (!isSubAgentSession || !subAgentInfo) {
+    return shellProfileContext
+      ? `${baseMessage}\n${shellProfileContext}`
+      : baseMessage;
+  }
   const taskPreview = truncateText(
     subAgentInfo.task.trim(),
     APPROVAL_TASK_PREVIEW_MAX_CHARS,
   );
-  return (
+  const message = (
     `${baseMessage}\n` +
     `Parent session: ${subAgentInfo.parentSessionId}\n` +
     `Sub-agent session: ${sessionId}\n` +
     `Delegated task: ${taskPreview}`
   );
+  return shellProfileContext ? `${message}\n${shellProfileContext}` : message;
 }
 
 function extractDelegationObjective(
@@ -1923,6 +1936,7 @@ async function runApprovalGate(params: {
   parentSessionId: string | undefined;
   isSubAgentSession: boolean;
   subAgentInfo: DelegationSubAgentInfo | null;
+  shellProfile?: SessionShellProfile;
   lifecycleEmitter: DelegationLifecycleEmitter;
   send: (msg: ControlResponse) => void;
   onToolEnd: SessionToolHandlerConfig["onToolEnd"];
@@ -1942,6 +1956,7 @@ async function runApprovalGate(params: {
     parentSessionId,
     isSubAgentSession,
     subAgentInfo,
+    shellProfile,
     lifecycleEmitter,
     send,
     onToolEnd,
@@ -1962,6 +1977,7 @@ async function runApprovalGate(params: {
       ? approvalEngine.simulate(name, args, sessionId, {
           ...(parentSessionId ? { parentSessionId } : {}),
           ...(isSubAgentSession ? { subagentSessionId: sessionId } : {}),
+          ...(shellProfile ? { shellProfile } : {}),
           ...(effectRef ? { effect: effectRef } : {}),
         })
       : undefined;
@@ -2100,6 +2116,7 @@ async function runApprovalGate(params: {
       sessionId,
       isSubAgentSession,
       subAgentInfo,
+      shellProfile,
     });
   let request;
   try {
@@ -2118,6 +2135,7 @@ async function runApprovalGate(params: {
       {
         ...(parentSessionId ? { parentSessionId } : {}),
         ...(isSubAgentSession ? { subagentSessionId: sessionId } : {}),
+        ...(shellProfile ? { shellProfile } : {}),
         ...(effectRef ? { effect: effectRef } : {}),
         ...(decision?.approvalScopeKey
           ? { approvalScopeKey: decision.approvalScopeKey }
@@ -2693,6 +2711,7 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
         ? approvalEngine.simulate(toolName, normalizedArgs, sessionId, {
             ...(parentSessionId ? { parentSessionId } : {}),
             ...(isSubAgentSession ? { subagentSessionId: sessionId } : {}),
+            ...(shellProfile ? { shellProfile } : {}),
             ...(preApprovalEffectRef ? { effect: preApprovalEffectRef } : {}),
           })
         : undefined;
@@ -2838,6 +2857,7 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
       parentSessionId,
       isSubAgentSession,
       subAgentInfo,
+      shellProfile,
       lifecycleEmitter,
       send,
       onToolEnd,

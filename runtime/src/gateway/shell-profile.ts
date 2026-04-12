@@ -201,6 +201,32 @@ export function getShellProfileDefinition(
   return DEFINITIONS[profile];
 }
 
+export function getShellProfileApprovalHints(
+  profile: SessionShellProfile,
+): ShellProfileApprovalHints {
+  return getShellProfileDefinition(profile).approvalHints;
+}
+
+export function buildShellProfileApprovalContext(
+  profile: SessionShellProfile,
+): string | undefined {
+  if (profile === "general") {
+    return undefined;
+  }
+  const definition = getShellProfileDefinition(profile);
+  const hints = definition.approvalHints;
+  const posture: string[] = [];
+  if (hints.readOnlyBias) {
+    posture.push("read-only bias");
+  }
+  if (hints.mutatingToolsDeemphasized) {
+    posture.push("mutating tools de-emphasized until justified");
+  }
+  const suffix =
+    posture.length > 0 ? ` (${posture.join("; ")})` : "";
+  return `Active shell profile: ${definition.label}${suffix}.`;
+}
+
 export function getShellProfilePreferredToolNames(params: {
   profile: SessionShellProfile;
   availableToolNames: readonly string[];

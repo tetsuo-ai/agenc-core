@@ -9,6 +9,10 @@
  */
 
 import type { BackgroundRunArtifactRef } from "./background-run-store.js";
+import {
+  isSessionShellProfile,
+  type SessionShellProfile,
+} from "./shell-profile.js";
 
 const SUBRUN_ROLES = [
   "planner",
@@ -65,6 +69,7 @@ export interface SubrunArtifactContract {
 export interface BackgroundRunLineage {
   readonly rootRunId: string;
   readonly parentRunId?: string;
+  readonly shellProfile?: SessionShellProfile;
   readonly role: SubrunRole;
   readonly depth: number;
   readonly joinStrategy?: SubrunJoinStrategy;
@@ -77,6 +82,7 @@ export interface BackgroundRunLineage {
 
 export interface DurableSubrunSpec {
   readonly sessionId?: string;
+  readonly shellProfile?: SessionShellProfile;
   readonly objective: string;
   readonly role: SubrunRole;
   readonly scope: SubrunScope;
@@ -238,6 +244,12 @@ export function assertValidDurableSubrunSpec(
   spec: DurableSubrunSpec,
   context = "durable subrun spec",
 ): void {
+  if (
+    spec.shellProfile !== undefined &&
+    !isSessionShellProfile(spec.shellProfile)
+  ) {
+    throw new Error(`${context}: shellProfile is invalid`);
+  }
   if (typeof spec.objective !== "string" || spec.objective.trim().length === 0) {
     throw new Error(`${context}: objective must be a non-empty string`);
   }
@@ -264,6 +276,12 @@ export function assertValidBackgroundRunLineage(
     (typeof lineage.parentRunId !== "string" || lineage.parentRunId.trim().length === 0)
   ) {
     throw new Error(`${context}: parentRunId must be a non-empty string when provided`);
+  }
+  if (
+    lineage.shellProfile !== undefined &&
+    !isSessionShellProfile(lineage.shellProfile)
+  ) {
+    throw new Error(`${context}: shellProfile is invalid`);
   }
   if (!isSubrunRole(lineage.role)) {
     throw new Error(`${context}: role is invalid`);

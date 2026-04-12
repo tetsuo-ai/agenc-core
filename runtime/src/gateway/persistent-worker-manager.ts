@@ -28,6 +28,8 @@ import {
   reportManagedRemoteSession,
   startManagedRemoteSession,
 } from "./remote-execution-handles.js";
+import type { SessionShellProfile } from "./shell-profile.js";
+import { coerceSessionShellProfile } from "./shell-profile.js";
 import { buildDelegatedChildPrompt } from "./tool-handler-factory-delegation.js";
 import type { VerifierRequirement } from "./verifier-probes.js";
 import { specRequiresSuccessfulToolEvidence } from "../utils/delegation-validation.js";
@@ -53,6 +55,7 @@ export interface PreparedPersistentWorkerAssignment {
   readonly request: ExecuteWithAgentInput;
   readonly objective: string;
   readonly admittedInput: ExecuteWithAgentInput;
+  readonly shellProfile?: SessionShellProfile;
   readonly allowedTools: readonly string[];
   readonly workingDirectory?: string;
   readonly executionContextFingerprint?: string;
@@ -73,6 +76,7 @@ interface PersistentWorkerRecord {
   readonly workerId: string;
   readonly workerName: string;
   readonly parentSessionId: string;
+  shellProfile?: SessionShellProfile;
   state: PersistentWorkerState;
   stopRequested: boolean;
   currentTaskId?: string;
@@ -235,6 +239,9 @@ function clonePreparedAssignment(
     request: cloneJson(assignment.request),
     objective: assignment.objective,
     admittedInput: cloneJson(assignment.admittedInput),
+    ...(assignment.shellProfile
+      ? { shellProfile: assignment.shellProfile }
+      : {}),
     allowedTools: [...assignment.allowedTools],
     ...(assignment.workingDirectory
       ? { workingDirectory: assignment.workingDirectory }
@@ -261,6 +268,7 @@ function cloneWorkerRecord(record: PersistentWorkerRecord): PersistentWorkerReco
     workerId: record.workerId,
     workerName: record.workerName,
     parentSessionId: record.parentSessionId,
+    ...(record.shellProfile ? { shellProfile: record.shellProfile } : {}),
     state: record.state,
     stopRequested: record.stopRequested,
     ...(record.currentTaskId ? { currentTaskId: record.currentTaskId } : {}),
@@ -376,6 +384,9 @@ function coercePreparedAssignment(
     request: cloneJson(request) as unknown as ExecuteWithAgentInput,
     objective,
     admittedInput: cloneJson(admittedInput) as unknown as ExecuteWithAgentInput,
+    ...(coerceSessionShellProfile(raw.shellProfile)
+      ? { shellProfile: coerceSessionShellProfile(raw.shellProfile) }
+      : {}),
     allowedTools,
     ...(asNonEmptyString(raw.workingDirectory)
       ? { workingDirectory: asNonEmptyString(raw.workingDirectory) }
@@ -454,6 +465,9 @@ function coerceWorkerRecord(value: unknown, parentSessionId: string): Persistent
     workerName,
     parentSessionId:
       asNonEmptyString(raw.parentSessionId) ?? parentSessionId,
+    ...(coerceSessionShellProfile(raw.shellProfile)
+      ? { shellProfile: coerceSessionShellProfile(raw.shellProfile) }
+      : {}),
     state,
     stopRequested: raw.stopRequested === true,
     ...(asNonEmptyString(raw.currentTaskId)
@@ -589,6 +603,9 @@ function buildRuntimeWorkerHandle(params: {
     updatedAt: params.worker.updatedAt,
     workerId: params.worker.workerId,
     workerName: params.worker.workerName,
+    ...(params.worker.shellProfile
+      ? { shellProfile: params.worker.shellProfile }
+      : {}),
     state: params.worker.state,
     ...(params.worker.currentTaskId ? { taskId: params.worker.currentTaskId } : {}),
     ...(params.worker.currentTaskId
@@ -827,6 +844,9 @@ export class PersistentWorkerManager {
     if ((worker.workingDirectory ?? undefined) !== assignment.workingDirectory) {
       return false;
     }
+    if ((worker.shellProfile ?? undefined) !== assignment.shellProfile) {
+      return false;
+    }
     if (
       (worker.executionContextFingerprint ?? undefined) !==
       assignment.executionContextFingerprint
@@ -913,6 +933,7 @@ export class PersistentWorkerManager {
         manager: this.remoteSessionManager,
         parentSessionId: params.parentSessionId,
         workerId: params.workerId,
+        shellProfile: params.assignment.shellProfile,
         workspaceRoot,
         workingDirectory,
       });
@@ -1125,6 +1146,7 @@ export class PersistentWorkerManager {
             workerId: params.workerId,
             assignment: params.assignment,
           });
+          record.shellProfile = params.assignment.shellProfile;
           record.workingDirectory = params.assignment.workingDirectory;
           record.allowedTools = [...params.assignment.allowedTools];
           record.executionContextFingerprint =
@@ -2052,6 +2074,9 @@ export class PersistentWorkerManager {
         : basePrompt;
       childSessionId = await this.subAgentManager.spawn({
         parentSessionId: params.parentSessionId,
+        ...(assignment.shellProfile
+          ? { shellProfile: assignment.shellProfile }
+          : {}),
         task: assignment.objective,
         prompt: childPrompt,
         ...(currentWorker?.continuationSessionId

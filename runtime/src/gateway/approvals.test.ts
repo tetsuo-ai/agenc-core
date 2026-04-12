@@ -811,6 +811,25 @@ describe('ApprovalEngine', () => {
       expect(req.allowDelegatedResolution).toBe(true);
     });
 
+    it("stores shell profile context on approval requests and previews", () => {
+      const rule = DEFAULT_APPROVAL_RULES[0];
+      const req = engine.createRequest(
+        "system.delete",
+        {},
+        "sess-1",
+        "Approve?",
+        rule,
+        { shellProfile: "validation" },
+      );
+
+      expect(req.shellProfile).toBe("validation");
+      expect(
+        engine.simulate("system.delete", {}, "sess-2", {
+          shellProfile: "research",
+        }).requestPreview?.shellProfile,
+      ).toBe("research");
+    });
+
     it('inherits denials from parent session across delegated children', async () => {
       const rule = DEFAULT_APPROVAL_RULES[0];
       const denyReq = engine.createRequest(

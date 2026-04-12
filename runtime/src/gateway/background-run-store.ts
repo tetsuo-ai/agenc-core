@@ -12,6 +12,11 @@ import {
   isSubrunRedundancyPattern,
   isSubrunRole,
 } from "./subrun-contract.js";
+import {
+  coerceSessionShellProfile,
+  DEFAULT_SESSION_SHELL_PROFILE,
+  type SessionShellProfile,
+} from "./shell-profile.js";
 import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";
 import { KeyedAsyncQueue } from "../utils/keyed-async-queue.js";
@@ -304,6 +309,7 @@ export interface BackgroundRunRecentSnapshot {
   readonly runId: string;
   readonly sessionId: string;
   readonly objective: string;
+  readonly shellProfile?: SessionShellProfile;
   readonly policyScope?: PolicyEvaluationScope;
   readonly state: BackgroundRunState;
   readonly contractKind: BackgroundRunKind;
@@ -333,6 +339,7 @@ export interface PersistedBackgroundRun {
   readonly id: string;
   readonly sessionId: string;
   readonly objective: string;
+  readonly shellProfile?: SessionShellProfile;
   readonly policyScope?: PolicyEvaluationScope;
   readonly contract: BackgroundRunContract;
   readonly state: BackgroundRunState;
@@ -2090,6 +2097,7 @@ function coerceRunLineage(value: unknown): BackgroundRunLineage | undefined {
     rootRunId: typeof raw.rootRunId === "string" ? raw.rootRunId : "",
     parentRunId:
       typeof raw.parentRunId === "string" ? raw.parentRunId : undefined,
+    shellProfile: coerceSessionShellProfile(raw.shellProfile),
     role: isSubrunRole(raw.role) ? raw.role : "worker",
     depth:
       typeof raw.depth === "number" && Number.isInteger(raw.depth) ? raw.depth : -1,
@@ -2180,6 +2188,7 @@ function coerceRun(value: unknown): PersistedBackgroundRun | undefined {
   const cycleCount = raw.cycleCount as number;
   const stableWorkingCycles = raw.stableWorkingCycles as number;
   const consecutiveErrorCycles = raw.consecutiveErrorCycles as number;
+  const lineage = coerceRunLineage(raw.lineage);
   const durableState = coerceRunDurableState({
     raw,
     contract,
@@ -2191,6 +2200,10 @@ function coerceRun(value: unknown): PersistedBackgroundRun | undefined {
     id,
     sessionId,
     objective,
+    shellProfile:
+      coerceSessionShellProfile(raw.shellProfile) ??
+      lineage?.shellProfile ??
+      DEFAULT_SESSION_SHELL_PROFILE,
     policyScope,
     contract,
     state,
@@ -2229,7 +2242,7 @@ function coerceRun(value: unknown): PersistedBackgroundRun | undefined {
     observedTargets,
     watchRegistrations: durableState.watchRegistrations,
     internalHistory: cloneJson(raw.internalHistory as readonly LLMMessage[]),
-    lineage: coerceRunLineage(raw.lineage),
+    lineage,
     fenceToken: durableState.fenceToken,
     preferredWorkerId:
       typeof raw.preferredWorkerId === "string"

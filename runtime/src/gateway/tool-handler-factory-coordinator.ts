@@ -433,6 +433,7 @@ async function preparePersistentWorkerAssignment(
       request: input,
       objective,
       admittedInput,
+      ...(params.shellProfile ? { shellProfile: params.shellProfile } : {}),
       allowedTools: resolvedChildScope.allowedTools,
       ...(workingDirectory ? { workingDirectory } : {}),
       ...(effectiveExecutionContext

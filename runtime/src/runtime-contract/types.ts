@@ -9,6 +9,7 @@ import type {
   VerifierProfileKind,
   VerifierRequirement,
 } from "../gateway/verifier-probes.js";
+import type { SessionShellProfile } from "../gateway/shell-profile.js";
 
 export type CompletionValidatorId =
   | "artifact_evidence"
@@ -191,6 +192,7 @@ export interface RuntimeWorkerHandle {
   readonly updatedAt?: number;
   readonly workerId: string;
   readonly workerName: string;
+  readonly shellProfile?: SessionShellProfile;
   readonly state:
     | "starting"
     | "running"

@@ -30,6 +30,7 @@ import type { GatewayMessage } from "./message.js";
 import {
   SessionManager,
   clearStatefulContinuationMetadata,
+  resolveSessionShellProfile,
 } from "./session.js";
 import {
   buildDaemonMemoryEntryOptions,
@@ -52,6 +53,7 @@ import { loadConfiguredPluginChannel } from "../plugins/channel-loader.js";
 import type { AgentDefinition } from "./agent-loader.js";
 import type { DelegationVerifierService } from "./delegation-runtime.js";
 import type { PersistentWorkerManager } from "./persistent-worker-manager.js";
+import type { SessionShellProfile } from "./shell-profile.js";
 import type { SubAgentManager } from "./sub-agent.js";
 
 // ---------------------------------------------------------------------------
@@ -106,12 +108,14 @@ export interface ChannelWiringDeps {
     send: (content: string) => Promise<void>;
     traceConfig: ResolvedTraceLoggingConfig;
     traceId: string;
+    shellProfile?: SessionShellProfile;
   }): ToolHandler;
 
   buildToolRoutingDecision(
     sessionId: string,
     content: string,
     history: readonly LLMMessage[],
+    shellProfile?: SessionShellProfile,
   ): ToolRoutingDecision | undefined;
 
   recordToolRoutingOutcome(
@@ -320,6 +324,7 @@ async function wireTelegram(
         send: sendTelegramText,
         traceConfig,
         traceId: turnTraceId,
+        shellProfile: resolveSessionShellProfile(session.metadata),
       });
 
       const result = await executeTextChannelTurn({
@@ -339,7 +344,12 @@ async function wireTelegram(
         includePlannerSummaryInTrace: true,
         persistToDaemonMemory: true,
         buildToolRoutingDecision: (sessionId, content, history) =>
-          deps.buildToolRoutingDecision(sessionId, content, history),
+          deps.buildToolRoutingDecision(
+            sessionId,
+            content,
+            history,
+            resolveSessionShellProfile(session.metadata),
+          ),
         recordToolRoutingOutcome: (sessionId, summary) => {
           deps.recordToolRoutingOutcome(sessionId, summary);
         },
@@ -517,6 +527,7 @@ export async function wireExternalChannel(
         send: sendChannelText,
         traceConfig,
         traceId: turnTraceId,
+        shellProfile: resolveSessionShellProfile(session.metadata),
       });
 
       const result = await executeTextChannelTurn({
@@ -534,7 +545,12 @@ export async function wireExternalChannel(
         memoryBackend: deps.memoryBackend,
         persistToDaemonMemory: channelName !== "concordia",
         buildToolRoutingDecision: (sessionId, content, history) =>
-          deps.buildToolRoutingDecision(sessionId, content, history),
+          deps.buildToolRoutingDecision(
+            sessionId,
+            content,
+            history,
+            resolveSessionShellProfile(session.metadata),
+          ),
         recordToolRoutingOutcome: (sessionId, summary) => {
           deps.recordToolRoutingOutcome(sessionId, summary);
         },

@@ -4,6 +4,7 @@ import type { RuntimeExecutionLocation } from "../runtime-contract/types.js";
 import type { ToolResult } from "../tools/types.js";
 import type { SystemRemoteJobManager } from "../tools/system/remote-job.js";
 import type { SystemRemoteSessionManager } from "../tools/system/remote-session.js";
+import type { SessionShellProfile } from "./shell-profile.js";
 
 interface ParsedToolResult {
   readonly body: Record<string, unknown>;
@@ -84,6 +85,7 @@ export async function startManagedRemoteSession(params: {
   readonly manager: Pick<SystemRemoteSessionManager, "start">;
   readonly parentSessionId: string;
   readonly workerId: string;
+  readonly shellProfile?: SessionShellProfile;
   readonly workspaceRoot?: string;
   readonly workingDirectory?: string;
 }): Promise<ManagedRemoteSessionHandle> {
@@ -97,6 +99,7 @@ export async function startManagedRemoteSession(params: {
     metadata: {
       parentSessionId: params.parentSessionId,
       workerId: params.workerId,
+      ...(params.shellProfile ? { shellProfile: params.shellProfile } : {}),
       ...(params.workspaceRoot ? { workspaceRoot: params.workspaceRoot } : {}),
       ...(params.workingDirectory
         ? { workingDirectory: params.workingDirectory }

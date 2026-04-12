@@ -49,8 +49,8 @@ Lifecycle rule:
 
 | Current surface | Current behavior | Public product disposition | Notes |
 | --- | --- | --- | --- |
-| `agenc` | opens operator console by default | `KEEP` | remains the default interactive operator/TUI surface |
-| `agenc console` | explicit operator console | `KEEP` | keep as explicit alias for default interactive mode |
+| `agenc` | opens the `general` shell by default | `KEEP` | default interactive shell-first surface on the shared daemon |
+| `agenc console` | explicit operator console | `KEEP` | compatibility/operator path, not the default shell surface |
 | `agenc <runtime-command>` | pass-through to runtime CLI | `KEEP` in transition | wrapper continues forwarding while public contract is stabilized |
 | `agenc runtime where|install|update|uninstall` | wrapper-owned runtime management | `KEEP` | explicit public install/update/remove namespace for the packaged runtime |
 | `agenc-runtime onboard` | write local runtime config | `WRAP` | public surface becomes `agenc onboard`; runtime alias remains for compatibility |

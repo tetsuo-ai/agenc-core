@@ -36,7 +36,7 @@ Primary responsibilities:
 
 - onboarding
 - lifecycle control: start/stop/restart/status/logs
-- shell entrypoints such as `agenc shell coding`
+- shell entrypoints such as bare `agenc` and `agenc shell coding`
 - connector and plugin management
 - eventual task/bid interaction
 
@@ -69,6 +69,10 @@ Primary responsibilities:
 - advanced session/workspace/log/approval visibility
 - deep local control
 
+The operator console is now an explicit compatibility surface behind
+`agenc console`; the default public interactive surface is the shell-first
+launcher.
+
 ### Web dashboard
 
 Primary responsibilities:
@@ -99,9 +103,10 @@ agenc
 agenc ui
 ```
 
-`agenc` and `agenc ui` both target the same local daemon. `agenc ui` is not a
-second runtime; it is a loopback dashboard surface mounted at `/ui/` on the
-daemon HTTP port.
+`agenc`, `agenc console`, and `agenc ui` all target the same local daemon.
+Bare `agenc` opens the `general` shell by default. `agenc ui` is not a second
+runtime; it is a loopback dashboard surface mounted at `/ui/` on the daemon
+HTTP port.
 
 `agenc onboard` is the canonical first-run experience. In V1 it is an
 interactive terminal onboarding flow that validates xAI access, collects the

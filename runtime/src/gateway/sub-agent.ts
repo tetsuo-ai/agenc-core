@@ -57,7 +57,10 @@ import type {
 } from "../utils/delegation-validation.js";
 import type { VerifierRequirement } from "./verifier-probes.js";
 import { SubAgentSpawnError } from "./errors.js";
-import type { SessionShellProfile } from "./shell-profile.js";
+import {
+  appendShellProfilePromptSection,
+  type SessionShellProfile,
+} from "./shell-profile.js";
 
 // ============================================================================
 // Constants
@@ -262,6 +265,7 @@ export interface SubAgentInfo {
   readonly status: SubAgentStatus;
   readonly startedAt: number;
   readonly task: string;
+  readonly shellProfile?: SessionShellProfile;
 }
 
 // ============================================================================
@@ -549,6 +553,9 @@ export class SubAgentManager {
       status: handle.status,
       startedAt: handle.startedAt,
       task: handle.task,
+      ...(handle.config.shellProfile
+        ? { shellProfile: handle.config.shellProfile }
+        : {}),
     };
   }
 
@@ -614,6 +621,9 @@ export class SubAgentManager {
         status: handle.status,
         startedAt: handle.startedAt,
         task: handle.task,
+        ...(handle.config.shellProfile
+          ? { shellProfile: handle.config.shellProfile }
+          : {}),
       });
     }
     return infos;
@@ -887,10 +897,13 @@ export class SubAgentManager {
         scope: "dm",
       });
 
-      const systemPrompt =
-        handle.config.systemPrompt ??
-        this.config.systemPrompt ??
-        DEFAULT_SUB_AGENT_SYSTEM_PROMPT;
+      const systemPrompt = appendShellProfilePromptSection({
+        systemPrompt:
+          handle.config.systemPrompt ??
+          this.config.systemPrompt ??
+          DEFAULT_SUB_AGENT_SYSTEM_PROMPT,
+        profile: handle.config.shellProfile ?? "general",
+      });
       const subAgentTraceId = `subagent:${handle.sessionId}:${Date.now()}`;
       const unsafeBenchmarkMode = handle.config.unsafeBenchmarkMode === true;
       const traceEnabled =

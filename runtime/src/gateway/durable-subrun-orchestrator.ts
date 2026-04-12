@@ -161,12 +161,14 @@ function buildRootLineage(
   if (existing) {
     return {
       ...existing,
+      shellProfile: existing.shellProfile ?? parentRun.shellProfile,
       joinStrategy: plan.joinStrategy,
       redundancyPattern: plan.redundancyPattern,
     };
   }
   return {
     rootRunId: parentRun.id,
+    shellProfile: parentRun.shellProfile,
     role: "planner",
     depth: 0,
     joinStrategy: plan.joinStrategy,
@@ -422,6 +424,7 @@ export class DurableSubrunOrchestrator {
       const lineage: BackgroundRunLineage = {
         rootRunId: rootLineage.rootRunId,
         parentRunId: parentRun.id,
+        shellProfile: child.shellProfile ?? parentRun.shellProfile,
         role: child.role,
         depth: rootLineage.depth + 1,
         joinStrategy: plan.joinStrategy,
@@ -438,6 +441,7 @@ export class DurableSubrunOrchestrator {
         options: {
           silent: true,
           lineage,
+          shellProfile: child.shellProfile ?? parentRun.shellProfile,
           contract: buildChildContract(parentRun.contract, child),
         },
       });
