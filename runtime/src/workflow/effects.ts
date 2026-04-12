@@ -174,12 +174,17 @@ export interface EffectRecordInput {
 
 const FILESYSTEM_WRITE_TOOL_NAMES = new Set([
   "system.writeFile",
+  "system.applyPatch",
   "desktop.text_editor",
 ]);
 const FILESYSTEM_APPEND_TOOL_NAMES = new Set(["system.appendFile"]);
 const FILESYSTEM_DELETE_TOOL_NAMES = new Set(["system.delete"]);
 const FILESYSTEM_MOVE_TOOL_NAMES = new Set(["system.move"]);
 const FILESYSTEM_MKDIR_TOOL_NAMES = new Set(["system.mkdir"]);
+const WORKTREE_MUTATION_TOOL_NAMES = new Set([
+  "system.gitWorktreeCreate",
+  "system.gitWorktreeRemove",
+]);
 const SHELL_TOOL_NAMES = new Set(["system.bash", "desktop.bash"]);
 const PROCESS_START_TOOL_NAMES = new Set(["system.processStart"]);
 const SERVER_START_TOOL_NAMES = new Set(["system.serverStart"]);
@@ -197,6 +202,7 @@ export function inferEffectClass(params: {
   if (FILESYSTEM_DELETE_TOOL_NAMES.has(toolName)) return "filesystem_write";
   if (FILESYSTEM_MOVE_TOOL_NAMES.has(toolName)) return "filesystem_write";
   if (FILESYSTEM_MKDIR_TOOL_NAMES.has(toolName)) return "filesystem_scaffold";
+  if (WORKTREE_MUTATION_TOOL_NAMES.has(toolName)) return "filesystem_write";
   if (SHELL_TOOL_NAMES.has(toolName)) return "shell";
   if (
     PROCESS_START_TOOL_NAMES.has(toolName) ||
@@ -213,6 +219,7 @@ export function inferEffectKind(toolName: string): EffectKind {
   if (FILESYSTEM_DELETE_TOOL_NAMES.has(toolName)) return "filesystem_delete";
   if (FILESYSTEM_MOVE_TOOL_NAMES.has(toolName)) return "filesystem_move";
   if (FILESYSTEM_MKDIR_TOOL_NAMES.has(toolName)) return "filesystem_mkdir";
+  if (WORKTREE_MUTATION_TOOL_NAMES.has(toolName)) return "other_mutation";
   if (SHELL_TOOL_NAMES.has(toolName)) return "shell_command";
   if (PROCESS_START_TOOL_NAMES.has(toolName)) return "process_start";
   if (SERVER_START_TOOL_NAMES.has(toolName)) return "server_start";
@@ -312,4 +319,3 @@ export function appendEffectAttempt(
 export function hashSnapshotContent(content: Buffer): string {
   return createHash("sha256").update(content).digest("hex");
 }
-

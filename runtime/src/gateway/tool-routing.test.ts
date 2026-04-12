@@ -82,7 +82,34 @@ describe("buildStaticToolRoutingDecision", () => {
       "system.readFile",
       "system.writeFile",
       "system.bash",
-      "agenc.inspectMarketplace",
     ]);
+  });
+
+  it("expands the coding bundle for mixed-mode browser turns", () => {
+    const decision = buildStaticToolRoutingDecision({
+      content: "Open the website in a browser, click through the flow, and then patch the local repo.",
+      availableToolNames: [
+        "system.readFile",
+        "system.applyPatch",
+        "system.searchTools",
+        "playwright.browser_navigate",
+        "playwright.browser_click",
+      ],
+      shellProfile: "coding",
+    });
+
+    expect(decision?.routedToolNames).toEqual([
+      "system.readFile",
+      "system.applyPatch",
+      "system.searchTools",
+    ]);
+    expect(decision?.expandedToolNames).toEqual([
+      "system.readFile",
+      "system.applyPatch",
+      "system.searchTools",
+      "playwright.browser_navigate",
+      "playwright.browser_click",
+    ]);
+    expect(decision?.diagnostics.clusterKey).toBe("shell-profile:coding:expanded");
   });
 });

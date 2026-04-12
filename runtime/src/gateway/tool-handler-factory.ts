@@ -12,6 +12,9 @@ import { existsSync } from 'node:fs';
 import { isAbsolute, relative, resolve as resolvePath } from 'node:path';
 import type { ToolHandler } from '../llm/types.js';
 import {
+  SESSION_ADVERTISED_TOOL_NAMES_ARG,
+} from "../tools/system/coding.js";
+import {
   SESSION_ALLOWED_ROOTS_ARG,
   SESSION_ID_ARG,
 } from "../tools/system/filesystem.js";
@@ -94,12 +97,45 @@ const TOOL_DEFAULT_CWD_NAMES = new Set([
   "system.serverStart",
   "verification.listProbes",
   "verification.runProbe",
+  "system.grep",
+  "system.glob",
+  "system.searchFiles",
+  "system.repoInventory",
+  "system.gitStatus",
+  "system.gitDiff",
+  "system.gitShow",
+  "system.gitBranchInfo",
+  "system.gitChangeSummary",
+  "system.gitWorktreeList",
+  "system.gitWorktreeCreate",
+  "system.gitWorktreeRemove",
+  "system.symbolSearch",
+  "system.symbolDefinition",
+  "system.symbolReferences",
 ]);
 const SESSION_ALLOWED_ROOT_TOOL_NAMES = new Set([
   "system.readFile",
+  "system.readFileRange",
   "system.writeFile",
   "system.appendFile",
   "system.editFile",
+  "system.grep",
+  "system.glob",
+  "system.searchFiles",
+  "system.repoInventory",
+  "system.gitStatus",
+  "system.gitDiff",
+  "system.gitShow",
+  "system.gitBranchInfo",
+  "system.gitChangeSummary",
+  "system.gitWorktreeList",
+  "system.gitWorktreeCreate",
+  "system.gitWorktreeRemove",
+  "system.gitWorktreeStatus",
+  "system.applyPatch",
+  "system.symbolSearch",
+  "system.symbolDefinition",
+  "system.symbolReferences",
   "system.listDir",
   "system.stat",
   "system.mkdir",
@@ -129,16 +165,36 @@ const SESSION_ALLOWED_ROOT_TOOL_NAMES = new Set([
  */
 const SESSION_ID_TOOL_NAMES = new Set([
   "system.readFile",
+  "system.readFileRange",
   "system.writeFile",
   "system.appendFile",
   "system.editFile",
+  "system.applyPatch",
 ]);
 const TOOL_PATH_ARG_KEYS: Readonly<Record<string, readonly string[]>> = {
   "desktop.text_editor": ["path"],
   "system.readFile": ["path"],
+  "system.readFileRange": ["path"],
   "system.writeFile": ["path"],
   "system.appendFile": ["path"],
   "system.editFile": ["path"],
+  "system.grep": ["path"],
+  "system.glob": ["path"],
+  "system.searchFiles": ["path"],
+  "system.repoInventory": ["path"],
+  "system.gitStatus": ["path"],
+  "system.gitDiff": ["path"],
+  "system.gitShow": ["path"],
+  "system.gitBranchInfo": ["path"],
+  "system.gitChangeSummary": ["path"],
+  "system.gitWorktreeList": ["path"],
+  "system.gitWorktreeCreate": ["path", "worktreePath"],
+  "system.gitWorktreeRemove": ["path", "worktreePath"],
+  "system.gitWorktreeStatus": ["worktreePath"],
+  "system.applyPatch": ["path"],
+  "system.symbolSearch": ["path"],
+  "system.symbolDefinition": ["path", "filePath"],
+  "system.symbolReferences": ["path", "filePath"],
   "system.listDir": ["path"],
   "system.stat": ["path"],
   "system.mkdir": ["path"],
@@ -238,7 +294,8 @@ function stripInternalToolArgs(
   const hasAllowedRoots = SESSION_ALLOWED_ROOTS_ARG in args;
   const hasTaskListId = TASK_LIST_ARG in args;
   const hasSessionId = SESSION_ID_ARG in args;
-  if (!hasAllowedRoots && !hasTaskListId && !hasSessionId) {
+  const hasAdvertisedToolNames = SESSION_ADVERTISED_TOOL_NAMES_ARG in args;
+  if (!hasAllowedRoots && !hasTaskListId && !hasSessionId && !hasAdvertisedToolNames) {
     return args;
   }
   const nextArgs = { ...args };
@@ -250,6 +307,9 @@ function stripInternalToolArgs(
   }
   if (hasSessionId) {
     delete nextArgs[SESSION_ID_ARG];
+  }
+  if (hasAdvertisedToolNames) {
+    delete nextArgs[SESSION_ADVERTISED_TOOL_NAMES_ARG];
   }
   return nextArgs;
 }
@@ -310,6 +370,20 @@ function applySessionId(
   return {
     ...args,
     [SESSION_ID_ARG]: sessionId,
+  };
+}
+
+function applyAdvertisedToolNames(
+  toolName: string,
+  args: Record<string, unknown>,
+  availableToolNames: readonly string[] | undefined,
+): Record<string, unknown> {
+  if (toolName !== "system.searchTools" || !availableToolNames) {
+    return args;
+  }
+  return {
+    ...args,
+    [SESSION_ADVERTISED_TOOL_NAMES_ARG]: [...availableToolNames],
   };
 }
 
@@ -2936,6 +3010,11 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
     );
     executionArgs = applySessionTaskListId(toolName, executionArgs, sessionId);
     executionArgs = applySessionId(toolName, executionArgs, sessionId);
+    executionArgs = applyAdvertisedToolNames(
+      toolName,
+      executionArgs,
+      availableToolNames,
+    );
 
     const subAgentEnvelopeError = isSubAgentSession
       ? enforceSubAgentExecutionEnvelope({

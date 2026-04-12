@@ -4,7 +4,12 @@
  * @module
  */
 
-import type { Tool, ToolRegistryConfig } from "./types.js";
+import type {
+  Tool,
+  ToolCatalogEntry,
+  ToolRegistryConfig,
+  ToolSource,
+} from "./types.js";
 import { safeStringify } from "./types.js";
 import { ToolNotFoundError, ToolAlreadyRegisteredError } from "./errors.js";
 import type { LLMTool, ToolHandler } from "../llm/types.js";
@@ -108,6 +113,20 @@ export class ToolRegistry {
     return Array.from(this.tools.values());
   }
 
+  listCatalog(allowedTools?: ReadonlySet<string>): readonly ToolCatalogEntry[] {
+    const result: ToolCatalogEntry[] = [];
+    for (const tool of this.tools.values()) {
+      if (allowedTools && !allowedTools.has(tool.name)) continue;
+      result.push({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        metadata: normalizeToolMetadata(tool),
+      });
+    }
+    return result;
+  }
+
   /**
    * Number of registered tools.
    */
@@ -207,4 +226,58 @@ function normalizeToolErrorContent(content: string): string {
   return safeStringify({
     error: message.length > 0 ? message : "Tool execution failed",
   });
+}
+
+function normalizeToolMetadata(tool: Tool): ToolCatalogEntry["metadata"] {
+  const metadata = tool.metadata ?? {};
+  return {
+    family: metadata.family ?? inferToolFamily(tool.name),
+    source: metadata.source ?? inferToolSource(tool.name),
+    hiddenByDefault: metadata.hiddenByDefault === true,
+    mutating: metadata.mutating === true,
+    ...(metadata.keywords ? { keywords: [...metadata.keywords] } : {}),
+    ...(metadata.preferredProfiles
+      ? { preferredProfiles: [...metadata.preferredProfiles] }
+      : {}),
+  };
+}
+
+function inferToolSource(name: string): ToolSource {
+  if (name.startsWith("mcp.")) return "mcp";
+  if (name.startsWith("plugin.")) return "plugin";
+  if (name.startsWith("skill.")) return "skill";
+  if (name.startsWith("web_search") || name.startsWith("browser_")) {
+    return "provider_native";
+  }
+  return "builtin";
+}
+
+function inferToolFamily(name: string): string {
+  if (name.startsWith("system.git") || name === "system.applyPatch") {
+    return "coding";
+  }
+  if (
+    name === "system.grep" ||
+    name === "system.glob" ||
+    name === "system.searchFiles" ||
+    name === "system.repoInventory" ||
+    name === "system.symbolSearch" ||
+    name === "system.symbolDefinition" ||
+    name === "system.symbolReferences" ||
+    name === "system.searchTools"
+  ) {
+    return "coding";
+  }
+  if (name.startsWith("system.")) return "system";
+  if (name.startsWith("verification.")) return "verification";
+  if (name.startsWith("task.")) return "task";
+  if (name.startsWith("agenc.")) return "operator";
+  if (name.startsWith("social.")) return "social";
+  if (name.startsWith("wallet.")) return "wallet";
+  if (name.startsWith("desktop.")) return "desktop";
+  if (name.startsWith("playwright.") || name.startsWith("browser_")) {
+    return "browser";
+  }
+  if (name.startsWith("mcp.")) return "mcp";
+  return "general";
 }

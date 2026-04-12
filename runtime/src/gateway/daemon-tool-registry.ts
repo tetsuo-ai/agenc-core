@@ -18,6 +18,9 @@ import { ToolRegistry } from "../tools/registry.js";
 import { createBashTool } from "../tools/system/bash.js";
 import { createHttpTools } from "../tools/system/http.js";
 import { createFilesystemTools } from "../tools/system/filesystem.js";
+import {
+  createCodingTools,
+} from "../tools/system/coding.js";
 import { createBrowserTools } from "../tools/system/browser.js";
 import { createProcessTools } from "../tools/system/process.js";
 import { createPdfTools } from "../tools/system/pdf.js";
@@ -277,6 +280,14 @@ export async function createDaemonToolRegistry(
     createFilesystemTools({
       allowedPaths: allowedFilesystemPaths,
       allowDelete: false,
+    }),
+  );
+  registry.registerAll(
+    createCodingTools({
+      allowedPaths: allowedFilesystemPaths,
+      persistenceRootDir: resolveRuntimePersistencePaths().rootDir,
+      logger,
+      getToolCatalog: () => registry.listCatalog(),
     }),
   );
   registry.registerAll(

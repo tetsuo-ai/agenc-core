@@ -185,7 +185,8 @@ export function buildDesktopContext(
       "- For web browsing, ALWAYS use the browser navigation/snapshot tools first; do not start with tab-state inspection.\n\n" +
       "Desktop tips:\n" +
       '- Launch GUI apps: desktop.bash with "app >/dev/null 2>&1 &" (MUST redirect output and background to avoid hanging)\n' +
-      '- Code search: desktop.bash with "rg pattern /path" (ripgrep), "fdfind filename" (fd-find)\n' +
+      '- For coding workflows, prefer the native tools first: system.grep, system.glob, system.searchFiles, system.repoInventory, system.git*, system.readFileRange, system.applyPatch, and system.symbol*.\n' +
+      '- Use system.searchTools when you need to discover mixed-mode tools outside the default coding bundle.\n' +
       "- Take screenshots only when you need to inspect visual state or verify a GUI action\n" +
       "- system.bash = host machine; desktop.bash = inside the Docker container\n" +
       "- Do NOT run raw Docker lifecycle commands (`docker run`, `docker exec`, `docker start`) for normal user tasks. The desktop sandbox is already the containerized environment. Use desktop.* tools unless the user explicitly asks for raw Docker management.\n" +

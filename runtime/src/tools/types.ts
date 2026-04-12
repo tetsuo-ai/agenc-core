@@ -20,6 +20,36 @@ import type { PolicyEngine } from "../policy/engine.js";
  */
 export type JSONSchema = Record<string, unknown>;
 
+export type ToolSource =
+  | "builtin"
+  | "mcp"
+  | "plugin"
+  | "skill"
+  | "provider_native";
+
+export interface ToolMetadata {
+  /** Coarse tool family for discovery/ranking. */
+  readonly family?: string;
+  /** Source of the tool surface. */
+  readonly source?: ToolSource;
+  /** Discovery keywords. */
+  readonly keywords?: readonly string[];
+  /** Session profiles this tool is especially suited for. */
+  readonly preferredProfiles?: readonly string[];
+  /** Hide from default advertised bundles unless explicitly expanded. */
+  readonly hiddenByDefault?: boolean;
+  /** Whether the tool mutates project/runtime state. */
+  readonly mutating?: boolean;
+}
+
+export interface ToolCatalogEntry {
+  readonly name: string;
+  readonly description: string;
+  readonly inputSchema: JSONSchema;
+  readonly metadata: Required<Pick<ToolMetadata, "family" | "source" | "hiddenByDefault" | "mutating">> &
+    Pick<ToolMetadata, "keywords" | "preferredProfiles">;
+}
+
 /**
  * Result returned by a tool execution.
  *
@@ -49,6 +79,8 @@ export interface Tool {
   readonly description: string;
   /** JSON Schema describing the input parameters */
   readonly inputSchema: JSONSchema;
+  /** Optional discovery/routing metadata. */
+  readonly metadata?: ToolMetadata;
   /** Execute the tool with the given arguments */
   execute(args: Record<string, unknown>): Promise<ToolResult>;
 }

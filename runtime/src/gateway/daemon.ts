@@ -182,6 +182,9 @@ import {
   SessionManager,
 } from "./session.js";
 import {
+  getShellProfilePreferredToolNames,
+} from "./shell-profile.js";
+import {
 
   getDefaultWorkspacePath,
 } from "./workspace-files.js";
@@ -2337,15 +2340,21 @@ export class DaemonManager {
             shellProfile,
           }),
         buildToolRoutingDecision: (sessionId, content, _history, shellProfile) =>
-          buildStaticToolRoutingDecision({
-            content,
-            availableToolNames: this.getAdvertisedToolNames(),
-            shellProfile:
+          {
+            const effectiveProfile =
               shellProfile ??
               resolveSessionShellProfile(
                 sessionMgr.get(sessionId)?.metadata ?? {},
+              );
+            return buildStaticToolRoutingDecision({
+              content,
+              availableToolNames: this.getAdvertisedToolNames(
+                undefined,
+                effectiveProfile,
               ),
-          }),
+              shellProfile: effectiveProfile,
+            });
+          },
         seedHistoryForSession: (sessionId) =>
           sessionMgr.get(sessionId)?.history ?? [],
         isSessionBusy: (sessionId) =>
@@ -3348,12 +3357,18 @@ export class DaemonManager {
       createTextChannelSessionToolHandler: (params) =>
         this.createTextChannelSessionToolHandler(params),
       buildToolRoutingDecision: (_sessionId, content, _history, shellProfile) =>
-        buildStaticToolRoutingDecision({
-          content,
-          availableToolNames: this.getAdvertisedToolNames(),
-          shellProfile:
-            shellProfile ?? resolveSessionShellProfile({}),
-        }),
+        {
+          const effectiveProfile =
+            shellProfile ?? resolveSessionShellProfile({});
+          return buildStaticToolRoutingDecision({
+            content,
+            availableToolNames: this.getAdvertisedToolNames(
+              undefined,
+              effectiveProfile,
+            ),
+            shellProfile: effectiveProfile,
+          });
+        },
       recordToolRoutingOutcome: () => {
         /* no-op: static routing, nothing to record */
       },
@@ -5049,13 +5064,21 @@ export class DaemonManager {
     toolNames: readonly string[] = this._llmTools.map(
       (tool) => tool.function.name,
     ),
+    shellProfile: SessionShellProfile = DEFAULT_SESSION_SHELL_PROFILE,
   ): readonly string[] {
-    return Array.from(
-      new Set([
-        ...toolNames,
-        ...getProviderNativeAdvertisedToolNames(this._primaryLlmConfig),
-      ]),
-    );
+    const providerNative = getProviderNativeAdvertisedToolNames(this._primaryLlmConfig);
+    const merged = Array.from(new Set([...toolNames, ...providerNative]));
+    if (shellProfile === DEFAULT_SESSION_SHELL_PROFILE) {
+      return merged;
+    }
+    const preferred = getShellProfilePreferredToolNames({
+      profile: shellProfile,
+      availableToolNames: merged,
+    });
+    if (!preferred.includes("system.searchTools") && merged.includes("system.searchTools")) {
+      return [...preferred, "system.searchTools"];
+    }
+    return preferred;
   }
 
   private relaySubAgentLifecycleEvent(
@@ -5472,7 +5495,13 @@ export class DaemonManager {
       baseHandler: baseToolHandler,
       taskStore: this._taskTrackerStore,
       runtimeContractFlags: resolveRuntimeContractFlags(this.gateway?.config.llm),
-      availableToolNames: this.getAdvertisedToolNames(),
+      availableToolNames: this.getAdvertisedToolNames(
+        undefined,
+        shellProfile ??
+          resolveSessionShellProfile(
+            this._webSessionManager?.get(sessionId)?.metadata ?? {},
+          ),
+      ),
       defaultWorkingDirectory: this._hostWorkspacePath ?? undefined,
       workspaceAliasRoot: this._hostWorkspacePath ?? undefined,
       scopedFilesystemRoot: this._hostWorkspacePath ?? undefined,
@@ -5576,7 +5605,10 @@ export class DaemonManager {
       baseHandler: this._baseToolHandler!,
       taskStore: this._taskTrackerStore,
       runtimeContractFlags: resolveRuntimeContractFlags(this.gateway?.config.llm),
-      availableToolNames: this.getAdvertisedToolNames(),
+      availableToolNames: this.getAdvertisedToolNames(
+        undefined,
+        shellProfile ?? DEFAULT_SESSION_SHELL_PROFILE,
+      ),
       defaultWorkingDirectory: this._hostWorkspacePath ?? undefined,
       workspaceAliasRoot: this._hostWorkspacePath ?? undefined,
       desktopRouterFactory: this._desktopRouterFactory ?? undefined,

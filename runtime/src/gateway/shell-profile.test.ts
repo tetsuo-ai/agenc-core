@@ -29,16 +29,23 @@ describe("shell-profile", () => {
   });
 
   it("selects coding-biased tools without dropping the entire catalog", () => {
-    expect(
-      getShellProfilePreferredToolNames({
-        profile: "coding",
-        availableToolNames: [
-          "system.readFile",
-          "system.writeFile",
-          "system.bash",
-          "agenc.inspectMarketplace",
-        ],
-      }),
-    ).toEqual(["system.readFile", "system.writeFile", "system.bash"]);
+    const preferred = getShellProfilePreferredToolNames({
+      profile: "coding",
+      availableToolNames: [
+        "system.readFile",
+        "system.writeFile",
+        "system.bash",
+        "system.grep",
+        "system.searchTools",
+        "agenc.inspectMarketplace",
+      ],
+    });
+
+    expect(preferred).toContain("system.readFile");
+    expect(preferred).toContain("system.writeFile");
+    expect(preferred).toContain("system.bash");
+    expect(preferred).toContain("system.grep");
+    expect(preferred).toContain("system.searchTools");
+    expect(preferred).not.toContain("agenc.inspectMarketplace");
   });
 });

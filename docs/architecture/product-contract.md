@@ -54,6 +54,15 @@ All profiles share the same daemon, policy authority, approvals, memory, and
 tooling substrate. Profiles only change default behavior such as prompt rules,
 tool advertisement bias, delegation posture, and session identity.
 
+The `coding` profile now has a native coding tool surface on that shared
+runtime. It is expected to expose:
+
+- repo inventory and file search
+- structured git and worktree inspection/mutation tools
+- safe read-range and patch-application tools
+- native tool discovery for mixed-mode expansion
+- native code-intelligence lookups for definitions and references
+
 V1 connector contract:
 
 - `agenc connector list`

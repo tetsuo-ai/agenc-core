@@ -106,7 +106,7 @@ export const SESSION_ID_ARG = "__agencSessionId";
  */
 const sessionReadState = new Map<string, Set<string>>();
 
-function recordSessionRead(
+export function recordSessionRead(
   sessionId: string | undefined,
   canonicalPath: string,
 ): void {
@@ -120,7 +120,7 @@ function recordSessionRead(
   set.add(canonicalPath);
 }
 
-function hasSessionRead(
+export function hasSessionRead(
   sessionId: string | undefined,
   canonicalPath: string,
 ): boolean {
@@ -146,7 +146,7 @@ export function clearSessionReadState(sessionId: string): void {
  * harness, direct unit test) and Read-before-Write enforcement is
  * skipped in that case so non-session callers stay functional.
  */
-function resolveSessionId(args: Record<string, unknown>): string | undefined {
+export function resolveSessionId(args: Record<string, unknown>): string | undefined {
   const value = args[SESSION_ID_ARG];
   if (typeof value === "string" && value.trim().length > 0) {
     return value;

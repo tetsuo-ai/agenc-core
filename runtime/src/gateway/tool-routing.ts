@@ -53,6 +53,24 @@ const MARKETPLACE_SURFACE_RE =
   /\b(?:overview|surface|surfaces|tasks?|skills?|governance|proposals?|disputes?|reputation|counts?|available)\b/i;
 const MARKETPLACE_MUTATION_RE =
   /\b(?:create|claim|complete|cancel|purchase|buy|install|rate|register|resolve|submit|file)\b/i;
+const BROWSER_INTENT_RE =
+  /\b(?:browser|playwright|screenshot|web page|website|navigate|click|type into|form|dom)\b/i;
+const RESEARCH_INTENT_RE =
+  /\b(?:research|sources?|citations?|evidence|compare|investigate|browse the web|look up)\b/i;
+const REMOTE_INTENT_RE =
+  /\b(?:remote job|remote session|callback|polling|ssh|remote debugging|remote worker)\b/i;
+const SANDBOX_INTENT_RE =
+  /\b(?:sandbox|container|docker|isolated environment)\b/i;
+const OPERATOR_INTENT_RE =
+  /\b(?:daemon|session list|approvals?|permissions|connector|marketplace|operator|runtime control)\b/i;
+
+const FAMILY_PREFIXES: Readonly<Record<string, readonly string[]>> = {
+  browser: ["playwright.", "browser_", "system.browse", "system.extractLinks", "system.htmlToMarkdown"],
+  research: ["system.research", "system.http", "system.browse", "browser_", "playwright."],
+  remote: ["system.remoteJob", "system.remoteSession"],
+  sandbox: ["system.sandbox"],
+  operator: ["agenc.", "social.", "wallet."],
+};
 
 function estimateToolSchemaChars(toolNames: readonly string[]): number {
   return toolNames.reduce((total, toolName) => total + toolName.length, 0);
@@ -102,6 +120,31 @@ function isMarketplaceInspectPrompt(content: string): boolean {
     MARKETPLACE_SURFACE_RE.test(normalized);
 }
 
+function collectFamilyExpansionToolNames(params: {
+  readonly content: string;
+  readonly availableToolNames: readonly string[];
+}): readonly string[] {
+  const families: string[] = [];
+  if (BROWSER_INTENT_RE.test(params.content)) families.push("browser");
+  if (RESEARCH_INTENT_RE.test(params.content)) families.push("research");
+  if (REMOTE_INTENT_RE.test(params.content)) families.push("remote");
+  if (SANDBOX_INTENT_RE.test(params.content)) families.push("sandbox");
+  if (OPERATOR_INTENT_RE.test(params.content)) families.push("operator");
+  if (families.length === 0) return [];
+
+  const expanded = new Set<string>();
+  for (const family of families) {
+    for (const prefix of FAMILY_PREFIXES[family] ?? []) {
+      for (const toolName of params.availableToolNames) {
+        if (toolName === prefix || toolName.startsWith(prefix)) {
+          expanded.add(toolName);
+        }
+      }
+    }
+  }
+  return [...expanded];
+}
+
 export function buildStaticToolRoutingDecision(params: {
   content: string;
   availableToolNames: readonly string[];
@@ -129,25 +172,36 @@ export function buildStaticToolRoutingDecision(params: {
       profile: shellProfile,
       availableToolNames,
     });
+    const familyExpansionToolNames = collectFamilyExpansionToolNames({
+      content,
+      availableToolNames,
+    });
+    const expandedToolNames = Array.from(
+      new Set([...preferredToolNames, ...familyExpansionToolNames]),
+    );
     if (
       preferredToolNames.length > 0 &&
       preferredToolNames.length < availableToolNames.length
     ) {
       const schemaCharsFull = estimateToolSchemaChars(availableToolNames);
       const schemaCharsRouted = estimateToolSchemaChars(preferredToolNames);
+      const schemaCharsExpanded = estimateToolSchemaChars(expandedToolNames);
       return {
         routedToolNames: preferredToolNames,
-        expandedToolNames: availableToolNames,
+        expandedToolNames,
         diagnostics: {
           cacheHit: false,
-          clusterKey: `shell-profile:${shellProfile}`,
-          confidence: 0.72,
+          clusterKey:
+            familyExpansionToolNames.length > 0
+              ? `shell-profile:${shellProfile}:expanded`
+              : `shell-profile:${shellProfile}`,
+          confidence: familyExpansionToolNames.length > 0 ? 0.8 : 0.72,
           totalToolCount: availableToolNames.length,
           routedToolCount: preferredToolNames.length,
-          expandedToolCount: availableToolNames.length,
+          expandedToolCount: expandedToolNames.length,
           schemaCharsFull,
           schemaCharsRouted,
-          schemaCharsExpanded: schemaCharsFull,
+          schemaCharsExpanded,
           schemaCharsSaved: Math.max(0, schemaCharsFull - schemaCharsRouted),
         },
       };

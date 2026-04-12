@@ -61,6 +61,15 @@ Current shell entrypoint:
 - `agenc-runtime shell [profile]` as the compatibility alias
 - `agenc console` for the explicit operator-console compatibility path
 
+Current coding runtime surface:
+
+- native coding tools under `system.*` for grep/glob/file search/repo inventory
+- structured git and worktree tools under `system.git*`
+- bounded file reads via `system.readFileRange`
+- native patch application via `system.applyPatch`
+- native code-intel via `system.symbolSearch`, `system.symbolDefinition`, and `system.symbolReferences`
+- tool discovery via `system.searchTools`
+
 Current operator marketplace entrypoint:
 
 - `agenc-runtime market ...` for non-interactive terminal marketplace flows

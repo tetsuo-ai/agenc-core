@@ -14,9 +14,18 @@ export {
 export {
   createFilesystemTools,
   isPathAllowed,
+  recordSessionRead,
+  hasSessionRead,
+  resolveSessionId,
   safePath,
   type FilesystemToolConfig,
 } from "./filesystem.js";
+
+export {
+  createCodingTools,
+  SESSION_ADVERTISED_TOOL_NAMES_ARG,
+  type CodingToolConfig,
+} from "./coding.js";
 
 export {
   createPdfTools,

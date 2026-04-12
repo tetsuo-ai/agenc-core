@@ -58,3 +58,21 @@ stack:
 
 Later phases should extend these surfaces rather than fork a second coding-only
 runtime path.
+
+## Phase 2 Coding Tool Surface
+
+The `coding` profile now defaults to a native coding bundle on the shared
+runtime rather than prompt-only shell advice.
+
+That bundle includes:
+
+- repo inventory and file-discovery tools
+- structured git status/diff/show/branch/change-summary tools
+- user-visible git worktree tools on top of the existing runtime
+- bounded file-context reads and native patch application
+- native code-intelligence lookups for symbol search, definitions, and references
+- tool discovery via `system.searchTools`
+
+Mixed-mode work is still allowed. Browser, research, remote, sandbox, and
+operator tools remain reachable through profile-aware expansion and explicit
+tool discovery instead of forcing coding sessions onto a second runtime.

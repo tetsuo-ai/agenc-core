@@ -11,6 +11,9 @@
 // Core types
 export {
   type Tool,
+  type ToolCatalogEntry,
+  type ToolMetadata,
+  type ToolSource,
   type ToolResult,
   type ToolContext,
   type ToolRegistryConfig,
@@ -60,9 +63,11 @@ export {
   type HttpResponse,
   // Filesystem
   createFilesystemTools,
+  createCodingTools,
   isPathAllowed,
   safePath,
   type FilesystemToolConfig,
+  type CodingToolConfig,
   // Browser
   createBrowserTools,
   closeBrowser,
