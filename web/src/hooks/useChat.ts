@@ -630,16 +630,6 @@ export function useChat({ send, connected }: UseChatOptions): UseChatReturn {
     const subagentEvent = parseSubagentEvent(msg);
     if (subagentEvent) {
       appendSubagentLifecycle(subagentEvent);
-      if (
-        subagentEvent.type === WS_SUBAGENTS_COMPLETED ||
-        subagentEvent.type === WS_SUBAGENTS_FAILED ||
-        subagentEvent.type === WS_SUBAGENTS_CANCELLED ||
-        subagentEvent.type === WS_SUBAGENTS_SYNTHESIZED
-      ) {
-        setIsTyping(false);
-      } else {
-        setIsTyping(true);
-      }
       return;
     }
 
@@ -681,6 +671,16 @@ export function useChat({ send, connected }: UseChatOptions): UseChatReturn {
       case WS_CHAT_TYPING: {
         const payload = (msg.payload ?? msg) as Record<string, unknown>;
         setIsTyping(!!payload.active);
+        break;
+      }
+
+      case 'chat.response': {
+        // chat.typing / chat.message are the authoritative top-level run
+        // lifecycle signals. Late subagent lifecycle events can legitimately
+        // arrive after completion, so force the spinner down on the terminal
+        // response envelope instead of letting delegated traffic reopen it.
+        pendingMsgIdRef.current = null;
+        setIsTyping(false);
         break;
       }
 

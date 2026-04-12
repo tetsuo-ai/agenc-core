@@ -4,3 +4,10 @@
 - **What worked:** Replacing heuristic artifact/workflow escalation with a direct-owner artifact contract fixed the route class, stale verification inheritance, conditional no-op semantics, and explicit `@artifact` normalization in one coherent runtime path.
 - **What didn't:** Artifact-intent classifier precedence and workspace-grounding phrase detection were still too narrow at first, which let explicit `@PLAN.md` repair requests drift into grounded-plan-generation or artifact-only review until the classifier and grounding detector were tightened.
 - **Rule added to CLAUDE.md:** no
+
+## PR #327: fix(web): stop stuck thinking after completed turn
+- **Date:** 2026-04-12
+- **Files changed:** `web/src/hooks/useChat.ts`, `web/src/hooks/useChat.test.ts`
+- **What worked:** Moving typing-state ownership back to the top-level chat lifecycle fixed the stuck-thinking race without disturbing delegated timeline rendering, and the regression tests cover both late subagent traffic and terminal `chat.response`.
+- **What didn't:** The UI hook had quietly treated subagent lifecycle events as a second source of truth for run completion, which made the bug look like a runtime/executor issue until the webchat state path was traced end to end.
+- **Rule added to CLAUDE.md:** no
