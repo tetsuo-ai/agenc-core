@@ -1,4 +1,4 @@
-import type { ChatExecutorResult } from "../llm/chat-executor.js";
+import type { ChatExecutorResult } from "../llm/chat-executor-types.js";
 import type { ToolHandler } from "../llm/types.js";
 import { extractToolFailureText } from "../llm/chat-executor-tool-utils.js";
 import { parseDirectCommandLine } from "../tools/system/command-line.js";

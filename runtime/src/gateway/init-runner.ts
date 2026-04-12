@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { constants } from "node:fs";
 import { access, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { join, resolve as resolvePath } from "node:path";
-import type { ChatExecutorResult } from "../llm/chat-executor.js";
+import type { ChatExecutorResult } from "../llm/chat-executor-types.js";
 
 const INIT_GUIDE_FILENAME = "AGENC.md";
 const MAX_FILE_EXCERPT_CHARS = 4_000;

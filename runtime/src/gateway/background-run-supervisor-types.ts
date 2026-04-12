@@ -7,7 +7,8 @@
  * @module
  */
 
-import type { ChatExecutor, ChatExecutorResult } from "../llm/chat-executor.js";
+import type { ChatExecutor } from "../llm/chat-executor.js";
+import type { ChatExecutorResult } from "../llm/chat-executor-types.js";
 import type { LLMMessage, LLMProvider, ToolHandler } from "../llm/types.js";
 import type { GatewayMessage } from "./message.js";
 import type { Logger } from "../utils/logger.js";

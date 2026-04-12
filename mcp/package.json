@@ -45,8 +45,8 @@
     "directory": "mcp"
   },
   "dependencies": {
-    "@tetsuo-ai/runtime": "0.1.0",
-    "@tetsuo-ai/sdk": "1.3.1",
+    "@tetsuo-ai/runtime": "0.2.0",
+    "@tetsuo-ai/sdk": "1.4.0",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "zod": "^4.3.6"
   },

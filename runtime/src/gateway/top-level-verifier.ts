@@ -1,4 +1,4 @@
-import type { ChatExecutorResult } from "../llm/chat-executor.js";
+import type { ChatExecutorResult } from "../llm/chat-executor-types.js";
 import { type PlannerVerificationSnapshot } from "../workflow/completion-state.js";
 import { createExecutionEnvelope } from "../workflow/execution-envelope.js";
 import {

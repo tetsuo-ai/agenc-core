@@ -8,7 +8,8 @@
  * @module
  */
 
-import type { ChatExecutor, ChatToolRoutingSummary } from "../llm/chat-executor.js";
+import type { ChatExecutor } from "../llm/chat-executor.js";
+import type { ChatToolRoutingSummary } from "../llm/chat-executor-types.js";
 import type { LLMMessage, ToolHandler } from "../llm/types.js";
 import type { MemoryBackend } from "../memory/types.js";
 import type { Logger } from "../utils/logger.js";

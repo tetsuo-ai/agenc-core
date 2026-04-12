@@ -12,7 +12,7 @@ export function BBSStatusBar({ activeNetwork, targetNetwork }: BBSStatusBarProps
   const pendingNetwork =
     active !== 'unknown' && target !== 'unknown' && active !== target ? target : null;
   const statusText = [
-    'AgenC v0.1.0',
+    'AgenC v0.2.0',
     `Solana ${formatSolanaNetwork(displayNetwork)}`,
     pendingNetwork ? `${formatSolanaNetwork(pendingNetwork)} pending restart` : null,
   ]

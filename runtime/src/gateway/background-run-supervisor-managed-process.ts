@@ -12,7 +12,7 @@
  * @module
  */
 
-import type { ChatExecutorResult } from "../llm/chat-executor.js";
+import type { ChatExecutorResult } from "../llm/chat-executor-types.js";
 import type { ToolHandler } from "../llm/types.js";
 import {
   type BackgroundRunManagedProcessLaunchSpec,

@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@tetsuo-ai/runtime": "0.1.0",
+    "@tetsuo-ai/runtime": "0.2.0",
     "@react-navigation/bottom-tabs": "^7.15.5",
     "@react-navigation/native": "^7.1.33",
     "expo": "~55.0.5",

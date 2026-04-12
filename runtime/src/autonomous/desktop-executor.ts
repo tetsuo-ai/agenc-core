@@ -12,7 +12,8 @@
  * @module
  */
 
-import type { ChatExecutor, ToolCallRecord } from "../llm/chat-executor.js";
+import type { ChatExecutor } from "../llm/chat-executor.js";
+import type { ToolCallRecord } from "../llm/chat-executor-types.js";
 import { executeChatToLegacyResult } from "../llm/execute-chat.js";
 import type { ToolHandler, LLMProvider } from "../llm/types.js";
 import {

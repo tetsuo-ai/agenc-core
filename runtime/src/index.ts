@@ -42,7 +42,7 @@ export {
   createReadOnlyProgram,
 } from "./idl.js";
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 
 // Runtime class
 export { AgentRuntime } from "./runtime.js";

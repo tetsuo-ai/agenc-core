@@ -16,7 +16,7 @@
  */
 
 import { createHash } from "node:crypto";
-import type { ChatExecutorResult } from "../llm/chat-executor.js";
+import type { ChatExecutorResult } from "../llm/chat-executor-types.js";
 import type { ToolRoutingDecision } from "./tool-routing.js";
 import {
   inferAgentRunDomain,

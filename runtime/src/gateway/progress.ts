@@ -9,7 +9,7 @@
  */
 
 import type { MemoryBackend } from "../memory/types.js";
-import type { MemoryRetriever } from "../llm/chat-executor.js";
+import type { MemoryRetriever } from "../llm/chat-executor-types.js";
 import type { Logger } from "../utils/logger.js";
 import { safeStringify } from "../tools/types.js";
 import { assessExecuteWithAgentResult } from "../utils/delegated-scope-trust.js";

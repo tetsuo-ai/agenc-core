@@ -17,7 +17,7 @@ import { computeTrustScore, inferTrustSource, DEFAULT_TRUST_THRESHOLD } from "./
 import type { VectorMemoryBackend } from "./vector-store.js";
 import type { EmbeddingProvider } from "./embeddings.js";
 import type { CuratedMemoryManager } from "./structured.js";
-import type { MemoryRetriever } from "../llm/chat-executor.js";
+import type { MemoryRetriever } from "../llm/chat-executor-types.js";
 import type { Logger } from "../utils/logger.js";
 
 // ============================================================================

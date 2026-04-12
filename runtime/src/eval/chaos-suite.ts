@@ -7,7 +7,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ChatExecutorResult } from "../llm/chat-executor.js";
+import type { ChatExecutorResult } from "../llm/chat-executor-types.js";
 import { callWithFallback } from "../llm/chat-executor-fallback.js";
 import { DEFAULT_LLM_RETRY_POLICY_MATRIX } from "../llm/policy.js";
 import { createSyntheticDialogueTurnExecutionContract } from "../llm/turn-execution-contract.js";

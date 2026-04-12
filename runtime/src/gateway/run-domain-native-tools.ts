@@ -1,5 +1,5 @@
 import { didToolCallFail } from "../llm/chat-executor-tool-utils.js";
-import type { ChatExecutorResult } from "../llm/chat-executor.js";
+import type { ChatExecutorResult } from "../llm/chat-executor-types.js";
 import { createSyntheticDialogueTurnExecutionContract } from "../llm/turn-execution-contract.js";
 import type { ToolHandler } from "../llm/types.js";
 import { toErrorMessage } from "../utils/async.js";

@@ -1,4 +1,7 @@
-import type { ChatExecuteParams, ChatExecutorResult } from "../llm/chat-executor.js";
+import type {
+  ChatExecuteParams,
+  ChatExecutorResult,
+} from "../llm/chat-executor-types.js";
 import type { LLMPipelineStopReason } from "../llm/policy.js";
 import type { ActiveTaskContext } from "../llm/turn-execution-contract-types.js";
 import type { LLMStatefulResumeAnchor } from "../llm/types.js";

@@ -8,7 +8,7 @@
  * @module
  */
 
-import type { DeterministicPipelineExecutor } from "../llm/chat-executor.js";
+import type { DeterministicPipelineExecutor } from "../llm/chat-executor-types.js";
 import type {
   Pipeline,
   PipelineExecutionOptions,

@@ -49,7 +49,7 @@ export async function createMCPConnection(
   });
 
   const client = new Client(
-    { name: `agenc-runtime`, version: "0.1.0" },
+    { name: `agenc-runtime`, version: "0.2.0" },
     { capabilities: {} },
   );
 

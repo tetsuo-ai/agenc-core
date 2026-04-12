@@ -22,7 +22,7 @@ Changelog entry template:
 - `<symbolName>` in `<filePath>` — use `<replacement>` instead. Removal planned for v<version>. (#<issue>)
 ```
 
-## @tetsuo-ai/sdk v1.3.1
+## @tetsuo-ai/sdk v1.4.0
 
 - Canonical repo: `https://github.com/tetsuo-ai/agenc-sdk`
 - README: `https://github.com/tetsuo-ai/agenc-sdk/blob/main/README.md`
@@ -31,7 +31,7 @@ Changelog entry template:
 - API baseline: `https://github.com/tetsuo-ai/agenc-sdk/blob/main/docs/api-baseline/sdk.json`
 - Public exports: see `https://github.com/tetsuo-ai/agenc-sdk/blob/main/docs/api-baseline/sdk.json`
 
-## @tetsuo-ai/plugin-kit v0.1.1
+## @tetsuo-ai/plugin-kit v0.2.0
 
 - Canonical repo: `https://github.com/tetsuo-ai/agenc-plugin-kit`
 - README: `https://github.com/tetsuo-ai/agenc-plugin-kit/blob/main/README.md`
@@ -40,7 +40,7 @@ Changelog entry template:
 - API baseline: `https://github.com/tetsuo-ai/agenc-plugin-kit/blob/main/docs/api-baseline/plugin-kit.json`
 - Public exports: see `https://github.com/tetsuo-ai/agenc-plugin-kit/blob/main/docs/api-baseline/plugin-kit.json`
 
-## @tetsuo-ai/runtime v0.1.0
+## @tetsuo-ai/runtime v0.2.0
 
 - Classification: Transitional private-kernel artifact; not a supported public builder target
 - Distribution policy: `docs/PRIVATE_KERNEL_DISTRIBUTION.md`

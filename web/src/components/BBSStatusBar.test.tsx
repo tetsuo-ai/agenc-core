@@ -6,7 +6,7 @@ describe('BBSStatusBar', () => {
   it('shows the active runtime network when it is known', () => {
     render(<BBSStatusBar activeNetwork="devnet" targetNetwork="https://api.devnet.solana.com" />);
 
-    expect(screen.getByText('AgenC v0.1.0 | Solana Devnet')).toBeTruthy();
+    expect(screen.getByText('AgenC v0.2.0 | Solana Devnet')).toBeTruthy();
   });
 
   it('shows a pending target when config differs from the active runtime network', () => {
@@ -18,7 +18,7 @@ describe('BBSStatusBar', () => {
     );
 
     expect(
-      screen.getByText('AgenC v0.1.0 | Solana Devnet | Mainnet pending restart'),
+      screen.getByText('AgenC v0.2.0 | Solana Devnet | Mainnet pending restart'),
     ).toBeTruthy();
   });
 });

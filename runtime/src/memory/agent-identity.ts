@@ -16,7 +16,7 @@
  */
 
 import type { MemoryBackend } from "./types.js";
-import type { MemoryRetriever } from "../llm/chat-executor.js";
+import type { MemoryRetriever } from "../llm/chat-executor-types.js";
 import type { Logger } from "../utils/logger.js";
 
 /** Persistent agent identity. */

@@ -13,7 +13,7 @@ const packages = [
   { name: '@tetsuo-ai/mcp', dir: 'mcp' },
   { name: '@tetsuo-ai/docs-mcp', dir: 'docs-mcp' },
 ];
-const releasedPackages = ['@tetsuo-ai/sdk@1.3.1', '@tetsuo-ai/protocol@0.1.1', '@tetsuo-ai/plugin-kit@0.1.1'];
+const releasedPackages = ['@tetsuo-ai/sdk@1.4.0', '@tetsuo-ai/protocol@0.2.0', '@tetsuo-ai/plugin-kit@0.2.0'];
 
 function run(command, args, cwd) {
   return execFileSync(command, args, {

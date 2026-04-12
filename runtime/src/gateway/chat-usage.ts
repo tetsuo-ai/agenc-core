@@ -1,4 +1,4 @@
-import type { ChatCallUsageRecord } from "../llm/chat-executor.js";
+import type { ChatCallUsageRecord } from "../llm/chat-executor-types.js";
 import type { RuntimeEconomicsSummary } from "../llm/run-budget.js";
 
 type ChatUsageSectionId =
