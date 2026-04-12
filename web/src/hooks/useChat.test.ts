@@ -353,6 +353,68 @@ describe("useChat session lifecycle", () => {
       sections: [{ id: "memory", label: "Memory", tokens: 800, percent: 31.2 }],
     });
   });
+
+  it("keeps typing cleared when late subagent events arrive after the final chat message", () => {
+    const send = vi.fn();
+    const { result } = renderHook(() => useChat({ send, connected: true }));
+
+    act(() => {
+      result.current.handleMessage({
+        type: "chat.typing",
+        payload: { active: true },
+      } as WSMessage);
+    });
+
+    expect(result.current.isTyping).toBe(true);
+
+    act(() => {
+      result.current.handleMessage({
+        type: "chat.message",
+        payload: {
+          content: "Finished the task.",
+          timestamp: 1000,
+        },
+      } as WSMessage);
+    });
+
+    expect(result.current.isTyping).toBe(false);
+
+    act(() => {
+      result.current.handleMessage({
+        type: "subagents.progress",
+        payload: {
+          sessionId: "session-parent",
+          parentSessionId: "session-parent",
+          subagentSessionId: "subagent:child-1",
+          timestamp: 1100,
+          data: { objective: "late event flush" },
+        },
+      } as WSMessage);
+    });
+
+    expect(result.current.isTyping).toBe(false);
+  });
+
+  it("treats chat.response as a terminal typing signal", () => {
+    const send = vi.fn();
+    const { result } = renderHook(() => useChat({ send, connected: true }));
+
+    act(() => {
+      result.current.handleMessage({
+        type: "chat.typing",
+        payload: { active: true },
+      } as WSMessage);
+      result.current.handleMessage({
+        type: "chat.response",
+        payload: {
+          completionState: "completed",
+          stopReason: "completed",
+        },
+      } as WSMessage);
+    });
+
+    expect(result.current.isTyping).toBe(false);
+  });
 });
 
 describe("useChat subagent lifecycle timeline", () => {
