@@ -136,13 +136,10 @@ function handleSessionListResult(data, state, api) {
   }
   const target = api.latestSessionSummary(sessions, state.sessionId);
   if (target?.sessionId) {
-    state.sessionId = target.sessionId;
-    api.persistSessionId(state.sessionId);
-    api.setTransientStatus(`resuming session ${state.sessionId}`);
+    api.setTransientStatus(`resuming session ${target.sessionId}`);
     api.send(
       "session.command.execute",
       api.authPayload({
-        sessionId: target.sessionId,
         client: "console",
         content: `/session resume ${target.sessionId}`,
       }),

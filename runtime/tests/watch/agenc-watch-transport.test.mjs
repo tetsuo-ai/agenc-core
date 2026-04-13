@@ -105,8 +105,8 @@ function createTransportHarness(overrides = {}) {
     pushEvent(kind, title, body, tone) {
       calls.push({ type: "event", kind, title, body, tone });
     },
-    authPayload() {
-      return { ownerToken: "owner-1" };
+    authPayload(payload = {}) {
+      return { ownerToken: "owner-1", ...payload };
     },
     hasActiveSurfaceRun() {
       return false;

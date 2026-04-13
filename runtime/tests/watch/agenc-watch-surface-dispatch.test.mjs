@@ -306,9 +306,8 @@ test("dispatchOperatorSurfaceEvent bootstraps from canonical session list result
     api,
   );
 
-  assert.equal(state.sessionId, "session-next");
+  assert.equal(state.sessionId, "session-prev");
   assert.deepEqual(calls, [
-    ["persistSessionId", "session-next"],
     [
       "status",
       "resuming session session-next",
@@ -320,7 +319,6 @@ test("dispatchOperatorSurfaceEvent bootstraps from canonical session list result
         auth: true,
         client: "console",
         content: "/session resume session-next",
-        sessionId: "session-next",
       },
     ],
   ]);
