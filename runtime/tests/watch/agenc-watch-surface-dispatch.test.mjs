@@ -1270,6 +1270,35 @@ test("dispatchOperatorSurfaceEvent schedules bootstrap retries for transient sta
   ]);
 });
 
+test("dispatchOperatorSurfaceEvent clears stale missing sessions during bootstrap", () => {
+  const { api, state, calls } = createHarness({
+    state: {
+      sessionId: "session:stale-session",
+      bootstrapReady: false,
+    },
+  });
+
+  dispatchOperatorSurfaceEvent(
+    {
+      family: "error",
+      type: "error",
+      payload: {},
+      payloadRecord: {},
+      payloadList: null,
+      isSessionScoped: false,
+      message: { error: 'Session "session:stale-session" not found' },
+    },
+    null,
+    api,
+  );
+
+  assert.equal(state.sessionId, null);
+  assert.deepEqual(calls, [
+    ["persistSessionId", null],
+    ["scheduleBootstrap", "stale session missing; retrying bootstrap"],
+  ]);
+});
+
 test("dispatchOperatorSurfaceEvent records unavailable durable-run operator errors", () => {
   const { api, state, calls } = createHarness();
 
