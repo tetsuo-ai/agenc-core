@@ -26,6 +26,7 @@ import {
   SESSION_SHELL_PROFILE_METADATA_KEY,
 } from "../../gateway/session.js";
 import { SESSION_WORKFLOW_STATE_METADATA_KEY } from "../../gateway/workflow-state.js";
+import { SlashCommandRegistry } from "../../gateway/commands.js";
 
 // ============================================================================
 // Test helpers
@@ -357,6 +358,84 @@ describe("WebChatChannel", () => {
     channel = new WebChatChannel(deps);
     await channel.initialize(context);
     await channel.start();
+  });
+
+  describe("session command bus", () => {
+    it("returns structured command results when a handler calls replyResult", async () => {
+      const send = vi.fn<(response: ControlResponse) => void>();
+      const registry = new SlashCommandRegistry({ logger: silentLogger });
+      registry.register({
+        name: "session",
+        description: "structured session test",
+        global: true,
+        metadata: { viewKind: "session", clients: ["web"], category: "session" },
+        handler: async (ctx) => {
+          await ctx.replyResult({
+            text: "Structured session result",
+            viewKind: "session",
+            data: {
+              kind: "session",
+              subcommand: "status",
+              currentSession: {
+                sessionId: ctx.sessionId,
+                runtimeSessionId: "runtime-session",
+                shellProfile: "coding",
+                workflowState: {
+                  stage: "implement",
+                  worktreeMode: "child_optional",
+                  enteredAt: 1,
+                  updatedAt: 2,
+                },
+                workspaceRoot: "/tmp/project",
+                historyMessages: 4,
+              },
+            },
+          });
+        },
+      });
+      const deps = createDeps({ commandRegistry: registry });
+      const channel = new WebChatChannel(deps);
+      await channel.initialize(createContext());
+      await channel.start();
+
+      channel.handleMessage("client_1", "chat.new", msg("chat.new", {}, "new-1"), send);
+      const sessionId = (findResponse(send, "chat.session", "new-1")?.payload as {
+        sessionId?: string;
+      })?.sessionId;
+      expect(sessionId).toBeTruthy();
+
+      send.mockClear();
+      channel.handleMessage(
+        "client_1",
+        "session.command.execute",
+        msg(
+          "session.command.execute",
+          {
+            content: "/session",
+            client: "web",
+            sessionId,
+          },
+          "cmd-1",
+        ),
+        send,
+      );
+
+      await vi.waitFor(() => {
+        expect(findResponse(send, "session.command.result", "cmd-1")?.payload).toMatchObject({
+          commandName: "session",
+          content: "Structured session result",
+          viewKind: "session",
+          data: {
+            kind: "session",
+            subcommand: "status",
+            currentSession: {
+              sessionId,
+              shellProfile: "coding",
+            },
+          },
+        });
+      });
+    });
   });
 
   // --------------------------------------------------------------------------

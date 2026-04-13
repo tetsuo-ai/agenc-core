@@ -77,8 +77,16 @@ export {
 export type {
   SubagentLifecyclePayload,
   SubagentLifecycleType,
+  AgentsCommandData,
+  GitCommandData,
+  ReviewCommandData,
   SessionCommandExecutePayload,
+  SessionCommandResultData,
   SessionCommandResultPayload,
+  SessionCommandCurrentSessionData,
+  SessionCommandData,
+  VerifyCommandData,
+  WorkflowCommandData,
 } from "./channels/webchat/protocol.js";
 export {
   classifyGatewayControlMessage,
@@ -124,8 +132,10 @@ export type { WorkflowOwnershipEntry } from "./gateway/watch-cockpit.js";
 export type { SessionShellProfile } from "./gateway/shell-profile.js";
 export type { SessionWorkflowState } from "./gateway/workflow-state.js";
 export type {
+  SlashCommandDispatchResult,
   SlashCommandCatalogEntry,
   SlashCommandClient,
+  SlashCommandExecutionResult,
   SlashCommandViewKind,
 } from "./gateway/commands.js";
 export type {

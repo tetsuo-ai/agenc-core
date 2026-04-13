@@ -236,6 +236,130 @@ describe("useChat tool result matching", () => {
 });
 
 describe("useChat session lifecycle", () => {
+  it("hydrates continuity records from chat.session.list", () => {
+    const send = vi.fn();
+    const { result } = renderHook(() => useChat({ send, connected: true }));
+
+    act(() => {
+      result.current.handleMessage({
+        type: "chat.session.list",
+        payload: [
+          {
+            sessionId: "session-1",
+            label: "Coding Session",
+            preview: "Investigate git diff handling",
+            messageCount: 7,
+            createdAt: 1,
+            updatedAt: 2,
+            lastActiveAt: 3,
+            connected: false,
+            resumabilityState: "disconnected-resumable",
+            shellProfile: "coding",
+            workflowStage: "implement",
+            childSessionCount: 1,
+            worktreeCount: 0,
+            pendingApprovalCount: 0,
+          },
+        ],
+      } as WSMessage);
+    });
+
+    expect(result.current.sessions).toHaveLength(1);
+    expect(result.current.sessions[0]).toMatchObject({
+      sessionId: "session-1",
+      shellProfile: "coding",
+      workflowStage: "implement",
+    });
+  });
+
+  it("stores structured session command results and resumes via the command bus", () => {
+    const send = vi.fn();
+    const { result } = renderHook(() => useChat({ send, connected: true }));
+
+    send.mockClear();
+    act(() => {
+      result.current.resumeSession("session-target");
+    });
+
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "session.command.execute",
+        payload: expect.objectContaining({
+          content: "/session resume session-target",
+          client: "web",
+        }),
+      }),
+    );
+
+    send.mockClear();
+    act(() => {
+      result.current.handleMessage({
+        type: "session.command.result",
+        payload: {
+          commandName: "session",
+          content: "Resumed session session-target.",
+          sessionId: "web-session",
+          viewKind: "session",
+          data: {
+            kind: "session",
+            subcommand: "resume",
+            resumed: {
+              sessionId: "session-target",
+              messageCount: 12,
+              workspaceRoot: "/tmp/work",
+            },
+          },
+        },
+      } as WSMessage);
+    });
+
+    expect(result.current.sessionId).toBe("session-target");
+    expect(result.current.lastCommandResult?.commandName).toBe("session");
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "chat.history",
+      }),
+    );
+  });
+
+  it("stores inspect payloads from the canonical continuity inspect channel", () => {
+    const send = vi.fn();
+    const { result } = renderHook(() => useChat({ send, connected: true }));
+
+    act(() => {
+      result.current.handleMessage({
+        type: "chat.session.inspect",
+        payload: {
+          sessionId: "session-2",
+          label: "Review Session",
+          preview: "Review the current changes",
+          messageCount: 9,
+          createdAt: 1,
+          updatedAt: 2,
+          lastActiveAt: 3,
+          connected: true,
+          resumabilityState: "active",
+          shellProfile: "coding",
+          workflowStage: "review",
+          childSessionCount: 2,
+          worktreeCount: 1,
+          pendingApprovalCount: 0,
+          workflowState: {
+            stage: "review",
+            worktreeMode: "child_optional",
+            enteredAt: 1,
+            updatedAt: 2,
+          },
+        },
+      } as WSMessage);
+    });
+
+    expect(result.current.selectedSessionDetail).toMatchObject({
+      sessionId: "session-2",
+      workflowStage: "review",
+    });
+  });
+
   it("persists a server-issued owner token and reuses it in later requests", () => {
     const send = vi.fn();
     const { result } = renderHook(() => useChat({ send, connected: true }));

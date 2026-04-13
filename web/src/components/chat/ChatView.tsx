@@ -1,12 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ChatMessage, CommandCatalogEntry, TokenUsage, VoiceState, VoiceMode } from '../../types';
-
-import type { ChatSessionInfo } from '../../hooks/useChat';
+import type {
+  ChatMessage,
+  CommandCatalogEntry,
+  ContinuityDetail,
+  ContinuityRecord,
+  SessionCommandResult,
+  TokenUsage,
+  VoiceState,
+  VoiceMode,
+} from '../../types';
 import { assetUrl } from '../../utils/assets';
 import { MessageList } from './MessageList';
 import { ChatInput } from './ChatInput';
 import { VoiceOverlay } from './VoiceOverlay';
 import { DesktopPanel } from './DesktopPanel';
+import { CommandResultPanel } from './CommandResultPanel';
 
 interface ChatViewProps {
   messages: ChatMessage[];
@@ -24,10 +32,14 @@ interface ChatViewProps {
   delegationTask?: string;
   theme?: 'light' | 'dark';
   onToggleTheme?: () => void;
-  chatSessions?: ChatSessionInfo[];
+  chatSessions?: ContinuityRecord[];
   commands?: CommandCatalogEntry[];
   activeSessionId?: string | null;
+  selectedSessionDetail?: ContinuityDetail | null;
+  commandResult?: SessionCommandResult | null;
   onSelectSession?: (sessionId: string) => void;
+  onInspectSession?: (sessionId: string) => void;
+  onForkSession?: (sessionId: string) => void;
   onNewChat?: () => void;
   desktopUrl?: string | null;
   desktopOpen?: boolean;
@@ -53,7 +65,11 @@ export function ChatView({
   chatSessions = [],
   commands = [],
   activeSessionId,
+  selectedSessionDetail = null,
+  commandResult = null,
   onSelectSession,
+  onInspectSession,
+  onForkSession,
   onNewChat,
   desktopUrl,
   desktopOpen = false,
@@ -166,6 +182,7 @@ export function ChatView({
 
     return { total: bySession.size, running, failed, completed };
   }, [messages]);
+  const rightPanelOpen = Boolean(commandResult) || (desktopOpen && desktopUrl);
 
   // ── Welcome / splash state ──
   if (isEmpty) {
@@ -361,9 +378,13 @@ export function ChatView({
       {/* Message list + optional desktop panel */}
       <div className="flex-1 min-h-0 flex">
         <MessageList messages={messages} isTyping={isTyping} theme={theme} searchQuery={searchQuery} />
-        {desktopOpen && desktopUrl && (
+        {rightPanelOpen && (
           <div className="hidden md:block w-[55%] min-w-[480px] h-full shrink-0">
-            <DesktopPanel vncUrl={desktopUrl} onClose={onToggleDesktop!} />
+            {desktopOpen && desktopUrl ? (
+              <DesktopPanel vncUrl={desktopUrl} onClose={onToggleDesktop!} />
+            ) : commandResult ? (
+              <CommandResultPanel result={commandResult} />
+            ) : null}
           </div>
         )}
       </div>
@@ -469,7 +490,9 @@ export function ChatView({
                   return (
                     <button
                       key={session.sessionId}
-                      onClick={() => { onSelectSession?.(session.sessionId); setSessionsOpen(false); }}
+                      onClick={() => {
+                        onInspectSession?.(session.sessionId);
+                      }}
                       className={`w-full text-left px-4 py-3 text-xs transition-colors border-b border-bbs-border/50 ${
                         isActive ? 'bg-bbs-surface text-bbs-purple' : 'text-bbs-lightgray hover:bg-bbs-surface'
                       }`}
@@ -477,15 +500,57 @@ export function ChatView({
                       <div className="flex items-center gap-2">
                         {isActive && <span className="text-bbs-purple">{'>'}</span>}
                         <span className="truncate">{session.label}</span>
+                        <span className="ml-auto text-bbs-cyan">{session.shellProfile}</span>
                       </div>
                       <div className="text-bbs-gray mt-0.5 ml-4">
                         {session.messageCount} msgs - {new Date(session.lastActiveAt).toLocaleString()}
+                      </div>
+                      <div className="mt-2 ml-4 flex items-center gap-3 text-[11px] uppercase tracking-wide">
+                        <button
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onSelectSession?.(session.sessionId);
+                            setSessionsOpen(false);
+                          }}
+                          className="text-bbs-purple hover:text-bbs-white"
+                        >
+                          [RESUME]
+                        </button>
+                        <button
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onInspectSession?.(session.sessionId);
+                          }}
+                          className="text-bbs-cyan hover:text-bbs-white"
+                        >
+                          [INSPECT]
+                        </button>
+                        {onForkSession && (
+                          <button
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onForkSession(session.sessionId);
+                            }}
+                            className="text-bbs-green hover:text-bbs-white"
+                          >
+                            [FORK]
+                          </button>
+                        )}
                       </div>
                     </button>
                   );
                 })
               )}
             </div>
+            {selectedSessionDetail && (
+              <div className="border-t border-bbs-border p-4 text-xs text-bbs-lightgray">
+                <div className="font-bold text-bbs-white">{selectedSessionDetail.label}</div>
+                <div className="mt-1 text-bbs-gray">
+                  {selectedSessionDetail.shellProfile} - {selectedSessionDetail.workflowStage}
+                </div>
+                <div className="mt-2 break-words">{selectedSessionDetail.preview}</div>
+              </div>
+            )}
           </div>
         </div>
       )}

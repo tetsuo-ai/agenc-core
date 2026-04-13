@@ -8,6 +8,13 @@
  */
 
 import type { SlashCommandViewKind } from "../../gateway/commands.js";
+import type {
+  SessionContinuityDetail,
+  SessionContinuityRecord,
+  SessionHistoryItem,
+} from "./types.js";
+import type { SessionShellProfile } from "../../gateway/shell-profile.js";
+import type { SessionWorkflowState } from "../../gateway/workflow-state.js";
 
 // ============================================================================
 // Shared constants
@@ -164,13 +171,129 @@ export interface SessionCommandExecutePayload {
   readonly client?: "shell" | "console" | "web";
 }
 
+export interface SessionCommandCurrentSessionData {
+  readonly sessionId: string;
+  readonly runtimeSessionId: string;
+  readonly shellProfile: SessionShellProfile;
+  readonly workflowState: SessionWorkflowState;
+  readonly workspaceRoot: string;
+  readonly historyMessages: number;
+  readonly model?: string;
+  readonly ownership?: readonly Record<string, unknown>[];
+}
+
+export interface SessionCommandData {
+  readonly kind: "session";
+  readonly subcommand: string;
+  readonly currentSession?: SessionCommandCurrentSessionData;
+  readonly sessions?: readonly SessionContinuityRecord[];
+  readonly detail?: SessionContinuityDetail;
+  readonly history?: readonly SessionHistoryItem[];
+  readonly resumed?: {
+    readonly sessionId: string;
+    readonly messageCount: number;
+    readonly workspaceRoot?: string;
+  };
+  readonly forked?: {
+    readonly sourceSessionId: string;
+    readonly targetSessionId: string;
+    readonly forkSource?: string;
+    readonly session?: Record<string, unknown>;
+  };
+}
+
+export interface WorkflowCommandData {
+  readonly kind: "workflow";
+  readonly subcommand: string;
+  readonly shellProfile: SessionShellProfile;
+  readonly workflowState: SessionWorkflowState;
+  readonly plannerStatus: string;
+  readonly suggestedNextStage?: SessionWorkflowState["stage"];
+  readonly branchInfo?: Record<string, unknown>;
+  readonly changeSummary?: Record<string, unknown>;
+  readonly tasks?: Record<string, unknown>;
+  readonly ownership?: readonly Record<string, unknown>[];
+  readonly delegated?: {
+    readonly sessionId: string;
+    readonly status: string;
+    readonly output?: string;
+  };
+}
+
+export interface AgentsCommandData {
+  readonly kind: "agents";
+  readonly subcommand: string;
+  readonly roles?: readonly Record<string, unknown>[];
+  readonly entries?: readonly Record<string, unknown>[];
+  readonly detail?: Record<string, unknown>;
+  readonly launched?: Record<string, unknown>;
+  readonly stopped?: Record<string, unknown>;
+}
+
+export interface GitCommandData {
+  readonly kind: "git";
+  readonly subcommand: string;
+  readonly branchInfo?: Record<string, unknown>;
+  readonly changeSummary?: Record<string, unknown>;
+  readonly diff?: Record<string, unknown>;
+}
+
+export interface ReviewCommandData {
+  readonly kind: "review";
+  readonly mode: "default" | "security" | "pr-comments";
+  readonly delegated: boolean;
+  readonly branchInfo?: Record<string, unknown>;
+  readonly changeSummary?: Record<string, unknown>;
+  readonly diff?: Record<string, unknown>;
+  readonly reviewSurface?: {
+    readonly status: string;
+    readonly source: string;
+    readonly delegatedSessionId?: string;
+    readonly summaryPreview?: string;
+  };
+  readonly delegatedResult?: {
+    readonly sessionId: string;
+    readonly status: string;
+    readonly output?: string;
+  };
+}
+
+export interface VerifyCommandData {
+  readonly kind: "verify";
+  readonly delegated: boolean;
+  readonly branchInfo?: Record<string, unknown>;
+  readonly changeSummary?: Record<string, unknown>;
+  readonly tasks?: Record<string, unknown>;
+  readonly runtimeStatusSnapshot?: Record<string, unknown>;
+  readonly verificationSurface?: {
+    readonly status: string;
+    readonly source: string;
+    readonly delegatedSessionId?: string;
+    readonly summaryPreview?: string;
+    readonly verdict?: string;
+  };
+  readonly delegatedResult?: {
+    readonly sessionId: string;
+    readonly status: string;
+    readonly output?: string;
+  };
+}
+
+export type SessionCommandResultData =
+  | SessionCommandData
+  | WorkflowCommandData
+  | AgentsCommandData
+  | GitCommandData
+  | ReviewCommandData
+  | VerifyCommandData;
+
 export interface SessionCommandResultPayload {
   readonly commandName: string;
   readonly content: string;
   readonly sessionId?: string;
   readonly client?: "shell" | "console" | "web";
   readonly viewKind?: SlashCommandViewKind;
-  readonly data?: Record<string, unknown>;
+  readonly data?: SessionCommandResultData;
 }
 
 type WebChatFilterList = readonly string[] | null;

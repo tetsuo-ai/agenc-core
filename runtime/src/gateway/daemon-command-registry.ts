@@ -2174,7 +2174,15 @@ export function createDaemonCommandRegistry(
           "system.gitStatus",
           jsonArgs ?? {},
         );
-        await cmdCtx.reply(formatGitStatusReply(result));
+        await cmdCtx.replyResult({
+          text: formatGitStatusReply(result),
+          viewKind: "git",
+          data: {
+            kind: "git",
+            subcommand: "status",
+            branchInfo: asRecord(result),
+          },
+        });
         return;
       }
 
@@ -2184,7 +2192,15 @@ export function createDaemonCommandRegistry(
           "system.gitBranchInfo",
           jsonArgs ?? {},
         );
-        await cmdCtx.reply(formatGitBranchReply(result));
+        await cmdCtx.replyResult({
+          text: formatGitBranchReply(result),
+          viewKind: "git",
+          data: {
+            kind: "git",
+            subcommand: "branch",
+            branchInfo: asRecord(result),
+          },
+        });
         return;
       }
 
@@ -2194,7 +2210,15 @@ export function createDaemonCommandRegistry(
           "system.gitChangeSummary",
           jsonArgs ?? {},
         );
-        await cmdCtx.reply(formatGitSummaryReply(result));
+        await cmdCtx.replyResult({
+          text: formatGitSummaryReply(result),
+          viewKind: "git",
+          data: {
+            kind: "git",
+            subcommand: "summary",
+            changeSummary: asRecord(result),
+          },
+        });
         return;
       }
 
@@ -2215,7 +2239,15 @@ export function createDaemonCommandRegistry(
             ...(hasInlineFlag(cmdCtx.argv, "stat") ? { noPatch: true } : {}),
           },
         );
-        await cmdCtx.reply(formatGitShowReply(result));
+        await cmdCtx.replyResult({
+          text: formatGitShowReply(result),
+          viewKind: "git",
+          data: {
+            kind: "git",
+            subcommand: "show",
+            diff: asRecord(result),
+          },
+        });
         return;
       }
 
@@ -2236,7 +2268,15 @@ export function createDaemonCommandRegistry(
               : {}),
           },
         );
-        await cmdCtx.reply(formatGitDiffReply(result));
+        await cmdCtx.replyResult({
+          text: formatGitDiffReply(result),
+          viewKind: "git",
+          data: {
+            kind: "git",
+            subcommand: "diff",
+            diff: asRecord(result),
+          },
+        });
         return;
       }
 
@@ -2257,7 +2297,15 @@ export function createDaemonCommandRegistry(
             "system.gitWorktreeList",
             jsonArgs ?? {},
           );
-          await cmdCtx.reply(formatGitWorktreeListReply(result));
+          await cmdCtx.replyResult({
+            text: formatGitWorktreeListReply(result),
+            viewKind: "git",
+            data: {
+              kind: "git",
+              subcommand: "worktree-list",
+              diff: asRecord(result),
+            },
+          });
           return;
         }
         if (worktreeCommand === "create") {
@@ -2285,7 +2333,15 @@ export function createDaemonCommandRegistry(
               ...(hasInlineFlag(cmdCtx.argv, "detached") ? { detached: true } : {}),
             },
           );
-          await cmdCtx.reply(formatGitWorktreeMutationReply("create", result));
+          await cmdCtx.replyResult({
+            text: formatGitWorktreeMutationReply("create", result),
+            viewKind: "git",
+            data: {
+              kind: "git",
+              subcommand: "worktree-create",
+              diff: asRecord(result),
+            },
+          });
           return;
         }
         if (worktreeCommand === "remove") {
@@ -2307,7 +2363,15 @@ export function createDaemonCommandRegistry(
               ...(hasInlineFlag(cmdCtx.argv, "force") ? { force: true } : {}),
             },
           );
-          await cmdCtx.reply(formatGitWorktreeMutationReply("remove", result));
+          await cmdCtx.replyResult({
+            text: formatGitWorktreeMutationReply("remove", result),
+            viewKind: "git",
+            data: {
+              kind: "git",
+              subcommand: "worktree-remove",
+              diff: asRecord(result),
+            },
+          });
           return;
         }
         if (worktreeCommand === "status") {
@@ -2326,7 +2390,15 @@ export function createDaemonCommandRegistry(
             "system.gitWorktreeStatus",
             jsonArgs ?? { worktreePath },
           );
-          await cmdCtx.reply(formatGitWorktreeStatusReply(result));
+          await cmdCtx.replyResult({
+            text: formatGitWorktreeStatusReply(result),
+            viewKind: "git",
+            data: {
+              kind: "git",
+              subcommand: "worktree-status",
+              diff: asRecord(result),
+            },
+          });
           return;
         }
         await cmdCtx.reply(
@@ -2437,11 +2509,18 @@ export function createDaemonCommandRegistry(
           ...(parseCsvFlag(cmdCtx.argv, "files")
             ? { filePaths: parseCsvFlag(cmdCtx.argv, "files") }
             : {}),
+          },
+      );
+      await cmdCtx.replyResult({
+        text: `${formatGitSummaryReply(summary)}\n\n${formatGitDiffReply(diff)}`,
+        viewKind: "diff",
+        data: {
+          kind: "git",
+          subcommand: "diff",
+          changeSummary: asRecord(summary),
+          diff: asRecord(diff),
         },
-      );
-      await cmdCtx.reply(
-        `${formatGitSummaryReply(summary)}\n\n${formatGitDiffReply(diff)}`,
-      );
+      });
     },
   });
   commandRegistry.register({
@@ -2524,15 +2603,41 @@ export function createDaemonCommandRegistry(
         preferred: resolveSessionShellProfile(session?.metadata ?? {}),
       });
       if (!wantsDelegate) {
+        let reviewState: ReviewSurfaceState | undefined;
         if (session) {
-          updateReviewSurfaceState(session, {
+          reviewState = updateReviewSurfaceState(session, {
             status: "completed",
             source: "local",
             summaryPreview: reviewSurface,
           });
           await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
         }
-        await cmdCtx.reply(reviewSurface);
+        await cmdCtx.replyResult({
+          text: reviewSurface,
+          viewKind: "review",
+          data: {
+            kind: "review",
+            mode: reviewMode,
+            delegated: false,
+            branchInfo: asRecord(branchInfo),
+            changeSummary: asRecord(summary),
+            diff: asRecord(diff),
+            ...(reviewState
+              ? {
+                  reviewSurface: {
+                    status: reviewState.status,
+                    source: reviewState.source,
+                    ...(reviewState.delegatedSessionId
+                      ? { delegatedSessionId: reviewState.delegatedSessionId }
+                      : {}),
+                    ...(reviewState.summaryPreview
+                      ? { summaryPreview: reviewState.summaryPreview }
+                      : {}),
+                  },
+                }
+              : {}),
+          },
+        });
         return;
       }
       if (session) {
@@ -2571,16 +2676,41 @@ export function createDaemonCommandRegistry(
         });
         await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
       }
-      await cmdCtx.reply(
-        [
-          reviewSurface,
-          "",
-          `Delegated reviewer session: ${delegated.sessionId} [${delegated.status}]`,
-          delegated.output.trim().length > 0
-            ? delegated.output.trim()
-            : "Delegated reviewer returned no output.",
-        ].join("\n"),
-      );
+      const delegatedText = [
+        reviewSurface,
+        "",
+        `Delegated reviewer session: ${delegated.sessionId} [${delegated.status}]`,
+        delegated.output.trim().length > 0
+          ? delegated.output.trim()
+          : "Delegated reviewer returned no output.",
+      ].join("\n");
+      await cmdCtx.replyResult({
+        text: delegatedText,
+        viewKind: "review",
+        data: {
+          kind: "review",
+          mode: reviewMode,
+          delegated: true,
+          branchInfo: asRecord(branchInfo),
+          changeSummary: asRecord(summary),
+          diff: asRecord(diff),
+          reviewSurface: {
+            status: delegated.success === true ? "completed" : "failed",
+            source: "delegated",
+            delegatedSessionId: delegated.sessionId,
+            ...(delegated.output.trim().length > 0
+              ? { summaryPreview: compactSurfacePreview(delegated.output) }
+              : {}),
+          },
+          delegatedResult: {
+            sessionId: delegated.sessionId,
+            status: delegated.status,
+            ...(delegated.output.trim().length > 0
+              ? { output: delegated.output.trim() }
+              : {}),
+          },
+        },
+      });
     },
   });
   commandRegistry.register({
@@ -2625,7 +2755,16 @@ export function createDaemonCommandRegistry(
           ? jsonArgs.subcommand.trim().toLowerCase()
           : cmdCtx.argv[0]?.toLowerCase() ?? "list";
       if (subcommand === "roles") {
-        await cmdCtx.reply(formatAgentRoleCatalog(ctx.listAgentRoles()));
+        const roles = ctx.listAgentRoles();
+        await cmdCtx.replyResult({
+          text: formatAgentRoleCatalog(roles),
+          viewKind: "agents",
+          data: {
+            kind: "agents",
+            subcommand: "roles",
+            roles: roles.map((role) => ({ ...role })),
+          },
+        });
         return;
       }
       if (subcommand === "list") {
@@ -2634,7 +2773,15 @@ export function createDaemonCommandRegistry(
         const entries = ctx.listSubAgentInfo(sessionId).filter((entry) =>
           includeAll ? true : entry.status === "running"
         );
-        await cmdCtx.reply(formatAgentListReply(entries));
+        await cmdCtx.replyResult({
+          text: formatAgentListReply(entries),
+          viewKind: "agents",
+          data: {
+            kind: "agents",
+            subcommand: "list",
+            entries: entries.map((entry) => ({ ...entry })),
+          },
+        });
         return;
       }
       if (subcommand === "inspect") {
@@ -2647,11 +2794,17 @@ export function createDaemonCommandRegistry(
           return;
         }
         const detail = await ctx.inspectShellAgentTask(sessionId, target);
-        await cmdCtx.reply(
-          detail
+        await cmdCtx.replyResult({
+          text: detail
             ? formatAgentInspectReply(detail)
             : `Child agent "${target}" is unavailable.`,
-        );
+          viewKind: "agents",
+          data: {
+            kind: "agents",
+            subcommand: "inspect",
+            ...(detail ? { detail: { ...detail } } : {}),
+          },
+        });
         return;
       }
       if (subcommand === "stop") {
@@ -2664,11 +2817,17 @@ export function createDaemonCommandRegistry(
           return;
         }
         const stopped = await ctx.stopShellAgentTask(sessionId, target);
-        await cmdCtx.reply(
-          stopped.stopped
+        await cmdCtx.replyResult({
+          text: stopped.stopped
             ? `Stopped child agent ${stopped.sessionId ?? target}.${stopped.taskId ? ` Task ${stopped.taskId}.` : ""}`
             : `Child agent "${target}" could not be stopped.`,
-        );
+          viewKind: "agents",
+          data: {
+            kind: "agents",
+            subcommand: "stop",
+            stopped: { ...stopped, target },
+          },
+        });
         return;
       }
       if (subcommand !== "spawn" && subcommand !== "assign") {
@@ -2788,8 +2947,8 @@ export function createDaemonCommandRegistry(
           : {}),
         ...(wantsWait ? { wait: true } : {}),
       });
-      await cmdCtx.reply(
-        launched.waited
+      await cmdCtx.replyResult({
+        text: launched.waited
           ? [
               `${launched.role.displayName} agent ${launched.sessionId} [${launched.status}]`,
               ...(launched.taskId ? [`Task: ${launched.taskId}`] : []),
@@ -2805,7 +2964,21 @@ export function createDaemonCommandRegistry(
               `Profile: ${shellProfile ?? launched.role.defaultShellProfile}`,
               `Bundle: ${toolBundle ?? launched.role.defaultToolBundle}`,
             ].join("\n"),
-      );
+        viewKind: "agents",
+        data: {
+          kind: "agents",
+          subcommand,
+          launched: {
+            ...launched,
+            requestedRoleId: roleId,
+            ...(shellProfile ? { requestedProfile: shellProfile } : {}),
+            ...(toolBundle ? { requestedToolBundle: toolBundle } : {}),
+            ...(workspaceRoot ? { workspaceRoot } : {}),
+            ...(workingDirectory ? { workingDirectory } : {}),
+            ...(worktreeValue ? { worktree: worktreeValue } : {}),
+          },
+        },
+      });
     },
   });
   commandRegistry.register({
@@ -3045,8 +3218,46 @@ export function createDaemonCommandRegistry(
           formatWorkflowOwnershipReply(ownership),
         ].join("\n");
       };
+      const buildPlanData = (
+        workflowState = resolveSessionWorkflowState(session.metadata),
+        delegated?: {
+          sessionId: string;
+          status: string;
+          output?: string;
+        },
+      ) => ({
+        kind: "workflow" as const,
+        subcommand,
+        shellProfile,
+        workflowState,
+        plannerStatus:
+          typeof runtimeStatusSnapshot?.completionState === "string"
+            ? runtimeStatusSnapshot.completionState
+            : "idle",
+        suggestedNextStage: suggestNextWorkflowStage({
+          currentStage: workflowState.stage,
+          plannerStatus:
+            typeof runtimeStatusSnapshot?.completionState === "string"
+              ? runtimeStatusSnapshot.completionState
+              : "idle",
+          ownership,
+          hasChanges,
+        }),
+        branchInfo: asRecord(branchInfo),
+        changeSummary: asRecord(summary),
+        tasks: asRecord(tasks),
+        ownership: ownership.map((entry) => ({ ...entry })) as readonly Record<
+          string,
+          unknown
+        >[],
+        ...(delegated ? { delegated } : {}),
+      });
       if (subcommand === "status") {
-        await cmdCtx.reply(formatPlanSurface(currentWorkflowState));
+        await cmdCtx.replyResult({
+          text: formatPlanSurface(currentWorkflowState),
+          viewKind: "workflow",
+          data: buildPlanData(currentWorkflowState),
+        });
         return;
       }
       if (subcommand === "enter") {
@@ -3074,9 +3285,11 @@ export function createDaemonCommandRegistry(
           },
         );
         await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
-        await cmdCtx.reply(
-          `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.\n\n${formatPlanSurface(workflowState)}`,
-        );
+        await cmdCtx.replyResult({
+          text: `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.\n\n${formatPlanSurface(workflowState)}`,
+          viewKind: "workflow",
+          data: buildPlanData(workflowState),
+        });
         return;
       }
       if (subcommand === "exit") {
@@ -3088,9 +3301,11 @@ export function createDaemonCommandRegistry(
           stage: "implement",
         });
         await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
-        await cmdCtx.reply(
-          `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.\n\n${formatPlanSurface(workflowState)}`,
-        );
+        await cmdCtx.replyResult({
+          text: `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.\n\n${formatPlanSurface(workflowState)}`,
+          viewKind: "workflow",
+          data: buildPlanData(workflowState),
+        });
         return;
       }
       if (subcommand === "implement") {
@@ -3098,9 +3313,11 @@ export function createDaemonCommandRegistry(
           stage: "implement",
         });
         await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
-        await cmdCtx.reply(
-          `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.\n\n${formatPlanSurface(workflowState)}`,
-        );
+        await cmdCtx.replyResult({
+          text: `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.\n\n${formatPlanSurface(workflowState)}`,
+          viewKind: "workflow",
+          data: buildPlanData(workflowState),
+        });
         return;
       }
       if (subcommand === "review") {
@@ -3114,9 +3331,11 @@ export function createDaemonCommandRegistry(
         });
         await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
         if (!wantsDelegate) {
-          await cmdCtx.reply(
-            `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.\n\n${formatPlanSurface(workflowState)}`,
-          );
+          await cmdCtx.replyResult({
+            text: `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.\n\n${formatPlanSurface(workflowState)}`,
+            viewKind: "workflow",
+            data: buildPlanData(workflowState),
+          });
           return;
         }
         const diff = await executeStructuredTool(
@@ -3146,8 +3365,8 @@ export function createDaemonCommandRegistry(
           summaryPreview: delegated.output,
         });
         await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
-        await cmdCtx.reply(
-          [
+        await cmdCtx.replyResult({
+          text: [
             `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.`,
             "",
             formatPlanSurface(workflowState),
@@ -3157,7 +3376,15 @@ export function createDaemonCommandRegistry(
               ? delegated.output.trim()
               : "Delegated reviewer returned no output.",
           ].join("\n"),
-        );
+          viewKind: "workflow",
+          data: buildPlanData(workflowState, {
+            sessionId: delegated.sessionId,
+            status: delegated.status,
+            ...(delegated.output.trim().length > 0
+              ? { output: delegated.output.trim() }
+              : {}),
+          }),
+        });
         return;
       }
       if (subcommand === "verify") {
@@ -3172,9 +3399,11 @@ export function createDaemonCommandRegistry(
         });
         await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
         if (!wantsDelegate) {
-          await cmdCtx.reply(
-            `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.\n\n${formatPlanSurface(workflowState)}`,
-          );
+          await cmdCtx.replyResult({
+            text: `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.\n\n${formatPlanSurface(workflowState)}`,
+            viewKind: "workflow",
+            data: buildPlanData(workflowState),
+          });
           return;
         }
         const delegated = await ctx.launchShellAgentTask({
@@ -3198,8 +3427,8 @@ export function createDaemonCommandRegistry(
           verdict: delegated.success === true ? "pass" : "fail",
         });
         await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
-        await cmdCtx.reply(
-          [
+        await cmdCtx.replyResult({
+          text: [
             `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.`,
             "",
             formatPlanSurface(workflowState),
@@ -3209,7 +3438,15 @@ export function createDaemonCommandRegistry(
               ? delegated.output.trim()
               : "Delegated verifier returned no output.",
           ].join("\n"),
-        );
+          viewKind: "workflow",
+          data: buildPlanData(workflowState, {
+            sessionId: delegated.sessionId,
+            status: delegated.status,
+            ...(delegated.output.trim().length > 0
+              ? { output: delegated.output.trim() }
+              : {}),
+          }),
+        });
         return;
       }
       await cmdCtx.reply(
@@ -3306,14 +3543,35 @@ export function createDaemonCommandRegistry(
         verifierSnapshot,
       ].join("\n");
       if (!wantsDelegate) {
-        updateVerificationSurfaceState(session, {
+        const verificationState = updateVerificationSurfaceState(session, {
           status: "completed",
           source: "local",
           summaryPreview: verificationSurface,
           verdict: hasChanges ? "mixed" : "pass",
         });
         await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
-        await cmdCtx.reply(verificationSurface);
+        await cmdCtx.replyResult({
+          text: verificationSurface,
+          viewKind: "verify",
+          data: {
+            kind: "verify",
+            delegated: false,
+            branchInfo: asRecord(branchInfo),
+            changeSummary: asRecord(summary),
+            tasks: asRecord(tasks),
+            runtimeStatusSnapshot,
+            verificationSurface: {
+              status: verificationState.status,
+              source: verificationState.source,
+              ...(verificationState.summaryPreview
+                ? { summaryPreview: verificationState.summaryPreview }
+                : {}),
+              ...(verificationState.verdict
+                ? { verdict: verificationState.verdict }
+                : {}),
+            },
+          },
+        });
         return;
       }
       updateVerificationSurfaceState(session, {
@@ -3347,8 +3605,8 @@ export function createDaemonCommandRegistry(
         verdict: delegated.success === true ? "pass" : "fail",
       });
       await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
-      await cmdCtx.reply(
-        [
+      await cmdCtx.replyResult({
+        text: [
           verificationSurface,
           "",
           `Delegated verifier session: ${delegated.sessionId} [${delegated.status}]`,
@@ -3356,7 +3614,32 @@ export function createDaemonCommandRegistry(
             ? delegated.output.trim()
             : "Delegated verifier returned no output.",
         ].join("\n"),
-      );
+        viewKind: "verify",
+        data: {
+          kind: "verify",
+          delegated: true,
+          branchInfo: asRecord(branchInfo),
+          changeSummary: asRecord(summary),
+          tasks: asRecord(tasks),
+          runtimeStatusSnapshot,
+          verificationSurface: {
+            status: delegated.success === true ? "completed" : "failed",
+            source: "delegated",
+            delegatedSessionId: delegated.sessionId,
+            ...(delegated.output.trim().length > 0
+              ? { summaryPreview: compactSurfacePreview(delegated.output) }
+              : {}),
+            verdict: delegated.success === true ? "pass" : "fail",
+          },
+          delegatedResult: {
+            sessionId: delegated.sessionId,
+            status: delegated.status,
+            ...(delegated.output.trim().length > 0
+              ? { output: delegated.output.trim() }
+              : {}),
+          },
+        },
+      });
     },
   });
   commandRegistry.register({
@@ -3399,8 +3682,8 @@ export function createDaemonCommandRegistry(
           taskResult: tasks,
           childInfos: ctx.listSubAgentInfo(resolvedSessionId),
         });
-        await cmdCtx.reply(
-          [
+        await cmdCtx.replyResult({
+          text: [
             "Shell session:",
             `  Session id: ${cmdCtx.sessionId}`,
             `  Runtime session id: ${resolvedSessionId}`,
@@ -3420,7 +3703,26 @@ export function createDaemonCommandRegistry(
             "",
             formatWorkflowOwnershipReply(ownership),
           ].join("\n"),
-        );
+          viewKind: "session",
+          data: {
+            kind: "session",
+            subcommand: "status",
+            currentSession: {
+              sessionId: cmdCtx.sessionId,
+              runtimeSessionId: resolvedSessionId,
+              shellProfile,
+              workflowState,
+              workspaceRoot,
+              historyMessages: session?.history.length ?? 0,
+              ...(modelInfo
+                ? {
+                    model: `${modelInfo.provider}:${modelInfo.model}${modelInfo.usedFallback ? " (fallback)" : ""}`,
+                  }
+                : {}),
+              ownership: ownership.map((entry) => ({ ...entry })),
+            },
+          },
+        });
       };
 
       if (!subcommand || subcommand === "status" || subcommand === "current") {
@@ -3452,11 +3754,17 @@ export function createDaemonCommandRegistry(
             ...(profile ? { shellProfile: profile } : {}),
           },
         );
-        await cmdCtx.reply(
-          formatContinuitySessionList(
+        await cmdCtx.replyResult({
+          text: formatContinuitySessionList(
             sessions as unknown as readonly Record<string, unknown>[],
           ),
-        );
+          viewKind: "session",
+          data: {
+            kind: "session",
+            subcommand: "list",
+            sessions,
+          },
+        });
         return;
       }
 
@@ -3469,11 +3777,17 @@ export function createDaemonCommandRegistry(
           cmdCtx.sessionId,
           targetSessionId,
         );
-        await cmdCtx.reply(
-          detail
+        await cmdCtx.replyResult({
+          text: detail
             ? formatContinuitySessionInspect(detail)
             : `Session "${targetSessionId ?? cmdCtx.sessionId}" not found.`,
-        );
+          viewKind: "session",
+          data: {
+            kind: "session",
+            subcommand: "inspect",
+            ...(detail ? { detail } : {}),
+          },
+        });
         return;
       }
 
@@ -3492,9 +3806,15 @@ export function createDaemonCommandRegistry(
             jsonArgs?.includeTools === true ||
             hasInlineFlag(cmdCtx.argv.slice(1), "include-tools"),
         });
-        await cmdCtx.reply(
-          formatSessionHistoryReply(history),
-        );
+        await cmdCtx.replyResult({
+          text: formatSessionHistoryReply(history),
+          viewKind: "session",
+          data: {
+            kind: "session",
+            subcommand: "history",
+            history,
+          },
+        });
         return;
       }
 
@@ -3511,8 +3831,8 @@ export function createDaemonCommandRegistry(
           cmdCtx.sessionId,
           targetSessionId,
         );
-        await cmdCtx.reply(
-          resumed
+        await cmdCtx.replyResult({
+          text: resumed
             ? [
                 `Resumed session ${resumed.sessionId}.`,
                 `  Messages: ${resumed.messageCount}`,
@@ -3521,7 +3841,13 @@ export function createDaemonCommandRegistry(
                   : []),
               ].join("\n")
             : `Session "${targetSessionId}" not found.`,
-        );
+          viewKind: "session",
+          data: {
+            kind: "session",
+            subcommand: "resume",
+            ...(resumed ? { resumed } : {}),
+          },
+        });
         return;
       }
 
@@ -3551,8 +3877,8 @@ export function createDaemonCommandRegistry(
           return;
         }
         const sessionDetail = asRecord(forked.session);
-        await cmdCtx.reply(
-          [
+        await cmdCtx.replyResult({
+          text: [
             `Forked session ${typeof forked.targetSessionId === "string" ? forked.targetSessionId : "unknown"} from ${
               typeof forked.sourceSessionId === "string" ? forked.sourceSessionId : cmdCtx.sessionId
             }.`,
@@ -3562,7 +3888,26 @@ export function createDaemonCommandRegistry(
               : []),
             "  Use /session resume <sessionId> to switch into the fork.",
           ].join("\n"),
-        );
+          viewKind: "session",
+          data: {
+            kind: "session",
+            subcommand: "fork",
+            forked: {
+              sourceSessionId:
+                typeof forked.sourceSessionId === "string"
+                  ? forked.sourceSessionId
+                  : cmdCtx.sessionId,
+              targetSessionId:
+                typeof forked.targetSessionId === "string"
+                  ? forked.targetSessionId
+                  : "unknown",
+              ...(typeof forked.forkSource === "string"
+                ? { forkSource: forked.forkSource }
+                : {}),
+              ...(sessionDetail ? { session: sessionDetail } : {}),
+            },
+          },
+        });
         return;
       }
 

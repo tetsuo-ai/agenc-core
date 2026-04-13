@@ -27,6 +27,8 @@ import {
   coerceSessionShellProfile,
   type SessionShellProfile,
 } from "../../gateway/shell-profile.js";
+import { evaluateShellFeatureRollout } from "../../gateway/shell-rollout.js";
+import type { GatewayAutonomyConfig } from "../../gateway/types.js";
 import { DEFAULT_WORKSPACE_ID } from "../../gateway/workspace.js";
 import type { ControlMessage, ControlResponse } from "../../gateway/types.js";
 import {
@@ -47,6 +49,7 @@ import type {
 } from "./types.js";
 import type {
   SessionCommandExecutePayload,
+  SessionCommandResultData,
   SessionCommandResultPayload,
 } from "./protocol.js";
 import { HANDLER_MAP } from "./handlers.js";
@@ -1270,16 +1273,74 @@ export class WebChatChannel
     id: string | undefined,
     send: SendFn,
   ): Promise<void> {
-    await this.resolveDurableOwner(clientId, payload, send);
+    const ownerKey = await this.resolveDurableOwner(clientId, payload, send);
     const client =
       payload?.client === "shell" ||
       payload?.client === "console" ||
       payload?.client === "web"
         ? payload.client
         : undefined;
-    const catalog = (this.deps.commandRegistry?.getCatalog() ?? []).filter(
-      (entry) => !client || entry.clients.includes(client),
-    );
+    let targetSessionId =
+      typeof payload?.sessionId === "string" && payload.sessionId.trim().length > 0
+        ? payload.sessionId.trim()
+        : this.clientSessions.get(clientId);
+    if (targetSessionId) {
+      const authorized = await this.isAuthorizedSession(
+        targetSessionId,
+        ownerKey,
+        clientId,
+      );
+      if (!authorized) {
+        targetSessionId = undefined;
+      }
+    }
+    const continuity =
+      targetSessionId && this.isDurableOwnerKey(ownerKey)
+        ? await this.inspectContinuitySession(targetSessionId, ownerKey)
+        : undefined;
+    const sessionRecord =
+      continuity && !("error" in continuity) ? continuity : undefined;
+    const autonomyConfig = this.deps.gateway.config as {
+      autonomy?: GatewayAutonomyConfig;
+    };
+    const catalog = (this.deps.commandRegistry?.getCatalog() ?? [])
+      .filter((entry) => !client || entry.clients.includes(client))
+      .map((entry) => {
+        if (!entry.rolloutFeature || !targetSessionId) {
+          return {
+            ...entry,
+            ...(sessionRecord?.shellProfile
+              ? { effectiveProfile: sessionRecord.shellProfile }
+              : {}),
+          };
+        }
+        const domain =
+          entry.rolloutFeature === "shellExtensions"
+            ? "extensions"
+            : entry.rolloutFeature === "watchCockpit"
+              ? "watch"
+              : "shell";
+        const decision = evaluateShellFeatureRollout({
+          autonomy: autonomyConfig.autonomy,
+          tenantId: undefined,
+          stableKey: targetSessionId,
+          feature: entry.rolloutFeature,
+          domain,
+        });
+        return {
+          ...entry,
+          available: decision.allowed,
+          ...(decision.allowed
+            ? {}
+            : {
+                availabilityReason: `${entry.rolloutFeature} rollout is currently held back for this session`,
+                heldBackBy: entry.rolloutFeature,
+              }),
+          ...(sessionRecord?.shellProfile
+            ? { effectiveProfile: sessionRecord.shellProfile }
+            : {}),
+        };
+      });
     send({
       type: "session.command.catalog",
       payload: catalog,
@@ -1363,17 +1424,16 @@ export class WebChatChannel
       return;
     }
 
-    const replies: string[] = [];
-    const handled = await registry.dispatch(
+    const detailed = await registry.dispatchDetailed(
       content,
       targetSessionId,
       this.currentActorId(clientId),
       this.name,
       async (replyContent) => {
-        replies.push(replyContent);
+        void replyContent;
       },
     );
-    if (!handled) {
+    if (!detailed.handled) {
       send({
         type: "error",
         error: `Unknown command: /${parsed.name}`,
@@ -1382,13 +1442,17 @@ export class WebChatChannel
       return;
     }
     const command = registry.get(parsed.name);
+    const structuredResult = detailed.result;
     const result: SessionCommandResultPayload = {
-      commandName: command?.name ?? parsed.name,
-      content: replies.join("\n\n").trim(),
+      commandName: detailed.commandName ?? command?.name ?? parsed.name,
+      content: structuredResult?.text ?? "",
       sessionId: targetSessionId,
       ...(request.client ? { client: request.client } : {}),
-      ...(command?.metadata?.viewKind
-        ? { viewKind: command.metadata.viewKind }
+      ...((structuredResult?.viewKind ?? command?.metadata?.viewKind)
+        ? { viewKind: structuredResult?.viewKind ?? command?.metadata?.viewKind }
+        : {}),
+      ...(structuredResult?.data
+        ? { data: structuredResult.data as SessionCommandResultData }
         : {}),
     };
     send({

@@ -19,6 +19,8 @@ interface SlashCommandOption {
   name: string;
   description: string;
   args?: string;
+  available?: boolean;
+  availabilityReason?: string;
 }
 
 const FALLBACK_SLASH_COMMANDS: SlashCommandOption[] = [
@@ -68,6 +70,8 @@ export function ChatInput({
         name: cmd.name,
         description: cmd.description,
         ...(cmd.args ? { args: cmd.args } : {}),
+        ...(typeof cmd.available === 'boolean' ? { available: cmd.available } : {}),
+        ...(cmd.availabilityReason ? { availabilityReason: cmd.availabilityReason } : {}),
       })),
     [commands],
   );
@@ -109,6 +113,7 @@ export function ChatInput({
   }, [disabled, focusComposer]);
 
   const applyCommand = useCallback((cmd: SlashCommandOption) => {
+    if (cmd.available === false) return;
     const nextValue = `/${cmd.name} `;
     setValue(nextValue);
     setActiveCommandIndex(0);
@@ -241,17 +246,27 @@ export function ChatInput({
                 <button
                   key={cmd.name}
                   type="button"
+                  disabled={cmd.available === false}
                   data-testid={`slash-command-${cmd.name}`}
                   onClick={() => applyCommand(cmd)}
                   className={`w-full text-left px-3 py-2 transition-colors text-xs ${
-                    idx === activeCommandIndex ? 'bg-bbs-surface text-bbs-white' : 'text-bbs-lightgray hover:bg-bbs-surface/50'
+                    cmd.available === false
+                      ? 'text-bbs-gray/60 cursor-not-allowed'
+                      : idx === activeCommandIndex
+                        ? 'bg-bbs-surface text-bbs-white'
+                        : 'text-bbs-lightgray hover:bg-bbs-surface/50'
                   }`}
                 >
                   <div className="flex items-center gap-2">
                     <span className="text-bbs-purple font-mono">{'>'} /{cmd.name}</span>
                     {cmd.args && <span className="text-bbs-gray font-mono">{cmd.args}</span>}
                   </div>
-                  <div className="mt-0.5 text-bbs-gray">{cmd.description}</div>
+                  <div className="mt-0.5 text-bbs-gray">
+                    {cmd.description}
+                    {cmd.available === false && cmd.availabilityReason
+                      ? ` - ${cmd.availabilityReason}`
+                      : ''}
+                  </div>
                 </button>
               ))}
             </div>

@@ -396,30 +396,16 @@ describe("SlashCommandRegistry", () => {
 });
 
 describe("createDefaultCommands", () => {
-  it("returns 15 default commands", () => {
+  it("returns only the help placeholder command", () => {
     const commands = createDefaultCommands();
-    expect(commands).toHaveLength(15);
+    expect(commands).toHaveLength(1);
   });
 
-  it("includes all expected command names", () => {
+  it("includes the help command placeholder", () => {
     const commands = createDefaultCommands();
     const names = commands.map((c) => c.name);
 
     expect(names).toContain("help");
-    expect(names).toContain("status");
-    expect(names).toContain("new");
-    expect(names).toContain("init");
-    expect(names).toContain("reset");
-    expect(names).toContain("stop");
-    expect(names).toContain("start");
-    expect(names).toContain("context");
-    expect(names).toContain("compact");
-    expect(names).toContain("model");
-    expect(names).toContain("skills");
-    expect(names).toContain("task");
-    expect(names).toContain("tasks");
-    expect(names).toContain("balance");
-    expect(names).toContain("reputation");
   });
 
   it("all commands have global: true", () => {
@@ -429,10 +415,10 @@ describe("createDefaultCommands", () => {
     }
   });
 
-  it("/model has args pattern", () => {
+  it("/help has no args pattern", () => {
     const commands = createDefaultCommands();
-    const model = commands.find((c) => c.name === "model");
-    expect(model!.args).toBe("[model-name | current | list]");
+    const help = commands.find((c) => c.name === "help");
+    expect(help?.args).toBeUndefined();
   });
 
   it("can be registered on a registry", () => {
@@ -441,7 +427,7 @@ describe("createDefaultCommands", () => {
     for (const cmd of commands) {
       registry.register(cmd);
     }
-    expect(registry.size).toBe(15);
+    expect(registry.size).toBe(1);
   });
 
   it("registry without defaults starts empty", () => {
@@ -449,12 +435,12 @@ describe("createDefaultCommands", () => {
     expect(registry.size).toBe(0);
   });
 
-  it("/status replies with session and channel info", async () => {
+  it("/help placeholder replies with generic guidance", async () => {
     const replies: string[] = [];
     const commands = createDefaultCommands();
-    const status = commands.find((c) => c.name === "status")!;
+    const help = commands.find((c) => c.name === "help")!;
 
-    await status.handler({
+    await help.handler({
       args: "",
       argv: [],
       sessionId: "sess1",
@@ -463,11 +449,13 @@ describe("createDefaultCommands", () => {
       reply: async (c) => {
         replies.push(c);
       },
+      replyResult: async (result) => {
+        replies.push(result.text);
+      },
     });
 
     expect(replies).toHaveLength(1);
-    expect(replies[0]).toContain("sess1");
-    expect(replies[0]).toContain("telegram");
+    expect(replies[0]).toContain("Use /help to see available commands.");
   });
 
   it("getCommands returns sorted results with defaults loaded", () => {
@@ -484,21 +472,22 @@ describe("createDefaultCommands", () => {
     }
   });
 
-  it("/model args and description appear in help-style listing", () => {
+  it("/help description appears in help-style listing", () => {
     const registry = new SlashCommandRegistry({ logger: silentLogger });
     for (const cmd of createDefaultCommands()) {
       registry.register(cmd);
     }
 
-    const model = registry.get("model")!;
-    const helpLine = `/${model.name}${model.args ? ` ${model.args}` : ""} — ${model.description}`;
+    const help = registry.get("help")!;
+    const helpLine = `/${help.name}${help.args ? ` ${help.args}` : ""} — ${help.description}`;
 
-    expect(helpLine).toContain("/model [model-name | current | list]");
+    expect(helpLine).toContain("/help");
   });
 
-  it("/init has args pattern [--force]", () => {
+  it("/help is global and utility-scoped", () => {
     const commands = createDefaultCommands();
-    const init = commands.find((c) => c.name === "init");
-    expect(init!.args).toBe("[--force]");
+    const help = commands.find((c) => c.name === "help");
+    expect(help?.global).toBe(true);
+    expect(help?.metadata?.category).toBe("utility");
   });
 });

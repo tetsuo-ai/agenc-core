@@ -135,6 +135,7 @@ export interface WebChatDeps {
       agent?: { name?: string };
       connection?: { rpcUrl?: string; keypairPath?: string };
       llm?: { provider?: string; model?: string };
+      autonomy?: unknown;
     };
   };
   /** Optional daemon-level status for operator memory/process panels. */

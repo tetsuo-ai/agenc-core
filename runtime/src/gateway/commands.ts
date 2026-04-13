@@ -30,6 +30,10 @@ export interface SlashCommandContext {
   readonly channel: string;
   /** Reply callback — sends a response in the same channel. */
   readonly reply: (content: string) => Promise<void>;
+  /** Structured reply callback for first-party clients. */
+  readonly replyResult: (
+    result: SlashCommandExecutionResult,
+  ) => Promise<void>;
 }
 
 /** Handler function signature for a slash command. */
@@ -110,7 +114,37 @@ export interface SlashCommandCatalogEntry {
     | "multiAgent";
   readonly viewKind: SlashCommandViewKind;
   readonly deprecatedAliases: readonly string[];
+  readonly available?: boolean;
+  readonly availabilityReason?: string;
+  readonly effectiveProfile?: string;
+  readonly heldBackBy?:
+    | "shellProfiles"
+    | "codingCommands"
+    | "shellExtensions"
+    | "watchCockpit"
+    | "multiAgent";
 }
+
+export interface SlashCommandExecutionResult<Data = unknown> {
+  readonly text: string;
+  readonly viewKind?: SlashCommandViewKind;
+  readonly data?: Data;
+}
+
+export interface SlashCommandDispatchResult<Data = unknown> {
+  readonly handled: boolean;
+  readonly commandName?: string;
+  readonly result?: SlashCommandExecutionResult<Data>;
+}
+
+type SlashCommandExecutionContext = Pick<
+  SlashCommandContext,
+  "sessionId" | "senderId" | "channel" | "reply"
+> & {
+  readonly replyResult?: (
+    result: SlashCommandExecutionResult,
+  ) => Promise<void>;
+};
 
 /** Result of parsing a message for slash commands. */
 export interface ParsedCommand {
@@ -260,25 +294,46 @@ export class SlashCommandRegistry {
    */
   async execute(
     parsed: ParsedCommand,
-    context: Omit<SlashCommandContext, "args" | "argv">,
+    context: SlashCommandExecutionContext,
   ): Promise<boolean> {
+    const detailed = await this.executeDetailed(parsed, context);
+    return detailed.handled;
+  }
+
+  async executeDetailed(
+    parsed: ParsedCommand,
+    context: SlashCommandExecutionContext,
+  ): Promise<SlashCommandDispatchResult> {
     if (!parsed.isCommand || !parsed.name) {
-      return false;
+      return { handled: false };
     }
 
     const command = this.get(parsed.name);
     if (!command) {
       this.logger.debug(`Unknown command: /${parsed.name}, passing through`);
-      return false;
+      return { handled: false };
     }
 
+    let explicitResult: SlashCommandExecutionResult | undefined;
+    const replies: string[] = [];
     const ctx: SlashCommandContext = {
       args: parsed.args ?? "",
       argv: parsed.argv ?? [],
       sessionId: context.sessionId,
       senderId: context.senderId,
       channel: context.channel,
-      reply: context.reply,
+      reply: async (content) => {
+        replies.push(content);
+        await context.reply(content);
+      },
+      replyResult: async (result) => {
+        explicitResult = result;
+        if (context.replyResult) {
+          await context.replyResult(result);
+          return;
+        }
+        await context.reply(result.text);
+      },
     };
 
     try {
@@ -291,7 +346,18 @@ export class SlashCommandRegistry {
       );
     }
 
-    return true;
+    return {
+      handled: true,
+      commandName: command.name,
+      result:
+        explicitResult ??
+        (replies.length > 0
+          ? {
+              text: replies.join("\n\n").trim(),
+              viewKind: command.metadata?.viewKind ?? "text",
+            }
+          : undefined),
+    };
   }
 
   getCatalog(): ReadonlyArray<SlashCommandCatalogEntry> {
@@ -325,8 +391,33 @@ export class SlashCommandRegistry {
     channel: string,
     reply: (content: string) => Promise<void>,
   ): Promise<boolean> {
+    const detailed = await this.dispatchDetailed(
+      message,
+      sessionId,
+      senderId,
+      channel,
+      reply,
+    );
+    return detailed.handled;
+  }
+
+  async dispatchDetailed(
+    message: string,
+    sessionId: string,
+    senderId: string,
+    channel: string,
+    reply: (content: string) => Promise<void>,
+  ): Promise<SlashCommandDispatchResult> {
     const parsed = this.parse(message);
-    return this.execute(parsed, { sessionId, senderId, channel, reply });
+    return this.executeDetailed(parsed, {
+      sessionId,
+      senderId,
+      channel,
+      reply,
+      replyResult: async (result) => {
+        await reply(result.text);
+      },
+    });
   }
 }
 

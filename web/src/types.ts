@@ -24,7 +24,14 @@ import type {
   ObservabilityTraceSummary,
   SessionContinuityDetail,
   SessionContinuityRecord,
+  SessionCommandData,
+  SessionCommandResultData,
   SessionCommandResultPayload,
+  VerifyCommandData,
+  ReviewCommandData,
+  WorkflowCommandData,
+  AgentsCommandData,
+  GitCommandData,
   SlashCommandCatalogEntry,
   SlashCommandViewKind,
   WatchCockpitSnapshot,
@@ -376,6 +383,13 @@ export type TraceLogTail = ObservabilityLogResponse;
 export type CommandCatalogEntry = SlashCommandCatalogEntry;
 export type ContinuityRecord = SessionContinuityRecord;
 export type ContinuityDetail = SessionContinuityDetail;
+export type SessionCommandViewData = SessionCommandResultData;
+export type SessionCommandViewSessionData = SessionCommandData;
+export type SessionCommandViewWorkflowData = WorkflowCommandData;
+export type SessionCommandViewAgentsData = AgentsCommandData;
+export type SessionCommandViewGitData = GitCommandData;
+export type SessionCommandViewReviewData = ReviewCommandData;
+export type SessionCommandViewVerifyData = VerifyCommandData;
 export type CockpitSnapshot = WatchCockpitSnapshot;
 
 // ============================================================================

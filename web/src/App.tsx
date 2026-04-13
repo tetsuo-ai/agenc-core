@@ -348,9 +348,13 @@ export default function App() {
               delegationTask={voice.delegationTask}
               theme={theme}
               chatSessions={chat.sessions}
+              selectedSessionDetail={chat.selectedSessionDetail}
+              commandResult={chat.lastCommandResult}
               commands={chat.commands}
               activeSessionId={chat.sessionId}
               onSelectSession={chat.resumeSession}
+              onInspectSession={chat.inspectSession}
+              onForkSession={chat.forkSession}
               onNewChat={chat.startNewChat}
               desktopUrl={sessionDesktopUrl}
               desktopOpen={desktopPanelOpen}
