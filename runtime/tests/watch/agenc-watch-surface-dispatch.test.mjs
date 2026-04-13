@@ -1296,6 +1296,36 @@ test("dispatchOperatorSurfaceEvent clears stale missing sessions during bootstra
   ]);
 });
 
+test("dispatchOperatorSurfaceEvent starts a new session when bootstrap resume fails without a remembered session", () => {
+  const { api, state, calls } = createHarness({
+    state: {
+      sessionId: null,
+      bootstrapReady: false,
+    },
+  });
+
+  dispatchOperatorSurfaceEvent(
+    {
+      family: "error",
+      type: "error",
+      payload: {},
+      payloadRecord: {},
+      payloadList: null,
+      isSessionScoped: false,
+      message: { error: 'Session "session:stale-bootstrap-target" not found' },
+    },
+    null,
+    api,
+  );
+
+  assert.equal(state.sessionId, null);
+  assert.deepEqual(calls, [
+    ["persistSessionId", null],
+    ["status", "bootstrap resume failed; starting a new session"],
+    ["send", "chat.new", { auth: true }],
+  ]);
+});
+
 test("dispatchOperatorSurfaceEvent records unavailable durable-run operator errors", () => {
   const { api, state, calls } = createHarness();
 

@@ -314,12 +314,21 @@ export function latestSessionSummary(
   if (!Array.isArray(payload) || payload.length === 0) {
     return null;
   }
+  const resumableSessions = payload.filter((session) => {
+    const resumabilityState = String(session?.resumabilityState ?? "").trim();
+    return (
+      !resumabilityState ||
+      resumabilityState === "active" ||
+      resumabilityState === "disconnected-resumable"
+    );
+  });
+  const eligibleSessions = resumableSessions.length > 0 ? resumableSessions : payload;
   const sameWorkspaceSessions =
     typeof preferredWorkspaceRoot === "string" && preferredWorkspaceRoot
-      ? payload.filter(
+      ? eligibleSessions.filter(
           (session) => session?.workspaceRoot === preferredWorkspaceRoot,
         )
-      : payload;
+      : eligibleSessions;
   if (preferredSessionId) {
     const preferred = sameWorkspaceSessions.find(
       (session) => session?.sessionId === preferredSessionId,
@@ -339,7 +348,7 @@ export function latestSessionSummary(
     return null;
   }
   const candidateSessions =
-    sameWorkspaceSessions.length > 0 ? sameWorkspaceSessions : payload;
+    sameWorkspaceSessions.length > 0 ? sameWorkspaceSessions : eligibleSessions;
   return [...candidateSessions].sort((left, right) => {
     const leftMessageCount = Number(left?.messageCount ?? 0);
     const rightMessageCount = Number(right?.messageCount ?? 0);
