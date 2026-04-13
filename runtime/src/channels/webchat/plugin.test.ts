@@ -118,6 +118,24 @@ function findResponse(
   return match?.[0] as ControlResponse | undefined;
 }
 
+async function waitForResponse(
+  send: ReturnType<typeof vi.fn<(response: ControlResponse) => void>>,
+  type: string,
+  id?: string,
+  attempts = 20,
+): Promise<ControlResponse> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const response = findResponse(send, type, id);
+    if (response) {
+      return response;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error(
+    `Timed out waiting for control response ${type}${id ? ` (${id})` : ""}`,
+  );
+}
+
 function requireOwnerToken(
   send: ReturnType<typeof vi.fn<(response: ControlResponse) => void>>,
 ): string {
@@ -1507,9 +1525,13 @@ describe("WebChatChannel", () => {
           ),
           send,
         );
-        await new Promise((resolve) => setTimeout(resolve, 0));
-
-        expect(findResponse(send, "chat.sessions", "req-continuity-list")?.payload).toEqual(
+        expect(
+          (await waitForResponse(
+            send,
+            "chat.sessions",
+            "req-continuity-list",
+          )).payload,
+        ).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
               sessionId: "session-continuity",
@@ -1530,9 +1552,13 @@ describe("WebChatChannel", () => {
           ),
           send,
         );
-        await new Promise((resolve) => setTimeout(resolve, 0));
-
-        expect(findResponse(send, "chat.inspect", "req-continuity-inspect")?.payload).toEqual(
+        expect(
+          (await waitForResponse(
+            send,
+            "chat.inspect",
+            "req-continuity-inspect",
+          )).payload,
+        ).toEqual(
           expect.objectContaining({
             session: expect.objectContaining({
               sessionId: "session-continuity",
