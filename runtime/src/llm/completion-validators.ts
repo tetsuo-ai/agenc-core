@@ -45,6 +45,12 @@ export function buildCompletionValidators(params: {
   readonly stopHookRuntime?: StopHookRuntime;
   readonly completionValidation?: ChatExecutorConfig["completionValidation"];
 }): readonly CompletionValidator[] {
+  const sharedCorrectionBudget =
+    params.ctx.requiredToolEvidence?.maxCorrectionAttempts ?? 1;
+  const stopHookRetryBudget = Math.max(
+    sharedCorrectionBudget,
+    params.stopHookRuntime?.maxAttempts ?? 1,
+  );
   const topLevelVerifierEnabled =
     params.runtimeContractFlags.verifierRuntimeRequired;
   const deterministicAcceptanceProbesEnabled =
@@ -94,7 +100,7 @@ export function buildCompletionValidators(params: {
               reason: hookResult.reason ?? "verification_ready",
               blockingMessage: hookResult.blockingMessage,
               evidence: hookResult.evidence,
-              maxAttempts: params.stopHookRuntime?.maxAttempts ?? 1,
+              maxAttempts: stopHookRetryBudget,
               exhaustedDetail:
                 "Verification-ready recovery exhausted after stop-hook intervention.",
               stopHookResult: hookResult,
@@ -192,7 +198,7 @@ export function buildCompletionValidators(params: {
             reason: hookResult.reason ?? "turn_end_stop_gate",
             blockingMessage: hookResult.blockingMessage,
             evidence: hookResult.evidence,
-            maxAttempts: params.stopHookRuntime.maxAttempts,
+            maxAttempts: stopHookRetryBudget,
             exhaustedDetail:
               hookResult.reason === "narrated_future_tool_work"
                 ? "Stop-gate recovery exhausted: the model kept narrating future work instead of calling tools."
@@ -213,7 +219,7 @@ export function buildCompletionValidators(params: {
           reason: decision.reason ?? "turn_end_stop_gate",
           blockingMessage: decision.blockingMessage,
           evidence: decision.evidence,
-          maxAttempts: 1,
+          maxAttempts: sharedCorrectionBudget,
           exhaustedDetail:
             decision.reason === "narrated_future_tool_work"
               ? "Stop-gate recovery exhausted: the model kept narrating future work instead of calling tools."
@@ -247,8 +253,7 @@ export function buildCompletionValidators(params: {
           return { id: "request_task_progress", outcome: "pass" };
         }
 
-        const maxAttempts =
-          params.ctx.requiredToolEvidence?.maxCorrectionAttempts ?? 1;
+        const maxAttempts = sharedCorrectionBudget;
         if (hasMalformedTaskMetadata) {
           const allowedIds = requestTaskState.allowedMilestones.map(
             (milestone) => milestone.id,
@@ -360,7 +365,7 @@ export function buildCompletionValidators(params: {
             missingFiles: check.missingFiles,
             checkedFiles: check.checkedFiles,
           },
-          maxAttempts: 1,
+          maxAttempts: sharedCorrectionBudget,
           exhaustedDetail:
             "Filesystem artifact verification failed after recovery; missing or empty artifacts remain on disk.",
         };
@@ -469,7 +474,7 @@ export function buildCompletionValidators(params: {
           outcome: validation.outcome,
           reason: "top_level_verifier",
           blockingMessage: validation.blockingMessage,
-          maxAttempts: params.ctx.requiredToolEvidence?.maxCorrectionAttempts ?? 1,
+          maxAttempts: sharedCorrectionBudget,
           exhaustedDetail: validation.exhaustedDetail,
           verifier: validation.runtimeVerifier,
           verifierTaskId: validation.taskId,

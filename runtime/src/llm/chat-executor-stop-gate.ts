@@ -388,7 +388,10 @@ function buildBlockingMessage(params: {
   lines.push("");
   if (params.reason === "narrated_future_tool_work") {
     lines.push(
-      `You have ONE recovery turn. In this turn you MUST:`,
+      `You are in a bounded recovery loop. Keep using tools until the work is actually complete or you hit a concrete blocker. In each recovery turn you MUST:`,
+    );
+    lines.push(
+      `  • Resume directly. No apology, no recap, no summary of prior work.`,
     );
     lines.push(
       `  • Call the tools you said you were going to call. ` +
@@ -407,7 +410,10 @@ function buildBlockingMessage(params: {
     );
   } else {
     lines.push(
-      `You have ONE recovery turn. Either:`,
+      `You are in a bounded recovery loop. In each recovery turn, either:`,
+    );
+    lines.push(
+      `  • Resume directly. No apology, no recap, no summary of prior work.`,
     );
     lines.push(
       `  (a) Make tool calls to actually fix the underlying causes, or`,
@@ -1129,10 +1135,12 @@ export async function checkFilesystemArtifacts(params: {
     `  (a) The write silently failed (check the tool result for errors)\n` +
     `  (b) A later operation overwrote the file with empty content\n` +
     `  (c) The file was never actually written despite the tool call\n\n` +
-    `You have ONE recovery turn. Re-read each empty/missing file with ` +
-    `system.readFile, then use system.writeFile or system.editFile to ` +
-    `write the actual implementation. Do NOT claim completion again ` +
-    `until every file has real content verified via tool results.`;
+    `You are in a bounded recovery loop. Resume directly with tool calls. ` +
+    `No apology, no recap, no summary of prior work. Re-read each empty/missing ` +
+    `file with system.readFile, then use system.writeFile or ` +
+    `system.editFile to write the actual implementation. Do NOT claim ` +
+    `completion again until every file has real content verified via ` +
+    `tool results.`;
 
   return {
     shouldIntervene: true,

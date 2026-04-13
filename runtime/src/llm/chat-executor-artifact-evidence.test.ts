@@ -271,6 +271,96 @@ describe("top-level artifact evidence gate", () => {
     });
   });
 
+  it("keeps retrying narrated future-work stop-gate recoveries within the coding correction budget", async () => {
+    const targetPath = `${WORKSPACE_ROOT}/src/main.c`;
+    const provider = createMockProvider("primary", {
+      chat: vi
+        .fn<[LLMMessage[], LLMChatOptions?], Promise<LLMResponse>>()
+        .mockResolvedValueOnce(
+          mockResponse({
+            content: "",
+            finishReason: "tool_calls",
+            toolCalls: [
+              {
+                id: "tc-1",
+                name: "system.writeFile",
+                arguments: safeJson({
+                  path: targetPath,
+                  content: "phase 1",
+                }),
+              },
+            ],
+          }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({
+            content: "Build succeeded and all phases were fully implemented.",
+          }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({
+            content: "Next I will fix the build and write the remaining files.",
+          }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({
+            content: "I will now update the failing source files and rerun the build.",
+          }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({
+            content: "",
+            finishReason: "tool_calls",
+            toolCalls: [
+              {
+                id: "tc-2",
+                name: "system.writeFile",
+                arguments: safeJson({
+                  path: targetPath,
+                  content: "phase 2",
+                }),
+              },
+            ],
+          }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({
+            content:
+              "Implementation completed with a successful rebuild after the recovery turns, and this summary is intentionally explicit enough to avoid stop-gate truncation handling.",
+          }),
+        ),
+    });
+    let writeAttempts = 0;
+    const toolHandler = vi.fn(async (name: string, args: Record<string, unknown>) => {
+      if (name !== "system.writeFile") {
+        return safeJson({ ok: true });
+      }
+      writeAttempts += 1;
+      writeFileSync(String(args.path), String(args.content ?? ""), "utf8");
+      return safeJson({ ok: true, path: String(args.path) });
+    });
+    const executor = new ChatExecutor({ providers: [provider], toolHandler });
+
+    const result = await executor.execute(
+      createParams({
+        requiredToolEvidence: {
+          maxCorrectionAttempts: 3,
+        },
+      }),
+    );
+
+    expect(result.stopReason).toBe("completed");
+    expect(writeAttempts).toBe(2);
+    expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(6);
+    expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls[2]?.[1]).toMatchObject({
+      toolChoice: "required",
+    });
+    expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls[3]?.[1]).toMatchObject({
+      toolChoice: "required",
+    });
+    expect(readFileSync(targetPath, "utf8")).toBe("phase 2");
+  });
+
   it("re-enters the loop when deterministic acceptance probes fail", async () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-acceptance-probe-"));
     const sourcePath = join(workspaceRoot, "src/main.c");

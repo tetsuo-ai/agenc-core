@@ -41,6 +41,7 @@ function makeCtx(params: {
   readonly turnClass?: string;
   readonly ownerMode?: string;
   readonly flags?: RuntimeContractFlags;
+  readonly requiredToolEvidence?: ExecutionContext["requiredToolEvidence"];
 }): ExecutionContext {
   const flags = params.flags ?? makeFlags();
   return {
@@ -67,6 +68,7 @@ function makeCtx(params: {
       targetArtifacts: params.targetArtifacts ?? [],
     },
     runtimeContractSnapshot: createRuntimeContractSnapshot(flags),
+    requiredToolEvidence: params.requiredToolEvidence,
   } as unknown as ExecutionContext;
 }
 
@@ -177,6 +179,64 @@ describe("completion-validators", () => {
     expect(result.blockingMessage).toBe("configured block");
     expect(result.maxAttempts).toBe(3);
     expect(result.stopHookResult?.phase).toBe("Stop");
+  });
+
+  it("lets the stop-hook path inherit the larger coding correction budget", async () => {
+    const flags = makeFlags({ stopHooksEnabled: true });
+    const validators = buildCompletionValidators({
+      ctx: makeCtx({
+        flags,
+        finalContent:
+          "The build is still failing. Next I will fix the linker errors.",
+        allToolCalls: [successfulWrite("/tmp/workspace/src/main.c")],
+        targetArtifacts: ["/tmp/workspace/src/main.c"],
+        turnClass: "workflow_implementation",
+        ownerMode: "workflow_owner",
+        requiredToolEvidence: {
+          maxCorrectionAttempts: 3,
+        },
+      }),
+      runtimeContractFlags: flags,
+      stopHookRuntime: buildStopHookRuntime({
+        enabled: true,
+      }),
+    });
+
+    const stopValidator = validators.find(
+      (validator) => validator.id === "turn_end_stop_gate",
+    );
+    const result = await stopValidator!.execute();
+
+    expect(result.outcome).toBe("retry_with_blocking_message");
+    expect(result.reason).toBe("narrated_future_tool_work");
+    expect(result.maxAttempts).toBe(3);
+  });
+
+  it("uses the shared correction budget for narrated future tool work when stop hooks are not configured", async () => {
+    const validators = buildCompletionValidators({
+      ctx: makeCtx({
+        finalContent:
+          "The current build still has failures. Next I will fix the linker errors and then rerun the build.",
+        allToolCalls: [successfulWrite("/tmp/workspace/src/main.c")],
+        turnClass: "workflow_implementation",
+        ownerMode: "workflow_owner",
+        targetArtifacts: ["/tmp/workspace/src/main.c"],
+        requiredToolEvidence: {
+          maxCorrectionAttempts: 3,
+        },
+      }),
+      runtimeContractFlags: makeFlags({ stopHooksEnabled: true }),
+    });
+
+    const stopValidator = validators.find(
+      (validator) => validator.id === "turn_end_stop_gate",
+    );
+    const result = await stopValidator!.execute();
+
+    expect(result.outcome).toBe("retry_with_blocking_message");
+    expect(result.reason).toBe("narrated_future_tool_work");
+    expect(result.maxAttempts).toBe(3);
+    expect(result.blockingMessage).toContain("bounded recovery loop");
   });
 
   it("gates the verification stage before deterministic probes run", async () => {
@@ -298,6 +358,38 @@ describe("completion-validators", () => {
     expect(result.exhaustedDetail).toContain(
       "made no successful workspace mutations",
     );
+  });
+
+  it("uses the shared correction budget for filesystem artifact recovery", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "filesystem-budget-"));
+    const missingPath = join(workspaceRoot, "src/main.c");
+    const validators = buildCompletionValidators({
+      ctx: makeCtx({
+        finalContent: "Implementation complete. All phases implemented.",
+        allToolCalls: [
+          {
+            name: "system.writeFile",
+            args: { path: missingPath, content: "phase 1" },
+            result: JSON.stringify({ ok: true, path: missingPath }),
+            isError: false,
+            durationMs: 1,
+          },
+        ],
+        requiredToolEvidence: {
+          maxCorrectionAttempts: 3,
+        },
+      }),
+      runtimeContractFlags: makeFlags(),
+    });
+
+    const filesystem = validators.find(
+      (validator) => validator.id === "filesystem_artifact_verification",
+    );
+    const result = await filesystem!.execute();
+
+    expect(result.outcome).toBe("retry_with_blocking_message");
+    expect(result.maxAttempts).toBe(3);
+    expect(result.blockingMessage).toContain("bounded recovery loop");
   });
 
   it("runs the top-level verifier even when runtimeContractV2 is false", async () => {

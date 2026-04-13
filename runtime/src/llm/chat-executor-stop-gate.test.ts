@@ -189,7 +189,7 @@ describe("evaluateTurnEndStopGate — narrated_future_tool_work", () => {
     expect(decision.shouldIntervene).toBe(true);
     expect(decision.reason).toBe("narrated_future_tool_work");
     expect(decision.blockingMessage).toContain("NARRATED");
-    expect(decision.blockingMessage).toContain("ONE recovery turn");
+    expect(decision.blockingMessage).toContain("bounded recovery loop");
     expect(decision.blockingMessage).toContain("Next tool calls will");
   });
 
@@ -343,7 +343,7 @@ describe("evaluateTurnEndStopGate — narrated_future_tool_work", () => {
     // Verify the blocking message references the actual narration so the
     // model sees what triggered the recovery.
     expect(decision.blockingMessage).toContain("NARRATED");
-    expect(decision.blockingMessage).toContain("ONE recovery turn");
+    expect(decision.blockingMessage).toContain("bounded recovery loop");
   });
 
   it("fires on bare 'Continue?' permission question at end", () => {
@@ -650,7 +650,7 @@ describe("evaluateTurnEndStopGate — detector priority", () => {
 // ---------------------------------------------------------------------------
 
 describe("evaluateTurnEndStopGate — blocking message contents", () => {
-  it("includes 'ONE recovery turn' instruction", () => {
+  it("includes bounded recovery loop instruction", () => {
     const decision = evaluateTurnEndStopGate({
       finalContent:
         "Phase 0 bootstrap complete. The build succeeded for all source " +
@@ -661,7 +661,7 @@ describe("evaluateTurnEndStopGate — blocking message contents", () => {
         bashFailure({ command: "make", stderr: "boom" }),
       ],
     });
-    expect(decision.blockingMessage).toMatch(/ONE recovery turn/);
+    expect(decision.blockingMessage).toMatch(/bounded recovery loop/);
     expect(decision.blockingMessage).toMatch(/\(a\) Make tool calls/);
     expect(decision.blockingMessage).toMatch(/\(b\) Retract the success claim/);
     expect(decision.blockingMessage).toMatch(/Do NOT repeat the success claim/);
