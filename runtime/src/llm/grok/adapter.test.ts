@@ -1575,6 +1575,70 @@ describe("GrokProvider", () => {
     expect(String(warnCall?.[0] ?? "")).toContain("tool_128");
   });
 
+  it("prioritizes critical AgenC task tools before trimming over-limit xAI catalogs", async () => {
+    mockCreate.mockResolvedValueOnce(makeCompletion());
+
+    const lowerPriorityTools: LLMTool[] = Array.from(
+      { length: 129 },
+      (_, i) => ({
+        type: "function",
+        function: {
+          name: `aaa.tool_${String(i).padStart(3, "0")}`,
+          description: `Tool ${i}`,
+          parameters: {
+            type: "object",
+            properties: { a: { type: "string" } },
+            required: ["a"],
+          },
+        },
+      }),
+    );
+    const completeTaskTool: LLMTool = {
+      type: "function",
+      function: {
+        name: "agenc.completeTask",
+        description: "Submit proof for a completed AgenC task",
+        parameters: {
+          type: "object",
+          properties: {
+            taskPda: { type: "string" },
+            proofHash: { type: "string" },
+          },
+          required: ["taskPda", "proofHash"],
+        },
+      },
+    };
+
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+      tools: [...lowerPriorityTools, completeTaskTool],
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let capturedWarnCalls: unknown[][] = [];
+    try {
+      await provider.chat([{ role: "user", content: "submit completion" }]);
+      capturedWarnCalls = warnSpy.mock.calls.map((call) => [...call]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    const params = mockCreate.mock.calls[0][0];
+    expect(Array.isArray(params.tools)).toBe(true);
+    expect((params.tools as unknown[]).length).toBe(128);
+    const sentNames = (params.tools as Array<{ name?: unknown }>).map((t) =>
+      String(t.name),
+    );
+    expect(sentNames).toContain("agenc.completeTask");
+    expect(sentNames).not.toContain("aaa.tool_128");
+
+    const warnCall = capturedWarnCalls.find((call) =>
+      String(call[0] ?? "").includes("Tool catalog has 130 tools"),
+    );
+    expect(warnCall).toBeDefined();
+    expect(String(warnCall?.[0] ?? "")).toContain("aaa.tool_128");
+    expect(String(warnCall?.[0] ?? "")).not.toContain("agenc.completeTask");
+  });
+
   it("does NOT trim when tool catalog is exactly at the 128 limit", async () => {
     mockCreate.mockResolvedValueOnce(makeCompletion());
 

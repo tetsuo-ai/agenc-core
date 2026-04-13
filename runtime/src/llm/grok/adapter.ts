@@ -97,6 +97,37 @@ const VISION_MODELS_WITH_TOOLS = new Set([
   "grok-4.20-multi-agent-beta-0309",
 ]);
 
+const XAI_RESPONSES_TRIM_PRIORITY_TOOL_NAMES = new Set([
+  "agenc.inspectMarketplace",
+  "agenc.listTasks",
+  "agenc.getTask",
+  "agenc.getJobSpec",
+  "agenc.getReputationSummary",
+  "agenc.getTokenBalance",
+  "agenc.registerAgent",
+  "agenc.createTask",
+  "agenc.claimTask",
+  "agenc.completeTask",
+]);
+
+function prioritizeToolsForXaiResponsesLimit<T extends Record<string, unknown>>(
+  tools: readonly T[],
+): T[] {
+  return tools
+    .map((tool, index) => ({
+      tool,
+      index,
+      priority: getXaiResponsesTrimPriority(tool),
+    }))
+    .sort((a, b) => a.priority - b.priority || a.index - b.index)
+    .map(({ tool }) => tool);
+}
+
+function getXaiResponsesTrimPriority(tool: Record<string, unknown>): number {
+  const name = extractTraceToolNames([tool])[0] ?? "";
+  return XAI_RESPONSES_TRIM_PRIORITY_TOOL_NAMES.has(name) ? 0 : 1;
+}
+
 interface StatefulSessionAnchor {
   responseId: string;
   reconciliationHash: string;
@@ -1972,12 +2003,17 @@ export class GrokProvider implements LLMProvider {
         // than XAI_RESPONSES_MAX_TOOL_COUNT tools; trim here so a
         // local catalog that legitimately exceeds the limit (e.g.
         // many MCP servers enabled) stays functional instead of
-        // failing closed at every request. The trim is deterministic
-        // (tail of the registry order) and the dropped tool names
-        // are logged so operators can reorder their tool registry
-        // or drop unused MCP servers to reclaim the dropped slots.
+        // failing closed at every request. Preserve critical AgenC
+        // task-lifecycle tools before trimming so marketplace runs
+        // can still claim and submit completions even with a large
+        // MCP catalog. The trim is deterministic and the dropped
+        // tool names are logged so operators can reorder their tool
+        // registry or drop unused MCP servers to reclaim the slots.
         if (selectedTools.tools.length > XAI_RESPONSES_MAX_TOOL_COUNT) {
-          const dropped = selectedTools.tools.slice(
+          const prioritizedTools = prioritizeToolsForXaiResponsesLimit(
+            selectedTools.tools,
+          );
+          const dropped = prioritizedTools.slice(
             XAI_RESPONSES_MAX_TOOL_COUNT,
           );
           const droppedNames = dropped
@@ -1986,13 +2022,13 @@ export class GrokProvider implements LLMProvider {
           console.warn(
             `[GrokProvider] Tool catalog has ${selectedTools.tools.length} ` +
               `tools but xAI Responses API documents a maximum of ` +
-              `${XAI_RESPONSES_MAX_TOOL_COUNT}. Trimming the tail of the ` +
-              `registry to stay within the contract. Dropped tools (last ` +
-              `in registry order): ${droppedNames}. Reorder your tool ` +
+              `${XAI_RESPONSES_MAX_TOOL_COUNT}. Trimming lower-priority ` +
+              `tools to stay within the contract. Dropped tools (after ` +
+              `preserving critical tools): ${droppedNames}. Reorder your tool ` +
               `registry or disable unused MCP servers if these should be ` +
               `retained.`,
           );
-          selectedTools.tools = selectedTools.tools.slice(
+          selectedTools.tools = prioritizedTools.slice(
             0,
             XAI_RESPONSES_MAX_TOOL_COUNT,
           ) as typeof selectedTools.tools;
