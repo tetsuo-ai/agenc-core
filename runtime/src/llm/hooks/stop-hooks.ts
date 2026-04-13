@@ -122,6 +122,7 @@ interface StopHookRuntimeDefinition {
 
 export interface StopHookRuntime {
   readonly maxAttempts: number;
+  readonly maxAttemptsExplicit: boolean;
   readonly definitionsByPhase: ReadonlyMap<StopHookPhase, readonly StopHookRuntimeDefinition[]>;
 }
 
@@ -185,6 +186,7 @@ export function buildStopHookRuntime(
   }
   return {
     maxAttempts: normalizeMaxAttempts(config.maxAttempts),
+    maxAttemptsExplicit: config.maxAttempts !== undefined,
     definitionsByPhase,
   };
 }

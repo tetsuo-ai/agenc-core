@@ -25,8 +25,6 @@ import type {
 import { runTopLevelVerifierValidation } from "../gateway/top-level-verifier.js";
 import { getRemainingRequestTaskMilestones } from "./request-task-progress.js";
 
-const DEFAULT_DETERMINISTIC_ACCEPTANCE_PROBE_ATTEMPTS = 3;
-
 export interface CompletionValidatorExecutionResult
   extends CompletionValidatorResult {
   readonly probeRuns?: readonly ToolCallRecord[];
@@ -45,12 +43,17 @@ export function buildCompletionValidators(params: {
   readonly stopHookRuntime?: StopHookRuntime;
   readonly completionValidation?: ChatExecutorConfig["completionValidation"];
 }): readonly CompletionValidator[] {
-  const sharedCorrectionBudget =
-    params.ctx.requiredToolEvidence?.maxCorrectionAttempts ?? 1;
-  const stopHookRetryBudget = Math.max(
-    sharedCorrectionBudget,
-    params.stopHookRuntime?.maxAttempts ?? 1,
-  );
+  const sharedCorrectionBudgetCap =
+    params.ctx.requiredToolEvidence?.maxCorrectionAttemptsExplicit === true
+      ? params.ctx.requiredToolEvidence.maxCorrectionAttempts
+      : undefined;
+  const stopHookRetryBudgetCap =
+    params.stopHookRuntime?.maxAttemptsExplicit === true
+      ? Math.max(
+          sharedCorrectionBudgetCap ?? 0,
+          params.stopHookRuntime.maxAttempts,
+        )
+      : sharedCorrectionBudgetCap;
   const topLevelVerifierEnabled =
     params.runtimeContractFlags.verifierRuntimeRequired;
   const deterministicAcceptanceProbesEnabled =
@@ -100,7 +103,7 @@ export function buildCompletionValidators(params: {
               reason: hookResult.reason ?? "verification_ready",
               blockingMessage: hookResult.blockingMessage,
               evidence: hookResult.evidence,
-              maxAttempts: stopHookRetryBudget,
+              maxAttempts: stopHookRetryBudgetCap,
               exhaustedDetail:
                 "Verification-ready recovery exhausted after stop-hook intervention.",
               stopHookResult: hookResult,
@@ -145,7 +148,7 @@ export function buildCompletionValidators(params: {
           reason: decision.validationCode ?? "artifact_evidence_gate",
           blockingMessage: decision.blockingMessage,
           evidence: decision.evidence,
-          maxAttempts: params.ctx.requiredToolEvidence?.maxCorrectionAttempts ?? 0,
+          maxAttempts: sharedCorrectionBudgetCap,
           exhaustedDetail:
             decision.stopReasonDetail ??
             "Artifact-evidence recovery exhausted.",
@@ -198,7 +201,7 @@ export function buildCompletionValidators(params: {
             reason: hookResult.reason ?? "turn_end_stop_gate",
             blockingMessage: hookResult.blockingMessage,
             evidence: hookResult.evidence,
-            maxAttempts: stopHookRetryBudget,
+            maxAttempts: stopHookRetryBudgetCap,
             exhaustedDetail:
               hookResult.reason === "narrated_future_tool_work"
                 ? "Stop-gate recovery exhausted: the model kept narrating future work instead of calling tools."
@@ -219,7 +222,7 @@ export function buildCompletionValidators(params: {
           reason: decision.reason ?? "turn_end_stop_gate",
           blockingMessage: decision.blockingMessage,
           evidence: decision.evidence,
-          maxAttempts: sharedCorrectionBudget,
+          maxAttempts: sharedCorrectionBudgetCap,
           exhaustedDetail:
             decision.reason === "narrated_future_tool_work"
               ? "Stop-gate recovery exhausted: the model kept narrating future work instead of calling tools."
@@ -253,7 +256,7 @@ export function buildCompletionValidators(params: {
           return { id: "request_task_progress", outcome: "pass" };
         }
 
-        const maxAttempts = sharedCorrectionBudget;
+        const maxAttempts = sharedCorrectionBudgetCap;
         if (hasMalformedTaskMetadata) {
           const allowedIds = requestTaskState.allowedMilestones.map(
             (milestone) => milestone.id,
@@ -365,7 +368,7 @@ export function buildCompletionValidators(params: {
             missingFiles: check.missingFiles,
             checkedFiles: check.checkedFiles,
           },
-          maxAttempts: sharedCorrectionBudget,
+          maxAttempts: sharedCorrectionBudgetCap,
           exhaustedDetail:
             "Filesystem artifact verification failed after recovery; missing or empty artifacts remain on disk.",
         };
@@ -414,9 +417,7 @@ export function buildCompletionValidators(params: {
             "deterministic_acceptance_probe_failed",
           blockingMessage: decision.blockingMessage,
           evidence: decision.evidence,
-          maxAttempts:
-            params.ctx.requiredToolEvidence?.maxCorrectionAttempts ??
-            DEFAULT_DETERMINISTIC_ACCEPTANCE_PROBE_ATTEMPTS,
+          maxAttempts: sharedCorrectionBudgetCap,
           exhaustedDetail:
             decision.stopReasonDetail ??
             "Deterministic acceptance-probe recovery exhausted.",
@@ -474,7 +475,7 @@ export function buildCompletionValidators(params: {
           outcome: validation.outcome,
           reason: "top_level_verifier",
           blockingMessage: validation.blockingMessage,
-          maxAttempts: sharedCorrectionBudget,
+          maxAttempts: sharedCorrectionBudgetCap,
           exhaustedDetail: validation.exhaustedDetail,
           verifier: validation.runtimeVerifier,
           verifierTaskId: validation.taskId,

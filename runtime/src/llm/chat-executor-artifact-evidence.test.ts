@@ -223,7 +223,7 @@ describe("top-level artifact evidence gate", () => {
     expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2);
   });
 
-  it("fails closed when stop-gate recovery is spent on another text-only completion claim", async () => {
+  it("fails closed when an explicit correction cap is spent on another text-only completion claim", async () => {
     const provider = createMockProvider("primary", {
       chat: vi
         .fn<[LLMMessage[], LLMChatOptions?], Promise<LLMResponse>>()
@@ -261,12 +261,93 @@ describe("top-level artifact evidence gate", () => {
     );
     const executor = new ChatExecutor({ providers: [provider], toolHandler });
 
-    const result = await executor.execute(createParams());
+    const result = await executor.execute(
+      createParams({
+        requiredToolEvidence: {
+          maxCorrectionAttempts: 1,
+        },
+      }),
+    );
 
     expect(result.stopReason).toBe("validation_error");
     expect(result.content).toContain("Stop-gate recovery exhausted");
     expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(3);
     expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls[2]?.[1]).toMatchObject({
+      toolChoice: "required",
+    });
+  });
+
+  it("exhausts repeated narration-only recoveries after three non-productive continuations", async () => {
+    const provider = createMockProvider("primary", {
+      chat: vi
+        .fn<[LLMMessage[], LLMChatOptions?], Promise<LLMResponse>>()
+        .mockResolvedValueOnce(
+          mockResponse({
+            content: "",
+            finishReason: "tool_calls",
+            toolCalls: [
+              {
+                id: "tc-1",
+                name: "system.bash",
+                arguments: safeJson({
+                  command: "make",
+                  args: [],
+                }),
+              },
+            ],
+          }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({
+            content: "Build succeeded and all phases were fully implemented.",
+          }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({
+            content: "Next I will fix the build and write the remaining files.",
+          }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({
+            content: "I will now update the failing source files and rerun the build.",
+          }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({
+            content: "I will now update the failing source files and rerun the build.",
+          }),
+        ),
+    });
+    const toolHandler = vi.fn(async (name: string) =>
+      name === "system.bash"
+        ? safeJson({ exitCode: 2, stdout: "", stderr: "link failed" })
+        : safeJson({ ok: true }),
+    );
+    const executor = new ChatExecutor({ providers: [provider], toolHandler });
+
+    const result = await executor.execute(
+      createParams({
+        runtimeContext: {
+          workspaceRoot: WORKSPACE_ROOT,
+        },
+        requiredToolEvidence: {
+          maxCorrectionAttempts: 3,
+        },
+      }),
+    );
+
+    expect(result.stopReason).toBe("validation_error");
+    expect(result.content).toContain("Stop-gate recovery exhausted");
+    expect(result.toolCalls.filter((call) => call.name === "system.bash")).toHaveLength(1);
+    expect(result.toolCalls.filter((call) => call.name === "system.writeFile")).toHaveLength(0);
+    expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(5);
+    expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls[2]?.[1]).toMatchObject({
+      toolChoice: "required",
+    });
+    expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls[3]?.[1]).toMatchObject({
+      toolChoice: "required",
+    });
+    expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls[4]?.[1]).toMatchObject({
       toolChoice: "required",
     });
   });

@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -68,7 +68,13 @@ function makeCtx(params: {
       targetArtifacts: params.targetArtifacts ?? [],
     },
     runtimeContractSnapshot: createRuntimeContractSnapshot(flags),
-    requiredToolEvidence: params.requiredToolEvidence,
+    requiredToolEvidence: params.requiredToolEvidence
+      ? {
+          ...params.requiredToolEvidence,
+          maxCorrectionAttemptsExplicit:
+            params.requiredToolEvidence.maxCorrectionAttempts !== undefined,
+        }
+      : undefined,
   } as unknown as ExecutionContext;
 }
 
@@ -390,6 +396,145 @@ describe("completion-validators", () => {
     expect(result.outcome).toBe("retry_with_blocking_message");
     expect(result.maxAttempts).toBe(3);
     expect(result.blockingMessage).toContain("bounded recovery loop");
+  });
+
+  it("applies the shared 3-attempt recovery budget consistently across the primary validators", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "shared-budget-"));
+    mkdirSync(join(workspaceRoot, "src"), { recursive: true });
+    writeFileSync(
+      join(workspaceRoot, "Makefile"),
+      "all:\n\t@echo build failed >&2\n\t@exit 2\n",
+      "utf8",
+    );
+    const targetPath = join(workspaceRoot, "src/main.c");
+    const narrativeCtx = makeCtx({
+      workspaceRoot,
+      finalContent: "Next I will fix the build and rerun the checks.",
+      allToolCalls: [successfulWrite(targetPath)],
+      targetArtifacts: [targetPath],
+      turnClass: "workflow_implementation",
+      ownerMode: "workflow_owner",
+      requiredToolEvidence: {
+        maxCorrectionAttempts: 3,
+      },
+    });
+    setAllowedRequestTaskMilestones(narrativeCtx.requestTaskState, [
+      { id: "phase_1", description: "Finish phase 1" },
+    ]);
+    const narrativeValidators = buildCompletionValidators({
+      ctx: narrativeCtx,
+      runtimeContractFlags: makeFlags(),
+    });
+    const filesystemCtx = makeCtx({
+      workspaceRoot,
+      finalContent: "Implementation complete. All phases implemented.",
+      allToolCalls: [successfulWrite(targetPath)],
+      targetArtifacts: [targetPath],
+      turnClass: "workflow_implementation",
+      ownerMode: "workflow_owner",
+      requiredToolEvidence: {
+        maxCorrectionAttempts: 3,
+      },
+    });
+    const filesystemValidators = buildCompletionValidators({
+      ctx: filesystemCtx,
+      runtimeContractFlags: makeFlags(),
+    });
+    const narrativeById = new Map(
+      narrativeValidators.map((validator) => [validator.id, validator]),
+    );
+    const filesystemById = new Map(
+      filesystemValidators.map((validator) => [validator.id, validator]),
+    );
+
+    const [stopGate, taskProgress, deterministic, filesystem] = await Promise.all([
+      narrativeById.get("turn_end_stop_gate")!.execute(),
+      narrativeById.get("request_task_progress")!.execute(),
+      narrativeById.get("deterministic_acceptance_probes")!.execute(),
+      filesystemById.get("filesystem_artifact_verification")!.execute(),
+    ]);
+
+    try {
+      expect(stopGate.outcome).toBe("retry_with_blocking_message");
+      expect(stopGate.maxAttempts).toBe(3);
+
+      expect(taskProgress.outcome).toBe("retry_with_blocking_message");
+      expect(taskProgress.maxAttempts).toBe(3);
+
+      expect(filesystem.outcome).toBe("retry_with_blocking_message");
+      expect(filesystem.maxAttempts).toBe(3);
+
+      expect(deterministic.outcome).toBe("retry_with_blocking_message");
+      expect(deterministic.maxAttempts).toBe(3);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps an explicit zero correction budget at zero for the recovery validators", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "zero-budget-"));
+    mkdirSync(join(workspaceRoot, "src"), { recursive: true });
+    writeFileSync(
+      join(workspaceRoot, "Makefile"),
+      "all:\n\t@echo build failed >&2\n\t@exit 2\n",
+      "utf8",
+    );
+    const targetPath = join(workspaceRoot, "src/main.c");
+    const narrativeCtx = makeCtx({
+      workspaceRoot,
+      finalContent: "Next I will fix the build and rerun the checks.",
+      allToolCalls: [successfulWrite(targetPath)],
+      targetArtifacts: [targetPath],
+      turnClass: "workflow_implementation",
+      ownerMode: "workflow_owner",
+      requiredToolEvidence: {
+        maxCorrectionAttempts: 0,
+      },
+    });
+    setAllowedRequestTaskMilestones(narrativeCtx.requestTaskState, [
+      { id: "phase_1", description: "Finish phase 1" },
+    ]);
+    const narrativeValidators = buildCompletionValidators({
+      ctx: narrativeCtx,
+      runtimeContractFlags: makeFlags(),
+    });
+    const filesystemCtx = makeCtx({
+      workspaceRoot,
+      finalContent: "Implementation complete. All phases implemented.",
+      allToolCalls: [successfulWrite(targetPath)],
+      targetArtifacts: [targetPath],
+      turnClass: "workflow_implementation",
+      ownerMode: "workflow_owner",
+      requiredToolEvidence: {
+        maxCorrectionAttempts: 0,
+      },
+    });
+    const filesystemValidators = buildCompletionValidators({
+      ctx: filesystemCtx,
+      runtimeContractFlags: makeFlags(),
+    });
+    const narrativeById = new Map(
+      narrativeValidators.map((validator) => [validator.id, validator]),
+    );
+    const filesystemById = new Map(
+      filesystemValidators.map((validator) => [validator.id, validator]),
+    );
+
+    const [stopGate, taskProgress, deterministic, filesystem] = await Promise.all([
+      narrativeById.get("turn_end_stop_gate")!.execute(),
+      narrativeById.get("request_task_progress")!.execute(),
+      narrativeById.get("deterministic_acceptance_probes")!.execute(),
+      filesystemById.get("filesystem_artifact_verification")!.execute(),
+    ]);
+
+    try {
+      expect(stopGate.maxAttempts).toBe(0);
+      expect(taskProgress.maxAttempts).toBe(0);
+      expect(filesystem.maxAttempts).toBe(0);
+      expect(deterministic.maxAttempts).toBe(0);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   it("runs the top-level verifier even when runtimeContractV2 is false", async () => {

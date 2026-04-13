@@ -1,8 +1,14 @@
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, it, expect } from "vitest";
 
 import type { ToolCallRecord } from "./chat-executor-types.js";
 import {
   __TESTING__,
+  checkFilesystemArtifacts,
+  evaluateArtifactEvidenceGate,
   evaluateTurnEndStopGate,
 } from "./chat-executor-stop-gate.js";
 
@@ -70,6 +76,16 @@ function readFile(path: string): ToolCallRecord {
     name: "system.readFile",
     args: { path },
     result: JSON.stringify({ path, size: 100, encoding: "utf-8", content: "..." }),
+    isError: false,
+    durationMs: 1,
+  };
+}
+
+function successfulWrite(path: string, content: string): ToolCallRecord {
+  return {
+    name: "system.writeFile",
+    args: { path, content },
+    result: JSON.stringify({ ok: true, path }),
     isError: false,
     durationMs: 1,
   };
@@ -156,6 +172,145 @@ describe("evaluateTurnEndStopGate (pass cases)", () => {
       allToolCalls: [bashSuccess("cmake .."), bashSuccess("make")],
     });
     expect(decision.shouldIntervene).toBe(false);
+  });
+});
+
+describe("evaluateArtifactEvidenceGate", () => {
+  it("bypasses artifact enforcement in unsafe benchmark mode", () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-benchmark-"));
+    const targetPath = join(workspaceRoot, "src/main.c");
+
+    const decision = evaluateArtifactEvidenceGate({
+      requiredToolEvidence: {
+        unsafeBenchmarkMode: true,
+        verificationContract: {
+          workspaceRoot,
+          targetArtifacts: [targetPath],
+        },
+      },
+      runtimeContext: { workspaceRoot },
+      allToolCalls: [],
+    });
+
+    expect(decision.shouldIntervene).toBe(false);
+    expect(decision.evidence.requiredTargetArtifacts).toEqual([]);
+  });
+
+  it("reports missing_successful_tool_evidence when a workflow turn has no successful tools", () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-artifact-evidence-"));
+    const targetPath = join(workspaceRoot, "src/main.c");
+
+    const decision = evaluateArtifactEvidenceGate({
+      requiredToolEvidence: {
+        verificationContract: {
+          workspaceRoot,
+          targetArtifacts: [targetPath],
+        },
+      },
+      runtimeContext: { workspaceRoot },
+      allToolCalls: [
+        bashFailure({
+          command: "make",
+          stderr: "build failed",
+        }),
+      ],
+    });
+
+    expect(decision.shouldIntervene).toBe(true);
+    expect(decision.validationCode).toBe("missing_successful_tool_evidence");
+    expect(decision.stopReasonDetail).toContain("no successful tool calls");
+    expect(decision.evidence.missingArtifacts).toEqual([targetPath]);
+  });
+
+  it("reports missing_file_artifact_evidence for grounded-read workflows that inspect the wrong file", () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-artifact-grounded-"));
+    mkdirSync(join(workspaceRoot, "src"), { recursive: true });
+    const targetPath = join(workspaceRoot, "src/main.c");
+    const otherPath = join(workspaceRoot, "src/other.c");
+    writeFileSync(otherPath, "int other(void) { return 0; }\n", "utf8");
+
+    const decision = evaluateArtifactEvidenceGate({
+      requiredToolEvidence: {
+        verificationContract: {
+          workspaceRoot,
+          targetArtifacts: [targetPath],
+          verificationMode: "grounded_read",
+        },
+      },
+      runtimeContext: { workspaceRoot },
+      allToolCalls: [
+        readFile(otherPath),
+      ],
+    });
+
+    expect(decision.shouldIntervene).toBe(true);
+    expect(decision.validationCode).toBe("missing_file_artifact_evidence");
+    expect(decision.evidence.inspectedArtifacts).toEqual([otherPath]);
+    expect(decision.evidence.missingArtifacts).toEqual([targetPath]);
+  });
+});
+
+describe("checkFilesystemArtifacts", () => {
+  it("flags empty and missing files while skipping same-turn deletions", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-filesystem-"));
+    mkdirSync(join(workspaceRoot, "src"), { recursive: true });
+
+    const emptyPath = join(workspaceRoot, "src/empty.c");
+    const missingPath = join(workspaceRoot, "src/missing.c");
+    const deletedPath = join(workspaceRoot, "src/deleted.c");
+    const healthyPath = join(workspaceRoot, "src/healthy.c");
+
+    writeFileSync(emptyPath, "seed", "utf8");
+    writeFileSync(emptyPath, "", "utf8");
+
+    writeFileSync(deletedPath, "remove me", "utf8");
+    rmSync(deletedPath);
+
+    writeFileSync(healthyPath, "int healthy(void) { return 0; }\n", "utf8");
+
+    const decision = await checkFilesystemArtifacts({
+      finalContent: "Task complete. All phases implemented.",
+      allToolCalls: [
+        {
+          name: "system.editFile",
+          args: { path: emptyPath, old_string: "seed", new_string: "updated" },
+          result: JSON.stringify({ ok: true, path: emptyPath }),
+          isError: false,
+          durationMs: 1,
+        },
+        {
+          name: "system.appendFile",
+          args: { path: missingPath, content: "append" },
+          result: JSON.stringify({ ok: true, path: missingPath }),
+          isError: false,
+          durationMs: 1,
+        },
+        {
+          name: "desktop.text_editor",
+          args: { path: deletedPath, command: "edit", content: "remove me" },
+          result: JSON.stringify({ ok: true, path: deletedPath }),
+          isError: false,
+          durationMs: 1,
+        },
+        successfulWrite(healthyPath, "int healthy(void) { return 0; }\n"),
+        {
+          name: "system.delete",
+          args: { path: deletedPath },
+          result: JSON.stringify({ ok: true, path: deletedPath }),
+          isError: false,
+          durationMs: 1,
+        },
+      ],
+    });
+
+    expect(decision.shouldIntervene).toBe(true);
+    expect(decision.emptyFiles).toEqual([emptyPath]);
+    expect(decision.missingFiles).toEqual([missingPath]);
+    expect(decision.deletedFiles).toContain(deletedPath);
+    expect(decision.checkedFiles).toEqual(
+      expect.arrayContaining([emptyPath, missingPath, healthyPath]),
+    );
+    expect(decision.checkedFiles).not.toContain(deletedPath);
   });
 });
 

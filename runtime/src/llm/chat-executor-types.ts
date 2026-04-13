@@ -85,6 +85,10 @@ import {
   createRequestTaskProgressState,
   type RequestTaskProgressState,
 } from "./request-task-progress.js";
+import {
+  createTurnContinuationState,
+  type TurnContinuationState,
+} from "./chat-executor-continuation.js";
 
 // ============================================================================
 // Error classes
@@ -151,6 +155,9 @@ export interface ToolCallRecord {
 }
 
 type ChatExecutionTraceEventType =
+  | "continuation_evaluated"
+  | "continuation_started"
+  | "continuation_stopped"
   | "completion_validator_finished"
   | "completion_validator_started"
   | "completion_validation_finished"
@@ -230,7 +237,7 @@ export interface ChatExecuteParams {
   };
   /** Require at least one successful tool call before accepting a final answer. */
   readonly requiredToolEvidence?: {
-    /** Bounded number of correction recalls before failing the turn. Default: 1. */
+    /** Optional tighter ceiling for productive continuation recovery loops. */
     readonly maxCorrectionAttempts?: number;
     /** Optional delegated output contract used for phase-specific validation. */
     readonly delegationSpec?: DelegationContractSpec;
@@ -655,6 +662,7 @@ export interface ExecutionContext {
   readonly stateful?: ChatExecuteParams["stateful"];
   readonly requiredToolEvidence?: {
     readonly maxCorrectionAttempts: number;
+    readonly maxCorrectionAttemptsExplicit: boolean;
     readonly delegationSpec?: DelegationContractSpec;
     readonly unsafeBenchmarkMode?: boolean;
     readonly verificationContract?: WorkflowVerificationContract;
@@ -703,6 +711,7 @@ export interface ExecutionContext {
   requestTaskState: RequestTaskProgressState;
   completedRequestMilestoneIds: readonly string[];
   economicsState: RuntimeEconomicsState;
+  continuationState: TurnContinuationState;
   /**
    * Per-iteration compaction state composed across snip, microcompact,
    * and autocompact layers. Replaced on every provider call in
@@ -806,6 +815,8 @@ export function buildDefaultExecutionContext(
           0,
           Math.floor(params.requiredToolEvidence.maxCorrectionAttempts ?? 1),
         ),
+        maxCorrectionAttemptsExplicit:
+          params.requiredToolEvidence.maxCorrectionAttempts !== undefined,
         delegationSpec: params.requiredToolEvidence.delegationSpec,
         unsafeBenchmarkMode: params.requiredToolEvidence.unsafeBenchmarkMode,
         verificationContract: params.requiredToolEvidence.verificationContract,
@@ -869,6 +880,7 @@ export function buildDefaultExecutionContext(
     requestTaskState: createRequestTaskProgressState(),
     completedRequestMilestoneIds: [],
     economicsState,
+    continuationState: createTurnContinuationState(),
     perIterationCompaction: createPerIterationCompactionState(),
   };
 }
