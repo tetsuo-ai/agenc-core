@@ -797,6 +797,88 @@ describe("system.editFile", () => {
     expect(parseResult(result).error).toContain("Re-read the file");
   });
 
+  it("normalizes curly quotes before matching and preserves quote style", async () => {
+    const before = `const title = “hello”;` + "\n";
+    setupExistingFile(before);
+    await readFirst("/workspace/quotes.ts");
+
+    setupExistingFile(before);
+    mockWriteFile.mockResolvedValueOnce(undefined);
+
+    const result = await tool.execute({
+      path: "/workspace/quotes.ts",
+      old_string: `const title = "hello";`,
+      new_string: `const title = "goodbye";`,
+      __agencSessionId: "session-edit",
+    });
+
+    expect(result.isError).toBeUndefined();
+    const [, written] = mockWriteFile.mock.calls[0];
+    expect((written as Buffer).toString()).toBe(`const title = “goodbye”;` + "\n");
+  });
+
+  it("desanitizes old_string before matching and applies the same replacements to new_string", async () => {
+    const before = `<output>\n<name>shell</name>\n</output>\n`;
+    setupExistingFile(before);
+    await readFirst("/workspace/transcript.xml");
+
+    setupExistingFile(before);
+    mockWriteFile.mockResolvedValueOnce(undefined);
+
+    const result = await tool.execute({
+      path: "/workspace/transcript.xml",
+      old_string: "<o>\n<n>shell</n>\n</o>\n",
+      new_string: "<o>\n<n>patched</n>\n</o>\n",
+      __agencSessionId: "session-edit",
+    });
+
+    expect(result.isError).toBeUndefined();
+    const [, written] = mockWriteFile.mock.calls[0];
+    expect((written as Buffer).toString()).toBe(
+      `<output>\n<name>patched</name>\n</output>\n`,
+    );
+  });
+
+  it("strips trailing whitespace from new_string for non-markdown files", async () => {
+    const before = `const answer = 1;\n`;
+    setupExistingFile(before);
+    await readFirst("/workspace/trim.ts");
+
+    setupExistingFile(before);
+    mockWriteFile.mockResolvedValueOnce(undefined);
+
+    const result = await tool.execute({
+      path: "/workspace/trim.ts",
+      old_string: "const answer = 1;",
+      new_string: "const answer = 2;   ",
+      __agencSessionId: "session-edit",
+    });
+
+    expect(result.isError).toBeUndefined();
+    const [, written] = mockWriteFile.mock.calls[0];
+    expect((written as Buffer).toString()).toBe(`const answer = 2;\n`);
+  });
+
+  it("preserves trailing whitespace in markdown replacements", async () => {
+    const before = `line one\nline two\n`;
+    setupExistingFile(before);
+    await readFirst("/workspace/readme.md");
+
+    setupExistingFile(before);
+    mockWriteFile.mockResolvedValueOnce(undefined);
+
+    const result = await tool.execute({
+      path: "/workspace/readme.md",
+      old_string: "line one",
+      new_string: "line one  ",
+      __agencSessionId: "session-edit",
+    });
+
+    expect(result.isError).toBeUndefined();
+    const [, written] = mockWriteFile.mock.calls[0];
+    expect((written as Buffer).toString()).toBe(`line one  \nline two\n`);
+  });
+
   it("rejects edit on a binary file", async () => {
     const buf = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]);
     mockStat.mockResolvedValueOnce({

@@ -448,6 +448,224 @@ function undoDoubleEscapingIfDetected(content: string): string {
   return content.replace(/\\\\/g, '\\').replace(/\\"/g, '"');
 }
 
+const LEFT_SINGLE_CURLY_QUOTE = "‘";
+const RIGHT_SINGLE_CURLY_QUOTE = "’";
+const LEFT_DOUBLE_CURLY_QUOTE = "“";
+const RIGHT_DOUBLE_CURLY_QUOTE = "”";
+
+const EDITFILE_DESANITIZATIONS: Readonly<Record<string, string>> = {
+  "<fnr>": "<function_results>",
+  "<n>": "<name>",
+  "</n>": "</name>",
+  "<o>": "<output>",
+  "</o>": "</output>",
+  "<e>": "<error>",
+  "</e>": "</error>",
+  "<s>": "<system>",
+  "</s>": "</system>",
+  "<r>": "<result>",
+  "</r>": "</result>",
+  "< META_START >": "<META_START>",
+  "< META_END >": "<META_END>",
+  "< EOT >": "<EOT>",
+  "< META >": "<META>",
+  "< SOS >": "<SOS>",
+  "\n\nH:": "\n\nHuman:",
+  "\n\nA:": "\n\nAssistant:",
+};
+
+function normalizeQuotes(content: string): string {
+  return content
+    .replaceAll(LEFT_SINGLE_CURLY_QUOTE, "'")
+    .replaceAll(RIGHT_SINGLE_CURLY_QUOTE, "'")
+    .replaceAll(LEFT_DOUBLE_CURLY_QUOTE, '"')
+    .replaceAll(RIGHT_DOUBLE_CURLY_QUOTE, '"');
+}
+
+function stripTrailingWhitespace(content: string): string {
+  const parts = content.split(/(\r\n|\n|\r)/);
+  let result = "";
+  for (let index = 0; index < parts.length; index++) {
+    const part = parts[index];
+    if (part === undefined) continue;
+    result += index % 2 === 0 ? part.replace(/\s+$/, "") : part;
+  }
+  return result;
+}
+
+function desanitizeMatchString(matchString: string): {
+  result: string;
+  appliedReplacements: Array<{ from: string; to: string }>;
+} {
+  let result = matchString;
+  const appliedReplacements: Array<{ from: string; to: string }> = [];
+  for (const [from, to] of Object.entries(EDITFILE_DESANITIZATIONS)) {
+    const before = result;
+    result = result.replaceAll(from, to);
+    if (before !== result) {
+      appliedReplacements.push({ from, to });
+    }
+  }
+  return { result, appliedReplacements };
+}
+
+function findActualString(fileContent: string, searchString: string): string | null {
+  if (fileContent.includes(searchString)) {
+    return searchString;
+  }
+  const normalizedSearch = normalizeQuotes(searchString);
+  const normalizedFile = normalizeQuotes(fileContent);
+  const searchIndex = normalizedFile.indexOf(normalizedSearch);
+  if (searchIndex < 0) {
+    return null;
+  }
+  return fileContent.substring(searchIndex, searchIndex + searchString.length);
+}
+
+function isOpeningQuoteContext(chars: readonly string[], index: number): boolean {
+  if (index === 0) return true;
+  const previous = chars[index - 1];
+  return (
+    previous === " " ||
+    previous === "\t" ||
+    previous === "\n" ||
+    previous === "\r" ||
+    previous === "(" ||
+    previous === "[" ||
+    previous === "{" ||
+    previous === "\u2014" ||
+    previous === "\u2013"
+  );
+}
+
+function applyCurlyDoubleQuotes(content: string): string {
+  const chars = [...content];
+  const result: string[] = [];
+  for (let index = 0; index < chars.length; index++) {
+    if (chars[index] === '"') {
+      result.push(
+        isOpeningQuoteContext(chars, index)
+          ? LEFT_DOUBLE_CURLY_QUOTE
+          : RIGHT_DOUBLE_CURLY_QUOTE,
+      );
+    } else {
+      result.push(chars[index]!);
+    }
+  }
+  return result.join("");
+}
+
+function applyCurlySingleQuotes(content: string): string {
+  const chars = [...content];
+  const result: string[] = [];
+  for (let index = 0; index < chars.length; index++) {
+    if (chars[index] === "'") {
+      const previous = index > 0 ? chars[index - 1] : undefined;
+      const next = index < chars.length - 1 ? chars[index + 1] : undefined;
+      const previousIsLetter =
+        previous !== undefined && /\p{L}/u.test(previous);
+      const nextIsLetter = next !== undefined && /\p{L}/u.test(next);
+      if (previousIsLetter && nextIsLetter) {
+        result.push(RIGHT_SINGLE_CURLY_QUOTE);
+      } else {
+        result.push(
+          isOpeningQuoteContext(chars, index)
+            ? LEFT_SINGLE_CURLY_QUOTE
+            : RIGHT_SINGLE_CURLY_QUOTE,
+        );
+      }
+    } else {
+      result.push(chars[index]!);
+    }
+  }
+  return result.join("");
+}
+
+function preserveQuoteStyle(
+  originalOldString: string,
+  actualOldString: string,
+  newString: string,
+): string {
+  if (originalOldString === actualOldString) {
+    return newString;
+  }
+  const hasDoubleQuotes =
+    actualOldString.includes(LEFT_DOUBLE_CURLY_QUOTE) ||
+    actualOldString.includes(RIGHT_DOUBLE_CURLY_QUOTE);
+  const hasSingleQuotes =
+    actualOldString.includes(LEFT_SINGLE_CURLY_QUOTE) ||
+    actualOldString.includes(RIGHT_SINGLE_CURLY_QUOTE);
+  let result = newString;
+  if (hasDoubleQuotes) {
+    result = applyCurlyDoubleQuotes(result);
+  }
+  if (hasSingleQuotes) {
+    result = applyCurlySingleQuotes(result);
+  }
+  return result;
+}
+
+function shouldStripTrailingWhitespaceForEdit(pathValue: string): boolean {
+  return !/\.(md|mdx)$/i.test(pathValue);
+}
+
+function normalizeEditStrings(
+  filePath: string,
+  existingContent: string,
+  oldString: string,
+  newString: string,
+): {
+  actualOldString: string | null;
+  actualNewString: string;
+} {
+  const normalizedNewString = shouldStripTrailingWhitespaceForEdit(filePath)
+    ? stripTrailingWhitespace(newString)
+    : newString;
+
+  const directActualOldString = findActualString(existingContent, oldString);
+  if (directActualOldString !== null) {
+    return {
+      actualOldString: directActualOldString,
+      actualNewString: preserveQuoteStyle(
+        oldString,
+        directActualOldString,
+        normalizedNewString,
+      ),
+    };
+  }
+
+  const { result: desanitizedOldString, appliedReplacements } =
+    desanitizeMatchString(oldString);
+  if (desanitizedOldString !== oldString) {
+    let desanitizedNewString = normalizedNewString;
+    for (const replacement of appliedReplacements) {
+      desanitizedNewString = desanitizedNewString.replaceAll(
+        replacement.from,
+        replacement.to,
+      );
+    }
+    const desanitizedActualOldString = findActualString(
+      existingContent,
+      desanitizedOldString,
+    );
+    if (desanitizedActualOldString !== null) {
+      return {
+        actualOldString: desanitizedActualOldString,
+        actualNewString: preserveQuoteStyle(
+          desanitizedOldString,
+          desanitizedActualOldString,
+          desanitizedNewString,
+        ),
+      };
+    }
+  }
+
+  return {
+    actualOldString: null,
+    actualNewString: normalizedNewString,
+  };
+}
+
 /** Detect if file content is likely binary (contains null bytes). */
 function isBinaryContent(buffer: Buffer): boolean {
   for (let i = 0; i < Math.min(buffer.length, 8192); i++) {
@@ -916,29 +1134,38 @@ function createEditFileTool(
         }
         const existingContent = existingBuffer.toString("utf-8");
 
-        // Find occurrences of old_string in the existing content. We do
-        // a literal substring search (not regex) to match Claude Code's
-        // FileEditTool semantics — old_string is interpreted as plain
-        // text with no metacharacter handling.
+        const requestedPath = args.path as string;
+        const { actualOldString, actualNewString } = normalizeEditStrings(
+          requestedPath,
+          existingContent,
+          args.old_string,
+          args.new_string,
+        );
+
+        // Find occurrences of old_string in the existing content after
+        // Claude-Code-style normalization (quote reconciliation,
+        // desanitization, and replacement whitespace cleanup). Matching
+        // remains literal and deterministic; normalization only widens
+        // common representational drift before the safety checks below.
         let occurrences = 0;
         let searchFrom = 0;
         // eslint-disable-next-line no-constant-condition
         while (true) {
-          const index = existingContent.indexOf(
-            args.old_string,
-            searchFrom,
-          );
+          const index =
+            actualOldString === null
+              ? -1
+              : existingContent.indexOf(actualOldString, searchFrom);
           if (index < 0) break;
           occurrences++;
-          searchFrom = index + args.old_string.length;
+          searchFrom = index + (actualOldString?.length ?? 0);
           if (!replaceAll && occurrences > 1) break; // early-out for the unique-match check
         }
         if (occurrences === 0) {
           return errorResult(
             `old_string not found in ${args.path}. The exact text you provided does not appear ` +
-              `anywhere in the file. Re-read the file with system.readFile to see the current ` +
-              `contents (including any escape characters that may differ from what you remember), ` +
-              `then construct old_string from the actual bytes you see.`,
+              `anywhere in the file after quote/desanitization normalization. Re-read the file ` +
+              `with system.readFile to see the current contents, then construct old_string from ` +
+              `the actual bytes you see.`,
           );
         }
         if (!replaceAll && occurrences > 1) {
@@ -952,16 +1179,14 @@ function createEditFileTool(
         // Undo Grok double-escaping on new_string before substitution.
         // old_string is NOT sanitized — it matches against the file's
         // ACTUAL bytes which are authoritative.
-        const sanitizedNewString = undoDoubleEscapingIfDetected(
-          args.new_string,
-        );
+        const sanitizedNewString = undoDoubleEscapingIfDetected(actualNewString);
 
         // Compute the new content. For the unique-match case use a
         // single replace; for replace_all walk the string to avoid
         // String.prototype.replaceAll edge cases on older runtimes.
         const newContent = replaceAll
-          ? existingContent.split(args.old_string).join(sanitizedNewString)
-          : existingContent.replace(args.old_string, sanitizedNewString);
+          ? existingContent.split(actualOldString!).join(sanitizedNewString)
+          : existingContent.replace(actualOldString!, sanitizedNewString);
 
         const newBuffer = Buffer.from(newContent, "utf-8");
         if (newBuffer.length > maxWriteBytes) {
