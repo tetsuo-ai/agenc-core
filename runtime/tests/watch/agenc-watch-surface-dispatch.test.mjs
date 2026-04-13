@@ -314,11 +314,10 @@ test("dispatchOperatorSurfaceEvent bootstraps from canonical session list result
     ],
     [
       "send",
-      "session.command.execute",
+      "chat.session.resume",
       {
         auth: true,
-        client: "console",
-        content: "/session resume session-next",
+        sessionId: "session-next",
       },
     ],
   ]);

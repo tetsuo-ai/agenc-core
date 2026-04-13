@@ -138,10 +138,9 @@ function handleSessionListResult(data, state, api) {
   if (target?.sessionId) {
     api.setTransientStatus(`resuming session ${target.sessionId}`);
     api.send(
-      "session.command.execute",
+      "chat.session.resume",
       api.authPayload({
-        client: "console",
-        content: `/session resume ${target.sessionId}`,
+        sessionId: target.sessionId,
       }),
     );
   } else {
