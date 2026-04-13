@@ -247,6 +247,20 @@ function deriveNormalizedData(
   return {};
 }
 
+function isSharedSessionControlResult(
+  normalized: NormalizedOperatorMessage,
+): boolean {
+  if (normalized.type !== "session.command.result") {
+    return false;
+  }
+  const data = isRecord(normalized.data) ? normalized.data : {};
+  if (normalizeText(data.kind) === "session") {
+    return true;
+  }
+  const payload = isRecord(normalized.payload) ? normalized.payload : {};
+  return normalizeText(payload.commandName) === "session";
+}
+
 function pickFirstText(...values: readonly unknown[]): string | undefined {
   for (const value of values) {
     const normalized = normalizeText(value);
@@ -350,6 +364,9 @@ export function shouldIgnoreOperatorMessage(
       ? (message as NormalizedOperatorMessage)
       : normalizeOperatorMessage(message as OperatorMessageEnvelope);
   if (!isSessionScopedType(normalized.type)) {
+    return false;
+  }
+  if (isSharedSessionControlResult(normalized)) {
     return false;
   }
   if (normalized.sessionIds.length === 0) {

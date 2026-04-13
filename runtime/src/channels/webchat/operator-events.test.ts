@@ -153,6 +153,23 @@ describe("operator event normalization", () => {
     expect(shouldIgnoreOperatorMessage(message, "other-session")).toBe(true);
   });
 
+  it("does not ignore shared session command results during bootstrap", () => {
+    const message = {
+      type: "session.command.result",
+      payload: {
+        commandName: "session",
+        sessionId: "session:fresh-session",
+        data: {
+          kind: "session",
+          subcommand: "list",
+          sessions: [{ sessionId: "session:fresh-session" }],
+        },
+      },
+    };
+
+    expect(shouldIgnoreOperatorMessage(message, "session:stale-session")).toBe(false);
+  });
+
   it("tolerates wrapped events without eventType", () => {
     expect(
       normalizeOperatorMessage({
