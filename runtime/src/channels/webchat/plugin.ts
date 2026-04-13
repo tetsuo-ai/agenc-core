@@ -1355,6 +1355,10 @@ export class WebChatChannel
     const request = (payload ?? {}) as unknown as SessionCommandExecutePayload;
     const content =
       typeof request.content === "string" ? request.content.trim() : "";
+    const requestedSessionId =
+      typeof request.sessionId === "string" && request.sessionId.trim().length > 0
+        ? request.sessionId.trim()
+        : null;
     if (!content.startsWith("/")) {
       send({
         type: "error",
@@ -1373,18 +1377,24 @@ export class WebChatChannel
       return;
     }
 
-    let targetSessionId =
-      typeof request.sessionId === "string" && request.sessionId.trim().length > 0
-        ? request.sessionId.trim()
-        : this.clientSessions.get(clientId);
+    let targetSessionId = requestedSessionId ?? this.clientSessions.get(clientId);
     if (!targetSessionId) {
       targetSessionId = this.ensureSession(clientId, ownerKey);
     }
-    const authorized = await this.isAuthorizedSession(
+    let authorized = await this.isAuthorizedSession(
       targetSessionId,
       ownerKey,
       clientId,
     );
+    if (!authorized && !requestedSessionId) {
+      this.clearClientSessionBinding(clientId, targetSessionId);
+      targetSessionId = this.ensureSession(clientId, ownerKey);
+      authorized = await this.isAuthorizedSession(
+        targetSessionId,
+        ownerKey,
+        clientId,
+      );
+    }
     if (!authorized) {
       send({
         type: "error",
@@ -1730,6 +1740,14 @@ export class WebChatChannel
     this.clientSessions.set(clientId, sessionId);
     this.sessionClients.set(sessionId, clientId);
     this.sessionOwners.set(sessionId, ownerKey);
+  }
+
+  private clearClientSessionBinding(clientId: string, sessionId?: string): void {
+    const boundSessionId = sessionId ?? this.clientSessions.get(clientId);
+    if (boundSessionId) {
+      this.sessionClients.delete(boundSessionId);
+    }
+    this.clientSessions.delete(clientId);
   }
 
   private buildSeenMessageKey(ownerKey: string, messageId: string): string {

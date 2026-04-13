@@ -482,6 +482,79 @@ describe("WebChatChannel", () => {
       });
     });
 
+    it("rebinds a stale implicit session before executing commands", async () => {
+      const send = vi.fn<(response: ControlResponse) => void>();
+      const registry = new SlashCommandRegistry({ logger: silentLogger });
+      registry.register({
+        name: "session",
+        description: "structured session test",
+        global: true,
+        metadata: { viewKind: "session", clients: ["console"], category: "session" },
+        handler: async (ctx) => {
+          await ctx.replyResult({
+            text: `Recovered session ${ctx.sessionId}`,
+            viewKind: "session",
+            data: {
+              kind: "session",
+              subcommand: "status",
+              currentSession: {
+                sessionId: ctx.sessionId,
+              },
+            },
+          });
+        },
+      });
+      const memoryBackend = new InMemoryBackend();
+      const channel = new WebChatChannel(
+        createDeps({ commandRegistry: registry, memoryBackend }),
+      );
+      await channel.initialize(createContext());
+      await channel.start();
+
+      (
+        channel as unknown as {
+          clientOwnerKeys: Map<string, string>;
+          clientSessions: Map<string, string>;
+        }
+      ).clientOwnerKeys.set("client_1", "owner:test");
+      (
+        channel as unknown as {
+          clientOwnerKeys: Map<string, string>;
+          clientSessions: Map<string, string>;
+        }
+      ).clientSessions.set("client_1", "session:stale-bound");
+
+      channel.handleMessage(
+        "client_1",
+        "session.command.execute",
+        msg(
+          "session.command.execute",
+          {
+            content: "/session",
+            client: "console",
+          },
+          "cmd-stale-bound",
+        ),
+        send,
+      );
+
+      await vi.waitFor(() => {
+        expect(findResponse(send, "error", "cmd-stale-bound")).toBeUndefined();
+        expect(findResponse(send, "session.command.result", "cmd-stale-bound")?.payload)
+          .toMatchObject({
+            commandName: "session",
+            viewKind: "session",
+            data: {
+              kind: "session",
+              subcommand: "status",
+              currentSession: {
+                sessionId: expect.not.stringContaining("session:stale-bound"),
+              },
+            },
+          });
+      });
+    });
+
     it("builds the command catalog with session policy scope and effective profile coercion", async () => {
       const memoryBackend = new InMemoryBackend();
       const registry = new SlashCommandRegistry({ logger: silentLogger });
