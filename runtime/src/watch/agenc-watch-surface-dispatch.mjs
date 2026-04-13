@@ -1072,20 +1072,29 @@ function handleErrorSurfaceEvent(surfaceEvent, rawMessage, state, api) {
   }
   if (
     (errorMessage === "Not authorized to access this session" || isStaleSessionMissing) &&
-    !state.bootstrapReady &&
-    typeof state.sessionId === "string" &&
-    state.sessionId.trim().length > 0
+    !state.bootstrapReady
   ) {
+    const hadRememberedSession =
+      typeof state.sessionId === "string" && state.sessionId.trim().length > 0;
     state.sessionId = null;
     state.cockpit = null;
     state.cockpitUpdatedAt = 0;
     state.cockpitFingerprint = null;
     api.persistSessionId(null);
-    api.scheduleBootstrap(
-      isStaleSessionMissing
-        ? "stale session missing; retrying bootstrap"
-        : "stale session authorization failed",
-    );
+    if (hadRememberedSession) {
+      api.scheduleBootstrap(
+        isStaleSessionMissing
+          ? "stale session missing; retrying bootstrap"
+          : "stale session authorization failed",
+      );
+    } else {
+      api.setTransientStatus(
+        isStaleSessionMissing
+          ? "bootstrap resume failed; starting a new session"
+          : "bootstrap authorization failed; starting a new session",
+      );
+      api.send("chat.new", api.authPayload());
+    }
     return true;
   }
   api.eventStore.cancelAgentStream("error");

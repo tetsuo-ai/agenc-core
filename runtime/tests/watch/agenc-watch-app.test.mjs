@@ -196,6 +196,33 @@ test("latestSessionSummary prefers sessions from the current workspace root", ()
   assert.equal(selected?.sessionId, "session-same");
 });
 
+test("latestSessionSummary skips non-resumable and missing-workspace sessions when resumable options exist", () => {
+  const payload = [
+    {
+      sessionId: "session-missing",
+      workspaceRoot: "/home/tetsuo/git/stream-test/agenc-shell",
+      messageCount: 20,
+      lastActiveAt: 300,
+      resumabilityState: "missing-workspace",
+    },
+    {
+      sessionId: "session-live",
+      workspaceRoot: "/home/tetsuo/git/stream-test/agenc-shell",
+      messageCount: 5,
+      lastActiveAt: 200,
+      resumabilityState: "disconnected-resumable",
+    },
+  ];
+
+  const selected = latestSessionSummary(
+    payload,
+    null,
+    "/home/tetsuo/git/stream-test/agenc-shell",
+  );
+
+  assert.equal(selected?.sessionId, "session-live");
+});
+
 test("resolveWatchMouseTrackingEnabled defaults on so the wheel scrolls the in-app transcript", () => {
   // Default ON: empty env, missing var, and explicit truthy values all
   // enable mouse tracking. Without it, wheel events fall through to the
