@@ -39,3 +39,10 @@
 - **What worked:** The remaining console bootstrap deadlock came from over-filtering session-scoped control responses; letting canonical `/session` command results bypass the active-session transcript filter preserved strict event scoping for normal traffic while allowing stale remembered sessions to recover cleanly.
 - **What didn't:** The daemon was healthy and the command registry bug was already fixed, so the second failure looked like “console still broken” until the watch-side session filter was traced against the persisted watch-state bootstrap flow.
 - **Rule added to CLAUDE.md:** no
+
+## PR #335: fix(runtime): keep coding repairs productive within budget
+- **Date:** 2026-04-13
+- **Files changed:** `runtime/src/llm/deterministic-acceptance-probes.ts`, `runtime/src/llm/completion-validators.ts`, `runtime/src/llm/turn-execution-contract.ts`, `runtime/src/llm/completion-validators.test.ts`, `runtime/src/llm/chat-executor-artifact-evidence.test.ts`
+- **What worked:** Giving deterministic acceptance-probe recovery a bounded multi-attempt budget for workflow-owned coding turns let trivial compile/build failures self-heal through several repair turns, while the new “no successful workspace mutations since last probe” check stops the loop as soon as it stops making real progress.
+- **What didn't:** The first full-executor regression accidentally used a `.txt` target, which this runtime classifies as documentation-only, and the short final success string also tripped the stop gate; the test had to be corrected before it was actually exercising the intended coding repair path.
+- **Rule added to CLAUDE.md:** no
