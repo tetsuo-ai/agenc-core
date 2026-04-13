@@ -23,10 +23,6 @@ interface SlashCommandOption {
   availabilityReason?: string;
 }
 
-const FALLBACK_SLASH_COMMANDS: SlashCommandOption[] = [
-  { name: 'help', description: 'Show available commands' },
-];
-
 function getSlashQuery(value: string): string | null {
   if (!value.startsWith('/')) return null;
   if (value.includes('\n')) return null;
@@ -55,7 +51,7 @@ export function ChatInput({
   const slashQuery = useMemo(() => getSlashQuery(value), [value]);
   const availableCommands = useMemo<SlashCommandOption[]>(
     () =>
-      (commands.length > 0 ? commands : FALLBACK_SLASH_COMMANDS).map((cmd) => ({
+      commands.map((cmd) => ({
         name: cmd.name,
         description: cmd.description,
         ...(cmd.args ? { args: cmd.args } : {}),
