@@ -1231,6 +1231,123 @@ function buildVerifyDelegatePrompt(params: {
   ].join("\n");
 }
 
+type ShellAgentLaunchResult = Awaited<
+  ReturnType<CommandRegistryDaemonContext["launchShellAgentTask"]>
+>;
+
+async function launchDelegatedReviewTask(params: {
+  readonly ctx: CommandRegistryDaemonContext;
+  readonly session: Session | undefined;
+  readonly webSessionId: string;
+  readonly resolvedSessionId: string;
+  readonly memoryBackend: MemoryBackend;
+  readonly shellProfile: SessionShellProfile;
+  readonly branchInfo: Record<string, unknown>;
+  readonly summary: Record<string, unknown>;
+  readonly diff: Record<string, unknown>;
+  readonly mode: "default" | "security" | "pr-comments";
+}): Promise<ShellAgentLaunchResult> {
+  if (params.session) {
+    updateReviewSurfaceState(params.session, {
+      status: "running",
+      source: "delegated",
+    });
+    await persistWebSessionRuntimeState(
+      params.memoryBackend,
+      params.webSessionId,
+      params.session,
+    );
+  }
+  const delegated = await params.ctx.launchShellAgentTask({
+    parentSessionId: params.resolvedSessionId,
+    roleId: "review",
+    objective:
+      params.mode === "security"
+        ? "Review the current changes for security issues and return findings-first output."
+        : params.mode === "pr-comments"
+          ? "Review the current changes and draft concise PR comments."
+          : "Review the current changes and return findings-first output.",
+    prompt: buildReviewDelegatePrompt({
+      branchReply: formatGitBranchReply(params.branchInfo),
+      summaryReply: formatGitSummaryReply(params.summary),
+      diffReply:
+        typeof params.diff.diff === "string" && params.diff.diff.trim().length > 0
+          ? formatGitDiffReply(params.diff)
+          : "No diff content to review.",
+    }),
+    shellProfile: params.shellProfile,
+    wait: true,
+  });
+  if (params.session) {
+    updateReviewSurfaceState(params.session, {
+      status: delegated.success === true ? "completed" : "failed",
+      source: "delegated",
+      delegatedSessionId: delegated.sessionId,
+      summaryPreview: delegated.output,
+    });
+    await persistWebSessionRuntimeState(
+      params.memoryBackend,
+      params.webSessionId,
+      params.session,
+    );
+  }
+  return delegated;
+}
+
+async function launchDelegatedVerifyTask(params: {
+  readonly ctx: CommandRegistryDaemonContext;
+  readonly session: Session | undefined;
+  readonly webSessionId: string;
+  readonly resolvedSessionId: string;
+  readonly memoryBackend: MemoryBackend;
+  readonly shellProfile: SessionShellProfile;
+  readonly branchInfo: Record<string, unknown>;
+  readonly summary: Record<string, unknown>;
+  readonly tasks: Record<string, unknown>;
+  readonly runtimeStatusSnapshot?: Record<string, unknown>;
+}): Promise<ShellAgentLaunchResult> {
+  if (params.session) {
+    updateVerificationSurfaceState(params.session, {
+      status: "running",
+      source: "delegated",
+      verdict: "unknown",
+    });
+    await persistWebSessionRuntimeState(
+      params.memoryBackend,
+      params.webSessionId,
+      params.session,
+    );
+  }
+  const delegated = await params.ctx.launchShellAgentTask({
+    parentSessionId: params.resolvedSessionId,
+    roleId: "verify",
+    objective: "Verify the current implementation state and return a verdict.",
+    prompt: buildVerifyDelegatePrompt({
+      branchReply: formatGitBranchReply(params.branchInfo),
+      summaryReply: formatGitSummaryReply(params.summary),
+      taskReply: formatTaskListReply(params.tasks),
+      runtimeStatusSnapshot: params.runtimeStatusSnapshot,
+    }),
+    shellProfile: params.shellProfile,
+    wait: true,
+  });
+  if (params.session) {
+    updateVerificationSurfaceState(params.session, {
+      status: delegated.success === true ? "completed" : "failed",
+      source: "delegated",
+      delegatedSessionId: delegated.sessionId,
+      summaryPreview: delegated.output,
+      verdict: delegated.success === true ? "pass" : "fail",
+    });
+    await persistWebSessionRuntimeState(
+      params.memoryBackend,
+      params.webSessionId,
+      params.session,
+    );
+  }
+  return delegated;
+}
+
 function summarizeStoredResponse(response: LLMStoredResponse): string {
   const usage = response.usage
     ? `prompt=${response.usage.promptTokens}, completion=${response.usage.completionTokens}, total=${response.usage.totalTokens}`
@@ -2674,42 +2791,18 @@ export function createDaemonCommandRegistry(
         });
         return;
       }
-      if (session) {
-        updateReviewSurfaceState(session, {
-          status: "running",
-          source: "delegated",
-        });
-        await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
-      }
-      const delegated = await ctx.launchShellAgentTask({
-        parentSessionId: resolvedSessionId,
-        roleId: "review",
-        objective:
-          reviewMode === "security"
-            ? "Review the current changes for security issues and return findings-first output."
-            : reviewMode === "pr-comments"
-              ? "Review the current changes and draft concise PR comments."
-              : "Review the current changes and return findings-first output.",
-        prompt: buildReviewDelegatePrompt({
-          branchReply: formatGitBranchReply(branchInfo),
-          summaryReply: formatGitSummaryReply(summary),
-          diffReply:
-            typeof diff.diff === "string" && diff.diff.trim().length > 0
-              ? formatGitDiffReply(diff)
-              : "No diff content to review.",
-        }),
+      const delegated = await launchDelegatedReviewTask({
+        ctx,
+        session,
+        webSessionId: cmdCtx.sessionId,
+        resolvedSessionId,
+        memoryBackend,
         shellProfile: effectiveShellProfile,
-        wait: true,
+        branchInfo,
+        summary,
+        diff,
+        mode: reviewMode,
       });
-      if (session) {
-        updateReviewSurfaceState(session, {
-          status: delegated.success === true ? "completed" : "failed",
-          source: "delegated",
-          delegatedSessionId: delegated.sessionId,
-          summaryPreview: delegated.output,
-        });
-        await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
-      }
       const delegatedText = [
         reviewSurface,
         "",
@@ -3393,13 +3486,13 @@ export function createDaemonCommandRegistry(
         const workflowState = updateSessionWorkflowState(session.metadata, {
           stage: "review",
         });
-        updateReviewSurfaceState(session, {
-          status: wantsDelegate ? "running" : "idle",
-          source: wantsDelegate ? "delegated" : "local",
-          ...(wantsDelegate ? {} : { summaryPreview: "Review stage entered." }),
-        });
-        await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
         if (!wantsDelegate) {
+          updateReviewSurfaceState(session, {
+            status: "idle",
+            source: "local",
+            summaryPreview: "Review stage entered.",
+          });
+          await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
           await cmdCtx.replyResult({
             text: `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.\n\n${formatPlanSurface(workflowState)}`,
             viewKind: "workflow",
@@ -3412,28 +3505,18 @@ export function createDaemonCommandRegistry(
           "system.gitDiff",
           wantsStaged ? { staged: true } : {},
         );
-        const delegated = await ctx.launchShellAgentTask({
-          parentSessionId: sessionId,
-          roleId: "review",
-          objective: "Review the current changes and return findings-first output.",
-          prompt: buildReviewDelegatePrompt({
-            branchReply: formatGitBranchReply(branchInfo),
-            summaryReply: formatGitSummaryReply(summary),
-            diffReply:
-              typeof diff.diff === "string" && diff.diff.trim().length > 0
-                ? formatGitDiffReply(diff)
-                : "No diff content to review.",
-          }),
+        const delegated = await launchDelegatedReviewTask({
+          ctx,
+          session,
+          webSessionId: cmdCtx.sessionId,
+          resolvedSessionId: sessionId,
+          memoryBackend,
           shellProfile,
-          wait: true,
+          branchInfo,
+          summary,
+          diff,
+          mode: "default",
         });
-        updateReviewSurfaceState(session, {
-          status: delegated.success === true ? "completed" : "failed",
-          source: "delegated",
-          delegatedSessionId: delegated.sessionId,
-          summaryPreview: delegated.output,
-        });
-        await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
         await cmdCtx.replyResult({
           text: [
             `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.`,
@@ -3460,14 +3543,14 @@ export function createDaemonCommandRegistry(
         const workflowState = updateSessionWorkflowState(session.metadata, {
           stage: "verify",
         });
-        updateVerificationSurfaceState(session, {
-          status: wantsDelegate ? "running" : "idle",
-          source: wantsDelegate ? "delegated" : "local",
-          verdict: "unknown",
-          ...(wantsDelegate ? {} : { summaryPreview: "Verification stage entered." }),
-        });
-        await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
         if (!wantsDelegate) {
+          updateVerificationSurfaceState(session, {
+            status: "idle",
+            source: "local",
+            verdict: "unknown",
+            summaryPreview: "Verification stage entered.",
+          });
+          await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
           await cmdCtx.replyResult({
             text: `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.\n\n${formatPlanSurface(workflowState)}`,
             viewKind: "workflow",
@@ -3475,27 +3558,18 @@ export function createDaemonCommandRegistry(
           });
           return;
         }
-        const delegated = await ctx.launchShellAgentTask({
-          parentSessionId: sessionId,
-          roleId: "verify",
-          objective: "Verify the current implementation state and return a verdict.",
-          prompt: buildVerifyDelegatePrompt({
-            branchReply: formatGitBranchReply(branchInfo),
-            summaryReply: formatGitSummaryReply(summary),
-            taskReply: formatTaskListReply(tasks),
-            runtimeStatusSnapshot,
-          }),
+        const delegated = await launchDelegatedVerifyTask({
+          ctx,
+          session,
+          webSessionId: cmdCtx.sessionId,
+          resolvedSessionId: sessionId,
+          memoryBackend,
           shellProfile,
-          wait: true,
+          branchInfo,
+          summary,
+          tasks,
+          runtimeStatusSnapshot,
         });
-        updateVerificationSurfaceState(session, {
-          status: delegated.success === true ? "completed" : "failed",
-          source: "delegated",
-          delegatedSessionId: delegated.sessionId,
-          summaryPreview: delegated.output,
-          verdict: delegated.success === true ? "pass" : "fail",
-        });
-        await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
         await cmdCtx.replyResult({
           text: [
             `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.`,
@@ -3643,37 +3717,22 @@ export function createDaemonCommandRegistry(
         });
         return;
       }
-      updateVerificationSurfaceState(session, {
-        status: "running",
-        source: "delegated",
-        verdict: "unknown",
-      });
-      await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
-      const delegated = await ctx.launchShellAgentTask({
-        parentSessionId: resolvedSessionId,
-        roleId: "verify",
-        objective: "Verify the current implementation state and return a verdict.",
-        prompt: buildVerifyDelegatePrompt({
-          branchReply: formatGitBranchReply(branchInfo),
-          summaryReply: formatGitSummaryReply(summary),
-          taskReply: formatTaskListReply(tasks),
-          runtimeStatusSnapshot,
-        }),
+      const delegated = await launchDelegatedVerifyTask({
+        ctx,
+        session,
+        webSessionId: cmdCtx.sessionId,
+        resolvedSessionId,
+        memoryBackend,
         shellProfile: resolveEffectiveShellProfileForSession({
           ctx,
           sessionId: resolvedSessionId,
           preferred: resolveSessionShellProfile(session.metadata),
         }),
-        wait: true,
+        branchInfo,
+        summary,
+        tasks,
+        runtimeStatusSnapshot,
       });
-      updateVerificationSurfaceState(session, {
-        status: delegated.success === true ? "completed" : "failed",
-        source: "delegated",
-        delegatedSessionId: delegated.sessionId,
-        summaryPreview: delegated.output,
-        verdict: delegated.success === true ? "pass" : "fail",
-      });
-      await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
       await cmdCtx.replyResult({
         text: [
           verificationSurface,

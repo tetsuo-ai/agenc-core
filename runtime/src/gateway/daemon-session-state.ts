@@ -216,9 +216,9 @@ function webSessionRuntimeStateKey(webSessionId: string): string {
   return `${WEB_SESSION_RUNTIME_STATE_KEY_PREFIX}${webSessionId}`;
 }
 
-function buildPersistedWebSessionRuntimeState(
+function buildPersistedSessionRuntimeState(
   session: Session,
-): PersistedWebSessionRuntimeState | undefined {
+): PersistedSessionRuntimeState | undefined {
   const resumeAnchorCandidate =
     session.metadata[SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY];
   const resumeAnchor = isStatefulResumeAnchor(resumeAnchorCandidate)
@@ -301,9 +301,9 @@ function buildPersistedWebSessionRuntimeState(
   };
 }
 
-function coercePersistedWebSessionRuntimeState(
+function coercePersistedSessionRuntimeState(
   value: unknown,
-): PersistedWebSessionRuntimeState | undefined {
+): PersistedSessionRuntimeState | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const candidate = value as Record<string, unknown>;
   if (
@@ -392,7 +392,7 @@ export async function loadPersistedSessionRuntimeState(
   memoryBackend: MemoryBackend,
   webSessionId: string,
 ): Promise<PersistedSessionRuntimeState | undefined> {
-  return coercePersistedWebSessionRuntimeState(
+  return coercePersistedSessionRuntimeState(
     await memoryBackend.get(webSessionRuntimeStateKey(webSessionId)),
   );
 }
@@ -440,7 +440,7 @@ export async function persistSessionRuntimeState(
       records: artifactRecords,
     });
   }
-  const persisted = buildPersistedWebSessionRuntimeState(session);
+  const persisted = buildPersistedSessionRuntimeState(session);
   const key = webSessionRuntimeStateKey(webSessionId);
   if (!persisted) {
     await artifactStore.clearSession(session.id);
@@ -455,7 +455,7 @@ export async function clearSessionRuntimeState(
   webSessionId: string,
 ): Promise<void> {
   const artifactStore = new MemoryArtifactStore(memoryBackend);
-  const persisted = coercePersistedWebSessionRuntimeState(
+  const persisted = coercePersistedSessionRuntimeState(
     await memoryBackend.get(webSessionRuntimeStateKey(webSessionId)),
   );
   if (persisted?.artifactSessionId) {
@@ -470,7 +470,7 @@ export async function hydrateSessionRuntimeState(
   session: Session,
 ): Promise<void> {
   const artifactStore = new MemoryArtifactStore(memoryBackend);
-  const persisted = coercePersistedWebSessionRuntimeState(
+  const persisted = coercePersistedSessionRuntimeState(
     await memoryBackend.get(webSessionRuntimeStateKey(webSessionId)),
   );
   if (!persisted) return;

@@ -18,8 +18,8 @@ import { silentLogger } from "../../utils/logger.js";
 import { InMemoryBackend } from "../../memory/in-memory/backend.js";
 import { WebChatSessionStore } from "./session-store.js";
 import {
-  loadPersistedWebSessionRuntimeState,
-  persistWebSessionRuntimeState,
+  loadPersistedSessionRuntimeState,
+  persistSessionRuntimeState,
 } from "../../gateway/daemon-session-state.js";
 import {
   SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY,
@@ -548,7 +548,7 @@ describe("WebChatChannel", () => {
         content: "Inspect commands",
         timestamp: 100,
       });
-      await persistWebSessionRuntimeState(
+      await persistSessionRuntimeState(
         memoryBackend,
         "session-catalog",
         {
@@ -1750,7 +1750,7 @@ describe("WebChatChannel", () => {
           content: "Checking the runtime state now.",
           timestamp: 110,
         });
-        await persistWebSessionRuntimeState(
+        await persistSessionRuntimeState(
           memoryBackend,
           "session-continuity",
           {
@@ -1912,7 +1912,7 @@ describe("WebChatChannel", () => {
           role: "user",
           content: "Ship the continuity layer",
         });
-        await persistWebSessionRuntimeState(
+        await persistSessionRuntimeState(
           memoryBackend,
           "session-source",
           {
@@ -1990,14 +1990,14 @@ describe("WebChatChannel", () => {
           },
         });
         expect(
-          await loadPersistedWebSessionRuntimeState(memoryBackend, targetSessionId),
+          await loadPersistedSessionRuntimeState(memoryBackend, targetSessionId),
         ).toMatchObject({
           shellProfile: "research",
           workflowState: expect.objectContaining({
             objective: "Investigate a variant",
           }),
         });
-        const targetState = await loadPersistedWebSessionRuntimeState(
+        const targetState = await loadPersistedSessionRuntimeState(
           memoryBackend,
           targetSessionId,
         );

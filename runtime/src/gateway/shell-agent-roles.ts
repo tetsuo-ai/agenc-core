@@ -104,7 +104,7 @@ const CURATED_ROLE_DEFINITIONS: readonly CuratedShellAgentRoleDefinition[] = [
   },
   {
     descriptor: {
-      id: "verification",
+      id: "verify",
       displayName: "Verification",
       description: "Verification child that tries to disprove an implementation with concrete checks.",
       source: "curated",
