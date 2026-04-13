@@ -1,3 +1,4 @@
+import { coerceSessionShellProfile } from "./shell-profile.js";
 import type { SessionShellProfile } from "./session.js";
 import type { WorkflowOwnershipEntry } from "./watch-cockpit.js";
 
@@ -82,8 +83,9 @@ export function collectSessionWorkflowOwnership(params: {
         : {}),
       ...(childSessionId ? { childSessionId } : {}),
       ...(typeof worker.workerId === "string" ? { workerId: worker.workerId } : {}),
-      ...(typeof worker.shellProfile === "string"
-        ? { shellProfile: worker.shellProfile }
+      ...(typeof worker.shellProfile === "string" &&
+      coerceSessionShellProfile(worker.shellProfile)
+        ? { shellProfile: coerceSessionShellProfile(worker.shellProfile) }
         : childSessionId && childIndex.get(childSessionId)?.shellProfile
           ? { shellProfile: childIndex.get(childSessionId)!.shellProfile }
           : {}),

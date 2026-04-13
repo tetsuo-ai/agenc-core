@@ -9,6 +9,7 @@
 
 // Re-export the canonical WebChatHandler from gateway/types to avoid duplication
 export type { WebChatHandler } from "../../gateway/types.js";
+export type { SessionResumabilityState } from "../../gateway/watch-cockpit.js";
 import type { GatewayStatus } from "../../gateway/types.js";
 import type {
   HookDispatcher,
@@ -33,6 +34,16 @@ import type {
   ObservabilityTraceSummary,
 } from "../../observability/types.js";
 import type { WatchCockpitSnapshot } from "../../gateway/watch-cockpit.js";
+import type {
+  ReviewSurfaceState,
+  SessionResumabilityState,
+  VerificationSurfaceState,
+  VerificationVerdict,
+} from "../../gateway/watch-cockpit.js";
+import type { SessionShellProfile } from "../../gateway/shell-profile.js";
+import type { SessionWorkflowState } from "../../gateway/workflow-state.js";
+import type { SlashCommandRegistry } from "../../gateway/commands.js";
+import type { ActiveTaskContext } from "../../llm/turn-execution-contract-types.js";
 
 // ============================================================================
 // WebChatDeps (dependency injection)
@@ -65,12 +76,6 @@ export interface WebChatHookListEntry {
   supported: boolean;
 }
 
-export type SessionResumabilityState =
-  | "active"
-  | "disconnected-resumable"
-  | "missing-workspace"
-  | "non-resumable";
-
 export interface SessionContinuityRecord {
   readonly sessionId: string;
   readonly label: string;
@@ -81,8 +86,8 @@ export interface SessionContinuityRecord {
   readonly lastActiveAt: number;
   readonly connected: boolean;
   readonly resumabilityState: SessionResumabilityState;
-  readonly shellProfile: string;
-  readonly workflowStage: string;
+  readonly shellProfile: SessionShellProfile;
+  readonly workflowStage: SessionWorkflowState["stage"];
   readonly workspaceRoot?: string;
   readonly repoRoot?: string;
   readonly branch?: string;
@@ -99,6 +104,45 @@ export interface SessionContinuityRecord {
   };
 }
 
+export interface SessionHistoryItem {
+  readonly content: string;
+  readonly sender: "user" | "agent" | "tool";
+  readonly timestamp: number;
+  readonly toolName?: string;
+}
+
+export interface SessionContinuityDetail extends SessionContinuityRecord {
+  readonly workflowState: SessionWorkflowState;
+  readonly runtimeState?: {
+    readonly activeTaskContext?: ActiveTaskContext;
+    readonly reviewStatus?: ReviewSurfaceState["status"];
+    readonly verificationStatus?: VerificationSurfaceState["status"];
+    readonly verificationVerdict?: VerificationVerdict;
+  };
+  readonly recentHistory?: readonly SessionHistoryItem[];
+  readonly backgroundRun?: {
+    readonly runId: string;
+    readonly state: BackgroundRunOperatorSummary["state"];
+    readonly currentPhase?: BackgroundRunOperatorSummary["currentPhase"];
+    readonly objective?: string;
+    readonly checkpointAvailable?: boolean;
+  };
+}
+
+export interface SessionResumePayload {
+  readonly sessionId: string;
+  readonly messageCount: number;
+  readonly workspaceRoot?: string;
+  readonly shellProfile?: SessionShellProfile;
+}
+
+export interface SessionForkResult {
+  readonly sourceSessionId: string;
+  readonly targetSessionId: string;
+  readonly forkSource?: string;
+  readonly session?: SessionContinuityRecord;
+}
+
 export interface WebChatDeps {
   /** Gateway instance for status queries. */
   gateway: {
@@ -107,7 +151,16 @@ export interface WebChatDeps {
       agent?: { name?: string };
       connection?: { rpcUrl?: string; keypairPath?: string };
       llm?: { provider?: string; model?: string };
+      autonomy?: unknown;
     };
+  };
+  /** Optional policy-scope resolver for session-scoped rollout/catalog decisions. */
+  resolvePolicyScopeForSession?: (params: {
+    sessionId: string;
+    channel: string;
+  }) => {
+    tenantId?: string;
+    projectId?: string;
   };
   /** Optional daemon-level status for operator memory/process panels. */
   getDaemonStatus?: () => {
@@ -223,6 +276,8 @@ export interface WebChatDeps {
     readonly lines?: number;
     readonly traceId?: string;
   }) => Promise<ObservabilityLogResponse | undefined>;
+  /** Shared daemon slash-command registry for first-party command catalog/execution. */
+  commandRegistry?: SlashCommandRegistry;
   /** Optional session-authorized watch cockpit snapshot builder. */
   getWatchCockpitSnapshot?: (params: {
     readonly sessionId: string;

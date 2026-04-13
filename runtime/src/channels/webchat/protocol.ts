@@ -7,6 +7,18 @@
  * @module
  */
 
+import type { SlashCommandViewKind } from "../../gateway/commands.js";
+import type {
+  SessionContinuityDetail,
+  SessionContinuityRecord,
+  SessionForkResult,
+  SessionHistoryItem,
+  SessionResumePayload,
+} from "./types.js";
+import type { SessionShellProfile } from "../../gateway/shell-profile.js";
+import type { SessionWorkflowState } from "../../gateway/workflow-state.js";
+import type { WorkflowOwnershipEntry } from "../../gateway/watch-cockpit.js";
+
 // ============================================================================
 // Shared constants
 // ============================================================================
@@ -25,11 +37,27 @@ export const WS_CHAT_SESSION = "chat.session" as const;
 export const WS_CHAT_OWNER = "chat.owner" as const;
 export const WS_CHAT_NEW = "chat.new" as const;
 export const WS_CHAT_RESUMED = "chat.resumed" as const;
+export const WS_CHAT_SESSION_RESUMED = "chat.session.resumed" as const;
 export const WS_CHAT_SESSIONS = "chat.sessions" as const;
+export const WS_CHAT_SESSION_RESUME = "chat.session.resume" as const;
+export const WS_CHAT_SESSION_LIST = "chat.session.list" as const;
+export const WS_CHAT_SESSION_INSPECT = "chat.session.inspect" as const;
+export const WS_CHAT_SESSION_FORK = "chat.session.fork" as const;
 export const WS_CHAT_CANCELLED = "chat.cancelled" as const;
 export const WS_CHAT_CANCEL = "chat.cancel" as const;
 export const WS_CHAT_RESUME = "chat.resume" as const;
 export const WS_CHAT_USAGE = "chat.usage" as const;
+
+// Session command bus
+export const WS_SESSION_COMMAND_CATALOG_GET =
+  "session.command.catalog.get" as const;
+export const WS_SESSION_COMMAND_CATALOG = "session.command.catalog" as const;
+export const WS_SESSION_COMMAND_EXECUTE = "session.command.execute" as const;
+export const WS_SESSION_COMMAND_RESULT = "session.command.result" as const;
+
+// Watch cockpit
+export const WS_WATCH_COCKPIT_GET = "watch.cockpit.get" as const;
+export const WS_WATCH_COCKPIT = "watch.cockpit" as const;
 
 // Events
 export const WS_EVENTS_SUBSCRIBE = "events.subscribe" as const;
@@ -140,6 +168,192 @@ export interface SubagentLifecyclePayload {
   data?: Record<string, unknown>;
   traceId?: string;
   parentTraceId?: string;
+}
+
+export interface SessionCommandExecutePayload {
+  readonly content: string;
+  readonly sessionId?: string;
+  readonly client?: "shell" | "console" | "web";
+}
+
+export interface SessionCommandCurrentSessionData {
+  readonly sessionId: string;
+  readonly runtimeSessionId: string;
+  readonly shellProfile: SessionShellProfile;
+  readonly workflowState: SessionWorkflowState;
+  readonly workspaceRoot: string;
+  readonly historyMessages: number;
+  readonly model?: string;
+  readonly ownership?: readonly WorkflowOwnershipEntry[];
+}
+
+export interface SessionCommandData {
+  readonly kind: "session";
+  readonly subcommand: string;
+  readonly currentSession?: SessionCommandCurrentSessionData;
+  readonly sessions?: readonly SessionContinuityRecord[];
+  readonly detail?: SessionContinuityDetail;
+  readonly history?: readonly SessionHistoryItem[];
+  readonly resumed?: {
+    readonly sessionId: SessionResumePayload["sessionId"];
+    readonly messageCount: SessionResumePayload["messageCount"];
+    readonly workspaceRoot?: SessionResumePayload["workspaceRoot"];
+  };
+  readonly forked?: {
+    readonly sourceSessionId: SessionForkResult["sourceSessionId"];
+    readonly targetSessionId: SessionForkResult["targetSessionId"];
+    readonly forkSource?: SessionForkResult["forkSource"];
+    readonly session?: SessionContinuityRecord;
+  };
+}
+
+export interface WorkflowCommandData {
+  readonly kind: "workflow";
+  readonly subcommand: string;
+  readonly shellProfile: SessionShellProfile;
+  readonly workflowState: SessionWorkflowState;
+  readonly plannerStatus: string;
+  readonly suggestedNextStage?: SessionWorkflowState["stage"];
+  readonly branchInfo?: Record<string, unknown>;
+  readonly changeSummary?: Record<string, unknown>;
+  readonly tasks?: Record<string, unknown>;
+  readonly ownership?: readonly WorkflowOwnershipEntry[];
+  readonly delegated?: {
+    readonly sessionId: string;
+    readonly status: string;
+    readonly output?: string;
+  };
+}
+
+export interface AgentsCommandData {
+  readonly kind: "agents";
+  readonly subcommand: string;
+  readonly roles?: readonly Record<string, unknown>[];
+  readonly entries?: readonly Record<string, unknown>[];
+  readonly detail?: Record<string, unknown>;
+  readonly launched?: Record<string, unknown>;
+  readonly stopped?: Record<string, unknown>;
+}
+
+export interface GitCommandData {
+  readonly kind: "git";
+  readonly subcommand: string;
+  readonly branchInfo?: Record<string, unknown>;
+  readonly changeSummary?: Record<string, unknown>;
+  readonly diff?: Record<string, unknown>;
+}
+
+export interface DiffCommandData {
+  readonly kind: "diff";
+  readonly subcommand: string;
+  readonly branchInfo?: Record<string, unknown>;
+  readonly changeSummary?: Record<string, unknown>;
+  readonly diff?: Record<string, unknown>;
+}
+
+export interface FilesCommandData {
+  readonly kind: "files";
+  readonly mode: "inventory" | "search";
+  readonly query?: string;
+  readonly result?: Record<string, unknown>;
+}
+
+export interface GrepCommandData {
+  readonly kind: "grep";
+  readonly pattern: string;
+  readonly result?: Record<string, unknown>;
+}
+
+export interface TasksCommandData {
+  readonly kind: "tasks";
+  readonly subcommand: string;
+  readonly taskId?: string;
+  readonly result?: Record<string, unknown>;
+}
+
+export interface PolicyCommandData {
+  readonly kind: "policy";
+  readonly subcommand: string;
+  readonly sessionPolicyState?: {
+    readonly elevatedPatterns: readonly string[];
+    readonly deniedPatterns: readonly string[];
+  };
+  readonly leases?: readonly Record<string, unknown>[];
+  readonly preview?: Record<string, unknown>;
+}
+
+export interface ExtensionsCommandData {
+  readonly kind: "extensions";
+  readonly surface: "mcp" | "skills" | "plugin";
+  readonly subcommand: string;
+  readonly target?: string;
+  readonly entries?: readonly Record<string, unknown>[];
+  readonly detail?: Record<string, unknown>;
+  readonly status?: Record<string, unknown>;
+}
+
+export interface ReviewCommandData {
+  readonly kind: "review";
+  readonly mode: "default" | "security" | "pr-comments";
+  readonly delegated: boolean;
+  readonly branchInfo?: Record<string, unknown>;
+  readonly changeSummary?: Record<string, unknown>;
+  readonly diff?: Record<string, unknown>;
+  readonly reviewSurface?: {
+    readonly status: string;
+    readonly source: string;
+    readonly delegatedSessionId?: string;
+    readonly summaryPreview?: string;
+  };
+  readonly delegatedResult?: {
+    readonly sessionId: string;
+    readonly status: string;
+    readonly output?: string;
+  };
+}
+
+export interface VerifyCommandData {
+  readonly kind: "verify";
+  readonly delegated: boolean;
+  readonly branchInfo?: Record<string, unknown>;
+  readonly changeSummary?: Record<string, unknown>;
+  readonly tasks?: Record<string, unknown>;
+  readonly runtimeStatusSnapshot?: Record<string, unknown>;
+  readonly verificationSurface?: {
+    readonly status: string;
+    readonly source: string;
+    readonly delegatedSessionId?: string;
+    readonly summaryPreview?: string;
+    readonly verdict?: string;
+  };
+  readonly delegatedResult?: {
+    readonly sessionId: string;
+    readonly status: string;
+    readonly output?: string;
+  };
+}
+
+export type SessionCommandResultData =
+  | SessionCommandData
+  | WorkflowCommandData
+  | AgentsCommandData
+  | GitCommandData
+  | DiffCommandData
+  | FilesCommandData
+  | GrepCommandData
+  | TasksCommandData
+  | PolicyCommandData
+  | ExtensionsCommandData
+  | ReviewCommandData
+  | VerifyCommandData;
+
+export interface SessionCommandResultPayload {
+  readonly commandName: string;
+  readonly content: string;
+  readonly sessionId?: string;
+  readonly client?: "shell" | "console" | "web";
+  readonly viewKind?: SlashCommandViewKind;
+  readonly data?: SessionCommandResultData;
 }
 
 type WebChatFilterList = readonly string[] | null;

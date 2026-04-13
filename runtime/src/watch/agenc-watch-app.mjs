@@ -4,6 +4,7 @@ import path from "node:path";
 import {
   createOperatorInputBatcher,
   buildWatchCommands,
+  mergeWatchCommandCatalog,
   matchWatchCommands,
   matchModelNames,
   parseWatchSlashCommand,
@@ -109,8 +110,6 @@ import {
   listWatchUserSkills,
   readWatchXaiConfigStatus,
   readWatchRuntimeConfig,
-  updateWatchMcpServerState,
-  updateWatchTrustedPluginPackage,
   updateWatchXaiApiKey,
 } from "./agenc-watch-extensibility.mjs";
 import {
@@ -127,7 +126,6 @@ import {
   buildWatchInsightsReport,
   buildWatchMaintenanceReport,
 } from "./agenc-watch-insights.mjs";
-import { buildWatchAgentsReport } from "./agenc-watch-agents.mjs";
 import { buildWatchUiPreferencesReport } from "./agenc-watch-ui-preferences.mjs";
 import {
   buildWatchSessionQueryCandidates,
@@ -334,7 +332,7 @@ const maxInlineChars = 220;
 const maxStoredBodyChars = 96_000;
 const enableMouseTracking = resolveWatchMouseTrackingEnabled(process.env);
 const watchFeatureFlags = resolveWatchFeatureFlags({ env: process.env });
-const watchCommands = buildWatchCommands({ featureFlags: watchFeatureFlags });
+const baseWatchCommands = buildWatchCommands({ featureFlags: watchFeatureFlags });
 const maxFeedPreviewLines = 3;
 const maxPreviewSourceLines = 160;
 const LIVE_EVENT_FILTERS = Object.freeze([
@@ -957,75 +955,6 @@ function promptForXaiApiKey() {
   scheduleRender();
 }
 
-function trustPluginPackage(packageName, allowedSubpaths = []) {
-  const { configSnapshot } = readExtensibilityContext();
-  const result = updateWatchTrustedPluginPackage({
-    fs,
-    configPath: configSnapshot.configPath,
-    packageName,
-    allowedSubpaths,
-  });
-  setTransientStatus(`plugin trusted: ${packageName}`);
-  pushEvent(
-    "operator",
-    "Plugin Trust Updated",
-    [
-      `Config: ${result.configPath}`,
-      `Package: ${result.packageName}`,
-      `Trusted packages: ${result.trustedPackages.length}`,
-      "Config watcher should pick up the change automatically if the daemon is live.",
-    ].join("\n"),
-    "teal",
-  );
-  return result;
-}
-
-function untrustPluginPackage(packageName) {
-  const { configSnapshot } = readExtensibilityContext();
-  const result = updateWatchTrustedPluginPackage({
-    fs,
-    configPath: configSnapshot.configPath,
-    packageName,
-    remove: true,
-  });
-  setTransientStatus(`plugin untrusted: ${packageName}`);
-  pushEvent(
-    "operator",
-    "Plugin Trust Updated",
-    [
-      `Config: ${result.configPath}`,
-      `Package: ${result.packageName}`,
-      `Trusted packages: ${result.trustedPackages.length}`,
-      "Config watcher should pick up the change automatically if the daemon is live.",
-    ].join("\n"),
-    "teal",
-  );
-  return result;
-}
-
-function setMcpServerEnabled(serverName, enabled) {
-  const { configSnapshot } = readExtensibilityContext();
-  const result = updateWatchMcpServerState({
-    fs,
-    configPath: configSnapshot.configPath,
-    serverName,
-    enabled,
-  });
-  setTransientStatus(`mcp ${enabled ? "enabled" : "disabled"}: ${serverName}`);
-  pushEvent(
-    "operator",
-    "MCP Server Updated",
-    [
-      `Config: ${result.configPath}`,
-      `Server: ${result.serverName}`,
-      `State: ${result.enabled ? "enabled" : "disabled"}`,
-      "Config watcher should pick up the change automatically if the daemon is live.",
-    ].join("\n"),
-    "teal",
-  );
-  return result;
-}
-
 function dismissIntro() {
   watchState.introDismissed = true;
 }
@@ -1252,8 +1181,15 @@ function currentInputValue() {
   return currentComposerInput(watchState);
 }
 
+function currentWatchCommands() {
+  return mergeWatchCommandCatalog(
+    baseWatchCommands,
+    Array.isArray(watchState.sharedCommandCatalog) ? watchState.sharedCommandCatalog : [],
+  );
+}
+
 function currentSlashSuggestions(limit = 8) {
-  return matchWatchCommands(currentInputValue(), { limit, commands: watchCommands });
+  return matchWatchCommands(currentInputValue(), { limit, commands: currentWatchCommands() });
 }
 
 function currentModelSuggestions(limit = 6) {
@@ -1492,7 +1428,10 @@ function autocompleteComposerInput() {
   }
   const completed = autocompleteSlashComposerInput(
     watchState,
-    (input, options = {}) => matchWatchCommands(input, { ...options, commands: watchCommands }),
+    (input, options = {}) => matchWatchCommands(input, {
+      ...options,
+      commands: currentWatchCommands(),
+    }),
   );
   if (completed) {
     resetComposerPaletteSelection();
@@ -1670,8 +1609,9 @@ const watchVoiceController = createWatchVoiceController({
 watchCommandController = createWatchCommandController({
   watchState,
   queuedOperatorInputs,
-  WATCH_COMMANDS: watchCommands,
-  parseWatchSlashCommand: (input) => parseWatchSlashCommand(input, { commands: watchCommands }),
+  getWatchCommands: currentWatchCommands,
+  parseWatchSlashCommand: (input) =>
+    parseWatchSlashCommand(input, { commands: currentWatchCommands() }),
   authPayload,
   send,
   shutdownWatch,
@@ -1681,7 +1621,6 @@ watchCommandController = createWatchCommandController({
   exportBundle,
   showInsights,
   showMaintenance,
-  showAgents,
   showExtensibility,
   showInputModes,
   resetLiveRunSurface,
@@ -1694,9 +1633,6 @@ watchCommandController = createWatchCommandController({
   setInputModeProfile,
   setKeybindingProfile,
   setThemeName,
-  trustPluginPackage,
-  untrustPluginPackage,
-  setMcpServerEnabled,
   showXaiStatus,
   validateConfiguredXaiKey,
   clearXaiApiKey,
@@ -2035,40 +1971,6 @@ function showMaintenance() {
   });
   setTransientStatus("maintenance ready");
   pushEvent("operator", "Maintenance Status", report, "slate");
-  return report;
-}
-
-function showAgents({
-  query = null,
-} = {}) {
-  const normalizedQuery = String(query ?? "").trim();
-  const includeCompleted = /^(all|recent)$/i.test(normalizedQuery);
-  const filteredQuery =
-    /^(all|recent|active)$/i.test(normalizedQuery) ? null : normalizedQuery || null;
-  const focus = currentActiveAgentFocus();
-  const report = buildWatchAgentsReport({
-    planSteps: includeCompleted
-      ? [...subagentPlanSteps.values()]
-      : activeAgentEntries(24),
-    plannerStatus: watchState.plannerDagStatus,
-    plannerNote: watchState.plannerDagNote,
-    activeAgentLabel: focus.label,
-    activeAgentActivity: focus.activity,
-    query: filteredQuery,
-    includeCompleted,
-    limit: 12,
-  });
-  setTransientStatus(
-    includeCompleted
-      ? "agent threads listed"
-      : "active agents listed",
-  );
-  pushEvent(
-    "subagent",
-    includeCompleted ? "Agent Threads" : "Active Agents",
-    report,
-    "slate",
-  );
   return report;
 }
 
@@ -2469,6 +2371,7 @@ watchTransportController = createWatchTransportController({
     formatLogPayload,
     formatStatusPayload,
     statusFeedFingerprint,
+    cockpitFeedFingerprint,
     handlePlannerTraceEvent,
     handleSubagentLifecycleMessage,
     hydratePlannerDagFromTraceArtifacts,

@@ -8,11 +8,20 @@ export {
   WS_CHAT_OWNER,
   WS_CHAT_NEW,
   WS_CHAT_RESUMED,
+  WS_CHAT_SESSION_RESUMED,
   WS_CHAT_SESSIONS,
+  WS_CHAT_SESSION_RESUME,
+  WS_CHAT_SESSION_LIST,
+  WS_CHAT_SESSION_INSPECT,
+  WS_CHAT_SESSION_FORK,
   WS_CHAT_CANCELLED,
   WS_CHAT_CANCEL,
   WS_CHAT_RESUME,
   WS_CHAT_USAGE,
+  WS_SESSION_COMMAND_CATALOG_GET,
+  WS_SESSION_COMMAND_CATALOG,
+  WS_SESSION_COMMAND_EXECUTE,
+  WS_SESSION_COMMAND_RESULT,
   WS_EVENTS_SUBSCRIBE,
   WS_EVENTS_UNSUBSCRIBE,
   WS_EVENTS_SUBSCRIBED,
@@ -64,10 +73,28 @@ export {
   WS_OBSERVABILITY_LOGS,
   WS_APPROVAL_REQUEST,
   WS_AGENT_STATUS,
+  WS_WATCH_COCKPIT_GET,
+  WS_WATCH_COCKPIT,
 } from "./channels/webchat/protocol.js";
 export type {
   SubagentLifecyclePayload,
   SubagentLifecycleType,
+  AgentsCommandData,
+  DiffCommandData,
+  ExtensionsCommandData,
+  FilesCommandData,
+  GrepCommandData,
+  GitCommandData,
+  PolicyCommandData,
+  ReviewCommandData,
+  SessionCommandExecutePayload,
+  SessionCommandResultData,
+  SessionCommandResultPayload,
+  SessionCommandCurrentSessionData,
+  SessionCommandData,
+  TasksCommandData,
+  VerifyCommandData,
+  WorkflowCommandData,
 } from "./channels/webchat/protocol.js";
 export {
   classifyGatewayControlMessage,
@@ -103,3 +130,29 @@ export type {
   ObservabilityTraceStatus,
   ObservabilityTraceSummary,
 } from "./observability/types.js";
+export type {
+  SessionContinuityRecord,
+  SessionContinuityDetail,
+  SessionForkResult,
+  SessionResumePayload,
+} from "./channels/webchat/types.js";
+export type {
+  SessionResumabilityState,
+  WatchCockpitSnapshot,
+  WorkflowOwnershipEntry,
+} from "./gateway/watch-cockpit.js";
+export type { SessionShellProfile } from "./gateway/shell-profile.js";
+export type { SessionWorkflowState } from "./gateway/workflow-state.js";
+export type {
+  SlashCommandDispatchResult,
+  SlashCommandCatalogEntry,
+  SlashCommandClient,
+  SlashCommandExecutionResult,
+  SlashCommandViewKind,
+} from "./gateway/commands.js";
+export type {
+  PersistedSessionRuntimeState,
+} from "./gateway/daemon-session-state.js";
+export type {
+  RuntimeContractStatusSnapshot,
+} from "./runtime-contract/types.js";

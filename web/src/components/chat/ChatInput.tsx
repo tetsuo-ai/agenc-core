@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { VoiceState, VoiceMode } from '../../types';
+import type { CommandCatalogEntry, VoiceState, VoiceMode } from '../../types';
 import { VoiceButton } from './VoiceButton';
 
 interface ChatInputProps {
@@ -12,37 +12,21 @@ interface ChatInputProps {
   onVoiceToggle?: () => void;
   onPushToTalkStart?: () => void;
   onPushToTalkStop?: () => void;
+  commands?: CommandCatalogEntry[];
 }
 
 interface SlashCommandOption {
   name: string;
   description: string;
   args?: string;
+  category?: string;
+  aliases?: readonly string[];
+  deprecatedAliases?: readonly string[];
+  available?: boolean;
+  availabilityReason?: string;
+  effectiveProfile?: string;
+  heldBackBy?: string;
 }
-
-const SLASH_COMMANDS: SlashCommandOption[] = [
-  { name: 'help', description: 'Show available commands' },
-  { name: 'status', description: 'Show agent status' },
-  { name: 'new', description: 'Start a new session' },
-  { name: 'reset', description: 'Reset session and clear context' },
-  { name: 'restart', description: 'Restart current chat context' },
-  { name: 'stop', description: 'Pause the agent' },
-  { name: 'start', description: 'Resume the agent' },
-  { name: 'context', description: 'Show context window usage' },
-  { name: 'compact', description: 'Force conversation compaction' },
-  { name: 'model', description: 'Show current model', args: '[name]' },
-  { name: 'skills', description: 'List available skills' },
-  { name: 'task', description: 'Show current task status' },
-  { name: 'tasks', description: 'List tasks' },
-  { name: 'balance', description: 'Show token balance' },
-  { name: 'reputation', description: 'Show reputation score' },
-  { name: 'eval', description: 'Model eval or in-session tool eval', args: '[prompt] | full [prompt] | script [args]' },
-  { name: 'progress', description: 'Show recent task progress' },
-  { name: 'pipeline', description: 'Run pipeline from JSON steps', args: '<json>' },
-  { name: 'resume', description: 'Resume halted pipeline', args: '[pipeline-id]' },
-  { name: 'goal', description: 'Create or list goals', args: '[description]' },
-  { name: 'desktop', description: 'Desktop sandbox control', args: '<start|stop|status|vnc|list|attach> [--memory 4g] [--cpu 2.0]' },
-];
 
 function getSlashQuery(value: string): string | null {
   if (!value.startsWith('/')) return null;
@@ -62,6 +46,7 @@ export function ChatInput({
   onVoiceToggle,
   onPushToTalkStart,
   onPushToTalkStop,
+  commands = [],
 }: ChatInputProps) {
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -69,11 +54,36 @@ export function ChatInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const slashQuery = useMemo(() => getSlashQuery(value), [value]);
+  const availableCommands = useMemo<SlashCommandOption[]>(
+    () =>
+      commands.map((cmd) => ({
+        name: cmd.name,
+        description: cmd.description,
+        ...(cmd.args ? { args: cmd.args } : {}),
+        ...(cmd.category ? { category: cmd.category } : {}),
+        ...(Array.isArray(cmd.aliases) && cmd.aliases.length > 0 ? { aliases: cmd.aliases } : {}),
+        ...(Array.isArray(cmd.deprecatedAliases) && cmd.deprecatedAliases.length > 0
+          ? { deprecatedAliases: cmd.deprecatedAliases }
+          : {}),
+        ...(typeof cmd.available === 'boolean' ? { available: cmd.available } : {}),
+        ...(cmd.availabilityReason ? { availabilityReason: cmd.availabilityReason } : {}),
+        ...(cmd.effectiveProfile ? { effectiveProfile: cmd.effectiveProfile } : {}),
+        ...(cmd.heldBackBy ? { heldBackBy: cmd.heldBackBy } : {}),
+      })),
+    [commands],
+  );
   const visibleCommands = useMemo(() => {
     if (slashQuery === null) return [];
-    if (!slashQuery) return SLASH_COMMANDS;
-    return SLASH_COMMANDS.filter((cmd) => cmd.name.startsWith(slashQuery));
-  }, [slashQuery]);
+    if (!slashQuery) return availableCommands;
+    return availableCommands.filter((cmd) => {
+      if (cmd.name.startsWith(slashQuery)) {
+        return true;
+      }
+      return [...(cmd.aliases ?? []), ...(cmd.deprecatedAliases ?? [])].some((alias) =>
+        alias.startsWith(slashQuery),
+      );
+    });
+  }, [availableCommands, slashQuery]);
   const showCommandMenu = visibleCommands.length > 0;
 
   useEffect(() => {
@@ -107,6 +117,7 @@ export function ChatInput({
   }, [disabled, focusComposer]);
 
   const applyCommand = useCallback((cmd: SlashCommandOption) => {
+    if (cmd.available === false) return;
     const nextValue = `/${cmd.name} `;
     setValue(nextValue);
     setActiveCommandIndex(0);
@@ -239,17 +250,48 @@ export function ChatInput({
                 <button
                   key={cmd.name}
                   type="button"
+                  disabled={cmd.available === false}
                   data-testid={`slash-command-${cmd.name}`}
                   onClick={() => applyCommand(cmd)}
                   className={`w-full text-left px-3 py-2 transition-colors text-xs ${
-                    idx === activeCommandIndex ? 'bg-bbs-surface text-bbs-white' : 'text-bbs-lightgray hover:bg-bbs-surface/50'
+                    cmd.available === false
+                      ? 'text-bbs-gray/60 cursor-not-allowed'
+                      : idx === activeCommandIndex
+                        ? 'bg-bbs-surface text-bbs-white'
+                        : 'text-bbs-lightgray hover:bg-bbs-surface/50'
                   }`}
                 >
                   <div className="flex items-center gap-2">
                     <span className="text-bbs-purple font-mono">{'>'} /{cmd.name}</span>
                     {cmd.args && <span className="text-bbs-gray font-mono">{cmd.args}</span>}
+                    {cmd.category && (
+                      <span className="border border-bbs-border px-1 py-0 text-[10px] uppercase tracking-wide text-bbs-cyan">
+                        {cmd.category}
+                      </span>
+                    )}
                   </div>
-                  <div className="mt-0.5 text-bbs-gray">{cmd.description}</div>
+                  <div className="mt-0.5 text-bbs-gray">
+                    {cmd.description}
+                    {cmd.available === false && cmd.availabilityReason
+                      ? ` - ${cmd.availabilityReason}`
+                      : ''}
+                  </div>
+                  {cmd.aliases && cmd.aliases.length > 0 && (
+                    <div className="mt-1 text-[11px] text-bbs-gray">
+                      aliases: {cmd.aliases.map((alias) => `/${alias}`).join(', ')}
+                    </div>
+                  )}
+                  {(cmd.deprecatedAliases && cmd.deprecatedAliases.length > 0) && (
+                    <div className="mt-1 text-[11px] text-bbs-gray">
+                      deprecated: {cmd.deprecatedAliases.map((alias) => `/${alias}`).join(', ')}
+                    </div>
+                  )}
+                  {(cmd.effectiveProfile || cmd.heldBackBy) && (
+                    <div className="mt-1 text-[11px] text-bbs-gray">
+                      {cmd.effectiveProfile ? `profile: ${cmd.effectiveProfile}` : 'profile: default'}
+                      {cmd.heldBackBy ? ` - held by ${cmd.heldBackBy}` : ''}
+                    </div>
+                  )}
                 </button>
               ))}
             </div>

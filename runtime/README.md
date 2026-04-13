@@ -60,36 +60,15 @@ Current shell entrypoint:
 - `agenc shell [profile]`
 - `agenc resume [--profile <name>]`
 - `agenc session list|inspect|history|resume|fork`
-- `agenc-runtime shell [profile]` as the compatibility alias
-- `agenc console` for the explicit operator-console compatibility path
+- `agenc-runtime shell [profile]` as the runtime CLI alias
+- `agenc console` for the explicit shared TUI/cockpit path
 
-Current coding shell command surface:
+Shared daemon-backed shell surfaces:
 
-- `agenc plan status|enter|exit|implement|review|verify`
-- `agenc agents roles|list|spawn|assign|inspect|stop`
-- `agenc tasks`
-- `agenc files`
-- `agenc grep`
-- `agenc git status|diff|show|branch|summary|worktree`
-- `agenc branch`
-- `agenc worktree`
-- `agenc diff`
-- `agenc review`
-- `agenc agents spawn coding --objective "Implement the task" --worktree auto`
-- `agenc agents assign <taskId> verification --wait`
-- `/verify` inside the shell for verification-stage checks or delegated verifier runs
-- `agenc session`
-- `agenc session list --active-only`
-- `agenc session inspect <sessionId>`
-- `agenc session history <sessionId> --include-tools`
-- `agenc session resume <sessionId>`
-- `agenc session fork <sessionId> --objective "Investigate variant"`
-- `agenc permissions`
-- `agenc mcp status|list|inspect|tools|validate|reconnect|enable|disable`
-- `agenc skills list|inspect|enable|disable|sources`
-- `/plugin list|inspect|enable|disable|reload` inside the shell for the local plugin catalog
-- `agenc model`
-- `agenc effort`
+- coding and workflow: `plan`, `agents`, `tasks`, `files`, `grep`, `git`, `branch`, `worktree`, `diff`, `review`, `/verify`
+- continuity and policy: `session`, `permissions`, `model`, `effort`
+- extension control: `mcp`, `skills`, `/plugin`
+- use `agenc --help` or `agenc-runtime --help` for the live command inventory instead of treating this README as the source of truth
 
 Extension surfaces stay distinct:
 

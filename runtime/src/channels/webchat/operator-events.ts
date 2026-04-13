@@ -7,6 +7,7 @@ export type NormalizedOperatorMessageKind =
   | "observability"
   | "planner"
   | "run"
+  | "session"
   | "social"
   | "status"
   | "subagent"
@@ -70,6 +71,7 @@ const SESSION_SCOPED_TYPES = new Set([
   "chat.stream",
   "chat.typing",
   "chat.cancelled",
+  "session.command.result",
   "run.inspect",
   "run.updated",
   "watch.cockpit",
@@ -134,6 +136,8 @@ function classifyOperatorMessageKind(type: string): NormalizedOperatorMessageKin
   if (type.startsWith("subagents.")) return "subagent";
   if (type === "tools.executing" || type === "tools.result") return "tool";
   if (type.startsWith("chat.")) return "chat";
+  if (type === "session.command.result") return "chat";
+  if (type === "session.command.catalog") return "session";
   if (type.startsWith("market.") || type.startsWith("tasks.") || type.startsWith("task.")) return "market";
   if (type === "runs.list" || type.startsWith("run.")) return "run";
   if (type === "watch.cockpit") return "status";
@@ -154,11 +158,16 @@ function classifyOperatorSurfaceEventFamily(type: string): OperatorSurfaceEventF
     type === "chat.session" ||
     type === "chat.owner" ||
     type === "chat.resumed" ||
+    type === "chat.session.resumed" ||
     type === "chat.sessions" ||
+    type === "chat.session.list" ||
+    type === "chat.session.inspect" ||
+    type === "chat.session.fork" ||
     type === "chat.history"
   ) {
     return "session";
   }
+  if (type === "session.command.catalog") return "session";
   if (type.startsWith("planner_")) return "planner";
   if (type.startsWith("subagents.")) return "subagent";
   if (type === "tools.executing" || type === "tools.result") return "tool";
@@ -167,7 +176,8 @@ function classifyOperatorSurfaceEventFamily(type: string): OperatorSurfaceEventF
     type === "chat.stream" ||
     type === "chat.typing" ||
     type === "chat.cancelled" ||
-    type === "chat.usage"
+    type === "chat.usage" ||
+    type === "session.command.result"
   ) {
     return "chat";
   }

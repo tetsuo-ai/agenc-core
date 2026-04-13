@@ -34,7 +34,7 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         frameExpectation: {
           containsInOrder: [
             "Ready",
-            "session ready: session-live-1",
+            "refreshing cockpit (session ready)",
             "Start typing below.",
           ],
           notContains: [
@@ -282,7 +282,7 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
         frameExpectation: {
           containsInOrder: [
             "Ready",
-            "session ready: session-reconnect-1",
+            "refreshing cockpit (session ready)",
             "Start typing below.",
           ],
           notContains: [

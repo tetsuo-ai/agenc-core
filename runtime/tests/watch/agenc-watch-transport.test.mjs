@@ -147,8 +147,16 @@ test("transport controller queues frames until open and flushes them on connect"
   assert.equal(harness.pendingFrames.length, 0);
   assert.deepEqual(
     sentFrames.map((frame) => frame.type),
-    ["chat.message", "events.subscribe", "status.get", "chat.sessions"],
+    [
+      "chat.message",
+      "events.subscribe",
+      "status.get",
+      "session.command.catalog.get",
+      "session.command.execute",
+    ],
   );
+  assert.equal(sentFrames[4]?.payload?.content, "/session list");
+  assert.equal(sentFrames[4]?.payload?.client, "console");
   assert.ok(
     harness.calls.some((entry) => entry.type === "status" && entry.status === "connected to ws://test"),
   );

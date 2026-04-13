@@ -30,11 +30,9 @@ export const WATCH_STATE_PRIMITIVE_KEYS = Object.freeze([
   "configuredModelRoute",
   "liveSessionModelRoute",
   "ownerToken",
-  "manualStatusRequestPending",
   "lastStatusFeedFingerprint",
   "manualSessionsRequestPending",
   "manualSessionsQuery",
-  "manualHistoryRequestPending",
   "pendingResumeHistoryRestore",
   "attachmentSequence",
   "expandedEventId",
@@ -117,7 +115,6 @@ const DEFAULT_BOUND_STATE_KEYS = Object.freeze([
   "bootstrapReady",
   "manualSessionsRequestPending",
   "manualSessionsQuery",
-  "manualHistoryRequestPending",
   "pendingResumeHistoryRestore",
   "currentObjective",
   "activeRunStartedAtMs",
@@ -132,7 +129,6 @@ const DEFAULT_BOUND_STATE_KEYS = Object.freeze([
   "cockpitUpdatedAt",
   "cockpitFingerprint",
   "configuredModelRoute",
-  "manualStatusRequestPending",
   "lastStatusFeedFingerprint",
   "eventCategoryFilter",
 ]);
@@ -550,17 +546,16 @@ export function createWatchState({
     skillCatalog: [],
     hookCatalog: [],
     voiceCompanion: null,
+    sharedCommandCatalog: [],
     pendingAttachments: Array.isArray(persistedWatchState.pendingAttachments)
       ? persistedWatchState.pendingAttachments.map((attachment) => ({ ...attachment }))
       : [],
     attachmentSequence: Number.isFinite(Number(persistedWatchState.attachmentSequence))
       ? Number(persistedWatchState.attachmentSequence)
       : 0,
-    manualStatusRequestPending: false,
     lastStatusFeedFingerprint: null,
     manualSessionsRequestPending: false,
     manualSessionsQuery: null,
-    manualHistoryRequestPending: false,
     pendingResumeHistoryRestore: false,
     maintenanceSnapshot: null,
     maintenanceRequestPending: false,

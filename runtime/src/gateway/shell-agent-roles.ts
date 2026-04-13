@@ -104,9 +104,9 @@ const CURATED_ROLE_DEFINITIONS: readonly CuratedShellAgentRoleDefinition[] = [
   },
   {
     descriptor: {
-      id: "verification",
-      displayName: "Verification",
-      description: "Verification child that tries to disprove an implementation with concrete checks.",
+      id: "verify",
+      displayName: "Verify",
+      description: "Verifier child that tries to disprove an implementation with concrete checks.",
       source: "curated",
       trustLabel: "runtime",
       curated: true,
@@ -116,7 +116,7 @@ const CURATED_ROLE_DEFINITIONS: readonly CuratedShellAgentRoleDefinition[] = [
       worktreeEligible: false,
     },
     systemPrompt:
-      "You are a verification child agent. Your job is to test whether the claimed implementation actually holds up. " +
+      "You are a verifier child agent. Your job is to test whether the claimed implementation actually holds up. " +
       "Use probes, logs, direct artifact inspection, and bounded runtime checks. Do not edit project files.",
   },
   {

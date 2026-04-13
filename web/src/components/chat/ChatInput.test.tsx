@@ -1,6 +1,60 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import type { CommandCatalogEntry } from '../../types';
 import { ChatInput } from './ChatInput';
+
+const commandCatalog: CommandCatalogEntry[] = [
+  {
+    name: 'help',
+    description: 'Show help',
+    global: true,
+    aliases: [],
+    deprecatedAliases: [],
+    category: 'utility',
+    clients: ['web'],
+    viewKind: 'text',
+  },
+  {
+    name: 'status',
+    description: 'Show status',
+    global: true,
+    aliases: [],
+    deprecatedAliases: [],
+    category: 'runtime',
+    clients: ['web'],
+    viewKind: 'runtime',
+  },
+  {
+    name: 'reset',
+    description: 'Reset the session',
+    global: true,
+    aliases: [],
+    deprecatedAliases: ['restart'],
+    category: 'utility',
+    clients: ['web'],
+    viewKind: 'text',
+  },
+  {
+    name: 'resume',
+    description: 'Resume a session',
+    global: true,
+    aliases: ['res'],
+    deprecatedAliases: [],
+    category: 'session',
+    clients: ['web'],
+    viewKind: 'session',
+  },
+  {
+    name: 'eval',
+    description: 'Run eval',
+    global: true,
+    aliases: [],
+    deprecatedAliases: [],
+    category: 'utility',
+    clients: ['web'],
+    viewKind: 'text',
+  },
+];
 
 afterEach(() => {
   cleanup();
@@ -9,7 +63,7 @@ afterEach(() => {
 describe('ChatInput', () => {
   it('sends text messages and clears input', () => {
     const onSend = vi.fn();
-    const { container } = render(<ChatInput onSend={onSend} />);
+    const { container } = render(<ChatInput onSend={onSend} commands={commandCatalog} />);
 
     const input = container.querySelector(
       'textarea[placeholder="Enter command..."]',
@@ -28,7 +82,7 @@ describe('ChatInput', () => {
 
   it('sends on Enter without shift and ignores shift+Enter submit path', () => {
     const onSend = vi.fn();
-    const { container } = render(<ChatInput onSend={onSend} />);
+    const { container } = render(<ChatInput onSend={onSend} commands={commandCatalog} />);
 
     const input = container.querySelector(
       'textarea[placeholder="Enter command..."]',
@@ -44,7 +98,7 @@ describe('ChatInput', () => {
 
   it('keeps textarea focused after sending on Enter', () => {
     const onSend = vi.fn();
-    const { container } = render(<ChatInput onSend={onSend} />);
+    const { container } = render(<ChatInput onSend={onSend} commands={commandCatalog} />);
 
     const input = container.querySelector(
       'textarea[placeholder="Enter command..."]',
@@ -59,7 +113,7 @@ describe('ChatInput', () => {
 
   it('keeps textarea focused after selecting a slash command with Enter', () => {
     const onSend = vi.fn();
-    const { container } = render(<ChatInput onSend={onSend} />);
+    const { container } = render(<ChatInput onSend={onSend} commands={commandCatalog} />);
 
     const input = container.querySelector(
       'textarea[placeholder="Enter command..."]',
@@ -73,7 +127,7 @@ describe('ChatInput', () => {
 
   it('focuses textarea on mount when nothing else is focused', () => {
     const onSend = vi.fn();
-    const { container } = render(<ChatInput onSend={onSend} />);
+    const { container } = render(<ChatInput onSend={onSend} commands={commandCatalog} />);
     const input = container.querySelector(
       'textarea[placeholder="Enter command..."]',
     ) as HTMLTextAreaElement;
@@ -83,7 +137,7 @@ describe('ChatInput', () => {
 
   it('attaches files and sends them with the message', async () => {
     const onSend = vi.fn();
-    const { container } = render(<ChatInput onSend={onSend} />);
+    const { container } = render(<ChatInput onSend={onSend} commands={commandCatalog} />);
 
     const input = container.querySelector(
       'textarea[placeholder="Enter command..."]',
@@ -112,7 +166,7 @@ describe('ChatInput', () => {
 
   it('shows slash command menu when typing "/"', () => {
     const onSend = vi.fn();
-    const { container } = render(<ChatInput onSend={onSend} />);
+    const { container } = render(<ChatInput onSend={onSend} commands={commandCatalog} />);
     const input = container.querySelector(
       'textarea[placeholder="Enter command..."]',
     ) as HTMLTextAreaElement;
@@ -126,7 +180,7 @@ describe('ChatInput', () => {
 
   it('filters slash commands by typed prefix', () => {
     const onSend = vi.fn();
-    const { container } = render(<ChatInput onSend={onSend} />);
+    const { container } = render(<ChatInput onSend={onSend} commands={commandCatalog} />);
     const input = container.querySelector(
       'textarea[placeholder="Enter command..."]',
     ) as HTMLTextAreaElement;
@@ -135,13 +189,12 @@ describe('ChatInput', () => {
 
     expect(screen.queryByTestId('slash-command-help')).toBeNull();
     expect(screen.getByTestId('slash-command-reset')).toBeTruthy();
-    expect(screen.getByTestId('slash-command-restart')).toBeTruthy();
     expect(screen.getByTestId('slash-command-resume')).toBeTruthy();
   });
 
   it('selects highlighted slash command with Enter and sends it', () => {
     const onSend = vi.fn();
-    const { container } = render(<ChatInput onSend={onSend} />);
+    const { container } = render(<ChatInput onSend={onSend} commands={commandCatalog} />);
     const input = container.querySelector(
       'textarea[placeholder="Enter command..."]',
     ) as HTMLTextAreaElement;
@@ -152,12 +205,12 @@ describe('ChatInput', () => {
     fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
 
     expect(onSend).toHaveBeenCalledTimes(1);
-    expect(onSend).toHaveBeenCalledWith('/restart', undefined);
+    expect(onSend).toHaveBeenCalledWith('/resume', undefined);
   });
 
   it('includes eval slash command in picker', () => {
     const onSend = vi.fn();
-    const { container } = render(<ChatInput onSend={onSend} />);
+    const { container } = render(<ChatInput onSend={onSend} commands={commandCatalog} />);
     const input = container.querySelector(
       'textarea[placeholder="Enter command..."]',
     ) as HTMLTextAreaElement;
@@ -165,5 +218,36 @@ describe('ChatInput', () => {
     fireEvent.change(input, { target: { value: '/ev' } });
 
     expect(screen.getByTestId('slash-command-eval')).toBeTruthy();
+  });
+
+  it('matches slash commands by aliases and shows rollout metadata', () => {
+    const onSend = vi.fn();
+    const { container } = render(
+      <ChatInput
+        onSend={onSend}
+        commands={[
+          {
+            name: 'profile',
+            description: 'Switch profiles',
+            global: true,
+            aliases: ['mode'],
+            deprecatedAliases: [],
+            category: 'session',
+            clients: ['web'],
+            viewKind: 'session',
+            effectiveProfile: 'coding',
+            heldBackBy: 'shellProfiles',
+          },
+        ]}
+      />,
+    );
+    const input = container.querySelector(
+      'textarea[placeholder="Enter command..."]',
+    ) as HTMLTextAreaElement;
+
+    fireEvent.change(input, { target: { value: '/mo' } });
+
+    expect(screen.getByTestId('slash-command-profile')).toBeTruthy();
+    expect(screen.getByText('profile: coding - held by shellProfiles')).toBeTruthy();
   });
 });

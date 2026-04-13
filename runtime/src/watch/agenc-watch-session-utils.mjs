@@ -124,8 +124,7 @@ export function isRetryableBootstrapError(errorText) {
     typeof errorText === "string" &&
     (
       errorText === "Unknown message type: chat.new" ||
-      errorText === "Unknown message type: chat.sessions" ||
-      errorText === "Unknown message type: chat.resume"
+      errorText === "Unknown message type: session.command.execute"
     )
   );
 }

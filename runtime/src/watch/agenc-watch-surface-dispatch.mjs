@@ -80,6 +80,103 @@ function modelRoutesMatch(left, right) {
   );
 }
 
+function isRecord(value) {
+  return typeof value === "object" && value !== null;
+}
+
+function requestSharedCommandCatalog(api, sessionId = null) {
+  api.send(
+    "session.command.catalog.get",
+    api.authPayload({
+      client: "console",
+      ...(typeof sessionId === "string" && sessionId.trim().length > 0
+        ? { sessionId: sessionId.trim() }
+        : {}),
+    }),
+  );
+}
+
+function handleSessionListResult(data, state, api) {
+  const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
+  if (state.manualSessionsRequestPending) {
+    state.manualSessionsRequestPending = false;
+    const query = String(state.manualSessionsQuery ?? "").trim().toLowerCase();
+    state.manualSessionsQuery = null;
+    const filteredSessions =
+      query.length > 0
+        ? sessions.filter((session) => {
+            const candidates = [
+              session?.sessionId,
+              session?.label,
+              session?.workspaceRoot,
+              session?.workspacePath,
+              session?.cwd,
+              session?.model,
+              ...(typeof api.sessionQueryCandidates === "function"
+                ? api.sessionQueryCandidates(session)
+                : []),
+            ]
+              .map((value) => String(value ?? "").trim().toLowerCase())
+              .filter(Boolean);
+            return candidates.some((value) => value.includes(query));
+          })
+        : sessions;
+    api.eventStore.pushEvent(
+      "session",
+      query.length > 0 ? "Filtered Sessions" : "Sessions",
+      api.formatSessionSummaries(filteredSessions),
+      "teal",
+    );
+    api.setTransientStatus(
+      query.length > 0
+        ? `session filter loaded: ${filteredSessions.length} match(es)`
+        : "session list loaded",
+    );
+    return true;
+  }
+  const target = api.latestSessionSummary(sessions, state.sessionId);
+  if (target?.sessionId) {
+    state.sessionId = target.sessionId;
+    api.persistSessionId(state.sessionId);
+    api.setTransientStatus(`resuming session ${state.sessionId}`);
+    api.send(
+      "session.command.execute",
+      api.authPayload({
+        sessionId: target.sessionId,
+        client: "console",
+        content: `/session resume ${target.sessionId}`,
+      }),
+    );
+  } else {
+    api.setTransientStatus("no existing session; creating a new one");
+    api.send("chat.new", api.authPayload());
+  }
+  return true;
+}
+
+function handleSessionResumeResult(payload, data, state, api) {
+  const resumed = isRecord(data?.resumed) ? data.resumed : {};
+  const nextSessionId =
+    typeof resumed.sessionId === "string" && resumed.sessionId.trim().length > 0
+      ? resumed.sessionId.trim()
+      : typeof payload.sessionId === "string" && payload.sessionId.trim().length > 0
+        ? payload.sessionId.trim()
+        : state.sessionId;
+  state.sessionId = nextSessionId;
+  api.persistSessionId(state.sessionId);
+  state.sessionAttachedAtMs = api.now();
+  state.runState = "idle";
+  state.runPhase = null;
+  state.pendingResumeHistoryRestore = true;
+  api.resetLiveRunSurface();
+  requestSharedCommandCatalog(api, state.sessionId);
+  api.send("chat.history", api.authPayload({ limit: 50 }));
+  api.requestRunInspect("resume", { force: true });
+  api.requestCockpit("resume");
+  api.markBootstrapReady(`session resumed: ${state.sessionId}; restoring history`);
+  return true;
+}
+
 function handleSubscriptionSurfaceEvent(surfaceEvent, api) {
   const payload = surfaceEvent.payloadRecord;
   switch (surfaceEvent.type) {
@@ -113,6 +210,7 @@ function handleSessionSurfaceEvent(surfaceEvent, state, api) {
       state.runDetail = null;
       state.runState = "idle";
       state.runPhase = null;
+      requestSharedCommandCatalog(api, state.sessionId);
       api.markBootstrapReady(`session ready: ${state.sessionId}`);
       api.requestCockpit("session ready");
       return true;
@@ -123,75 +221,21 @@ function handleSessionSurfaceEvent(surfaceEvent, state, api) {
       }
       return true;
     case "chat.resumed":
-      state.sessionId = payload.sessionId ?? state.sessionId;
-      api.persistSessionId(state.sessionId);
-      state.sessionAttachedAtMs = api.now();
-      state.runState = "idle";
-      state.runPhase = null;
-      state.pendingResumeHistoryRestore = true;
-      api.resetLiveRunSurface();
-      api.send("chat.history", api.authPayload({ limit: 50 }));
-      api.requestRunInspect("resume", { force: true });
-      api.requestCockpit("resume");
-      api.markBootstrapReady(`session resumed: ${state.sessionId}; restoring history`);
-      return true;
-    case "chat.sessions": {
-      const sessions = surfaceEvent.payloadList ?? [];
-      if (state.manualSessionsRequestPending) {
-        state.manualSessionsRequestPending = false;
-        const query = String(state.manualSessionsQuery ?? "").trim().toLowerCase();
-        state.manualSessionsQuery = null;
-        const filteredSessions =
-          query.length > 0
-            ? sessions.filter((session) => {
-                const candidates = [
-                  session?.sessionId,
-                  session?.label,
-                  session?.workspaceRoot,
-                  session?.workspacePath,
-                  session?.cwd,
-                  session?.model,
-                  ...(typeof api.sessionQueryCandidates === "function"
-                    ? api.sessionQueryCandidates(session)
-                    : []),
-                ]
-                  .map((value) => String(value ?? "").trim().toLowerCase())
-                  .filter(Boolean);
-                return candidates.some((value) => value.includes(query));
-              })
-            : sessions;
-        api.eventStore.pushEvent(
-          "session",
-          query.length > 0 ? "Filtered Sessions" : "Sessions",
-          api.formatSessionSummaries(filteredSessions),
-          "teal",
-        );
-        api.setTransientStatus(
-          query.length > 0
-            ? `session filter loaded: ${filteredSessions.length} match(es)`
-            : "session list loaded",
-        );
-        return true;
-      }
-      const target = api.latestSessionSummary(sessions, state.sessionId);
-      if (target?.sessionId) {
-        state.sessionId = target.sessionId;
-        api.persistSessionId(state.sessionId);
-        api.setTransientStatus(`resuming session ${state.sessionId}`);
-        api.send("chat.resume", api.authPayload({ sessionId: target.sessionId }));
-      } else {
-        api.setTransientStatus("no existing session; creating a new one");
-        api.send("chat.new", api.authPayload());
-      }
-      return true;
+    case "chat.session.resumed":
+      return handleSessionResumeResult(payload, { resumed: { sessionId: payload.sessionId } }, state, api);
+    case "chat.sessions":
+    case "chat.session.list": {
+      return handleSessionListResult({ sessions: surfaceEvent.payloadList ?? [] }, state, api);
     }
+    case "session.command.catalog":
+      state.sharedCommandCatalog = Array.isArray(surfaceEvent.payloadList)
+        ? surfaceEvent.payloadList
+        : [];
+      api.setTransientStatus("command catalog updated");
+      return true;
     case "chat.history": {
       const history = surfaceEvent.payloadList ?? [];
-      if (state.manualHistoryRequestPending) {
-        state.manualHistoryRequestPending = false;
-        api.eventStore.pushEvent("history", "Chat History", api.formatHistoryPayload(history), "slate");
-        api.setTransientStatus(`history loaded: ${history.length} item(s)`);
-      } else if (state.pendingResumeHistoryRestore && state.sessionId) {
+      if (state.pendingResumeHistoryRestore && state.sessionId) {
         state.pendingResumeHistoryRestore = false;
         api.eventStore.restoreTranscriptFromHistory(history);
         api.setTransientStatus(`history restored: ${history.length} item(s)`);
@@ -222,6 +266,33 @@ function handleChatSurfaceEvent(surfaceEvent, state, api) {
         api.requestRunInspect("agent reply");
       }
       return true;
+    case "session.command.result": {
+      const data = isRecord(payload.data) ? payload.data : {};
+      if (data.kind === "session" && typeof data.subcommand === "string") {
+        if (data.subcommand === "list") {
+          return handleSessionListResult(data, state, api);
+        }
+        if (data.subcommand === "resume") {
+          return handleSessionResumeResult(payload, data, state, api);
+        }
+      }
+      const content =
+        typeof payload.content === "string" && payload.content.trim().length > 0
+          ? payload.content
+          : "(empty)";
+      const commandName =
+        typeof payload.commandName === "string" && payload.commandName.trim().length > 0
+          ? payload.commandName.trim()
+          : "command";
+      if (typeof payload.sessionId === "string" && payload.sessionId.trim().length > 0) {
+        state.sessionId = payload.sessionId.trim();
+        api.persistSessionId(state.sessionId);
+      }
+      api.setTransientStatus(`/${commandName} ready`);
+      api.eventStore.pushEvent("operator", `/${commandName}`, content, "teal");
+      api.requestCockpit(`/${commandName}`);
+      return true;
+    }
     case "chat.stream":
       {
         const chunk =
@@ -909,10 +980,8 @@ function handleStatusSurfaceEvent(surfaceEvent, state, api) {
   }
   const fingerprint = api.statusFeedFingerprint(payload);
   const shouldEmit =
-    state.manualStatusRequestPending ||
     state.lastStatusFeedFingerprint === null ||
     fingerprint !== state.lastStatusFeedFingerprint;
-  state.manualStatusRequestPending = false;
   state.lastStatusFeedFingerprint = fingerprint;
   api.requestCockpit("status poll");
   if (shouldEmit) {
@@ -974,10 +1043,8 @@ function handleErrorSurfaceEvent(surfaceEvent, rawMessage, state, api) {
     return false;
   }
   state.runInspectPending = false;
-  state.manualStatusRequestPending = false;
   state.manualSessionsRequestPending = false;
   state.manualSessionsQuery = null;
-  state.manualHistoryRequestPending = false;
   state.pendingResumeHistoryRestore = false;
   if (api.isExpectedMissingRunInspect(errorMessage, errorPayload)) {
     state.runDetail = null;

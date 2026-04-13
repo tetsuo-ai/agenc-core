@@ -143,7 +143,13 @@ export function createWatchTransportController(dependencies = {}) {
     if (!transportState.isOpen || shuttingDown()) {
       return;
     }
-    send("chat.sessions", authPayload());
+    send(
+      "session.command.execute",
+      authPayload({
+        client: "console",
+        content: "/session list",
+      }),
+    );
   }
 
   function scheduleBootstrap(reason = "restoring session") {
@@ -191,6 +197,12 @@ export function createWatchTransportController(dependencies = {}) {
     }
     send("events.subscribe", { filters: [...liveEventFilters] });
     send("status.get", {});
+    send("session.command.catalog.get", {
+      client: "console",
+      ...(typeof watchState.sessionId === "string" && watchState.sessionId.trim().length > 0
+        ? { sessionId: watchState.sessionId.trim() }
+        : {}),
+    });
     ensureStatusPollTimer();
     sendBootstrapProbe();
   }
@@ -220,7 +232,6 @@ export function createWatchTransportController(dependencies = {}) {
     watchState.pendingResumeHistoryRestore = false;
     watchState.runInspectPending = false;
     watchState.manualSessionsRequestPending = false;
-    watchState.manualHistoryRequestPending = false;
     transportState.connectionState = "reconnecting";
     clearBootstrapTimer();
     clearStatusPollTimer();

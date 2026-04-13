@@ -102,6 +102,7 @@ import type {
 } from "./subagent-infrastructure.js";
 import type { VoiceBridge } from "./voice-bridge.js";
 import type { WebChatChannel } from "../channels/webchat/plugin.js";
+import type { SessionContinuityDetail } from "../channels/webchat/types.js";
 import { PluginCatalog } from "../skills/catalog.js";
 import { TASK_LIST_ARG } from "../tools/system/task-tracker.js";
 import type {
@@ -1085,82 +1086,80 @@ function updateVerificationSurfaceState(
   return next;
 }
 
-function formatContinuitySessionInspect(
-  detail: Record<string, unknown>,
-): string {
-  const session = asRecord(detail.session);
+async function persistSurfaceStateForSession(
+  memoryBackend: MemoryBackend,
+  webSessionId: string,
+  session: Session | undefined,
+): Promise<void> {
   if (!session) {
-    return typeof detail.error === "string"
-      ? `Session inspect failed: ${detail.error}`
-      : "Session detail unavailable.";
+    return;
   }
+  await persistWebSessionRuntimeState(memoryBackend, webSessionId, session);
+}
+
+function formatContinuitySessionInspect(detail: SessionContinuityDetail): string {
   const lines = [
     "Session detail:",
-    `  Session id: ${typeof session.sessionId === "string" ? session.sessionId : "unknown"}`,
-    `  Profile: ${typeof session.shellProfile === "string" ? session.shellProfile : "general"}`,
-    `  Workflow stage: ${typeof session.workflowStage === "string" ? session.workflowStage : "idle"}`,
-    `  Resumability: ${typeof session.resumabilityState === "string" ? session.resumabilityState : "unknown"}`,
-    ...(typeof session.workspaceRoot === "string"
-      ? [`  Workspace root: ${session.workspaceRoot}`]
+    `  Session id: ${detail.sessionId}`,
+    `  Profile: ${detail.shellProfile}`,
+    `  Workflow stage: ${detail.workflowStage}`,
+    `  Resumability: ${detail.resumabilityState}`,
+    ...(typeof detail.workspaceRoot === "string"
+      ? [`  Workspace root: ${detail.workspaceRoot}`]
       : []),
-    ...(typeof session.repoRoot === "string"
-      ? [`  Repo root: ${session.repoRoot}`]
+    ...(typeof detail.repoRoot === "string"
+      ? [`  Repo root: ${detail.repoRoot}`]
       : []),
-    ...(typeof session.branch === "string" ? [`  Branch: ${session.branch}`] : []),
-    ...(typeof session.head === "string" ? [`  Head: ${session.head}`] : []),
-    ...(typeof detail.objective === "string" ? [`  Objective: ${detail.objective}`] : []),
-    `  Messages: ${typeof session.messageCount === "number" ? session.messageCount : 0}`,
-    `  Pending approvals: ${typeof session.pendingApprovalCount === "number" ? session.pendingApprovalCount : 0}`,
-    `  Child sessions: ${typeof session.childSessionCount === "number" ? session.childSessionCount : 0}`,
-    `  Worktrees: ${typeof session.worktreeCount === "number" ? session.worktreeCount : 0}`,
-    ...(typeof session.activeTaskSummary === "string"
-      ? [`  Active task: ${session.activeTaskSummary}`]
+    ...(typeof detail.branch === "string" ? [`  Branch: ${detail.branch}`] : []),
+    ...(typeof detail.head === "string" ? [`  Head: ${detail.head}`] : []),
+    ...(typeof detail.workflowState.objective === "string"
+      ? [`  Objective: ${detail.workflowState.objective}`]
       : []),
-    ...(typeof session.lastAssistantOutputPreview === "string"
-      ? [`  Last assistant output: ${session.lastAssistantOutputPreview}`]
+    `  Messages: ${detail.messageCount}`,
+    `  Pending approvals: ${detail.pendingApprovalCount}`,
+    `  Child sessions: ${detail.childSessionCount}`,
+    `  Worktrees: ${detail.worktreeCount}`,
+    ...(typeof detail.activeTaskSummary === "string"
+      ? [`  Active task: ${detail.activeTaskSummary}`]
+      : []),
+    ...(typeof detail.lastAssistantOutputPreview === "string"
+      ? [`  Last assistant output: ${detail.lastAssistantOutputPreview}`]
       : []),
   ];
-  const forkLineage = asRecord(session.forkLineage);
-  if (forkLineage) {
+  if (detail.forkLineage) {
     lines.push(
-      `  Forked from: ${typeof forkLineage.parentSessionId === "string" ? forkLineage.parentSessionId : "unknown"} (${typeof forkLineage.source === "string" ? forkLineage.source : "unknown"})`,
+      `  Forked from: ${detail.forkLineage.parentSessionId} (${detail.forkLineage.source})`,
     );
   }
-  const backgroundRun = asRecord(detail.backgroundRun);
-  if (backgroundRun) {
+  if (detail.backgroundRun) {
     lines.push("");
     lines.push("Background run:");
     lines.push(
-      `  ${typeof backgroundRun.runId === "string" ? backgroundRun.runId : "unknown"} ${typeof backgroundRun.state === "string" ? `[${backgroundRun.state}]` : ""} ${typeof backgroundRun.currentPhase === "string" ? backgroundRun.currentPhase : ""}`.trim(),
+      `  ${detail.backgroundRun.runId} [${detail.backgroundRun.state}] ${detail.backgroundRun.currentPhase ?? ""}`.trim(),
     );
-    if (typeof backgroundRun.objective === "string") {
-      lines.push(`  Objective: ${backgroundRun.objective}`);
+    if (typeof detail.backgroundRun.objective === "string") {
+      lines.push(`  Objective: ${detail.backgroundRun.objective}`);
     }
-    if (backgroundRun.checkpointAvailable === true) {
+    if (detail.backgroundRun.checkpointAvailable === true) {
       lines.push("  Checkpoint available: yes");
     }
   }
-  const history = Array.isArray(detail.recentHistory)
-    ? detail.recentHistory
-        .map((entry) => asRecord(entry))
-        .filter((entry): entry is Record<string, unknown> => Boolean(entry))
-    : [];
-  if (history.length > 0) {
+  if ((detail.recentHistory?.length ?? 0) > 0) {
     lines.push("");
     lines.push("Recent history:");
-    for (const entry of history) {
-      const sender =
-        typeof entry.sender === "string" ? entry.sender : "unknown";
-      const content =
-        typeof entry.content === "string" ? entry.content.trim() : "";
-      lines.push(`  ${sender}: ${content || "(empty)"}`);
+    for (const entry of detail.recentHistory ?? []) {
+      lines.push(`  ${entry.sender}: ${entry.content.trim() || "(empty)"}`);
     }
   }
   return lines.join("\n");
 }
 
 function formatSessionHistoryReply(
-  history: readonly Record<string, unknown>[],
+  history: readonly {
+    readonly content: string;
+    readonly sender: string;
+    readonly toolName?: string;
+  }[],
 ): string {
   if (history.length === 0) {
     return "No session history found.";
@@ -1168,15 +1167,9 @@ function formatSessionHistoryReply(
   return [
     `Session history (${history.length}):`,
     ...history.map((entry) => {
-      const sender =
-        typeof entry.sender === "string" ? entry.sender : "unknown";
-      const toolName =
-        typeof entry.toolName === "string" ? ` ${entry.toolName}` : "";
-      const content =
-        typeof entry.content === "string" && entry.content.trim().length > 0
-          ? entry.content.trim()
-          : "(empty)";
-      return `  ${sender}${toolName}: ${content}`;
+      const toolName = entry.toolName ? ` ${entry.toolName}` : "";
+      const content = entry.content.trim().length > 0 ? entry.content.trim() : "(empty)";
+      return `  ${entry.sender}${toolName}: ${content}`;
     }),
   ].join("\n");
 }
@@ -1247,6 +1240,154 @@ function buildVerifyDelegatePrompt(params: {
     params.taskReply,
     ...(verifierStages ? ["", "Runtime verifier snapshot:", verifierStages] : []),
   ].join("\n");
+}
+
+type ShellAgentLaunchResult = Awaited<
+  ReturnType<CommandRegistryDaemonContext["launchShellAgentTask"]>
+>;
+
+async function launchDelegatedSurfaceTask<
+  TSurfaceState extends ReviewSurfaceState | VerificationSurfaceState,
+>(params: {
+  readonly ctx: CommandRegistryDaemonContext;
+  readonly session: Session | undefined;
+  readonly webSessionId: string;
+  readonly resolvedSessionId: string;
+  readonly memoryBackend: MemoryBackend;
+  readonly shellProfile: SessionShellProfile;
+  readonly roleId: "review" | "verify";
+  readonly objective: string;
+  readonly prompt: string;
+  readonly startSurfaceState: Partial<TSurfaceState> &
+    Pick<TSurfaceState, "status" | "source">;
+  readonly finishSurfaceState: (
+    delegated: ShellAgentLaunchResult,
+  ) => Partial<TSurfaceState> & Pick<TSurfaceState, "status" | "source">;
+  readonly updateSurfaceState: (
+    session: Session,
+    state: Partial<TSurfaceState> & Pick<TSurfaceState, "status" | "source">,
+  ) => TSurfaceState;
+}): Promise<ShellAgentLaunchResult> {
+  if (params.session) {
+    params.updateSurfaceState(params.session, params.startSurfaceState);
+    await persistSurfaceStateForSession(
+      params.memoryBackend,
+      params.webSessionId,
+      params.session,
+    );
+  }
+  const delegated = await params.ctx.launchShellAgentTask({
+    parentSessionId: params.resolvedSessionId,
+    roleId: params.roleId,
+    objective: params.objective,
+    prompt: params.prompt,
+    shellProfile: params.shellProfile,
+    wait: true,
+  });
+  if (params.session) {
+    params.updateSurfaceState(
+      params.session,
+      params.finishSurfaceState(delegated),
+    );
+    await persistSurfaceStateForSession(
+      params.memoryBackend,
+      params.webSessionId,
+      params.session,
+    );
+  }
+  return delegated;
+}
+
+async function launchDelegatedReviewTask(params: {
+  readonly ctx: CommandRegistryDaemonContext;
+  readonly session: Session | undefined;
+  readonly webSessionId: string;
+  readonly resolvedSessionId: string;
+  readonly memoryBackend: MemoryBackend;
+  readonly shellProfile: SessionShellProfile;
+  readonly branchInfo: Record<string, unknown>;
+  readonly summary: Record<string, unknown>;
+  readonly diff: Record<string, unknown>;
+  readonly mode: "default" | "security" | "pr-comments";
+}): Promise<ShellAgentLaunchResult> {
+  return launchDelegatedSurfaceTask({
+    ctx: params.ctx,
+    session: params.session,
+    webSessionId: params.webSessionId,
+    resolvedSessionId: params.resolvedSessionId,
+    memoryBackend: params.memoryBackend,
+    shellProfile: params.shellProfile,
+    roleId: "review",
+    objective:
+      params.mode === "security"
+        ? "Review the current changes for security issues and return findings-first output."
+        : params.mode === "pr-comments"
+          ? "Review the current changes and draft concise PR comments."
+          : "Review the current changes and return findings-first output.",
+    prompt: buildReviewDelegatePrompt({
+      branchReply: formatGitBranchReply(params.branchInfo),
+      summaryReply: formatGitSummaryReply(params.summary),
+      diffReply:
+        typeof params.diff.diff === "string" && params.diff.diff.trim().length > 0
+          ? formatGitDiffReply(params.diff)
+          : "No diff content to review.",
+    }),
+    startSurfaceState: {
+      status: "running",
+      source: "delegated",
+    },
+    finishSurfaceState: (delegated) => ({
+      status: delegated.success === true ? "completed" : "failed",
+      source: "delegated",
+      delegatedSessionId: delegated.sessionId,
+      summaryPreview: delegated.output,
+    }),
+    updateSurfaceState: updateReviewSurfaceState,
+  });
+}
+
+async function launchDelegatedVerifyTask(params: {
+  readonly ctx: CommandRegistryDaemonContext;
+  readonly session: Session | undefined;
+  readonly webSessionId: string;
+  readonly resolvedSessionId: string;
+  readonly memoryBackend: MemoryBackend;
+  readonly shellProfile: SessionShellProfile;
+  readonly branchInfo: Record<string, unknown>;
+  readonly summary: Record<string, unknown>;
+  readonly tasks: Record<string, unknown>;
+  readonly runtimeStatusSnapshot?: Record<string, unknown>;
+}): Promise<ShellAgentLaunchResult> {
+  return launchDelegatedSurfaceTask({
+    ctx: params.ctx,
+    session: params.session,
+    webSessionId: params.webSessionId,
+    resolvedSessionId: params.resolvedSessionId,
+    memoryBackend: params.memoryBackend,
+    shellProfile: params.shellProfile,
+    roleId: "verify",
+    objective: "Verify the current implementation state and return a verdict.",
+    prompt: buildVerifyDelegatePrompt({
+      branchReply: formatGitBranchReply(params.branchInfo),
+      summaryReply: formatGitSummaryReply(params.summary),
+      taskReply: formatTaskListReply(params.tasks),
+      runtimeStatusSnapshot: params.runtimeStatusSnapshot,
+    }),
+    startSurfaceState: {
+      status: "running",
+      source: "delegated",
+      verdict: "unknown",
+    },
+    finishSurfaceState: (delegated) => ({
+      status: delegated.success === true ? "completed" : "failed",
+      source: "delegated",
+      delegatedSessionId: delegated.sessionId,
+      summaryPreview: delegated.output,
+      verdict:
+        (delegated.success === true ? "pass" : "fail") as VerificationSurfaceState["verdict"],
+    }),
+    updateSurfaceState: updateVerificationSurfaceState,
+  });
 }
 
 function summarizeStoredResponse(response: LLMStoredResponse): string {
@@ -2005,6 +2146,12 @@ export function createDaemonCommandRegistry(
     description: "Show repo inventory or search files in the active workspace",
     args: "[query|json]",
     global: true,
+    metadata: {
+      category: "coding",
+      clients: ["shell", "console", "web"],
+      rolloutFeature: "codingCommands",
+      viewKind: "files",
+    },
     handler: async (cmdCtx) => {
       if (
         !(await requireShellFeature({
@@ -2033,11 +2180,20 @@ export function createDaemonCommandRegistry(
           query.length > 0 ? "system.searchFiles" : "system.repoInventory",
           jsonArgs,
         );
-        await cmdCtx.reply(
+        const text =
           query.length > 0
             ? formatSearchFilesReply(result)
-            : formatRepoInventoryReply(result),
-        );
+            : formatRepoInventoryReply(result);
+        await cmdCtx.replyResult({
+          text,
+          viewKind: "files",
+          data: {
+            kind: "files",
+            mode: query.length > 0 ? "search" : "inventory",
+            ...(query.length > 0 ? { query } : {}),
+            result,
+          },
+        });
         return;
       }
       const query = cmdCtx.argv
@@ -2050,7 +2206,15 @@ export function createDaemonCommandRegistry(
           "system.repoInventory",
           {},
         );
-        await cmdCtx.reply(formatRepoInventoryReply(result));
+        await cmdCtx.replyResult({
+          text: formatRepoInventoryReply(result),
+          viewKind: "files",
+          data: {
+            kind: "files",
+            mode: "inventory",
+            result,
+          },
+        });
         return;
       }
       const result = await executeStructuredTool(
@@ -2070,7 +2234,16 @@ export function createDaemonCommandRegistry(
             : {}),
         },
       );
-      await cmdCtx.reply(formatSearchFilesReply(result));
+      await cmdCtx.replyResult({
+        text: formatSearchFilesReply(result),
+        viewKind: "files",
+        data: {
+          kind: "files",
+          mode: "search",
+          query,
+          result,
+        },
+      });
     },
   });
   commandRegistry.register({
@@ -2078,6 +2251,12 @@ export function createDaemonCommandRegistry(
     description: "Search repo-local files with the native coding grep tool",
     args: "<pattern|json>",
     global: true,
+    metadata: {
+      category: "coding",
+      clients: ["shell", "console", "web"],
+      rolloutFeature: "codingCommands",
+      viewKind: "grep",
+    },
     handler: async (cmdCtx) => {
       if (
         !(await requireShellFeature({
@@ -2130,7 +2309,15 @@ export function createDaemonCommandRegistry(
         "system.grep",
         args,
       );
-      await cmdCtx.reply(formatGrepReply(result));
+      await cmdCtx.replyResult({
+        text: formatGrepReply(result),
+        viewKind: "grep",
+        data: {
+          kind: "grep",
+          pattern: typeof args.pattern === "string" ? args.pattern : "",
+          result,
+        },
+      });
     },
   });
   commandRegistry.register({
@@ -2138,6 +2325,12 @@ export function createDaemonCommandRegistry(
     description: "Run structured git status, diff, branch, show, summary, or worktree commands",
     args: "<status|diff|show|branch|summary|worktree>",
     global: true,
+    metadata: {
+      category: "coding",
+      clients: ["shell", "console", "web"],
+      rolloutFeature: "codingCommands",
+      viewKind: "git",
+    },
     handler: async (cmdCtx) => {
       if (
         !(await requireShellFeature({
@@ -2174,7 +2367,15 @@ export function createDaemonCommandRegistry(
           "system.gitStatus",
           jsonArgs ?? {},
         );
-        await cmdCtx.reply(formatGitStatusReply(result));
+        await cmdCtx.replyResult({
+          text: formatGitStatusReply(result),
+          viewKind: "git",
+          data: {
+            kind: "git",
+            subcommand: "status",
+            branchInfo: asRecord(result),
+          },
+        });
         return;
       }
 
@@ -2184,7 +2385,15 @@ export function createDaemonCommandRegistry(
           "system.gitBranchInfo",
           jsonArgs ?? {},
         );
-        await cmdCtx.reply(formatGitBranchReply(result));
+        await cmdCtx.replyResult({
+          text: formatGitBranchReply(result),
+          viewKind: "git",
+          data: {
+            kind: "git",
+            subcommand: "branch",
+            branchInfo: asRecord(result),
+          },
+        });
         return;
       }
 
@@ -2194,7 +2403,15 @@ export function createDaemonCommandRegistry(
           "system.gitChangeSummary",
           jsonArgs ?? {},
         );
-        await cmdCtx.reply(formatGitSummaryReply(result));
+        await cmdCtx.replyResult({
+          text: formatGitSummaryReply(result),
+          viewKind: "git",
+          data: {
+            kind: "git",
+            subcommand: "summary",
+            changeSummary: asRecord(result),
+          },
+        });
         return;
       }
 
@@ -2215,7 +2432,15 @@ export function createDaemonCommandRegistry(
             ...(hasInlineFlag(cmdCtx.argv, "stat") ? { noPatch: true } : {}),
           },
         );
-        await cmdCtx.reply(formatGitShowReply(result));
+        await cmdCtx.replyResult({
+          text: formatGitShowReply(result),
+          viewKind: "git",
+          data: {
+            kind: "git",
+            subcommand: "show",
+            diff: asRecord(result),
+          },
+        });
         return;
       }
 
@@ -2236,7 +2461,15 @@ export function createDaemonCommandRegistry(
               : {}),
           },
         );
-        await cmdCtx.reply(formatGitDiffReply(result));
+        await cmdCtx.replyResult({
+          text: formatGitDiffReply(result),
+          viewKind: "git",
+          data: {
+            kind: "git",
+            subcommand: "diff",
+            diff: asRecord(result),
+          },
+        });
         return;
       }
 
@@ -2257,7 +2490,15 @@ export function createDaemonCommandRegistry(
             "system.gitWorktreeList",
             jsonArgs ?? {},
           );
-          await cmdCtx.reply(formatGitWorktreeListReply(result));
+          await cmdCtx.replyResult({
+            text: formatGitWorktreeListReply(result),
+            viewKind: "git",
+            data: {
+              kind: "git",
+              subcommand: "worktree-list",
+              diff: asRecord(result),
+            },
+          });
           return;
         }
         if (worktreeCommand === "create") {
@@ -2285,7 +2526,15 @@ export function createDaemonCommandRegistry(
               ...(hasInlineFlag(cmdCtx.argv, "detached") ? { detached: true } : {}),
             },
           );
-          await cmdCtx.reply(formatGitWorktreeMutationReply("create", result));
+          await cmdCtx.replyResult({
+            text: formatGitWorktreeMutationReply("create", result),
+            viewKind: "git",
+            data: {
+              kind: "git",
+              subcommand: "worktree-create",
+              diff: asRecord(result),
+            },
+          });
           return;
         }
         if (worktreeCommand === "remove") {
@@ -2307,7 +2556,15 @@ export function createDaemonCommandRegistry(
               ...(hasInlineFlag(cmdCtx.argv, "force") ? { force: true } : {}),
             },
           );
-          await cmdCtx.reply(formatGitWorktreeMutationReply("remove", result));
+          await cmdCtx.replyResult({
+            text: formatGitWorktreeMutationReply("remove", result),
+            viewKind: "git",
+            data: {
+              kind: "git",
+              subcommand: "worktree-remove",
+              diff: asRecord(result),
+            },
+          });
           return;
         }
         if (worktreeCommand === "status") {
@@ -2326,7 +2583,15 @@ export function createDaemonCommandRegistry(
             "system.gitWorktreeStatus",
             jsonArgs ?? { worktreePath },
           );
-          await cmdCtx.reply(formatGitWorktreeStatusReply(result));
+          await cmdCtx.replyResult({
+            text: formatGitWorktreeStatusReply(result),
+            viewKind: "git",
+            data: {
+              kind: "git",
+              subcommand: "worktree-status",
+              diff: asRecord(result),
+            },
+          });
           return;
         }
         await cmdCtx.reply(
@@ -2344,6 +2609,12 @@ export function createDaemonCommandRegistry(
     name: "branch",
     description: "Alias for /git branch",
     global: true,
+    metadata: {
+      category: "coding",
+      clients: ["shell", "console", "web"],
+      rolloutFeature: "codingCommands",
+      viewKind: "git",
+    },
     handler: async (cmdCtx) => {
       await commandRegistry
         .get("git")
@@ -2359,6 +2630,12 @@ export function createDaemonCommandRegistry(
     description: "Alias for /git worktree",
     args: "<list|create|remove|status>",
     global: true,
+    metadata: {
+      category: "coding",
+      clients: ["shell", "console", "web"],
+      rolloutFeature: "codingCommands",
+      viewKind: "git",
+    },
     handler: async (cmdCtx) => {
       const args = cmdCtx.args.trim();
       const forwardedArgs =
@@ -2382,6 +2659,12 @@ export function createDaemonCommandRegistry(
     description: "Show repo change summary plus a structured git diff",
     args: "[--staged|json]",
     global: true,
+    metadata: {
+      category: "coding",
+      clients: ["shell", "console", "web"],
+      rolloutFeature: "codingCommands",
+      viewKind: "diff",
+    },
     handler: async (cmdCtx) => {
       if (
         !(await requireShellFeature({
@@ -2419,18 +2702,32 @@ export function createDaemonCommandRegistry(
           ...(parseCsvFlag(cmdCtx.argv, "files")
             ? { filePaths: parseCsvFlag(cmdCtx.argv, "files") }
             : {}),
+          },
+      );
+      await cmdCtx.replyResult({
+        text: `${formatGitSummaryReply(summary)}\n\n${formatGitDiffReply(diff)}`,
+        viewKind: "diff",
+        data: {
+          kind: "diff",
+          subcommand: "diff",
+          changeSummary: asRecord(summary),
+          diff: asRecord(diff),
         },
-      );
-      await cmdCtx.reply(
-        `${formatGitSummaryReply(summary)}\n\n${formatGitDiffReply(diff)}`,
-      );
+      });
     },
   });
   commandRegistry.register({
     name: "review",
     description: "Summarize the current repo state for human or agent review",
-    args: "[--staged|--delegate]",
+    args: "[--staged|--delegate|--mode security|--mode pr-comments]",
     global: true,
+    metadata: {
+      category: "coding",
+      clients: ["shell", "console", "web"],
+      rolloutFeature: "codingCommands",
+      viewKind: "review",
+      aliases: ["security-review", "pr-comments"],
+    },
     handler: async (cmdCtx) => {
       if (
         !(await requireShellFeature({
@@ -2446,11 +2743,21 @@ export function createDaemonCommandRegistry(
       try {
         jsonArgs = parseCommandJsonArgs(cmdCtx.args);
       } catch (error) {
-        await cmdCtx.reply(`Usage: /review [--staged] [--delegate]\n${toErrorMessage(error)}`);
+        await cmdCtx.reply(
+          `Usage: /review [--staged] [--delegate|--mode security|--mode pr-comments]\n${toErrorMessage(error)}`,
+        );
         return;
       }
       const wantsDelegate =
         jsonArgs?.delegate === true || hasInlineFlag(cmdCtx.argv, "delegate");
+      const requestedMode =
+        typeof jsonArgs?.mode === "string"
+          ? jsonArgs.mode.trim().toLowerCase()
+          : parseInlineFlag(cmdCtx.argv, "mode")?.trim().toLowerCase();
+      const reviewMode =
+        requestedMode === "security" || requestedMode === "pr-comments"
+          ? requestedMode
+          : "default";
       const branchInfo = await executeStructuredTool(
         baseToolHandler,
         "system.gitBranchInfo",
@@ -2468,7 +2775,11 @@ export function createDaemonCommandRegistry(
           (hasInlineFlag(cmdCtx.argv, "staged") ? { staged: true } : {}),
       );
       const reviewSurface = [
-        "Review surface:",
+        reviewMode === "security"
+          ? "Security review surface:"
+          : reviewMode === "pr-comments"
+            ? "PR comment drafting surface:"
+            : "Review surface:",
         formatGitBranchReply(branchInfo),
         "",
         formatGitSummaryReply(summary),
@@ -2485,58 +2796,90 @@ export function createDaemonCommandRegistry(
         preferred: resolveSessionShellProfile(session?.metadata ?? {}),
       });
       if (!wantsDelegate) {
+        let reviewState: ReviewSurfaceState | undefined;
         if (session) {
-          updateReviewSurfaceState(session, {
+          reviewState = updateReviewSurfaceState(session, {
             status: "completed",
             source: "local",
             summaryPreview: reviewSurface,
           });
           await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
         }
-        await cmdCtx.reply(reviewSurface);
+        await cmdCtx.replyResult({
+          text: reviewSurface,
+          viewKind: "review",
+          data: {
+            kind: "review",
+            mode: reviewMode,
+            delegated: false,
+            branchInfo: asRecord(branchInfo),
+            changeSummary: asRecord(summary),
+            diff: asRecord(diff),
+            ...(reviewState
+              ? {
+                  reviewSurface: {
+                    status: reviewState.status,
+                    source: reviewState.source,
+                    ...(reviewState.delegatedSessionId
+                      ? { delegatedSessionId: reviewState.delegatedSessionId }
+                      : {}),
+                    ...(reviewState.summaryPreview
+                      ? { summaryPreview: reviewState.summaryPreview }
+                      : {}),
+                  },
+                }
+              : {}),
+          },
+        });
         return;
       }
-      if (session) {
-        updateReviewSurfaceState(session, {
-          status: "running",
-          source: "delegated",
-        });
-        await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
-      }
-      const delegated = await ctx.launchShellAgentTask({
-        parentSessionId: resolvedSessionId,
-        roleId: "review",
-        objective: "Review the current changes and return findings-first output.",
-        prompt: buildReviewDelegatePrompt({
-          branchReply: formatGitBranchReply(branchInfo),
-          summaryReply: formatGitSummaryReply(summary),
-          diffReply:
-            typeof diff.diff === "string" && diff.diff.trim().length > 0
-              ? formatGitDiffReply(diff)
-              : "No diff content to review.",
-        }),
+      const delegated = await launchDelegatedReviewTask({
+        ctx,
+        session,
+        webSessionId: cmdCtx.sessionId,
+        resolvedSessionId,
+        memoryBackend,
         shellProfile: effectiveShellProfile,
-        wait: true,
+        branchInfo,
+        summary,
+        diff,
+        mode: reviewMode,
       });
-      if (session) {
-        updateReviewSurfaceState(session, {
-          status: delegated.success === true ? "completed" : "failed",
-          source: "delegated",
-          delegatedSessionId: delegated.sessionId,
-          summaryPreview: delegated.output,
-        });
-        await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
-      }
-      await cmdCtx.reply(
-        [
-          reviewSurface,
-          "",
-          `Delegated reviewer session: ${delegated.sessionId} [${delegated.status}]`,
-          delegated.output.trim().length > 0
-            ? delegated.output.trim()
-            : "Delegated reviewer returned no output.",
-        ].join("\n"),
-      );
+      const delegatedText = [
+        reviewSurface,
+        "",
+        `Delegated reviewer session: ${delegated.sessionId} [${delegated.status}]`,
+        delegated.output.trim().length > 0
+          ? delegated.output.trim()
+          : "Delegated reviewer returned no output.",
+      ].join("\n");
+      await cmdCtx.replyResult({
+        text: delegatedText,
+        viewKind: "review",
+        data: {
+          kind: "review",
+          mode: reviewMode,
+          delegated: true,
+          branchInfo: asRecord(branchInfo),
+          changeSummary: asRecord(summary),
+          diff: asRecord(diff),
+          reviewSurface: {
+            status: delegated.success === true ? "completed" : "failed",
+            source: "delegated",
+            delegatedSessionId: delegated.sessionId,
+            ...(delegated.output.trim().length > 0
+              ? { summaryPreview: compactSurfacePreview(delegated.output) }
+              : {}),
+          },
+          delegatedResult: {
+            sessionId: delegated.sessionId,
+            status: delegated.status,
+            ...(delegated.output.trim().length > 0
+              ? { output: delegated.output.trim() }
+              : {}),
+          },
+        },
+      });
     },
   });
   commandRegistry.register({
@@ -2544,6 +2887,12 @@ export function createDaemonCommandRegistry(
     description: "List, spawn, inspect, assign, or stop child agents",
     args: "[roles|list|spawn|assign|inspect|stop]",
     global: true,
+    metadata: {
+      category: "agents",
+      clients: ["shell", "console", "web"],
+      rolloutFeature: "multiAgent",
+      viewKind: "agents",
+    },
     handler: async (cmdCtx) => {
       const sessionId = resolveSessionId(cmdCtx.sessionId);
       const session = sessionMgr.get(sessionId);
@@ -2575,7 +2924,16 @@ export function createDaemonCommandRegistry(
           ? jsonArgs.subcommand.trim().toLowerCase()
           : cmdCtx.argv[0]?.toLowerCase() ?? "list";
       if (subcommand === "roles") {
-        await cmdCtx.reply(formatAgentRoleCatalog(ctx.listAgentRoles()));
+        const roles = ctx.listAgentRoles();
+        await cmdCtx.replyResult({
+          text: formatAgentRoleCatalog(roles),
+          viewKind: "agents",
+          data: {
+            kind: "agents",
+            subcommand: "roles",
+            roles: roles.map((role) => ({ ...role })),
+          },
+        });
         return;
       }
       if (subcommand === "list") {
@@ -2584,7 +2942,15 @@ export function createDaemonCommandRegistry(
         const entries = ctx.listSubAgentInfo(sessionId).filter((entry) =>
           includeAll ? true : entry.status === "running"
         );
-        await cmdCtx.reply(formatAgentListReply(entries));
+        await cmdCtx.replyResult({
+          text: formatAgentListReply(entries),
+          viewKind: "agents",
+          data: {
+            kind: "agents",
+            subcommand: "list",
+            entries: entries.map((entry) => ({ ...entry })),
+          },
+        });
         return;
       }
       if (subcommand === "inspect") {
@@ -2597,11 +2963,17 @@ export function createDaemonCommandRegistry(
           return;
         }
         const detail = await ctx.inspectShellAgentTask(sessionId, target);
-        await cmdCtx.reply(
-          detail
+        await cmdCtx.replyResult({
+          text: detail
             ? formatAgentInspectReply(detail)
             : `Child agent "${target}" is unavailable.`,
-        );
+          viewKind: "agents",
+          data: {
+            kind: "agents",
+            subcommand: "inspect",
+            ...(detail ? { detail: { ...detail } } : {}),
+          },
+        });
         return;
       }
       if (subcommand === "stop") {
@@ -2614,11 +2986,17 @@ export function createDaemonCommandRegistry(
           return;
         }
         const stopped = await ctx.stopShellAgentTask(sessionId, target);
-        await cmdCtx.reply(
-          stopped.stopped
+        await cmdCtx.replyResult({
+          text: stopped.stopped
             ? `Stopped child agent ${stopped.sessionId ?? target}.${stopped.taskId ? ` Task ${stopped.taskId}.` : ""}`
             : `Child agent "${target}" could not be stopped.`,
-        );
+          viewKind: "agents",
+          data: {
+            kind: "agents",
+            subcommand: "stop",
+            stopped: { ...stopped, target },
+          },
+        });
         return;
       }
       if (subcommand !== "spawn" && subcommand !== "assign") {
@@ -2738,8 +3116,8 @@ export function createDaemonCommandRegistry(
           : {}),
         ...(wantsWait ? { wait: true } : {}),
       });
-      await cmdCtx.reply(
-        launched.waited
+      await cmdCtx.replyResult({
+        text: launched.waited
           ? [
               `${launched.role.displayName} agent ${launched.sessionId} [${launched.status}]`,
               ...(launched.taskId ? [`Task: ${launched.taskId}`] : []),
@@ -2755,7 +3133,21 @@ export function createDaemonCommandRegistry(
               `Profile: ${shellProfile ?? launched.role.defaultShellProfile}`,
               `Bundle: ${toolBundle ?? launched.role.defaultToolBundle}`,
             ].join("\n"),
-      );
+        viewKind: "agents",
+        data: {
+          kind: "agents",
+          subcommand,
+          launched: {
+            ...launched,
+            requestedRoleId: roleId,
+            ...(shellProfile ? { requestedProfile: shellProfile } : {}),
+            ...(toolBundle ? { requestedToolBundle: toolBundle } : {}),
+            ...(workspaceRoot ? { workspaceRoot } : {}),
+            ...(workingDirectory ? { workingDirectory } : {}),
+            ...(worktreeValue ? { worktree: worktreeValue } : {}),
+          },
+        },
+      });
     },
   });
   commandRegistry.register({
@@ -2763,6 +3155,11 @@ export function createDaemonCommandRegistry(
     description: "List or inspect session task-tracker tasks",
     args: "[list|get <taskId>|wait <taskId>|output <taskId>]",
     global: true,
+    metadata: {
+      category: "tasks",
+      clients: ["shell", "console", "web"],
+      viewKind: "tasks",
+    },
     handler: async (cmdCtx) => {
       let jsonArgs: Record<string, unknown> | undefined;
       try {
@@ -2789,7 +3186,15 @@ export function createDaemonCommandRegistry(
               : {}),
           },
         );
-        await cmdCtx.reply(formatTaskListReply(result));
+        await cmdCtx.replyResult({
+          text: formatTaskListReply(result),
+          viewKind: "tasks",
+          data: {
+            kind: "tasks",
+            subcommand,
+            result: asRecord(result),
+          },
+        });
         return;
       }
 
@@ -2810,7 +3215,16 @@ export function createDaemonCommandRegistry(
           "task.get",
           { [TASK_LIST_ARG]: cmdCtx.sessionId, taskId },
         );
-        await cmdCtx.reply(formatTaskDetailReply(result));
+        await cmdCtx.replyResult({
+          text: formatTaskDetailReply(result),
+          viewKind: "tasks",
+          data: {
+            kind: "tasks",
+            subcommand,
+            taskId,
+            result: asRecord(result),
+          },
+        });
         return;
       }
 
@@ -2829,7 +3243,16 @@ export function createDaemonCommandRegistry(
               : {}),
           },
         );
-        await cmdCtx.reply(formatTaskDetailReply(result));
+        await cmdCtx.replyResult({
+          text: formatTaskDetailReply(result),
+          viewKind: "tasks",
+          data: {
+            kind: "tasks",
+            subcommand,
+            taskId,
+            result: asRecord(result),
+          },
+        });
         return;
       }
 
@@ -2850,11 +3273,20 @@ export function createDaemonCommandRegistry(
               : {}),
           },
         );
-        await cmdCtx.reply(
+        const text =
           typeof result.output === "string"
             ? result.output
-            : formatTaskDetailReply(result),
-        );
+            : formatTaskDetailReply(result);
+        await cmdCtx.replyResult({
+          text,
+          viewKind: "tasks",
+          data: {
+            kind: "tasks",
+            subcommand,
+            taskId,
+            result: asRecord(result),
+          },
+        });
         return;
       }
 
@@ -2868,6 +3300,12 @@ export function createDaemonCommandRegistry(
     description: "Show or change the current coding workflow stage for this session",
     args: "[status|enter|exit|implement|review|verify]",
     global: true,
+    metadata: {
+      category: "workflow",
+      clients: ["shell", "console", "web"],
+      rolloutFeature: "codingCommands",
+      viewKind: "workflow",
+    },
     handler: async (cmdCtx) => {
       const sessionId = resolveSessionId(cmdCtx.sessionId);
       const session = sessionMgr.get(sessionId);
@@ -2984,8 +3422,46 @@ export function createDaemonCommandRegistry(
           formatWorkflowOwnershipReply(ownership),
         ].join("\n");
       };
+      const buildPlanData = (
+        workflowState = resolveSessionWorkflowState(session.metadata),
+        delegated?: {
+          sessionId: string;
+          status: string;
+          output?: string;
+        },
+      ) => ({
+        kind: "workflow" as const,
+        subcommand,
+        shellProfile,
+        workflowState,
+        plannerStatus:
+          typeof runtimeStatusSnapshot?.completionState === "string"
+            ? runtimeStatusSnapshot.completionState
+            : "idle",
+        suggestedNextStage: suggestNextWorkflowStage({
+          currentStage: workflowState.stage,
+          plannerStatus:
+            typeof runtimeStatusSnapshot?.completionState === "string"
+              ? runtimeStatusSnapshot.completionState
+              : "idle",
+          ownership,
+          hasChanges,
+        }),
+        branchInfo: asRecord(branchInfo),
+        changeSummary: asRecord(summary),
+        tasks: asRecord(tasks),
+        ownership: ownership.map((entry) => ({ ...entry })) as readonly Record<
+          string,
+          unknown
+        >[],
+        ...(delegated ? { delegated } : {}),
+      });
       if (subcommand === "status") {
-        await cmdCtx.reply(formatPlanSurface(currentWorkflowState));
+        await cmdCtx.replyResult({
+          text: formatPlanSurface(currentWorkflowState),
+          viewKind: "workflow",
+          data: buildPlanData(currentWorkflowState),
+        });
         return;
       }
       if (subcommand === "enter") {
@@ -3013,9 +3489,11 @@ export function createDaemonCommandRegistry(
           },
         );
         await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
-        await cmdCtx.reply(
-          `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.\n\n${formatPlanSurface(workflowState)}`,
-        );
+        await cmdCtx.replyResult({
+          text: `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.\n\n${formatPlanSurface(workflowState)}`,
+          viewKind: "workflow",
+          data: buildPlanData(workflowState),
+        });
         return;
       }
       if (subcommand === "exit") {
@@ -3027,9 +3505,11 @@ export function createDaemonCommandRegistry(
           stage: "implement",
         });
         await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
-        await cmdCtx.reply(
-          `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.\n\n${formatPlanSurface(workflowState)}`,
-        );
+        await cmdCtx.replyResult({
+          text: `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.\n\n${formatPlanSurface(workflowState)}`,
+          viewKind: "workflow",
+          data: buildPlanData(workflowState),
+        });
         return;
       }
       if (subcommand === "implement") {
@@ -3037,25 +3517,29 @@ export function createDaemonCommandRegistry(
           stage: "implement",
         });
         await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
-        await cmdCtx.reply(
-          `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.\n\n${formatPlanSurface(workflowState)}`,
-        );
+        await cmdCtx.replyResult({
+          text: `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.\n\n${formatPlanSurface(workflowState)}`,
+          viewKind: "workflow",
+          data: buildPlanData(workflowState),
+        });
         return;
       }
       if (subcommand === "review") {
         const workflowState = updateSessionWorkflowState(session.metadata, {
           stage: "review",
         });
-        updateReviewSurfaceState(session, {
-          status: wantsDelegate ? "running" : "idle",
-          source: wantsDelegate ? "delegated" : "local",
-          ...(wantsDelegate ? {} : { summaryPreview: "Review stage entered." }),
-        });
-        await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
         if (!wantsDelegate) {
-          await cmdCtx.reply(
-            `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.\n\n${formatPlanSurface(workflowState)}`,
-          );
+          updateReviewSurfaceState(session, {
+            status: "idle",
+            source: "local",
+            summaryPreview: "Review stage entered.",
+          });
+          await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
+          await cmdCtx.replyResult({
+            text: `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.\n\n${formatPlanSurface(workflowState)}`,
+            viewKind: "workflow",
+            data: buildPlanData(workflowState),
+          });
           return;
         }
         const diff = await executeStructuredTool(
@@ -3063,30 +3547,20 @@ export function createDaemonCommandRegistry(
           "system.gitDiff",
           wantsStaged ? { staged: true } : {},
         );
-        const delegated = await ctx.launchShellAgentTask({
-          parentSessionId: sessionId,
-          roleId: "review",
-          objective: "Review the current changes and return findings-first output.",
-          prompt: buildReviewDelegatePrompt({
-            branchReply: formatGitBranchReply(branchInfo),
-            summaryReply: formatGitSummaryReply(summary),
-            diffReply:
-              typeof diff.diff === "string" && diff.diff.trim().length > 0
-                ? formatGitDiffReply(diff)
-                : "No diff content to review.",
-          }),
+        const delegated = await launchDelegatedReviewTask({
+          ctx,
+          session,
+          webSessionId: cmdCtx.sessionId,
+          resolvedSessionId: sessionId,
+          memoryBackend,
           shellProfile,
-          wait: true,
+          branchInfo,
+          summary,
+          diff,
+          mode: "default",
         });
-        updateReviewSurfaceState(session, {
-          status: delegated.success === true ? "completed" : "failed",
-          source: "delegated",
-          delegatedSessionId: delegated.sessionId,
-          summaryPreview: delegated.output,
-        });
-        await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
-        await cmdCtx.reply(
-          [
+        await cmdCtx.replyResult({
+          text: [
             `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.`,
             "",
             formatPlanSurface(workflowState),
@@ -3096,49 +3570,50 @@ export function createDaemonCommandRegistry(
               ? delegated.output.trim()
               : "Delegated reviewer returned no output.",
           ].join("\n"),
-        );
+          viewKind: "workflow",
+          data: buildPlanData(workflowState, {
+            sessionId: delegated.sessionId,
+            status: delegated.status,
+            ...(delegated.output.trim().length > 0
+              ? { output: delegated.output.trim() }
+              : {}),
+          }),
+        });
         return;
       }
       if (subcommand === "verify") {
         const workflowState = updateSessionWorkflowState(session.metadata, {
           stage: "verify",
         });
-        updateVerificationSurfaceState(session, {
-          status: wantsDelegate ? "running" : "idle",
-          source: wantsDelegate ? "delegated" : "local",
-          verdict: "unknown",
-          ...(wantsDelegate ? {} : { summaryPreview: "Verification stage entered." }),
-        });
-        await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
         if (!wantsDelegate) {
-          await cmdCtx.reply(
-            `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.\n\n${formatPlanSurface(workflowState)}`,
-          );
+          updateVerificationSurfaceState(session, {
+            status: "idle",
+            source: "local",
+            verdict: "unknown",
+            summaryPreview: "Verification stage entered.",
+          });
+          await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
+          await cmdCtx.replyResult({
+            text: `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.\n\n${formatPlanSurface(workflowState)}`,
+            viewKind: "workflow",
+            data: buildPlanData(workflowState),
+          });
           return;
         }
-        const delegated = await ctx.launchShellAgentTask({
-          parentSessionId: sessionId,
-          roleId: "verify",
-          objective: "Verify the current implementation state and return a verdict.",
-          prompt: buildVerifyDelegatePrompt({
-            branchReply: formatGitBranchReply(branchInfo),
-            summaryReply: formatGitSummaryReply(summary),
-            taskReply: formatTaskListReply(tasks),
-            runtimeStatusSnapshot,
-          }),
+        const delegated = await launchDelegatedVerifyTask({
+          ctx,
+          session,
+          webSessionId: cmdCtx.sessionId,
+          resolvedSessionId: sessionId,
+          memoryBackend,
           shellProfile,
-          wait: true,
+          branchInfo,
+          summary,
+          tasks,
+          runtimeStatusSnapshot,
         });
-        updateVerificationSurfaceState(session, {
-          status: delegated.success === true ? "completed" : "failed",
-          source: "delegated",
-          delegatedSessionId: delegated.sessionId,
-          summaryPreview: delegated.output,
-          verdict: delegated.success === true ? "pass" : "fail",
-        });
-        await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
-        await cmdCtx.reply(
-          [
+        await cmdCtx.replyResult({
+          text: [
             `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.`,
             "",
             formatPlanSurface(workflowState),
@@ -3148,7 +3623,15 @@ export function createDaemonCommandRegistry(
               ? delegated.output.trim()
               : "Delegated verifier returned no output.",
           ].join("\n"),
-        );
+          viewKind: "workflow",
+          data: buildPlanData(workflowState, {
+            sessionId: delegated.sessionId,
+            status: delegated.status,
+            ...(delegated.output.trim().length > 0
+              ? { output: delegated.output.trim() }
+              : {}),
+          }),
+        });
         return;
       }
       await cmdCtx.reply(
@@ -3158,9 +3641,15 @@ export function createDaemonCommandRegistry(
   });
   commandRegistry.register({
     name: "verify",
-    description: "Show verification state or run the restricted verifier child",
+    description: "Show verifier state or run the restricted verifier child",
     args: "[--delegate]",
     global: true,
+    metadata: {
+      category: "coding",
+      clients: ["shell", "console", "web"],
+      rolloutFeature: "codingCommands",
+      viewKind: "verify",
+    },
     handler: async (cmdCtx) => {
       const resolvedSessionId = resolveSessionId(cmdCtx.sessionId);
       const session = sessionMgr.get(resolvedSessionId);
@@ -3239,49 +3728,55 @@ export function createDaemonCommandRegistry(
         verifierSnapshot,
       ].join("\n");
       if (!wantsDelegate) {
-        updateVerificationSurfaceState(session, {
+        const verificationState = updateVerificationSurfaceState(session, {
           status: "completed",
           source: "local",
           summaryPreview: verificationSurface,
           verdict: hasChanges ? "mixed" : "pass",
         });
         await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
-        await cmdCtx.reply(verificationSurface);
+        await cmdCtx.replyResult({
+          text: verificationSurface,
+          viewKind: "verify",
+          data: {
+            kind: "verify",
+            delegated: false,
+            branchInfo: asRecord(branchInfo),
+            changeSummary: asRecord(summary),
+            tasks: asRecord(tasks),
+            runtimeStatusSnapshot,
+            verificationSurface: {
+              status: verificationState.status,
+              source: verificationState.source,
+              ...(verificationState.summaryPreview
+                ? { summaryPreview: verificationState.summaryPreview }
+                : {}),
+              ...(verificationState.verdict
+                ? { verdict: verificationState.verdict }
+                : {}),
+            },
+          },
+        });
         return;
       }
-      updateVerificationSurfaceState(session, {
-        status: "running",
-        source: "delegated",
-        verdict: "unknown",
-      });
-      await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
-      const delegated = await ctx.launchShellAgentTask({
-        parentSessionId: resolvedSessionId,
-        roleId: "verify",
-        objective: "Verify the current implementation state and return a verdict.",
-        prompt: buildVerifyDelegatePrompt({
-          branchReply: formatGitBranchReply(branchInfo),
-          summaryReply: formatGitSummaryReply(summary),
-          taskReply: formatTaskListReply(tasks),
-          runtimeStatusSnapshot,
-        }),
+      const delegated = await launchDelegatedVerifyTask({
+        ctx,
+        session,
+        webSessionId: cmdCtx.sessionId,
+        resolvedSessionId,
+        memoryBackend,
         shellProfile: resolveEffectiveShellProfileForSession({
           ctx,
           sessionId: resolvedSessionId,
           preferred: resolveSessionShellProfile(session.metadata),
         }),
-        wait: true,
+        branchInfo,
+        summary,
+        tasks,
+        runtimeStatusSnapshot,
       });
-      updateVerificationSurfaceState(session, {
-        status: delegated.success === true ? "completed" : "failed",
-        source: "delegated",
-        delegatedSessionId: delegated.sessionId,
-        summaryPreview: delegated.output,
-        verdict: delegated.success === true ? "pass" : "fail",
-      });
-      await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
-      await cmdCtx.reply(
-        [
+      await cmdCtx.replyResult({
+        text: [
           verificationSurface,
           "",
           `Delegated verifier session: ${delegated.sessionId} [${delegated.status}]`,
@@ -3289,13 +3784,43 @@ export function createDaemonCommandRegistry(
             ? delegated.output.trim()
             : "Delegated verifier returned no output.",
         ].join("\n"),
-      );
+        viewKind: "verify",
+        data: {
+          kind: "verify",
+          delegated: true,
+          branchInfo: asRecord(branchInfo),
+          changeSummary: asRecord(summary),
+          tasks: asRecord(tasks),
+          runtimeStatusSnapshot,
+          verificationSurface: {
+            status: delegated.success === true ? "completed" : "failed",
+            source: "delegated",
+            delegatedSessionId: delegated.sessionId,
+            ...(delegated.output.trim().length > 0
+              ? { summaryPreview: compactSurfacePreview(delegated.output) }
+              : {}),
+            verdict: delegated.success === true ? "pass" : "fail",
+          },
+          delegatedResult: {
+            sessionId: delegated.sessionId,
+            status: delegated.status,
+            ...(delegated.output.trim().length > 0
+              ? { output: delegated.output.trim() }
+              : {}),
+          },
+        },
+      });
     },
   });
   commandRegistry.register({
     name: "session",
     description: "Inspect the current shell session or continuity catalog",
     global: true,
+    metadata: {
+      category: "session",
+      clients: ["shell", "console", "web"],
+      viewKind: "session",
+    },
     handler: async (cmdCtx) => {
       const subcommand = cmdCtx.argv[0]?.toLowerCase() ?? "status";
       const webChat = ctx.getWebChatChannel();
@@ -3327,8 +3852,8 @@ export function createDaemonCommandRegistry(
           taskResult: tasks,
           childInfos: ctx.listSubAgentInfo(resolvedSessionId),
         });
-        await cmdCtx.reply(
-          [
+        await cmdCtx.replyResult({
+          text: [
             "Shell session:",
             `  Session id: ${cmdCtx.sessionId}`,
             `  Runtime session id: ${resolvedSessionId}`,
@@ -3348,7 +3873,26 @@ export function createDaemonCommandRegistry(
             "",
             formatWorkflowOwnershipReply(ownership),
           ].join("\n"),
-        );
+          viewKind: "session",
+          data: {
+            kind: "session",
+            subcommand: "status",
+            currentSession: {
+              sessionId: cmdCtx.sessionId,
+              runtimeSessionId: resolvedSessionId,
+              shellProfile,
+              workflowState,
+              workspaceRoot,
+              historyMessages: session?.history.length ?? 0,
+              ...(modelInfo
+                ? {
+                    model: `${modelInfo.provider}:${modelInfo.model}${modelInfo.usedFallback ? " (fallback)" : ""}`,
+                  }
+                : {}),
+              ownership: ownership.map((entry) => ({ ...entry })),
+            },
+          },
+        });
       };
 
       if (!subcommand || subcommand === "status" || subcommand === "current") {
@@ -3380,11 +3924,17 @@ export function createDaemonCommandRegistry(
             ...(profile ? { shellProfile: profile } : {}),
           },
         );
-        await cmdCtx.reply(
-          formatContinuitySessionList(
+        await cmdCtx.replyResult({
+          text: formatContinuitySessionList(
             sessions as unknown as readonly Record<string, unknown>[],
           ),
-        );
+          viewKind: "session",
+          data: {
+            kind: "session",
+            subcommand: "list",
+            sessions,
+          },
+        });
         return;
       }
 
@@ -3397,11 +3947,17 @@ export function createDaemonCommandRegistry(
           cmdCtx.sessionId,
           targetSessionId,
         );
-        await cmdCtx.reply(
-          detail
+        await cmdCtx.replyResult({
+          text: detail
             ? formatContinuitySessionInspect(detail)
             : `Session "${targetSessionId ?? cmdCtx.sessionId}" not found.`,
-        );
+          viewKind: "session",
+          data: {
+            kind: "session",
+            subcommand: "inspect",
+            ...(detail ? { detail } : {}),
+          },
+        });
         return;
       }
 
@@ -3420,11 +3976,15 @@ export function createDaemonCommandRegistry(
             jsonArgs?.includeTools === true ||
             hasInlineFlag(cmdCtx.argv.slice(1), "include-tools"),
         });
-        await cmdCtx.reply(
-          formatSessionHistoryReply(
-            history as unknown as readonly Record<string, unknown>[],
-          ),
-        );
+        await cmdCtx.replyResult({
+          text: formatSessionHistoryReply(history),
+          viewKind: "session",
+          data: {
+            kind: "session",
+            subcommand: "history",
+            history,
+          },
+        });
         return;
       }
 
@@ -3441,8 +4001,8 @@ export function createDaemonCommandRegistry(
           cmdCtx.sessionId,
           targetSessionId,
         );
-        await cmdCtx.reply(
-          resumed
+        await cmdCtx.replyResult({
+          text: resumed
             ? [
                 `Resumed session ${resumed.sessionId}.`,
                 `  Messages: ${resumed.messageCount}`,
@@ -3451,7 +4011,13 @@ export function createDaemonCommandRegistry(
                   : []),
               ].join("\n")
             : `Session "${targetSessionId}" not found.`,
-        );
+          viewKind: "session",
+          data: {
+            kind: "session",
+            subcommand: "resume",
+            ...(resumed ? { resumed } : {}),
+          },
+        });
         return;
       }
 
@@ -3481,8 +4047,8 @@ export function createDaemonCommandRegistry(
           return;
         }
         const sessionDetail = asRecord(forked.session);
-        await cmdCtx.reply(
-          [
+        await cmdCtx.replyResult({
+          text: [
             `Forked session ${typeof forked.targetSessionId === "string" ? forked.targetSessionId : "unknown"} from ${
               typeof forked.sourceSessionId === "string" ? forked.sourceSessionId : cmdCtx.sessionId
             }.`,
@@ -3492,7 +4058,26 @@ export function createDaemonCommandRegistry(
               : []),
             "  Use /session resume <sessionId> to switch into the fork.",
           ].join("\n"),
-        );
+          viewKind: "session",
+          data: {
+            kind: "session",
+            subcommand: "fork",
+            forked: {
+              sourceSessionId:
+                typeof forked.sourceSessionId === "string"
+                  ? forked.sourceSessionId
+                  : cmdCtx.sessionId,
+              targetSessionId:
+                typeof forked.targetSessionId === "string"
+                  ? forked.targetSessionId
+                  : "unknown",
+              ...(typeof forked.forkSource === "string"
+                ? { forkSource: forked.forkSource }
+                : {}),
+              ...(sessionDetail ? { session: sessionDetail } : {}),
+            },
+          },
+        });
         return;
       }
 
@@ -3629,13 +4214,34 @@ export function createDaemonCommandRegistry(
     description: "Show policy state or simulate a tool policy decision",
     args: "[status|simulate <toolName> [jsonArgs]|credentials|revoke-credentials [credentialId]|update <allow|deny|clear|reset> [pattern]]",
     global: true,
+    metadata: {
+      category: "policy",
+      clients: ["shell", "console", "web"],
+      viewKind: "policy",
+    },
     handler: async (cmdCtx) => {
+      const replyPolicyResult = async (
+        subcommandName: string,
+        text: string,
+        extras: Omit<import("../channels/webchat/protocol.js").PolicyCommandData, "kind" | "subcommand"> = {},
+      ) => {
+        await cmdCtx.replyResult({
+          text,
+          viewKind: "policy",
+          data: {
+            kind: "policy",
+            subcommand: subcommandName,
+            ...extras,
+          },
+        });
+      };
       const subcommand = cmdCtx.argv[0]?.toLowerCase();
       if (!subcommand || subcommand === "status") {
         const state = ctx.getPolicyEngineState();
         const policy = ctx.gateway?.config.policy;
         const sessionPolicyState = ctx.getSessionPolicyState(cmdCtx.sessionId);
-        await cmdCtx.reply(
+        await replyPolicyResult(
+          "status",
           [
             `Policy engine: ${ctx.isPolicyEngineEnabled() ? "enabled" : "disabled"}`,
             `Simulation mode: ${policy?.simulationMode ?? "off"}`,
@@ -3654,6 +4260,13 @@ export function createDaemonCommandRegistry(
                 : "none"
             }`,
           ].join("\n"),
+          {
+            sessionPolicyState: {
+              elevatedPatterns: sessionPolicyState.elevatedPatterns,
+              deniedPatterns: sessionPolicyState.deniedPatterns,
+            },
+            ...(state ? { preview: asRecord(state) } : {}),
+          },
         );
         return;
       }
@@ -3661,7 +4274,7 @@ export function createDaemonCommandRegistry(
         const leases =
           ctx.listSessionCredentialLeases(cmdCtx.sessionId) ?? [];
         if (leases.length === 0) {
-          await cmdCtx.reply("No active session credential leases.");
+          await replyPolicyResult("credentials", "No active session credential leases.");
           return;
         }
         const lines = leases.map(
@@ -3669,8 +4282,14 @@ export function createDaemonCommandRegistry(
             `- ${lease.credentialId}: expires ${new Date(lease.expiresAt).toISOString()} ` +
             `(domains=${lease.domains.join(", ") || "none"})`,
         );
-        await cmdCtx.reply(
+        await replyPolicyResult(
+          "credentials",
           `Active session credential leases:\n${lines.join("\n")}`,
+          {
+            leases: leases
+              .map((lease) => asRecord(lease))
+              .filter((lease): lease is Record<string, unknown> => Boolean(lease)),
+          },
         );
         return;
       }
@@ -3684,7 +4303,8 @@ export function createDaemonCommandRegistry(
               : undefined,
           reason: "manual",
         });
-        await cmdCtx.reply(
+        await replyPolicyResult(
+          "revoke-credentials",
           revoked > 0
             ? `Revoked ${revoked} session credential lease${revoked === 1 ? "" : "s"}.`
             : credentialId
@@ -3711,7 +4331,8 @@ export function createDaemonCommandRegistry(
           operation: operation as "allow" | "deny" | "clear" | "reset",
           pattern,
         });
-        await cmdCtx.reply(
+        await replyPolicyResult(
+          "update",
           [
             `Policy update: ${operation}${pattern ? ` ${pattern}` : ""}`,
             `Session allow patterns: ${
@@ -3725,6 +4346,12 @@ export function createDaemonCommandRegistry(
                 : "none"
             }`,
           ].join("\n"),
+          {
+            sessionPolicyState: {
+              elevatedPatterns: nextState.elevatedPatterns,
+              deniedPatterns: nextState.deniedPatterns,
+            },
+          },
         );
         return;
       }
@@ -3774,7 +4401,8 @@ export function createDaemonCommandRegistry(
               .join("\n")
           : "- none";
       const approvalPreview = preview.approval.requestPreview;
-      await cmdCtx.reply(
+      await replyPolicyResult(
+        "simulate",
         [
           `Policy simulation for ${preview.toolName}`,
           `Session: ${preview.sessionId}`,
@@ -3785,6 +4413,9 @@ export function createDaemonCommandRegistry(
             ? `Approval preview: ${approvalPreview.message}`
             : "Approval preview: none",
         ].join("\n"),
+        {
+          preview: asRecord(preview),
+        },
       );
     },
   });
@@ -3793,6 +4424,11 @@ export function createDaemonCommandRegistry(
     description: "Alias for /policy with coding-shell wording",
     args: "[status|simulate <toolName> [jsonArgs]|credentials|revoke-credentials [credentialId]|update <allow|deny|clear|reset> [pattern]]",
     global: true,
+    metadata: {
+      category: "policy",
+      clients: ["shell", "console", "web"],
+      viewKind: "policy",
+    },
     handler: async (cmdCtx) => {
       const policy = commandRegistry.get("policy");
       if (!policy) {
@@ -3807,6 +4443,12 @@ export function createDaemonCommandRegistry(
     description: "Inspect and control already-configured MCP servers",
     args: "[status|list|inspect <server>|tools [server]|validate [server]|reconnect <server>|enable <server>|disable <server>]",
     global: true,
+    metadata: {
+      category: "extensions",
+      clients: ["shell", "console", "web"],
+      rolloutFeature: "shellExtensions",
+      viewKind: "extensions",
+    },
     handler: async (cmdCtx) => {
       if (
         !(await requireShellFeature({
@@ -3836,16 +4478,40 @@ export function createDaemonCommandRegistry(
         `  Plugin tools: ${sourceCounts.plugin ?? 0}`,
         `  Skill tools: ${sourceCounts.skill ?? 0}`,
       ].join("\n");
+      const replyExtensionResult = async (
+        text: string,
+        extras: Omit<import("../channels/webchat/protocol.js").ExtensionsCommandData, "kind" | "surface" | "subcommand"> = {},
+      ) => {
+        await cmdCtx.replyResult({
+          text,
+          viewKind: "extensions",
+          data: {
+            kind: "extensions",
+            surface: "mcp",
+            subcommand,
+            ...extras,
+          },
+        });
+      };
       const findServer = (name: string | undefined) =>
         configuredServers.find((server) => server.name === name);
 
       if (subcommand === "status") {
-        await cmdCtx.reply(renderStatus());
+        await replyExtensionResult(renderStatus(), {
+          status: {
+            configuredServers: configuredServers.length,
+            connectedServers: connectedServers.size,
+            visibleTools: mcpCatalog.length,
+            builtinTools: sourceCounts.builtin ?? 0,
+            pluginTools: sourceCounts.plugin ?? 0,
+            skillTools: sourceCounts.skill ?? 0,
+          },
+        });
         return;
       }
       if (subcommand === "list") {
         if (configuredServers.length === 0) {
-          await cmdCtx.reply(`${renderStatus()}\n\nNo MCP servers are configured.`);
+          await replyExtensionResult(`${renderStatus()}\n\nNo MCP servers are configured.`);
           return;
         }
         const lines = configuredServers.map((server) => {
@@ -3863,7 +4529,13 @@ export function createDaemonCommandRegistry(
             `— tools=${toolCount}`
           );
         });
-        await cmdCtx.reply(`${renderStatus()}\n\nServers:\n${lines.join("\n")}`);
+        await replyExtensionResult(`${renderStatus()}\n\nServers:\n${lines.join("\n")}`, {
+          entries: configuredServers.map((server) => ({
+            ...asRecord(server),
+            visibleToolCount: getMcpCatalogEntries(mcpCatalog, server.name).length,
+            connected: connectedServers.has(server.name),
+          })),
+        });
         return;
       }
       if (subcommand === "tools") {
@@ -3873,14 +4545,20 @@ export function createDaemonCommandRegistry(
             ? getMcpCatalogEntries(mcpCatalog, serverName.trim())
             : mcpCatalog;
         if (visibleCatalog.length === 0) {
-          await cmdCtx.reply(`${renderStatus()}\n\nNo MCP tools are currently connected.`);
+          await replyExtensionResult(`${renderStatus()}\n\nNo MCP tools are currently connected.`);
           return;
         }
         const lines = visibleCatalog
           .slice(0, 100)
           .map((entry) => `  ${entry.name} — ${entry.description}`);
-        await cmdCtx.reply(
+        await replyExtensionResult(
           `${renderStatus()}\n\nTools${serverName ? ` (${serverName.trim()})` : ""}:\n${lines.join("\n")}`,
+          {
+            ...(serverName ? { target: serverName.trim() } : {}),
+            entries: visibleCatalog
+              .map((entry) => asRecord(entry))
+              .filter((entry): entry is Record<string, unknown> => Boolean(entry)),
+          },
         );
         return;
       }
@@ -3929,7 +4607,15 @@ export function createDaemonCommandRegistry(
               .map((entry) => `  ${stripMcpToolPrefix(entry.name, server.name)} — ${entry.description}`),
           );
         }
-        await cmdCtx.reply(lines.join("\n"));
+        await replyExtensionResult(lines.join("\n"), {
+          target: serverName,
+          detail: {
+            ...asRecord(server),
+            visibleTools: serverCatalog
+              .map((entry) => asRecord(entry))
+              .filter((entry): entry is Record<string, unknown> => Boolean(entry)),
+          },
+        });
         return;
       }
       if (subcommand === "validate") {
@@ -4007,7 +4693,12 @@ export function createDaemonCommandRegistry(
             ].join("\n"),
           );
         }
-        await cmdCtx.reply(sections.join("\n\n"));
+        await replyExtensionResult(sections.join("\n\n"), {
+          ...(serverName ? { target: serverName } : {}),
+          entries: targets
+            .map((server) => asRecord(server))
+            .filter((entry): entry is Record<string, unknown> => Boolean(entry)),
+        });
         return;
       }
       if (subcommand === "reconnect") {
@@ -4028,10 +4719,14 @@ export function createDaemonCommandRegistry(
           return;
         }
         const result = await mcpManager.reconnectServer(server.name);
-        await cmdCtx.reply(
+        await replyExtensionResult(
           result.success
             ? `MCP server "${server.name}" reconnected (${result.toolCount} tools).`
             : `MCP server "${server.name}" reconnect failed: ${result.error ?? "unknown error"}`,
+          {
+            target: server.name,
+            detail: asRecord(result),
+          },
         );
         return;
       }
@@ -4065,8 +4760,14 @@ export function createDaemonCommandRegistry(
           parsed.mcp = { ...(parsed.mcp ?? {}), servers };
           await writeFile(ctx.configPath, JSON.stringify(parsed, null, 2) + "\n");
           await ctx.handleConfigReload();
-          await cmdCtx.reply(
+          await replyExtensionResult(
             `MCP server "${server.name}" ${nextEnabled ? "enabled" : "disabled"} via config reload.`,
+            {
+              target: server.name,
+              detail: {
+                enabled: nextEnabled,
+              },
+            },
           );
         } catch (error) {
           await cmdCtx.reply(
@@ -4362,6 +5063,12 @@ export function createDaemonCommandRegistry(
     description: "Inspect and toggle local discovered skills",
     args: "[list|inspect <name>|enable <name>|disable <name>|sources]",
     global: true,
+    metadata: {
+      category: "extensions",
+      clients: ["shell", "console", "web"],
+      rolloutFeature: "shellExtensions",
+      viewKind: "extensions",
+    },
     handler: async (cmdCtx) => {
       if (
         !(await requireShellFeature({
@@ -4389,10 +5096,25 @@ export function createDaemonCommandRegistry(
       };
       const resolveByName = (name: string | undefined) =>
         discovered.find((entry) => entry.skill.name === name);
+      const replyExtensionResult = async (
+        text: string,
+        extras: Omit<import("../channels/webchat/protocol.js").ExtensionsCommandData, "kind" | "surface" | "subcommand"> = {},
+      ) => {
+        await cmdCtx.replyResult({
+          text,
+          viewKind: "extensions",
+          data: {
+            kind: "extensions",
+            surface: "skills",
+            subcommand,
+            ...extras,
+          },
+        });
+      };
 
       if (subcommand === "list") {
         if (discovered.length === 0) {
-          await cmdCtx.reply(
+          await replyExtensionResult(
             "No local skills discovered.\nMarketplace listings remain under `agenc market skills ...`.",
           );
           return;
@@ -4404,10 +5126,20 @@ export function createDaemonCommandRegistry(
             `(${entry.tier}, ${state})`
           );
         });
-        await cmdCtx.reply(
+        await replyExtensionResult(
           "Local skills:\n" +
             lines.join("\n") +
             "\n\nMarketplace listings: use `agenc market skills ...`.",
+          {
+            entries: discovered
+              .map((entry) =>
+                asRecord({
+                  ...entry,
+                  ...resolveState(entry),
+                }),
+              )
+              .filter((entry): entry is Record<string, unknown> => Boolean(entry)),
+          },
         );
         return;
       }
@@ -4450,7 +5182,13 @@ export function createDaemonCommandRegistry(
         if (preview.trim().length > 0) {
           lines.push("", "Preview:", preview);
         }
-        await cmdCtx.reply(lines.join("\n"));
+        await replyExtensionResult(lines.join("\n"), {
+          target: skillName,
+          detail: asRecord({
+            ...skill,
+            ...resolveState(skill),
+          }),
+        });
         return;
       }
 
@@ -4458,7 +5196,7 @@ export function createDaemonCommandRegistry(
         const sources = await ctx.resolveShellSkillDiscoveryPaths({
           sessionId: cmdCtx.sessionId,
         });
-        await cmdCtx.reply(
+        await replyExtensionResult(
           [
             "Skill discovery sources:",
             `  Agent: ${sources.agentSkills ?? "not configured"}`,
@@ -4468,6 +5206,9 @@ export function createDaemonCommandRegistry(
             "",
             "Marketplace listings: use `agenc market skills ...`.",
           ].join("\n"),
+          {
+            detail: asRecord(sources),
+          },
         );
         return;
       }
@@ -4495,9 +5236,15 @@ export function createDaemonCommandRegistry(
           } else if (!existsSync(markerPath)) {
             await writeFile(markerPath, "", "utf8");
           }
-          await cmdCtx.reply(
+          await replyExtensionResult(
             `Skill "${skill.skill.name}" ${subcommand}d.\n` +
               "Marketplace listings remain separate under `agenc market skills ...`.",
+            {
+              target: skill.skill.name,
+              detail: {
+                disabled: subcommand !== "enable",
+              },
+            },
           );
         } catch (error) {
           await cmdCtx.reply(
@@ -4517,6 +5264,12 @@ export function createDaemonCommandRegistry(
     description: "Inspect and toggle the local plugin catalog",
     args: "[list|inspect <pluginId>|enable <pluginId>|disable <pluginId>|reload <pluginId>]",
     global: true,
+    metadata: {
+      category: "extensions",
+      clients: ["shell", "console", "web"],
+      rolloutFeature: "shellExtensions",
+      viewKind: "extensions",
+    },
     handler: async (cmdCtx) => {
       if (
         !(await requireShellFeature({
@@ -4530,11 +5283,26 @@ export function createDaemonCommandRegistry(
       }
       const subcommand = cmdCtx.argv[0]?.toLowerCase() ?? "list";
       const catalog = ctx.getPluginCatalog();
+      const replyExtensionResult = async (
+        text: string,
+        extras: Omit<import("../channels/webchat/protocol.js").ExtensionsCommandData, "kind" | "surface" | "subcommand"> = {},
+      ) => {
+        await cmdCtx.replyResult({
+          text,
+          viewKind: "extensions",
+          data: {
+            kind: "extensions",
+            surface: "plugin",
+            subcommand,
+            ...extras,
+          },
+        });
+      };
 
       if (subcommand === "list") {
         const entries = catalog.list();
         if (entries.length === 0) {
-          await cmdCtx.reply("No plugins are registered in the local catalog.");
+          await replyExtensionResult("No plugins are registered in the local catalog.");
           return;
         }
         const lines = entries.map(
@@ -4542,7 +5310,11 @@ export function createDaemonCommandRegistry(
             `  ${entry.manifest.id} — ${entry.enabled ? "enabled" : "disabled"} ` +
             `(${entry.precedence}${entry.slot ? `, slot=${entry.slot}` : ""})`,
         );
-        await cmdCtx.reply("Plugin catalog:\n" + lines.join("\n"));
+        await replyExtensionResult("Plugin catalog:\n" + lines.join("\n"), {
+          entries: entries
+            .map((entry) => asRecord(entry))
+            .filter((entry): entry is Record<string, unknown> => Boolean(entry)),
+        });
         return;
       }
 
@@ -4569,7 +5341,7 @@ export function createDaemonCommandRegistry(
           entry.manifest.allowDeny?.deny?.length
             ? entry.manifest.allowDeny.deny.join(", ")
             : "none";
-        await cmdCtx.reply(
+        await replyExtensionResult(
           [
             `Plugin: ${entry.manifest.id}`,
             `  Display name: ${entry.manifest.displayName}`,
@@ -4586,6 +5358,10 @@ export function createDaemonCommandRegistry(
             "Permissions:",
             ...permissions,
           ].join("\n"),
+          {
+            target: pluginId,
+            detail: asRecord(entry),
+          },
         );
         return;
       }
@@ -4601,11 +5377,15 @@ export function createDaemonCommandRegistry(
             : subcommand === "disable"
               ? catalog.disable(pluginId)
               : catalog.reload(pluginId);
-        await cmdCtx.reply(
+        await replyExtensionResult(
           [
             result.message,
             renderPluginMutationNote(),
           ].join("\n"),
+          {
+            target: pluginId,
+            detail: asRecord(result),
+          },
         );
         return;
       }

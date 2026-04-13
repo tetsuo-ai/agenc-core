@@ -40,7 +40,7 @@ export interface ShellProfileDefinition {
     | "balanced"
     | "coding"
     | "research"
-    | "verification"
+    | "verify"
     | "operator";
   readonly approvalHints: ShellProfileApprovalHints;
 }
@@ -141,7 +141,7 @@ const DEFINITIONS: Record<SessionShellProfile, ShellProfileDefinition> = {
     ],
     toolPrefixes: ["system.", "desktop.", "task."],
     exactToolNames: ["execute_with_agent"],
-    delegationDefault: "verification",
+    delegationDefault: "verify",
     approvalHints: {
       readOnlyBias: true,
       mutatingToolsDeemphasized: true,

@@ -30,10 +30,57 @@ export interface SlashCommandContext {
   readonly channel: string;
   /** Reply callback — sends a response in the same channel. */
   readonly reply: (content: string) => Promise<void>;
+  /** Structured reply callback for first-party clients. */
+  readonly replyResult: (
+    result: SlashCommandExecutionResult,
+  ) => Promise<void>;
 }
 
 /** Handler function signature for a slash command. */
 export type SlashCommandHandler = (ctx: SlashCommandContext) => Promise<void>;
+
+export type SlashCommandClient = "shell" | "console" | "web";
+
+export type SlashCommandCategory =
+  | "session"
+  | "workflow"
+  | "coding"
+  | "agents"
+  | "tasks"
+  | "extensions"
+  | "policy"
+  | "runtime"
+  | "utility";
+
+export type SlashCommandViewKind =
+  | "text"
+  | "session"
+  | "workflow"
+  | "agents"
+  | "tasks"
+  | "files"
+  | "grep"
+  | "git"
+  | "diff"
+  | "review"
+  | "verify"
+  | "extensions"
+  | "policy"
+  | "runtime";
+
+export interface SlashCommandMetadata {
+  readonly aliases?: readonly string[];
+  readonly category?: SlashCommandCategory;
+  readonly clients?: readonly SlashCommandClient[];
+  readonly rolloutFeature?:
+    | "shellProfiles"
+    | "codingCommands"
+    | "shellExtensions"
+    | "watchCockpit"
+    | "multiAgent";
+  readonly viewKind?: SlashCommandViewKind;
+  readonly deprecatedAliases?: readonly string[];
+}
 
 /** Definition of a slash command. */
 export interface SlashCommandDef {
@@ -45,9 +92,59 @@ export interface SlashCommandDef {
   readonly args?: string;
   /** Whether this command is available in all channels. */
   readonly global: boolean;
+  /** Optional metadata used by first-party clients to build command catalogs. */
+  readonly metadata?: SlashCommandMetadata;
   /** Handler function. */
   readonly handler: SlashCommandHandler;
 }
+
+export interface SlashCommandCatalogEntry {
+  readonly name: string;
+  readonly description: string;
+  readonly args?: string;
+  readonly global: boolean;
+  readonly aliases: readonly string[];
+  readonly category: SlashCommandCategory;
+  readonly clients: readonly SlashCommandClient[];
+  readonly rolloutFeature?:
+    | "shellProfiles"
+    | "codingCommands"
+    | "shellExtensions"
+    | "watchCockpit"
+    | "multiAgent";
+  readonly viewKind: SlashCommandViewKind;
+  readonly deprecatedAliases: readonly string[];
+  readonly available?: boolean;
+  readonly availabilityReason?: string;
+  readonly effectiveProfile?: string;
+  readonly heldBackBy?:
+    | "shellProfiles"
+    | "codingCommands"
+    | "shellExtensions"
+    | "watchCockpit"
+    | "multiAgent";
+}
+
+export interface SlashCommandExecutionResult<Data = unknown> {
+  readonly text: string;
+  readonly viewKind?: SlashCommandViewKind;
+  readonly data?: Data;
+}
+
+export interface SlashCommandDispatchResult<Data = unknown> {
+  readonly handled: boolean;
+  readonly commandName?: string;
+  readonly result?: SlashCommandExecutionResult<Data>;
+}
+
+type SlashCommandExecutionContext = Pick<
+  SlashCommandContext,
+  "sessionId" | "senderId" | "channel" | "reply"
+> & {
+  readonly replyResult?: (
+    result: SlashCommandExecutionResult,
+  ) => Promise<void>;
+};
 
 /** Result of parsing a message for slash commands. */
 export interface ParsedCommand {
@@ -120,6 +217,7 @@ export interface SlashCommandRegistryConfig {
  */
 export class SlashCommandRegistry {
   private readonly commands = new Map<string, SlashCommandDef>();
+  private readonly aliases = new Map<string, string>();
   private readonly logger: Logger;
 
   constructor(config?: SlashCommandRegistryConfig) {
@@ -128,7 +226,17 @@ export class SlashCommandRegistry {
 
   /** Register a slash command. Overwrites if name already exists. */
   register(command: SlashCommandDef): void {
+    const existing = this.commands.get(command.name);
+    if (existing) {
+      this.unregister(command.name);
+    }
     this.commands.set(command.name, command);
+    for (const alias of command.metadata?.aliases ?? []) {
+      this.aliases.set(alias, command.name);
+    }
+    for (const alias of command.metadata?.deprecatedAliases ?? []) {
+      this.aliases.set(alias, command.name);
+    }
     this.logger.debug(`Command registered: /${command.name}`);
   }
 
@@ -136,6 +244,11 @@ export class SlashCommandRegistry {
   unregister(name: string): boolean {
     const removed = this.commands.delete(name);
     if (removed) {
+      for (const [alias, target] of this.aliases.entries()) {
+        if (target === name) {
+          this.aliases.delete(alias);
+        }
+      }
       this.logger.debug(`Command unregistered: /${name}`);
     }
     return removed;
@@ -143,12 +256,13 @@ export class SlashCommandRegistry {
 
   /** Get a command definition by name. */
   get(name: string): SlashCommandDef | undefined {
-    return this.commands.get(name);
+    const canonical = this.aliases.get(name) ?? name;
+    return this.commands.get(canonical);
   }
 
   /** Check if a command is registered. */
   has(name: string): boolean {
-    return this.commands.has(name);
+    return this.commands.has(name) || this.aliases.has(name);
   }
 
   /** Get all registered command definitions sorted by name. */
@@ -180,25 +294,46 @@ export class SlashCommandRegistry {
    */
   async execute(
     parsed: ParsedCommand,
-    context: Omit<SlashCommandContext, "args" | "argv">,
+    context: SlashCommandExecutionContext,
   ): Promise<boolean> {
+    const detailed = await this.executeDetailed(parsed, context);
+    return detailed.handled;
+  }
+
+  async executeDetailed(
+    parsed: ParsedCommand,
+    context: SlashCommandExecutionContext,
+  ): Promise<SlashCommandDispatchResult> {
     if (!parsed.isCommand || !parsed.name) {
-      return false;
+      return { handled: false };
     }
 
-    const command = this.commands.get(parsed.name);
+    const command = this.get(parsed.name);
     if (!command) {
       this.logger.debug(`Unknown command: /${parsed.name}, passing through`);
-      return false;
+      return { handled: false };
     }
 
+    let explicitResult: SlashCommandExecutionResult | undefined;
+    const replies: string[] = [];
     const ctx: SlashCommandContext = {
       args: parsed.args ?? "",
       argv: parsed.argv ?? [],
       sessionId: context.sessionId,
       senderId: context.senderId,
       channel: context.channel,
-      reply: context.reply,
+      reply: async (content) => {
+        replies.push(content);
+        await context.reply(content);
+      },
+      replyResult: async (result) => {
+        explicitResult = result;
+        if (context.replyResult) {
+          await context.replyResult(result);
+          return;
+        }
+        await context.reply(result.text);
+      },
     };
 
     try {
@@ -211,7 +346,35 @@ export class SlashCommandRegistry {
       );
     }
 
-    return true;
+    return {
+      handled: true,
+      commandName: command.name,
+      result:
+        explicitResult ??
+        (replies.length > 0
+          ? {
+              text: replies.join("\n\n").trim(),
+              viewKind: command.metadata?.viewKind ?? "text",
+            }
+          : undefined),
+    };
+  }
+
+  getCatalog(): ReadonlyArray<SlashCommandCatalogEntry> {
+    return this.getCommands().map((command) => ({
+      name: command.name,
+      description: command.description,
+      ...(command.args ? { args: command.args } : {}),
+      global: command.global,
+      aliases: command.metadata?.aliases ?? [],
+      category: command.metadata?.category ?? "utility",
+      clients: command.metadata?.clients ?? ["shell", "console", "web"],
+      ...(command.metadata?.rolloutFeature
+        ? { rolloutFeature: command.metadata.rolloutFeature }
+        : {}),
+      viewKind: command.metadata?.viewKind ?? "text",
+      deprecatedAliases: command.metadata?.deprecatedAliases ?? [],
+    }));
   }
 
   /**
@@ -228,8 +391,33 @@ export class SlashCommandRegistry {
     channel: string,
     reply: (content: string) => Promise<void>,
   ): Promise<boolean> {
+    const detailed = await this.dispatchDetailed(
+      message,
+      sessionId,
+      senderId,
+      channel,
+      reply,
+    );
+    return detailed.handled;
+  }
+
+  async dispatchDetailed(
+    message: string,
+    sessionId: string,
+    senderId: string,
+    channel: string,
+    reply: (content: string) => Promise<void>,
+  ): Promise<SlashCommandDispatchResult> {
     const parsed = this.parse(message);
-    return this.execute(parsed, { sessionId, senderId, channel, reply });
+    return this.executeDetailed(parsed, {
+      sessionId,
+      senderId,
+      channel,
+      reply,
+      replyResult: async (result) => {
+        await reply(result.text);
+      },
+    });
   }
 }
 
@@ -250,136 +438,15 @@ export function createDefaultCommands(): SlashCommandDef[] {
       name: "help",
       description: "Show available commands",
       global: true,
+      metadata: {
+        category: "utility",
+        clients: ["shell", "console", "web"],
+        viewKind: "text",
+      },
       handler: async (ctx) => {
         // Help needs access to a registry, so this is a placeholder.
         // The gateway wires up the real help handler with registry access.
         await ctx.reply("Use /help to see available commands.");
-      },
-    },
-    {
-      name: "status",
-      description: "Show agent status",
-      global: true,
-      handler: async (ctx) => {
-        await ctx.reply(
-          `Agent is running.\nSession: ${ctx.sessionId}\nChannel: ${ctx.channel}`,
-        );
-      },
-    },
-    {
-      name: "new",
-      description: "Start a new session (reset conversation)",
-      global: true,
-      handler: async (ctx) => {
-        await ctx.reply("Session reset. Starting fresh conversation.");
-      },
-    },
-    {
-      name: "init",
-      description: "Generate an AGENC.md contributor guide",
-      args: "[--force]",
-      global: true,
-      handler: async (ctx) => {
-        await ctx.reply(
-          "Project guide init is not wired in this surface yet.",
-        );
-      },
-    },
-    {
-      name: "reset",
-      description: "Reset session and clear context",
-      global: true,
-      handler: async (ctx) => {
-        await ctx.reply("Session and context cleared.");
-      },
-    },
-    {
-      name: "stop",
-      description: "Pause the agent (stop responding)",
-      global: true,
-      handler: async (ctx) => {
-        await ctx.reply("Agent paused. Use /start to resume.");
-      },
-    },
-    {
-      name: "start",
-      description: "Resume the agent",
-      global: true,
-      handler: async (ctx) => {
-        await ctx.reply("Agent resumed.");
-      },
-    },
-    {
-      name: "context",
-      description: "Show current context window usage",
-      global: true,
-      handler: async (ctx) => {
-        await ctx.reply(
-          `Session: ${ctx.sessionId}\nContext info not yet available.`,
-        );
-      },
-    },
-    {
-      name: "compact",
-      description: "Force conversation compaction",
-      global: true,
-      handler: async (ctx) => {
-        await ctx.reply("Compaction triggered.");
-      },
-    },
-    {
-      name: "model",
-      description: "Show or switch the current LLM model",
-      args: "[model-name | current | list]",
-      global: true,
-      handler: async (ctx) => {
-        if (ctx.args) {
-          await ctx.reply(
-            `Model switching requires the daemon. Requested: ${ctx.args}`,
-          );
-        } else {
-          await ctx.reply("Model info requires the daemon. Use /model in the operator console.");
-        }
-      },
-    },
-    {
-      name: "skills",
-      description: "List available skills",
-      global: true,
-      handler: async (ctx) => {
-        await ctx.reply("Skill listing not yet available.");
-      },
-    },
-    {
-      name: "task",
-      description: "Show current task status",
-      global: true,
-      handler: async (ctx) => {
-        await ctx.reply("Task status not yet available.");
-      },
-    },
-    {
-      name: "tasks",
-      description: "List all tasks",
-      global: true,
-      handler: async (ctx) => {
-        await ctx.reply("Task listing not yet available.");
-      },
-    },
-    {
-      name: "balance",
-      description: "Show token balance",
-      global: true,
-      handler: async (ctx) => {
-        await ctx.reply("Balance info not yet available.");
-      },
-    },
-    {
-      name: "reputation",
-      description: "Show agent reputation score",
-      global: true,
-      handler: async (ctx) => {
-        await ctx.reply("Reputation info not yet available.");
       },
     },
   ];

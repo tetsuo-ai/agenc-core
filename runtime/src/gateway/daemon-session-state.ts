@@ -60,7 +60,7 @@ import {
 
 const WEB_SESSION_RUNTIME_STATE_KEY_PREFIX = "webchat:runtime-state:";
 
-export interface PersistedWebSessionRuntimeState {
+export interface PersistedSessionRuntimeState {
   readonly version: 6;
   readonly shellProfile?: SessionShellProfile;
   readonly workflowState?: SessionWorkflowState;
@@ -78,8 +78,11 @@ export interface PersistedWebSessionRuntimeState {
    * resume on a new client connection without losing the workflow contract
    * fingerprint, source/target artifacts, or task lineage.
    */
-  readonly activeTaskContext?: unknown;
+  readonly activeTaskContext?: ActiveTaskContext;
 }
+
+/** @deprecated Use PersistedSessionRuntimeState. */
+export type PersistedWebSessionRuntimeState = PersistedSessionRuntimeState;
 
 const SESSION_STATEFUL_LINEAGE_PHASES = new Set([
   "initial",
@@ -213,9 +216,22 @@ function webSessionRuntimeStateKey(webSessionId: string): string {
   return `${WEB_SESSION_RUNTIME_STATE_KEY_PREFIX}${webSessionId}`;
 }
 
-function buildPersistedWebSessionRuntimeState(
+function coerceActiveTaskContext(value: unknown): ActiveTaskContext | undefined {
+  if (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    (value as Record<string, unknown>).version === 1 &&
+    typeof (value as Record<string, unknown>).taskLineageId === "string"
+  ) {
+    return value as ActiveTaskContext;
+  }
+  return undefined;
+}
+
+function buildPersistedSessionRuntimeState(
   session: Session,
-): PersistedWebSessionRuntimeState | undefined {
+): PersistedSessionRuntimeState | undefined {
   const resumeAnchorCandidate =
     session.metadata[SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY];
   const resumeAnchor = isStatefulResumeAnchor(resumeAnchorCandidate)
@@ -231,10 +247,10 @@ function buildPersistedWebSessionRuntimeState(
     typeof (artifactContext as Record<string, unknown>).snapshotId === "string"
       ? String((artifactContext as Record<string, unknown>).snapshotId)
       : undefined;
-  const activeTaskContext =
-    session.metadata[SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY];
-  const hasActiveTaskContext =
-    typeof activeTaskContext === "object" && activeTaskContext !== null;
+  const activeTaskContext = coerceActiveTaskContext(
+    session.metadata[SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY],
+  );
+  const hasActiveTaskContext = activeTaskContext !== undefined;
   const runtimeContractSnapshot =
     typeof session.metadata[SESSION_RUNTIME_CONTRACT_SNAPSHOT_METADATA_KEY] === "object" &&
       session.metadata[SESSION_RUNTIME_CONTRACT_SNAPSHOT_METADATA_KEY] !== null
@@ -298,9 +314,9 @@ function buildPersistedWebSessionRuntimeState(
   };
 }
 
-function coercePersistedWebSessionRuntimeState(
+function coercePersistedSessionRuntimeState(
   value: unknown,
-): PersistedWebSessionRuntimeState | undefined {
+): PersistedSessionRuntimeState | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const candidate = value as Record<string, unknown>;
   if (
@@ -329,11 +345,7 @@ function coercePersistedWebSessionRuntimeState(
     candidate.artifactSessionId.trim().length > 0
       ? candidate.artifactSessionId.trim()
       : undefined;
-  const activeTaskContext =
-    typeof candidate.activeTaskContext === "object" &&
-    candidate.activeTaskContext !== null
-      ? candidate.activeTaskContext
-      : undefined;
+  const activeTaskContext = coerceActiveTaskContext(candidate.activeTaskContext);
   const runtimeContractSnapshot =
     typeof candidate.runtimeContractSnapshot === "object" &&
       candidate.runtimeContractSnapshot !== null
@@ -377,19 +389,19 @@ function coercePersistedWebSessionRuntimeState(
   };
 }
 
-function clonePersistedWebSessionRuntimeState(
-  state: PersistedWebSessionRuntimeState,
-): PersistedWebSessionRuntimeState {
+function clonePersistedSessionRuntimeState(
+  state: PersistedSessionRuntimeState,
+): PersistedSessionRuntimeState {
   return JSON.parse(
     JSON.stringify(state),
-  ) as PersistedWebSessionRuntimeState;
+  ) as PersistedSessionRuntimeState;
 }
 
-export async function loadPersistedWebSessionRuntimeState(
+export async function loadPersistedSessionRuntimeState(
   memoryBackend: MemoryBackend,
   webSessionId: string,
-): Promise<PersistedWebSessionRuntimeState | undefined> {
-  return coercePersistedWebSessionRuntimeState(
+): Promise<PersistedSessionRuntimeState | undefined> {
+  return coercePersistedSessionRuntimeState(
     await memoryBackend.get(webSessionRuntimeStateKey(webSessionId)),
   );
 }
@@ -415,7 +427,7 @@ export function buildSessionStatefulOptions(
   };
 }
 
-export async function persistWebSessionRuntimeState(
+export async function persistSessionRuntimeState(
   memoryBackend: MemoryBackend,
   webSessionId: string,
   session: Session,
@@ -437,7 +449,7 @@ export async function persistWebSessionRuntimeState(
       records: artifactRecords,
     });
   }
-  const persisted = buildPersistedWebSessionRuntimeState(session);
+  const persisted = buildPersistedSessionRuntimeState(session);
   const key = webSessionRuntimeStateKey(webSessionId);
   if (!persisted) {
     await artifactStore.clearSession(session.id);
@@ -447,12 +459,12 @@ export async function persistWebSessionRuntimeState(
   await memoryBackend.set(key, persisted);
 }
 
-export async function clearWebSessionRuntimeState(
+export async function clearSessionRuntimeState(
   memoryBackend: MemoryBackend,
   webSessionId: string,
 ): Promise<void> {
   const artifactStore = new MemoryArtifactStore(memoryBackend);
-  const persisted = coercePersistedWebSessionRuntimeState(
+  const persisted = coercePersistedSessionRuntimeState(
     await memoryBackend.get(webSessionRuntimeStateKey(webSessionId)),
   );
   if (persisted?.artifactSessionId) {
@@ -461,13 +473,13 @@ export async function clearWebSessionRuntimeState(
   await memoryBackend.delete(webSessionRuntimeStateKey(webSessionId));
 }
 
-export async function hydrateWebSessionRuntimeState(
+export async function hydrateSessionRuntimeState(
   memoryBackend: MemoryBackend,
   webSessionId: string,
   session: Session,
 ): Promise<void> {
   const artifactStore = new MemoryArtifactStore(memoryBackend);
-  const persisted = coercePersistedWebSessionRuntimeState(
+  const persisted = coercePersistedSessionRuntimeState(
     await memoryBackend.get(webSessionRuntimeStateKey(webSessionId)),
   );
   if (!persisted) return;
@@ -517,7 +529,7 @@ export async function hydrateWebSessionRuntimeState(
   }
 }
 
-export async function forkWebSessionRuntimeState(
+export async function forkSessionRuntimeState(
   memoryBackend: MemoryBackend,
   params: {
     sourceWebSessionId: string;
@@ -526,7 +538,7 @@ export async function forkWebSessionRuntimeState(
     workflowState?: Partial<SessionWorkflowState>;
   },
 ): Promise<boolean> {
-  const persisted = await loadPersistedWebSessionRuntimeState(
+  const persisted = await loadPersistedSessionRuntimeState(
     memoryBackend,
     params.sourceWebSessionId,
   );
@@ -536,7 +548,7 @@ export async function forkWebSessionRuntimeState(
 
   const artifactStore = new MemoryArtifactStore(memoryBackend);
   const next = {
-    ...clonePersistedWebSessionRuntimeState(persisted),
+    ...clonePersistedSessionRuntimeState(persisted),
   } as {
     version: 6;
     shellProfile?: SessionShellProfile;
@@ -549,7 +561,7 @@ export async function forkWebSessionRuntimeState(
     runtimeContractStatusSnapshot?: RuntimeContractStatusSnapshot;
     reviewSurfaceState?: ReviewSurfaceState;
     verificationSurfaceState?: VerificationSurfaceState;
-    activeTaskContext?: unknown;
+    activeTaskContext?: ActiveTaskContext;
   };
   const mergedWorkflowState = (() => {
     if (persisted.workflowState) {
@@ -628,6 +640,17 @@ export async function forkWebSessionRuntimeState(
   );
   return true;
 }
+
+/** @deprecated Use loadPersistedSessionRuntimeState. */
+export const loadPersistedWebSessionRuntimeState = loadPersistedSessionRuntimeState;
+/** @deprecated Use persistSessionRuntimeState. */
+export const persistWebSessionRuntimeState = persistSessionRuntimeState;
+/** @deprecated Use clearSessionRuntimeState. */
+export const clearWebSessionRuntimeState = clearSessionRuntimeState;
+/** @deprecated Use hydrateSessionRuntimeState. */
+export const hydrateWebSessionRuntimeState = hydrateSessionRuntimeState;
+/** @deprecated Use forkSessionRuntimeState. */
+export const forkWebSessionRuntimeState = forkSessionRuntimeState;
 
 export function resolveSessionStatefulContinuation(
   result: ChatExecutorResult,
@@ -711,17 +734,9 @@ export function persistSessionStatefulContinuation(
 export function buildSessionActiveTaskContext(
   session: Session,
 ): ActiveTaskContext | undefined {
-  const raw = session.metadata[SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY];
-  if (
-    raw &&
-    typeof raw === "object" &&
-    !Array.isArray(raw) &&
-    (raw as Record<string, unknown>).version === 1 &&
-    typeof (raw as Record<string, unknown>).taskLineageId === "string"
-  ) {
-    return raw as ActiveTaskContext;
-  }
-  return undefined;
+  return coerceActiveTaskContext(
+    session.metadata[SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY],
+  );
 }
 
 export function persistSessionActiveTaskContext(

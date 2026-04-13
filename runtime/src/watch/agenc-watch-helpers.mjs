@@ -51,19 +51,9 @@ const CORE_WATCH_COMMANDS = Object.freeze([
     description: "Generate an AGENC.md contributor guide for this repo.",
   }),
   Object.freeze({
-    name: "/sessions",
-    usage: "/sessions [query]",
-    description: "List resumable chat sessions, optionally filtered by a local query.",
-  }),
-  Object.freeze({
     name: "/session",
-    usage: "/session <sessionId>",
-    description: "Resume a specific chat session.",
-  }),
-  Object.freeze({
-    name: "/history",
-    usage: "/history [limit]",
-    description: "Show recent chat history for the active session.",
+    usage: "/session [status|list|inspect|history|resume|fork]",
+    description: "Inspect, list, resume, or fork daemon-backed sessions.",
   }),
   Object.freeze({
     name: "/runs",
@@ -160,23 +150,7 @@ const CORE_WATCH_COMMANDS = Object.freeze([
   }),
 ]);
 
-const REVIEW_MODE_COMMANDS = Object.freeze([
-  Object.freeze({
-    name: "/review",
-    usage: "/review [scope]",
-    description: "Run a findings-first code review of the current changes.",
-  }),
-  Object.freeze({
-    name: "/security-review",
-    usage: "/security-review [scope]",
-    description: "Run a security-focused review of the current changes.",
-  }),
-  Object.freeze({
-    name: "/pr-comments",
-    usage: "/pr-comments [scope]",
-    description: "Draft concise PR review comments for the current changes.",
-  }),
-]);
+const REVIEW_MODE_COMMANDS = Object.freeze([]);
 
 const CHECKPOINT_COMMANDS = Object.freeze([
   Object.freeze({
@@ -200,8 +174,13 @@ const CHECKPOINT_COMMANDS = Object.freeze([
 const DIFF_REVIEW_COMMANDS = Object.freeze([
   Object.freeze({
     name: "/diff",
-    usage: "/diff [open|next|prev|close]",
-    description: "Open the newest diff, move between hunks, or close diff detail mode.",
+    usage: "/diff [--staged|--from <ref>|--to <ref>|--files <a,b>]",
+    description: "Use the shared daemon-backed diff surface.",
+  }),
+  Object.freeze({
+    name: "/diff-view",
+    usage: "/diff-view [open|next|prev|close]",
+    description: "Open the newest diff detail, move between hunks, or close diff detail mode.",
   }),
 ]);
 
@@ -216,7 +195,6 @@ const COMPACTION_COMMANDS = Object.freeze([
 const PERMISSIONS_COMMANDS = Object.freeze([
   Object.freeze({
     name: "/permissions",
-    aliases: ["/policy"],
     usage: "/permissions [status|simulate <toolName> [jsonArgs]|credentials|revoke-credentials [credentialId]|allow <toolPattern>|deny <toolPattern>|clear <toolPattern>|reset]",
     description: "Inspect policy state or simulate approval/policy decisions.",
   }),
@@ -268,8 +246,8 @@ const THREAD_SWITCHER_COMMANDS = Object.freeze([
   Object.freeze({
     name: "/agents",
     aliases: ["/threads"],
-    usage: "/agents [active|all|query]",
-    description: "Inspect active or recent planner/subagent threads from the local watch state.",
+    usage: "/agents [roles|list|spawn|assign|inspect|stop]",
+    description: "Use the shared child-agent orchestration surface.",
   }),
 ]);
 
@@ -364,17 +342,12 @@ const EXTENSIBILITY_COMMANDS = Object.freeze([
   Object.freeze({
     name: "/skills",
     usage: "/skills [list|enable <name>|disable <name>]",
-    description: "List runtime skills or toggle one through the live gateway session.",
-  }),
-  Object.freeze({
-    name: "/plugins",
-    usage: "/plugins [list|trust <packageName> [subpath ...]|untrust <packageName>]",
-    description: "Inspect or update trusted plugin packages in the runtime config.",
+    description: "Use the shared local-skill surface.",
   }),
   Object.freeze({
     name: "/mcp",
-    usage: "/mcp [list|enable <serverName>|disable <serverName>]",
-    description: "Inspect MCP servers or toggle one in the runtime config.",
+    usage: "/mcp [status|list|inspect <server>|tools [server]|validate [server]|reconnect <server>|enable <server>|disable <server>]",
+    description: "Use the shared daemon-backed MCP surface.",
   }),
   Object.freeze({
     name: "/hooks",
@@ -458,6 +431,55 @@ export function buildWatchCommands({ featureFlags = {} } = {}) {
 }
 
 export const WATCH_COMMANDS = buildWatchCommands();
+
+export function mergeWatchCommandCatalog(localCommands = WATCH_COMMANDS, sharedCatalog = []) {
+  const merged = [...localCommands];
+  const seen = new Map(
+    localCommands
+      .map((command, index) => [String(command?.name ?? "").trim().toLowerCase(), index])
+      .filter(([name]) => Boolean(name)),
+  );
+  for (const entry of sharedCatalog) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const clients = Array.isArray(entry.clients) ? entry.clients : [];
+    if (clients.length > 0 && !clients.includes("console")) {
+      continue;
+    }
+    const name = typeof entry.name === "string" ? `/${entry.name.trim()}` : "";
+    if (!name) {
+      continue;
+    }
+    const normalizedName = name.toLowerCase();
+    const aliases = [
+      ...(Array.isArray(entry.aliases) ? entry.aliases : []),
+      ...(Array.isArray(entry.deprecatedAliases) ? entry.deprecatedAliases : []),
+    ]
+      .map((alias) => (typeof alias === "string" ? `/${alias.trim()}` : ""))
+      .filter(Boolean);
+    const args = typeof entry.args === "string" && entry.args.trim().length > 0
+      ? ` ${entry.args.trim()}`
+      : "";
+    const nextEntry = Object.freeze({
+      name,
+      aliases: Object.freeze(aliases),
+      usage: `${name}${args}`,
+      description:
+        typeof entry.description === "string" && entry.description.trim().length > 0
+          ? entry.description.trim()
+          : "Runtime command",
+    });
+    const existingIndex = seen.get(normalizedName);
+    if (existingIndex !== undefined) {
+      merged[existingIndex] = nextEntry;
+      continue;
+    }
+    seen.set(normalizedName, merged.length);
+    merged.push(nextEntry);
+  }
+  return Object.freeze(merged);
+}
 
 const BACKGROUND_RUN_STATES = new Set([
   "pending",

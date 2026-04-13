@@ -22,6 +22,25 @@ import type {
   ObservabilityTraceDetail,
   ObservabilityTraceStatus,
   ObservabilityTraceSummary,
+  SessionContinuityDetail,
+  SessionContinuityRecord,
+  DiffCommandData,
+  ExtensionsCommandData,
+  FilesCommandData,
+  GrepCommandData,
+  SessionCommandData,
+  SessionCommandResultData,
+  SessionCommandResultPayload,
+  VerifyCommandData,
+  ReviewCommandData,
+  WorkflowCommandData,
+  AgentsCommandData,
+  GitCommandData,
+  PolicyCommandData,
+  TasksCommandData,
+  SlashCommandCatalogEntry,
+  SlashCommandViewKind,
+  WatchCockpitSnapshot,
 } from '@tetsuo-ai/runtime/browser';
 export type { GatewayChannelStatus } from '@tetsuo-ai/runtime/browser';
 
@@ -367,6 +386,23 @@ export type TraceStatus = ObservabilityTraceStatus | 'all';
 export type TraceSummaryMetrics = ObservabilitySummary;
 export type TraceArtifact = ObservabilityArtifactResponse;
 export type TraceLogTail = ObservabilityLogResponse;
+export type CommandCatalogEntry = SlashCommandCatalogEntry;
+export type ContinuityRecord = SessionContinuityRecord;
+export type ContinuityDetail = SessionContinuityDetail;
+export type SessionCommandViewData = SessionCommandResultData;
+export type SessionCommandViewSessionData = SessionCommandData;
+export type SessionCommandViewWorkflowData = WorkflowCommandData;
+export type SessionCommandViewAgentsData = AgentsCommandData;
+export type SessionCommandViewGitData = GitCommandData;
+export type SessionCommandViewDiffData = DiffCommandData;
+export type SessionCommandViewFilesData = FilesCommandData;
+export type SessionCommandViewGrepData = GrepCommandData;
+export type SessionCommandViewTasksData = TasksCommandData;
+export type SessionCommandViewPolicyData = PolicyCommandData;
+export type SessionCommandViewExtensionsData = ExtensionsCommandData;
+export type SessionCommandViewReviewData = ReviewCommandData;
+export type SessionCommandViewVerifyData = VerifyCommandData;
+export type CockpitSnapshot = WatchCockpitSnapshot;
 
 // ============================================================================
 // WebSocket Message Envelope
@@ -402,9 +438,13 @@ export interface WSMessage {
   messageCount?: number;
   active?: boolean;
   filters?: string[];
+  commandName?: string;
+  viewKind?: SlashCommandViewKind;
   // Subagent lifecycle
   subagent?: SubagentLifecyclePayload;
 }
+
+export type SessionCommandResult = SessionCommandResultPayload;
 
 // ============================================================================
 // Voice

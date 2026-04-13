@@ -136,7 +136,11 @@ async function runContinuityQuery(
     controlPlanePort?: number;
   },
   query: {
-    type: "chat.sessions" | "chat.inspect" | "chat.history" | "chat.fork";
+    type:
+      | "chat.session.list"
+      | "chat.session.inspect"
+      | "chat.history"
+      | "chat.session.fork";
     payload: Record<string, unknown>;
   },
 ): Promise<{ payload?: unknown; code: CliStatusCode }> {
@@ -190,7 +194,7 @@ export async function runSessionContinuityListCommand(
     "session.list",
     options,
     {
-      type: "chat.sessions",
+      type: "chat.session.list",
       payload: {
         continuity: true,
         ...(options.activeOnly ? { activeOnly: true } : {}),
@@ -219,7 +223,7 @@ export async function runSessionContinuityInspectCommand(
     "session.inspect",
     options,
     {
-      type: "chat.inspect",
+      type: "chat.session.inspect",
       payload: { sessionId: options.sessionId },
     },
   );
@@ -271,7 +275,7 @@ export async function runSessionContinuityForkCommand(
     "session.fork",
     options,
     {
-      type: "chat.fork",
+      type: "chat.session.fork",
       payload: {
         sessionId: options.sessionId,
         ...(options.objective ? { objective: options.objective } : {}),

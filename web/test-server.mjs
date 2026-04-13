@@ -53,6 +53,144 @@ const TEST_AGENTS = [
   },
 ];
 
+const TEST_CONTINUITY_SESSIONS = [
+  {
+    sessionId: CHAT_SESSION_ID,
+    label: 'Local Coding Session',
+    preview: 'Investigate unified session surface parity',
+    messageCount: 14,
+    createdAt: Date.now() - 60 * 60 * 1000,
+    updatedAt: Date.now() - 2 * 60 * 1000,
+    lastActiveAt: Date.now() - 2 * 60 * 1000,
+    connected: true,
+    resumabilityState: 'active',
+    shellProfile: 'coding',
+    workflowStage: 'implement',
+    workspaceRoot: '/tmp/agenc-demo',
+    repoRoot: '/tmp/agenc-demo',
+    branch: 'feature/demo',
+    head: 'abc1234',
+    childSessionCount: 1,
+    worktreeCount: 1,
+    pendingApprovalCount: 0,
+  },
+];
+
+const TEST_COCKPIT = {
+  session: {
+    sessionId: CHAT_SESSION_ID,
+    shellProfile: 'coding',
+    workflowStage: 'implement',
+    resumabilityState: 'active',
+    preview: 'Investigate unified session surface parity',
+    objective: 'Close remaining shell/console/web drift.',
+    messageCount: 14,
+    lastActiveAt: Date.now() - 2 * 60 * 1000,
+  },
+  repo: {
+    available: true,
+    workspaceRoot: '/tmp/agenc-demo',
+    repoRoot: '/tmp/agenc-demo',
+    branch: 'feature/demo',
+    head: 'abc1234',
+    dirtyCounts: { staged: 1, unstaged: 2, untracked: 0, conflicted: 0 },
+    changedFiles: ['runtime/src/gateway/daemon-command-registry.ts', 'web/src/hooks/useChat.ts'],
+  },
+  worktrees: {
+    available: true,
+    entries: [
+      {
+        path: '/tmp/agenc-demo',
+        branch: 'feature/demo',
+        head: 'abc1234',
+        clean: false,
+        ownedByRuntime: true,
+        ownerRole: 'coding',
+      },
+    ],
+  },
+  review: {
+    status: 'completed',
+    source: 'local',
+    startedAt: Date.now() - 10 * 60 * 1000,
+    updatedAt: Date.now() - 5 * 60 * 1000,
+    completedAt: Date.now() - 5 * 60 * 1000,
+    summaryPreview: 'Review completed with one remaining parity gap.',
+  },
+  verification: {
+    status: 'running',
+    source: 'delegated',
+    startedAt: Date.now() - 3 * 60 * 1000,
+    updatedAt: Date.now() - 30 * 1000,
+    verdict: 'unknown',
+    summaryPreview: 'Verifier is still running web parity checks.',
+  },
+  approvals: {
+    count: 1,
+    entries: [
+      {
+        requestId: 'approval-demo-1',
+        toolName: 'system.applyPatch',
+        state: 'pending',
+        preview: 'Apply the final cleanup patch',
+      },
+    ],
+  },
+  ownership: [
+    {
+      role: 'coding',
+      state: 'running',
+      childSessionId: 'child-demo-1',
+      shellProfile: 'coding',
+      worktreePath: '/tmp/agenc-demo',
+    },
+  ],
+};
+
+const TEST_COMMAND_CATALOG = [
+  {
+    name: 'session',
+    description: 'Inspect the current shell session or continuity catalog',
+    args: '[status|list|inspect|history|resume|fork]',
+    global: true,
+    aliases: [],
+    category: 'session',
+    clients: ['shell', 'console', 'web'],
+    viewKind: 'session',
+    deprecatedAliases: [],
+    available: true,
+  },
+  {
+    name: 'review',
+    description: 'Summarize repo state for review',
+    args: '[--staged|--delegate|--mode security|--mode pr-comments]',
+    global: true,
+    aliases: ['security-review', 'pr-comments'],
+    category: 'coding',
+    clients: ['shell', 'console', 'web'],
+    viewKind: 'review',
+    deprecatedAliases: [],
+    available: true,
+  },
+  {
+    name: 'diff',
+    description: 'Show change summary plus diff',
+    args: '[--staged|--from <ref>|--to <ref>|--files <a,b>]',
+    global: true,
+    aliases: [],
+    category: 'coding',
+    clients: ['shell', 'console', 'web'],
+    viewKind: 'diff',
+    deprecatedAliases: [],
+    available: true,
+  },
+];
+
+const TEST_HISTORY = [
+  { content: 'Audit remaining drift', sender: 'user', timestamp: Date.now() - 10_000 },
+  { content: 'Continuing with shell/console/web unification.', sender: 'agent', timestamp: Date.now() - 9_000 },
+];
+
 const DEFAULT_CONFIG = {
   llm: {
     provider: 'grok',
@@ -170,16 +308,129 @@ wss.on('connection', (ws) => {
         break;
 
       case 'chat.history':
-        ws.send(JSON.stringify({ type: 'chat.history', payload: [], id }));
+        ws.send(JSON.stringify({ type: 'chat.history', payload: TEST_HISTORY, id }));
         break;
 
-      case 'chat.resume':
+      case 'chat.session.list':
+        ws.send(JSON.stringify({ type: 'chat.session.list', payload: TEST_CONTINUITY_SESSIONS, id }));
+        break;
+
+      case 'chat.session.inspect':
         ws.send(JSON.stringify({
           type: 'error',
           error: `Session "${payload.sessionId}" not found in test server`,
           id,
         }));
         break;
+
+      case 'chat.session.fork':
+        ws.send(JSON.stringify({
+          type: 'error',
+          error: `Session "${payload.sessionId}" not found in test server`,
+          id,
+        }));
+        break;
+
+      case 'chat.session.resume':
+        ws.send(JSON.stringify({
+          type: 'chat.session.resumed',
+          payload: {
+            sessionId: payload.sessionId ?? CHAT_SESSION_ID,
+            messageCount: TEST_HISTORY.length,
+            workspaceRoot: '/tmp/agenc-demo',
+            shellProfile: 'coding',
+          },
+          id,
+        }));
+        break;
+
+      case 'session.command.catalog.get':
+        ws.send(JSON.stringify({
+          type: 'session.command.catalog',
+          payload: TEST_COMMAND_CATALOG,
+          id,
+        }));
+        break;
+
+      case 'watch.cockpit.get':
+        ws.send(JSON.stringify({
+          type: 'watch.cockpit',
+          payload: TEST_COCKPIT,
+          id,
+        }));
+        break;
+
+      case 'session.command.execute': {
+        const content = String(payload.content ?? '').trim();
+        if (content.startsWith('/session list')) {
+          ws.send(JSON.stringify({
+            type: 'session.command.result',
+            payload: {
+              commandName: 'session',
+              content: 'Listed sessions.',
+              sessionId: CHAT_SESSION_ID,
+              viewKind: 'session',
+              data: {
+                kind: 'session',
+                subcommand: 'list',
+                sessions: TEST_CONTINUITY_SESSIONS,
+              },
+            },
+            id,
+          }));
+          break;
+        }
+        if (content.startsWith('/session history')) {
+          ws.send(JSON.stringify({
+            type: 'session.command.result',
+            payload: {
+              commandName: 'session',
+              content: 'Loaded session history.',
+              sessionId: CHAT_SESSION_ID,
+              viewKind: 'session',
+              data: {
+                kind: 'session',
+                subcommand: 'history',
+                history: TEST_HISTORY,
+              },
+            },
+            id,
+          }));
+          break;
+        }
+        if (content.startsWith('/session resume')) {
+          ws.send(JSON.stringify({
+            type: 'session.command.result',
+            payload: {
+              commandName: 'session',
+              content: 'Resumed session.',
+              sessionId: CHAT_SESSION_ID,
+              viewKind: 'session',
+              data: {
+                kind: 'session',
+                subcommand: 'resume',
+                resumed: {
+                  sessionId: CHAT_SESSION_ID,
+                  messageCount: TEST_HISTORY.length,
+                  workspaceRoot: '/tmp/agenc-demo',
+                },
+              },
+            },
+            id,
+          }));
+          break;
+        }
+        ws.send(JSON.stringify({
+          type: 'session.command.result',
+          payload: {
+            commandName: content.startsWith('/') ? content.slice(1).split(/\s+/)[0] : 'command',
+            content: `Handled ${content || 'command'}.`,
+            sessionId: CHAT_SESSION_ID,
+          },
+          id,
+        }));
+        break;
+      }
 
       case 'status.get':
         {

@@ -4,13 +4,13 @@ import type { MemoryBackend } from "../memory/types.js";
 import {
   buildRuntimeContractStatusSnapshotForSession,
   buildSessionStatefulOptions,
-  clearWebSessionRuntimeState,
+  clearSessionRuntimeState,
   enrichRuntimeContractSnapshotForSession,
-  forkWebSessionRuntimeState,
-  hydrateWebSessionRuntimeState,
-  loadPersistedWebSessionRuntimeState,
+  forkSessionRuntimeState,
+  hydrateSessionRuntimeState,
+  loadPersistedSessionRuntimeState,
   persistSessionRuntimeContractStatusSnapshot,
-  persistWebSessionRuntimeState,
+  persistSessionRuntimeState,
 } from "./daemon-session-state.js";
 import {
   SESSION_SHELL_PROFILE_METADATA_KEY,
@@ -163,7 +163,7 @@ describe("web session runtime state helpers", () => {
   it("clears persisted runtime state during explicit session resets", async () => {
     const memoryBackend = createMemoryBackendStub();
 
-    await persistWebSessionRuntimeState(
+    await persistSessionRuntimeState(
       memoryBackend,
       "web-session-1",
       createSession({
@@ -174,10 +174,10 @@ describe("web session runtime state helpers", () => {
       }),
     );
 
-    await clearWebSessionRuntimeState(memoryBackend, "web-session-1");
+    await clearSessionRuntimeState(memoryBackend, "web-session-1");
 
     const hydrated = createSession();
-    await hydrateWebSessionRuntimeState(
+    await hydrateSessionRuntimeState(
       memoryBackend,
       "web-session-1",
       hydrated,
@@ -226,7 +226,7 @@ describe("web session runtime state helpers", () => {
       },
     ];
 
-    await persistWebSessionRuntimeState(
+    await persistSessionRuntimeState(
       memoryBackend,
       "web-session-artifacts",
       createSession({
@@ -241,7 +241,7 @@ describe("web session runtime state helpers", () => {
     );
 
     const hydrated = createSession();
-    await hydrateWebSessionRuntimeState(
+    await hydrateSessionRuntimeState(
       memoryBackend,
       "web-session-artifacts",
       hydrated,
@@ -276,7 +276,7 @@ describe("web session runtime state helpers", () => {
       displayArtifact: "PLAN.md",
     };
 
-    await persistWebSessionRuntimeState(
+    await persistSessionRuntimeState(
       memoryBackend,
       "web-session-active-task",
       createSession({
@@ -285,7 +285,7 @@ describe("web session runtime state helpers", () => {
     );
 
     const hydrated = createSession();
-    await hydrateWebSessionRuntimeState(
+    await hydrateSessionRuntimeState(
       memoryBackend,
       "web-session-active-task",
       hydrated,
@@ -299,7 +299,7 @@ describe("web session runtime state helpers", () => {
   it("persists and hydrates workflow state across web-session resume", async () => {
     const memoryBackend = createMemoryBackendStub();
 
-    await persistWebSessionRuntimeState(
+    await persistSessionRuntimeState(
       memoryBackend,
       "web-session-workflow",
       createSession({
@@ -314,7 +314,7 @@ describe("web session runtime state helpers", () => {
     );
 
     const hydrated = createSession();
-    await hydrateWebSessionRuntimeState(
+    await hydrateSessionRuntimeState(
       memoryBackend,
       "web-session-workflow",
       hydrated,
@@ -331,7 +331,7 @@ describe("web session runtime state helpers", () => {
 
   it("persists and hydrates review and verification surface state", async () => {
     const memoryBackend = createMemoryBackendStub();
-    await persistWebSessionRuntimeState(
+    await persistSessionRuntimeState(
       memoryBackend,
       "web-session-cockpit",
       createSession({
@@ -356,7 +356,7 @@ describe("web session runtime state helpers", () => {
       }),
     );
     const hydrated = createSession();
-    await hydrateWebSessionRuntimeState(memoryBackend, "web-session-cockpit", hydrated);
+    await hydrateSessionRuntimeState(memoryBackend, "web-session-cockpit", hydrated);
     expect(hydrated.metadata[SESSION_REVIEW_SURFACE_STATE_METADATA_KEY]).toMatchObject({
       status: "completed",
       source: "local",
@@ -391,12 +391,12 @@ describe("web session runtime state helpers", () => {
         verdict: "unknown",
       },
     });
-    const forked = await forkWebSessionRuntimeState(memoryBackend, {
+    const forked = await forkSessionRuntimeState(memoryBackend, {
       sourceWebSessionId: "web-source",
       targetWebSessionId: "web-target",
     });
     expect(forked).toBe(true);
-    const persisted = await loadPersistedWebSessionRuntimeState(memoryBackend, "web-target");
+    const persisted = await loadPersistedSessionRuntimeState(memoryBackend, "web-target");
     expect(persisted?.reviewSurfaceState).toMatchObject({
       status: "idle",
       source: "local",
@@ -411,7 +411,7 @@ describe("web session runtime state helpers", () => {
   it("persists and hydrates non-default shell profiles across web-session resume", async () => {
     const memoryBackend = createMemoryBackendStub();
 
-    await persistWebSessionRuntimeState(
+    await persistSessionRuntimeState(
       memoryBackend,
       "web-session-profile",
       createSession({
@@ -420,7 +420,7 @@ describe("web session runtime state helpers", () => {
     );
 
     const hydrated = createSession();
-    await hydrateWebSessionRuntimeState(
+    await hydrateSessionRuntimeState(
       memoryBackend,
       "web-session-profile",
       hydrated,
@@ -446,7 +446,7 @@ describe("web session runtime state helpers", () => {
       artifactRefs: [],
     };
 
-    await persistWebSessionRuntimeState(
+    await persistSessionRuntimeState(
       memoryBackend,
       "web-session-source",
       createSession({
@@ -470,7 +470,7 @@ describe("web session runtime state helpers", () => {
     );
 
     await expect(
-      forkWebSessionRuntimeState(memoryBackend, {
+      forkSessionRuntimeState(memoryBackend, {
         sourceWebSessionId: "web-session-source",
         targetWebSessionId: "web-session-target",
         shellProfile: "research",
@@ -481,7 +481,7 @@ describe("web session runtime state helpers", () => {
     ).resolves.toBe(true);
 
     expect(
-      await loadPersistedWebSessionRuntimeState(
+      await loadPersistedSessionRuntimeState(
         memoryBackend,
         "web-session-target",
       ),
@@ -497,7 +497,7 @@ describe("web session runtime state helpers", () => {
     });
     expect(
       (
-        await loadPersistedWebSessionRuntimeState(
+        await loadPersistedSessionRuntimeState(
           memoryBackend,
           "web-session-target",
         )
@@ -588,10 +588,10 @@ describe("web session runtime state helpers", () => {
       omittedMilestoneCount: 0,
     });
 
-    await persistWebSessionRuntimeState(memoryBackend, "web-session-status", session);
+    await persistSessionRuntimeState(memoryBackend, "web-session-status", session);
 
     const hydrated = createSession();
-    await hydrateWebSessionRuntimeState(
+    await hydrateSessionRuntimeState(
       memoryBackend,
       "web-session-status",
       hydrated,

@@ -35,6 +35,7 @@ function createHarness(overrides = {}) {
     state,
     now: () => 123,
     setTransientStatus: (value) => calls.push(["status", value]),
+    requestCockpit: (reason) => calls.push(["requestCockpit", reason]),
     persistSessionId: (value) => calls.push(["persistSessionId", value]),
     persistOwnerToken: (value) => calls.push(["persistOwnerToken", value]),
     resetLiveRunSurface: () => calls.push(["resetLiveRunSurface"]),
@@ -80,6 +81,7 @@ function createHarness(overrides = {}) {
     formatLogPayload: (value) => JSON.stringify(value),
     formatStatusPayload: (value) => JSON.stringify(value),
     statusFeedFingerprint: (value) => JSON.stringify(value),
+    cockpitFeedFingerprint: (value) => JSON.stringify(value),
     handlePlannerTraceEvent: (...args) => {
       calls.push(["handlePlannerTraceEvent", ...args]);
       return true;
@@ -124,7 +126,9 @@ test("dispatchOperatorSurfaceEvent handles session-ready events", () => {
   assert.deepEqual(calls, [
     ["persistSessionId", "session-1"],
     ["resetLiveRunSurface"],
+    ["send", "session.command.catalog.get", { auth: true, client: "console", sessionId: "session-1" }],
     ["markBootstrapReady", "session ready: session-1"],
+    ["requestCockpit", "session ready"],
   ]);
 });
 
@@ -154,8 +158,10 @@ test("dispatchOperatorSurfaceEvent resumes sessions by restoring history and ins
   assert.deepEqual(calls, [
     ["persistSessionId", "session-2"],
     ["resetLiveRunSurface"],
+    ["send", "session.command.catalog.get", { auth: true, client: "console", sessionId: "session-2" }],
     ["send", "chat.history", { auth: true, limit: 50 }],
     ["requestRunInspect", "resume", { force: true }],
+    ["requestCockpit", "resume"],
     ["markBootstrapReady", "session resumed: session-2; restoring history"],
   ]);
 });
@@ -184,6 +190,7 @@ test("dispatchOperatorSurfaceEvent restores bootstrap history before marking the
     ["restoreTranscriptFromHistory", history],
     ["markBootstrapReady", "history restored: 1 item(s)"],
     ["requestRunInspect", "history restore", { force: true }],
+    ["requestCockpit", "history restore"],
   ]);
 });
 
@@ -255,6 +262,123 @@ test("dispatchOperatorSurfaceEvent filters manual session lists with the active 
       "teal",
     ],
     ["status", "session filter loaded: 1 match(es)"],
+  ]);
+});
+
+test("dispatchOperatorSurfaceEvent bootstraps from canonical session list results", () => {
+  const { api, state, calls } = createHarness({
+    state: {
+      bootstrapReady: false,
+      sessionId: "session-prev",
+    },
+  });
+  const sessions = [
+    { sessionId: "session-next", label: "Latest" },
+  ];
+
+  dispatchOperatorSurfaceEvent(
+    {
+      family: "chat",
+      type: "session.command.result",
+      payload: {
+        commandName: "session",
+        content: "1 session",
+        data: {
+          kind: "session",
+          subcommand: "list",
+          sessions,
+        },
+      },
+      payloadRecord: {
+        commandName: "session",
+        content: "1 session",
+        data: {
+          kind: "session",
+          subcommand: "list",
+          sessions,
+        },
+      },
+      payloadList: null,
+      isSessionScoped: false,
+      message: {},
+    },
+    null,
+    api,
+  );
+
+  assert.equal(state.sessionId, "session-next");
+  assert.deepEqual(calls, [
+    ["persistSessionId", "session-next"],
+    [
+      "status",
+      "resuming session session-next",
+    ],
+    [
+      "send",
+      "session.command.execute",
+      {
+        auth: true,
+        client: "console",
+        content: "/session resume session-next",
+        sessionId: "session-next",
+      },
+    ],
+  ]);
+});
+
+test("dispatchOperatorSurfaceEvent handles canonical session resume results", () => {
+  const { api, state, calls } = createHarness({
+    state: { bootstrapReady: false },
+  });
+
+  dispatchOperatorSurfaceEvent(
+    {
+      family: "chat",
+      type: "session.command.result",
+      payload: {
+        commandName: "session",
+        content: "resumed",
+        sessionId: "session-5",
+        data: {
+          kind: "session",
+          subcommand: "resume",
+          resumed: {
+            sessionId: "session-5",
+            messageCount: 12,
+          },
+        },
+      },
+      payloadRecord: {
+        commandName: "session",
+        content: "resumed",
+        sessionId: "session-5",
+        data: {
+          kind: "session",
+          subcommand: "resume",
+          resumed: {
+            sessionId: "session-5",
+            messageCount: 12,
+          },
+        },
+      },
+      payloadList: null,
+      isSessionScoped: true,
+      message: {},
+    },
+    null,
+    api,
+  );
+
+  assert.equal(state.sessionId, "session-5");
+  assert.equal(state.pendingResumeHistoryRestore, true);
+  assert.deepEqual(calls, [
+    ["persistSessionId", "session-5"],
+    ["resetLiveRunSurface"],
+    ["send", "session.command.catalog.get", { auth: true, client: "console", sessionId: "session-5" }],
+    ["send", "chat.history", { auth: true, limit: 50 }],
+    ["requestRunInspect", "resume", { force: true }],
+    ["requestCockpit", "resume"],
+    ["markBootstrapReady", "session resumed: session-5; restoring history"],
   ]);
 });
 
@@ -692,6 +816,7 @@ test("dispatchOperatorSurfaceEvent routes final chat messages through stream rec
   assert.deepEqual(calls, [
     ["status", "agent reply received"],
     ["commitAgentMessage", "done"],
+    ["requestCockpit", "agent reply"],
     ["requestRunInspect", "agent reply", null],
   ]);
 });
@@ -884,6 +1009,7 @@ test("dispatchOperatorSurfaceEvent updates run state from run.inspect payloads",
   assert.deepEqual(calls, [
     ["hydratePlannerDagFromTraceArtifacts", "session-4"],
     ["status", "run inspect loaded: running"],
+    ["requestCockpit", "run inspect"],
   ]);
 });
 
@@ -921,6 +1047,7 @@ test("dispatchOperatorSurfaceEvent prefers completion truth from run.inspect pay
   assert.deepEqual(calls, [
     ["hydratePlannerDagFromTraceArtifacts", "session-4"],
     ["status", "run inspect loaded: needs verification"],
+    ["requestCockpit", "run inspect"],
   ]);
 });
 
@@ -977,6 +1104,7 @@ test("dispatchOperatorSurfaceEvent preserves completion truth on run.updated pay
       "magenta",
     ],
     ["requestRunInspect", "run update", null],
+    ["requestCockpit", "run update"],
   ]);
 });
 
@@ -1011,6 +1139,7 @@ test("dispatchOperatorSurfaceEvent emits status updates when the fingerprint cha
   assert.equal(state.lastStatusFeedFingerprint, JSON.stringify(payload));
   assert.deepEqual(calls, [
     ["status", "gateway status loaded"],
+    ["requestCockpit", "status poll"],
     ["pushEvent", "status", "Gateway Status", JSON.stringify(payload), "blue"],
   ]);
 });
@@ -1052,6 +1181,7 @@ test("dispatchOperatorSurfaceEvent keeps a local model selection when gateway st
   assert.equal(state.lastStatusFeedFingerprint, JSON.stringify(payload));
   assert.deepEqual(calls, [
     ["status", "gateway status loaded"],
+    ["requestCockpit", "status poll"],
     ["pushEvent", "status", "Gateway Status", JSON.stringify(payload), "blue"],
   ]);
 });
@@ -1084,6 +1214,7 @@ test("dispatchOperatorSurfaceEvent surfaces durable-run disabled status explicit
 
   assert.deepEqual(calls, [
     ["status", "durable runs disabled"],
+    ["requestCockpit", "status poll"],
     ["pushEvent", "status", "Gateway Status", JSON.stringify(payload), "blue"],
   ]);
 });
@@ -1218,6 +1349,7 @@ test("dispatchOperatorSurfaceEvent preserves approval escalations in the transcr
       JSON.stringify({ rule: "system.delete", reason: "dangerous action" }),
       "amber",
     ],
+    ["requestCockpit", "approval escalated"],
   ]);
 });
 

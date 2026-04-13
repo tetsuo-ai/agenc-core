@@ -5,8 +5,6 @@ import {
   buildWatchExtensibilityReport,
   clearWatchXaiApiKey,
   readWatchXaiConfigStatus,
-  updateWatchMcpServerState,
-  updateWatchTrustedPluginPackage,
   updateWatchXaiApiKey,
 } from "../../src/watch/agenc-watch-extensibility.mjs";
 
@@ -66,52 +64,6 @@ test("buildWatchExtensibilityReport summarizes config and live skills", () => {
   assert.match(report, /MCP servers: 1/);
   assert.match(report, /Runtime skills: 1/);
   assert.match(report, /Runtime hooks: 1/);
-});
-
-test("updateWatchTrustedPluginPackage writes a trusted package entry", () => {
-  const writes = [];
-  const fs = {
-    readFileSync: () => JSON.stringify({ plugins: { trustedPackages: [] } }),
-    mkdirSync: () => {},
-    writeFileSync: (_path, value) => writes.push(String(value)),
-  };
-
-  const result = updateWatchTrustedPluginPackage({
-    fs,
-    configPath: "/tmp/agenc.json",
-    packageName: "@demo/plugin",
-    allowedSubpaths: ["channel", "hooks"],
-  });
-
-  assert.equal(result.trustedPackages.length, 1);
-  assert.match(writes[0], /@demo\/plugin/);
-  assert.match(writes[0], /channel/);
-});
-
-test("updateWatchMcpServerState toggles the selected server", () => {
-  const writes = [];
-  const fs = {
-    readFileSync: () =>
-      JSON.stringify({
-        mcp: {
-          servers: [
-            { name: "browser", command: "npx", args: ["@demo/browser"], enabled: false },
-          ],
-        },
-      }),
-    mkdirSync: () => {},
-    writeFileSync: (_path, value) => writes.push(String(value)),
-  };
-
-  const result = updateWatchMcpServerState({
-    fs,
-    configPath: "/tmp/agenc.json",
-    serverName: "browser",
-    enabled: true,
-  });
-
-  assert.equal(result.enabled, true);
-  assert.match(writes[0], /"enabled": true/);
 });
 
 test("readWatchXaiConfigStatus reports masked local credentials", () => {

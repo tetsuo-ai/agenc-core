@@ -1,7 +1,16 @@
+import type { SessionShellProfile } from "./shell-profile.js";
+import type { SessionWorkflowState } from "./workflow-state.js";
+
 export const SESSION_REVIEW_SURFACE_STATE_METADATA_KEY =
   "reviewSurfaceState";
 export const SESSION_VERIFICATION_SURFACE_STATE_METADATA_KEY =
   "verificationSurfaceState";
+
+export type SessionResumabilityState =
+  | "active"
+  | "disconnected-resumable"
+  | "missing-workspace"
+  | "non-resumable";
 
 export type CockpitSurfaceStatus =
   | "idle"
@@ -45,7 +54,7 @@ export interface WorkflowOwnershipEntry {
   readonly taskSubject?: string;
   readonly childSessionId?: string;
   readonly workerId?: string;
-  readonly shellProfile?: string;
+  readonly shellProfile?: SessionShellProfile;
   readonly executionLocation?: string;
   readonly workspaceRoot?: string;
   readonly workingDirectory?: string;
@@ -57,9 +66,9 @@ export interface WorkflowOwnershipEntry {
 export interface WatchCockpitSnapshot {
   readonly session: {
     readonly sessionId: string;
-    readonly shellProfile: string;
-    readonly workflowStage: string;
-    readonly resumabilityState: string;
+    readonly shellProfile: SessionShellProfile;
+    readonly workflowStage: SessionWorkflowState["stage"];
+    readonly resumabilityState: SessionResumabilityState;
     readonly preview?: string;
     readonly objective?: string;
     readonly messageCount: number;

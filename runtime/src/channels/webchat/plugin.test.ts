@@ -18,14 +18,16 @@ import { silentLogger } from "../../utils/logger.js";
 import { InMemoryBackend } from "../../memory/in-memory/backend.js";
 import { WebChatSessionStore } from "./session-store.js";
 import {
-  loadPersistedWebSessionRuntimeState,
-  persistWebSessionRuntimeState,
+  loadPersistedSessionRuntimeState,
+  persistSessionRuntimeState,
 } from "../../gateway/daemon-session-state.js";
 import {
   SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY,
   SESSION_SHELL_PROFILE_METADATA_KEY,
 } from "../../gateway/session.js";
 import { SESSION_WORKFLOW_STATE_METADATA_KEY } from "../../gateway/workflow-state.js";
+import { SlashCommandRegistry } from "../../gateway/commands.js";
+import type { GatewayAutonomyConfig } from "../../gateway/types.js";
 
 // ============================================================================
 // Test helpers
@@ -90,6 +92,50 @@ function createDeps(overrides?: Partial<WebChatDeps>): WebChatDeps {
       },
     }),
     ...overrides,
+  };
+}
+
+function makeAutonomy(overrides?: Partial<GatewayAutonomyConfig>): GatewayAutonomyConfig {
+  return {
+    enabled: true,
+    featureFlags: {
+      canaryRollout: true,
+      shellProfiles: true,
+      codingCommands: true,
+      shellExtensions: true,
+      watchCockpit: true,
+      multiAgent: true,
+      backgroundRuns: true,
+      notifications: true,
+      replayGates: true,
+      ...(overrides?.featureFlags ?? {}),
+    },
+    killSwitches: {
+      canaryRollout: false,
+      shellProfiles: false,
+      codingCommands: false,
+      shellExtensions: false,
+      watchCockpit: false,
+      multiAgent: false,
+      backgroundRuns: false,
+      notifications: false,
+      replayGates: false,
+      ...(overrides?.killSwitches ?? {}),
+    },
+    canary: {
+      enabled: true,
+      featureAllowList: [
+        "shellProfiles",
+        "codingCommands",
+        "shellExtensions",
+        "watchCockpit",
+        "multiAgent",
+      ],
+      domainAllowList: ["shell", "extensions", "watch"],
+      percentage: 1,
+      ...(overrides?.canary ?? {}),
+    },
+    ...(overrides ?? {}),
   };
 }
 
@@ -357,6 +403,192 @@ describe("WebChatChannel", () => {
     channel = new WebChatChannel(deps);
     await channel.initialize(context);
     await channel.start();
+  });
+
+  describe("session command bus", () => {
+    it("returns structured command results when a handler calls replyResult", async () => {
+      const send = vi.fn<(response: ControlResponse) => void>();
+      const registry = new SlashCommandRegistry({ logger: silentLogger });
+      registry.register({
+        name: "session",
+        description: "structured session test",
+        global: true,
+        metadata: { viewKind: "session", clients: ["web"], category: "session" },
+        handler: async (ctx) => {
+          await ctx.replyResult({
+            text: "Structured session result",
+            viewKind: "session",
+            data: {
+              kind: "session",
+              subcommand: "status",
+              currentSession: {
+                sessionId: ctx.sessionId,
+                runtimeSessionId: "runtime-session",
+                shellProfile: "coding",
+                workflowState: {
+                  stage: "implement",
+                  worktreeMode: "child_optional",
+                  enteredAt: 1,
+                  updatedAt: 2,
+                },
+                workspaceRoot: "/tmp/project",
+                historyMessages: 4,
+              },
+            },
+          });
+        },
+      });
+      const deps = createDeps({ commandRegistry: registry });
+      const channel = new WebChatChannel(deps);
+      await channel.initialize(createContext());
+      await channel.start();
+
+      channel.handleMessage("client_1", "chat.new", msg("chat.new", {}, "new-1"), send);
+      const sessionId = (findResponse(send, "chat.session", "new-1")?.payload as {
+        sessionId?: string;
+      })?.sessionId;
+      expect(sessionId).toBeTruthy();
+
+      send.mockClear();
+      channel.handleMessage(
+        "client_1",
+        "session.command.execute",
+        msg(
+          "session.command.execute",
+          {
+            content: "/session",
+            client: "web",
+            sessionId,
+          },
+          "cmd-1",
+        ),
+        send,
+      );
+
+      await vi.waitFor(() => {
+        expect(findResponse(send, "session.command.result", "cmd-1")?.payload).toMatchObject({
+          commandName: "session",
+          content: "Structured session result",
+          viewKind: "session",
+          data: {
+            kind: "session",
+            subcommand: "status",
+            currentSession: {
+              sessionId,
+              shellProfile: "coding",
+            },
+          },
+        });
+      });
+    });
+
+    it("builds the command catalog with session policy scope and effective profile coercion", async () => {
+      const memoryBackend = new InMemoryBackend();
+      const registry = new SlashCommandRegistry({ logger: silentLogger });
+      registry.register({
+        name: "files",
+        description: "files test",
+        global: true,
+        metadata: {
+          category: "coding",
+          clients: ["web"],
+          rolloutFeature: "codingCommands",
+          viewKind: "files",
+        },
+        handler: async () => undefined,
+      });
+
+      const deps = createDeps({
+        memoryBackend,
+        commandRegistry: registry,
+        gateway: {
+          getStatus: () => ({
+            state: "running",
+            uptimeMs: 60_000,
+            channels: ["webchat"],
+            activeSessions: 1,
+            controlPlanePort: 9100,
+          }),
+          config: {
+            agent: { name: "test-agent" },
+            autonomy: makeAutonomy({
+              canary: {
+                enabled: true,
+                tenantAllowList: ["tenant-b"],
+                featureAllowList: ["shellProfiles", "codingCommands"],
+                domainAllowList: ["shell", "extensions", "watch"],
+                percentage: 1,
+              },
+            }),
+          },
+        },
+        resolvePolicyScopeForSession: () => ({ tenantId: "tenant-a" }),
+      });
+      const channel = new WebChatChannel(deps);
+      const context = createContext();
+      await channel.initialize(context);
+      await channel.start();
+
+      const seedSend = vi.fn<(response: ControlResponse) => void>();
+      channel.handleMessage(
+        "client_1",
+        "chat.message",
+        msg("chat.message", { content: "Inspect commands" }),
+        seedSend,
+      );
+      const ownerToken = requireOwnerToken(seedSend);
+      const sessionId = vi.mocked(context.onMessage).mock.calls[0][0].sessionId;
+      const store = new WebChatSessionStore({ memoryBackend });
+      const ownerCredential = await store.resolveOwnerCredential(ownerToken);
+      expect(ownerCredential?.ownerKey).toEqual(expect.any(String));
+      await store.recordActivity({
+        sessionId: "session-catalog",
+        ownerKey: ownerCredential!.ownerKey,
+        sender: "user",
+        content: "Inspect commands",
+        timestamp: 100,
+      });
+      await persistSessionRuntimeState(
+        memoryBackend,
+        "session-catalog",
+        {
+          id: "session-catalog",
+          metadata: {
+            [SESSION_SHELL_PROFILE_METADATA_KEY]: "coding",
+          },
+        } as any,
+      );
+
+      const send = vi.fn<(response: ControlResponse) => void>();
+      channel.handleMessage(
+        "client_2",
+        "session.command.catalog.get",
+        msg(
+          "session.command.catalog.get",
+          {
+            ownerToken,
+            client: "web",
+            sessionId: "session-catalog",
+          },
+          "catalog-1",
+        ),
+        send,
+      );
+
+      const response = await waitForResponse(
+        send,
+        "session.command.catalog",
+        "catalog-1",
+      );
+      expect(response.payload).toEqual([
+        expect.objectContaining({
+          name: "files",
+          available: false,
+          effectiveProfile: "general",
+          heldBackBy: "codingCommands",
+        }),
+      ]);
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -1207,6 +1439,33 @@ describe("WebChatChannel", () => {
       );
     });
 
+    it("accepts canonical chat.session.resume requests", async () => {
+      const send1 = vi.fn<(response: ControlResponse) => void>();
+
+      channel.handleMessage(
+        "client_1",
+        "chat.message",
+        msg("chat.message", { content: "Hello" }),
+        send1,
+      );
+
+      const gatewayMsg = vi.mocked(context.onMessage).mock.calls[0][0];
+      const sessionId = gatewayMsg.sessionId;
+
+      const send2 = vi.fn<(response: ControlResponse) => void>();
+      channel.handleMessage(
+        "client_1",
+        "chat.session.resume",
+        msg("chat.session.resume", { sessionId }, "req-canonical-resume"),
+        send2,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(
+        findResponse(send2, "chat.session.resumed", "req-canonical-resume")?.payload,
+      ).toEqual(expect.objectContaining({ sessionId }));
+    });
+
     it("should reject resume from different client (session hijacking prevention)", async () => {
       const send1 = vi.fn<(response: ControlResponse) => void>();
 
@@ -1491,7 +1750,7 @@ describe("WebChatChannel", () => {
           content: "Checking the runtime state now.",
           timestamp: 110,
         });
-        await persistWebSessionRuntimeState(
+        await persistSessionRuntimeState(
           memoryBackend,
           "session-continuity",
           {
@@ -1517,10 +1776,10 @@ describe("WebChatChannel", () => {
 
         continuityChannel.handleMessage(
           "client_2",
-          "chat.sessions",
+          "chat.session.list",
           msg(
-            "chat.sessions",
-            { ownerToken: issued.ownerToken, continuity: true },
+            "chat.session.list",
+            { ownerToken: issued.ownerToken },
             "req-continuity-list",
           ),
           send,
@@ -1528,7 +1787,7 @@ describe("WebChatChannel", () => {
         expect(
           (await waitForResponse(
             send,
-            "chat.sessions",
+            "chat.session.list",
             "req-continuity-list",
           )).payload,
         ).toEqual(
@@ -1544,9 +1803,9 @@ describe("WebChatChannel", () => {
 
         continuityChannel.handleMessage(
           "client_2",
-          "chat.inspect",
+          "chat.session.inspect",
           msg(
-            "chat.inspect",
+            "chat.session.inspect",
             { ownerToken: issued.ownerToken, sessionId: "session-continuity" },
             "req-continuity-inspect",
           ),
@@ -1555,18 +1814,18 @@ describe("WebChatChannel", () => {
         expect(
           (await waitForResponse(
             send,
-            "chat.inspect",
+            "chat.session.inspect",
             "req-continuity-inspect",
           )).payload,
         ).toEqual(
           expect.objectContaining({
-            session: expect.objectContaining({
-              sessionId: "session-continuity",
-              shellProfile: "coding",
-              workflowStage: "review",
-              pendingApprovalCount: 0,
+            sessionId: "session-continuity",
+            shellProfile: "coding",
+            workflowStage: "review",
+            pendingApprovalCount: 0,
+            workflowState: expect.objectContaining({
+              objective: "Investigate the regression",
             }),
-            objective: "Investigate the regression",
           }),
         );
 
@@ -1653,7 +1912,7 @@ describe("WebChatChannel", () => {
           role: "user",
           content: "Ship the continuity layer",
         });
-        await persistWebSessionRuntimeState(
+        await persistSessionRuntimeState(
           memoryBackend,
           "session-source",
           {
@@ -1695,9 +1954,9 @@ describe("WebChatChannel", () => {
 
         forkChannel.handleMessage(
           "client_2",
-          "chat.fork",
+          "chat.session.fork",
           msg(
-            "chat.fork",
+            "chat.session.fork",
             {
               ownerToken: issued.ownerToken,
               sessionId: "session-source",
@@ -1710,7 +1969,7 @@ describe("WebChatChannel", () => {
         );
         await new Promise((resolve) => setTimeout(resolve, 0));
 
-        const forkResponse = findResponse(send, "chat.fork", "req-fork");
+        const forkResponse = findResponse(send, "chat.session.fork", "req-fork");
         expect(forkResponse?.payload).toEqual(
           expect.objectContaining({
             sourceSessionId: "session-source",
@@ -1731,14 +1990,14 @@ describe("WebChatChannel", () => {
           },
         });
         expect(
-          await loadPersistedWebSessionRuntimeState(memoryBackend, targetSessionId),
+          await loadPersistedSessionRuntimeState(memoryBackend, targetSessionId),
         ).toMatchObject({
           shellProfile: "research",
           workflowState: expect.objectContaining({
             objective: "Investigate a variant",
           }),
         });
-        const targetState = await loadPersistedWebSessionRuntimeState(
+        const targetState = await loadPersistedSessionRuntimeState(
           memoryBackend,
           targetSessionId,
         );

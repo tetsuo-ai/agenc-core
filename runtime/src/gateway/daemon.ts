@@ -27,6 +27,10 @@ import { randomUUID } from "node:crypto";
 import { Gateway } from "./gateway.js";
 import { buildGatewayChannelStatus } from "./channel-status.js";
 import { loadGatewayConfig } from "./config-watcher.js";
+import {
+  attachTrackedSubagentTask,
+  finalizeTrackedSubagentTask,
+} from "./subagent-task-lifecycle.js";
 import { GatewayLifecycleError, GatewayStateError } from "./errors.js";
 import { toErrorMessage } from "../utils/async.js";
 import type {
@@ -4342,7 +4346,39 @@ export class DaemonManager {
     if (!subAgentManager) {
       throw new Error("Sub-agent runtime is unavailable");
     }
-    const result = await subAgentManager.waitForResult(params.childSessionId);
+    let result;
+    try {
+      result = await subAgentManager.waitForResult(params.childSessionId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      let finalExecutionLocation = params.executionLocation;
+      if (params.executionLocation.mode === "worktree") {
+        finalExecutionLocation =
+          (await new WorktreeIsolationManager({
+            logger: this.logger,
+          }).cleanupLocation(params.executionLocation)) ?? params.executionLocation;
+      }
+      if (taskStore && params.taskId) {
+        await finalizeTrackedSubagentTask({
+          taskStore,
+          listId: params.parentSessionId,
+          taskId: params.taskId,
+          status: "failed",
+          summary: `${params.roleId} agent wait failed: ${message}`,
+          workingDirectory:
+            finalExecutionLocation.workingDirectory ?? params.workingDirectory,
+          executionLocation: finalExecutionLocation,
+          childSessionId: params.childSessionId,
+          label: params.roleId,
+          eventData: {
+            childSessionId: params.childSessionId,
+            role: params.roleId,
+            stage: "wait",
+          },
+        });
+      }
+      throw error;
+    }
     const output = result?.output ?? "";
     const success = result?.success === true;
     const status =
@@ -4357,7 +4393,8 @@ export class DaemonManager {
         }).cleanupLocation(params.executionLocation)) ?? params.executionLocation;
     }
     if (taskStore && params.taskId) {
-      await taskStore.finalizeRuntimeTask({
+      await finalizeTrackedSubagentTask({
+        taskStore,
         listId: params.parentSessionId,
         taskId: params.taskId,
         status:
@@ -4375,12 +4412,8 @@ export class DaemonManager {
         workingDirectory:
           finalExecutionLocation.workingDirectory ?? params.workingDirectory,
         executionLocation: finalExecutionLocation,
-        externalRef: {
-          kind: "subagent",
-          id: params.childSessionId,
-          sessionId: params.childSessionId,
-          label: params.roleId,
-        },
+        childSessionId: params.childSessionId,
+        label: params.roleId,
         eventData: {
           childSessionId: params.childSessionId,
           role: params.roleId,
@@ -4517,47 +4550,65 @@ export class DaemonManager {
       taskId = createdTask.id;
     }
 
-    const childSessionId = await subAgentManager.spawn({
-      parentSessionId: params.parentSessionId,
-      shellProfile: resolvedRole.shellProfile,
-      role: resolvedRole.descriptor.id,
-      roleSource: resolvedRole.descriptor.source,
-      toolBundle: resolvedRole.toolBundle,
-      ...(taskId ? { taskId } : {}),
-      task: params.objective,
-      prompt: params.prompt ?? params.objective,
-      ...(resolvedRole.systemPrompt ? { systemPrompt: resolvedRole.systemPrompt } : {}),
-      ...(resolvedRole.toolNames ? { tools: resolvedRole.toolNames } : {}),
-      workingDirectory: scope.workingDirectory,
-      ...(scope.workspaceRoot ? { workspaceRoot: scope.workspaceRoot } : {}),
-      executionLocation: scope.executionLocation,
-      ...(scope.executionContext
-        ? {
-            delegationSpec: {
-              task: params.objective,
-              objective: params.objective,
-              executionContext: scope.executionContext,
-              isolationReason:
-                scope.executionLocation.mode === "worktree"
-                  ? "shell_agent_worktree"
-                  : "shell_agent_scope",
-            },
-          }
-        : {}),
-      ...(params.timeoutMs ? { timeoutMs: params.timeoutMs } : {}),
-    });
-    if (taskStore && taskId) {
-      await taskStore.attachExternalRef(
-        params.parentSessionId,
-        taskId,
-        {
-          kind: "subagent",
-          id: childSessionId,
-          sessionId: childSessionId,
+    let childSessionId: string;
+    try {
+      childSessionId = await subAgentManager.spawn({
+        parentSessionId: params.parentSessionId,
+        shellProfile: resolvedRole.shellProfile,
+        role: resolvedRole.descriptor.id,
+        roleSource: resolvedRole.descriptor.source,
+        toolBundle: resolvedRole.toolBundle,
+        ...(taskId ? { taskId } : {}),
+        task: params.objective,
+        prompt: params.prompt ?? params.objective,
+        ...(resolvedRole.systemPrompt ? { systemPrompt: resolvedRole.systemPrompt } : {}),
+        ...(resolvedRole.toolNames ? { tools: resolvedRole.toolNames } : {}),
+        workingDirectory: scope.workingDirectory,
+        ...(scope.workspaceRoot ? { workspaceRoot: scope.workspaceRoot } : {}),
+        executionLocation: scope.executionLocation,
+        ...(scope.executionContext
+          ? {
+              delegationSpec: {
+                task: params.objective,
+                objective: params.objective,
+                executionContext: scope.executionContext,
+                isolationReason:
+                  scope.executionLocation.mode === "worktree"
+                    ? "shell_agent_worktree"
+                    : "shell_agent_scope",
+              },
+            }
+          : {}),
+        ...(params.timeoutMs ? { timeoutMs: params.timeoutMs } : {}),
+      });
+      if (taskStore && taskId) {
+        await attachTrackedSubagentTask({
+          taskStore,
+          listId: params.parentSessionId,
+          taskId,
+          childSessionId,
           label: resolvedRole.descriptor.id,
-        },
-        `${resolvedRole.descriptor.displayName} agent started.`,
-      );
+          summary: `${resolvedRole.descriptor.displayName} agent started.`,
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (taskStore && taskId) {
+        await finalizeTrackedSubagentTask({
+          taskStore,
+          listId: params.parentSessionId,
+          taskId,
+          status: "failed",
+          summary: `${resolvedRole.descriptor.displayName} agent could not be started: ${message}`,
+          workingDirectory: scope.workingDirectory,
+          executionLocation: scope.executionLocation,
+          eventData: {
+            role: resolvedRole.descriptor.id,
+            stage: "spawn",
+          },
+        });
+      }
+      throw error;
     }
 
     const monitorPromise = this.monitorShellAgentTask({

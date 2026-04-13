@@ -44,6 +44,10 @@ import {
 } from "./delegated-runtime-result.js";
 import type { VerifierRequirement } from "./verifier-probes.js";
 import type { SessionShellProfile } from "./shell-profile.js";
+import {
+  attachTrackedSubagentTask,
+  finalizeTrackedSubagentTask,
+} from "./subagent-task-lifecycle.js";
 
 const DELEGATION_POLL_INTERVAL_MS = 75;
 const DELEGATION_PROGRESS_INTERVAL_MS = 1000;
@@ -426,7 +430,8 @@ async function finalizeDelegationTask(params: {
         runtimeResult: terminalOutcome.runtimeResult,
       },
     });
-    await params.taskStore.finalizeRuntimeTask({
+    await finalizeTrackedSubagentTask({
+      taskStore: params.taskStore,
       listId: params.sessionId,
       taskId: params.taskId,
       status: "completed",
@@ -438,11 +443,7 @@ async function finalizeDelegationTask(params: {
       verifierVerdict,
       ownedArtifacts: params.ownedArtifacts,
       executionLocation: params.executionLocation,
-      externalRef: {
-        kind: "subagent",
-        id: params.childSessionId,
-        sessionId: params.childSessionId,
-      },
+      childSessionId: params.childSessionId,
       eventData: {
         durationMs: childResult?.durationMs,
         toolCalls: childResult?.toolCalls.length ?? 0,
@@ -477,7 +478,8 @@ async function finalizeDelegationTask(params: {
       runtimeResult: terminalOutcome.runtimeResult,
     },
   });
-  await params.taskStore.finalizeRuntimeTask({
+  await finalizeTrackedSubagentTask({
+    taskStore: params.taskStore,
     listId: params.sessionId,
     taskId: params.taskId,
     status:
@@ -489,11 +491,7 @@ async function finalizeDelegationTask(params: {
     verifierVerdict,
     ownedArtifacts: params.ownedArtifacts,
     executionLocation: params.executionLocation,
-    externalRef: {
-      kind: "subagent",
-      id: params.childSessionId,
-      sessionId: params.childSessionId,
-    },
+    childSessionId: params.childSessionId,
     eventData: {
       durationMs: childResult?.durationMs,
       toolCalls: childResult?.toolCalls.length ?? 0,
@@ -867,21 +865,19 @@ export async function executeDelegationTool(
       unsafeBenchmarkMode,
     });
     if (taskStore && runtimeTaskId) {
-      await taskStore.attachExternalRef(
-        sessionId,
-        runtimeTaskId,
-        {
-          kind: "subagent",
-          id: childSessionId,
-          sessionId: childSessionId,
-        },
-        "Delegated worker started.",
-      );
+      await attachTrackedSubagentTask({
+        taskStore,
+        listId: sessionId,
+        taskId: runtimeTaskId,
+        childSessionId,
+        summary: "Delegated worker started.",
+      });
     }
   } catch (error) {
     const message = toErrorString(error);
     if (taskStore && runtimeTaskId) {
-      await taskStore.finalizeRuntimeTask({
+      await finalizeTrackedSubagentTask({
+        taskStore,
         listId: sessionId,
         taskId: runtimeTaskId,
         status: "failed",
@@ -1004,7 +1000,8 @@ export async function executeDelegationTool(
             toolCallId,
           },
         });
-        await taskStore.finalizeRuntimeTask({
+        await finalizeTrackedSubagentTask({
+          taskStore,
           listId: sessionId,
           taskId: runtimeTaskId,
           status: "failed",
@@ -1012,11 +1009,7 @@ export async function executeDelegationTool(
           workingDirectory,
           isolation: admittedInput.delegationAdmission?.isolationReason,
           executionLocation: localExecutionLocation,
-          externalRef: {
-            kind: "subagent",
-            id: childSessionId,
-            sessionId: childSessionId,
-          },
+          childSessionId,
           eventData: {
             stage: "wait",
           },
@@ -1135,7 +1128,8 @@ export async function executeDelegationTool(
         },
       });
       if (taskStore && runtimeTaskId) {
-        await taskStore.finalizeRuntimeTask({
+        await finalizeTrackedSubagentTask({
+          taskStore,
           listId: sessionId,
           taskId: runtimeTaskId,
           status: "completed",
@@ -1149,11 +1143,7 @@ export async function executeDelegationTool(
           workingDirectory,
           isolation: admittedInput.delegationAdmission?.isolationReason,
           executionLocation: localExecutionLocation,
-          externalRef: {
-            kind: "subagent",
-            id: childSessionId,
-            sessionId: childSessionId,
-          },
+          childSessionId,
           eventData: {
             durationMs: childResult.durationMs,
             toolCalls: childResult.toolCalls.length,
@@ -1209,7 +1199,8 @@ export async function executeDelegationTool(
       },
     });
     if (taskStore && runtimeTaskId) {
-      await taskStore.finalizeRuntimeTask({
+      await finalizeTrackedSubagentTask({
+        taskStore,
         listId: sessionId,
         taskId: runtimeTaskId,
         status:
@@ -1224,11 +1215,7 @@ export async function executeDelegationTool(
         workingDirectory,
         isolation: admittedInput.delegationAdmission?.isolationReason,
         executionLocation: localExecutionLocation,
-        externalRef: {
-          kind: "subagent",
-          id: childSessionId,
-          sessionId: childSessionId,
-        },
+        childSessionId,
         eventData: {
           durationMs: childResult.durationMs,
           toolCalls: childResult.toolCalls.length,

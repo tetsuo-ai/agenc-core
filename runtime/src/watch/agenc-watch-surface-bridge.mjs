@@ -7,7 +7,6 @@ const REQUIRED_STATE_KEYS = Object.freeze([
   "runPhase",
   "bootstrapReady",
   "manualSessionsRequestPending",
-  "manualHistoryRequestPending",
   "pendingResumeHistoryRestore",
   "currentObjective",
   "activeRunStartedAtMs",
@@ -22,7 +21,6 @@ const REQUIRED_STATE_KEYS = Object.freeze([
   "cockpitUpdatedAt",
   "cockpitFingerprint",
   "configuredModelRoute",
-  "manualStatusRequestPending",
   "lastStatusFeedFingerprint",
   "manualSessionsQuery",
 ]);
