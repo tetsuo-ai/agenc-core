@@ -314,14 +314,16 @@ export async function resolveMarketplaceJobSpecReference(
   );
   const expectedUri = canonicalJobSpecUri(reference.jobSpecHash);
   const isRemote = isRemoteJobSpecUri(jobSpecUri);
-  if (isRemote && options.allowRemote === false) {
-    throw new Error("remote marketplace jobSpec URI resolution is disabled");
-  }
 
   const rootDir = options.rootDir ?? getDefaultMarketplaceJobSpecStoreDir();
   const jobSpecPath = isRemote
     ? jobSpecUri
     : join(rootDir, "objects", `${reference.jobSpecHash}.json`);
+  if (isRemote && options.allowRemote !== true) {
+    throw new Error(
+      "Remote marketplace jobSpec resolution requires allowRemote=true",
+    );
+  }
   const envelope = isRemote
     ? await fetchRemoteMarketplaceJobSpecEnvelope(jobSpecUri, reference.jobSpecHash)
     : await readMarketplaceJobSpecEnvelope(
@@ -396,6 +398,7 @@ export function verifyMarketplaceJobSpecEnvelope(
   if (typeof payloadHash !== "string" || !HASH_RE.test(payloadHash)) return false;
   const expectedUri = `agenc://job-spec/sha256/${payloadHash}`;
   if (candidate.integrity.uri !== expectedUri) return false;
+  if (hasForbiddenMarketplaceJobSpecObjectKey(candidate.payload)) return false;
   return sha256Hex(canonicalJson(candidate.payload)) === payloadHash;
 }
 
@@ -817,11 +820,26 @@ function canonicalJson(value: unknown): string {
 function sortMarketplaceJobSpecJsonValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortMarketplaceJobSpecJsonValue);
   if (!value || typeof value !== "object") return value;
-  const sorted: Record<string, unknown> = {};
+  const sorted: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const key of Object.keys(value).sort()) {
     sorted[key] = sortMarketplaceJobSpecJsonValue((value as Record<string, unknown>)[key]);
   }
   return sorted;
+}
+
+function hasForbiddenMarketplaceJobSpecObjectKey(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.some(hasForbiddenMarketplaceJobSpecObjectKey);
+  }
+  if (!value || typeof value !== "object") return false;
+
+  for (const key of Object.keys(value)) {
+    if (FORBIDDEN_OBJECT_KEYS.has(key)) return true;
+    if (hasForbiddenMarketplaceJobSpecObjectKey((value as Record<string, unknown>)[key])) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function sha256Hex(input: string): string {

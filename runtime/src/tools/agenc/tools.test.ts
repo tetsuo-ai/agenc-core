@@ -1,3 +1,6 @@
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PublicKey } from '@solana/web3.js';
 import type { ToolResult } from '../types.js';
@@ -14,13 +17,17 @@ import { OnChainTaskStatus, TaskType } from '../../task/types.js';
 import {
   createGetDisputeTool,
   createGetGovernanceProposalTool,
+  createGetJobSpecTool,
+  createGetTaskTool,
   createGetReputationSummaryTool,
   createGetSkillTool,
   createInspectMarketplaceTool,
   createListDisputesTool,
   createListGovernanceProposalsTool,
+  createListTasksTool,
   createListSkillsTool,
 } from './tools.js';
+import { linkMarketplaceJobSpecToTask } from '../../marketplace/job-spec-store.js';
 
 function parseJson(result: ToolResult) {
   return JSON.parse(result.content) as Record<string, any>;
@@ -149,6 +156,23 @@ function makeProposal(status: ProposalStatus, seed: number) {
   };
 }
 
+async function linkRemoteJobSpecForTask(
+  taskPda: PublicKey,
+  task: OnChainTask,
+  jobSpecStoreDir: string,
+) {
+  return linkMarketplaceJobSpecToTask(
+    {
+      hash: 'a'.repeat(64),
+      uri: 'https://attacker.invalid/job-spec.json',
+      taskPda: taskPda.toBase58(),
+      taskId: Buffer.from(task.taskId).toString('hex'),
+      transactionSignature: 'remote-job-spec-test',
+    },
+    { rootDir: jobSpecStoreDir },
+  );
+}
+
 function createMockProgram() {
   const firstSkillPda = PublicKey.unique();
   const secondSkillPda = PublicKey.unique();
@@ -235,9 +259,77 @@ function createMockProgram() {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe('agenc query tools', () => {
+  it('agenc.getTask does not fetch remote job specs by default', async () => {
+    const taskPda = PublicKey.unique();
+    const task = makeTaskRecord({ status: OnChainTaskStatus.Open, currentWorkers: 0 });
+    const jobSpecStoreDir = await mkdtemp(join(tmpdir(), 'agenc-tool-job-spec-'));
+    await linkRemoteJobSpecForTask(taskPda, task, jobSpecStoreDir);
+    const fetchSpy = vi.fn(async () => {
+      throw new Error('fetch should not be called');
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    const ops = {
+      fetchTask: vi.fn(async () => task),
+      fetchEscrowTokenBalance: vi.fn(),
+    } as unknown as TaskOperations;
+    const tool = createGetTaskTool(ops, silentLogger, { jobSpecStoreDir });
+
+    const result = await tool.execute({ taskPda: taskPda.toBase58() });
+    const parsed = parseJson(result);
+
+    expect(result.isError).toBeUndefined();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(parsed.jobSpec.verified).toBe(false);
+    expect(parsed.jobSpec.error).toMatch(/allowRemote=true/);
+  });
+
+  it('agenc.getJobSpec fails closed without fetching remote job specs by default', async () => {
+    const taskPda = PublicKey.unique();
+    const task = makeTaskRecord({ status: OnChainTaskStatus.Open, currentWorkers: 0 });
+    const jobSpecStoreDir = await mkdtemp(join(tmpdir(), 'agenc-tool-job-spec-'));
+    await linkRemoteJobSpecForTask(taskPda, task, jobSpecStoreDir);
+    const fetchSpy = vi.fn(async () => {
+      throw new Error('fetch should not be called');
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    const tool = createGetJobSpecTool(silentLogger, { jobSpecStoreDir });
+
+    const result = await tool.execute({ taskPda: taskPda.toBase58() });
+    const parsed = parseJson(result);
+
+    expect(result.isError).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(parsed.error).toMatch(/allowRemote=true/);
+  });
+
+  it('agenc.listTasks payload enrichment does not fetch remote job specs by default', async () => {
+    const taskPda = PublicKey.unique();
+    const task = makeTaskRecord({ status: OnChainTaskStatus.Open, currentWorkers: 0 });
+    const jobSpecStoreDir = await mkdtemp(join(tmpdir(), 'agenc-tool-job-spec-'));
+    await linkRemoteJobSpecForTask(taskPda, task, jobSpecStoreDir);
+    const fetchSpy = vi.fn(async () => {
+      throw new Error('fetch should not be called');
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    const ops = {
+      fetchClaimableTasks: vi.fn(async () => [{ taskPda, task }]),
+      fetchAllTasks: vi.fn(async () => [{ taskPda, task }]),
+    } as unknown as TaskOperations;
+    const tool = createListTasksTool(ops, silentLogger, { jobSpecStoreDir });
+
+    const result = await tool.execute({ status: 'open', includeJobSpecPayload: true });
+    const parsed = parseJson(result);
+
+    expect(result.isError).toBeUndefined();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(parsed.tasks[0].jobSpec.verified).toBe(false);
+    expect(parsed.tasks[0].jobSpec.error).toMatch(/allowRemote=true/);
+  });
+
   it('agenc.listSkills filters and sorts marketplace skills', async () => {
     const program = createMockProgram();
     const tool = createListSkillsTool(program as never, silentLogger);

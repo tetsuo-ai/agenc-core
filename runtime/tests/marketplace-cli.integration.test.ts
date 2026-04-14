@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Connection } from "@solana/web3.js";
 import { Keypair, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import {
@@ -56,6 +56,7 @@ import {
   type RuntimeTestContext,
 } from "./litesvm-setup.js";
 import { registerLiteSVMProgramAccount } from "../../tests/litesvm-connection-proxy.ts";
+import { linkMarketplaceJobSpecToTask } from "../src/marketplace/job-spec-store.js";
 
 interface Actor {
   label: string;
@@ -306,6 +307,7 @@ beforeAll(async () => {
 
 afterEach(() => {
   activeSignerAgentPda = null;
+  vi.unstubAllGlobals();
   if (baseCtx) {
     advanceClock(baseCtx.svm, 61);
   }
@@ -375,6 +377,69 @@ describeIfProtocolWorkspace("marketplace CLI integration", () => {
     expect(expectString(summarySpec.jobSpecUri)).toBe(
       expectString(createdTask.jobSpecUri),
     );
+  });
+
+  it("fails closed without fetching remote job specs in task detail by default", async () => {
+    const jobSpecStoreDir = await mkdtemp(
+      join(tmpdir(), "agenc-market-job-spec-"),
+    );
+    const createPayload = await runMarketCommand(
+      runMarketTaskCreateCommand,
+      {
+        description: "LiteSVM remote job spec guard task",
+        reward: String(LAMPORTS_PER_SOL / 20),
+        requiredCapabilities: "1",
+        creatorAgentPda: creator.agentPda.toBase58(),
+        jobSpecStoreDir,
+      },
+      creator.agentPda.toBase58(),
+    );
+    const createdTask = asRecord(createPayload.result);
+    const taskPda = expectString(createdTask.taskPda);
+    registerLiteSVMProgramAccount(baseCtx.connection, new PublicKey(taskPda));
+
+    await linkMarketplaceJobSpecToTask(
+      {
+        hash: "b".repeat(64),
+        uri: "https://attacker.invalid/job-spec.json",
+        taskPda,
+        taskId: expectString(createdTask.taskId),
+        transactionSignature: "remote-job-spec-test",
+      },
+      { rootDir: jobSpecStoreDir },
+    );
+    const fetchSpy = vi.fn(async () => {
+      throw new Error("fetch should not be called");
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    let output: unknown;
+    let error: unknown;
+    const code = await runMarketTaskDetailCommand(
+      {
+        logger: silentLogger,
+        outputFormat: "json",
+        output(value) {
+          output = value;
+        },
+        error(value) {
+          error = value;
+        },
+      },
+      {
+        ...BASE_OPTIONS,
+        taskPda,
+        jobSpecStoreDir,
+      },
+    );
+
+    expect(code).toBe(1);
+    expect(output).toBeUndefined();
+    expect(error).toMatchObject({
+      code: "MARKET_TASK_DETAIL_FAILED",
+      message: expect.stringMatching(/allowRemote=true/),
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("blocks injected marketplace task prompts until the job spec is locally verified", async () => {
