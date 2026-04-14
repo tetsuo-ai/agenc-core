@@ -66,3 +66,10 @@
 - **What worked:** Matching Claude’s stale-file contract made edit retries fail fast with an explicit reread requirement instead of grinding through repeated `old_string not found` misses, and removing the repeated-failure breaker let failing tool rounds continue under the normal hook and round budgets instead of a hidden three-strikes fuse.
 - **What didn't:** AgenC still had dead breaker config, state, and tests after the stop path was removed, so the parity fix wasn’t complete until the dormant breaker surface was deleted as well.
 - **Rule added to CLAUDE.md:** no
+
+## PR #348: refactor(runtime): reduce loop and completion gate state
+- **Date:** 2026-04-14
+- **Files changed:** `runtime/src/llm/chat-executor-tool-loop.ts`, `runtime/src/llm/hooks/stop-hooks.ts`, `runtime/src/runtime-contract/types.ts`, `runtime/src/gateway/top-level-verifier.ts`, `runtime/src/llm/completion-validators.ts`, `runtime/src/workflow/request-task-runtime.ts`, `runtime/src/tools/system/filesystem.ts`, `runtime/src/gateway/tool-handler-factory.ts`, `runtime/src/llm/compact/*`
+- **What worked:** Collapsing finalization onto the built-in stop-hook chain removed the second completion engine after hooks, while the file-tool cleanup and compaction attachment side-channel simplified the runtime around one message-centric loop with fewer hidden gates.
+- **What didn't:** The refactor touched several dependent runtime surfaces at once, so type and test fallout showed up in hook typing and validator snapshot expectations before the reduced contract settled.
+- **Rule added to CLAUDE.md:** no
