@@ -258,7 +258,7 @@ describe("completion-validators", () => {
     expect(result.stopHookResult?.outcome).toBe("retry_with_blocking_message");
   });
 
-  it("uses the shared correction budget for narrated future tool work when stop hooks are not configured", async () => {
+  it("uses the default builtin stop-hook runtime when no explicit stop-hook config is provided", async () => {
     const validators = buildCompletionValidators({
       ctx: makeCtx({
         finalContent:
@@ -272,6 +272,7 @@ describe("completion-validators", () => {
         },
       }),
       runtimeContractFlags: makeFlags({ stopHooksEnabled: true }),
+      stopHookRuntime: buildStopHookRuntime(undefined),
     });
 
     const stopValidator = validators.find(
@@ -447,6 +448,7 @@ describe("completion-validators", () => {
       "utf8",
     );
     const targetPath = join(workspaceRoot, "src/main.c");
+    const stopHookFlags = makeFlags({ stopHooksEnabled: true });
     const narrativeCtx = makeCtx({
       workspaceRoot,
       finalContent: "Next I will fix the build and rerun the checks.",
@@ -454,6 +456,7 @@ describe("completion-validators", () => {
       targetArtifacts: [targetPath],
       turnClass: "workflow_implementation",
       ownerMode: "workflow_owner",
+      flags: stopHookFlags,
       requiredToolEvidence: {
         maxCorrectionAttempts: 3,
       },
@@ -463,7 +466,8 @@ describe("completion-validators", () => {
     ]);
     const narrativeValidators = buildCompletionValidators({
       ctx: narrativeCtx,
-      runtimeContractFlags: makeFlags(),
+      runtimeContractFlags: stopHookFlags,
+      stopHookRuntime: buildStopHookRuntime(undefined),
     });
     const filesystemCtx = makeCtx({
       workspaceRoot,
@@ -520,6 +524,7 @@ describe("completion-validators", () => {
       "utf8",
     );
     const targetPath = join(workspaceRoot, "src/main.c");
+    const stopHookFlags = makeFlags({ stopHooksEnabled: true });
     const narrativeCtx = makeCtx({
       workspaceRoot,
       finalContent: "Next I will fix the build and rerun the checks.",
@@ -527,6 +532,7 @@ describe("completion-validators", () => {
       targetArtifacts: [targetPath],
       turnClass: "workflow_implementation",
       ownerMode: "workflow_owner",
+      flags: stopHookFlags,
       requiredToolEvidence: {
         maxCorrectionAttempts: 0,
       },
@@ -536,7 +542,8 @@ describe("completion-validators", () => {
     ]);
     const narrativeValidators = buildCompletionValidators({
       ctx: narrativeCtx,
-      runtimeContractFlags: makeFlags(),
+      runtimeContractFlags: stopHookFlags,
+      stopHookRuntime: buildStopHookRuntime(undefined),
     });
     const filesystemCtx = makeCtx({
       workspaceRoot,

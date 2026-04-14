@@ -167,7 +167,7 @@ function buildBuiltinStopHookDefinitions(): readonly StopHookRuntimeDefinition[]
 export function buildStopHookRuntime(
   config: StopHookRuntimeConfig | undefined,
 ): StopHookRuntime | undefined {
-  if (config?.enabled !== true) {
+  if (config?.enabled === false) {
     return undefined;
   }
   const definitionsByPhase = new Map<StopHookPhase, StopHookRuntimeDefinition[]>();
@@ -176,7 +176,7 @@ export function buildStopHookRuntime(
     list.push(definition);
     definitionsByPhase.set(definition.phase, list);
   }
-  for (const handler of config.handlers ?? []) {
+  for (const handler of config?.handlers ?? []) {
     const list = definitionsByPhase.get(handler.phase) ?? [];
     list.push({
       ...handler,
@@ -185,8 +185,8 @@ export function buildStopHookRuntime(
     definitionsByPhase.set(handler.phase, list);
   }
   return {
-    maxAttempts: normalizeMaxAttempts(config.maxAttempts),
-    maxAttemptsExplicit: config.maxAttempts !== undefined,
+    maxAttempts: normalizeMaxAttempts(config?.maxAttempts),
+    maxAttemptsExplicit: config?.maxAttempts !== undefined,
     definitionsByPhase,
   };
 }

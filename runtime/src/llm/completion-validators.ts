@@ -1,7 +1,6 @@
 import {
   checkFilesystemArtifacts,
   evaluateArtifactEvidenceGate,
-  evaluateTurnEndStopGate,
 } from "./chat-executor-stop-gate.js";
 import {
   runDeterministicAcceptanceProbes,
@@ -160,10 +159,7 @@ export function buildCompletionValidators(params: {
       id: "turn_end_stop_gate",
       enabled: true,
       async execute(): Promise<CompletionValidatorExecutionResult> {
-        if (
-          params.runtimeContractFlags.stopHooksEnabled &&
-          params.stopHookRuntime
-        ) {
+        if (params.runtimeContractFlags.stopHooksEnabled && params.stopHookRuntime) {
           const hookResult = await runStopHookPhase({
             runtime: params.stopHookRuntime,
             phase: "Stop",
@@ -209,25 +205,7 @@ export function buildCompletionValidators(params: {
             stopHookResult: hookResult,
           };
         }
-        const decision = evaluateTurnEndStopGate({
-          finalContent: params.ctx.response?.content ?? "",
-          allToolCalls: params.ctx.allToolCalls,
-        });
-        if (!decision.shouldIntervene) {
-          return { id: "turn_end_stop_gate", outcome: "pass" };
-        }
-        return {
-          id: "turn_end_stop_gate",
-          outcome: "retry_with_blocking_message",
-          reason: decision.reason ?? "turn_end_stop_gate",
-          blockingMessage: decision.blockingMessage,
-          evidence: decision.evidence,
-          maxAttempts: sharedCorrectionBudgetCap,
-          exhaustedDetail:
-            decision.reason === "narrated_future_tool_work"
-              ? "Stop-gate recovery exhausted: the model kept narrating future work instead of calling tools."
-              : "Stop-gate recovery exhausted after the model continued to emit an invalid completion summary.",
-        };
+        return { id: "turn_end_stop_gate", outcome: "pass" };
       },
     },
     {

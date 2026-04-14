@@ -51,8 +51,12 @@ function verificationFailure(error: string): ToolCallRecord {
 }
 
 describe("stop-hooks", () => {
-  it("returns undefined when stop hooks are disabled", () => {
-    expect(buildStopHookRuntime(undefined)).toBeUndefined();
+  it("builds the builtin stop-hook runtime by default and disables only on explicit false", () => {
+    const runtime = buildStopHookRuntime(undefined);
+    expect(runtime).toBeDefined();
+    expect(runtime?.definitionsByPhase.get("Stop")?.[0]?.id).toBe(
+      BUILTIN_TURN_END_STOP_GATE_ID,
+    );
     expect(buildStopHookRuntime({ enabled: false })).toBeUndefined();
   });
 
