@@ -81,6 +81,67 @@ function readFile(path: string): ToolCallRecord {
   };
 }
 
+function verificationFailure(params: {
+  probeId?: string;
+  command?: string;
+  error: string;
+}): ToolCallRecord {
+  return {
+    name: "verification.runProbe",
+    args: {
+      probeId: params.probeId ?? "build",
+      cwd: "/tmp/workspace",
+      __runtimeAcceptanceProbe: true,
+    },
+    result: JSON.stringify({
+      error: params.error,
+      __agencVerification: {
+        probeId: params.probeId ?? "build",
+        category: "build",
+        profile: "default",
+        repoLocal: true,
+        cwd: "/tmp/workspace",
+        command: params.command ?? "cmake --build build",
+        writesTempOnly: false,
+      },
+    }),
+    isError: true,
+    durationMs: 1,
+    synthetic: true,
+  };
+}
+
+function verificationSuccess(params: {
+  probeId?: string;
+  command?: string;
+} = {}): ToolCallRecord {
+  return {
+    name: "verification.runProbe",
+    args: {
+      probeId: params.probeId ?? "build",
+      cwd: "/tmp/workspace",
+      __runtimeAcceptanceProbe: true,
+    },
+    result: JSON.stringify({
+      exitCode: 0,
+      stdout: "ok",
+      stderr: "",
+      __agencVerification: {
+        probeId: params.probeId ?? "build",
+        category: "build",
+        profile: "default",
+        repoLocal: true,
+        cwd: "/tmp/workspace",
+        command: params.command ?? "cmake --build build",
+        writesTempOnly: false,
+      },
+    }),
+    isError: false,
+    durationMs: 1,
+    synthetic: true,
+  };
+}
+
 function successfulWrite(path: string, content: string): ToolCallRecord {
   return {
     name: "system.writeFile",
@@ -763,6 +824,64 @@ describe("evaluateTurnEndStopGate — false_success_after_failed_bash", () => {
         bashFailure({ command: "make", stderr: "syntax error" }),
       ],
     });
+    expect(decision.shouldIntervene).toBe(false);
+  });
+});
+
+describe("evaluateTurnEndStopGate — false_success_after_failed_verification", () => {
+  it("fires when the latest verification probe failed and the final text claims completion", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "All phases of PLAN.md have been completed. The workspace is fully implemented and verified.",
+      allToolCalls: [
+        successfulWrite("/tmp/workspace/include/utils.h", "#include <stdio.h>\n"),
+        verificationFailure({
+          command: "cmake --build build",
+          error: "include/utils.h:25:18: error: unknown type name 'FILE'",
+        }),
+      ],
+    });
+
+    expect(decision.shouldIntervene).toBe(true);
+    expect(decision.reason).toBe("false_success_after_failed_verification");
+    expect(decision.blockingMessage).toMatch(/verification\/probe step/i);
+    expect(decision.blockingMessage).toMatch(/cmake --build build/);
+    expect(decision.evidence.failedVerificationCallCount).toBe(1);
+  });
+
+  it("does not fire when a later verification probe succeeded", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "All phases of PLAN.md have been completed. The workspace is fully implemented and verified. " +
+        "I reran the final build and verification probes after the source edits, " +
+        "confirmed the binary builds cleanly, and observed the success output directly.",
+      allToolCalls: [
+        verificationFailure({
+          command: "cmake --build build",
+          error: "first build failed",
+        }),
+        successfulWrite("/tmp/workspace/include/utils.h", "#include <stdio.h>\n"),
+        verificationSuccess({
+          command: "cmake --build build",
+        }),
+      ],
+    });
+
+    expect(decision.shouldIntervene).toBe(false);
+  });
+
+  it("does not fire when the final reply honestly reports the verification failure", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "I did not complete the plan. The latest verification probe failed on cmake --build build with unknown type name FILE.",
+      allToolCalls: [
+        verificationFailure({
+          command: "cmake --build build",
+          error: "unknown type name 'FILE'",
+        }),
+      ],
+    });
+
     expect(decision.shouldIntervene).toBe(false);
   });
 });

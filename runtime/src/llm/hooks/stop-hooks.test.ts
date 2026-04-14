@@ -24,6 +24,32 @@ function bashFailure(command: string, stderr: string): ToolCallRecord {
   };
 }
 
+function verificationFailure(error: string): ToolCallRecord {
+  return {
+    name: "verification.runProbe",
+    args: {
+      probeId: "build",
+      cwd: "/tmp/workspace",
+      __runtimeAcceptanceProbe: true,
+    },
+    result: JSON.stringify({
+      error,
+      __agencVerification: {
+        probeId: "build",
+        category: "build",
+        profile: "default",
+        repoLocal: true,
+        cwd: "/tmp/workspace",
+        command: "cmake --build build",
+        writesTempOnly: false,
+      },
+    }),
+    isError: true,
+    durationMs: 1,
+    synthetic: true,
+  };
+}
+
 describe("stop-hooks", () => {
   it("returns undefined when stop hooks are disabled", () => {
     expect(buildStopHookRuntime(undefined)).toBeUndefined();
@@ -51,6 +77,30 @@ describe("stop-hooks", () => {
     expect(result.reason).toBe("false_success_after_failed_bash");
     expect(result.blockingMessage).toMatch(/Failing shell commands/);
     expect(result.hookOutcomes[0]?.hookId).toBe(BUILTIN_TURN_END_STOP_GATE_ID);
+  });
+
+  it("blocks completion when the latest verification probe still failed", async () => {
+    const runtime = buildStopHookRuntime({ enabled: true });
+    const result = await runStopHookPhase({
+      runtime,
+      phase: "Stop",
+      matchKey: "session-verify",
+      context: {
+        phase: "Stop",
+        sessionId: "session-verify",
+        finalContent:
+          "All phases of PLAN.md have been completed. The workspace is fully implemented and verified.",
+        allToolCalls: [
+          verificationFailure(
+            "include/utils.h:25:18: error: unknown type name 'FILE'",
+          ),
+        ],
+      },
+    });
+
+    expect(result.outcome).toBe("retry_with_blocking_message");
+    expect(result.reason).toBe("false_success_after_failed_verification");
+    expect(result.blockingMessage).toMatch(/verification\/probe step/i);
   });
 
   it("honors configured hook ordering and merges evidence by hook id", async () => {

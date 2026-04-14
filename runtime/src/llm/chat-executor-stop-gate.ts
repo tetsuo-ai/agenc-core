@@ -67,7 +67,7 @@ import { resolveWorkflowEvidenceFromRequiredToolEvidence } from "./turn-executio
  * claims as well as opening sentences.
  */
 const FALSE_SUCCESS_RE =
-  /\b(?:build\s+(?:succeeded|successful|complete|completed|finished)|build\s+is\s+(?:successful|complete|finished)|phase\s+\d+\s+(?:complete|completed|done|finished|passed|implemented)|phase\s+\d+\s+(?:bootstrap|implementation)\s+(?:complete|completed|finished)|tests?\s+(?:passed|succeeded|all\s+pass(?:ed|ing)?)|all\s+tests?\s+pass(?:ed|ing)?|binary\s+(?:is\s+)?(?:exists|ready|built|compiled)|all\s+phases?\s+(?:complete|completed|done|finished|implemented)|task\s+(?:complete|completed|done|finished)|implementation\s+(?:complete|completed|done|finished)|successfully\s+(?:built|compiled|implemented|completed|finished)|v\d+(?:\.\d+)*\s+complete|ready\s+to\s+ship|done\s+with\s+phase)/i;
+  /\b(?:build\s+(?:succeeded|successful|complete|completed|finished)|build\s+is\s+(?:successful|complete|finished)|phase\s+\d+\s+(?:complete|completed|done|finished|passed|implemented)|phase\s+\d+\s+(?:bootstrap|implementation)\s+(?:complete|completed|finished)|tests?\s+(?:passed|succeeded|all\s+pass(?:ed|ing)?)|all\s+tests?\s+pass(?:ed|ing)?|binary\s+(?:is\s+)?(?:exists|ready|built|compiled)|all\s+phases?\s+(?:complete|completed|done|finished|implemented)|all\s+phases?\s+of\s+[^\n]{0,120}?\s+have\s+been\s+(?:complete|completed|done|finished|implemented)|all\s+phases?\b(?:[^.!?\n]{0,80})\b(?:complete|completed|done|finished|implemented)|task\s+(?:complete|completed|done|finished)|implementation\s+(?:complete|completed|done|finished)|successfully\s+(?:built|compiled|implemented|completed|finished)|v\d+(?:\.\d+)*\s+complete|ready\s+to\s+ship|done\s+with\s+phase)/i;
 
 /**
  * Honest-acknowledgment phrases. If the final message contains BOTH a
@@ -189,7 +189,7 @@ const MID_TASK_PERMISSION_QUESTION_RE =
  * are not forced into a recovery loop.
  */
 const TERMINAL_COMPLETION_RE =
-  /\b(?:task\s+(?:complete|completed|done|finished)|all\s+phases?\s+(?:complete|completed|done|finished|implemented)|implementation\s+(?:complete|completed|done|finished)|nothing\s+(?:more|else)\s+to\s+(?:do|implement)|session\s+(?:complete|done|finished)|finished\s+the\s+(?:task|work|implementation|plan)|project\s+(?:complete|completed|done|finished))/i;
+  /\b(?:task\s+(?:complete|completed|done|finished)|all\s+phases?\s+(?:complete|completed|done|finished|implemented)|all\s+phases?\s+of\s+[^\n]{0,120}?\s+have\s+been\s+(?:complete|completed|done|finished|implemented)|all\s+phases?\b(?:[^.!?\n]{0,80})\b(?:complete|completed|done|finished|implemented)|implementation\s+(?:complete|completed|done|finished)|nothing\s+(?:more|else)\s+to\s+(?:do|implement)|session\s+(?:complete|done|finished)|finished\s+the\s+(?:task|work|implementation|plan)|project\s+(?:complete|completed|done|finished))/i;
 
 /**
  * Tool names whose failures count as "this turn had a failed shell
@@ -215,6 +215,7 @@ const SHELL_LIKE_TOOL_NAMES: ReadonlySet<string> = new Set([
  */
 export type StopGateInterventionReason =
   | "false_success_after_failed_bash"
+  | "false_success_after_failed_verification"
   | "false_success_after_anti_fab_refusal"
   | "truncated_success_claim"
   | "narrated_future_tool_work";
@@ -222,12 +223,16 @@ export type StopGateInterventionReason =
 export interface StopGateEvidence {
   /** Number of `system.bash` / `desktop.bash` calls in the turn that returned `isError: true`. */
   readonly failedShellCallCount: number;
+  /** Number of verification/probe calls whose latest observed result is still failing. */
+  readonly failedVerificationCallCount: number;
   /** Number of tool calls in the turn that the runtime refused (anti-fab, contract, envelope, etc.). */
   readonly refusedToolCallCount: number;
   /** Length of the final assistant text in characters. */
   readonly finalContentLength: number;
   /** Up to 3 truncated failure-text excerpts to surface in the blocking message. */
   readonly failureExcerpts: readonly string[];
+  /** Up to 3 verification/probe failure excerpts to surface in the blocking message. */
+  readonly verificationFailureExcerpts: readonly string[];
   /** Up to 3 refused-call reasons to surface in the blocking message. */
   readonly refusalExcerpts: readonly string[];
 }
@@ -319,10 +324,68 @@ function summarizeRefusedCall(record: ToolCallRecord): string {
   return `${record.name}${target ? ` on \`${truncate(target, 100)}\`` : ""}: ${truncate(reason, 200)}`;
 }
 
+function isVerificationLikeToolCall(record: ToolCallRecord): boolean {
+  if (record.name === "verification.runProbe") {
+    return true;
+  }
+  if (record.args?.__runtimeAcceptanceProbe === true) {
+    return true;
+  }
+  try {
+    const parsed = JSON.parse(record.result) as Record<string, unknown>;
+    return (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "__agencVerification" in parsed
+    );
+  } catch {
+    return false;
+  }
+}
+
+function findUnresolvedVerificationFailures(
+  allToolCalls: readonly ToolCallRecord[],
+): ToolCallRecord[] {
+  const verificationCalls = allToolCalls.filter(isVerificationLikeToolCall);
+  if (verificationCalls.length === 0) {
+    return [];
+  }
+  const lastVerificationCall = verificationCalls.at(-1);
+  if (
+    !lastVerificationCall ||
+    !didToolCallFail(lastVerificationCall.isError, lastVerificationCall.result)
+  ) {
+    return [];
+  }
+  return [lastVerificationCall];
+}
+
+function summarizeVerificationFailureCall(record: ToolCallRecord): string {
+  let label =
+    typeof record.args?.probeId === "string" && record.args.probeId.trim().length > 0
+      ? record.args.probeId.trim()
+      : record.name;
+  try {
+    const parsed = JSON.parse(record.result) as Record<string, unknown>;
+    const verification =
+      typeof parsed.__agencVerification === "object" &&
+      parsed.__agencVerification !== null
+        ? parsed.__agencVerification as Record<string, unknown>
+        : null;
+    if (verification && typeof verification.command === "string") {
+      label = verification.command.trim();
+    }
+  } catch {
+    // Fall back to probe id / tool name when result is not structured JSON.
+  }
+  return `\`${truncate(label, 100)}\` → ${truncate(extractToolFailureText(record), 200)}`;
+}
+
 function buildBlockingMessage(params: {
   readonly reason: StopGateInterventionReason;
   readonly finalContent: string;
   readonly failedShellCalls: readonly ToolCallRecord[];
+  readonly failedVerificationCalls: readonly ToolCallRecord[];
   readonly refusedCalls: readonly ToolCallRecord[];
 }): string {
   const lines: string[] = [];
@@ -342,6 +405,14 @@ function buildBlockingMessage(params: {
           `tool call(s) in this turn. A refused write means the runtime ` +
           `prevented you from masking a prior failure — claiming success ` +
           `now papers over the same failure.`,
+      );
+      break;
+    case "false_success_after_failed_verification":
+      lines.push(
+        `Your final reply claims the work is complete, but the latest ` +
+          `verification/probe step in this turn still FAILED. Completion ` +
+          `cannot pass while the most recent grounded verification result ` +
+          `is red.`,
       );
       break;
     case "truncated_success_claim":
@@ -375,6 +446,13 @@ function buildBlockingMessage(params: {
     lines.push(`Failing shell commands (up to 3 shown):`);
     for (const call of params.failedShellCalls.slice(0, 3)) {
       lines.push(`  • ${summarizeFailedShellCall(call)}`);
+    }
+  }
+  if (params.failedVerificationCalls.length > 0) {
+    lines.push("");
+    lines.push(`Failing verification/probe steps (up to 3 shown):`);
+    for (const call of params.failedVerificationCalls.slice(0, 3)) {
+      lines.push(`  • ${summarizeVerificationFailureCall(call)}`);
     }
   }
   if (params.refusedCalls.length > 0) {
@@ -641,13 +719,18 @@ export function evaluateTurnEndStopGate(
   const finalContent = params.finalContent ?? "";
   const allToolCalls = params.allToolCalls ?? [];
   const failedShellCalls = findFailedShellCalls(allToolCalls);
+  const failedVerificationCalls = findUnresolvedVerificationFailures(allToolCalls);
   const refusedCalls = findRefusedCalls(allToolCalls);
 
   const evidence: StopGateEvidence = {
     failedShellCallCount: failedShellCalls.length,
+    failedVerificationCallCount: failedVerificationCalls.length,
     refusedToolCallCount: refusedCalls.length,
     finalContentLength: finalContent.length,
     failureExcerpts: failedShellCalls
+      .slice(0, 3)
+      .map((c) => truncate(extractToolFailureText(c), 200)),
+    verificationFailureExcerpts: failedVerificationCalls
       .slice(0, 3)
       .map((c) => truncate(extractToolFailureText(c), 200)),
     refusalExcerpts: refusedCalls
@@ -691,6 +774,24 @@ export function evaluateTurnEndStopGate(
         reason: "false_success_after_anti_fab_refusal",
         finalContent,
         failedShellCalls,
+        failedVerificationCalls,
+        refusedCalls,
+      }),
+      evidence,
+    };
+  }
+
+  // Detector 1.5: the latest verification/probe step in the turn still
+  // failed, but the model is now claiming completion anyway.
+  if (failedVerificationCalls.length > 0 && !acknowledgesFailure) {
+    return {
+      shouldIntervene: true,
+      reason: "false_success_after_failed_verification",
+      blockingMessage: buildBlockingMessage({
+        reason: "false_success_after_failed_verification",
+        finalContent,
+        failedShellCalls,
+        failedVerificationCalls,
         refusedCalls,
       }),
       evidence,
@@ -710,6 +811,7 @@ export function evaluateTurnEndStopGate(
         reason: "truncated_success_claim",
         finalContent,
         failedShellCalls,
+        failedVerificationCalls,
         refusedCalls,
       }),
       evidence,
@@ -726,6 +828,7 @@ export function evaluateTurnEndStopGate(
         reason: "false_success_after_failed_bash",
         finalContent,
         failedShellCalls,
+        failedVerificationCalls,
         refusedCalls,
       }),
       evidence,
@@ -949,6 +1052,7 @@ function maybeFireNarratedFutureToolWork(params: {
       reason: "narrated_future_tool_work",
       finalContent: params.finalContent,
       failedShellCalls: params.failedShellCalls,
+      failedVerificationCalls: [],
       refusedCalls: params.refusedCalls,
     }),
     evidence: params.evidence,

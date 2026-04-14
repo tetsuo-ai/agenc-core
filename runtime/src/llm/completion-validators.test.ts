@@ -218,6 +218,46 @@ describe("completion-validators", () => {
     expect(result.maxAttempts).toBe(3);
   });
 
+  it("blocks finalization when the latest verification probe still failed", async () => {
+    const flags = makeFlags({ stopHooksEnabled: true });
+    const validators = buildCompletionValidators({
+      ctx: makeCtx({
+        flags,
+        finalContent:
+          "All phases of PLAN.md have been completed. The workspace is fully implemented and verified.",
+        allToolCalls: [
+          successfulWrite("/tmp/workspace/include/utils.h"),
+          syntheticAcceptanceProbe({
+            error: "include/utils.h:25:18: error: unknown type name 'FILE'",
+            __agencVerification: {
+              probeId: "build",
+              category: "build",
+              profile: "default",
+              repoLocal: true,
+              cwd: "/tmp/workspace",
+              command: "cmake --build build",
+              writesTempOnly: false,
+            },
+          }),
+        ],
+      }),
+      runtimeContractFlags: flags,
+      stopHookRuntime: buildStopHookRuntime({
+        enabled: true,
+      }),
+    });
+
+    const stopValidator = validators.find(
+      (validator) => validator.id === "turn_end_stop_gate",
+    );
+    const result = await stopValidator!.execute();
+
+    expect(result.outcome).toBe("retry_with_blocking_message");
+    expect(result.reason).toBe("false_success_after_failed_verification");
+    expect(result.blockingMessage).toContain("cmake --build build");
+    expect(result.stopHookResult?.outcome).toBe("retry_with_blocking_message");
+  });
+
   it("uses the shared correction budget for narrated future tool work when stop hooks are not configured", async () => {
     const validators = buildCompletionValidators({
       ctx: makeCtx({
