@@ -353,7 +353,9 @@ describe("top-level artifact evidence gate", () => {
   });
 
   it("keeps retrying narrated future-work stop-gate recoveries within the coding correction budget", async () => {
-    const targetPath = `${WORKSPACE_ROOT}/src/main.c`;
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-stop-gate-recovery-"));
+    const targetPath = join(workspaceRoot, "src/main.c");
+    mkdirSync(dirname(targetPath), { recursive: true });
     const provider = createMockProvider("primary", {
       chat: vi
         .fn<[LLMMessage[], LLMChatOptions?], Promise<LLMResponse>>()
@@ -422,24 +424,29 @@ describe("top-level artifact evidence gate", () => {
     });
     const executor = new ChatExecutor({ providers: [provider], toolHandler });
 
-    const result = await executor.execute(
-      createParams({
-        requiredToolEvidence: {
-          maxCorrectionAttempts: 3,
-        },
-      }),
-    );
+    try {
+      const result = await executor.execute(
+        createParams({
+          runtimeContext: { workspaceRoot },
+          requiredToolEvidence: {
+            maxCorrectionAttempts: 3,
+          },
+        }),
+      );
 
-    expect(result.stopReason).toBe("completed");
-    expect(writeAttempts).toBe(2);
-    expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(6);
-    expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls[2]?.[1]).toMatchObject({
-      toolChoice: "required",
-    });
-    expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls[3]?.[1]).toMatchObject({
-      toolChoice: "required",
-    });
-    expect(readFileSync(targetPath, "utf8")).toBe("phase 2");
+      expect(result.stopReason).toBe("completed");
+      expect(writeAttempts).toBe(2);
+      expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(6);
+      expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls[2]?.[1]).toMatchObject({
+        toolChoice: "required",
+      });
+      expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls[3]?.[1]).toMatchObject({
+        toolChoice: "required",
+      });
+      expect(readFileSync(targetPath, "utf8")).toBe("phase 2");
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   it("re-enters the loop when deterministic acceptance probes fail", async () => {
