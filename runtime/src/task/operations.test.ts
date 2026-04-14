@@ -840,7 +840,7 @@ describe("TaskOperations", () => {
       });
 
       await expect(ops.claimTask(taskPda, task)).rejects.toThrow(
-        /remote marketplace jobSpec URI resolution is disabled/,
+        /Task not claimable: Task job spec could not be verified before claim/,
       );
       expect(fetchSpy).not.toHaveBeenCalled();
       expect(mocks.claimTaskBuilder.rpc).not.toHaveBeenCalled();
