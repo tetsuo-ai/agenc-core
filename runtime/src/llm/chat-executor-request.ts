@@ -31,6 +31,7 @@ import { sanitizeFinalContent } from "./chat-executor-text.js";
 import { summarizeStateful } from "./chat-executor-recovery.js";
 import { dispatchHooks, defaultHookExecutor } from "./hooks/index.js";
 import { resolveWorkflowCompletionState } from "../workflow/completion-state.js";
+import { isRuntimeVerifierRequiredForTurn } from "../gateway/runtime-verifier-requirement.js";
 import { deriveWorkflowProgressSnapshot } from "../workflow/completion-progress.js";
 import { buildRuntimeEconomicsSummary } from "./run-budget.js";
 import { deriveActiveTaskContext } from "./turn-execution-contract.js";
@@ -160,7 +161,10 @@ export async function executeRequest(
     completedRequestMilestoneIds: ctx.completedRequestMilestoneIds,
     validationCode: ctx.validationCode,
     verifier: ctx.verifierSnapshot,
-    runtimeVerifierRequired: ctx.runtimeContractSnapshot.flags.verifierRuntimeRequired,
+    runtimeVerifierRequired: isRuntimeVerifierRequiredForTurn({
+      flags: ctx.runtimeContractSnapshot.flags,
+      turnExecutionContract: ctx.turnExecutionContract,
+    }),
   });
 
   const durationMs = Date.now() - ctx.startTime;

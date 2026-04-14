@@ -26,6 +26,7 @@ import {
   reportManagedRemoteJob,
   startManagedRemoteJob,
 } from "./remote-execution-handles.js";
+import { isRuntimeVerifierRequiredForTurn } from "./runtime-verifier-requirement.js";
 
 const DEFAULT_VERIFY_TOOLS = [
   "system.readFile",
@@ -355,16 +356,18 @@ function shouldRunTopLevelVerifier(params: TopLevelVerifierParams): boolean {
   if (isSubAgentSessionId(params.sessionId)) return false;
   if (params.result.stopReason !== "completed") return false;
   if (params.result.completionState !== "completed") return false;
-  if (params.result.turnExecutionContract.turnClass !== "workflow_implementation") {
+  if (
+    !isRuntimeVerifierRequiredForTurn({
+      flags: params.result.runtimeContractSnapshot?.flags,
+      turnExecutionContract: params.result.turnExecutionContract,
+    })
+  ) {
     return false;
   }
-  const targetArtifacts = params.result.turnExecutionContract.targetArtifacts ?? [];
-  if (targetArtifacts.length === 0) return false;
   if (!params.verifierService) return true;
   return params.verifierService.resolveVerifierRequirement({
     requested: true,
-    runtimeRequired:
-      params.result.runtimeContractSnapshot?.flags.verifierRuntimeRequired,
+    runtimeRequired: true,
     projectBootstrap:
       params.result.runtimeContractSnapshot?.flags.verifierProjectBootstrap,
     workspaceRoot: params.result.turnExecutionContract.workspaceRoot,
@@ -374,8 +377,15 @@ function shouldRunTopLevelVerifier(params: TopLevelVerifierParams): boolean {
 function resolveTopLevelVerifierRequirement(
   params: TopLevelVerifierParams,
 ): VerifierRequirement | null {
+  const runtimeRequired = isRuntimeVerifierRequiredForTurn({
+    flags: params.result.runtimeContractSnapshot?.flags,
+    turnExecutionContract: params.result.turnExecutionContract,
+  });
+  if (!runtimeRequired) {
+    return null;
+  }
   if (!params.verifierService) {
-    return params.result.runtimeContractSnapshot?.flags.verifierRuntimeRequired
+    return runtimeRequired
       ? {
           required: true,
           bootstrapSource: "fallback",
@@ -389,8 +399,7 @@ function resolveTopLevelVerifierRequirement(
   }
   return params.verifierService.resolveVerifierRequirement({
     requested: true,
-    runtimeRequired:
-      params.result.runtimeContractSnapshot?.flags.verifierRuntimeRequired,
+    runtimeRequired: true,
     projectBootstrap:
       params.result.runtimeContractSnapshot?.flags.verifierProjectBootstrap,
     workspaceRoot: params.result.turnExecutionContract.workspaceRoot,

@@ -22,6 +22,7 @@ import type {
   CompletionValidatorId,
   RuntimeContractFlags,
 } from "../runtime-contract/types.js";
+import { isRuntimeVerifierRequiredForTurn } from "../gateway/runtime-verifier-requirement.js";
 import { runTopLevelVerifierValidation } from "../gateway/top-level-verifier.js";
 import { getRemainingRequestTaskMilestones } from "./request-task-progress.js";
 
@@ -54,8 +55,10 @@ export function buildCompletionValidators(params: {
           params.stopHookRuntime.maxAttempts,
         )
       : sharedCorrectionBudgetCap;
-  const topLevelVerifierEnabled =
-    params.runtimeContractFlags.verifierRuntimeRequired;
+  const topLevelVerifierEnabled = isRuntimeVerifierRequiredForTurn({
+    flags: params.runtimeContractFlags,
+    turnExecutionContract: params.ctx.turnExecutionContract,
+  });
   const deterministicAcceptanceProbesEnabled =
     shouldRunDeterministicAcceptanceProbes({
       workspaceRoot: params.ctx.runtimeWorkspaceRoot,

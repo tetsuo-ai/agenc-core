@@ -33,7 +33,7 @@ function createResult(
       asyncTasksEnabled: false,
       persistentWorkersEnabled: false,
       mailboxEnabled: false,
-      verifierRuntimeRequired: false,
+      verifierRuntimeRequired: true,
       verifierProjectBootstrap: false,
       workerIsolationWorktree: false,
       workerIsolationRemote: false,
@@ -193,7 +193,7 @@ describe("runTopLevelVerifierValidation", () => {
     expect(decision.runtimeVerifier.overall).toBe("fail");
   });
 
-  it("blocks required verifier work for non-workflow turns instead of silently skipping", async () => {
+  it("skips verifier work for non-workflow turns even when the runtime flag is enabled", async () => {
     const spawn = vi.fn(async () => "subagent:verify-1");
 
     const decision = await runTopLevelVerifierValidation({
@@ -212,8 +212,8 @@ describe("runTopLevelVerifierValidation", () => {
     });
 
     expect(spawn).not.toHaveBeenCalled();
-    expect(decision.outcome).toBe("retry_with_blocking_message");
-    expect(decision.runtimeVerifier.overall).toBe("retry");
+    expect(decision.outcome).toBe("skipped");
+    expect(decision.runtimeVerifier.overall).toBe("skipped");
   });
 
   it("still skips verifier workers when runtime verification is not required", async () => {
