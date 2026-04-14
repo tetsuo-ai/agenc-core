@@ -393,14 +393,18 @@ export const COMPLETION_VALIDATOR_ORDER: readonly CompletionValidatorId[] = [
 export function createRuntimeContractSnapshot(
   flags: RuntimeContractFlags,
 ): RuntimeContractSnapshot {
+  const hookBackedValidatorIds = new Set<CompletionValidatorId>([
+    "artifact_evidence",
+    "turn_end_stop_gate",
+    "filesystem_artifact_verification",
+    "deterministic_acceptance_probes",
+  ]);
   return {
     flags,
     validatorOrder: [...COMPLETION_VALIDATOR_ORDER],
     validators: COMPLETION_VALIDATOR_ORDER.map((id) => ({
       id,
-      enabled: id === "top_level_verifier"
-        ? flags.verifierRuntimeRequired
-        : true,
+      enabled: hookBackedValidatorIds.has(id) && flags.stopHooksEnabled,
       executed: false,
       outcome: "skipped",
     })),

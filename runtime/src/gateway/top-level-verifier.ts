@@ -13,6 +13,7 @@ import {
   extractVerificationProbeCoverage,
   type VerifierRequirement,
 } from "./verifier-probes.js";
+import type { TurnExecutionContract } from "../llm/turn-execution-contract-types.js";
 import type {
   SubAgentConfig,
   SubAgentManager,
@@ -26,7 +27,6 @@ import {
   reportManagedRemoteJob,
   startManagedRemoteJob,
 } from "./remote-execution-handles.js";
-import { isRuntimeVerifierRequiredForTurn } from "./runtime-verifier-requirement.js";
 
 const DEFAULT_VERIFY_TOOLS = [
   "system.readFile",
@@ -141,6 +141,45 @@ export interface TopLevelVerifierTraceEvent {
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
   return `${text.slice(0, max - 1).trimEnd()}…`;
+}
+
+function getTopLevelVerifierTaskClass(
+  turnExecutionContract:
+    | Pick<TurnExecutionContract, "completionContract" | "verificationContract">
+    | undefined,
+): string | undefined {
+  const completionContract = turnExecutionContract?.completionContract as
+    | { readonly taskClass?: unknown }
+    | undefined;
+  if (typeof completionContract?.taskClass === "string") {
+    return completionContract.taskClass;
+  }
+
+  const verificationContract = turnExecutionContract?.verificationContract as
+    | { readonly completionContract?: { readonly taskClass?: unknown } }
+    | undefined;
+  const nestedTaskClass =
+    verificationContract?.completionContract?.taskClass;
+  return typeof nestedTaskClass === "string" ? nestedTaskClass : undefined;
+}
+
+export function isExplicitTopLevelVerifierRequiredForTurn(params: {
+  readonly turnExecutionContract:
+    | Pick<
+        TurnExecutionContract,
+        "turnClass" | "completionContract" | "verificationContract"
+      >
+    | undefined;
+}): boolean {
+  if (params.turnExecutionContract?.turnClass !== "workflow_implementation") {
+    return false;
+  }
+  const taskClass = getTopLevelVerifierTaskClass(params.turnExecutionContract);
+  return (
+    taskClass === "build_required" ||
+    taskClass === "behavior_required" ||
+    taskClass === "review_required"
+  );
 }
 
 function selectVerifyDefinition(
@@ -357,8 +396,7 @@ function shouldRunTopLevelVerifier(params: TopLevelVerifierParams): boolean {
   if (params.result.stopReason !== "completed") return false;
   if (params.result.completionState !== "completed") return false;
   if (
-    !isRuntimeVerifierRequiredForTurn({
-      flags: params.result.runtimeContractSnapshot?.flags,
+    !isExplicitTopLevelVerifierRequiredForTurn({
       turnExecutionContract: params.result.turnExecutionContract,
     })
   ) {
@@ -377,15 +415,14 @@ function shouldRunTopLevelVerifier(params: TopLevelVerifierParams): boolean {
 function resolveTopLevelVerifierRequirement(
   params: TopLevelVerifierParams,
 ): VerifierRequirement | null {
-  const runtimeRequired = isRuntimeVerifierRequiredForTurn({
-    flags: params.result.runtimeContractSnapshot?.flags,
+  const explicitVerifierRequired = isExplicitTopLevelVerifierRequiredForTurn({
     turnExecutionContract: params.result.turnExecutionContract,
   });
-  if (!runtimeRequired) {
+  if (!explicitVerifierRequired) {
     return null;
   }
   if (!params.verifierService) {
-    return runtimeRequired
+    return explicitVerifierRequired
       ? {
           required: true,
           bootstrapSource: "fallback",

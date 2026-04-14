@@ -1,11 +1,19 @@
 import { spawn } from "node:child_process";
 
+import type { ToolHandler } from "../types.js";
 import type { ToolCallRecord } from "../chat-executor-types.js";
+import type { DelegationContractSpec } from "../../utils/delegation-validation.js";
+import type { ExecutionEnvelope } from "../../workflow/execution-envelope.js";
+import type { ImplementationCompletionContract } from "../../workflow/completion-contract.js";
+import type { WorkflowVerificationContract } from "../../workflow/verification-obligations.js";
 import {
   buildTurnEndStopGateSnapshot,
+  checkFilesystemArtifacts,
   evaluateTurnEndStopGate,
+  evaluateArtifactEvidenceGate,
   type TurnEndStopGateSnapshot,
 } from "../chat-executor-stop-gate.js";
+import { runDeterministicAcceptanceProbes } from "../deterministic-acceptance-probes.js";
 import { matchesHookMatcher } from "./matcher.js";
 
 export const STOP_HOOK_PHASES = [
@@ -23,7 +31,18 @@ export type StopHookConfigKind = (typeof STOP_HOOK_CONFIG_KINDS)[number];
 export const STOP_HOOK_DEFAULT_TIMEOUT_MS = 5_000;
 export const STOP_HOOK_RESERVED_ID_PREFIX = "builtin:";
 export const BUILTIN_TURN_END_STOP_GATE_ID = `${STOP_HOOK_RESERVED_ID_PREFIX}turn_end_stop_gate`;
-export const BUILTIN_STOP_HOOK_IDS = [BUILTIN_TURN_END_STOP_GATE_ID] as const;
+export const BUILTIN_ARTIFACT_EVIDENCE_HOOK_ID =
+  `${STOP_HOOK_RESERVED_ID_PREFIX}artifact_evidence`;
+export const BUILTIN_FILESYSTEM_ARTIFACT_VERIFICATION_HOOK_ID =
+  `${STOP_HOOK_RESERVED_ID_PREFIX}filesystem_artifact_verification`;
+export const BUILTIN_DETERMINISTIC_ACCEPTANCE_PROBES_HOOK_ID =
+  `${STOP_HOOK_RESERVED_ID_PREFIX}deterministic_acceptance_probes`;
+export const BUILTIN_STOP_HOOK_IDS = [
+  BUILTIN_TURN_END_STOP_GATE_ID,
+  BUILTIN_ARTIFACT_EVIDENCE_HOOK_ID,
+  BUILTIN_FILESYSTEM_ARTIFACT_VERIFICATION_HOOK_ID,
+  BUILTIN_DETERMINISTIC_ACCEPTANCE_PROBES_HOOK_ID,
+] as const;
 
 export interface StopHookHandlerConfig {
   readonly id: string;
@@ -61,6 +80,19 @@ export interface StopHookContext {
   readonly finalContent?: string;
   readonly allToolCalls?: readonly ToolCallRecord[];
   readonly turnEndSnapshot?: TurnEndStopGateSnapshot;
+  readonly runtimeChecks?: {
+    readonly requiredToolEvidence?: {
+      readonly maxCorrectionAttempts?: number;
+      readonly delegationSpec?: DelegationContractSpec;
+      readonly unsafeBenchmarkMode?: boolean;
+      readonly verificationContract?: WorkflowVerificationContract;
+      readonly completionContract?: ImplementationCompletionContract;
+      readonly executionEnvelope?: ExecutionEnvelope;
+    };
+    readonly targetArtifacts?: readonly string[];
+    readonly activeToolHandler?: ToolHandler;
+    readonly appendProbeRuns?: (runs: readonly ToolCallRecord[]) => void;
+  };
   readonly verificationReady?: {
     readonly deterministicAcceptanceProbesEnabled: boolean;
     readonly topLevelVerifierEnabled: boolean;
@@ -169,6 +201,167 @@ function buildBuiltinStopHookDefinitions(): readonly StopHookRuntimeDefinition[]
         };
       },
     },
+    {
+      id: BUILTIN_ARTIFACT_EVIDENCE_HOOK_ID,
+      phase: "Stop",
+      kind: "builtin",
+      target: "evaluateArtifactEvidenceGate",
+      source: "builtin",
+      builtinHandler: async (context) => {
+        const startedAt = Date.now();
+        const decision = evaluateArtifactEvidenceGate({
+          requiredToolEvidence: context.runtimeChecks?.requiredToolEvidence,
+          runtimeContext: {
+            workspaceRoot: context.runtimeWorkspaceRoot,
+          },
+          allToolCalls: context.allToolCalls ?? [],
+        });
+        return {
+          hookId: BUILTIN_ARTIFACT_EVIDENCE_HOOK_ID,
+          phase: context.phase,
+          progressMessages: [],
+          ...(decision.shouldIntervene
+            ? {
+                blockingError: {
+                  hookId: BUILTIN_ARTIFACT_EVIDENCE_HOOK_ID,
+                  message:
+                    decision.blockingMessage ??
+                    "Artifact evidence is incomplete.",
+                  evidence: decision.evidence,
+                },
+                stopReason: decision.validationCode,
+                evidence: decision.evidence,
+              }
+            : { evidence: decision.evidence }),
+          durationMs: Date.now() - startedAt,
+        };
+      },
+    },
+    {
+      id: BUILTIN_FILESYSTEM_ARTIFACT_VERIFICATION_HOOK_ID,
+      phase: "Stop",
+      kind: "builtin",
+      target: "checkFilesystemArtifacts",
+      source: "builtin",
+      builtinHandler: async (context) => {
+        const startedAt = Date.now();
+        const check = await checkFilesystemArtifacts({
+          finalContent: context.finalContent ?? "",
+          allToolCalls: context.allToolCalls ?? [],
+        });
+        return {
+          hookId: BUILTIN_FILESYSTEM_ARTIFACT_VERIFICATION_HOOK_ID,
+          phase: context.phase,
+          progressMessages: [],
+          ...(check.shouldIntervene
+            ? {
+                blockingError: {
+                  hookId: BUILTIN_FILESYSTEM_ARTIFACT_VERIFICATION_HOOK_ID,
+                  message:
+                    check.blockingMessage ??
+                    "Filesystem artifact verification failed.",
+                  evidence: {
+                    emptyFiles: check.emptyFiles,
+                    missingFiles: check.missingFiles,
+                    checkedFiles: check.checkedFiles,
+                  },
+                },
+                stopReason: "filesystem_artifact_verification",
+                evidence: {
+                  emptyFiles: check.emptyFiles,
+                  missingFiles: check.missingFiles,
+                  checkedFiles: check.checkedFiles,
+                },
+              }
+            : {
+                evidence: {
+                  emptyFiles: check.emptyFiles,
+                  missingFiles: check.missingFiles,
+                  checkedFiles: check.checkedFiles,
+                },
+              }),
+          durationMs: Date.now() - startedAt,
+        };
+      },
+    },
+    {
+      id: BUILTIN_DETERMINISTIC_ACCEPTANCE_PROBES_HOOK_ID,
+      phase: "Stop",
+      kind: "builtin",
+      target: "runDeterministicAcceptanceProbes",
+      source: "builtin",
+      builtinHandler: async (context) => {
+        const startedAt = Date.now();
+        const activeToolHandler = context.runtimeChecks?.activeToolHandler;
+        if (!activeToolHandler) {
+          return passOutcome(
+            BUILTIN_DETERMINISTIC_ACCEPTANCE_PROBES_HOOK_ID,
+            context.phase,
+            Date.now() - startedAt,
+          );
+        }
+        const decision = await runDeterministicAcceptanceProbes({
+          workspaceRoot: context.runtimeWorkspaceRoot,
+          targetArtifacts: context.runtimeChecks?.targetArtifacts,
+          allToolCalls: context.allToolCalls ?? [],
+          activeToolHandler,
+        });
+        if (decision.probeRuns.length > 0) {
+          context.runtimeChecks?.appendProbeRuns?.(decision.probeRuns);
+        }
+        if (!decision.shouldIntervene) {
+          return {
+            hookId: BUILTIN_DETERMINISTIC_ACCEPTANCE_PROBES_HOOK_ID,
+            phase: context.phase,
+            progressMessages: [],
+            evidence: {
+              evidence: decision.evidence,
+              probeRuns: decision.probeRuns,
+            },
+            durationMs: Date.now() - startedAt,
+          };
+        }
+        if (decision.allowRecovery === false) {
+          return {
+            hookId: BUILTIN_DETERMINISTIC_ACCEPTANCE_PROBES_HOOK_ID,
+            phase: context.phase,
+            progressMessages: [],
+            preventContinuation: true,
+            stopReason:
+              decision.validationCode ??
+              "deterministic_acceptance_probe_failed",
+            evidence: {
+              evidence: decision.evidence,
+              probeRuns: decision.probeRuns,
+            },
+            durationMs: Date.now() - startedAt,
+          };
+        }
+        return {
+          hookId: BUILTIN_DETERMINISTIC_ACCEPTANCE_PROBES_HOOK_ID,
+          phase: context.phase,
+          progressMessages: [],
+          blockingError: {
+            hookId: BUILTIN_DETERMINISTIC_ACCEPTANCE_PROBES_HOOK_ID,
+            message:
+              decision.blockingMessage ??
+              "Deterministic acceptance probes failed.",
+            evidence: {
+              evidence: decision.evidence,
+              probeRuns: decision.probeRuns,
+            },
+          },
+          stopReason:
+            decision.validationCode ??
+            "deterministic_acceptance_probe_failed",
+          evidence: {
+            evidence: decision.evidence,
+            probeRuns: decision.probeRuns,
+          },
+          durationMs: Date.now() - startedAt,
+        };
+      },
+    },
   ];
 }
 
@@ -225,39 +418,40 @@ export async function runStopHookPhase(params: {
     };
   }
 
-  const outcomes = await Promise.all(
-    matched.map((definition) =>
-      runStopHookDefinition(definition, params.context),
-    ),
-  );
+  const outcomes: StopHookOutcome[] = [];
+  for (const definition of matched) {
+    const outcome = await runStopHookDefinition(definition, params.context);
+    outcomes.push(outcome);
+    const progressMessages = outcomes.flatMap(
+      (candidate) => candidate.progressMessages,
+    );
+    if (outcome.preventContinuation) {
+      return {
+        phase: params.phase,
+        outcome: "prevent_continuation",
+        reason: outcome.hookId,
+        stopReason:
+          outcome.stopReason ??
+          outcome.blockingError?.message ??
+          "Runtime stop hook prevented continuation.",
+        evidence: mergeStopHookEvidence(outcomes),
+        progressMessages,
+        hookOutcomes: outcomes,
+      };
+    }
+    if (outcome.blockingError) {
+      return {
+        phase: params.phase,
+        outcome: "retry_with_blocking_message",
+        reason: outcome.stopReason ?? outcome.hookId,
+        blockingMessage: outcome.blockingError.message,
+        evidence: mergeStopHookEvidence(outcomes),
+        progressMessages,
+        hookOutcomes: outcomes,
+      };
+    }
+  }
   const progressMessages = outcomes.flatMap((outcome) => outcome.progressMessages);
-  const preventOutcome = outcomes.find((outcome) => outcome.preventContinuation);
-  if (preventOutcome) {
-    return {
-      phase: params.phase,
-      outcome: "prevent_continuation",
-      reason: preventOutcome.hookId,
-      stopReason:
-        preventOutcome.stopReason ??
-        preventOutcome.blockingError?.message ??
-        "Runtime stop hook prevented continuation.",
-      evidence: mergeStopHookEvidence(outcomes),
-      progressMessages,
-      hookOutcomes: outcomes,
-    };
-  }
-  const blockingOutcome = outcomes.find((outcome) => outcome.blockingError);
-  if (blockingOutcome?.blockingError) {
-    return {
-      phase: params.phase,
-      outcome: "retry_with_blocking_message",
-      reason: blockingOutcome.stopReason ?? blockingOutcome.hookId,
-      blockingMessage: blockingOutcome.blockingError.message,
-      evidence: mergeStopHookEvidence(outcomes),
-      progressMessages,
-      hookOutcomes: outcomes,
-    };
-  }
   return {
     phase: params.phase,
     outcome: "pass",

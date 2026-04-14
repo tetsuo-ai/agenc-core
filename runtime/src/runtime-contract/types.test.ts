@@ -6,7 +6,7 @@ import {
 } from "./types.js";
 
 describe("runtime-contract types", () => {
-  it("includes request_task_progress in the validator order and snapshot", () => {
+  it("keeps the reduced hook-backed validator snapshot shape", () => {
     expect(COMPLETION_VALIDATOR_ORDER).toEqual([
       "artifact_evidence",
       "turn_end_stop_gate",
@@ -33,6 +33,13 @@ describe("runtime-contract types", () => {
       COMPLETION_VALIDATOR_ORDER,
     );
     expect(
+      snapshot.validators.find((validator) => validator.id === "request_task_progress"),
+    ).toMatchObject({
+      enabled: false,
+      executed: false,
+      outcome: "skipped",
+    });
+    expect(
       snapshot.validators.find((validator) => validator.id === "top_level_verifier"),
     ).toMatchObject({
       enabled: false,
@@ -49,7 +56,7 @@ describe("runtime-contract types", () => {
     });
   });
 
-  it("enables the top-level verifier whenever runtime verification is required", () => {
+  it("keeps top-level verifier advisory in the runtime snapshot", () => {
     const snapshot = createRuntimeContractSnapshot({
       runtimeContractV2: false,
       stopHooksEnabled: false,
@@ -65,7 +72,7 @@ describe("runtime-contract types", () => {
     expect(
       snapshot.validators.find((validator) => validator.id === "top_level_verifier"),
     ).toMatchObject({
-      enabled: true,
+      enabled: false,
       executed: false,
       outcome: "skipped",
     });

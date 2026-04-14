@@ -61,7 +61,7 @@ import {
   ANTI_FABRICATION_HARNESS_OVERWRITE_REASON,
   evaluateWriteOverFailedVerification,
 } from "./verification-target-guard.js";
-import { buildCompletionValidators } from "./completion-validators.js";
+import { buildTurnEndStopGateSnapshot } from "./chat-executor-stop-gate.js";
 import {
   checkTurnContinuationBudget,
   countTurnCompletionTokens,
@@ -80,7 +80,13 @@ import {
   dispatchHooks,
   defaultHookExecutor,
 } from "./hooks/index.js";
-import { runStopHookPhase } from "./hooks/stop-hooks.js";
+import {
+  BUILTIN_ARTIFACT_EVIDENCE_HOOK_ID,
+  BUILTIN_DETERMINISTIC_ACCEPTANCE_PROBES_HOOK_ID,
+  BUILTIN_FILESYSTEM_ARTIFACT_VERIFICATION_HOOK_ID,
+  BUILTIN_TURN_END_STOP_GATE_ID,
+  runStopHookPhase,
+} from "./hooks/stop-hooks.js";
 import type { CanUseToolFn } from "./can-use-tool.js";
 import {
   partitionToolCalls,
@@ -115,9 +121,7 @@ import type { DelegationOutputValidationCode } from "../utils/delegation-validat
 import {
   type CompletionValidatorId,
   updateRuntimeContractValidatorSnapshot,
-  updateRuntimeContractVerifierStage,
   updateRuntimeContractToolProtocolSnapshot,
-  updateRuntimeContractVerifierVerdict,
 } from "../runtime-contract/types.js";
 import {
   getPendingToolProtocolCalls,
@@ -132,7 +136,6 @@ import {
 } from "./tool-protocol-state.js";
 import {
   getRemainingRequestTaskMilestones,
-  noteRequestTaskVerifierAttempt,
   REQUEST_TASK_PROGRESS_NO_IN_PROGRESS_KEY,
   REQUEST_TASK_PROGRESS_NO_TASK_YET_KEY,
   type RequestTaskObservationResult,
@@ -2079,24 +2082,35 @@ export async function executeToolCallLoop(
     const continuationSummary = ctx.continuationState.active
       ? emitContinuationEvaluation()
       : undefined;
-    const allValidators = buildCompletionValidators({
-      ctx,
-      runtimeContractFlags: config.runtimeContractFlags,
-      stopHookRuntime: config.stopHookRuntime,
-      completionValidation: config.completionValidation,
-    });
-    const validators = allValidators.filter(
-      (validator) => validator.id !== "turn_end_stop_gate",
-    );
+    const stopHookValidators = [
+      {
+        hookId: BUILTIN_TURN_END_STOP_GATE_ID,
+        validatorId: "turn_end_stop_gate" as CompletionValidatorId,
+      },
+      {
+        hookId: BUILTIN_ARTIFACT_EVIDENCE_HOOK_ID,
+        validatorId: "artifact_evidence" as CompletionValidatorId,
+      },
+      {
+        hookId: BUILTIN_FILESYSTEM_ARTIFACT_VERIFICATION_HOOK_ID,
+        validatorId: "filesystem_artifact_verification" as CompletionValidatorId,
+      },
+      {
+        hookId: BUILTIN_DETERMINISTIC_ACCEPTANCE_PROBES_HOOK_ID,
+        validatorId: "deterministic_acceptance_probes" as CompletionValidatorId,
+      },
+    ] as const;
+    const skippedValidators = [
+      "request_task_progress",
+      "top_level_verifier",
+    ] as const satisfies readonly CompletionValidatorId[];
+
     callbacks.emitExecutionTrace(ctx, {
       type: "completion_validation_started",
       phase: "tool_followup",
       callIndex: ctx.callIndex,
       payload: {
-        validatorOrder: [
-          "turn_end_stop_gate",
-          ...validators.map((validator) => validator.id),
-        ],
+        validatorOrder: stopHookValidators.map((entry) => entry.validatorId),
         runtimeContract: ctx.runtimeContractSnapshot,
       },
     });
@@ -2105,20 +2119,23 @@ export async function executeToolCallLoop(
     const stopHooksEnabled =
       config.runtimeContractFlags.stopHooksEnabled &&
       config.stopHookRuntime !== undefined;
-    callbacks.emitExecutionTrace(ctx, {
-      type: "completion_validator_started",
-      phase: "tool_followup",
-      callIndex: ctx.callIndex,
-      payload: {
-        validatorId: "turn_end_stop_gate",
-        enabled: stopHooksEnabled,
-        runtimeContract: ctx.runtimeContractSnapshot,
-      },
-    });
-    if (!stopHooksEnabled) {
+
+    for (const entry of stopHookValidators) {
+      callbacks.emitExecutionTrace(ctx, {
+        type: "completion_validator_started",
+        phase: "tool_followup",
+        callIndex: ctx.callIndex,
+        payload: {
+          validatorId: entry.validatorId,
+          enabled: stopHooksEnabled,
+          runtimeContract: ctx.runtimeContractSnapshot,
+        },
+      });
+    }
+    for (const validatorId of skippedValidators) {
       ctx.runtimeContractSnapshot = updateRuntimeContractValidatorSnapshot({
         snapshot: ctx.runtimeContractSnapshot,
-        id: "turn_end_stop_gate",
+        id: validatorId,
         enabled: false,
         executed: false,
         outcome: "skipped",
@@ -2128,12 +2145,35 @@ export async function executeToolCallLoop(
         phase: "tool_followup",
         callIndex: ctx.callIndex,
         payload: {
-          validatorId: "turn_end_stop_gate",
+          validatorId,
           enabled: false,
           outcome: "skipped",
           runtimeContract: ctx.runtimeContractSnapshot,
         },
       });
+    }
+
+    if (!stopHooksEnabled) {
+      for (const entry of stopHookValidators) {
+        ctx.runtimeContractSnapshot = updateRuntimeContractValidatorSnapshot({
+          snapshot: ctx.runtimeContractSnapshot,
+          id: entry.validatorId,
+          enabled: false,
+          executed: false,
+          outcome: "skipped",
+        });
+        callbacks.emitExecutionTrace(ctx, {
+          type: "completion_validator_finished",
+          phase: "tool_followup",
+          callIndex: ctx.callIndex,
+          payload: {
+            validatorId: entry.validatorId,
+            enabled: false,
+            outcome: "skipped",
+            runtimeContract: ctx.runtimeContractSnapshot,
+          },
+        });
+      }
     } else {
       const hookResult = await runStopHookPhase({
         runtime: config.stopHookRuntime,
@@ -2145,6 +2185,18 @@ export async function executeToolCallLoop(
           runtimeWorkspaceRoot: ctx.runtimeWorkspaceRoot,
           finalContent: ctx.response?.content ?? "",
           allToolCalls: ctx.allToolCalls,
+          turnEndSnapshot: buildTurnEndStopGateSnapshot(ctx.allToolCalls),
+          runtimeChecks: {
+            requiredToolEvidence: ctx.requiredToolEvidence,
+            targetArtifacts: ctx.turnExecutionContract.targetArtifacts,
+            activeToolHandler: ctx.activeToolHandler,
+            appendProbeRuns: (runs) => {
+              for (const run of runs) {
+                const observation = callbacks.appendToolRecord(ctx, run);
+                reconcileRequestTaskReminderState(ctx, callbacks, observation);
+              }
+            },
+          },
         },
       });
       callbacks.emitExecutionTrace(ctx, {
@@ -2162,6 +2214,46 @@ export async function executeToolCallLoop(
           evidence: hookResult.evidence,
         },
       });
+
+      const hookOutcomes = new Map(
+        hookResult.hookOutcomes.map((outcome) => [outcome.hookId, outcome]),
+      );
+      for (const entry of stopHookValidators) {
+        const outcome = hookOutcomes.get(entry.hookId);
+        const snapshotOutcome =
+          !outcome
+            ? "skipped"
+            : outcome.preventContinuation
+              ? "fail_closed"
+              : outcome.blockingError
+                ? "retry_with_blocking_message"
+                : "pass";
+        const reason =
+          outcome?.stopReason ??
+          outcome?.blockingError?.hookId ??
+          outcome?.hookId;
+        ctx.runtimeContractSnapshot = updateRuntimeContractValidatorSnapshot({
+          snapshot: ctx.runtimeContractSnapshot,
+          id: entry.validatorId,
+          enabled: true,
+          executed: outcome !== undefined,
+          outcome: snapshotOutcome,
+          reason,
+        });
+        callbacks.emitExecutionTrace(ctx, {
+          type: "completion_validator_finished",
+          phase: "tool_followup",
+          callIndex: ctx.callIndex,
+          payload: {
+            validatorId: entry.validatorId,
+            enabled: true,
+            outcome: snapshotOutcome,
+            reason,
+            runtimeContract: ctx.runtimeContractSnapshot,
+          },
+        });
+      }
+
       if (hookResult.outcome !== "pass") {
         callbacks.emitExecutionTrace(ctx, {
           type: "stop_hook_blocked",
@@ -2176,46 +2268,8 @@ export async function executeToolCallLoop(
           },
         });
       }
-      if (hookResult.outcome === "pass") {
-        ctx.runtimeContractSnapshot = updateRuntimeContractValidatorSnapshot({
-          snapshot: ctx.runtimeContractSnapshot,
-          id: "turn_end_stop_gate",
-          enabled: true,
-          executed: true,
-          outcome: "pass",
-        });
-        callbacks.emitExecutionTrace(ctx, {
-          type: "completion_validator_finished",
-          phase: "tool_followup",
-          callIndex: ctx.callIndex,
-          payload: {
-            validatorId: "turn_end_stop_gate",
-            enabled: true,
-            outcome: "pass",
-            runtimeContract: ctx.runtimeContractSnapshot,
-          },
-        });
-      } else if (hookResult.outcome === "prevent_continuation") {
-        ctx.runtimeContractSnapshot = updateRuntimeContractValidatorSnapshot({
-          snapshot: ctx.runtimeContractSnapshot,
-          id: "turn_end_stop_gate",
-          enabled: true,
-          executed: true,
-          outcome: "fail_closed",
-          reason: hookResult.reason,
-        });
-        callbacks.emitExecutionTrace(ctx, {
-          type: "completion_validator_finished",
-          phase: "tool_followup",
-          callIndex: ctx.callIndex,
-          payload: {
-            validatorId: "turn_end_stop_gate",
-            enabled: true,
-            outcome: "fail_closed",
-            reason: hookResult.reason,
-            runtimeContract: ctx.runtimeContractSnapshot,
-          },
-        });
+
+      if (hookResult.outcome === "prevent_continuation") {
         completionValidationStatus = "fail_closed";
         callbacks.setStopReason(
           ctx,
@@ -2228,27 +2282,7 @@ export async function executeToolCallLoop(
             content: "",
           };
         }
-      } else {
-        ctx.runtimeContractSnapshot = updateRuntimeContractValidatorSnapshot({
-          snapshot: ctx.runtimeContractSnapshot,
-          id: "turn_end_stop_gate",
-          enabled: true,
-          executed: true,
-          outcome: "retry_with_blocking_message",
-          reason: hookResult.reason,
-        });
-        callbacks.emitExecutionTrace(ctx, {
-          type: "completion_validator_finished",
-          phase: "tool_followup",
-          callIndex: ctx.callIndex,
-          payload: {
-            validatorId: "turn_end_stop_gate",
-            enabled: true,
-            outcome: "retry_with_blocking_message",
-            reason: hookResult.reason,
-            runtimeContract: ctx.runtimeContractSnapshot,
-          },
-        });
+      } else if (hookResult.outcome === "retry_with_blocking_message") {
         const stopHookRecovery = await attemptCompletionRecovery({
           reason: hookResult.reason ?? "turn_end_stop_gate",
           blockingMessage: hookResult.blockingMessage,
@@ -2260,7 +2294,13 @@ export async function executeToolCallLoop(
                 ? ctx.requiredToolEvidence.maxCorrectionAttempts
                 : undefined,
           budgetReason:
-            "Max model recalls exceeded during stop-hook recovery turn",
+            hookResult.reason === "artifact_evidence"
+              ? "Max model recalls exceeded during artifact-evidence recovery turn"
+              : hookResult.reason === "filesystem_artifact_verification"
+                ? "Max model recalls exceeded during filesystem artifact recovery turn"
+                : hookResult.reason === "deterministic_acceptance_probe_failed"
+                  ? "Max model recalls exceeded during deterministic acceptance-probe recovery turn"
+                  : "Max model recalls exceeded during stop-hook recovery turn",
           exhaustedDetail:
             hookResult.reason === "narrated_future_tool_work"
               ? "Stop-hook recovery exhausted: the model kept narrating future work instead of calling tools."
@@ -2288,251 +2328,6 @@ export async function executeToolCallLoop(
         }
       }
     }
-    if (completionValidationStatus === "fail_closed") {
-      callbacks.emitExecutionTrace(ctx, {
-        type: "completion_validation_finished",
-        phase: "tool_followup",
-        callIndex: ctx.callIndex,
-        payload: {
-          status: completionValidationStatus,
-          stopReason: ctx.stopReason,
-          validationCode: ctx.validationCode,
-          runtimeContract: ctx.runtimeContractSnapshot,
-        },
-      });
-    } else {
-    for (const validator of validators) {
-      callbacks.emitExecutionTrace(ctx, {
-        type: "completion_validator_started",
-        phase: "tool_followup",
-        callIndex: ctx.callIndex,
-        payload: {
-          validatorId: validator.id,
-          enabled: validator.enabled,
-          runtimeContract: ctx.runtimeContractSnapshot,
-        },
-      });
-      if (!validator.enabled) {
-        if (validator.id === "top_level_verifier") {
-          ctx.runtimeContractSnapshot = updateRuntimeContractVerifierStage({
-            snapshot: ctx.runtimeContractSnapshot,
-            verifierStages: {
-              ...ctx.runtimeContractSnapshot.verifierStages,
-              stageStatus: ctx.runtimeContractSnapshot.flags.verifierRuntimeRequired
-                ? "skipped"
-                : "inactive",
-              ...(ctx.runtimeContractSnapshot.flags.verifierRuntimeRequired
-                ? { skipReason: "validator_disabled" }
-                : { skipReason: "runtime_not_required" }),
-            },
-          });
-        }
-        ctx.runtimeContractSnapshot = updateRuntimeContractValidatorSnapshot({
-          snapshot: ctx.runtimeContractSnapshot,
-          id: validator.id,
-          enabled: false,
-          executed: false,
-          outcome: "skipped",
-        });
-        callbacks.emitExecutionTrace(ctx, {
-          type: "completion_validator_finished",
-          phase: "tool_followup",
-          callIndex: ctx.callIndex,
-          payload: {
-            validatorId: validator.id,
-            enabled: false,
-            outcome: "skipped",
-            runtimeContract: ctx.runtimeContractSnapshot,
-          },
-        });
-        continue;
-      }
-
-      if (validator.id === "top_level_verifier") {
-        ctx.runtimeContractSnapshot = updateRuntimeContractVerifierStage({
-          snapshot: ctx.runtimeContractSnapshot,
-          verifierStages: {
-            ...ctx.runtimeContractSnapshot.verifierStages,
-            stageStatus: "running",
-            skipReason: undefined,
-          },
-        });
-      }
-
-      const validation = await validator.execute();
-      if (validation.stopHookResult) {
-        callbacks.emitExecutionTrace(ctx, {
-          type: "stop_hook_execution_finished",
-          phase: "tool_followup",
-          callIndex: ctx.callIndex,
-          payload: {
-            validatorId: validator.id,
-            stopHookPhase: validation.stopHookResult.phase,
-            outcome: validation.stopHookResult.outcome,
-            reason: validation.stopHookResult.reason,
-            stopReason: validation.stopHookResult.stopReason,
-            hookIds: validation.stopHookResult.hookOutcomes.map(
-              (outcome) => outcome.hookId,
-            ),
-            progressMessages: validation.stopHookResult.progressMessages,
-            evidence: validation.stopHookResult.evidence,
-          },
-        });
-        if (validation.stopHookResult.outcome !== "pass") {
-          callbacks.emitExecutionTrace(ctx, {
-            type: "stop_hook_blocked",
-            phase: "tool_followup",
-            callIndex: ctx.callIndex,
-            payload: {
-              validatorId: validator.id,
-              stopHookPhase: validation.stopHookResult.phase,
-              outcome: validation.stopHookResult.outcome,
-              reason: validation.stopHookResult.reason,
-              stopReason: validation.stopHookResult.stopReason,
-              validationCode: validation.validationCode,
-            },
-          });
-        }
-      }
-      if (validation.probeRuns) {
-        for (const run of validation.probeRuns) {
-          const observation = callbacks.appendToolRecord(ctx, run);
-          reconcileRequestTaskReminderState(ctx, callbacks, observation);
-        }
-      }
-      if (validation.verifier) {
-        ctx.verifierSnapshot = {
-          performed: validation.verifier.attempted,
-          overall: validation.verifier.overall,
-        };
-        if (validation.verifier.attempted) {
-          noteRequestTaskVerifierAttempt(ctx.requestTaskState);
-        }
-        ctx.runtimeContractSnapshot = updateRuntimeContractVerifierVerdict({
-          snapshot: ctx.runtimeContractSnapshot,
-          verifier: validation.verifier,
-        });
-      }
-      if (validator.id === "top_level_verifier") {
-        const verifierStageStatus =
-          validation.outcome === "pass"
-            ? "passed"
-            : validation.outcome === "fail_closed"
-              ? "failed"
-              : validation.outcome === "retry_with_blocking_message"
-                ? validation.verifier?.overall === "fail"
-                  ? "failed"
-                  : "retry"
-                : "skipped";
-        ctx.runtimeContractSnapshot = updateRuntimeContractVerifierStage({
-          snapshot: ctx.runtimeContractSnapshot,
-          verifierStages: {
-            ...ctx.runtimeContractSnapshot.verifierStages,
-            ...(validation.verifierTaskId
-              ? { taskId: validation.verifierTaskId }
-              : {}),
-            ...(validation.verifierRequirement
-              ? {
-                  bootstrapSource: validation.verifierRequirement.bootstrapSource,
-                  profiles: validation.verifierRequirement.profiles,
-                  probeCategories: validation.verifierRequirement.probeCategories,
-                }
-              : {}),
-            ...(validation.verifierLauncherKind
-              ? { launcherKind: validation.verifierLauncherKind }
-              : {}),
-            stageStatus: verifierStageStatus,
-            ...(validation.outcome === "skipped" && validation.reason
-              ? { skipReason: validation.reason }
-              : verifierStageStatus === "skipped"
-                ? { skipReason: "validator_skipped" }
-                : { skipReason: undefined }),
-          },
-        });
-      }
-      ctx.runtimeContractSnapshot = updateRuntimeContractValidatorSnapshot({
-        snapshot: ctx.runtimeContractSnapshot,
-        id: validator.id,
-        enabled: true,
-        executed: validation.outcome !== "skipped",
-        outcome: validation.outcome,
-        reason: validation.reason,
-        validationCode: validation.validationCode,
-      });
-      callbacks.emitExecutionTrace(ctx, {
-        type: "completion_validator_finished",
-        phase: "tool_followup",
-        callIndex: ctx.callIndex,
-        payload: {
-          validatorId: validator.id,
-          outcome: validation.outcome,
-          reason: validation.reason,
-          validationCode: validation.validationCode,
-          verifierTaskId: validation.verifierTaskId,
-          verifierLauncherKind: validation.verifierLauncherKind,
-          exhaustedDetail: validation.exhaustedDetail,
-          runtimeContract: ctx.runtimeContractSnapshot,
-        },
-      });
-
-      if (
-        validation.outcome === "pass" ||
-        validation.outcome === "skipped"
-      ) {
-        continue;
-      }
-
-      if (validation.outcome === "fail_closed") {
-        completionValidationStatus = "fail_closed";
-        callbacks.setStopReason(
-          ctx,
-          "validation_error",
-          validation.exhaustedDetail ?? "Completion validation failed closed.",
-        );
-        if (validation.validationCode) {
-          ctx.validationCode = validation.validationCode;
-        }
-        if (ctx.response) {
-          ctx.response = {
-            ...ctx.response,
-            content: "",
-          };
-        }
-        break;
-      }
-
-      const budgetReason =
-        validator.id === "artifact_evidence"
-          ? "Max model recalls exceeded during artifact-evidence recovery turn"
-          : validator.id === "turn_end_stop_gate"
-            ? "Max model recalls exceeded during stop-gate recovery turn"
-            : validator.id === "request_task_progress"
-              ? "Max model recalls exceeded during request-task progress recovery turn"
-              : validator.id === "filesystem_artifact_verification"
-              ? "Max model recalls exceeded during filesystem artifact recovery turn"
-              : validator.id === "deterministic_acceptance_probes"
-                ? "Max model recalls exceeded during deterministic acceptance-probe recovery turn"
-                : "Max model recalls exceeded during top-level verifier recovery turn";
-
-      await attemptCompletionRecovery({
-        reason: validation.reason ?? validator.id,
-        blockingMessage: validation.blockingMessage,
-        evidence: validation.evidence,
-        maxAttempts: validation.maxAttempts,
-        budgetReason,
-        exhaustedDetail:
-          validation.exhaustedDetail ??
-          `${validator.id} recovery exhausted.`,
-        validationCode: validation.validationCode,
-        validatorId: validator.id,
-        stopHookResult: validation.stopHookResult,
-        continuationSummary,
-      });
-      completionValidationStatus = shouldContinueAfterStopGate
-        ? "recovery_requested"
-        : "recovery_exhausted";
-      break;
-    }
 
     callbacks.emitExecutionTrace(ctx, {
       type: "completion_validation_finished",
@@ -2554,7 +2349,6 @@ export async function executeToolCallLoop(
     if (requestedBudgetContinuation) {
       continue;
     }
-  }
   }
   } while (shouldContinueAfterStopGate);
 

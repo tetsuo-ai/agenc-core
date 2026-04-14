@@ -216,6 +216,6 @@ export function buildRequestMilestoneRuntimeInstruction(
     `${milestoneLines}\n` +
     "When you use task.create/task.update for this request, attach milestone ids in " +
     "`metadata._runtime.milestoneIds` and mark verification tasks with " +
-    "`metadata._runtime.verification: true`. Keep one task in_progress until all request milestones are complete."
+    "`metadata._runtime.verification: true`."
   );
 }

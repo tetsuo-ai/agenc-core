@@ -41,6 +41,7 @@ function makeCtx(params: {
   readonly turnClass?: string;
   readonly ownerMode?: string;
   readonly flags?: RuntimeContractFlags;
+  readonly completionContract?: Record<string, unknown>;
   readonly requiredToolEvidence?: ExecutionContext["requiredToolEvidence"];
 }): ExecutionContext {
   const flags = params.flags ?? makeFlags();
@@ -66,6 +67,7 @@ function makeCtx(params: {
       turnClass: params.turnClass ?? "dialogue",
       ownerMode: params.ownerMode ?? "none",
       targetArtifacts: params.targetArtifacts ?? [],
+      ...(params.completionContract ? { completionContract: params.completionContract } : {}),
     },
     runtimeContractSnapshot: createRuntimeContractSnapshot(flags),
     requiredToolEvidence: params.requiredToolEvidence
@@ -313,6 +315,11 @@ describe("completion-validators", () => {
         turnClass: "workflow_implementation",
         ownerMode: "workflow_owner",
         flags,
+        completionContract: {
+          taskClass: "build_required",
+          placeholdersAllowed: false,
+          partialCompletionAllowed: false,
+        },
       }),
       runtimeContractFlags: flags,
       stopHookRuntime: buildStopHookRuntime({
@@ -344,7 +351,7 @@ describe("completion-validators", () => {
     expect(toolHandler).not.toHaveBeenCalled();
   });
 
-  it("skips the top-level verifier on dialogue turns even when runtime verification is globally enabled", async () => {
+  it("skips the top-level verifier for ordinary workflow turns that only carry artifact completion", async () => {
     const flags = makeFlags({
       verifierRuntimeRequired: true,
     });
@@ -353,6 +360,13 @@ describe("completion-validators", () => {
         flags,
         allToolCalls: [successfulWrite("/tmp/workspace/src/main.c")],
         targetArtifacts: ["/tmp/workspace/src/main.c"],
+        turnClass: "workflow_implementation",
+        ownerMode: "workflow_owner",
+        completionContract: {
+          taskClass: "artifact_only",
+          placeholdersAllowed: false,
+          partialCompletionAllowed: false,
+        },
       }),
       runtimeContractFlags: flags,
     });
@@ -524,8 +538,7 @@ describe("completion-validators", () => {
       expect(stopGate.outcome).toBe("retry_with_blocking_message");
       expect(stopGate.maxAttempts).toBe(3);
 
-      expect(taskProgress.outcome).toBe("retry_with_blocking_message");
-      expect(taskProgress.maxAttempts).toBe(3);
+      expect(taskProgress.outcome).toBe("pass");
 
       expect(filesystem.outcome).toBe("retry_with_blocking_message");
       expect(filesystem.maxAttempts).toBe(3);
@@ -598,7 +611,7 @@ describe("completion-validators", () => {
 
     try {
       expect(stopGate.maxAttempts).toBe(0);
-      expect(taskProgress.maxAttempts).toBe(0);
+      expect(taskProgress.outcome).toBe("pass");
       expect(filesystem.maxAttempts).toBe(0);
       expect(deterministic.maxAttempts).toBe(0);
     } finally {
@@ -624,6 +637,11 @@ describe("completion-validators", () => {
       sourceArtifacts: ["/tmp/workspace/PLAN.md"],
       targetArtifacts: ["/tmp/workspace/src/main.c"],
       delegationPolicy: "direct_owner",
+      completionContract: {
+        taskClass: "build_required",
+        placeholdersAllowed: false,
+        partialCompletionAllowed: false,
+      },
       contractFingerprint: "contract-1",
       taskLineageId: "task-1",
     } as any;
@@ -685,7 +703,7 @@ describe("completion-validators", () => {
     expect(result.verifier?.overall).toBe("pass");
   });
 
-  it("blocks finalization when request milestones remain open without an in_progress task", async () => {
+  it("does not block finalization when request milestones remain open without an in_progress task", async () => {
     const ctx = makeCtx({});
     setAllowedRequestTaskMilestones(ctx.requestTaskState, [
       { id: "phase_1", description: "Finish phase 1" },
@@ -699,8 +717,7 @@ describe("completion-validators", () => {
       (validator) => validator.id === "request_task_progress",
     )!.execute();
 
-    expect(result.outcome).toBe("retry_with_blocking_message");
-    expect(result.blockingMessage).toContain("no task is marked in_progress");
+    expect(result.outcome).toBe("pass");
   });
 
   it("blocks malformed runtime milestone metadata before allowing completion", async () => {
@@ -735,7 +752,7 @@ describe("completion-validators", () => {
     expect(result.blockingMessage).toContain("#1");
   });
 
-  it("requires a verification task after three completed non-verification tasks", async () => {
+  it("does not require a verification task after three completed non-verification tasks", async () => {
     const ctx = makeCtx({});
     for (const id of ["1", "2", "3"]) {
       observeRequestTaskToolRecord(
@@ -755,7 +772,6 @@ describe("completion-validators", () => {
       (validator) => validator.id === "request_task_progress",
     )!.execute();
 
-    expect(result.outcome).toBe("retry_with_blocking_message");
-    expect(result.blockingMessage).toContain("verification task");
+    expect(result.outcome).toBe("pass");
   });
 });

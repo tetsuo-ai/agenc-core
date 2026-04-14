@@ -46,6 +46,11 @@ function createResult(
       sourceArtifacts: ["/workspace/PLAN.md"],
       targetArtifacts: ["/workspace/src/main.c"],
       delegationPolicy: "direct_owner",
+      completionContract: {
+        taskClass: "build_required",
+        placeholdersAllowed: false,
+        partialCompletionAllowed: false,
+      },
       contractFingerprint: "contract-1",
       taskLineageId: "task-1",
     },
@@ -193,7 +198,7 @@ describe("runTopLevelVerifierValidation", () => {
     expect(decision.runtimeVerifier.overall).toBe("fail");
   });
 
-  it("skips verifier work for non-workflow turns even when the runtime flag is enabled", async () => {
+  it("skips verifier work for ordinary workflow turns with artifact-only completion", async () => {
     const spawn = vi.fn(async () => "subagent:verify-1");
 
     const decision = await runTopLevelVerifierValidation({
@@ -202,9 +207,13 @@ describe("runTopLevelVerifierValidation", () => {
       result: createResult({
         turnExecutionContract: {
           ...createResult().turnExecutionContract,
-          turnClass: "dialogue",
-          ownerMode: "none",
-          targetArtifacts: [],
+          turnClass: "workflow_implementation",
+          ownerMode: "workflow_owner",
+          completionContract: {
+            taskClass: "artifact_only",
+            placeholdersAllowed: false,
+            partialCompletionAllowed: true,
+          },
         },
       }),
       subAgentManager: { spawn, waitForResult: vi.fn(async () => null) },
