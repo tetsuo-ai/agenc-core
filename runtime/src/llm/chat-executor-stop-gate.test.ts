@@ -142,6 +142,39 @@ function verificationSuccess(params: {
   };
 }
 
+function verificationWeakPass(params: {
+  probeId?: string;
+  command?: string;
+  stderr?: string;
+} = {}): ToolCallRecord {
+  return {
+    name: "verification.runProbe",
+    args: {
+      probeId: params.probeId ?? "generic:test:ctest",
+      cwd: "/tmp/workspace",
+      __runtimeAcceptanceProbe: true,
+    },
+    result: JSON.stringify({
+      exitCode: 0,
+      stdout: "Internal ctest changing into directory: /tmp/workspace/build",
+      stderr: params.stderr ?? "No tests were found!!!",
+      __agencVerification: {
+        probeId: params.probeId ?? "generic:test:ctest",
+        category: "test",
+        profile: "generic",
+        repoLocal: true,
+        cwd: "/tmp/workspace",
+        command:
+          params.command ?? "ctest --test-dir build --output-on-failure",
+        writesTempOnly: false,
+      },
+    }),
+    isError: false,
+    durationMs: 1,
+    synthetic: true,
+  };
+}
+
 function successfulWrite(path: string, content: string): ToolCallRecord {
   return {
     name: "system.writeFile",
@@ -813,6 +846,23 @@ describe("evaluateTurnEndStopGate — false_success_after_failed_bash", () => {
     expect(decision.shouldIntervene).toBe(false);
   });
 
+  it("fires when the reply still claims terminal completion despite acknowledging remaining shell gaps", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "Implementation of Agenc Shell per PLAN.md is complete. " +
+        "Leak cleanup is the only remaining gap and does not block core functionality.",
+      allToolCalls: [
+        bashFailure({
+          command: "cd build && ./agenc-shell -c 'echo hello'",
+          stderr: "LeakSanitizer: detected memory leaks",
+        }),
+      ],
+    });
+
+    expect(decision.shouldIntervene).toBe(true);
+    expect(decision.reason).toBe("false_success_after_failed_bash");
+  });
+
   it("does NOT fire when an earlier shell failure was followed by a later shell success", () => {
     const decision = evaluateTurnEndStopGate({
       finalContent:
@@ -904,6 +954,21 @@ describe("evaluateTurnEndStopGate — false_success_after_failed_verification", 
     });
 
     expect(decision.shouldIntervene).toBe(false);
+  });
+
+  it("fires when the latest verification result is only a weak pass but the reply claims full completion", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "Implementation of Agenc Shell per PLAN.md is complete and fully verified.",
+      allToolCalls: [
+        successfulWrite("/tmp/workspace/tests/CMakeLists.txt", "add_test(NAME smoke COMMAND smoke)\n"),
+        verificationWeakPass(),
+      ],
+    });
+
+    expect(decision.shouldIntervene).toBe(true);
+    expect(decision.reason).toBe("false_success_after_failed_verification");
+    expect(decision.evidence.failedVerificationCallCount).toBe(1);
   });
 });
 

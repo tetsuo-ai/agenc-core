@@ -280,6 +280,62 @@ describe("runTopLevelVerifierValidation", () => {
     expect(decision.summary).toContain("required probe categories");
   });
 
+  it("blocks PASS verdicts backed only by weak green verification probes", async () => {
+    const spawn = vi.fn(async () => "subagent:verify-weak");
+    const waitForResult = vi.fn(async () => ({
+      sessionId: "subagent:verify-weak",
+      output: "All good.\nVERDICT: PASS",
+      success: true,
+      durationMs: 20,
+      toolCalls: [
+        {
+          name: "verification.runProbe",
+          args: { probeId: "tests:ctest" },
+          result: JSON.stringify({
+            ok: true,
+            exitCode: 0,
+            stdout: "",
+            stderr: "No tests were found!!!",
+            __agencVerification: {
+              probeId: "tests:ctest",
+              category: "build",
+              profile: "generic",
+            },
+          }),
+          isError: false,
+          durationMs: 2,
+        },
+      ],
+      structuredOutput: {
+        type: "json_schema",
+        name: "agenc_top_level_verifier_decision",
+        parsed: {
+          verdict: "pass",
+          summary: "Verifier thinks the build is correct.",
+        },
+      },
+      completionState: "completed",
+      stopReason: "completed",
+    }));
+
+    const decision = await runTopLevelVerifierValidation({
+      sessionId: "session:test",
+      userRequest: "Implement every phase from PLAN.md",
+      result: createResult(),
+      subAgentManager: { spawn, waitForResult },
+      verifierService: createVerifierService(
+        createVerifierRequirement({
+          profiles: ["generic"],
+          probeCategories: ["build"],
+        }),
+      ),
+    });
+
+    expect(decision.outcome).toBe("retry_with_blocking_message");
+    expect(decision.summary).toContain("weak green results");
+    expect(decision.summary).toContain("tests:ctest");
+  });
+
   it("records remote-job verifier handles when remote isolation is enabled", async () => {
     const spawn = vi.fn(async () => "subagent:verify-remote");
     const waitForResult = vi.fn(async () => ({

@@ -62,6 +62,23 @@ export interface VerificationProbeCoverage {
   readonly probeIds: readonly string[];
   readonly categories: readonly AcceptanceProbeCategory[];
   readonly profiles: readonly VerifierProfileKind[];
+  readonly weakProbeIds: readonly string[];
+  readonly failedProbeIds: readonly string[];
+}
+
+export type VerificationProbeVerdict =
+  | "pass"
+  | "weak_pass"
+  | "fail"
+  | "not_verification";
+
+export interface VerificationProbeAssessment {
+  readonly verdict: VerificationProbeVerdict;
+  readonly probeId?: string;
+  readonly category?: AcceptanceProbeCategory;
+  readonly profile?: VerifierProfileKind;
+  readonly command?: string;
+  readonly reason?: string;
 }
 
 const DEFAULT_PROBE_TIMEOUT_MS = 120_000;
@@ -91,6 +108,104 @@ function isPlainObject(
   value: unknown,
 ): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const WEAK_VERIFICATION_PATTERNS: ReadonlyArray<{
+  readonly reason: string;
+  readonly pattern: RegExp;
+}> = [
+  {
+    reason: "no_tests_found",
+    pattern: /\bno tests were found!?/i,
+  },
+];
+
+function parseVerificationMetadata(
+  result: string,
+): {
+  readonly parsed: Record<string, unknown>;
+  readonly metadata: Record<string, unknown>;
+} | null {
+  try {
+    const parsed = JSON.parse(result) as unknown;
+    if (!isPlainObject(parsed)) {
+      return null;
+    }
+    const metadata =
+      isPlainObject(parsed.__agencVerification)
+        ? parsed.__agencVerification
+        : parsed;
+    return { parsed, metadata };
+  } catch {
+    return null;
+  }
+}
+
+export function classifyVerificationProbeResult(
+  result: string,
+): VerificationProbeAssessment {
+  const parsedResult = parseVerificationMetadata(result);
+  if (!parsedResult) {
+    return { verdict: "not_verification" };
+  }
+
+  const { parsed, metadata } = parsedResult;
+  const probeId =
+    typeof metadata.probeId === "string" && metadata.probeId.trim().length > 0
+      ? metadata.probeId.trim()
+      : undefined;
+  const category =
+    typeof metadata.category === "string"
+      ? metadata.category.trim() as AcceptanceProbeCategory
+      : undefined;
+  const profile =
+    typeof metadata.profile === "string"
+      ? metadata.profile.trim() as VerifierProfileKind
+      : undefined;
+  const command =
+    typeof metadata.command === "string" && metadata.command.trim().length > 0
+      ? metadata.command.trim()
+      : undefined;
+
+  if (
+    (typeof parsed.error === "string" && parsed.error.trim().length > 0) ||
+    parsed.timedOut === true ||
+    (typeof parsed.exitCode === "number" && parsed.exitCode !== 0)
+  ) {
+    return {
+      verdict: "fail",
+      probeId,
+      category,
+      profile,
+      command,
+    };
+  }
+
+  const stdout =
+    typeof parsed.stdout === "string" ? parsed.stdout.trim() : "";
+  const stderr =
+    typeof parsed.stderr === "string" ? parsed.stderr.trim() : "";
+  const combinedText = `${stdout}\n${stderr}`.trim();
+  for (const weakPattern of WEAK_VERIFICATION_PATTERNS) {
+    if (weakPattern.pattern.test(combinedText)) {
+      return {
+        verdict: "weak_pass",
+        probeId,
+        category,
+        profile,
+        command,
+        reason: weakPattern.reason,
+      };
+    }
+  }
+
+  return {
+    verdict: "pass",
+    probeId,
+    category,
+    profile,
+    command,
+  };
 }
 
 function readJsonObject(
@@ -718,6 +833,8 @@ export function extractVerificationProbeCoverage(
   const probeIds = new Set<string>();
   const categories = new Set<AcceptanceProbeCategory>();
   const profiles = new Set<VerifierProfileKind>();
+  const weakProbeIds = new Set<string>();
+  const failedProbeIds = new Set<string>();
 
   for (const toolCall of toolCalls) {
     if (toolCall.name !== "verification.runProbe") {
@@ -726,33 +843,24 @@ export function extractVerificationProbeCoverage(
     if (typeof toolCall.result !== "string") {
       continue;
     }
-    try {
-      const parsed = JSON.parse(toolCall.result) as Record<string, unknown>;
-      const metadata =
-        isPlainObject(parsed.__agencVerification)
-          ? parsed.__agencVerification
-          : parsed;
-      const probeId =
-        typeof metadata.probeId === "string" ? metadata.probeId.trim() : "";
-      const category =
-        typeof metadata.category === "string"
-          ? metadata.category.trim() as AcceptanceProbeCategory
-          : undefined;
-      const profile =
-        typeof metadata.profile === "string"
-          ? metadata.profile.trim() as VerifierProfileKind
-          : undefined;
-      if (probeId) {
-        probeIds.add(probeId);
+    const assessment = classifyVerificationProbeResult(toolCall.result);
+    if (assessment.verdict === "not_verification") {
+      continue;
+    }
+    if (assessment.probeId) {
+      probeIds.add(assessment.probeId);
+      if (assessment.verdict === "weak_pass") {
+        weakProbeIds.add(assessment.probeId);
       }
-      if (category) {
-        categories.add(category);
+      if (assessment.verdict === "fail") {
+        failedProbeIds.add(assessment.probeId);
       }
-      if (profile) {
-        profiles.add(profile);
-      }
-    } catch {
-      // Ignore malformed probe outputs; coverage is best effort.
+    }
+    if (assessment.category) {
+      categories.add(assessment.category);
+    }
+    if (assessment.profile) {
+      profiles.add(assessment.profile);
     }
   }
 
@@ -760,6 +868,8 @@ export function extractVerificationProbeCoverage(
     probeIds: [...probeIds],
     categories: [...categories],
     profiles: [...profiles],
+    weakProbeIds: [...weakProbeIds],
+    failedProbeIds: [...failedProbeIds],
   };
 }
 

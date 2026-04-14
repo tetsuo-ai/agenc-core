@@ -1,4 +1,5 @@
 import {
+  buildTurnEndStopGateSnapshot,
   checkFilesystemArtifacts,
   evaluateArtifactEvidenceGate,
 } from "./chat-executor-stop-gate.js";
@@ -160,6 +161,9 @@ export function buildCompletionValidators(params: {
       enabled: true,
       async execute(): Promise<CompletionValidatorExecutionResult> {
         if (params.runtimeContractFlags.stopHooksEnabled && params.stopHookRuntime) {
+          const turnEndSnapshot = buildTurnEndStopGateSnapshot(
+            params.ctx.allToolCalls,
+          );
           const hookResult = await runStopHookPhase({
             runtime: params.stopHookRuntime,
             phase: "Stop",
@@ -170,6 +174,7 @@ export function buildCompletionValidators(params: {
               runtimeWorkspaceRoot: params.ctx.runtimeWorkspaceRoot,
               finalContent: params.ctx.response?.content ?? "",
               allToolCalls: params.ctx.allToolCalls,
+              turnEndSnapshot,
             },
           });
           if (hookResult.outcome === "pass") {

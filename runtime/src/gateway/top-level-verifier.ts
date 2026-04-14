@@ -238,6 +238,8 @@ function buildVerifierBlockingMessage(params: {
 function buildVerifierCoverageSummary(params: {
   readonly missingCategories: readonly string[];
   readonly missingProfiles: readonly string[];
+  readonly weakProbeIds: readonly string[];
+  readonly failedProbeIds: readonly string[];
 }): string {
   const parts: string[] = [];
   if (params.missingCategories.length > 0) {
@@ -248,6 +250,16 @@ function buildVerifierCoverageSummary(params: {
   if (params.missingProfiles.length > 0) {
     parts.push(
       `required verifier profiles were not exercised: ${params.missingProfiles.join(", ")}`,
+    );
+  }
+  if (params.weakProbeIds.length > 0) {
+    parts.push(
+      `verification probes reported weak green results: ${params.weakProbeIds.join(", ")}`,
+    );
+  }
+  if (params.failedProbeIds.length > 0) {
+    parts.push(
+      `verification probes still failed: ${params.failedProbeIds.join(", ")}`,
     );
   }
   if (parts.length === 0) {
@@ -696,7 +708,9 @@ export async function runTopLevelVerifierValidation(
     verifierRequirement.required &&
     (coverage.probeIds.length === 0 ||
       missingCategories.length > 0 ||
-      missingProfiles.length > 0);
+      missingProfiles.length > 0 ||
+      coverage.weakProbeIds.length > 0 ||
+      coverage.failedProbeIds.length > 0);
   const effectiveParsed = coverageBlocked
     ? {
         snapshot: { performed: true, overall: "retry" } as const,
@@ -706,6 +720,8 @@ export async function runTopLevelVerifierValidation(
               ? ["at least one verification probe"]
               : missingCategories,
           missingProfiles,
+          weakProbeIds: coverage.weakProbeIds,
+          failedProbeIds: coverage.failedProbeIds,
         }),
       }
     : parsed;
