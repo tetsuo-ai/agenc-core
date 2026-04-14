@@ -758,9 +758,9 @@ describe("evaluateTurnEndStopGate — false_success_after_failed_bash", () => {
     });
     expect(decision.shouldIntervene).toBe(true);
     expect(decision.reason).toBe("false_success_after_failed_bash");
-    expect(decision.evidence.failedShellCallCount).toBe(2);
+    expect(decision.evidence.failedShellCallCount).toBe(1);
     expect(decision.blockingMessage).toMatch(/Failing shell commands/);
-    expect(decision.blockingMessage).toMatch(/cmake/);
+    expect(decision.blockingMessage).toMatch(/make -j2/);
   });
 
   it("fires on 'all tests pass' phrasing", () => {
@@ -811,6 +811,27 @@ describe("evaluateTurnEndStopGate — false_success_after_failed_bash", () => {
       ],
     });
     expect(decision.shouldIntervene).toBe(false);
+  });
+
+  it("does NOT fire when an earlier shell failure was followed by a later shell success", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "Phase 0 bootstrap complete. The build succeeded for all source " +
+        "files. The binary is ready at build/agenc. All tests pass " +
+        "with strict assertions.",
+      allToolCalls: [
+        bashFailure({
+          command: "cd build && ./agenc-shell --help",
+          stderr: "No such file or directory",
+        }),
+        bashSuccess(
+          "cd build && cmake .. && make -j2 2>&1 | tail -30",
+          "[100%] Built target agenc-shell",
+        ),
+      ],
+    });
+    expect(decision.shouldIntervene).toBe(false);
+    expect(decision.evidence.failedShellCallCount).toBe(0);
   });
 
   it("does NOT fire when failures are present but the model is reporting them, not claiming success", () => {
@@ -956,7 +977,7 @@ describe("evaluateTurnEndStopGate — blocking message contents", () => {
     );
   });
 
-  it("evidence caps shown failures at 3 even when many are present", () => {
+  it("evidence reports only the latest unresolved shell failure", () => {
     const calls: ToolCallRecord[] = [];
     for (let i = 0; i < 10; i++) {
       calls.push(
@@ -970,13 +991,13 @@ describe("evaluateTurnEndStopGate — blocking message contents", () => {
         "with strict assertions.",
       allToolCalls: calls,
     });
-    expect(decision.evidence.failedShellCallCount).toBe(10);
-    expect(decision.evidence.failureExcerpts).toHaveLength(3);
-    // The blocking message lists at most 3 commands, not 10.
+    expect(decision.evidence.failedShellCallCount).toBe(1);
+    expect(decision.evidence.failureExcerpts).toHaveLength(1);
     const matchCount = (
       decision.blockingMessage?.match(/make target_/g) ?? []
     ).length;
-    expect(matchCount).toBe(3);
+    expect(matchCount).toBe(1);
+    expect(decision.blockingMessage).toMatch(/make target_9/);
   });
 });
 

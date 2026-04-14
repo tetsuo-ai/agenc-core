@@ -654,19 +654,25 @@ function buildArtifactEvidenceBlockingMessage(params: {
 // Detectors
 // ---------------------------------------------------------------------------
 
-function findFailedShellCalls(
+function findUnresolvedShellFailures(
   allToolCalls: readonly ToolCallRecord[],
 ): ToolCallRecord[] {
-  const out: ToolCallRecord[] = [];
-  for (const call of allToolCalls) {
-    if (call.args.__runtimeAcceptanceProbe === true) {
-      continue;
-    }
-    if (call.isError && isShellLikeTool(call.name)) {
-      out.push(call);
-    }
+  const shellCalls = allToolCalls.filter(
+    (call) =>
+      call.args.__runtimeAcceptanceProbe !== true &&
+      isShellLikeTool(call.name),
+  );
+  if (shellCalls.length === 0) {
+    return [];
   }
-  return out;
+  const lastShellCall = shellCalls.at(-1);
+  if (
+    !lastShellCall ||
+    !didToolCallFail(lastShellCall.isError, lastShellCall.result)
+  ) {
+    return [];
+  }
+  return [lastShellCall];
 }
 
 function findRefusedCalls(
@@ -708,9 +714,9 @@ function findRefusedCalls(
  *      the turn made at least one tool call (so the turn was substantive,
  *      not a one-line greeting).
  *
- *   3. `false_success_after_failed_bash` — at least one
- *      `system.bash` / `desktop.bash` call returned `isError: true` AND
- *      the final text matches `FALSE_SUCCESS_RE` AND does NOT match
+ *   3. `false_success_after_failed_bash` — the latest shell-like call in
+ *      the turn is still failing AND the final text matches
+ *      `FALSE_SUCCESS_RE` AND does NOT match
  *      `FAILURE_ACKNOWLEDGMENT_RE`.
  */
 export function evaluateTurnEndStopGate(
@@ -718,7 +724,7 @@ export function evaluateTurnEndStopGate(
 ): StopGateInterventionDecision {
   const finalContent = params.finalContent ?? "";
   const allToolCalls = params.allToolCalls ?? [];
-  const failedShellCalls = findFailedShellCalls(allToolCalls);
+  const failedShellCalls = findUnresolvedShellFailures(allToolCalls);
   const failedVerificationCalls = findUnresolvedVerificationFailures(allToolCalls);
   const refusedCalls = findRefusedCalls(allToolCalls);
 
