@@ -46,3 +46,10 @@
 - **What worked:** Giving deterministic acceptance-probe recovery a bounded multi-attempt budget for workflow-owned coding turns let trivial compile/build failures self-heal through several repair turns, while the new “no successful workspace mutations since last probe” check stops the loop as soon as it stops making real progress.
 - **What didn't:** The first full-executor regression accidentally used a `.txt` target, which this runtime classifies as documentation-only, and the short final success string also tripped the stop gate; the test had to be corrected before it was actually exercising the intended coding repair path.
 - **Rule added to CLAUDE.md:** no
+
+## PR #343: fix(runtime): only block on unresolved shell failures
+- **Date:** 2026-04-14
+- **Files changed:** `runtime/src/llm/chat-executor-stop-gate.ts`, `runtime/src/llm/chat-executor-stop-gate.test.ts`
+- **What worked:** Switching the bash-side stop-gate detector from “any failed shell call in the turn” to “latest unresolved shell failure” restored Claude-style stop-hook semantics, so honest recoveries no longer get blocked by stale failures that were already repaired later in the same turn.
+- **What didn't:** The first stop-gate patch promoted turn-ledger history to a permanent blocker, which was stricter than Claude’s hook model and caused the runtime to stop on already-fixed failures until the detector was made resolution-aware.
+- **Rule added to CLAUDE.md:** no
