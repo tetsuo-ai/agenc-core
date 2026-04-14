@@ -48,8 +48,85 @@ import type {
   ChatPlannerSummary,
   ExecutionContext,
 } from "./chat-executor-types.js";
-import type { HookRegistry } from "./hooks/index.js";
+import type { HookContext, HookRegistry } from "./hooks/index.js";
 import type { RuntimeEconomicsPolicy } from "./run-budget.js";
+
+interface HookFailureDetail {
+  readonly name?: string;
+  readonly message: string;
+  readonly stopReason?: string;
+  readonly stopReasonDetail?: string;
+  readonly failureClass?: string;
+  readonly providerName?: string;
+  readonly statusCode?: number;
+  readonly timeoutMs?: number;
+}
+
+function readStringField(
+  value: unknown,
+  key: string,
+): string | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const candidate = (value as Record<string, unknown>)[key];
+  return typeof candidate === "string" && candidate.length > 0
+    ? candidate
+    : undefined;
+}
+
+function readNumberField(
+  value: unknown,
+  key: string,
+): number | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const candidate = (value as Record<string, unknown>)[key];
+  return typeof candidate === "number" && Number.isFinite(candidate)
+    ? candidate
+    : undefined;
+}
+
+function buildHookLifecycleContext(
+  ctx: ExecutionContext,
+  event: "Stop" | "StopFailure",
+  failure?: HookFailureDetail,
+): HookContext {
+  const stopReason = readStringField(failure ?? ctx, "stopReason") ?? ctx.stopReason;
+  const stopReasonDetail =
+    readStringField(failure ?? ctx, "stopReasonDetail") ?? ctx.stopReasonDetail;
+  return {
+    event,
+    sessionId: ctx.sessionId,
+    messages: ctx.messages,
+    ...(ctx.finalContent ? { finalContent: ctx.finalContent } : {}),
+    ...(stopReason ? { stopReason } : {}),
+    ...(stopReasonDetail ? { stopReasonDetail } : {}),
+    ...(failure ? { failure } : {}),
+  };
+}
+
+function buildHookFailureDetail(error: unknown): HookFailureDetail {
+  const message = error instanceof Error ? error.message : String(error);
+  const name = readStringField(error, "name") ?? (error instanceof Error ? error.name : undefined);
+  const stopReason = readStringField(error, "stopReason");
+  const stopReasonDetail = readStringField(error, "stopReasonDetail");
+  const failureClass = readStringField(error, "failureClass");
+  const providerName = readStringField(error, "providerName");
+  const statusCode = readNumberField(error, "statusCode");
+  const timeoutMs = readNumberField(error, "timeoutMs");
+  return {
+    ...(name ? { name } : {}),
+    message,
+    ...(stopReason ? { stopReason } : {}),
+    ...(stopReasonDetail ? { stopReasonDetail } : {}),
+    ...(failureClass ? { failureClass } : {}),
+    ...(providerName ? { providerName } : {}),
+    ...(statusCode !== undefined ? { statusCode } : {}),
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+  };
+}
 
 /**
  * Dependency struct for `executeRequest`. Extends the init deps
@@ -148,7 +225,28 @@ export async function executeRequest(
     });
   }
 
-  await helpers.executeToolCallLoop(ctx);
+  try {
+    await helpers.executeToolCallLoop(ctx);
+  } catch (error) {
+    if (deps.hookRegistry) {
+      const failure = buildHookFailureDetail(error);
+      try {
+        await dispatchHooks({
+          registry: deps.hookRegistry,
+          event: "StopFailure",
+          matchKey: ctx.sessionId,
+          executor: defaultHookExecutor,
+          context: buildHookLifecycleContext(ctx, "StopFailure", failure),
+        });
+      } catch (hookError) {
+        if (hookError instanceof Error && error instanceof Error) {
+          (hookError as Error & { cause?: unknown }).cause ??= error;
+        }
+        throw hookError;
+      }
+    }
+    throw error;
+  }
 
   checkRequestTimeout(ctx, "finalization");
 
@@ -199,11 +297,18 @@ export async function executeRequest(
       event: stopEvent,
       matchKey: ctx.sessionId,
       executor: defaultHookExecutor,
-      context: {
-        event: stopEvent,
-        sessionId: ctx.sessionId,
-        messages: ctx.messages,
-      },
+      context: buildHookLifecycleContext(
+        ctx,
+        stopEvent,
+        stopEvent === "StopFailure"
+          ? buildHookFailureDetail({
+              name: "StopFailure",
+              message: ctx.stopReasonDetail ?? "Execution ended in failure.",
+              stopReason: ctx.stopReason,
+              stopReasonDetail: ctx.stopReasonDetail,
+            })
+          : undefined,
+      ),
     });
   }
 

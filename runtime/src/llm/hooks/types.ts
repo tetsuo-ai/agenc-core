@@ -59,6 +59,17 @@ interface HookContextBase {
   readonly depth?: number;
 }
 
+interface HookFailureContext {
+  readonly name?: string;
+  readonly message: string;
+  readonly stopReason?: string;
+  readonly stopReasonDetail?: string;
+  readonly failureClass?: string;
+  readonly providerName?: string;
+  readonly statusCode?: number;
+  readonly timeoutMs?: number;
+}
+
 interface PreToolUseContext extends HookContextBase {
   readonly event: "PreToolUse";
   readonly toolCall: LLMToolCall;
@@ -80,6 +91,10 @@ interface PostToolUseFailureContext extends HookContextBase {
 interface SessionLifecycleContext extends HookContextBase {
   readonly event: "SessionStart" | "Stop" | "StopFailure";
   readonly messages: readonly LLMMessage[];
+  readonly finalContent?: string;
+  readonly stopReason?: string;
+  readonly stopReasonDetail?: string;
+  readonly failure?: HookFailureContext;
 }
 
 interface CompactContext extends HookContextBase {
