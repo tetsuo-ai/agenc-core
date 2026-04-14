@@ -369,6 +369,46 @@ describe("createSessionToolHandler", () => {
     });
   });
 
+  it("preserves a seeded session id for replayed filesystem mutations when the handler session id is absent", async () => {
+    const baseHandler = vi.fn(async (toolName: string, args: Record<string, unknown>) =>
+      JSON.stringify({ toolName, args }),
+    );
+    const handler = createSessionToolHandler({
+      sessionId: undefined as unknown as string,
+      baseHandler,
+      routerId: "router-a",
+      send: vi.fn(),
+      defaultWorkingDirectory: "/workspace",
+    });
+
+    const result = await handler("system.writeFile", {
+      path: "/workspace/replayed.txt",
+      content: "hello",
+      [SESSION_ID_ARG]: "seeded-session",
+    });
+    const parsed = JSON.parse(result) as {
+      toolName: string;
+      args: Record<string, unknown>;
+    };
+
+    expect(parsed).toMatchObject({
+      toolName: "system.writeFile",
+      args: expect.objectContaining({
+        path: "/workspace/replayed.txt",
+        content: "hello",
+        [SESSION_ID_ARG]: "seeded-session",
+      }),
+    });
+    expect(baseHandler).toHaveBeenCalledWith(
+      "system.writeFile",
+      expect.objectContaining({
+        path: "/workspace/replayed.txt",
+        content: "hello",
+        [SESSION_ID_ARG]: "seeded-session",
+      }),
+    );
+  });
+
   it("injects session task-list ids on the gateway path and strips spoofed internal args", async () => {
     const taskStore = new TaskStore();
     const taskTools = new Map(

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   createFilesystemTools,
   clearSessionReadState,
+  clearSessionReadCache,
   safePath,
   isPathAllowed,
 } from "./filesystem.js";
@@ -533,6 +534,8 @@ describe("system.writeFile", () => {
 
   it("rejects writing an existing file when not previously read in session", async () => {
     // File exists at the target path
+    const sessionId = "session-write-no-read";
+    clearSessionReadState(sessionId);
     mockStat.mockResolvedValueOnce({
       isFile: () => true,
       isDirectory: () => false,
@@ -542,7 +545,7 @@ describe("system.writeFile", () => {
     const result = await tool.execute({
       path: "/workspace/existing.c",
       content: "new content",
-      __agencSessionId: "session-A",
+      __agencSessionId: sessionId,
     });
 
     expect(result.isError).toBe(true);
@@ -584,22 +587,22 @@ describe("system.writeFile", () => {
     expect(mockWriteFile).toHaveBeenCalled();
   });
 
-  it("allows writing an existing file when no session id is provided (test/eval harness path)", async () => {
-    // No __agencSessionId in args -> Read-before-Write check is skipped
+  it("rejects writing an existing file when no session id is provided", async () => {
+    // No __agencSessionId in args -> fail closed unless a seed exists
     mockStat.mockResolvedValueOnce({
       isFile: () => true,
       isDirectory: () => false,
       size: 100,
     } as never);
-    mockMkdir.mockResolvedValueOnce(undefined);
-    mockWriteFile.mockResolvedValueOnce(undefined);
 
     const result = await tool.execute({
       path: "/workspace/existing.c",
       content: "new content",
     });
 
-    expect(result.isError).toBeUndefined();
+    expect(result.isError).toBe(true);
+    expect(parseResult(result).error).toContain("File has not been read yet");
+    expect(mockWriteFile).not.toHaveBeenCalled();
   });
 
   it("allows writing a new (non-existent) file without a prior read", async () => {
@@ -616,6 +619,51 @@ describe("system.writeFile", () => {
 
     expect(result.isError).toBeUndefined();
     expect(mockWriteFile).toHaveBeenCalled();
+  });
+
+  it("rehydrates read state from the local history cache after an in-memory reset", async () => {
+    const historyRoot = mkdtempSync(join(tmpdir(), "agenc-filesystem-history-"));
+    const previousHistoryRoot = process.env.AGENC_FILESYSTEM_HISTORY_ROOT;
+    process.env.AGENC_FILESYSTEM_HISTORY_ROOT = historyRoot;
+    try {
+      const readTool = findTool(createFilesystemTools(CONFIG), "system.readFile");
+      const sessionId = "session-rehydrate";
+
+      mockStat.mockResolvedValueOnce({
+        isFile: () => true,
+        isDirectory: () => false,
+        size: 5,
+      } as never);
+      mockReadFile.mockResolvedValueOnce(Buffer.from("hello"));
+      await readTool.execute({
+        path: "/workspace/rehydrate.txt",
+        __agencSessionId: sessionId,
+      });
+
+      clearSessionReadCache(sessionId);
+
+      mockStat.mockResolvedValueOnce({
+        isFile: () => true,
+        isDirectory: () => false,
+        size: 5,
+      } as never);
+      mockReadFile.mockResolvedValueOnce(Buffer.from("hello"));
+      mockMkdir.mockResolvedValueOnce(undefined);
+      mockWriteFile.mockResolvedValueOnce(undefined);
+
+      const result = await tool.execute({
+        path: "/workspace/rehydrate.txt",
+        content: "world",
+        __agencSessionId: sessionId,
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(mockWriteFile).toHaveBeenCalledTimes(1);
+    } finally {
+      clearSessionReadState("session-rehydrate");
+      process.env.AGENC_FILESYSTEM_HISTORY_ROOT = previousHistoryRoot;
+      rmSync(historyRoot, { recursive: true, force: true });
+    }
   });
 
   it("rejects content exceeding size limit", async () => {
@@ -748,6 +796,21 @@ describe("system.editFile", () => {
       old_string: "return 0",
       new_string: "return 1",
       __agencSessionId: "session-no-read",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(parseResult(result).error).toContain("File has not been read yet");
+    expect(mockWriteFile).not.toHaveBeenCalled();
+  });
+
+  it("rejects edit when no session id is provided", async () => {
+    const before = `int main(void) { return 0; }\n`;
+    setupExistingFile(before);
+
+    const result = await tool.execute({
+      path: "/workspace/no-session.c",
+      old_string: "return 0",
+      new_string: "return 1",
     });
 
     expect(result.isError).toBe(true);
@@ -1636,6 +1699,9 @@ describe("system.writeFile base64 size pre-check", () => {
   it("rejects oversized base64 string before regex/decode", async () => {
     // 200 bytes decoded → ~268 chars base64, well above 100-byte limit
     const oversizedB64 = Buffer.alloc(200).toString("base64");
+    mockStat.mockRejectedValueOnce(
+      Object.assign(new Error("ENOENT"), { code: "ENOENT" }) as never,
+    );
 
     const result = await tool.execute({
       path: "/workspace/big.bin",

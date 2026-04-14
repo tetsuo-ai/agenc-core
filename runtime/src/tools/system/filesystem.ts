@@ -28,8 +28,8 @@
  * generating the next write, which is the highest-leverage structural
  * defense against the Grok JSON-escape bug. The rule is skipped for
  * non-existent files (creating new files does not require a prior
- * read) and skipped entirely when no session ID is present in tool
- * args (e.g. unit tests, eval harness).
+ * read) and can be rehydrated from the persisted local history cache
+ * after compaction or restart.
  *
  * @module
  */
@@ -119,7 +119,7 @@ export const SESSION_ID_ARG = "__agencSessionId";
  * happens via the helpers below; tools never see the underlying Set.
  */
 interface SessionReadSnapshot {
-  readonly content?: string;
+  readonly content?: string | null;
   readonly timestamp?: number;
 }
 
@@ -154,7 +154,6 @@ function persistLocalFileHistorySnapshot(
   snapshot: SessionReadSnapshot,
 ): void {
   if (!sessionId || sessionId.trim().length === 0) return;
-  if (snapshot.content === undefined) return;
   try {
     const historyFile = resolveLocalHistoryFilePath(sessionId, canonicalPath);
     mkdirSync(dirname(historyFile), { recursive: true });
@@ -165,11 +164,16 @@ function persistLocalFileHistorySnapshot(
       const parsed = JSON.parse(raw) as unknown;
       if (Array.isArray(parsed)) {
         entries = parsed.filter(
-          (entry): entry is SessionReadSnapshot & { readonly recordedAt: number } =>
-            typeof entry === "object" &&
-            entry !== null &&
-            typeof (entry as { recordedAt?: unknown }).recordedAt === "number" &&
-            typeof (entry as { content?: unknown }).content === "string",
+          (entry): entry is SessionReadSnapshot & { readonly recordedAt: number } => {
+            if (typeof entry !== "object" || entry === null) return false;
+            if (
+              typeof (entry as { recordedAt?: unknown }).recordedAt !== "number"
+            ) {
+              return false;
+            }
+            const content = (entry as { content?: unknown }).content;
+            return typeof content === "string" || content === null;
+          },
         );
       }
     } catch {
@@ -177,7 +181,7 @@ function persistLocalFileHistorySnapshot(
     }
 
     entries.push({
-      content: snapshot.content,
+      content: snapshot.content ?? null,
       timestamp: snapshot.timestamp,
       recordedAt: Date.now(),
     });
@@ -188,6 +192,72 @@ function persistLocalFileHistorySnapshot(
   } catch {
     // Best effort only. Local history is an ergonomics aid, not part of the tool contract.
   }
+}
+
+function loadPersistedSessionReadSnapshot(
+  sessionId: string,
+  canonicalPath: string,
+): SessionReadSnapshot | undefined {
+  try {
+    const historyFile = resolveLocalHistoryFilePath(sessionId, canonicalPath);
+    const raw = readFileSync(historyFile, "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      return undefined;
+    }
+
+    for (let index = parsed.length - 1; index >= 0; index--) {
+      const entry = parsed[index];
+      if (typeof entry !== "object" || entry === null) continue;
+      const content = (entry as { content?: unknown }).content;
+      const timestampValue = (entry as { timestamp?: unknown }).timestamp;
+      const recordedAtValue = (entry as { recordedAt?: unknown }).recordedAt;
+      const timestamp =
+        typeof timestampValue === "number" && Number.isFinite(timestampValue)
+          ? timestampValue
+          : typeof recordedAtValue === "number" && Number.isFinite(recordedAtValue)
+            ? recordedAtValue
+            : undefined;
+      if (typeof content === "string") {
+        return timestamp === undefined ? { content } : { content, timestamp };
+      }
+      if (content === null) {
+        return timestamp === undefined
+          ? { content: null }
+          : { content: null, timestamp };
+      }
+    }
+  } catch {
+    // Best effort only. Missing or corrupt local history should not block rehydration.
+  }
+  return undefined;
+}
+
+function rehydrateSessionReadSnapshot(
+  sessionId: string | undefined,
+  canonicalPath: string,
+): SessionReadSnapshot | undefined {
+  if (!sessionId || sessionId.trim().length === 0) {
+    return undefined;
+  }
+
+  const existingSnapshot = sessionReadState.get(sessionId)?.get(canonicalPath);
+  if (existingSnapshot) {
+    return existingSnapshot;
+  }
+
+  const persistedSnapshot = loadPersistedSessionReadSnapshot(sessionId, canonicalPath);
+  if (!persistedSnapshot) {
+    return undefined;
+  }
+
+  let fileMap = sessionReadState.get(sessionId);
+  if (!fileMap) {
+    fileMap = new Map();
+    sessionReadState.set(sessionId, fileMap);
+  }
+  fileMap.set(canonicalPath, persistedSnapshot);
+  return persistedSnapshot;
 }
 
 export function recordSessionRead(
@@ -215,19 +285,14 @@ export function hasSessionRead(
   sessionId: string | undefined,
   canonicalPath: string,
 ): boolean {
-  if (!sessionId || sessionId.trim().length === 0) return false;
-  const fileMap = sessionReadState.get(sessionId);
-  if (!fileMap) return false;
-  return fileMap.has(canonicalPath);
+  return rehydrateSessionReadSnapshot(sessionId, canonicalPath) !== undefined;
 }
 
 export function getSessionReadSnapshot(
   sessionId: string | undefined,
   canonicalPath: string,
 ): SessionReadSnapshot | undefined {
-  if (!sessionId || sessionId.trim().length === 0) return undefined;
-  const fileMap = sessionReadState.get(sessionId);
-  return fileMap?.get(canonicalPath);
+  return rehydrateSessionReadSnapshot(sessionId, canonicalPath);
 }
 
 /**
@@ -248,11 +313,19 @@ export function clearSessionReadState(sessionId: string): void {
 }
 
 /**
+ * Clear only the in-memory read cache for a session. The persisted local
+ * history snapshot remains available for transcript/compaction rehydration.
+ */
+export function clearSessionReadCache(sessionId: string): void {
+  sessionReadState.delete(sessionId);
+}
+
+/**
  * Resolve the session ID from tool args (injected by the gateway via
  * `applySessionId`). Returns `undefined` when no session ID is present
  * — that signals "tool was called outside a chat session" (e.g. eval
- * harness, direct unit test) and Read-before-Write enforcement is
- * skipped in that case so non-session callers stay functional.
+ * harness, direct unit test) and mutation guards fail closed unless the
+ * caller has seeded a session id into the tool args.
  */
 export function resolveSessionId(args: Record<string, unknown>): string | undefined {
   const value = args[SESSION_ID_ARG];
@@ -784,7 +857,7 @@ function hasFileChangedSinceSnapshot(params: {
   readonly snapshot: SessionReadSnapshot | undefined;
   readonly currentContent: string;
 }): boolean {
-  if (params.snapshot?.content === undefined) {
+  if (params.snapshot?.content == null) {
     return false;
   }
   return params.currentContent !== params.snapshot.content;
@@ -872,7 +945,7 @@ function createReadFileTool(
         // path satisfy the Read-before-Write rule. See PR #314 and
         // the SESSION_ID_ARG comment for the rationale.
         recordSessionRead(resolveSessionId(args), resolved!, {
-          content: binary ? undefined : buffer.toString("utf-8"),
+          content: binary ? null : buffer.toString("utf-8"),
           timestamp: getFileTimestampMs(fileStats),
         });
 
@@ -962,7 +1035,7 @@ function createWriteFileTool(
           // prior read required.
         }
         const readSnapshot = getSessionReadSnapshot(sessionId, resolved!);
-        if (targetExists && sessionId !== undefined && !hasSessionRead(sessionId, resolved!)) {
+        if (targetExists && readSnapshot === undefined) {
           return errorResult(
             `File has not been read yet. Read it first before writing to it. ` +
               `Call system.readFile on "${args.path}" before calling system.writeFile, ` +
@@ -1030,7 +1103,7 @@ function createWriteFileTool(
         const updatedStat = await stat(resolved!).catch(() => undefined);
         recordSessionRead(sessionId, resolved!, {
           content:
-            encoding === "base64" ? undefined : data.toString("utf-8"),
+            encoding === "base64" ? null : data.toString("utf-8"),
           timestamp: getFileTimestampMs(updatedStat ?? {}) ?? Date.now(),
         });
 
@@ -1254,7 +1327,7 @@ function createEditFileTool(
         // called system.readFile on this path in the current session.
         const sessionId = resolveSessionId(args);
         const readSnapshot = getSessionReadSnapshot(sessionId, resolved!);
-        if (sessionId !== undefined && !hasSessionRead(sessionId, resolved!)) {
+        if (readSnapshot === undefined) {
           return errorResult(
             `File has not been read yet. Read it first before editing it. ` +
               `Call system.readFile on "${args.path}" before calling system.editFile. ` +

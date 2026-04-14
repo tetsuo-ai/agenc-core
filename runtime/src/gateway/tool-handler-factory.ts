@@ -2438,7 +2438,14 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
 
   return async (name: string, args: Record<string, unknown>): Promise<string> => {
     const toolName = normalizeToolName(name);
-    const isSubAgentSession = isSubAgentSessionId(sessionId);
+    const normalizedToolCallArgs = normalizeToolCallArguments(toolName, args);
+    const seededSessionId =
+      typeof normalizedToolCallArgs[SESSION_ID_ARG] === "string" &&
+      normalizedToolCallArgs[SESSION_ID_ARG].trim().length > 0
+        ? normalizedToolCallArgs[SESSION_ID_ARG].trim()
+        : undefined;
+    const sessionIdentity = sessionId ?? seededSessionId;
+    const isSubAgentSession = isSubAgentSessionId(sessionIdentity);
     const workspaceContext = (await resolveWorkspaceContext?.()) ?? {};
     const defaultWorkingDirectory =
       workspaceContext.defaultWorkingDirectory ?? config.defaultWorkingDirectory;
@@ -2449,9 +2456,7 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
       config.workspaceAliasRoot ??
       scopedFilesystemRoot ??
       defaultWorkingDirectory;
-    const normalizedToolArgs = stripInternalToolArgs(
-      normalizeToolCallArguments(toolName, args),
-    );
+    const normalizedToolArgs = stripInternalToolArgs(normalizedToolCallArgs);
     const {
       args: normalizedArgs,
       missingDefaultWorkingDirectory,
@@ -2496,11 +2501,11 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
     const lifecycleEmitter = delegationContext?.lifecycleEmitter ?? null;
     const unsafeBenchmarkMode = delegationContext?.unsafeBenchmarkMode === true;
     const subAgentInfo = isSubAgentSession
-      ? subAgentManager?.getInfo(sessionId) ?? null
+      ? subAgentManager?.getInfo(sessionIdentity) ?? null
       : null;
     const subAgentExecutionContext =
       isSubAgentSession && typeof subAgentManager?.getExecutionContext === "function"
-        ? subAgentManager.getExecutionContext(sessionId)
+        ? subAgentManager.getExecutionContext(sessionIdentity)
         : undefined;
     const parentSessionId = subAgentInfo?.parentSessionId;
     const policyScope = resolvePolicyScope?.();
@@ -2929,8 +2934,8 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
       executionArgs,
       delegatedParentAllowedRoots,
     );
-    executionArgs = applySessionTaskListId(toolName, executionArgs, sessionId);
-    executionArgs = applySessionId(toolName, executionArgs, sessionId);
+    executionArgs = applySessionTaskListId(toolName, executionArgs, sessionIdentity);
+    executionArgs = applySessionId(toolName, executionArgs, sessionIdentity);
     executionArgs = applyAdvertisedToolNames(
       toolName,
       executionArgs,
