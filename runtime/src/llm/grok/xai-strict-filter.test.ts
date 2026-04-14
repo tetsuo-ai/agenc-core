@@ -801,6 +801,45 @@ describe("validateXaiResponsePostFlight (mid-sentence truncation bug)", () => {
     expect(anomaly?.evidence.messageTextTail).toContain("pkg-config).\n2");
   });
 
+  it("detects reasoning-only completed responses with no visible assistant text", () => {
+    const request = toolFollowupRequest({
+      model: "grok-4.20-beta-0309-reasoning",
+      tools: [functionTool("system.bash"), functionTool("system.editFile")],
+    });
+    const result = validateXaiResponsePostFlight({
+      request,
+      response: responseWith({
+        model: "grok-4.20-beta-0309-reasoning",
+        status: "completed",
+        incomplete_details: null,
+        output: [
+          reasoningBlock(
+            "The final recovery turn must be direct. The ledger shows repeated failed tool calls.",
+          ),
+        ],
+        usage: {
+          input_tokens: 34492,
+          output_tokens: 280,
+          total_tokens: 34772,
+          output_tokens_details: { reasoning_tokens: 280 },
+        },
+      }),
+    });
+    const anomaly = result.find(
+      (a) => a.code === "truncated_response_mid_sentence",
+    );
+    expect(anomaly).toBeDefined();
+    expect(anomaly?.severity).toBe("warn");
+    expect(anomaly?.evidence).toMatchObject({
+      outputTokens: 280,
+      priorFunctionCallOutputCount: 1,
+      toolChoice: "auto",
+      reasoningBlockCount: 1,
+      variant: "reasoning_only",
+    });
+    expect(anomaly?.evidence.assistantMessageTextTail).toBe("");
+  });
+
   it("does NOT flag when text ends with a period", () => {
     const request = toolFollowupRequest({
       tools: [functionTool("system.bash")],

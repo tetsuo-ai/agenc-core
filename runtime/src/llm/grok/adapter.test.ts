@@ -2546,6 +2546,87 @@ describe("GrokProvider", () => {
     expect(third.stateful?.fallbackReason).toBeUndefined();
   });
 
+  it("retries reasoning-only completed tool followups with tool_choice none", async () => {
+    mockCreate
+      .mockResolvedValueOnce(
+        makeCompletion({
+          id: "resp_reasoning_only_initial",
+          output_text: "",
+          output: [
+            {
+              type: "reasoning",
+              id: "rs_reasoning_only",
+              summary: [
+                {
+                  type: "summary_text",
+                  text:
+                    "The final recovery turn must be direct. The ledger shows repeated failed tool calls.",
+                },
+              ],
+              status: "completed",
+            },
+          ],
+          usage: {
+            input_tokens: 34492,
+            output_tokens: 280,
+            total_tokens: 34772,
+            output_tokens_details: { reasoning_tokens: 280 },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeCompletion({
+          id: "resp_reasoning_only_retry",
+          output_text: "Recovered after retry",
+        }),
+      );
+
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+      model: "grok-4.20-beta-0309-reasoning",
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "system.bash",
+            description: "run command",
+            parameters: {
+              type: "object",
+              properties: { command: { type: "string" } },
+            },
+          },
+        },
+      ],
+    });
+
+    const response = await provider.chat([
+      { role: "user", content: "find the token" },
+      {
+        role: "assistant",
+        content: "",
+        phase: "commentary",
+        toolCalls: [
+          {
+            id: "call_reasoning_only_1",
+            name: "system.bash",
+            arguments: '{"command":"echo TOKEN=ONYX-SHARD-58"}',
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: "TOKEN=ONYX-SHARD-58",
+        toolCallId: "call_reasoning_only_1",
+        toolName: "system.bash",
+      },
+    ]);
+
+    expect(mockCreate).toHaveBeenCalledTimes(2);
+    expect(mockCreate.mock.calls[1][0].tool_choice).toBe("none");
+    expect(mockCreate.mock.calls[1][0].stream).toBe(false);
+    expect(response.content).toBe("Recovered after retry");
+  });
+
   it("keeps previous_response_id continuity when replayed tool-call arguments are sanitized", async () => {
     const rawArguments = JSON.stringify({
       path: "packages/core/src/routing.test.ts",

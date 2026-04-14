@@ -762,6 +762,42 @@ function extractMessageText(output: unknown): string {
   return parts.join("\n");
 }
 
+function extractAssistantMessageText(output: unknown): string {
+  if (!Array.isArray(output)) return "";
+  const parts: string[] = [];
+  for (const item of output) {
+    if (!item || typeof item !== "object") continue;
+    if ((item as { type?: unknown }).type !== "message") continue;
+    const content = (item as { content?: unknown }).content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (
+        block &&
+        typeof block === "object" &&
+        typeof (block as { text?: unknown }).text === "string"
+      ) {
+        parts.push((block as { text: string }).text);
+      }
+    }
+  }
+  return parts.join("\n");
+}
+
+function countReasoningOutputBlocks(output: unknown): number {
+  if (!Array.isArray(output)) return 0;
+  let count = 0;
+  for (const item of output) {
+    if (
+      item &&
+      typeof item === "object" &&
+      (item as { type?: unknown }).type === "reasoning"
+    ) {
+      count++;
+    }
+  }
+  return count;
+}
+
 /**
  * Count output blocks whose `type` is one of the documented tool-call
  * output types ({@link SERVER_SIDE_TOOL_CALL_OUTPUT_TYPES}). The
@@ -832,6 +868,8 @@ export function validateXaiResponsePostFlight(params: {
   // so a response with any of these is NOT a silent tool drop.
   const toolCallBlockCount = countToolCallOutputBlocks(output);
   const messageText = extractMessageText(output);
+  const assistantMessageText = extractAssistantMessageText(output);
+  const reasoningBlockCount = countReasoningOutputBlocks(output);
 
   // 1. Silent tool drop (incoming).
   if (
@@ -946,9 +984,12 @@ export function validateXaiResponsePostFlight(params: {
     usage && typeof usage === "object"
       ? Number((usage as { output_tokens?: unknown }).output_tokens) || 0
       : 0;
-  // Two variants of the same xAI decoder bug:
+  // Three variants of the same xAI decoder bug:
   //   (a) Mid-sentence truncation: text present but cut off mid-word
   //   (b) Empty-output truncation: output_tokens === 0, output === []
+  //   (c) Reasoning-only truncation: output_tokens > 0 but the response
+  //       contains only `reasoning` blocks and no visible assistant
+  //       message/output_text for the user
   // Both share the same trigger shape (completed + null incomplete +
   // tools + auto + prior fn_output + zero tool-call blocks). Variant
   // (b) was not caught in PR #306 because the condition required
@@ -956,9 +997,16 @@ export function validateXaiResponsePostFlight(params: {
   // 03:31:42 call_6 returned output:[] with 0 tokens while the prior
   // calls (2-5) were all productive writeFile sequences.
   const isMidSentenceTruncation =
-    messageText.length > 0 && !endsWithTerminalPunctuation(messageText);
+    assistantMessageText.length > 0 &&
+    !endsWithTerminalPunctuation(assistantMessageText);
   const isEmptyOutputTruncation =
-    messageText.length === 0 && outputTokens === 0;
+    assistantMessageText.length === 0 &&
+    reasoningBlockCount === 0 &&
+    outputTokens === 0;
+  const isReasoningOnlyTruncation =
+    assistantMessageText.length === 0 &&
+    reasoningBlockCount > 0 &&
+    outputTokens > 0;
   if (
     responseStatus === "completed" &&
     (responseIncomplete === null || responseIncomplete === undefined) &&
@@ -966,7 +1014,9 @@ export function validateXaiResponsePostFlight(params: {
     effChoice === "auto" &&
     priorFnOutputCount > 0 &&
     toolCallBlockCount === 0 &&
-    (isMidSentenceTruncation || isEmptyOutputTruncation)
+    (isMidSentenceTruncation ||
+      isEmptyOutputTruncation ||
+      isReasoningOnlyTruncation)
   ) {
     anomalies.push({
       code: "truncated_response_mid_sentence",
@@ -981,6 +1031,16 @@ export function validateXaiResponsePostFlight(params: {
             `${sentTools.length} tools in scope, and tool_choice="auto" ` +
             `produced zero output. The adapter will retry with ` +
             `tool_choice="none".`
+          : isReasoningOnlyTruncation
+            ? `xAI /v1/responses returned status="completed" with ` +
+              `incomplete_details=null and ${outputTokens} output tokens, ` +
+              `but produced only reasoning blocks and no visible assistant ` +
+              `message/output_text. This is a reasoning-only variant of the ` +
+              `xAI decoder tool-mode → text-mode transition bug: a turn with ` +
+              `${priorFnOutputCount} prior function_call_output items, ` +
+              `${sentTools.length} tools in scope, and tool_choice="auto" ` +
+              `ended with hidden reasoning instead of user-visible text. The ` +
+              `adapter will retry with tool_choice="none".`
           : `xAI /v1/responses returned status="completed" with ` +
             `incomplete_details=null, but the text-only response ends without ` +
             `terminal punctuation after ${outputTokens} output tokens. ` +
@@ -993,11 +1053,17 @@ export function validateXaiResponsePostFlight(params: {
       evidence: {
         outputTokens,
         messageTextTail: messageText.slice(-120),
+        assistantMessageTextTail: assistantMessageText.slice(-120),
         priorFunctionCallOutputCount: priorFnOutputCount,
         sentToolCount: sentTools.length,
         toolCallBlockCount,
+        reasoningBlockCount,
         toolChoice: effChoice,
-        variant: isEmptyOutputTruncation ? "empty_output" : "mid_sentence",
+        variant: isEmptyOutputTruncation
+          ? "empty_output"
+          : isReasoningOnlyTruncation
+            ? "reasoning_only"
+            : "mid_sentence",
       },
     });
   }
