@@ -150,10 +150,19 @@ describe("task-tracker", () => {
       expect(result.body.error).toMatch(/subject/);
     });
 
-    it("rejects empty description", async () => {
+    it("falls back to the subject when description is omitted", async () => {
+      const result = await callTool(create, { subject: "x" });
+      expect(result.raw.isError).toBeUndefined();
+      expect(result.body.task).toMatchObject({
+        subject: "x",
+      });
+      expect(store.list(DEFAULT_TASK_LIST_ID)[0]?.description).toBe("x");
+    });
+
+    it("falls back to the subject when description is empty", async () => {
       const result = await callTool(create, { subject: "x", description: "" });
-      expect(result.raw.isError).toBe(true);
-      expect(result.body.error).toMatch(/description/);
+      expect(result.raw.isError).toBeUndefined();
+      expect(store.list(DEFAULT_TASK_LIST_ID)[0]?.description).toBe("x");
     });
 
     it("preserves activeForm and metadata when provided", async () => {

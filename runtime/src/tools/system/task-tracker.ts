@@ -1758,7 +1758,8 @@ const TASK_CREATE_DESCRIPTION =
   "multi-step work (3+ steps), complex tasks that require planning, or when the user " +
   "supplies multiple things to do. Mark a task in_progress with task.update BEFORE " +
   "starting work, and completed only once the work is fully done. Runtime-managed " +
-  "milestone tracking uses metadata._runtime.milestoneIds and metadata._runtime.verification.";
+  "milestone tracking uses metadata._runtime.milestoneIds and metadata._runtime.verification. " +
+  "If description is omitted, the runtime falls back to the subject text.";
 
 const TASK_LIST_DESCRIPTION =
   "List tasks in the current session's task list. Returns id, kind, subject, status, owner, " +
@@ -1814,7 +1815,8 @@ export function createTaskTrackerTools(
         },
         description: {
           type: "string",
-          description: "What needs to be done. Include enough detail to act on later.",
+          description:
+            "What needs to be done. Include enough detail to act on later. Optional; when omitted, the runtime reuses the subject.",
         },
         activeForm: {
           type: "string",
@@ -1827,13 +1829,12 @@ export function createTaskTrackerTools(
             "Arbitrary metadata to attach to the task. Runtime-managed milestone tracking uses metadata._runtime.milestoneIds and metadata._runtime.verification.",
         },
       },
-      required: ["subject", "description"],
+      required: ["subject"],
     },
     async execute(args) {
       const subject = asNonEmptyString(args.subject);
       if (!subject) return errorResult("subject must be a non-empty string");
-      const description = asNonEmptyString(args.description);
-      if (!description) return errorResult("description must be a non-empty string");
+      const description = asNonEmptyString(args.description) ?? subject;
       const activeForm = asNonEmptyString(args.activeForm);
       const metadata = asPlainObject(args.metadata);
 
