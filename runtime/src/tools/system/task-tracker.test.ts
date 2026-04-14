@@ -514,23 +514,60 @@ describe("task-tracker", () => {
       expect(result.raw.isError).toBe(true);
     });
 
-    it("blocks completion when the runtime completion guard rejects it", async () => {
+    it("allows ordinary task completion even when a completion guard is configured", async () => {
+      let guardCalled = false;
       tools = createTaskTrackerTools(store, {
-        onBeforeTaskComplete: async () => ({
-          outcome: "block",
-          message: "completion blocked",
-        }),
+        onBeforeTaskComplete: async () => {
+          guardCalled = true;
+          return {
+            outcome: "block",
+            message: "completion blocked",
+          };
+        },
       });
       update = findTool(tools, "task.update");
 
       const result = await callTool(update, { taskId: "1", status: "completed" });
 
+      expect(result.raw.isError).toBeUndefined();
+      expect(result.body.task).toMatchObject({
+        id: "1",
+        status: "completed",
+      });
+      expect(store.get(DEFAULT_TASK_LIST_ID, "1")?.status).toBe("completed");
+      expect(guardCalled).toBe(false);
+    });
+
+    it("still blocks explicit verification tasks when the completion guard rejects them", async () => {
+      let guardCalled = false;
+      tools = createTaskTrackerTools(store, {
+        onBeforeTaskComplete: async () => {
+          guardCalled = true;
+          return {
+            outcome: "block",
+            message: "completion blocked",
+          };
+        },
+      });
+      update = findTool(tools, "task.update");
+
+      const result = await callTool(update, {
+        taskId: "1",
+        status: "completed",
+        metadata: {
+          _runtime: {
+            verification: true,
+          },
+        },
+      });
+
       expect(result.raw.isError).toBe(true);
       expect(result.body.error).toContain("completion blocked");
       expect(store.get(DEFAULT_TASK_LIST_ID, "1")?.status).toBe("pending");
+      expect(guardCalled).toBe(true);
     });
 
-    it("rejects stale completion when the task changes during the guard", async () => {
+    it("rejects stale completion when an explicit verification task changes during the guard", async () => {
       tools = createTaskTrackerTools(store, {
         onBeforeTaskComplete: async () => {
           store.update(DEFAULT_TASK_LIST_ID, "1", {
@@ -544,7 +581,12 @@ describe("task-tracker", () => {
       const result = await callTool(update, {
         taskId: "1",
         status: "completed",
-        metadata: { ready: true },
+        metadata: {
+          ready: true,
+          _runtime: {
+            verification: true,
+          },
+        },
       });
 
       expect(result.raw.isError).toBe(true);
