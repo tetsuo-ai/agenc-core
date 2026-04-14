@@ -193,7 +193,7 @@ describe("runTopLevelVerifierValidation", () => {
     expect(decision.runtimeVerifier.overall).toBe("fail");
   });
 
-  it("skips verifier workers for non-workflow turns", async () => {
+  it("blocks required verifier work for non-workflow turns instead of silently skipping", async () => {
     const spawn = vi.fn(async () => "subagent:verify-1");
 
     const decision = await runTopLevelVerifierValidation({
@@ -209,6 +209,42 @@ describe("runTopLevelVerifierValidation", () => {
       }),
       subAgentManager: { spawn, waitForResult: vi.fn(async () => null) },
       verifierService: createVerifierService(),
+    });
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(decision.outcome).toBe("retry_with_blocking_message");
+    expect(decision.runtimeVerifier.overall).toBe("retry");
+  });
+
+  it("still skips verifier workers when runtime verification is not required", async () => {
+    const spawn = vi.fn(async () => "subagent:verify-1");
+
+    const decision = await runTopLevelVerifierValidation({
+      sessionId: "session:test",
+      userRequest: "hello",
+      result: createResult({
+        runtimeContractSnapshot: createRuntimeContractSnapshot({
+          runtimeContractV2: false,
+          stopHooksEnabled: false,
+          asyncTasksEnabled: false,
+          persistentWorkersEnabled: false,
+          mailboxEnabled: false,
+          verifierRuntimeRequired: false,
+          verifierProjectBootstrap: false,
+          workerIsolationWorktree: false,
+          workerIsolationRemote: false,
+        }),
+        turnExecutionContract: {
+          ...createResult().turnExecutionContract,
+          turnClass: "dialogue",
+          ownerMode: "none",
+          targetArtifacts: [],
+        },
+      }),
+      subAgentManager: { spawn, waitForResult: vi.fn(async () => null) },
+      verifierService: createVerifierService(
+        createVerifierRequirement({ required: false }),
+      ),
     });
 
     expect(spawn).not.toHaveBeenCalled();

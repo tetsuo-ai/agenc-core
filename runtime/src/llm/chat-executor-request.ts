@@ -160,6 +160,7 @@ export async function executeRequest(
     completedRequestMilestoneIds: ctx.completedRequestMilestoneIds,
     validationCode: ctx.validationCode,
     verifier: ctx.verifierSnapshot,
+    runtimeVerifierRequired: ctx.runtimeContractSnapshot.flags.verifierRuntimeRequired,
   });
 
   const durationMs = Date.now() - ctx.startTime;

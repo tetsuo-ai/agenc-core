@@ -56,6 +56,7 @@ export function resolveWorkflowCompletionState(input: {
   readonly completedRequestMilestoneIds?: readonly string[];
   readonly validationCode?: DelegationOutputValidationCode;
   readonly verifier?: PlannerVerificationSnapshot;
+  readonly runtimeVerifierRequired?: boolean;
 }): WorkflowCompletionState {
   const verifier = input.verifier;
   const completionContract =
@@ -75,6 +76,9 @@ export function resolveWorkflowCompletionState(input: {
     }
     if (verifier?.overall === "retry" || verifier?.overall === "fail") {
       return hasProgress ? "partial" : "blocked";
+    }
+    if (input.runtimeVerifierRequired && verifier?.overall !== "pass") {
+      return "needs_verification";
     }
     if (
       requiresPassedVerificationForCompletion(completionContract) &&

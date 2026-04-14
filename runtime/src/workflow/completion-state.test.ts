@@ -145,6 +145,27 @@ describe("completion-state", () => {
     ).toBe("needs_verification");
   });
 
+  it("keeps runtime-required work in needs_verification when verifier is skipped", () => {
+    expect(
+      resolveWorkflowCompletionState({
+        stopReason: "completed",
+        toolCalls: [
+          {
+            name: "system.writeFile",
+            args: { path: "/workspace/src/runner.js" },
+            result: JSON.stringify({ ok: true }),
+            isError: false,
+          },
+        ],
+        verifier: {
+          performed: false,
+          overall: "skipped",
+        },
+        runtimeVerifierRequired: true,
+      }),
+    ).toBe("needs_verification");
+  });
+
   it("keeps request-level multi-phase work partial when local verification passes but planner milestones remain", () => {
     expect(
       resolveWorkflowCompletionState({
