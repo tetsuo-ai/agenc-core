@@ -53,3 +53,9 @@
 - **What worked:** Switching the bash-side stop-gate detector from “any failed shell call in the turn” to “latest unresolved shell failure” restored Claude-style stop-hook semantics, so honest recoveries no longer get blocked by stale failures that were already repaired later in the same turn.
 - **What didn't:** The first stop-gate patch promoted turn-ledger history to a permanent blocker, which was stricter than Claude’s hook model and caused the runtime to stop on already-fixed failures until the detector was made resolution-aware.
 - **Rule added to CLAUDE.md:** no
+## PR #344: fix(runtime): default to builtin stop-hook finalization
+- **Date:** 2026-04-13
+- **Files changed:** `runtime/src/llm/hooks/stop-hooks.ts`, `runtime/src/llm/completion-validators.ts`, `runtime/src/llm/hooks/stop-hooks.test.ts`, `runtime/src/llm/completion-validators.test.ts`
+- **What worked:** Making builtin stop hooks default-on aligned runtime behavior with the existing `stopHooksEnabled` contract and removed the validator-only fallback that was letting false completion leak through.
+- **What didn't:** AgenC had drifted into a split contract where flags defaulted stop hooks on but the actual hook runtime only existed behind explicit config, which made the executor behave unlike Claude until this pass.
+- **Rule added to CLAUDE.md:** no
