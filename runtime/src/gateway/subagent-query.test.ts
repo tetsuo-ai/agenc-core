@@ -185,7 +185,7 @@ describe("runSubagentToLegacyResult (Phase K)", () => {
     ).rejects.toThrow();
   });
 
-  it("preserves shared continuation behavior for subagent turns", async () => {
+  it("keeps token-budget continuation disabled for subagent turns", async () => {
     const provider: LLMProvider = {
       name: "mock-subagent-provider",
       chat: vi
@@ -212,13 +212,6 @@ describe("runSubagentToLegacyResult (Phase K)", () => {
           usage: { promptTokens: 20, completionTokens: 100, totalTokens: 120 },
           model: "mock-model",
           finishReason: "stop",
-        })
-        .mockResolvedValueOnce({
-          content: "Subagent finished the remaining work.",
-          toolCalls: [],
-          usage: { promptTokens: 20, completionTokens: 1_900, totalTokens: 1_920 },
-          model: "mock-model",
-          finishReason: "stop",
         }),
       chatStream: vi
         .fn<
@@ -234,22 +227,22 @@ describe("runSubagentToLegacyResult (Phase K)", () => {
     });
 
     const result = await runSubagentToLegacyResult(executor, {
-      sessionId: "continued-child",
+      sessionId: "subagent:continued-child",
       params: {
         message: makeMessage("continue the task"),
         history: [],
         systemPrompt: "System",
-        sessionId: "continued-child",
+        sessionId: "subagent:continued-child",
+        turnOutputTokenBudget: 2_000,
       },
     });
 
-    expect(result.legacyResult?.content).toBe("Subagent finished the remaining work.");
+    expect(result.legacyResult?.content).toBe("Bootstrap complete. Continuing.");
     expect(result.legacyResult?.callUsage.map((entry) => entry.phase)).toEqual([
       "initial",
       "tool_followup",
       "tool_followup",
-      "tool_followup",
     ]);
-    expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(4);
+    expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(3);
   });
 });

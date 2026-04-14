@@ -1545,16 +1545,6 @@ export async function executeToolCallLoop(
     return summary;
   };
   const resolveTurnOutputTokenBudget = (): number | null => {
-    for (let index = ctx.callUsage.length - 1; index >= 0; index -= 1) {
-      const maxOutputTokens = ctx.callUsage[index]?.budgetDiagnostics?.model.maxOutputTokens;
-      if (
-        typeof maxOutputTokens === "number" &&
-        Number.isFinite(maxOutputTokens) &&
-        maxOutputTokens > 0
-      ) {
-        return Math.max(1, Math.floor(maxOutputTokens));
-      }
-    }
     return ctx.turnOutputTokenBudget;
   };
   const shouldAllowBudgetContinuation = (): boolean => {
@@ -1564,7 +1554,7 @@ export async function executeToolCallLoop(
     if (structuredOutputActive) {
       return false;
     }
-    if (ctx.continuationState.history.length === 0) {
+    if (ctx.sessionId.startsWith("subagent:")) {
       return false;
     }
     return true;

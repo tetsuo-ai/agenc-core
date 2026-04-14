@@ -219,6 +219,8 @@ export interface ChatExecuteParams {
   readonly maxModelRecallsPerRequest?: number;
   /** Per-call end-to-end timeout in milliseconds — overrides the constructor default. 0 = unlimited. */
   readonly requestTimeoutMs?: number;
+  /** Optional explicit per-turn output-token continuation budget. Null disables Claude-style budget continuation. */
+  readonly turnOutputTokenBudget?: number | null;
   /** Per-call context injection controls for bounded/system-owned executions. */
   readonly contextInjection?: {
     /** When false, skip skill/system context injection for this call. */

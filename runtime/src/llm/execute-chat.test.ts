@@ -310,6 +310,7 @@ describe("executeChat (Phase C async generator)", () => {
         history: [],
         systemPrompt: "You are a test.",
         sessionId: "session-continuation",
+        turnOutputTokenBudget: 2_000,
       }),
     );
 

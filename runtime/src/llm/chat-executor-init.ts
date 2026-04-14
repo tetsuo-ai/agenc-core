@@ -286,11 +286,13 @@ export async function initializeExecutionContext(
         params.requestTimeoutMs ?? deps.requestTimeoutMs,
       ),
       turnOutputTokenBudget:
-        typeof deps.promptBudget.maxOutputTokens === "number" &&
-          Number.isFinite(deps.promptBudget.maxOutputTokens) &&
-          deps.promptBudget.maxOutputTokens > 0
-          ? Math.max(1, Math.floor(deps.promptBudget.maxOutputTokens))
-          : null,
+        typeof params.turnOutputTokenBudget === "number" &&
+          Number.isFinite(params.turnOutputTokenBudget) &&
+          params.turnOutputTokenBudget > 0
+          ? Math.max(1, Math.floor(params.turnOutputTokenBudget))
+          : params.turnOutputTokenBudget === null
+            ? null
+            : deps.turnOutputTokenBudget,
       providerName: deps.providers[0]?.name ?? "unknown",
       plannerEnabled: deps.plannerEnabled,
       defaultRunClass: deps.defaultRunClass,

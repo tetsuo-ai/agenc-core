@@ -949,6 +949,7 @@ describe("ChatExecutor", () => {
       const executor = new ChatExecutor({ providers: [provider], toolHandler });
       const result = await executor.execute(
         createParams({
+          turnOutputTokenBudget: 2_000,
           structuredOutput: {
             enabled: true,
             schema: {
@@ -1003,6 +1004,7 @@ describe("ChatExecutor", () => {
       const executor = new ChatExecutor({ providers: [provider], toolHandler });
       const result = await executor.execute(
         createParams({
+          turnOutputTokenBudget: 2_000,
           structuredOutput: {
             schema: {
               type: "json_schema",
