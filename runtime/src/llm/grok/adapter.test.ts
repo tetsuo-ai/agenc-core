@@ -2627,6 +2627,201 @@ describe("GrokProvider", () => {
     expect(response.content).toBe("Recovered after retry");
   });
 
+  it("retries direct silent tool drops with tool_choice required", async () => {
+    mockCreate
+      .mockResolvedValueOnce(
+        makeCompletion({
+          id: "resp_silent_drop_initial",
+          output_text: "I will call system.bash to inspect the build.",
+          output: [
+            {
+              type: "message",
+              content: [
+                {
+                  type: "output_text",
+                  text: "I will call system.bash to inspect the build.",
+                },
+              ],
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeCompletion({
+          id: "resp_silent_drop_retry",
+          output_text: "",
+          output: [
+            {
+              type: "function_call",
+              call_id: "call_silent_drop_1",
+              name: "system.bash",
+              arguments: '{"command":"pwd"}',
+            },
+          ],
+        }),
+      );
+
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+      model: "grok-4.20-beta-0309-reasoning",
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "system.bash",
+            description: "run command",
+            parameters: {
+              type: "object",
+              properties: { command: { type: "string" } },
+            },
+          },
+        },
+      ],
+    });
+
+    const response = await provider.chat([
+      { role: "user", content: "inspect the build" },
+      {
+        role: "assistant",
+        content: "",
+        phase: "commentary",
+        toolCalls: [
+          {
+            id: "call_silent_drop_seed",
+            name: "system.bash",
+            arguments: '{"command":"echo seeded"}',
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: "seeded",
+        toolCallId: "call_silent_drop_seed",
+        toolName: "system.bash",
+      },
+    ]);
+
+    expect(mockCreate).toHaveBeenCalledTimes(2);
+    expect(mockCreate.mock.calls[1][0].tool_choice).toBe("required");
+    expect(mockCreate.mock.calls[1][0].stream).toBe(false);
+    expect(response.toolCalls).toMatchObject([
+      {
+        id: "call_silent_drop_1",
+        name: "system.bash",
+        arguments: '{"command":"pwd"}',
+      },
+    ]);
+  });
+
+  it("retries silent tool drops that happen on the tool_choice none mitigation path", async () => {
+    mockCreate
+      .mockResolvedValueOnce(
+        makeCompletion({
+          id: "resp_truncated_initial",
+          output_text: "Continuing with tool calls to fix the build",
+          output: [
+            {
+              type: "message",
+              content: [
+                {
+                  type: "output_text",
+                  text: "Continuing with tool calls to fix the build",
+                },
+              ],
+            },
+          ],
+          usage: {
+            input_tokens: 100,
+            output_tokens: 22,
+            total_tokens: 122,
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeCompletion({
+          id: "resp_truncated_retry_none",
+          output_text: "I will call system.bash to inspect the build.",
+          output: [
+            {
+              type: "message",
+              content: [
+                {
+                  type: "output_text",
+                  text: "I will call system.bash to inspect the build.",
+                },
+              ],
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeCompletion({
+          id: "resp_truncated_retry_required",
+          output_text: "",
+          output: [
+            {
+              type: "function_call",
+              call_id: "call_recovered_1",
+              name: "system.bash",
+              arguments: '{"command":"ls"}',
+            },
+          ],
+        }),
+      );
+
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+      model: "grok-4.20-beta-0309-reasoning",
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "system.bash",
+            description: "run command",
+            parameters: {
+              type: "object",
+              properties: { command: { type: "string" } },
+            },
+          },
+        },
+      ],
+    });
+
+    const response = await provider.chat([
+      { role: "user", content: "inspect the build" },
+      {
+        role: "assistant",
+        content: "",
+        phase: "commentary",
+        toolCalls: [
+          {
+            id: "call_truncation_seed",
+            name: "system.bash",
+            arguments: '{"command":"echo seeded"}',
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: "seeded",
+        toolCallId: "call_truncation_seed",
+        toolName: "system.bash",
+      },
+    ]);
+
+    expect(mockCreate).toHaveBeenCalledTimes(3);
+    expect(mockCreate.mock.calls[1][0].tool_choice).toBe("none");
+    expect(mockCreate.mock.calls[2][0].tool_choice).toBe("required");
+    expect(mockCreate.mock.calls[2][0].stream).toBe(false);
+    expect(response.toolCalls).toMatchObject([
+      {
+        id: "call_recovered_1",
+        name: "system.bash",
+        arguments: '{"command":"ls"}',
+      },
+    ]);
+  });
+
   it("keeps previous_response_id continuity when replayed tool-call arguments are sanitized", async () => {
     const rawArguments = JSON.stringify({
       path: "packages/core/src/routing.test.ts",
