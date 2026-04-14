@@ -5,7 +5,7 @@ import {
 } from "./completion-progress.js";
 
 describe("completion-progress", () => {
-  it("derives reusable verification evidence and remaining verifier work", () => {
+  it("derives reusable verification evidence without adding verifier-only requirements", () => {
     const snapshot = deriveWorkflowProgressSnapshot({
       stopReason: "completed",
       completionState: "needs_verification",
@@ -43,7 +43,7 @@ describe("completion-progress", () => {
     expect(snapshot).toMatchObject({
       completionState: "needs_verification",
       satisfiedRequirements: ["build_verification"],
-      remainingRequirements: ["workflow_verifier_pass"],
+      remainingRequirements: [],
       reusableEvidence: [
         expect.objectContaining({
           requirement: "build_verification",
@@ -107,7 +107,6 @@ describe("completion-progress", () => {
       completionState: "completed",
       satisfiedRequirements: expect.arrayContaining([
         "build_verification",
-        "workflow_verifier_pass",
       ]),
       remainingRequirements: [],
     });
@@ -173,12 +172,12 @@ describe("completion-progress", () => {
     });
 
     expect(direct).toMatchObject({
-      requiredRequirements: ["workflow_verifier_pass"],
-      remainingRequirements: ["workflow_verifier_pass"],
+      requiredRequirements: [],
+      remainingRequirements: [],
     });
     expect(planner).toMatchObject({
-      requiredRequirements: ["workflow_verifier_pass"],
-      remainingRequirements: ["workflow_verifier_pass"],
+      requiredRequirements: [],
+      remainingRequirements: [],
     });
   });
 
@@ -239,10 +238,7 @@ describe("completion-progress", () => {
 
     expect(merged).toMatchObject({
       completionState: "completed",
-      satisfiedRequirements: expect.arrayContaining([
-        "build_verification",
-        "workflow_verifier_pass",
-      ]),
+      satisfiedRequirements: expect.arrayContaining(["build_verification"]),
       remainingRequirements: [],
     });
   });
@@ -311,7 +307,7 @@ describe("completion-progress", () => {
     expect(merged).toMatchObject({
       completionState: "completed",
       requiredRequirements: [],
-      satisfiedRequirements: ["workflow_verifier_pass"],
+      satisfiedRequirements: [],
       remainingRequirements: [],
     });
     expect(merged?.reusableEvidence).toEqual([]);
@@ -357,8 +353,8 @@ describe("completion-progress", () => {
     const next = {
       completionState: "completed" as const,
       stopReason: "completed" as const,
-      requiredRequirements: ["workflow_verifier_pass"] as const,
-      satisfiedRequirements: ["workflow_verifier_pass"] as const,
+      requiredRequirements: [] as const,
+      satisfiedRequirements: [] as const,
       remainingRequirements: [] as const,
       reusableEvidence: [] as const,
       updatedAt: 15,
@@ -369,13 +365,13 @@ describe("completion-progress", () => {
 
     expect(merged).toMatchObject({
       completionState: "completed",
-      satisfiedRequirements: ["workflow_verifier_pass"],
+      satisfiedRequirements: [],
       remainingRequirements: [],
     });
     expect(merged?.reusableEvidence).toEqual([]);
   });
 
-  it("preserves needs-verification carryover when a later snapshot blocks before verifier closure", () => {
+  it("keeps reusable evidence but does not preserve verifier-only carryover when a later snapshot blocks", () => {
     const previous = deriveWorkflowProgressSnapshot({
       stopReason: "completed",
       completionState: "needs_verification",
@@ -427,8 +423,8 @@ describe("completion-progress", () => {
     });
 
     expect(merged).toMatchObject({
-      completionState: "needs_verification",
-      remainingRequirements: ["workflow_verifier_pass"],
+      completionState: "blocked",
+      remainingRequirements: [],
       stopReason: "validation_error",
       stopReasonDetail: "Verification artifacts are still missing",
     });

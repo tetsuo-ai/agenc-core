@@ -10,10 +10,8 @@ describe("runtime-contract types", () => {
     expect(COMPLETION_VALIDATOR_ORDER).toEqual([
       "artifact_evidence",
       "turn_end_stop_gate",
-      "request_task_progress",
       "filesystem_artifact_verification",
       "deterministic_acceptance_probes",
-      "top_level_verifier",
     ]);
 
     const snapshot = createRuntimeContractSnapshot({
@@ -32,20 +30,6 @@ describe("runtime-contract types", () => {
     expect(snapshot.validators.map((validator) => validator.id)).toEqual(
       COMPLETION_VALIDATOR_ORDER,
     );
-    expect(
-      snapshot.validators.find((validator) => validator.id === "request_task_progress"),
-    ).toMatchObject({
-      enabled: false,
-      executed: false,
-      outcome: "skipped",
-    });
-    expect(
-      snapshot.validators.find((validator) => validator.id === "top_level_verifier"),
-    ).toMatchObject({
-      enabled: false,
-      executed: false,
-      outcome: "skipped",
-    });
     expect(snapshot.mailboxLayer).toEqual({
       configured: false,
       effective: false,
@@ -56,7 +40,7 @@ describe("runtime-contract types", () => {
     });
   });
 
-  it("keeps top-level verifier advisory in the runtime snapshot", () => {
+  it("omits task and verifier completion gates from the runtime snapshot order", () => {
     const snapshot = createRuntimeContractSnapshot({
       runtimeContractV2: false,
       stopHooksEnabled: false,
@@ -69,13 +53,12 @@ describe("runtime-contract types", () => {
       workerIsolationRemote: false,
     });
 
-    expect(
-      snapshot.validators.find((validator) => validator.id === "top_level_verifier"),
-    ).toMatchObject({
-      enabled: false,
-      executed: false,
-      outcome: "skipped",
-    });
+    expect(snapshot.validators.map((validator) => validator.id)).not.toContain(
+      "top_level_verifier",
+    );
+    expect(snapshot.validators.map((validator) => validator.id)).not.toContain(
+      "request_task_progress",
+    );
     expect(snapshot).not.toHaveProperty("legacyTopLevelVerifierMode");
   });
 });

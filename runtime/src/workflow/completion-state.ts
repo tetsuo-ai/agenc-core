@@ -1,6 +1,5 @@
 import { didToolCallFail } from "../llm/chat-executor-tool-utils.js";
 import type { DelegationOutputValidationCode } from "../utils/delegation-validation.js";
-import type { ImplementationCompletionContract } from "./completion-contract.js";
 import { resolveWorkflowRequestCompletionStatus } from "./request-completion.js";
 import type { WorkflowVerificationContract } from "./verification-obligations.js";
 
@@ -22,19 +21,6 @@ interface CompletionStateToolCall {
   readonly isError: boolean;
 }
 
-function requiresPassedVerificationForCompletion(
-  completionContract: ImplementationCompletionContract | undefined,
-): boolean {
-  switch (completionContract?.taskClass) {
-    case "behavior_required":
-    case "build_required":
-    case "review_required":
-      return true;
-    default:
-      return false;
-  }
-}
-
 export function resolvePipelineCompletionState(input: {
   readonly status: "running" | "completed" | "failed" | "halted";
   readonly completedSteps: number;
@@ -52,15 +38,11 @@ export function resolveWorkflowCompletionState(input: {
   readonly stopReason: string;
   readonly toolCalls: readonly CompletionStateToolCall[];
   readonly verificationContract?: WorkflowVerificationContract;
-  readonly completionContract?: ImplementationCompletionContract;
   readonly completedRequestMilestoneIds?: readonly string[];
   readonly validationCode?: DelegationOutputValidationCode;
   readonly verifier?: PlannerVerificationSnapshot;
-  readonly runtimeVerifierRequired?: boolean;
 }): WorkflowCompletionState {
   const verifier = input.verifier;
-  const completionContract =
-    input.completionContract ?? input.verificationContract?.completionContract;
   const successfulToolCalls = input.toolCalls.filter(
     (toolCall) => !didToolCallFail(toolCall.isError, toolCall.result),
   );
@@ -71,20 +53,8 @@ export function resolveWorkflowCompletionState(input: {
   });
 
   if (input.stopReason === "completed") {
-    if ((requestCompletion?.remainingMilestones.length ?? 0) > 0) {
-      return hasProgress ? "partial" : "blocked";
-    }
     if (verifier?.overall === "retry" || verifier?.overall === "fail") {
       return hasProgress ? "partial" : "blocked";
-    }
-    if (input.runtimeVerifierRequired && verifier?.overall !== "pass") {
-      return "needs_verification";
-    }
-    if (
-      requiresPassedVerificationForCompletion(completionContract) &&
-      verifier?.overall !== "pass"
-    ) {
-      return "needs_verification";
     }
     return "completed";
   }
@@ -94,7 +64,11 @@ export function resolveWorkflowCompletionState(input: {
   }
 
   if (input.validationCode === "missing_behavior_harness" && hasProgress) {
-    return "needs_verification";
+    return "partial";
+  }
+
+  if ((requestCompletion?.remainingMilestones.length ?? 0) > 0 && hasProgress) {
+    return "partial";
   }
 
   return hasProgress ? "partial" : "blocked";

@@ -2100,10 +2100,6 @@ export async function executeToolCallLoop(
         validatorId: "deterministic_acceptance_probes" as CompletionValidatorId,
       },
     ] as const;
-    const skippedValidators = [
-      "request_task_progress",
-      "top_level_verifier",
-    ] as const satisfies readonly CompletionValidatorId[];
 
     callbacks.emitExecutionTrace(ctx, {
       type: "completion_validation_started",
@@ -2132,27 +2128,6 @@ export async function executeToolCallLoop(
         },
       });
     }
-    for (const validatorId of skippedValidators) {
-      ctx.runtimeContractSnapshot = updateRuntimeContractValidatorSnapshot({
-        snapshot: ctx.runtimeContractSnapshot,
-        id: validatorId,
-        enabled: false,
-        executed: false,
-        outcome: "skipped",
-      });
-      callbacks.emitExecutionTrace(ctx, {
-        type: "completion_validator_finished",
-        phase: "tool_followup",
-        callIndex: ctx.callIndex,
-        payload: {
-          validatorId,
-          enabled: false,
-          outcome: "skipped",
-          runtimeContract: ctx.runtimeContractSnapshot,
-        },
-      });
-    }
-
     if (!stopHooksEnabled) {
       for (const entry of stopHookValidators) {
         ctx.runtimeContractSnapshot = updateRuntimeContractValidatorSnapshot({

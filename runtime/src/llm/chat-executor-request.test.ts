@@ -191,7 +191,7 @@ describe("ChatExecutor request assembly", () => {
   });
 
   describe("stateful session wiring and result assembly", () => {
-    it("injects the request milestone contract before the first model call", async () => {
+    it("does not inject a request milestone contract before the first model call", async () => {
       const provider = createMockProvider("primary", {
         chat: vi.fn().mockResolvedValue(mockResponse({ content: "ok" })),
       });
@@ -225,10 +225,7 @@ describe("ChatExecutor request assembly", () => {
           message.content.includes("Request milestone contract:"),
       );
 
-      expect(instruction).toBeDefined();
-      expect(String(instruction?.content)).toContain("phase_1: Finish phase 1");
-      expect(String(instruction?.content)).toContain("metadata._runtime.milestoneIds");
-      expect(String(instruction?.content)).toContain("metadata._runtime.verification");
+      expect(instruction).toBeUndefined();
     });
 
     it("passes stateful session options through provider calls", async () => {

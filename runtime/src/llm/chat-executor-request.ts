@@ -20,7 +20,6 @@
 import {
   checkRequestTimeout,
   emitExecutionTrace,
-  pushMessage,
 } from "./chat-executor-ctx-helpers.js";
 import {
   initializeExecutionContext,
@@ -31,17 +30,10 @@ import { sanitizeFinalContent } from "./chat-executor-text.js";
 import { summarizeStateful } from "./chat-executor-recovery.js";
 import { dispatchHooks, defaultHookExecutor } from "./hooks/index.js";
 import { resolveWorkflowCompletionState } from "../workflow/completion-state.js";
-import { isRuntimeVerifierRequiredForTurn } from "../gateway/runtime-verifier-requirement.js";
 import { deriveWorkflowProgressSnapshot } from "../workflow/completion-progress.js";
 import { buildRuntimeEconomicsSummary } from "./run-budget.js";
 import { deriveActiveTaskContext } from "./turn-execution-contract.js";
 import { resolveWorkflowEvidenceFromRequiredToolEvidence } from "./turn-execution-contract.js";
-import {
-  setAllowedRequestTaskMilestones,
-} from "./request-task-progress.js";
-import {
-  buildRequestMilestoneRuntimeInstruction,
-} from "../workflow/request-task-runtime.js";
 import type {
   ChatExecuteParams,
   ChatExecutorResult,
@@ -186,26 +178,6 @@ export async function executeRequest(
       activeTaskContext: deriveActiveTaskContext(ctx.turnExecutionContract),
     },
   });
-  setAllowedRequestTaskMilestones(
-    ctx.requestTaskState,
-    workflowEvidence.verificationContract?.requestCompletion?.requiredMilestones,
-  );
-  ctx.completedRequestMilestoneIds = [
-    ...ctx.requestTaskState.completedMilestoneIds,
-  ];
-  const milestoneInstruction = buildRequestMilestoneRuntimeInstruction(
-    workflowEvidence.verificationContract?.requestCompletion,
-  );
-  if (milestoneInstruction) {
-    pushMessage(
-      ctx,
-      {
-        role: "system",
-        content: milestoneInstruction,
-      },
-      "system_runtime",
-    );
-  }
 
   // Phase H: dispatch SessionStart the first time a session is
   // observed. `sessionTokens` is a per-session Map the executor
@@ -255,14 +227,9 @@ export async function executeRequest(
     stopReason: ctx.stopReason,
     toolCalls: ctx.allToolCalls,
     verificationContract: workflowEvidence.verificationContract,
-    completionContract: workflowEvidence.completionContract,
     completedRequestMilestoneIds: ctx.completedRequestMilestoneIds,
     validationCode: ctx.validationCode,
     verifier: ctx.verifierSnapshot,
-    runtimeVerifierRequired: isRuntimeVerifierRequiredForTurn({
-      flags: ctx.runtimeContractSnapshot.flags,
-      turnExecutionContract: ctx.turnExecutionContract,
-    }),
   });
 
   const durationMs = Date.now() - ctx.startTime;

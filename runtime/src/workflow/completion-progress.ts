@@ -79,9 +79,6 @@ export function deriveWorkflowProgressSnapshot(params: {
     completionContract: params.completionContract,
   });
   const requiredRequirements = new Set<WorkflowProgressRequirement>();
-  if (params.completionState === "needs_verification") {
-    requiredRequirements.add("workflow_verifier_pass");
-  }
   const requestCompletion = resolveWorkflowRequestCompletionStatus({
     contract: mergedContract?.requestCompletion,
     completedMilestoneIds: params.completedRequestMilestoneIds,
@@ -109,12 +106,6 @@ export function deriveWorkflowProgressSnapshot(params: {
   const satisfiedRequirements = new Set<WorkflowProgressRequirement>(
     reusableEvidence.map((entry) => entry.requirement),
   );
-  if (
-    params.completionState === "completed" &&
-    (!params.verifier || params.verifier.overall === "pass")
-  ) {
-    satisfiedRequirements.add("workflow_verifier_pass");
-  }
   if (requestCompletion && requestCompletion.remainingMilestones.length === 0) {
     satisfiedRequirements.add("request_milestones");
   }
@@ -349,9 +340,6 @@ function resolveMergedCompletionState(params: {
   const latest = params.next.completionState;
   if (params.remainingRequirements.length === 0) {
     return latest;
-  }
-  if (params.remainingRequirements.includes("workflow_verifier_pass")) {
-    return "needs_verification";
   }
   if (latest === "blocked") {
     return "blocked";

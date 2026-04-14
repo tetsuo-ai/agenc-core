@@ -45,7 +45,7 @@ describe("completion-state", () => {
     ).toBe("partial");
   });
 
-  it("marks missing behavior harness as needs_verification when implementation progress exists", () => {
+  it("marks missing behavior harness as partial when implementation progress exists", () => {
     expect(
       resolveWorkflowCompletionState({
         stopReason: "validation_error",
@@ -71,7 +71,7 @@ describe("completion-state", () => {
           },
         },
       }),
-    ).toBe("needs_verification");
+    ).toBe("partial");
   });
 
   it("uses the same completion semantics for planner and direct implementation when the workflow contract matches", () => {
@@ -114,7 +114,7 @@ describe("completion-state", () => {
     ).toBe("completed");
   });
 
-  it("keeps behavior-required work in needs_verification when verification is skipped", () => {
+  it("keeps behavior-required work completed when verification is skipped on a normal turn", () => {
     expect(
       resolveWorkflowCompletionState({
         stopReason: "completed",
@@ -142,10 +142,10 @@ describe("completion-state", () => {
           overall: "skipped",
         },
       }),
-    ).toBe("needs_verification");
+    ).toBe("completed");
   });
 
-  it("keeps runtime-required work in needs_verification when verifier is skipped", () => {
+  it("keeps runtime-required work completed when verifier is skipped on a normal turn", () => {
     expect(
       resolveWorkflowCompletionState({
         stopReason: "completed",
@@ -161,12 +161,11 @@ describe("completion-state", () => {
           performed: false,
           overall: "skipped",
         },
-        runtimeVerifierRequired: true,
       }),
-    ).toBe("needs_verification");
+    ).toBe("completed");
   });
 
-  it("keeps request-level multi-phase work partial when local verification passes but planner milestones remain", () => {
+  it("keeps request-level multi-phase work completed when planner milestones remain advisory", () => {
     expect(
       resolveWorkflowCompletionState({
         stopReason: "completed",
@@ -207,6 +206,6 @@ describe("completion-state", () => {
           overall: "pass",
         },
       }),
-    ).toBe("partial");
+    ).toBe("completed");
   });
 });
