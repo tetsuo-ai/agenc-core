@@ -73,3 +73,10 @@
 - **What worked:** Collapsing finalization onto the built-in stop-hook chain removed the second completion engine after hooks, while the file-tool cleanup and compaction attachment side-channel simplified the runtime around one message-centric loop with fewer hidden gates.
 - **What didn't:** The refactor touched several dependent runtime surfaces at once, so type and test fallout showed up in hook typing and validator snapshot expectations before the reduced contract settled.
 - **Rule added to CLAUDE.md:** no
+
+## PR #349: refactor(runtime): reduce source-parity drift
+- **Date:** 2026-04-14
+- **Files changed:** `runtime/src/tools/system/task-tracker.ts`, `runtime/src/llm/chat-executor-request.ts`, `runtime/src/llm/hooks/types.ts`, `runtime/src/llm/context-compaction.ts`, `runtime/src/tools/system/filesystem.ts`, `runtime/src/gateway/tool-handler-factory.ts`, `runtime/src/workflow/completion-state.ts`, `runtime/src/workflow/completion-progress.ts`, `runtime/src/runtime-contract/types.ts`
+- **What worked:** Demoting normal-turn task and verifier gates, rebuilding compacted history with preserved messages, and rehydrating file read state removed the biggest runtime drifts from the source loop without regressing the explicit verification paths.
+- **What didn't:** The broad reduction exposed lingering assumptions in progress snapshots and validator ordering, so several workflow and runtime-contract tests had to be updated after the code changes were already green in isolation.
+- **Rule added to CLAUDE.md:** no
