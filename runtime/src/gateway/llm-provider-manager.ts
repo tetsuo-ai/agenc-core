@@ -232,7 +232,7 @@ function findConfiguredLlmConfigForProvider(
 
   const providerName = profile?.provider ?? provider.name;
   const normalizedProvider = providerName.toLowerCase();
-  if (normalizedProvider !== "grok" && normalizedProvider !== "ollama") {
+  if (normalizedProvider !== "grok" && normalizedProvider !== "ollama" && normalizedProvider !== "openai-compat") {
     return primaryLlmConfig;
   }
 
@@ -395,6 +395,22 @@ export async function createSingleLLMProvider(
         timeoutMs,
         maxTokens: normalizeOptionalPositiveInt(maxTokens),
         numCtx: normalizeOptionalPositiveInt(llmConfig.contextWindowTokens),
+        tools,
+      });
+    }
+    case "openai-compat": {
+      const { OpenAICompatProvider } = await import(
+        "../llm/openai-compat/adapter.js"
+      );
+      return new OpenAICompatProvider({
+        baseUrl: baseUrl ?? "http://127.0.0.1:1234/v1",
+        apiKey: apiKey ?? "local",
+        model: model ?? "local-model",
+        contextWindowTokens: normalizeOptionalPositiveInt(
+          llmConfig.contextWindowTokens,
+        ) ?? 4096,
+        timeoutMs,
+        maxTokens: normalizeOptionalPositiveInt(maxTokens),
         tools,
       });
     }

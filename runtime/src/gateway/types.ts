@@ -21,7 +21,7 @@ import type { UserHooksSettings } from "../llm/hooks/user-config.js";
 // ============================================================================
 
 export interface GatewayLLMConfig extends LLMXaiCapabilitySurface {
-  provider: "grok" | "ollama";
+  provider: "grok" | "ollama" | "openai-compat";
   apiKey?: string;
   model?: string;
   baseUrl?: string;
