@@ -35,3 +35,23 @@ export function collectPreservedAttachments(
   }
   return preserved;
 }
+
+export function collectPreservedMessages(
+  messages: readonly LLMMessage[],
+): readonly LLMMessage[] {
+  const preserved: LLMMessage[] = [];
+  for (const message of messages) {
+    if (!message || !Array.isArray(message.content)) {
+      continue;
+    }
+    preserved.push({
+      ...message,
+      content: message.content.map((part) =>
+        part.type === "text"
+          ? { type: "text", text: part.text }
+          : { type: "image_url", image_url: { url: part.image_url.url } },
+      ),
+    });
+  }
+  return preserved;
+}

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { LLMMessage } from "./types.js";
 import { extractToolFailureTextFromResult } from "./chat-executor-tool-utils.js";
 import { findToolTurnValidationIssue } from "./tool-turn-validator.js";
+import { collectPreservedMessages } from "./compact/attachments.js";
 import type {
   ArtifactCompactionState,
   ContextArtifactKind,
@@ -459,6 +460,7 @@ export function compactHistoryIntoArtifactContext(
   );
   const toCompact = input.history.slice(0, retainedTailStartIndex);
   const toKeep = input.history.slice(retainedTailStartIndex);
+  const preservedMessages = collectPreservedMessages(toCompact);
   const now = Date.now();
   const records = toCompact
     .map((message, index) => {
@@ -530,6 +532,7 @@ export function compactHistoryIntoArtifactContext(
         role: "system",
         content: summaryText,
       },
+      ...preservedMessages,
       ...toKeep,
     ],
     state,

@@ -43,6 +43,20 @@ function msg(role: LLMMessage["role"], content: string): LLMMessage {
   return { role, content };
 }
 
+function multimodalMsg(
+  role: LLMMessage["role"],
+  text: string,
+  imageUrl: string,
+): LLMMessage {
+  return {
+    role,
+    content: [
+      { type: "text", text },
+      { type: "image_url", image_url: { url: imageUrl } },
+    ],
+  } as LLMMessage;
+}
+
 describe("SessionManager", () => {
   let manager: SessionManager;
 
@@ -388,6 +402,31 @@ describe("SessionManager", () => {
       expect(
         session.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY],
       ).toBe(true);
+    });
+
+    it("reconstructs compacted history with preserved multimodal messages", async () => {
+      const mgr = new SessionManager(makeConfig({ compaction: "summarize" }));
+      const session = mgr.getOrCreate(makeParams());
+      const preserved = multimodalMsg(
+        "user",
+        "see the attached image",
+        "https://example.com/diagram.png",
+      );
+      session.history.push(
+        preserved,
+        msg("assistant", "Working on the image."),
+        msg("assistant", "Tail message."),
+        msg("user", "Follow-up."),
+      );
+
+      const result = await mgr.compact(session.id);
+      expect(result).not.toBeNull();
+      expect(result!.messagesRemoved).toBe(2);
+      expect(result!.messagesRetained).toBe(4);
+      expect(session.history[0].role).toBe("system");
+      expect(session.history[1]).toMatchObject(preserved);
+      expect(session.history[2]).toEqual(msg("assistant", "Tail message."));
+      expect(session.history[3]).toEqual(msg("user", "Follow-up."));
     });
 
     it("'summarize' with summarizer calls callback", async () => {

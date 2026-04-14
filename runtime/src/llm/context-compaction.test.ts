@@ -3,6 +3,16 @@ import { describe, expect, it } from "vitest";
 import { compactHistoryIntoArtifactContext } from "./context-compaction.js";
 import type { LLMMessage } from "./types.js";
 
+function multimodalMessage(): LLMMessage {
+  return {
+    role: "user",
+    content: [
+      { type: "text", text: "See the attached diagram." },
+      { type: "image_url", image_url: { url: "https://example.com/diagram.png" } },
+    ],
+  };
+}
+
 describe("context compaction", () => {
   it("preserves unresolved stub work even when the narrative summary falsely claims closure", () => {
     const history: LLMMessage[] = [
@@ -165,5 +175,32 @@ describe("context compaction", () => {
     expect(compacted.summaryText).toContain("has no member named 'next'");
     expect(compacted.summaryText).toContain("did you mean 'Redir'");
     expect(compacted.summaryText).toContain("TOK_REDIR_IN");
+  });
+
+  it("rebuilds the compacted history with preserved multimodal messages", () => {
+    const history: LLMMessage[] = [
+      multimodalMessage(),
+      {
+        role: "assistant",
+        content: "Continuing with the image context.",
+      },
+      {
+        role: "user",
+        content: "Wrap up the remaining work.",
+      },
+    ];
+
+    const compacted = compactHistoryIntoArtifactContext({
+      sessionId: "session-4",
+      history,
+      keepTailCount: 1,
+      source: "session_compaction",
+    });
+
+    expect(compacted.compactedHistory).toHaveLength(3);
+    expect(compacted.compactedHistory[0]?.role).toBe("system");
+    expect(compacted.compactedHistory[1]).toMatchObject(history[0]);
+    expect(compacted.compactedHistory[1]?.content).toEqual(history[0].content);
+    expect(compacted.compactedHistory[2]).toEqual(history[2]);
   });
 });
