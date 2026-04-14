@@ -59,3 +59,10 @@
 - **What worked:** Making builtin stop hooks default-on aligned runtime behavior with the existing `stopHooksEnabled` contract and removed the validator-only fallback that was letting false completion leak through.
 - **What didn't:** AgenC had drifted into a split contract where flags defaulted stop hooks on but the actual hook runtime only existed behind explicit config, which made the executor behave unlike Claude until this pass.
 - **Rule added to CLAUDE.md:** no
+
+## PR #346: fix(runtime): align edit retries and tool loops with claude
+- **Date:** 2026-04-14
+- **Files changed:** `runtime/src/tools/system/filesystem.ts`, `runtime/src/tools/system/filesystem.test.ts`, `runtime/src/llm/chat-executor-tool-loop.ts`, `runtime/src/llm/chat-executor-tool-utils.ts`, `runtime/src/llm/chat-executor-constants.ts`, `runtime/src/llm/chat-executor-state.ts`, `runtime/src/llm/chat-executor-model-orchestration.ts`, `runtime/src/llm/chat-executor.ts`, `runtime/src/llm/chat-executor-types.ts`, `runtime/src/gateway/types.ts`, `runtime/src/gateway/config-watcher.ts`, `runtime/src/gateway/chat-executor-factory.ts`, `runtime/src/gateway/gateway.test.ts`, `runtime/src/llm/chat-executor-ctx-helpers.test.ts`
+- **What worked:** Matching Claude’s stale-file contract made edit retries fail fast with an explicit reread requirement instead of grinding through repeated `old_string not found` misses, and removing the repeated-failure breaker let failing tool rounds continue under the normal hook and round budgets instead of a hidden three-strikes fuse.
+- **What didn't:** AgenC still had dead breaker config, state, and tests after the stop path was removed, so the parity fix wasn’t complete until the dormant breaker surface was deleted as well.
+- **Rule added to CLAUDE.md:** no
