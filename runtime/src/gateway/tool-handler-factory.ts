@@ -644,16 +644,6 @@ interface DefaultWorkingDirectoryApplication {
   };
 }
 
-interface RecentFileObservation {
-  readonly path: string;
-  readonly content?: string;
-  readonly observedAtSeq: number;
-}
-
-const RECENT_FILE_OBSERVATION_LIMIT = 12;
-const DESTRUCTIVE_OVERWRITE_MAX_AGE = 4;
-const DESTRUCTIVE_OVERWRITE_LENGTH_RATIO = 0.6;
-
 function tryParseJsonRecord(value: string): Record<string, unknown> | undefined {
   try {
     const parsed = JSON.parse(value) as unknown;
@@ -664,22 +654,6 @@ function tryParseJsonRecord(value: string): Record<string, unknown> | undefined 
     return undefined;
   }
   return undefined;
-}
-
-function resolveFilesystemTargetPath(
-  args: Record<string, unknown>,
-  defaultWorkingDirectory?: string,
-): string | undefined {
-  const rawPath = typeof args.path === 'string' ? args.path.trim() : '';
-  if (rawPath.length === 0) return undefined;
-  if (isAbsolute(rawPath) || rawPath.startsWith('~')) {
-    return rawPath;
-  }
-  const cwd = typeof args.cwd === 'string' && args.cwd.trim().length > 0
-    ? args.cwd.trim()
-    : defaultWorkingDirectory?.trim();
-  if (!cwd) return undefined;
-  return resolvePath(cwd, rawPath);
 }
 
 function resolveToolTargetPaths(
@@ -1111,57 +1085,6 @@ function isRepoLocalVerificationHarnessPath(
     /(?:^|\/)(?:run|verify|smoke|integration|e2e)[-_]?tests?\.(?:sh|bash|zsh)$/iu
       .test(relativePath)
   );
-}
-
-function collectMeaningfulLines(value: string): string[] {
-  return value
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter((line) => line.length >= 16);
-}
-
-function hasSufficientLineOverlap(
-  previousContent: string,
-  nextContent: string,
-): boolean {
-  const previousLines = collectMeaningfulLines(previousContent);
-  if (previousLines.length === 0) {
-    return false;
-  }
-  const nextLines = new Set(collectMeaningfulLines(nextContent));
-  if (nextLines.size === 0) {
-    return false;
-  }
-  const overlapCount = previousLines.filter((line) => nextLines.has(line)).length;
-  return overlapCount / previousLines.length >= 0.25;
-}
-
-function isPotentiallyDestructiveOverwrite(
-  previousContent: string,
-  nextContent: string,
-): boolean {
-  const previous = previousContent.trim();
-  const next = nextContent.trim();
-  if (previous.length === 0 || next.length === 0) {
-    return false;
-  }
-  if (next === previous) {
-    return false;
-  }
-  if (next.length >= previous.length * DESTRUCTIVE_OVERWRITE_LENGTH_RATIO) {
-    return false;
-  }
-  return !hasSufficientLineOverlap(previous, next);
-}
-
-function buildRecentFileObservationMap(
-  observations: readonly RecentFileObservation[],
-): Map<string, RecentFileObservation> {
-  const map = new Map<string, RecentFileObservation>();
-  for (const observation of observations) {
-    map.set(observation.path, observation);
-  }
-  return map;
 }
 
 function applyDefaultWorkingDirectory(
@@ -2510,7 +2433,6 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
   // Per-message duplicate guard to avoid opening the same GUI app twice when
   // the model emits repeated desktop.bash launch calls in one turn.
   const seenGuiLaunches = new Set<string>();
-  const recentFileObservations: RecentFileObservation[] = [];
   const nextToolCallId = (): string =>
     `tool-${Date.now().toString(36)}-${++toolCallSeq}`;
 
@@ -2617,7 +2539,6 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
     const effectiveScopedFilesystemRoot =
       subAgentExecutionContext?.workspaceRoot ?? scopedFilesystemRoot;
     const toolCallId = nextToolCallId();
-    const fileObservationMap = buildRecentFileObservationMap(recentFileObservations);
     const delegationObjective = extractDelegationObjective(normalizedArgs);
 
     if (
@@ -3080,31 +3001,6 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
             })
           : routedHandler;
 
-    if (toolName === 'system.writeFile') {
-      const targetPath = resolveFilesystemTargetPath(
-        executionArgs,
-        effectiveDefaultWorkingDirectory,
-      );
-      const previousObservation =
-        targetPath ? fileObservationMap.get(targetPath) : undefined;
-      const nextContent =
-        typeof executionArgs.content === 'string' ? executionArgs.content : undefined;
-      if (
-        previousObservation?.content &&
-        nextContent &&
-        toolCallSeq - previousObservation.observedAtSeq <= DESTRUCTIVE_OVERWRITE_MAX_AGE &&
-        isPotentiallyDestructiveOverwrite(previousObservation.content, nextContent)
-      ) {
-        const destructiveOverwriteError =
-          `Refusing destructive overwrite of previously-read file "${targetPath}". ` +
-          "Preserve the existing content when revising the file, or use system.appendFile for an additive update.";
-        return sendRecordedImmediateToolError(
-          JSON.stringify({ error: destructiveOverwriteError }),
-          destructiveOverwriteError,
-        );
-      }
-    }
-
     // 6. Execute and time
     if (effectLedger && effectRecord) {
       effectRecord =
@@ -3165,47 +3061,6 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
     const durationMs = Date.now() - start;
     incidentDiagnostics?.clearDomain("tool");
     const isError = didToolCallFail(false, result);
-    if (!isError) {
-      if (toolName === 'system.readFile') {
-        const parsed = tryParseJsonRecord(result);
-        const observedPath =
-          typeof parsed?.path === 'string'
-            ? parsed.path
-            : resolveFilesystemTargetPath(executionArgs, effectiveDefaultWorkingDirectory);
-        if (observedPath) {
-          const nextObservation: RecentFileObservation = {
-            path: observedPath,
-            content: typeof parsed?.content === 'string' ? parsed.content : undefined,
-            observedAtSeq: toolCallSeq,
-          };
-          recentFileObservations.push(nextObservation);
-          if (recentFileObservations.length > RECENT_FILE_OBSERVATION_LIMIT) {
-            recentFileObservations.splice(
-              0,
-              recentFileObservations.length - RECENT_FILE_OBSERVATION_LIMIT,
-            );
-          }
-        }
-      } else if (toolName === 'system.writeFile') {
-        const targetPath = resolveFilesystemTargetPath(
-          executionArgs,
-          effectiveDefaultWorkingDirectory,
-        );
-        if (targetPath && typeof executionArgs.content === 'string') {
-          recentFileObservations.push({
-            path: targetPath,
-            content: executionArgs.content,
-            observedAtSeq: toolCallSeq,
-          });
-          if (recentFileObservations.length > RECENT_FILE_OBSERVATION_LIMIT) {
-            recentFileObservations.splice(
-              0,
-              recentFileObservations.length - RECENT_FILE_OBSERVATION_LIMIT,
-            );
-          }
-        }
-      }
-    }
 
     if (effectLedger && effectRecord) {
       const postExecutionSnapshots =

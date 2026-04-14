@@ -39,6 +39,10 @@ export {
   type ReactiveCompactState,
 } from "./reactive-compact.js";
 export {
+  collectPreservedAttachments,
+  type PreservedAttachment,
+} from "./attachments.js";
+export {
   tokenCountWithEstimation,
   type TokenCountInput,
 } from "./token-count.js";
@@ -67,6 +71,10 @@ import {
   createReactiveCompactState,
   type ReactiveCompactState,
 } from "./reactive-compact.js";
+import {
+  collectPreservedAttachments,
+  type PreservedAttachment,
+} from "./attachments.js";
 
 /**
  * Per-iteration compaction state composed across all four layers.
@@ -120,6 +128,7 @@ export interface PerIterationCompactionResult {
   readonly messages: readonly LLMMessage[];
   readonly state: PerIterationCompactionState;
   readonly boundaries: readonly LLMMessage[];
+  readonly preservedAttachments: readonly PreservedAttachment[];
 }
 
 /**
@@ -155,6 +164,7 @@ export function applyPerIterationCompaction(
 ): PerIterationCompactionResult {
   const nowMs = input.nowMs;
   const boundaries: LLMMessage[] = [];
+  const preservedAttachments: PreservedAttachment[] = [];
   let currentMessages: readonly LLMMessage[] = input.messages;
   let snipState = input.state.snip;
   let microState = input.state.microcompact;
@@ -175,6 +185,9 @@ export function applyPerIterationCompaction(
     // autocompact threshold check reads this value to short-circuit
     // a borderline trigger after a successful snip.
     const dropped = currentMessages.length - snipResult.messages.length;
+    preservedAttachments.push(
+      ...collectPreservedAttachments(currentMessages.slice(0, dropped)),
+    );
     snipTokensFreed = Math.max(0, dropped) * APPROX_TOKENS_PER_SNIPPED_MESSAGE;
     currentMessages = snipResult.messages;
     if (snipResult.boundary) boundaries.push(snipResult.boundary);
@@ -238,6 +251,7 @@ export function applyPerIterationCompaction(
       reactiveCompact: input.state.reactiveCompact,
     },
     boundaries,
+    preservedAttachments,
   };
 }
 

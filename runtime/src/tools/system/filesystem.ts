@@ -35,6 +35,9 @@
  */
 
 import {
+  createHash,
+} from "node:crypto";
+import {
   readFile,
   writeFile,
   appendFile,
@@ -46,7 +49,14 @@ import {
   rename,
   realpath,
 } from "node:fs/promises";
-import { resolve, dirname, basename } from "node:path";
+import {
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { resolve, dirname, basename, join } from "node:path";
+import { tmpdir } from "node:os";
 import { resolveSessionWorkspaceRoot } from "../../gateway/host-workspace.js";
 import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
@@ -97,6 +107,10 @@ export const SESSION_ID_ARG = "__agencSessionId";
  *     when the target path EXISTS — creating a new file does not
  *     require a prior read (Claude Code's FileWriteTool.ts:191-196
  *     uses the same ENOENT escape hatch)
+ *   - The latest snapshots are also mirrored into a bounded local
+ *     history cache under a temp-root outside the tracked workspace
+ *     tree so recent source-of-truth content is available for
+ *     inspection without polluting repo files.
  *   - The set lives for the lifetime of the daemon process; explicit
  *     cleanup is handled by `clearSessionReadState(sessionId)` when
  *     a session ends, called from the gateway's session lifecycle
@@ -110,6 +124,71 @@ interface SessionReadSnapshot {
 }
 
 const sessionReadState = new Map<string, Map<string, SessionReadSnapshot>>();
+const LOCAL_FILE_HISTORY_MAX_ENTRIES = 8;
+
+function resolveLocalFileHistoryRoot(): string {
+  const configuredRoot = process.env.AGENC_FILESYSTEM_HISTORY_ROOT?.trim();
+  return configuredRoot && configuredRoot.length > 0
+    ? configuredRoot
+    : join(tmpdir(), "agenc", "filesystem-history");
+}
+
+function hashString(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function resolveLocalHistorySessionDir(sessionId: string): string {
+  return join(resolveLocalFileHistoryRoot(), hashString(sessionId));
+}
+
+function resolveLocalHistoryFilePath(
+  sessionId: string,
+  canonicalPath: string,
+): string {
+  return join(resolveLocalHistorySessionDir(sessionId), `${hashString(canonicalPath)}.json`);
+}
+
+function persistLocalFileHistorySnapshot(
+  sessionId: string | undefined,
+  canonicalPath: string,
+  snapshot: SessionReadSnapshot,
+): void {
+  if (!sessionId || sessionId.trim().length === 0) return;
+  if (snapshot.content === undefined) return;
+  try {
+    const historyFile = resolveLocalHistoryFilePath(sessionId, canonicalPath);
+    mkdirSync(dirname(historyFile), { recursive: true });
+
+    let entries: Array<SessionReadSnapshot & { readonly recordedAt: number }> = [];
+    try {
+      const raw = readFileSync(historyFile, "utf8");
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) {
+        entries = parsed.filter(
+          (entry): entry is SessionReadSnapshot & { readonly recordedAt: number } =>
+            typeof entry === "object" &&
+            entry !== null &&
+            typeof (entry as { recordedAt?: unknown }).recordedAt === "number" &&
+            typeof (entry as { content?: unknown }).content === "string",
+        );
+      }
+    } catch {
+      // Best effort only. Missing or corrupt local history should not block writes.
+    }
+
+    entries.push({
+      content: snapshot.content,
+      timestamp: snapshot.timestamp,
+      recordedAt: Date.now(),
+    });
+    if (entries.length > LOCAL_FILE_HISTORY_MAX_ENTRIES) {
+      entries = entries.slice(-LOCAL_FILE_HISTORY_MAX_ENTRIES);
+    }
+    writeFileSync(historyFile, `${JSON.stringify(entries, null, 2)}\n`, "utf8");
+  } catch {
+    // Best effort only. Local history is an ergonomics aid, not part of the tool contract.
+  }
+}
 
 export function recordSessionRead(
   sessionId: string | undefined,
@@ -124,10 +203,12 @@ export function recordSessionRead(
     sessionReadState.set(sessionId, fileMap);
   }
   const previous = fileMap.get(canonicalPath);
-  fileMap.set(canonicalPath, {
+  const nextSnapshot = {
     ...(previous ?? {}),
     ...(snapshot ?? {}),
-  });
+  };
+  fileMap.set(canonicalPath, nextSnapshot);
+  persistLocalFileHistorySnapshot(sessionId, canonicalPath, nextSnapshot);
 }
 
 export function hasSessionRead(
@@ -156,6 +237,14 @@ export function getSessionReadSnapshot(
  */
 export function clearSessionReadState(sessionId: string): void {
   sessionReadState.delete(sessionId);
+  try {
+    rmSync(resolveLocalHistorySessionDir(sessionId), {
+      recursive: true,
+      force: true,
+    });
+  } catch {
+    // Best effort cleanup.
+  }
 }
 
 /**
@@ -693,17 +782,9 @@ function getFileTimestampMs(fileStats: { mtimeMs?: number }): number | undefined
 
 function hasFileChangedSinceSnapshot(params: {
   readonly snapshot: SessionReadSnapshot | undefined;
-  readonly currentTimestamp: number | undefined;
   readonly currentContent: string;
 }): boolean {
-  if (
-    params.snapshot?.timestamp === undefined ||
-    params.snapshot.content === undefined ||
-    params.currentTimestamp === undefined
-  ) {
-    return false;
-  }
-  if (params.currentTimestamp <= params.snapshot.timestamp) {
+  if (params.snapshot?.content === undefined) {
     return false;
   }
   return params.currentContent !== params.snapshot.content;
@@ -889,14 +970,12 @@ function createWriteFileTool(
           );
         }
 
-        if (targetExists && readSnapshot?.timestamp !== undefined) {
+        if (targetExists && readSnapshot?.content !== undefined) {
           const existingBuffer = await readFile(resolved!);
           const existingContent = existingBuffer.toString("utf-8");
-          const existingStat = await stat(resolved!);
           if (
             hasFileChangedSinceSnapshot({
               snapshot: readSnapshot,
-              currentTimestamp: getFileTimestampMs(existingStat),
               currentContent: existingContent,
             })
           ) {
@@ -1196,13 +1275,7 @@ function createEditFileTool(
           );
         }
         const existingContent = existingBuffer.toString("utf-8");
-        if (
-          hasFileChangedSinceSnapshot({
-            snapshot: readSnapshot,
-            currentTimestamp: getFileTimestampMs(fileStats),
-            currentContent: existingContent,
-          })
-        ) {
+        if (hasFileChangedSinceSnapshot({ snapshot: readSnapshot, currentContent: existingContent })) {
           return errorResult(
             `File has been modified since it was last read. Read "${args.path}" again before editing it.`,
           );

@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   createFilesystemTools,
+  clearSessionReadState,
   safePath,
   isPathAllowed,
 } from "./filesystem.js";
@@ -84,6 +88,19 @@ function findTool(tools: Tool[], name: string): Tool {
 
 function parseResult(result: { content: string }) {
   return JSON.parse(result.content);
+}
+
+function walkJsonFiles(root: string): string[] {
+  const entries: string[] = [];
+  for (const name of readdirSync(root, { withFileTypes: true })) {
+    const fullPath = join(root, name.name);
+    if (name.isDirectory()) {
+      entries.push(...walkJsonFiles(fullPath));
+    } else if (name.isFile() && name.name.endsWith(".json")) {
+      entries.push(fullPath);
+    }
+  }
+  return entries;
 }
 
 const ALLOWED_PATHS = ["/workspace"];
@@ -440,6 +457,38 @@ describe("system.readFile", () => {
     expect(result.isError).toBe(true);
     expect(parseResult(result).error).toContain("exceeds limit");
   });
+
+  it("persists a bounded local history snapshot outside the repo tree", async () => {
+    const historyRoot = mkdtempSync(join(tmpdir(), "agenc-filesystem-history-"));
+    const previousHistoryRoot = process.env.AGENC_FILESYSTEM_HISTORY_ROOT;
+    process.env.AGENC_FILESYSTEM_HISTORY_ROOT = historyRoot;
+    try {
+      for (let index = 0; index < 9; index++) {
+        const content = `line ${index}\n`;
+        mockStat.mockResolvedValueOnce({
+          isFile: () => true,
+          isDirectory: () => false,
+          size: content.length,
+        } as never);
+        mockReadFile.mockResolvedValueOnce(Buffer.from(content));
+        await tool.execute({
+          path: "/workspace/history.txt",
+          __agencSessionId: "session-history",
+        });
+      }
+
+      const snapshotFiles = walkJsonFiles(historyRoot);
+      expect(snapshotFiles).toHaveLength(1);
+      const snapshots = JSON.parse(readFileSync(snapshotFiles[0]!, "utf8"));
+      expect(snapshots).toHaveLength(8);
+      expect(snapshots[0].content).toBe("line 1\n");
+      expect(snapshots.at(-1).content).toBe("line 8\n");
+    } finally {
+      clearSessionReadState("session-history");
+      process.env.AGENC_FILESYSTEM_HISTORY_ROOT = previousHistoryRoot;
+      rmSync(historyRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 // ============================================================================
@@ -521,6 +570,7 @@ describe("system.writeFile", () => {
       isDirectory: () => false,
       size: 5,
     } as never);
+    mockReadFile.mockResolvedValueOnce(Buffer.from("hello"));
     mockMkdir.mockResolvedValueOnce(undefined);
     mockWriteFile.mockResolvedValueOnce(undefined);
 
@@ -808,13 +858,13 @@ describe("system.editFile", () => {
     expect(parseResult(result).error).toContain("Re-read the file");
   });
 
-  it("rejects edit when the file changed after it was read", async () => {
+  it("rejects edit when the file contents changed after it was read", async () => {
     const before = `int main(void) { return 0; }\n`;
     const after = `int main(void) { return 1; }\n`;
     setupExistingFileWithMtime(before, 1000);
     await readFirst("/workspace/main.c");
 
-    setupExistingFileWithMtime(after, 2000);
+    setupExistingFileWithMtime(after, 1000);
 
     const result = await tool.execute({
       path: "/workspace/main.c",

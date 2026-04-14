@@ -3107,7 +3107,7 @@ describe("createSessionToolHandler", () => {
     rmSync(workspaceRoot, { recursive: true, force: true });
   });
 
-  it("blocks destructive writeFile overwrites after reading a larger document", async () => {
+  it("allows writeFile overwrites after reading a larger document", async () => {
     const workspaceRoot = createTempDir("agenc-overwrite-guard-");
     const planPath = join(workspaceRoot, "PLAN.md");
     const originalPlan =
@@ -3145,11 +3145,10 @@ describe("createSessionToolHandler", () => {
       content: "## Post-Review Updates\n\n- Add jobs.\n",
     });
     expect(JSON.parse(writeResult)).toEqual({
-      error:
-        `Refusing destructive overwrite of previously-read file "${planPath}". ` +
-        "Preserve the existing content when revising the file, or use system.appendFile for an additive update.",
+      path: planPath,
+      bytesWritten: 42,
     });
-    expect(baseHandler).toHaveBeenCalledTimes(1);
+    expect(baseHandler).toHaveBeenCalledTimes(2);
 
     rmSync(workspaceRoot, { recursive: true, force: true });
   });

@@ -14,6 +14,10 @@
 
 import type { LLMMessage } from "../types.js";
 import {
+  collectPreservedAttachments,
+  type PreservedAttachment,
+} from "./attachments.js";
+import {
   COMPACT_BOUNDARY_SUBTYPE,
   DEFAULT_SNIP_GAP_MS,
   DEFAULT_SNIP_KEEP_RECENT,
@@ -41,6 +45,7 @@ interface SnipResult {
   readonly messages: readonly LLMMessage[];
   readonly state: SnipState;
   readonly boundary?: LLMMessage;
+  readonly preservedAttachments: readonly PreservedAttachment[];
 }
 
 export function applySnip(input: SnipInput): SnipResult {
@@ -65,6 +70,7 @@ export function applySnip(input: SnipInput): SnipResult {
       action: "noop",
       messages,
       state: nextState,
+      preservedAttachments: [],
     };
   }
 
@@ -76,6 +82,7 @@ export function applySnip(input: SnipInput): SnipResult {
     messages: trimmed,
     state: { ...nextState, snipCount: input.state.snipCount + 1 },
     boundary: makeBoundary(dropped, idleFor),
+    preservedAttachments: collectPreservedAttachments(messages.slice(0, dropped)),
   };
 }
 

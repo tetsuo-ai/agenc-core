@@ -14,6 +14,10 @@
  */
 
 import type { LLMMessage } from "../types.js";
+import {
+  collectPreservedAttachments,
+  type PreservedAttachment,
+} from "./attachments.js";
 import { COMPACT_BOUNDARY_SUBTYPE } from "./constants.js";
 
 const REACTIVE_COMPACT_TRIM_FRACTIONS = [0.25, 0.5, 0.75] as const;
@@ -38,6 +42,7 @@ interface ReactiveCompactResult {
   readonly messages: readonly LLMMessage[];
   readonly state: ReactiveCompactState;
   readonly boundary?: LLMMessage;
+  readonly preservedAttachments: readonly PreservedAttachment[];
 }
 
 /**
@@ -54,6 +59,7 @@ export function applyReactiveCompact(
       action: "exhausted",
       messages: input.messages,
       state: input.state,
+      preservedAttachments: [],
     };
   }
   const fraction =
@@ -64,6 +70,7 @@ export function applyReactiveCompact(
       action: "noop",
       messages: input.messages,
       state: input.state,
+      preservedAttachments: [],
     };
   }
 
@@ -75,6 +82,9 @@ export function applyReactiveCompact(
       attemptIndex: input.state.attemptIndex + 1,
       lastTriggerMs: input.nowMs ?? Date.now(),
     },
+    preservedAttachments: collectPreservedAttachments(
+      input.messages.slice(0, dropCount),
+    ),
     boundary: {
       role: "system",
       content:

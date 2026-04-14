@@ -1764,19 +1764,6 @@ export function inferRecoveryHint(
   }
 
   if (
-    call.name === "system.writeFile" &&
-    failureTextLower.includes("refusing destructive overwrite of previously-read file")
-  ) {
-    return {
-      key: "system-writefile-destructive-overwrite",
-      message:
-        "This `system.writeFile` call tried to replace a previously-read file with partial or destructive content. " +
-        "Re-read the current file contents, preserve the unchanged sections, and rewrite the COMPLETE file body in one `system.writeFile` call. " +
-        "Do not send only the changed snippet unless you are using an additive tool like `system.appendFile`.",
-    };
-  }
-
-  if (
     call.name === "system.browse" ||
     call.name === "system.httpGet" ||
     call.name === "system.httpPost" ||

@@ -11,6 +11,7 @@
  */
 
 import type { LLMMessage } from "../types.js";
+import type { PreservedAttachment } from "./attachments.js";
 import {
   COMPACT_BOUNDARY_SUBTYPE,
   DEFAULT_MICROCOMPACT_GAP_MS,
@@ -45,6 +46,7 @@ interface MicrocompactResult {
   readonly messages: readonly LLMMessage[];
   readonly state: MicrocompactState;
   readonly boundary?: LLMMessage;
+  readonly preservedAttachments: readonly PreservedAttachment[];
 }
 
 /**
@@ -66,7 +68,12 @@ export function applyMicrocompact(
   };
 
   if (input.state.lastTouchMs === 0 || idleFor < gapMs) {
-    return { action: "noop", messages: input.messages, state: nextState };
+    return {
+      action: "noop",
+      messages: input.messages,
+      state: nextState,
+      preservedAttachments: [],
+    };
   }
 
   const messages = input.messages.slice();
@@ -91,7 +98,12 @@ export function applyMicrocompact(
   }
 
   if (clearedNow === 0) {
-    return { action: "noop", messages: input.messages, state: nextState };
+    return {
+      action: "noop",
+      messages: input.messages,
+      state: nextState,
+      preservedAttachments: [],
+    };
   }
 
   return {
@@ -102,6 +114,7 @@ export function applyMicrocompact(
       clearedToolUseIds: cleared,
       compactCount: input.state.compactCount + 1,
     },
+    preservedAttachments: [],
     boundary: {
       role: "system",
       content:

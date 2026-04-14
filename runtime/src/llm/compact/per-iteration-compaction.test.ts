@@ -29,6 +29,16 @@ function makeUser(content: string): LLMMessage {
   return { role: "user", content };
 }
 
+function makeMultimodalUser(content: string, imageUrl: string): LLMMessage {
+  return {
+    role: "user",
+    content: [
+      { type: "text", text: content },
+      { type: "image_url", image_url: { url: imageUrl } },
+    ],
+  };
+}
+
 function makeToolResult(id: string, size: number): LLMMessage {
   return {
     role: "tool",
@@ -51,6 +61,7 @@ describe("applyPerIterationCompaction", () => {
     expect(result.action).toBe("noop");
     expect(result.messages).toBe(messages);
     expect(result.boundaries).toEqual([]);
+    expect(result.preservedAttachments).toEqual([]);
     // State timestamps updated even on noop so the next call has a
     // baseline to compute idleness against.
     expect(result.state.snip.lastTouchMs).toBe(T0);
@@ -80,6 +91,7 @@ describe("applyPerIterationCompaction", () => {
 
     expect(result.action).toBe("noop");
     expect(result.boundaries).toEqual([]);
+    expect(result.preservedAttachments).toEqual([]);
   });
 
   it("snips after the snip gap elapses on a long history", () => {
@@ -112,6 +124,39 @@ describe("applyPerIterationCompaction", () => {
     );
     expect(snipBoundary).toBeDefined();
     expect(result.state.snip.snipCount).toBe(1);
+  });
+
+  it("surfaces preserved attachments when snip drops a multimodal message", () => {
+    let state = createPerIterationCompactionState();
+    state = applyPerIterationCompaction({
+      messages: [makeUser("seed")],
+      state,
+      nowMs: T0,
+    }).state;
+
+    const attachmentMessage = makeMultimodalUser(
+      "see this",
+      "https://example.com/asset.png",
+    );
+    const history: LLMMessage[] = [attachmentMessage];
+    for (let i = 0; i < 45; i++) {
+      history.push(makeUser(`q${i}`), makeAssistant(`a${i}`));
+    }
+
+    const result = applyPerIterationCompaction({
+      messages: history,
+      state,
+      nowMs: T0 + DEFAULT_SNIP_GAP_MS + 1,
+    });
+
+    expect(result.action).toBe("compacted");
+    expect(result.messages).not.toContain(attachmentMessage);
+    expect(result.preservedAttachments).toHaveLength(1);
+    expect(result.preservedAttachments[0]).toMatchObject({
+      messageIndex: 0,
+      role: "user",
+      content: attachmentMessage.content,
+    });
   });
 
   it("microcompacts cold tool results after the microcompact gap", () => {

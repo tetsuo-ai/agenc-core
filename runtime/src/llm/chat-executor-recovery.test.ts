@@ -768,27 +768,6 @@ describe("chat-executor-recovery", () => {
     expect(hint?.message).toContain("rerun `npm install`");
   });
 
-  it("flags destructive writeFile overwrites with whole-file rewrite guidance", () => {
-    const hint = inferRecoveryHint({
-      name: "system.writeFile",
-      args: {
-        path: "/tmp/workspace/src/lexer.c",
-        content: "advance(lexer); // skip backslash",
-      },
-      result: JSON.stringify({
-        error:
-          'Refusing destructive overwrite of previously-read file "/tmp/workspace/src/lexer.c". Preserve the existing content when revising the file, or use system.appendFile for an additive update.',
-      }),
-      isError: true,
-      durationMs: 2,
-    });
-
-    expect(hint).toBeDefined();
-    expect(hint?.key).toBe("system-writefile-destructive-overwrite");
-    expect(hint?.message).toContain("rewrite the COMPLETE file body");
-    expect(hint?.message).toContain("system.appendFile");
-  });
-
   it("flags repo-local verification harness shadow copies and redirects to direct bounded verification", () => {
     const hint = inferRecoveryHint({
       name: "system.writeFile",
