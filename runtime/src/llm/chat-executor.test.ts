@@ -804,7 +804,7 @@ describe("ChatExecutor", () => {
       );
     });
 
-    it("uses streamed post-tool content when the terminal provider payload is empty", async () => {
+    it("fails closed when the terminal provider payload is empty after tool use", async () => {
       const toolHandler = vi
         .fn()
         .mockResolvedValue('{"status":"requires_input"}');
@@ -838,14 +838,14 @@ describe("ChatExecutor", () => {
       });
       const result = await executor.execute(createParams());
 
-      expect(result.stopReason).toBe("completed");
+      expect(result.stopReason).toBe("no_progress");
       expect(result.content).toBe(
-        "Yes, but your signer wallet already has registered agents.",
+        "Model returned empty content after tool follow-up; refusing to surface raw tool output as the final answer.",
       );
       expect(onStreamChunk).toHaveBeenCalledWith(
         expect.objectContaining({ content: "Yes, but your signer wallet " }),
       );
-      expect(result.content).not.toContain("Model returned empty content");
+      expect(result.content).toContain("Model returned empty content");
     });
 
     it("continues after a successful tool turn while token budget remains", async () => {

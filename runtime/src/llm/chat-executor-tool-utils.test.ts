@@ -54,6 +54,25 @@ describe("chat-executor-tool-utils", () => {
       ).toBe(true);
     });
 
+    it("returns true for weak verification passes with no executed tests", () => {
+      expect(
+        didToolCallFail(
+          false,
+          JSON.stringify({
+            exitCode: 0,
+            stdout: "Internal ctest changing into directory: /workspace/build",
+            stderr: "No tests were found!!!",
+            __agencVerification: {
+              probeId: "generic:test:ctest",
+              category: "test",
+              profile: "generic",
+              command: "ctest --test-dir build --output-on-failure",
+            },
+          }),
+        ),
+      ).toBe(true);
+    });
+
     it("returns true for MCP plain-text failure signatures", () => {
       expect(
         didToolCallFail(

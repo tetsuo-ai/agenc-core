@@ -1,7 +1,11 @@
 import { spawn } from "node:child_process";
 
 import type { ToolCallRecord } from "../chat-executor-types.js";
-import { evaluateTurnEndStopGate } from "../chat-executor-stop-gate.js";
+import {
+  buildTurnEndStopGateSnapshot,
+  evaluateTurnEndStopGate,
+  type TurnEndStopGateSnapshot,
+} from "../chat-executor-stop-gate.js";
 import { matchesHookMatcher } from "./matcher.js";
 
 export const STOP_HOOK_PHASES = [
@@ -56,6 +60,7 @@ export interface StopHookContext {
   readonly runtimeWorkspaceRoot?: string;
   readonly finalContent?: string;
   readonly allToolCalls?: readonly ToolCallRecord[];
+  readonly turnEndSnapshot?: TurnEndStopGateSnapshot;
   readonly verificationReady?: {
     readonly deterministicAcceptanceProbesEnabled: boolean;
     readonly topLevelVerifierEnabled: boolean;
@@ -138,7 +143,10 @@ function buildBuiltinStopHookDefinitions(): readonly StopHookRuntimeDefinition[]
         const startedAt = Date.now();
         const decision = evaluateTurnEndStopGate({
           finalContent: context.finalContent ?? "",
-          allToolCalls: context.allToolCalls ?? [],
+          allToolCalls: context.allToolCalls,
+          snapshot:
+            context.turnEndSnapshot ??
+            buildTurnEndStopGateSnapshot(context.allToolCalls ?? []),
         });
         return {
           hookId: BUILTIN_TURN_END_STOP_GATE_ID,

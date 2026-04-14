@@ -26,6 +26,7 @@ import {
   reportManagedRemoteJob,
   startManagedRemoteJob,
 } from "./remote-execution-handles.js";
+import { isRuntimeVerifierRequiredForTurn } from "./runtime-verifier-requirement.js";
 
 const DEFAULT_VERIFY_TOOLS = [
   "system.readFile",
@@ -238,6 +239,8 @@ function buildVerifierBlockingMessage(params: {
 function buildVerifierCoverageSummary(params: {
   readonly missingCategories: readonly string[];
   readonly missingProfiles: readonly string[];
+  readonly weakProbeIds: readonly string[];
+  readonly failedProbeIds: readonly string[];
 }): string {
   const parts: string[] = [];
   if (params.missingCategories.length > 0) {
@@ -248,6 +251,16 @@ function buildVerifierCoverageSummary(params: {
   if (params.missingProfiles.length > 0) {
     parts.push(
       `required verifier profiles were not exercised: ${params.missingProfiles.join(", ")}`,
+    );
+  }
+  if (params.weakProbeIds.length > 0) {
+    parts.push(
+      `verification probes reported weak green results: ${params.weakProbeIds.join(", ")}`,
+    );
+  }
+  if (params.failedProbeIds.length > 0) {
+    parts.push(
+      `verification probes still failed: ${params.failedProbeIds.join(", ")}`,
     );
   }
   if (parts.length === 0) {
@@ -343,20 +356,89 @@ function shouldRunTopLevelVerifier(params: TopLevelVerifierParams): boolean {
   if (isSubAgentSessionId(params.sessionId)) return false;
   if (params.result.stopReason !== "completed") return false;
   if (params.result.completionState !== "completed") return false;
-  if (params.result.turnExecutionContract.turnClass !== "workflow_implementation") {
+  if (
+    !isRuntimeVerifierRequiredForTurn({
+      flags: params.result.runtimeContractSnapshot?.flags,
+      turnExecutionContract: params.result.turnExecutionContract,
+    })
+  ) {
     return false;
   }
-  const targetArtifacts = params.result.turnExecutionContract.targetArtifacts ?? [];
-  if (targetArtifacts.length === 0) return false;
   if (!params.verifierService) return true;
   return params.verifierService.resolveVerifierRequirement({
     requested: true,
-    runtimeRequired:
-      params.result.runtimeContractSnapshot?.flags.verifierRuntimeRequired,
+    runtimeRequired: true,
     projectBootstrap:
       params.result.runtimeContractSnapshot?.flags.verifierProjectBootstrap,
     workspaceRoot: params.result.turnExecutionContract.workspaceRoot,
   }).required;
+}
+
+function resolveTopLevelVerifierRequirement(
+  params: TopLevelVerifierParams,
+): VerifierRequirement | null {
+  const runtimeRequired = isRuntimeVerifierRequiredForTurn({
+    flags: params.result.runtimeContractSnapshot?.flags,
+    turnExecutionContract: params.result.turnExecutionContract,
+  });
+  if (!runtimeRequired) {
+    return null;
+  }
+  if (!params.verifierService) {
+    return runtimeRequired
+      ? {
+          required: true,
+          bootstrapSource: "fallback",
+          profiles: ["generic"],
+          probeCategories: [],
+          mutationPolicy: "read_only_workspace",
+          allowTempArtifacts: false,
+          rationale: ["runtime verifier required"],
+        }
+      : null;
+  }
+  return params.verifierService.resolveVerifierRequirement({
+    requested: true,
+    runtimeRequired: true,
+    projectBootstrap:
+      params.result.runtimeContractSnapshot?.flags.verifierProjectBootstrap,
+    workspaceRoot: params.result.turnExecutionContract.workspaceRoot,
+  });
+}
+
+function getTopLevelVerifierSkipReason(
+  params: TopLevelVerifierParams,
+): string | undefined {
+  if (isSubAgentSessionId(params.sessionId)) return "subagent_session";
+  if (params.result.stopReason !== "completed") return "stop_reason_not_completed";
+  if (params.result.completionState !== "completed") {
+    return "completion_state_not_completed";
+  }
+  if (params.result.turnExecutionContract.turnClass !== "workflow_implementation") {
+    return "turn_class_not_workflow_implementation";
+  }
+  const targetArtifacts = params.result.turnExecutionContract.targetArtifacts ?? [];
+  if (targetArtifacts.length === 0) return "missing_target_artifacts";
+  return undefined;
+}
+
+function buildTopLevelVerifierSkipBlockingMessage(reason: string): string {
+  const detail =
+    reason === "subagent_session"
+      ? "the verifier cannot run from a subagent session"
+      : reason === "stop_reason_not_completed"
+        ? "the turn has not reached a completed stop reason yet"
+        : reason === "completion_state_not_completed"
+          ? "the workflow completion state is not completed yet"
+          : reason === "turn_class_not_workflow_implementation"
+            ? "the turn is not classified as workflow_implementation"
+            : "no target artifacts were declared for verification";
+  return [
+    "Runtime verification is required before completion can be accepted.",
+    "",
+    `Verifier launch is currently blocked because ${detail}.`,
+    "Continue with tool calls until the implementation is in a verifiable completed state and target artifacts are declared.",
+  ].join("\n");
 }
 
 export async function runTopLevelVerifierValidation(
@@ -377,6 +459,50 @@ export async function runTopLevelVerifierValidation(
       });
     }
   };
+  const verifierRequirement = resolveTopLevelVerifierRequirement(params);
+  const verifierRequired = verifierRequirement?.required === true;
+  const skipReason = getTopLevelVerifierSkipReason(params);
+  if (skipReason) {
+    if (verifierRequired) {
+      const summary = `Top-level verifier is required but cannot run yet (${skipReason}).`;
+      await emitTraceEvent({
+        type: "skipped",
+        summary,
+      });
+      return {
+        outcome: "retry_with_blocking_message",
+        verifier: { performed: false, overall: "retry" },
+        runtimeVerifier: {
+          attempted: false,
+          overall: "retry",
+          summary,
+        },
+        summary,
+        blockingMessage: buildTopLevelVerifierSkipBlockingMessage(skipReason),
+        exhaustedDetail: summary,
+        verifierRequirement:
+          verifierRequirement ?? {
+            required: true,
+            bootstrapSource: "fallback",
+            profiles: ["generic"],
+            probeCategories: [],
+            mutationPolicy: "read_only_workspace",
+            allowTempArtifacts: false,
+            rationale: ["runtime verifier required"],
+          },
+      };
+    }
+    await emitTraceEvent({
+      type: "skipped",
+      summary: "Top-level verifier skipped.",
+    });
+    return {
+      outcome: "skipped",
+      verifier: { performed: false, overall: "skipped" },
+      runtimeVerifier: { attempted: false, overall: "skipped" },
+      summary: "Top-level verifier skipped.",
+    };
+  }
   if (!shouldRunTopLevelVerifier(params)) {
     await emitTraceEvent({
       type: "skipped",
@@ -428,14 +554,16 @@ export async function runTopLevelVerifierValidation(
   const workspaceRoot = normalizeWorkspaceRoot(
     params.result.turnExecutionContract.workspaceRoot,
   );
-  const verifierRequirement = params.verifierService.resolveVerifierRequirement({
-    requested: true,
-    runtimeRequired:
-      params.result.runtimeContractSnapshot?.flags.verifierRuntimeRequired,
-    projectBootstrap:
-      params.result.runtimeContractSnapshot?.flags.verifierProjectBootstrap,
-    workspaceRoot,
-  });
+  const effectiveVerifierRequirement =
+    verifierRequirement ??
+    params.verifierService.resolveVerifierRequirement({
+      requested: true,
+      runtimeRequired:
+        params.result.runtimeContractSnapshot?.flags.verifierRuntimeRequired,
+      projectBootstrap:
+        params.result.runtimeContractSnapshot?.flags.verifierProjectBootstrap,
+      workspaceRoot,
+    });
   const sourceArtifacts = normalizeArtifactPaths(
     params.result.turnExecutionContract.sourceArtifacts ?? [],
     workspaceRoot,
@@ -474,7 +602,7 @@ export async function runTopLevelVerifierValidation(
       sourceArtifacts,
       targetArtifacts,
       assistantContent: params.result.content,
-      verifierRequirement,
+      verifierRequirement: effectiveVerifierRequirement,
     }),
     systemPrompt: definition.systemPrompt,
     tools: definition.tools,
@@ -504,7 +632,7 @@ export async function runTopLevelVerifierValidation(
       },
       summary: "Remote verifier isolation is enabled but unavailable.",
       exhaustedDetail: "Remote verifier isolation is enabled but unavailable.",
-      verifierRequirement,
+      verifierRequirement: effectiveVerifierRequirement,
       launcherKind: "remote_job",
     };
   }
@@ -540,7 +668,7 @@ export async function runTopLevelVerifierValidation(
         },
         summary: `Remote verifier handle could not be started: ${message}`,
         exhaustedDetail: `Remote verifier handle could not be started: ${message}`,
-        verifierRequirement,
+        verifierRequirement: effectiveVerifierRequirement,
         launcherKind: "remote_job",
       };
     }
@@ -558,8 +686,8 @@ export async function runTopLevelVerifierValidation(
         metadata: {
           _runtime: {
             verification: true,
-            verifierProfiles: verifierRequirement.profiles,
-            verifierProbeCategories: verifierRequirement.probeCategories,
+            verifierProfiles: effectiveVerifierRequirement.profiles,
+            verifierProbeCategories: effectiveVerifierRequirement.probeCategories,
           },
         },
         summary: "Runtime verifier started.",
@@ -651,7 +779,7 @@ export async function runTopLevelVerifierValidation(
       },
       summary: "Top-level verifier worker could not be started.",
       exhaustedDetail: "Top-level verifier worker could not be started.",
-      verifierRequirement,
+      verifierRequirement: effectiveVerifierRequirement,
       launcherKind: remoteJobHandle ? "remote_job" : "subagent",
       ...(verifierTaskId ? { taskId: verifierTaskId } : {}),
     };
@@ -679,13 +807,13 @@ export async function runTopLevelVerifierValidation(
   const coverage = extractVerificationProbeCoverage(verifierResult?.toolCalls ?? []);
   const missingCategories =
     parsed.snapshot.overall === "pass"
-      ? verifierRequirement.probeCategories.filter(
+      ? effectiveVerifierRequirement.probeCategories.filter(
           (category) => !coverage.categories.includes(category),
         )
       : [];
   const missingProfiles =
     parsed.snapshot.overall === "pass"
-      ? verifierRequirement.profiles.filter(
+      ? effectiveVerifierRequirement.profiles.filter(
           (profile) =>
             profile !== "generic" &&
             !coverage.profiles.includes(profile),
@@ -693,10 +821,12 @@ export async function runTopLevelVerifierValidation(
       : [];
   const coverageBlocked =
     parsed.snapshot.overall === "pass" &&
-    verifierRequirement.required &&
+    effectiveVerifierRequirement.required &&
     (coverage.probeIds.length === 0 ||
       missingCategories.length > 0 ||
-      missingProfiles.length > 0);
+      missingProfiles.length > 0 ||
+      coverage.weakProbeIds.length > 0 ||
+      coverage.failedProbeIds.length > 0);
   const effectiveParsed = coverageBlocked
     ? {
         snapshot: { performed: true, overall: "retry" } as const,
@@ -706,6 +836,8 @@ export async function runTopLevelVerifierValidation(
               ? ["at least one verification probe"]
               : missingCategories,
           missingProfiles,
+          weakProbeIds: coverage.weakProbeIds,
+          failedProbeIds: coverage.failedProbeIds,
         }),
       }
     : parsed;
@@ -781,7 +913,7 @@ export async function runTopLevelVerifierValidation(
       runtimeVerifier,
       summary: effectiveParsed.summary,
       exhaustedDetail: `Top-level verifier retry: ${effectiveParsed.summary}`,
-      verifierRequirement,
+      verifierRequirement: effectiveVerifierRequirement,
       launcherKind: remoteJobHandle ? "remote_job" : "subagent",
       ...(verifierTaskId ? { taskId: verifierTaskId } : {}),
     };
@@ -792,7 +924,7 @@ export async function runTopLevelVerifierValidation(
       verifier: effectiveParsed.snapshot,
       runtimeVerifier,
       summary: effectiveParsed.summary,
-      verifierRequirement,
+      verifierRequirement: effectiveVerifierRequirement,
       launcherKind: remoteJobHandle ? "remote_job" : "subagent",
       ...(verifierTaskId ? { taskId: verifierTaskId } : {}),
     };
@@ -808,7 +940,7 @@ export async function runTopLevelVerifierValidation(
     }),
     exhaustedDetail:
       `Top-level verifier ${effectiveParsed.snapshot.overall}: ${effectiveParsed.summary}`,
-    verifierRequirement,
+    verifierRequirement: effectiveVerifierRequirement,
     launcherKind: remoteJobHandle ? "remote_job" : "subagent",
     ...(verifierTaskId ? { taskId: verifierTaskId } : {}),
   };

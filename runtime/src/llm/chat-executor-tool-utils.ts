@@ -7,6 +7,7 @@
 import type { LLMToolCall, LLMMessage, ToolHandler } from "./types.js";
 import type { ToolCallRecord, ToolCallAction, ToolLoopState, RecoveryHint, LLMRetryPolicyOverrides } from "./chat-executor-types.js";
 import type { LLMRetryPolicyMatrix } from "./policy.js";
+import { classifyVerificationProbeResult } from "../gateway/verifier-probes.js";
 import { resolveRuntimeTimeoutMs } from "./runtime-limit-policy.js";
 import { DEFAULT_LLM_RETRY_POLICY_MATRIX } from "./policy.js";
 import type { LLMFailureClass, LLMRetryPolicyRule } from "./policy.js";
@@ -47,6 +48,13 @@ interface ToolArgumentRepairResult {
 
 export function didToolCallFail(isError: boolean, result: string): boolean {
   if (isError) return true;
+  const verificationAssessment = classifyVerificationProbeResult(result);
+  if (
+    verificationAssessment.verdict === "fail" ||
+    verificationAssessment.verdict === "weak_pass"
+  ) {
+    return true;
+  }
   try {
     const parsed = JSON.parse(result) as unknown;
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {

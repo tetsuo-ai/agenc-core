@@ -67,7 +67,7 @@ import { resolveWorkflowEvidenceFromRequiredToolEvidence } from "./turn-executio
  * claims as well as opening sentences.
  */
 const FALSE_SUCCESS_RE =
-  /\b(?:build\s+(?:succeeded|successful|complete|completed|finished)|build\s+is\s+(?:successful|complete|finished)|phase\s+\d+\s+(?:complete|completed|done|finished|passed|implemented)|phase\s+\d+\s+(?:bootstrap|implementation)\s+(?:complete|completed|finished)|tests?\s+(?:passed|succeeded|all\s+pass(?:ed|ing)?)|all\s+tests?\s+pass(?:ed|ing)?|binary\s+(?:is\s+)?(?:exists|ready|built|compiled)|all\s+phases?\s+(?:complete|completed|done|finished|implemented)|all\s+phases?\s+of\s+[^\n]{0,120}?\s+have\s+been\s+(?:complete|completed|done|finished|implemented)|all\s+phases?\b(?:[^.!?\n]{0,80})\b(?:complete|completed|done|finished|implemented)|task\s+(?:complete|completed|done|finished)|implementation\s+(?:complete|completed|done|finished)|successfully\s+(?:built|compiled|implemented|completed|finished)|v\d+(?:\.\d+)*\s+complete|ready\s+to\s+ship|done\s+with\s+phase)/i;
+  /\b(?:build\s+(?:succeeded|successful|complete|completed|finished)|build\s+is\s+(?:successful|complete|finished)|phase\s+\d+\s+(?:complete|completed|done|finished|passed|implemented)|phase\s+\d+\s+(?:bootstrap|implementation)\s+(?:complete|completed|finished)|tests?\s+(?:passed|succeeded|all\s+pass(?:ed|ing)?)|all\s+tests?\s+pass(?:ed|ing)?|binary\s+(?:is\s+)?(?:exists|ready|built|compiled)|all\s+phases?\s+(?:complete|completed|done|finished|implemented)|all\s+phases?\s+of\s+[^\n]{0,120}?\s+have\s+been\s+(?:complete|completed|done|finished|implemented)|all\s+phases?\b(?:[^.!?\n]{0,80})\b(?:complete|completed|done|finished|implemented)|task\s+(?:complete|completed|done|finished)|implementation\s+(?:complete|completed|done|finished)|implementation\s+of\s+[^\n]{0,160}?\s+(?:is\s+)?(?:complete|completed|done|finished)|(?:fully|successfully)\s+verified|successfully\s+(?:built|compiled|implemented|completed|finished)|v\d+(?:\.\d+)*\s+complete|ready\s+to\s+ship|done\s+with\s+phase)/i;
 
 /**
  * Honest-acknowledgment phrases. If the final message contains BOTH a
@@ -189,7 +189,7 @@ const MID_TASK_PERMISSION_QUESTION_RE =
  * are not forced into a recovery loop.
  */
 const TERMINAL_COMPLETION_RE =
-  /\b(?:task\s+(?:complete|completed|done|finished)|all\s+phases?\s+(?:complete|completed|done|finished|implemented)|all\s+phases?\s+of\s+[^\n]{0,120}?\s+have\s+been\s+(?:complete|completed|done|finished|implemented)|all\s+phases?\b(?:[^.!?\n]{0,80})\b(?:complete|completed|done|finished|implemented)|implementation\s+(?:complete|completed|done|finished)|nothing\s+(?:more|else)\s+to\s+(?:do|implement)|session\s+(?:complete|done|finished)|finished\s+the\s+(?:task|work|implementation|plan)|project\s+(?:complete|completed|done|finished))/i;
+  /\b(?:task\s+(?:complete|completed|done|finished)|all\s+phases?\s+(?:complete|completed|done|finished|implemented)|all\s+phases?\s+of\s+[^\n]{0,120}?\s+have\s+been\s+(?:complete|completed|done|finished|implemented)|all\s+phases?\b(?:[^.!?\n]{0,80})\b(?:complete|completed|done|finished|implemented)|implementation\s+(?:complete|completed|done|finished)|implementation\s+of\s+[^\n]{0,160}?\s+(?:is\s+)?(?:complete|completed|done|finished)|nothing\s+(?:more|else)\s+to\s+(?:do|implement)|session\s+(?:complete|done|finished)|finished\s+the\s+(?:task|work|implementation|plan)|project\s+(?:complete|completed|done|finished))/i;
 
 /**
  * Tool names whose failures count as "this turn had a failed shell
@@ -272,7 +272,16 @@ export interface EvaluateTurnEndStopGateParams {
   /** The model's about-to-be-final assistant text. */
   readonly finalContent: string;
   /** The full tool ledger for the turn (`ctx.allToolCalls`, turn-scoped). */
-  readonly allToolCalls: readonly ToolCallRecord[];
+  readonly allToolCalls?: readonly ToolCallRecord[];
+  /** Optional precomputed unresolved execution snapshot for stop-hook evaluation. */
+  readonly snapshot?: TurnEndStopGateSnapshot;
+}
+
+export interface TurnEndStopGateSnapshot {
+  readonly unresolvedShellFailures: readonly ToolCallRecord[];
+  readonly unresolvedVerificationFailures: readonly ToolCallRecord[];
+  readonly unresolvedRefusals: readonly ToolCallRecord[];
+  readonly toolCallCount: number;
 }
 
 export interface EvaluateArtifactEvidenceGateParams {
@@ -322,6 +331,44 @@ function summarizeRefusedCall(record: ToolCallRecord): string {
         : "";
   const reason = typeof record.result === "string" ? record.result : "";
   return `${record.name}${target ? ` on \`${truncate(target, 100)}\`` : ""}: ${truncate(reason, 200)}`;
+}
+
+function getRefusalTargetPath(record: ToolCallRecord): string | undefined {
+  if (typeof record.args?.path === "string" && record.args.path.trim().length > 0) {
+    return record.args.path;
+  }
+  if (
+    typeof record.args?.destination === "string" &&
+    record.args.destination.trim().length > 0
+  ) {
+    return record.args.destination;
+  }
+  return undefined;
+}
+
+function isSuccessfulMutationForPath(
+  record: ToolCallRecord,
+  targetPath: string,
+): boolean {
+  if (didToolCallFail(record.isError, record.result)) {
+    return false;
+  }
+  if (record.name === "desktop.text_editor") {
+    const command =
+      typeof record.args?.command === "string"
+        ? record.args.command.trim().toLowerCase()
+        : "";
+    if (command === "view") {
+      return false;
+    }
+  }
+  const candidatePaths = [
+    typeof record.args?.path === "string" ? record.args.path : undefined,
+    typeof record.args?.destination === "string"
+      ? record.args.destination
+      : undefined,
+  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+  return candidatePaths.includes(targetPath);
 }
 
 function isVerificationLikeToolCall(record: ToolCallRecord): boolean {
@@ -678,13 +725,35 @@ function findUnresolvedShellFailures(
 function findRefusedCalls(
   allToolCalls: readonly ToolCallRecord[],
 ): ToolCallRecord[] {
-  const out: ToolCallRecord[] = [];
-  for (const call of allToolCalls) {
-    if (looksLikeRefusal(call)) {
-      out.push(call);
+  for (let index = allToolCalls.length - 1; index >= 0; index -= 1) {
+    const call = allToolCalls[index];
+    if (!looksLikeRefusal(call)) {
+      continue;
+    }
+    const targetPath = getRefusalTargetPath(call);
+    if (!targetPath) {
+      return [call];
+    }
+    const resolved = allToolCalls
+      .slice(index + 1)
+      .some((laterCall) => isSuccessfulMutationForPath(laterCall, targetPath));
+    if (!resolved) {
+      return [call];
     }
   }
-  return out;
+  return [];
+}
+
+export function buildTurnEndStopGateSnapshot(
+  allToolCalls: readonly ToolCallRecord[],
+): TurnEndStopGateSnapshot {
+  return {
+    unresolvedShellFailures: findUnresolvedShellFailures(allToolCalls),
+    unresolvedVerificationFailures:
+      findUnresolvedVerificationFailures(allToolCalls),
+    unresolvedRefusals: findRefusedCalls(allToolCalls),
+    toolCallCount: allToolCalls.length,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -724,9 +793,10 @@ export function evaluateTurnEndStopGate(
 ): StopGateInterventionDecision {
   const finalContent = params.finalContent ?? "";
   const allToolCalls = params.allToolCalls ?? [];
-  const failedShellCalls = findUnresolvedShellFailures(allToolCalls);
-  const failedVerificationCalls = findUnresolvedVerificationFailures(allToolCalls);
-  const refusedCalls = findRefusedCalls(allToolCalls);
+  const snapshot = params.snapshot ?? buildTurnEndStopGateSnapshot(allToolCalls);
+  const failedShellCalls = snapshot.unresolvedShellFailures;
+  const failedVerificationCalls = snapshot.unresolvedVerificationFailures;
+  const refusedCalls = snapshot.unresolvedRefusals;
 
   const evidence: StopGateEvidence = {
     failedShellCallCount: failedShellCalls.length,
@@ -753,6 +823,7 @@ export function evaluateTurnEndStopGate(
   }
 
   const claimsSuccess = FALSE_SUCCESS_RE.test(finalContent);
+  const claimsTerminalCompletion = TERMINAL_COMPLETION_RE.test(finalContent);
   if (!claimsSuccess) {
     // Skip the success-claim detectors but still check the
     // narrated-future-tool-work detector below — narration without a
@@ -769,10 +840,12 @@ export function evaluateTurnEndStopGate(
   }
 
   const acknowledgesFailure = FAILURE_ACKNOWLEDGMENT_RE.test(finalContent);
+  const shouldBlockClaimAgainstCurrentState =
+    claimsTerminalCompletion || !acknowledgesFailure;
 
   // Detector 1: anti-fab refusal + success claim. The runtime literally
   // told the model to stop and it's now claiming success — highest signal.
-  if (refusedCalls.length > 0 && !acknowledgesFailure) {
+  if (refusedCalls.length > 0 && shouldBlockClaimAgainstCurrentState) {
     return {
       shouldIntervene: true,
       reason: "false_success_after_anti_fab_refusal",
@@ -789,7 +862,10 @@ export function evaluateTurnEndStopGate(
 
   // Detector 1.5: the latest verification/probe step in the turn still
   // failed, but the model is now claiming completion anyway.
-  if (failedVerificationCalls.length > 0 && !acknowledgesFailure) {
+  if (
+    failedVerificationCalls.length > 0 &&
+    shouldBlockClaimAgainstCurrentState
+  ) {
     return {
       shouldIntervene: true,
       reason: "false_success_after_failed_verification",
@@ -808,7 +884,7 @@ export function evaluateTurnEndStopGate(
   // 14-token truncation bug from the 2026-04-09 incident.
   if (
     finalContent.length < TRUNCATED_SUCCESS_MAX_CHARS &&
-    allToolCalls.length > 0
+    snapshot.toolCallCount > 0
   ) {
     return {
       shouldIntervene: true,
@@ -826,7 +902,7 @@ export function evaluateTurnEndStopGate(
 
   // Detector 3: failed shell call + success claim + no honest
   // acknowledgment. The classic false-success-after-failure pattern.
-  if (failedShellCalls.length > 0 && !acknowledgesFailure) {
+  if (failedShellCalls.length > 0 && shouldBlockClaimAgainstCurrentState) {
     return {
       shouldIntervene: true,
       reason: "false_success_after_failed_bash",

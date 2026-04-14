@@ -33,7 +33,7 @@ function createResult(
       asyncTasksEnabled: false,
       persistentWorkersEnabled: false,
       mailboxEnabled: false,
-      verifierRuntimeRequired: false,
+      verifierRuntimeRequired: true,
       verifierProjectBootstrap: false,
       workerIsolationWorktree: false,
       workerIsolationRemote: false,
@@ -193,7 +193,7 @@ describe("runTopLevelVerifierValidation", () => {
     expect(decision.runtimeVerifier.overall).toBe("fail");
   });
 
-  it("skips verifier workers for non-workflow turns", async () => {
+  it("skips verifier work for non-workflow turns even when the runtime flag is enabled", async () => {
     const spawn = vi.fn(async () => "subagent:verify-1");
 
     const decision = await runTopLevelVerifierValidation({
@@ -209,6 +209,42 @@ describe("runTopLevelVerifierValidation", () => {
       }),
       subAgentManager: { spawn, waitForResult: vi.fn(async () => null) },
       verifierService: createVerifierService(),
+    });
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(decision.outcome).toBe("skipped");
+    expect(decision.runtimeVerifier.overall).toBe("skipped");
+  });
+
+  it("still skips verifier workers when runtime verification is not required", async () => {
+    const spawn = vi.fn(async () => "subagent:verify-1");
+
+    const decision = await runTopLevelVerifierValidation({
+      sessionId: "session:test",
+      userRequest: "hello",
+      result: createResult({
+        runtimeContractSnapshot: createRuntimeContractSnapshot({
+          runtimeContractV2: false,
+          stopHooksEnabled: false,
+          asyncTasksEnabled: false,
+          persistentWorkersEnabled: false,
+          mailboxEnabled: false,
+          verifierRuntimeRequired: false,
+          verifierProjectBootstrap: false,
+          workerIsolationWorktree: false,
+          workerIsolationRemote: false,
+        }),
+        turnExecutionContract: {
+          ...createResult().turnExecutionContract,
+          turnClass: "dialogue",
+          ownerMode: "none",
+          targetArtifacts: [],
+        },
+      }),
+      subAgentManager: { spawn, waitForResult: vi.fn(async () => null) },
+      verifierService: createVerifierService(
+        createVerifierRequirement({ required: false }),
+      ),
     });
 
     expect(spawn).not.toHaveBeenCalled();
@@ -278,6 +314,62 @@ describe("runTopLevelVerifierValidation", () => {
 
     expect(decision.outcome).toBe("retry_with_blocking_message");
     expect(decision.summary).toContain("required probe categories");
+  });
+
+  it("blocks PASS verdicts backed only by weak green verification probes", async () => {
+    const spawn = vi.fn(async () => "subagent:verify-weak");
+    const waitForResult = vi.fn(async () => ({
+      sessionId: "subagent:verify-weak",
+      output: "All good.\nVERDICT: PASS",
+      success: true,
+      durationMs: 20,
+      toolCalls: [
+        {
+          name: "verification.runProbe",
+          args: { probeId: "tests:ctest" },
+          result: JSON.stringify({
+            ok: true,
+            exitCode: 0,
+            stdout: "",
+            stderr: "No tests were found!!!",
+            __agencVerification: {
+              probeId: "tests:ctest",
+              category: "build",
+              profile: "generic",
+            },
+          }),
+          isError: false,
+          durationMs: 2,
+        },
+      ],
+      structuredOutput: {
+        type: "json_schema",
+        name: "agenc_top_level_verifier_decision",
+        parsed: {
+          verdict: "pass",
+          summary: "Verifier thinks the build is correct.",
+        },
+      },
+      completionState: "completed",
+      stopReason: "completed",
+    }));
+
+    const decision = await runTopLevelVerifierValidation({
+      sessionId: "session:test",
+      userRequest: "Implement every phase from PLAN.md",
+      result: createResult(),
+      subAgentManager: { spawn, waitForResult },
+      verifierService: createVerifierService(
+        createVerifierRequirement({
+          profiles: ["generic"],
+          probeCategories: ["build"],
+        }),
+      ),
+    });
+
+    expect(decision.outcome).toBe("retry_with_blocking_message");
+    expect(decision.summary).toContain("weak green results");
+    expect(decision.summary).toContain("tests:ctest");
   });
 
   it("records remote-job verifier handles when remote isolation is enabled", async () => {

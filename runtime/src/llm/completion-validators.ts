@@ -1,4 +1,5 @@
 import {
+  buildTurnEndStopGateSnapshot,
   checkFilesystemArtifacts,
   evaluateArtifactEvidenceGate,
 } from "./chat-executor-stop-gate.js";
@@ -21,6 +22,7 @@ import type {
   CompletionValidatorId,
   RuntimeContractFlags,
 } from "../runtime-contract/types.js";
+import { isRuntimeVerifierRequiredForTurn } from "../gateway/runtime-verifier-requirement.js";
 import { runTopLevelVerifierValidation } from "../gateway/top-level-verifier.js";
 import { getRemainingRequestTaskMilestones } from "./request-task-progress.js";
 
@@ -53,8 +55,10 @@ export function buildCompletionValidators(params: {
           params.stopHookRuntime.maxAttempts,
         )
       : sharedCorrectionBudgetCap;
-  const topLevelVerifierEnabled =
-    params.runtimeContractFlags.verifierRuntimeRequired;
+  const topLevelVerifierEnabled = isRuntimeVerifierRequiredForTurn({
+    flags: params.runtimeContractFlags,
+    turnExecutionContract: params.ctx.turnExecutionContract,
+  });
   const deterministicAcceptanceProbesEnabled =
     shouldRunDeterministicAcceptanceProbes({
       workspaceRoot: params.ctx.runtimeWorkspaceRoot,
@@ -160,6 +164,9 @@ export function buildCompletionValidators(params: {
       enabled: true,
       async execute(): Promise<CompletionValidatorExecutionResult> {
         if (params.runtimeContractFlags.stopHooksEnabled && params.stopHookRuntime) {
+          const turnEndSnapshot = buildTurnEndStopGateSnapshot(
+            params.ctx.allToolCalls,
+          );
           const hookResult = await runStopHookPhase({
             runtime: params.stopHookRuntime,
             phase: "Stop",
@@ -170,6 +177,7 @@ export function buildCompletionValidators(params: {
               runtimeWorkspaceRoot: params.ctx.runtimeWorkspaceRoot,
               finalContent: params.ctx.response?.content ?? "",
               allToolCalls: params.ctx.allToolCalls,
+              turnEndSnapshot,
             },
           });
           if (hookResult.outcome === "pass") {

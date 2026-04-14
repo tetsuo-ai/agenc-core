@@ -310,6 +310,8 @@ describe("completion-validators", () => {
         activeToolHandler: toolHandler,
         allToolCalls: [successfulWrite(join(workspaceRoot, "src/main.c"))],
         targetArtifacts: [join(workspaceRoot, "src/main.c")],
+        turnClass: "workflow_implementation",
+        ownerMode: "workflow_owner",
         flags,
       }),
       runtimeContractFlags: flags,
@@ -340,6 +342,26 @@ describe("completion-validators", () => {
     expect(deterministicResult.stopHookResult?.phase).toBe("VerificationReady");
     expect(topLevelResult.outcome).toBe("retry_with_blocking_message");
     expect(toolHandler).not.toHaveBeenCalled();
+  });
+
+  it("skips the top-level verifier on dialogue turns even when runtime verification is globally enabled", async () => {
+    const flags = makeFlags({
+      verifierRuntimeRequired: true,
+    });
+    const validators = buildCompletionValidators({
+      ctx: makeCtx({
+        flags,
+        allToolCalls: [successfulWrite("/tmp/workspace/src/main.c")],
+        targetArtifacts: ["/tmp/workspace/src/main.c"],
+      }),
+      runtimeContractFlags: flags,
+    });
+
+    const result = await validators.find(
+      (validator) => validator.id === "top_level_verifier",
+    )!.execute();
+
+    expect(result.outcome).toBe("skipped");
   });
 
   it("uses the shared correction budget for deterministic acceptance probes on workflow-owned turns", async () => {

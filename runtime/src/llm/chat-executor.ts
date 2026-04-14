@@ -27,7 +27,10 @@ import {
   type ModelRoutingPolicy,
 } from "./model-routing-policy.js";
 import type { HookRegistry } from "./hooks/index.js";
-import type { StopHookRuntime } from "./hooks/stop-hooks.js";
+import {
+  buildStopHookRuntime,
+  type StopHookRuntime,
+} from "./hooks/stop-hooks.js";
 import type { CanUseToolFn } from "./can-use-tool.js";
 import type { IsConcurrencySafeFn } from "./tool-orchestration.js";
 import type {
@@ -312,7 +315,7 @@ export class ChatExecutor {
     this.defaultRunClass = config.defaultRunClass;
     this.runtimeContractFlags = config.runtimeContractFlags ?? {
       runtimeContractV2: false,
-      stopHooksEnabled: false,
+      stopHooksEnabled: true,
       asyncTasksEnabled: false,
       persistentWorkersEnabled: false,
       mailboxEnabled: false,
@@ -321,7 +324,11 @@ export class ChatExecutor {
       workerIsolationWorktree: false,
       workerIsolationRemote: false,
     };
-    this.stopHookRuntime = config.stopHookRuntime;
+    this.stopHookRuntime =
+      config.stopHookRuntime ??
+      (this.runtimeContractFlags.stopHooksEnabled
+        ? buildStopHookRuntime({})
+        : undefined);
     this.completionValidation = config.completionValidation;
     this.hookRegistry = config.hookRegistry;
     this.canUseTool = config.canUseTool;

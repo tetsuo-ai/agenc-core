@@ -89,6 +89,7 @@ import {
   dispatchHooks,
   defaultHookExecutor,
 } from "./hooks/index.js";
+import { runStopHookPhase } from "./hooks/stop-hooks.js";
 import type { CanUseToolFn } from "./can-use-tool.js";
 import {
   partitionToolCalls,
@@ -2156,23 +2157,228 @@ export async function executeToolCallLoop(
     const continuationSummary = ctx.continuationState.active
       ? emitContinuationEvaluation()
       : undefined;
-    const validators = buildCompletionValidators({
+    const allValidators = buildCompletionValidators({
       ctx,
       runtimeContractFlags: config.runtimeContractFlags,
       stopHookRuntime: config.stopHookRuntime,
       completionValidation: config.completionValidation,
     });
+    const validators = allValidators.filter(
+      (validator) => validator.id !== "turn_end_stop_gate",
+    );
     callbacks.emitExecutionTrace(ctx, {
       type: "completion_validation_started",
       phase: "tool_followup",
       callIndex: ctx.callIndex,
       payload: {
-        validatorOrder: validators.map((validator) => validator.id),
+        validatorOrder: [
+          "turn_end_stop_gate",
+          ...validators.map((validator) => validator.id),
+        ],
         runtimeContract: ctx.runtimeContractSnapshot,
       },
     });
 
     let completionValidationStatus = "passed";
+    const stopHooksEnabled =
+      config.runtimeContractFlags.stopHooksEnabled &&
+      config.stopHookRuntime !== undefined;
+    callbacks.emitExecutionTrace(ctx, {
+      type: "completion_validator_started",
+      phase: "tool_followup",
+      callIndex: ctx.callIndex,
+      payload: {
+        validatorId: "turn_end_stop_gate",
+        enabled: stopHooksEnabled,
+        runtimeContract: ctx.runtimeContractSnapshot,
+      },
+    });
+    if (!stopHooksEnabled) {
+      ctx.runtimeContractSnapshot = updateRuntimeContractValidatorSnapshot({
+        snapshot: ctx.runtimeContractSnapshot,
+        id: "turn_end_stop_gate",
+        enabled: false,
+        executed: false,
+        outcome: "skipped",
+      });
+      callbacks.emitExecutionTrace(ctx, {
+        type: "completion_validator_finished",
+        phase: "tool_followup",
+        callIndex: ctx.callIndex,
+        payload: {
+          validatorId: "turn_end_stop_gate",
+          enabled: false,
+          outcome: "skipped",
+          runtimeContract: ctx.runtimeContractSnapshot,
+        },
+      });
+    } else {
+      const hookResult = await runStopHookPhase({
+        runtime: config.stopHookRuntime,
+        phase: "Stop",
+        matchKey: ctx.sessionId,
+        context: {
+          phase: "Stop",
+          sessionId: ctx.sessionId,
+          runtimeWorkspaceRoot: ctx.runtimeWorkspaceRoot,
+          finalContent: ctx.response?.content ?? "",
+          allToolCalls: ctx.allToolCalls,
+        },
+      });
+      callbacks.emitExecutionTrace(ctx, {
+        type: "stop_hook_execution_finished",
+        phase: "tool_followup",
+        callIndex: ctx.callIndex,
+        payload: {
+          validatorId: "turn_end_stop_gate",
+          stopHookPhase: hookResult.phase,
+          outcome: hookResult.outcome,
+          reason: hookResult.reason,
+          stopReason: hookResult.stopReason,
+          hookIds: hookResult.hookOutcomes.map((outcome) => outcome.hookId),
+          progressMessages: hookResult.progressMessages,
+          evidence: hookResult.evidence,
+        },
+      });
+      if (hookResult.outcome !== "pass") {
+        callbacks.emitExecutionTrace(ctx, {
+          type: "stop_hook_blocked",
+          phase: "tool_followup",
+          callIndex: ctx.callIndex,
+          payload: {
+            validatorId: "turn_end_stop_gate",
+            stopHookPhase: hookResult.phase,
+            outcome: hookResult.outcome,
+            reason: hookResult.reason,
+            stopReason: hookResult.stopReason,
+          },
+        });
+      }
+      if (hookResult.outcome === "pass") {
+        ctx.runtimeContractSnapshot = updateRuntimeContractValidatorSnapshot({
+          snapshot: ctx.runtimeContractSnapshot,
+          id: "turn_end_stop_gate",
+          enabled: true,
+          executed: true,
+          outcome: "pass",
+        });
+        callbacks.emitExecutionTrace(ctx, {
+          type: "completion_validator_finished",
+          phase: "tool_followup",
+          callIndex: ctx.callIndex,
+          payload: {
+            validatorId: "turn_end_stop_gate",
+            enabled: true,
+            outcome: "pass",
+            runtimeContract: ctx.runtimeContractSnapshot,
+          },
+        });
+      } else if (hookResult.outcome === "prevent_continuation") {
+        ctx.runtimeContractSnapshot = updateRuntimeContractValidatorSnapshot({
+          snapshot: ctx.runtimeContractSnapshot,
+          id: "turn_end_stop_gate",
+          enabled: true,
+          executed: true,
+          outcome: "fail_closed",
+          reason: hookResult.reason,
+        });
+        callbacks.emitExecutionTrace(ctx, {
+          type: "completion_validator_finished",
+          phase: "tool_followup",
+          callIndex: ctx.callIndex,
+          payload: {
+            validatorId: "turn_end_stop_gate",
+            enabled: true,
+            outcome: "fail_closed",
+            reason: hookResult.reason,
+            runtimeContract: ctx.runtimeContractSnapshot,
+          },
+        });
+        completionValidationStatus = "fail_closed";
+        callbacks.setStopReason(
+          ctx,
+          "validation_error",
+          hookResult.stopReason ?? "Stop-hook chain prevented completion.",
+        );
+        if (ctx.response) {
+          ctx.response = {
+            ...ctx.response,
+            content: "",
+          };
+        }
+      } else {
+        ctx.runtimeContractSnapshot = updateRuntimeContractValidatorSnapshot({
+          snapshot: ctx.runtimeContractSnapshot,
+          id: "turn_end_stop_gate",
+          enabled: true,
+          executed: true,
+          outcome: "retry_with_blocking_message",
+          reason: hookResult.reason,
+        });
+        callbacks.emitExecutionTrace(ctx, {
+          type: "completion_validator_finished",
+          phase: "tool_followup",
+          callIndex: ctx.callIndex,
+          payload: {
+            validatorId: "turn_end_stop_gate",
+            enabled: true,
+            outcome: "retry_with_blocking_message",
+            reason: hookResult.reason,
+            runtimeContract: ctx.runtimeContractSnapshot,
+          },
+        });
+        const stopHookRecovery = await attemptCompletionRecovery({
+          reason: hookResult.reason ?? "turn_end_stop_gate",
+          blockingMessage: hookResult.blockingMessage,
+          evidence: hookResult.evidence,
+          maxAttempts:
+            config.stopHookRuntime?.maxAttemptsExplicit === true
+              ? config.stopHookRuntime.maxAttempts
+              : ctx.requiredToolEvidence?.maxCorrectionAttemptsExplicit === true
+                ? ctx.requiredToolEvidence.maxCorrectionAttempts
+                : undefined,
+          budgetReason:
+            "Max model recalls exceeded during stop-hook recovery turn",
+          exhaustedDetail:
+            hookResult.reason === "narrated_future_tool_work"
+              ? "Stop-hook recovery exhausted: the model kept narrating future work instead of calling tools."
+              : "Stop-hook recovery exhausted after the model continued to emit an invalid completion summary.",
+          validatorId: "turn_end_stop_gate",
+          stopHookResult: hookResult,
+          continuationSummary,
+        });
+        completionValidationStatus = stopHookRecovery
+          ? "recovery_requested"
+          : "recovery_exhausted";
+        callbacks.emitExecutionTrace(ctx, {
+          type: "completion_validation_finished",
+          phase: "tool_followup",
+          callIndex: ctx.callIndex,
+          payload: {
+            status: completionValidationStatus,
+            stopReason: ctx.stopReason,
+            validationCode: ctx.validationCode,
+            runtimeContract: ctx.runtimeContractSnapshot,
+          },
+        });
+        if (stopHookRecovery) {
+          continue;
+        }
+      }
+    }
+    if (completionValidationStatus === "fail_closed") {
+      callbacks.emitExecutionTrace(ctx, {
+        type: "completion_validation_finished",
+        phase: "tool_followup",
+        callIndex: ctx.callIndex,
+        payload: {
+          status: completionValidationStatus,
+          stopReason: ctx.stopReason,
+          validationCode: ctx.validationCode,
+          runtimeContract: ctx.runtimeContractSnapshot,
+        },
+      });
+    } else {
     for (const validator of validators) {
       callbacks.emitExecutionTrace(ctx, {
         type: "completion_validator_started",
@@ -2427,6 +2633,7 @@ export async function executeToolCallLoop(
       continue;
     }
   }
+  }
   } while (shouldContinueAfterStopGate);
 
   if (hasPendingToolProtocol(ctx.toolProtocolState)) {
@@ -2459,14 +2666,6 @@ export async function executeToolCallLoop(
   }
 
   ctx.finalContent = ctx.response?.content ?? "";
-  if (
-    !ctx.finalContent &&
-    ctx.lastModelStreamedContent.trim().length > 0 &&
-    ctx.allToolCalls.length > 0 &&
-    ctx.stopReason === "completed"
-  ) {
-    ctx.finalContent = ctx.lastModelStreamedContent;
-  }
   const missingFinalToolFollowupAnswer =
     !ctx.finalContent &&
     ctx.allToolCalls.length > 0 &&
