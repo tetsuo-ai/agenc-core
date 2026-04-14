@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  checkTurnContinuationBudget,
+  countTurnCompletionTokens,
   createTurnContinuationState,
   finishTurnContinuation,
   shouldStopForDiminishingReturns,
@@ -120,5 +122,90 @@ describe("chat-executor-continuation", () => {
     expect(ctx.continuationState.continuationCount).toBe(3);
     expect(ctx.continuationState.consecutiveLowProgressStalls).toBe(3);
     expect(shouldStopForDiminishingReturns(ctx.continuationState)).toBe(true);
+  });
+
+  it("continues while the turn stays below the token budget threshold", () => {
+    const ctx = makeCtx({
+      callUsage: [makeCallUsageRecord(300)],
+    });
+
+    const decision = checkTurnContinuationBudget({
+      state: ctx.continuationState,
+      budget: 1_000,
+      globalTurnTokens: countTurnCompletionTokens(ctx.callUsage),
+      eligible: true,
+    });
+
+    expect(decision.action).toBe("continue");
+    if (decision.action !== "continue") {
+      throw new Error("Expected continuation");
+    }
+    expect(decision.continuationCount).toBe(1);
+    expect(decision.turnTokens).toBe(300);
+    expect(ctx.continuationState.budget.lastGlobalOutputTokens).toBe(300);
+  });
+
+  it("stops token-budget continuation after repeated low-delta continuations", () => {
+    const ctx = makeCtx();
+
+    let globalTurnTokens = 100;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const decision = checkTurnContinuationBudget({
+        state: ctx.continuationState,
+        budget: 2_000,
+        globalTurnTokens,
+        eligible: true,
+      });
+      expect(decision.action).toBe("continue");
+      globalTurnTokens += 100;
+    }
+
+    const stopDecision = checkTurnContinuationBudget({
+      state: ctx.continuationState,
+      budget: 2_000,
+      globalTurnTokens,
+      eligible: true,
+    });
+
+    expect(stopDecision.action).toBe("stop");
+    if (stopDecision.action !== "stop") {
+      throw new Error("Expected stop");
+    }
+    expect(stopDecision.completionEvent?.diminishingReturns).toBe(true);
+    expect(stopDecision.completionEvent?.continuationCount).toBe(3);
+  });
+
+  it("keeps token-budget stalls from poisoning validator recovery diminishing returns", () => {
+    const ctx = makeCtx();
+
+    const budgetDecision = checkTurnContinuationBudget({
+      state: ctx.continuationState,
+      budget: 2_000,
+      globalTurnTokens: 100,
+      eligible: true,
+    });
+    expect(budgetDecision.action).toBe("continue");
+    if (budgetDecision.action !== "continue") {
+      throw new Error("Expected token-budget continuation");
+    }
+
+    startTurnContinuation({
+      state: ctx.continuationState,
+      ctx,
+      reason: "token_budget",
+    });
+    finishTurnContinuation({ state: ctx.continuationState, ctx });
+
+    startTurnContinuation({
+      state: ctx.continuationState,
+      ctx,
+      reason: "validator",
+      validatorId: "deterministic_acceptance_probes",
+    });
+    finishTurnContinuation({ state: ctx.continuationState, ctx });
+
+    expect(ctx.continuationState.continuationCount).toBe(1);
+    expect(ctx.continuationState.consecutiveLowProgressStalls).toBe(1);
+    expect(shouldStopForDiminishingReturns(ctx.continuationState)).toBe(false);
   });
 });

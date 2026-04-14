@@ -12,6 +12,7 @@ import {
 
 const LOW_PROGRESS_TOKEN_DELTA = 500;
 const MIN_DIMINISHING_RETURNS_CONTINUATIONS = 3;
+const CONTINUATION_COMPLETION_THRESHOLD = 0.9;
 
 const SUCCESSFUL_MUTATION_TOOL_NAMES = new Set([
   "system.applyPatch",
@@ -47,12 +48,51 @@ export interface TurnContinuationCycleSummary {
   readonly lowProgressStall: boolean;
 }
 
-export interface TurnContinuationState {
+export interface TurnContinuationBudgetState {
   continuationCount: number;
+  lastDeltaTokens: number;
+  lastGlobalOutputTokens: number;
+  readonly startedAt: number;
+}
+
+export interface TurnContinuationBudgetCompletionEvent {
+  readonly continuationCount: number;
+  readonly pct: number;
+  readonly turnTokens: number;
+  readonly budget: number;
+  readonly diminishingReturns: boolean;
+  readonly durationMs: number;
+}
+
+export type TurnContinuationBudgetDecision =
+  | {
+      readonly action: "continue";
+      readonly nudgeMessage: string;
+      readonly continuationCount: number;
+      readonly pct: number;
+      readonly turnTokens: number;
+      readonly budget: number;
+    }
+  | {
+      readonly action: "stop";
+      readonly completionEvent: TurnContinuationBudgetCompletionEvent | null;
+    };
+
+export interface TurnContinuationState {
+  /**
+   * Recovery continuation attempts only. Token-budget continuation keeps its own
+   * separate tracker so low-budget nudges do not poison validator recovery caps.
+   */
+  continuationCount: number;
+  /**
+   * Recovery continuation low-progress streak only. Token-budget continuation
+   * uses its own diminishing-returns tracker.
+   */
   consecutiveLowProgressStalls: number;
   lastContinuationReason?: string;
   active?: TurnContinuationActiveState;
   readonly history: TurnContinuationCycleSummary[];
+  readonly budget: TurnContinuationBudgetState;
 }
 
 export function createTurnContinuationState(): TurnContinuationState {
@@ -60,6 +100,16 @@ export function createTurnContinuationState(): TurnContinuationState {
     continuationCount: 0,
     consecutiveLowProgressStalls: 0,
     history: [],
+    budget: createTurnContinuationBudgetState(),
+  };
+}
+
+export function createTurnContinuationBudgetState(): TurnContinuationBudgetState {
+  return {
+    continuationCount: 0,
+    lastDeltaTokens: 0,
+    lastGlobalOutputTokens: 0,
+    startedAt: Date.now(),
   };
 }
 
@@ -70,7 +120,10 @@ export function startTurnContinuation(params: {
   readonly validatorId?: CompletionValidatorId;
   readonly tighterCap?: number;
 }): TurnContinuationActiveState {
-  const attempt = params.state.continuationCount + 1;
+  const attempt =
+    params.reason === "token_budget"
+      ? params.state.budget.continuationCount
+      : params.state.continuationCount + 1;
   const active: TurnContinuationActiveState = {
     reason: params.reason,
     validatorId: params.validatorId,
@@ -81,7 +134,9 @@ export function startTurnContinuation(params: {
     baselineToolCallIndex: params.ctx.allToolCalls.length,
     baselineDiagnosticFingerprint: buildDiagnosticFingerprint(params.ctx),
   };
-  params.state.continuationCount = attempt;
+  if (params.reason !== "token_budget") {
+    params.state.continuationCount = attempt;
+  }
   params.state.lastContinuationReason = params.reason;
   params.state.active = active;
   return active;
@@ -135,9 +190,11 @@ export function finishTurnContinuation(params: {
     lowProgressStall,
   };
   params.state.history.push(summary);
-  params.state.consecutiveLowProgressStalls = lowProgressStall
-    ? params.state.consecutiveLowProgressStalls + 1
-    : 0;
+  if (active.reason !== "token_budget") {
+    params.state.consecutiveLowProgressStalls = lowProgressStall
+      ? params.state.consecutiveLowProgressStalls + 1
+      : 0;
+  }
   params.state.active = undefined;
   return summary;
 }
@@ -149,6 +206,79 @@ export function shouldStopForDiminishingReturns(
     state.continuationCount >= MIN_DIMINISHING_RETURNS_CONTINUATIONS &&
     state.consecutiveLowProgressStalls >= 2
   );
+}
+
+export function countTurnCompletionTokens(
+  callUsage: readonly ChatCallUsageRecord[],
+): number {
+  return countCompletionTokensSince(callUsage, 0);
+}
+
+export function checkTurnContinuationBudget(params: {
+  readonly state: TurnContinuationState;
+  readonly budget: number | null;
+  readonly globalTurnTokens: number;
+  readonly eligible: boolean;
+}): TurnContinuationBudgetDecision {
+  if (!params.eligible || params.budget === null || params.budget <= 0) {
+    return { action: "stop", completionEvent: null };
+  }
+
+  const tracker = params.state.budget;
+  const turnTokens = params.globalTurnTokens;
+  const pct = Math.round((turnTokens / params.budget) * 100);
+  const deltaSinceLastCheck =
+    params.globalTurnTokens - tracker.lastGlobalOutputTokens;
+  const isDiminishing =
+    tracker.continuationCount >= MIN_DIMINISHING_RETURNS_CONTINUATIONS &&
+    deltaSinceLastCheck < LOW_PROGRESS_TOKEN_DELTA &&
+    tracker.lastDeltaTokens < LOW_PROGRESS_TOKEN_DELTA;
+
+  if (!isDiminishing && turnTokens < params.budget * CONTINUATION_COMPLETION_THRESHOLD) {
+    tracker.continuationCount += 1;
+    tracker.lastDeltaTokens = deltaSinceLastCheck;
+    tracker.lastGlobalOutputTokens = params.globalTurnTokens;
+    return {
+      action: "continue",
+      nudgeMessage: buildTurnContinuationBudgetMessage(
+        pct,
+        turnTokens,
+        params.budget,
+      ),
+      continuationCount: tracker.continuationCount,
+      pct,
+      turnTokens,
+      budget: params.budget,
+    };
+  }
+
+  if (isDiminishing || tracker.continuationCount > 0) {
+    return {
+      action: "stop",
+      completionEvent: {
+        continuationCount: tracker.continuationCount,
+        pct,
+        turnTokens,
+        budget: params.budget,
+        diminishingReturns: isDiminishing,
+        durationMs: Date.now() - tracker.startedAt,
+      },
+    };
+  }
+
+  return { action: "stop", completionEvent: null };
+}
+
+export function buildTurnContinuationBudgetMessage(
+  pct: number,
+  turnTokens: number,
+  budget: number,
+): string {
+  const format = (value: number): string =>
+    new Intl.NumberFormat("en-US").format(value);
+  return `Stopped at ${pct}% of token target (${format(turnTokens)} / ${format(
+    budget,
+  )}). Keep working - do not summarize.`;
 }
 
 export function buildDiagnosticFingerprint(ctx: ExecutionContext): string {

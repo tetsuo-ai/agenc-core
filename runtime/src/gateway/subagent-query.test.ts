@@ -184,4 +184,72 @@ describe("runSubagentToLegacyResult (Phase K)", () => {
       }),
     ).rejects.toThrow();
   });
+
+  it("preserves shared continuation behavior for subagent turns", async () => {
+    const provider: LLMProvider = {
+      name: "mock-subagent-provider",
+      chat: vi
+        .fn<[LLMMessage[], LLMChatOptions?], Promise<LLMResponse>>()
+        .mockResolvedValueOnce({
+          content: "",
+          toolCalls: [
+            { id: "tc-1", name: "system.listDir", arguments: '{"path":"."}' },
+          ],
+          usage: { promptTokens: 20, completionTokens: 50, totalTokens: 70 },
+          model: "mock-model",
+          finishReason: "tool_calls",
+        })
+        .mockResolvedValueOnce({
+          content: "Next I will continue with the remaining work.",
+          toolCalls: [],
+          usage: { promptTokens: 20, completionTokens: 100, totalTokens: 120 },
+          model: "mock-model",
+          finishReason: "stop",
+        })
+        .mockResolvedValueOnce({
+          content: "Bootstrap complete. Continuing.",
+          toolCalls: [],
+          usage: { promptTokens: 20, completionTokens: 100, totalTokens: 120 },
+          model: "mock-model",
+          finishReason: "stop",
+        })
+        .mockResolvedValueOnce({
+          content: "Subagent finished the remaining work.",
+          toolCalls: [],
+          usage: { promptTokens: 20, completionTokens: 1_900, totalTokens: 1_920 },
+          model: "mock-model",
+          finishReason: "stop",
+        }),
+      chatStream: vi
+        .fn<
+          [LLMMessage[], StreamProgressCallback, LLMChatOptions?],
+          Promise<LLMResponse>
+        >()
+        .mockRejectedValue(new Error("unused")),
+      healthCheck: vi.fn<[], Promise<boolean>>().mockResolvedValue(true),
+    };
+    const executor = new ChatExecutor({
+      providers: [provider],
+      toolHandler: vi.fn(async () => '{"ok":true}'),
+    });
+
+    const result = await runSubagentToLegacyResult(executor, {
+      sessionId: "continued-child",
+      params: {
+        message: makeMessage("continue the task"),
+        history: [],
+        systemPrompt: "System",
+        sessionId: "continued-child",
+      },
+    });
+
+    expect(result.legacyResult?.content).toBe("Subagent finished the remaining work.");
+    expect(result.legacyResult?.callUsage.map((entry) => entry.phase)).toEqual([
+      "initial",
+      "tool_followup",
+      "tool_followup",
+      "tool_followup",
+    ]);
+    expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(4);
+  });
 });

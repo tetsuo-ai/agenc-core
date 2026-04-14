@@ -651,6 +651,7 @@ export interface ExecutionContext {
   readonly effectiveMaxModelRecalls: number;
   readonly effectiveFailureBudget: number;
   readonly effectiveRequestTimeoutMs: number;
+  readonly turnOutputTokenBudget: number | null;
   readonly startTime: number;
   readonly requestDeadlineAt: number;
   readonly initialRoutedToolNames: readonly string[];
@@ -758,6 +759,7 @@ interface BuildExecutionContextConfig {
   readonly maxFailureBudgetPerRequest: number;
   /** End-to-end request timeout in milliseconds. 0 = unlimited. */
   readonly requestTimeoutMs: number;
+  readonly turnOutputTokenBudget: number | null;
   readonly providerName: string;
   readonly plannerEnabled: boolean;
   readonly defaultRunClass?: RuntimeRunClass;
@@ -792,6 +794,7 @@ export function buildDefaultExecutionContext(
     effectiveMaxModelRecalls: config.maxModelRecallsPerRequest,
     effectiveFailureBudget: config.maxFailureBudgetPerRequest,
     effectiveRequestTimeoutMs: config.requestTimeoutMs,
+    turnOutputTokenBudget: config.turnOutputTokenBudget,
     startTime,
     requestDeadlineAt:
       config.requestTimeoutMs > 0

@@ -72,6 +72,8 @@ import {
 } from "./verification-target-guard.js";
 import { buildCompletionValidators } from "./completion-validators.js";
 import {
+  checkTurnContinuationBudget,
+  countTurnCompletionTokens,
   finishTurnContinuation,
   shouldStopForDiminishingReturns,
   startTurnContinuation,
@@ -108,6 +110,8 @@ import {
   checkRequestTimeout,
   clearRuntimeInstructionKey,
   emitExecutionTrace,
+  getRemainingRequestMs,
+  hasModelRecallBudget,
   maybePushRuntimeInstruction,
   maybePushKeyedRuntimeInstruction,
   pushMessage,
@@ -1540,6 +1544,31 @@ export async function executeToolCallLoop(
     });
     return summary;
   };
+  const resolveTurnOutputTokenBudget = (): number | null => {
+    for (let index = ctx.callUsage.length - 1; index >= 0; index -= 1) {
+      const maxOutputTokens = ctx.callUsage[index]?.budgetDiagnostics?.model.maxOutputTokens;
+      if (
+        typeof maxOutputTokens === "number" &&
+        Number.isFinite(maxOutputTokens) &&
+        maxOutputTokens > 0
+      ) {
+        return Math.max(1, Math.floor(maxOutputTokens));
+      }
+    }
+    return ctx.turnOutputTokenBudget;
+  };
+  const shouldAllowBudgetContinuation = (): boolean => {
+    const structuredOutputActive =
+      ctx.structuredOutput?.schema !== undefined &&
+      ctx.structuredOutput.enabled !== false;
+    if (structuredOutputActive) {
+      return false;
+    }
+    if (ctx.continuationState.history.length === 0) {
+      return false;
+    }
+    return true;
+  };
   const attemptCompletionRecovery = async (params: {
     readonly reason: string;
     readonly blockingMessage?: string;
@@ -1550,8 +1579,8 @@ export async function executeToolCallLoop(
     readonly validationCode?: DelegationOutputValidationCode;
     readonly validatorId?: CompletionValidatorId;
     readonly stopHookResult?: import("./hooks/stop-hooks.js").StopHookPhaseResult;
+    readonly continuationSummary?: ReturnType<typeof finishTurnContinuation>;
   }): Promise<boolean> => {
-    const continuationSummary = emitContinuationEvaluation();
     const continuationCap =
       params.maxAttempts !== undefined
         ? Math.max(0, params.maxAttempts)
@@ -1593,7 +1622,7 @@ export async function executeToolCallLoop(
           attempt: ctx.continuationState.continuationCount,
           maxAttempts: continuationCap,
           exhaustedDetail: params.exhaustedDetail,
-          continuationSummary,
+          continuationSummary: params.continuationSummary,
           stopCause: shouldExhaustForDiminishingReturns
             ? "diminishing_returns"
             : continuationCap !== undefined &&
@@ -1696,7 +1725,6 @@ export async function executeToolCallLoop(
         statefulSessionId: ctx.sessionId,
         statefulResumeAnchor: ctx.stateful?.resumeAnchor,
         statefulHistoryCompacted: ctx.stateful?.historyCompacted,
-        toolChoice: "required",
         budgetReason: params.budgetReason,
       }),
     );
@@ -1729,6 +1757,111 @@ export async function executeToolCallLoop(
       return false;
     }
     ctx.response = recoveryResponse;
+    failClosedOnMalformedToolContinuation(ctx, callbacks);
+    shouldContinueAfterStopGate = true;
+    return true;
+  };
+  const attemptTokenBudgetContinuation = async (params: {
+    readonly continuationSummary?: ReturnType<typeof finishTurnContinuation>;
+  }): Promise<boolean> => {
+    const decision = checkTurnContinuationBudget({
+      state: ctx.continuationState,
+      budget: resolveTurnOutputTokenBudget(),
+      globalTurnTokens: countTurnCompletionTokens(ctx.callUsage),
+      eligible: shouldAllowBudgetContinuation(),
+    });
+    if (decision.action === "stop") {
+      if (decision.completionEvent) {
+        callbacks.emitExecutionTrace(ctx, {
+          type: "continuation_stopped",
+          phase: "tool_followup",
+          callIndex: ctx.callIndex,
+          payload: {
+            reason: "token_budget",
+            continuationSummary: params.continuationSummary,
+            completionEvent: decision.completionEvent,
+            stopCause: decision.completionEvent.diminishingReturns
+              ? "diminishing_returns"
+              : "token_budget_completed",
+          },
+        });
+      }
+      return false;
+    }
+    if (!hasModelRecallBudget(ctx) || getRemainingRequestMs(ctx) <= 0) {
+      callbacks.emitExecutionTrace(ctx, {
+        type: "continuation_stopped",
+        phase: "tool_followup",
+        callIndex: ctx.callIndex,
+        payload: {
+          reason: "token_budget",
+          continuationSummary: params.continuationSummary,
+          stopCause: !hasModelRecallBudget(ctx)
+            ? "model_recall_budget_exhausted"
+            : "request_timeout_exhausted",
+          turnTokens: decision.turnTokens,
+          budget: decision.budget,
+          pct: decision.pct,
+          continuationCount: decision.continuationCount,
+        },
+      });
+      return false;
+    }
+    sealPendingToolProtocol(ctx, callbacks, "validation_recovery");
+    const activeContinuation = startTurnContinuation({
+      state: ctx.continuationState,
+      ctx,
+      reason: "token_budget",
+    });
+    callbacks.emitExecutionTrace(ctx, {
+      type: "continuation_started",
+      phase: "tool_followup",
+      callIndex: ctx.callIndex,
+      payload: {
+        reason: "token_budget",
+        attempt: activeContinuation.attempt,
+        continuationCount: decision.continuationCount,
+        turnTokens: decision.turnTokens,
+        budget: decision.budget,
+        pct: decision.pct,
+      },
+    });
+    callbacks.pushMessage(
+      ctx,
+      {
+        role: "user",
+        content: decision.nudgeMessage,
+      },
+      "system_runtime",
+    );
+    await runPerIterationCompactionBeforeModelCall(
+      ctx,
+      config,
+      callbacks,
+      "tool_followup",
+    );
+    const continuationResponse = await callModelWithReactiveCompact(
+      ctx,
+      callbacks,
+      "tool_followup",
+      () => ({
+        phase: "tool_followup",
+        callMessages: ctx.messages,
+        callSections: ctx.messageSections,
+        onStreamChunk: ctx.activeStreamCallback,
+        structuredOutput: ctx.structuredOutput,
+        statefulSessionId: ctx.sessionId,
+        statefulResumeAnchor: ctx.stateful?.resumeAnchor,
+        statefulHistoryCompacted: ctx.stateful?.historyCompacted,
+        budgetReason:
+          "Max model recalls exceeded during token-budget continuation",
+      }),
+    );
+    if (!continuationResponse) {
+      ctx.continuationState.active = undefined;
+      return false;
+    }
+    ctx.response = continuationResponse;
     failClosedOnMalformedToolContinuation(ctx, callbacks);
     shouldContinueAfterStopGate = true;
     return true;
@@ -2030,6 +2163,9 @@ export async function executeToolCallLoop(
     !hasPendingToolProtocol(ctx.toolProtocolState) &&
     ctx.stopReason === "completed"
   ) {
+    const continuationSummary = ctx.continuationState.active
+      ? emitContinuationEvaluation()
+      : undefined;
     const validators = buildCompletionValidators({
       ctx,
       runtimeContractFlags: config.runtimeContractFlags,
@@ -2272,6 +2408,7 @@ export async function executeToolCallLoop(
         validationCode: validation.validationCode,
         validatorId: validator.id,
         stopHookResult: validation.stopHookResult,
+        continuationSummary,
       });
       completionValidationStatus = shouldContinueAfterStopGate
         ? "recovery_requested"
@@ -2291,6 +2428,12 @@ export async function executeToolCallLoop(
       },
     });
     if (shouldContinueAfterStopGate) {
+      continue;
+    }
+    const requestedBudgetContinuation = await attemptTokenBudgetContinuation({
+      continuationSummary,
+    });
+    if (requestedBudgetContinuation) {
       continue;
     }
   }

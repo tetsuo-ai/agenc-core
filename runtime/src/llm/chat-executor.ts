@@ -363,6 +363,12 @@ export class ChatExecutor {
       maxModelRecallsPerRequest: this.maxModelRecallsPerRequest,
       maxFailureBudgetPerRequest: this.maxFailureBudgetPerRequest,
       requestTimeoutMs: this.requestTimeoutMs,
+      turnOutputTokenBudget:
+        typeof this.promptBudget.maxOutputTokens === "number" &&
+          Number.isFinite(this.promptBudget.maxOutputTokens) &&
+          this.promptBudget.maxOutputTokens > 0
+          ? Math.max(1, Math.floor(this.promptBudget.maxOutputTokens))
+          : null,
       // Routing + enforcement
       allowedTools: this.allowedTools,
       plannerEnabled: this.plannerEnabled,

@@ -92,6 +92,7 @@ export interface InitializeExecutionContextDependencies {
   readonly maxModelRecallsPerRequest: number;
   readonly maxFailureBudgetPerRequest: number;
   readonly requestTimeoutMs: number;
+  readonly turnOutputTokenBudget: number | null;
   // Routing + enforcement
   readonly allowedTools: Set<string> | null;
   readonly plannerEnabled: boolean;
@@ -284,6 +285,12 @@ export async function initializeExecutionContext(
       requestTimeoutMs: normalizeInitRequestTimeoutMs(
         params.requestTimeoutMs ?? deps.requestTimeoutMs,
       ),
+      turnOutputTokenBudget:
+        typeof deps.promptBudget.maxOutputTokens === "number" &&
+          Number.isFinite(deps.promptBudget.maxOutputTokens) &&
+          deps.promptBudget.maxOutputTokens > 0
+          ? Math.max(1, Math.floor(deps.promptBudget.maxOutputTokens))
+          : null,
       providerName: deps.providers[0]?.name ?? "unknown",
       plannerEnabled: deps.plannerEnabled,
       defaultRunClass: deps.defaultRunClass,

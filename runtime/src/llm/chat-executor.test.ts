@@ -848,6 +848,184 @@ describe("ChatExecutor", () => {
       expect(result.content).not.toContain("Model returned empty content");
     });
 
+    it("continues after a successful tool turn while token budget remains", async () => {
+      const toolHandler = vi.fn().mockResolvedValue('{"ok":true}');
+      const provider = createMockProvider("primary", {
+        chat: vi
+          .fn()
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: "",
+              finishReason: "tool_calls",
+              toolCalls: [
+                { id: "tc-1", name: "system.listDir", arguments: '{"path":"."}' },
+              ],
+              usage: {
+                promptTokens: 25,
+                completionTokens: 50,
+                totalTokens: 75,
+              },
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: "Next I will continue with the remaining implementation work.",
+              finishReason: "stop",
+              usage: {
+                promptTokens: 30,
+                completionTokens: 100,
+                totalTokens: 130,
+              },
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: "Bootstrap complete. Continuing with the remaining work.",
+              finishReason: "stop",
+              usage: {
+                promptTokens: 30,
+                completionTokens: 100,
+                totalTokens: 130,
+              },
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: "Finished the remaining implementation details.",
+              finishReason: "stop",
+              usage: {
+                promptTokens: 30,
+                completionTokens: 1_900,
+                totalTokens: 1_930,
+              },
+            }),
+          ),
+      });
+
+      const executor = new ChatExecutor({ providers: [provider], toolHandler });
+      const result = await executor.execute(createParams());
+
+      expect(result.stopReason).toBe("completed");
+      expect(result.content).toBe("Finished the remaining implementation details.");
+      expect(result.callUsage.map((entry) => entry.phase)).toEqual([
+        "initial",
+        "tool_followup",
+        "tool_followup",
+        "tool_followup",
+      ]);
+      expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(4);
+      expect(
+        (provider.chat as ReturnType<typeof vi.fn>).mock.calls[2]?.[1]?.toolChoice,
+      ).toBeUndefined();
+    });
+
+    it("does not apply token-budget continuation to structured-output turns", async () => {
+      const toolHandler = vi.fn().mockResolvedValue('{"ok":true}');
+      const provider = createMockProvider("primary", {
+        chat: vi
+          .fn()
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: "",
+              finishReason: "tool_calls",
+              toolCalls: [
+                { id: "tc-1", name: "system.listDir", arguments: '{"path":"."}' },
+              ],
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: '{"status":"done"}',
+              finishReason: "stop",
+              usage: {
+                promptTokens: 20,
+                completionTokens: 100,
+                totalTokens: 120,
+              },
+            }),
+          ),
+      });
+
+      const executor = new ChatExecutor({ providers: [provider], toolHandler });
+      const result = await executor.execute(
+        createParams({
+          structuredOutput: {
+            enabled: true,
+            schema: {
+              type: "json_schema",
+              name: "structured_turn",
+              strict: true,
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                required: ["status"],
+                properties: {
+                  status: { type: "string" },
+                },
+              },
+            },
+          },
+        }),
+      );
+
+      expect(result.stopReason).toBe("completed");
+      expect(result.content).toBe('{"status":"done"}');
+      expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2);
+    });
+
+    it("does not apply token-budget continuation when structured output is default-enabled", async () => {
+      const toolHandler = vi.fn().mockResolvedValue('{"ok":true}');
+      const provider = createMockProvider("primary", {
+        chat: vi
+          .fn()
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: "",
+              finishReason: "tool_calls",
+              toolCalls: [
+                { id: "tc-1", name: "system.listDir", arguments: '{"path":"."}' },
+              ],
+            }),
+          )
+          .mockResolvedValueOnce(
+            mockResponse({
+              content: '{"status":"done"}',
+              finishReason: "stop",
+              usage: {
+                promptTokens: 20,
+                completionTokens: 100,
+                totalTokens: 120,
+              },
+            }),
+          ),
+      });
+
+      const executor = new ChatExecutor({ providers: [provider], toolHandler });
+      const result = await executor.execute(
+        createParams({
+          structuredOutput: {
+            schema: {
+              type: "json_schema",
+              name: "structured_turn",
+              strict: true,
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                required: ["status"],
+                properties: {
+                  status: { type: "string" },
+                },
+              },
+            },
+          },
+        }),
+      );
+
+      expect(result.stopReason).toBe("completed");
+      expect(result.content).toBe('{"status":"done"}');
+      expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2);
+    });
+
     it("surfaces timeout detail instead of summarizing tool output when tool follow-up never starts", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-04-08T00:00:00.000Z"));

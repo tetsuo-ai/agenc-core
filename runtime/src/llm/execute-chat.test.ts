@@ -240,6 +240,97 @@ describe("executeChat (Phase C async generator)", () => {
     expect(terminal.reason).toBe("stop_reason_end_turn");
   });
 
+  it("preserves shared continuation behavior through the executeChat adapter", async () => {
+    const provider: LLMProvider = {
+      name: "mock-continuation",
+      chat: vi
+        .fn<[LLMMessage[], LLMChatOptions?], Promise<LLMResponse>>()
+        .mockResolvedValueOnce({
+          content: "",
+          toolCalls: [
+            { id: "tc-1", name: "system.listDir", arguments: '{"path":"."}' },
+          ],
+          usage: {
+            promptTokens: 20,
+            completionTokens: 50,
+            totalTokens: 70,
+          },
+          model: "mock-model",
+          finishReason: "tool_calls",
+        })
+        .mockResolvedValueOnce({
+          content: "Next I will continue with the remaining work.",
+          toolCalls: [],
+          usage: {
+            promptTokens: 20,
+            completionTokens: 100,
+            totalTokens: 120,
+          },
+          model: "mock-model",
+          finishReason: "stop",
+        })
+        .mockResolvedValueOnce({
+          content: "Bootstrap complete. Continuing.",
+          toolCalls: [],
+          usage: {
+            promptTokens: 20,
+            completionTokens: 100,
+            totalTokens: 120,
+          },
+          model: "mock-model",
+          finishReason: "stop",
+        })
+        .mockResolvedValueOnce({
+          content: "Finished the remaining implementation details.",
+          toolCalls: [],
+          usage: {
+            promptTokens: 20,
+            completionTokens: 1_900,
+            totalTokens: 1_920,
+          },
+          model: "mock-model",
+          finishReason: "stop",
+        }),
+      chatStream: vi
+        .fn<
+          [LLMMessage[], StreamProgressCallback, LLMChatOptions?],
+          Promise<LLMResponse>
+        >()
+        .mockRejectedValue(new Error("unused")),
+      healthCheck: vi.fn<[], Promise<boolean>>().mockResolvedValue(true),
+    };
+    const executor = new ChatExecutor({
+      providers: [provider],
+      toolHandler: vi.fn(async () => '{"ok":true}'),
+    });
+
+    const { events, terminal } = await collect(
+      executeChat(executor, {
+        message: makeMessage("continue the task"),
+        history: [],
+        systemPrompt: "You are a test.",
+        sessionId: "session-continuation",
+      }),
+    );
+
+    const assistants = events.filter(
+      (event) => event.type === "assistant",
+    ) as AssistantMessage[];
+    expect(assistants.at(-1)?.content).toBe(
+      "Finished the remaining implementation details.",
+    );
+    expect(terminal.finalContent).toBe(
+      "Finished the remaining implementation details.",
+    );
+    expect(terminal.legacyResult?.callUsage.map((entry) => entry.phase)).toEqual([
+      "initial",
+      "tool_followup",
+      "tool_followup",
+      "tool_followup",
+    ]);
+    expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(4);
+  });
+
   it("drains provider stream chunks into stream_chunk events when chatStream is used", async () => {
     const chunks: LLMStreamChunk[] = [
       { content: "a", done: false },
