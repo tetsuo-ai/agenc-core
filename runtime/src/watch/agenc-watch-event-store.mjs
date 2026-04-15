@@ -294,32 +294,24 @@ export function createWatchEventStore(dependencies = {}) {
   }
 
   function appendAgentStreamChunk(chunk, { done = false } = {}) {
+    void done;
     const safeChunk = stripTerminalControlSequences(sanitizeLargeText(chunk ?? ""));
     return withPreservedManualTranscriptViewport(({ shouldFollow }) => {
       const timestamp = nowStamp();
-      const target = findLatestStreamingAgentEvent();
-      if (target) {
-        const createdAtMs = nowMs();
-        if (safeChunk) {
-          updateExistingEventBody(target, `${storedEventBody(target)}${safeChunk}`);
-        }
-        target.timestamp = timestamp;
-        target.createdAtMs = createdAtMs;
-        target.title = "Agent Reply · live";
-        target.streamState = nextAgentStreamState({ done });
-        updateLatestAgentSummary(target);
-      } else {
-        const nextStreamingText = `${watchState.agentStreamingText ?? ""}${safeChunk}`;
-        watchState.agentStreamingText = nextStreamingText || null;
-        watchState.agentStreamingPreview = deriveStreamingPreviewText(nextStreamingText);
-        if (safeChunk && introDismissKinds.has("agent")) {
-          dismissIntro();
-        }
+      // Keep provider stream text provisional until a final chat.message
+      // arrives. The runtime can still reject a streamed "done" summary
+      // during stop hooks or verification, so committing it into the
+      // transcript early makes the UI lie about turn completion.
+      const nextStreamingText = `${watchState.agentStreamingText ?? ""}${safeChunk}`;
+      watchState.agentStreamingText = nextStreamingText || null;
+      watchState.agentStreamingPreview = deriveStreamingPreviewText(nextStreamingText);
+      if (safeChunk && introDismissKinds.has("agent")) {
+        dismissIntro();
       }
       updateActivity(timestamp);
       followTranscriptIfNeeded(shouldFollow);
       scheduleRender();
-      return target ?? watchState.agentStreamingPreview;
+      return watchState.agentStreamingPreview;
     });
   }
 

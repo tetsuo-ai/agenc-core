@@ -381,6 +381,8 @@ export interface ChatExecutorResult {
   readonly verifierSnapshot?: import("../workflow/completion-state.js").PlannerVerificationSnapshot;
   /** Runtime-contract telemetry captured during execution. Not consulted for final completion decisions. */
   readonly runtimeContractSnapshot?: RuntimeContractSnapshot;
+  /** Resolved workspace root used for this execution, when available. */
+  readonly runtimeWorkspaceRoot?: string;
   /** Single preflight execution contract that governed this turn. */
   readonly turnExecutionContract: TurnExecutionContract;
   /** Typed task carryover emitted for the next compatible turn, when applicable. */

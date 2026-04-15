@@ -2880,24 +2880,11 @@ export function createWatchFrameController(dependencies = {}) {
   }
 
   function buildStreamingPreviewBlock(width) {
-    const previewText =
-      typeof watchState.agentStreamingPreview === "string"
-        ? watchState.agentStreamingPreview.trimEnd()
-        : "";
-    if (!previewText) {
-      return [];
-    }
-    const previewEvent = {
-      id: "__streaming_preview__",
-      kind: "agent",
-      title: "Agent Reply · live",
-      tone: "cyan",
-      body: previewText,
-      bodyTruncated: false,
-      renderMode: "markdown",
-      streamState: "streaming",
-    };
-    return renderEventBlock(previewEvent, width, { showBody: true });
+    void width;
+    // The transcript should only show committed agent replies. Provisional
+    // provider stream text can still be rejected by verification or stop
+    // hooks, so leave streaming content out of the transcript surface.
+    return [];
   }
 
   function flattenTranscriptView(width) {

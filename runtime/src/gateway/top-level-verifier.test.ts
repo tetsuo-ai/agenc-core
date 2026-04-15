@@ -310,6 +310,64 @@ describe("runTopLevelVerifierValidation", () => {
     expect(decision.runtimeVerifier.overall).toBe("pass");
   });
 
+  it("uses the execution workspace root instead of a stale contract root", async () => {
+    const spawn = vi.fn(async () => "subagent:verify-workspace");
+    const waitForResult = vi.fn(async () => ({
+      sessionId: "subagent:verify-workspace",
+      output: "All good.\nVERDICT: PASS",
+      success: true,
+      durationMs: 10,
+      toolCalls: [],
+      structuredOutput: {
+        type: "json_schema",
+        name: "agenc_top_level_verifier_decision",
+        parsed: {
+          verdict: "pass",
+          summary: "Workspace-root verification passed.",
+        },
+      },
+      completionState: "completed",
+      stopReason: "completed",
+    }));
+
+    await runTopLevelVerifierValidation({
+      sessionId: "session:test",
+      userRequest: "Finish the shell implementation and verify it",
+      result: createResult({
+        runtimeWorkspaceRoot: "/runtime-workspace",
+        toolCalls: [
+          {
+            name: "system.writeFile",
+            args: { path: "src/main.c" },
+            result: '{"ok":true}',
+            isError: false,
+            durationMs: 5,
+          },
+        ],
+        turnExecutionContract: {
+          ...createResult().turnExecutionContract,
+          workspaceRoot: "/stale-contract-root",
+          sourceArtifacts: ["/stale-contract-root/PLAN.md"],
+          targetArtifacts: [],
+        },
+      }),
+      subAgentManager: { spawn, waitForResult },
+      verifierService: createVerifierService(),
+    });
+
+    expect(spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workingDirectory: "/runtime-workspace",
+        requiredToolEvidence: expect.objectContaining({
+          executionEnvelope: expect.objectContaining({
+            allowedReadRoots: ["/runtime-workspace"],
+            targetArtifacts: ["/runtime-workspace/src/main.c"],
+          }),
+        }),
+      }),
+    );
+  });
+
   it("still runs verifier work when target artifacts are declared without structured writes", async () => {
     const spawn = vi.fn(async () => "subagent:verify-1");
     const waitForResult = vi.fn(async () => ({
