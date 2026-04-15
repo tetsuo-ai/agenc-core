@@ -105,3 +105,49 @@ test("normalizer classifies mkdir start and result separately from generic tools
     },
   );
 });
+
+test("normalizer classifies editFile start and result separately from generic tools", () => {
+  const normalizer = createNormalizer();
+
+  assert.deepEqual(
+    normalizer.normalizeToolStart("system.editFile", {
+      path: "src/app/args.c",
+      old_string: "old value",
+      new_string: "new value",
+    }),
+    {
+      kind: "file-edit-start",
+      filePathDisplay: "src/app/args.c",
+      filePathRaw: "src/app/args.c",
+      oldText: "old value",
+      newText: "new value",
+      replaceAll: false,
+    },
+  );
+
+  assert.deepEqual(
+    normalizer.normalizeToolResult(
+      "system.editFile",
+      {
+        path: "src/app/args.c",
+        old_string: "old value",
+        new_string: "new value",
+      },
+      false,
+      '{"path":"src/app/args.c","replacements":1,"bytesWritten":128}',
+    ),
+    {
+      kind: "file-edit-result",
+      isError: false,
+      filePathDisplay: "src/app/args.c",
+      filePathRaw: "src/app/args.c",
+      oldText: "old value",
+      newText: "new value",
+      replaceAll: false,
+      replacements: 1,
+      bytesWrittenText: "128 B",
+      errorText: null,
+      errorPreview: null,
+    },
+  );
+});

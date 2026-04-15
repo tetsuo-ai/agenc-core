@@ -19,6 +19,18 @@ export function createWatchToolPresentationCopyBuilder(dependencies = {}) {
     describeDesktopTextEditorStart,
   } = createWatchToolPresentationEditorDescriptors({ truncate });
 
+  function summarizeEditFileErrorCopy(data) {
+    const text = String(data.errorText ?? "").replace(/\s+/g, " ").trim();
+    if (!text) return "Error editing file";
+    if (/file has not been read yet|must be read first|call system\.readfile/i.test(text)) {
+      return "File must be read first";
+    }
+    if (/file not found|path does not exist|enoent/i.test(text)) {
+      return "File not found";
+    }
+    return "Error editing file";
+  }
+
   function summarizeToolErrorCopy(toolName, prettyResult) {
     const text = String(prettyResult ?? "").replace(/\s+/g, " ").trim();
     if (!text) return null;
@@ -73,6 +85,19 @@ export function createWatchToolPresentationCopyBuilder(dependencies = {}) {
             filePath: data.filePathRaw,
             mutationKind: data.action,
             mutationAfterText: data.content ?? undefined,
+          }),
+        };
+      case "file-edit-start":
+        return {
+          title: `Update ${data.filePathDisplay || "file"}`,
+          body: data.filePathDisplay || "(pending edit)",
+          tone: "yellow",
+          previewMode: "source-write",
+          ...buildSourceMetadata({
+            filePath: data.filePathRaw,
+            mutationKind: "replace",
+            mutationBeforeText: data.oldText ?? undefined,
+            mutationAfterText: data.newText ?? undefined,
           }),
         };
       case "file-read-start":
@@ -142,6 +167,30 @@ export function createWatchToolPresentationCopyBuilder(dependencies = {}) {
             filePath: data.filePathRaw,
             mutationKind: data.action,
             mutationAfterText: typeof data.content === "string" ? data.content : undefined,
+          }),
+        };
+      case "file-edit-result":
+        return {
+          title: `${data.isError ? "Update" : "Updated"} ${data.filePathDisplay || "file"}`,
+          body: data.isError
+            ? summarizeEditFileErrorCopy(data)
+            : joinDescriptorBody(
+                [
+                  data.filePathDisplay ? `path: ${data.filePathDisplay}` : null,
+                  typeof data.replacements === "number"
+                    ? `replacements: ${data.replacements}`
+                    : null,
+                  data.bytesWrittenText ? `written: ${data.bytesWrittenText}` : null,
+                ],
+                data.filePathDisplay || "(file updated)",
+              ),
+          tone: data.isError ? "red" : "green",
+          previewMode: "source-write",
+          ...buildSourceMetadata({
+            filePath: data.filePathRaw,
+            mutationKind: "replace",
+            mutationBeforeText: data.oldText ?? undefined,
+            mutationAfterText: data.newText ?? undefined,
           }),
         };
       case "file-read-result":

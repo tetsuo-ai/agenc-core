@@ -269,6 +269,24 @@ export function createWatchToolPresentationNormalizer(dependencies = {}) {
               ? payload.content
               : null,
         };
+      case "system.editFile":
+        return {
+          kind: "file-edit-start",
+          filePathDisplay: compactPathForDisplay(payload.path),
+          filePathRaw:
+            typeof payload?.path === "string" && payload.path.trim().length > 0
+              ? sanitizeInlineText(payload.path)
+              : null,
+          oldText:
+            typeof payload.old_string === "string" && payload.old_string.length > 0
+              ? payload.old_string
+              : null,
+          newText:
+            typeof payload.new_string === "string" && payload.new_string.length > 0
+              ? payload.new_string
+              : null,
+          replaceAll: payload.replace_all === true,
+        };
       case "system.readFile":
         return {
           kind: "file-read-start",
@@ -357,6 +375,38 @@ export function createWatchToolPresentationNormalizer(dependencies = {}) {
           bytesWrittenText: formatBytes(resultObject.bytesWritten),
           content:
             typeof payload?.content === "string" ? payload.content : null,
+        };
+      }
+      case "system.editFile": {
+        const filePathValue = resultObject.path ?? payload.path;
+        const errorText =
+          typeof resultObject.error === "string" && resultObject.error.trim().length > 0
+            ? resultObject.error
+            : null;
+        return {
+          kind: "file-edit-result",
+          isError,
+          filePathDisplay: compactPathForDisplay(filePathValue),
+          filePathRaw:
+            typeof filePathValue === "string" && String(filePathValue).trim().length > 0
+              ? sanitizeInlineText(String(filePathValue))
+              : null,
+          oldText:
+            typeof payload.old_string === "string" && payload.old_string.length > 0
+              ? payload.old_string
+              : null,
+          newText:
+            typeof payload.new_string === "string" && payload.new_string.length > 0
+              ? payload.new_string
+              : null,
+          replaceAll: payload.replace_all === true,
+          replacements:
+            typeof resultObject.replacements === "number" && Number.isFinite(resultObject.replacements)
+              ? resultObject.replacements
+              : null,
+          bytesWrittenText: formatBytes(resultObject.bytesWritten),
+          errorText,
+          errorPreview: isError ? firstMeaningfulLine(errorText ?? tryPrettyJson(result)) : null,
         };
       }
       case "system.readFile": {
