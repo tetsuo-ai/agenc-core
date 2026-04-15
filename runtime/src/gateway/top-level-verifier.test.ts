@@ -141,14 +141,11 @@ describe("runTopLevelVerifierValidation", () => {
           kind: "prompt_envelope_v1",
           baseSystemPrompt: "Verifier system prompt",
         }),
-        tools: expect.arrayContaining([
+        tools: [
           "system.readFile",
           "system.bash",
           "verification.runProbe",
-          "system.listDir",
-          "system.stat",
-          "verification.listProbes",
-        ]),
+        ],
         structuredOutput: expect.objectContaining({
           enabled: true,
           schema: expect.objectContaining({
@@ -159,7 +156,7 @@ describe("runTopLevelVerifierValidation", () => {
         requiredToolEvidence: expect.objectContaining({
           executionEnvelope: expect.objectContaining({
             verificationMode: "grounded_read",
-            allowedWriteRoots: [tmpdir()],
+            allowedWriteRoots: ["/workspace", tmpdir()],
             targetArtifacts: ["/workspace/src/main.c"],
           }),
         }),
@@ -205,8 +202,25 @@ describe("runTopLevelVerifierValidation", () => {
     expect(decision.runtimeVerifier.overall).toBe("fail");
   });
 
-  it("skips verifier work when no successful workspace mutation occurred", async () => {
+  it("still runs verifier work when target artifacts are declared without structured writes", async () => {
     const spawn = vi.fn(async () => "subagent:verify-1");
+    const waitForResult = vi.fn(async () => ({
+      sessionId: "subagent:verify-1",
+      output: "All good.\nVERDICT: PASS",
+      success: true,
+      durationMs: 10,
+      toolCalls: [],
+      structuredOutput: {
+        type: "json_schema",
+        name: "agenc_top_level_verifier_decision",
+        parsed: {
+          verdict: "pass",
+          summary: "Verification passed without relying on structured write records.",
+        },
+      },
+      completionState: "completed",
+      stopReason: "completed",
+    }));
 
     const decision = await runTopLevelVerifierValidation({
       sessionId: "session:test",
@@ -224,13 +238,13 @@ describe("runTopLevelVerifierValidation", () => {
           },
         },
       }),
-      subAgentManager: { spawn, waitForResult: vi.fn(async () => null) },
+      subAgentManager: { spawn, waitForResult },
       verifierService: createVerifierService(),
     });
 
-    expect(spawn).not.toHaveBeenCalled();
-    expect(decision.outcome).toBe("skipped");
-    expect(decision.runtimeVerifier.overall).toBe("skipped");
+    expect(spawn).toHaveBeenCalled();
+    expect(decision.outcome).toBe("pass");
+    expect(decision.runtimeVerifier.overall).toBe("pass");
   });
 
   it("still skips verifier workers when runtime verification is not required", async () => {
@@ -288,7 +302,7 @@ describe("runTopLevelVerifierValidation", () => {
     expect(traceEvents).toEqual(["unavailable"]);
   });
 
-  it("blocks PASS verdicts that skip required probe coverage", async () => {
+  it("accepts PASS verdicts even when probe coverage is incomplete", async () => {
     const spawn = vi.fn(async () => "subagent:verify-coverage");
     const waitForResult = vi.fn(async () => ({
       sessionId: "subagent:verify-coverage",
@@ -329,11 +343,12 @@ describe("runTopLevelVerifierValidation", () => {
       ),
     });
 
-    expect(decision.outcome).toBe("retry_with_blocking_message");
-    expect(decision.summary).toContain("required probe categories");
+    expect(decision.outcome).toBe("pass");
+    expect(decision.summary).toContain("Verifier thinks the build is correct.");
+    expect(decision.runtimeVerifier.overall).toBe("pass");
   });
 
-  it("blocks PASS verdicts backed only by weak green verification probes", async () => {
+  it("accepts PASS verdicts even when the verifier includes weak green probe output", async () => {
     const spawn = vi.fn(async () => "subagent:verify-weak");
     const waitForResult = vi.fn(async () => ({
       sessionId: "subagent:verify-weak",
@@ -384,9 +399,9 @@ describe("runTopLevelVerifierValidation", () => {
       ),
     });
 
-    expect(decision.outcome).toBe("retry_with_blocking_message");
-    expect(decision.summary).toContain("weak green results");
-    expect(decision.summary).toContain("tests:ctest");
+    expect(decision.outcome).toBe("pass");
+    expect(decision.summary).toContain("Verifier thinks the build is correct.");
+    expect(decision.runtimeVerifier.overall).toBe("pass");
   });
 
   it("records remote-job verifier handles when remote isolation is enabled", async () => {

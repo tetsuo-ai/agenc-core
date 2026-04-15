@@ -382,21 +382,23 @@ export interface DelegatedRuntimeResult {
 export const COMPLETION_VALIDATOR_ORDER: readonly CompletionValidatorId[] = [
   "artifact_evidence",
   "turn_end_stop_gate",
+  "request_task_progress",
+  "top_level_verifier",
 ];
 
 export function createRuntimeContractSnapshot(
   flags: RuntimeContractFlags,
 ): RuntimeContractSnapshot {
-  const hookBackedValidatorIds = new Set<CompletionValidatorId>([
-    "artifact_evidence",
-    "turn_end_stop_gate",
-  ]);
   return {
     flags,
     validatorOrder: [...COMPLETION_VALIDATOR_ORDER],
     validators: COMPLETION_VALIDATOR_ORDER.map((id) => ({
       id,
-      enabled: hookBackedValidatorIds.has(id) && flags.stopHooksEnabled,
+      enabled:
+        id === "artifact_evidence" ||
+        id === "request_task_progress" ||
+        (id === "turn_end_stop_gate" && flags.stopHooksEnabled) ||
+        (id === "top_level_verifier" && flags.verifierRuntimeRequired),
       executed: false,
       outcome: "skipped",
     })),

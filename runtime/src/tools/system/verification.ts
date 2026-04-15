@@ -80,7 +80,7 @@ export function createVerificationTools(): readonly Tool[] {
   const listProbes: Tool = {
     name: "verification.listProbes",
     description:
-      "List repo-local verification probes that the runtime can execute without mutating the workspace.",
+      "List repo-local verification probes that the runtime can execute to validate the workspace without intentionally editing source files.",
     inputSchema: {
       type: "object",
       properties: {
@@ -149,7 +149,7 @@ export function createVerificationTools(): readonly Tool[] {
   const runProbeTool: Tool = {
     name: "verification.runProbe",
     description:
-      "Run one repo-local verification probe selected from verification.listProbes. This tool is read-only with respect to the project workspace.",
+      "Run one repo-local verification probe selected from verification.listProbes. Probes may run normal repo-local build or test commands as part of verification.",
     inputSchema: {
       type: "object",
       properties: {

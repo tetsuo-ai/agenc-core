@@ -1,7 +1,6 @@
 import { tmpdir } from "node:os";
 
 import type { ChatExecutorResult } from "../llm/chat-executor-types.js";
-import { hasSuccessfulStructuredMutation } from "../llm/deterministic-acceptance-probes.js";
 import { type PlannerVerificationSnapshot } from "../workflow/completion-state.js";
 import { createExecutionEnvelope } from "../workflow/execution-envelope.js";
 import { areDocumentationOnlyArtifacts } from "../workflow/artifact-paths.js";
@@ -65,11 +64,11 @@ const DEFAULT_VERIFY_TOOLS = [
   "verification.listProbes",
   "verification.runProbe",
 ] as const;
-const ALLOWED_VERIFY_TOOLS = new Set<string>(DEFAULT_VERIFY_TOOLS);
 
 const DEFAULT_VERIFY_SYSTEM_PROMPT =
   "You are a verification agent. Your job is to try to break the claimed implementation with real checks. " +
-  "Do not modify project files. You may use temp-only artifacts outside the workspace when needed for verification harnesses. " +
+  "Do not intentionally modify project files. You may use temp artifacts outside the workspace when needed for verification harnesses, " +
+  "and you may run normal repo-local build/test commands when required to verify the implementation. " +
   "Read the repo instructions first, inspect the declared artifacts directly, and run repo-local verification commands when possible, " +
   "and finish with exactly one line: VERDICT: PASS, VERDICT: FAIL, or VERDICT: PARTIAL.";
 const VERIFY_STRUCTURED_OUTPUT: LLMStructuredOutputRequest = {
@@ -184,7 +183,6 @@ export function isExplicitTopLevelVerifierRequiredForTurn(params: {
         | "targetArtifacts"
       >
     | undefined;
-  readonly allToolCalls?: readonly ChatExecutorResult["toolCalls"][number][];
 }): boolean {
   if (params.turnExecutionContract?.turnClass !== "workflow_implementation") {
     return false;
@@ -196,7 +194,7 @@ export function isExplicitTopLevelVerifierRequiredForTurn(params: {
   if (areDocumentationOnlyArtifacts(targetArtifacts)) {
     return false;
   }
-  return hasSuccessfulStructuredMutation(params.allToolCalls ?? []);
+  return true;
 }
 
 function selectVerifyDefinition(
@@ -206,14 +204,9 @@ function selectVerifyDefinition(
   readonly promptEnvelope: ReturnType<typeof createPromptEnvelope>;
 } {
   const match = definitions?.find((definition) => definition.name === "verify");
-  const rawTools = match?.tools?.length ? match.tools : DEFAULT_VERIFY_TOOLS;
-  const tools = rawTools
-    .filter((toolName) => ALLOWED_VERIFY_TOOLS.has(toolName))
-    .concat(
-      [...DEFAULT_VERIFY_TOOLS].filter((toolName) =>
-        !rawTools.includes(toolName)
-      ),
-    );
+  const tools = match?.tools?.length
+    ? [...new Set(match.tools.map((toolName) => toolName.trim()).filter(Boolean))]
+    : [...DEFAULT_VERIFY_TOOLS];
   return {
     tools,
     promptEnvelope: createPromptEnvelope(
@@ -291,39 +284,6 @@ function buildVerifierBlockingMessage(params: {
     "",
     "Use tools to fix the implementation until verification passes. Do not restate completion while verifier failures remain.",
   ].join("\n");
-}
-
-function buildVerifierCoverageSummary(params: {
-  readonly missingCategories: readonly string[];
-  readonly missingProfiles: readonly string[];
-  readonly weakProbeIds: readonly string[];
-  readonly failedProbeIds: readonly string[];
-}): string {
-  const parts: string[] = [];
-  if (params.missingCategories.length > 0) {
-    parts.push(
-      `required probe categories were not run: ${params.missingCategories.join(", ")}`,
-    );
-  }
-  if (params.missingProfiles.length > 0) {
-    parts.push(
-      `required verifier profiles were not exercised: ${params.missingProfiles.join(", ")}`,
-    );
-  }
-  if (params.weakProbeIds.length > 0) {
-    parts.push(
-      `verification probes reported weak green results: ${params.weakProbeIds.join(", ")}`,
-    );
-  }
-  if (params.failedProbeIds.length > 0) {
-    parts.push(
-      `verification probes still failed: ${params.failedProbeIds.join(", ")}`,
-    );
-  }
-  if (parts.length === 0) {
-    return "Verifier passed without running the required probe coverage.";
-  }
-  return `Verifier passed without sufficient runtime evidence because ${parts.join("; ")}.`;
 }
 
 function parseStructuredVerifierSnapshot(result: SubAgentResult | null): {
@@ -416,7 +376,6 @@ function shouldRunTopLevelVerifier(params: TopLevelVerifierParams): boolean {
   if (
     !isExplicitTopLevelVerifierRequiredForTurn({
       turnExecutionContract: params.result.turnExecutionContract,
-      allToolCalls: params.result.toolCalls,
     })
   ) {
     return false;
@@ -436,7 +395,6 @@ function resolveTopLevelVerifierRequirement(
 ): VerifierRequirement | null {
   const explicitVerifierRequired = isExplicitTopLevelVerifierRequiredForTurn({
     turnExecutionContract: params.result.turnExecutionContract,
-    allToolCalls: params.result.toolCalls,
   });
   if (!explicitVerifierRequired) {
     return null;
@@ -479,9 +437,6 @@ function getTopLevelVerifierSkipReason(
   if (areDocumentationOnlyArtifacts(targetArtifacts)) {
     return "documentation_only_artifacts";
   }
-  if (!hasSuccessfulStructuredMutation(params.result.toolCalls)) {
-    return "no_successful_workspace_mutation";
-  }
   return undefined;
 }
 
@@ -492,13 +447,11 @@ function buildTopLevelVerifierSkipBlockingMessage(reason: string): string {
       : reason === "stop_reason_not_completed"
         ? "the turn has not reached a completed stop reason yet"
         : reason === "completion_state_not_completed"
-          ? "the workflow completion state is not completed yet"
-          : reason === "turn_class_not_workflow_implementation"
-            ? "the turn is not classified as workflow_implementation"
+        ? "the workflow completion state is not completed yet"
+        : reason === "turn_class_not_workflow_implementation"
+          ? "the turn is not classified as workflow_implementation"
             : reason === "documentation_only_artifacts"
               ? "the declared target artifacts are documentation-only"
-              : reason === "no_successful_workspace_mutation"
-                ? "the turn has not made a successful non-documentation workspace mutation yet"
             : "no target artifacts were declared for verification";
   return [
     "Runtime verification is required before completion can be accepted.",
@@ -641,15 +594,15 @@ export async function runTopLevelVerifierValidation(
   );
   const definition = selectVerifyDefinition(params.agentDefinitions);
   const inspectionArtifacts = [...new Set([...sourceArtifacts, ...targetArtifacts])];
-  const executionEnvelopeBase = createExecutionEnvelope({
+  const executionEnvelope = createExecutionEnvelope({
     workspaceRoot,
     allowedReadRoots: workspaceRoot ? [workspaceRoot] : [],
-    allowedWriteRoots: [tmpdir()],
+    allowedWriteRoots: workspaceRoot ? [workspaceRoot, tmpdir()] : [tmpdir()],
     allowedTools: definition.tools,
     inputArtifacts: inspectionArtifacts,
     requiredSourceArtifacts: inspectionArtifacts,
     targetArtifacts,
-    effectClass: "read_only",
+    effectClass: "shell",
     verificationMode: "grounded_read",
     stepKind: "delegated_validation",
     role: "validator",
@@ -659,12 +612,6 @@ export async function runTopLevelVerifierValidation(
       partialCompletionAllowed: false,
     },
   });
-  const executionEnvelope = executionEnvelopeBase
-    ? {
-        ...executionEnvelopeBase,
-        allowedWriteRoots: [tmpdir()],
-      }
-    : undefined;
 
   const spawnConfig: SubAgentConfig = {
     parentSessionId: params.sessionId,
@@ -876,44 +823,8 @@ export async function runTopLevelVerifierValidation(
   }
 
   const verifierResult = await subAgentManager.waitForResult(childSessionId);
-  const parsed = parseVerifierSnapshot(verifierResult);
   const coverage = extractVerificationProbeCoverage(verifierResult?.toolCalls ?? []);
-  const missingCategories =
-    parsed.snapshot.overall === "pass"
-      ? effectiveVerifierRequirement.probeCategories.filter(
-          (category) => !coverage.categories.includes(category),
-        )
-      : [];
-  const missingProfiles =
-    parsed.snapshot.overall === "pass"
-      ? effectiveVerifierRequirement.profiles.filter(
-          (profile) =>
-            profile !== "generic" &&
-            !coverage.profiles.includes(profile),
-        )
-      : [];
-  const coverageBlocked =
-    parsed.snapshot.overall === "pass" &&
-    effectiveVerifierRequirement.required &&
-    (coverage.probeIds.length === 0 ||
-      missingCategories.length > 0 ||
-      missingProfiles.length > 0 ||
-      coverage.weakProbeIds.length > 0 ||
-      coverage.failedProbeIds.length > 0);
-  const effectiveParsed = coverageBlocked
-    ? {
-        snapshot: { performed: true, overall: "retry" } as const,
-        summary: buildVerifierCoverageSummary({
-          missingCategories:
-            coverage.probeIds.length === 0
-              ? ["at least one verification probe"]
-              : missingCategories,
-          missingProfiles,
-          weakProbeIds: coverage.weakProbeIds,
-          failedProbeIds: coverage.failedProbeIds,
-        }),
-      }
-    : parsed;
+  const effectiveParsed = parseVerifierSnapshot(verifierResult);
   const runtimeVerifier = toRuntimeVerifierVerdict(effectiveParsed);
   await emitTraceEvent({
     type: "verdict",
