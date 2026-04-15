@@ -45,7 +45,7 @@ export interface DeterministicAcceptanceProbeDecision {
   readonly probeRuns: readonly ToolCallRecord[];
 }
 
-function hasSuccessfulStructuredMutation(
+export function hasSuccessfulStructuredMutation(
   toolCalls: readonly ToolCallRecord[],
 ): boolean {
   return toolCalls.some((toolCall) => {

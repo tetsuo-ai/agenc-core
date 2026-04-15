@@ -8,12 +8,10 @@ import type { ImplementationCompletionContract } from "../../workflow/completion
 import type { WorkflowVerificationContract } from "../../workflow/verification-obligations.js";
 import {
   buildTurnEndStopGateSnapshot,
-  checkFilesystemArtifacts,
   evaluateTurnEndStopGate,
   evaluateArtifactEvidenceGate,
   type TurnEndStopGateSnapshot,
 } from "../chat-executor-stop-gate.js";
-import { runDeterministicAcceptanceProbes } from "../deterministic-acceptance-probes.js";
 import { matchesHookMatcher } from "./matcher.js";
 
 export const STOP_HOOK_PHASES = [
@@ -33,15 +31,9 @@ export const STOP_HOOK_RESERVED_ID_PREFIX = "builtin:";
 export const BUILTIN_TURN_END_STOP_GATE_ID = `${STOP_HOOK_RESERVED_ID_PREFIX}turn_end_stop_gate`;
 export const BUILTIN_ARTIFACT_EVIDENCE_HOOK_ID =
   `${STOP_HOOK_RESERVED_ID_PREFIX}artifact_evidence`;
-export const BUILTIN_FILESYSTEM_ARTIFACT_VERIFICATION_HOOK_ID =
-  `${STOP_HOOK_RESERVED_ID_PREFIX}filesystem_artifact_verification`;
-export const BUILTIN_DETERMINISTIC_ACCEPTANCE_PROBES_HOOK_ID =
-  `${STOP_HOOK_RESERVED_ID_PREFIX}deterministic_acceptance_probes`;
 export const BUILTIN_STOP_HOOK_IDS = [
   BUILTIN_TURN_END_STOP_GATE_ID,
   BUILTIN_ARTIFACT_EVIDENCE_HOOK_ID,
-  BUILTIN_FILESYSTEM_ARTIFACT_VERIFICATION_HOOK_ID,
-  BUILTIN_DETERMINISTIC_ACCEPTANCE_PROBES_HOOK_ID,
 ] as const;
 
 export interface StopHookHandlerConfig {
@@ -233,132 +225,6 @@ function buildBuiltinStopHookDefinitions(): readonly StopHookRuntimeDefinition[]
                 evidence: decision.evidence,
               }
             : { evidence: decision.evidence }),
-          durationMs: Date.now() - startedAt,
-        };
-      },
-    },
-    {
-      id: BUILTIN_FILESYSTEM_ARTIFACT_VERIFICATION_HOOK_ID,
-      phase: "Stop",
-      kind: "builtin",
-      target: "checkFilesystemArtifacts",
-      source: "builtin",
-      builtinHandler: async (context) => {
-        const startedAt = Date.now();
-        const check = await checkFilesystemArtifacts({
-          finalContent: context.finalContent ?? "",
-          allToolCalls: context.allToolCalls ?? [],
-          workspaceRoot: context.runtimeWorkspaceRoot,
-        });
-        return {
-          hookId: BUILTIN_FILESYSTEM_ARTIFACT_VERIFICATION_HOOK_ID,
-          phase: context.phase,
-          progressMessages: [],
-          ...(check.shouldIntervene
-            ? {
-                blockingError: {
-                  hookId: BUILTIN_FILESYSTEM_ARTIFACT_VERIFICATION_HOOK_ID,
-                  message:
-                    check.blockingMessage ??
-                    "Filesystem artifact verification failed.",
-                  evidence: {
-                    emptyFiles: check.emptyFiles,
-                    missingFiles: check.missingFiles,
-                    checkedFiles: check.checkedFiles,
-                  },
-                },
-                stopReason: "filesystem_artifact_verification",
-                evidence: {
-                  emptyFiles: check.emptyFiles,
-                  missingFiles: check.missingFiles,
-                  checkedFiles: check.checkedFiles,
-                },
-              }
-            : {
-                evidence: {
-                  emptyFiles: check.emptyFiles,
-                  missingFiles: check.missingFiles,
-                  checkedFiles: check.checkedFiles,
-                },
-              }),
-          durationMs: Date.now() - startedAt,
-        };
-      },
-    },
-    {
-      id: BUILTIN_DETERMINISTIC_ACCEPTANCE_PROBES_HOOK_ID,
-      phase: "Stop",
-      kind: "builtin",
-      target: "runDeterministicAcceptanceProbes",
-      source: "builtin",
-      builtinHandler: async (context) => {
-        const startedAt = Date.now();
-        const activeToolHandler = context.runtimeChecks?.activeToolHandler;
-        if (!activeToolHandler) {
-          return passOutcome(
-            BUILTIN_DETERMINISTIC_ACCEPTANCE_PROBES_HOOK_ID,
-            context.phase,
-            Date.now() - startedAt,
-          );
-        }
-        const decision = await runDeterministicAcceptanceProbes({
-          workspaceRoot: context.runtimeWorkspaceRoot,
-          targetArtifacts: context.runtimeChecks?.targetArtifacts,
-          allToolCalls: context.allToolCalls ?? [],
-          activeToolHandler,
-        });
-        if (decision.probeRuns.length > 0) {
-          context.runtimeChecks?.appendProbeRuns?.(decision.probeRuns);
-        }
-        if (!decision.shouldIntervene) {
-          return {
-            hookId: BUILTIN_DETERMINISTIC_ACCEPTANCE_PROBES_HOOK_ID,
-            phase: context.phase,
-            progressMessages: [],
-            evidence: {
-              evidence: decision.evidence,
-              probeRuns: decision.probeRuns,
-            },
-            durationMs: Date.now() - startedAt,
-          };
-        }
-        if (decision.allowRecovery === false) {
-          return {
-            hookId: BUILTIN_DETERMINISTIC_ACCEPTANCE_PROBES_HOOK_ID,
-            phase: context.phase,
-            progressMessages: [],
-            preventContinuation: true,
-            stopReason:
-              decision.validationCode ??
-              "deterministic_acceptance_probe_failed",
-            evidence: {
-              evidence: decision.evidence,
-              probeRuns: decision.probeRuns,
-            },
-            durationMs: Date.now() - startedAt,
-          };
-        }
-        return {
-          hookId: BUILTIN_DETERMINISTIC_ACCEPTANCE_PROBES_HOOK_ID,
-          phase: context.phase,
-          progressMessages: [],
-          blockingError: {
-            hookId: BUILTIN_DETERMINISTIC_ACCEPTANCE_PROBES_HOOK_ID,
-            message:
-              decision.blockingMessage ??
-              "Deterministic acceptance probes failed.",
-            evidence: {
-              evidence: decision.evidence,
-              probeRuns: decision.probeRuns,
-            },
-          },
-          stopReason:
-            decision.validationCode ??
-            "deterministic_acceptance_probe_failed",
-          evidence: {
-            evidence: decision.evidence,
-            probeRuns: decision.probeRuns,
-          },
           durationMs: Date.now() - startedAt,
         };
       },

@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -142,7 +142,7 @@ function taskToolResult(params: {
 }
 
 describe("completion-validators", () => {
-  it("registers request_task_progress between stop-gate and filesystem checks", () => {
+  it("registers request_task_progress before the explicit top-level verifier", () => {
     const validators = buildCompletionValidators({
       ctx: makeCtx({}),
       runtimeContractFlags: makeFlags(),
@@ -152,8 +152,6 @@ describe("completion-validators", () => {
       "artifact_evidence",
       "turn_end_stop_gate",
       "request_task_progress",
-      "filesystem_artifact_verification",
-      "deterministic_acceptance_probes",
       "top_level_verifier",
     ]);
   });
@@ -335,31 +333,26 @@ describe("completion-validators", () => {
       }),
     });
 
-    const deterministic = validators.find(
-      (validator) => validator.id === "deterministic_acceptance_probes",
-    );
     const topLevel = validators.find(
       (validator) => validator.id === "top_level_verifier",
     );
-    const deterministicResult = await deterministic!.execute();
     const topLevelResult = await topLevel!.execute();
 
-    expect(deterministicResult.outcome).toBe("retry_with_blocking_message");
-    expect(deterministicResult.blockingMessage).toBe("verification blocked");
-    expect(deterministicResult.stopHookResult?.phase).toBe("VerificationReady");
     expect(topLevelResult.outcome).toBe("retry_with_blocking_message");
+    expect(topLevelResult.blockingMessage).toBe("verification blocked");
+    expect(topLevelResult.stopHookResult?.phase).toBe("VerificationReady");
     expect(toolHandler).not.toHaveBeenCalled();
   });
 
-  it("skips the top-level verifier for ordinary workflow turns that only carry artifact completion", async () => {
+  it("skips the top-level verifier for documentation-only completion turns", async () => {
     const flags = makeFlags({
       verifierRuntimeRequired: true,
     });
     const validators = buildCompletionValidators({
       ctx: makeCtx({
         flags,
-        allToolCalls: [successfulWrite("/tmp/workspace/src/main.c")],
-        targetArtifacts: ["/tmp/workspace/src/main.c"],
+        allToolCalls: [successfulWrite("/tmp/workspace/docs/readme.md")],
+        targetArtifacts: ["/tmp/workspace/docs/readme.md"],
         turnClass: "workflow_implementation",
         ownerMode: "workflow_owner",
         completionContract: {
@@ -376,247 +369,6 @@ describe("completion-validators", () => {
     )!.execute();
 
     expect(result.outcome).toBe("skipped");
-  });
-
-  it("uses the shared correction budget for deterministic acceptance probes on workflow-owned turns", async () => {
-    const workspaceRoot = mkdtempSync(join(tmpdir(), "deterministic-budget-"));
-    writeFileSync(
-      join(workspaceRoot, "Makefile"),
-      "all:\n\t@printf 'ok\\n'\n",
-    );
-    const validators = buildCompletionValidators({
-      ctx: makeCtx({
-        workspaceRoot,
-        allToolCalls: [successfulWrite(join(workspaceRoot, "src/main.c"))],
-        targetArtifacts: [join(workspaceRoot, "src/main.c")],
-        turnClass: "workflow_implementation",
-        ownerMode: "workflow_owner",
-      }),
-      runtimeContractFlags: makeFlags(),
-    });
-
-    const deterministic = validators.find(
-      (validator) => validator.id === "deterministic_acceptance_probes",
-    );
-    const result = await deterministic!.execute();
-
-    expect(result.outcome).toBe("pass");
-    expect(result.probeRuns).toHaveLength(1);
-  });
-
-  it("fails closed when a deterministic acceptance recovery turn made no workspace mutations", async () => {
-    const workspaceRoot = mkdtempSync(join(tmpdir(), "deterministic-stall-"));
-    writeFileSync(
-      join(workspaceRoot, "Makefile"),
-      "all:\n\t@echo build failed >&2\n\t@exit 2\n",
-    );
-    const validators = buildCompletionValidators({
-      ctx: makeCtx({
-        workspaceRoot,
-        allToolCalls: [
-          successfulWrite(join(workspaceRoot, "src/main.c")),
-          syntheticAcceptanceProbe({
-            exitCode: 2,
-            stdout: "",
-            stderr: "build failed",
-            timedOut: false,
-            durationMs: 1,
-            truncated: false,
-          }),
-        ],
-        targetArtifacts: [join(workspaceRoot, "src/main.c")],
-        turnClass: "workflow_implementation",
-        ownerMode: "workflow_owner",
-      }),
-      runtimeContractFlags: makeFlags(),
-    });
-
-    const deterministic = validators.find(
-      (validator) => validator.id === "deterministic_acceptance_probes",
-    );
-    const result = await deterministic!.execute();
-
-    expect(result.outcome).toBe("fail_closed");
-    expect(result.reason).toBe("deterministic_acceptance_probe_failed");
-    expect(result.exhaustedDetail).toContain(
-      "made no successful workspace mutations",
-    );
-  });
-
-  it("uses the shared correction budget for filesystem artifact recovery", async () => {
-    const workspaceRoot = mkdtempSync(join(tmpdir(), "filesystem-budget-"));
-    const missingPath = join(workspaceRoot, "src/main.c");
-    const validators = buildCompletionValidators({
-      ctx: makeCtx({
-        finalContent: "Implementation complete. All phases implemented.",
-        allToolCalls: [
-          {
-            name: "system.writeFile",
-            args: { path: missingPath, content: "phase 1" },
-            result: JSON.stringify({ ok: true, path: missingPath }),
-            isError: false,
-            durationMs: 1,
-          },
-        ],
-        requiredToolEvidence: {
-          maxCorrectionAttempts: 3,
-        },
-      }),
-      runtimeContractFlags: makeFlags(),
-    });
-
-    const filesystem = validators.find(
-      (validator) => validator.id === "filesystem_artifact_verification",
-    );
-    const result = await filesystem!.execute();
-
-    expect(result.outcome).toBe("retry_with_blocking_message");
-    expect(result.maxAttempts).toBe(3);
-    expect(result.blockingMessage).toContain("bounded recovery loop");
-  });
-
-  it("applies the shared 3-attempt recovery budget consistently across the primary validators", async () => {
-    const workspaceRoot = mkdtempSync(join(tmpdir(), "shared-budget-"));
-    mkdirSync(join(workspaceRoot, "src"), { recursive: true });
-    writeFileSync(
-      join(workspaceRoot, "Makefile"),
-      "all:\n\t@echo build failed >&2\n\t@exit 2\n",
-      "utf8",
-    );
-    const targetPath = join(workspaceRoot, "src/main.c");
-    const stopHookFlags = makeFlags({ stopHooksEnabled: true });
-    const narrativeCtx = makeCtx({
-      workspaceRoot,
-      finalContent: "Next I will fix the build and rerun the checks.",
-      allToolCalls: [successfulWrite(targetPath)],
-      targetArtifacts: [targetPath],
-      turnClass: "workflow_implementation",
-      ownerMode: "workflow_owner",
-      flags: stopHookFlags,
-      requiredToolEvidence: {
-        maxCorrectionAttempts: 3,
-      },
-    });
-    setAllowedRequestTaskMilestones(narrativeCtx.requestTaskState, [
-      { id: "phase_1", description: "Finish phase 1" },
-    ]);
-    const narrativeValidators = buildCompletionValidators({
-      ctx: narrativeCtx,
-      runtimeContractFlags: stopHookFlags,
-      stopHookRuntime: buildStopHookRuntime(undefined),
-    });
-    const filesystemCtx = makeCtx({
-      workspaceRoot,
-      finalContent: "Implementation complete. All phases implemented.",
-      allToolCalls: [successfulWrite(targetPath)],
-      targetArtifacts: [targetPath],
-      turnClass: "workflow_implementation",
-      ownerMode: "workflow_owner",
-      requiredToolEvidence: {
-        maxCorrectionAttempts: 3,
-      },
-    });
-    const filesystemValidators = buildCompletionValidators({
-      ctx: filesystemCtx,
-      runtimeContractFlags: makeFlags(),
-    });
-    const narrativeById = new Map(
-      narrativeValidators.map((validator) => [validator.id, validator]),
-    );
-    const filesystemById = new Map(
-      filesystemValidators.map((validator) => [validator.id, validator]),
-    );
-
-    const [stopGate, taskProgress, deterministic, filesystem] = await Promise.all([
-      narrativeById.get("turn_end_stop_gate")!.execute(),
-      narrativeById.get("request_task_progress")!.execute(),
-      narrativeById.get("deterministic_acceptance_probes")!.execute(),
-      filesystemById.get("filesystem_artifact_verification")!.execute(),
-    ]);
-
-    try {
-      expect(stopGate.outcome).toBe("retry_with_blocking_message");
-      expect(stopGate.maxAttempts).toBe(3);
-
-      expect(taskProgress.outcome).toBe("pass");
-
-      expect(filesystem.outcome).toBe("retry_with_blocking_message");
-      expect(filesystem.maxAttempts).toBe(3);
-
-      expect(deterministic.outcome).toBe("retry_with_blocking_message");
-      expect(deterministic.maxAttempts).toBe(3);
-    } finally {
-      rmSync(workspaceRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps an explicit zero correction budget at zero for the recovery validators", async () => {
-    const workspaceRoot = mkdtempSync(join(tmpdir(), "zero-budget-"));
-    mkdirSync(join(workspaceRoot, "src"), { recursive: true });
-    writeFileSync(
-      join(workspaceRoot, "Makefile"),
-      "all:\n\t@echo build failed >&2\n\t@exit 2\n",
-      "utf8",
-    );
-    const targetPath = join(workspaceRoot, "src/main.c");
-    const stopHookFlags = makeFlags({ stopHooksEnabled: true });
-    const narrativeCtx = makeCtx({
-      workspaceRoot,
-      finalContent: "Next I will fix the build and rerun the checks.",
-      allToolCalls: [successfulWrite(targetPath)],
-      targetArtifacts: [targetPath],
-      turnClass: "workflow_implementation",
-      ownerMode: "workflow_owner",
-      flags: stopHookFlags,
-      requiredToolEvidence: {
-        maxCorrectionAttempts: 0,
-      },
-    });
-    setAllowedRequestTaskMilestones(narrativeCtx.requestTaskState, [
-      { id: "phase_1", description: "Finish phase 1" },
-    ]);
-    const narrativeValidators = buildCompletionValidators({
-      ctx: narrativeCtx,
-      runtimeContractFlags: stopHookFlags,
-      stopHookRuntime: buildStopHookRuntime(undefined),
-    });
-    const filesystemCtx = makeCtx({
-      workspaceRoot,
-      finalContent: "Implementation complete. All phases implemented.",
-      allToolCalls: [successfulWrite(targetPath)],
-      targetArtifacts: [targetPath],
-      turnClass: "workflow_implementation",
-      ownerMode: "workflow_owner",
-      requiredToolEvidence: {
-        maxCorrectionAttempts: 0,
-      },
-    });
-    const filesystemValidators = buildCompletionValidators({
-      ctx: filesystemCtx,
-      runtimeContractFlags: makeFlags(),
-    });
-    const narrativeById = new Map(
-      narrativeValidators.map((validator) => [validator.id, validator]),
-    );
-    const filesystemById = new Map(
-      filesystemValidators.map((validator) => [validator.id, validator]),
-    );
-
-    const [stopGate, taskProgress, deterministic, filesystem] = await Promise.all([
-      narrativeById.get("turn_end_stop_gate")!.execute(),
-      narrativeById.get("request_task_progress")!.execute(),
-      narrativeById.get("deterministic_acceptance_probes")!.execute(),
-      filesystemById.get("filesystem_artifact_verification")!.execute(),
-    ]);
-
-    try {
-      expect(stopGate.maxAttempts).toBe(0);
-      expect(taskProgress.outcome).toBe("pass");
-      expect(filesystem.maxAttempts).toBe(0);
-      expect(deterministic.maxAttempts).toBe(0);
-    } finally {
-      rmSync(workspaceRoot, { recursive: true, force: true });
-    }
   });
 
   it("runs the top-level verifier even when runtimeContractV2 is false", async () => {
@@ -685,7 +437,7 @@ describe("completion-validators", () => {
               profiles: ["generic"],
               probeCategories: ["build"],
               mutationPolicy: "read_only_workspace",
-              allowTempArtifacts: false,
+              allowTempArtifacts: true,
               bootstrapSource: "disabled",
               rationale: ["test"],
             })),

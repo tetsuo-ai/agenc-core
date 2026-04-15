@@ -1,16 +1,10 @@
 import {
   buildTurnEndStopGateSnapshot,
-  checkFilesystemArtifacts,
   evaluateArtifactEvidenceGate,
 } from "./chat-executor-stop-gate.js";
-import {
-  runDeterministicAcceptanceProbes,
-  shouldRunDeterministicAcceptanceProbes,
-} from "./deterministic-acceptance-probes.js";
 import type {
   ChatExecutorConfig,
   ExecutionContext,
-  ToolCallRecord,
 } from "./chat-executor-types.js";
 import {
   runStopHookPhase,
@@ -29,7 +23,6 @@ import {
 
 export interface CompletionValidatorExecutionResult
   extends CompletionValidatorResult {
-  readonly probeRuns?: readonly ToolCallRecord[];
   readonly stopHookResult?: StopHookPhaseResult;
 }
 
@@ -58,14 +51,8 @@ export function buildCompletionValidators(params: {
       : sharedCorrectionBudgetCap;
   const topLevelVerifierEnabled = isExplicitTopLevelVerifierRequiredForTurn({
     turnExecutionContract: params.ctx.turnExecutionContract,
+    allToolCalls: params.ctx.allToolCalls,
   });
-  const deterministicAcceptanceProbesEnabled =
-    shouldRunDeterministicAcceptanceProbes({
-      workspaceRoot: params.ctx.runtimeWorkspaceRoot,
-      targetArtifacts: params.ctx.turnExecutionContract.targetArtifacts,
-      allToolCalls: params.ctx.allToolCalls,
-      activeToolHandler: params.ctx.activeToolHandler,
-    });
   let verificationReadyGate:
     | CompletionValidatorExecutionResult
     | undefined;
@@ -75,9 +62,9 @@ export function buildCompletionValidators(params: {
       if (verificationReadyGate) {
         return verificationReadyGate;
       }
-      if (!deterministicAcceptanceProbesEnabled && !topLevelVerifierEnabled) {
+      if (!topLevelVerifierEnabled) {
         verificationReadyGate = {
-          id: "deterministic_acceptance_probes",
+          id: "top_level_verifier",
           outcome: "pass",
         };
         return verificationReadyGate;
@@ -92,7 +79,7 @@ export function buildCompletionValidators(params: {
           runtimeWorkspaceRoot: params.ctx.runtimeWorkspaceRoot,
           allToolCalls: params.ctx.allToolCalls,
           verificationReady: {
-            deterministicAcceptanceProbesEnabled,
+            deterministicAcceptanceProbesEnabled: false,
             topLevelVerifierEnabled,
             targetArtifacts: params.ctx.turnExecutionContract.targetArtifacts,
           },
@@ -101,7 +88,7 @@ export function buildCompletionValidators(params: {
       verificationReadyGate =
         hookResult.outcome === "retry_with_blocking_message"
           ? {
-              id: "deterministic_acceptance_probes",
+              id: "top_level_verifier",
               outcome: "retry_with_blocking_message",
               reason: hookResult.reason ?? "verification_ready",
               blockingMessage: hookResult.blockingMessage,
@@ -113,7 +100,7 @@ export function buildCompletionValidators(params: {
             }
           : hookResult.outcome === "prevent_continuation"
             ? {
-                id: "deterministic_acceptance_probes",
+                id: "top_level_verifier",
                 outcome: "fail_closed",
                 reason: hookResult.reason ?? "verification_ready",
                 exhaustedDetail:
@@ -122,7 +109,7 @@ export function buildCompletionValidators(params: {
                 stopHookResult: hookResult,
               }
             : {
-                id: "deterministic_acceptance_probes",
+                id: "top_level_verifier",
                 outcome: "pass",
                 evidence: hookResult.evidence,
                 stopHookResult: hookResult,
@@ -251,86 +238,6 @@ export function buildCompletionValidators(params: {
           maxAttempts,
           exhaustedDetail:
             "Request task progress recovery exhausted while malformed task metadata remained in the session task state.",
-        };
-      },
-    },
-    {
-      id: "filesystem_artifact_verification",
-      enabled: true,
-      async execute(): Promise<CompletionValidatorExecutionResult> {
-        const check = await checkFilesystemArtifacts({
-          finalContent: params.ctx.response?.content ?? "",
-          allToolCalls: params.ctx.allToolCalls,
-          workspaceRoot: params.ctx.runtimeWorkspaceRoot,
-        });
-        if (!check.shouldIntervene) {
-          return { id: "filesystem_artifact_verification", outcome: "pass" };
-        }
-        return {
-          id: "filesystem_artifact_verification",
-          outcome: "retry_with_blocking_message",
-          reason: "filesystem_artifact_verification",
-          blockingMessage: check.blockingMessage,
-          evidence: {
-            emptyFiles: check.emptyFiles,
-            missingFiles: check.missingFiles,
-            checkedFiles: check.checkedFiles,
-          },
-          maxAttempts: sharedCorrectionBudgetCap,
-          exhaustedDetail:
-            "Filesystem artifact verification failed after recovery; missing or empty artifacts remain on disk.",
-        };
-      },
-    },
-    {
-      id: "deterministic_acceptance_probes",
-      enabled: true,
-      async execute(): Promise<CompletionValidatorExecutionResult> {
-        const gate = await ensureVerificationReadyGate();
-        if (gate.outcome !== "pass") {
-          return gate;
-        }
-        const decision = await runDeterministicAcceptanceProbes({
-          workspaceRoot: params.ctx.runtimeWorkspaceRoot,
-          targetArtifacts: params.ctx.turnExecutionContract.targetArtifacts,
-          allToolCalls: params.ctx.allToolCalls,
-          activeToolHandler: params.ctx.activeToolHandler,
-        });
-        if (!decision.shouldIntervene) {
-          return {
-            id: "deterministic_acceptance_probes",
-            outcome: "pass",
-            ...(decision.probeRuns.length > 0 ? { probeRuns: decision.probeRuns } : {}),
-          };
-        }
-        if (decision.allowRecovery === false) {
-          return {
-            id: "deterministic_acceptance_probes",
-            outcome: "fail_closed",
-            reason:
-              decision.validationCode ??
-              "deterministic_acceptance_probe_failed",
-            exhaustedDetail:
-              decision.stopReasonDetail ??
-              "Deterministic acceptance-probe recovery exhausted.",
-            validationCode: decision.validationCode,
-            probeRuns: decision.probeRuns,
-          };
-        }
-        return {
-          id: "deterministic_acceptance_probes",
-          outcome: "retry_with_blocking_message",
-          reason:
-            decision.validationCode ??
-            "deterministic_acceptance_probe_failed",
-          blockingMessage: decision.blockingMessage,
-          evidence: decision.evidence,
-          maxAttempts: sharedCorrectionBudgetCap,
-          exhaustedDetail:
-            decision.stopReasonDetail ??
-            "Deterministic acceptance-probe recovery exhausted.",
-          validationCode: decision.validationCode,
-          probeRuns: decision.probeRuns,
         };
       },
     },

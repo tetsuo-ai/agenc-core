@@ -10,8 +10,6 @@ describe("runtime-contract types", () => {
     expect(COMPLETION_VALIDATOR_ORDER).toEqual([
       "artifact_evidence",
       "turn_end_stop_gate",
-      "filesystem_artifact_verification",
-      "deterministic_acceptance_probes",
     ]);
 
     const snapshot = createRuntimeContractSnapshot({

@@ -84,8 +84,6 @@ import {
 } from "./hooks/index.js";
 import {
   BUILTIN_ARTIFACT_EVIDENCE_HOOK_ID,
-  BUILTIN_DETERMINISTIC_ACCEPTANCE_PROBES_HOOK_ID,
-  BUILTIN_FILESYSTEM_ARTIFACT_VERIFICATION_HOOK_ID,
   BUILTIN_TURN_END_STOP_GATE_ID,
   runStopHookPhase,
 } from "./hooks/stop-hooks.js";
@@ -1843,8 +1841,6 @@ export async function executeToolCallLoop(
     const shouldRequireRecoveryTool =
       params.validationCode === "missing_file_mutation_evidence" ||
       params.validationCode === "missing_file_artifact_evidence" ||
-      stopHookRecoveryReason === "filesystem_artifact_verification" ||
-      stopHookRecoveryReason === "deterministic_acceptance_probe_failed" ||
       (params.stopHookResult !== undefined && ctx.requiredToolEvidence !== undefined);
     const recoveryToolChoice = shouldRequireRecoveryTool
       ? "required"
@@ -2344,14 +2340,6 @@ export async function executeToolCallLoop(
         hookId: BUILTIN_ARTIFACT_EVIDENCE_HOOK_ID,
         validatorId: "artifact_evidence" as CompletionValidatorId,
       },
-      {
-        hookId: BUILTIN_FILESYSTEM_ARTIFACT_VERIFICATION_HOOK_ID,
-        validatorId: "filesystem_artifact_verification" as CompletionValidatorId,
-      },
-      {
-        hookId: BUILTIN_DETERMINISTIC_ACCEPTANCE_PROBES_HOOK_ID,
-        validatorId: "deterministic_acceptance_probes" as CompletionValidatorId,
-      },
     ] as const;
 
     callbacks.emitExecutionTrace(ctx, {
@@ -2367,6 +2355,7 @@ export async function executeToolCallLoop(
     let completionValidationStatus = "passed";
     const topLevelVerifierEnabled = isExplicitTopLevelVerifierRequiredForTurn({
       turnExecutionContract: ctx.turnExecutionContract,
+      allToolCalls: ctx.allToolCalls,
     });
     const stopHooksEnabled =
       config.runtimeContractFlags.stopHooksEnabled &&
@@ -2533,11 +2522,7 @@ export async function executeToolCallLoop(
             hookValidationCode === "missing_file_mutation_evidence" ||
             hookValidationCode === "missing_file_artifact_evidence"
               ? "Max model recalls exceeded during artifact-evidence recovery turn"
-              : hookResult.reason === "filesystem_artifact_verification"
-                ? "Max model recalls exceeded during filesystem artifact recovery turn"
-                : hookResult.reason === "deterministic_acceptance_probe_failed"
-                  ? "Max model recalls exceeded during deterministic acceptance-probe recovery turn"
-                  : "Max model recalls exceeded during stop-hook recovery turn",
+              : "Max model recalls exceeded during stop-hook recovery turn",
           exhaustedDetail:
             hookResult.reason === "narrated_future_tool_work"
               ? "Stop-gate recovery exhausted: the model kept narrating future work instead of calling tools."
@@ -2673,10 +2658,7 @@ export async function executeToolCallLoop(
           reason: "top_level_verifier",
           blockingMessage: validation.blockingMessage,
           evidence: { verifier: validation.runtimeVerifier },
-          maxAttempts:
-            ctx.requiredToolEvidence?.maxCorrectionAttemptsExplicit === true
-              ? ctx.requiredToolEvidence.maxCorrectionAttempts
-              : undefined,
+          maxAttempts: 0,
           budgetReason:
             "Max model recalls exceeded during top-level verifier recovery turn",
           exhaustedDetail:

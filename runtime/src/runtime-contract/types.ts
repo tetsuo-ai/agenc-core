@@ -15,8 +15,6 @@ export type CompletionValidatorId =
   | "artifact_evidence"
   | "turn_end_stop_gate"
   | "request_task_progress"
-  | "filesystem_artifact_verification"
-  | "deterministic_acceptance_probes"
   | "top_level_verifier";
 
 export type CompletionValidatorOutcome =
@@ -384,8 +382,6 @@ export interface DelegatedRuntimeResult {
 export const COMPLETION_VALIDATOR_ORDER: readonly CompletionValidatorId[] = [
   "artifact_evidence",
   "turn_end_stop_gate",
-  "filesystem_artifact_verification",
-  "deterministic_acceptance_probes",
 ];
 
 export function createRuntimeContractSnapshot(
@@ -394,8 +390,6 @@ export function createRuntimeContractSnapshot(
   const hookBackedValidatorIds = new Set<CompletionValidatorId>([
     "artifact_evidence",
     "turn_end_stop_gate",
-    "filesystem_artifact_verification",
-    "deterministic_acceptance_probes",
   ]);
   return {
     flags,
