@@ -46,9 +46,6 @@ import {
   applyActiveRoutedToolNames,
   resolveEffectiveRoutedToolNames,
 } from "./chat-executor-routing-state.js";
-import {
-  buildToolExecutionGroundingMessage,
-} from "./chat-executor-text.js";
 import { annotateFailureError } from "./chat-executor-provider-retry.js";
 import {
   getProviderRouteKey,
@@ -248,20 +245,8 @@ export async function callModelForPhase(
       resetSessionTokens: helpers.resetSessionTokens,
     },
   );
-  const groundingMessage =
-    input.phase === "tool_followup"
-      ? buildToolExecutionGroundingMessage({
-        toolCalls: ctx.allToolCalls,
-        providerEvidence: ctx.providerEvidence,
-      })
-      : undefined;
-  const effectiveCallMessages = groundingMessage
-    ? [...compactedCallInput.callMessages, groundingMessage]
-    : [...compactedCallInput.callMessages];
-  const effectiveCallSections =
-    groundingMessage && compactedCallInput.callSections
-      ? [...compactedCallInput.callSections, "system_runtime" as const]
-      : compactedCallInput.callSections;
+  const effectiveCallMessages = [...compactedCallInput.callMessages];
+  const effectiveCallSections = compactedCallInput.callSections;
   const requestedStructuredOutput =
     input.structuredOutput?.enabled === false ||
       input.structuredOutput?.schema === undefined
@@ -359,7 +344,7 @@ export async function callModelForPhase(
       parallelToolCalls,
       structuredOutputSchemaName: structuredOutput?.schema?.name,
       messageCount: effectiveCallMessages.length,
-      groundingMessageAdded: Boolean(groundingMessage),
+      groundingMessageAdded: false,
       activeRouteMisses: ctx.routedToolMisses,
       routedToolsExpanded: ctx.routedToolsExpanded,
       economicsRunClass: routingDecision.runClass,

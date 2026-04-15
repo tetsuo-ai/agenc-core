@@ -20,15 +20,19 @@ import type { LLMMessage } from "./types.js";
 type TaggedMessage = LLMMessage & { cacheControl?: "ephemeral" };
 
 describe("normalizeMessagesForAPI", () => {
-  it("strips boundary system messages (snip/microcompact/autocompact)", () => {
+  it("strips boundary system messages (snip/microcompact/context-collapse/autocompact)", () => {
     const input: LLMMessage[] = [
       { role: "system", content: "You are a test." },
       { role: "system", content: "[snip] dropped 12 messages" },
+      { role: "system", content: "[context-collapse] projected older messages" },
       { role: "user", content: "hi" },
       { role: "system", content: "[autocompact] history exceeded" },
     ];
     const out = normalizeMessagesForAPI(input);
     expect(out.map((m) => m.content)).not.toContain("[snip] dropped 12 messages");
+    expect(out.map((m) => m.content)).not.toContain(
+      "[context-collapse] projected older messages",
+    );
     expect(out.map((m) => m.content)).not.toContain(
       "[autocompact] history exceeded",
     );

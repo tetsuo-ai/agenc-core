@@ -104,6 +104,7 @@ import {
   computeAutocompactThreshold,
 } from "./compact/index.js";
 import { applyReactiveCompact } from "./compact/reactive-compact.js";
+import { tryProjectedContextCollapse } from "./chat-executor-history-compaction.js";
 import { LLMContextWindowExceededError } from "./errors.js";
 import {
   appendToolRecord,
@@ -1402,6 +1403,29 @@ async function runPerIterationCompactionBeforeModelCall(
     nowMs: Date.now(),
     autocompactThresholdTokens: computeAutocompactThreshold(config.contextWindowTokens),
     lastResponseUsage: ctx.response?.usage,
+    collapseHook: (messages) => {
+      const projected = tryProjectedContextCollapse({
+        history: messages,
+        sessionId: ctx.sessionId,
+        existingArtifactContext: ctx.compactedArtifactContext,
+        autocompactThresholdTokens: computeAutocompactThreshold(
+          config.contextWindowTokens,
+        ),
+      });
+      if (!projected) {
+        return {
+          action: "noop" as const,
+          messages,
+        };
+      }
+      ctx.compacted = true;
+      ctx.compactedArtifactContext = projected.artifactContext;
+      return {
+        action: "collapsed" as const,
+        messages: projected.history,
+        boundary: projected.boundary,
+      };
+    },
     ...(config.consolidationHook
       ? { consolidationHook: config.consolidationHook }
       : {}),
@@ -1420,6 +1444,7 @@ async function runPerIterationCompactionBeforeModelCall(
       const layer = extractCompactionLayerTag(content) as
         | "snip"
         | "microcompact"
+        | "context-collapse"
         | "autocompact"
         | "reactive-compact";
       await dispatchHooks({
@@ -1473,6 +1498,7 @@ async function runPerIterationCompactionBeforeModelCall(
       const layer = extractCompactionLayerTag(content) as
         | "snip"
         | "microcompact"
+        | "context-collapse"
         | "autocompact"
         | "reactive-compact";
       await dispatchHooks({

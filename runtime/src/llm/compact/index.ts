@@ -106,6 +106,19 @@ export interface PerIterationCompactionInput {
   readonly autocompactThresholdTokens?: number;
   readonly lastResponseUsage?: LLMUsage;
   /**
+   * Optional deterministic collapse projection that runs after
+   * snip/microcompact but before autocompact. Mirrors the source loop's
+   * cheaper context-collapse pass, which gets a chance to lower the view
+   * before the expensive summarization fallback is considered.
+   */
+  readonly collapseHook?: (
+    messages: readonly LLMMessage[],
+  ) => {
+    readonly action: "noop" | "collapsed";
+    readonly messages: readonly LLMMessage[];
+    readonly boundary?: LLMMessage;
+  };
+  /**
    * Phase N: optional memory-consolidation hook. When provided, the
    * orchestrator invokes the hook after the autocompact decision
    * layer. The hook receives the current message window and may
@@ -206,7 +219,17 @@ export function applyPerIterationCompaction(
     if (microResult.boundary) boundaries.push(microResult.boundary);
   }
 
-  // --- Layer 3: autocompact (decision only) ---
+  // --- Layer 3: deterministic collapse projection ---
+  if (input.collapseHook) {
+    const collapseResult = input.collapseHook(currentMessages);
+    if (collapseResult.action === "collapsed") {
+      anyAction = true;
+      currentMessages = collapseResult.messages;
+      if (collapseResult.boundary) boundaries.push(collapseResult.boundary);
+    }
+  }
+
+  // --- Layer 4: autocompact (decision only) ---
   const autoResult = applyAutocompact({
     messages: currentMessages,
     state: autoState,
@@ -222,7 +245,7 @@ export function applyPerIterationCompaction(
     if (autoResult.boundary) boundaries.push(autoResult.boundary);
   }
 
-  // --- Layer 4 (Phase N, optional): memory consolidation ---
+  // --- Layer 5 (Phase N, optional): memory consolidation ---
   // Only fires when the caller has explicitly wired a consolidation
   // hook. Produces a synthetic summary message that joins the
   // boundary list — the caller decides whether to splice it into

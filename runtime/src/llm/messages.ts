@@ -10,7 +10,7 @@
  *
  * Steps in order:
  *   1. Strip "virtual" / boundary system messages whose content starts
- *      with `[snip]`, `[microcompact]`, `[autocompact]`,
+ *      with `[snip]`, `[microcompact]`, `[context-collapse]`, `[autocompact]`,
  *      `[reactive-compact]`, or `[boundary]`.
  *   2. Drop empty assistant content unless that message is the very
  *      last one in the array.
@@ -35,6 +35,7 @@ import type { LLMMessage } from "./types.js";
 const BOUNDARY_PREFIXES = [
   "[snip]",
   "[microcompact]",
+  "[context-collapse]",
   "[autocompact]",
   "[reactive-compact]",
   "[boundary]",
