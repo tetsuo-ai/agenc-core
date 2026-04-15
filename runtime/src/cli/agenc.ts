@@ -6,6 +6,10 @@ import {
   type OperatorConsoleOptions,
 } from "./operator-console.js";
 import { runUiCommand, resolveOpenPreference, type UiCommandDeps } from "./ui.js";
+import {
+  parseOptionalBoolLike,
+  parseOptionalLooseString,
+} from "./coercion.js";
 import type { CliStatusCode } from "./types.js";
 
 interface AgencRunOptions {
@@ -90,45 +94,16 @@ function buildHelp(): string {
   ].join("\n");
 }
 
-function parseOptionalString(value: unknown): string | undefined {
-  if (typeof value === "string" && value.trim().length > 0) {
-    return value.trim();
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return String(value);
-  }
-  return undefined;
-}
-
-function parseOptionalBool(value: unknown): boolean | undefined {
-  if (typeof value === "boolean") {
-    return value;
-  }
-  if (typeof value === "number") {
-    return value !== 0;
-  }
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === "true" || normalized === "1") {
-      return true;
-    }
-    if (normalized === "false" || normalized === "0") {
-      return false;
-    }
-  }
-  return undefined;
-}
-
 function buildOperatorConsoleOptions(
   argv: AgencRunOptions["argv"],
   options: AgencRunOptions,
 ): OperatorConsoleOptions {
   const parsed = parseArgv(argv ?? []);
   return {
-    configPath: parseOptionalString(parsed.flags.config),
-    pidPath: parseOptionalString(parsed.flags["pid-path"]),
-    logLevel: parseOptionalString(parsed.flags["log-level"]),
-    yolo: parseOptionalBool(parsed.flags.yolo),
+    configPath: parseOptionalLooseString(parsed.flags.config),
+    pidPath: parseOptionalLooseString(parsed.flags["pid-path"]),
+    logLevel: parseOptionalLooseString(parsed.flags["log-level"]),
+    yolo: parseOptionalBoolLike(parsed.flags.yolo),
     cwd: options.cwd,
     env: options.env,
   };
@@ -140,10 +115,10 @@ function buildUiOptions(
 ): Parameters<typeof runUiCommand>[0] {
   const parsed = parseArgv(argv ?? []);
   return {
-    configPath: parseOptionalString(parsed.flags.config),
-    pidPath: parseOptionalString(parsed.flags["pid-path"]),
-    logLevel: parseOptionalString(parsed.flags["log-level"]),
-    yolo: parseOptionalBool(parsed.flags.yolo),
+    configPath: parseOptionalLooseString(parsed.flags.config),
+    pidPath: parseOptionalLooseString(parsed.flags["pid-path"]),
+    logLevel: parseOptionalLooseString(parsed.flags["log-level"]),
+    yolo: parseOptionalBoolLike(parsed.flags.yolo),
     open: resolveOpenPreference(parsed.flags),
     cwd: options.cwd,
     env: options.env,

@@ -13,6 +13,11 @@ import { basename, dirname, join, resolve } from "node:path";
 import { validateGatewayConfig } from "../gateway/config-watcher.js";
 import type { GatewayConfig } from "../gateway/types.js";
 import { validateConfigStrict } from "../types/config-migration.js";
+import {
+  parseOptionalBoolLike,
+  parseOptionalIntLike,
+  parseOptionalLooseString,
+} from "./coercion.js";
 import type {
   CliFileConfig,
   CliLogLevel,
@@ -55,7 +60,7 @@ type LoadedCliConfigShape =
   | "canonical-gateway"
   | "legacy-flat";
 
-interface ResolvedCliConfigPath {
+export interface ResolvedCliConfigPath {
   configPath: string;
   configPathSource: CliConfigPathSource;
   canonicalConfigPath: string;
@@ -73,40 +78,6 @@ export interface LoadedCliConfigContract {
 interface LoadCliConfigContractOptions {
   strictModeEnabled?: boolean;
   configPathSource?: CliConfigPathSource;
-}
-
-function parseOptionalString(value: unknown): string | undefined {
-  if (typeof value === "string" && value.trim().length > 0) {
-    return value.trim();
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return String(value);
-  }
-  return undefined;
-}
-
-function parseIntValue(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return Math.trunc(value);
-  }
-  if (typeof value === "string" && value.trim().length > 0) {
-    const parsed = Number.parseInt(value.trim(), 10);
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-  }
-  return undefined;
-}
-
-function normalizeBool(value: unknown): boolean | undefined {
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value !== 0;
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === "true" || normalized === "1") return true;
-    if (normalized === "false" || normalized === "0") return false;
-  }
-  return undefined;
 }
 
 function normalizeOutputFormat(value: unknown): CliOutputFormat | undefined {
@@ -135,16 +106,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function parseLegacyCliConfig(value: Record<string, unknown>): CliFileConfig {
   return {
-    rpcUrl: parseOptionalString(value.rpcUrl ?? value.rpc_url),
-    programId: parseOptionalString(value.programId ?? value.program_id),
+    rpcUrl: parseOptionalLooseString(value.rpcUrl ?? value.rpc_url),
+    programId: parseOptionalLooseString(value.programId ?? value.program_id),
     storeType:
       normalizeStoreType(value.storeType ?? value.store_type) ??
       DEFAULT_CLI_STORE_TYPE,
-    sqlitePath: parseOptionalString(value.sqlitePath ?? value.sqlite_path),
-    traceId: parseOptionalString(value.traceId ?? value.trace_id),
-    strictMode: normalizeBool(value.strictMode ?? value.strict_mode),
+    sqlitePath: parseOptionalLooseString(value.sqlitePath ?? value.sqlite_path),
+    traceId: parseOptionalLooseString(value.traceId ?? value.trace_id),
+    strictMode: parseOptionalBoolLike(value.strictMode ?? value.strict_mode),
     idempotencyWindow:
-      parseIntValue(value.idempotencyWindow ?? value.idempotency_window) ??
+      parseOptionalIntLike(value.idempotencyWindow ?? value.idempotency_window) ??
       DEFAULT_CLI_IDEMPOTENCY_WINDOW,
     outputFormat:
       normalizeOutputFormat(value.outputFormat ?? value.output_format) ??
@@ -157,13 +128,13 @@ function parseLegacyCliConfig(value: Record<string, unknown>): CliFileConfig {
 
 function parseCanonicalCliConfig(value: GatewayConfig): CliFileConfig {
   return {
-    rpcUrl: parseOptionalString(value.connection.rpcUrl),
-    programId: parseOptionalString(value.connection.programId),
-    keypairPath: parseOptionalString(value.connection.keypairPath),
+    rpcUrl: parseOptionalLooseString(value.connection.rpcUrl),
+    programId: parseOptionalLooseString(value.connection.programId),
+    keypairPath: parseOptionalLooseString(value.connection.keypairPath),
     storeType:
       normalizeStoreType(value.replay?.store?.type) ?? DEFAULT_CLI_STORE_TYPE,
-    sqlitePath: parseOptionalString(value.replay?.store?.sqlitePath),
-    traceId: parseOptionalString(
+    sqlitePath: parseOptionalLooseString(value.replay?.store?.sqlitePath),
+    traceId: parseOptionalLooseString(
       value.replay?.traceId ?? value.replay?.tracing?.traceId,
     ),
     strictMode: value.cli?.strictMode,
@@ -205,7 +176,7 @@ export function resolveCliConfigPath(options: {
 } = {}): ResolvedCliConfigPath {
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
-  const explicitConfigPath = parseOptionalString(options.explicitConfigPath);
+  const explicitConfigPath = parseOptionalLooseString(options.explicitConfigPath);
   const canonicalConfigPath = getCanonicalDefaultConfigPath();
   const legacyConfigPath = getLegacyRuntimeConfigPath(cwd);
 
@@ -218,7 +189,7 @@ export function resolveCliConfigPath(options: {
     };
   }
 
-  const agencConfig = parseOptionalString(env.AGENC_CONFIG);
+  const agencConfig = parseOptionalLooseString(env.AGENC_CONFIG);
   if (agencConfig) {
     return {
       configPath: resolve(cwd, agencConfig),
@@ -228,7 +199,7 @@ export function resolveCliConfigPath(options: {
     };
   }
 
-  const legacyEnvConfig = parseOptionalString(env.AGENC_RUNTIME_CONFIG);
+  const legacyEnvConfig = parseOptionalLooseString(env.AGENC_RUNTIME_CONFIG);
   if (legacyEnvConfig) {
     return {
       configPath: resolve(cwd, legacyEnvConfig),
