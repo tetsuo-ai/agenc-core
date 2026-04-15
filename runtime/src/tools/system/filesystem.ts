@@ -123,6 +123,12 @@ interface SessionReadSnapshot {
   readonly timestamp?: number;
 }
 
+export interface SessionReadSeedEntry {
+  readonly path: string;
+  readonly content?: string | null;
+  readonly timestamp?: number;
+}
+
 const sessionReadState = new Map<string, Map<string, SessionReadSnapshot>>();
 const LOCAL_FILE_HISTORY_MAX_ENTRIES = 8;
 
@@ -279,6 +285,24 @@ export function recordSessionRead(
   };
   fileMap.set(canonicalPath, nextSnapshot);
   persistLocalFileHistorySnapshot(sessionId, canonicalPath, nextSnapshot);
+}
+
+export function seedSessionReadState(
+  sessionId: string | undefined,
+  entries: readonly SessionReadSeedEntry[],
+): void {
+  if (!sessionId || sessionId.trim().length === 0) return;
+  for (const entry of entries) {
+    if (!entry || typeof entry.path !== "string" || entry.path.trim().length === 0) {
+      continue;
+    }
+    recordSessionRead(sessionId, entry.path, {
+      ...(entry.content === undefined ? {} : { content: entry.content }),
+      ...(typeof entry.timestamp === "number" && Number.isFinite(entry.timestamp)
+        ? { timestamp: entry.timestamp }
+        : {}),
+    });
+  }
 }
 
 export function hasSessionRead(
@@ -853,6 +877,19 @@ function getFileTimestampMs(fileStats: { mtimeMs?: number }): number | undefined
     : undefined;
 }
 
+async function readFreshTextSnapshot(
+  path: string,
+): Promise<SessionReadSnapshot> {
+  const [buffer, fileStats] = await Promise.all([
+    readFile(path),
+    stat(path),
+  ]);
+  return {
+    content: isBinaryContent(buffer) ? null : buffer.toString("utf-8"),
+    timestamp: getFileTimestampMs(fileStats) ?? Date.now(),
+  };
+}
+
 function hasFileChangedSinceSnapshot(params: {
   readonly snapshot: SessionReadSnapshot | undefined;
   readonly currentContent: string;
@@ -1100,12 +1137,8 @@ function createWriteFileTool(
         // Successful write counts as the "current state" the model has
         // seen — record the path so subsequent edits to the same file
         // in the same session don't require a redundant readFile.
-        const updatedStat = await stat(resolved!).catch(() => undefined);
-        recordSessionRead(sessionId, resolved!, {
-          content:
-            encoding === "base64" ? null : data.toString("utf-8"),
-          timestamp: getFileTimestampMs(updatedStat ?? {}) ?? Date.now(),
-        });
+        const refreshedSnapshot = await readFreshTextSnapshot(resolved!);
+        recordSessionRead(sessionId, resolved!, refreshedSnapshot);
 
         return {
           content: safeStringify({
@@ -1419,11 +1452,8 @@ function createEditFileTool(
 
         // Record the post-edit content as "read" so the next edit in
         // this session does not require a redundant readFile.
-        const updatedStat = await stat(resolved!).catch(() => undefined);
-        recordSessionRead(sessionId, resolved!, {
-          content: newContent,
-          timestamp: getFileTimestampMs(updatedStat ?? {}) ?? Date.now(),
-        });
+        const refreshedSnapshot = await readFreshTextSnapshot(resolved!);
+        recordSessionRead(sessionId, resolved!, refreshedSnapshot);
 
         return {
           content: safeStringify({

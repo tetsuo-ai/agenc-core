@@ -6,6 +6,7 @@ import {
   createFilesystemTools,
   clearSessionReadState,
   clearSessionReadCache,
+  seedSessionReadState,
   safePath,
   isPathAllowed,
 } from "./filesystem.js";
@@ -102,6 +103,28 @@ function walkJsonFiles(root: string): string[] {
     }
   }
   return entries;
+}
+
+function setupPostWriteReadback(content: string, mtimeMs = 2_000): void {
+  const buf = Buffer.from(content);
+  mockStat.mockResolvedValueOnce({
+    isFile: () => true,
+    isDirectory: () => false,
+    size: buf.length,
+    mtimeMs,
+  } as never);
+  mockReadFile.mockResolvedValueOnce(buf);
+}
+
+function setupCreateThenReadback(content: string, mtimeMs = 2_000): void {
+  mockStat.mockImplementationOnce(async () => {
+    const err: NodeJS.ErrnoException = new Error(
+      "ENOENT: no such file or directory",
+    );
+    err.code = "ENOENT";
+    throw err;
+  });
+  setupPostWriteReadback(content, mtimeMs);
 }
 
 const ALLOWED_PATHS = ["/workspace"];
@@ -230,7 +253,7 @@ describe("safePath", () => {
 
 describe("isPathAllowed", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     mockRealpath.mockImplementation(async (p: string) => p as never);
   });
 
@@ -347,7 +370,7 @@ describe("system.readFile", () => {
   let tool: Tool;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     mockRealpath.mockImplementation(async (p: string) => p as never);
     tool = findTool(createFilesystemTools(CONFIG), "system.readFile");
   });
@@ -518,6 +541,7 @@ describe("system.writeFile", () => {
   it("writes a text file and creates parent dirs", async () => {
     mockMkdir.mockResolvedValueOnce(undefined);
     mockWriteFile.mockResolvedValueOnce(undefined);
+    setupCreateThenReadback("hello");
 
     const result = await tool.execute({
       path: "/workspace/subdir/new.txt",
@@ -576,6 +600,7 @@ describe("system.writeFile", () => {
     mockReadFile.mockResolvedValueOnce(Buffer.from("hello"));
     mockMkdir.mockResolvedValueOnce(undefined);
     mockWriteFile.mockResolvedValueOnce(undefined);
+    setupPostWriteReadback("world");
 
     const result = await tool.execute({
       path: "/workspace/existing.c",
@@ -610,6 +635,7 @@ describe("system.writeFile", () => {
     // Read-before-Write enforcement (creating a new file is allowed)
     mockMkdir.mockResolvedValueOnce(undefined);
     mockWriteFile.mockResolvedValueOnce(undefined);
+    setupCreateThenReadback("fresh content");
 
     const result = await tool.execute({
       path: "/workspace/brand-new.c",
@@ -650,6 +676,7 @@ describe("system.writeFile", () => {
       mockReadFile.mockResolvedValueOnce(Buffer.from("hello"));
       mockMkdir.mockResolvedValueOnce(undefined);
       mockWriteFile.mockResolvedValueOnce(undefined);
+      setupPostWriteReadback("world");
 
       const result = await tool.execute({
         path: "/workspace/rehydrate.txt",
@@ -664,6 +691,38 @@ describe("system.writeFile", () => {
       process.env.AGENC_FILESYSTEM_HISTORY_ROOT = previousHistoryRoot;
       rmSync(historyRoot, { recursive: true, force: true });
     }
+  });
+
+  it("accepts an explicit seeded snapshot for an existing file", async () => {
+    const sessionId = "session-seeded-write";
+    clearSessionReadState(sessionId);
+    seedSessionReadState(sessionId, [
+      {
+        path: "/workspace/seeded.txt",
+        content: "hello",
+        timestamp: 1_000,
+      },
+    ]);
+
+    mockStat.mockResolvedValueOnce({
+      isFile: () => true,
+      isDirectory: () => false,
+      size: 5,
+      mtimeMs: 1_000,
+    } as never);
+    mockReadFile.mockResolvedValueOnce(Buffer.from("hello"));
+    mockMkdir.mockResolvedValueOnce(undefined);
+    mockWriteFile.mockResolvedValueOnce(undefined);
+    setupPostWriteReadback("world");
+
+    const result = await tool.execute({
+      path: "/workspace/seeded.txt",
+      content: "world",
+      __agencSessionId: sessionId,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(mockWriteFile).toHaveBeenCalledTimes(1);
   });
 
   it("rejects content exceeding size limit", async () => {
@@ -703,6 +762,20 @@ describe("system.writeFile", () => {
   it("writes base64 content", async () => {
     mockMkdir.mockResolvedValueOnce(undefined);
     mockWriteFile.mockResolvedValueOnce(undefined);
+    mockStat.mockImplementationOnce(async () => {
+      const err: NodeJS.ErrnoException = new Error(
+        "ENOENT: no such file or directory",
+      );
+      err.code = "ENOENT";
+      throw err;
+    });
+    mockStat.mockResolvedValueOnce({
+      isFile: () => true,
+      isDirectory: () => false,
+      size: 11,
+      mtimeMs: 2_000,
+    } as never);
+    mockReadFile.mockResolvedValueOnce(Buffer.from("binary data"));
 
     const b64 = Buffer.from("binary data").toString("base64");
     const result = await tool.execute({
@@ -1080,7 +1153,22 @@ describe("system.editFile", () => {
     await readFirst("/workspace/chain.c");
 
     // First edit
-    setupExistingFile(original);
+    const afterFirst = `LINE ONE\nline two\nline three\n`;
+    mockStat
+      .mockResolvedValueOnce({
+        isFile: () => true,
+        isDirectory: () => false,
+        size: Buffer.byteLength(original),
+      } as never)
+      .mockResolvedValueOnce({
+        isFile: () => true,
+        isDirectory: () => false,
+        size: Buffer.byteLength(afterFirst),
+        mtimeMs: 2_000,
+      } as never);
+    mockReadFile
+      .mockResolvedValueOnce(Buffer.from(original))
+      .mockResolvedValueOnce(Buffer.from(afterFirst));
     mockWriteFile.mockResolvedValueOnce(undefined);
     const first = await tool.execute({
       path: "/workspace/chain.c",
@@ -1093,8 +1181,22 @@ describe("system.editFile", () => {
     // Second edit on the same file in the same session — must NOT
     // require another readFile call (the first edit auto-recorded
     // the post-edit content as read)
-    const afterFirst = `LINE ONE\nline two\nline three\n`;
-    setupExistingFile(afterFirst);
+    const afterSecond = `LINE ONE\nLINE TWO\nline three\n`;
+    mockStat
+      .mockResolvedValueOnce({
+        isFile: () => true,
+        isDirectory: () => false,
+        size: Buffer.byteLength(afterFirst),
+      } as never)
+      .mockResolvedValueOnce({
+        isFile: () => true,
+        isDirectory: () => false,
+        size: Buffer.byteLength(afterSecond),
+        mtimeMs: 3_000,
+      } as never);
+    mockReadFile
+      .mockResolvedValueOnce(Buffer.from(afterFirst))
+      .mockResolvedValueOnce(Buffer.from(afterSecond));
     mockWriteFile.mockResolvedValueOnce(undefined);
     const second = await tool.execute({
       path: "/workspace/chain.c",

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,7 @@ import {
   executeTool,
   validateDesktopToolHandlers,
 } from "./tools.js";
+import { __textEditorTestHooks } from "./tools-editor.js";
 
 test("desktop tool contract stays aligned with executable handlers", () => {
   assert.doesNotThrow(() => validateDesktopToolHandlers());
@@ -279,6 +280,115 @@ test("process_status fails closed for legacy running records without identity me
     assert.equal(payload.running, false);
   } finally {
     await __managedProcessTestHooks.reset();
+  }
+});
+
+test("text_editor create rejects existing files", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "agenc-text-editor-create-"));
+  const targetPath = join(workspace, "existing.txt");
+
+  try {
+    await executeTool("text_editor", {
+      command: "create",
+      path: targetPath,
+      file_text: "first version\n",
+    });
+
+    const second = await executeTool("text_editor", {
+      command: "create",
+      path: targetPath,
+      file_text: "second version\n",
+    });
+    assert.equal(second.isError, true);
+    const payload = JSON.parse(second.content) as Record<string, unknown>;
+    assert.match(String(payload.error ?? ""), /already exists/i);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("text_editor requires a prior view before mutating an existing file", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "agenc-text-editor-read-before-write-"));
+  const targetPath = join(workspace, "notes.txt");
+  const sessionId = `session-${Date.now().toString(36)}`;
+
+  try {
+    await executeTool("text_editor", {
+      command: "create",
+      path: targetPath,
+      file_text: "hello\nworld\n",
+      __agencSessionId: sessionId,
+    });
+    __textEditorTestHooks.clearSessionReadState(sessionId);
+
+    const result = await executeTool("text_editor", {
+      command: "str_replace",
+      path: targetPath,
+      old_str: "world",
+      new_str: "runtime",
+      __agencSessionId: sessionId,
+    });
+    assert.equal(result.isError, true);
+    const payload = JSON.parse(result.content) as Record<string, unknown>;
+    assert.match(String(payload.error ?? ""), /has not been read yet/i);
+  } finally {
+    __textEditorTestHooks.clearSessionReadState(sessionId);
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("text_editor rejects stale mutations and rehydrates read state from persisted history", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "agenc-text-editor-rehydrate-"));
+  const targetPath = join(workspace, "notes.txt");
+  const sessionId = `session-${Date.now().toString(36)}`;
+
+  try {
+    const created = await executeTool("text_editor", {
+      command: "create",
+      path: targetPath,
+      file_text: "alpha\nbeta\n",
+      __agencSessionId: sessionId,
+    });
+    assert.notEqual(created.isError, true);
+
+    const viewed = await executeTool("text_editor", {
+      command: "view",
+      path: targetPath,
+      __agencSessionId: sessionId,
+    });
+    assert.notEqual(viewed.isError, true);
+
+    await writeFile(targetPath, "alpha\ngamma\n", "utf8");
+    const stale = await executeTool("text_editor", {
+      command: "str_replace",
+      path: targetPath,
+      old_str: "gamma",
+      new_str: "delta",
+      __agencSessionId: sessionId,
+    });
+    assert.equal(stale.isError, true);
+    const stalePayload = JSON.parse(stale.content) as Record<string, unknown>;
+    assert.match(String(stalePayload.error ?? ""), /modified since it was last read/i);
+
+    await executeTool("text_editor", {
+      command: "view",
+      path: targetPath,
+      __agencSessionId: sessionId,
+    });
+    __textEditorTestHooks.clearSessionReadCache(sessionId);
+
+    const fresh = await executeTool("text_editor", {
+      command: "str_replace",
+      path: targetPath,
+      old_str: "gamma",
+      new_str: "delta",
+      __agencSessionId: sessionId,
+    });
+    assert.notEqual(fresh.isError, true);
+    assert.equal(await readFile(targetPath, "utf8"), "alpha\ndelta\n");
+  } finally {
+    __textEditorTestHooks.clearSessionReadState(sessionId);
+    await rm(workspace, { recursive: true, force: true });
   }
 });
 
