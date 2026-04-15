@@ -115,3 +115,10 @@
 - **What worked:** Keeping streamed assistant text provisional until the accepted final reply arrives stops the cockpit from presenting rejected completion summaries as real answers, and threading the execution workspace root into the final result fixes verifier runs that were inspecting the wrong repo root.
 - **What didn't:** The watch transcript had been conflating provider stream text with committed replies, so getting the behavior right required changing the presentation contract rather than adding another stop-hook patch.
 - **Rule added to CLAUDE.md:** no
+
+## PR #392: fix(runtime): unify file reads and unblock verifier retries
+- **Date:** 2026-04-15
+- **Files changed:** `runtime/src/tools/system/filesystem.ts`, `runtime/src/tools/system/filesystem.test.ts`, `runtime/src/gateway/{system-prompt-builder,top-level-verifier,sub-agent}.ts`, `runtime/src/gateway/{top-level-verifier,sub-agent}.test.ts`
+- **What worked:** Teaching the main file-read tool to handle targeted line windows on the same surface removed the repeated argument-shape failures, and giving verifier children an explicit unlimited round budget stopped retry verification from dying after a single tool call.
+- **What didn't:** The original split between the main read tool and the range-only read tool had leaked into prompt guidance and test assumptions, so the fix needed prompt updates plus a narrower sub-agent budget override instead of a pure tool-schema change.
+- **Rule added to CLAUDE.md:** no
