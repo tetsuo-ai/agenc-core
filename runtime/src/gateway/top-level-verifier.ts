@@ -132,6 +132,7 @@ interface TopLevelVerifierParams {
     | "content"
     | "stopReason"
     | "completionState"
+    | "runtimeWorkspaceRoot"
     | "turnExecutionContract"
     | "toolCalls"
     | "stopReasonDetail"
@@ -514,6 +515,7 @@ function shouldRunTopLevelVerifier(params: TopLevelVerifierParams): boolean {
   const verifierArtifacts = resolveTopLevelVerifierArtifacts({
     turnExecutionContract: params.result.turnExecutionContract,
     allToolCalls: params.result.toolCalls,
+    workspaceRoot: params.result.runtimeWorkspaceRoot,
   });
   if (
     verifierArtifacts.targetArtifacts.length === 0 ||
@@ -537,6 +539,7 @@ function resolveTopLevelVerifierRequirement(
   const verifierArtifacts = resolveTopLevelVerifierArtifacts({
     turnExecutionContract: params.result.turnExecutionContract,
     allToolCalls: params.result.toolCalls,
+    workspaceRoot: params.result.runtimeWorkspaceRoot,
   });
   if (
     verifierArtifacts.targetArtifacts.length === 0 ||
@@ -575,6 +578,7 @@ function getTopLevelVerifierSkipReason(
   const targetArtifacts = resolveTopLevelVerifierArtifacts({
     turnExecutionContract: params.result.turnExecutionContract,
     allToolCalls: params.result.toolCalls,
+    workspaceRoot: params.result.runtimeWorkspaceRoot,
   }).targetArtifacts;
   if (targetArtifacts.length === 0) return "missing_target_artifacts";
   if (areDocumentationOnlyArtifacts(targetArtifacts)) {
@@ -715,6 +719,7 @@ export async function runTopLevelVerifierValidation(
   const verifierArtifacts = resolveTopLevelVerifierArtifacts({
     turnExecutionContract: params.result.turnExecutionContract,
     allToolCalls: params.result.toolCalls,
+    workspaceRoot: params.result.runtimeWorkspaceRoot,
   });
   const workspaceRoot = verifierArtifacts.workspaceRoot;
   const effectiveVerifierRequirement =

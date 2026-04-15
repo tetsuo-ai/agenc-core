@@ -192,6 +192,21 @@ describe("ChatExecutor request assembly", () => {
   });
 
   describe("stateful session wiring and result assembly", () => {
+    it("returns the resolved runtime workspace root with the final result", async () => {
+      const provider = createMockProvider("primary", {
+        chat: vi.fn().mockResolvedValue(mockResponse({ content: "ok" })),
+      });
+      const executor = new ChatExecutor({ providers: [provider] });
+
+      const result = await executor.execute(
+        createParams({
+          runtimeContext: { workspaceRoot: "/tmp/runtime-workspace-root" },
+        }),
+      );
+
+      expect(result.runtimeWorkspaceRoot).toBe("/tmp/runtime-workspace-root");
+    });
+
     it("does not inject a request milestone contract before the first model call", async () => {
       const provider = createMockProvider("primary", {
         chat: vi.fn().mockResolvedValue(mockResponse({ content: "ok" })),

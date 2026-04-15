@@ -347,6 +347,7 @@ export async function executeRequest(
       completionState,
       verifierSnapshot: terminal.verifierSnapshot,
       runtimeContractSnapshot: terminal.runtimeContractSnapshot,
+      runtimeWorkspaceRoot: ctx.runtimeWorkspaceRoot,
       completionProgress,
       turnExecutionContract: ctx.turnExecutionContract,
       activeTaskContext: deriveActiveTaskContext(ctx.turnExecutionContract),
