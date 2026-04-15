@@ -108,17 +108,18 @@ export const WATCH_LIVE_REPLAY_FIXTURES = Object.freeze({
           runPhase: "queued",
           latestTool: null,
           latestToolState: null,
-          eventCount: 3,
+          eventCount: 2,
           expandedEventId: null,
         },
         frameExpectation: {
           containsInOrder: [
             "AgenC",
             "show me a linked list in c",
-            "● Linked List in C",
-            "code · c",
-            "#include <stdio.h>",
             "\n>",
+          ],
+          notContains: [
+            "● Linked List in C",
+            "#include <stdio.h>",
           ],
         },
       },

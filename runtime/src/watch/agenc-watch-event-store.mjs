@@ -237,6 +237,7 @@ export function createWatchEventStore(dependencies = {}) {
         body: normalized.body,
         bodyTruncated: normalized.bodyTruncated,
         renderMode: kind === "agent" ? "markdown" : undefined,
+        canonicalReply: kind === "agent",
       };
       preserveFullDetailBody(restoredEvent, normalized, entry?.content ?? "(empty)");
       events.push(restoredEvent);
@@ -341,6 +342,7 @@ export function createWatchEventStore(dependencies = {}) {
       result = pushEvent("agent", "Agent Reply", safeContent, "cyan", {
         renderMode: "markdown",
         streamState: "complete",
+        canonicalReply: true,
       });
       updateLatestAgentSummary(result);
     } else {
@@ -364,6 +366,7 @@ export function createWatchEventStore(dependencies = {}) {
       target.tone = "cyan";
       target.renderMode = "markdown";
       target.streamState = "complete";
+      target.canonicalReply = true;
       updateLatestAgentSummary(target);
       updateActivity(timestamp);
       result = target;

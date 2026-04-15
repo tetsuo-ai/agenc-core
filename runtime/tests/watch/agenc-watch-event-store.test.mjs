@@ -92,6 +92,7 @@ test("event store streams and commits agent replies with summary side effects", 
   assert.equal(events[0].title, "Agent Reply");
   assert.equal(events[0].streamState, "complete");
   assert.equal(events[0].body, "hello world");
+  assert.equal(events[0].canonicalReply, true);
   assert.equal(watchState.agentStreamingText, null);
   assert.equal(watchState.agentStreamingPreview, null);
   assert.equal(watchState.latestAgentSummary, "hello world");
@@ -110,6 +111,7 @@ test("event store restores transcript history and clears stale expanded selectio
   assert.equal(events.length, 2);
   assert.equal(events[0].title, "Prompt");
   assert.equal(events[1].renderMode, "markdown");
+  assert.equal(events[1].canonicalReply, true);
   assert.equal(events[1].timestamp, "history:2026-03-14T00:00:01.000Z");
   assert.equal(watchState.transcriptScrollOffset, 0);
   assert.equal(watchState.detailScrollOffset, 0);

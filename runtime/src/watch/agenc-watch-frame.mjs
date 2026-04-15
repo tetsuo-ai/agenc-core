@@ -137,7 +137,7 @@ export function createWatchFrameController(dependencies = {}) {
     renderPanel,
     row,
   });
-  const hiddenTranscriptKinds = new Set(["status"]);
+  const hiddenTranscriptKinds = new Set(["status", "agent"]);
   const transcriptBlockInset = "  ";
   const transcriptBodyInset = "    ";
   // Medium gray so the user-prompt rounded pill stands out clearly against
@@ -832,6 +832,55 @@ export function createWatchFrameController(dependencies = {}) {
     return rows;
   }
 
+  function storedEventBodyText(event) {
+    if (!event || typeof event !== "object") {
+      return "";
+    }
+    if (typeof event.detailBody === "string" && event.detailBody.length > 0) {
+      return event.detailBody;
+    }
+    return typeof event.body === "string" ? event.body : "";
+  }
+
+  function canonicalReplyRows(width) {
+    const replyEvent = currentCanonicalReplyEvent();
+    if (!replyEvent) {
+      return [];
+    }
+    const fullReplyLines = fullAgentTranscriptLines(replyEvent, width);
+    const previewLines = eventPreviewLines(replyEvent, Math.max(12, width - 4));
+    const previewSplit = splitTranscriptPreviewForHeadline(replyEvent, previewLines);
+    const headline = previewSplit.headline || eventHeadline(replyEvent, previewLines);
+    const replySplit =
+      fullReplyLines.length > 0
+        ? isTableDisplayMode(fullReplyLines[0]?.mode)
+          ? { headline, bodyLines: fullReplyLines }
+          : splitTranscriptPreviewForHeadline(replyEvent, fullReplyLines)
+        : previewSplit;
+    const rows = [
+      ...transcriptChatRows([replySplit.headline || headline], width, {
+        marker: "●",
+        markerTone: color.ink,
+        textTone: color.ink,
+      }),
+    ];
+    const bodyLines = fullReplyLines.length > 0 ? replySplit.bodyLines : previewSplit.bodyLines;
+    for (const line of bodyLines) {
+      const plain = sanitizeDisplayText(
+        typeof line === "string" ? line : displayLinePlainText(line),
+      );
+      if (plain.length === 0) {
+        rows.push(fitAnsi(transcriptBodyInset, width));
+        continue;
+      }
+      rows.push(fitAnsi(renderEventBodyLine(replyEvent, line, {
+        inline: true,
+        prefix: transcriptBodyInset,
+      }), width));
+    }
+    return rows;
+  }
+
   function activePlanEntries(limit = 10) {
     return [...subagentPlanSteps.values()]
       .sort((left, right) => left.order - right.order)
@@ -883,8 +932,28 @@ export function createWatchFrameController(dependencies = {}) {
     );
   }
 
+  function currentCanonicalReplyEvent() {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const candidate = events[index];
+      if (!candidate || candidate.kind !== "agent") {
+        continue;
+      }
+      if (candidate.canonicalReply === true) {
+        return candidate;
+      }
+    }
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const candidate = events[index];
+      if (candidate?.kind === "agent") {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
   function shouldShowIdleTranscript() {
-    return visibleTranscriptEvents().length === 0 &&
+    return !currentCanonicalReplyEvent() &&
+      visibleTranscriptEvents().length === 0 &&
       sanitizeInlineText(currentInputValue(), "").length === 0;
   }
 
@@ -2986,17 +3055,40 @@ export function createWatchFrameController(dependencies = {}) {
   }
 
   function activityPanelLines(width, targetHeight) {
+    const replyRows = canonicalReplyRows(width);
     const transcriptView = flattenTranscriptView(width);
+    const hasTranscript = transcriptView.rows.length > 0;
+    const reservedTranscriptRows = hasTranscript
+      ? Math.min(Math.max(1, transcriptView.rows.length), Math.max(0, Math.min(1, targetHeight - 1)))
+      : 0;
+    const availableReplyRows = replyRows.length > 0
+      ? Math.max(0, targetHeight - (hasTranscript ? reservedTranscriptRows + 1 : 0))
+      : 0;
+    const visibleReplyRows = availableReplyRows > 0
+      ? replyRows.slice(0, availableReplyRows)
+      : [];
+    const transcriptTargetHeight = Math.max(
+      0,
+      targetHeight - visibleReplyRows.length - (visibleReplyRows.length > 0 && hasTranscript ? 1 : 0),
+    );
     const sliced = sliceViewportRowsFromBottom(
       transcriptView.rows,
-      targetHeight,
+      transcriptTargetHeight,
       watchState.transcriptScrollOffset,
     );
     watchState.transcriptScrollOffset = sliced.normalizedOffset;
+    const lines = [...visibleReplyRows];
+    if (visibleReplyRows.length > 0 && sliced.rows.length > 0) {
+      lines.push(blankRow(width));
+    }
+    lines.push(...sliced.rows);
     return {
-      lines: [...sliced.rows],
+      lines,
       hiddenAbove: sliced.hiddenAbove,
       hiddenBelow: sliced.hiddenBelow,
+      transcriptStartIndex: visibleReplyRows.length > 0 && sliced.rows.length > 0
+        ? visibleReplyRows.length + 1
+        : visibleReplyRows.length,
     };
   }
 
@@ -3216,13 +3308,26 @@ export function createWatchFrameController(dependencies = {}) {
       ].filter(Boolean).join("\n\n").trim();
     }
 
-    return events
-      .map((event) => [
-        `[${event.timestamp}] ${sanitizeDisplayText(event.title)}`,
-        event.body,
-      ].join("\n"))
-      .join("\n\n")
-      .trim();
+    const sections = [];
+    const replyEvent = currentCanonicalReplyEvent();
+    if (replyEvent) {
+      sections.push(
+        [
+          `[${replyEvent.timestamp}] ${sanitizeDisplayText(replyEvent.title)}`,
+          storedEventBodyText(replyEvent),
+        ].join("\n"),
+      );
+    }
+
+    sections.push(
+      ...visibleTranscriptEvents()
+        .map((event) => [
+          `[${event.timestamp}] ${sanitizeDisplayText(event.title)}`,
+          storedEventBodyText(event),
+        ].join("\n"))
+        .filter((block) => block.trim().length > 0),
+    );
+    return sections.join("\n\n").trim();
   }
 
   function exportViewText(text, mode = watchState.expandedEventId ? "detail" : "transcript") {
@@ -3583,10 +3688,23 @@ export function createWatchFrameController(dependencies = {}) {
         : activityPanelLines(transcriptWidth, transcriptHeight);
       diffNavigation = transcriptView.diffNavigation ?? null;
       const transcriptLines = [...transcriptView.lines];
+      const transcriptStartIndex = Math.max(
+        0,
+        Math.min(
+          transcriptLines.length - 1,
+          Number.isFinite(Number(transcriptView.transcriptStartIndex))
+            ? Number(transcriptView.transcriptStartIndex)
+            : 0,
+        ),
+      );
       if (!watchState.expandedEventId && transcriptLines.length > 0) {
         if (transcriptView.hiddenAbove > 0) {
           const aboveText = `${color.fog}▲ ${transcriptView.hiddenAbove} more line${transcriptView.hiddenAbove === 1 ? "" : "s"} above${color.reset}`;
-          transcriptLines[0] = paintSurface(aboveText, transcriptWidth, color.panelBg);
+          transcriptLines[transcriptStartIndex] = paintSurface(
+            aboveText,
+            transcriptWidth,
+            color.panelBg,
+          );
         }
         if (transcriptView.hiddenBelow > 0) {
           const belowText = `${color.fog}▼ ${transcriptView.hiddenBelow} more line${transcriptView.hiddenBelow === 1 ? "" : "s"} below${color.reset}`;

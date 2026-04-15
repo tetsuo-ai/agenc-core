@@ -881,12 +881,12 @@ test("frame controller renders user transcript rows as shaded blocks without div
     new RegExp(`\\x1b\\[48;5;238m\\s+<soft>otra linea<reset>`),
   );
 
-  const assistantRow = lines.findIndex((line, index) =>
-    index > firstUserRow && line.includes("respuesta corta")
-  );
+  const assistantRow = lines.findIndex((line) => line.includes("respuesta corta"));
   assert.notEqual(assistantRow, -1);
+  const betweenStart = Math.min(firstUserRow, assistantRow) + 1;
+  const betweenEnd = Math.max(firstUserRow, assistantRow);
   assert.equal(
-    lines.slice(firstUserRow + 2, assistantRow).some((line) => /^─+$/.test(line)),
+    lines.slice(betweenStart, betweenEnd).some((line) => /^─+$/.test(line)),
     false,
   );
 });
