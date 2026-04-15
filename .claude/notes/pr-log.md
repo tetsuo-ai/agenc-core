@@ -108,3 +108,10 @@
 - **What worked:** Splitting lightweight session tasks from runtime handles let the public `task.*` workflow return only session-task fields while delegated and coordinator flows moved to path-first background handles, which brought the runtime surface into one consistent model without losing durable runtime state internally.
 - **What didn't:** The original task tracker and tests assumed one mixed surface, so separating the handle tools required a second factory plus coordinated fixture updates across delegation, coordinator, and daemon command tests before the suite settled.
 - **Rule added to CLAUDE.md:** no
+
+## PR #379: fix(runtime): align final reply acceptance and verifier root
+- **Date:** 2026-04-15
+- **Files changed:** `runtime/src/gateway/top-level-verifier.ts`, `runtime/src/llm/{chat-executor-request,chat-executor-types}.ts`, `runtime/src/watch/{agenc-watch-event-store,agenc-watch-frame}.mjs`, `runtime/src/gateway/top-level-verifier.test.ts`, `runtime/src/llm/chat-executor-request.test.ts`
+- **What worked:** Keeping streamed assistant text provisional until the accepted final reply arrives stops the cockpit from presenting rejected completion summaries as real answers, and threading the execution workspace root into the final result fixes verifier runs that were inspecting the wrong repo root.
+- **What didn't:** The watch transcript had been conflating provider stream text with committed replies, so getting the behavior right required changing the presentation contract rather than adding another stop-hook patch.
+- **Rule added to CLAUDE.md:** no
