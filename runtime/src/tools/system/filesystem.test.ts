@@ -6,6 +6,7 @@ import {
   createFilesystemTools,
   clearSessionReadState,
   clearSessionReadCache,
+  hasSessionRead,
   seedSessionReadState,
   safePath,
   isPathAllowed,
@@ -391,6 +392,60 @@ describe("system.readFile", () => {
     expect(parsed.encoding).toBe("utf-8");
     expect(parsed.content).toBe("hello world");
     expect(parsed.size).toBe(11);
+    expect(parsed.startLine).toBe(1);
+    expect(parsed.totalLines).toBe(1);
+    expect(parsed.lineCount).toBe(1);
+  });
+
+  it("reads a targeted text window via offset and limit", async () => {
+    const content = "line 1\nline 2\nline 3\nline 4";
+    mockStat.mockResolvedValueOnce({
+      isFile: () => true,
+      isDirectory: () => false,
+      size: content.length,
+      mtimeMs: 1_700,
+    } as never);
+    mockReadFile.mockResolvedValueOnce(Buffer.from(content));
+
+    const result = await tool.execute({
+      path: "/workspace/test.txt",
+      offset: 2,
+      limit: 2,
+      __agencSessionId: "session-read-window",
+    });
+    const parsed = parseResult(result);
+
+    expect(result.isError).toBeUndefined();
+    expect(parsed.content).toBe("line 2\nline 3");
+    expect(parsed.startLine).toBe(2);
+    expect(parsed.endLine).toBe(3);
+    expect(parsed.totalLines).toBe(4);
+    expect(parsed.lineCount).toBe(2);
+    expect(hasSessionRead("session-read-window", "/workspace/test.txt")).toBe(false);
+    clearSessionReadState("session-read-window");
+  });
+
+  it("accepts compatibility startLine/endLine arguments on the main read tool", async () => {
+    const content = "alpha\nbeta\ngamma\ndelta";
+    mockStat.mockResolvedValueOnce({
+      isFile: () => true,
+      isDirectory: () => false,
+      size: content.length,
+    } as never);
+    mockReadFile.mockResolvedValueOnce(Buffer.from(content));
+
+    const result = await tool.execute({
+      path: "/workspace/test.txt",
+      startLine: 3,
+      endLine: 4,
+    });
+    const parsed = parseResult(result);
+
+    expect(result.isError).toBeUndefined();
+    expect(parsed.content).toBe("gamma\ndelta");
+    expect(parsed.startLine).toBe(3);
+    expect(parsed.endLine).toBe(4);
+    expect(parsed.lineCount).toBe(2);
   });
 
   it("auto-detects binary content", async () => {
@@ -406,6 +461,25 @@ describe("system.readFile", () => {
     const parsed = parseResult(result);
 
     expect(parsed.encoding).toBe("base64");
+  });
+
+  it("rejects line-window arguments for binary reads", async () => {
+    const binary = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x02]);
+    mockStat.mockResolvedValueOnce({
+      isFile: () => true,
+      isDirectory: () => false,
+      size: binary.length,
+    } as never);
+    mockReadFile.mockResolvedValueOnce(binary);
+
+    const result = await tool.execute({
+      path: "/workspace/image.png",
+      offset: 2,
+      limit: 3,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(parseResult(result).error).toContain("Line-based reads are only supported");
   });
 
   it("rejects files exceeding size limit", async () => {

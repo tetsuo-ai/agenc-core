@@ -185,7 +185,7 @@ export function buildDesktopContext(
       "- For web browsing, ALWAYS use the browser navigation/snapshot tools first; do not start with tab-state inspection.\n\n" +
       "Desktop tips:\n" +
       '- Launch GUI apps: desktop.bash with "app >/dev/null 2>&1 &" (MUST redirect output and background to avoid hanging)\n' +
-      '- For coding workflows, prefer the native tools first: system.grep, system.glob, system.searchFiles, system.git*, system.readFileRange, system.applyPatch, and system.symbol*. Use system.repoInventory only when you specifically need repo/worktree inventory.\n' +
+      '- For coding workflows, prefer the native tools first: system.grep, system.glob, system.searchFiles, system.git*, system.readFile (use offset/limit for targeted reads), system.applyPatch, and system.symbol*. Use system.repoInventory only when you specifically need repo/worktree inventory.\n' +
       '- Use system.searchTools when you need to discover mixed-mode tools outside the default coding bundle.\n' +
       "- Take screenshots only when you need to inspect visual state or verify a GUI action\n" +
       "- system.bash = host machine; desktop.bash = inside the Docker container\n" +

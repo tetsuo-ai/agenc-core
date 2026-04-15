@@ -153,6 +153,7 @@ describe("runTopLevelVerifierValidation", () => {
             strict: true,
           }),
         }),
+        maxToolRounds: 0,
         requiredToolEvidence: expect.objectContaining({
           executionEnvelope: expect.objectContaining({
             verificationMode: "grounded_read",

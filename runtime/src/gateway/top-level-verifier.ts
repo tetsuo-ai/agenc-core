@@ -43,7 +43,6 @@ import type { ToolCatalogEntry } from "../tools/types.js";
 
 const DEFAULT_VERIFY_TOOLS = [
   "system.readFile",
-  "system.readFileRange",
   "system.listDir",
   "system.stat",
   "system.searchFiles",
@@ -837,6 +836,7 @@ export async function runTopLevelVerifierValidation(
     promptEnvelope: definition.promptEnvelope,
     tools: definition.tools,
     structuredOutput: VERIFY_STRUCTURED_OUTPUT,
+    maxToolRounds: 0,
     ...(workspaceRoot ? { workingDirectory: workspaceRoot } : {}),
     requiredToolEvidence: {
       maxCorrectionAttempts: 1,

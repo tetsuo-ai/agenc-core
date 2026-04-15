@@ -941,6 +941,89 @@ function isBinaryContent(buffer: Buffer): boolean {
   return false;
 }
 
+function normalizeIntegerArg(
+  value: unknown,
+): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+  if (typeof value === "string" && /^-?\d+$/.test(value.trim())) {
+    return Number.parseInt(value.trim(), 10);
+  }
+  return undefined;
+}
+
+function resolveReadWindow(args: Record<string, unknown>): {
+  readonly startLine?: number;
+  readonly limit?: number;
+} {
+  const explicitOffset = normalizeIntegerArg(args.offset);
+  const explicitLimit = normalizeIntegerArg(args.limit);
+  const compatStartLine = normalizeIntegerArg(args.startLine);
+  const compatEndLine = normalizeIntegerArg(args.endLine);
+
+  if (
+    explicitOffset === undefined &&
+    explicitLimit === undefined &&
+    compatStartLine === undefined &&
+    compatEndLine === undefined
+  ) {
+    return {};
+  }
+
+  const startLine =
+    explicitOffset !== undefined
+      ? Math.max(1, explicitOffset)
+      : Math.max(1, compatStartLine ?? 1);
+  const limit =
+    explicitLimit !== undefined
+      ? Math.max(1, explicitLimit)
+      : compatEndLine !== undefined
+        ? Math.max(1, compatEndLine - startLine + 1)
+        : undefined;
+
+  return {
+    startLine,
+    ...(limit === undefined ? {} : { limit }),
+  };
+}
+
+function sliceTextByLines(params: {
+  readonly text: string;
+  readonly startLine: number;
+  readonly limit?: number;
+}): {
+  readonly content: string;
+  readonly startLine: number;
+  readonly endLine: number;
+  readonly totalLines: number;
+  readonly lineCount: number;
+  readonly viewKind: SessionReadViewKind;
+} {
+  const lines = params.text.split(/\r?\n/);
+  const totalLines = lines.length;
+  const boundedStartLine = Math.max(1, params.startLine);
+  const boundedEndLine =
+    params.limit === undefined
+      ? totalLines
+      : Math.min(totalLines, boundedStartLine + params.limit - 1);
+  const selected =
+    totalLines === 0 || boundedStartLine > totalLines
+      ? []
+      : lines.slice(boundedStartLine - 1, boundedEndLine);
+  return {
+    content: selected.join("\n"),
+    startLine: boundedStartLine,
+    endLine: Math.max(boundedStartLine, boundedEndLine),
+    totalLines,
+    lineCount: selected.length,
+    viewKind:
+      boundedStartLine === 1 && selected.length === totalLines
+        ? "full"
+        : "partial",
+  };
+}
+
 // ============================================================================
 // Tool Factories
 // ============================================================================
@@ -952,7 +1035,8 @@ function createReadFileTool(
   return {
     name: "system.readFile",
     description:
-      "Read a file from the filesystem. Returns text content (UTF-8) by default, or base64 for binary files. Gated by path allowlist and size limits.",
+      "Read a file from the filesystem. Returns text content (UTF-8) by default, or base64 for binary files. " +
+      "For text files, optional line-window reads are supported via offset/limit. Gated by path allowlist and size limits.",
     inputSchema: {
       type: "object",
       properties: {
@@ -965,6 +1049,30 @@ function createReadFileTool(
           enum: ["utf-8", "base64"],
           description:
             "Output encoding (default: auto-detect — utf-8 for text, base64 for binary)",
+        },
+        offset: {
+          type: "integer",
+          minimum: 1,
+          description:
+            "Optional 1-indexed starting line for text reads. Use with limit to target a portion of a file.",
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          description:
+            "Optional number of lines to return for text reads.",
+        },
+        startLine: {
+          type: "integer",
+          minimum: 1,
+          description:
+            "Compatibility alias for offset on text reads.",
+        },
+        endLine: {
+          type: "integer",
+          minimum: 1,
+          description:
+            "Compatibility alias for the inclusive end line on text reads.",
         },
       },
       required: ["path"],
@@ -1005,17 +1113,61 @@ function createReadFileTool(
             `File size ${buffer.length} bytes exceeds limit of ${maxReadBytes} bytes`,
           );
         }
+        const readWindow = resolveReadWindow(args);
         const forceEncoding = args.encoding as string | undefined;
         const binary =
           forceEncoding === "base64" ||
           (!forceEncoding && isBinaryContent(buffer));
+
+        if (binary && readWindow.startLine !== undefined) {
+          return errorResult(
+            "Line-based reads are only supported for UTF-8 text files. Omit offset/limit for binary reads.",
+          );
+        }
+
+        if (!binary && readWindow.startLine !== undefined) {
+          const text = buffer.toString("utf-8");
+          const sliced = sliceTextByLines({
+            text,
+            startLine: readWindow.startLine,
+            ...(readWindow.limit === undefined
+              ? {}
+              : { limit: readWindow.limit }),
+          });
+          recordSessionRead(resolveSessionId(args), resolved!, {
+            content: sliced.content,
+            timestamp: getFileTimestampMs(fileStats),
+            viewKind: sliced.viewKind,
+          });
+          return {
+            content: safeStringify({
+              path: args.path,
+              size: buffer.length,
+              encoding: "utf-8",
+              content: sliced.content,
+              startLine: sliced.startLine,
+              endLine: sliced.endLine,
+              totalLines: sliced.totalLines,
+              lineCount: sliced.lineCount,
+            }),
+          };
+        }
+
+        const textContent = binary ? undefined : buffer.toString("utf-8");
+        const fullTextMetadata =
+          textContent === undefined
+            ? undefined
+            : sliceTextByLines({
+                text: textContent,
+                startLine: 1,
+              });
 
         // Record the read in the per-session readFileState so
         // subsequent system.writeFile / system.editFile calls on this
         // path satisfy the Read-before-Write rule. See PR #314 and
         // the SESSION_ID_ARG comment for the rationale.
         recordSessionRead(resolveSessionId(args), resolved!, {
-          content: binary ? null : buffer.toString("utf-8"),
+          content: binary ? null : textContent ?? "",
           timestamp: getFileTimestampMs(fileStats),
           viewKind: "full",
         });
@@ -1027,7 +1179,15 @@ function createReadFileTool(
             encoding: binary ? "base64" : "utf-8",
             content: binary
               ? buffer.toString("base64")
-              : buffer.toString("utf-8"),
+              : textContent ?? "",
+            ...(fullTextMetadata
+              ? {
+                  startLine: 1,
+                  endLine: fullTextMetadata.endLine,
+                  totalLines: fullTextMetadata.totalLines,
+                  lineCount: fullTextMetadata.lineCount,
+                }
+              : {}),
           }),
         };
       } catch (err) {

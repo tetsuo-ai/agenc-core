@@ -183,6 +183,7 @@ export interface SubAgentConfig {
   };
   readonly continuationSessionId?: string;
   readonly timeoutMs?: number;
+  readonly maxToolRounds?: number;
   readonly toolBudgetPerRequest?: number;
   readonly workingDirectory?: string;
   readonly workingDirectorySource?: "execution_envelope";
@@ -1170,8 +1171,11 @@ export class SubAgentManager {
         resolvedExecutionBudget?.providerProfile;
       const defaultMaxToolRounds = this.config.resolveDefaultMaxToolRounds?.();
       const effectiveMaxToolRounds =
-        typeof defaultMaxToolRounds === "number" &&
-          Number.isFinite(defaultMaxToolRounds)
+        typeof handle.config.maxToolRounds === "number" &&
+          Number.isFinite(handle.config.maxToolRounds)
+          ? normalizeRuntimeLimit(handle.config.maxToolRounds, 0)
+          : typeof defaultMaxToolRounds === "number" &&
+              Number.isFinite(defaultMaxToolRounds)
           ? resolveMaxToolRoundsForToolNames(
               Math.max(1, Math.floor(defaultMaxToolRounds)),
               handle.config.tools,

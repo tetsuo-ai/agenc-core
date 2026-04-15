@@ -1097,6 +1097,49 @@ describe("SubAgentManager", () => {
       }
     });
 
+    it("honors an explicit child maxToolRounds override", async () => {
+      const executeSpy = vi.spyOn(ChatExecutor.prototype, "execute")
+        .mockResolvedValueOnce({
+          content: "VERDICT: PASS",
+          provider: "mock",
+          model: "mock",
+          usedFallback: false,
+          toolCalls: [],
+          tokenUsage: {
+            promptTokens: 1,
+            completionTokens: 1,
+            totalTokens: 2,
+          },
+          callUsage: [],
+          durationMs: 1,
+          compacted: false,
+          stopReason: "completed",
+          completionState: "completed",
+        });
+
+      try {
+        const manager = new SubAgentManager(makeManagerConfig({
+          resolveDefaultMaxToolRounds: () => 1,
+        }));
+        const sessionId = await manager.spawn({
+          parentSessionId: "p",
+          task: "verify the implementation",
+          maxToolRounds: 0,
+          tools: ["system.readFile", "verification.runProbe"],
+        });
+        await settle();
+
+        expect(manager.getResult(sessionId)?.success).toBe(true);
+        const handleConfig = (manager as unknown as {
+          handles: Map<string, { config: { maxToolRounds?: number } }>;
+        }).handles.get(sessionId)?.config;
+        expect(handleConfig?.maxToolRounds).toBe(0);
+        expect(executeSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        executeSpy.mockRestore();
+      }
+    });
+
     it("preserves child completion progress and refuses completion when the workflow state needs verification", async () => {
       const executeSpy = vi.spyOn(ChatExecutor.prototype, "execute")
         .mockResolvedValueOnce({
