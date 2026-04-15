@@ -756,7 +756,7 @@ export async function runTopLevelVerifierValidation(
     baseExecutionEnvelope && workspaceRoot
       ? {
           ...baseExecutionEnvelope,
-          allowedWriteRoots: baseExecutionEnvelope.allowedWriteRoots.filter(
+          allowedWriteRoots: (baseExecutionEnvelope.allowedWriteRoots ?? []).filter(
             (root) => root !== workspaceRoot,
           ),
         }
