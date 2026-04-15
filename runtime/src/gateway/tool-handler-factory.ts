@@ -1174,6 +1174,23 @@ function applyDefaultWorkingDirectory(
     nextArgs = { ...nextArgs, cwd: executionWorkingDirectory };
   }
 
+  const workspaceRootValue =
+    typeof nextArgs.workspaceRoot === "string"
+      ? nextArgs.workspaceRoot.trim()
+      : undefined;
+  if (workspaceRootValue && typeof logicalWorkingDirectory === "string") {
+    const normalizedWorkspaceRoot = normalizeEnvelopePath(
+      workspaceRootValue,
+      logicalWorkingDirectory,
+    );
+    if (normalizedWorkspaceRoot !== workspaceRootValue) {
+      if (nextArgs === args) {
+        nextArgs = { ...nextArgs };
+      }
+      nextArgs.workspaceRoot = normalizedWorkspaceRoot;
+    }
+  }
+
   const pathArgKeys = TOOL_PATH_ARG_KEYS[toolName];
   if (!pathArgKeys) {
     return {
@@ -1335,6 +1352,20 @@ function applyWorkspaceAliasTranslation(
     }
   }
 
+  const workspaceRootValue =
+    typeof nextArgs.workspaceRoot === "string"
+      ? nextArgs.workspaceRoot.trim()
+      : undefined;
+  if (workspaceRootValue) {
+    const translatedWorkspaceRoot = translateWorkspaceAliasPath(
+      workspaceRootValue,
+      root,
+    );
+    if (translatedWorkspaceRoot !== workspaceRootValue) {
+      updateArg("workspaceRoot", translatedWorkspaceRoot);
+    }
+  }
+
   if (toolName !== "system.bash" && toolName !== "desktop.bash") {
     return nextArgs;
   }
@@ -1426,6 +1457,16 @@ function validateDelegatedCanonicalToolPaths(
   if (cwdValue && hasWorkspaceAliasPath(cwdValue)) {
     return buildDelegatedWorkspaceAliasLeakError(
       `cwd still uses the logical /workspace alias (${cwdValue})`,
+    );
+  }
+
+  const workspaceRootValue =
+    typeof args.workspaceRoot === "string"
+      ? args.workspaceRoot.trim()
+      : undefined;
+  if (workspaceRootValue && hasWorkspaceAliasPath(workspaceRootValue)) {
+    return buildDelegatedWorkspaceAliasLeakError(
+      `workspaceRoot still uses the logical /workspace alias (${workspaceRootValue})`,
     );
   }
 
@@ -3020,6 +3061,7 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
             taskStore,
             runtimeContractFlags,
             availableToolNames,
+            launchShellAgentTask: delegationContext?.launchShellAgentTask,
             defaultWorkingDirectory: effectiveDefaultWorkingDirectory,
             parentAllowedReadRoots: delegatedParentAllowedRoots,
             parentAllowedWriteRoots: delegatedParentAllowedRoots,

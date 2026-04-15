@@ -136,4 +136,33 @@ describe("verification tools", () => {
       parsed.probes?.some((probe) => probe.id === "generic:test:ctest"),
     ).toBe(true);
   });
+
+  it("resolves relative workspaceRoot against cwd when the caller passes '.'", async () => {
+    const workspaceRoot = mkdtempSync(
+      join(tmpdir(), "verification-relative-workspace-root-"),
+    );
+    writeFileSync(
+      join(workspaceRoot, "package.json"),
+      JSON.stringify({
+        name: "verification-fixture",
+        private: true,
+        scripts: {
+          build: "node -e \"process.stdout.write('build-ok')\"",
+        },
+      }),
+    );
+
+    const tools = createVerificationTools();
+    const listProbes = findTool(tools, "verification.listProbes");
+
+    const parsed = JSON.parse(
+      (await listProbes.execute({ workspaceRoot: ".", cwd: workspaceRoot })).content,
+    ) as {
+      workspaceRoot?: string;
+      probes?: Array<{ category?: string }>;
+    };
+
+    expect(parsed.workspaceRoot).toBe(workspaceRoot);
+    expect(parsed.probes?.some((probe) => probe.category === "build")).toBe(true);
+  });
 });

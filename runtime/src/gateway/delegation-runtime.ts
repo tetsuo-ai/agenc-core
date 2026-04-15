@@ -13,6 +13,7 @@ import {
 } from "./sub-agent.js";
 import type { PersistentWorkerManager } from "./persistent-worker-manager.js";
 import type { GatewaySubagentFallbackBehavior } from "./types.js";
+import type { DelegationContractSpec } from "../utils/delegation-validation.js";
 import {
   createVerifierRequirement,
   type VerifierRequirement,
@@ -268,6 +269,35 @@ export interface DelegationToolCompositionContext {
   readonly policyEngine: DelegationPolicyEngine | null;
   readonly verifier: DelegationVerifierService | null;
   readonly lifecycleEmitter: SubAgentLifecycleEmitter | null;
+  readonly launchShellAgentTask?: (params: {
+    readonly parentSessionId: string;
+    readonly roleId: string;
+    readonly objective: string;
+    readonly prompt?: string;
+    readonly shellProfile?: string;
+    readonly tools?: readonly string[];
+    readonly requiredCapabilities?: readonly string[];
+    readonly workspaceRoot?: string;
+    readonly workingDirectory?: string;
+    readonly continuationSessionId?: string;
+    readonly requireToolCall?: boolean;
+    readonly delegationSpec?: DelegationContractSpec;
+    readonly worktree?: "auto" | string;
+    readonly wait?: boolean;
+    readonly timeoutMs?: number;
+    readonly name?: string;
+    readonly createTaskIfMissing?: boolean;
+    readonly unsafeBenchmarkMode?: boolean;
+  }) => Promise<{
+    readonly sessionId: string;
+    readonly taskId?: string;
+    readonly output: string;
+    readonly success: boolean;
+    readonly status: string;
+    readonly waited: boolean;
+    readonly outputPath?: string;
+    readonly name?: string;
+  }>;
   readonly unsafeBenchmarkMode?: boolean;
 }
 

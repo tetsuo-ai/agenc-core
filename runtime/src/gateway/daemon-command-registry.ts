@@ -1692,11 +1692,19 @@ export interface CommandRegistryDaemonContext {
     taskId?: string;
     shellProfile?: SessionShellProfile;
     toolBundle?: ShellAgentToolBundleName;
+    tools?: readonly string[];
+    requiredCapabilities?: readonly string[];
     workspaceRoot?: string;
     workingDirectory?: string;
+    continuationSessionId?: string;
+    requireToolCall?: boolean;
+    delegationSpec?: Record<string, unknown>;
     worktree?: "auto" | string;
     wait?: boolean;
     timeoutMs?: number;
+    name?: string;
+    createTaskIfMissing?: boolean;
+    unsafeBenchmarkMode?: boolean;
   }): Promise<{
     role: ShellAgentRoleDescriptor;
     sessionId: string;
@@ -1705,6 +1713,8 @@ export interface CommandRegistryDaemonContext {
     success: boolean;
     status: string;
     waited: boolean;
+    outputPath?: string;
+    name?: string;
   }>;
   inspectShellAgentTask(parentSessionId: string, target: string): Promise<{
     sessionId?: string;
