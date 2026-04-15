@@ -150,3 +150,10 @@
 - **What worked:** Promoting explicit full-plan implementation requests into durable workflow execution, making request milestones authoritative for strict runs, and allowing milestone checkpoint summaries to continue instead of tripping narrated-future-work made long implementation sessions persist progress instead of dying after the first honest checkpoint.
 - **What didn't:** The durable path needed wiring at multiple layers because request milestones were previously telemetry-only, background-run actor cycles were missing runtime evidence context, and stale verifier state could survive later mutations unless it was explicitly invalidated.
 - **Rule added to CLAUDE.md:** no
+
+## PR #400: fix(watch): separate final reply from transcript feed
+- **Date:** 2026-04-15
+- **Files changed:** `runtime/src/watch/{agenc-watch-event-store,agenc-watch-frame}.mjs`, `runtime/tests/watch/{agenc-watch-event-store,agenc-watch-frame}.test.mjs`, `runtime/tests/watch/fixtures/agenc-watch-live-replay.fixture.mjs`
+- **What worked:** Promoting the accepted agent reply to a canonical block while hiding ordinary agent rows from the scrolling transcript makes the cockpit read like a final answer plus supporting detail instead of a blended stream of provisional output and tool chatter.
+- **What didn't:** The frame logic needed coordinated changes to transcript slicing, hidden-line markers, export behavior, and replay fixtures, so the UI adjustment touched more than just the renderer and needed full watch-suite coverage to prove it stayed stable.
+- **Rule added to CLAUDE.md:** no
