@@ -1457,7 +1457,10 @@ export function createCodingTools(config: CodingToolConfig): readonly Tool[] {
         normalizePositiveInteger(args.endLine, startLine + 50, lines.length || startLine),
       );
       const selected = lines.slice(startLine - 1, endLine);
-      recordSessionRead(resolveSessionId(args), safe.resolved);
+      recordSessionRead(resolveSessionId(args), safe.resolved, {
+        content: selected.join("\n"),
+        viewKind: "partial",
+      });
       return okResult({
         path: safe.resolved,
         startLine,
@@ -1516,7 +1519,7 @@ export function createCodingTools(config: CodingToolConfig): readonly Tool[] {
         const existingStat = await stat(resolvedTarget).catch(() => undefined);
         if (existingStat && !hasSessionRead(sessionId, resolvedTarget)) {
           return errorResult(
-            `Call system.readFile or system.readFileRange on "${targetPath}" before system.applyPatch.`,
+            `Call system.readFile on "${targetPath}" before system.applyPatch.`,
           );
         }
 

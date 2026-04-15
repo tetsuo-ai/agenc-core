@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { Keypair, PublicKey } from "@solana/web3.js";
 import { LLMTaskExecutor } from "./executor.js";
+import { createPromptEnvelope } from "./prompt-envelope.js";
 import type {
   LLMProvider,
   LLMResponse,
@@ -94,7 +95,7 @@ describe("LLMTaskExecutor", () => {
     const provider = createMockProvider();
     const executor = new LLMTaskExecutor({
       provider,
-      systemPrompt: "You are a helpful agent.",
+      promptEnvelope: createPromptEnvelope("You are a helpful agent."),
     });
 
     await executor.execute(createMockTask());
@@ -106,6 +107,39 @@ describe("LLMTaskExecutor", () => {
       content: "You are a helpful agent.",
     });
     expect(messages[1].role).toBe("user");
+  });
+
+  it("builds prompt-bearing task messages from a prompt envelope", async () => {
+    const provider = createMockProvider();
+    const executor = new LLMTaskExecutor({
+      provider,
+      promptEnvelope: {
+        kind: "prompt_envelope_v1",
+        baseSystemPrompt: "You are a helpful agent.",
+        systemSections: [
+          { source: "memory_semantic", content: "Project memory" },
+        ],
+        userSections: [
+          { source: "delegated_context", content: "Operator handoff" },
+        ],
+      },
+    });
+
+    await executor.execute(createMockTask());
+
+    const messages = (provider.chat as ReturnType<typeof vi.fn>).mock
+      .calls[0][0] as LLMMessage[];
+    expect(messages[0]).toEqual({
+      role: "system",
+      content: "You are a helpful agent.",
+    });
+    expect(messages[1]).toEqual({
+      role: "system",
+      content: "Project memory",
+    });
+    expect(messages[2]?.role).toBe("user");
+    expect(messages[2]?.content).toContain("Operator handoff");
+    expect(messages[3]?.role).toBe("user");
   });
 
   it("passes provider trace options when enabled", async () => {
@@ -484,7 +518,7 @@ describe("LLMTaskExecutor", () => {
       const executor = new LLMTaskExecutor({
         provider,
         memory,
-        systemPrompt: "You are an agent.",
+        promptEnvelope: createPromptEnvelope("You are an agent."),
       });
 
       await executor.execute(createTaskWithUniquePda());

@@ -183,6 +183,10 @@ export function createWatchToolPresentationNormalizer(dependencies = {}) {
     }
     switch (toolName) {
       case "system.readFile":
+      case "system.readFileRange":
+      case "system.grep":
+      case "system.searchFiles":
+      case "system.glob":
       case "system.listDir":
         return true;
       case "system.bash":
@@ -269,6 +273,24 @@ export function createWatchToolPresentationNormalizer(dependencies = {}) {
               ? payload.content
               : null,
         };
+      case "system.editFile":
+        return {
+          kind: "file-edit-start",
+          filePathDisplay: compactPathForDisplay(payload.path),
+          filePathRaw:
+            typeof payload?.path === "string" && payload.path.trim().length > 0
+              ? sanitizeInlineText(payload.path)
+              : null,
+          oldText:
+            typeof payload.old_string === "string" && payload.old_string.length > 0
+              ? payload.old_string
+              : null,
+          newText:
+            typeof payload.new_string === "string" && payload.new_string.length > 0
+              ? payload.new_string
+              : null,
+          replaceAll: payload.replace_all === true,
+        };
       case "system.readFile":
         return {
           kind: "file-read-start",
@@ -283,6 +305,17 @@ export function createWatchToolPresentationNormalizer(dependencies = {}) {
           kind: "list-dir-start",
           dirPathDisplay: compactPathForDisplay(payload.path ?? payload.dir ?? payload.directory),
         };
+      case "system.mkdir": {
+        const dirPathValue = payload.path ?? payload.dir ?? payload.directory;
+        return {
+          kind: "mkdir-start",
+          dirPathDisplay: compactPathForDisplay(dirPathValue),
+          dirPathRaw:
+            typeof dirPathValue === "string" && String(dirPathValue).trim().length > 0
+              ? sanitizeInlineText(String(dirPathValue))
+              : null,
+        };
+      }
       case "system.bash":
         return {
           kind: "shell-start",
@@ -348,6 +381,38 @@ export function createWatchToolPresentationNormalizer(dependencies = {}) {
             typeof payload?.content === "string" ? payload.content : null,
         };
       }
+      case "system.editFile": {
+        const filePathValue = resultObject.path ?? payload.path;
+        const errorText =
+          typeof resultObject.error === "string" && resultObject.error.trim().length > 0
+            ? resultObject.error
+            : null;
+        return {
+          kind: "file-edit-result",
+          isError,
+          filePathDisplay: compactPathForDisplay(filePathValue),
+          filePathRaw:
+            typeof filePathValue === "string" && String(filePathValue).trim().length > 0
+              ? sanitizeInlineText(String(filePathValue))
+              : null,
+          oldText:
+            typeof payload.old_string === "string" && payload.old_string.length > 0
+              ? payload.old_string
+              : null,
+          newText:
+            typeof payload.new_string === "string" && payload.new_string.length > 0
+              ? payload.new_string
+              : null,
+          replaceAll: payload.replace_all === true,
+          replacements:
+            typeof resultObject.replacements === "number" && Number.isFinite(resultObject.replacements)
+              ? resultObject.replacements
+              : null,
+          bytesWrittenText: formatBytes(resultObject.bytesWritten),
+          errorText,
+          errorPreview: isError ? firstMeaningfulLine(errorText ?? tryPrettyJson(result)) : null,
+        };
+      }
       case "system.readFile": {
         const filePathValue = resultObject.path ?? payload.path;
         return {
@@ -377,6 +442,24 @@ export function createWatchToolPresentationNormalizer(dependencies = {}) {
               .filter(Boolean)
             : [],
         };
+      case "system.mkdir": {
+        const dirPathValue = resultObject.path ?? payload.path ?? payload.dir ?? payload.directory;
+        const errorText =
+          typeof resultObject.error === "string" && resultObject.error.trim().length > 0
+            ? resultObject.error
+            : null;
+        return {
+          kind: "mkdir-result",
+          isError,
+          dirPathDisplay: compactPathForDisplay(dirPathValue),
+          dirPathRaw:
+            typeof dirPathValue === "string" && String(dirPathValue).trim().length > 0
+              ? sanitizeInlineText(String(dirPathValue))
+              : null,
+          errorText,
+          errorPreview: isError ? firstMeaningfulLine(errorText ?? tryPrettyJson(result)) : null,
+        };
+      }
       case "desktop.text_editor":
         return normalizeDesktopTextEditorResult(payload, resultObject, isError);
       case "system.bash":

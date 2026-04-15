@@ -4,6 +4,7 @@ import {
   MemorySerializationError,
   MemoryBackendError,
 } from "../errors.js";
+import { isTranscriptCapableMemoryBackend } from "../transcript.js";
 
 // Mock better-sqlite3
 const mockRun = vi.fn().mockReturnValue({ changes: 0 });
@@ -29,6 +30,105 @@ vi.mock("better-sqlite3", () => {
 
 // Import after mock
 import { SqliteBackend } from "./backend.js";
+
+function installTranscriptMockStore(): void {
+  type StoredRow = {
+    stream_id: string;
+    seq: number;
+    event_id: string;
+    kind: string;
+    payload: string;
+    metadata: string | null;
+    timestamp: number;
+    version: number;
+    dedupe_key: string | null;
+  };
+
+  const rowsByStream = new Map<string, StoredRow[]>();
+
+  mockPrepare.mockImplementation((sql: string) => ({
+    run: (...args: any[]) => {
+      if (sql.includes("INSERT INTO memory_transcript_events")) {
+        const row: StoredRow = {
+          stream_id: args[0],
+          seq: args[1],
+          event_id: args[2],
+          kind: args[3],
+          payload: args[4],
+          metadata: args[5],
+          timestamp: args[6],
+          version: args[7],
+          dedupe_key: args[8],
+        };
+        const stream = rowsByStream.get(row.stream_id) ?? [];
+        stream.push(row);
+        stream.sort((a, b) => a.seq - b.seq);
+        rowsByStream.set(row.stream_id, stream);
+        return { changes: 1 };
+      }
+
+      if (sql === "DELETE FROM memory_transcript_events WHERE stream_id = ?") {
+        const streamId = args[0];
+        const count = (rowsByStream.get(streamId) ?? []).length;
+        rowsByStream.delete(streamId);
+        return { changes: count };
+      }
+
+      return mockRun(...args);
+    },
+    get: (...args: any[]) => {
+      if (sql.includes("MAX(seq) AS max_seq")) {
+        const stream = rowsByStream.get(args[0]) ?? [];
+        return {
+          max_seq: stream.length > 0 ? stream[stream.length - 1]!.seq : 0,
+        };
+      }
+
+      if (
+        sql ===
+        "SELECT * FROM memory_transcript_events WHERE stream_id = ? AND event_id = ?"
+      ) {
+        const stream = rowsByStream.get(args[0]) ?? [];
+        return stream.find((row) => row.event_id === args[1]);
+      }
+
+      return mockGet(...args);
+    },
+    all: (...args: any[]) => {
+      if (sql.includes("SELECT * FROM memory_transcript_events WHERE")) {
+        const stream = [...(rowsByStream.get(args[0]) ?? [])];
+        let results = stream;
+        let paramIndex = 1;
+        if (sql.includes("seq > ?")) {
+          const afterSeq = args[paramIndex++];
+          results = results.filter((row) => row.seq > afterSeq);
+        }
+        if (sql.includes("ORDER BY seq DESC")) {
+          results = [...results].sort((a, b) => b.seq - a.seq);
+        }
+        if (sql.includes("LIMIT ?")) {
+          const limit = args[paramIndex];
+          results = results.slice(0, limit);
+        }
+        return results;
+      }
+
+      if (sql.includes("SELECT DISTINCT stream_id FROM memory_transcript_events")) {
+        const prefixArg = args[0];
+        const streamIds = [...rowsByStream.keys()]
+          .filter((streamId) =>
+            typeof prefixArg === "string"
+              ? streamId.startsWith(prefixArg.replace(/%$/, ""))
+              : true,
+          )
+          .sort();
+        return streamIds.map((stream_id) => ({ stream_id }));
+      }
+
+      return mockAll(...args);
+    },
+  }));
+}
 
 describe("SqliteBackend", () => {
   beforeEach(() => {
@@ -333,6 +433,60 @@ describe("SqliteBackend", () => {
     });
   });
 
+  describe("transcript capability", () => {
+    it("advertises transcript support", () => {
+      const backend = new SqliteBackend();
+      expect(isTranscriptCapableMemoryBackend(backend)).toBe(true);
+    });
+
+    it("round-trips transcript events", async () => {
+      installTranscriptMockStore();
+      const backend = new SqliteBackend();
+
+      const appended = await backend.appendTranscript("stream-1", [
+        {
+          eventId: "evt-1",
+          kind: "message",
+          payload: { role: "user", content: "hello" },
+          timestamp: 100,
+        },
+        {
+          eventId: "evt-2",
+          kind: "metadata_projection",
+          payload: { key: "shellProfile", value: "default" },
+          timestamp: 200,
+        },
+      ]);
+
+      expect(appended.map((event) => event.seq)).toEqual([1, 2]);
+      expect(await backend.loadTranscript("stream-1")).toEqual(appended);
+      expect(await backend.listTranscriptStreams()).toEqual(["stream-1"]);
+    });
+
+    it("deduplicates transcript events by event id", async () => {
+      installTranscriptMockStore();
+      const backend = new SqliteBackend();
+
+      const first = await backend.appendTranscript("stream-1", [
+        {
+          eventId: "evt-1",
+          kind: "message",
+          payload: { role: "assistant", content: "hi" },
+        },
+      ]);
+      const second = await backend.appendTranscript("stream-1", [
+        {
+          eventId: "evt-1",
+          kind: "message",
+          payload: { role: "assistant", content: "hi" },
+        },
+      ]);
+
+      expect(second).toEqual(first);
+      expect(await backend.loadTranscript("stream-1")).toHaveLength(1);
+    });
+  });
+
   describe("KV operations", () => {
     it("set uses INSERT OR REPLACE", async () => {
       const backend = new SqliteBackend();
@@ -401,8 +555,14 @@ describe("SqliteBackend", () => {
         (c: any[]) =>
           typeof c[0] === "string" && c[0] === "DELETE FROM memory_kv",
       );
+      const transcriptDeleteCalls = mockPrepare.mock.calls.filter(
+        (c: any[]) =>
+          typeof c[0] === "string" &&
+          c[0] === "DELETE FROM memory_transcript_events",
+      );
       expect(deleteCalls.length).toBe(1);
       expect(kvDeleteCalls.length).toBe(1);
+      expect(transcriptDeleteCalls.length).toBe(1);
     });
 
     it("close calls db.close()", async () => {

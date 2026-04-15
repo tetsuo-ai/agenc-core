@@ -13,6 +13,7 @@ import {
   runSubagentToLegacyResult,
 } from "./subagent-query.js";
 import { ChatExecutor } from "../llm/chat-executor.js";
+import { createPromptEnvelope } from "../llm/prompt-envelope.js";
 import type { GatewayMessage } from "./message.js";
 import type {
   LLMChatOptions,
@@ -79,7 +80,7 @@ describe("querySubagent (Phase K)", () => {
       params: {
         message: makeMessage(),
         history: [],
-        systemPrompt: "You are a scoped subagent.",
+        promptEnvelope: createPromptEnvelope("You are a scoped subagent."),
         sessionId: "child-session",
       },
     });
@@ -114,7 +115,7 @@ describe("querySubagent (Phase K)", () => {
       params: {
         message: makeMessage("child task"),
         history: [],
-        systemPrompt: "System",
+        promptEnvelope: createPromptEnvelope("System"),
         sessionId: "child-1",
       },
     });
@@ -143,7 +144,7 @@ describe("runSubagentToLegacyResult (Phase K)", () => {
       params: {
         message: makeMessage("legacy test"),
         history: [],
-        systemPrompt: "System",
+        promptEnvelope: createPromptEnvelope("System"),
         sessionId: "legacy-child",
       },
     });
@@ -178,7 +179,7 @@ describe("runSubagentToLegacyResult (Phase K)", () => {
         params: {
           message: makeMessage(),
           history: [],
-          systemPrompt: "System",
+          promptEnvelope: createPromptEnvelope("System"),
           sessionId: "error-child",
         },
       }),
@@ -231,7 +232,7 @@ describe("runSubagentToLegacyResult (Phase K)", () => {
       params: {
         message: makeMessage("continue the task"),
         history: [],
-        systemPrompt: "System",
+        promptEnvelope: createPromptEnvelope("System"),
         sessionId: "subagent:continued-child",
         turnOutputTokenBudget: 2_000,
       },

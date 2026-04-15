@@ -13,6 +13,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { ChatExecutor } from "./chat-executor.js";
+import { createPromptEnvelope } from "./prompt-envelope.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -139,7 +140,7 @@ describe("chat-executor parallel tool dispatch (Phase B)", () => {
     await executor.execute({
       message: createMessage(),
       history: [],
-      systemPrompt: "You are a test assistant.",
+      promptEnvelope: createPromptEnvelope("You are a test assistant."),
       sessionId: "session-parallel",
     });
     const elapsed = Date.now() - started;
@@ -184,7 +185,7 @@ describe("chat-executor parallel tool dispatch (Phase B)", () => {
     await executor.execute({
       message: createMessage(),
       history: [],
-      systemPrompt: "You are a test assistant.",
+      promptEnvelope: createPromptEnvelope("You are a test assistant."),
       sessionId: "session-serial",
     });
     const elapsed = Date.now() - started;
@@ -223,7 +224,7 @@ describe("chat-executor parallel tool dispatch (Phase B)", () => {
     await executor.execute({
       message: createMessage(),
       history: [],
-      systemPrompt: "You are a test assistant.",
+      promptEnvelope: createPromptEnvelope("You are a test assistant."),
       sessionId: "session-default-serial",
     });
     const elapsed = Date.now() - started;

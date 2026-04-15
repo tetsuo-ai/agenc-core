@@ -104,6 +104,7 @@ import {
   computeAutocompactThreshold,
 } from "./compact/index.js";
 import { applyReactiveCompact } from "./compact/reactive-compact.js";
+import { tryProjectedContextCollapse } from "./chat-executor-history-compaction.js";
 import { LLMContextWindowExceededError } from "./errors.js";
 import {
   appendToolRecord,
@@ -277,6 +278,77 @@ function buildFailedToolRecoveryHint(
     message:
       `Recent tool failures: ${summary}. Stop repeating the same failing tool pattern. Reassess the errors and continue without tools unless a materially different tool action is clearly justified.`,
   };
+}
+
+function stableToolFailureValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableToolFailureValue(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(
+        ([key, entryValue]) =>
+          `${JSON.stringify(key)}:${stableToolFailureValue(entryValue)}`,
+      );
+    return `{${entries.join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function toolFailureSignature(
+  name: string,
+  args: Record<string, unknown>,
+): string {
+  return `${name}:${stableToolFailureValue(args)}`;
+}
+
+function toolCallSignature(toolCall: LLMToolCall): string | undefined {
+  try {
+    const parsed = JSON.parse(toolCall.arguments) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return undefined;
+    }
+    return toolFailureSignature(
+      toolCall.name,
+      parsed as Record<string, unknown>,
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+function isRepeatedSameFailedToolPattern(
+  failedCalls: readonly ToolCallRecord[],
+): boolean {
+  const recentFailures = failedCalls.slice(-FAILED_TOOL_RECOVERY_STREAK);
+  if (recentFailures.length < FAILED_TOOL_RECOVERY_STREAK) {
+    return false;
+  }
+  const [first, ...rest] = recentFailures.map((call) =>
+    toolFailureSignature(call.name, call.args),
+  );
+  return rest.every((signature) => signature === first);
+}
+
+function responseRepeatsFailedToolPattern(params: {
+  readonly response: LLMResponse;
+  readonly failedCalls: readonly ToolCallRecord[];
+}): boolean {
+  if (!isRepeatedSameFailedToolPattern(params.failedCalls)) {
+    return false;
+  }
+  const repeatedFailure = params.failedCalls[params.failedCalls.length - 1];
+  if (!repeatedFailure) {
+    return false;
+  }
+  const repeatedSignature = toolFailureSignature(
+    repeatedFailure.name,
+    repeatedFailure.args,
+  );
+  return params.response.toolCalls.every(
+    (toolCall) => toolCallSignature(toolCall) === repeatedSignature,
+  );
 }
 
 function collectRecentConsecutiveFailedToolCalls(
@@ -1331,6 +1403,29 @@ async function runPerIterationCompactionBeforeModelCall(
     nowMs: Date.now(),
     autocompactThresholdTokens: computeAutocompactThreshold(config.contextWindowTokens),
     lastResponseUsage: ctx.response?.usage,
+    collapseHook: (messages) => {
+      const projected = tryProjectedContextCollapse({
+        history: messages,
+        sessionId: ctx.sessionId,
+        existingArtifactContext: ctx.compactedArtifactContext,
+        autocompactThresholdTokens: computeAutocompactThreshold(
+          config.contextWindowTokens,
+        ),
+      });
+      if (!projected) {
+        return {
+          action: "noop" as const,
+          messages,
+        };
+      }
+      ctx.compacted = true;
+      ctx.compactedArtifactContext = projected.artifactContext;
+      return {
+        action: "collapsed" as const,
+        messages: projected.history,
+        boundary: projected.boundary,
+      };
+    },
     ...(config.consolidationHook
       ? { consolidationHook: config.consolidationHook }
       : {}),
@@ -1349,6 +1444,7 @@ async function runPerIterationCompactionBeforeModelCall(
       const layer = extractCompactionLayerTag(content) as
         | "snip"
         | "microcompact"
+        | "context-collapse"
         | "autocompact"
         | "reactive-compact";
       await dispatchHooks({
@@ -1402,6 +1498,7 @@ async function runPerIterationCompactionBeforeModelCall(
       const layer = extractCompactionLayerTag(content) as
         | "snip"
         | "microcompact"
+        | "context-collapse"
         | "autocompact"
         | "reactive-compact";
       await dispatchHooks({
@@ -2088,10 +2185,14 @@ export async function executeToolCallLoop(
       consecutiveFailedToolCalls,
       roundCalls,
     );
+    const recentConsecutiveFailedToolCalls = collectRecentConsecutiveFailedToolCalls(
+      ctx.allToolCalls,
+    );
     const failedToolRecoveryHint = buildFailedToolRecoveryHint(
-      collectRecentConsecutiveFailedToolCalls(ctx.allToolCalls),
+      recentConsecutiveFailedToolCalls,
     );
     const shouldForceFailureRecovery =
+      ctx.effectiveFailureBudget > 0 &&
       !forcedFailureRecoveryUsed &&
       consecutiveFailedToolCalls >= FAILED_TOOL_RECOVERY_STREAK;
 
@@ -2192,7 +2293,13 @@ export async function executeToolCallLoop(
     if (!nextResponse) break;
     if (shouldForceFailureRecovery) {
       forcedFailureRecoveryUsed = true;
-      if (responseHasToolCalls(nextResponse)) {
+      if (
+        responseHasToolCalls(nextResponse) &&
+        !responseRepeatsFailedToolPattern({
+          response: nextResponse,
+          failedCalls: recentConsecutiveFailedToolCalls,
+        })
+      ) {
         emitToolProtocolViolation(
           ctx,
           callbacks,

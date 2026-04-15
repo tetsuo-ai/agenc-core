@@ -215,6 +215,38 @@ describe("applyPerIterationCompaction", () => {
     expect(placeholderHits.length).toBeGreaterThan(0);
   });
 
+  it("runs the collapse hook before autocompact", () => {
+    const state = createPerIterationCompactionState();
+    const collapseHook = vi.fn((messages: readonly LLMMessage[]) => ({
+      action: "collapsed" as const,
+      messages: messages.slice(-4),
+      boundary: {
+        role: "system" as const,
+        content: "[context-collapse] projected older messages into a compact view",
+      },
+    }));
+    const messages: LLMMessage[] = Array.from({ length: 24 }, (_, index) =>
+      index % 2 === 0 ? makeUser(`u${index}`) : makeAssistant(`a${index}`),
+    );
+
+    const result = applyPerIterationCompaction({
+      messages,
+      state,
+      nowMs: T0,
+      collapseHook,
+    });
+
+    expect(collapseHook).toHaveBeenCalledOnce();
+    expect(result.messages).toHaveLength(4);
+    expect(
+      result.boundaries.some(
+        (message) =>
+          typeof message.content === "string" &&
+          message.content.startsWith("[context-collapse]"),
+      ),
+    ).toBe(true);
+  });
+
   it("flags autocompact as decision-only (messages unchanged)", () => {
     const state = createPerIterationCompactionState();
     // Build a synthetic history far above the default threshold.

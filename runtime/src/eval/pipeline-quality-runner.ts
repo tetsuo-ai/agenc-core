@@ -17,6 +17,7 @@ import {
   type ChatExecutorConfig,
 } from "../llm/chat-executor.js";
 import { executeChatToLegacyResult } from "../llm/execute-chat.js";
+import { createPromptEnvelope } from "../llm/prompt-envelope.js";
 import { LLMMessageValidationError } from "../llm/errors.js";
 import {
   validateToolTurnSequence,
@@ -282,7 +283,7 @@ async function runEconomicsBenchmark(): Promise<ReturnType<typeof computeEconomi
     const result = await executeChatToLegacyResult(executor, {
       message: createBenchmarkMessage("stay within runtime budget", "economics-budget", 0),
       history: [],
-      systemPrompt: "Budget test",
+      promptEnvelope: createPromptEnvelope("Budget test"),
       sessionId: "economics-budget",
     });
     scenarios.push({
@@ -324,13 +325,13 @@ async function runEconomicsBenchmark(): Promise<ReturnType<typeof computeEconomi
     await executeChatToLegacyResult(executor, {
       message: createBenchmarkMessage("trip provider cooldown", "economics-reroute", 0),
       history: [],
-      systemPrompt: "Reroute test",
+      promptEnvelope: createPromptEnvelope("Reroute test"),
       sessionId: "economics-reroute",
     });
     const rerouted = await executeChatToLegacyResult(executor, {
       message: createBenchmarkMessage("run on healthy provider", "economics-reroute", 1),
       history: [],
-      systemPrompt: "Reroute test",
+      promptEnvelope: createPromptEnvelope("Reroute test"),
       sessionId: "economics-reroute",
     });
     scenarios.push({
@@ -413,7 +414,7 @@ async function runContextAndTokenBenchmark(
     const result = await executeChatToLegacyResult(executor, {
       message: createBenchmarkMessage(content, sessionId, turn),
       history: session.history,
-      systemPrompt,
+      promptEnvelope: createPromptEnvelope(systemPrompt),
       sessionId,
       maxToolRounds: 1,
       stateful: buildSessionStatefulOptions(session),

@@ -7,6 +7,7 @@ import type {
 import type { ChatExecutionTraceEvent } from "../llm/chat-executor-types.js";
 import { hasActionableStatefulFallback } from "../llm/chat-executor-recovery.js";
 import { executeChatToLegacyResult } from "../llm/execute-chat.js";
+import { normalizePromptEnvelope } from "../llm/prompt-envelope.js";
 import type {
   LLMProviderTraceEvent,
   StreamProgressCallback,
@@ -23,11 +24,18 @@ import {
   buildSessionStatefulOptions,
   enrichRuntimeContractSnapshotForSession,
   persistSessionActiveTaskContext,
+  persistSessionStartContextMessages,
   persistSessionRuntimeContractSnapshot,
   persistSessionRuntimeContractStatusSnapshot,
   persistSessionStatefulContinuation,
   persistWebSessionRuntimeState,
 } from "./daemon-session-state.js";
+import {
+  appendTranscriptBatch,
+  createTranscriptHistorySnapshotEvent,
+  createTranscriptMessageEvent,
+  createTranscriptMetadataProjectionEvent,
+} from "./session-transcript.js";
 import { filterSystemPromptForToolRouting } from "./system-prompt-routing.js";
 import {
   buildRuntimeContractSessionTraceId,
@@ -180,6 +188,13 @@ export async function executeWebChatConversationTurn(
       msg.content,
       session.history,
     );
+    await appendTranscriptBatch(memoryBackend, msg.sessionId, [
+      createTranscriptMessageEvent({
+        surface: "webchat",
+        message: { role: "user", content: msg.content },
+        dedupeKey: `webchat:user:${turnTraceId}`,
+      }),
+    ]);
     const profileAwareSystemPrompt = appendShellProfilePromptSection({
       systemPrompt: getSystemPrompt(),
       profile: resolveSessionShellProfile(session.metadata),
@@ -187,6 +202,9 @@ export async function executeWebChatConversationTurn(
     const effectiveSystemPrompt = filterSystemPromptForToolRouting({
       systemPrompt: profileAwareSystemPrompt,
       routedToolNames: toolRoutingDecision?.routedToolNames,
+    });
+    const promptEnvelope = normalizePromptEnvelope({
+      baseSystemPrompt: effectiveSystemPrompt,
     });
 
     if (traceConfig.enabled) {
@@ -282,7 +300,7 @@ export async function executeWebChatConversationTurn(
     const rawResult = await executeChatToLegacyResult(chatExecutor, {
       message: effectiveMessage,
       history: session.history,
-      systemPrompt: effectiveSystemPrompt,
+      promptEnvelope,
       sessionId: msg.sessionId,
       runtimeContext:
         typeof runtimeWorkspaceRoot === "string" || sessionActiveTaskContext
@@ -299,7 +317,6 @@ export async function executeWebChatConversationTurn(
       onStreamChunk: sessionStreamCallback,
       signal: abortController.signal,
       maxToolRounds: effectiveMaxToolRounds,
-      maxFailureBudgetPerRequest: 4,
       ...(sessionStateful ? { stateful: sessionStateful } : {}),
       toolRouting: toolRoutingDecision
         ? {
@@ -495,10 +512,10 @@ export async function executeWebChatConversationTurn(
 
     persistSessionStatefulContinuation(session, result);
     persistSessionActiveTaskContext(session, result);
+    persistSessionStartContextMessages(session, result);
     if (result.compacted) {
       await sessionMgr.compact(session.id);
     }
-    await persistWebSessionRuntimeState(memoryBackend, msg.sessionId, session);
 
     signals.signalIdle(msg.sessionId);
     sessionMgr.appendMessage(session.id, {
@@ -509,6 +526,34 @@ export async function executeWebChatConversationTurn(
       role: "assistant",
       content: result.content,
     });
+    const overflowCompaction =
+      typeof sessionMgr.flushPendingCompaction === "function"
+        ? await sessionMgr.flushPendingCompaction(session.id)
+        : null;
+    await appendTranscriptBatch(memoryBackend, msg.sessionId, [
+      createTranscriptMessageEvent({
+        surface: "webchat",
+        message: { role: "assistant", content: result.content },
+        dedupeKey: `webchat:assistant:${turnTraceId}`,
+      }),
+      createTranscriptMetadataProjectionEvent({
+        surface: "webchat",
+        key: "session.metadata",
+        value: session.metadata,
+        dedupeKey: `webchat:metadata:${turnTraceId}`,
+      }),
+      ...(result.compacted || (overflowCompaction?.messagesRemoved ?? 0) > 0
+        ? [
+            createTranscriptHistorySnapshotEvent({
+              surface: "webchat",
+              history: session.history,
+              reason: "compaction",
+              dedupeKey: `webchat:snapshot:${turnTraceId}`,
+            }),
+          ]
+        : []),
+    ]);
+    await persistWebSessionRuntimeState(memoryBackend, msg.sessionId, session);
 
     await webChat.send({
       sessionId: msg.sessionId,
@@ -518,6 +563,7 @@ export async function executeWebChatConversationTurn(
     webChat.pushToSession(msg.sessionId, {
       type: "chat.usage",
       payload: buildChatUsagePayload({
+        sessionId: msg.sessionId,
         totalTokens: getSessionTokenUsage(msg.sessionId),
         sessionTokenBudget,
         compacted: result.compacted ?? false,

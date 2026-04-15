@@ -21,13 +21,13 @@
 import { truncateText } from "./chat-executor-text.js";
 import { emitExecutionTrace } from "./chat-executor-ctx-helpers.js";
 import { getContextSectionMaxChars } from "./chat-executor-config.js";
+import type { PromptSection } from "./prompt-envelope.js";
 import type {
   DetailedSkillInjectionResult,
   SkillInjector,
   MemoryRetriever,
   ExecutionContext,
 } from "./chat-executor-types.js";
-import type { LLMMessage } from "./types.js";
 import type {
   PromptBudgetConfig,
   PromptBudgetSection,
@@ -90,27 +90,31 @@ export interface ContextInjectionDependencies {
   readonly promptBudget: PromptBudgetConfig;
 }
 
+export interface CollectedContextSection {
+  readonly section: PromptSection;
+  readonly budgetSection: PromptBudgetSection;
+  readonly role: "system" | "user";
+}
+
 /**
- * Best-effort context injection. Supports both SkillInjector
+ * Best-effort context collection. Supports both SkillInjector
  * (`.inject()` / `.injectDetailed()`) and MemoryRetriever
  * (`.retrieve()` / `.retrieveDetailed()`) interfaces. Failure is
- * non-blocking: a failed injection emits a trace event with
- * `error: "context_injection_failed"` and returns without throwing.
+ * non-blocking: a failed collection emits a trace event with
+ * `error: "context_injection_failed"` and returns an empty result.
  *
  * Phase F extraction (PR-7, E4). Previously
  * `ChatExecutor.injectContext`.
  */
-export async function injectContext(
+export async function collectContextSections(
   ctx: ExecutionContext,
   provider: SkillInjector | MemoryRetriever | undefined,
   message: string,
   sessionId: string,
-  messages: LLMMessage[],
-  sections: PromptBudgetSection[],
   section: PromptBudgetSection,
   deps: ContextInjectionDependencies,
-): Promise<void> {
-  if (!provider) return;
+): Promise<readonly CollectedContextSection[]> {
+  if (!provider) return [];
   const isSkillInjector = "inject" in provider;
   const providerKind = isSkillInjector ? "skill" : "memory";
   try {
@@ -153,31 +157,42 @@ export async function injectContext(
         context.length > 0
       ? truncateText(context, sectionMaxChars)
       : undefined;
+    const collected: CollectedContextSection[] = [];
     if (truncatedTrustedContext) {
-      messages.push({
+      collected.push({
         role: "system",
-        content: truncatedTrustedContext,
+        budgetSection: section,
+        section: {
+          source: `${providerKind}_trusted`,
+          content: truncatedTrustedContext,
+        },
       });
-      sections.push(section);
     }
     if (truncatedUntrustedContext) {
-      messages.push({
+      collected.push({
         role: "user",
-        content: truncatedUntrustedContext,
+        budgetSection: "user",
+        section: {
+          source: `${providerKind}_untrusted`,
+          content: truncatedUntrustedContext,
+        },
       });
-      sections.push("user");
     }
     if (truncatedContext) {
-      messages.push({
+      collected.push({
         role: "system",
-        content: truncatedContext,
+        budgetSection: section,
+        section: {
+          source: providerKind === "memory" ? section : providerKind,
+          content: truncatedContext,
+        },
       });
-      sections.push(section);
     }
     const injectedChars =
-      (truncatedTrustedContext?.length ?? 0) +
-      (truncatedUntrustedContext?.length ?? 0) +
-      (truncatedContext?.length ?? 0);
+      collected.reduce(
+        (sum, entry) => sum + entry.section.content.length,
+        0,
+      );
     emitExecutionTrace(ctx, {
       type: "context_injected",
       phase: "initial",
@@ -185,11 +200,7 @@ export async function injectContext(
       payload: {
         providerKind,
         section,
-        injected: Boolean(
-          truncatedTrustedContext ||
-            truncatedUntrustedContext ||
-            truncatedContext,
-        ),
+        injected: collected.length > 0,
         originalChars: typeof context === "string" ? context.length : 0,
         injectedChars,
         ...(detailedSkillResult
@@ -222,6 +233,7 @@ export async function injectContext(
           : {}),
       },
     });
+    return collected;
   } catch {
     emitExecutionTrace(ctx, {
       type: "context_injected",
@@ -234,5 +246,6 @@ export async function injectContext(
         error: "context_injection_failed",
       },
     });
+    return [];
   }
 }

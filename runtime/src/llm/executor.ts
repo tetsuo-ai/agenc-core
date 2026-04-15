@@ -22,6 +22,12 @@ import { TELEMETRY_METRIC_NAMES } from "../telemetry/metric-names.js";
 import type { MemoryGraph, MemoryGraphResult } from "../memory/graph.js";
 import { createProviderTraceEventLogger } from "./provider-trace-logger.js";
 import { assertValidLLMResponse } from "./response-validation.js";
+import {
+  createPromptEnvelope,
+  flattenPromptEnvelope,
+  normalizePromptEnvelope,
+  type PromptEnvelopeV1,
+} from "./prompt-envelope.js";
 import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";
 
@@ -34,8 +40,8 @@ const DEFAULT_MEMORY_TTL_MS = 86_400_000;
 export interface LLMTaskExecutorConfig {
   /** The LLM provider to use for task execution */
   provider: LLMProvider;
-  /** System prompt providing context for task execution */
-  systemPrompt?: string;
+  /** Normalized prompt envelope for prompt-bearing executor call paths. */
+  promptEnvelope?: PromptEnvelopeV1;
   /** Whether to use streaming (invokes onStreamChunk per chunk) */
   streaming?: boolean;
   /** Callback for streaming progress */
@@ -81,7 +87,7 @@ export interface LLMTaskExecutorConfig {
  */
 export class LLMTaskExecutor implements TaskExecutor {
   private readonly provider: LLMProvider;
-  private readonly systemPrompt?: string;
+  private readonly promptEnvelope?: PromptEnvelopeV1;
   private readonly streaming: boolean;
   private readonly onStreamChunk?: StreamProgressCallback;
   private readonly toolHandler?: ToolHandler;
@@ -101,7 +107,7 @@ export class LLMTaskExecutor implements TaskExecutor {
 
   constructor(config: LLMTaskExecutorConfig) {
     this.provider = config.provider;
-    this.systemPrompt = config.systemPrompt;
+    this.promptEnvelope = config.promptEnvelope;
     this.streaming = config.streaming ?? false;
     this.onStreamChunk = config.onStreamChunk;
     this.toolHandler = config.toolHandler;
@@ -432,11 +438,13 @@ export class LLMTaskExecutor implements TaskExecutor {
   }
 
   private buildMessages(task: Task, description: string): LLMMessage[] {
-    const messages: LLMMessage[] = [];
-
-    if (this.systemPrompt) {
-      messages.push({ role: "system", content: this.systemPrompt });
-    }
+    const messages: LLMMessage[] = [
+      ...flattenPromptEnvelope("call", {
+        envelope: normalizePromptEnvelope(
+          this.promptEnvelope ?? createPromptEnvelope(""),
+        ),
+      }).messages,
+    ];
 
     const taskInfo = [
       "<task-data>",

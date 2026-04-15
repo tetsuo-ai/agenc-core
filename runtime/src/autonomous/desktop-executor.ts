@@ -15,6 +15,7 @@
 import type { ChatExecutor } from "../llm/chat-executor.js";
 import type { ToolCallRecord } from "../llm/chat-executor-types.js";
 import { executeChatToLegacyResult } from "../llm/execute-chat.js";
+import { createPromptEnvelope } from "../llm/prompt-envelope.js";
 import type { ToolHandler, LLMProvider } from "../llm/types.js";
 import {
   createExecutionTraceEventLogger,
@@ -297,8 +298,9 @@ export class DesktopExecutor {
       const planResult = await executeChatToLegacyResult(this.chatExecutor, {
         message: makeMessage(planPrompt, sessionId),
         history: [],
-        systemPrompt:
+        promptEnvelope: createPromptEnvelope(
           "You are an autonomous desktop action planner. Return only valid JSON.",
+        ),
         sessionId,
         toolHandler: this.toolHandler,
         ...(planTrace ? { trace: planTrace } : {}),
@@ -411,8 +413,9 @@ export class DesktopExecutor {
           actResult = await executeChatToLegacyResult(this.chatExecutor, {
             message: makeMessage(actPrompt, sessionId),
             history: [],
-            systemPrompt:
+            promptEnvelope: createPromptEnvelope(
               "You are a desktop automation agent. Execute the requested action using available tools.",
+            ),
             sessionId,
             toolHandler: this.toolHandler,
             ...(actTrace ? { trace: actTrace } : {}),

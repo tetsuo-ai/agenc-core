@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { InMemoryBackend } from "./backend.js";
 import { MemoryBackendError } from "../errors.js";
+import { isTranscriptCapableMemoryBackend } from "../transcript.js";
 
 describe("InMemoryBackend", () => {
   let backend: InMemoryBackend;
@@ -249,6 +250,56 @@ describe("InMemoryBackend", () => {
 
       const sessions = await backend.listSessions("task-");
       expect(sessions).toHaveLength(2);
+    });
+  });
+
+  describe("transcript capability", () => {
+    it("advertises transcript support", () => {
+      expect(isTranscriptCapableMemoryBackend(backend)).toBe(true);
+    });
+
+    it("round-trips transcript events in sequence order", async () => {
+      const appended = await backend.appendTranscript("stream-1", [
+        {
+          eventId: "evt-1",
+          kind: "message",
+          payload: { role: "user", content: "hello" },
+          timestamp: 100,
+        },
+        {
+          eventId: "evt-2",
+          kind: "compact_boundary",
+          payload: { boundaryId: "b-1", summaryText: "summary" },
+          timestamp: 200,
+        },
+      ]);
+
+      expect(appended.map((event) => event.seq)).toEqual([1, 2]);
+
+      const loaded = await backend.loadTranscript("stream-1");
+      expect(loaded).toEqual(appended);
+      expect(await backend.listTranscriptStreams()).toContain("stream-1");
+    });
+
+    it("deduplicates repeated transcript appends by event id", async () => {
+      const first = await backend.appendTranscript("stream-1", [
+        {
+          eventId: "evt-1",
+          kind: "message",
+          payload: { role: "assistant", content: "hi" },
+        },
+      ]);
+
+      const second = await backend.appendTranscript("stream-1", [
+        {
+          eventId: "evt-1",
+          kind: "message",
+          payload: { role: "assistant", content: "hi" },
+        },
+      ]);
+
+      expect(second).toEqual(first);
+      expect(await backend.loadTranscript("stream-1")).toHaveLength(1);
     });
   });
 

@@ -22,6 +22,7 @@ import type { Logger } from "../utils/logger.js";
 import type { ToolHandler } from "../llm/types.js";
 import type { ChatExecutor } from "../llm/chat-executor.js";
 import { executeChatToLegacyResult } from "../llm/execute-chat.js";
+import { normalizePromptEnvelope } from "../llm/prompt-envelope.js";
 import type { SessionManager } from "./session.js";
 import type { HookDispatcher } from "./hooks.js";
 import type { ApprovalEngine } from "./approvals.js";
@@ -50,6 +51,10 @@ import {
 import type { ResolvedTraceLoggingConfig } from "./daemon-trace.js";
 import { normalizeToolCallArguments } from "../llm/chat-executor-tool-utils.js";
 import { toErrorMessage } from "../utils/async.js";
+import {
+  appendTranscriptBatch,
+  createTranscriptMessageEvent,
+} from "./session-transcript.js";
 
 const DEFAULT_MAX_SESSIONS = 10;
 
@@ -760,6 +765,15 @@ export class VoiceBridge {
       const delegationToolHandler = this.buildSessionToolHandler(sessionId, send);
 
       const chatExecutor = this.requireChatExecutor();
+      if (this.config.memoryBackend) {
+        await appendTranscriptBatch(this.config.memoryBackend, sessionId, [
+          createTranscriptMessageEvent({
+            surface: "voice",
+            message: { role: "user", content: task },
+            dedupeKey: `voice:user:${traceId}`,
+          }),
+        ]);
+      }
       const providerTrace =
         this.config.traceProviderPayloads === true && this.logger
           ? {
@@ -792,11 +806,12 @@ export class VoiceBridge {
       const result = await executeChatToLegacyResult(chatExecutor, {
         message: gatewayMsg,
         history,
-        systemPrompt: this.config.systemPrompt,
+        promptEnvelope: normalizePromptEnvelope({
+          baseSystemPrompt: this.config.systemPrompt,
+        }),
         sessionId,
         toolHandler: delegationToolHandler,
         maxToolRounds: MAX_DELEGATION_TOOL_ROUNDS,
-        maxFailureBudgetPerRequest: 4,
         signal: abortController.signal,
         ...(providerTrace ? { trace: providerTrace } : {}),
       });
@@ -808,6 +823,15 @@ export class VoiceBridge {
         task,
         result.content,
       );
+      if (this.config.memoryBackend) {
+        await appendTranscriptBatch(this.config.memoryBackend, sessionId, [
+          createTranscriptMessageEvent({
+            surface: "voice",
+            message: { role: "assistant", content: result.content },
+            dedupeKey: `voice:assistant:${traceId}`,
+          }),
+        ]);
+      }
 
       // Dispatch outbound hook
       if (this.config.hooks) {
@@ -851,6 +875,7 @@ export class VoiceBridge {
       send({
         type: "chat.usage",
         payload: buildChatUsagePayload({
+          sessionId,
           totalTokens: chatExecutor.getSessionTokenUsage(sessionId),
           sessionTokenBudget: this.config.sessionTokenBudget ?? 0,
           compacted: result.compacted ?? false,

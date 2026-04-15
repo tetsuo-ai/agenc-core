@@ -4,6 +4,7 @@ import type {
   ChatToolRoutingSummary,
 } from "../llm/chat-executor.js";
 import { executeChatToLegacyResult } from "../llm/execute-chat.js";
+import { normalizePromptEnvelope } from "../llm/prompt-envelope.js";
 import type {
   LLMProviderTraceEvent,
   LLMStructuredOutputRequest,
@@ -34,10 +35,17 @@ import {
   buildSessionStatefulOptions,
   enrichRuntimeContractSnapshotForSession,
   persistSessionActiveTaskContext,
+  persistSessionStartContextMessages,
   persistSessionRuntimeContractSnapshot,
   persistSessionRuntimeContractStatusSnapshot,
   persistSessionStatefulContinuation,
 } from "./daemon-session-state.js";
+import {
+  appendTranscriptBatch,
+  createTranscriptHistorySnapshotEvent,
+  createTranscriptMessageEvent,
+  createTranscriptMetadataProjectionEvent,
+} from "./session-transcript.js";
 import type { AgentDefinition } from "./agent-loader.js";
 import type { DelegationVerifierService } from "./delegation-runtime.js";
 import type { PersistentWorkerManager } from "./persistent-worker-manager.js";
@@ -172,6 +180,15 @@ export async function executeTextChannelTurn(
     msg.content,
     session.history,
   );
+  if (memoryBackend) {
+    await appendTranscriptBatch(memoryBackend, msg.sessionId, [
+      createTranscriptMessageEvent({
+        surface: "text",
+        message: { role: "user", content: msg.content },
+        dedupeKey: `${channelName}:user:${turnTraceId}`,
+      }),
+    ]);
+  }
   const profileAwareSystemPrompt = appendShellProfilePromptSection({
     systemPrompt,
     profile: resolveSessionShellProfile(session.metadata),
@@ -179,6 +196,9 @@ export async function executeTextChannelTurn(
   const effectiveSystemPrompt = filterSystemPromptForToolRouting({
     systemPrompt: profileAwareSystemPrompt,
     routedToolNames: toolRoutingDecision?.routedToolNames,
+  });
+  const promptEnvelope = normalizePromptEnvelope({
+    baseSystemPrompt: effectiveSystemPrompt,
   });
 
   if (traceConfig.enabled) {
@@ -265,14 +285,13 @@ export async function executeTextChannelTurn(
   const rawResult = await executeChatToLegacyResult(chatExecutor, {
     message: msg,
     history: session.history,
-    systemPrompt: effectiveSystemPrompt,
+    promptEnvelope,
     sessionId: msg.sessionId,
     ...(sessionActiveTaskContext
       ? { runtimeContext: { activeTaskContext: sessionActiveTaskContext } }
       : {}),
     toolHandler,
     maxToolRounds: effectiveMaxToolRounds,
-    maxFailureBudgetPerRequest: 4,
     ...(sessionStateful ? { stateful: sessionStateful } : {}),
     ...(structuredOutput ? { structuredOutput } : {}),
     ...(isConcordiaGenerateAgentsTurn
@@ -469,6 +488,7 @@ export async function executeTextChannelTurn(
 
   persistSessionStatefulContinuation(session, result);
   persistSessionActiveTaskContext(session, result);
+  persistSessionStartContextMessages(session, result);
   sessionMgr.appendMessage(session.id, {
     role: "user",
     content: msg.content,
@@ -477,6 +497,35 @@ export async function executeTextChannelTurn(
     role: "assistant",
     content: result.content,
   });
+  const overflowCompaction =
+    typeof sessionMgr.flushPendingCompaction === "function"
+      ? await sessionMgr.flushPendingCompaction(session.id)
+      : null;
+  if (memoryBackend) {
+    await appendTranscriptBatch(memoryBackend, msg.sessionId, [
+      createTranscriptMessageEvent({
+        surface: "text",
+        message: { role: "assistant", content: result.content },
+        dedupeKey: `${channelName}:assistant:${turnTraceId}`,
+      }),
+      createTranscriptMetadataProjectionEvent({
+        surface: "text",
+        key: "session.metadata",
+        value: session.metadata,
+        dedupeKey: `${channelName}:metadata:${turnTraceId}`,
+      }),
+      ...(result.compacted || (overflowCompaction?.messagesRemoved ?? 0) > 0
+        ? [
+            createTranscriptHistorySnapshotEvent({
+              surface: "text",
+              history: session.history,
+              reason: "compaction",
+              dedupeKey: `${channelName}:snapshot:${turnTraceId}`,
+            }),
+          ]
+        : []),
+    ]);
+  }
 
   if (memoryBackend && persistToDaemonMemory) {
     const persistenceOptions = buildDaemonMemoryEntryOptions(

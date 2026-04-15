@@ -15,6 +15,10 @@ import type {
   MemoryEntry,
   MemoryQuery,
   AddEntryOptions,
+  TranscriptCapableMemoryBackend,
+  TranscriptEvent,
+  TranscriptEventInput,
+  TranscriptLoadOptions,
 } from "../types.js";
 import type { SqliteBackendConfig } from "./types.js";
 import {
@@ -27,13 +31,19 @@ import type { MetricsProvider } from "../../task/types.js";
 import { TELEMETRY_METRIC_NAMES } from "../../telemetry/metric-names.js";
 import type { EncryptionProvider } from "../encryption.js";
 import { createAES256GCMProvider } from "../encryption.js";
+import {
+  applyTranscriptLoadOptions,
+  materializeTranscriptEvent,
+} from "../transcript.js";
 
 /** Security H-2: escape SQL LIKE wildcards in prefix parameters. */
 function escapeLikePrefix(prefix: string): string {
   return prefix.replace(/%/g, "\\%").replace(/_/g, "\\_");
 }
 
-export class SqliteBackend implements MemoryBackend {
+export class SqliteBackend
+  implements MemoryBackend, TranscriptCapableMemoryBackend
+{
   readonly name: string = "sqlite";
 
   protected db: any = null;
@@ -274,6 +284,117 @@ export class SqliteBackend implements MemoryBackend {
     return rows.map((r: any) => r.session_id);
   }
 
+  async appendTranscript(
+    streamId: string,
+    events: readonly TranscriptEventInput[],
+  ): Promise<TranscriptEvent[]> {
+    const db = await this.ensureDb();
+    const start = Date.now();
+
+    const getMaxSeqStmt = db.prepare(
+      "SELECT COALESCE(MAX(seq), 0) AS max_seq FROM memory_transcript_events WHERE stream_id = ?",
+    );
+    const getExistingStmt = db.prepare(
+      "SELECT * FROM memory_transcript_events WHERE stream_id = ? AND event_id = ?",
+    );
+    const insertStmt = db.prepare(
+      `INSERT INTO memory_transcript_events (stream_id, seq, event_id, kind, payload, metadata, timestamp, version, dedupe_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+
+    let nextSeq = Number(getMaxSeqStmt.get(streamId)?.max_seq ?? 0);
+    const appended: TranscriptEvent[] = [];
+
+    for (const event of events) {
+      const existingRow = getExistingStmt.get(streamId, event.eventId);
+      if (existingRow) {
+        appended.push(this.rowToTranscriptEvent(existingRow));
+        continue;
+      }
+
+      nextSeq += 1;
+      const stored = materializeTranscriptEvent(streamId, nextSeq, event);
+      const payloadJson = this.encryptField(JSON.stringify(stored.payload));
+      const metadataJson = stored.metadata
+        ? this.encryptField(JSON.stringify(stored.metadata))
+        : null;
+
+      insertStmt.run(
+        streamId,
+        stored.seq,
+        stored.eventId,
+        stored.kind,
+        payloadJson,
+        metadataJson,
+        stored.timestamp,
+        stored.version,
+        stored.dedupeKey ?? null,
+      );
+      appended.push(stored);
+    }
+
+    this.recordMemoryMetrics("appendTranscript", Date.now() - start);
+    return appended;
+  }
+
+  async loadTranscript(
+    streamId: string,
+    options: TranscriptLoadOptions = {},
+  ): Promise<TranscriptEvent[]> {
+    const db = await this.ensureDb();
+    const start = Date.now();
+    const conditions = ["stream_id = ?"];
+    const params: unknown[] = [streamId];
+
+    if (options.afterSeq !== undefined) {
+      conditions.push("seq > ?");
+      params.push(options.afterSeq);
+    }
+
+    const order = options.order === "desc" ? "DESC" : "ASC";
+    let sql = `SELECT * FROM memory_transcript_events WHERE ${conditions.join(" AND ")} ORDER BY seq ${order}`;
+    if (options.limit !== undefined && options.limit > 0) {
+      sql += " LIMIT ?";
+      params.push(options.limit);
+    }
+
+    const rows = db.prepare(sql).all(...params);
+    const result = applyTranscriptLoadOptions(
+      rows.map((row: any) => this.rowToTranscriptEvent(row)),
+      options,
+    );
+    this.recordMemoryMetrics("loadTranscript", Date.now() - start);
+    return result;
+  }
+
+  async deleteTranscript(streamId: string): Promise<number> {
+    const db = await this.ensureDb();
+    const result = db
+      .prepare("DELETE FROM memory_transcript_events WHERE stream_id = ?")
+      .run(streamId);
+    return result.changes;
+  }
+
+  async listTranscriptStreams(prefix?: string): Promise<string[]> {
+    const db = await this.ensureDb();
+    if (prefix) {
+      const rows = db
+        .prepare(
+          `SELECT DISTINCT stream_id FROM memory_transcript_events
+           WHERE stream_id LIKE ? ORDER BY stream_id ASC`,
+        )
+        .all(`${escapeLikePrefix(prefix)}%`);
+      return rows.map((row: any) => row.stream_id);
+    }
+
+    const rows = db
+      .prepare(
+        "SELECT DISTINCT stream_id FROM memory_transcript_events ORDER BY stream_id ASC",
+      )
+      .all();
+    return rows.map((row: any) => row.stream_id);
+  }
+
   // ---------- Key-Value Operations ----------
 
   async set(key: string, value: unknown, ttlMs?: number): Promise<void> {
@@ -364,6 +485,7 @@ export class SqliteBackend implements MemoryBackend {
   async clear(): Promise<void> {
     const db = await this.ensureDb();
     db.prepare("DELETE FROM memory_entries").run();
+    db.prepare("DELETE FROM memory_transcript_events").run();
     db.prepare("DELETE FROM memory_kv").run();
     this.logger.debug("Cleared all memory");
   }
@@ -492,6 +614,24 @@ export class SqliteBackend implements MemoryBackend {
         value TEXT NOT NULL,
         expires_at INTEGER
       );
+
+      CREATE TABLE IF NOT EXISTS memory_transcript_events (
+        stream_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        event_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        metadata TEXT,
+        timestamp INTEGER NOT NULL,
+        version INTEGER NOT NULL,
+        dedupe_key TEXT,
+        PRIMARY KEY (stream_id, seq),
+        UNIQUE(stream_id, event_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_transcript_stream_seq ON memory_transcript_events(stream_id, seq);
+      CREATE INDEX IF NOT EXISTS idx_transcript_stream_timestamp ON memory_transcript_events(stream_id, timestamp);
+      CREATE INDEX IF NOT EXISTS idx_transcript_stream_dedupe ON memory_transcript_events(stream_id, dedupe_key);
     `);
     // Schema migration: add scoping columns to existing DBs
     this.migrateSchemaIfNeeded();
@@ -577,6 +717,45 @@ export class SqliteBackend implements MemoryBackend {
     if (row.channel) (entry as any).channel = row.channel;
 
     return entry;
+  }
+
+  private rowToTranscriptEvent(row: any): TranscriptEvent {
+    let payload: TranscriptEvent["payload"];
+    try {
+      payload = JSON.parse(this.decryptField(row.payload)) as TranscriptEvent["payload"];
+    } catch (err) {
+      throw new MemorySerializationError(
+        this.name,
+        `Failed to deserialize transcript payload: ${(err as Error).message}`,
+      );
+    }
+
+    let metadata: Record<string, unknown> | undefined;
+    if (row.metadata) {
+      try {
+        metadata = JSON.parse(this.decryptField(row.metadata)) as Record<
+          string,
+          unknown
+        >;
+      } catch (err) {
+        throw new MemorySerializationError(
+          this.name,
+          `Failed to deserialize transcript metadata: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    return {
+      version: row.version,
+      streamId: row.stream_id,
+      seq: row.seq,
+      eventId: row.event_id,
+      kind: row.kind,
+      payload,
+      timestamp: row.timestamp,
+      metadata,
+      dedupeKey: row.dedupe_key ?? undefined,
+    };
   }
 
   private encryptField(plaintext: string): string {

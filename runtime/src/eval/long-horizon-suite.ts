@@ -12,6 +12,7 @@ import { SqliteBackend } from "../memory/sqlite/backend.js";
 import type { LLMProvider, LLMResponse } from "../llm/types.js";
 import { ChatExecutor } from "../llm/chat-executor.js";
 import { executeChatToLegacyResult } from "../llm/execute-chat.js";
+import { createPromptEnvelope } from "../llm/prompt-envelope.js";
 import { SessionManager, type SessionLookupParams } from "../gateway/session.js";
 import {
   buildSessionStatefulOptions,
@@ -251,7 +252,7 @@ async function buildCompactionScenario(params: {
         scope: "dm",
       },
       history: resumed.history,
-      systemPrompt: "You are a benchmark assistant.",
+      promptEnvelope: createPromptEnvelope("You are a benchmark assistant."),
       sessionId: "long-horizon-session",
       stateful,
     });

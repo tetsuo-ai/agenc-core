@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ChatExecutor } from "./chat-executor.js";
 import type { ChatExecuteParams } from "./chat-executor.js";
+import { createPromptEnvelope } from "./prompt-envelope.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -69,7 +70,7 @@ function createParams(
   return {
     message: createMessage(),
     history: [],
-    systemPrompt: "You are a helpful assistant.",
+    promptEnvelope: createPromptEnvelope("You are a helpful assistant."),
     sessionId: "session-1",
     runtimeContext: { workspaceRoot: "/tmp/chat-executor-test-workspace" },
     ...overrides,
@@ -137,6 +138,42 @@ describe("ChatExecutor initialization and prompt budgeting", () => {
       expect(last.role).toBe("user");
       expect(typeof last.content).toBe("string");
       expect((last.content as string).length).toBeLessThanOrEqual(8_000);
+    });
+
+    it("keeps synthetic user context separate from the active user turn", async () => {
+      const provider = createMockProvider();
+      const executor = new ChatExecutor({ providers: [provider] });
+
+      await executor.execute(
+        createParams({
+          promptEnvelope: {
+            kind: "prompt_envelope_v1",
+            baseSystemPrompt: "You are a helpful assistant.",
+            systemSections: [
+              { source: "memory_semantic", content: "Known project fact" },
+            ],
+            userSections: [
+              { source: "delegated_context", content: "Scoped operator context" },
+            ],
+          },
+        }),
+      );
+
+      const messages = (provider.chat as ReturnType<typeof vi.fn>).mock
+        .calls[0][0] as LLMMessage[];
+      expect(messages[0]).toMatchObject({
+        role: "system",
+        content: "You are a helpful assistant.",
+      });
+      expect(messages[1]).toMatchObject({
+        role: "system",
+        content: "Known project fact",
+      });
+      const userMessages = messages.filter((message) => message.role === "user");
+      expect(userMessages).toHaveLength(2);
+      expect(userMessages[0]!.content).toContain("<system-reminder>");
+      expect(userMessages[0]!.content).toContain("Scoped operator context");
+      expect(userMessages[1]!.content).toBe("hello");
     });
 
     it("suppresses runaway repetitive assistant output", async () => {

@@ -19,13 +19,20 @@
 
 import { annotateFailureError } from "./chat-executor-provider-retry.js";
 import { callWithFallback } from "./chat-executor-fallback.js";
-import { compactHistoryIntoArtifactContext } from "./context-compaction.js";
+import {
+  compactHistoryIntoArtifactContext,
+  createCompactBoundaryMessage,
+} from "./context-compaction.js";
 import { MAX_COMPACT_INPUT } from "./chat-executor-constants.js";
 import type { ArtifactCompactionState } from "../memory/artifact-store.js";
 import type { CooldownEntry, ChatExecuteParams } from "./chat-executor-types.js";
 import type { LLMMessage, LLMProvider } from "./types.js";
 import type { LLMRetryPolicyMatrix } from "./policy.js";
 import type { PromptBudgetConfig } from "./prompt-budget.js";
+import { tokenCountWithEstimation } from "./compact/token-count.js";
+import {
+  MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES,
+} from "./compact/autocompact.js";
 
 /**
  * Dependency struct for `compactHistory`. Contains every
@@ -41,6 +48,15 @@ export interface HistoryCompactionDependencies {
   readonly maxCooldownMs: number;
   readonly onCompaction?: (sessionId: string, summary: string) => void;
 }
+
+export interface SessionMemoryCompactionResult {
+  readonly history: readonly LLMMessage[];
+  readonly artifactContext: ArtifactCompactionState;
+  readonly postCompactTokenCount: number;
+}
+
+const DEFAULT_SESSION_MEMORY_COMPACT_KEEP_TAIL = 3;
+const CONTEXT_COLLAPSE_TRIGGER_FRACTION = 0.9;
 
 /**
  * Summarize the durable task state out of an existing history and
@@ -161,4 +177,92 @@ export async function compactHistory(
     history: compacted.compactedHistory,
     artifactContext: compacted.state,
   };
+}
+
+export function trySessionMemoryCompaction(params: {
+  readonly history: readonly LLMMessage[];
+  readonly sessionId: string;
+  readonly existingArtifactContext?: ArtifactCompactionState;
+  readonly keepTailCount?: number;
+  readonly thresholdTokens?: number;
+}): SessionMemoryCompactionResult | null {
+  const keepTailCount = Math.max(
+    1,
+    params.keepTailCount ?? DEFAULT_SESSION_MEMORY_COMPACT_KEEP_TAIL,
+  );
+  if (params.history.length <= keepTailCount) {
+    return null;
+  }
+
+  const compacted = compactHistoryIntoArtifactContext({
+    sessionId: params.sessionId,
+    history: params.history,
+    keepTailCount,
+    source: "executor_compaction",
+    existingState: params.existingArtifactContext,
+  });
+  const postCompactTokenCount = tokenCountWithEstimation({
+    messages: compacted.compactedHistory,
+  });
+  if (
+    params.thresholdTokens !== undefined &&
+    postCompactTokenCount >= params.thresholdTokens
+  ) {
+    return null;
+  }
+  return {
+    history: compacted.compactedHistory,
+    artifactContext: compacted.state,
+    postCompactTokenCount,
+  };
+}
+
+export function tryProjectedContextCollapse(params: {
+  readonly history: readonly LLMMessage[];
+  readonly sessionId: string;
+  readonly existingArtifactContext?: ArtifactCompactionState;
+  readonly autocompactThresholdTokens?: number;
+  readonly keepTailCount?: number;
+}): {
+  readonly history: readonly LLMMessage[];
+  readonly artifactContext: ArtifactCompactionState;
+  readonly boundary: LLMMessage;
+} | null {
+  const thresholdTokens = params.autocompactThresholdTokens;
+  if (
+    thresholdTokens === undefined ||
+    thresholdTokens <= 0 ||
+    tokenCountWithEstimation({ messages: params.history }) <
+      Math.floor(thresholdTokens * CONTEXT_COLLAPSE_TRIGGER_FRACTION)
+  ) {
+    return null;
+  }
+  const collapsed = trySessionMemoryCompaction({
+    history: params.history,
+    sessionId: params.sessionId,
+    existingArtifactContext: params.existingArtifactContext,
+    keepTailCount: params.keepTailCount ?? 6,
+    thresholdTokens,
+  });
+  if (!collapsed) {
+    return null;
+  }
+  return {
+    history: collapsed.history,
+    artifactContext: collapsed.artifactContext,
+    boundary: createCompactBoundaryMessage({
+      boundaryId: collapsed.artifactContext.snapshotId,
+      source: "executor_compaction",
+      sourceMessageCount: collapsed.artifactContext.sourceMessageCount,
+      retainedTailCount: collapsed.artifactContext.retainedTailCount,
+      summaryText:
+        "context-collapse projected older messages into the compact artifact snapshot",
+    }),
+  };
+}
+
+export function shouldSkipHistoryCompactionForCircuitBreaker(
+  consecutiveFailures: number,
+): boolean {
+  return consecutiveFailures >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES;
 }

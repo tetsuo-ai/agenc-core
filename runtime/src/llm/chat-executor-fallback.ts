@@ -45,6 +45,7 @@ import {
 } from "./chat-executor-text.js";
 import { normalizeMessagesForAPI } from "./messages.js";
 import { getProviderRouteKey } from "./model-routing-policy.js";
+import { stripRuntimeOnlyPromptMetadata } from "./prompt-envelope.js";
 import type { RuntimeFaultInjector } from "../eval/fault-injection.js";
 
 // ============================================================================
@@ -168,6 +169,9 @@ export async function callWithFallback(
       dropOrphanToolMessages: false,
     }),
   ];
+  const serializedBoundedMessages = [
+    ...stripRuntimeOnlyPromptMetadata(boundedMessages),
+  ];
   const afterBudget = estimatePromptShape(boundedMessages);
   const budgetDiagnostics = budgeted.diagnostics;
   const hasStatefulSessionId = Boolean(options?.statefulSessionId);
@@ -195,7 +199,9 @@ export async function callWithFallback(
             stateful: {
               sessionId: String(options?.statefulSessionId),
               reconciliationMessages:
-                options?.reconciliationMessages ?? messages,
+                stripRuntimeOnlyPromptMetadata(
+                  options?.reconciliationMessages ?? messages,
+                ),
               ...(hasStatefulHistoryCompacted
                 ? { historyCompacted: true }
                 : {}),
@@ -308,11 +314,11 @@ export async function callWithFallback(
         });
         const rawResponse = shouldStream
           ? await provider.chatStream(
-            boundedMessages,
+            serializedBoundedMessages,
             streamChunkCallback,
             providerChatOptions,
           )
-          : await provider.chat(boundedMessages, providerChatOptions);
+          : await provider.chat(serializedBoundedMessages, providerChatOptions);
         const response = assertValidLLMResponse(provider.name, rawResponse);
 
         if (response.finishReason === "error") {

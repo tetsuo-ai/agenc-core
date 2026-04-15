@@ -135,7 +135,10 @@ describe("runTopLevelVerifierValidation", () => {
 
     expect(spawn).toHaveBeenCalledWith(
       expect.objectContaining({
-        systemPrompt: "Verifier system prompt",
+        promptEnvelope: expect.objectContaining({
+          kind: "prompt_envelope_v1",
+          baseSystemPrompt: "Verifier system prompt",
+        }),
         tools: [
           "system.readFile",
           "verification.runProbe",

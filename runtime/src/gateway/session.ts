@@ -58,6 +58,8 @@ export const SESSION_RUNTIME_CONTRACT_SNAPSHOT_METADATA_KEY =
   "runtimeContractSnapshot";
 export const SESSION_RUNTIME_CONTRACT_STATUS_SNAPSHOT_METADATA_KEY =
   "runtimeContractStatusSnapshot";
+export const SESSION_STATEFUL_SESSION_START_CONTEXT_MESSAGES_METADATA_KEY =
+  "sessionStartContextMessages";
 
 export function clearStatefulContinuationMetadata(
   metadata: Record<string, unknown>,
@@ -69,6 +71,7 @@ export function clearStatefulContinuationMetadata(
   delete metadata[SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY];
   delete metadata[SESSION_RUNTIME_CONTRACT_SNAPSHOT_METADATA_KEY];
   delete metadata[SESSION_RUNTIME_CONTRACT_STATUS_SNAPSHOT_METADATA_KEY];
+  delete metadata[SESSION_STATEFUL_SESSION_START_CONTEXT_MESSAGES_METADATA_KEY];
   delete metadata[SESSION_REVIEW_SURFACE_STATE_METADATA_KEY];
   delete metadata[SESSION_VERIFICATION_SURFACE_STATE_METADATA_KEY];
 }
@@ -382,6 +385,7 @@ export class SessionManager {
   private readonly config: SessionConfig;
   private readonly sessions = new Map<string, Session>();
   private readonly lookups = new Map<string, SessionLookupParams>();
+  private readonly pendingCompactions = new Map<string, Promise<CompactionResult | null>>();
   private readonly summarizer?: Summarizer;
   private readonly compactionHook?: SessionCompactionHook;
 
@@ -459,6 +463,7 @@ export class SessionManager {
   reset(sessionId: string): boolean {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
+    this.pendingCompactions.delete(sessionId);
     session.history = [];
     clearStatefulContinuationMetadata(session.metadata);
     session.lastActiveAt = Date.now();
@@ -469,6 +474,7 @@ export class SessionManager {
   destroy(sessionId: string): boolean {
     const existed = this.sessions.delete(sessionId);
     this.lookups.delete(sessionId);
+    this.pendingCompactions.delete(sessionId);
     return existed;
   }
 
@@ -491,10 +497,17 @@ export class SessionManager {
     return true;
   }
 
+  async flushPendingCompaction(
+    sessionId: string,
+  ): Promise<CompactionResult | null> {
+    return this.pendingCompactions.get(sessionId) ?? null;
+  }
+
   /** Replace a session's history wholesale, preserving identity and metadata. */
   replaceHistory(sessionId: string, history: readonly LLMMessage[]): boolean {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
+    this.pendingCompactions.delete(sessionId);
     session.history = [...history];
     clearStatefulContinuationMetadata(session.metadata);
     session.lastActiveAt = Date.now();
@@ -506,6 +519,20 @@ export class SessionManager {
    * Returns null if session not found.
    */
   async compact(sessionId: string): Promise<CompactionResult | null> {
+    const pending = this.pendingCompactions.get(sessionId);
+    if (pending) {
+      return pending;
+    }
+    const run = this.runCompaction(sessionId).finally(() => {
+      this.pendingCompactions.delete(sessionId);
+    });
+    this.pendingCompactions.set(sessionId, run);
+    return run;
+  }
+
+  private async runCompaction(
+    sessionId: string,
+  ): Promise<CompactionResult | null> {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
 

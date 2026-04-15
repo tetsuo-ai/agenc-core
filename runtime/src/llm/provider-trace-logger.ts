@@ -2,7 +2,9 @@ import type { Logger } from "../utils/logger.js";
 import { persistTracePayloadArtifact } from "../utils/trace-payload-store.js";
 import {
   formatTracePayloadForLog,
+  sanitizeTraceTextForLogSnippet,
   summarizeTracePayloadForPreview,
+  summarizeTraceTextForPreview,
 } from "../utils/trace-payload-serialization.js";
 import { recordObservabilityTraceEvent } from "../observability/observability.js";
 import type { LLMProviderTraceEvent } from "./types.js";
@@ -20,6 +22,34 @@ function formatProviderTracePayloadForLog(
   maxChars = DEFAULT_MAX_CHARS,
 ): string {
   return formatTracePayloadForLog(payload, maxChars);
+}
+
+function summarizeExecutionPayloadPreview(
+  event: ChatExecutionTraceEvent,
+  maxChars: number,
+): unknown {
+  if (
+    event.type !== "tool_dispatch_finished" ||
+    !event.payload ||
+    typeof event.payload !== "object" ||
+    Array.isArray(event.payload)
+  ) {
+    return summarizeTracePayloadForPreview(event.payload, maxChars);
+  }
+  const payload = { ...event.payload } as Record<string, unknown>;
+  if ("result" in payload) {
+    const rawResult = payload.result;
+    delete payload.result;
+    payload.resultPreview =
+      typeof rawResult === "string"
+        ? summarizeTraceTextForPreview(
+            sanitizeTraceTextForLogSnippet(rawResult, maxChars),
+            Math.min(maxChars, 480),
+          )
+        : summarizeTracePayloadForPreview(rawResult, Math.min(maxChars, 480));
+    payload.resultOmitted = true;
+  }
+  return summarizeTracePayloadForPreview(payload, maxChars);
 }
 
 export function createProviderTraceEventLogger(params: {
@@ -40,6 +70,9 @@ export function createProviderTraceEventLogger(params: {
   } = params;
 
   return (event: LLMProviderTraceEvent): void => {
+    if (event.kind === "stream_event") {
+      return;
+    }
     const eventName = `${traceLabel}.${event.kind}`;
     const payloadArtifact = persistTracePayloadArtifact({
       traceId,
@@ -122,7 +155,7 @@ export function createExecutionTraceEventLogger(params: {
       ...(staticFields ?? {}),
       ...(event.callIndex !== undefined ? { callIndex: event.callIndex } : {}),
       ...(event.phase !== undefined ? { callPhase: event.phase } : {}),
-      payloadPreview: summarizeTracePayloadForPreview(event.payload, maxChars),
+      payloadPreview: summarizeExecutionPayloadPreview(event, maxChars),
       ...(payloadArtifact ? { payloadArtifact } : {}),
     };
     recordObservabilityTraceEvent({

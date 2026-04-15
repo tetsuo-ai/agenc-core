@@ -1166,6 +1166,26 @@ describe("system.bash tool", () => {
       }
     });
 
+    it("allows mkdir scaffolding in the workspace root", async () => {
+      const workspaceRoot = mkdtempSync(
+        join(tmpdir(), "agenc-bash-mkdir-write-"),
+      );
+
+      try {
+        const tool = createBashTool({ cwd: workspaceRoot });
+        mockSpawnSuccess("");
+
+        const result = await tool.execute({ command: "mkdir -p src/app include/agenc docs" });
+        const parsed = parseContent(result);
+
+        expect(result.isError).toBeUndefined();
+        expect(parsed.exitCode).toBe(0);
+        expect(mockSpawn).toHaveBeenCalledOnce();
+      } finally {
+        rmSync(workspaceRoot, { recursive: true, force: true });
+      }
+    });
+
     it("blocks dangerous inline shell wrapper scripts", async () => {
       const tool = createBashTool();
 

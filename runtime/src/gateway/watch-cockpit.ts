@@ -1,5 +1,6 @@
 import type { SessionShellProfile } from "./shell-profile.js";
 import type { SessionWorkflowState } from "./workflow-state.js";
+import type { ChatUsagePayload } from "./chat-usage.js";
 
 export const SESSION_REVIEW_SURFACE_STATE_METADATA_KEY =
   "reviewSurfaceState";
@@ -74,6 +75,7 @@ export interface WatchCockpitSnapshot {
     readonly messageCount: number;
     readonly lastActiveAt: number;
   };
+  readonly usage?: ChatUsagePayload;
   readonly repo: {
     readonly available: boolean;
     readonly workspaceRoot?: string;

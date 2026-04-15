@@ -8,6 +8,7 @@ import { createEffectApprovalPolicy } from "../gateway/effect-approval-policy.js
 import { SqliteBackend } from "../memory/sqlite/backend.js";
 import { ChatExecutor } from "../llm/chat-executor.js";
 import { executeChatToLegacyResult } from "../llm/execute-chat.js";
+import { createPromptEnvelope } from "../llm/prompt-envelope.js";
 import { LLMTimeoutError } from "../llm/errors.js";
 import type { LLMProvider, LLMResponse } from "../llm/types.js";
 import { resolveWorkflowCompletionState } from "../workflow/completion-state.js";
@@ -183,7 +184,7 @@ async function runLiveRuntimeFalseCompletionScenario(): Promise<PipelineImplemen
         scope: "dm",
       },
       history: [],
-      systemPrompt: "You are an evaluation harness.",
+      promptEnvelope: createPromptEnvelope("You are an evaluation harness."),
       sessionId: "phase12-false-completion",
       runtimeContext: { workspaceRoot },
       requiredToolEvidence: buildRuntimeRequiredToolEvidence(
@@ -334,7 +335,7 @@ async function runWrongArtifactVerifierScenario(): Promise<PipelineImplementatio
         scope: "dm",
       },
       history: [],
-      systemPrompt: "You are an evaluation harness.",
+      promptEnvelope: createPromptEnvelope("You are an evaluation harness."),
       sessionId: "phase12-wrong-artifact",
       runtimeContext: { workspaceRoot },
       requiredToolEvidence: buildRuntimeRequiredToolEvidence(
@@ -557,7 +558,7 @@ async function runDegradedProviderRetryScenario(): Promise<PipelineImplementatio
       scope: "dm",
     },
     history: [],
-    systemPrompt: "You are an evaluation harness.",
+    promptEnvelope: createPromptEnvelope("You are an evaluation harness."),
     sessionId: "phase8-reroute",
   });
   const completionState = resolveWorkflowCompletionState({

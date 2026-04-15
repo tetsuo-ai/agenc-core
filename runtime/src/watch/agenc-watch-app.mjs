@@ -1684,6 +1684,8 @@ function shouldShowSplash() {
 
 function resetLiveRunSurface() {
   watchState.latestAgentSummary = null;
+  watchState.agentStreamingText = null;
+  watchState.agentStreamingPreview = null;
   // Intentionally preserve `latestTool`, `latestToolState`, and
   // `lastUsageSummary` across run boundaries. The server only emits
   // `chat.usage` at completion, and tool events fire mid-stream — wiping
@@ -2031,13 +2033,15 @@ function handleToolResult(toolName, isError, result, toolArgs) {
     return;
   }
   pushEvent(
-    isError ? "tool error" : "tool result",
+    "tool result",
     descriptor.title,
     descriptor.body,
     descriptor.tone,
     descriptorEventMetadata(descriptor, {
       toolName,
       toolArgs: args,
+      toolState: isError ? "error" : "ok",
+      isError,
     }),
   );
 }

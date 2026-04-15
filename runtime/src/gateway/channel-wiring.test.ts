@@ -251,6 +251,7 @@ describe("wireExternalChannels", () => {
       };
     });
     const addEntry = vi.fn().mockResolvedValue(undefined);
+    const appendTranscript = vi.fn().mockResolvedValue([]);
 
     await wireExternalChannel(
       channel,
@@ -261,7 +262,7 @@ describe("wireExternalChannels", () => {
         gateway: null,
         logger: silentLogger,
         chatExecutor: { execute } as never,
-        memoryBackend: { addEntry } as never,
+        memoryBackend: { addEntry, appendTranscript } as never,
         defaultForegroundMaxToolRounds: 1,
         buildChannelHostServices() {
           return undefined;

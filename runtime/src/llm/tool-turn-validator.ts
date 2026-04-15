@@ -24,6 +24,10 @@ export interface ToolTurnValidationOptions {
   readonly allowLeadingToolResults?: boolean;
 }
 
+export interface ToolTurnRepairOptions {
+  readonly repairMissingResults?: boolean;
+}
+
 function summarizeToolIds(ids: Iterable<string>): string {
   const all = Array.from(ids);
   if (all.length <= MAX_TOOL_IDS_IN_ERROR) {
@@ -177,36 +181,95 @@ export function findToolTurnValidationIssue(
  */
 export function repairToolTurnSequence(
   messages: readonly LLMMessage[],
+  options?: ToolTurnRepairOptions,
 ): readonly LLMMessage[] {
   const issue = findToolTurnValidationIssue(messages);
   if (!issue) return messages;
 
   const repaired: LLMMessage[] = [];
-  let pendingToolCallIds: Set<string> | null = null;
+  const issuedToolCallIds = new Set<string>();
+  const resolvedToolCallIds = new Set<string>();
+  let pendingToolCalls = new Map<string, { readonly name: string }>();
+  const aggressiveRepair = options?.repairMissingResults === true;
+
+  const flushPendingToolResults = (): void => {
+    if (pendingToolCalls.size === 0) return;
+    for (const [toolCallId, toolCall] of pendingToolCalls.entries()) {
+      repaired.push({
+        role: "tool",
+        toolCallId,
+        toolName: toolCall.name,
+        content:
+          "[missing tool result inserted during transcript recovery]",
+      });
+      resolvedToolCallIds.add(toolCallId);
+    }
+    pendingToolCalls = new Map();
+  };
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
 
     if (msg.role === "assistant" && msg.toolCalls && msg.toolCalls.length > 0) {
-      pendingToolCallIds = new Set(
-        msg.toolCalls
-          .map((tc) => tc.id?.trim())
-          .filter((id): id is string => Boolean(id)),
+      flushPendingToolResults();
+      const uniqueToolCalls = aggressiveRepair
+        ? msg.toolCalls.filter((toolCall) => {
+            const id = toolCall.id?.trim();
+            if (!id || issuedToolCallIds.has(id)) {
+              return false;
+            }
+            issuedToolCallIds.add(id);
+            return true;
+          })
+        : msg.toolCalls;
+      if (uniqueToolCalls.length === 0) {
+        if (
+          typeof msg.content === "string"
+            ? msg.content.trim().length > 0
+            : msg.content.some((part) =>
+                part.type === "text" ? part.text.trim().length > 0 : true
+              )
+        ) {
+          repaired.push({
+            ...msg,
+            toolCalls: undefined,
+          });
+        }
+        continue;
+      }
+      pendingToolCalls = new Map(
+        uniqueToolCalls.map((toolCall) => [
+          toolCall.id!.trim(),
+          { name: toolCall.name ?? "unknown" },
+        ]),
       );
-      repaired.push(msg);
+      repaired.push({
+        ...msg,
+        toolCalls: uniqueToolCalls,
+      });
       continue;
     }
 
     if (msg.role === "tool") {
       const toolCallId = msg.toolCallId?.trim();
-      if (toolCallId && (!pendingToolCallIds || !pendingToolCallIds.has(toolCallId))) {
+      if (!toolCallId) {
+        continue;
+      }
+      if (aggressiveRepair && resolvedToolCallIds.has(toolCallId)) {
+        continue;
+      }
+      if (!pendingToolCalls.has(toolCallId)) {
         // Collect consecutive orphaned tool messages to synthesize a
         // single assistant envelope for the whole block.
         const orphanedBlock: LLMMessage[] = [msg];
         let j = i + 1;
         while (j < messages.length && messages[j].role === "tool") {
           const nextId = messages[j].toolCallId?.trim();
-          if (nextId && (!pendingToolCallIds || !pendingToolCallIds.has(nextId))) {
+          if (
+            nextId &&
+            !pendingToolCalls.has(nextId) &&
+            !resolvedToolCallIds.has(nextId)
+          ) {
             orphanedBlock.push(messages[j]);
             j++;
           } else {
@@ -228,29 +291,41 @@ export function repairToolTurnSequence(
         });
         repaired.push(...orphanedBlock);
 
-        pendingToolCallIds = new Set(
-          syntheticToolCalls.map((tc) => tc.id),
+        pendingToolCalls = new Map(
+          syntheticToolCalls.map((tc) => [
+            tc.id,
+            { name: tc.name ?? "unknown" },
+          ]),
         );
         for (const orphan of orphanedBlock) {
           const id = orphan.toolCallId?.trim();
-          if (id) pendingToolCallIds.delete(id);
+          if (id) {
+            pendingToolCalls.delete(id);
+            issuedToolCallIds.add(id);
+            resolvedToolCallIds.add(id);
+          }
         }
         i = j - 1;
         continue;
       }
 
-      if (toolCallId && pendingToolCallIds) {
-        pendingToolCallIds.delete(toolCallId);
-      }
+      pendingToolCalls.delete(toolCallId);
+      resolvedToolCallIds.add(toolCallId);
       repaired.push(msg);
       continue;
     }
 
     // Non-tool, non-assistant-with-tool-calls message — reset pending state
     if (msg.role !== "system") {
-      pendingToolCallIds = null;
+      if (aggressiveRepair) {
+        flushPendingToolResults();
+      }
     }
     repaired.push(msg);
+  }
+
+  if (aggressiveRepair) {
+    flushPendingToolResults();
   }
 
   return repaired;

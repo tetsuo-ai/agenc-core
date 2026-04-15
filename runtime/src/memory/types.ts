@@ -194,6 +194,126 @@ export interface MemoryBackend {
 }
 
 /**
+ * Versioned transcript event schema version supported by the built-in
+ * transcript-capable backends.
+ */
+export const TRANSCRIPT_EVENT_VERSION = 1 as const;
+
+export type TranscriptEventVersion = typeof TRANSCRIPT_EVENT_VERSION;
+
+export type TranscriptEventKind =
+  | "message"
+  | "compact_boundary"
+  | "metadata_projection"
+  | "content_replacement"
+  | "context_collapse"
+  | "custom";
+
+export interface TranscriptMessagePayload {
+  readonly role: MemoryRole;
+  readonly content: LLMMessage["content"];
+  readonly phase?: LLMMessage["phase"];
+  readonly toolCalls?: LLMMessage["toolCalls"];
+  readonly toolCallId?: string;
+  readonly toolName?: string;
+}
+
+export interface TranscriptCompactBoundaryPayload {
+  readonly boundaryId: string;
+  readonly source?: string;
+  readonly summaryText?: string;
+  readonly sourceMessageCount?: number;
+  readonly retainedTailCount?: number;
+  readonly headEventId?: string;
+  readonly anchorEventId?: string;
+  readonly tailEventId?: string;
+}
+
+export interface TranscriptMetadataProjectionPayload {
+  readonly key: string;
+  readonly value: unknown;
+}
+
+export interface TranscriptContentReplacementPayload {
+  readonly replacementId: string;
+  readonly target: string;
+  readonly value: unknown;
+}
+
+export interface TranscriptContextCollapsePayload {
+  readonly collapseId: string;
+  readonly summary: string;
+  readonly detail?: string;
+}
+
+export interface TranscriptCustomPayload {
+  readonly name: string;
+  readonly data?: unknown;
+}
+
+export interface TranscriptEventPayloadMap {
+  readonly message: TranscriptMessagePayload;
+  readonly compact_boundary: TranscriptCompactBoundaryPayload;
+  readonly metadata_projection: TranscriptMetadataProjectionPayload;
+  readonly content_replacement: TranscriptContentReplacementPayload;
+  readonly context_collapse: TranscriptContextCollapsePayload;
+  readonly custom: TranscriptCustomPayload;
+}
+
+export type TranscriptEventPayload = {
+  [K in TranscriptEventKind]: TranscriptEventPayloadMap[K];
+}[TranscriptEventKind];
+
+export type TranscriptEvent<
+  K extends TranscriptEventKind = TranscriptEventKind,
+> = {
+  readonly version: TranscriptEventVersion;
+  readonly streamId: string;
+  readonly seq: number;
+  readonly eventId: string;
+  readonly kind: K;
+  readonly payload: TranscriptEventPayloadMap[K];
+  readonly timestamp: number;
+  readonly metadata?: Record<string, unknown>;
+  readonly dedupeKey?: string;
+};
+
+export type TranscriptEventInput<
+  K extends TranscriptEventKind = TranscriptEventKind,
+> = {
+  readonly version?: TranscriptEventVersion;
+  readonly eventId: string;
+  readonly kind: K;
+  readonly payload: TranscriptEventPayloadMap[K];
+  readonly timestamp?: number;
+  readonly metadata?: Record<string, unknown>;
+  readonly dedupeKey?: string;
+};
+
+export interface TranscriptLoadOptions {
+  readonly afterSeq?: number;
+  readonly limit?: number;
+  readonly order?: "asc" | "desc";
+}
+
+/**
+ * Optional, non-breaking transcript storage capability. Backends that do not
+ * implement this continue to satisfy `MemoryBackend`.
+ */
+export interface TranscriptCapableMemoryBackend {
+  appendTranscript(
+    streamId: string,
+    events: readonly TranscriptEventInput[],
+  ): Promise<TranscriptEvent[]>;
+  loadTranscript(
+    streamId: string,
+    options?: TranscriptLoadOptions,
+  ): Promise<TranscriptEvent[]>;
+  deleteTranscript(streamId: string): Promise<number>;
+  listTranscriptStreams(prefix?: string): Promise<string[]>;
+}
+
+/**
  * Shared configuration for all memory backends
  */
 export interface MemoryBackendConfig {

@@ -130,6 +130,21 @@ function buildHookFailureDetail(error: unknown): HookFailureDetail {
   };
 }
 
+function buildSessionStartContextMessages(
+  outcomes: readonly { readonly message?: string }[],
+): readonly {
+  readonly role: "system";
+  readonly content: string;
+}[] {
+  return outcomes
+    .map((outcome) => outcome.message?.trim())
+    .filter((message): message is string => typeof message === "string" && message.length > 0)
+    .map((message) => ({
+      role: "system" as const,
+      content: `[SessionStart hook context]\n${message}`,
+    }));
+}
+
 /**
  * Dependency struct for `executeRequest`. Extends the init deps
  * with the hook registry (if any) and the economics policy handle
@@ -195,8 +210,14 @@ export async function executeRequest(
   // observed. `sessionTokens` is a per-session Map the executor
   // initializes lazily — absence of an entry means this is the
   // first execute() call for this session id.
+  let sessionStartContextMessages:
+    | readonly {
+        readonly role: "system";
+        readonly content: string;
+      }[]
+    | undefined;
   if (deps.hookRegistry && !helpers.sessionTokens.has(ctx.sessionId)) {
-    await dispatchHooks({
+    const sessionStartDispatch = await dispatchHooks({
       registry: deps.hookRegistry,
       event: "SessionStart",
       matchKey: ctx.sessionId,
@@ -207,6 +228,13 @@ export async function executeRequest(
         messages: ctx.messages,
       },
     });
+    sessionStartContextMessages = buildSessionStartContextMessages(
+      sessionStartDispatch.outcomes,
+    );
+    if (sessionStartContextMessages.length > 0) {
+      ctx.messages.unshift(...sessionStartContextMessages);
+      ctx.reconciliationMessages.unshift(...sessionStartContextMessages);
+    }
   }
 
   const computeVerificationRequirement = (terminal: ToolLoopTerminalResult): boolean =>
@@ -325,6 +353,9 @@ export async function executeRequest(
       completionProgress,
       turnExecutionContract: ctx.turnExecutionContract,
       activeTaskContext: deriveActiveTaskContext(ctx.turnExecutionContract),
+      ...(sessionStartContextMessages && sessionStartContextMessages.length > 0
+        ? { sessionStartContextMessages }
+        : {}),
       stopReasonDetail: terminal.stopReasonDetail,
       validationCode: terminal.validationCode,
     };

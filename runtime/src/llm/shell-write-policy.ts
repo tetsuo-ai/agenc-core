@@ -308,7 +308,10 @@ function collectDirectCommandWriteTargets(params: {
   if (command === "cp" || command === "mv" || command === "install" || command === "ln") {
     return collectDestinationTarget(command, params.args, params.cwd);
   }
-  if (command === "mkdir" || command === "rm" || command === "rmdir" || command === "truncate") {
+  if (command === "mkdir") {
+    return emptyTargetCollection();
+  }
+  if (command === "rm" || command === "rmdir" || command === "truncate") {
     return collectOperandTargets(params.args, params.cwd);
   }
   if (command === "dd") {

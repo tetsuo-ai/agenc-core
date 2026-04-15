@@ -23,6 +23,7 @@ import type { LLMStructuredOutputRequest } from "../llm/types.js";
 import type { RuntimeVerifierVerdict } from "../runtime-contract/types.js";
 import type { SystemRemoteJobManager } from "../tools/system/remote-job.js";
 import type { TaskStore } from "../tools/system/task-tracker.js";
+import { createPromptEnvelope } from "../llm/prompt-envelope.js";
 import {
   reportManagedRemoteJob,
   startManagedRemoteJob,
@@ -186,7 +187,7 @@ function selectVerifyDefinition(
   definitions: readonly AgentDefinition[] | undefined,
 ): {
   readonly tools: readonly string[];
-  readonly systemPrompt: string;
+  readonly promptEnvelope: ReturnType<typeof createPromptEnvelope>;
 } {
   const match = definitions?.find((definition) => definition.name === "verify");
   const rawTools = match?.tools?.length ? match.tools : DEFAULT_VERIFY_TOOLS;
@@ -199,10 +200,11 @@ function selectVerifyDefinition(
     );
   return {
     tools,
-    systemPrompt:
+    promptEnvelope: createPromptEnvelope(
       match?.body.trim().length
         ? match.body.trim()
         : DEFAULT_VERIFY_SYSTEM_PROMPT,
+    ),
   };
 }
 
@@ -641,7 +643,7 @@ export async function runTopLevelVerifierValidation(
       assistantContent: params.result.content,
       verifierRequirement: effectiveVerifierRequirement,
     }),
-    systemPrompt: definition.systemPrompt,
+    promptEnvelope: definition.promptEnvelope,
     tools: definition.tools,
     structuredOutput: VERIFY_STRUCTURED_OUTPUT,
     ...(workspaceRoot ? { workingDirectory: workspaceRoot } : {}),

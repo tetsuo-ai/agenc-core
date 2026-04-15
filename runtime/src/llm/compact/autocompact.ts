@@ -29,6 +29,8 @@ export interface AutoCompactTrackingState {
   readonly consecutiveFailures: number;
 }
 
+export const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3;
+
 export function createAutoCompactTrackingState(): AutoCompactTrackingState {
   return {
     compacted: false,
@@ -129,4 +131,29 @@ void COMPACT_BOUNDARY_SUBTYPE;
 function newTurnId(): string {
   // Lightweight non-crypto random — turn IDs are diagnostic, not security.
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export function markAutocompactSuccess(
+  state: AutoCompactTrackingState,
+): AutoCompactTrackingState {
+  return {
+    ...state,
+    compacted: false,
+    consecutiveFailures: 0,
+  };
+}
+
+export function markAutocompactFailure(
+  state: AutoCompactTrackingState,
+): AutoCompactTrackingState {
+  return {
+    ...state,
+    consecutiveFailures: state.consecutiveFailures + 1,
+  };
+}
+
+export function shouldSkipAutocompactForCircuitBreaker(
+  state: AutoCompactTrackingState,
+): boolean {
+  return state.consecutiveFailures >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES;
 }

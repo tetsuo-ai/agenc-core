@@ -20,6 +20,7 @@ import {
   SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY,
   SESSION_REVIEW_SURFACE_STATE_METADATA_KEY,
   SESSION_RUNTIME_CONTRACT_STATUS_SNAPSHOT_METADATA_KEY,
+  SESSION_STATEFUL_SESSION_START_CONTEXT_MESSAGES_METADATA_KEY,
   SESSION_VERIFICATION_SURFACE_STATE_METADATA_KEY,
   type Session,
   SESSION_WORKFLOW_STATE_METADATA_KEY,
@@ -172,7 +173,7 @@ describe("web session runtime state helpers", () => {
     expect(
       await loadPersistedSessionRuntimeState(memoryBackend, "web-session-artifacts"),
     ).toMatchObject({
-      version: 1,
+      version: 2,
       boundarySeq: 1,
       snapshot: {
         statefulResumeAnchor: {
@@ -181,7 +182,6 @@ describe("web session runtime state helpers", () => {
         },
         statefulHistoryCompacted: true,
       },
-      tailEvents: expect.any(Array),
     });
 
     const hydrated = createSession();
@@ -255,7 +255,7 @@ describe("web session runtime state helpers", () => {
     expect(
       await loadPersistedSessionRuntimeState(memoryBackend, "web-legacy"),
     ).toMatchObject({
-      version: 1,
+      version: 2,
       migratedFromLegacyAt: expect.any(Number),
       snapshot: {
         statefulResumeAnchor: {
@@ -297,6 +297,36 @@ describe("web session runtime state helpers", () => {
     expect(
       hydrated.metadata[SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY],
     ).toEqual(activeTaskContext);
+  });
+
+  it("persists and hydrates session-start context messages across web-session resume", async () => {
+    const memoryBackend = createMemoryBackendStub();
+    const sessionStartContextMessages = [
+      {
+        role: "system" as const,
+        content: "[SessionStart hook context]\nRestore the project bootstrap note.",
+      },
+    ];
+
+    await persistSessionRuntimeState(
+      memoryBackend,
+      "web-session-session-start",
+      createSession({
+        [SESSION_STATEFUL_SESSION_START_CONTEXT_MESSAGES_METADATA_KEY]:
+          sessionStartContextMessages,
+      }),
+    );
+
+    const hydrated = createSession();
+    await hydrateSessionRuntimeState(
+      memoryBackend,
+      "web-session-session-start",
+      hydrated,
+    );
+
+    expect(buildSessionStatefulOptions(hydrated)).toMatchObject({
+      sessionStartContextMessages,
+    });
   });
 
   it("persists and hydrates workflow state across web-session resume", async () => {
@@ -476,7 +506,7 @@ describe("web session runtime state helpers", () => {
         "web-session-target",
       ),
     ).toMatchObject({
-      version: 1,
+      version: 2,
       snapshot: {
         shellProfile: "research",
         workflowState: expect.objectContaining({

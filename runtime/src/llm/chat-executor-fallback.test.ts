@@ -252,4 +252,35 @@ describe("callWithFallback", () => {
     expect(onStreamChunk).toHaveBeenCalledWith({ content: "partial-", done: false });
     expect(onStreamChunk).toHaveBeenCalledWith({ content: "final", done: false });
   });
+
+  it("strips runtime-only prompt metadata before provider serialization", async () => {
+    const provider = createMockProvider();
+
+    await callWithFallback(
+      createDeps(provider),
+      [
+        {
+          role: "user",
+          content: "<system-reminder>\nDelegated context",
+          runtimeOnly: { mergeBoundary: "user_context" },
+        },
+        { role: "user", content: "continue" },
+      ],
+      undefined,
+      undefined,
+      {
+        callPhase: "initial",
+        toolChoice: "none",
+      },
+    );
+
+    const serializedMessages =
+      ((provider.chatStream as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] ??
+        (provider.chat as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]) as
+        | LLMMessage[]
+        | undefined;
+    expect(serializedMessages).toBeDefined();
+    expect(serializedMessages[0]).not.toHaveProperty("runtimeOnly");
+    expect(serializedMessages[1]).not.toHaveProperty("runtimeOnly");
+  });
 });

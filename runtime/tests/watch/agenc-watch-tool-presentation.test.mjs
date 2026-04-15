@@ -58,6 +58,28 @@ test("tool presentation formats text-editor reads and suppresses low-signal read
   const tools = createToolPresentation();
 
   assert.equal(
+    tools.shouldSuppressToolTranscript("system.readFileRange", {
+      path: "/tmp/demo.txt",
+      startLine: 1,
+      endLine: 40,
+    }),
+    true,
+  );
+  assert.equal(
+    tools.shouldSuppressToolTranscript("system.grep", {
+      pattern: "ShellState",
+      path: "src",
+    }),
+    true,
+  );
+  assert.equal(
+    tools.shouldSuppressToolTranscript("system.searchFiles", {
+      path: "src",
+      pattern: "*.c",
+    }),
+    true,
+  );
+  assert.equal(
     tools.shouldSuppressToolTranscript("desktop.text_editor", {
       command: "view",
       filePath: "/tmp/demo.txt",
@@ -97,6 +119,11 @@ test("tool presentation emits structured mutation metadata for write and replace
   assert.equal(writeDescriptor.filePath, "/home/tetsuo/git/AgenC/runtime/src/index.ts");
   assert.equal(writeDescriptor.mutationKind, "write");
   assert.equal(writeDescriptor.mutationAfterText, "export const ready = true;\n");
+  assert.equal(writeDescriptor.title, "Write /home/tetsuo/git/AgenC/runtime/src/index.ts");
+  assert.equal(
+    writeDescriptor.body,
+    "path: /home/tetsuo/git/AgenC/runtime/src/index.ts\nlines: 1\nexport const ready = true;\n",
+  );
 
   const replaceDescriptor = tools.describeToolStart("desktop.text_editor", {
     command: "str_replace",
@@ -141,4 +168,110 @@ test("tool presentation formats shell results and generic summaries", () => {
   assert.equal(generic.title, "system.inspect");
   assert.equal(generic.body, "status: ready");
   assert.equal(generic.tone, "green");
+});
+
+test("tool presentation gives system.mkdir a tool-specific row and terse success body", () => {
+  const tools = createToolPresentation();
+
+  assert.deepEqual(
+    tools.describeToolStart("system.mkdir", {
+      path: "src/ui",
+    }),
+    {
+      title: "mkdir src/ui",
+      body: "path: src/ui",
+      tone: "yellow",
+    },
+  );
+
+  assert.deepEqual(
+    tools.describeToolResult(
+      "system.mkdir",
+      { path: "src/ui" },
+      false,
+      JSON.stringify({ path: "src/ui", created: true }),
+    ),
+    {
+      title: "mkdir src/ui",
+      body: "Done",
+      tone: "green",
+    },
+  );
+});
+
+test("tool presentation keeps file writes concise instead of embedding full payload bodies", () => {
+  const tools = createToolPresentation();
+  const content = Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join("\n");
+
+  const start = tools.describeToolStart("system.writeFile", {
+    path: "src/app/main.c",
+    content,
+  });
+  assert.equal(start.title, "Write src/app/main.c");
+  assert.equal(start.previewMode, "source-write");
+  assert.equal(start.filePath, "src/app/main.c");
+  assert.equal(start.mutationAfterText, Array.from({ length: 10 }, (_, index) => `line ${index + 1}`).join("\n"));
+  assert.match(start.body, /^path: src\/app\/main\.c\nlines: 12\nline 1/);
+  assert.doesNotMatch(start.body, /line 11/);
+
+  const result = tools.describeToolResult(
+    "system.writeFile",
+    {
+      path: "src/app/main.c",
+      content,
+    },
+    false,
+    JSON.stringify({ path: "src/app/main.c", bytesWritten: 128 }),
+  );
+  assert.equal(result.title, "Wrote src/app/main.c");
+  assert.match(result.body, /^path: src\/app\/main\.c\nlines: 12\nwritten: 128 B\nline 1/);
+  assert.doesNotMatch(result.body, /line 11/);
+});
+
+test("tool presentation gives system.editFile a source-style path row and terse error body", () => {
+  const tools = createToolPresentation();
+
+  assert.deepEqual(
+    tools.describeToolStart("system.editFile", {
+      path: "src/app/args.c",
+      old_string: "old value",
+      new_string: "new value",
+    }),
+    {
+      title: "Update src/app/args.c",
+      body: "src/app/args.c",
+      tone: "yellow",
+      previewMode: "source-write",
+      filePath: "src/app/args.c",
+      mutationKind: "replace",
+      mutationBeforeText: "old value",
+      mutationAfterText: "new value",
+    },
+  );
+
+  assert.deepEqual(
+    tools.describeToolResult(
+      "system.editFile",
+      {
+        path: "src/app/args.c",
+        old_string: "old value",
+        new_string: "new value",
+      },
+      true,
+      JSON.stringify({
+        error:
+          "old_string not found in src/app/args.c. The exact text you provided does not appear anywhere in the file after quote/desanitization normalization.",
+      }),
+    ),
+    {
+      title: "Update src/app/args.c",
+      body: "Error editing file",
+      tone: "red",
+      previewMode: "source-write",
+      filePath: "src/app/args.c",
+      mutationKind: "replace",
+      mutationBeforeText: "old value",
+      mutationAfterText: "new value",
+    },
+  );
 });

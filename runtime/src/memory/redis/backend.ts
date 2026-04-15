@@ -15,6 +15,10 @@ import type {
   MemoryEntry,
   MemoryQuery,
   AddEntryOptions,
+  TranscriptCapableMemoryBackend,
+  TranscriptEvent,
+  TranscriptEventInput,
+  TranscriptLoadOptions,
 } from "../types.js";
 import type { RedisBackendConfig } from "./types.js";
 import {
@@ -25,6 +29,10 @@ import {
 import { ensureLazyBackend } from "../lazy-import.js";
 import type { MetricsProvider } from "../../task/types.js";
 import { TELEMETRY_METRIC_NAMES } from "../../telemetry/metric-names.js";
+import {
+  applyTranscriptLoadOptions,
+  materializeTranscriptEvent,
+} from "../transcript.js";
 
 async function scanKeys(client: any, pattern: string): Promise<string[]> {
   const keys: string[] = [];
@@ -37,7 +45,9 @@ async function scanKeys(client: any, pattern: string): Promise<string[]> {
   return keys;
 }
 
-export class RedisBackend implements MemoryBackend {
+export class RedisBackend
+  implements MemoryBackend, TranscriptCapableMemoryBackend
+{
   readonly name = "redis";
 
   private client: any = null;
@@ -73,8 +83,16 @@ export class RedisBackend implements MemoryBackend {
     return `${this.prefix}kv:${key}`;
   }
 
+  private transcriptKey(streamId: string): string {
+    return `${this.prefix}transcript:${streamId}`;
+  }
+
   private get sessionsKey(): string {
     return `${this.prefix}sessions`;
+  }
+
+  private get transcriptStreamsKey(): string {
+    return `${this.prefix}transcript-streams`;
   }
 
   // ---------- Thread Operations ----------
@@ -233,6 +251,93 @@ export class RedisBackend implements MemoryBackend {
     return sessions.filter((s: string) => s.startsWith(prefix));
   }
 
+  async appendTranscript(
+    streamId: string,
+    events: readonly TranscriptEventInput[],
+  ): Promise<TranscriptEvent[]> {
+    const client = await this.ensureClient();
+    const start = Date.now();
+    const key = this.transcriptKey(streamId);
+    const existingEvents = await this.loadTranscript(streamId);
+    const existingById = new Map(
+      existingEvents.map((event) => [event.eventId, event] as const),
+    );
+    let nextSeq =
+      existingEvents.length > 0
+        ? existingEvents[existingEvents.length - 1]!.seq
+        : 0;
+
+    const appended: TranscriptEvent[] = [];
+    for (const event of events) {
+      const existing = existingById.get(event.eventId);
+      if (existing) {
+        appended.push(existing);
+        continue;
+      }
+
+      nextSeq += 1;
+      const stored = materializeTranscriptEvent(streamId, nextSeq, event);
+      let json: string;
+      try {
+        json = JSON.stringify(stored);
+      } catch (err) {
+        throw new MemorySerializationError(
+          this.name,
+          `Failed to serialize transcript event: ${(err as Error).message}`,
+        );
+      }
+
+      await client.zadd(key, stored.seq, json);
+      await client.sadd(this.transcriptStreamsKey, streamId);
+      existingById.set(stored.eventId, stored);
+      appended.push(stored);
+    }
+
+    this.recordMemoryMetrics("appendTranscript", Date.now() - start);
+    return appended;
+  }
+
+  async loadTranscript(
+    streamId: string,
+    options: TranscriptLoadOptions = {},
+  ): Promise<TranscriptEvent[]> {
+    const client = await this.ensureClient();
+    const start = Date.now();
+    const key = this.transcriptKey(streamId);
+
+    let members: string[];
+    if ((options.order ?? "asc") === "desc") {
+      members = await client.zrevrangebyscore(key, "+inf", "-inf");
+    } else {
+      members = await client.zrangebyscore(key, "-inf", "+inf");
+    }
+
+    const parsed = members
+      .map((member: string) => this.parseTranscriptEvent(member))
+      .filter(Boolean) as TranscriptEvent[];
+    const result = applyTranscriptLoadOptions(parsed, options);
+    this.recordMemoryMetrics("loadTranscript", Date.now() - start);
+    return result;
+  }
+
+  async deleteTranscript(streamId: string): Promise<number> {
+    const client = await this.ensureClient();
+    const key = this.transcriptKey(streamId);
+    const count = await client.zcard(key);
+    if (count > 0) {
+      await client.del(key);
+      await client.srem(this.transcriptStreamsKey, streamId);
+    }
+    return count;
+  }
+
+  async listTranscriptStreams(prefix?: string): Promise<string[]> {
+    const client = await this.ensureClient();
+    const streams: string[] = await client.smembers(this.transcriptStreamsKey);
+    if (!prefix) return streams;
+    return streams.filter((streamId: string) => streamId.startsWith(prefix));
+  }
+
   // ---------- Key-Value Operations ----------
 
   async set(key: string, value: unknown, ttlMs?: number): Promise<void> {
@@ -310,6 +415,14 @@ export class RedisBackend implements MemoryBackend {
       await client.del(this.threadKey(sessionId));
     }
     await client.del(this.sessionsKey);
+
+    const transcriptStreams: string[] = await client.smembers(
+      this.transcriptStreamsKey,
+    );
+    for (const streamId of transcriptStreams) {
+      await client.del(this.transcriptKey(streamId));
+    }
+    await client.del(this.transcriptStreamsKey);
 
     // Delete all KV keys
     const kvKeys: string[] = await scanKeys(client, `${this.prefix}kv:*`);
@@ -430,6 +543,15 @@ export class RedisBackend implements MemoryBackend {
       return JSON.parse(json) as MemoryEntry;
     } catch {
       this.logger.warn(`Failed to parse entry: ${json.slice(0, 100)}`);
+      return null;
+    }
+  }
+
+  private parseTranscriptEvent(json: string): TranscriptEvent | null {
+    try {
+      return JSON.parse(json) as TranscriptEvent;
+    } catch {
+      this.logger.warn(`Failed to parse transcript event: ${json.slice(0, 100)}`);
       return null;
     }
   }

@@ -32,9 +32,17 @@ import { getSessionCompactionState } from "./chat-executor-state.js";
 import type {
   HistoryCompactionDependencies,
 } from "./chat-executor-history-compaction.js";
-import { compactHistory } from "./chat-executor-history-compaction.js";
+import {
+  compactHistory,
+  shouldSkipHistoryCompactionForCircuitBreaker,
+  trySessionMemoryCompaction,
+} from "./chat-executor-history-compaction.js";
 import type { LLMMessage } from "./types.js";
 import type { PromptBudgetSection } from "./prompt-budget.js";
+import {
+  markAutocompactFailure,
+  markAutocompactSuccess,
+} from "./compact/autocompact.js";
 
 /**
  * Dependency struct for `maybeCompactInFlightCallInput`.
@@ -92,6 +100,19 @@ export async function maybeCompactInFlightCallInput(
   );
   const statefulHistoryCompacted =
     input.statefulHistoryCompacted === true || ctx.compacted;
+  if (
+    compactionState.softThresholdReached &&
+    shouldSkipHistoryCompactionForCircuitBreaker(
+      ctx.perIterationCompaction.autocompact.consecutiveFailures,
+    )
+  ) {
+    return {
+      callMessages: input.callMessages,
+      callReconciliationMessages: input.callReconciliationMessages,
+      callSections: input.callSections,
+      statefulHistoryCompacted,
+    };
+  }
   if (
     !compactionState.hardBudgetReached &&
     !compactionState.softThresholdReached
@@ -156,18 +177,27 @@ export async function maybeCompactInFlightCallInput(
     ? undefined
     : new Map<string, CooldownEntry>(deps.cooldowns);
   try {
-    const compacted = await compactHistory(
-      replayTail,
-      ctx.sessionId,
-      deps,
-      {
-        ...(ctx.trace ? { trace: ctx.trace } : {}),
-        ...(ctx.compactedArtifactContext
-          ? { existingArtifactContext: ctx.compactedArtifactContext }
-          : {}),
+    const compacted =
+      trySessionMemoryCompaction({
+        history: replayTail,
+        sessionId: ctx.sessionId,
+        existingArtifactContext: ctx.compactedArtifactContext,
         keepTailCount: inFlightKeepTailCount,
-      },
-    );
+        thresholdTokens:
+          deps.sessionCompactionThreshold ?? deps.sessionTokenBudget,
+      }) ??
+      await compactHistory(
+        replayTail,
+        ctx.sessionId,
+        deps,
+        {
+          ...(ctx.trace ? { trace: ctx.trace } : {}),
+          ...(ctx.compactedArtifactContext
+            ? { existingArtifactContext: ctx.compactedArtifactContext }
+            : {}),
+          keepTailCount: inFlightKeepTailCount,
+        },
+      );
     const retainedTailCount = Math.max(0, compacted.history.length - 1);
     const replayTailReconciliationMessages = (
       input.callReconciliationMessages ?? ctx.reconciliationMessages
@@ -212,6 +242,12 @@ export async function maybeCompactInFlightCallInput(
     ctx.messageSections = [...nextSections];
     ctx.compacted = true;
     ctx.compactedArtifactContext = compacted.artifactContext;
+    ctx.perIterationCompaction = {
+      ...ctx.perIterationCompaction,
+      autocompact: markAutocompactSuccess(
+        ctx.perIterationCompaction.autocompact,
+      ),
+    };
     helpers.resetSessionTokens(ctx.sessionId);
     return {
       callMessages: ctx.messages,
@@ -220,6 +256,12 @@ export async function maybeCompactInFlightCallInput(
       statefulHistoryCompacted: true,
     };
   } catch (error) {
+    ctx.perIterationCompaction = {
+      ...ctx.perIterationCompaction,
+      autocompact: markAutocompactFailure(
+        ctx.perIterationCompaction.autocompact,
+      ),
+    };
     if (compactionState.hardBudgetReached) {
       if (error instanceof ChatBudgetExceededError) {
         throw error;

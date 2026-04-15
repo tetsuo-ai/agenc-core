@@ -153,6 +153,54 @@ describe("BackgroundRunStore", () => {
     expect(await store.listRuns()).toEqual([]);
   });
 
+  it("rebuilds run history from the durable conversation transcript", async () => {
+    const backend = new InMemoryBackend();
+    const store = new BackgroundRunStore({ memoryBackend: backend });
+    const run = makeRun({
+      internalHistory: [
+        { role: "user", content: "Check the server status." },
+        { role: "assistant", content: "I am checking the server status now.", phase: "commentary" },
+      ],
+    });
+
+    await store.saveRun(run);
+    await backend.set("background-run:session:session-1", {
+      ...run,
+      internalHistory: [],
+    });
+
+    await expect(store.loadRun(run.sessionId)).resolves.toMatchObject({
+      internalHistory: run.internalHistory,
+    });
+  });
+
+  it("forks durable conversation history between run sessions", async () => {
+    const backend = new InMemoryBackend();
+    const store = new BackgroundRunStore({ memoryBackend: backend });
+
+    await store.seedConversationHistory("source", [
+      { role: "user", content: "Monitor the worker." },
+      { role: "assistant", content: "Monitoring started.", phase: "commentary" },
+    ]);
+
+    expect(await store.forkConversationHistory("source", "target")).toBe(true);
+
+    await store.saveRun(
+      makeRun({
+        id: "bg-target",
+        sessionId: "target",
+        internalHistory: [],
+      }),
+    );
+
+    await expect(store.loadRun("target")).resolves.toMatchObject({
+      internalHistory: [
+        { role: "user", content: "Monitor the worker." },
+        { role: "assistant", content: "Monitoring started.", phase: "commentary" },
+      ],
+    });
+  });
+
   it("preserves canonical delegated scope in durable lineage records", async () => {
     const backend = new InMemoryBackend();
     const store = new BackgroundRunStore({ memoryBackend: backend });

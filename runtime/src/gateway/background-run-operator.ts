@@ -14,9 +14,9 @@ import type {
   BackgroundRunBudgetState,
   BackgroundRunCompactionState,
   BackgroundRunContract,
+  BackgroundRunLastWakeReason,
   BackgroundRunObservedTarget,
   BackgroundRunState,
-  BackgroundRunWakeReason,
   BackgroundRunWatchRegistration,
 } from "./background-run-store.js";
 import type { PolicyEvaluationScope } from "../policy/types.js";
@@ -77,7 +77,7 @@ export interface BackgroundRunOperatorSummary {
   readonly fenceToken: number;
   readonly lastUserUpdate?: string;
   readonly lastToolEvidence?: string;
-  readonly lastWakeReason?: BackgroundRunWakeReason;
+  readonly lastWakeReason?: BackgroundRunLastWakeReason;
   readonly carryForwardSummary?: string;
   readonly blockerSummary?: string;
   readonly completionState?: WorkflowProgressSnapshot["completionState"];
@@ -216,7 +216,7 @@ export function buildBackgroundRunExplanation(params: {
   readonly approval: BackgroundRunApprovalState;
   readonly nextCheckAt?: number;
   readonly nextHeartbeatAt?: number;
-  readonly lastWakeReason?: BackgroundRunWakeReason;
+  readonly lastWakeReason?: BackgroundRunLastWakeReason;
   readonly requiresUserStop: boolean;
   readonly now?: number;
 }): { currentPhase: string; explanation: string; unsafeToContinue: boolean } {

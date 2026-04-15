@@ -84,6 +84,45 @@ function isRecord(value) {
   return typeof value === "object" && value !== null;
 }
 
+function syncUsageSummaryFromPayload(state, api, payload) {
+  if (!isRecord(payload) || !isRecord(payload.usage)) {
+    return;
+  }
+  const usageSummary = api.summarizeUsage(payload.usage);
+  if (usageSummary) {
+    state.lastUsageSummary = usageSummary;
+  }
+}
+
+function syncUsageSummaryFromContextResult(state, payload) {
+  if (!isRecord(payload) || payload.commandName !== "context") {
+    return;
+  }
+  const metrics = Array.isArray(payload.metrics) ? payload.metrics : [];
+  const usedMetric = metrics.find((entry) =>
+    isRecord(entry) && typeof entry.label === "string" && entry.label.trim().toLowerCase() === "used"
+  );
+  const contextMetric = metrics.find((entry) =>
+    isRecord(entry) &&
+    typeof entry.label === "string" &&
+    entry.label.trim().toLowerCase() === "context window"
+  );
+  const usedValue =
+    isRecord(usedMetric) && typeof usedMetric.value === "string"
+      ? usedMetric.value.trim()
+      : "";
+  const contextValue =
+    isRecord(contextMetric) && typeof contextMetric.value === "string"
+      ? contextMetric.value.trim()
+      : "";
+  if (!usedValue) {
+    return;
+  }
+  state.lastUsageSummary = contextValue
+    ? `${usedValue} / ${contextValue}`
+    : usedValue;
+}
+
 function requestSharedCommandCatalog(api, sessionId = null) {
   api.send(
     "session.command.catalog.get",
@@ -203,6 +242,7 @@ function handleSessionSurfaceEvent(surfaceEvent, state, api) {
       state.cockpitUpdatedAt = 0;
       state.cockpitFingerprint = null;
       api.resetLiveRunSurface();
+      syncUsageSummaryFromPayload(state, api, payload);
       state.runDetail = null;
       state.runState = "idle";
       state.runPhase = null;
@@ -217,6 +257,7 @@ function handleSessionSurfaceEvent(surfaceEvent, state, api) {
       }
       return true;
     case "chat.session.resumed":
+      syncUsageSummaryFromPayload(state, api, payload);
       return handleSessionResumeResult(payload, { resumed: { sessionId: payload.sessionId } }, state, api);
     case "chat.session.list": {
       return handleSessionListResult({ sessions: surfaceEvent.payloadList ?? [] }, state, api);
@@ -282,6 +323,7 @@ function handleChatSurfaceEvent(surfaceEvent, state, api) {
         state.sessionId = payload.sessionId.trim();
         api.persistSessionId(state.sessionId);
       }
+      syncUsageSummaryFromContextResult(state, payload);
       api.setTransientStatus(`/${commandName} ready`);
       api.eventStore.pushEvent("operator", `/${commandName}`, content, "teal");
       api.requestCockpit(`/${commandName}`);
@@ -298,10 +340,7 @@ function handleChatSurfaceEvent(surfaceEvent, state, api) {
         if (chunk || payload.done) {
           api.eventStore.appendAgentStreamChunk(chunk, { done: payload.done === true });
         }
-        const statusPreview = api.sanitizeInlineText(chunk);
-        if (statusPreview) {
-          api.setTransientStatus(`streaming: ${api.truncate(statusPreview, 72)}`);
-        } else if (payload.done === true) {
+        if (payload.done === true) {
           api.setTransientStatus("agent stream complete");
         } else {
           api.setTransientStatus("agent streaming…");
@@ -930,6 +969,7 @@ function handleStatusSurfaceEvent(surfaceEvent, state, api) {
     state.cockpit = payload;
     state.cockpitUpdatedAt = api.now();
     state.cockpitFingerprint = api.cockpitFeedFingerprint(payload);
+    syncUsageSummaryFromPayload(state, api, payload);
     if (typeof payload?.session?.workflowStage === "string") {
       state.workflowStage = payload.session.workflowStage;
       state.workflowStageUpdatedAt = api.now();

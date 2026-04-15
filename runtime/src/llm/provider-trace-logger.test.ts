@@ -167,6 +167,72 @@ describe("createProviderTraceEventLogger", () => {
     rmSync(payloadArtifactMatch![1], { force: true });
   });
 
+  it("suppresses high-volume provider stream events from the normal logger", () => {
+    const logger = {
+      info: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+      warn: vi.fn(),
+      setLevel: vi.fn(),
+    };
+
+    const logEvent = createProviderTraceEventLogger({
+      logger,
+      traceLabel: "webchat.provider",
+      traceId: "trace-stream",
+      sessionId: "session-stream",
+    });
+
+    logEvent({
+      kind: "stream_event",
+      transport: "chat",
+      provider: "grok",
+      model: "grok-test",
+      payload: { type: "response.output_text.delta", delta: "hel" },
+    });
+
+    expect(logger.info).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it("summarizes tool_dispatch_finished results in the log preview", () => {
+    const logger = {
+      info: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+      warn: vi.fn(),
+      setLevel: vi.fn(),
+    };
+
+    const logEvent = createExecutionTraceEventLogger({
+      logger,
+      traceLabel: "webchat.executor",
+      traceId: "trace-tool-result",
+      sessionId: "session-tool-result",
+    });
+
+    logEvent({
+      type: "tool_dispatch_finished",
+      phase: "tool_followup",
+      callIndex: 1,
+      payload: {
+        tool: "system.readFile",
+        isError: false,
+        result: "line one\nline two\nline three",
+      },
+    });
+
+    const line = logger.info.mock.calls[0]?.[0] as string;
+    expect(line).toContain('"resultPreview"');
+    expect(line).toContain('"resultOmitted":true');
+    expect(line).not.toContain('"result":"line one');
+    const payloadArtifactMatch = line.match(
+      /"payloadArtifact":\{"path":"([^"]+)"/,
+    );
+    expect(payloadArtifactMatch?.[1]).toBeTruthy();
+    rmSync(payloadArtifactMatch![1], { force: true });
+  });
+
   it("summarizes ANSI-heavy terminal payloads in the log preview while keeping the artifact payload", () => {
     const logger = {
       info: vi.fn(),

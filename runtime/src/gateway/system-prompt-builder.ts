@@ -270,7 +270,7 @@ function buildModelDisclosureContext(config: GatewayConfig): string {
  * Assemble the full system prompt from workspace files, personality
  * templates, and the desktop / model-disclosure context sections.
  */
-export async function buildSystemPrompt(
+export async function buildBaseSystemPrompt(
   config: GatewayConfig,
   opts: {
     yolo: boolean;
@@ -301,6 +301,7 @@ export async function buildSystemPrompt(
       "### File modification: prefer editFile over writeFile\n\n" +
       "For modifying an existing file, ALWAYS prefer `system.editFile` over `system.writeFile`. `system.editFile` takes `{path, old_string, new_string, replace_all?}` and only sends the diff — it does NOT require you to JSON-encode the entire file. Reserve `system.writeFile` for creating new files or for truly full rewrites where editFile cannot express the change.\n\n" +
       "Why this matters: `system.writeFile` content is JSON-encoded as a tool argument. Every nested `\"` (double-quote) in the file content has to be escaped as `\\\"` in the JSON, every `\\` becomes `\\\\`, every newline becomes `\\n`. For a 200-line C source file with `#include \"shell.h\"` directives, printf format strings, and inline string literals, that is hundreds of escape opportunities. Even one mistake produces a literal `\\\"` (backslash + quote) in the output file, which the C compiler rejects with `error: #include expects \"FILENAME\" or <FILENAME>`. `system.editFile` with an `old_string` of ~50 chars and a `new_string` of ~50 chars has ~100x fewer escape opportunities and is reliable on every model.\n\n" +
+      "When using `system.editFile`, use the smallest `old_string` that is clearly unique in the current file — usually 2-4 adjacent lines are enough. Do not paste 10+ lines of context when fewer lines uniquely identify the target. Preserve the exact indentation and whitespace from the file bytes you just read. If you are renaming or replacing repeated text throughout the file, use `replace_all: true` instead of issuing a chain of overlapping single-match edits.\n\n" +
       "Read-before-Write rule: BOTH `system.writeFile` (for existing files) AND `system.editFile` REQUIRE that you have called `system.readFile` on the same path earlier in this session. The runtime enforces this at the tool boundary — calls without a prior read are rejected with the message \"File has not been read yet. Read it first before writing to it.\" The reason is that the read puts the LITERAL current bytes of the file into your context (including any escape characters or stray backslashes from prior failed attempts). Without reading first, you are guessing at the current state and the next edit will likely repeat whatever bug is already in the file. Read first, then edit.\n\n" +
       "Creating a new file: `system.writeFile` does NOT require a prior read because there is nothing to read yet (the file does not exist). The Read-before-Write rule only kicks in when the target path already exists.\n\n" +
       "### Tool calls must be real tool calls, not narrated prose\n\n" +
@@ -369,6 +370,18 @@ export async function buildSystemPrompt(
     `System prompt loaded from default personality template: ${getDefaultWorkspacePath()}`,
   );
   return prompt;
+}
+
+export async function buildSystemPrompt(
+  config: GatewayConfig,
+  opts: {
+    yolo: boolean;
+    configPath: string;
+    logger: Logger;
+  },
+  options?: { forVoice?: boolean },
+): Promise<string> {
+  return buildBaseSystemPrompt(config, opts, options);
 }
 
 /**

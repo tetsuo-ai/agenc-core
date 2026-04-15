@@ -275,6 +275,61 @@ describe("DaemonManager host workspace prompt and memory resolution", () => {
   });
 });
 
+describe("DaemonManager watch cockpit usage snapshots", () => {
+  it("includes the live session usage snapshot in watch cockpit payloads", async () => {
+    const dm = new DaemonManager({ configPath: "/tmp/config.json" });
+    (dm as any).gateway = {
+      config: {
+        llm: {
+          provider: "grok",
+          model: "grok-code-fast-1",
+        },
+      },
+    };
+    (dm as any)._resolvedContextWindowTokens = 256_000;
+    (dm as any)._chatExecutor = {
+      getSessionTokenUsage: vi.fn(() => 4321),
+    };
+    (dm as any).evaluateShellFeatureAdmission = vi.fn(() => ({ allowed: true }));
+    (dm as any).getWatchCockpitRepoSections = vi.fn(async () => ({
+      repo: { available: false, unavailableReason: "workspace unavailable" },
+      worktrees: {
+        available: false,
+        entries: [],
+        unavailableReason: "workspace unavailable",
+      },
+    }));
+
+    const snapshot = await (dm as any).buildWatchCockpitSnapshot({
+      sessionId: "session-live-usage",
+      actorId: "actor-1",
+      channel: "webchat",
+      continuity: {
+        sessionId: "session-live-usage",
+        shellProfile: "general",
+        workflowStage: "working",
+        resumabilityState: "active",
+        preview: "working",
+        messageCount: 3,
+        lastActiveAt: 123,
+      },
+      redactionProfile: "watch_cockpit",
+    });
+
+    expect(snapshot).toEqual(
+      expect.objectContaining({
+        usage: expect.objectContaining({
+          sessionId: "session-live-usage",
+          totalTokens: 4321,
+          contextWindowTokens: 256_000,
+          provider: "grok",
+          model: "grok-code-fast-1",
+        }),
+      }),
+    );
+  });
+});
+
 // ============================================================================
 // Command availability classifier
 // ============================================================================

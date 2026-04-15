@@ -2879,9 +2879,37 @@ export function createWatchFrameController(dependencies = {}) {
     return rows;
   }
 
+  function buildStreamingPreviewBlock(width) {
+    const previewText =
+      typeof watchState.agentStreamingPreview === "string"
+        ? watchState.agentStreamingPreview.trimEnd()
+        : "";
+    if (!previewText) {
+      return [];
+    }
+    const previewEvent = {
+      id: "__streaming_preview__",
+      kind: "agent",
+      title: "Agent Reply · live",
+      tone: "cyan",
+      body: previewText,
+      bodyTruncated: false,
+      renderMode: "markdown",
+      streamState: "streaming",
+    };
+    return renderEventBlock(previewEvent, width, { showBody: true });
+  }
+
   function flattenTranscriptView(width) {
     const transcriptEvents = visibleTranscriptEvents();
+    const streamingPreviewBlock = buildStreamingPreviewBlock(width);
     if (transcriptEvents.length === 0) {
+      if (streamingPreviewBlock.length > 0) {
+        return {
+          rows: streamingPreviewBlock,
+          ranges: new Map(),
+        };
+      }
       if (shouldShowIdleTranscript()) {
         return {
           rows: splashRenderer.renderIdleState(width),
@@ -2927,6 +2955,12 @@ export function createWatchFrameController(dependencies = {}) {
       rows.push(...block);
       ranges.set(event.id, { start, end: rows.length });
     });
+    if (streamingPreviewBlock.length > 0) {
+      if (rows.length > 0) {
+        rows.push(blankRow(width));
+      }
+      rows.push(...streamingPreviewBlock);
+    }
     return { rows, ranges };
   }
 

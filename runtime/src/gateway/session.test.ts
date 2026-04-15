@@ -316,8 +316,7 @@ describe("SessionManager", () => {
         mgr.appendMessage(session.id, msg("user", `msg-${i}`));
       }
 
-      // appendMessage compaction is async (fire-and-forget)
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await mgr.flushPendingCompaction(session.id);
 
       // Truncate keeps last half (ceil(6/2)=3)
       expect(session.history.length).toBeLessThanOrEqual(5);

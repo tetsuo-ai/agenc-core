@@ -18,7 +18,6 @@ import {
   updateRuntimeContractTaskLayer,
   updateRuntimeContractWorkerLayer,
 } from "../runtime-contract/types.js";
-import { createCompactBoundaryMessage } from "../llm/context-compaction.js";
 import type { LLMMessage } from "../llm/types.js";
 import type { Task, TaskStore } from "../tools/system/task-tracker.js";
 import type { PersistentWorkerManager } from "./persistent-worker-manager.js";
@@ -40,6 +39,7 @@ import {
   SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY,
   SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY,
   SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY,
+  SESSION_STATEFUL_SESSION_START_CONTEXT_MESSAGES_METADATA_KEY,
   SESSION_VERIFICATION_SURFACE_STATE_METADATA_KEY,
   SESSION_WORKFLOW_STATE_METADATA_KEY,
   coerceSessionShellProfile,
@@ -78,6 +78,7 @@ export interface PersistedSessionReplaySnapshot {
   readonly workflowState?: SessionWorkflowState;
   readonly statefulResumeAnchor?: LLMStatefulResumeAnchor;
   readonly statefulHistoryCompacted?: boolean;
+  readonly sessionStartContextMessages?: readonly LLMMessage[];
   readonly artifactSnapshotId?: string;
   readonly artifactSessionId?: string;
   readonly runtimeContractSnapshot?: RuntimeContractSnapshot;
@@ -95,11 +96,12 @@ export interface PersistedSessionReplaySnapshot {
 }
 
 export interface PersistedSessionReplayState {
-  readonly version: 1;
+  readonly version: 1 | 2;
   readonly boundarySeq: number;
   readonly migratedFromLegacyAt?: number;
   readonly snapshot: PersistedSessionReplaySnapshot;
-  readonly tailEvents: readonly LLMMessage[];
+  readonly history?: readonly LLMMessage[];
+  readonly tailEvents?: readonly LLMMessage[];
 }
 
 /** @deprecated Use PersistedSessionReplayState. */
@@ -299,8 +301,8 @@ function webSessionReplayStateKey(webSessionId: string): string {
   return `${WEB_SESSION_REPLAY_STATE_KEY_PREFIX}${webSessionId}`;
 }
 
-function cloneReplayTailEvents(tailEvents: readonly LLMMessage[]): readonly LLMMessage[] {
-  return tailEvents.map((event) => JSON.parse(JSON.stringify(event)) as LLMMessage);
+function cloneReplayHistory(history: readonly LLMMessage[]): readonly LLMMessage[] {
+  return (history ?? []).map((event) => JSON.parse(JSON.stringify(event)) as LLMMessage);
 }
 
 function buildPersistedSessionReplaySnapshot(
@@ -313,6 +315,21 @@ function buildPersistedSessionReplaySnapshot(
     : undefined;
   const historyCompacted =
     session.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY] === true;
+  const sessionStartContextMessages = Array.isArray(
+    session.metadata[SESSION_STATEFUL_SESSION_START_CONTEXT_MESSAGES_METADATA_KEY],
+  )
+    ? (
+        session.metadata[
+          SESSION_STATEFUL_SESSION_START_CONTEXT_MESSAGES_METADATA_KEY
+        ] as readonly LLMMessage[]
+      ).filter(
+        (message): message is LLMMessage =>
+          !!message &&
+          typeof message === "object" &&
+          typeof message.role === "string" &&
+          "content" in message,
+      )
+    : [];
   const activeTaskContext = coerceActiveTaskContext(
     session.metadata[SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY],
   );
@@ -362,6 +379,7 @@ function buildPersistedSessionReplaySnapshot(
     !hasPersistedWorkflowState &&
     !resumeAnchor &&
     !historyCompacted &&
+    sessionStartContextMessages.length === 0 &&
     !artifactSnapshotId &&
     !artifactSessionId &&
     !runtimeContractSnapshot &&
@@ -377,6 +395,9 @@ function buildPersistedSessionReplaySnapshot(
     workflowState: hasPersistedWorkflowState ? workflowState : undefined,
     statefulResumeAnchor: resumeAnchor,
     statefulHistoryCompacted: historyCompacted ? true : undefined,
+    ...(sessionStartContextMessages.length > 0
+      ? { sessionStartContextMessages: cloneReplayHistory(sessionStartContextMessages) }
+      : {}),
     artifactSnapshotId,
     artifactSessionId,
     runtimeContractSnapshot,
@@ -387,75 +408,21 @@ function buildPersistedSessionReplaySnapshot(
   };
 }
 
-function buildReplayTailEvents(
-  sessionId: string,
-  snapshot: PersistedSessionReplaySnapshot,
-  boundarySeq: number,
-): readonly LLMMessage[] {
-  const summaryParts: string[] = [];
-  if (snapshot.shellProfile) {
-    summaryParts.push(`shell=${snapshot.shellProfile}`);
-  }
-  if (snapshot.workflowState) {
-    summaryParts.push(`workflow=${snapshot.workflowState.stage}`);
-    if (snapshot.workflowState.objective) {
-      summaryParts.push(`objective=${snapshot.workflowState.objective}`);
-    }
-  }
-  if (snapshot.statefulResumeAnchor) {
-    summaryParts.push(`resume=${snapshot.statefulResumeAnchor.previousResponseId}`);
-  }
-  if (snapshot.statefulHistoryCompacted) {
-    summaryParts.push("history_compacted=true");
-  }
-  if (snapshot.runtimeContractSnapshot) {
-    summaryParts.push("runtime_contract=true");
-  }
-  if (snapshot.runtimeContractStatusSnapshot) {
-    summaryParts.push(
-      `runtime_status=${snapshot.runtimeContractStatusSnapshot.completionState ?? snapshot.runtimeContractStatusSnapshot.stopReason ?? "unknown"}`,
-    );
-  }
-  if (snapshot.reviewSurfaceState?.status) {
-    summaryParts.push(`review=${snapshot.reviewSurfaceState.status}`);
-  }
-  if (snapshot.verificationSurfaceState?.status) {
-    summaryParts.push(`verification=${snapshot.verificationSurfaceState.status}`);
-  }
-  if (snapshot.activeTaskContext?.taskLineageId) {
-    summaryParts.push(`task=${snapshot.activeTaskContext.taskLineageId}`);
-  }
-  if (snapshot.forkMarker) {
-    summaryParts.push(`fork=${snapshot.forkMarker.parentSessionId}`);
-  }
-  if (snapshot.artifactSnapshotId) {
-    summaryParts.push(`artifact=${snapshot.artifactSnapshotId}`);
-  }
-  if (snapshot.artifactSessionId) {
-    summaryParts.push(`artifact_session=${snapshot.artifactSessionId}`);
-  }
-  if (summaryParts.length === 0) {
-    return [];
-  }
-  return [
-    createCompactBoundaryMessage({
-      boundaryId: `${sessionId}:${boundarySeq}`,
-      source: "session_compaction",
-      sourceMessageCount: 0,
-      retainedTailCount: 0,
-      summaryText: summaryParts.join(" | "),
-    }),
-  ];
-}
-
 export function buildSessionReplayHistory(
   thread: readonly LLMMessage[],
   replayState: PersistedSessionReplayState | undefined,
 ): readonly LLMMessage[] {
+  if (replayState?.history && replayState.history.length > 0) {
+    return repairToolTurnSequence(cloneReplayHistory(replayState.history), {
+      repairMissingResults: true,
+    });
+  }
   return repairToolTurnSequence([
     ...thread,
-    ...(replayState?.tailEvents ? cloneReplayTailEvents(replayState.tailEvents) : []),
-  ]);
+    ...(replayState?.tailEvents ? cloneReplayHistory(replayState.tailEvents) : []),
+  ], {
+    repairMissingResults: true,
+  });
 }
 
 function buildPersistedSessionRuntimeState(
@@ -469,20 +436,19 @@ function buildPersistedSessionRuntimeState(
   const nextBoundarySeq = existing
     ? existing.boundarySeq + 1
     : 1;
-  const tailEvents = buildReplayTailEvents(session.id, snapshot, nextBoundarySeq);
   const next: PersistedSessionReplayState = {
-    version: 1,
+    version: 2,
     boundarySeq: nextBoundarySeq,
     ...(existing?.migratedFromLegacyAt
       ? { migratedFromLegacyAt: existing.migratedFromLegacyAt }
       : {}),
     snapshot,
-    tailEvents,
+    history: cloneReplayHistory(session.history),
   };
   if (
     existing &&
     JSON.stringify(existing.snapshot) === JSON.stringify(next.snapshot) &&
-    JSON.stringify(existing.tailEvents) === JSON.stringify(next.tailEvents)
+    JSON.stringify(existing.history ?? []) === JSON.stringify(next.history ?? [])
   ) {
     return existing;
   }
@@ -494,7 +460,7 @@ function coercePersistedSessionRuntimeState(
 ): PersistedSessionReplayState | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const candidate = value as Record<string, unknown>;
-  if (candidate.version === 1) {
+  if (candidate.version === 1 || candidate.version === 2) {
     const boundarySeq =
       typeof candidate.boundarySeq === "number" &&
       Number.isFinite(candidate.boundarySeq) &&
@@ -522,6 +488,19 @@ function coercePersistedSessionRuntimeState(
               : {}),
             ...(snapshotCandidate.statefulHistoryCompacted === true
               ? { statefulHistoryCompacted: true }
+              : {}),
+            ...(Array.isArray(snapshotCandidate.sessionStartContextMessages)
+              ? {
+                  sessionStartContextMessages: snapshotCandidate.sessionStartContextMessages
+                    .filter(
+                      (message): message is LLMMessage =>
+                        !!message &&
+                        typeof message === "object" &&
+                        typeof (message as LLMMessage).role === "string" &&
+                        "content" in message,
+                    )
+                    .map((message) => JSON.parse(JSON.stringify(message)) as LLMMessage),
+                }
               : {}),
             ...(typeof snapshotCandidate.artifactSnapshotId === "string" &&
             snapshotCandidate.artifactSnapshotId.trim().length > 0
@@ -608,6 +587,15 @@ function coercePersistedSessionRuntimeState(
               : {}),
           }
         : undefined;
+    const history = Array.isArray(candidate.history)
+      ? candidate.history.filter(
+          (event): event is LLMMessage =>
+            !!event &&
+            typeof event === "object" &&
+            typeof (event as LLMMessage).role === "string" &&
+            "content" in event,
+        )
+      : [];
     const tailEvents = Array.isArray(candidate.tailEvents)
       ? candidate.tailEvents.filter(
           (event): event is LLMMessage =>
@@ -621,14 +609,15 @@ function coercePersistedSessionRuntimeState(
       return undefined;
     }
     return {
-      version: 1,
+      version: candidate.version as 1 | 2,
       boundarySeq,
       ...(typeof candidate.migratedFromLegacyAt === "number" &&
       Number.isFinite(candidate.migratedFromLegacyAt)
         ? { migratedFromLegacyAt: candidate.migratedFromLegacyAt }
         : {}),
       snapshot: snapshot as PersistedSessionReplaySnapshot,
-      tailEvents: cloneReplayTailEvents(tailEvents),
+      ...(history.length > 0 ? { history: cloneReplayHistory(history) } : {}),
+      ...(tailEvents.length > 0 ? { tailEvents: cloneReplayHistory(tailEvents) } : {}),
     };
   }
 
@@ -724,13 +713,12 @@ function coercePersistedSessionRuntimeState(
   if (!snapshot) {
     return undefined;
   }
-  const tailEvents = buildReplayTailEvents("legacy", snapshot, 1);
   return {
     version: 1,
     boundarySeq: 1,
     migratedFromLegacyAt: Date.now(),
     snapshot,
-    tailEvents,
+    tailEvents: [],
   };
 }
 
@@ -773,10 +761,14 @@ export async function loadPersistedSessionReplayContext(
   readonly state?: PersistedSessionReplayState;
   readonly history: readonly LLMMessage[];
 }> {
-  const [state, thread] = await Promise.all([
-    loadPersistedSessionReplayState(memoryBackend, webSessionId),
-    memoryBackend.getThread(webSessionId).catch(() => []),
-  ]);
+  const state = await loadPersistedSessionReplayState(memoryBackend, webSessionId);
+  if (state?.history && state.history.length > 0) {
+    return {
+      state,
+      history: buildSessionReplayHistory([], state),
+    };
+  }
+  const thread = await memoryBackend.getThread(webSessionId).catch(() => []);
   return {
     state,
     history: buildSessionReplayHistory(
@@ -800,11 +792,38 @@ export function buildSessionStatefulOptions(
   const historyCompacted =
     session.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY] === true;
   const artifactContext = readArtifactCompactionState(session.metadata);
-  if (!resumeAnchor && !historyCompacted && !artifactContext) return undefined;
+  const sessionStartContextMessages = Array.isArray(
+    session.metadata[SESSION_STATEFUL_SESSION_START_CONTEXT_MESSAGES_METADATA_KEY],
+  )
+    ? cloneReplayHistory(
+        (
+          session.metadata[
+            SESSION_STATEFUL_SESSION_START_CONTEXT_MESSAGES_METADATA_KEY
+          ] as readonly LLMMessage[]
+        ).filter(
+          (message): message is LLMMessage =>
+            !!message &&
+            typeof message === "object" &&
+            typeof message.role === "string" &&
+            "content" in message,
+        ),
+      )
+    : [];
+  if (
+    !resumeAnchor &&
+    !historyCompacted &&
+    !artifactContext &&
+    sessionStartContextMessages.length === 0
+  ) {
+    return undefined;
+  }
   return {
     ...(resumeAnchor ? { resumeAnchor } : {}),
     ...(historyCompacted ? { historyCompacted: true } : {}),
     ...(artifactContext ? { artifactContext } : {}),
+    ...(sessionStartContextMessages.length > 0
+      ? { sessionStartContextMessages }
+      : {}),
   };
 }
 
@@ -894,9 +913,17 @@ export async function hydrateSessionReplayState(
   if (persisted.snapshot.statefulHistoryCompacted) {
     session.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY] = true;
   }
+  if (
+    persisted.snapshot.sessionStartContextMessages &&
+    persisted.snapshot.sessionStartContextMessages.length > 0
+  ) {
+    session.metadata[SESSION_STATEFUL_SESSION_START_CONTEXT_MESSAGES_METADATA_KEY] =
+      cloneReplayHistory(persisted.snapshot.sessionStartContextMessages);
+  }
   if (persisted.snapshot.artifactSessionId) {
     const artifactSnapshot = await artifactStore.loadSnapshot(
       persisted.snapshot.artifactSessionId,
+      persisted.snapshot.artifactSnapshotId,
     );
     if (artifactSnapshot?.state) {
       session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY] =
@@ -1004,17 +1031,18 @@ export async function forkSessionReplayState(
   };
   const boundarySeq = persisted.boundarySeq + 1;
   const next: PersistedSessionReplayState = {
-    version: 1,
+    version: 2,
     ...(persisted.migratedFromLegacyAt
       ? { migratedFromLegacyAt: persisted.migratedFromLegacyAt }
       : {}),
     boundarySeq,
     snapshot: nextSnapshot as PersistedSessionReplaySnapshot,
-    tailEvents: buildReplayTailEvents(
-    params.targetWebSessionId,
-    nextSnapshot as PersistedSessionReplaySnapshot,
-    boundarySeq,
-  ),
+    ...(persisted.history
+      ? { history: cloneReplayHistory(persisted.history) }
+      : {}),
+    ...(persisted.tailEvents
+      ? { tailEvents: cloneReplayHistory(persisted.tailEvents) }
+      : {}),
   };
 
   await memoryBackend.set(
@@ -1133,6 +1161,19 @@ export function persistSessionActiveTaskContext(
       result.activeTaskContext;
   } else {
     delete session.metadata[SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY];
+  }
+}
+
+export function persistSessionStartContextMessages(
+  session: Session,
+  result: ChatExecutorResult,
+): void {
+  if (
+    result.sessionStartContextMessages &&
+    result.sessionStartContextMessages.length > 0
+  ) {
+    session.metadata[SESSION_STATEFUL_SESSION_START_CONTEXT_MESSAGES_METADATA_KEY] =
+      cloneReplayHistory(result.sessionStartContextMessages);
   }
 }
 

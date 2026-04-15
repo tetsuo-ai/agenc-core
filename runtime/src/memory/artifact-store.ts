@@ -91,10 +91,17 @@ export class MemoryArtifactStore {
 
   async loadSnapshot(
     sessionId: string,
+    expectedSnapshotId?: string,
   ): Promise<PersistedArtifactSnapshot | undefined> {
     const state =
       await this.backend.get<ArtifactCompactionState>(snapshotKey(sessionId));
     if (!state) {
+      return undefined;
+    }
+    if (
+      expectedSnapshotId !== undefined &&
+      state.snapshotId !== expectedSnapshotId
+    ) {
       return undefined;
     }
     const records: ContextArtifactRecord[] = [];

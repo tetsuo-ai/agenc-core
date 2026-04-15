@@ -839,6 +839,42 @@ describe("WebChatChannel", () => {
       expect(gatewayMsg.scope).toBe("dm");
     });
 
+    it("includes a usage snapshot in the session payload when available", async () => {
+      deps = createDeps({
+        getSessionUsageSnapshot: (sessionId) => ({
+          sessionId,
+          totalTokens: 1250,
+          budget: 16000,
+          compacted: false,
+          contextWindowTokens: 64000,
+        }),
+      });
+      context = createContext();
+      channel = new WebChatChannel(deps);
+      await channel.initialize(context);
+      await channel.start();
+
+      const send = vi.fn<(response: ControlResponse) => void>();
+      channel.handleMessage(
+        "client_1",
+        "chat.message",
+        msg("chat.message", { content: "Hello usage!" }, "req-usage-1"),
+        send,
+      );
+
+      expect(findResponse(send, "chat.session", "req-usage-1")).toEqual(
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            sessionId: expect.any(String),
+            usage: expect.objectContaining({
+              totalTokens: 1250,
+              contextWindowTokens: 64000,
+            }),
+          }),
+        }),
+      );
+    });
+
     it("should forward and persist policy context for the session", async () => {
       const memoryBackend = new InMemoryBackend();
       deps = createDeps({ memoryBackend });
@@ -1377,6 +1413,40 @@ describe("WebChatChannel", () => {
       expect(logger.info).toHaveBeenCalledWith(
         expect.stringContaining("\"content\":\"Hi back!\""),
       );
+    });
+
+    it("does not trace outbound chat.stream frames", async () => {
+      const logger = {
+        ...silentLogger,
+        info: vi.fn(),
+      };
+      context = createContext({ logger });
+      channel = new WebChatChannel(deps);
+      await channel.initialize(context);
+      await channel.start();
+
+      const send = vi.fn<(response: ControlResponse) => void>();
+      channel.handleMessage(
+        "client_1",
+        "chat.message",
+        msg("chat.message", { content: "Hello" }),
+        send,
+      );
+
+      channel["traceOutboundControlResponse"](
+        "client_1",
+        "client_1",
+        send,
+        {
+          type: "chat.stream",
+          payload: { content: "partial", done: false },
+        },
+      );
+
+      const outboundLines = logger.info.mock.calls
+        .map((call) => call[0])
+        .filter((line) => typeof line === "string" && line.includes("[trace] webchat.ws.outbound "));
+      expect(outboundLines.some((line) => line.includes("\"type\":\"chat.stream\""))).toBe(false);
     });
 
     it("should not throw for unmapped session", async () => {
@@ -1965,6 +2035,13 @@ describe("WebChatChannel", () => {
               messageCount: continuity.messageCount,
               lastActiveAt: continuity.lastActiveAt,
             },
+            usage: {
+              sessionId: continuity.sessionId,
+              totalTokens: 2048,
+              budget: 16000,
+              compacted: false,
+              contextWindowTokens: 64000,
+            },
             repo: { available: false, unavailableReason: "test" },
             worktrees: { available: false, entries: [], unavailableReason: "test" },
             review: {
@@ -2008,6 +2085,10 @@ describe("WebChatChannel", () => {
             session: expect.objectContaining({
               sessionId: "session-continuity",
               workflowStage: "review",
+            }),
+            usage: expect.objectContaining({
+              totalTokens: 2048,
+              contextWindowTokens: 64000,
             }),
             approvals: { count: 0, entries: [] },
           }),
@@ -2123,7 +2204,7 @@ describe("WebChatChannel", () => {
         expect(
           await loadPersistedSessionRuntimeState(memoryBackend, targetSessionId),
         ).toMatchObject({
-          version: 1,
+          version: 2,
           snapshot: {
             shellProfile: "research",
             workflowState: expect.objectContaining({

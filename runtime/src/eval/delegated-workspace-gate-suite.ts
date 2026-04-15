@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { ChatExecutor } from "../llm/chat-executor.js";
 import { executeChatToLegacyResult } from "../llm/execute-chat.js";
+import { createPromptEnvelope } from "../llm/prompt-envelope.js";
 import { LLMTimeoutError } from "../llm/errors.js";
 import type { LLMProvider, LLMResponse } from "../llm/types.js";
 import { assessDelegationAdmission } from "../gateway/delegation-admission.js";
@@ -366,7 +367,7 @@ async function runDegradedProviderRetryBrokenScopeScenario(): Promise<PipelineDe
       scope: "dm",
     },
     history: [],
-    systemPrompt: "You are an evaluation harness.",
+    promptEnvelope: createPromptEnvelope("You are an evaluation harness."),
     sessionId: "phase7-degraded-scope",
   });
   const preflight = preflightDelegatedLocalFileScope({

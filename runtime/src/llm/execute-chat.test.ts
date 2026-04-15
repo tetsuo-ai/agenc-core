@@ -12,6 +12,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { ChatExecutor } from "./chat-executor.js";
+import { createPromptEnvelope } from "./prompt-envelope.js";
 import { executeChat } from "./execute-chat.js";
 import type {
   LLMChatOptions,
@@ -101,7 +102,7 @@ describe("executeChat (Phase C async generator)", () => {
     const gen = executeChat(executor, {
       message: makeMessage(),
       history: [],
-      systemPrompt: "You are a test.",
+      promptEnvelope: createPromptEnvelope("You are a test."),
       sessionId: "session-1",
     });
     const first = await gen.next();
@@ -122,7 +123,7 @@ describe("executeChat (Phase C async generator)", () => {
       executeChat(executor, {
         message: makeMessage(),
         history: [],
-        systemPrompt: "You are a test.",
+        promptEnvelope: createPromptEnvelope("You are a test."),
         sessionId: "session-1",
       }),
     );
@@ -190,7 +191,7 @@ describe("executeChat (Phase C async generator)", () => {
       executeChat(executor, {
         message: makeMessage("run tools"),
         history: [],
-        systemPrompt: "You are a test.",
+        promptEnvelope: createPromptEnvelope("You are a test."),
         sessionId: "session-tools",
       }),
     );
@@ -210,7 +211,7 @@ describe("executeChat (Phase C async generator)", () => {
       executeChat(executor, {
         message: makeMessage(),
         history: [],
-        systemPrompt: "You are a test.",
+        promptEnvelope: createPromptEnvelope("You are a test."),
         sessionId: "session-order",
       }),
     );
@@ -230,7 +231,7 @@ describe("executeChat (Phase C async generator)", () => {
       executeChat(executor, {
         message: makeMessage(),
         history: [],
-        systemPrompt: "You are a test.",
+        promptEnvelope: createPromptEnvelope("You are a test."),
         sessionId: "session-terminal",
       }),
     );
@@ -308,7 +309,7 @@ describe("executeChat (Phase C async generator)", () => {
       executeChat(executor, {
         message: makeMessage("continue the task"),
         history: [],
-        systemPrompt: "You are a test.",
+        promptEnvelope: createPromptEnvelope("You are a test."),
         sessionId: "session-continuation",
         turnOutputTokenBudget: 2_000,
       }),
@@ -381,7 +382,7 @@ describe("executeChat (Phase C async generator)", () => {
       executeChat(executor, {
         message: makeMessage(),
         history: [],
-        systemPrompt: "You are a test.",
+        promptEnvelope: createPromptEnvelope("You are a test."),
         sessionId: "session-stream",
         onStreamChunk: () => {
           // Present but no-op — the generator should still yield
@@ -440,7 +441,7 @@ describe("executeChat (Phase C async generator)", () => {
       executeChat(executor, {
         message: makeMessage(),
         history: [],
-        systemPrompt: "You are a test.",
+        promptEnvelope: createPromptEnvelope("You are a test."),
         sessionId: "session-pass",
         onStreamChunk,
       }),
@@ -490,7 +491,7 @@ describe("executeChat (Phase C async generator)", () => {
       executeChat(executor, {
         message: makeMessage(),
         history: [],
-        systemPrompt: "You are a test.",
+        promptEnvelope: createPromptEnvelope("You are a test."),
         sessionId: "session-cb-err",
         onStreamChunk: () => {
           throw new Error("callback error");
@@ -523,7 +524,7 @@ describe("executeChat (Phase C async generator)", () => {
       executeChat(executor, {
         message: makeMessage(),
         history: [],
-        systemPrompt: "You are a test.",
+        promptEnvelope: createPromptEnvelope("You are a test."),
         sessionId: "session-reject",
       }),
     );
@@ -544,7 +545,7 @@ describe("executeChat (Phase C async generator)", () => {
       executeChat(executor, {
         message: makeMessage(),
         history: [],
-        systemPrompt: "You are a test.",
+        promptEnvelope: createPromptEnvelope("You are a test."),
         sessionId: "session-id",
       }),
     );
@@ -571,7 +572,7 @@ describe("executeChat (Phase C async generator)", () => {
       executeChat(executor, {
         message: makeMessage(),
         history: [],
-        systemPrompt: "You are a test.",
+        promptEnvelope: createPromptEnvelope("You are a test."),
         sessionId: "session-duration",
       }),
     );
@@ -632,7 +633,7 @@ describe("executeChat (Phase C async generator)", () => {
       executeChat(executor, {
         message: makeMessage(),
         history: [],
-        systemPrompt: "You are a test.",
+        promptEnvelope: createPromptEnvelope("You are a test."),
         sessionId: "session-ordered",
       }),
     );
@@ -655,7 +656,7 @@ describe("executeChat (Phase C async generator)", () => {
       executeChat(executor, {
         message: makeMessage(),
         history: [],
-        systemPrompt: "You are a test.",
+        promptEnvelope: createPromptEnvelope("You are a test."),
         sessionId: "session-notools",
       }),
     );

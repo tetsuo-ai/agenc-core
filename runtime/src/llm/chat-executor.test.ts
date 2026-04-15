@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ChatExecutor } from "./chat-executor.js";
 import type { ChatExecuteParams } from "./chat-executor.js";
+import { createPromptEnvelope } from "./prompt-envelope.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -91,7 +92,7 @@ function createParams(
   return {
     message: createMessage(),
     history: [],
-    systemPrompt: "You are a helpful assistant.",
+    promptEnvelope: createPromptEnvelope("You are a helpful assistant."),
     sessionId: "session-1",
     runtimeContext: { workspaceRoot: "/tmp/chat-executor-test-workspace" },
     ...overrides,
@@ -142,7 +143,7 @@ describe("ChatExecutor", () => {
       const provider = createMockProvider();
       const executor = new ChatExecutor({ providers: [provider] });
 
-      await executor.execute(createParams({ systemPrompt: "Be helpful." }));
+      await executor.execute(createParams({ promptEnvelope: createPromptEnvelope("Be helpful.") }));
 
       const messages = (provider.chat as ReturnType<typeof vi.fn>).mock
         .calls[0][0] as LLMMessage[];
@@ -689,7 +690,11 @@ describe("ChatExecutor", () => {
           .mockResolvedValueOnce(mockResponse({ content: "final answer" })),
       });
 
-      const executor = new ChatExecutor({ providers: [provider], toolHandler });
+      const executor = new ChatExecutor({
+        providers: [provider],
+        toolHandler,
+        maxFailureBudgetPerRequest: 4,
+      });
       const result = await executor.execute(createParams());
 
       expect(result.content).toBe("final answer");
@@ -733,7 +738,11 @@ describe("ChatExecutor", () => {
           .mockResolvedValueOnce(mockResponse({ content: "final answer" })),
       });
 
-      const executor = new ChatExecutor({ providers: [provider], toolHandler });
+      const executor = new ChatExecutor({
+        providers: [provider],
+        toolHandler,
+        maxFailureBudgetPerRequest: 4,
+      });
       const result = await executor.execute(createParams());
 
       expect(result.stopReason).toBe("completed");
@@ -785,7 +794,11 @@ describe("ChatExecutor", () => {
           ),
       });
 
-      const executor = new ChatExecutor({ providers: [provider], toolHandler });
+      const executor = new ChatExecutor({
+        providers: [provider],
+        toolHandler,
+        maxFailureBudgetPerRequest: 4,
+      });
       const result = await executor.execute(createParams());
 
       expect(result.stopReason).toBe("no_progress");
@@ -902,7 +915,11 @@ describe("ChatExecutor", () => {
           ),
       });
 
-      const executor = new ChatExecutor({ providers: [provider], toolHandler });
+      const executor = new ChatExecutor({
+        providers: [provider],
+        toolHandler,
+        maxFailureBudgetPerRequest: 4,
+      });
       const result = await executor.execute(createParams());
 
       expect(result.stopReason).toBe("completed");
@@ -946,7 +963,11 @@ describe("ChatExecutor", () => {
           ),
       });
 
-      const executor = new ChatExecutor({ providers: [provider], toolHandler });
+      const executor = new ChatExecutor({
+        providers: [provider],
+        toolHandler,
+        maxFailureBudgetPerRequest: 4,
+      });
       const result = await executor.execute(
         createParams({
           turnOutputTokenBudget: 2_000,
@@ -1001,7 +1022,11 @@ describe("ChatExecutor", () => {
           ),
       });
 
-      const executor = new ChatExecutor({ providers: [provider], toolHandler });
+      const executor = new ChatExecutor({
+        providers: [provider],
+        toolHandler,
+        maxFailureBudgetPerRequest: 4,
+      });
       const result = await executor.execute(
         createParams({
           turnOutputTokenBudget: 2_000,
@@ -1157,7 +1182,11 @@ describe("ChatExecutor", () => {
           ),
       });
 
-      const executor = new ChatExecutor({ providers: [provider], toolHandler });
+      const executor = new ChatExecutor({
+        providers: [provider],
+        toolHandler,
+        maxFailureBudgetPerRequest: 4,
+      });
       const result = await executor.execute(createParams());
 
       expect(result.stopReason).toBe("completed");
@@ -1210,7 +1239,11 @@ describe("ChatExecutor", () => {
           ),
       });
 
-      const executor = new ChatExecutor({ providers: [provider], toolHandler });
+      const executor = new ChatExecutor({
+        providers: [provider],
+        toolHandler,
+        maxFailureBudgetPerRequest: 4,
+      });
       const result = await executor.execute(createParams());
 
       expect(result.stopReason).toBe("validation_error");

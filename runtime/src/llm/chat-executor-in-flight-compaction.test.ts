@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ChatExecutor } from "./chat-executor.js";
 import type { ChatExecuteParams } from "./chat-executor.js";
+import { createPromptEnvelope } from "./prompt-envelope.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -65,7 +66,7 @@ function createParams(
   return {
     message: createMessage(),
     history: [],
-    systemPrompt: "You are a helpful assistant.",
+    promptEnvelope: createPromptEnvelope("You are a helpful assistant."),
     sessionId: "session-1",
     runtimeContext: { workspaceRoot: "/tmp/chat-executor-test-workspace" },
     ...overrides,

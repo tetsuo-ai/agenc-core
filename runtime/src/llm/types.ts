@@ -39,6 +39,14 @@ export interface LLMMessage {
   content: string | LLMContentPart[];
   /** Optional local phase metadata for runtime-side replay and completion logic. */
   phase?: LLMAssistantPhase;
+  /**
+   * Runtime-only metadata used to preserve prompt-envelope semantics before
+   * provider serialization. This must be stripped before adapter payloads or
+   * stateful reconciliation hashing.
+   */
+  runtimeOnly?: {
+    readonly mergeBoundary?: "user_context";
+  };
   /** For assistant messages that request tool execution */
   toolCalls?: LLMToolCall[];
   /** For tool result messages — the ID of the tool call being responded to */

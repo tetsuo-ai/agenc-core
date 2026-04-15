@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ChatExecutor } from "./chat-executor.js";
 import type { ChatExecuteParams } from "./chat-executor.js";
+import { createPromptEnvelope } from "./prompt-envelope.js";
 import { evaluateArtifactEvidenceGate } from "./chat-executor-stop-gate.js";
 import type {
   LLMChatOptions,
@@ -68,7 +69,7 @@ function createParams(
   return {
     message: createMessage("Implement every phase"),
     history: [],
-    systemPrompt: "You are a helpful assistant.",
+    promptEnvelope: createPromptEnvelope("You are a helpful assistant."),
     sessionId: "session-1",
     runtimeContext: { workspaceRoot: WORKSPACE_ROOT },
     ...overrides,

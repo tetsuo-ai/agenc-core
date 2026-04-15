@@ -3,6 +3,7 @@ import type { LLMMessage } from "./types.js";
 import { LLMMessageValidationError } from "./errors.js";
 import {
   findToolTurnValidationIssue,
+  repairToolTurnSequence,
   validateToolTurnSequence,
 } from "./tool-turn-validator.js";
 
@@ -248,5 +249,45 @@ describe("tool-turn validator", () => {
       const issue = findToolTurnValidationIssue(mutation.messages);
       expect(issue, mutation.name).not.toBeNull();
     }
+  });
+
+  it("inserts synthetic tool results when an assistant tool call is missing its result", () => {
+    const repaired = repairToolTurnSequence([
+      { role: "user", content: "run task" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "call_1", name: "desktop.bash", arguments: "{}" }],
+      },
+      { role: "assistant", content: "moving on" },
+    ], { repairMissingResults: true });
+
+    expect(repaired).toContainEqual({
+      role: "tool",
+      toolCallId: "call_1",
+      toolName: "desktop.bash",
+      content: "[missing tool result inserted during transcript recovery]",
+    });
+    expect(findToolTurnValidationIssue(repaired)).toBeNull();
+  });
+
+  it("drops duplicate tool results during repair", () => {
+    const repaired = repairToolTurnSequence([
+      { role: "user", content: "run task" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "call_1", name: "desktop.bash", arguments: "{}" }],
+      },
+      { role: "tool", content: "{\"stdout\":\"ok\"}", toolCallId: "call_1" },
+      { role: "tool", content: "{\"stdout\":\"ok\"}", toolCallId: "call_1" },
+    ], { repairMissingResults: true });
+
+    expect(
+      repaired.filter(
+        (message) => message.role === "tool" && message.toolCallId === "call_1",
+      ),
+    ).toHaveLength(1);
+    expect(findToolTurnValidationIssue(repaired)).toBeNull();
   });
 });

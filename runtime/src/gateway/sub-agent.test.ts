@@ -8,6 +8,7 @@ import {
 } from "./sub-agent.js";
 import { SubAgentSpawnError } from "./errors.js";
 import { ChatExecutor } from "../llm/chat-executor.js";
+import { InMemoryBackend } from "../memory/in-memory/backend.js";
 import type {
   IsolatedSessionContext,
   SubAgentSessionIdentity,
@@ -21,6 +22,7 @@ import type {
 import type { Tool, ToolResult } from "../tools/types.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { RuntimeErrorCodes } from "../types/errors.js";
+import { createPromptEnvelope } from "../llm/prompt-envelope.js";
 
 // ============================================================================
 // Helpers
@@ -1004,13 +1006,13 @@ describe("SubAgentManager", () => {
 
       try {
         const manager = new SubAgentManager(makeManagerConfig({
-          systemPrompt: "parent sub-agent prompt",
+          promptEnvelope: createPromptEnvelope("parent sub-agent prompt"),
         }));
         const sessionId = await manager.spawn({
           parentSessionId: "p",
           task: "verify the implementation",
           prompt: "Run the verifier checks",
-          systemPrompt: "verifier worker prompt",
+          promptEnvelope: createPromptEnvelope("verifier worker prompt"),
           tools: ["system.readFile", "system.bash"],
           requiredToolEvidence: {
             maxCorrectionAttempts: 1,
@@ -1026,7 +1028,12 @@ describe("SubAgentManager", () => {
         expect(manager.getResult(sessionId)?.success).toBe(true);
         expect(executeSpy).toHaveBeenCalledWith(
           expect.objectContaining({
-            systemPrompt: expect.stringContaining("verifier worker prompt"),
+            promptEnvelope: expect.objectContaining({
+              kind: "prompt_envelope_v1",
+              baseSystemPrompt: expect.stringContaining(
+                "verifier worker prompt",
+              ),
+            }),
             requiredToolEvidence: expect.objectContaining({
               executionEnvelope: expect.objectContaining({
                 verificationMode: "grounded_read",
@@ -2232,6 +2239,89 @@ describe("SubAgentManager", () => {
       }
     });
 
+    it("reuses a persisted terminal child session after manager restart", async () => {
+      const executeSpy = vi
+        .spyOn(ChatExecutor.prototype, "execute")
+        .mockResolvedValueOnce({
+          content: "STORED-CHILD-RESULT",
+          provider: "mock-llm",
+          usedFallback: false,
+          toolCalls: [],
+          tokenUsage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+          callUsage: [],
+          durationMs: 10,
+          compacted: false,
+          stopReason: "completed",
+          completionState: "completed",
+          completionProgress: {
+            completionState: "completed",
+            stopReason: "completed",
+            requiredRequirements: [],
+            satisfiedRequirements: [],
+            remainingRequirements: [],
+            reusableEvidence: [],
+            updatedAt: 1_700_000_000_000,
+          },
+        } as any)
+        .mockResolvedValueOnce({
+          content: "RECALLED-RESULT",
+          provider: "mock-llm",
+          usedFallback: false,
+          toolCalls: [],
+          tokenUsage: { promptTokens: 12, completionTokens: 4, totalTokens: 16 },
+          callUsage: [],
+          durationMs: 12,
+          compacted: false,
+          stopReason: "completed",
+          completionState: "completed",
+          completionProgress: {
+            completionState: "completed",
+            stopReason: "completed",
+            requiredRequirements: [],
+            satisfiedRequirements: [],
+            remainingRequirements: [],
+            reusableEvidence: [],
+            updatedAt: 1_700_000_000_001,
+          },
+        } as any);
+      const memoryBackend = new InMemoryBackend();
+      const firstManager = new SubAgentManager(
+        makeManagerConfig({ memoryBackend }),
+      );
+
+      try {
+        const firstSessionId = await firstManager.spawn({
+          parentSessionId: "parent-1",
+          task: "Store the token for later recall",
+          prompt: "Store the token for later recall",
+        });
+        await settle();
+
+        const secondManager = new SubAgentManager(
+          makeManagerConfig({ memoryBackend }),
+        );
+        const secondSessionId = await secondManager.spawn({
+          parentSessionId: "parent-1",
+          task: "Recall the token",
+          prompt: "Recall the token",
+          continuationSessionId: firstSessionId,
+        });
+        await settle();
+
+        expect(secondSessionId).toBe(firstSessionId);
+        expect(executeSpy).toHaveBeenCalledTimes(2);
+        expect(executeSpy.mock.calls[1]?.[0]).toMatchObject({
+          sessionId: firstSessionId,
+          history: [
+            { role: "user", content: "Store the token for later recall" },
+            { role: "assistant", content: "STORED-CHILD-RESULT" },
+          ],
+        });
+      } finally {
+        executeSpy.mockRestore();
+      }
+    });
+
     it("rejects continuation attempts that widen the delegated tool scope", async () => {
       const executeSpy = vi
         .spyOn(ChatExecutor.prototype, "execute")
@@ -2417,7 +2507,7 @@ describe("SubAgentManager", () => {
       const manager = new SubAgentManager(
         makeManagerConfig({
           createContext: vi.fn(async () => mockContext),
-          systemPrompt: "Custom prompt for sub-agent",
+          promptEnvelope: createPromptEnvelope("Custom prompt for sub-agent"),
         }),
       );
 

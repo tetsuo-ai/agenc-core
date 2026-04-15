@@ -13,6 +13,7 @@
 import type { ChatExecutor } from "../llm/chat-executor.js";
 import type { ChatExecutorResult } from "../llm/chat-executor-types.js";
 import { executeChatToLegacyResult } from "../llm/execute-chat.js";
+import { normalizePromptEnvelope } from "../llm/prompt-envelope.js";
 import type { LLMProvider, ToolHandler } from "../llm/types.js";
 import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";
@@ -1716,6 +1717,7 @@ export class BackgroundRunSupervisor {
     }
     await this.cancelRun(params.sessionId, "Replaced by a new background run.");
     await this.runStore.deleteCheckpoint(params.sessionId);
+    await this.runStore.resetConversationHistory(params.sessionId);
     if (params.options?.lineage) {
       assertValidBackgroundRunLineage(params.options.lineage);
     }
@@ -1777,6 +1779,10 @@ export class BackgroundRunSupervisor {
       abortController: null,
     };
     run.policyScope = this.resolveRunPolicyScope(run);
+    await this.runStore.seedConversationHistory(
+      params.sessionId,
+      run.internalHistory,
+    );
 
     await this.persistRun(run, {
       type: "run_started",
@@ -2039,7 +2045,7 @@ export class BackgroundRunSupervisor {
       assertAgentRunStateTransition(persistedRun.state, "working", "resumeRun persisted");
       persistedRun.state = "working";
       persistedRun.updatedAt = this.now();
-      persistedRun.lastWakeReason = "user_input";
+      persistedRun.lastWakeReason = "resume";
       persistedRun.lastUserUpdate = truncate(reason, MAX_USER_UPDATE_CHARS);
       persistedRun.lastHeartbeatContent = undefined;
       persistedRun.preferredWorkerId = this.instanceId;
@@ -2070,7 +2076,7 @@ export class BackgroundRunSupervisor {
     assertAgentRunStateTransition(run.state, "working", "resumeRun");
     run.state = "working";
     run.updatedAt = this.now();
-    run.lastWakeReason = "user_input";
+    run.lastWakeReason = "resume";
     run.lastUserUpdate = truncate(reason, MAX_USER_UPDATE_CHARS);
     run.lastHeartbeatContent = undefined;
     clearRunBlockers(run);
@@ -2771,6 +2777,7 @@ export class BackgroundRunSupervisor {
       summary: truncate(`Background run retried: ${reason}`, 200),
       timestamp: now,
     });
+    await this.runStore.seedConversationHistory(sessionId, run.internalHistory);
     await this.runStore.saveCheckpoint(toPersistedRun(run));
     await this.publishUpdate(sessionId, run.lastUserUpdate);
     await this.enqueueDispatchForSession({
@@ -2951,6 +2958,7 @@ export class BackgroundRunSupervisor {
         sourceRunId: source.id,
       },
     });
+    await this.runStore.forkConversationHistory(sessionId, targetSessionId);
     await this.runStore.saveCheckpoint(toPersistedRun(run));
     await this.publishUpdate(targetSessionId, run.lastUserUpdate);
     await this.enqueueDispatchForSession({
@@ -3570,13 +3578,13 @@ export class BackgroundRunSupervisor {
     sessionId: string;
     cycleToolHandler: ToolHandler;
     actorPrompt: string;
-    actorSystemPrompt: string;
+    actorPromptEnvelope: import("../llm/prompt-envelope.js").PromptEnvelopeV1;
   }): Promise<{
     actorResult?: ChatExecutorResult;
     decision: BackgroundRunDecision;
     heartbeatMs?: number;
   }> {
-    const { run, sessionId, cycleToolHandler, actorPrompt, actorSystemPrompt } = params;
+    const { run, sessionId, cycleToolHandler, actorPrompt, actorPromptEnvelope } = params;
     let actorResult: ChatExecutorResult | undefined;
     let decision: BackgroundRunDecision;
     let heartbeatMs: number | undefined;
@@ -3638,7 +3646,7 @@ export class BackgroundRunSupervisor {
         actorResult = await executeChatToLegacyResult(this.chatExecutor, {
           message: toRunMessage(actorPrompt, sessionId, run.id, run.cycleCount),
           history: run.internalHistory,
-          systemPrompt: actorSystemPrompt,
+          promptEnvelope: actorPromptEnvelope,
           sessionId,
           requestTimeoutMs: BACKGROUND_RUN_ACTOR_REQUEST_TIMEOUT_MS,
           stateful: run.carryForward?.providerContinuation
@@ -3671,6 +3679,10 @@ export class BackgroundRunSupervisor {
 
         run.internalHistory = trimHistory([
           ...run.internalHistory,
+          { role: "user", content: actorPrompt },
+          { role: "assistant", content: actorResult.content, phase: "commentary" },
+        ]);
+        await this.runStore.appendConversationTurn(sessionId, [
           { role: "user", content: actorPrompt },
           { role: "assistant", content: actorResult.content, phase: "commentary" },
         ]);
@@ -3844,17 +3856,26 @@ export class BackgroundRunSupervisor {
       sessionId,
       cycleToolHandler,
       actorPrompt: buildActorPrompt(run),
-      actorSystemPrompt: `${appendShellProfilePromptSection({
-        systemPrompt: this.getSystemPrompt(),
-        profile: run.shellProfile ?? DEFAULT_SESSION_SHELL_PROFILE,
-      })}\n\n${BACKGROUND_ACTOR_SECTION}`,
+      actorPromptEnvelope: normalizePromptEnvelope({
+        baseSystemPrompt: appendShellProfilePromptSection({
+          systemPrompt: this.getSystemPrompt(),
+          profile: run.shellProfile ?? DEFAULT_SESSION_SHELL_PROFILE,
+        }),
+        systemSections: [
+          {
+            source: "background_actor",
+            content: BACKGROUND_ACTOR_SECTION,
+          },
+        ],
+        userSections: [],
+      }),
     };
   }
 
   private async resolvePreparedCycleOutcome(
     context: PreparedCycleContext,
   ): Promise<ResolvedCycleOutcome | undefined> {
-    const { run, sessionId, cycleToolHandler, actorPrompt, actorSystemPrompt } = context;
+    const { run, sessionId, cycleToolHandler, actorPrompt, actorPromptEnvelope } = context;
     const trace = buildBackgroundRunTraceIds(run, "execute_cycle");
     const cycleSpan = startReplaySpan({
       name: "background_run.execute_cycle",
@@ -3897,7 +3918,7 @@ export class BackgroundRunSupervisor {
         sessionId,
         cycleToolHandler,
         actorPrompt,
-        actorSystemPrompt,
+        actorPromptEnvelope,
       }));
     } catch (error) {
       if (run.abortController?.signal.aborted) {

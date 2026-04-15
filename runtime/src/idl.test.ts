@@ -17,7 +17,7 @@ import {
 describe('IDL exports', () => {
   type InstructionWithAccounts = {
     name: string;
-    accounts?: Array<{ name: string }>;
+    accounts?: Array<{ name: string; writable?: boolean }>;
   };
 
   it('exports a valid IDL object', () => {
@@ -57,12 +57,21 @@ describe('IDL exports', () => {
       (ix) => ix.name === 'initiate_dispute',
     );
 
-    expect(createTask?.accounts.map((account) => account.name)).toContain(
+    expect(createTask?.accounts.map((account) => account.name)).not.toContain(
       'authority_rate_limit',
     );
     expect(
+      createTask?.accounts.find((account) => account.name === 'creator_agent')
+        ?.writable,
+    ).toBe(true);
+    expect(
       createDependentTask?.accounts.map((account) => account.name),
-    ).toContain('authority_rate_limit');
+    ).not.toContain('authority_rate_limit');
+    expect(
+      createDependentTask?.accounts.find(
+        (account) => account.name === 'creator_agent',
+      )?.writable,
+    ).toBe(true);
     expect(
       initiateDispute?.accounts.map((account) => account.name),
     ).toContain('authority_rate_limit');
@@ -86,20 +95,29 @@ describe('IDL exports', () => {
     expect(instructionNames).toContain('register_agent');
   });
 
-  it('adds authority rate limit accounts to task creation instructions', () => {
+  it('matches the deployed devnet task creation signer layout', () => {
     const instructions = IDL.instructions as InstructionWithAccounts[];
 
     for (const instructionName of ['create_task', 'create_dependent_task']) {
       const instruction = instructions.find((ix) => ix.name === instructionName);
       expect(instruction).toBeDefined();
 
-      const accountNames = instruction?.accounts?.map((account) => account.name) ?? [];
-      const authorityRateLimitIndex = accountNames.indexOf('authority_rate_limit');
+      const accountNames =
+        instruction?.accounts?.map((account) => account.name) ?? [];
+      const creatorAgent = instruction?.accounts?.find(
+        (account) => account.name === 'creator_agent',
+      );
+      const creatorAgentIndex = accountNames.indexOf('creator_agent');
       const authorityIndex = accountNames.indexOf('authority');
+      const creatorIndex = accountNames.indexOf('creator');
 
-      expect(authorityRateLimitIndex).toBeGreaterThanOrEqual(0);
+      expect(accountNames).not.toContain('authority_rate_limit');
+      expect(creatorAgent?.writable).toBe(true);
+      expect(creatorAgentIndex).toBeGreaterThanOrEqual(0);
       expect(authorityIndex).toBeGreaterThanOrEqual(0);
-      expect(authorityRateLimitIndex).toBeLessThan(authorityIndex);
+      expect(creatorIndex).toBeGreaterThanOrEqual(0);
+      expect(creatorAgentIndex).toBeLessThan(authorityIndex);
+      expect(authorityIndex).toBeLessThan(creatorIndex);
     }
   });
 

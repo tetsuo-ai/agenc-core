@@ -71,6 +71,7 @@ const SESSION_SCOPED_TYPES = new Set([
   "chat.stream",
   "chat.typing",
   "chat.cancelled",
+  "chat.usage",
   "session.command.result",
   "run.inspect",
   "run.updated",

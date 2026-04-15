@@ -99,7 +99,12 @@ interface SessionLifecycleContext extends HookContextBase {
 
 interface CompactContext extends HookContextBase {
   readonly event: "PreCompact" | "PostCompact";
-  readonly layer: "snip" | "microcompact" | "autocompact" | "reactive-compact";
+  readonly layer:
+    | "snip"
+    | "microcompact"
+    | "context-collapse"
+    | "autocompact"
+    | "reactive-compact";
 }
 
 export type HookContext =

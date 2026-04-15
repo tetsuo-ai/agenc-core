@@ -16,10 +16,18 @@ import type {
   MemoryQuery,
   AddEntryOptions,
   MemoryBackendConfig,
+  TranscriptCapableMemoryBackend,
+  TranscriptEvent,
+  TranscriptEventInput,
+  TranscriptLoadOptions,
 } from "../types.js";
 import { MemoryBackendError } from "../errors.js";
 import type { MetricsProvider } from "../../task/types.js";
 import { TELEMETRY_METRIC_NAMES } from "../../telemetry/metric-names.js";
+import {
+  applyTranscriptLoadOptions,
+  materializeTranscriptEvent,
+} from "../transcript.js";
 
 /**
  * Configuration for the in-memory backend
@@ -39,10 +47,13 @@ interface KVEntry {
 const DEFAULT_MAX_ENTRIES_PER_SESSION = 1000;
 const DEFAULT_MAX_TOTAL_ENTRIES = 100_000;
 
-export class InMemoryBackend implements MemoryBackend {
+export class InMemoryBackend
+  implements MemoryBackend, TranscriptCapableMemoryBackend
+{
   readonly name = "in-memory";
 
   private readonly threads = new Map<string, MemoryEntry[]>();
+  private readonly transcripts = new Map<string, TranscriptEvent[]>();
   private readonly kv = new Map<string, KVEntry>();
   private readonly logger: Logger;
   private readonly defaultTtlMs: number;
@@ -206,6 +217,65 @@ export class InMemoryBackend implements MemoryBackend {
     return sessions.filter((s) => s.startsWith(prefix));
   }
 
+  async appendTranscript(
+    streamId: string,
+    events: readonly TranscriptEventInput[],
+  ): Promise<TranscriptEvent[]> {
+    this.ensureOpen();
+    const start = Date.now();
+    let stream = this.transcripts.get(streamId);
+    if (!stream) {
+      stream = [];
+      this.transcripts.set(streamId, stream);
+    }
+
+    const appended: TranscriptEvent[] = [];
+    let nextSeq = stream.length > 0 ? stream[stream.length - 1]!.seq : 0;
+
+    for (const event of events) {
+      const existing = stream.find((candidate) => candidate.eventId === event.eventId);
+      if (existing) {
+        appended.push(existing);
+        continue;
+      }
+      nextSeq += 1;
+      const stored = materializeTranscriptEvent(streamId, nextSeq, event);
+      stream.push(stored);
+      appended.push(stored);
+    }
+
+    this.recordMemoryMetrics("appendTranscript", Date.now() - start);
+    return appended;
+  }
+
+  async loadTranscript(
+    streamId: string,
+    options: TranscriptLoadOptions = {},
+  ): Promise<TranscriptEvent[]> {
+    this.ensureOpen();
+    const start = Date.now();
+    const stream = this.transcripts.get(streamId) ?? [];
+    const result = applyTranscriptLoadOptions(stream, options);
+    this.recordMemoryMetrics("loadTranscript", Date.now() - start);
+    return result;
+  }
+
+  async deleteTranscript(streamId: string): Promise<number> {
+    this.ensureOpen();
+    const stream = this.transcripts.get(streamId);
+    if (!stream) return 0;
+    const count = stream.length;
+    this.transcripts.delete(streamId);
+    return count;
+  }
+
+  async listTranscriptStreams(prefix?: string): Promise<string[]> {
+    this.ensureOpen();
+    const streams = Array.from(this.transcripts.keys());
+    if (!prefix) return streams;
+    return streams.filter((streamId) => streamId.startsWith(prefix));
+  }
+
   // ---------- Key-Value Operations ----------
 
   async set(key: string, value: unknown, ttlMs?: number): Promise<void> {
@@ -265,6 +335,7 @@ export class InMemoryBackend implements MemoryBackend {
   async clear(): Promise<void> {
     this.ensureOpen();
     this.threads.clear();
+    this.transcripts.clear();
     this.kv.clear();
     this.totalEntries = 0;
     this.logger.debug("Cleared all memory");
@@ -273,6 +344,7 @@ export class InMemoryBackend implements MemoryBackend {
   async close(): Promise<void> {
     this.closed = true;
     this.threads.clear();
+    this.transcripts.clear();
     this.kv.clear();
     this.totalEntries = 0;
     this.logger.debug("In-memory backend closed");

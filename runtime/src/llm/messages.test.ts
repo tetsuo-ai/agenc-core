@@ -20,15 +20,19 @@ import type { LLMMessage } from "./types.js";
 type TaggedMessage = LLMMessage & { cacheControl?: "ephemeral" };
 
 describe("normalizeMessagesForAPI", () => {
-  it("strips boundary system messages (snip/microcompact/autocompact)", () => {
+  it("strips boundary system messages (snip/microcompact/context-collapse/autocompact)", () => {
     const input: LLMMessage[] = [
       { role: "system", content: "You are a test." },
       { role: "system", content: "[snip] dropped 12 messages" },
+      { role: "system", content: "[context-collapse] projected older messages" },
       { role: "user", content: "hi" },
       { role: "system", content: "[autocompact] history exceeded" },
     ];
     const out = normalizeMessagesForAPI(input);
     expect(out.map((m) => m.content)).not.toContain("[snip] dropped 12 messages");
+    expect(out.map((m) => m.content)).not.toContain(
+      "[context-collapse] projected older messages",
+    );
     expect(out.map((m) => m.content)).not.toContain(
       "[autocompact] history exceeded",
     );
@@ -47,6 +51,23 @@ describe("normalizeMessagesForAPI", () => {
     const userMessages = out.filter((m) => m.role === "user");
     expect(userMessages).toHaveLength(1);
     expect(userMessages[0]!.content).toBe("part a\n\npart b");
+  });
+
+  it("does not merge synthetic user-context messages into adjacent user turns", () => {
+    const input: LLMMessage[] = [
+      { role: "system", content: "sys" },
+      {
+        role: "user",
+        content: "<system-reminder>\n# context\nvalue\n</system-reminder>",
+        runtimeOnly: { mergeBoundary: "user_context" },
+      },
+      { role: "user", content: "real user turn" },
+    ];
+    const out = normalizeMessagesForAPI(input);
+    const userMessages = out.filter((m) => m.role === "user");
+    expect(userMessages).toHaveLength(2);
+    expect(userMessages[0]!.content).toContain("<system-reminder>");
+    expect(userMessages[1]!.content).toBe("real user turn");
   });
 
   it("drops orphan tool messages", () => {

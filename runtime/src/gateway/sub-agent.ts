@@ -13,10 +13,16 @@ import type {
   IsolatedSessionContext,
   SubAgentSessionIdentity,
 } from "./session-isolation.js";
+import type { MemoryBackend } from "../memory/types.js";
 import { createGatewayMessage } from "./message.js";
 import { ChatExecutor } from "../llm/chat-executor.js";
 import { runSubagentToLegacyResult } from "./subagent-query.js";
 import { buildModelRoutingPolicy } from "../llm/model-routing-policy.js";
+import {
+  createPromptEnvelope,
+  normalizePromptEnvelope,
+  type PromptEnvelopeV1,
+} from "../llm/prompt-envelope.js";
 import type { GatewayLLMConfig } from "./types.js";
 import type { PromptBudgetConfig } from "../llm/prompt-budget.js";
 import {
@@ -62,6 +68,14 @@ import {
   type SessionShellProfile,
 } from "./shell-profile.js";
 import type { RuntimeExecutionLocation } from "../runtime-contract/types.js";
+import type { CanUseToolFn } from "../llm/can-use-tool.js";
+import {
+  appendTranscriptBatch,
+  createTranscriptMessageEvent,
+  loadTranscript,
+  recoverTranscriptHistory,
+  subAgentTranscriptStreamId,
+} from "./session-transcript.js";
 
 // ============================================================================
 // Constants
@@ -79,6 +93,7 @@ const DEFAULT_MAX_SUB_AGENT_DEPTH = 4;
 export const DEFAULT_MAX_RETAINED_TERMINAL_SUB_AGENTS = 256;
 export const DEFAULT_TERMINAL_SUB_AGENT_RETENTION_MS = 6 * 60 * 60 * 1000; // 6h
 export const SUB_AGENT_SESSION_PREFIX = "subagent:";
+const SUB_AGENT_STATE_KEY_PREFIX = "sub-agent:state:";
 
 const DEFAULT_SUB_AGENT_SYSTEM_PROMPT =
   "You are a sub-agent. Execute only the assigned delegated contract, stay within the provided scope, " +
@@ -160,7 +175,7 @@ export interface SubAgentConfig {
   readonly toolBundle?: string;
   readonly taskId?: string;
   readonly prompt?: string;
-  readonly systemPrompt?: string;
+  readonly promptEnvelope?: PromptEnvelopeV1;
   readonly continuationSessionId?: string;
   readonly timeoutMs?: number;
   readonly toolBudgetPerRequest?: number;
@@ -218,7 +233,7 @@ export interface SubAgentManagerConfig {
   readonly maxDepth?: number;
   readonly maxRetainedTerminalHandles?: number;
   readonly terminalHandleRetentionMs?: number;
-  readonly systemPrompt?: string;
+  readonly promptEnvelope?: PromptEnvelopeV1;
   readonly composeToolHandler?: (params: {
     sessionIdentity: SubAgentSessionIdentity;
     context: IsolatedSessionContext;
@@ -256,6 +271,8 @@ export interface SubAgentManagerConfig {
   readonly sessionCompactionThreshold?: number;
   readonly economicsMode?: RuntimeBudgetMode;
   readonly onCompaction?: (sessionId: string, summary: string) => void;
+  readonly memoryBackend?: MemoryBackend;
+  readonly canUseTool?: CanUseToolFn;
 }
 
 interface ResolvedSubAgentExecutionBudget {
@@ -301,6 +318,134 @@ interface SubAgentHandle {
   timeoutTimer: ReturnType<typeof setTimeout> | null;
   execution: Promise<void>;
   finishedAt: number | null;
+}
+
+interface PersistedSubAgentState {
+  readonly version: 1;
+  readonly sessionId: string;
+  readonly parentSessionId: string;
+  readonly depth: number;
+  readonly task: string;
+  readonly config: SubAgentConfig;
+  readonly status: SubAgentStatus;
+  readonly result: SubAgentResult | null;
+  readonly startedAt: number;
+  readonly finishedAt: number | null;
+}
+
+interface LegacySubAgentConfigRecord extends Record<string, unknown> {
+  readonly promptEnvelope?: PromptEnvelopeV1;
+  readonly systemPrompt?: string;
+}
+
+function subAgentStateKey(sessionId: string): string {
+  return `${SUB_AGENT_STATE_KEY_PREFIX}${sessionId}`;
+}
+
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function normalizeSubAgentPromptEnvelope(
+  envelope: PromptEnvelopeV1 | undefined,
+  fallbackBaseSystemPrompt: string,
+): PromptEnvelopeV1 {
+  return normalizePromptEnvelope(
+    envelope ?? createPromptEnvelope(fallbackBaseSystemPrompt),
+  );
+}
+
+function normalizeSubAgentConfig(
+  config: SubAgentConfig,
+  managerPromptEnvelope?: PromptEnvelopeV1,
+): SubAgentConfig {
+  return {
+    ...config,
+    promptEnvelope: normalizeSubAgentPromptEnvelope(
+      config.promptEnvelope,
+      managerPromptEnvelope?.baseSystemPrompt ?? DEFAULT_SUB_AGENT_SYSTEM_PROMPT,
+    ),
+  };
+}
+
+function normalizePersistedSubAgentConfig(
+  value: unknown,
+): SubAgentConfig | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const rawConfig = value as LegacySubAgentConfigRecord;
+  const promptEnvelope = normalizeSubAgentPromptEnvelope(
+    rawConfig.promptEnvelope,
+    typeof rawConfig.systemPrompt === "string"
+      ? rawConfig.systemPrompt
+      : DEFAULT_SUB_AGENT_SYSTEM_PROMPT,
+  );
+  const normalized = {
+    ...(cloneJson(rawConfig) as Record<string, unknown>),
+    promptEnvelope,
+  };
+  delete (normalized as Record<string, unknown>).systemPrompt;
+  return normalized as SubAgentConfig;
+}
+
+function normalizePromptEnvelopeFingerprint(
+  envelope: PromptEnvelopeV1 | undefined,
+): string {
+  return stableConfigFragment(normalizePromptEnvelope(envelope ?? createPromptEnvelope("")));
+}
+
+function coercePersistedSubAgentState(
+  value: unknown,
+): PersistedSubAgentState | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const raw = value as Record<string, unknown>;
+  if (
+    raw.version !== 1 ||
+    typeof raw.sessionId !== "string" ||
+    typeof raw.parentSessionId !== "string" ||
+    typeof raw.depth !== "number" ||
+    typeof raw.task !== "string" ||
+    !raw.config ||
+    typeof raw.config !== "object" ||
+    typeof raw.status !== "string" ||
+    typeof raw.startedAt !== "number"
+  ) {
+    return undefined;
+  }
+  if (
+    raw.status !== "running" &&
+    raw.status !== "completed" &&
+    raw.status !== "cancelled" &&
+    raw.status !== "timed_out" &&
+    raw.status !== "failed"
+  ) {
+    return undefined;
+  }
+  const normalizedConfig = normalizePersistedSubAgentConfig(raw.config);
+  if (!normalizedConfig) {
+    return undefined;
+  }
+  return {
+    version: 1,
+    sessionId: raw.sessionId,
+    parentSessionId: raw.parentSessionId,
+    depth: raw.depth,
+    task: raw.task,
+    config: normalizedConfig,
+    status: raw.status,
+    result:
+      raw.result && typeof raw.result === "object"
+        ? cloneJson(raw.result as SubAgentResult)
+        : null,
+    startedAt: raw.startedAt,
+    finishedAt:
+      typeof raw.finishedAt === "number" && Number.isFinite(raw.finishedAt)
+        ? raw.finishedAt
+        : null,
+  };
 }
 
 function mapChatCompletionToSubAgentStatus(input: {
@@ -422,6 +567,16 @@ function validateContinuationCompatibility(params: {
     return "continuationSessionId must preserve verifier obligations";
   }
 
+  const existingPromptEnvelope = normalizePromptEnvelopeFingerprint(
+    params.existing.promptEnvelope,
+  );
+  const nextPromptEnvelope = normalizePromptEnvelopeFingerprint(
+    params.next.promptEnvelope,
+  );
+  if (existingPromptEnvelope !== nextPromptEnvelope) {
+    return "continuationSessionId must preserve delegated prompt state";
+  }
+
   return undefined;
 }
 
@@ -475,31 +630,35 @@ export class SubAgentManager {
 
   async spawn(config: SubAgentConfig): Promise<string> {
     this.pruneTerminalHandles();
+    const normalizedConfig = normalizeSubAgentConfig(
+      config,
+      this.config.promptEnvelope,
+    );
 
     // Validate inputs
-    if (!config.parentSessionId) {
+    if (!normalizedConfig.parentSessionId) {
       throw new SubAgentSpawnError("", "parentSessionId must be non-empty");
     }
-    if (!config.task) {
+    if (!normalizedConfig.task) {
       throw new SubAgentSpawnError(
-        config.parentSessionId,
+        normalizedConfig.parentSessionId,
         "task must be non-empty",
       );
     }
     if (isRuntimeLimitReached(this.activeCount, this.maxConcurrent)) {
       throw new SubAgentSpawnError(
-        config.parentSessionId,
+        normalizedConfig.parentSessionId,
         `max concurrent sub-agents reached (${this.maxConcurrent})`,
       );
     }
-    const continuationHandle = this.resolveContinuationHandle(config);
-    const parentDepth = this.resolveSessionDepth(config.parentSessionId);
+    const continuationHandle = await this.resolveContinuationHandle(normalizedConfig);
+    const parentDepth = this.resolveSessionDepth(normalizedConfig.parentSessionId);
     const depth = continuationHandle
       ? continuationHandle.depth
       : parentDepth + 1;
     if (!continuationHandle && isRuntimeLimitExceeded(depth, this.maxDepth)) {
       throw new SubAgentSpawnError(
-        config.parentSessionId,
+        normalizedConfig.parentSessionId,
         `max sub-agent depth reached (${this.maxDepth})`,
       );
     }
@@ -510,10 +669,10 @@ export class SubAgentManager {
 
     const handle: SubAgentHandle = {
       sessionId,
-      parentSessionId: config.parentSessionId,
+      parentSessionId: normalizedConfig.parentSessionId,
       depth,
-      task: config.task,
-      config,
+      task: normalizedConfig.task,
+      config: normalizedConfig,
       // Phase 2.8: sub-agent memory inheritance
       // "none" = empty history (default, fully isolated)
       // "read_snapshot" handled by caller injecting parent context as system messages
@@ -529,6 +688,7 @@ export class SubAgentManager {
     };
 
     this.handles.set(sessionId, handle);
+    await this.persistHandleState(handle);
 
     // Fire-and-forget execution
     handle.execution = this.executeSubAgent(handle).catch(() => {
@@ -536,7 +696,7 @@ export class SubAgentManager {
     });
 
     this.logger.info(
-      `Sub-agent ${sessionId} spawned for parent ${config.parentSessionId}`,
+      `Sub-agent ${sessionId} spawned for parent ${normalizedConfig.parentSessionId}`,
     );
     return sessionId;
   }
@@ -787,6 +947,87 @@ export class SubAgentManager {
     }, timeoutMs);
   }
 
+  private async persistHandleState(handle: SubAgentHandle): Promise<void> {
+    const memoryBackend = this.config.memoryBackend;
+    if (!memoryBackend) return;
+    const persisted: PersistedSubAgentState = {
+      version: 1,
+      sessionId: handle.sessionId,
+      parentSessionId: handle.parentSessionId,
+      depth: handle.depth,
+      task: handle.task,
+      config: cloneJson(handle.config),
+      status: handle.status,
+      result: handle.result ? cloneJson(handle.result) : null,
+      startedAt: handle.startedAt,
+      finishedAt: handle.finishedAt,
+    };
+    await memoryBackend.set(subAgentStateKey(handle.sessionId), persisted);
+  }
+
+  private async appendConversationTurn(
+    handle: SubAgentHandle,
+    turn: {
+      readonly user: LLMMessage;
+      readonly assistant: LLMMessage;
+    },
+  ): Promise<void> {
+    handle.history = [...handle.history, cloneJson(turn.user), cloneJson(turn.assistant)];
+    const memoryBackend = this.config.memoryBackend;
+    if (!memoryBackend) return;
+    await appendTranscriptBatch(
+      memoryBackend,
+      subAgentTranscriptStreamId(handle.sessionId),
+      [
+        createTranscriptMessageEvent({
+          surface: "subagent",
+          message: turn.user,
+          dedupeKey: `subagent:user:${handle.sessionId}:${handle.history.length - 1}`,
+        }),
+        createTranscriptMessageEvent({
+          surface: "subagent",
+          message: turn.assistant,
+          dedupeKey: `subagent:assistant:${handle.sessionId}:${handle.history.length}`,
+        }),
+      ],
+    );
+  }
+
+  private async loadPersistedContinuationHandle(
+    continuationSessionId: string,
+  ): Promise<SubAgentHandle | undefined> {
+    const memoryBackend = this.config.memoryBackend;
+    if (!memoryBackend) return undefined;
+    const persisted = coercePersistedSubAgentState(
+      await memoryBackend.get(subAgentStateKey(continuationSessionId)),
+    );
+    if (!persisted) return undefined;
+    const transcript = await loadTranscript(
+      memoryBackend,
+      subAgentTranscriptStreamId(continuationSessionId),
+    );
+    return {
+      sessionId: persisted.sessionId,
+      parentSessionId: persisted.parentSessionId,
+      depth: persisted.depth,
+      task: persisted.task,
+      config: normalizeSubAgentConfig(
+        persisted.config,
+        this.config.promptEnvelope,
+      ),
+      history: [...recoverTranscriptHistory(transcript, {
+        injectContinuationPrompt: true,
+      })],
+      startedAt: persisted.startedAt,
+      status: persisted.status,
+      result: persisted.result ? cloneJson(persisted.result) : null,
+      abortController: new AbortController(),
+      timeoutTimer: null,
+      execution: Promise.resolve(),
+      finishedAt: persisted.finishedAt,
+    };
+  }
+
   private async executeSubAgent(handle: SubAgentHandle): Promise<void> {
     const workspaceId =
       handle.config.workspace ?? this.config.defaultWorkspaceId ?? "default";
@@ -940,6 +1181,7 @@ export class SubAgentManager {
         }),
         resolveHostWorkspaceRoot: () =>
           handle.config.workingDirectory ?? null,
+        ...(this.config.canUseTool ? { canUseTool: this.config.canUseTool } : {}),
         ...(typeof effectiveMaxToolRounds === "number"
           ? { maxToolRounds: effectiveMaxToolRounds }
           : {}),
@@ -954,13 +1196,17 @@ export class SubAgentManager {
         scope: "dm",
       });
 
-      const systemPrompt = appendShellProfilePromptSection({
-        systemPrompt:
-          handle.config.systemPrompt ??
-          this.config.systemPrompt ??
-          DEFAULT_SUB_AGENT_SYSTEM_PROMPT,
-        profile: handle.config.shellProfile ?? "general",
+      const promptEnvelope = normalizePromptEnvelope({
+        ...(handle.config.promptEnvelope ??
+          createPromptEnvelope(DEFAULT_SUB_AGENT_SYSTEM_PROMPT)),
+        baseSystemPrompt: appendShellProfilePromptSection({
+          systemPrompt:
+            handle.config.promptEnvelope?.baseSystemPrompt ??
+            DEFAULT_SUB_AGENT_SYSTEM_PROMPT,
+          profile: handle.config.shellProfile ?? "general",
+        }),
       });
+      const baseSystemPrompt = promptEnvelope.baseSystemPrompt;
       const subAgentTraceId = `subagent:${handle.sessionId}:${Date.now()}`;
       const unsafeBenchmarkMode = handle.config.unsafeBenchmarkMode === true;
       const traceEnabled =
@@ -1074,7 +1320,10 @@ export class SubAgentManager {
           params: {
             message,
             history: handle.history,
-            systemPrompt,
+            promptEnvelope: {
+              ...promptEnvelope,
+              baseSystemPrompt,
+            },
             sessionId: handle.sessionId,
             ...(spawnRoutedTools
               ? { toolRouting: { routedToolNames: spawnRoutedTools } }
@@ -1130,13 +1379,10 @@ export class SubAgentManager {
           ? resultOrAbort.content
           : resultOrAbort.stopReasonDetail;
 
-      if (success) {
-        handle.history = [
-          ...handle.history,
-          { role: "user", content: handle.config.prompt ?? handle.task },
-          { role: "assistant", content: output },
-        ];
-      }
+      await this.appendConversationTurn(handle, {
+        user: { role: "user", content: handle.config.prompt ?? handle.task },
+        assistant: { role: "assistant", content: output },
+      });
 
       this.markTerminalState(handle, terminalStatus, {
         sessionId: handle.sessionId,
@@ -1189,6 +1435,7 @@ export class SubAgentManager {
         stopReason: "tool_error",
         stopReasonDetail: failedOutput,
       });
+      await this.persistHandleState(handle);
 
       this.logger.error(
         `Sub-agent ${handle.sessionId} failed: ${failedOutput}`,
@@ -1221,6 +1468,11 @@ export class SubAgentManager {
     handle.status = status;
     handle.result = result;
     handle.finishedAt = Date.now();
+    void this.persistHandleState(handle).catch((error) => {
+      this.logger.warn(
+        `Failed to persist sub-agent state for ${handle.sessionId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
     this.pruneTerminalHandles();
   }
 
@@ -1257,13 +1509,15 @@ export class SubAgentManager {
     return sessionId.startsWith(SUB_AGENT_SESSION_PREFIX) ? 1 : 0;
   }
 
-  private resolveContinuationHandle(
+  private async resolveContinuationHandle(
     config: SubAgentConfig,
-  ): SubAgentHandle | undefined {
+  ): Promise<SubAgentHandle | undefined> {
     const continuationSessionId = config.continuationSessionId?.trim();
     if (!continuationSessionId) return undefined;
 
-    const existing = this.handles.get(continuationSessionId);
+    const existing =
+      this.handles.get(continuationSessionId) ??
+      (await this.loadPersistedContinuationHandle(continuationSessionId));
     if (!existing) {
       throw new SubAgentSpawnError(
         config.parentSessionId,

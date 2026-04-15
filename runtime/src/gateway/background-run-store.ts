@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { LLMMessage } from "../llm/types.js";
 import type { MemoryBackend, MemoryEntry } from "../memory/types.js";
 import type { PolicyEvaluationScope } from "../policy/types.js";
@@ -12,6 +13,16 @@ import {
   isSubrunRedundancyPattern,
   isSubrunRole,
 } from "./subrun-contract.js";
+import {
+  appendTranscriptBatch,
+  backgroundRunTranscriptStreamId,
+  createTranscriptHistorySnapshotEvent,
+  createTranscriptMessageEvent,
+  deleteTranscript,
+  forkTranscript,
+  loadTranscript,
+  recoverTranscriptHistory,
+} from "./session-transcript.js";
 import {
   coerceSessionShellProfile,
   DEFAULT_SESSION_SHELL_PROFILE,
@@ -118,6 +129,7 @@ export interface BackgroundRunManagedProcessLaunchSpec {
 }
 
 export type BackgroundRunWakeReason = AgentRunWakeReason;
+export type BackgroundRunLastWakeReason = BackgroundRunWakeReason | "resume";
 
 export interface BackgroundRunSignal {
   readonly id: string;
@@ -322,7 +334,7 @@ export interface BackgroundRunRecentSnapshot {
   readonly nextHeartbeatAt?: number;
   readonly lastUserUpdate?: string;
   readonly lastToolEvidence?: string;
-  readonly lastWakeReason?: BackgroundRunWakeReason;
+  readonly lastWakeReason?: BackgroundRunLastWakeReason;
   readonly pendingSignals: number;
   readonly carryForwardSummary?: string;
   readonly blockerSummary?: string;
@@ -354,7 +366,7 @@ export interface PersistedBackgroundRun {
   readonly lastUserUpdate?: string;
   readonly lastToolEvidence?: string;
   readonly lastHeartbeatContent?: string;
-  readonly lastWakeReason?: BackgroundRunWakeReason;
+  readonly lastWakeReason?: BackgroundRunLastWakeReason;
   readonly completionProgress?: WorkflowProgressSnapshot;
   readonly carryForward?: BackgroundRunCarryForwardState;
   readonly blocker?: BackgroundRunBlockerState;
@@ -593,6 +605,16 @@ interface BackgroundRunStoreConfig {
 
 function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function isBackgroundRunLastWakeReason(
+  value: unknown,
+): value is BackgroundRunLastWakeReason {
+  return value === "resume" || isAgentRunWakeReason(value);
+}
+
+function digestHistory(history: readonly LLMMessage[]): string {
+  return createHash("sha256").update(JSON.stringify(history)).digest("hex");
 }
 
 function backgroundRunKey(sessionId: string): string {
@@ -1703,7 +1725,7 @@ function coerceRecentSnapshot(
         ? raw.lastToolEvidence
         : undefined,
     lastWakeReason:
-      isAgentRunWakeReason(raw.lastWakeReason)
+      isBackgroundRunLastWakeReason(raw.lastWakeReason)
         ? raw.lastWakeReason
         : undefined,
     pendingSignals: raw.pendingSignals,
@@ -2229,7 +2251,7 @@ function coerceRun(value: unknown): PersistedBackgroundRun | undefined {
         ? raw.lastHeartbeatContent
         : undefined,
     lastWakeReason:
-      isAgentRunWakeReason(raw.lastWakeReason)
+      isBackgroundRunLastWakeReason(raw.lastWakeReason)
         ? raw.lastWakeReason
         : undefined,
     completionProgress: core.completionProgress,
@@ -2285,6 +2307,71 @@ export class BackgroundRunStore {
     return this.memoryBackend.get(backgroundRunKey(sessionId));
   }
 
+  private async loadConversationHistory(
+    sessionId: string,
+  ): Promise<readonly LLMMessage[]> {
+    const transcript = await loadTranscript(
+      this.memoryBackend,
+      backgroundRunTranscriptStreamId(sessionId),
+    );
+    return recoverTranscriptHistory(transcript, {
+      injectContinuationPrompt: true,
+    });
+  }
+
+  private async syncConversationHistory(params: {
+    readonly sessionId: string;
+    readonly history: readonly LLMMessage[];
+    readonly reason: "save_run" | "save_checkpoint" | "seed" | "fork";
+  }): Promise<void> {
+    const current = await this.loadConversationHistory(params.sessionId);
+    const desired = cloneJson(params.history);
+    if (current.length > 0 && desired.length === 0) {
+      return;
+    }
+    if (JSON.stringify(current) === JSON.stringify(desired)) {
+      return;
+    }
+
+    const currentLength = current.length;
+    const incremental =
+      currentLength > 0 &&
+      desired.length >= currentLength &&
+      JSON.stringify(desired.slice(0, currentLength)) === JSON.stringify(current);
+    if (incremental) {
+      const tail = desired.slice(currentLength);
+      if (tail.length > 0) {
+        await appendTranscriptBatch(
+          this.memoryBackend,
+          backgroundRunTranscriptStreamId(params.sessionId),
+          tail.map((message, index) =>
+            createTranscriptMessageEvent({
+              surface: "background",
+              message,
+              dedupeKey:
+                `background:${params.sessionId}:${currentLength + index}:${message.role}`,
+            })
+          ),
+        );
+      }
+      return;
+    }
+
+    await appendTranscriptBatch(
+      this.memoryBackend,
+      backgroundRunTranscriptStreamId(params.sessionId),
+      [
+        createTranscriptHistorySnapshotEvent({
+          surface: "background",
+          history: desired,
+          reason: params.reason === "fork" ? "fork" : "compaction",
+          dedupeKey:
+            `background:snapshot:${params.sessionId}:${params.reason}:${digestHistory(desired).slice(0, 16)}`,
+        }),
+      ],
+    );
+  }
+
   private async loadRawWakeQueue(sessionId: string): Promise<unknown> {
     return this.memoryBackend.get(backgroundRunWakeQueueKey(sessionId));
   }
@@ -2324,6 +2411,11 @@ export class BackgroundRunStore {
       throw new Error("Invalid persisted BackgroundRun record");
     }
     await this.queue.run(run.sessionId, async () => {
+      await this.syncConversationHistory({
+        sessionId: run.sessionId,
+        history: validated.internalHistory,
+        reason: "save_run",
+      });
       const current = await this.loadRun(run.sessionId);
       if (current && validated.leaseOwnerId !== undefined) {
         if (current.fenceToken > validated.fenceToken) {
@@ -2363,7 +2455,15 @@ export class BackgroundRunStore {
       }
       return undefined;
     }
-    return run;
+    if (!run) return undefined;
+    const transcriptHistory = await this.loadConversationHistory(sessionId);
+    if (transcriptHistory.length === 0) {
+      return run;
+    }
+    return {
+      ...run,
+      internalHistory: transcriptHistory,
+    };
   }
 
   async deleteRun(sessionId: string): Promise<void> {
@@ -2414,6 +2514,11 @@ export class BackgroundRunStore {
       throw new Error("Invalid BackgroundRun checkpoint");
     }
     await this.queue.run(run.sessionId, async () => {
+      await this.syncConversationHistory({
+        sessionId: run.sessionId,
+        history: validated.internalHistory,
+        reason: "save_checkpoint",
+      });
       await this.memoryBackend.set(
         backgroundRunCheckpointKey(run.sessionId),
         cloneJson(validated),
@@ -2423,7 +2528,16 @@ export class BackgroundRunStore {
 
   async loadCheckpoint(sessionId: string): Promise<PersistedBackgroundRun | undefined> {
     const value = await this.memoryBackend.get(backgroundRunCheckpointKey(sessionId));
-    return coerceRun(value);
+    const run = coerceRun(value);
+    if (!run) return undefined;
+    const transcriptHistory = await this.loadConversationHistory(sessionId);
+    if (transcriptHistory.length === 0) {
+      return run;
+    }
+    return {
+      ...run,
+      internalHistory: transcriptHistory,
+    };
   }
 
   async listCheckpoints(): Promise<readonly PersistedBackgroundRun[]> {
@@ -2444,6 +2558,71 @@ export class BackgroundRunStore {
   async deleteCheckpoint(sessionId: string): Promise<void> {
     await this.queue.run(sessionId, async () => {
       await this.memoryBackend.delete(backgroundRunCheckpointKey(sessionId));
+    });
+  }
+
+  async resetConversationHistory(sessionId: string): Promise<void> {
+    await this.queue.run(sessionId, async () => {
+      await deleteTranscript(
+        this.memoryBackend,
+        backgroundRunTranscriptStreamId(sessionId),
+      );
+    });
+  }
+
+  async seedConversationHistory(
+    sessionId: string,
+    history: readonly LLMMessage[],
+  ): Promise<void> {
+    await this.queue.run(sessionId, async () => {
+      await deleteTranscript(
+        this.memoryBackend,
+        backgroundRunTranscriptStreamId(sessionId),
+      );
+      await this.syncConversationHistory({
+        sessionId,
+        history,
+        reason: "seed",
+      });
+    });
+  }
+
+  async appendConversationTurn(
+    sessionId: string,
+    messages: readonly LLMMessage[],
+  ): Promise<void> {
+    if (messages.length === 0) return;
+    await this.queue.run(sessionId, async () => {
+      const current = await this.loadConversationHistory(sessionId);
+      await appendTranscriptBatch(
+        this.memoryBackend,
+        backgroundRunTranscriptStreamId(sessionId),
+        messages.map((message, index) =>
+          createTranscriptMessageEvent({
+            surface: "background",
+            message,
+            dedupeKey:
+              `background:${sessionId}:${current.length + index}:${message.role}`,
+          })
+        ),
+      );
+    });
+  }
+
+  async forkConversationHistory(
+    sourceSessionId: string,
+    targetSessionId: string,
+  ): Promise<boolean> {
+    return this.queue.run(targetSessionId, async () => {
+      await deleteTranscript(
+        this.memoryBackend,
+        backgroundRunTranscriptStreamId(targetSessionId),
+      );
+      return forkTranscript(
+        this.memoryBackend,
+        backgroundRunTranscriptStreamId(sourceSessionId),
+        backgroundRunTranscriptStreamId(targetSessionId),
+      );
     });
   }
 

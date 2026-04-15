@@ -4,6 +4,7 @@ import {
   MemorySerializationError,
   MemoryBackendError,
 } from "../errors.js";
+import { isTranscriptCapableMemoryBackend } from "../transcript.js";
 
 // Mock ioredis
 const mockZadd = vi.fn().mockResolvedValue(1);
@@ -57,6 +58,84 @@ vi.mock("ioredis", () => {
 
 // Import after mock
 import { RedisBackend } from "./backend.js";
+
+function installTranscriptRedisStore(): void {
+  type StoredTranscriptEvent = {
+    seq: number;
+    json: string;
+  };
+
+  const transcriptEntries = new Map<string, StoredTranscriptEvent[]>();
+  const transcriptStreams = new Set<string>();
+
+  mockZadd.mockImplementation(async (key: string, score: number, member: string) => {
+    const stream = transcriptEntries.get(key) ?? [];
+    stream.push({ seq: score, json: member });
+    stream.sort((a, b) => a.seq - b.seq);
+    transcriptEntries.set(key, stream);
+    return 1;
+  });
+
+  mockSadd.mockImplementation(async (key: string, value: string) => {
+    if (key.includes("transcript-streams")) {
+      transcriptStreams.add(value);
+    }
+    return 1;
+  });
+
+  mockZrangebyscore.mockImplementation(
+    async (key: string, min: string, max: string) => {
+      if (!key.includes("transcript:")) return [];
+      const stream = transcriptEntries.get(key) ?? [];
+      const minSeq = min === "-inf" ? Number.NEGATIVE_INFINITY : Number(min);
+      const maxSeq = max === "+inf" ? Number.POSITIVE_INFINITY : Number(max);
+      return stream
+        .filter((entry) => entry.seq >= minSeq && entry.seq <= maxSeq)
+        .map((entry) => entry.json);
+    },
+  );
+
+  mockZrevrangebyscore.mockImplementation(async (key: string) => {
+    if (!key.includes("transcript:")) return [];
+    const stream = [...(transcriptEntries.get(key) ?? [])].sort(
+      (a, b) => b.seq - a.seq,
+    );
+    return stream.map((entry) => entry.json);
+  });
+
+  mockZcard.mockImplementation(async (key: string) => {
+    if (!key.includes("transcript:")) return 0;
+    return (transcriptEntries.get(key) ?? []).length;
+  });
+
+  mockDel.mockImplementation(async (...keys: string[]) => {
+    let removed = 0;
+    for (const key of keys) {
+      if (key.includes("transcript:")) {
+        removed += transcriptEntries.get(key)?.length ?? 0;
+        transcriptEntries.delete(key);
+      } else if (key.includes("transcript-streams")) {
+        transcriptStreams.clear();
+        removed += 1;
+      }
+    }
+    return removed || 1;
+  });
+
+  mockSrem.mockImplementation(async (key: string, value: string) => {
+    if (key.includes("transcript-streams")) {
+      transcriptStreams.delete(value);
+    }
+    return 1;
+  });
+
+  mockSmembers.mockImplementation(async (key: string) => {
+    if (key.includes("transcript-streams")) {
+      return [...transcriptStreams.values()];
+    }
+    return [];
+  });
+}
 
 describe("RedisBackend", () => {
   beforeEach(() => {
@@ -426,6 +505,60 @@ describe("RedisBackend", () => {
     });
   });
 
+  describe("transcript capability", () => {
+    it("advertises transcript support", () => {
+      const backend = new RedisBackend();
+      expect(isTranscriptCapableMemoryBackend(backend)).toBe(true);
+    });
+
+    it("round-trips transcript events", async () => {
+      installTranscriptRedisStore();
+      const backend = new RedisBackend();
+
+      const appended = await backend.appendTranscript("stream-1", [
+        {
+          eventId: "evt-1",
+          kind: "message",
+          payload: { role: "user", content: "hello" },
+          timestamp: 100,
+        },
+        {
+          eventId: "evt-2",
+          kind: "context_collapse",
+          payload: { collapseId: "c-1", summary: "summary" },
+          timestamp: 200,
+        },
+      ]);
+
+      expect(appended.map((event) => event.seq)).toEqual([1, 2]);
+      expect(await backend.loadTranscript("stream-1")).toEqual(appended);
+      expect(await backend.listTranscriptStreams()).toEqual(["stream-1"]);
+    });
+
+    it("deduplicates transcript events by event id", async () => {
+      installTranscriptRedisStore();
+      const backend = new RedisBackend();
+
+      const first = await backend.appendTranscript("stream-1", [
+        {
+          eventId: "evt-1",
+          kind: "message",
+          payload: { role: "assistant", content: "hi" },
+        },
+      ]);
+      const second = await backend.appendTranscript("stream-1", [
+        {
+          eventId: "evt-1",
+          kind: "message",
+          payload: { role: "assistant", content: "hi" },
+        },
+      ]);
+
+      expect(second).toEqual(first);
+      expect(await backend.loadTranscript("stream-1")).toHaveLength(1);
+    });
+  });
+
   describe("KV operations", () => {
     it("set with TTL uses PX flag", async () => {
       const backend = new RedisBackend();
@@ -521,7 +654,7 @@ describe("RedisBackend", () => {
 
   describe("lifecycle", () => {
     it("clear deletes all thread and KV keys", async () => {
-      mockSmembers.mockResolvedValueOnce(["s1", "s2"]);
+      mockSmembers.mockResolvedValueOnce(["s1", "s2"]).mockResolvedValueOnce([]);
       mockScan.mockResolvedValueOnce([
         "0",
         ["agenc:memory:kv:a", "agenc:memory:kv:b"],

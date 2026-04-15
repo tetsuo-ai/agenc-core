@@ -17,7 +17,8 @@ interface ChatUsageSection {
   readonly percent: number;
 }
 
-interface ChatUsagePayload {
+export interface ChatUsagePayload {
+  readonly sessionId?: string;
   readonly totalTokens: number;
   readonly budget: number;
   readonly compacted: boolean;
@@ -44,6 +45,7 @@ interface ChatUsagePayload {
 }
 
 interface BuildChatUsagePayloadInput {
+  readonly sessionId?: string;
   readonly totalTokens: number;
   readonly sessionTokenBudget: number;
   readonly compacted: boolean;
@@ -103,6 +105,7 @@ export function buildChatUsagePayload(
   input: BuildChatUsagePayloadInput,
 ): ChatUsagePayload {
   const payload: ChatUsagePayload = {
+    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
     totalTokens: normalizeNonNegativeInt(input.totalTokens),
     budget: normalizeNonNegativeInt(input.sessionTokenBudget),
     compacted: input.compacted === true,

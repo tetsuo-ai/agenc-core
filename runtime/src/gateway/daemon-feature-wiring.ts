@@ -13,6 +13,7 @@ import type { MemoryBackend } from "../memory/types.js";
 import type { ChannelPlugin } from "./channel.js";
 import type { ChatExecutor } from "../llm/chat-executor.js";
 import type { ToolHandler, LLMProvider } from "../llm/types.js";
+import { createPromptEnvelope } from "../llm/prompt-envelope.js";
 import type { Tool } from "../tools/types.js";
 import { loadWallet } from "./wallet-loader.js";
 import { WorkspaceLoader } from "./workspace-files.js";
@@ -245,11 +246,17 @@ export async function wireAutonomousFeatures(
   ctx: FeatureWiringContext,
 ): Promise<void> {
   const heartbeatConfig = (config as unknown as Record<string, unknown>)
-    .heartbeat as { enabled?: boolean; intervalMs?: number } | undefined;
+    .heartbeat as {
+      enabled?: boolean;
+      intervalMs?: number;
+      autonomousActionsEnabled?: boolean;
+    } | undefined;
   if (heartbeatConfig?.enabled === false) return;
   if (!ctx.chatExecutor || !ctx.memoryBackend) return;
 
   const intervalMs = heartbeatConfig?.intervalMs ?? 300_000; // default 5 min
+  const heartbeatAutonomousActionsEnabled =
+    heartbeatConfig?.autonomousActionsEnabled === true;
 
   // Build active channels map for ProactiveCommunicator
   const activeChannels = new Map(ctx.externalChannels);
@@ -309,7 +316,9 @@ export async function wireAutonomousFeatures(
       chatExecutor: ctx.chatExecutor!,
       toolHandler: ctx.baseToolHandler!,
       memory: ctx.memoryBackend!,
-      systemPrompt: "You are an autonomous AI research agent.",
+      promptEnvelope: createPromptEnvelope(
+        "You are an autonomous AI research agent.",
+      ),
       communicator,
       goalManager: ctx.goalManager,
       traceProviderPayloads,
@@ -335,27 +344,33 @@ export async function wireAutonomousFeatures(
       strategicMemory,
       traceProviderPayloads,
     });
-    const proactiveCommsAction = createProactiveCommsAction({
-      llm,
-      memory: ctx.memoryBackend!,
-      communicator,
-      traceProviderPayloads,
-    });
-
-    // --- HeartbeatScheduler for short-cycle actions ---
-    const { HeartbeatScheduler } = await import("./heartbeat.js");
-    const heartbeatScheduler = new HeartbeatScheduler(
-      { enabled: true, intervalMs, timeoutMs: 180_000 },
-      { logger: ctx.logger },
-    );
-    heartbeatScheduler.registerAction(metaPlannerAction);
-    heartbeatScheduler.registerAction(proactiveCommsAction);
-
-    // Desktop awareness: register if Peekaboo MCP tools are available
     let setBridgeCallback:
       | ((cb: (text: string) => Promise<unknown>) => void)
       | null = null;
-    if (ctx.mcpManager) {
+    let heartbeatScheduler: import("./heartbeat.js").HeartbeatScheduler | null =
+      null;
+    if (heartbeatAutonomousActionsEnabled) {
+      const proactiveCommsAction = createProactiveCommsAction({
+        llm,
+        memory: ctx.memoryBackend!,
+        communicator,
+        traceProviderPayloads,
+      });
+
+      // --- HeartbeatScheduler for short-cycle actions ---
+      const { HeartbeatScheduler } = await import("./heartbeat.js");
+      heartbeatScheduler = new HeartbeatScheduler(
+        { enabled: true, intervalMs, timeoutMs: 180_000 },
+        { logger: ctx.logger },
+      );
+      heartbeatScheduler.registerAction(metaPlannerAction);
+      heartbeatScheduler.registerAction(proactiveCommsAction);
+    }
+
+    // Desktop awareness: register only when the interactive heartbeat action
+    // lane is explicitly enabled. The source runtime does not run model-backed
+    // heartbeat work during normal interactive sessions.
+    if (heartbeatAutonomousActionsEnabled && ctx.mcpManager && heartbeatScheduler) {
       const screenshotTool = ctx.mcpManager
         .getToolsByServer("peekaboo")
         .find((t: Tool) => t.name.includes("takeScreenshot"));
@@ -448,7 +463,7 @@ export async function wireAutonomousFeatures(
     }
 
     // Goal executor: dequeue from GoalManager and execute via DesktopExecutor
-    if (ctx.desktopExecutor && ctx.goalManager) {
+    if (heartbeatScheduler && ctx.desktopExecutor && ctx.goalManager) {
       const { createGoalExecutorAction } =
         await import("../autonomous/goal-executor-action.js");
       heartbeatScheduler.registerAction(
@@ -461,8 +476,10 @@ export async function wireAutonomousFeatures(
       );
     }
 
-    heartbeatScheduler.start();
-    ctx.heartbeatScheduler = heartbeatScheduler;
+    if (heartbeatScheduler) {
+      heartbeatScheduler.start();
+      ctx.heartbeatScheduler = heartbeatScheduler;
+    }
 
     // --- CronScheduler for long-running research tasks ---
     const { CronScheduler } = await import("./scheduler.js");
@@ -502,7 +519,9 @@ export async function wireAutonomousFeatures(
     ctx.cronScheduler = cronScheduler;
 
     ctx.logger.info(
-      `Autonomous features wired: heartbeat (interval=${intervalMs}ms) + cron (curiosity @2h, self-learning @6h)`,
+      heartbeatScheduler
+        ? `Autonomous features wired: heartbeat (interval=${intervalMs}ms) + cron (curiosity @2h, self-learning @6h)`
+        : "Autonomous features wired: cron only (interactive heartbeat actions disabled by default)",
     );
   } catch (err) {
     ctx.logger.error("Failed to wire autonomous features:", err);

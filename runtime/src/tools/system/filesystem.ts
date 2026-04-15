@@ -1356,7 +1356,10 @@ function createEditFileTool(
       "single-quotes, or printf format strings. The file must exist and must have been read in this session " +
       "(via system.readFile, or implicitly via a prior system.writeFile / system.editFile in the same session). " +
       "old_string must match exactly once unless replace_all is true. If old_string is not unique, narrow it " +
-      "with more surrounding context or pass replace_all: true.",
+      "with more surrounding context or pass replace_all: true. Use the smallest old_string that is clearly " +
+      "unique — usually 2-4 adjacent lines are enough. Preserve the exact indentation and whitespace from the " +
+      "file bytes you read. If you are renaming or replacing repeated text across the file, use replace_all: true " +
+      "instead of issuing a sequence of overlapping single-match edits.",
     inputSchema: {
       type: "object",
       properties: {

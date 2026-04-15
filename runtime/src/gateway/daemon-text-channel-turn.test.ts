@@ -252,7 +252,13 @@ describe("executeTextChannelTurn", () => {
     );
     expect(execute).toHaveBeenCalledOnce();
     expect(execute).toHaveBeenCalledWith(
-      expect.objectContaining({ maxToolRounds: 3, maxFailureBudgetPerRequest: 4 }),
+      expect.objectContaining({
+        maxToolRounds: 3,
+        promptEnvelope: expect.objectContaining({
+          kind: "prompt_envelope_v1",
+          baseSystemPrompt: expect.stringContaining("system"),
+        }),
+      }),
     );
     expect(recordToolRoutingOutcome).toHaveBeenCalledWith(
       "session:test",
@@ -452,6 +458,10 @@ describe("executeTextChannelTurn", () => {
 
     expect(execute).toHaveBeenCalledWith(
       expect.objectContaining({
+        promptEnvelope: expect.objectContaining({
+          kind: "prompt_envelope_v1",
+          baseSystemPrompt: expect.stringContaining("system"),
+        }),
         runtimeContext: expect.objectContaining({
           activeTaskContext: expect.objectContaining({
             contractFingerprint: "phase-0-contract",
@@ -523,6 +533,10 @@ describe("executeTextChannelTurn", () => {
           }),
         }),
         contextInjection: { memory: false },
+        promptEnvelope: expect.objectContaining({
+          kind: "prompt_envelope_v1",
+          baseSystemPrompt: expect.stringContaining("system"),
+        }),
       }),
     );
   });

@@ -16,6 +16,10 @@ import type {
 } from "../gateway/heartbeat.js";
 import type { ChatExecutor } from "../llm/chat-executor.js";
 import { executeChatToLegacyResult } from "../llm/execute-chat.js";
+import {
+  createPromptEnvelope,
+  type PromptEnvelopeV1,
+} from "../llm/prompt-envelope.js";
 import type { ToolHandler } from "../llm/types.js";
 import {
   createExecutionTraceEventLogger,
@@ -39,8 +43,8 @@ interface CuriosityConfig {
   toolHandler: ToolHandler;
   /** Memory backend for storing findings. */
   memory: MemoryBackend;
-  /** System prompt for research context. */
-  systemPrompt: string;
+  /** Prompt envelope for research context. */
+  promptEnvelope: PromptEnvelopeV1;
   /** Optional: broadcast notable findings to channels. */
   communicator?: ProactiveCommunicator;
   /** Channels to broadcast to (default: all default targets). */
@@ -80,7 +84,7 @@ export function createCuriosityAction(config: CuriosityConfig): HeartbeatAction 
     chatExecutor,
     toolHandler,
     memory,
-    systemPrompt,
+    promptEnvelope,
     communicator,
     broadcastChannels,
   } = config;
@@ -143,7 +147,7 @@ export function createCuriosityAction(config: CuriosityConfig): HeartbeatAction 
               scope: "dm",
             }),
             history: [],
-            systemPrompt,
+            promptEnvelope,
             sessionId,
             toolHandler,
             ...(researchTrace ? { trace: researchTrace } : {}),
@@ -208,7 +212,9 @@ export function createCuriosityAction(config: CuriosityConfig): HeartbeatAction 
                 scope: "dm",
               }),
               history: [],
-              systemPrompt: "You are a concise evaluator. Return only valid JSON.",
+              promptEnvelope: createPromptEnvelope(
+                "You are a concise evaluator. Return only valid JSON.",
+              ),
               sessionId: evalSessionId,
               toolHandler,
               ...(evaluationTrace ? { trace: evaluationTrace } : {}),

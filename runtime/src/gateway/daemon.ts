@@ -106,6 +106,11 @@ import {
   createChatExecutor,
   buildPermissionRulesFromAllowDeny,
 } from "./chat-executor-factory.js";
+import {
+  ToolPermissionEvaluator,
+  evaluatorToCanUseTool,
+} from "../policy/tool-permission-evaluator.js";
+import { BudgetStateService } from "../policy/budget-state.js";
 import { resolveRuntimeContractFlags } from "../runtime-contract/flags.js";
 import {
   normalizeToolCallArguments,
@@ -124,6 +129,7 @@ import {
   DEFAULT_GROK_MODEL,
   type LLMProviderConfigCatalogEntry,
 } from "./llm-provider-manager.js";
+import { buildChatUsagePayload } from "./chat-usage.js";
 import type {
   ChatExecutorResult,
   DeterministicPipelineExecutor,
@@ -167,6 +173,11 @@ import {
 import type { MemoryBackend } from "../memory/types.js";
 import { createMemoryRetrievers } from "./memory-retriever-factory.js";
 import { createMemoryBackend } from "./memory-backend-factory.js";
+import {
+  deleteTranscript,
+  loadTranscript,
+  recoverTranscriptState,
+} from "./session-transcript.js";
 // loadWallet moved to ./daemon-tool-registry.ts and ./daemon-feature-wiring.ts
 import {
   clearWebSessionReplayState,
@@ -205,6 +216,7 @@ import {
   buildSystemPrompt,
   resolveActiveHostWorkspacePath,
 } from "./system-prompt-builder.js";
+import { createPromptEnvelope } from "../llm/prompt-envelope.js";
 import {
   HookDispatcher,
   createBuiltinHooks,
@@ -1513,6 +1525,19 @@ export class DaemonManager {
       logger: this.logger,
     });
     this._sessionIsolationManager = isolationManager;
+    const subAgentPermissionRules = buildPermissionRulesFromAllowDeny({
+      toolAllowList: config.policy?.toolAllowList,
+      toolDenyList: config.policy?.toolDenyList,
+    });
+    const subAgentCanUseTool =
+      subAgentPermissionRules.length > 0
+        ? evaluatorToCanUseTool(
+            new ToolPermissionEvaluator({
+              rules: subAgentPermissionRules,
+              budgetState: new BudgetStateService(),
+            }),
+          )
+        : undefined;
 
     this._subAgentManager = new SubAgentManager({
       createContext: async (sessionIdentity: SubAgentSessionIdentity) => {
@@ -1547,6 +1572,8 @@ export class DaemonManager {
       sessionCompactionThreshold: subAgentSessionCompactionThreshold,
       economicsMode: config.llm?.economicsMode ?? "enforce",
       onCompaction: this.handleCompaction,
+      ...(this._memoryBackend ? { memoryBackend: this._memoryBackend } : {}),
+      ...(subAgentCanUseTool ? { canUseTool: subAgentCanUseTool } : {}),
       resolveExecutionBudget: async ({ selectedProvider }) =>
         this.resolveProviderExecutionBudget(selectedProvider),
       resolveDefaultMaxToolRounds: () => this._defaultForegroundMaxToolRounds,
@@ -2232,6 +2259,9 @@ export class DaemonManager {
       hooks,
       voiceBridge,
       memoryBackend,
+      getSessionUsageSnapshot: (sessionId) => {
+        return this.buildSessionUsageSnapshot(sessionId, config.llm);
+      },
       approvalEngine: approvalEngine ?? undefined,
       skillToggle,
       connection: this._connectionManager?.getConnection(),
@@ -4093,6 +4123,12 @@ export class DaemonManager {
         error: toErrorMessage(error),
       });
     });
+    await deleteTranscript(memoryBackend, webSessionId).catch((error: unknown) => {
+      this.logger.debug("Failed to delete web session transcript", {
+        sessionId: webSessionId,
+        error: toErrorMessage(error),
+      });
+    });
     await clearWebSessionReplayState(memoryBackend, webSessionId).catch(
       (error: unknown) => {
         this.logger.debug("Failed to delete web session replay state", {
@@ -4128,19 +4164,34 @@ export class DaemonManager {
       scope: "dm",
       workspaceId: "default",
     });
-    const replayContext = await loadPersistedSessionReplayContext(
-      memoryBackend,
-      webSessionId,
-    ).catch((error) => {
-      this.logger.debug("Failed to hydrate web session from replay state", {
-        sessionId: webSessionId,
-        error: toErrorMessage(error),
-      });
-      return {
-        history: [],
-      };
-    });
-    const history = replayContext.history;
+    const transcript = await loadTranscript(memoryBackend, webSessionId).catch(
+      (error) => {
+        this.logger.debug("Failed to hydrate web session transcript", {
+          sessionId: webSessionId,
+          error: toErrorMessage(error),
+        });
+        return undefined;
+      },
+    );
+    const transcriptRecovery = recoverTranscriptState(transcript);
+    const transcriptHistory = transcriptRecovery.history;
+    const replayContext =
+      transcriptHistory.length > 0
+        ? undefined
+        : await loadPersistedSessionReplayContext(
+            memoryBackend,
+            webSessionId,
+          ).catch((error) => {
+            this.logger.debug("Failed to hydrate web session from replay state", {
+              sessionId: webSessionId,
+              error: toErrorMessage(error),
+            });
+            return {
+              history: [],
+            };
+          });
+    const history =
+      transcriptHistory.length > 0 ? transcriptHistory : replayContext?.history ?? [];
     const historiesMatch =
       session.history.length === history.length &&
       session.history.every((message, index) => {
@@ -4158,6 +4209,12 @@ export class DaemonManager {
       });
     if (!historiesMatch) {
       sessionMgr.replaceHistory(historySessionId, history);
+    }
+    if (transcriptRecovery.metadata) {
+      session.metadata = {
+        ...session.metadata,
+        ...transcriptRecovery.metadata,
+      };
     }
     await hydrateWebSessionReplayState(memoryBackend, webSessionId, session);
   }
@@ -4571,7 +4628,9 @@ export class DaemonManager {
         ...(taskId ? { taskId } : {}),
         task: params.objective,
         prompt: params.prompt ?? params.objective,
-        ...(resolvedRole.systemPrompt ? { systemPrompt: resolvedRole.systemPrompt } : {}),
+        ...(resolvedRole.systemPrompt
+          ? { promptEnvelope: createPromptEnvelope(resolvedRole.systemPrompt) }
+          : {}),
         ...(resolvedRole.toolNames ? { tools: resolvedRole.toolNames } : {}),
         workingDirectory: scope.workingDirectory,
         ...(scope.workspaceRoot ? { workspaceRoot: scope.workspaceRoot } : {}),
@@ -5276,6 +5335,7 @@ export class DaemonManager {
       domain: "watch",
     });
     if (!admission.allowed) {
+      const usage = this.buildSessionUsageSnapshot(params.sessionId);
       return {
         session: {
           sessionId: params.continuity.sessionId,
@@ -5289,6 +5349,7 @@ export class DaemonManager {
           messageCount: params.continuity.messageCount,
           lastActiveAt: params.continuity.lastActiveAt,
         },
+        ...(usage ? { usage } : {}),
         repo: {
           available: false,
           unavailableReason: `watch cockpit held back: ${admission.reason}`,
@@ -5342,6 +5403,7 @@ export class DaemonManager {
     const verification =
       coerceVerificationSurfaceState(metadata.verificationSurfaceState) ??
       createIdleVerificationSurfaceState();
+    const usage = this.buildSessionUsageSnapshot(params.sessionId);
     return {
       session: {
         sessionId: params.continuity.sessionId,
@@ -5359,6 +5421,7 @@ export class DaemonManager {
         messageCount: params.continuity.messageCount,
         lastActiveAt: params.continuity.lastActiveAt,
       },
+      ...(usage ? { usage } : {}),
       repo,
       worktrees,
       review,
@@ -5366,6 +5429,31 @@ export class DaemonManager {
       approvals,
       ownership,
     };
+  }
+
+  private buildSessionUsageSnapshot(
+    sessionId: string,
+    llmConfig?: GatewayConfig["llm"],
+  ) {
+    const effectiveLlmConfig = llmConfig ?? this.gateway?.config?.llm;
+    const contextWindowTokens =
+      this._resolvedContextWindowTokens ?? inferContextWindowTokens(effectiveLlmConfig);
+    const executor = this._chatExecutor;
+    if (!executor) {
+      return null;
+    }
+    return buildChatUsagePayload({
+      sessionId,
+      totalTokens: executor.getSessionTokenUsage(sessionId),
+      sessionTokenBudget: resolveSessionTokenBudget(
+        effectiveLlmConfig,
+        contextWindowTokens,
+      ),
+      compacted: false,
+      provider: effectiveLlmConfig?.provider,
+      model: effectiveLlmConfig?.model,
+      contextWindowTokens,
+    });
   }
 
   private buildWatchCockpitApprovals(sessionId: string): WatchCockpitSnapshot["approvals"] {

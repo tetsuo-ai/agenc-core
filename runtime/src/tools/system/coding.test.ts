@@ -6,6 +6,7 @@ import { join, resolve as resolvePath } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ToolRegistry } from "../registry.js";
+import { seedSessionReadState } from "./filesystem.js";
 import { createCodingTools } from "./coding.js";
 
 function byName(name: string) {
@@ -97,7 +98,7 @@ describe("createCodingTools", () => {
     expect(parsed.results.some((entry) => entry.name === "system.searchTools")).toBe(true);
   });
 
-  it("supports readFileRange followed by applyPatch under read-before-write rules", async () => {
+  it("requires a full read before applyPatch on existing files", async () => {
     const root = await createRepoFixture();
     createdRoots.push(root);
     const tools = createCodingTools({
@@ -117,6 +118,31 @@ describe("createCodingTools", () => {
       __agencSessionId: "session-1",
     });
     expect(before.isError).not.toBe(true);
+
+    const blocked = await applyPatch!.execute({
+      path: root,
+      patch: [
+        "--- a/src/app.ts",
+        "+++ b/src/app.ts",
+        "@@ -1,3 +1,3 @@",
+        " export function greet(name: string): string {",
+        "-  return `Hello, ${name}`;",
+        "+  return `Hi, ${name}`;",
+        " }",
+        "",
+      ].join("\n"),
+      __agencSessionId: "session-1",
+    });
+    expect(blocked.isError).toBe(true);
+    expect(blocked.content).toContain("Call system.readFile on");
+
+    seedSessionReadState("session-1", [
+      {
+        path: join(root, "src", "app.ts"),
+        content: await readFile(join(root, "src", "app.ts"), "utf8"),
+        viewKind: "full",
+      },
+    ]);
 
     const patch = [
       "--- a/src/app.ts",
