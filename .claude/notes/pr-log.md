@@ -87,3 +87,10 @@
 - **What worked:** Pulling the remaining milestone and verifier pressure out of the normal coding loop, persisting compacted sessions as rebuilt message streams, and enforcing one seeded read-state contract across runtime and desktop editor surfaces removed the largest remaining execution-model drifts without breaking the public result surface.
 - **What didn't:** Session persistence and restore had hidden dependencies on artifact snapshot metadata and reduced replay history, so the refactor needed a dual-read migration path and broader daemon/session test coverage than the original loop-only reduction suggested.
 - **Rule added to CLAUDE.md:** no
+
+## PR #358: refactor(runtime): tighten long-session replay and loop finalization
+- **Date:** 2026-04-14
+- **Files changed:** `runtime/src/llm/chat-executor-{request,tool-loop,types}.ts`, `runtime/src/llm/{context-compaction,shell-write-policy}.ts`, `runtime/src/gateway/{session,daemon-session-state,daemon,tool-handler-factory}.ts`, `runtime/src/channels/webchat/plugin.ts`, `runtime/src/tools/system/{filesystem,bash,task-tracker}.ts`, `runtime/src/workflow/completion-state.ts`, `containers/desktop/server/src/{tools-editor,tools.test.ts}`
+- **What worked:** Moving terminal ownership into the tool loop, persisting replay state as compact-boundary snapshots with hydrated artifact/read-state carryover, and requiring full-file read state before existing-file mutation closed the remaining long-session execution gaps without regressing the explicit verifier path.
+- **What didn't:** Durable compaction still had hidden coupling between session metadata and artifact snapshot persistence, so the replay fix needed extra session/daemon integration coverage and exposed unrelated marketplace CLI and MCP typecheck drift during the broader repo validation run.
+- **Rule added to CLAUDE.md:** no
