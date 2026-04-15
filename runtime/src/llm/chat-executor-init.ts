@@ -57,8 +57,6 @@ import {
   type MemoryRetriever,
   type PlannerDecision,
 } from "./chat-executor-types.js";
-import { selectRelevantArtifactRefs } from "./context-pruning.js";
-import { MAX_PROMPT_CHARS_BUDGET } from "./chat-executor-constants.js";
 import { normalizeRuntimeLimit } from "./runtime-limit-policy.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS } from "./chat-executor-constants.js";
 import type { HistoryCompactionDependencies } from "./chat-executor-history-compaction.js";
@@ -387,32 +385,6 @@ export async function initializeExecutionContext(
       "memory_working",
       contextInjectionDeps,
     );
-  }
-
-  if (ctx.stateful?.artifactContext?.artifactRefs?.length) {
-    const artifactLines = selectRelevantArtifactRefs({
-      artifacts: ctx.stateful.artifactContext.artifactRefs,
-      query: ctx.messageText,
-      maxChars: Math.max(
-        600,
-        Math.floor(
-          (deps.promptBudget.hardMaxPromptChars ?? MAX_PROMPT_CHARS_BUDGET) *
-            0.08,
-        ),
-      ),
-    });
-    if (artifactLines.length > 0) {
-      pushMessage(
-        ctx,
-        {
-          role: "system",
-          content: `Compacted artifact context:\n${artifactLines
-            .map((line) => `- ${line}`)
-            .join("\n")}`,
-        },
-        "memory_working",
-      );
-    }
   }
 
   // Append history and user message

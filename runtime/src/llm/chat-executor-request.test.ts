@@ -486,13 +486,7 @@ describe("ChatExecutor request assembly", () => {
           typeof message.content === "string" &&
           message.content.includes("Compacted artifact context:"),
       );
-      expect(artifactMessage).toBeDefined();
-      expect(String(artifactMessage?.content)).toContain(
-        "[artifact-ref:plan:artifact:plan] PLAN.md",
-      );
-      expect(String(artifactMessage?.content)).toContain(
-        "[artifact-ref:test_result:artifact:test] parser.test.ts",
-      );
+      expect(artifactMessage).toBeUndefined();
     });
 
     it("aggregates stateful fallback reason counters in result summary", async () => {

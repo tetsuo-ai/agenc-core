@@ -208,4 +208,24 @@ describe("completion-state", () => {
       }),
     ).toBe("completed");
   });
+
+  it("does not downgrade a completed turn when verifier telemetry is red", () => {
+    expect(
+      resolveWorkflowCompletionState({
+        stopReason: "completed",
+        toolCalls: [
+          {
+            name: "system.writeFile",
+            args: { path: "/workspace/src/main.c" },
+            result: JSON.stringify({ ok: true }),
+            isError: false,
+          },
+        ],
+        verifier: {
+          performed: true,
+          overall: "fail",
+        },
+      }),
+    ).toBe("completed");
+  });
 });

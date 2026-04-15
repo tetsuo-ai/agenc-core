@@ -4128,13 +4128,8 @@ export class DaemonManager {
       scope: "dm",
       workspaceId: "default",
     });
-    if (session.history.length > 0) {
-      return;
-    }
-
-    const maxHistory = 100;
     const thread = await memoryBackend
-      .getThread(webSessionId, maxHistory)
+      .getThread(webSessionId)
       .catch((error) => {
         this.logger.debug("Failed to hydrate web session from memory", {
           sessionId: webSessionId,
@@ -4143,13 +4138,29 @@ export class DaemonManager {
         return [];
       });
     if (thread.length === 0) {
+      await hydrateWebSessionRuntimeState(memoryBackend, webSessionId, session);
       return;
     }
 
-    const history = thread
-      .filter((entry) => entry.role !== "tool")
-      .map((entry) => entryToMessage(entry));
-    sessionMgr.replaceHistory(historySessionId, history);
+    const history = thread.map((entry) => entryToMessage(entry));
+    const historiesMatch =
+      session.history.length === history.length &&
+      session.history.every((message, index) => {
+        const candidate = history[index];
+        if (!candidate || message.role !== candidate.role) {
+          return false;
+        }
+        if (message.toolCallId !== candidate.toolCallId) {
+          return false;
+        }
+        if (message.toolName !== candidate.toolName) {
+          return false;
+        }
+        return JSON.stringify(message.content) === JSON.stringify(candidate.content);
+      });
+    if (!historiesMatch) {
+      sessionMgr.replaceHistory(historySessionId, history);
+    }
     await hydrateWebSessionRuntimeState(memoryBackend, webSessionId, session);
   }
 

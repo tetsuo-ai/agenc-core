@@ -1,6 +1,5 @@
 import { didToolCallFail } from "../llm/chat-executor-tool-utils.js";
 import type { DelegationOutputValidationCode } from "../utils/delegation-validation.js";
-import { resolveWorkflowRequestCompletionStatus } from "./request-completion.js";
 import type { WorkflowVerificationContract } from "./verification-obligations.js";
 
 export type WorkflowCompletionState =
@@ -42,23 +41,12 @@ export function resolveWorkflowCompletionState(input: {
   readonly validationCode?: DelegationOutputValidationCode;
   readonly verifier?: PlannerVerificationSnapshot;
 }): WorkflowCompletionState {
-  const verifier = input.verifier;
   const successfulToolCalls = input.toolCalls.filter(
     (toolCall) => !didToolCallFail(toolCall.isError, toolCall.result),
   );
   const hasProgress = successfulToolCalls.length > 0;
-  const requestCompletion = resolveWorkflowRequestCompletionStatus({
-    contract: input.verificationContract?.requestCompletion,
-    completedMilestoneIds: input.completedRequestMilestoneIds,
-  });
 
   if (input.stopReason === "completed") {
-    if (verifier?.overall === "retry" || verifier?.overall === "fail") {
-      return hasProgress ? "partial" : "blocked";
-    }
-    if (input.verificationContract && !hasProgress && verifier?.overall === "skipped") {
-      return "needs_verification";
-    }
     return "completed";
   }
 
@@ -67,10 +55,6 @@ export function resolveWorkflowCompletionState(input: {
   }
 
   if (input.validationCode === "missing_behavior_harness" && hasProgress) {
-    return "partial";
-  }
-
-  if ((requestCompletion?.remainingMilestones.length ?? 0) > 0 && hasProgress) {
     return "partial";
   }
 

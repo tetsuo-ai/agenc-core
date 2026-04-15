@@ -21,8 +21,6 @@ import type { Task, TaskStore } from "../tools/system/task-tracker.js";
 import type { PersistentWorkerManager } from "./persistent-worker-manager.js";
 import {
   MemoryArtifactStore,
-  type ContextArtifactRecord,
-  type ArtifactCompactionState,
 } from "../memory/artifact-store.js";
 import {
   DEFAULT_SESSION_SHELL_PROFILE,
@@ -61,11 +59,12 @@ import {
 const WEB_SESSION_RUNTIME_STATE_KEY_PREFIX = "webchat:runtime-state:";
 
 export interface PersistedSessionRuntimeState {
-  readonly version: 6;
+  readonly version: 7;
   readonly shellProfile?: SessionShellProfile;
   readonly workflowState?: SessionWorkflowState;
   readonly statefulResumeAnchor?: LLMStatefulResumeAnchor;
   readonly statefulHistoryCompacted?: boolean;
+  /** Legacy compacted artifact snapshot ids; read during migration, never written. */
   readonly artifactSnapshotId?: string;
   readonly artifactSessionId?: string;
   readonly runtimeContractSnapshot?: RuntimeContractSnapshot;
@@ -239,14 +238,6 @@ function buildPersistedSessionRuntimeState(
     : undefined;
   const historyCompacted =
     session.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY] === true;
-  const artifactContext =
-    session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY];
-  const artifactSnapshotId =
-    typeof artifactContext === "object" &&
-    artifactContext !== null &&
-    typeof (artifactContext as Record<string, unknown>).snapshotId === "string"
-      ? String((artifactContext as Record<string, unknown>).snapshotId)
-      : undefined;
   const activeTaskContext = coerceActiveTaskContext(
     session.metadata[SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY],
   );
@@ -289,7 +280,6 @@ function buildPersistedSessionRuntimeState(
     !hasPersistedWorkflowState &&
     !resumeAnchor &&
     !historyCompacted &&
-    !artifactSnapshotId &&
     !runtimeContractSnapshot &&
     !runtimeContractStatusSnapshot &&
     !reviewSurfaceState &&
@@ -299,13 +289,11 @@ function buildPersistedSessionRuntimeState(
     return undefined;
   }
   return {
-    version: 6,
+    version: 7,
     ...(hasPersistedShellProfile ? { shellProfile } : {}),
     ...(hasPersistedWorkflowState ? { workflowState } : {}),
     ...(resumeAnchor ? { statefulResumeAnchor: resumeAnchor } : {}),
     ...(historyCompacted ? { statefulHistoryCompacted: true } : {}),
-    ...(artifactSnapshotId ? { artifactSnapshotId } : {}),
-    ...(artifactSnapshotId ? { artifactSessionId: session.id } : {}),
     ...(runtimeContractSnapshot ? { runtimeContractSnapshot } : {}),
     ...(runtimeContractStatusSnapshot ? { runtimeContractStatusSnapshot } : {}),
     ...(reviewSurfaceState ? { reviewSurfaceState } : {}),
@@ -325,7 +313,8 @@ function coercePersistedSessionRuntimeState(
     candidate.version !== 3 &&
     candidate.version !== 4 &&
     candidate.version !== 5 &&
-    candidate.version !== 6
+    candidate.version !== 6 &&
+    candidate.version !== 7
   ) {
     return undefined;
   }
@@ -334,7 +323,10 @@ function coercePersistedSessionRuntimeState(
   const resumeAnchor = isStatefulResumeAnchor(candidate.statefulResumeAnchor)
     ? cloneResumeAnchor(candidate.statefulResumeAnchor)
     : undefined;
-  const historyCompacted = candidate.statefulHistoryCompacted === true;
+  const historyCompacted =
+    candidate.statefulHistoryCompacted === true ||
+    (typeof candidate.artifactSnapshotId === "string" &&
+      candidate.artifactSnapshotId.trim().length > 0);
   const artifactSnapshotId =
     typeof candidate.artifactSnapshotId === "string" &&
     candidate.artifactSnapshotId.trim().length > 0
@@ -364,7 +356,6 @@ function coercePersistedSessionRuntimeState(
     !workflowState &&
     !resumeAnchor &&
     !historyCompacted &&
-    !artifactSnapshotId &&
     !runtimeContractSnapshot &&
     !runtimeContractStatusSnapshot &&
     !reviewSurfaceState &&
@@ -374,7 +365,7 @@ function coercePersistedSessionRuntimeState(
     return undefined;
   }
   return {
-    version: 6,
+    version: 7,
     ...(shellProfile ? { shellProfile } : {}),
     ...(workflowState ? { workflowState } : {}),
     ...(resumeAnchor ? { statefulResumeAnchor: resumeAnchor } : {}),
@@ -416,14 +407,10 @@ export function buildSessionStatefulOptions(
     : undefined;
   const historyCompacted =
     session.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY] === true;
-  const artifactContext = session.metadata[
-    SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY
-  ] as ArtifactCompactionState | undefined;
-  if (!resumeAnchor && !historyCompacted && !artifactContext) return undefined;
+  if (!resumeAnchor && !historyCompacted) return undefined;
   return {
     ...(resumeAnchor ? { resumeAnchor } : {}),
     ...(historyCompacted ? { historyCompacted: true } : {}),
-    ...(artifactContext ? { artifactContext } : {}),
   };
 }
 
@@ -433,22 +420,6 @@ export async function persistSessionRuntimeState(
   session: Session,
 ): Promise<void> {
   const artifactStore = new MemoryArtifactStore(memoryBackend);
-  const artifactContext = session.metadata[
-    SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY
-  ] as ArtifactCompactionState | undefined;
-  const artifactRecords = Array.isArray(
-    session.metadata[SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY],
-  )
-    ? (session.metadata[
-        SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY
-      ] as readonly ContextArtifactRecord[])
-    : [];
-  if (artifactContext) {
-    await artifactStore.persistSnapshot({
-      state: artifactContext,
-      records: artifactRecords,
-    });
-  }
   const persisted = buildPersistedSessionRuntimeState(session);
   const key = webSessionRuntimeStateKey(webSessionId);
   if (!persisted) {
@@ -478,7 +449,6 @@ export async function hydrateSessionRuntimeState(
   webSessionId: string,
   session: Session,
 ): Promise<void> {
-  const artifactStore = new MemoryArtifactStore(memoryBackend);
   const persisted = coercePersistedSessionRuntimeState(
     await memoryBackend.get(webSessionRuntimeStateKey(webSessionId)),
   );
@@ -496,17 +466,8 @@ export async function hydrateSessionRuntimeState(
   if (persisted.statefulHistoryCompacted) {
     session.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY] = true;
   }
-  if (persisted.artifactSnapshotId) {
-    const snapshot = await artifactStore.loadSnapshot(
-      persisted.artifactSessionId ?? session.id,
-    );
-    if (snapshot?.state) {
-      session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY] =
-        snapshot.state;
-      session.metadata[SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY] =
-        snapshot.records;
-    }
-  }
+  delete session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY];
+  delete session.metadata[SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY];
   if (persisted.activeTaskContext) {
     session.metadata[SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY] =
       persisted.activeTaskContext;
@@ -545,12 +506,10 @@ export async function forkSessionRuntimeState(
   if (!persisted) {
     return false;
   }
-
-  const artifactStore = new MemoryArtifactStore(memoryBackend);
   const next = {
     ...clonePersistedSessionRuntimeState(persisted),
   } as {
-    version: 6;
+    version: 7;
     shellProfile?: SessionShellProfile;
     workflowState?: SessionWorkflowState;
     statefulResumeAnchor?: LLMStatefulResumeAnchor;
@@ -610,29 +569,8 @@ export async function forkSessionRuntimeState(
   if (mergedWorkflowState) {
     next.workflowState = mergedWorkflowState;
   }
-
-  if (persisted.artifactSnapshotId) {
-    const snapshot = await artifactStore.loadSnapshot(
-      persisted.artifactSessionId ?? params.sourceWebSessionId,
-    );
-    if (snapshot) {
-      await artifactStore.persistSnapshot({
-        state: {
-          ...snapshot.state,
-          sessionId: params.targetWebSessionId,
-        },
-        records: snapshot.records.map((record) => ({
-          ...record,
-          sessionId: params.targetWebSessionId,
-        })),
-      });
-      next.artifactSessionId = params.targetWebSessionId;
-      next.artifactSnapshotId = snapshot.state.snapshotId;
-    } else {
-      delete next.artifactSessionId;
-      delete next.artifactSnapshotId;
-    }
-  }
+  delete next.artifactSessionId;
+  delete next.artifactSnapshotId;
 
   await memoryBackend.set(
     webSessionRuntimeStateKey(params.targetWebSessionId),
@@ -716,12 +654,7 @@ export function persistSessionStatefulContinuation(
       session.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY] = true;
       return;
     }
-    if (
-      session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY] ===
-      undefined
-    ) {
-      delete session.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY];
-    }
+    delete session.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY];
     return;
   }
 

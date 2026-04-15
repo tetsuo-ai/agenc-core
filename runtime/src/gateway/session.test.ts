@@ -395,10 +395,10 @@ describe("SessionManager", () => {
       );
       expect(
         session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY],
-      ).toBeDefined();
+      ).toBeUndefined();
       expect(
         session.metadata[SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY],
-      ).toBeDefined();
+      ).toBeUndefined();
       expect(
         session.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY],
       ).toBe(true);
@@ -449,10 +449,10 @@ describe("SessionManager", () => {
       expect(summarizer).toHaveBeenCalledOnce();
       expect(session.history[0].role).toBe("system");
       expect(session.history[0].content).toContain("decisions");
-      expect(session.history[0].content).toContain("Artifact refs:");
+      expect(session.history[0].content).not.toContain("Artifact refs:");
     });
 
-    it("'summarize' without summarizer still preserves artifact-backed context", async () => {
+    it("'summarize' without summarizer still preserves rebuilt compacted history", async () => {
       const mgr = new SessionManager(makeConfig({ compaction: "summarize" }));
       const session = mgr.getOrCreate(makeParams());
       for (let i = 0; i < 10; i++) {
@@ -472,7 +472,7 @@ describe("SessionManager", () => {
       );
       expect(
         session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY],
-      ).toBeDefined();
+      ).toBeUndefined();
     });
 
     it("dedupes artifact refs across repeated compactions during long sessions", async () => {
@@ -505,15 +505,16 @@ describe("SessionManager", () => {
       );
 
       const second = await mgr.compact(session.id);
-      const state = session.metadata[
-        SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY
-      ] as { artifactRefs?: Array<{ digest: string; title: string }> };
       expect(second?.artifactCount).toBeGreaterThan(0);
-      expect(state.artifactRefs?.length).toBeGreaterThan(0);
-      const digests = new Set(state.artifactRefs?.map((artifact) => artifact.digest));
-      expect(digests.size).toBe(state.artifactRefs?.length);
+      expect(second?.artifactState?.artifactRefs.length).toBeGreaterThan(0);
+      const digests = new Set(
+        second?.artifactState?.artifactRefs.map((artifact) => artifact.digest),
+      );
+      expect(digests.size).toBe(second?.artifactState?.artifactRefs.length);
       expect(
-        state.artifactRefs?.some((artifact) => artifact.title.includes("PLAN.md")),
+        second?.artifactState?.artifactRefs.some((artifact) =>
+          artifact.title.includes("PLAN.md"),
+        ),
       ).toBe(true);
     });
 

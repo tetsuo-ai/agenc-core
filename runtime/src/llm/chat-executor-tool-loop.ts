@@ -140,9 +140,6 @@ import {
   type ToolProtocolRepairReason,
 } from "./tool-protocol-state.js";
 import {
-  getRemainingRequestTaskMilestones,
-  REQUEST_TASK_PROGRESS_NO_IN_PROGRESS_KEY,
-  REQUEST_TASK_PROGRESS_NO_TASK_YET_KEY,
   type RequestTaskObservationResult,
 } from "./request-task-progress.js";
 import {
@@ -279,7 +276,7 @@ function pushToolResultMessage(params: {
     },
     "tools",
   );
-  const observation = callbacks.appendToolRecord(ctx, {
+  callbacks.appendToolRecord(ctx, {
     name: toolName,
     args,
     result: content,
@@ -289,7 +286,6 @@ function pushToolResultMessage(params: {
     ...(synthetic ? { synthetic: true } : {}),
     ...(protocolRepairReason ? { protocolRepairReason } : {}),
   });
-  reconcileRequestTaskReminderState(ctx, callbacks, observation);
   recordToolProtocolResult(ctx.toolProtocolState, toolCallId);
   syncToolProtocolSnapshot(ctx);
   callbacks.emitExecutionTrace(ctx, {
@@ -306,63 +302,6 @@ function pushToolResultMessage(params: {
       ...(protocolRepairReason ? { protocolRepairReason } : {}),
     },
   });
-}
-
-function reconcileRequestTaskReminderState(
-  ctx: ExecutionContext,
-  callbacks: ToolLoopCallbacks,
-  observation: RequestTaskObservationResult | undefined,
-): void {
-  if (!observation) {
-    return;
-  }
-  if (
-    (observation.source === "task.create" ||
-      observation.source === "task.update") &&
-    observation.nonDeletedTaskCount > 0
-  ) {
-    callbacks.clearRuntimeInstructionKey(
-      ctx,
-      REQUEST_TASK_PROGRESS_NO_TASK_YET_KEY,
-    );
-  }
-  if (observation.inProgressTaskCount > 0) {
-    callbacks.clearRuntimeInstructionKey(
-      ctx,
-      REQUEST_TASK_PROGRESS_NO_IN_PROGRESS_KEY,
-    );
-  }
-}
-
-function maybeInjectRequestTaskReminders(
-  ctx: ExecutionContext,
-  callbacks: ToolLoopCallbacks,
-  rounds: number,
-): void {
-  if (rounds < 1 || ctx.requestTaskState.allowedMilestones.length === 0) {
-    return;
-  }
-  const remainingMilestones = getRemainingRequestTaskMilestones(
-    ctx.requestTaskState,
-  );
-  if (ctx.requestTaskState.nonDeletedTaskCount === 0) {
-    callbacks.maybePushKeyedRuntimeInstruction(ctx, {
-      key: REQUEST_TASK_PROGRESS_NO_TASK_YET_KEY,
-      content:
-        "This request has an active milestone contract. Create or update a task and attach the matching milestone ids in `metadata._runtime.milestoneIds` before you continue finalizing work.",
-    });
-    return;
-  }
-  if (
-    remainingMilestones.length > 0 &&
-    ctx.requestTaskState.inProgressTaskIds.length === 0
-  ) {
-    callbacks.maybePushKeyedRuntimeInstruction(ctx, {
-      key: REQUEST_TASK_PROGRESS_NO_IN_PROGRESS_KEY,
-      content:
-        "Request milestones are still open, but no task is currently marked in_progress. Update one task to in_progress before continuing.",
-    });
-  }
 }
 
 function materializeResponseToolCalls(
@@ -1145,7 +1084,7 @@ export async function executeSingleToolCall(
     }
   }
 
-  const observation = callbacks.appendToolRecord(ctx, {
+  callbacks.appendToolRecord(ctx, {
     name: toolCall.name,
     args,
     result,
@@ -1153,7 +1092,6 @@ export async function executeSingleToolCall(
     durationMs: exec.durationMs,
     toolCallId: toolCall.id,
   });
-  reconcileRequestTaskReminderState(ctx, callbacks, observation);
   callbacks.emitExecutionTrace(ctx, {
     type: "tool_dispatch_finished",
     phase: "tool_followup",
@@ -2061,8 +1999,6 @@ export async function executeToolCallLoop(
     )) {
       callbacks.pushMessage(ctx, msg, "system_runtime");
     }
-    maybeInjectRequestTaskReminders(ctx, callbacks, rounds);
-
     // Routing expansion on miss.
     if (loopState.expandAfterRound && ctx.expandedRoutedToolNames.length > 0) {
       const previousRoutedToolNames = [...ctx.activeRoutedToolNames];
@@ -2225,8 +2161,7 @@ export async function executeToolCallLoop(
             activeToolHandler: ctx.activeToolHandler,
             appendProbeRuns: (runs) => {
               for (const run of runs) {
-                const observation = callbacks.appendToolRecord(ctx, run);
-                reconcileRequestTaskReminderState(ctx, callbacks, observation);
+                callbacks.appendToolRecord(ctx, run);
               }
             },
           },

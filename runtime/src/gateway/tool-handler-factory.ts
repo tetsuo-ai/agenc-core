@@ -159,11 +159,12 @@ const SESSION_ALLOWED_ROOT_TOOL_NAMES = new Set([
  * Filesystem tool names that need a session-scoped readFileState entry
  * for the Read-before-Write rule. The gateway injects `SESSION_ID_ARG`
  * into the args of every call to one of these tools so the per-session
- * read tracker in `runtime/src/tools/system/filesystem.ts` can record
- * (for readFile) and check (for writeFile/editFile) which paths the
+ * read tracker in `runtime/src/tools/system/filesystem.ts` and the
+ * desktop text editor adapter can record and validate which paths the
  * model has seen in the current chat session.
  */
 const SESSION_ID_TOOL_NAMES = new Set([
+  "desktop.text_editor",
   "system.readFile",
   "system.readFileRange",
   "system.writeFile",

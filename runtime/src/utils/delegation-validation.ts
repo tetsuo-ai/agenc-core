@@ -1013,7 +1013,9 @@ export function resolveDelegatedChildToolScope(params: {
     !capabilityProfile.isReadOnlyContract &&
     (requireFileMutation || taskIntent === "implementation" || setupHeavy)
   ) {
-    addShellSemanticFallback();
+    if (taskIntent === "implementation" || setupHeavy) {
+      addShellSemanticFallback();
+    }
     addSemanticFallback("system.mkdir");
     addSemanticFallback("system.writeFile");
     addSemanticFallback("system.appendFile");
@@ -1140,7 +1142,6 @@ export function resolveDelegatedChildToolScope(params: {
     },
   };
 }
-
 
 
 

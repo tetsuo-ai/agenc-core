@@ -572,6 +572,7 @@ describe("createSessionToolHandler", () => {
       command: "create",
       path: "/tmp/project-root/src/store.ts",
       file_text: "export const ok = true;\n",
+      [SESSION_ID_ARG]: "session-1",
     });
   });
 

@@ -80,3 +80,10 @@
 - **What worked:** Demoting normal-turn task and verifier gates, rebuilding compacted history with preserved messages, and rehydrating file read state removed the biggest runtime drifts from the source loop without regressing the explicit verification paths.
 - **What didn't:** The broad reduction exposed lingering assumptions in progress snapshots and validator ordering, so several workflow and runtime-contract tests had to be updated after the code changes were already green in isolation.
 - **Rule added to CLAUDE.md:** no
+
+## PR #357: refactor(runtime): reduce source-parity drift in loop, compaction, and file state
+- **Date:** 2026-04-14
+- **Files changed:** `runtime/src/llm/chat-executor-*`, `runtime/src/workflow/completion-{state,progress}.ts`, `runtime/src/gateway/{daemon,daemon-session-state,session,system-prompt-builder,tool-handler-factory}.ts`, `runtime/src/tools/system/filesystem.ts`, `containers/desktop/server/src/tools-editor.ts`
+- **What worked:** Pulling the remaining milestone and verifier pressure out of the normal coding loop, persisting compacted sessions as rebuilt message streams, and enforcing one seeded read-state contract across runtime and desktop editor surfaces removed the largest remaining execution-model drifts without breaking the public result surface.
+- **What didn't:** Session persistence and restore had hidden dependencies on artifact snapshot metadata and reduced replay history, so the refactor needed a dual-read migration path and broader daemon/session test coverage than the original loop-only reduction suggested.
+- **Rule added to CLAUDE.md:** no

@@ -537,6 +537,7 @@ export class SessionManager {
           case "truncate": {
             session.history = history.slice(dropCount);
             delete session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY];
+            delete session.metadata[SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY];
             result = {
               messagesRemoved: dropCount,
               messagesRetained: keepCount,
@@ -572,10 +573,8 @@ export class SessionManager {
               source: "session_compaction",
               ...(narrativeSummary ? { narrativeSummary } : {}),
             });
-            session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY] =
-              compacted.state;
-            session.metadata[SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY] =
-              compacted.records;
+            delete session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY];
+            delete session.metadata[SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY];
             session.history = [...compacted.compactedHistory];
             result = {
               messagesRemoved: dropCount,
@@ -615,10 +614,8 @@ export class SessionManager {
               source: "session_compaction",
               ...(narrativeSummary ? { narrativeSummary } : {}),
             });
-            session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY] =
-              compacted.state;
-            session.metadata[SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY] =
-              compacted.records;
+            delete session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY];
+            delete session.metadata[SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY];
             session.history = [...compacted.compactedHistory];
             result = {
               messagesRemoved: dropCount,
