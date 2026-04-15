@@ -1,7 +1,11 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ChatExecutorResult } from "../llm/chat-executor.js";
 import type { MemoryBackend } from "../memory/types.js";
+import { getSessionReadSnapshot } from "../tools/system/filesystem.js";
 import type { Logger } from "../utils/logger.js";
 import { hydrateWebSessionRuntimeState } from "./daemon-session-state.js";
 import { executeWebChatConversationTurn } from "./daemon-webchat-turn.js";
@@ -911,6 +915,106 @@ You have broad access to this machine via the system.bash tool.`,
     );
     expect(session.metadata[SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY]).toEqual(
       nextActiveTaskContext,
+    );
+  });
+
+  it("expands @-mentioned files into source-artifact context before execution", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-webchat-at-"));
+    const planPath = join(workspaceRoot, "PLAN.md");
+    writeFileSync(planPath, "# Plan\nBuild the shell in C.\n", "utf8");
+
+    const logger = createLoggerStub();
+    const memoryBackend = createMemoryBackendStub();
+    const session = createSession();
+    const sessionMgr = {
+      getOrCreate: vi.fn(() => session),
+      appendMessage: vi.fn(),
+      compact: vi.fn(async () => undefined),
+    } as any;
+    const webChat = {
+      createAbortController: vi.fn(() => new AbortController()),
+      clearAbortController: vi.fn(),
+      send: vi.fn(async () => undefined),
+      pushToSession: vi.fn(),
+      broadcastEvent: vi.fn(),
+      loadSessionWorkspaceRoot: vi.fn(async () => workspaceRoot),
+    } as any;
+    const hooks = {
+      dispatch: vi.fn(async () => ({ completed: true, payload: {} })),
+    } as any;
+    const signals = {
+      signalThinking: vi.fn(),
+      signalIdle: vi.fn(),
+    };
+    const execute = vi.fn(async () => createResult());
+
+    await executeWebChatConversationTurn({
+      logger,
+      msg: {
+        sessionId: "session:at-mention-webchat",
+        senderId: "operator-1",
+        channel: "webchat",
+        content: "Read @PLAN.md and implement it in full.",
+      },
+      webChat,
+      chatExecutor: { execute } as any,
+      sessionMgr,
+      getSystemPrompt: () => "system",
+      sessionToolHandler: vi.fn() as any,
+      sessionStreamCallback: vi.fn(),
+      signals,
+      hooks,
+      memoryBackend,
+      sessionTokenBudget: 16_000,
+      defaultMaxToolRounds: 3,
+      contextWindowTokens: 64_000,
+      traceConfig: {
+        enabled: false,
+        includeHistory: true,
+        includeSystemPrompt: true,
+        includeToolArgs: true,
+        includeToolResults: true,
+        includeProviderPayloads: false,
+        maxChars: 20_000,
+      },
+      turnTraceId: "trace-at-mention-webchat",
+      buildToolRoutingDecision: () => undefined,
+      recordToolRoutingOutcome: vi.fn(),
+      getSessionTokenUsage: () => 0,
+      onModelInfo: vi.fn(),
+      onSubagentSynthesis: vi.fn(),
+    });
+
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        history: expect.arrayContaining([
+          expect.objectContaining({
+            role: "assistant",
+            toolCalls: [
+              expect.objectContaining({
+                name: "system.readFile",
+              }),
+            ],
+          }),
+          expect.objectContaining({
+            role: "tool",
+            toolName: "system.readFile",
+          }),
+        ]),
+        requiredToolEvidence: expect.objectContaining({
+          executionEnvelope: expect.objectContaining({
+            requiredSourceArtifacts: [planPath],
+          }),
+        }),
+      }),
+    );
+    expect(
+      getSessionReadSnapshot("session:at-mention-webchat", planPath),
+    ).toEqual(
+      expect.objectContaining({
+        content: "# Plan\nBuild the shell in C.\n",
+        viewKind: "full",
+      }),
     );
   });
 

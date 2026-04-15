@@ -46,6 +46,7 @@ import {
   createTranscriptMessageEvent,
   createTranscriptMetadataProjectionEvent,
 } from "./session-transcript.js";
+import { resolveAtMentionAttachments } from "./at-mention-attachments.js";
 import type { AgentDefinition } from "./agent-loader.js";
 import type { DelegationVerifierService } from "./delegation-runtime.js";
 import type { PersistentWorkerManager } from "./persistent-worker-manager.js";
@@ -70,6 +71,7 @@ import {
   truncateToolLogText,
   type ResolvedTraceLoggingConfig,
 } from "./daemon-trace.js";
+import { seedSessionReadState } from "../tools/system/filesystem.js";
 
 const CONCORDIA_GENERATED_AGENTS_SCHEMA_NAME =
   "concordia_generated_agents";
@@ -197,6 +199,23 @@ export async function executeTextChannelTurn(
     systemPrompt: profileAwareSystemPrompt,
     routedToolNames: toolRoutingDecision?.routedToolNames,
   });
+  const runtimeWorkspaceRoot =
+    typeof msg.metadata?.workspaceRoot === "string" &&
+      msg.metadata.workspaceRoot.trim().length > 0
+      ? msg.metadata.workspaceRoot.trim()
+      : typeof session.metadata?.workspaceRoot === "string" &&
+          session.metadata.workspaceRoot.trim().length > 0
+        ? session.metadata.workspaceRoot.trim()
+        : undefined;
+  const atMentionAttachments = await resolveAtMentionAttachments({
+    content: msg.content,
+    workspaceRoot: runtimeWorkspaceRoot,
+  });
+  seedSessionReadState(msg.sessionId, atMentionAttachments.readSeeds);
+  const effectiveHistory =
+    atMentionAttachments.historyPrelude.length > 0
+      ? [...session.history, ...atMentionAttachments.historyPrelude]
+      : session.history;
   const promptEnvelope = normalizePromptEnvelope({
     baseSystemPrompt: effectiveSystemPrompt,
   });
@@ -284,11 +303,18 @@ export async function executeTextChannelTurn(
   // touching this call site.
   const rawResult = await executeChatToLegacyResult(chatExecutor, {
     message: msg,
-    history: session.history,
+    history: effectiveHistory,
     promptEnvelope,
     sessionId: msg.sessionId,
     ...(sessionActiveTaskContext
       ? { runtimeContext: { activeTaskContext: sessionActiveTaskContext } }
+      : {}),
+    ...(atMentionAttachments.executionEnvelope
+      ? {
+          requiredToolEvidence: {
+            executionEnvelope: atMentionAttachments.executionEnvelope,
+          },
+        }
       : {}),
     toolHandler,
     maxToolRounds: effectiveMaxToolRounds,

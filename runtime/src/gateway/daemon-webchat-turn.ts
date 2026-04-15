@@ -36,6 +36,7 @@ import {
   createTranscriptMessageEvent,
   createTranscriptMetadataProjectionEvent,
 } from "./session-transcript.js";
+import { resolveAtMentionAttachments } from "./at-mention-attachments.js";
 import { filterSystemPromptForToolRouting } from "./system-prompt-routing.js";
 import {
   buildRuntimeContractSessionTraceId,
@@ -74,6 +75,7 @@ import type { DelegationVerifierService } from "./delegation-runtime.js";
 import type { PersistentWorkerManager } from "./persistent-worker-manager.js";
 import type { SubAgentManager } from "./sub-agent.js";
 import type { TaskStore } from "../tools/system/task-tracker.js";
+import { seedSessionReadState } from "../tools/system/filesystem.js";
 
 interface WebChatTurnSignals {
   signalThinking: (sessionId: string) => void;
@@ -290,6 +292,15 @@ export async function executeWebChatConversationTurn(
             },
           }
         : msg;
+    const atMentionAttachments = await resolveAtMentionAttachments({
+      content: effectiveMessage.content,
+      workspaceRoot: runtimeWorkspaceRoot,
+    });
+    seedSessionReadState(msg.sessionId, atMentionAttachments.readSeeds);
+    const effectiveHistory =
+      atMentionAttachments.historyPrelude.length > 0
+        ? [...session.history, ...atMentionAttachments.historyPrelude]
+        : session.history;
 
     // Phase E: webchat streaming caller migrated to drain the
     // Phase C generator. onStreamChunk pass-through is handled
@@ -299,7 +310,7 @@ export async function executeWebChatConversationTurn(
     // identical to the direct chatExecutor.execute() call.
     const rawResult = await executeChatToLegacyResult(chatExecutor, {
       message: effectiveMessage,
-      history: session.history,
+      history: effectiveHistory,
       promptEnvelope,
       sessionId: msg.sessionId,
       runtimeContext:
@@ -313,6 +324,13 @@ export async function executeWebChatConversationTurn(
                 : {}),
             }
           : undefined,
+      ...(atMentionAttachments.executionEnvelope
+        ? {
+            requiredToolEvidence: {
+              executionEnvelope: atMentionAttachments.executionEnvelope,
+            },
+          }
+        : {}),
       toolHandler: sessionToolHandler,
       onStreamChunk: sessionStreamCallback,
       signal: abortController.signal,

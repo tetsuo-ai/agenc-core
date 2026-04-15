@@ -1,8 +1,12 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ChatExecutorResult } from "../llm/chat-executor.js";
 import type { MemoryBackend } from "../memory/types.js";
 import { createRuntimeContractSnapshot } from "../runtime-contract/types.js";
+import { getSessionReadSnapshot } from "../tools/system/filesystem.js";
 import type { Logger } from "../utils/logger.js";
 import { executeTextChannelTurn } from "./daemon-text-channel-turn.js";
 import {
@@ -671,5 +675,84 @@ describe("executeTextChannelTurn", () => {
         expect.objectContaining({ id: "phase-1" }),
       ],
     });
+  });
+
+  it("expands @-mentioned files into source-artifact context before execution", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-text-at-"));
+    const planPath = join(workspaceRoot, "PLAN.md");
+    writeFileSync(planPath, "# Plan\nUse C and CMake.\n", "utf8");
+
+    const logger = createLoggerStub();
+    const memoryBackend = createMemoryBackendStub();
+    const session = createSession();
+    const sessionMgr = {
+      appendMessage: vi.fn(),
+    } as any;
+    const execute = vi.fn(async () => createResult());
+
+    await executeTextChannelTurn({
+      logger,
+      channelName: "telegram",
+      msg: {
+        sessionId: "session:at-mention-text",
+        senderId: "user-1",
+        channel: "telegram",
+        content: "Read @PLAN.md and implement it.",
+        metadata: {
+          workspaceRoot,
+        },
+      },
+      session,
+      sessionMgr,
+      systemPrompt: "system",
+      chatExecutor: { execute } as any,
+      toolHandler: vi.fn() as any,
+      defaultMaxToolRounds: 3,
+      traceConfig: {
+        enabled: false,
+        includeHistory: true,
+        includeSystemPrompt: true,
+        includeToolArgs: true,
+        includeToolResults: true,
+        includeProviderPayloads: false,
+        maxChars: 20_000,
+      },
+      turnTraceId: "trace-at-mention-text",
+      memoryBackend,
+      buildToolRoutingDecision: () => undefined,
+      recordToolRoutingOutcome: vi.fn(),
+    });
+
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        history: expect.arrayContaining([
+          expect.objectContaining({
+            role: "assistant",
+            toolCalls: [
+              expect.objectContaining({
+                name: "system.readFile",
+              }),
+            ],
+          }),
+          expect.objectContaining({
+            role: "tool",
+            toolName: "system.readFile",
+          }),
+        ]),
+        requiredToolEvidence: expect.objectContaining({
+          executionEnvelope: expect.objectContaining({
+            requiredSourceArtifacts: [planPath],
+          }),
+        }),
+      }),
+    );
+    expect(
+      getSessionReadSnapshot("session:at-mention-text", planPath),
+    ).toEqual(
+      expect.objectContaining({
+        content: "# Plan\nUse C and CMake.\n",
+        viewKind: "full",
+      }),
+    );
   });
 });
