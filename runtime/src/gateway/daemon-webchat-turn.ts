@@ -560,6 +560,7 @@ export async function executeWebChatConversationTurn(
     webChat.pushToSession(msg.sessionId, {
       type: "chat.usage",
       payload: buildChatUsagePayload({
+        sessionId: msg.sessionId,
         totalTokens: getSessionTokenUsage(msg.sessionId),
         sessionTokenBudget,
         compacted: result.compacted ?? false,

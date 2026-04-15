@@ -873,6 +873,7 @@ export class VoiceBridge {
       send({
         type: "chat.usage",
         payload: buildChatUsagePayload({
+          sessionId,
           totalTokens: chatExecutor.getSessionTokenUsage(sessionId),
           sessionTokenBudget: this.config.sessionTokenBudget ?? 0,
           compacted: result.compacted ?? false,

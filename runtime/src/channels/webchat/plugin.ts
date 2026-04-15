@@ -50,6 +50,7 @@ import {
   metadataFromTranscript,
   recoverTranscriptHistory,
 } from "../../gateway/session-transcript.js";
+import type { ChatUsagePayload } from "../../gateway/chat-usage.js";
 import type {
   WebChatHandler,
   WebChatDeps,
@@ -1993,12 +1994,14 @@ export class WebChatChannel
   private buildChatSessionPayload(
     sessionId: string,
     workspaceRoot?: string,
-  ): { sessionId: string; workspaceRoot?: string } {
+  ): { sessionId: string; workspaceRoot?: string; usage?: ChatUsagePayload } {
     const resolvedWorkspaceRoot =
       workspaceRoot ?? this.sessionWorkspaceRoots.get(sessionId);
+    const usage = this.deps.getSessionUsageSnapshot?.(sessionId) ?? null;
     return {
       sessionId,
       ...(resolvedWorkspaceRoot ? { workspaceRoot: resolvedWorkspaceRoot } : {}),
+      ...(usage ? { usage } : {}),
     };
   }
 

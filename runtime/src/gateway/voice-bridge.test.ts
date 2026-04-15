@@ -275,6 +275,7 @@ describe("VoiceBridge delegation", () => {
     expect(send).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "chat.usage",
+        payload: expect.objectContaining({ sessionId: "session-1" }),
       }),
     );
     expect(result).toContain("Task completed");

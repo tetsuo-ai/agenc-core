@@ -129,6 +129,7 @@ import {
   DEFAULT_GROK_MODEL,
   type LLMProviderConfigCatalogEntry,
 } from "./llm-provider-manager.js";
+import { buildChatUsagePayload } from "./chat-usage.js";
 import type {
   ChatExecutorResult,
   DeterministicPipelineExecutor,
@@ -2257,6 +2258,26 @@ export class DaemonManager {
       hooks,
       voiceBridge,
       memoryBackend,
+      getSessionUsageSnapshot: (sessionId) => {
+        const contextWindowTokens =
+          this._resolvedContextWindowTokens ?? inferContextWindowTokens(config.llm);
+        const executor = this._chatExecutor;
+        if (!executor) {
+          return null;
+        }
+        return buildChatUsagePayload({
+          sessionId,
+          totalTokens: executor.getSessionTokenUsage(sessionId),
+          sessionTokenBudget: resolveSessionTokenBudget(
+            config.llm,
+            contextWindowTokens,
+          ),
+          compacted: false,
+          provider: config.llm?.provider,
+          model: config.llm?.model,
+          contextWindowTokens,
+        });
+      },
       approvalEngine: approvalEngine ?? undefined,
       skillToggle,
       connection: this._connectionManager?.getConnection(),

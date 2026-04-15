@@ -839,6 +839,42 @@ describe("WebChatChannel", () => {
       expect(gatewayMsg.scope).toBe("dm");
     });
 
+    it("includes a usage snapshot in the session payload when available", async () => {
+      deps = createDeps({
+        getSessionUsageSnapshot: (sessionId) => ({
+          sessionId,
+          totalTokens: 1250,
+          budget: 16000,
+          compacted: false,
+          contextWindowTokens: 64000,
+        }),
+      });
+      context = createContext();
+      channel = new WebChatChannel(deps);
+      await channel.initialize(context);
+      await channel.start();
+
+      const send = vi.fn<(response: ControlResponse) => void>();
+      channel.handleMessage(
+        "client_1",
+        "chat.message",
+        msg("chat.message", { content: "Hello usage!" }, "req-usage-1"),
+        send,
+      );
+
+      expect(findResponse(send, "chat.session", "req-usage-1")).toEqual(
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            sessionId: expect.any(String),
+            usage: expect.objectContaining({
+              totalTokens: 1250,
+              contextWindowTokens: 64000,
+            }),
+          }),
+        }),
+      );
+    });
+
     it("should forward and persist policy context for the session", async () => {
       const memoryBackend = new InMemoryBackend();
       deps = createDeps({ memoryBackend });

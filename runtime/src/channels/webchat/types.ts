@@ -44,6 +44,7 @@ import type { SessionShellProfile } from "../../gateway/shell-profile.js";
 import type { SessionWorkflowState } from "../../gateway/workflow-state.js";
 import type { SlashCommandRegistry } from "../../gateway/commands.js";
 import type { ActiveTaskContext } from "../../llm/turn-execution-contract-types.js";
+import type { ChatUsagePayload } from "../../gateway/chat-usage.js";
 
 // ============================================================================
 // WebChatDeps (dependency injection)
@@ -187,6 +188,8 @@ export interface WebChatDeps {
   connection?: import("@solana/web3.js").Connection;
   /** Optional callback to broadcast events to all subscribed WS clients. */
   broadcastEvent?: (eventType: string, data: Record<string, unknown>) => void;
+  /** Optional callback to resolve the latest usage snapshot for one session. */
+  getSessionUsageSnapshot?: (sessionId: string) => ChatUsagePayload | null;
   /** Optional desktop sandbox manager for desktop.* handlers. */
   desktopManager?: import("../../desktop/manager.js").DesktopSandboxManager;
   /**
