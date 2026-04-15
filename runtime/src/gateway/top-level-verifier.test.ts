@@ -202,6 +202,83 @@ describe("runTopLevelVerifierValidation", () => {
     expect(decision.runtimeVerifier.overall).toBe("fail");
   });
 
+  it("runs verifier work for non-trivial general turns with derived target artifacts", async () => {
+    const spawn = vi.fn(async () => "subagent:verify-general");
+    const waitForResult = vi.fn(async () => ({
+      sessionId: "subagent:verify-general",
+      output: "All good.\nVERDICT: PASS",
+      success: true,
+      durationMs: 10,
+      toolCalls: [],
+      structuredOutput: {
+        type: "json_schema",
+        name: "agenc_top_level_verifier_decision",
+        parsed: {
+          verdict: "pass",
+          summary: "Derived-artifact verification passed.",
+        },
+      },
+      completionState: "completed",
+      stopReason: "completed",
+    }));
+
+    const decision = await runTopLevelVerifierValidation({
+      sessionId: "session:test",
+      userRequest: "Finish the shell implementation and verify it",
+      result: createResult({
+        toolCalls: [
+          {
+            name: "system.writeFile",
+            args: { path: "src/main.c" },
+            result: '{"ok":true}',
+            isError: false,
+            durationMs: 5,
+          },
+          {
+            name: "system.editFile",
+            args: { path: "include/shell.h" },
+            result: '{"ok":true}',
+            isError: false,
+            durationMs: 5,
+          },
+          {
+            name: "system.appendFile",
+            args: { path: "tests/smoke.c" },
+            result: '{"ok":true}',
+            isError: false,
+            durationMs: 5,
+          },
+        ],
+        turnExecutionContract: {
+          ...createResult().turnExecutionContract,
+          turnClass: "dialogue",
+          ownerMode: "none",
+          sourceArtifacts: [],
+          targetArtifacts: [],
+        },
+        activeTaskContext: undefined,
+      }),
+      subAgentManager: { spawn, waitForResult },
+      verifierService: createVerifierService(),
+    });
+
+    expect(spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requiredToolEvidence: expect.objectContaining({
+          executionEnvelope: expect.objectContaining({
+            targetArtifacts: [
+              "/workspace/src/main.c",
+              "/workspace/include/shell.h",
+              "/workspace/tests/smoke.c",
+            ],
+          }),
+        }),
+      }),
+    );
+    expect(decision.outcome).toBe("pass");
+    expect(decision.runtimeVerifier.overall).toBe("pass");
+  });
+
   it("still runs verifier work when target artifacts are declared without structured writes", async () => {
     const spawn = vi.fn(async () => "subagent:verify-1");
     const waitForResult = vi.fn(async () => ({

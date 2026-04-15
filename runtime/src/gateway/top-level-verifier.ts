@@ -1,12 +1,17 @@
 import { tmpdir } from "node:os";
 
-import type { ChatExecutorResult } from "../llm/chat-executor-types.js";
+import type {
+  ChatExecutorResult,
+  ToolCallRecord,
+} from "../llm/chat-executor-types.js";
 import { type PlannerVerificationSnapshot } from "../workflow/completion-state.js";
 import { createExecutionEnvelope } from "../workflow/execution-envelope.js";
 import { areDocumentationOnlyArtifacts } from "../workflow/artifact-paths.js";
 import {
   normalizeArtifactPaths,
+  normalizeEnvelopePath,
   normalizeWorkspaceRoot,
+  isPathWithinRoot,
 } from "../workflow/path-normalization.js";
 import type { Logger } from "../utils/logger.js";
 import type { AgentDefinition } from "./agent-loader.js";
@@ -111,6 +116,15 @@ const VERIFY_STRUCTURED_OUTPUT: LLMStructuredOutputRequest = {
   },
 };
 
+const IMPLICIT_VERIFIER_MUTATION_THRESHOLD = 3;
+const IMPLICIT_VERIFIER_MUTATION_TOOL_NAMES = new Set([
+  "system.writeFile",
+  "system.appendFile",
+  "system.editFile",
+  "system.move",
+  "desktop.text_editor",
+]);
+
 interface TopLevelVerifierParams {
   readonly sessionId: string;
   readonly userRequest: string;
@@ -168,6 +182,12 @@ export interface TopLevelVerifierTraceEvent {
   readonly verdict?: RuntimeVerifierVerdict["overall"];
 }
 
+interface TopLevelVerifierArtifactResolution {
+  readonly workspaceRoot?: string;
+  readonly sourceArtifacts: readonly string[];
+  readonly targetArtifacts: readonly string[];
+}
+
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
   return `${text.slice(0, max - 1).trimEnd()}…`;
@@ -192,6 +212,128 @@ export function isExplicitTopLevelVerifierRequiredForTurn(params: {
     return false;
   }
   if (areDocumentationOnlyArtifacts(targetArtifacts)) {
+    return false;
+  }
+  return true;
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : undefined;
+}
+
+function collectImplicitVerifierArtifacts(params: {
+  readonly allToolCalls: readonly ToolCallRecord[];
+  readonly workspaceRoot?: string;
+}): readonly string[] {
+  const normalizedWorkspaceRoot = normalizeWorkspaceRoot(params.workspaceRoot);
+  const collected: string[] = [];
+  const seen = new Set<string>();
+
+  const addCandidate = (rawPath: string | undefined): void => {
+    if (!rawPath) return;
+    const normalized = normalizeEnvelopePath(rawPath, normalizedWorkspaceRoot);
+    if (!normalized) return;
+    if (
+      normalizedWorkspaceRoot &&
+      !isPathWithinRoot(normalized, normalizedWorkspaceRoot)
+    ) {
+      return;
+    }
+    if (seen.has(normalized)) return;
+    seen.add(normalized);
+    collected.push(normalized);
+  };
+
+  for (const toolCall of params.allToolCalls) {
+    if (
+      toolCall.isError ||
+      !IMPLICIT_VERIFIER_MUTATION_TOOL_NAMES.has(toolCall.name)
+    ) {
+      continue;
+    }
+    if (toolCall.name === "system.move") {
+      addCandidate(asString(toolCall.args.destination));
+      continue;
+    }
+    addCandidate(asString(toolCall.args.path));
+  }
+
+  return collected;
+}
+
+export function resolveTopLevelVerifierArtifacts(params: {
+  readonly turnExecutionContract:
+    | Pick<
+        TurnExecutionContract,
+        | "workspaceRoot"
+        | "sourceArtifacts"
+        | "targetArtifacts"
+      >
+    | undefined;
+  readonly allToolCalls?: readonly ToolCallRecord[];
+  readonly workspaceRoot?: string;
+}): TopLevelVerifierArtifactResolution {
+  const workspaceRoot = normalizeWorkspaceRoot(
+    params.workspaceRoot ?? params.turnExecutionContract?.workspaceRoot,
+  );
+  const sourceArtifacts = normalizeArtifactPaths(
+    params.turnExecutionContract?.sourceArtifacts ?? [],
+    workspaceRoot,
+  );
+  const explicitTargetArtifacts = normalizeArtifactPaths(
+    params.turnExecutionContract?.targetArtifacts ?? [],
+    workspaceRoot,
+  );
+  if (explicitTargetArtifacts.length > 0) {
+    return {
+      workspaceRoot,
+      sourceArtifacts,
+      targetArtifacts: explicitTargetArtifacts,
+    };
+  }
+  return {
+    workspaceRoot,
+    sourceArtifacts,
+    targetArtifacts: collectImplicitVerifierArtifacts({
+      allToolCalls: params.allToolCalls ?? [],
+      workspaceRoot,
+    }),
+  };
+}
+
+export function isTopLevelVerifierRequiredForTurn(params: {
+  readonly turnExecutionContract:
+    | Pick<
+        TurnExecutionContract,
+        | "turnClass"
+        | "completionContract"
+        | "verificationContract"
+        | "workspaceRoot"
+        | "sourceArtifacts"
+        | "targetArtifacts"
+      >
+    | undefined;
+  readonly allToolCalls?: readonly ToolCallRecord[];
+  readonly workspaceRoot?: string;
+}): boolean {
+  if (
+    isExplicitTopLevelVerifierRequiredForTurn({
+      turnExecutionContract: params.turnExecutionContract,
+    })
+  ) {
+    return true;
+  }
+  const artifacts = resolveTopLevelVerifierArtifacts({
+    turnExecutionContract: params.turnExecutionContract,
+    allToolCalls: params.allToolCalls,
+    workspaceRoot: params.workspaceRoot,
+  });
+  if (artifacts.targetArtifacts.length < IMPLICIT_VERIFIER_MUTATION_THRESHOLD) {
+    return false;
+  }
+  if (areDocumentationOnlyArtifacts(artifacts.targetArtifacts)) {
     return false;
   }
   return true;
@@ -373,9 +515,15 @@ function shouldRunTopLevelVerifier(params: TopLevelVerifierParams): boolean {
   if (isSubAgentSessionId(params.sessionId)) return false;
   if (params.result.stopReason !== "completed") return false;
   if (params.result.completionState !== "completed") return false;
+  const verifierArtifacts = resolveTopLevelVerifierArtifacts({
+    turnExecutionContract: params.result.turnExecutionContract,
+    allToolCalls: params.result.toolCalls,
+  });
   if (
-    !isExplicitTopLevelVerifierRequiredForTurn({
+    !isTopLevelVerifierRequiredForTurn({
       turnExecutionContract: params.result.turnExecutionContract,
+      allToolCalls: params.result.toolCalls,
+      workspaceRoot: verifierArtifacts.workspaceRoot,
     })
   ) {
     return false;
@@ -386,38 +534,41 @@ function shouldRunTopLevelVerifier(params: TopLevelVerifierParams): boolean {
     runtimeRequired: true,
     projectBootstrap:
       params.result.runtimeContractSnapshot?.flags.verifierProjectBootstrap,
-    workspaceRoot: params.result.turnExecutionContract.workspaceRoot,
+    workspaceRoot: verifierArtifacts.workspaceRoot,
   }).required;
 }
 
 function resolveTopLevelVerifierRequirement(
   params: TopLevelVerifierParams,
 ): VerifierRequirement | null {
-  const explicitVerifierRequired = isExplicitTopLevelVerifierRequiredForTurn({
+  const verifierRequired = isTopLevelVerifierRequiredForTurn({
     turnExecutionContract: params.result.turnExecutionContract,
+    allToolCalls: params.result.toolCalls,
   });
-  if (!explicitVerifierRequired) {
+  if (!verifierRequired) {
     return null;
   }
+  const verifierArtifacts = resolveTopLevelVerifierArtifacts({
+    turnExecutionContract: params.result.turnExecutionContract,
+    allToolCalls: params.result.toolCalls,
+  });
   if (!params.verifierService) {
-    return explicitVerifierRequired
-      ? {
-          required: true,
-          bootstrapSource: "fallback",
-          profiles: ["generic"],
-          probeCategories: [],
-          mutationPolicy: "read_only_workspace",
-          allowTempArtifacts: true,
-          rationale: ["runtime verifier required"],
-        }
-      : null;
+    return {
+      required: true,
+      bootstrapSource: "fallback",
+      profiles: ["generic"],
+      probeCategories: [],
+      mutationPolicy: "read_only_workspace",
+      allowTempArtifacts: true,
+      rationale: ["runtime verifier required"],
+    };
   }
   return params.verifierService.resolveVerifierRequirement({
     requested: true,
     runtimeRequired: true,
     projectBootstrap:
       params.result.runtimeContractSnapshot?.flags.verifierProjectBootstrap,
-    workspaceRoot: params.result.turnExecutionContract.workspaceRoot,
+    workspaceRoot: verifierArtifacts.workspaceRoot,
   });
 }
 
@@ -429,10 +580,10 @@ function getTopLevelVerifierSkipReason(
   if (params.result.completionState !== "completed") {
     return "completion_state_not_completed";
   }
-  if (params.result.turnExecutionContract.turnClass !== "workflow_implementation") {
-    return "turn_class_not_workflow_implementation";
-  }
-  const targetArtifacts = params.result.turnExecutionContract.targetArtifacts ?? [];
+  const targetArtifacts = resolveTopLevelVerifierArtifacts({
+    turnExecutionContract: params.result.turnExecutionContract,
+    allToolCalls: params.result.toolCalls,
+  }).targetArtifacts;
   if (targetArtifacts.length === 0) return "missing_target_artifacts";
   if (areDocumentationOnlyArtifacts(targetArtifacts)) {
     return "documentation_only_artifacts";
@@ -446,13 +597,11 @@ function buildTopLevelVerifierSkipBlockingMessage(reason: string): string {
       ? "the verifier cannot run from a subagent session"
       : reason === "stop_reason_not_completed"
         ? "the turn has not reached a completed stop reason yet"
-        : reason === "completion_state_not_completed"
+      : reason === "completion_state_not_completed"
         ? "the workflow completion state is not completed yet"
-        : reason === "turn_class_not_workflow_implementation"
-          ? "the turn is not classified as workflow_implementation"
-            : reason === "documentation_only_artifacts"
-              ? "the declared target artifacts are documentation-only"
-            : "no target artifacts were declared for verification";
+        : reason === "documentation_only_artifacts"
+          ? "the declared target artifacts are documentation-only"
+          : "no target artifacts were declared for verification";
   return [
     "Runtime verification is required before completion can be accepted.",
     "",
@@ -571,9 +720,11 @@ export async function runTopLevelVerifierValidation(
     };
   }
 
-  const workspaceRoot = normalizeWorkspaceRoot(
-    params.result.turnExecutionContract.workspaceRoot,
-  );
+  const verifierArtifacts = resolveTopLevelVerifierArtifacts({
+    turnExecutionContract: params.result.turnExecutionContract,
+    allToolCalls: params.result.toolCalls,
+  });
+  const workspaceRoot = verifierArtifacts.workspaceRoot;
   const effectiveVerifierRequirement =
     verifierRequirement ??
     params.verifierService.resolveVerifierRequirement({
@@ -584,14 +735,8 @@ export async function runTopLevelVerifierValidation(
         params.result.runtimeContractSnapshot?.flags.verifierProjectBootstrap,
       workspaceRoot,
     });
-  const sourceArtifacts = normalizeArtifactPaths(
-    params.result.turnExecutionContract.sourceArtifacts ?? [],
-    workspaceRoot,
-  );
-  const targetArtifacts = normalizeArtifactPaths(
-    params.result.turnExecutionContract.targetArtifacts ?? [],
-    workspaceRoot,
-  );
+  const sourceArtifacts = verifierArtifacts.sourceArtifacts;
+  const targetArtifacts = verifierArtifacts.targetArtifacts;
   const definition = selectVerifyDefinition(params.agentDefinitions);
   const inspectionArtifacts = [...new Set([...sourceArtifacts, ...targetArtifacts])];
   const executionEnvelope = createExecutionEnvelope({

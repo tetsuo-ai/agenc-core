@@ -17,7 +17,8 @@ import type {
   RuntimeContractFlags,
 } from "../runtime-contract/types.js";
 import {
-  isExplicitTopLevelVerifierRequiredForTurn,
+  isTopLevelVerifierRequiredForTurn,
+  resolveTopLevelVerifierArtifacts,
   runTopLevelVerifierValidation,
 } from "../gateway/top-level-verifier.js";
 
@@ -49,9 +50,15 @@ export function buildCompletionValidators(params: {
           params.stopHookRuntime.maxAttempts,
         )
       : sharedCorrectionBudgetCap;
-  const topLevelVerifierEnabled = isExplicitTopLevelVerifierRequiredForTurn({
+  const verifierArtifacts = resolveTopLevelVerifierArtifacts({
     turnExecutionContract: params.ctx.turnExecutionContract,
     allToolCalls: params.ctx.allToolCalls,
+    workspaceRoot: params.ctx.runtimeWorkspaceRoot,
+  });
+  const topLevelVerifierEnabled = isTopLevelVerifierRequiredForTurn({
+    turnExecutionContract: params.ctx.turnExecutionContract,
+    allToolCalls: params.ctx.allToolCalls,
+    workspaceRoot: verifierArtifacts.workspaceRoot,
   });
   let verificationReadyGate:
     | CompletionValidatorExecutionResult
@@ -81,7 +88,7 @@ export function buildCompletionValidators(params: {
           verificationReady: {
             deterministicAcceptanceProbesEnabled: false,
             topLevelVerifierEnabled,
-            targetArtifacts: params.ctx.turnExecutionContract.targetArtifacts,
+            targetArtifacts: verifierArtifacts.targetArtifacts,
           },
         },
       });

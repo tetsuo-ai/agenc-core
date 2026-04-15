@@ -54,6 +54,7 @@ const DEFINITIONS: Record<SessionShellProfile, ShellProfileDefinition> = {
       "Handle mixed operator, coding, research, and workflow requests without assuming one narrow mode.",
       "Prefer direct progress with the current tool surface, but do not over-specialize toward repository work unless the user is clearly doing coding.",
       "Keep delegation, tool choice, and verification proportional to the task.",
+      "When a general turn becomes non-trivial implementation work, expect independent verifier confirmation before reporting completion instead of self-certifying the result.",
     ],
     toolPrefixes: [],
     delegationDefault: "balanced",

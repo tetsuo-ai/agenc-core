@@ -371,6 +371,81 @@ describe("completion-validators", () => {
     expect(result.outcome).toBe("skipped");
   });
 
+  it("runs the top-level verifier for non-trivial general turns with derived artifacts", async () => {
+    const flags = makeFlags({
+      verifierRuntimeRequired: true,
+    });
+    const spawn = vi.fn(async () => "subagent:verify-general");
+    const validators = buildCompletionValidators({
+      ctx: makeCtx({
+        flags,
+        workspaceRoot: "/tmp/workspace",
+        allToolCalls: [
+          successfulWrite("src/main.c"),
+          {
+            name: "system.editFile",
+            args: { path: "include/shell.h", oldText: "old", newText: "new" },
+            result: '{"ok":true}',
+            isError: false,
+            durationMs: 1,
+          },
+          {
+            name: "system.appendFile",
+            args: { path: "tests/smoke.c", content: "int main(void) { return 0; }" },
+            result: '{"ok":true}',
+            isError: false,
+            durationMs: 1,
+          },
+        ],
+      }),
+      runtimeContractFlags: flags,
+      completionValidation: {
+        topLevelVerifier: {
+          subAgentManager: {
+            spawn,
+            waitForResult: vi.fn(async () => ({
+              sessionId: "subagent:verify-general",
+              output: "All good.\nVERDICT: PASS",
+              success: true,
+              durationMs: 1,
+              toolCalls: [],
+              structuredOutput: {
+                type: "json_schema",
+                name: "agenc_top_level_verifier_decision",
+                parsed: {
+                  verdict: "pass",
+                  summary: "Derived-artifact verification passed.",
+                },
+              },
+              completionState: "completed",
+              stopReason: "completed",
+            })),
+          },
+          verifierService: {
+            resolveVerifierRequirement: vi.fn(() => ({
+              required: true,
+              profiles: ["generic"],
+              probeCategories: [],
+              mutationPolicy: "read_only_workspace",
+              allowTempArtifacts: true,
+              bootstrapSource: "disabled",
+              rationale: ["test"],
+            })),
+            shouldVerifySubAgentResult: vi.fn(() => true),
+          },
+        },
+      },
+    });
+
+    const result = await validators.find(
+      (validator) => validator.id === "top_level_verifier",
+    )!.execute();
+
+    expect(spawn).toHaveBeenCalled();
+    expect(result.outcome).toBe("pass");
+    expect(result.verifier?.overall).toBe("pass");
+  });
+
   it("runs the top-level verifier even when runtimeContractV2 is false", async () => {
     const flags = makeFlags({
       runtimeContractV2: false,
