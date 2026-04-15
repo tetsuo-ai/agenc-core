@@ -21,11 +21,13 @@ describe("shell-profile", () => {
   it("appends profile-specific prompt guidance", () => {
     const prompt = appendShellProfilePromptSection({
       systemPrompt: "Base prompt",
-      profile: "validation",
+      profile: "general",
     });
 
-    expect(prompt).toContain("## Validation Shell Defaults");
-    expect(prompt).toContain("Bias toward reproduction, inspection, verification");
+    expect(prompt).toContain("## General Shell Defaults");
+    expect(prompt).toContain(
+      "expect independent verifier confirmation before reporting completion",
+    );
   });
 
   it("selects coding-biased tools without dropping the entire catalog", () => {

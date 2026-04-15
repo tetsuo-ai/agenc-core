@@ -14,7 +14,6 @@ import type { SessionShellProfile } from "../gateway/shell-profile.js";
 export type CompletionValidatorId =
   | "artifact_evidence"
   | "turn_end_stop_gate"
-  | "request_task_progress"
   | "top_level_verifier";
 
 export type CompletionValidatorOutcome =
@@ -382,8 +381,6 @@ export interface DelegatedRuntimeResult {
 export const COMPLETION_VALIDATOR_ORDER: readonly CompletionValidatorId[] = [
   "artifact_evidence",
   "turn_end_stop_gate",
-  "request_task_progress",
-  "top_level_verifier",
 ];
 
 export function createRuntimeContractSnapshot(
@@ -396,9 +393,7 @@ export function createRuntimeContractSnapshot(
       id,
       enabled:
         id === "artifact_evidence" ||
-        id === "request_task_progress" ||
-        (id === "turn_end_stop_gate" && flags.stopHooksEnabled) ||
-        (id === "top_level_verifier" && flags.verifierRuntimeRequired),
+        (id === "turn_end_stop_gate" && flags.stopHooksEnabled),
       executed: false,
       outcome: "skipped",
     })),

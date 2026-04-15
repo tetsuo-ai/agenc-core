@@ -1,7 +1,3 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
 import { describe, expect, it, vi } from "vitest";
 
 import { buildStopHookRuntime } from "./hooks/stop-hooks.js";
@@ -9,11 +5,7 @@ import { buildCompletionValidators } from "./completion-validators.js";
 import type { ExecutionContext, ToolCallRecord } from "./chat-executor-types.js";
 import { createRuntimeContractSnapshot } from "../runtime-contract/types.js";
 import type { RuntimeContractFlags } from "../runtime-contract/types.js";
-import {
-  createRequestTaskProgressState,
-  observeRequestTaskToolRecord,
-  setAllowedRequestTaskMilestones,
-} from "./request-task-progress.js";
+import { createRequestTaskProgressState } from "./request-task-progress.js";
 
 function makeFlags(
   overrides: Partial<RuntimeContractFlags> = {},
@@ -105,44 +97,8 @@ function syntheticAcceptanceProbe(result: unknown): ToolCallRecord {
   };
 }
 
-function taskToolResult(params: {
-  readonly toolName?: "task.create" | "task.update" | "task.get";
-  readonly id: string;
-  readonly status: "pending" | "in_progress" | "completed" | "deleted";
-  readonly metadata?: Record<string, unknown>;
-}): ToolCallRecord {
-  const toolName = params.toolName ?? "task.update";
-  return {
-    name: toolName,
-    args: { taskId: params.id },
-    result: JSON.stringify({
-      task: {
-        id: params.id,
-        subject: `Task ${params.id}`,
-        status: params.status,
-      },
-      taskRuntime: {
-        fullTask: {
-          id: params.id,
-          subject: `Task ${params.id}`,
-          description: `Description ${params.id}`,
-          status: params.status,
-          blocks: [],
-          blockedBy: [],
-          ...(params.metadata ? { metadata: params.metadata } : {}),
-          createdAt: 1,
-          updatedAt: 2,
-        },
-        runtimeMetadata: {},
-      },
-    }),
-    isError: false,
-    durationMs: 1,
-  };
-}
-
 describe("completion-validators", () => {
-  it("registers request_task_progress before the explicit top-level verifier", () => {
+  it("registers only the inline completion-integrity validators", () => {
     const validators = buildCompletionValidators({
       ctx: makeCtx({}),
       runtimeContractFlags: makeFlags(),
@@ -151,8 +107,6 @@ describe("completion-validators", () => {
     expect(validators.map((validator) => validator.id)).toEqual([
       "artifact_evidence",
       "turn_end_stop_gate",
-      "request_task_progress",
-      "top_level_verifier",
     ]);
   });
 
@@ -286,244 +240,14 @@ describe("completion-validators", () => {
     expect(result.blockingMessage).toContain("bounded recovery loop");
   });
 
-  it("gates the verification stage before deterministic probes run", async () => {
-    const workspaceRoot = mkdtempSync(join(tmpdir(), "verification-ready-"));
-    writeFileSync(join(workspaceRoot, "Makefile"), "all:\n\t@true\n");
-    const toolHandler = vi.fn(async () =>
-      JSON.stringify({
-        exitCode: 0,
-        stdout: "ok",
-        stderr: "",
-        timedOut: false,
-        durationMs: 1,
-        truncated: false,
-      }),
-    );
-    const flags = makeFlags({
-      runtimeContractV2: true,
-      stopHooksEnabled: true,
-      verifierRuntimeRequired: true,
-    });
+  it("does not register task progress as a completion gate", () => {
     const validators = buildCompletionValidators({
-      ctx: makeCtx({
-        workspaceRoot,
-        activeToolHandler: toolHandler,
-        allToolCalls: [successfulWrite(join(workspaceRoot, "src/main.c"))],
-        targetArtifacts: [join(workspaceRoot, "src/main.c")],
-        turnClass: "workflow_implementation",
-        ownerMode: "workflow_owner",
-        flags,
-        completionContract: {
-          taskClass: "build_required",
-          placeholdersAllowed: false,
-          partialCompletionAllowed: false,
-        },
-      }),
-      runtimeContractFlags: flags,
-      stopHookRuntime: buildStopHookRuntime({
-        enabled: true,
-        handlers: [
-          {
-            id: "verification-block",
-            phase: "VerificationReady",
-            kind: "command",
-            target: "printf '{\"blockingError\":\"verification blocked\"}'",
-          },
-        ],
-      }),
-    });
-
-    const topLevel = validators.find(
-      (validator) => validator.id === "top_level_verifier",
-    );
-    const topLevelResult = await topLevel!.execute();
-
-    expect(topLevelResult.outcome).toBe("retry_with_blocking_message");
-    expect(topLevelResult.blockingMessage).toBe("verification blocked");
-    expect(topLevelResult.stopHookResult?.phase).toBe("VerificationReady");
-    expect(toolHandler).not.toHaveBeenCalled();
-  });
-
-  it("skips the top-level verifier for documentation-only completion turns", async () => {
-    const flags = makeFlags({
-      verifierRuntimeRequired: true,
-    });
-    const validators = buildCompletionValidators({
-      ctx: makeCtx({
-        flags,
-        allToolCalls: [successfulWrite("/tmp/workspace/docs/readme.md")],
-        targetArtifacts: ["/tmp/workspace/docs/readme.md"],
-        turnClass: "workflow_implementation",
-        ownerMode: "workflow_owner",
-        completionContract: {
-          taskClass: "artifact_only",
-          placeholdersAllowed: false,
-          partialCompletionAllowed: false,
-        },
-      }),
-      runtimeContractFlags: flags,
-    });
-
-    const result = await validators.find(
-      (validator) => validator.id === "top_level_verifier",
-    )!.execute();
-
-    expect(result.outcome).toBe("skipped");
-  });
-
-  it("runs the top-level verifier even when runtimeContractV2 is false", async () => {
-    const flags = makeFlags({
-      runtimeContractV2: false,
-      verifierRuntimeRequired: true,
-    });
-    const ctx = makeCtx({
-      flags,
-      allToolCalls: [successfulWrite("/tmp/workspace/src/main.c")],
-      targetArtifacts: ["/tmp/workspace/src/main.c"],
-    });
-    ctx.turnExecutionContract = {
-      version: 1,
-      turnClass: "workflow_implementation",
-      ownerMode: "workflow_owner",
-      workspaceRoot: "/tmp/workspace",
-      sourceArtifacts: ["/tmp/workspace/PLAN.md"],
-      targetArtifacts: ["/tmp/workspace/src/main.c"],
-      delegationPolicy: "direct_owner",
-      completionContract: {
-        taskClass: "build_required",
-        placeholdersAllowed: false,
-        partialCompletionAllowed: false,
-      },
-      contractFingerprint: "contract-1",
-      taskLineageId: "task-1",
-    } as any;
-    const validators = buildCompletionValidators({
-      ctx,
-      runtimeContractFlags: flags,
-      completionValidation: {
-        topLevelVerifier: {
-          subAgentManager: {
-            spawn: vi.fn(async () => "subagent:verify"),
-            waitForResult: vi.fn(async () => ({
-              sessionId: "subagent:verify",
-              output: "All good.\nVERDICT: PASS",
-              success: true,
-              durationMs: 1,
-              toolCalls: [
-                {
-                  name: "verification.runProbe",
-                  args: { probeId: "build" },
-                  result:
-                    "{\"ok\":true,\"__agencVerification\":{\"probeId\":\"build\",\"category\":\"build\",\"profile\":\"generic\"}}",
-                  isError: false,
-                  durationMs: 1,
-                },
-              ],
-              structuredOutput: {
-                type: "json_schema",
-                name: "agenc_top_level_verifier_decision",
-                parsed: {
-                  verdict: "pass",
-                  summary: "Probe-backed verification passed.",
-                },
-              },
-              completionState: "completed",
-              stopReason: "completed",
-            })),
-          },
-          verifierService: {
-            resolveVerifierRequirement: vi.fn(() => ({
-              required: true,
-              profiles: ["generic"],
-              probeCategories: ["build"],
-              mutationPolicy: "read_only_workspace",
-              allowTempArtifacts: true,
-              bootstrapSource: "disabled",
-              rationale: ["test"],
-            })),
-            shouldVerifySubAgentResult: vi.fn(() => true),
-          },
-        },
-      },
-    });
-
-    const result = await validators.find(
-      (validator) => validator.id === "top_level_verifier",
-    )!.execute();
-
-    expect(result.outcome).toBe("pass");
-    expect(result.verifier?.overall).toBe("pass");
-  });
-
-  it("does not block finalization when request milestones remain open without an in_progress task", async () => {
-    const ctx = makeCtx({});
-    setAllowedRequestTaskMilestones(ctx.requestTaskState, [
-      { id: "phase_1", description: "Finish phase 1" },
-    ]);
-    const validators = buildCompletionValidators({
-      ctx,
+      ctx: makeCtx({}),
       runtimeContractFlags: makeFlags(),
     });
 
-    const result = await validators.find(
-      (validator) => validator.id === "request_task_progress",
-    )!.execute();
-
-    expect(result.outcome).toBe("pass");
-  });
-
-  it("blocks malformed runtime milestone metadata before allowing completion", async () => {
-    const ctx = makeCtx({});
-    setAllowedRequestTaskMilestones(ctx.requestTaskState, [
-      { id: "phase_1", description: "Finish phase 1" },
-    ]);
-    observeRequestTaskToolRecord(
-      ctx.requestTaskState,
-      taskToolResult({
-        id: "1",
-        status: "completed",
-        metadata: {
-          _runtime: {
-            milestoneIds: ["phase_1", "phase_1"],
-          },
-        },
-      }),
-    );
-    ctx.completedRequestMilestoneIds = [...ctx.requestTaskState.completedMilestoneIds];
-    const validators = buildCompletionValidators({
-      ctx,
-      runtimeContractFlags: makeFlags(),
-    });
-
-    const result = await validators.find(
-      (validator) => validator.id === "request_task_progress",
-    )!.execute();
-
-    expect(result.outcome).toBe("retry_with_blocking_message");
-    expect(result.blockingMessage).toContain("malformed");
-    expect(result.blockingMessage).toContain("#1");
-  });
-
-  it("does not require a verification task after three completed non-verification tasks", async () => {
-    const ctx = makeCtx({});
-    for (const id of ["1", "2", "3"]) {
-      observeRequestTaskToolRecord(
-        ctx.requestTaskState,
-        taskToolResult({
-          id,
-          status: "completed",
-        }),
-      );
-    }
-    const validators = buildCompletionValidators({
-      ctx,
-      runtimeContractFlags: makeFlags(),
-    });
-
-    const result = await validators.find(
-      (validator) => validator.id === "request_task_progress",
-    )!.execute();
-
-    expect(result.outcome).toBe("pass");
+    expect(
+      validators.find((validator) => validator.id === "request_task_progress"),
+    ).toBeUndefined();
   });
 });

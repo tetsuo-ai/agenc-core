@@ -16,10 +16,6 @@ import type {
   CompletionValidatorId,
   RuntimeContractFlags,
 } from "../runtime-contract/types.js";
-import {
-  isExplicitTopLevelVerifierRequiredForTurn,
-  runTopLevelVerifierValidation,
-} from "../gateway/top-level-verifier.js";
 
 export interface CompletionValidatorExecutionResult
   extends CompletionValidatorResult {
@@ -49,73 +45,6 @@ export function buildCompletionValidators(params: {
           params.stopHookRuntime.maxAttempts,
         )
       : sharedCorrectionBudgetCap;
-  const topLevelVerifierEnabled = isExplicitTopLevelVerifierRequiredForTurn({
-    turnExecutionContract: params.ctx.turnExecutionContract,
-    allToolCalls: params.ctx.allToolCalls,
-  });
-  let verificationReadyGate:
-    | CompletionValidatorExecutionResult
-    | undefined;
-
-  const ensureVerificationReadyGate =
-    async (): Promise<CompletionValidatorExecutionResult> => {
-      if (verificationReadyGate) {
-        return verificationReadyGate;
-      }
-      if (!topLevelVerifierEnabled) {
-        verificationReadyGate = {
-          id: "top_level_verifier",
-          outcome: "pass",
-        };
-        return verificationReadyGate;
-      }
-      const hookResult = await runStopHookPhase({
-        runtime: params.stopHookRuntime,
-        phase: "VerificationReady",
-        matchKey: params.ctx.sessionId,
-        context: {
-          phase: "VerificationReady",
-          sessionId: params.ctx.sessionId,
-          runtimeWorkspaceRoot: params.ctx.runtimeWorkspaceRoot,
-          allToolCalls: params.ctx.allToolCalls,
-          verificationReady: {
-            deterministicAcceptanceProbesEnabled: false,
-            topLevelVerifierEnabled,
-            targetArtifacts: params.ctx.turnExecutionContract.targetArtifacts,
-          },
-        },
-      });
-      verificationReadyGate =
-        hookResult.outcome === "retry_with_blocking_message"
-          ? {
-              id: "top_level_verifier",
-              outcome: "retry_with_blocking_message",
-              reason: hookResult.reason ?? "verification_ready",
-              blockingMessage: hookResult.blockingMessage,
-              evidence: hookResult.evidence,
-              maxAttempts: stopHookRetryBudgetCap,
-              exhaustedDetail:
-                "Verification-ready recovery exhausted after stop-hook intervention.",
-              stopHookResult: hookResult,
-            }
-          : hookResult.outcome === "prevent_continuation"
-            ? {
-                id: "top_level_verifier",
-                outcome: "fail_closed",
-                reason: hookResult.reason ?? "verification_ready",
-                exhaustedDetail:
-                  hookResult.stopReason ??
-                  "Verification-ready stop hook prevented continuation.",
-                stopHookResult: hookResult,
-              }
-            : {
-                id: "top_level_verifier",
-                outcome: "pass",
-                evidence: hookResult.evidence,
-                stopHookResult: hookResult,
-              };
-      return verificationReadyGate;
-    };
 
   return [
     {
@@ -201,102 +130,6 @@ export function buildCompletionValidators(params: {
           };
         }
         return { id: "turn_end_stop_gate", outcome: "pass" };
-      },
-    },
-    {
-      id: "request_task_progress",
-      enabled: true,
-      async execute(): Promise<CompletionValidatorExecutionResult> {
-        const requestTaskState = params.ctx.requestTaskState;
-        const hasMalformedTaskMetadata =
-          requestTaskState.malformedTasks.length > 0;
-        if (!hasMalformedTaskMetadata) {
-          return { id: "request_task_progress", outcome: "pass" };
-        }
-
-        const maxAttempts = sharedCorrectionBudgetCap;
-        const allowedIds = requestTaskState.allowedMilestones.map(
-          (milestone) => milestone.id,
-        );
-        const malformedDetails = requestTaskState.malformedTasks
-          .map((task) => `#${task.taskId}: ${task.errors.join("; ")}`)
-          .join("\n");
-        return {
-          id: "request_task_progress",
-          outcome: "retry_with_blocking_message",
-          reason: "request_task_progress",
-          blockingMessage:
-            "Task runtime metadata is malformed and must be corrected before finalization.\n" +
-            `${malformedDetails}\n` +
-            (allowedIds.length > 0
-              ? `Allowed request milestone ids: ${allowedIds.join(", ")}`
-              : "Remove or correct malformed `metadata._runtime` fields before continuing."),
-          evidence: {
-            malformedTasks: requestTaskState.malformedTasks,
-            allowedMilestoneIds: allowedIds,
-          },
-          maxAttempts,
-          exhaustedDetail:
-            "Request task progress recovery exhausted while malformed task metadata remained in the session task state.",
-        };
-      },
-    },
-    {
-      id: "top_level_verifier",
-      enabled: topLevelVerifierEnabled,
-      async execute(): Promise<CompletionValidatorExecutionResult> {
-        if (!topLevelVerifierEnabled) {
-          return { id: "top_level_verifier", outcome: "skipped" };
-        }
-        const gate = await ensureVerificationReadyGate();
-        if (gate.outcome !== "pass") {
-          return {
-            ...gate,
-            id: "top_level_verifier",
-          };
-        }
-        const validation = await runTopLevelVerifierValidation({
-          sessionId: params.ctx.sessionId,
-          userRequest: params.ctx.messageText,
-          result: {
-            content: params.ctx.response?.content ?? "",
-            stopReason: params.ctx.stopReason,
-            completionState: params.ctx.completionState,
-            turnExecutionContract: params.ctx.turnExecutionContract,
-            toolCalls: params.ctx.allToolCalls,
-            stopReasonDetail: params.ctx.stopReasonDetail,
-            validationCode: params.ctx.validationCode,
-            completionProgress: undefined,
-            runtimeContractSnapshot: params.ctx.runtimeContractSnapshot,
-          },
-          subAgentManager:
-            params.completionValidation?.topLevelVerifier?.subAgentManager ??
-            null,
-          verifierService:
-            params.completionValidation?.topLevelVerifier?.verifierService ??
-            null,
-          taskStore:
-            params.completionValidation?.topLevelVerifier?.taskStore ?? null,
-          remoteJobManager:
-            params.completionValidation?.topLevelVerifier?.remoteJobManager ?? null,
-          agentDefinitions:
-            params.completionValidation?.topLevelVerifier?.agentDefinitions,
-          logger: params.completionValidation?.topLevelVerifier?.logger,
-          onTraceEvent:
-            params.completionValidation?.topLevelVerifier?.onTraceEvent,
-        });
-        return {
-          id: "top_level_verifier",
-          outcome: validation.outcome,
-          reason: "top_level_verifier",
-          blockingMessage: validation.blockingMessage,
-          maxAttempts: sharedCorrectionBudgetCap,
-          exhaustedDetail: validation.exhaustedDetail,
-          verifier: validation.runtimeVerifier,
-          verifierTaskId: validation.taskId,
-          verifierRequirement: validation.verifierRequirement,
-          verifierLauncherKind: validation.launcherKind,
-        };
       },
     },
   ];

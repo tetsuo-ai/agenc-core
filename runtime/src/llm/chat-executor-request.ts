@@ -238,10 +238,7 @@ export async function executeRequest(
   }
 
   const computeVerificationRequirement = (terminal: ToolLoopTerminalResult): boolean =>
-    ctx.runtimeContractFlags.verifierRuntimeRequired === true &&
-    ctx.turnExecutionContract.turnClass === "workflow_implementation" &&
-    (((ctx.turnExecutionContract.targetArtifacts?.length ?? 0) > 0) ||
-      terminal.mutationDetected);
+    terminal.runtimeContractSnapshot.verifierStages.runtimeRequired === true;
 
   try {
     const terminal = await helpers.executeToolCallLoop(ctx);
