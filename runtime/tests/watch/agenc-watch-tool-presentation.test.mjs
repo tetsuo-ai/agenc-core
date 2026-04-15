@@ -171,3 +171,51 @@ test("tool presentation gives system.mkdir a tool-specific row and terse success
     },
   );
 });
+
+test("tool presentation gives system.editFile a source-style path row and terse error body", () => {
+  const tools = createToolPresentation();
+
+  assert.deepEqual(
+    tools.describeToolStart("system.editFile", {
+      path: "src/app/args.c",
+      old_string: "old value",
+      new_string: "new value",
+    }),
+    {
+      title: "Update src/app/args.c",
+      body: "src/app/args.c",
+      tone: "yellow",
+      previewMode: "source-write",
+      filePath: "src/app/args.c",
+      mutationKind: "replace",
+      mutationBeforeText: "old value",
+      mutationAfterText: "new value",
+    },
+  );
+
+  assert.deepEqual(
+    tools.describeToolResult(
+      "system.editFile",
+      {
+        path: "src/app/args.c",
+        old_string: "old value",
+        new_string: "new value",
+      },
+      true,
+      JSON.stringify({
+        error:
+          "old_string not found in src/app/args.c. The exact text you provided does not appear anywhere in the file after quote/desanitization normalization.",
+      }),
+    ),
+    {
+      title: "Update src/app/args.c",
+      body: "Error editing file",
+      tone: "red",
+      previewMode: "source-write",
+      filePath: "src/app/args.c",
+      mutationKind: "replace",
+      mutationBeforeText: "old value",
+      mutationAfterText: "new value",
+    },
+  );
+});
