@@ -13,6 +13,10 @@ const DEFAULT_PREVIEW_MAX_CHARS = 20_000;
 const DEFAULT_PREVIEW_MAX_DEPTH = 4;
 const DEFAULT_PREVIEW_MAX_ARRAY_ITEMS = 40;
 const DEFAULT_PREVIEW_MAX_OBJECT_KEYS = 80;
+const MULTILINE_PREVIEW_MIN_LINES = 4;
+const MULTILINE_PREVIEW_MIN_CHARS = 160;
+const MULTILINE_PREVIEW_MAX_LINES = 4;
+const MULTILINE_PREVIEW_MAX_LINE_CHARS = 160;
 
 interface TraceSerializationState {
   readonly depth: number;
@@ -173,6 +177,37 @@ function summarizeSpecialTextForPreview(
   return undefined;
 }
 
+function summarizeMultilineTextForPreview(
+  value: string,
+): Record<string, unknown> | undefined {
+  if (!/[\r\n]/.test(value)) {
+    return undefined;
+  }
+  const inspection = inspectTraceText(value);
+  if (
+    inspection.lineCount < MULTILINE_PREVIEW_MIN_LINES &&
+    value.length < MULTILINE_PREVIEW_MIN_CHARS
+  ) {
+    return undefined;
+  }
+
+  const firstLines = inspection.cleaned
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0)
+    .slice(0, MULTILINE_PREVIEW_MAX_LINES)
+    .map((line) => truncateTraceText(line, MULTILINE_PREVIEW_MAX_LINE_CHARS));
+
+  return {
+    artifactType: "multiline_text",
+    digest: buildShaDigest(value),
+    chars: value.length,
+    lines: inspection.lineCount,
+    previewLines: firstLines,
+    externalized: true,
+  };
+}
+
 function formatTraceTextSummaryForSnippet(
   summary: Record<string, unknown>,
 ): string {
@@ -189,6 +224,9 @@ function formatTraceTextSummaryForSnippet(
   }
   if (summary.artifactType === "base64_blob") {
     return `[base64 blob omitted${digest} chars:${summary.chars ?? "?"}]`;
+  }
+  if (summary.artifactType === "multiline_text") {
+    return `[multiline text omitted${digest} lines:${summary.lines ?? "?"} chars:${summary.chars ?? "?"}]`;
   }
   return safeStringify(summary);
 }
@@ -291,6 +329,7 @@ export function summarizeTraceTextForPreview(
   return (
     summarizeBinaryStringForPreview(value) ??
     summarizeSpecialTextForPreview(value) ??
+    summarizeMultilineTextForPreview(value) ??
     truncateTraceText(inspectTraceText(value).cleaned, maxChars)
   );
 }
@@ -301,7 +340,8 @@ export function sanitizeTraceTextForLogSnippet(
 ): string {
   const preview =
     summarizeBinaryStringForPreview(value) ??
-    summarizeSpecialTextForPreview(value);
+    summarizeSpecialTextForPreview(value) ??
+    summarizeMultilineTextForPreview(value);
   if (preview) {
     return formatTraceTextSummaryForSnippet(preview);
   }

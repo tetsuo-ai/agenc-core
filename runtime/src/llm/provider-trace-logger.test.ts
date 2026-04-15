@@ -287,6 +287,48 @@ describe("createProviderTraceEventLogger", () => {
     rmSync(artifactPath, { force: true });
   });
 
+  it("summarizes multiline provider payload text instead of logging escaped newlines", () => {
+    const logger = {
+      info: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+      warn: vi.fn(),
+      setLevel: vi.fn(),
+    };
+
+    const logEvent = createProviderTraceEventLogger({
+      logger,
+      traceLabel: "webchat.provider",
+      traceId: "trace-multiline",
+      sessionId: "session-multiline",
+    });
+
+    logEvent({
+      kind: "request",
+      transport: "chat",
+      provider: "grok",
+      model: "grok-test",
+      payload: {
+        promptText: [
+          '#include "parser.h"',
+          "",
+          "int parse(void) {",
+          "    return 0;",
+          "}",
+        ].join("\n"),
+      },
+    });
+
+    const line = logger.info.mock.calls[0]?.[0] as string;
+    expect(line).toContain('"artifactType":"multiline_text"');
+    expect(line).not.toContain('#include \\"parser.h\\"\\n');
+    const payloadArtifactMatch = line.match(
+      /"payloadArtifact":\{"path":"([^"]+)"/,
+    );
+    expect(payloadArtifactMatch?.[1]).toBeTruthy();
+    rmSync(payloadArtifactMatch![1], { force: true });
+  });
+
   it("serializes structured runtime trace events as single-line JSON", () => {
     const logger = {
       info: vi.fn(),

@@ -84,6 +84,22 @@ describe("trace-payload-serialization", () => {
     expect(formatted).not.toContain("\\u0000");
   });
 
+  it("summarizes multiline source text instead of logging escaped newline blobs", () => {
+    const formatted = formatTracePayloadForLog({
+      content: [
+        '#include "parser.h"',
+        "",
+        "int parse(void) {",
+        "    return 0;",
+        "}",
+      ].join("\n"),
+    });
+
+    expect(formatted).toContain('"artifactType":"multiline_text"');
+    expect(formatted).toContain('"previewLines":["#include \\"parser.h\\"","int parse(void) {","    return 0;","}"]');
+    expect(formatted).not.toContain('#include \\"parser.h\\"\\n');
+  });
+
   it("strips ANSI from short inline snippets while preserving the readable text", () => {
     const snippet = sanitizeTraceTextForLogSnippet(
       "\u001b[31mterminal check complete\u001b[0m",
