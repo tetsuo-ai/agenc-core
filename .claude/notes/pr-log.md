@@ -143,3 +143,10 @@
 - **What worked:** Threading the runtime workspace root all the way into delegated child launches and top-level verifier execution stopped child sessions from drifting back to the umbrella repo, while the richer shell-agent launcher path preserved the intended child scope and handle metadata.
 - **What didn't:** The runtime already had most of the workspace plumbing, but one omitted handoff in the completion loop meant the verifier silently fell back to stale contract roots, so the failure only showed up at the very end of otherwise-correct runs.
 - **Rule added to CLAUDE.md:** no
+
+## PR #399: fix(runtime): keep multi-phase implementation runs durable
+- **Date:** 2026-04-15
+- **Files changed:** `runtime/src/gateway/{background-run-workflow-context,background-run-supervisor,background-run-supervisor-types,daemon,daemon-webchat-turn}.ts`, `runtime/src/workflow/completion-progress.ts`, `runtime/src/llm/{chat-executor-ctx-helpers,chat-executor-stop-gate}.ts`, `runtime/src/llm/hooks/stop-hooks.ts`, `runtime/src/gateway/*.test.ts`, `runtime/src/workflow/completion-progress.test.ts`, `runtime/src/llm/*.test.ts`
+- **What worked:** Promoting explicit full-plan implementation requests into durable workflow execution, making request milestones authoritative for strict runs, and allowing milestone checkpoint summaries to continue instead of tripping narrated-future-work made long implementation sessions persist progress instead of dying after the first honest checkpoint.
+- **What didn't:** The durable path needed wiring at multiple layers because request milestones were previously telemetry-only, background-run actor cycles were missing runtime evidence context, and stale verifier state could survive later mutations unless it was explicitly invalidated.
+- **Rule added to CLAUDE.md:** no

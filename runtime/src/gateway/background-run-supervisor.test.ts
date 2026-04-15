@@ -8,6 +8,7 @@ import type { LLMProvider, ToolHandler } from "../llm/types.js";
 import { InMemoryBackend } from "../memory/in-memory/backend.js";
 import { SqliteBackend } from "../memory/sqlite/backend.js";
 import { PolicyEngine } from "../policy/engine.js";
+import type { Logger } from "../utils/logger.js";
 import {
   BackgroundRunSupervisor,
   inferBackgroundRunIntent,
@@ -77,6 +78,16 @@ function createRunStore() {
   return new BackgroundRunStore({
     memoryBackend: new InMemoryBackend(),
   });
+}
+
+function createLoggerStub(): Logger {
+  return {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    setLevel: vi.fn(),
+  };
 }
 
 function deferred<T>() {
@@ -424,6 +435,101 @@ describe("background-run-supervisor", () => {
     expect(
       isBackgroundRunStatusRequest("what is the status of the server you started"),
     ).toBe(false);
+  });
+
+  it("passes resolved workflow execution context into actor cycles", async () => {
+    const execute = vi.fn(async (params: any) =>
+      makeResult({
+        content: "Completed M0 and continuing with M1 next.",
+        toolCalls: [
+          {
+            name: "system.writeFile",
+            args: { path: "/tmp/workspace/src/main.c" },
+            result: JSON.stringify({ ok: true }),
+            isError: false,
+            durationMs: 1,
+          },
+        ],
+        completionState: "partial",
+        stopReason: "completed",
+        ...(params.runtimeContext
+          ? { runtimeWorkspaceRoot: params.runtimeContext.workspaceRoot }
+          : {}),
+      })
+    );
+    const resolveExecutionContext = vi.fn(async () => ({
+      runtimeContext: {
+        workspaceRoot: "/tmp/workspace",
+      },
+      requiredToolEvidence: {
+        verificationContract: {
+          workspaceRoot: "/tmp/workspace",
+          requestCompletion: {
+            requiredMilestones: [
+              { id: "M0", description: "Bootstrap" },
+              { id: "M1", description: "Lexer" },
+            ],
+          },
+          completionContract: {
+            taskClass: "artifact_only",
+            placeholdersAllowed: false,
+            partialCompletionAllowed: false,
+            placeholderTaxonomy: "implementation",
+          },
+        },
+        completionContract: {
+          taskClass: "artifact_only",
+          placeholdersAllowed: false,
+          partialCompletionAllowed: false,
+          placeholderTaxonomy: "implementation",
+        },
+      },
+    }));
+    const supervisor = new BackgroundRunSupervisor({
+      chatExecutor: { execute } as any,
+      supervisorLlm: { chat: vi.fn(async () => ({ content: "" })) } as any,
+      getSystemPrompt: () => "system",
+      createToolHandler: () => vi.fn(async () => JSON.stringify({ ok: true })),
+      resolveExecutionContext,
+      publishUpdate: vi.fn(async () => undefined),
+      runStore: createRunStore(),
+      logger: createLoggerStub(),
+    });
+
+    await supervisor.startRun({
+      sessionId: "session:workflow-context",
+      objective: "Read PLAN.md and implement all phases in full.",
+      options: {
+        contract: {
+          domain: "workspace",
+          kind: "finite",
+          successCriteria: ["All milestones complete."],
+          completionCriteria: ["Implementation is complete."],
+          blockedCriteria: ["Verification is blocked."],
+          nextCheckMs: 1_000,
+          requiresUserStop: false,
+        },
+      },
+    });
+
+    await eventuallyAsync(async () => {
+      expect(resolveExecutionContext).toHaveBeenCalled();
+      expect(execute).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runtimeContext: { workspaceRoot: "/tmp/workspace" },
+          requiredToolEvidence: expect.objectContaining({
+            verificationContract: expect.objectContaining({
+              requestCompletion: {
+                requiredMilestones: [
+                  { id: "M0", description: "Bootstrap" },
+                  { id: "M1", description: "Lexer" },
+                ],
+              },
+            }),
+          }),
+        }),
+      );
+    });
   });
 
   it("does not misparse natural-language durable server objectives as native process commands", async () => {

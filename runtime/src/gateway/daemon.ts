@@ -290,6 +290,10 @@ import {
   isBackgroundRunStatusRequest,
   isBackgroundRunStopRequest,
 } from "./background-run-supervisor.js";
+import {
+  buildBackgroundRunWorkflowContext,
+  shouldPromoteImplementationBackgroundRun,
+} from "./background-run-workflow-context.js";
 import type { RuntimeFaultInjector } from "../eval/fault-injection.js";
 
 function firstSurfaceSummaryLine(value: unknown): string | undefined {
@@ -426,6 +430,19 @@ export {
   DEFAULT_GROK_MODEL,
   DEFAULT_GROK_FALLBACK_MODEL,
 } from "./llm-provider-manager.js";
+
+function effectiveHistoryForBackgroundRun(params: {
+  readonly history: readonly import("../llm/types.js").LLMMessage[];
+  readonly objective: string;
+}): readonly import("../llm/types.js").LLMMessage[] {
+  return [
+    ...params.history,
+    {
+      role: "user",
+      content: params.objective,
+    },
+  ];
+}
 
 // ============================================================================
 // Constants
@@ -2476,6 +2493,23 @@ export class DaemonManager {
             hookMetadata: { backgroundRunId: runId },
             shellProfile,
           }),
+        resolveExecutionContext: async ({
+          sessionId,
+          objective,
+        }) => {
+          const workspaceRoot =
+            typeof webChat.loadSessionWorkspaceRoot === "function"
+              ? await webChat.loadSessionWorkspaceRoot(sessionId)
+              : undefined;
+          return buildBackgroundRunWorkflowContext({
+            objective,
+            workspaceRoot:
+              typeof workspaceRoot === "string" &&
+              workspaceRoot.trim().length > 0
+                ? workspaceRoot.trim()
+                : undefined,
+          });
+        },
         buildToolRoutingDecision: (sessionId, content, _history, shellProfile) =>
           {
             const effectiveProfile = this.resolveEffectiveShellProfile({
@@ -7262,6 +7296,47 @@ export class DaemonManager {
       traceConfig,
       turnTraceId,
       workerManager: this._persistentWorkerManager,
+      maybeStartBackgroundRun: async ({
+        session,
+        objective,
+        effectiveHistory,
+      }) => {
+        if (
+          !this._backgroundRunSupervisor ||
+          !shouldPromoteImplementationBackgroundRun(objective)
+        ) {
+          return false;
+        }
+        const admission = this.evaluateBackgroundRunAdmission({
+          sessionId: msg.sessionId,
+          domain: "workspace",
+        });
+        if (!admission.allowed) {
+          await webChat.send({
+            sessionId: msg.sessionId,
+            content: formatBackgroundRunAdmissionDenied(admission.reason),
+          });
+          return true;
+        }
+        const shellProfile = this.resolveEffectiveShellProfile({
+          sessionId: msg.sessionId,
+          metadata: session.metadata ?? {},
+        });
+        await this._backgroundRunSupervisor.startRun({
+          sessionId: msg.sessionId,
+          objective,
+          options: {
+            seedHistory: [
+              ...effectiveHistoryForBackgroundRun({
+                history: effectiveHistory,
+                objective,
+              }),
+            ],
+            shellProfile,
+          },
+        });
+        return true;
+      },
     });
   }
 
@@ -7282,6 +7357,9 @@ export class DaemonManager {
     traceConfig: ResolvedTraceLoggingConfig;
     turnTraceId: string;
     workerManager?: PersistentWorkerManager | null;
+    maybeStartBackgroundRun?: Parameters<
+      typeof runWebChatConversationTurn
+    >[0]["maybeStartBackgroundRun"];
   }): Promise<ChatExecutorResult | undefined> {
     const {
       msg,
@@ -7300,6 +7378,7 @@ export class DaemonManager {
       traceConfig,
       turnTraceId,
       workerManager,
+      maybeStartBackgroundRun,
     } = params;
 
     this._activeSessionTraceIds.set(msg.sessionId, turnTraceId);
@@ -7359,6 +7438,7 @@ export class DaemonManager {
         },
         taskStore: this._taskTrackerStore,
         workerManager,
+        maybeStartBackgroundRun,
         onSubagentSynthesis: (result) => {
           if (
             this._subagentActivityTraceBySession.get(msg.sessionId) !== turnTraceId

@@ -481,7 +481,7 @@ describe("completion-progress", () => {
     });
   });
 
-  it("keeps milestone telemetry without turning it into a completion requirement", () => {
+  it("downgrades strict workflow completion when required milestones remain", () => {
     const snapshot = deriveWorkflowProgressSnapshot({
       stopReason: "completed",
       completionState: "completed",
@@ -506,7 +506,7 @@ describe("completion-progress", () => {
     });
 
     expect(snapshot).toMatchObject({
-      completionState: "completed",
+      completionState: "partial",
       requiredRequirements: [],
       satisfiedRequirements: [],
       remainingRequirements: [],

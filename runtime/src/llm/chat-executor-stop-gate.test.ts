@@ -462,6 +462,41 @@ describe("evaluateTurnEndStopGate — narrated_future_tool_work", () => {
     expect(decision.blockingMessage).toContain("Next tool calls will");
   });
 
+  it("allows milestone checkpoints for strict workflow-owned implementation runs", () => {
+    const decision = evaluateTurnEndStopGate({
+      finalContent:
+        "M0 bootstrap is complete. Next I will implement M1 lexer support.",
+      allToolCalls: [
+        bashSuccess("mkdir -p src"),
+        bashSuccess("touch src/main.c"),
+      ],
+      requiredToolEvidence: {
+        completionContract: {
+          taskClass: "artifact_only",
+          placeholdersAllowed: false,
+          partialCompletionAllowed: false,
+          placeholderTaxonomy: "implementation",
+        },
+        verificationContract: {
+          requestCompletion: {
+            requiredMilestones: [
+              { id: "M0", description: "Bootstrap" },
+              { id: "M1", description: "Lexer" },
+            ],
+          },
+          completionContract: {
+            taskClass: "artifact_only",
+            placeholdersAllowed: false,
+            partialCompletionAllowed: false,
+            placeholderTaxonomy: "implementation",
+          },
+        },
+      },
+    });
+
+    expect(decision.shouldIntervene).toBe(false);
+  });
+
   it("fires on 'Now I will write the parser'", () => {
     // No success-claim prefix and length > TRUNCATED_SUCCESS_MAX_CHARS
     // so truncated_success_claim does not pre-empt narrated.

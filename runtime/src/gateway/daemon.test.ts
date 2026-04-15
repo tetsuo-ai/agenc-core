@@ -1663,6 +1663,93 @@ describe("webchat background-run routing", () => {
     executeWebChatConversationTurnSpy.mockRestore();
   });
 
+  it("promotes explicit full-plan implementation requests into background supervision", async () => {
+    const dm = new DaemonManager({ configPath: "/tmp/config.json" });
+    const startRun = vi.fn(async () => undefined);
+    const getStatusSnapshot = vi.fn(() => undefined);
+
+    (dm as any).gateway = {
+      config: {
+        autonomy: {
+          enabled: true,
+          featureFlags: { backgroundRuns: true, canaryRollout: false },
+        },
+      },
+    };
+    (dm as any)._backgroundRunSupervisor = {
+      getStatusSnapshot,
+      startRun,
+    };
+
+    const executeWebChatConversationTurnSpy = vi
+      .spyOn(dm as any, "executeWebChatConversationTurn")
+      .mockImplementation(async (params: any) => {
+        const started = await params.maybeStartBackgroundRun?.({
+          session: { metadata: {} },
+          objective: params.msg.content,
+          runtimeWorkspaceRoot: "/home/tetsuo/git/stream-test/agenc-shell",
+          effectiveHistory: [],
+        });
+        expect(started).toBe(true);
+        return undefined;
+      });
+
+    const webChat = {
+      send: vi.fn(async () => undefined),
+      pushToSession: vi.fn(),
+      broadcastEvent: vi.fn(),
+    } as any;
+    const commandRegistry = { dispatch: vi.fn(async () => false) } as any;
+    const hooks = {
+      dispatch: vi.fn(async () => ({ completed: true, payload: {} })),
+    } as any;
+    const sessionMgr = {
+      getOrCreate: vi.fn(() => ({ metadata: {} })),
+    } as any;
+    const memoryBackend = { addEntry: vi.fn(async () => undefined) } as any;
+
+    await (dm as any).handleWebChatInboundMessage(
+      {
+        sessionId: "session-background-implementation",
+        senderId: "operator-1",
+        channel: "webchat",
+        content: "Read @PLAN.md and implement all phases in full without stopping.",
+      },
+      {
+        webChat,
+        commandRegistry,
+        getChatExecutor: () => ({ execute: vi.fn() }),
+        getLoggingConfig: () => ({}),
+        hooks,
+        sessionMgr,
+        getSystemPrompt: () => "",
+        baseToolHandler: vi.fn(),
+        approvalEngine: undefined,
+        memoryBackend,
+        signals: {} as any,
+        sessionTokenBudget: 16_000,
+        contextWindowTokens: 64_000,
+      },
+    );
+
+    expect(startRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "session-background-implementation",
+        objective: "Read @PLAN.md and implement all phases in full without stopping.",
+        options: expect.objectContaining({
+          seedHistory: expect.arrayContaining([
+            expect.objectContaining({
+              role: "user",
+              content: "Read @PLAN.md and implement all phases in full without stopping.",
+            }),
+          ]),
+        }),
+      }),
+    );
+    expect(executeWebChatConversationTurnSpy).toHaveBeenCalledOnce();
+    executeWebChatConversationTurnSpy.mockRestore();
+  });
+
 });
 
 describe("ensureChromiumCompatShims", () => {
@@ -2720,8 +2807,26 @@ describe("DaemonManager", () => {
         },
       },
     ];
+    const launchShellAgentTask = vi.fn(async () => ({
+      role: {
+        id: "shell",
+        displayName: "Shell",
+        description: "shell",
+      },
+      sessionId: "subagent:child-webchat",
+      output: JSON.stringify({
+        stdout: `${sessionWorkspaceRoot}\n`,
+        stderr: "",
+        exitCode: 0,
+      }),
+      success: true,
+      status: "completed",
+      waited: true,
+      outputPath: undefined,
+      name: undefined,
+    }));
+    (dm as any).launchShellAgentTask = launchShellAgentTask;
     (dm as any)._subAgentManager = {
-      spawn: vi.fn(async () => "subagent:child-webchat"),
       getResult: vi.fn(() => ({
         sessionId: "subagent:child-webchat",
         output: JSON.stringify({
@@ -2794,11 +2899,11 @@ describe("DaemonManager", () => {
     expect(webChat.loadSessionWorkspaceRoot).toHaveBeenCalledWith(
       "session-project-root",
     );
-    expect((dm as any)._subAgentManager.spawn).toHaveBeenCalledWith(
+    expect(launchShellAgentTask).toHaveBeenCalledWith(
       expect.objectContaining({
         parentSessionId: "session-project-root",
+        workspaceRoot: sessionWorkspaceRoot,
         workingDirectory: sessionWorkspaceRoot,
-        workingDirectorySource: "execution_envelope",
         tools: ["system.bash"],
         delegationSpec: expect.objectContaining({
           executionContext: expect.objectContaining({

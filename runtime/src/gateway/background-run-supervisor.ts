@@ -486,6 +486,7 @@ export class BackgroundRunSupervisor {
   private readonly supervisorLlm: LLMProvider;
   private readonly getSystemPrompt: () => string;
   private readonly createToolHandler: BackgroundRunSupervisorConfig["createToolHandler"];
+  private readonly resolveExecutionContext?: BackgroundRunSupervisorConfig["resolveExecutionContext"];
   private readonly buildToolRoutingDecision?: BackgroundRunSupervisorConfig["buildToolRoutingDecision"];
   private readonly seedHistoryForSession?: BackgroundRunSupervisorConfig["seedHistoryForSession"];
   private readonly isSessionBusy?: BackgroundRunSupervisorConfig["isSessionBusy"];
@@ -524,6 +525,7 @@ export class BackgroundRunSupervisor {
     this.supervisorLlm = config.supervisorLlm;
     this.getSystemPrompt = config.getSystemPrompt;
     this.createToolHandler = config.createToolHandler;
+    this.resolveExecutionContext = config.resolveExecutionContext;
     this.buildToolRoutingDecision = config.buildToolRoutingDecision;
     this.seedHistoryForSession = config.seedHistoryForSession;
     this.isSessionBusy = config.isSessionBusy;
@@ -3633,6 +3635,13 @@ export class BackgroundRunSupervisor {
           run.internalHistory,
           run.shellProfile ?? DEFAULT_SESSION_SHELL_PROFILE,
         );
+        const resolvedExecutionContext =
+          await this.resolveExecutionContext?.({
+            sessionId,
+            objective: run.objective,
+            shellProfile: run.shellProfile ?? DEFAULT_SESSION_SHELL_PROFILE,
+            history: run.internalHistory,
+          });
         const toolRoutingDecision = applyRunToolScopeDecision({
           allowedTools: getScopedAllowedTools(run),
           toolRoutingDecision: baseToolRoutingDecision,
@@ -3648,6 +3657,8 @@ export class BackgroundRunSupervisor {
           history: run.internalHistory,
           promptEnvelope: actorPromptEnvelope,
           sessionId,
+          runtimeContext: resolvedExecutionContext?.runtimeContext,
+          requiredToolEvidence: resolvedExecutionContext?.requiredToolEvidence,
           requestTimeoutMs: BACKGROUND_RUN_ACTOR_REQUEST_TIMEOUT_MS,
           stateful: run.carryForward?.providerContinuation
             ? {

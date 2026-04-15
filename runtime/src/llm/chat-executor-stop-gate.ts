@@ -275,6 +275,8 @@ export interface EvaluateTurnEndStopGateParams {
   readonly allToolCalls?: readonly ToolCallRecord[];
   /** Optional precomputed unresolved execution snapshot for stop-hook evaluation. */
   readonly snapshot?: TurnEndStopGateSnapshot;
+  readonly requiredToolEvidence?: ChatExecuteParams["requiredToolEvidence"];
+  readonly runtimeContext?: ChatExecuteParams["runtimeContext"];
 }
 
 export interface TurnEndStopGateSnapshot {
@@ -310,6 +312,20 @@ function looksLikeRefusal(record: ToolCallRecord): boolean {
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
   return `${text.slice(0, max).trimEnd()}…`;
+}
+
+function shouldAllowWorkflowCheckpoint(params: {
+  readonly requiredToolEvidence?: ChatExecuteParams["requiredToolEvidence"];
+}): boolean {
+  const requestCompletion =
+    params.requiredToolEvidence?.verificationContract?.requestCompletion;
+  const completionContract =
+    params.requiredToolEvidence?.completionContract ??
+    params.requiredToolEvidence?.verificationContract?.completionContract;
+  return (
+    (requestCompletion?.requiredMilestones.length ?? 0) > 0 &&
+    completionContract?.partialCompletionAllowed === false
+  );
 }
 
 function summarizeFailedShellCall(record: ToolCallRecord): string {
@@ -855,6 +871,7 @@ export function evaluateTurnEndStopGate(
       failedShellCalls,
       refusedCalls,
       evidence,
+      requiredToolEvidence: params.requiredToolEvidence,
     });
   }
 
@@ -948,6 +965,7 @@ export function evaluateTurnEndStopGate(
     failedShellCalls,
     refusedCalls,
     evidence,
+    requiredToolEvidence: params.requiredToolEvidence,
   });
 }
 
@@ -1133,6 +1151,7 @@ function maybeFireNarratedFutureToolWork(params: {
   readonly failedShellCalls: readonly ToolCallRecord[];
   readonly refusedCalls: readonly ToolCallRecord[];
   readonly evidence: StopGateEvidence;
+  readonly requiredToolEvidence?: ChatExecuteParams["requiredToolEvidence"];
 }): StopGateInterventionDecision {
   const trimmed = params.finalContent.trimEnd();
   if (params.allToolCalls.length === 0) {
@@ -1144,6 +1163,13 @@ function maybeFireNarratedFutureToolWork(params: {
   const narrated = NARRATED_FUTURE_TOOL_WORK_RE.test(params.finalContent);
   const permissionQuestion = MID_TASK_PERMISSION_QUESTION_RE.test(trimmed);
   if (!narrated && !permissionQuestion) {
+    return { shouldIntervene: false, evidence: params.evidence };
+  }
+  if (
+    shouldAllowWorkflowCheckpoint({
+      requiredToolEvidence: params.requiredToolEvidence,
+    })
+  ) {
     return { shouldIntervene: false, evidence: params.evidence };
   }
   return {
