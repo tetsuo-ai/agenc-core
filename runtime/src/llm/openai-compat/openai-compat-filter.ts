@@ -55,7 +55,7 @@ export {
  *   - 172.16.0.0/12  (172.16.x.x – 172.31.x.x)
  */
 function isLocalHostname(hostname: string): boolean {
-  if (hostname === "localhost" || hostname === "::1") {
+  if (hostname === "localhost" || hostname === "[::1]" || hostname === "::1") {
     return true;
   }
 
