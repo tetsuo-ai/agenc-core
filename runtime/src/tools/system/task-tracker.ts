@@ -56,8 +56,6 @@ export const TASK_TRACKER_TOOL_NAMES: ReadonlySet<string> = new Set([
   "task.list",
   "task.get",
   "task.update",
-  "task.wait",
-  "task.output",
 ]);
 
 export type TaskStatus =
@@ -473,18 +471,6 @@ function isTaskStatus(value: unknown): value is TaskStatus {
   );
 }
 
-function isFilterableStatus(
-  value: unknown,
-): value is Exclude<TaskStatus, "deleted"> {
-  return (
-    value === "pending" ||
-    value === "in_progress" ||
-    value === "completed" ||
-    value === "failed" ||
-    value === "cancelled"
-  );
-}
-
 function asPlainObject(
   value: unknown,
 ): Record<string, unknown> | undefined {
@@ -544,16 +530,42 @@ function okResult(data: unknown): ToolResult {
   return { content: safeStringify(data) };
 }
 
-function summarizeTask(task: Task): Record<string, unknown> {
+type PublicTaskStatus = "pending" | "in_progress" | "completed";
+
+function isPublicTaskStatus(status: TaskStatus): status is PublicTaskStatus {
+  return (
+    status === "pending" ||
+    status === "in_progress" ||
+    status === "completed"
+  );
+}
+
+function isPublicSessionTask(task: Task): boolean {
+  return (
+    task.kind === "manual" &&
+    isPublicTaskStatus(task.status) &&
+    task.metadata?._internal !== true
+  );
+}
+
+function summarizePublicTask(task: Task): Record<string, unknown> {
   return {
     id: task.id,
-    kind: task.kind,
     subject: task.subject,
     status: task.status,
-    ...(task.summary !== undefined ? { summary: task.summary } : {}),
     ...(task.owner !== undefined ? { owner: task.owner } : {}),
-    ...(task.blockedBy.length > 0 ? { blockedBy: task.blockedBy } : {}),
-    ...(task.outputReady !== undefined ? { outputReady: task.outputReady } : {}),
+    blockedBy: task.blockedBy,
+  };
+}
+
+function detailPublicTask(task: Task): Record<string, unknown> {
+  return {
+    id: task.id,
+    subject: task.subject,
+    description: task.description,
+    status: task.status,
+    blocks: task.blocks,
+    blockedBy: task.blockedBy,
   };
 }
 
@@ -951,6 +963,10 @@ export class TaskStore {
 
   private outputPathFor(listId: string, taskId: string): string {
     return join(this.outputDirFor(listId, taskId), "output.json");
+  }
+
+  getTaskOutputPath(listId: string, taskId: string): string {
+    return this.outputPathFor(listId, taskId);
   }
 
   private async runExclusive<T>(
@@ -1810,25 +1826,23 @@ export class TaskStore {
 }
 
 const TASK_CREATE_DESCRIPTION =
-  "Create a structured task in the current session's durable task list. Use proactively for " +
+  "Create a structured task in the current session's task list. Use proactively for " +
   "multi-step work (3+ steps), complex tasks that require planning, or when the user " +
   "supplies multiple things to do. Mark a task in_progress with task.update BEFORE " +
-  "starting work, and completed only once the work is fully done. Runtime-managed " +
-  "milestone tracking uses metadata._runtime.milestoneIds and metadata._runtime.verification. " +
-  "If description is omitted, the runtime falls back to the subject text.";
+  "starting work, and completed only once the work is fully done. If description is " +
+  "omitted, the runtime falls back to the subject text.";
 
 const TASK_LIST_DESCRIPTION =
-  "List tasks in the current session's task list. Returns id, kind, subject, status, owner, " +
-  "summary, blockedBy, and outputReady for each visible task. Use the optional `status` filter " +
-  "to narrow the result to pending / in_progress / completed / failed / cancelled.";
+  "List tasks in the current session's task list. Returns each task's id, subject, status, " +
+  "optional owner, and unresolved blockedBy ids.";
 
 const TASK_GET_DESCRIPTION =
-  "Fetch a single task by id with its full description, metadata, runtime linkage, events, " +
-  "output readiness, and timestamps. Use this when task.list does not give you enough detail.";
+  "Fetch a single task by id with its description, status, blocks, and blockedBy ids. " +
+  "Returns null when the task does not exist.";
 
 const TASK_UPDATE_DESCRIPTION =
   "Update a task's status, subject, description, owner, activeForm, metadata, or blocks. " +
-  "Status transitions include pending, in_progress, completed, failed, cancelled, and deleted. " +
+  "Status transitions include pending, in_progress, completed, and deleted. " +
   "Use status 'deleted' to permanently hide the task from list/get. Metadata is merged shallowly; " +
   "pass a key with value null to delete that key. addBlocks / addBlockedBy append unique ids.";
 
@@ -1848,15 +1862,6 @@ export function createTaskTrackerTools(
   options: TaskTrackerToolOptions = {},
 ): Tool[] {
   const taskStore = store ?? new TaskStore();
-  const emitTaskAccessEvent = async (
-    event: TaskTrackerAccessNotification,
-  ): Promise<void> => {
-    try {
-      await options.onTaskAccessEvent?.(event);
-    } catch {
-      // Access tracing must not affect tool behavior.
-    }
-  };
 
   const taskCreate: Tool = {
     name: "task.create",
@@ -1881,8 +1886,7 @@ export function createTaskTrackerTools(
         },
         metadata: {
           type: "object",
-          description:
-            "Arbitrary metadata to attach to the task. Runtime-managed milestone tracking uses metadata._runtime.milestoneIds and metadata._runtime.verification.",
+          description: "Arbitrary metadata to attach to the task.",
         },
       },
       required: ["subject"],
@@ -1902,9 +1906,10 @@ export function createTaskTrackerTools(
       });
 
       return okResult({
-        message: `Task #${task.id} created: ${task.subject}`,
-        task: summarizeTask(task),
-        taskRuntime: taskRuntime(task),
+        task: {
+          id: task.id,
+          subject: task.subject,
+        },
       });
     },
   };
@@ -1914,22 +1919,20 @@ export function createTaskTrackerTools(
     description: TASK_LIST_DESCRIPTION,
     inputSchema: {
       type: "object",
-      properties: {
-        status: {
-          type: "string",
-          enum: ["pending", "in_progress", "completed", "failed", "cancelled"],
-          description: "Optional status filter.",
-        },
-      },
+      properties: {},
     },
     async execute(args) {
-      const filter = isFilterableStatus(args.status)
-        ? { status: args.status }
-        : undefined;
-      const tasks = await taskStore.listTasks(resolveListId(args), filter);
+      const tasks = (await taskStore.listTasks(resolveListId(args))).filter(
+        isPublicSessionTask,
+      );
+      const resolvedTaskIds = new Set(
+        tasks.filter((task) => task.status === "completed").map((task) => task.id),
+      );
       return okResult({
-        count: tasks.length,
-        tasks: tasks.map(summarizeTask),
+        tasks: tasks.map((task) => ({
+          ...summarizePublicTask(task),
+          blockedBy: task.blockedBy.filter((id) => !resolvedTaskIds.has(id)),
+        })),
       });
     },
   };
@@ -1951,10 +1954,13 @@ export function createTaskTrackerTools(
       const taskId = asNonEmptyString(args.taskId);
       if (!taskId) return errorResult("taskId must be a non-empty string");
       const task = await taskStore.getTask(resolveListId(args), taskId);
-      if (!task) return errorResult(`task ${taskId} not found`);
+      if (!task || !isPublicSessionTask(task)) {
+        return okResult({
+          task: null,
+        });
+      }
       return okResult({
-        task: fullTask(task),
-        taskRuntime: taskRuntime(task),
+        task: detailPublicTask(task),
       });
     },
   };
@@ -2008,19 +2014,27 @@ export function createTaskTrackerTools(
       const listId = resolveListId(args);
       const actor = resolveTaskActor(args);
       const patch: TaskUpdatePatch = {};
+      const updatedFields: string[] = [];
 
       if (args.status !== undefined) {
-        if (!isTaskStatus(args.status)) {
+        if (
+          args.status !== "pending" &&
+          args.status !== "in_progress" &&
+          args.status !== "completed" &&
+          args.status !== "deleted"
+        ) {
           return errorResult(
-            "status must be one of: pending, in_progress, completed, failed, cancelled, deleted",
+            "status must be one of: pending, in_progress, completed, deleted",
           );
         }
         patch.status = args.status;
+        updatedFields.push("status");
       }
       if (args.subject !== undefined) {
         const next = asNonEmptyString(args.subject);
         if (next === undefined) return errorResult("subject must be a non-empty string");
         patch.subject = next;
+        updatedFields.push("subject");
       }
       if (args.description !== undefined) {
         const next = asNonEmptyString(args.description);
@@ -2028,18 +2042,21 @@ export function createTaskTrackerTools(
           return errorResult("description must be a non-empty string");
         }
         patch.description = next;
+        updatedFields.push("description");
       }
       if (args.activeForm !== undefined) {
         if (typeof args.activeForm !== "string") {
           return errorResult("activeForm must be a string");
         }
         patch.activeForm = args.activeForm;
+        updatedFields.push("activeForm");
       }
       if (args.owner !== undefined) {
         if (typeof args.owner !== "string") {
           return errorResult("owner must be a string");
         }
         patch.owner = args.owner;
+        updatedFields.push("owner");
       }
       if (args.metadata !== undefined) {
         const metadata = asPlainObject(args.metadata);
@@ -2047,6 +2064,7 @@ export function createTaskTrackerTools(
           return errorResult("metadata must be a plain object");
         }
         patch.metadata = metadata;
+        updatedFields.push("metadata");
       }
       if (args.addBlocks !== undefined) {
         if (!Array.isArray(args.addBlocks) ||
@@ -2054,6 +2072,7 @@ export function createTaskTrackerTools(
           return errorResult("addBlocks must be an array of strings");
         }
         patch.addBlocks = args.addBlocks as string[];
+        updatedFields.push("addBlocks");
       }
       if (args.addBlockedBy !== undefined) {
         if (!Array.isArray(args.addBlockedBy) ||
@@ -2061,10 +2080,18 @@ export function createTaskTrackerTools(
           return errorResult("addBlockedBy must be an array of strings");
         }
         patch.addBlockedBy = args.addBlockedBy as string[];
+        updatedFields.push("addBlockedBy");
       }
 
       const current = await taskStore.readTaskState(listId, taskId);
-      if (!current) return errorResult(`task ${taskId} not found`);
+      if (!current || current.task.kind !== "manual") {
+        return okResult({
+          success: false,
+          taskId,
+          updatedFields: [],
+          error: "Task not found",
+        });
+      }
 
       if (
         patch.status === "in_progress" &&
@@ -2082,6 +2109,9 @@ export function createTaskTrackerTools(
           (actor.kind === "subagent" ? actor.name : undefined);
         if (autoOwner) {
           patch.owner = autoOwner;
+          if (!updatedFields.includes("owner")) {
+            updatedFields.push("owner");
+          }
         }
       }
 
@@ -2126,24 +2156,55 @@ export function createTaskTrackerTools(
         patch,
         isTransitioningToCompleted ? current.revision : undefined,
       );
-      if (!task) return errorResult(`task ${taskId} not found`);
+      if (!task || task.kind !== "manual") {
+        return okResult({
+          success: false,
+          taskId,
+          updatedFields: [],
+          error: "Task not found",
+        });
+      }
       const allTasks =
         patch.status === "completed"
-          ? await taskStore.listTasks(listId)
+          ? (await taskStore.listTasks(listId)).filter(isPublicSessionTask)
           : [];
       const verificationNudgeNeeded = shouldEmitVerificationNudge({
         tasks: allTasks,
         actorKind: actor.kind,
       });
       return okResult({
-        message: verificationNudgeNeeded
-          ? `Task #${task.id} updated\n\nNOTE: You just closed out 3+ tasks and none of them was a verification step. Run the verifier before writing the final summary.`
-          : `Task #${task.id} updated`,
-        task: summarizeTask(task),
-        taskRuntime: taskRuntime(task),
+        success: true,
+        taskId: task.id,
+        updatedFields,
+        ...(patch.status !== undefined
+          ? {
+              statusChange: {
+                from: current.task.status,
+                to: patch.status,
+              },
+            }
+          : {}),
         ...(verificationNudgeNeeded ? { verificationNudgeNeeded: true } : {}),
       });
     },
+  };
+
+  return [taskCreate, taskList, taskGet, taskUpdate];
+}
+
+export function createRuntimeTaskHandleTools(
+  store?: TaskStore,
+  options: Pick<TaskTrackerToolOptions, "onTaskAccessEvent"> = {},
+): Tool[] {
+  const taskStore = store ?? new TaskStore();
+  const emitTaskAccessEvent = async (
+    event: TaskTrackerAccessNotification,
+  ): Promise<void> => {
+    try {
+      await options.onTaskAccessEvent?.(event);
+    } catch {
+      // Access tracing must not affect tool behavior.
+    }
   };
 
   const taskWait: Tool = {
@@ -2284,5 +2345,5 @@ export function createTaskTrackerTools(
     },
   };
 
-  return [taskCreate, taskList, taskGet, taskUpdate, taskWait, taskOutput];
+  return [taskWait, taskOutput];
 }

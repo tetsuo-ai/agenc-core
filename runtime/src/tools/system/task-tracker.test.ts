@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import {
   TASK_ACTOR_KIND_ARG,
   TASK_ACTOR_NAME_ARG,
+  createRuntimeTaskHandleTools,
   createTaskTrackerTools,
   TaskStore,
   type TaskTrackerToolOptions,
@@ -79,8 +80,6 @@ describe("task-tracker", () => {
   let list: Tool;
   let get: Tool;
   let update: Tool;
-  let wait: Tool;
-  let output: Tool;
   let toolOptions: TaskTrackerToolOptions;
 
   beforeEach(() => {
@@ -92,20 +91,16 @@ describe("task-tracker", () => {
     list = findTool(tools, "task.list");
     get = findTool(tools, "task.get");
     update = findTool(tools, "task.update");
-    wait = findTool(tools, "task.wait");
-    output = findTool(tools, "task.output");
   });
 
   describe("registration metadata", () => {
-    it("exposes the six task tracker tools", () => {
+    it("exposes the four public session task tools", () => {
       const names = tools.map((t) => t.name).sort();
       expect(names).toEqual([
         "task.create",
         "task.get",
         "task.list",
-        "task.output",
         "task.update",
-        "task.wait",
       ]);
     });
 
@@ -135,7 +130,6 @@ describe("task-tracker", () => {
       const task = (result.body.task as Record<string, unknown>);
       expect(task.id).toBe("1");
       expect(task.subject).toBe("Write the spec");
-      expect(task.status).toBe("pending");
       expect(store.list(DEFAULT_TASK_LIST_ID)).toHaveLength(1);
     });
 
@@ -177,21 +171,13 @@ describe("task-tracker", () => {
       const stored = store.list(DEFAULT_TASK_LIST_ID)[0];
       expect(stored.activeForm).toBe("Running the build");
       expect(stored.metadata).toEqual({ priority: "high", tags: ["ci"] });
-      expect(result.body.taskRuntime).toMatchObject({
-        fullTask: expect.objectContaining({
-          subject: "Run the build",
-        }),
-        runtimeMetadata: {
-          hasRuntimeMetadata: false,
-          milestoneIds: [],
-          verification: false,
-          malformed: false,
-          errors: [],
-        },
+      expect(result.body.task).toMatchObject({
+        id: "1",
+        subject: "Run the build",
       });
     });
 
-    it("returns normalized runtime metadata alongside the compact task summary", async () => {
+    it("keeps metadata on the stored task without exposing runtime payloads", async () => {
       const result = await callTool(create, {
         subject: "Implement phase 1",
         description: "Ship the first milestone",
@@ -206,24 +192,11 @@ describe("task-tracker", () => {
       expect(result.body.task).toMatchObject({
         id: "1",
         subject: "Implement phase 1",
-        status: "pending",
       });
-      expect(result.body.taskRuntime).toMatchObject({
-        fullTask: expect.objectContaining({
-          id: "1",
-          metadata: {
-            _runtime: {
-              milestoneIds: ["phase_1"],
-              verification: true,
-            },
-          },
-        }),
-        runtimeMetadata: {
-          hasRuntimeMetadata: true,
+      expect(store.get(DEFAULT_TASK_LIST_ID, "1")?.metadata).toEqual({
+        _runtime: {
           milestoneIds: ["phase_1"],
           verification: true,
-          malformed: false,
-          errors: [],
         },
       });
     });
@@ -238,39 +211,31 @@ describe("task-tracker", () => {
 
     it("returns all visible tasks by default", async () => {
       const result = await callTool(list, {});
-      expect(result.body.count).toBe(3);
       const tasks = result.body.tasks as Array<Record<string, unknown>>;
       expect(tasks.map((t) => t.subject)).toEqual(["A", "B", "C"]);
     });
 
-    it("filters by status", async () => {
-      await callTool(update, { taskId: "1", status: "in_progress" });
-      await callTool(update, { taskId: "2", status: "completed" });
-      const inProgress = await callTool(list, { status: "in_progress" });
-      expect(inProgress.body.count).toBe(1);
-      expect((inProgress.body.tasks as Array<Record<string, unknown>>)[0].id).toBe("1");
-      const completed = await callTool(list, { status: "completed" });
-      expect(completed.body.count).toBe(1);
-      const pending = await callTool(list, { status: "pending" });
-      expect(pending.body.count).toBe(1);
+    it("hides blockers that are already completed", async () => {
+      await callTool(update, { taskId: "1", status: "completed" });
+      await callTool(update, { taskId: "2", addBlockedBy: ["1", "3"] });
+
+      const listed = await callTool(list, {});
+      const task = (listed.body.tasks as Array<Record<string, unknown>>).find(
+        (entry) => entry.id === "2",
+      );
+      expect(task?.blockedBy).toEqual(["3"]);
     });
 
     it("ignores deleted tasks", async () => {
       await callTool(update, { taskId: "2", status: "deleted" });
       const result = await callTool(list, {});
-      expect(result.body.count).toBe(2);
       const ids = (result.body.tasks as Array<Record<string, unknown>>).map((t) => t.id);
       expect(ids).toEqual(["1", "3"]);
     });
 
-    it("ignores invalid status filter values", async () => {
-      const result = await callTool(list, { status: "garbage" });
-      expect(result.body.count).toBe(3);
-    });
-
     it("returns empty for an unknown task list", async () => {
       const result = await callTool(list, { [TASK_LIST_ARG]: "unknown-session" });
-      expect(result.body.count).toBe(0);
+      expect(result.body.tasks).toEqual([]);
     });
   });
 
@@ -367,36 +332,19 @@ describe("task-tracker", () => {
       });
     });
 
-    it("returns the full task with description, metadata, timestamps", async () => {
+    it("returns the lightweight public task view", async () => {
       const result = await callTool(get, { taskId: "1" });
       const task = result.body.task as Record<string, unknown>;
       expect(task.id).toBe("1");
       expect(task.description).toBe("Tail daemon log for the last hour");
-      expect(task.activeForm).toBe("Inspecting logs");
-      expect(task.metadata).toEqual({ severity: "warn" });
       expect(task.blocks).toEqual([]);
       expect(task.blockedBy).toEqual([]);
-      expect(typeof task.createdAt).toBe("number");
-      expect(typeof task.updatedAt).toBe("number");
-      expect(result.body.taskRuntime).toMatchObject({
-        fullTask: expect.objectContaining({
-          id: "1",
-          description: "Tail daemon log for the last hour",
-        }),
-        runtimeMetadata: {
-          hasRuntimeMetadata: false,
-          milestoneIds: [],
-          verification: false,
-          malformed: false,
-          errors: [],
-        },
-      });
     });
 
-    it("returns an error when the task does not exist", async () => {
+    it("returns null when the task does not exist", async () => {
       const result = await callTool(get, { taskId: "999" });
-      expect(result.raw.isError).toBe(true);
-      expect(result.body.error).toMatch(/not found/);
+      expect(result.raw.isError).toBeUndefined();
+      expect(result.body.task).toBeNull();
     });
 
     it("rejects empty taskId", async () => {
@@ -407,7 +355,7 @@ describe("task-tracker", () => {
     it("treats deleted tasks as not found", async () => {
       await callTool(update, { taskId: "1", status: "deleted" });
       const result = await callTool(get, { taskId: "1" });
-      expect(result.raw.isError).toBe(true);
+      expect(result.body.task).toBeNull();
     });
   });
 
@@ -418,9 +366,24 @@ describe("task-tracker", () => {
 
     it("transitions through pending -> in_progress -> completed", async () => {
       const start = await callTool(update, { taskId: "1", status: "in_progress" });
-      expect((start.body.task as Record<string, unknown>).status).toBe("in_progress");
+      expect(start.body).toMatchObject({
+        success: true,
+        taskId: "1",
+        statusChange: {
+          from: "pending",
+          to: "in_progress",
+        },
+      });
       const done = await callTool(update, { taskId: "1", status: "completed" });
-      expect((done.body.task as Record<string, unknown>).status).toBe("completed");
+      expect(done.body).toMatchObject({
+        success: true,
+        taskId: "1",
+        statusChange: {
+          from: "in_progress",
+          to: "completed",
+        },
+      });
+      expect(store.get(DEFAULT_TASK_LIST_ID, "1")?.status).toBe("completed");
     });
 
     it("auto-claims an in-progress task for a subagent actor when no owner is set", async () => {
@@ -431,11 +394,15 @@ describe("task-tracker", () => {
         [TASK_ACTOR_NAME_ARG]: "worker-alpha",
       });
 
-      expect(start.body.task).toMatchObject({
-        id: "1",
-        status: "in_progress",
-        owner: "worker-alpha",
+      expect(start.body).toMatchObject({
+        success: true,
+        taskId: "1",
+        statusChange: {
+          from: "pending",
+          to: "in_progress",
+        },
       });
+      expect(store.get(DEFAULT_TASK_LIST_ID, "1")?.owner).toBe("worker-alpha");
     });
 
     it("merges metadata shallowly and deletes keys set to null", async () => {
@@ -454,8 +421,8 @@ describe("task-tracker", () => {
       expect(merged?.metadata).toEqual({ retries: 3 });
     });
 
-    it("surfaces malformed runtime metadata in the additive taskRuntime payload", async () => {
-      const result = await callTool(update, {
+    it("preserves malformed runtime metadata on the stored task without exposing it publicly", async () => {
+      await callTool(update, {
         taskId: "1",
         metadata: {
           _runtime: {
@@ -465,33 +432,12 @@ describe("task-tracker", () => {
         },
       });
 
-      expect(result.body.task).toMatchObject({
-        id: "1",
-        status: "pending",
+      expect(store.get(DEFAULT_TASK_LIST_ID, "1")?.metadata).toEqual({
+        _runtime: {
+          milestoneIds: ["phase_1", "phase_1", ""],
+          verification: "yes",
+        },
       });
-      expect(result.body.taskRuntime).toMatchObject({
-        fullTask: expect.objectContaining({
-          id: "1",
-        }),
-      });
-      expect(result.body.taskRuntime).toMatchObject({
-        runtimeMetadata: expect.objectContaining({
-          hasRuntimeMetadata: true,
-          malformed: true,
-          milestoneIds: ["phase_1"],
-          verification: false,
-        }),
-      });
-      expect(
-        ((result.body.taskRuntime as Record<string, unknown>).runtimeMetadata as Record<string, unknown>)
-          .errors,
-      ).toEqual(
-        expect.arrayContaining([
-          expect.stringContaining("verification must be a boolean"),
-          expect.stringContaining("cannot contain duplicates"),
-          expect.stringContaining("cannot contain empty strings"),
-        ]),
-      );
     });
 
     it("appends unique blockedBy ids", async () => {
@@ -508,14 +454,21 @@ describe("task-tracker", () => {
 
     it("rejects updates to non-existent task", async () => {
       const result = await callTool(update, { taskId: "404", status: "completed" });
-      expect(result.raw.isError).toBe(true);
-      expect(result.body.error).toMatch(/not found/);
+      expect(result.body).toMatchObject({
+        success: false,
+        taskId: "404",
+        error: "Task not found",
+      });
     });
 
     it("rejects updates to deleted tasks", async () => {
       await callTool(update, { taskId: "1", status: "deleted" });
       const result = await callTool(update, { taskId: "1", status: "completed" });
-      expect(result.raw.isError).toBe(true);
+      expect(result.body).toMatchObject({
+        success: false,
+        taskId: "1",
+        error: "Task not found",
+      });
     });
 
     it("rejects non-array addBlocks", async () => {
@@ -547,9 +500,13 @@ describe("task-tracker", () => {
       const result = await callTool(update, { taskId: "1", status: "completed" });
 
       expect(result.raw.isError).toBeUndefined();
-      expect(result.body.task).toMatchObject({
-        id: "1",
-        status: "completed",
+      expect(result.body).toMatchObject({
+        success: true,
+        taskId: "1",
+        statusChange: {
+          from: "pending",
+          to: "completed",
+        },
       });
       expect(store.get(DEFAULT_TASK_LIST_ID, "1")?.status).toBe("completed");
       expect(guardCalled).toBe(false);
@@ -611,7 +568,7 @@ describe("task-tracker", () => {
       const stored = store.get(DEFAULT_TASK_LIST_ID, "1");
       expect(stored?.status).toBe("pending");
       expect(stored?.metadata).toEqual({ changedBy: "guard" });
-      expect((result.body.task as Record<string, unknown> | undefined)?.revision).toBeUndefined();
+      expect(result.body.task).toBeUndefined();
     });
 
     it("appends a verification nudge when the main actor closes 3+ tasks without a verification step", async () => {
@@ -623,7 +580,6 @@ describe("task-tracker", () => {
       const result = await callTool(update, { taskId: "3", status: "completed" });
 
       expect(result.body.verificationNudgeNeeded).toBe(true);
-      expect(result.body.message).toContain("Run the verifier");
     });
 
     it("does not append the verification nudge for subagent actors", async () => {
@@ -650,12 +606,14 @@ describe("task-tracker", () => {
       });
 
       expect(result.body.verificationNudgeNeeded).toBeUndefined();
-      expect(String(result.body.message)).not.toContain("Run the verifier");
     });
   });
 
   describe("task.wait and task.output", () => {
     it("returns terminal state and persisted output for runtime-managed tasks", async () => {
+      const runtimeTools = createRuntimeTaskHandleTools(store);
+      const wait = findTool(runtimeTools, "task.wait");
+      const output = findTool(runtimeTools, "task.output");
       const runtimeTask = await store.createRuntimeTask({
         listId: DEFAULT_TASK_LIST_ID,
         kind: "subagent",
@@ -745,8 +703,6 @@ describe("task-tracker", () => {
 
       const a = await callTool(list, { [TASK_LIST_ARG]: "session-a" });
       const b = await callTool(list, { [TASK_LIST_ARG]: "session-b" });
-      expect(a.body.count).toBe(2);
-      expect(b.body.count).toBe(1);
 
       const aIds = (a.body.tasks as Array<Record<string, unknown>>).map((t) => t.id);
       const bIds = (b.body.tasks as Array<Record<string, unknown>>).map((t) => t.id);
@@ -803,16 +759,19 @@ describe("task-tracker", () => {
           return () => now++;
         })(),
       });
-      const tracedTools = createTaskTrackerTools(tracedStore, {
-        onTaskAccessEvent: async (event) => {
-          accessEvents.push({
-            type: event.type,
-            taskId: event.taskId,
-            ready: event.ready,
-            until: event.until,
-          });
-        },
-      });
+      const tracedTools = [
+        ...createTaskTrackerTools(tracedStore),
+        ...createRuntimeTaskHandleTools(tracedStore, {
+          onTaskAccessEvent: async (event) => {
+            accessEvents.push({
+              type: event.type,
+              taskId: event.taskId,
+              ready: event.ready,
+              until: event.until,
+            });
+          },
+        }),
+      ];
       const tracedCreate = findTool(tracedTools, "task.create");
       const tracedWait = findTool(tracedTools, "task.wait");
       const tracedOutput = findTool(tracedTools, "task.output");

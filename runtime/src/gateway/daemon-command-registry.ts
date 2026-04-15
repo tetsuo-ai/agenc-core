@@ -3326,7 +3326,7 @@ export function createDaemonCommandRegistry(
         jsonArgs = parseCommandJsonArgs(cmdCtx.args);
       } catch (error) {
         await cmdCtx.reply(
-          `Usage: /tasks [list|get <taskId>|wait <taskId>|output <taskId>]\n${toErrorMessage(error)}`,
+          `Usage: /tasks [list|get <taskId>]\n${toErrorMessage(error)}`,
         );
         return;
       }
@@ -3363,9 +3363,7 @@ export function createDaemonCommandRegistry(
           ? jsonArgs.taskId.trim()
           : cmdCtx.argv[1]?.trim();
       if (!taskId) {
-        await cmdCtx.reply(
-          "Usage: /tasks [list|get <taskId>|wait <taskId>|output <taskId>]",
-        );
+        await cmdCtx.reply("Usage: /tasks [list|get <taskId>]");
         return;
       }
 
@@ -3388,71 +3386,7 @@ export function createDaemonCommandRegistry(
         return;
       }
 
-      if (subcommand === "wait") {
-        const result = await executeStructuredTool(
-          baseToolHandler,
-          "task.wait",
-          {
-            [TASK_LIST_ARG]: cmdCtx.sessionId,
-            taskId,
-            ...(typeof jsonArgs?.timeoutMs === "number"
-              ? { timeoutMs: jsonArgs.timeoutMs }
-              : {}),
-            ...(parseIntegerFlag(cmdCtx.argv, "timeout")
-              ? { timeoutMs: parseIntegerFlag(cmdCtx.argv, "timeout") }
-              : {}),
-          },
-        );
-        await cmdCtx.replyResult({
-          text: formatTaskDetailReply(result),
-          viewKind: "tasks",
-          data: {
-            kind: "tasks",
-            subcommand,
-            taskId,
-            result: asRecord(result),
-          },
-        });
-        return;
-      }
-
-      if (subcommand === "output") {
-        const result = await executeStructuredTool(
-          baseToolHandler,
-          "task.output",
-          {
-            [TASK_LIST_ARG]: cmdCtx.sessionId,
-            taskId,
-            ...(jsonArgs?.block === true ? { block: true } : {}),
-            ...(typeof jsonArgs?.timeoutMs === "number"
-              ? { timeoutMs: jsonArgs.timeoutMs }
-              : {}),
-            ...(hasInlineFlag(cmdCtx.argv, "block") ? { block: true } : {}),
-            ...(parseIntegerFlag(cmdCtx.argv, "timeout")
-              ? { timeoutMs: parseIntegerFlag(cmdCtx.argv, "timeout") }
-              : {}),
-          },
-        );
-        const text =
-          typeof result.output === "string"
-            ? result.output
-            : formatTaskDetailReply(result);
-        await cmdCtx.replyResult({
-          text,
-          viewKind: "tasks",
-          data: {
-            kind: "tasks",
-            subcommand,
-            taskId,
-            result: asRecord(result),
-          },
-        });
-        return;
-      }
-
-      await cmdCtx.reply(
-        "Usage: /tasks [list|get <taskId>|wait <taskId>|output <taskId>]",
-      );
+      await cmdCtx.reply("Usage: /tasks [list|get <taskId>]");
     },
   });
   commandRegistry.register({

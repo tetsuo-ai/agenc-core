@@ -157,8 +157,6 @@ function buildRuntimeTaskHandle(task: Task): RuntimeTaskHandle {
       : {}),
     ...(task.outputReady !== undefined ? { outputReady: task.outputReady } : {}),
     ...(task.outputRef?.path ? { outputPath: task.outputRef.path } : {}),
-    waitTool: "task.wait",
-    outputTool: "task.output",
   };
 }
 
