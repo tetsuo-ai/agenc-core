@@ -431,7 +431,10 @@ You have broad access to this machine via the system.bash tool.`,
     );
     expect(webChat.pushToSession).toHaveBeenCalledWith(
       "session:test",
-      expect.objectContaining({ type: "chat.usage" }),
+      expect.objectContaining({
+        type: "chat.usage",
+        payload: expect.objectContaining({ sessionId: "session:test" }),
+      }),
     );
     expect(webChat.broadcastEvent).toHaveBeenCalledWith("chat.response", {
       sessionId: "session:test",

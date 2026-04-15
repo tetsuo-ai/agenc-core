@@ -153,6 +153,19 @@ describe("operator event normalization", () => {
     expect(shouldIgnoreOperatorMessage(message, "other-session")).toBe(true);
   });
 
+  it("treats chat.usage as a session-scoped event when a session id is present", () => {
+    const message = {
+      type: "chat.usage",
+      payload: {
+        sessionId: "session:abc123",
+        totalTokens: 1234,
+      },
+    };
+
+    expect(shouldIgnoreOperatorMessage(message, "session:abc123")).toBe(false);
+    expect(shouldIgnoreOperatorMessage(message, "other-session")).toBe(true);
+  });
+
   it("does not ignore shared session command results during bootstrap", () => {
     const message = {
       type: "session.command.result",

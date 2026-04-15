@@ -132,6 +132,42 @@ test("dispatchOperatorSurfaceEvent handles session-ready events", () => {
   ]);
 });
 
+test("dispatchOperatorSurfaceEvent seeds usage summary from session payloads", () => {
+  const { api, state } = createHarness({
+    api: {
+      summarizeUsage: (value) => `${value.totalTokens} total / ${value.contextWindowTokens} ctx`,
+    },
+  });
+
+  dispatchOperatorSurfaceEvent(
+    {
+      family: "session",
+      type: "chat.session",
+      payload: {
+        sessionId: "session-usage",
+        usage: {
+          totalTokens: 1200,
+          contextWindowTokens: 64000,
+        },
+      },
+      payloadRecord: {
+        sessionId: "session-usage",
+        usage: {
+          totalTokens: 1200,
+          contextWindowTokens: 64000,
+        },
+      },
+      payloadList: null,
+      isSessionScoped: false,
+      message: { error: undefined },
+    },
+    null,
+    api,
+  );
+
+  assert.equal(state.lastUsageSummary, "1200 total / 64000 ctx");
+});
+
 test("dispatchOperatorSurfaceEvent resumes sessions by restoring history and inspecting the run", () => {
   const { api, state, calls } = createHarness({
     state: { bootstrapReady: true },
@@ -192,6 +228,44 @@ test("dispatchOperatorSurfaceEvent restores bootstrap history before marking the
     ["requestRunInspect", "history restore", { force: true }],
     ["requestCockpit", "history restore"],
   ]);
+});
+
+test("dispatchOperatorSurfaceEvent updates usage summary from /context results", () => {
+  const { api, state } = createHarness({
+    state: { sessionId: "session-ctx" },
+  });
+
+  dispatchOperatorSurfaceEvent(
+    {
+      family: "chat",
+      type: "session.command.result",
+      payload: {
+        commandName: "context",
+        sessionId: "session-ctx",
+        metrics: [
+          { label: "Context Window", value: "64,000 tokens" },
+          { label: "Used", value: "1,250 tokens (2.0%)" },
+        ],
+        content: "context report",
+      },
+      payloadRecord: {
+        commandName: "context",
+        sessionId: "session-ctx",
+        metrics: [
+          { label: "Context Window", value: "64,000 tokens" },
+          { label: "Used", value: "1,250 tokens (2.0%)" },
+        ],
+        content: "context report",
+      },
+      payloadList: null,
+      isSessionScoped: true,
+      message: {},
+    },
+    null,
+    api,
+  );
+
+  assert.equal(state.lastUsageSummary, "1,250 tokens (2.0%) / 64,000 tokens");
 });
 
 test("dispatchOperatorSurfaceEvent restores resumed history without blocking session input", () => {
