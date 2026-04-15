@@ -252,7 +252,7 @@ describe("executeTextChannelTurn", () => {
     );
     expect(execute).toHaveBeenCalledOnce();
     expect(execute).toHaveBeenCalledWith(
-      expect.objectContaining({ maxToolRounds: 3, maxFailureBudgetPerRequest: 4 }),
+      expect.objectContaining({ maxToolRounds: 3 }),
     );
     expect(recordToolRoutingOutcome).toHaveBeenCalledWith(
       "session:test",

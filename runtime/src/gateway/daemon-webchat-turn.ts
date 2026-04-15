@@ -313,7 +313,6 @@ export async function executeWebChatConversationTurn(
       onStreamChunk: sessionStreamCallback,
       signal: abortController.signal,
       maxToolRounds: effectiveMaxToolRounds,
-      maxFailureBudgetPerRequest: 4,
       ...(sessionStateful ? { stateful: sessionStateful } : {}),
       toolRouting: toolRoutingDecision
         ? {

@@ -427,7 +427,7 @@ You have broad access to this machine via the system.bash tool.`,
       content: "reply",
     });
     expect(execute).toHaveBeenCalledWith(
-      expect.objectContaining({ maxToolRounds: 3, maxFailureBudgetPerRequest: 4 }),
+      expect.objectContaining({ maxToolRounds: 3 }),
     );
     expect(webChat.pushToSession).toHaveBeenCalledWith(
       "session:test",
