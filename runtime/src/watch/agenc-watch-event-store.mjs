@@ -115,6 +115,24 @@ export function createWatchEventStore(dependencies = {}) {
       sanitizeInlineText(storedEventBody(event)) || watchState.latestAgentSummary;
   }
 
+  function deriveStreamingPreviewText(value) {
+    const text = typeof value === "string" ? value : "";
+    if (!text) {
+      return null;
+    }
+    const lastNewlineIndex = text.lastIndexOf("\n");
+    if (lastNewlineIndex < 0) {
+      return null;
+    }
+    const preview = text.slice(0, lastNewlineIndex + 1);
+    return preview.length > 0 ? preview : null;
+  }
+
+  function clearAgentStreamingPreview() {
+    watchState.agentStreamingText = null;
+    watchState.agentStreamingPreview = null;
+  }
+
   function shouldCoalesceRenderedEvent(previousEvent, nextEvent) {
     if (!previousEvent || !nextEvent) {
       return false;
@@ -190,6 +208,7 @@ export function createWatchEventStore(dependencies = {}) {
       return;
     }
     events.length = 0;
+    clearAgentStreamingPreview();
     watchState.transcriptScrollOffset = 0;
     watchState.transcriptFollowMode = true;
     watchState.detailScrollOffset = 0;
@@ -278,48 +297,29 @@ export function createWatchEventStore(dependencies = {}) {
     const safeChunk = stripTerminalControlSequences(sanitizeLargeText(chunk ?? ""));
     return withPreservedManualTranscriptViewport(({ shouldFollow }) => {
       const timestamp = nowStamp();
-      const createdAtMs = nowMs();
-      let target = findLatestStreamingAgentEvent();
-      if (!target) {
-        if (!safeChunk) {
-          return null;
+      const target = findLatestStreamingAgentEvent();
+      if (target) {
+        const createdAtMs = nowMs();
+        if (safeChunk) {
+          updateExistingEventBody(target, `${storedEventBody(target)}${safeChunk}`);
         }
-        const normalized = normalizeEventBody(safeChunk || "(streaming)");
-        target = {
-          id: nextId("evt"),
-          kind: "agent",
-          title: "Agent Reply · live",
-          tone: "cyan",
-          timestamp,
-          createdAtMs,
-          body: normalized.body,
-          bodyTruncated: normalized.bodyTruncated,
-          renderMode: "markdown",
-          streamState: nextAgentStreamState({ done }),
-        };
-        preserveFullDetailBody(target, normalized, safeChunk || "(streaming)");
-        events.push(target);
-        if (introDismissKinds.has("agent")) {
-          dismissIntro();
-        }
-        trimBoundedHistory();
-      } else if (safeChunk) {
-        updateExistingEventBody(target, `${storedEventBody(target)}${safeChunk}`);
         target.timestamp = timestamp;
         target.createdAtMs = createdAtMs;
         target.title = "Agent Reply · live";
         target.streamState = nextAgentStreamState({ done });
+        updateLatestAgentSummary(target);
       } else {
-        target.timestamp = timestamp;
-        target.createdAtMs = createdAtMs;
-        target.title = done ? "Agent Reply · live" : target.title;
-        target.streamState = done ? nextAgentStreamState({ done }) : target.streamState;
+        const nextStreamingText = `${watchState.agentStreamingText ?? ""}${safeChunk}`;
+        watchState.agentStreamingText = nextStreamingText || null;
+        watchState.agentStreamingPreview = deriveStreamingPreviewText(nextStreamingText);
+        if (safeChunk && introDismissKinds.has("agent")) {
+          dismissIntro();
+        }
       }
-      updateLatestAgentSummary(target);
       updateActivity(timestamp);
       followTranscriptIfNeeded(shouldFollow);
       scheduleRender();
-      return target;
+      return target ?? watchState.agentStreamingPreview;
     });
   }
 
@@ -350,6 +350,7 @@ export function createWatchEventStore(dependencies = {}) {
         renderMode: "markdown",
         streamState: "complete",
       });
+      updateLatestAgentSummary(result);
     } else {
       // Always overwrite the streaming target body with the canonical
       // commit content when it is non-empty. The previous fallback chain
@@ -375,6 +376,7 @@ export function createWatchEventStore(dependencies = {}) {
       updateActivity(timestamp);
       result = target;
     }
+    clearAgentStreamingPreview();
     // Force-snap to the new reply AFTER any nested wrapper has run. This
     // line MUST be outside withPreservedManualTranscriptViewport — the
     // wrapper's cleanup overwrote it in PR #310, which is exactly why
@@ -389,7 +391,17 @@ export function createWatchEventStore(dependencies = {}) {
     return withPreservedManualTranscriptViewport(({ shouldFollow }) => {
       const target = findLatestStreamingAgentEvent();
       if (!target) {
-        return false;
+        const hadPreview =
+          typeof watchState.agentStreamingText === "string" ||
+          typeof watchState.agentStreamingPreview === "string";
+        if (!hadPreview) {
+          return false;
+        }
+        clearAgentStreamingPreview();
+        updateActivity(nowStamp());
+        followTranscriptIfNeeded(shouldFollow);
+        scheduleRender();
+        return true;
       }
       target.title = reason === "error" ? "Agent Reply Interrupted" : "Agent Reply Cancelled";
       target.tone = reason === "error" ? "red" : "amber";
@@ -397,6 +409,7 @@ export function createWatchEventStore(dependencies = {}) {
       target.timestamp = nowStamp();
       target.createdAtMs = nowMs();
       updateLatestAgentSummary(target);
+      clearAgentStreamingPreview();
       updateActivity(target.timestamp);
       followTranscriptIfNeeded(shouldFollow);
       scheduleRender();
@@ -482,7 +495,9 @@ export function createWatchEventStore(dependencies = {}) {
         return false;
       }
       const normalized = normalizeEventBody(body);
-      lastEvent.kind = isError ? "tool error" : "tool result";
+      lastEvent.kind = "tool result";
+      lastEvent.toolState = isError ? "error" : "ok";
+      lastEvent.isError = isError;
       lastEvent.title = descriptor?.title ?? toolName;
       lastEvent.tone = descriptor?.tone ?? (isError ? "red" : "green");
       lastEvent.timestamp = nowStamp();
@@ -527,7 +542,9 @@ export function createWatchEventStore(dependencies = {}) {
         return false;
       }
       const normalized = normalizeEventBody(body);
-      lastEvent.kind = isError ? "subagent error" : "subagent tool result";
+      lastEvent.kind = "subagent tool result";
+      lastEvent.toolState = isError ? "error" : "ok";
+      lastEvent.isError = isError;
       lastEvent.title = descriptor?.title ?? toolName;
       lastEvent.tone = descriptor?.tone ?? (isError ? "red" : "green");
       lastEvent.timestamp = nowStamp();
@@ -544,6 +561,7 @@ export function createWatchEventStore(dependencies = {}) {
 
   function clearLiveTranscriptView() {
     events.length = 0;
+    clearAgentStreamingPreview();
     resetDelegationState();
     watchState.expandedEventId = null;
     watchState.transcriptScrollOffset = 0;

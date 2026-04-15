@@ -263,6 +263,9 @@ export function logProviderPayloadTraceEvent(params: {
 }): void {
   const { logger, channelName, traceId, sessionId, traceConfig, event } =
     params;
+  if (event.kind === "stream_event") {
+    return;
+  }
   logTraceEvent(
     logger,
     `${channelName}.provider.${event.kind}`,
@@ -300,6 +303,34 @@ export function logProviderPayloadTraceEvent(params: {
   );
 }
 
+function summarizeExecutionTracePayloadPreview(
+  event: ChatExecutionTraceEvent,
+  maxChars: number,
+): unknown {
+  if (
+    event.type !== "tool_dispatch_finished" ||
+    !event.payload ||
+    typeof event.payload !== "object" ||
+    Array.isArray(event.payload)
+  ) {
+    return summarizeTraceValue(event.payload, maxChars);
+  }
+  const payload = { ...event.payload } as Record<string, unknown>;
+  if ("result" in payload) {
+    const rawResult = payload.result;
+    delete payload.result;
+    payload.resultPreview =
+      typeof rawResult === "string"
+        ? summarizeTraceTextForPreview(
+            sanitizeToolResultTextForTrace(rawResult),
+            Math.min(maxChars, 480),
+          )
+        : summarizeTraceValue(rawResult, Math.min(maxChars, 480));
+    payload.resultOmitted = true;
+  }
+  return summarizeTraceValue(payload, maxChars);
+}
+
 export function logExecutionTraceEvent(params: {
   logger: Logger;
   channelName: string;
@@ -318,7 +349,10 @@ export function logExecutionTraceEvent(params: {
       sessionId,
       ...(event.callIndex !== undefined ? { callIndex: event.callIndex } : {}),
       ...(event.phase !== undefined ? { callPhase: event.phase } : {}),
-      payloadPreview: summarizeTraceValue(event.payload, traceConfig.maxChars),
+      payloadPreview: summarizeExecutionTracePayloadPreview(
+        event,
+        traceConfig.maxChars,
+      ),
     },
     traceConfig.maxChars,
     {

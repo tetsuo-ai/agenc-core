@@ -593,6 +593,9 @@ export class WebChatChannel
     sessionId: string | undefined,
     response: ControlResponse,
   ): void {
+    if (response.type === "chat.stream") {
+      return;
+    }
     const payload = response.payload;
     const payloadSessionId =
       payload &&

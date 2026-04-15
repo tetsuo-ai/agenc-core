@@ -837,7 +837,7 @@ test("dispatchOperatorSurfaceEvent accepts content-based chat.stream payloads", 
 
   assert.deepEqual(calls, [
     ["appendAgentStreamChunk", "partial", { done: false }],
-    ["status", "streaming: partial"],
+    ["status", "agent streaming…"],
   ]);
 });
 
@@ -860,7 +860,7 @@ test("dispatchOperatorSurfaceEvent retains delta fallback for older chat.stream 
 
   assert.deepEqual(calls, [
     ["appendAgentStreamChunk", "legacy", { done: false }],
-    ["status", "streaming: legacy"],
+    ["status", "agent streaming…"],
   ]);
 });
 

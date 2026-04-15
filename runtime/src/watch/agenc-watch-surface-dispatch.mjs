@@ -298,10 +298,7 @@ function handleChatSurfaceEvent(surfaceEvent, state, api) {
         if (chunk || payload.done) {
           api.eventStore.appendAgentStreamChunk(chunk, { done: payload.done === true });
         }
-        const statusPreview = api.sanitizeInlineText(chunk);
-        if (statusPreview) {
-          api.setTransientStatus(`streaming: ${api.truncate(statusPreview, 72)}`);
-        } else if (payload.done === true) {
+        if (payload.done === true) {
           api.setTransientStatus("agent stream complete");
         } else {
           api.setTransientStatus("agent streaming…");

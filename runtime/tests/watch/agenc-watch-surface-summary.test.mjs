@@ -205,7 +205,14 @@ test("buildWatchSurfaceSummary derives route, alerts, and recent tool timeline",
       { kind: "approval", title: "Resolver needed", timestamp: "15:30:01" },
       { kind: "tool", title: "Run pwd", toolName: "system.bash", timestamp: "15:30:02" },
       { kind: "tool result", title: "Ran pwd", toolName: "system.bash", timestamp: "15:30:03" },
-      { kind: "tool error", title: "Command failed", toolName: "system.readFile", timestamp: "15:30:04" },
+      {
+        kind: "tool result",
+        title: "Command failed",
+        toolName: "system.readFile",
+        toolState: "error",
+        isError: true,
+        timestamp: "15:30:04",
+      },
     ],
     planCount: 3,
     activeAgentCount: 1,
@@ -295,6 +302,21 @@ test("buildTranscriptEventSummary assigns visible badge and tool state", () => {
   assert.equal(summary.meta, "system.writeFile 12345678");
   assert.equal(summary.toolState, "ok");
   assert.deepEqual(summary.previewLines, ["line 1", "line 2"]);
+});
+
+test("buildTranscriptEventSummary marks failed tool results without changing the event path", () => {
+  const summary = buildTranscriptEventSummary({
+    kind: "tool result",
+    title: "Search failed",
+    toolName: "system.grep",
+    timestamp: "15:31:02",
+    body: "Search failed: path missing",
+    toolState: "error",
+    isError: true,
+  });
+
+  assert.deepEqual(summary.badge, { label: "ERROR", tone: "red" });
+  assert.equal(summary.toolState, "error");
 });
 
 test("buildTranscriptEventSummary omits generic meta labels for agent and prompt cards", () => {
