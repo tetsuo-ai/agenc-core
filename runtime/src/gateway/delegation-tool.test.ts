@@ -44,6 +44,17 @@ describe("delegation-tool", () => {
     expect(parsed.value.objective).toBe("compare three modules");
   });
 
+  it("parses forkContext on the public delegation path", () => {
+    const parsed = parseExecuteWithAgentInput({
+      task: "investigate the live failure",
+      forkContext: true,
+    });
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.forkContext).toBe(true);
+  });
+
   it("preserves explicit task scope when task and objective are both provided", () => {
     const parsed = parseExecuteWithAgentInput({
       task: "Inspect docs/RUNTIME_API.md sections 4b and 8",

@@ -47,6 +47,11 @@ import {
   attachTrackedSubagentTask,
   finalizeTrackedSubagentTask,
 } from "./subagent-task-lifecycle.js";
+import {
+  resolveShellAgentRole,
+  type ShellAgentToolBundleName,
+} from "./shell-agent-roles.js";
+import type { ToolCatalogEntry } from "../tools/types.js";
 
 const DELEGATION_POLL_INTERVAL_MS = 75;
 const DELEGATION_PROGRESS_INTERVAL_MS = 1000;
@@ -60,6 +65,30 @@ const CHILD_DEFERRED_DISCLOSURE_RE =
   /\b(?:do\s+not|don't|never|must\s+not)\s+(?:reveal|return|output|disclose|share|expose)\b/i;
 const DELEGATION_SESSION_ID_FIELD_RE =
   /\b(?:child|subagent|continuation)\s*session\s*id\b|\b(?:child|subagent|continuation)sessionid\b/i;
+const LOCAL_ARTIFACT_REFERENCE_RE =
+  /(?:^|\s)(?:\.{0,2}\/)?(?:[\w.-]+\/)+[\w.-]+(?:\s|$)/u;
+const MUTATING_CHILD_TOOL_NAMES = new Set([
+  "system.writeFile",
+  "system.appendFile",
+  "system.editFile",
+  "system.applyPatch",
+  "system.move",
+  "system.delete",
+  "system.mkdir",
+  "desktop.text_editor",
+  "desktop.bash",
+]);
+const LOCAL_INSPECTION_TOOL_NAMES = new Set([
+  "desktop.text_editor",
+  "system.readFile",
+  "system.readFileRange",
+  "system.listDir",
+  "system.searchFiles",
+  "system.grep",
+  "system.symbolSearch",
+  "system.symbolDefinition",
+  "system.symbolReferences",
+]);
 
 type DelegationContext = NonNullable<
   ReturnType<NonNullable<DelegationToolCompositionResolver>>
@@ -87,12 +116,128 @@ export interface ExecuteDelegationToolParams {
   readonly unsafeBenchmarkMode?: boolean;
 }
 
+interface DelegatedChildToolProfile {
+  readonly roleId: string;
+  readonly roleSource: string;
+  readonly toolBundle: ShellAgentToolBundleName;
+  readonly toolNames: readonly string[];
+}
+
 function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function toErrorString(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function buildSyntheticToolCatalog(
+  availableToolNames: readonly string[],
+): readonly ToolCatalogEntry[] {
+  return availableToolNames.map((name) => ({
+    name,
+    description: "",
+    inputSchema: { type: "object", properties: {} },
+    metadata: {
+      family: "runtime",
+      source: "builtin",
+      hiddenByDefault: false,
+      mutating: MUTATING_CHILD_TOOL_NAMES.has(name),
+    },
+  }));
+}
+
+function inferDelegatedChildRoleId(
+  input: ExecuteWithAgentInput,
+  resolvedToolNames: readonly string[],
+): "coding" | "research" | "verify" {
+  if (input.forkContext === true) {
+    return "research";
+  }
+  if (
+    (input.delegationAdmission?.verifierObligations ?? []).length > 0 ||
+    input.executionContext?.verificationMode === "grounded_read" ||
+    resolvedToolNames.some(
+      (toolName) =>
+        toolName.startsWith("verification.") ||
+        toolName.startsWith("playwright.") ||
+        toolName.startsWith("mcp.browser.") ||
+        toolName.startsWith("system.browser") ||
+        toolName === "system.browse",
+    )
+  ) {
+    return "verify";
+  }
+  if (
+    resolvedToolNames.some((toolName) => MUTATING_CHILD_TOOL_NAMES.has(toolName)) ||
+    (input.delegationAdmission?.ownedArtifacts ?? []).length > 0 ||
+    input.executionContext?.effectClass === "filesystem_write"
+  ) {
+    return "coding";
+  }
+  return "research";
+}
+
+function resolveDelegatedChildToolProfile(params: {
+  readonly input: ExecuteWithAgentInput;
+  readonly availableToolNames: readonly string[];
+}): DelegatedChildToolProfile {
+  if (params.input.forkContext === true) {
+    return {
+      roleId: "fork",
+      roleSource: "fork_context",
+      toolBundle: "inherit",
+      toolNames: [...params.availableToolNames],
+    };
+  }
+
+  const requestedToolNames = [
+    ...(params.input.tools ?? []),
+    ...(params.input.executionContext?.allowedTools ?? []),
+    ...(params.input.requiredToolCapabilities ?? []),
+  ]
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  const roleId = inferDelegatedChildRoleId(params.input, requestedToolNames);
+  const explicitToolNames = (params.input.tools ?? [])
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  const combinedObjectiveText = [
+    params.input.task,
+    params.input.objective,
+    params.input.inputContract,
+    ...(params.input.acceptanceCriteria ?? []),
+  ]
+    .filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+    .join("\n");
+  const localInspectionOnlyTools = params.availableToolNames.filter((toolName) =>
+    LOCAL_INSPECTION_TOOL_NAMES.has(toolName)
+  );
+  const resolvedRole = resolveShellAgentRole({
+    roleId,
+    definitions: [],
+    toolCatalog: buildSyntheticToolCatalog(params.availableToolNames),
+  });
+  const defaultToolNames =
+    resolvedRole?.toolNames && resolvedRole.toolNames.length > 0
+      ? resolvedRole.toolNames
+      : params.availableToolNames;
+  const toolNames =
+    explicitToolNames.length > 0
+      ? explicitToolNames
+      : LOCAL_ARTIFACT_REFERENCE_RE.test(combinedObjectiveText) &&
+          localInspectionOnlyTools.length > 0
+        ? localInspectionOnlyTools
+        : requestedToolNames.length > 0
+      ? defaultToolNames.filter((toolName) => requestedToolNames.includes(toolName))
+      : defaultToolNames;
+
+  return {
+    roleId,
+    roleSource: resolvedRole?.descriptor.source ?? "curated",
+    toolBundle: resolvedRole?.toolBundle ?? "inherit",
+    toolNames: toolNames.length > 0 ? toolNames : defaultToolNames,
+  };
 }
 
 function parseDelegationFailureReason(output: string): string {
@@ -152,6 +297,15 @@ export function buildDelegatedChildPrompt(
   ];
   const basePrompt = parts.join("\n\n");
   const guidance: string[] = [];
+
+  if (input.forkContext === true) {
+    guidance.push(
+      "Forked child context:\n" +
+        "- You inherit the parent session's prior conversation context and current tool surface.\n" +
+        "- Treat the latest delegated task in this prompt as your exact scope.\n" +
+        "- Do not restate or widen the parent plan; execute only the assigned child objective.",
+    );
+  }
 
   if (isDeferredDisclosureStoreTurn(input)) {
     guidance.push(
@@ -510,7 +664,7 @@ export async function executeDelegationTool(
     toolCallId,
     subAgentManager,
     lifecycleEmitter,
-    availableToolNames,
+    availableToolNames = [],
     unsafeBenchmarkMode = false,
   } = params;
   const finalizeDelegationResult = (payload: Record<string, unknown>): string =>
@@ -547,6 +701,28 @@ export async function executeDelegationTool(
       ? sanitizeDelegatedRecallInput(parsedInput.value)
       : parsedInput.value,
   );
+  if (isSubAgentSessionId(sessionId) && input.forkContext === true) {
+    const error = "Forked child context cannot be requested from inside a child session.";
+    lifecycleEmitter?.emit({
+      type: "subagents.failed",
+      timestamp: Date.now(),
+      sessionId,
+      parentSessionId: sessionId,
+      toolName: name,
+      payload: {
+        stage: "validation",
+        objective: input.objective ?? input.task,
+        reason: error,
+        toolCallId,
+      },
+    });
+    return finalizeDelegationResult({
+      success: false,
+      status: "failed",
+      objective: input.objective ?? input.task,
+      error,
+    });
+  }
   const scopeAssessment = assessDelegationScope(input);
   if (!unsafeBenchmarkMode && !scopeAssessment.ok) {
     lifecycleEmitter?.emit({
@@ -578,14 +754,19 @@ export async function executeDelegationTool(
     params.runtimeContractFlags,
     taskStore,
   );
+  const childToolProfile = resolveDelegatedChildToolProfile({
+    input,
+    availableToolNames,
+  });
   const resolvedChildScope = resolveDelegatedChildToolScope({
     spec: input,
-    requestedTools: input.tools,
-    parentAllowedTools: availableToolNames,
+    requestedTools: childToolProfile.toolNames,
     availableTools: availableToolNames,
-    allowDelegationTools: isSubAgentSessionId(sessionId),
-    enforceParentIntersection: true,
-    strictExplicitToolAllowlist: Array.isArray(input.tools) && input.tools.length > 0,
+    allowDelegationTools: input.forkContext === true || isSubAgentSessionId(sessionId),
+    enforceParentIntersection: false,
+    strictExplicitToolAllowlist:
+      input.forkContext === true ||
+      (Array.isArray(input.tools) && input.tools.length > 0),
     unsafeBenchmarkMode,
   });
   const derivedExecutionEnvelope = deriveDelegatedExecutionEnvelopeFromParent({
@@ -726,7 +907,7 @@ export async function executeDelegationTool(
     ...(workingDirectory ? { workingDirectory } : {}),
   };
   let runtimeTaskId: string | undefined;
-  if (taskStore) {
+  if (taskStore && asyncTaskHandlesEnabled) {
     try {
       const task = await taskStore.createRuntimeTask({
         listId: sessionId,
@@ -823,6 +1004,26 @@ export async function executeDelegationTool(
       parentSessionId: sessionId,
       ...(params.shellProfile ? { shellProfile: params.shellProfile } : {}),
       task: objective,
+      ...(input.forkContext === true
+        ? {
+            forkContext: {
+              enabled: true as const,
+              sourceSessionId: sessionId,
+              preserveParentTools: true,
+            },
+          }
+        : {}),
+      ...(childToolProfile.roleId !== "fork"
+        ? {
+            role: childToolProfile.roleId,
+            roleSource: childToolProfile.roleSource,
+            toolBundle: childToolProfile.toolBundle,
+          }
+        : {
+            role: "fork",
+            roleSource: "fork_context",
+            toolBundle: "inherit" as const,
+          }),
       prompt: childPrompt,
       ...(continuationSessionId
         ? { continuationSessionId }

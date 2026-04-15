@@ -23,6 +23,10 @@ import type { Tool, ToolResult } from "../tools/types.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { RuntimeErrorCodes } from "../types/errors.js";
 import { createPromptEnvelope } from "../llm/prompt-envelope.js";
+import {
+  appendTranscriptBatch,
+  createTranscriptMessageEvent,
+} from "./session-transcript.js";
 
 // ============================================================================
 // Helpers
@@ -208,6 +212,52 @@ describe("SubAgentManager", () => {
       await settle();
 
       expect(createContext).toHaveBeenCalledTimes(1);
+    });
+
+    it("inherits parent transcript history when forkContext is enabled", async () => {
+      const observedMessages: LLMMessage[][] = [];
+      const memoryBackend = new InMemoryBackend();
+      await appendTranscriptBatch(memoryBackend, "parent-1", [
+        createTranscriptMessageEvent({
+          surface: "webchat",
+          message: { role: "user", content: "parent request context" },
+        }),
+        createTranscriptMessageEvent({
+          surface: "webchat",
+          message: { role: "assistant", content: "parent progress context" },
+        }),
+      ]);
+      const createContext = vi.fn(async () => {
+        const ctx = makeMockContext();
+        return {
+          ...ctx,
+          llmProvider: makeSequencedLLMProvider(
+            ["fork child output"],
+            observedMessages,
+          ),
+        };
+      });
+      const manager = new SubAgentManager(
+        makeManagerConfig({
+          memoryBackend,
+          createContext,
+        }),
+      );
+
+      const sessionId = await manager.spawn({
+        parentSessionId: "parent-1",
+        task: "Investigate the live failure",
+        forkContext: {
+          enabled: true,
+          sourceSessionId: "parent-1",
+          preserveParentTools: true,
+        },
+      });
+      await manager.waitForResult(sessionId);
+
+      expect(observedMessages).toHaveLength(1);
+      expect(JSON.stringify(observedMessages[0])).toContain("parent request context");
+      expect(JSON.stringify(observedMessages[0])).toContain("parent progress context");
     });
 
     it("passes provider and execution trace callbacks when sub-agent tracing is enabled", async () => {

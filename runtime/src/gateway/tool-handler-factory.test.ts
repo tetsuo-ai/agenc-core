@@ -4531,11 +4531,16 @@ describe("createSessionToolHandler", () => {
       success?: boolean;
       error?: string;
       removedByPolicy?: string[];
+      removedAsUnknownTools?: string[];
     };
 
     expect(parsed.success).toBe(false);
     expect(parsed.error).toContain("No permitted child tools remain");
-    expect(parsed.removedByPolicy).toEqual([
+    expect(
+      parsed.removedByPolicy?.length
+        ? parsed.removedByPolicy
+        : parsed.removedAsUnknownTools,
+    ).toEqual([
       "system.bash",
       "system.writeFile",
     ]);

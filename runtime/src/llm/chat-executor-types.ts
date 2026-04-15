@@ -553,6 +553,7 @@ export interface ChatExecutorConfig {
         "resolveVerifierRequirement" | "shouldVerifySubAgentResult"
       > | null;
       readonly agentDefinitions?: readonly AgentDefinition[];
+      readonly availableToolNames?: readonly string[];
       readonly logger?: import("../utils/logger.js").Logger;
       readonly taskStore?: TaskStore | null;
       readonly remoteJobManager?: Pick<

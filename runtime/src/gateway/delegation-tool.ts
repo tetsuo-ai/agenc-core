@@ -20,6 +20,7 @@ const DIRECT_EXECUTION_ERROR =
 export interface ExecuteWithAgentInput {
   readonly task: string;
   readonly objective?: string;
+  readonly forkContext?: boolean;
   readonly continuationSessionId?: string;
   readonly timeoutMs?: number;
   readonly tools?: readonly string[];
@@ -70,6 +71,13 @@ function toOptionalTimeout(value: unknown): number | undefined {
   const rounded = Math.floor(value);
   if (rounded < 1_000 || rounded > 3_600_000) return undefined;
   return rounded;
+}
+
+function toOptionalBoolean(value: unknown): boolean | undefined {
+  if (typeof value !== "boolean") {
+    return undefined;
+  }
+  return value;
 }
 
 function hasOwnNonEmptyString(record: Record<string, unknown>, key: string): boolean {
@@ -288,6 +296,9 @@ export function parseExecuteWithAgentInput(
     value: {
       task,
       objective,
+      forkContext:
+        toOptionalBoolean(args.forkContext) ??
+        toOptionalBoolean(args.fork_context),
       continuationSessionId:
         toNonEmptyString(args.continuationSessionId) ??
         toNonEmptyString(args.subagentSessionId),
@@ -333,6 +344,11 @@ export function createExecuteWithAgentTool(): Tool {
         objective: {
           type: "string",
           description: "Alias for task when planner emits objective-centric payloads",
+        },
+        forkContext: {
+          type: "boolean",
+          description:
+            "When true, fork the child from the parent's current conversation context and tool surface instead of starting from an isolated delegated summary.",
         },
         tools: {
           type: "array",

@@ -36,6 +36,10 @@ import {
   reportManagedRemoteJob,
   startManagedRemoteJob,
 } from "./remote-execution-handles.js";
+import {
+  resolveShellAgentRole,
+} from "./shell-agent-roles.js";
+import type { ToolCatalogEntry } from "../tools/types.js";
 
 const DEFAULT_VERIFY_TOOLS = [
   "system.readFile",
@@ -151,6 +155,7 @@ interface TopLevelVerifierParams {
     "start" | "handleWebhook"
   > | null;
   readonly agentDefinitions?: readonly AgentDefinition[];
+  readonly availableToolNames?: readonly string[];
   readonly parentAllowedTools?: readonly string[];
   readonly logger?: Logger;
   readonly onTraceEvent?: (
@@ -299,28 +304,75 @@ export function resolveTopLevelVerifierArtifacts(params: {
   };
 }
 
+function buildSyntheticToolCatalog(
+  availableToolNames: readonly string[],
+): readonly ToolCatalogEntry[] {
+  return availableToolNames.map((name) => ({
+    name,
+    description: "",
+    inputSchema: { type: "object", properties: {} },
+    metadata: {
+      family: "runtime",
+      source: "builtin",
+      hiddenByDefault: false,
+      mutating: IMPLICIT_VERIFIER_MUTATION_TOOL_NAMES.has(name),
+    },
+  }));
+}
+
 function selectVerifyDefinition(
   definitions: readonly AgentDefinition[] | undefined,
+  availableToolNames: readonly string[] | undefined,
   parentAllowedTools?: readonly string[],
 ): {
+  readonly roleId: string;
+  readonly roleSource: string;
+  readonly toolBundle: string;
   readonly tools: readonly string[];
   readonly promptEnvelope: ReturnType<typeof createPromptEnvelope>;
 } {
   const match = definitions?.find((definition) => definition.name === "verify");
-  const inheritedTools = buildVerifierToolNames(parentAllowedTools);
-  const tools =
-    inheritedTools.length > 0
-      ? inheritedTools
-      : match?.tools?.length
-        ? [...new Set(match.tools.map((toolName) => toolName.trim()).filter(Boolean))]
+  const effectiveAvailableToolNames =
+    availableToolNames && availableToolNames.length > 0
+      ? availableToolNames
+      : parentAllowedTools && parentAllowedTools.length > 0
+        ? parentAllowedTools
         : [...DEFAULT_VERIFY_TOOLS];
+  const resolvedRole = resolveShellAgentRole({
+    roleId: "verify",
+    definitions: definitions ?? [],
+    toolCatalog: buildSyntheticToolCatalog(effectiveAvailableToolNames),
+  });
+  const inheritedTools = buildVerifierToolNames(effectiveAvailableToolNames);
+  let tools: readonly string[];
+  if (match?.tools?.length) {
+    tools = [...new Set(match.tools.map((toolName) => toolName.trim()).filter(Boolean))];
+  } else if (availableToolNames && availableToolNames.length > 0) {
+    tools =
+      resolvedRole?.toolNames && resolvedRole.toolNames.length > 0
+        ? resolvedRole.toolNames
+        : inheritedTools.length > 0
+          ? inheritedTools
+          : [...DEFAULT_VERIFY_TOOLS];
+  } else if (parentAllowedTools && parentAllowedTools.length > 0) {
+    tools = inheritedTools.length > 0 ? inheritedTools : [...DEFAULT_VERIFY_TOOLS];
+  } else if (resolvedRole?.toolNames && resolvedRole.toolNames.length > 0) {
+    tools = resolvedRole.toolNames;
+  } else {
+    tools = inheritedTools.length > 0 ? inheritedTools : [...DEFAULT_VERIFY_TOOLS];
+  }
+  const systemPrompt =
+    match?.body.trim().length
+      ? match.body.trim()
+      : resolvedRole?.systemPrompt?.trim().length
+        ? resolvedRole.systemPrompt.trim()
+        : DEFAULT_VERIFY_SYSTEM_PROMPT;
   return {
+    roleId: resolvedRole?.descriptor.id ?? "verify",
+    roleSource: resolvedRole?.descriptor.source ?? "curated",
+    toolBundle: resolvedRole?.toolBundle ?? "verification-probes",
     tools,
-    promptEnvelope: createPromptEnvelope(
-      match?.body.trim().length
-        ? match.body.trim()
-        : DEFAULT_VERIFY_SYSTEM_PROMPT,
-    ),
+    promptEnvelope: createPromptEnvelope(systemPrompt),
   };
 }
 
@@ -737,6 +789,7 @@ export async function runTopLevelVerifierValidation(
   const inspectionArtifacts = [...new Set([...sourceArtifacts, ...targetArtifacts])];
   const definition = selectVerifyDefinition(
     params.agentDefinitions,
+    params.availableToolNames,
     params.parentAllowedTools,
   );
   const baseExecutionEnvelope = createExecutionEnvelope({
@@ -769,6 +822,9 @@ export async function runTopLevelVerifierValidation(
 
   const spawnConfig: SubAgentConfig = {
     parentSessionId: params.sessionId,
+    role: definition.roleId,
+    roleSource: definition.roleSource,
+    toolBundle: definition.toolBundle,
     task: "Verify the completed implementation",
     prompt: buildVerifierPrompt({
       userRequest: params.userRequest,

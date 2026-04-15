@@ -176,6 +176,11 @@ export interface SubAgentConfig {
   readonly taskId?: string;
   readonly prompt?: string;
   readonly promptEnvelope?: PromptEnvelopeV1;
+  readonly forkContext?: {
+    readonly enabled: true;
+    readonly sourceSessionId: string;
+    readonly preserveParentTools?: boolean;
+  };
   readonly continuationSessionId?: string;
   readonly timeoutMs?: number;
   readonly toolBudgetPerRequest?: number;
@@ -520,6 +525,17 @@ function normalizeExecutionContextFingerprint(
   });
 }
 
+function normalizeForkContextFingerprint(
+  forkContext: SubAgentConfig["forkContext"] | undefined,
+): string | undefined {
+  if (!forkContext) return undefined;
+  return stableConfigFragment({
+    enabled: forkContext.enabled === true,
+    sourceSessionId: forkContext.sourceSessionId,
+    preserveParentTools: forkContext.preserveParentTools === true,
+  });
+}
+
 function validateContinuationCompatibility(params: {
   readonly existing: SubAgentConfig;
   readonly next: SubAgentConfig;
@@ -575,6 +591,16 @@ function validateContinuationCompatibility(params: {
   );
   if (existingPromptEnvelope !== nextPromptEnvelope) {
     return "continuationSessionId must preserve delegated prompt state";
+  }
+
+  const existingForkContext = normalizeForkContextFingerprint(
+    params.existing.forkContext,
+  );
+  const nextForkContext = normalizeForkContextFingerprint(
+    params.next.forkContext,
+  );
+  if (existingForkContext !== nextForkContext) {
+    return "continuationSessionId must preserve forked child context";
   }
 
   return undefined;
@@ -1086,6 +1112,23 @@ export class SubAgentManager {
         handle,
         handle.config.timeoutMs ?? DEFAULT_SUB_AGENT_TIMEOUT_MS,
       );
+
+      if (
+        handle.history.length === 0 &&
+        handle.config.forkContext?.enabled === true &&
+        this.config.memoryBackend
+      ) {
+        const forkTranscript = await loadTranscript(
+          this.config.memoryBackend,
+          handle.config.forkContext.sourceSessionId,
+        );
+        const inheritedHistory = recoverTranscriptHistory(forkTranscript, {
+          injectContinuationPrompt: false,
+        });
+        if (inheritedHistory.length > 0) {
+          handle.history = [...inheritedHistory];
+        }
+      }
 
       const toolHandler = this.composeToolHandler(sessionIdentity, context, handle);
       const selectedProvider =

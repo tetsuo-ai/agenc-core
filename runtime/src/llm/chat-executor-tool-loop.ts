@@ -2613,6 +2613,8 @@ export async function executeToolCallLoop(
             config.completionValidation?.topLevelVerifier?.remoteJobManager ?? null,
           agentDefinitions:
             config.completionValidation?.topLevelVerifier?.agentDefinitions,
+          availableToolNames:
+            config.completionValidation?.topLevelVerifier?.availableToolNames,
           parentAllowedTools: config.allowedTools
             ? [...config.allowedTools]
             : undefined,
