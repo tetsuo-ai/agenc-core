@@ -20,6 +20,7 @@ import {
   normalizeArtifactPaths,
   normalizeEnvelopeRoots,
   normalizeWorkspaceRoot,
+  normalizeEnvelopePath,
 } from "../workflow/path-normalization.js";
 
 export type DelegationExecutionContext = ExecutionEnvelope;
@@ -254,6 +255,7 @@ type DelegatedExecutionEnvelopeDerivationSource =
 type DelegatedExecutionEnvelopeDerivationIssueCode =
   | "missing_parent_workspace_authority"
   | "workspace_root_outside_parent_workspace"
+  | "working_directory_outside_parent_workspace"
   | "read_root_outside_parent_workspace"
   | "write_root_outside_parent_workspace"
   | "input_artifact_outside_parent_workspace"
@@ -332,13 +334,10 @@ export function deriveDelegatedExecutionEnvelopeFromParent(params: {
   readonly parentAllowedReadRoots?: readonly (string | undefined | null)[];
   readonly parentAllowedWriteRoots?: readonly (string | undefined | null)[];
   readonly requestedExecutionContext?: DelegationExecutionContext;
+  readonly requestedWorkingDirectory?: string | null;
   readonly requiresStructuredExecutionContext: boolean;
   readonly source: DelegatedExecutionEnvelopeDerivationSource;
 }): DelegatedExecutionEnvelopeDerivationResult {
-  if (!params.requiresStructuredExecutionContext) {
-    return { ok: true };
-  }
-
   const rawRequestedWorkspaceRoot =
     params.requestedExecutionContext?.workspaceRoot;
   if (
@@ -362,7 +361,37 @@ export function deriveDelegatedExecutionEnvelopeFromParent(params: {
         : undefined),
   );
   if (!parentWorkspaceRoot) {
+    if (!params.requiresStructuredExecutionContext) {
+      if (params.requestedWorkingDirectory) {
+        return buildMissingParentWorkspaceAuthorityFailure(params.source);
+      }
+      return { ok: true };
+    }
     return buildMissingParentWorkspaceAuthorityFailure(params.source);
+  }
+
+  if (!params.requiresStructuredExecutionContext) {
+    const requestedWorkingDirectory = normalizeWorkingDirectoryWithinWorkspace(
+      params.requestedWorkingDirectory,
+      parentWorkspaceRoot,
+    );
+    if (
+      requestedWorkingDirectory &&
+      !isPathWithinRoot(requestedWorkingDirectory, parentWorkspaceRoot)
+    ) {
+      return buildDerivationFailure({
+        code: "working_directory_outside_parent_workspace",
+        message:
+          `Requested delegated working directory "${requestedWorkingDirectory}" is outside the trusted child workspace root.`,
+        path: requestedWorkingDirectory,
+      });
+    }
+    return {
+      ok: true,
+      ...(requestedWorkingDirectory
+        ? { workingDirectory: requestedWorkingDirectory }
+        : {}),
+    };
   }
 
   const parentAllowedReadRoots = normalizeParentRoots(
@@ -563,12 +592,37 @@ export function deriveDelegatedExecutionEnvelopeFromParent(params: {
     approvalProfile: requestedContext?.approvalProfile,
   });
 
+  const requestedWorkingDirectory = normalizeWorkingDirectoryWithinWorkspace(
+    params.requestedWorkingDirectory,
+    childWorkspaceRoot,
+  );
+  if (
+    requestedWorkingDirectory &&
+    !isPathWithinRoot(requestedWorkingDirectory, childWorkspaceRoot)
+  ) {
+    return buildDerivationFailure({
+      code: "working_directory_outside_parent_workspace",
+      message:
+        `Requested delegated working directory "${requestedWorkingDirectory}" is outside the trusted child workspace root.`,
+      path: requestedWorkingDirectory,
+    });
+  }
+
   return {
     ok: true,
     executionContext,
-    // Audit S1.6: normalize so the working directory passed to spawned
-    // child processes uses path.resolve + ~ expansion, matching the
-    // upstream parent workspace root used elsewhere in this file.
-    workingDirectory: normalizeWorkspaceRoot(executionContext?.workspaceRoot),
+    workingDirectory:
+      requestedWorkingDirectory ??
+      normalizeWorkspaceRoot(executionContext?.workspaceRoot),
   };
+}
+
+function normalizeWorkingDirectoryWithinWorkspace(
+  value: string | undefined | null,
+  workspaceRoot: string,
+): string | undefined {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return undefined;
+  }
+  return normalizeEnvelopePath(value, workspaceRoot);
 }

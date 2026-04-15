@@ -20,6 +20,7 @@ const DIRECT_EXECUTION_ERROR =
 export interface ExecuteWithAgentInput {
   readonly task: string;
   readonly objective?: string;
+  readonly cwd?: string;
   readonly forkContext?: boolean;
   readonly continuationSessionId?: string;
   readonly timeoutMs?: number;
@@ -207,6 +208,7 @@ export interface DelegatedWorkingDirectoryResolution {
 interface DelegatedWorkingDirectoryInput {
   readonly task?: string;
   readonly objective?: string;
+  readonly cwd?: string;
   readonly inputContract?: string;
   readonly acceptanceCriteria?: readonly string[];
   readonly executionContext?: DelegationExecutionContext;
@@ -296,6 +298,10 @@ export function parseExecuteWithAgentInput(
     value: {
       task,
       objective,
+      cwd:
+        toNonEmptyString(args.cwd) ??
+        toNonEmptyString(args.workingDirectory) ??
+        toNonEmptyString(args.working_directory),
       forkContext:
         toOptionalBoolean(args.forkContext) ??
         toOptionalBoolean(args.fork_context),
@@ -344,6 +350,11 @@ export function createExecuteWithAgentTool(): Tool {
         objective: {
           type: "string",
           description: "Alias for task when planner emits objective-centric payloads",
+        },
+        cwd: {
+          type: "string",
+          description:
+            "Optional child working directory beneath the trusted delegated workspace root.",
         },
         forkContext: {
           type: "boolean",

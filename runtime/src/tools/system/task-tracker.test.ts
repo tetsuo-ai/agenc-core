@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it, expect, beforeEach } from "vitest";
 import {
   TASK_ACTOR_KIND_ARG,
@@ -728,6 +731,38 @@ describe("task-tracker", () => {
       expect(store.list("ephemeral")).toHaveLength(1);
       expect(store.dropList("ephemeral")).toBe(true);
       expect(store.list("ephemeral")).toHaveLength(0);
+    });
+
+    it("persists session task lists to a dedicated file-backed store", async () => {
+      const persistenceRootDir = mkdtempSync(join(tmpdir(), "agenc-session-tasks-"));
+      try {
+        const persistedStore = new SessionTaskStore({
+          persistenceRootDir,
+          now: (() => {
+            let now = 2_000;
+            return () => now++;
+          })(),
+        });
+        const persistedTools = createTaskTrackerTools(persistedStore);
+        const persistedCreate = findTool(persistedTools, "task.create");
+        await callTool(persistedCreate, {
+          [TASK_LIST_ARG]: "session-persisted",
+          subject: "Ship shell",
+          description: "Finish the shell milestone",
+        });
+
+        const reloadedStore = new SessionTaskStore({ persistenceRootDir });
+        const tasks = await reloadedStore.listTasks("session-persisted");
+        expect(tasks).toEqual([
+          expect.objectContaining({
+            id: "1",
+            subject: "Ship shell",
+            description: "Finish the shell milestone",
+          }),
+        ]);
+      } finally {
+        rmSync(persistenceRootDir, { recursive: true, force: true });
+      }
     });
   });
 

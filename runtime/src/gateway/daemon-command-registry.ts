@@ -3313,7 +3313,7 @@ export function createDaemonCommandRegistry(
   commandRegistry.register({
     name: "tasks",
     description: "List or inspect session task-tracker tasks",
-    args: "[list|get <taskId>|wait <taskId>|output <taskId>]",
+    args: "[list|get <taskId>]",
     global: true,
     metadata: {
       category: "tasks",

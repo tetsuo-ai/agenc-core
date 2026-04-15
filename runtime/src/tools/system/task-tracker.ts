@@ -10,7 +10,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdir, open, readFile, rename, stat } from "node:fs/promises";
+import { mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
@@ -30,6 +30,7 @@ const TASK_LIST_KEY_PREFIX = "runtime_task_list:";
 const TASK_OUTPUT_SCHEMA_VERSION = 1;
 const SESSION_TASK_LIST_SCHEMA_VERSION = 1;
 const TASK_LIST_SCHEMA_VERSION = 2;
+const SESSION_TASK_LIST_DIRNAME = "session-task-lists";
 const TASK_OUTPUT_DIRNAME = "runtime-task-outputs";
 const DEFAULT_WAIT_TIMEOUT_MS = 5_000;
 const DEFAULT_WAIT_POLL_MS = 100;
@@ -263,6 +264,7 @@ interface SessionTaskListEntry {
 
 interface SessionTaskStoreOptions {
   readonly memoryBackend?: MemoryBackend;
+  readonly persistenceRootDir?: string;
   readonly logger?: Logger;
   readonly now?: () => number;
 }
@@ -1065,6 +1067,8 @@ function coerceTaskOutputEnvelope(value: unknown): TaskOutputEnvelope | undefine
 
 export class SessionTaskStore {
   private readonly memoryBackend?: MemoryBackend;
+  private readonly persistenceRootDir?: string;
+  private readonly logger: Logger;
   private readonly now: () => number;
   private readonly lists = new Map<string, SessionTaskListEntry>();
   private readonly loadedLists = new Set<string>();
@@ -1072,6 +1076,10 @@ export class SessionTaskStore {
 
   constructor(options?: SessionTaskStoreOptions) {
     this.memoryBackend = options?.memoryBackend;
+    this.persistenceRootDir = options?.persistenceRootDir
+      ? resolve(options.persistenceRootDir, SESSION_TASK_LIST_DIRNAME)
+      : undefined;
+    this.logger = options?.logger ?? silentLogger;
     this.now = options?.now ?? (() => Date.now());
   }
 
@@ -1110,13 +1118,59 @@ export class SessionTaskStore {
     return list;
   }
 
+  private listDirFor(listId: string): string | undefined {
+    if (!this.persistenceRootDir) return undefined;
+    return join(this.persistenceRootDir, hashPathSegment(listId));
+  }
+
+  private listPathFor(listId: string): string | undefined {
+    const dir = this.listDirFor(listId);
+    return dir ? join(dir, "tasks.json") : undefined;
+  }
+
+  private async loadPersistedList(
+    listId: string,
+  ): Promise<SessionTaskListEntry | undefined> {
+    const listPath = this.listPathFor(listId);
+    if (!listPath) return undefined;
+    try {
+      const payload = await readFile(listPath, "utf8");
+      return (
+        coerceSessionTaskListEntry(JSON.parse(payload), listId) ??
+        createEmptySessionTaskList(listId)
+      );
+    } catch (error) {
+      const code =
+        typeof error === "object" && error && "code" in error
+          ? (error as { code?: string }).code
+          : undefined;
+      if (code === "ENOENT") {
+        return undefined;
+      }
+      this.logger.debug?.("Failed to load persisted session task list", {
+        listId,
+        path: listPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  }
+
   private async ensureListLoaded(listId: string): Promise<SessionTaskListEntry> {
     if (this.loadedLists.has(listId) || !this.memoryBackend) {
-      return this.getOrCreateCachedList(listId);
+      if (this.loadedLists.has(listId)) {
+        return this.getOrCreateCachedList(listId);
+      }
+      const persisted = await this.loadPersistedList(listId);
+      const list = persisted ?? this.getOrCreateCachedList(listId);
+      this.lists.set(listId, list);
+      this.loadedLists.add(listId);
+      return list;
     }
     const persisted = await this.memoryBackend.get(this.listKey(listId));
     const list =
       coerceSessionTaskListEntry(persisted, listId) ??
+      (await this.loadPersistedList(listId)) ??
       createEmptySessionTaskList(listId);
     this.lists.set(listId, list);
     this.loadedLists.add(listId);
@@ -1125,9 +1179,24 @@ export class SessionTaskStore {
 
   private async persistList(list: SessionTaskListEntry): Promise<void> {
     if (!this.memoryBackend) {
+      await this.persistListToDisk(list);
       return;
     }
     await this.memoryBackend.set(this.listKey(list.id), cloneSessionTaskList(list));
+    await this.persistListToDisk(list);
+  }
+
+  private async persistListToDisk(list: SessionTaskListEntry): Promise<void> {
+    const listPath = this.listPathFor(list.id);
+    const listDir = this.listDirFor(list.id);
+    if (!listPath || !listDir) {
+      return;
+    }
+    await mkdir(listDir, { recursive: true });
+    const payload = safeStringify(cloneSessionTaskList(list));
+    const tempPath = `${listPath}.tmp-${process.pid}-${Date.now()}`;
+    await writeFile(tempPath, payload, "utf8");
+    await rename(tempPath, listPath);
   }
 
   list(listId: string): SessionTask[] {

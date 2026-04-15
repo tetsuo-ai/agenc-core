@@ -316,6 +316,7 @@ async function preparePersistentWorkerAssignment(
     parentAllowedReadRoots: params.parentAllowedReadRoots,
     parentAllowedWriteRoots: params.parentAllowedWriteRoots,
     requestedExecutionContext: input.executionContext,
+    requestedWorkingDirectory: input.cwd,
     requiresStructuredExecutionContext: toolScopeRequiresStructuredExecutionContext(
       resolvedChildScope.allowedTools,
     ),

@@ -55,6 +55,17 @@ describe("delegation-tool", () => {
     expect(parsed.value.forkContext).toBe(true);
   });
 
+  it("parses an explicit child cwd on the public delegation path", () => {
+    const parsed = parseExecuteWithAgentInput({
+      task: "inspect the generated project",
+      cwd: "packages/app",
+    });
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.cwd).toBe("packages/app");
+  });
+
   it("preserves explicit task scope when task and objective are both provided", () => {
     const parsed = parseExecuteWithAgentInput({
       task: "Inspect docs/RUNTIME_API.md sections 4b and 8",
@@ -254,6 +265,7 @@ describe("delegation-tool", () => {
     expect(tool.inputSchema.properties).not.toHaveProperty(
       "contextRequirements",
     );
+    expect(tool.inputSchema.properties).toHaveProperty("cwd");
     const executionContext = tool.inputSchema.properties.executionContext as {
       properties?: Record<string, unknown>;
     };

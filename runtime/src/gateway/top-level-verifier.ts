@@ -18,7 +18,6 @@ import type { AgentDefinition } from "./agent-loader.js";
 import type { DelegationVerifierService } from "./delegation-runtime.js";
 import { isSubAgentSessionId } from "./delegation-runtime.js";
 import {
-  extractVerificationProbeCoverage,
   type VerifierRequirement,
 } from "./verifier-probes.js";
 import type { TurnExecutionContract } from "../llm/turn-execution-contract-types.js";
@@ -40,6 +39,7 @@ import {
   resolveShellAgentRole,
 } from "./shell-agent-roles.js";
 import type { ToolCatalogEntry } from "../tools/types.js";
+import type { DelegationContractSpec } from "../utils/delegation-validation.js";
 
 const DEFAULT_VERIFY_TOOLS = [
   "system.readFile",
@@ -857,10 +857,6 @@ export async function runTopLevelVerifierValidation(
           workingDirectory: workspaceRoot,
         }
       : {}),
-    requiredToolEvidence: {
-      maxCorrectionAttempts: 1,
-      executionEnvelope: executionEnvelope!,
-    },
   };
 
   const useRemoteJob =
@@ -885,11 +881,6 @@ export async function runTopLevelVerifierValidation(
       launcherKind: "remote_job",
     };
   }
-  const localExecutionLocation = {
-    mode: "local" as const,
-    ...(workspaceRoot ? { workspaceRoot } : {}),
-    ...(workspaceRoot ? { workingDirectory: workspaceRoot } : {}),
-  };
   let remoteJobHandle:
     | Awaited<ReturnType<typeof startManagedRemoteJob>>
     | undefined;
@@ -923,56 +914,28 @@ export async function runTopLevelVerifierValidation(
     }
   }
 
-  let verifierTaskId: string | undefined;
-  if (params.taskStore) {
-    try {
-      const verifierTask = await params.taskStore.createRuntimeTask({
-        listId: params.sessionId,
-        kind: "verifier",
-        subject: "Run runtime verification",
-        description: "Verify the completed implementation with concrete checks.",
-        activeForm: "Running runtime verification",
-        metadata: {
-          _runtime: {
-            verification: true,
-            verifierProfiles: effectiveVerifierRequirement.profiles,
-            verifierProbeCategories: effectiveVerifierRequirement.probeCategories,
-          },
-        },
-        summary: "Runtime verifier started.",
-        workingDirectory: workspaceRoot,
-        executionLocation:
-          remoteJobHandle?.executionLocation ?? localExecutionLocation,
-      });
-      verifierTaskId = verifierTask.id;
-    } catch (error) {
-      params.logger?.debug?.("Failed to create verifier task record", {
-        sessionId: params.sessionId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
+  const verifierDelegationSpec: DelegationContractSpec | undefined =
+    executionEnvelope
+      ? {
+          task: "Verify the completed implementation",
+          objective:
+            "Inspect the declared artifacts directly, run grounded checks, and return a verifier verdict.",
+          executionContext: executionEnvelope,
+          acceptanceCriteria: [
+            "Use grounded checks inside the delegated verifier workspace.",
+            "Return a concrete PASS, FAIL, or RETRY verifier verdict.",
+          ],
+        }
+      : undefined;
 
   let childSessionId: string;
   try {
-    childSessionId = await subAgentManager.spawn(spawnConfig);
-    if (params.taskStore && verifierTaskId) {
-      await params.taskStore.attachExternalRef(
-        params.sessionId,
-        verifierTaskId,
-        remoteJobHandle
-          ? {
-              kind: "remote_job",
-              id: remoteJobHandle.handleId,
-            }
-          : {
-              kind: "verifier",
-              id: childSessionId,
-              sessionId: childSessionId,
-            },
-        "Runtime verifier worker started.",
-      );
-    }
+    childSessionId = await subAgentManager.spawn({
+      ...spawnConfig,
+      ...(workspaceRoot ? { workingDirectorySource: "execution_envelope" as const } : {}),
+      ...(verifierDelegationSpec ? { delegationSpec: verifierDelegationSpec } : {}),
+      requireToolCall: true,
+    });
   } catch (error) {
     if (remoteJobHandle && params.remoteJobManager) {
       await reportManagedRemoteJob({
@@ -983,28 +946,6 @@ export async function runTopLevelVerifierValidation(
         summary: "Top-level verifier worker could not be started.",
       }).catch(() => undefined);
     }
-    if (params.taskStore && verifierTaskId) {
-      await params.taskStore.finalizeRuntimeTask({
-        listId: params.sessionId,
-        taskId: verifierTaskId,
-        status: "failed",
-        summary: "Top-level verifier worker could not be started.",
-        workingDirectory: workspaceRoot,
-        executionLocation:
-          remoteJobHandle?.executionLocation ?? localExecutionLocation,
-        ...(remoteJobHandle
-          ? {
-              externalRef: {
-                kind: "remote_job" as const,
-                id: remoteJobHandle.handleId,
-              },
-            }
-          : {}),
-        eventData: {
-          stage: "spawn",
-        },
-      });
-    }
     params.logger?.warn(
       "Failed to spawn top-level verifier worker",
       {
@@ -1014,7 +955,6 @@ export async function runTopLevelVerifierValidation(
     );
     await emitTraceEvent({
       type: "unavailable",
-      ...(verifierTaskId ? { taskId: verifierTaskId } : {}),
       launcherKind: remoteJobHandle ? "remote_job" : "subagent",
       summary: "Top-level verifier worker could not be started.",
     });
@@ -1030,12 +970,10 @@ export async function runTopLevelVerifierValidation(
       exhaustedDetail: "Top-level verifier worker could not be started.",
       verifierRequirement: effectiveVerifierRequirement,
       launcherKind: remoteJobHandle ? "remote_job" : "subagent",
-      ...(verifierTaskId ? { taskId: verifierTaskId } : {}),
     };
   }
   await emitTraceEvent({
     type: "spawned",
-    ...(verifierTaskId ? { taskId: verifierTaskId } : {}),
     launcherKind: remoteJobHandle ? "remote_job" : "subagent",
     summary: "Runtime verifier is running.",
   });
@@ -1052,50 +990,14 @@ export async function runTopLevelVerifierValidation(
   }
 
   const verifierResult = await subAgentManager.waitForResult(childSessionId);
-  const coverage = extractVerificationProbeCoverage(verifierResult?.toolCalls ?? []);
   const effectiveParsed = parseVerifierSnapshot(verifierResult);
   const runtimeVerifier = toRuntimeVerifierVerdict(effectiveParsed);
   await emitTraceEvent({
     type: "verdict",
-    ...(verifierTaskId ? { taskId: verifierTaskId } : {}),
     launcherKind: remoteJobHandle ? "remote_job" : "subagent",
     summary: effectiveParsed.summary,
     verdict: runtimeVerifier.overall,
   });
-  if (params.taskStore && verifierTaskId) {
-    await params.taskStore.finalizeRuntimeTask({
-      listId: params.sessionId,
-      taskId: verifierTaskId,
-      status: effectiveParsed.snapshot.overall === "pass" ? "completed" : "failed",
-      summary: effectiveParsed.summary,
-      output: verifierResult?.output,
-      structuredOutput: verifierResult?.structuredOutput?.parsed,
-      usage:
-        verifierResult?.tokenUsage as unknown as Record<string, unknown> | undefined,
-      verifierVerdict: runtimeVerifier,
-      ownedArtifacts: targetArtifacts,
-      workingDirectory: workspaceRoot,
-      executionLocation:
-        remoteJobHandle?.executionLocation ?? localExecutionLocation,
-      externalRef: remoteJobHandle
-        ? {
-            kind: "remote_job",
-            id: remoteJobHandle.handleId,
-          }
-        : {
-            kind: "verifier",
-            id: childSessionId,
-            sessionId: childSessionId,
-          },
-      eventData: {
-        verifierSessionId: childSessionId,
-        verdict: runtimeVerifier.overall,
-        probeIds: coverage.probeIds,
-        profiles: coverage.profiles,
-        categories: coverage.categories,
-      },
-    });
-  }
   if (remoteJobHandle && params.remoteJobManager) {
     await reportManagedRemoteJob({
       manager: params.remoteJobManager,
@@ -1128,7 +1030,6 @@ export async function runTopLevelVerifierValidation(
       exhaustedDetail: `Top-level verifier retry: ${effectiveParsed.summary}`,
       verifierRequirement: effectiveVerifierRequirement,
       launcherKind: remoteJobHandle ? "remote_job" : "subagent",
-      ...(verifierTaskId ? { taskId: verifierTaskId } : {}),
     };
   }
   if (effectiveParsed.snapshot.overall === "pass") {
@@ -1139,7 +1040,6 @@ export async function runTopLevelVerifierValidation(
       summary: effectiveParsed.summary,
       verifierRequirement: effectiveVerifierRequirement,
       launcherKind: remoteJobHandle ? "remote_job" : "subagent",
-      ...(verifierTaskId ? { taskId: verifierTaskId } : {}),
     };
   }
   return {
@@ -1155,6 +1055,5 @@ export async function runTopLevelVerifierValidation(
       `Top-level verifier ${effectiveParsed.snapshot.overall}: ${effectiveParsed.summary}`,
     verifierRequirement: effectiveVerifierRequirement,
     launcherKind: remoteJobHandle ? "remote_job" : "subagent",
-    ...(verifierTaskId ? { taskId: verifierTaskId } : {}),
   };
 }

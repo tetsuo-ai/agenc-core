@@ -340,6 +340,7 @@ export async function createDaemonToolRegistry(
   );
   const sessionTaskStore = new SessionTaskStore({
     memoryBackend,
+    persistenceRootDir: resolveRuntimePersistencePaths().rootDir,
     logger,
   });
   const taskTrackerStore = new TaskStore({
