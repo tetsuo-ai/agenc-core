@@ -2,6 +2,7 @@ import {
   buildTableDisplayLines,
   buildMarkdownDisplayLines,
   createDisplayLine,
+  parseTableAlignment,
   isTableSeparator,
   normalizeDisplayLineCollection,
   normalizeInlineMarkdown,
@@ -85,7 +86,7 @@ function commonPrefixLength(left, right) {
   return index;
 }
 
-function buildStreamingMarkdownState(value) {
+function buildStreamingMarkdownState(value, options = {}) {
   const source = normalizeMarkdownSource(value);
   if (source.trim().length === 0) {
     return {
@@ -107,9 +108,10 @@ function buildStreamingMarkdownState(value) {
     }
 
     const headerCells = parseTableRow(rawLines[trailingTableStart]);
-    const separatorComplete = isTableSeparator(rawLines[trailingTableStart + 1] ?? "");
+    const separatorLine = rawLines[trailingTableStart + 1] ?? "";
+    const separatorComplete = isTableSeparator(separatorLine);
     const stableSource = rawLines.slice(0, trailingTableStart).join("\n");
-    const stableLines = stableSource ? buildMarkdownDisplayLines(stableSource) : [];
+    const stableLines = stableSource ? buildMarkdownDisplayLines(stableSource, options) : [];
 
     if (!headerCells || !separatorComplete) {
       const previewLines = rawLines
@@ -142,7 +144,12 @@ function buildStreamingMarkdownState(value) {
     return {
       completeLines: normalizeDisplayLineCollection([
         ...stableLines,
-        ...buildTableDisplayLines(headerCells, completedRows),
+        ...buildTableDisplayLines(
+          headerCells,
+          completedRows,
+          parseTableAlignment(separatorLine),
+          options,
+        ),
       ]),
       previewLines: previewLines.filter((line) => String(line.text ?? "").trim().length > 0),
     };
@@ -150,7 +157,7 @@ function buildStreamingMarkdownState(value) {
 
   if (source.endsWith("\n")) {
     return {
-      completeLines: buildMarkdownDisplayLines(source),
+      completeLines: buildMarkdownDisplayLines(source, options),
       previewLines: [],
     };
   }
@@ -160,7 +167,7 @@ function buildStreamingMarkdownState(value) {
     const stableSource = rawLines.slice(0, -1).join("\n");
     const tail = normalizeStreamingTailText(lastLine);
     return {
-      completeLines: stableSource ? buildMarkdownDisplayLines(stableSource) : [],
+      completeLines: stableSource ? buildMarkdownDisplayLines(stableSource, options) : [],
       previewLines: tail ? [createDisplayLine(tail, "stream-tail")] : [],
     };
   }
@@ -169,13 +176,13 @@ function buildStreamingMarkdownState(value) {
   if (lastNewlineIndex === -1) {
     return {
       completeLines: [],
-      previewLines: buildMarkdownDisplayLines(source),
+      previewLines: buildMarkdownDisplayLines(source, options),
     };
   }
 
   const stableSource = source.slice(0, lastNewlineIndex + 1);
-  const stableLines = buildMarkdownDisplayLines(stableSource);
-  const fullLines = buildMarkdownDisplayLines(source);
+  const stableLines = buildMarkdownDisplayLines(stableSource, options);
+  const fullLines = buildMarkdownDisplayLines(source, options);
   const prefixLength = commonPrefixLength(stableLines, fullLines);
 
   return {
@@ -184,7 +191,7 @@ function buildStreamingMarkdownState(value) {
   };
 }
 
-export function createMarkdownStreamCollector() {
+export function createMarkdownStreamCollector(options = {}) {
   let buffer = "";
   let committedLines = [];
 
@@ -211,7 +218,7 @@ export function createMarkdownStreamCollector() {
   }
 
   function commitCompleteLines() {
-    const { completeLines } = buildStreamingMarkdownState(buffer);
+    const { completeLines } = buildStreamingMarkdownState(buffer, options);
     const prefixLength = commonPrefixLength(committedLines, completeLines);
     const nextLines =
       prefixLength < committedLines.length
@@ -222,12 +229,12 @@ export function createMarkdownStreamCollector() {
   }
 
   function previewPendingLines() {
-    const { previewLines } = buildStreamingMarkdownState(buffer);
+    const { previewLines } = buildStreamingMarkdownState(buffer, options);
     return previewLines;
   }
 
   function snapshot() {
-    const state = buildStreamingMarkdownState(buffer);
+    const state = buildStreamingMarkdownState(buffer, options);
     committedLines = state.completeLines;
     return normalizeDisplayLineCollection([
       ...state.completeLines,
@@ -236,7 +243,7 @@ export function createMarkdownStreamCollector() {
   }
 
   function finalizeAndDrain() {
-    const rendered = buildMarkdownDisplayLines(buffer);
+    const rendered = buildMarkdownDisplayLines(buffer, options);
     const prefixLength = commonPrefixLength(committedLines, rendered);
     const lines = rendered.slice(prefixLength);
     clear();
@@ -254,8 +261,8 @@ export function createMarkdownStreamCollector() {
   };
 }
 
-export function buildStreamingMarkdownDisplayLines(value) {
-  const state = buildStreamingMarkdownState(value);
+export function buildStreamingMarkdownDisplayLines(value, options = {}) {
+  const state = buildStreamingMarkdownState(value, options);
   return normalizeDisplayLineCollection([
     ...state.completeLines,
     ...state.previewLines,

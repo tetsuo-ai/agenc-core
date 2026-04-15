@@ -68,12 +68,125 @@ function normalizeInlineWhitespace(value) {
     .trim();
 }
 
-function truncateCell(value, maxWidth = 24) {
-  const text = String(value ?? "");
-  if (text.length <= maxWidth) {
-    return text;
+const TABLE_TARGET_WIDTH = 88;
+const TABLE_SAFETY_MARGIN = 4;
+const TABLE_MIN_COLUMN_WIDTH = 3;
+const TABLE_MAX_ROW_LINES = 4;
+
+function normalizeTableLayoutOptions(options = {}) {
+  const hasExplicitTargetWidth =
+    Object.prototype.hasOwnProperty.call(options, "targetWidth") ||
+    Object.prototype.hasOwnProperty.call(options, "tableTargetWidth") ||
+    Object.prototype.hasOwnProperty.call(options, "width");
+  const rawTargetWidth = hasExplicitTargetWidth
+    ? options.targetWidth ?? options.tableTargetWidth ?? options.width
+    : TABLE_TARGET_WIDTH;
+  const numericTargetWidth = Number(rawTargetWidth);
+  const targetWidth = Number.isFinite(numericTargetWidth)
+    ? Math.max(24, Math.floor(numericTargetWidth))
+    : TABLE_TARGET_WIDTH;
+  const fillWidth = options.fillWidth === true ||
+    options.fillTables === true ||
+    (hasExplicitTargetWidth && options.fillWidth !== false && options.fillTables !== false);
+  const safetyMargin = hasExplicitTargetWidth ? 0 : TABLE_SAFETY_MARGIN;
+  return {
+    targetWidth,
+    fillWidth,
+    safetyMargin,
+  };
+}
+
+function distributeWidthRemainder(widths, remainder) {
+  const output = widths.map((width) => Math.max(TABLE_MIN_COLUMN_WIDTH, width));
+  let remaining = Math.max(0, Math.floor(remainder));
+  let index = 0;
+  while (remaining > 0 && output.length > 0) {
+    output[index % output.length] += 1;
+    remaining -= 1;
+    index += 1;
   }
-  return `${text.slice(0, Math.max(1, maxWidth - 1)).trimEnd()}…`;
+  return output;
+}
+
+function displayWidth(value) {
+  return Array.from(String(value ?? "")).length;
+}
+
+function sliceDisplay(value, start, end = Infinity) {
+  return Array.from(String(value ?? "")).slice(start, end).join("");
+}
+
+function padAligned(value, targetWidth, align = "left") {
+  const text = String(value ?? "");
+  const padding = Math.max(0, targetWidth - displayWidth(text));
+  if (align === "right") {
+    return `${" ".repeat(padding)}${text}`;
+  }
+  if (align === "center") {
+    const left = Math.floor(padding / 2);
+    return `${" ".repeat(left)}${text}${" ".repeat(padding - left)}`;
+  }
+  return `${text}${" ".repeat(padding)}`;
+}
+
+function hardWrapWord(word, width) {
+  const output = [];
+  let remaining = String(word ?? "");
+  while (displayWidth(remaining) > width) {
+    output.push(sliceDisplay(remaining, 0, width));
+    remaining = sliceDisplay(remaining, width);
+  }
+  if (remaining.length > 0) {
+    output.push(remaining);
+  }
+  return output;
+}
+
+function wrapCellText(value, width, { hard = false } = {}) {
+  const text = String(value ?? "")
+    .trimEnd()
+    .replace(/\s+/g, " ");
+  if (!text) {
+    return [""];
+  }
+  const normalizedWidth = Math.max(1, Number(width) || 1);
+  const words = text.split(" ").filter((word) => word.length > 0);
+  const lines = [];
+  let current = "";
+
+  for (const word of words) {
+    const wordParts = hard && displayWidth(word) > normalizedWidth
+      ? hardWrapWord(word, normalizedWidth)
+      : [word];
+    for (const part of wordParts) {
+      if (!current) {
+        current = part;
+        continue;
+      }
+      const candidate = `${current} ${part}`;
+      if (displayWidth(candidate) <= normalizedWidth) {
+        current = candidate;
+      } else {
+        lines.push(current);
+        current = part;
+      }
+    }
+  }
+
+  if (current) {
+    lines.push(current);
+  }
+  return lines.length > 0 ? lines : [""];
+}
+
+function longestWordWidth(value) {
+  const words = String(value ?? "")
+    .split(/\s+/)
+    .filter(Boolean);
+  if (words.length === 0) {
+    return TABLE_MIN_COLUMN_WIDTH;
+  }
+  return Math.max(TABLE_MIN_COLUMN_WIDTH, ...words.map(displayWidth));
 }
 
 function normalizeTableMatrix(headers, rows) {
@@ -91,50 +204,11 @@ function normalizeTableMatrix(headers, rows) {
   };
 }
 
-function shouldStackTable(headers, rows) {
-  const matrix = normalizeTableMatrix(headers, rows);
-  if (matrix.columnCount > 4) {
-    return true;
-  }
-  const widths = Array.from({ length: matrix.columnCount }, (_, index) =>
-    Math.max(
-      3,
-      ...[matrix.headers, ...matrix.rows].map((row) => String(row[index] ?? "").length),
-    ),
-  );
-  const estimatedWidth = widths.reduce((sum, width) => sum + width, 0) + Math.max(0, matrix.columnCount - 1) * 3;
-  return estimatedWidth > 88;
-}
-
-function buildStackedTableDisplayLines(headers, rows) {
-  const matrix = normalizeTableMatrix(headers, rows);
-  const headerText = matrix.headers.join(" · ");
-  const divider = "─".repeat(Math.max(12, Math.min(88, headerText.length)));
-  const lines = [
-    createDisplayLine(headerText, "table-header"),
-    createDisplayLine(divider, "table-divider"),
-  ];
-
-  for (const [rowIndex, row] of matrix.rows.entries()) {
-    lines.push(
-      createDisplayLine(
-        `${rowIndex + 1}. ${matrix.headers[0]}: ${row[0] || "—"}`,
-        "table-row",
-        { continuationPrefix: "   " },
-      ),
-    );
-    for (let index = 1; index < matrix.columnCount; index += 1) {
-      lines.push(
-        createDisplayLine(
-          `   ${matrix.headers[index]}: ${row[index] || "—"}`,
-          "table-row",
-          { continuationPrefix: "   " },
-        ),
-      );
-    }
-  }
-
-  return lines;
+function normalizeTableAlignments(alignments, columnCount) {
+  return Array.from({ length: columnCount }, (_, index) => {
+    const value = String(alignments?.[index] ?? "left").toLowerCase();
+    return value === "right" || value === "center" ? value : "left";
+  });
 }
 
 export function parseTableRow(rawLine) {
@@ -156,28 +230,181 @@ export function isTableSeparator(rawLine) {
   return /^\s*\|(?:\s*:?-{3,}:?\s*\|)+\s*$/.test(String(rawLine ?? ""));
 }
 
-export function buildTableDisplayLines(headers, rows) {
-  if (shouldStackTable(headers, rows)) {
-    return buildStackedTableDisplayLines(headers, rows);
+export function parseTableAlignment(rawLine) {
+  const cells = parseTableRow(rawLine);
+  if (!cells) {
+    return [];
+  }
+  return cells.map((cell) => {
+    const value = String(cell ?? "").trim();
+    const left = value.startsWith(":");
+    const right = value.endsWith(":");
+    if (left && right) return "center";
+    if (right) return "right";
+    return "left";
+  });
+}
+
+function buildVerticalTableDisplayLines(headers, rows, options = {}) {
+  const { targetWidth } = normalizeTableLayoutOptions(options);
+  const separator = "─".repeat(Math.min(targetWidth - 1, 40));
+  const lines = [];
+  rows.forEach((row, rowIndex) => {
+    if (rowIndex > 0) {
+      lines.push(createDisplayLine(separator, "table-divider"));
+    }
+    headers.forEach((header, columnIndex) => {
+      const label = String(header ?? `Column ${columnIndex + 1}`).trim();
+      const value = String(row[columnIndex] ?? "")
+        .replace(/\n+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      const firstLineWidth = Math.max(10, targetWidth - displayWidth(label) - 3);
+      const continuationWidth = Math.max(10, targetWidth - 3);
+      const firstPass = wrapCellText(value, firstLineWidth);
+      const firstLine = firstPass[0] ?? "";
+      const wrapped = firstPass.length <= 1 || continuationWidth <= firstLineWidth
+        ? firstPass
+        : [
+            firstLine,
+            ...wrapCellText(
+              firstPass.slice(1).map((line) => line.trim()).join(" "),
+              continuationWidth,
+            ),
+          ];
+      lines.push(createDisplayLine(`${label}: ${wrapped[0] ?? ""}`, "table-row"));
+      for (const continuation of wrapped.slice(1)) {
+        if (continuation.trim()) {
+          lines.push(createDisplayLine(`  ${continuation}`, "table-row"));
+        }
+      }
+    });
+  });
+  return lines;
+}
+
+export function buildTableDisplayLines(headers, rows, alignments = [], options = {}) {
+  const { targetWidth, fillWidth, safetyMargin } = normalizeTableLayoutOptions(options);
+  const normalized = normalizeTableMatrix(headers, rows);
+  const columnCount = normalized.columnCount;
+  const align = normalizeTableAlignments(alignments, columnCount);
+  const matrix = [normalized.headers, ...normalized.rows];
+  const minWidths = Array.from({ length: columnCount }, (_, index) =>
+    Math.max(...matrix.map((row) => longestWordWidth(row[index]))),
+  );
+  const idealWidths = Array.from({ length: columnCount }, (_, index) =>
+    Math.max(TABLE_MIN_COLUMN_WIDTH, ...matrix.map((row) => displayWidth(row[index]))),
+  );
+  const borderOverhead = 1 + columnCount * 3;
+  const availableWidth = Math.max(
+    targetWidth - borderOverhead - safetyMargin,
+    columnCount * TABLE_MIN_COLUMN_WIDTH,
+  );
+  const totalMin = minWidths.reduce((sum, width) => sum + width, 0);
+  const totalIdeal = idealWidths.reduce((sum, width) => sum + width, 0);
+  let needsHardWrap = false;
+  let columnWidths;
+
+  if (totalIdeal <= availableWidth) {
+    columnWidths = idealWidths;
+    if (fillWidth) {
+      columnWidths = distributeWidthRemainder(
+        columnWidths,
+        availableWidth - columnWidths.reduce((sum, width) => sum + width, 0),
+      );
+    }
+  } else if (totalMin <= availableWidth) {
+    const extraSpace = availableWidth - totalMin;
+    const overflows = idealWidths.map((ideal, index) => ideal - minWidths[index]);
+    const totalOverflow = overflows.reduce((sum, overflow) => sum + overflow, 0);
+    columnWidths = minWidths.map((minWidth, index) => {
+      if (totalOverflow === 0) {
+        return minWidth;
+      }
+      return minWidth + Math.floor((overflows[index] / totalOverflow) * extraSpace);
+    });
+    if (fillWidth) {
+      columnWidths = distributeWidthRemainder(
+        columnWidths,
+        availableWidth - columnWidths.reduce((sum, width) => sum + width, 0),
+      );
+    }
+  } else {
+    needsHardWrap = true;
+    const scaleFactor = availableWidth / totalMin;
+    columnWidths = minWidths.map((width) =>
+      Math.max(Math.floor(width * scaleFactor), TABLE_MIN_COLUMN_WIDTH),
+    );
+    if (fillWidth) {
+      columnWidths = distributeWidthRemainder(
+        columnWidths,
+        availableWidth - columnWidths.reduce((sum, width) => sum + width, 0),
+      );
+    }
   }
 
-  const matrix = [headers, ...rows].map((row) =>
-    row.map((cell) => truncateCell(cell)),
+  const wrappedRows = matrix.map((row) =>
+    row.map((cell, index) =>
+      wrapCellText(cell, columnWidths[index], { hard: needsHardWrap })
+    ),
   );
-  const columnCount = Math.max(...matrix.map((row) => row.length), 0);
-  const widths = Array.from({ length: columnCount }, (_, index) =>
-    Math.max(3, ...matrix.map((row) => String(row[index] ?? "").length)),
-  );
-  const renderRow = (row) =>
-    row
-      .map((cell, index) => String(cell ?? "").padEnd(widths[index], " "))
-      .join(" │ ");
-  const divider = widths.map((width) => "─".repeat(width)).join("─┼─");
-  return [
-    createDisplayLine(renderRow(headers), "table-header"),
-    createDisplayLine(divider, "table-divider"),
-    ...rows.map((row) => createDisplayLine(renderRow(row), "table-row")),
+  const maxRowLines = Math.max(1, ...wrappedRows.flatMap((row) => row.map((cellLines) => cellLines.length)));
+  if (maxRowLines > TABLE_MAX_ROW_LINES) {
+    return buildVerticalTableDisplayLines(normalized.headers, normalized.rows, options);
+  }
+
+  const renderBorderLine = (type) => {
+    const [left, mid, cross, right] = {
+      top: ["┌", "─", "┬", "┐"],
+      middle: ["├", "─", "┼", "┤"],
+      bottom: ["└", "─", "┴", "┘"],
+    }[type];
+    return `${left}${columnWidths
+      .map((width) => mid.repeat(width + 2))
+      .join(cross)}${right}`;
+  };
+  const renderRowLines = (row, isHeader) => {
+    const cellLines = row.map((cell, index) =>
+      wrapCellText(cell, columnWidths[index], { hard: needsHardWrap })
+    );
+    const rowHeight = Math.max(1, ...cellLines.map((lines) => lines.length));
+    const offsets = cellLines.map((lines) => Math.floor((rowHeight - lines.length) / 2));
+    const output = [];
+    for (let lineIndex = 0; lineIndex < rowHeight; lineIndex += 1) {
+      let line = "│";
+      for (let columnIndex = 0; columnIndex < columnCount; columnIndex += 1) {
+        const localIndex = lineIndex - offsets[columnIndex];
+        const cellLine = localIndex >= 0 && localIndex < cellLines[columnIndex].length
+          ? cellLines[columnIndex][localIndex]
+          : "";
+        line += ` ${padAligned(
+          cellLine,
+          columnWidths[columnIndex],
+          isHeader ? "center" : align[columnIndex],
+        )} │`;
+      }
+      output.push(line);
+    }
+    return output;
+  };
+
+  const lines = [
+    createDisplayLine(renderBorderLine("top"), "table-divider"),
+    ...renderRowLines(normalized.headers, true).map((line) =>
+      createDisplayLine(line, "table-header")
+    ),
+    createDisplayLine(renderBorderLine("middle"), "table-divider"),
   ];
+  normalized.rows.forEach((row, rowIndex) => {
+    lines.push(
+      ...renderRowLines(row, false).map((line) => createDisplayLine(line, "table-row")),
+    );
+    if (rowIndex < normalized.rows.length - 1) {
+      lines.push(createDisplayLine(renderBorderLine("middle"), "table-divider"));
+    }
+  });
+  lines.push(createDisplayLine(renderBorderLine("bottom"), "table-divider"));
+  return lines;
 }
 
 export function normalizeDisplayLineCollection(lines) {
@@ -442,11 +669,19 @@ function appendCodeFenceLines(lines, token, lastSourceEnd) {
   return nextSourceEnd(token.map, lastSourceEnd);
 }
 
-function consumeTable(tokens, startIndex) {
+function tokenTableAlignment(token) {
+  const style = String(attributeValue(token, "style") ?? "");
+  const match = style.match(/text-align\s*:\s*(left|right|center)/i);
+  return match?.[1]?.toLowerCase() ?? "left";
+}
+
+function consumeTable(tokens, startIndex, options = {}) {
   let headers = [];
+  let alignments = [];
   const rows = [];
   let currentRow = [];
   let currentCell = "";
+  let currentCellAlign = "left";
   let inHeader = false;
   let index = startIndex + 1;
   while (index < tokens.length) {
@@ -458,6 +693,10 @@ function consumeTable(tokens, startIndex) {
       case "thead_close":
         inHeader = false;
         break;
+      case "th_open":
+      case "td_open":
+        currentCellAlign = tokenTableAlignment(token);
+        break;
       case "inline":
         currentCell = normalizeInlineWhitespace(
           renderInlineTokens(token.children ?? []).text,
@@ -466,7 +705,11 @@ function consumeTable(tokens, startIndex) {
       case "th_close":
       case "td_close":
         currentRow.push(currentCell);
+        if (inHeader) {
+          alignments.push(currentCellAlign);
+        }
         currentCell = "";
+        currentCellAlign = "left";
         break;
       case "tr_close":
         if (currentRow.length > 0) {
@@ -482,7 +725,7 @@ function consumeTable(tokens, startIndex) {
         return {
           nextIndex: index + 1,
           lines: headers.length > 0
-            ? buildTableDisplayLines(headers, rows)
+            ? buildTableDisplayLines(headers, rows, alignments, options)
             : [createDisplayLine("(empty)", "paragraph")],
         };
       default:
@@ -493,12 +736,12 @@ function consumeTable(tokens, startIndex) {
   return {
     nextIndex: index,
     lines: headers.length > 0
-      ? buildTableDisplayLines(headers, rows)
+      ? buildTableDisplayLines(headers, rows, alignments, options)
       : [createDisplayLine("(empty)", "paragraph")],
   };
 }
 
-export function buildMarkdownDisplayLines(value) {
+export function buildMarkdownDisplayLines(value, options = {}) {
   const source = normalizeMarkdownSource(value);
   if (source.trim().length === 0) {
     return [createDisplayLine("(empty)", "paragraph")];
@@ -585,7 +828,7 @@ export function buildMarkdownDisplayLines(value) {
         break;
       case "table_open": {
         maybeInsertGapLine(lines, lastSourceEnd, token.map);
-        const table = consumeTable(tokens, index);
+        const table = consumeTable(tokens, index, options);
         lines.push(...table.lines);
         lastSourceEnd = nextSourceEnd(token.map, lastSourceEnd);
         index = table.nextIndex;

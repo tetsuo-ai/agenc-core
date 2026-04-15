@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildMarkdownDisplayLines } from "../../src/watch/agenc-watch-markdown-parse.mjs";
+import {
+  buildMarkdownDisplayLines,
+  buildTableDisplayLines,
+} from "../../src/watch/agenc-watch-markdown-parse.mjs";
 import {
   buildStreamingMarkdownDisplayLines,
   createMarkdownStreamCollector,
@@ -40,8 +43,10 @@ test("markdown stream module preserves incremental table sanitization and collec
     .map((line) => ({ mode: line.mode, text: line.text }));
 
   assert.deepEqual(preview, [
-    { mode: "table-header", text: "Name │ Value" },
-    { mode: "table-divider", text: "─────┼──────" },
+    { mode: "table-divider", text: "┌──────┬───────┐" },
+    { mode: "table-header", text: "│ Name │ Value │" },
+    { mode: "table-divider", text: "├──────┼───────┤" },
+    { mode: "table-divider", text: "└──────┴───────┘" },
     { mode: "stream-tail", text: "alp" },
   ]);
 
@@ -50,4 +55,18 @@ test("markdown stream module preserves incremental table sanitization and collec
     direct.filter((line) => line.mode !== "blank").map((line) => ({ mode: line.mode, text: line.text })),
     preview,
   );
+});
+
+test("markdown table renderer can fill an explicit terminal width", () => {
+  const lines = buildTableDisplayLines(
+    ["Name", "Value"],
+    [["alpha", "42"]],
+    [],
+    { targetWidth: 40, fillWidth: true },
+  );
+
+  const tableLines = lines.filter((line) => line.mode !== "blank");
+  assert.equal(tableLines[0].text.length, 40);
+  assert.equal(tableLines[1].text.length, 40);
+  assert.equal(tableLines.at(-1).text.length, 40);
 });

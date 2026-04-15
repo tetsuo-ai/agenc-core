@@ -296,6 +296,56 @@ export function buildSourcePreviewDisplayLines(event, { cwd, maxChars = 72 } = {
   return lines.concat(contentLines.map((line) => createDisplayLine(line, "code")));
 }
 
+function limitDisplayLines(lines, maxLines = Infinity) {
+  const normalizedMaxLines = Number.isFinite(Number(maxLines))
+    ? Math.max(0, Number(maxLines))
+    : Infinity;
+  return Number.isFinite(normalizedMaxLines)
+    ? lines.slice(0, normalizedMaxLines)
+    : lines;
+}
+
+function markdownRenderOptionsForWidth(width) {
+  const numericWidth = Number(width);
+  if (!Number.isFinite(numericWidth)) {
+    return {};
+  }
+  return {
+    targetWidth: Math.max(24, Math.floor(numericWidth)),
+    fillWidth: true,
+  };
+}
+
+function buildUncachedEventDisplayLines(event, deps = {}, { markdownOptions = {} } = {}) {
+  if (isDiffRenderableEvent(event)) {
+    const diffLines = buildDiffDisplayLines(event, {
+      cwd: deps.cwd,
+      maxPathChars: 72,
+    });
+    if (diffLines.length > 0) {
+      return normalizeDisplayLines(diffLines);
+    }
+  }
+  if (isSourcePreviewEvent(event)) {
+    return normalizeDisplayLines(
+      buildSourcePreviewDisplayLines(event, { cwd: deps.cwd }),
+    );
+  }
+  if (isMarkdownRenderableEvent(event)) {
+    return normalizeDisplayLines(
+      (event?.streamState === "streaming"
+        ? buildStreamingMarkdownDisplayLines
+        : buildMarkdownDisplayLines)(
+        stripTerminalControlSequences(sanitizeLargeText(event.body ?? "")),
+        markdownOptions,
+      ),
+    );
+  }
+  return normalizeDisplayLines(
+    eventBodyLines(event.body).map((line) => createDisplayLine(line, "plain")),
+  );
+}
+
 /**
  * Build display lines for an event, using cached results when possible.
  *
@@ -310,34 +360,7 @@ export function buildEventDisplayLines(event, renderCache, deps, maxLines = Infi
     renderCache,
     event,
     signature,
-    () => {
-      if (isDiffRenderableEvent(event)) {
-        const diffLines = buildDiffDisplayLines(event, {
-          cwd: deps.cwd,
-          maxPathChars: 72,
-        });
-        if (diffLines.length > 0) {
-          return normalizeDisplayLines(diffLines);
-        }
-      }
-      if (isSourcePreviewEvent(event)) {
-        return normalizeDisplayLines(
-          buildSourcePreviewDisplayLines(event, { cwd: deps.cwd }),
-        );
-      }
-      if (isMarkdownRenderableEvent(event)) {
-        return normalizeDisplayLines(
-          (event?.streamState === "streaming"
-            ? buildStreamingMarkdownDisplayLines
-            : buildMarkdownDisplayLines)(
-            stripTerminalControlSequences(sanitizeLargeText(event.body ?? "")),
-          ),
-        );
-      }
-      return normalizeDisplayLines(
-        eventBodyLines(event.body).map((line) => createDisplayLine(line, "plain")),
-      );
-    },
+    () => buildUncachedEventDisplayLines(event, deps),
     { maxLines },
   );
 }
@@ -355,7 +378,12 @@ export function wrapEventDisplayLines(event, renderCache, deps, width, maxLines 
     width,
     maxLines,
     () => wrapDisplayLines(
-      buildEventDisplayLines(event, renderCache, deps, maxLines),
+      limitDisplayLines(
+        buildUncachedEventDisplayLines(event, deps, {
+          markdownOptions: markdownRenderOptionsForWidth(width),
+        }),
+        maxLines,
+      ),
       width,
     ),
   );

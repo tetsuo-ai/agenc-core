@@ -39,6 +39,7 @@ export const color = {
   panelAltBg: "\x1b[48;5;233m",
   panelHiBg: "\x1b[48;5;234m",
   panelMessageBg: "\x1b[48;5;236m",
+  tableHeaderBg: "\x1b[48;5;236m",
 };
 
 /** Tone-to-fg/bg mapping. */
@@ -77,6 +78,7 @@ const WATCH_THEME_PRESETS = Object.freeze({
     panelAltBg: "\x1b[48;5;233m",
     panelHiBg: "\x1b[48;5;234m",
     panelMessageBg: "\x1b[48;5;236m",
+    tableHeaderBg: "\x1b[48;5;236m",
   }),
   aurora: Object.freeze({
     border: "\x1b[38;5;31m",
@@ -98,6 +100,7 @@ const WATCH_THEME_PRESETS = Object.freeze({
     panelAltBg: "\x1b[48;5;236m",
     panelHiBg: "\x1b[48;5;237m",
     panelMessageBg: "\x1b[48;5;239m",
+    tableHeaderBg: "\x1b[48;5;238m",
   }),
   ember: Object.freeze({
     border: "\x1b[38;5;94m",
@@ -119,6 +122,7 @@ const WATCH_THEME_PRESETS = Object.freeze({
     panelAltBg: "\x1b[48;5;235m",
     panelHiBg: "\x1b[48;5;236m",
     panelMessageBg: "\x1b[48;5;238m",
+    tableHeaderBg: "\x1b[48;5;238m",
   }),
 });
 
@@ -142,6 +146,7 @@ const THEME_KEYS = Object.freeze([
   "panelAltBg",
   "panelHiBg",
   "panelMessageBg",
+  "tableHeaderBg",
 ]);
 
 const TONE_KEYS = Object.freeze([

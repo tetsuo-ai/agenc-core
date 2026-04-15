@@ -1069,3 +1069,58 @@ test("frame controller does not add blank rows between wrapped lines of one para
   assert.equal(continuationRows.some((line) => String(line).trim().length === 0), false);
   assert.equal(String(lines[nextParagraphRow - 1] ?? "").trim().length, 0);
 });
+
+test("frame controller keeps agent table rows contiguous and rendered", () => {
+  const harness = createWatchFrameHarness({
+    width: 90,
+    height: 34,
+    previewLines: 20,
+    events: [
+      {
+        id: "evt-agent-table",
+        kind: "agent",
+        title: "Agent Reply",
+        body: "ignored",
+        timestamp: "15:15:01",
+      },
+    ],
+    dependencies: {
+      isMarkdownRenderableEvent(event) {
+        return event?.kind === "agent";
+      },
+      buildEventDisplayLines() {
+        return [
+          createDisplayLine("┌────────┬────────┬───────┐", "table-divider"),
+          createDisplayLine("│ Name   │ Status │ Score │", "table-header"),
+          createDisplayLine("├────────┼────────┼───────┤", "table-divider"),
+          createDisplayLine("│ Elena  │ Active │ 92.1  │", "table-row"),
+          createDisplayLine("└────────┴────────┴───────┘", "table-divider"),
+        ];
+      },
+      wrapDisplayLines(lines) {
+        return lines;
+      },
+      renderEventBodyLine(_event, line) {
+        return `<render:${line?.mode}>${line?.text ?? ""}`;
+      },
+    },
+  });
+
+  const lines = harness.controller.buildVisibleFrameSnapshot().lines.map((line) => String(line));
+  const topRow = lines.findIndex((line) => line.includes("┌────────"));
+  const headerRow = lines.findIndex((line) => line.includes("│ Name"));
+  const dividerRow = lines.findIndex((line) => line.includes("├────────"));
+  const dataRow = lines.findIndex((line) => line.includes("│ Elena"));
+  const bottomRow = lines.findIndex((line) => line.includes("└────────"));
+  const tableRows = lines.slice(topRow, bottomRow + 1);
+
+  assert.notEqual(topRow, -1);
+  assert.notEqual(headerRow, -1);
+  assert.notEqual(dividerRow, -1);
+  assert.notEqual(dataRow, -1);
+  assert.notEqual(bottomRow, -1);
+  assert.deepEqual([headerRow, dividerRow, dataRow, bottomRow], [topRow + 1, topRow + 2, topRow + 3, topRow + 4]);
+  assert.equal(tableRows.some((line) => line.trim().length === 0), false);
+  assert.ok(lines.some((line) => line.includes("<render:table-divider>┌")));
+  assert.ok(lines.some((line) => line.includes("<render:table-header>│ Name")));
+});

@@ -65,14 +65,16 @@ Paragraph with [docs](https://example.com/docs), ![diagram](asset.png), and \`np
         mode: "paragraph",
         text: "Paragraph with docs (https://example.com/docs), image: diagram (asset.png), and 'npm test'.",
       },
-      { mode: "table-header", text: "Name  │ Value" },
-      { mode: "table-divider", text: "──────┼──────" },
-      { mode: "table-row", text: "alpha │ 42   " },
+      { mode: "table-divider", text: "┌───────┬───────┐" },
+      { mode: "table-header", text: "│ Name  │ Value │" },
+      { mode: "table-divider", text: "├───────┼───────┤" },
+      { mode: "table-row", text: "│ alpha │ 42    │" },
+      { mode: "table-divider", text: "└───────┴───────┘" },
     ]),
   );
 });
 
-test("buildMarkdownDisplayLines falls back to ordered stacked rows for wide tables", () => {
+test("buildMarkdownDisplayLines keeps wide tables in horizontal table form", () => {
   const lines = buildMarkdownDisplayLines(`
 | Name | Owner | Status | Notes | Updated |
 | --- | --- | --- | --- | --- |
@@ -86,13 +88,38 @@ test("buildMarkdownDisplayLines falls back to ordered stacked rows for wide tabl
   assert.equal(
     JSON.stringify(actual),
     JSON.stringify([
-      { mode: "table-header", text: "Name · Owner · Status · Notes · Updated" },
-      { mode: "table-divider", text: "───────────────────────────────────────" },
-      { mode: "table-row", text: "1. Name: Governance Sync" },
-      { mode: "table-row", text: "   Owner: team-ops" },
-      { mode: "table-row", text: "   Status: active" },
-      { mode: "table-row", text: "   Notes: Keeps proposal state and votes aligned across surfaces" },
-      { mode: "table-row", text: "   Updated: today" },
+      { mode: "table-divider", text: "┌──────────────┬──────────┬────────┬────────────────────────────────────┬─────────┐" },
+      { mode: "table-header", text: "│     Name     │  Owner   │ Status │               Notes                │ Updated │" },
+      { mode: "table-divider", text: "├──────────────┼──────────┼────────┼────────────────────────────────────┼─────────┤" },
+      { mode: "table-row", text: "│ Governance   │ team-ops │ active │ Keeps proposal state and votes     │ today   │" },
+      { mode: "table-row", text: "│ Sync         │          │        │ aligned across surfaces            │         │" },
+      { mode: "table-divider", text: "└──────────────┴──────────┴────────┴────────────────────────────────────┴─────────┘" },
+    ]),
+  );
+});
+
+test("buildMarkdownDisplayLines keeps multi-column markdown tables visible", () => {
+  const lines = buildMarkdownDisplayLines(`
+| ID | Name    | Age | Department   | Salary    | City      | Performance |
+|----|---------|-----|--------------|-----------|-----------|-------------|
+| 1  | Frank   | 31  | Engineering  | $162,196  | Tokyo     | 3.6         |
+| 2  | Bob     | 30  | Research     | $76,395   | Sydney    | 3.9         |
+`);
+
+  const actual = lines
+    .filter((line) => line.mode !== "blank")
+    .map((line) => ({ mode: line.mode, text: line.text }));
+
+  assert.equal(
+    JSON.stringify(actual),
+    JSON.stringify([
+      { mode: "table-divider", text: "┌─────┬───────┬─────┬─────────────┬──────────┬────────┬─────────────┐" },
+      { mode: "table-header", text: "│ ID  │ Name  │ Age │ Department  │  Salary  │  City  │ Performance │" },
+      { mode: "table-divider", text: "├─────┼───────┼─────┼─────────────┼──────────┼────────┼─────────────┤" },
+      { mode: "table-row", text: "│ 1   │ Frank │ 31  │ Engineering │ $162,196 │ Tokyo  │ 3.6         │" },
+      { mode: "table-divider", text: "├─────┼───────┼─────┼─────────────┼──────────┼────────┼─────────────┤" },
+      { mode: "table-row", text: "│ 2   │ Bob   │ 30  │ Research    │ $76,395  │ Sydney │ 3.9         │" },
+      { mode: "table-divider", text: "└─────┴───────┴─────┴─────────────┴──────────┴────────┴─────────────┘" },
     ]),
   );
 });
@@ -221,8 +248,10 @@ test("buildStreamingMarkdownDisplayLines keeps partial table rows sanitized whil
   assert.equal(
     JSON.stringify(actual),
     JSON.stringify([
-      { mode: "table-header", text: "Component │ Status" },
-      { mode: "table-divider", text: "──────────┼───────" },
+      { mode: "table-divider", text: "┌───────────┬────────┐" },
+      { mode: "table-header", text: "│ Component │ Status │" },
+      { mode: "table-divider", text: "├───────────┼────────┤" },
+      { mode: "table-divider", text: "└───────────┴────────┘" },
       { mode: "stream-tail", text: "Input" },
     ]),
   );
@@ -233,6 +262,38 @@ test("highlightSourceLine and renderDisplayLine add ansi styling for code and he
   const heading = renderDisplayLine({ text: "Heading", mode: "heading" });
   assert.match(code, /\x1b\[[0-9;]*mconst\x1b\[[0-9;]*m/);
   assert.match(heading, /\x1b\[[0-9;]*mHeading\x1b\[[0-9;]*m/);
+});
+
+test("renderDisplayLine styles table borders, headers, and semantic cells", () => {
+  const color = {
+    reset: "</>",
+    bold: "<bold>",
+    borderStrong: "<border>",
+    teal: "<teal>",
+    green: "<green>",
+    yellow: "<yellow>",
+    cyan: "<cyan>",
+    ink: "<ink>",
+    softInk: "<soft>",
+    red: "<red>",
+    magenta: "<magenta>",
+    fog: "<fog>",
+    tableHeaderBg: "<header-bg>",
+  };
+
+  const divider = renderDisplayLine({ text: "┌──────┬────────┐", mode: "table-divider" }, { color });
+  const header = renderDisplayLine({ text: "│ Name │ Status │", mode: "table-header" }, { color });
+  const row = renderDisplayLine(
+    { text: "│ Elena │ Active │ 92.1 │ 2025-01-03 │", mode: "table-row" },
+    { color },
+  );
+
+  assert.match(divider, /^<border><bold>┌/);
+  assert.ok(header.includes("<border><bold>│</><header-bg> <teal><bold>Name</><header-bg> </>"));
+  assert.ok(row.includes("<border>│</> <ink>Elena</>"));
+  assert.ok(row.includes("<green>Active</>"));
+  assert.ok(row.includes("<yellow>92.1</>"));
+  assert.ok(row.includes("<cyan>2025-01-03</>"));
 });
 
 test("renderDisplayLine emits OSC 8 hyperlinks for structured file-link entries", () => {

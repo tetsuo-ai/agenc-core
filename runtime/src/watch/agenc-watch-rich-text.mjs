@@ -30,6 +30,7 @@ const DEFAULT_COLOR = Object.freeze({
   red: "\x1b[38;5;203m",
   border: "\x1b[38;5;54m",
   borderStrong: "\x1b[38;5;99m",
+  tableHeaderBg: "\x1b[48;5;236m",
 });
 
 const SOURCE_TOKEN_RE =
@@ -154,6 +155,93 @@ function styleInlineSegment(segment, color, baseTone, enableHyperlinks) {
 function renderInlineSegments(segments, fallbackText, color, baseTone, enableHyperlinks) {
   return normalizeRenderableSegments(segments, fallbackText)
     .map((segment) => styleInlineSegment(segment, color, baseTone, enableHyperlinks))
+    .join("");
+}
+
+const TABLE_VERTICAL_BORDER = "\u2502";
+const TABLE_NUMERIC_CELL_RE = /^[+-]?(?:[$\u20ac\u00a3\u00a5]\s*)?\d[\d,]*(?:\.\d+)?%?$/u;
+const TABLE_DATE_CELL_RE = /^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?$/u;
+const TABLE_POSITIVE_CELL_RE = /^(active|success|succeeded|done|ok|yes|pass|passed|healthy|running|complete|completed|open)$/iu;
+const TABLE_NEGATIVE_CELL_RE = /^(inactive|failed|failure|error|no|down|blocked|critical|closed)$/iu;
+const TABLE_PENDING_CELL_RE = /^(pending|waiting|queued|review|warn|warning|partial|paused|idle)$/iu;
+
+function isTableDisplayMode(mode) {
+  const normalized = String(mode ?? "");
+  return normalized === "table-divider" ||
+    normalized === "table-header" ||
+    normalized === "table-row";
+}
+
+function tableCellTone(value, color, { isHeader = false } = {}) {
+  const trimmed = String(value ?? "").trim();
+  if (isHeader) {
+    return `${colorValue(color, "teal")}${colorValue(color, "bold")}`;
+  }
+  if (trimmed.length === 0) {
+    return colorValue(color, "softInk");
+  }
+  if (TABLE_POSITIVE_CELL_RE.test(trimmed)) {
+    return colorValue(color, "green");
+  }
+  if (TABLE_NEGATIVE_CELL_RE.test(trimmed)) {
+    return colorValue(color, "red");
+  }
+  if (TABLE_PENDING_CELL_RE.test(trimmed)) {
+    return colorValue(color, "yellow");
+  }
+  if (TABLE_DATE_CELL_RE.test(trimmed)) {
+    return colorValue(color, "cyan");
+  }
+  if (TABLE_NUMERIC_CELL_RE.test(trimmed)) {
+    return colorValue(color, "yellow");
+  }
+  return colorValue(color, "ink");
+}
+
+function tableHeaderBackground(color) {
+  return colorValue(color, "tableHeaderBg") ||
+    colorValue(color, "panelMessageBg") ||
+    colorValue(color, "panelHiBg");
+}
+
+function renderTableCell(rawCell, color, { isHeader = false } = {}) {
+  const cell = String(rawCell ?? "");
+  const match = cell.match(/^(\s*)(.*?)(\s*)$/su);
+  const leading = match?.[1] ?? "";
+  const content = match?.[2] ?? cell;
+  const trailing = match?.[3] ?? "";
+  const headerBg = isHeader ? tableHeaderBackground(color) : "";
+  if (content.length === 0) {
+    return headerBg ? `${headerBg}${cell}${colorValue(color, "reset")}` : cell;
+  }
+  const tone = tableCellTone(content, color, { isHeader });
+  if (headerBg) {
+    const reset = colorValue(color, "reset");
+    return `${headerBg}${leading}${tone}${content}${reset}${headerBg}${trailing}${reset}`;
+  }
+  return `${leading}${tone}${content}${colorValue(color, "reset")}${trailing}`;
+}
+
+function renderTableDividerLine(text, color) {
+  return `${colorValue(color, "borderStrong")}${colorValue(color, "bold")}${text}${colorValue(color, "reset")}`;
+}
+
+function renderTableDataLine(text, color, { isHeader = false } = {}) {
+  const source = String(text ?? "");
+  if (!source.includes(TABLE_VERTICAL_BORDER)) {
+    return renderTableCell(source, color, { isHeader });
+  }
+  const borderTone = `${colorValue(color, "borderStrong")}${isHeader ? colorValue(color, "bold") : ""}`;
+  const reset = colorValue(color, "reset");
+  const parts = source.split(TABLE_VERTICAL_BORDER);
+  return parts
+    .map((part, index) => {
+      const border = index === 0 ? "" : `${borderTone}${TABLE_VERTICAL_BORDER}${reset}`;
+      if (part.length === 0 && (index === 0 || index === parts.length - 1)) {
+        return border;
+      }
+      return `${border}${renderTableCell(part, color, { isHeader })}`;
+    })
     .join("");
 }
 
@@ -378,6 +466,10 @@ export function wrapRichDisplayLines(lines, width) {
       wrapped.push(createDisplayLine("", "blank"));
       continue;
     }
+    if (isTableDisplayMode(entry.mode)) {
+      wrapped.push(entry);
+      continue;
+    }
     const chunks = wrapPlainTextLine(
       plainText,
       width,
@@ -462,11 +554,11 @@ export function renderDisplayLine(
     case "rule":
       return `${colorValue(color, "borderStrong")}${text}${colorValue(color, "reset")}`;
     case "table-header":
-      return `${colorValue(color, "teal")}${colorValue(color, "bold")}${text}${colorValue(color, "reset")}`;
+      return renderTableDataLine(text, color, { isHeader: true });
     case "table-divider":
-      return `${colorValue(color, "borderStrong")}${text}${colorValue(color, "reset")}`;
+      return renderTableDividerLine(text, color);
     case "table-row":
-      return `${colorValue(color, "softInk")}${renderInlineSegments(entry.inlineSegments, text, color, colorValue(color, "softInk"), enableHyperlinks)}${colorValue(color, "reset")}`;
+      return renderTableDataLine(text, color);
     case "stream-tail":
       return `${colorValue(color, "softInk")}${renderInlineSegments(entry.inlineSegments, text, color, colorValue(color, "softInk"), enableHyperlinks)}${colorValue(color, "reset")}`;
     case "paragraph":

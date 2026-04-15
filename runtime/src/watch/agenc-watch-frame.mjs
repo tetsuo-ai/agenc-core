@@ -2729,15 +2729,40 @@ export function createWatchFrameController(dependencies = {}) {
       normalized === "paragraph" ||
       normalized === "list" ||
       normalized === "quote" ||
-      normalized === "heading" ||
+      normalized === "heading";
+  }
+
+  function isTableDisplayMode(mode) {
+    const normalized = String(mode ?? "");
+    return normalized === "table-divider" ||
       normalized === "table-header" ||
       normalized === "table-row";
   }
 
 
+  function shouldUseWidthAwareAgentLines(baseLines, widthAwareLines) {
+    if (!Array.isArray(widthAwareLines) || widthAwareLines.length === 0) {
+      return false;
+    }
+    const anchor = (Array.isArray(baseLines) ? baseLines : [])
+      .map((line) => displayLinePlainText(line).trim())
+      .find((line) => line.length > 0);
+    if (!anchor) {
+      return true;
+    }
+    const widthAwareText = widthAwareLines
+      .map((line) => displayLinePlainText(line))
+      .join("\n");
+    return widthAwareText.includes(anchor.slice(0, Math.min(anchor.length, 18)));
+  }
+
   function fullAgentTranscriptLines(event, width) {
     const previewWidth = Math.max(12, width - 4);
-    const displayLines = buildEventDisplayLines(eventDetailVariant(event), Infinity);
+    const baseLines = buildEventDisplayLines(eventDetailVariant(event), Infinity);
+    const widthAwareLines = wrapEventDisplayLines(eventDetailVariant(event), previewWidth, Infinity);
+    const displayLines = shouldUseWidthAwareAgentLines(baseLines, widthAwareLines)
+      ? widthAwareLines
+      : baseLines;
     if (!Array.isArray(displayLines) || displayLines.length === 0) {
       return [];
     }
@@ -2798,14 +2823,38 @@ export function createWatchFrameController(dependencies = {}) {
       const fullAgentLines = fullAgentTranscriptLines(event, width);
       const agentSplit =
         fullAgentLines.length > 0
-          ? splitTranscriptPreviewForHeadline(event, fullAgentLines)
+          ? isTableDisplayMode(fullAgentLines[0]?.mode)
+            ? { headline, bodyLines: fullAgentLines }
+            : splitTranscriptPreviewForHeadline(event, fullAgentLines)
           : previewSplit;
       rows.push(
-        ...transcriptChatRows([agentSplit.headline || headline, ...agentSplit.bodyLines], width, {
+        ...transcriptChatRows([agentSplit.headline || headline], width, {
           marker: "●",
           markerTone: color.ink,
           textTone: color.ink,
-          preserveBlankLines: fullAgentLines.length > 0,
+        }),
+      );
+      if (fullAgentLines.length > 0) {
+        for (const line of agentSplit.bodyLines) {
+          const plain = sanitizeDisplayText(
+            typeof line === "string" ? line : displayLinePlainText(line),
+          );
+          if (plain.length === 0) {
+            rows.push(fitAnsi(transcriptBodyInset, width));
+            continue;
+          }
+          rows.push(fitAnsi(renderEventBodyLine(event, line, {
+            inline: true,
+            prefix: transcriptBodyInset,
+          }), width));
+        }
+        return rows;
+      }
+      rows.push(
+        ...transcriptChatRows(agentSplit.bodyLines, width, {
+          marker: "●",
+          markerTone: color.ink,
+          textTone: color.ink,
         }),
       );
       return rows;
@@ -2938,7 +2987,7 @@ export function createWatchFrameController(dependencies = {}) {
   }
 
   function detailViewportState(event, width, targetHeight) {
-    const body = wrapEventDisplayLines(eventDetailVariant(event), width);
+    const body = wrapEventDisplayLines(eventDetailVariant(event), Math.max(12, width - 2));
     const metaRows = event?.title && buildTranscriptEventSummary(event).meta !== sanitizeDisplayText(event.title)
       ? 1
       : 0;
