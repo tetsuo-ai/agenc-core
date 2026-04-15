@@ -406,6 +406,26 @@ describe("checkFilesystemArtifacts", () => {
     );
     expect(decision.checkedFiles).not.toContain(deletedPath);
   });
+
+  it("resolves relative write paths against the workspace root before statting", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-filesystem-relative-"));
+    mkdirSync(join(workspaceRoot, "src"), { recursive: true });
+
+    const relativePath = "src/main.c";
+    const absolutePath = join(workspaceRoot, relativePath);
+    writeFileSync(absolutePath, "int main(void) { return 0; }\n", "utf8");
+
+    const decision = await checkFilesystemArtifacts({
+      finalContent: "All phases completed. Task complete.",
+      allToolCalls: [successfulWrite(relativePath, "int main(void) { return 0; }\n")],
+      workspaceRoot,
+    });
+
+    expect(decision.shouldIntervene).toBe(false);
+    expect(decision.emptyFiles).toEqual([]);
+    expect(decision.missingFiles).toEqual([]);
+    expect(decision.checkedFiles).toEqual([absolutePath]);
+  });
 });
 
 // ---------------------------------------------------------------------------

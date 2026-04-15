@@ -261,6 +261,7 @@ export function buildCompletionValidators(params: {
         const check = await checkFilesystemArtifacts({
           finalContent: params.ctx.response?.content ?? "",
           allToolCalls: params.ctx.allToolCalls,
+          workspaceRoot: params.ctx.runtimeWorkspaceRoot,
         });
         if (!check.shouldIntervene) {
           return { id: "filesystem_artifact_verification", outcome: "pass" };

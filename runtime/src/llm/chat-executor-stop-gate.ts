@@ -1224,6 +1224,7 @@ export interface FilesystemArtifactCheckResult {
 export async function checkFilesystemArtifacts(params: {
   readonly finalContent: string;
   readonly allToolCalls: readonly ToolCallRecord[];
+  readonly workspaceRoot?: string;
 }): Promise<FilesystemArtifactCheckResult> {
   const noIntervention: FilesystemArtifactCheckResult = {
     shouldIntervene: false,
@@ -1240,12 +1241,12 @@ export async function checkFilesystemArtifacts(params: {
 
   // Collect all file paths the model wrote/edited with non-empty content.
   const writtenPaths = new Set<string>();
+  const rawWrittenPathsByNormalizedPath = new Map<string, Set<string>>();
   for (const call of params.allToolCalls) {
     if (!FILE_WRITE_TOOL_NAMES.has(call.name)) continue;
     if (call.isError) continue; // failed writes don't count
 
-    const path =
-      typeof call.args?.path === "string" ? call.args.path : undefined;
+    const path = normalizeToolPath(call.args?.path, params.workspaceRoot);
     if (!path) continue;
 
     // For writeFile/appendFile: check if content was non-empty.
@@ -1260,6 +1261,13 @@ export async function checkFilesystemArtifacts(params: {
     }
 
     writtenPaths.add(path);
+    const rawPath =
+      typeof call.args?.path === "string" ? call.args.path : undefined;
+    if (rawPath) {
+      const rawPaths = rawWrittenPathsByNormalizedPath.get(path) ?? new Set<string>();
+      rawPaths.add(rawPath);
+      rawWrittenPathsByNormalizedPath.set(path, rawPaths);
+    }
   }
 
   if (writtenPaths.size === 0) {
@@ -1270,8 +1278,7 @@ export async function checkFilesystemArtifacts(params: {
   const deletedPaths = new Set<string>();
   for (const call of params.allToolCalls) {
     if (FILE_DELETE_TOOL_NAMES.has(call.name) && !call.isError) {
-      const path =
-        typeof call.args?.path === "string" ? call.args.path : undefined;
+      const path = normalizeToolPath(call.args?.path, params.workspaceRoot);
       if (path) deletedPaths.add(path);
     }
     // Also check for `rm` in bash commands.
@@ -1281,7 +1288,11 @@ export async function checkFilesystemArtifacts(params: {
       // Simple heuristic: if bash command contains `rm` and a written
       // path, exclude that path. Not perfect but catches the common case.
       for (const writtenPath of writtenPaths) {
-        if (cmd.includes("rm") && cmd.includes(writtenPath)) {
+        const rawWrittenPaths = rawWrittenPathsByNormalizedPath.get(writtenPath);
+        const matchesRawPath = rawWrittenPaths
+          ? [...rawWrittenPaths].some((rawPath) => cmd.includes(rawPath))
+          : false;
+        if (cmd.includes("rm") && (cmd.includes(writtenPath) || matchesRawPath)) {
           deletedPaths.add(writtenPath);
         }
       }

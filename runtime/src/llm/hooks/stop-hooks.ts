@@ -248,6 +248,7 @@ function buildBuiltinStopHookDefinitions(): readonly StopHookRuntimeDefinition[]
         const check = await checkFilesystemArtifacts({
           finalContent: context.finalContent ?? "",
           allToolCalls: context.allToolCalls ?? [],
+          workspaceRoot: context.runtimeWorkspaceRoot,
         });
         return {
           hookId: BUILTIN_FILESYSTEM_ARTIFACT_VERIFICATION_HOOK_ID,
