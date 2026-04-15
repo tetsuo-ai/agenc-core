@@ -556,6 +556,38 @@ describe("system.writeFile", () => {
     });
   });
 
+  it("decodes over-escaped multiline content before writing new files", async () => {
+    mockMkdir.mockResolvedValueOnce(undefined);
+    mockWriteFile.mockResolvedValueOnce(undefined);
+    setupCreateThenReadback('#include "shell.h"\nint main(void) { return 0; }\n');
+
+    const result = await tool.execute({
+      path: "/workspace/src/main.c",
+      content: '#include "shell.h"\\nint main(void) { return 0; }\\n',
+    });
+
+    expect(result.isError).toBeUndefined();
+    const [, written] = mockWriteFile.mock.calls[0];
+    expect((written as Buffer).toString()).toBe(
+      '#include "shell.h"\nint main(void) { return 0; }\n',
+    );
+  });
+
+  it("decodes over-escaped single-line quote content before writing", async () => {
+    mockMkdir.mockResolvedValueOnce(undefined);
+    mockWriteFile.mockResolvedValueOnce(undefined);
+    setupCreateThenReadback('#include "shell.h"');
+
+    const result = await tool.execute({
+      path: "/workspace/include/agenc/shell.h",
+      content: '#include \\"shell.h\\"',
+    });
+
+    expect(result.isError).toBeUndefined();
+    const [, written] = mockWriteFile.mock.calls[0];
+    expect((written as Buffer).toString()).toBe('#include "shell.h"');
+  });
+
   it("rejects writing an existing file when not previously read in session", async () => {
     // File exists at the target path
     const sessionId = "session-write-no-read";
@@ -891,6 +923,37 @@ describe("system.editFile", () => {
     expect((written as Buffer).toString()).toBe(
       `#include <stdio.h>\n` +
         `int main(void) { printf("hello world\\n"); return 0; }\n`,
+    );
+  });
+
+  it("matches decoded old_string variants and writes decoded new_string content", async () => {
+    const before =
+      `#include "shell.h"\n` +
+      `int main(void) {\n` +
+      `  printf("hi\\n");\n` +
+      `  return 0;\n` +
+      `}\n`;
+    setupExistingFile(before);
+    await readFirst("/workspace/main.c");
+
+    setupExistingFile(before);
+    mockWriteFile.mockResolvedValueOnce(undefined);
+
+    const result = await tool.execute({
+      path: "/workspace/main.c",
+      old_string: '#include "shell.h"\\nint main(void) {\\n  printf("hi\\\\n");\\n  return 0;\\n}',
+      new_string: '#include "shell.h"\\nint main(void) {\\n  printf("hello\\\\n");\\n  return 0;\\n}',
+      __agencSessionId: "session-edit",
+    });
+
+    expect(result.isError).toBeUndefined();
+    const [, written] = mockWriteFile.mock.calls[0];
+    expect((written as Buffer).toString()).toBe(
+      `#include "shell.h"\n` +
+        `int main(void) {\n` +
+        `  printf("hello\\n");\n` +
+        `  return 0;\n` +
+        `}\n`,
     );
   });
 

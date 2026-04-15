@@ -21,6 +21,7 @@ import {
   RECOVERY_HINT_PREFIX,
 } from "./chat-executor-constants.js";
 import { safeStringify } from "../tools/types.js";
+import { normalizeOverescapedToolText } from "../utils/overescaped-text.js";
 
 const NON_JSON_FAILURE_PREFIXES = [
   "mcp tool \"",
@@ -383,36 +384,56 @@ const TOOL_ARG_ALIASES: Readonly<Record<string, Readonly<Record<string, string>>
   },
 };
 
+const TOOL_TEXT_FIELDS_TO_NORMALIZE: Readonly<Record<string, readonly string[]>> = {
+  "system.writeFile": ["content"],
+  "system.appendFile": ["content"],
+  "system.editFile": ["old_string", "new_string"],
+  "system.bash": ["command"],
+};
+
 function normalizeFilesystemToolCallArguments(
   toolName: string,
   args: Record<string, unknown>,
 ): Record<string, unknown> {
   const aliasMap = TOOL_ARG_ALIASES[toolName];
-  if (!aliasMap) {
-    return args;
-  }
-
   let nextArgs = args;
-  for (const [alias, canonical] of Object.entries(aliasMap)) {
-    if (!Object.prototype.hasOwnProperty.call(nextArgs, alias)) {
-      continue;
-    }
-    const aliasValue = nextArgs[alias];
-    if (aliasValue === undefined) {
-      continue;
-    }
-    if (Object.prototype.hasOwnProperty.call(nextArgs, canonical)) {
+  if (aliasMap) {
+    for (const [alias, canonical] of Object.entries(aliasMap)) {
+      if (!Object.prototype.hasOwnProperty.call(nextArgs, alias)) {
+        continue;
+      }
+      const aliasValue = nextArgs[alias];
+      if (aliasValue === undefined) {
+        continue;
+      }
+      if (Object.prototype.hasOwnProperty.call(nextArgs, canonical)) {
+        if (nextArgs === args) {
+          nextArgs = { ...args };
+        }
+        delete nextArgs[alias];
+        continue;
+      }
       if (nextArgs === args) {
         nextArgs = { ...args };
       }
+      nextArgs[canonical] = aliasValue;
       delete nextArgs[alias];
-      continue;
     }
+  }
+
+  const textFields = TOOL_TEXT_FIELDS_TO_NORMALIZE[toolName];
+  if (!textFields) {
+    return nextArgs;
+  }
+  for (const field of textFields) {
+    const value = nextArgs[field];
+    if (typeof value !== "string") continue;
+    const normalized = normalizeOverescapedToolText(value);
+    if (normalized === value) continue;
     if (nextArgs === args) {
       nextArgs = { ...args };
     }
-    nextArgs[canonical] = aliasValue;
-    delete nextArgs[alias];
+    nextArgs[field] = normalized;
   }
   return nextArgs;
 }

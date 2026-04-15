@@ -156,6 +156,42 @@ describe("chat-executor-tool-utils", () => {
         content: "updated",
       });
     });
+
+    it("decodes over-escaped multiline write content before execution", () => {
+      expect(
+        normalizeToolCallArguments("system.writeFile", {
+          path: "/workspace/main.c",
+          content: '#include "shell.h"\\nint main(void) { return 0; }\\n',
+        }),
+      ).toEqual({
+        path: "/workspace/main.c",
+        content: '#include "shell.h"\nint main(void) { return 0; }\n',
+      });
+    });
+
+    it("decodes over-escaped edit strings without touching legitimate in-code escapes", () => {
+      expect(
+        normalizeToolCallArguments("system.editFile", {
+          path: "/workspace/main.c",
+          old_string: 'printf(\\"hi\\\\n\\");\\nreturn 0;',
+          new_string: 'printf(\\"hello\\\\n\\");\\nreturn 0;',
+        }),
+      ).toEqual({
+        path: "/workspace/main.c",
+        old_string: 'printf("hi\\n");\nreturn 0;',
+        new_string: 'printf("hello\\n");\nreturn 0;',
+      });
+    });
+
+    it("decodes over-escaped bash commands before execution", () => {
+      expect(
+        normalizeToolCallArguments("system.bash", {
+          command: 'echo \\"hello\\" && printf \\"%s\\\\n\\" ok',
+        }),
+      ).toEqual({
+        command: 'echo "hello" && printf "%s\\n" ok',
+      });
+    });
   });
 
   describe("repairToolCallArgumentsFromMessageText", () => {
