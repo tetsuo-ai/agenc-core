@@ -24,7 +24,7 @@ export type { AgencCoordination };
 type NamedIdlEntry = { name: string };
 type NamedIdlInstruction = NamedIdlEntry & { accounts?: unknown[] };
 
-// The published protocol package currently lags behind the deployed
+// The published protocol package currently diverges from the deployed
 // marketplace/task-dispute account layouts on devnet. Override the stale
 // account metadata here so Anchor derives and validates the correct accounts
 // without requiring a package release first.
@@ -61,6 +61,7 @@ const MARKETPLACE_ACCOUNT_LAYOUT_OVERRIDES = {
     {
       name: "creator_agent",
       docs: ["Creator's agent registration for identity/authorization checks"],
+      writable: true,
       pda: {
         seeds: [
           { kind: "const", value: [97, 103, 101, 110, 116] },
@@ -69,23 +70,6 @@ const MARKETPLACE_ACCOUNT_LAYOUT_OVERRIDES = {
             path: "creator_agent.agent_id",
             account: "AgentRegistration",
           },
-        ],
-      },
-    },
-    {
-      name: "authority_rate_limit",
-      docs: ["Wallet-scoped task/dispute rate limit state shared across all agents"],
-      writable: true,
-      pda: {
-        seeds: [
-          {
-            kind: "const",
-            value: [
-              97, 117, 116, 104, 111, 114, 105, 116, 121, 95, 114, 97, 116, 101, 95, 108, 105,
-              109, 105, 116,
-            ],
-          },
-          { kind: "account", path: "authority" },
         ],
       },
     },
@@ -183,6 +167,7 @@ const MARKETPLACE_ACCOUNT_LAYOUT_OVERRIDES = {
     {
       name: "creator_agent",
       docs: ["Creator's agent registration for identity/authorization checks"],
+      writable: true,
       pda: {
         seeds: [
           { kind: "const", value: [97, 103, 101, 110, 116] },
@@ -191,23 +176,6 @@ const MARKETPLACE_ACCOUNT_LAYOUT_OVERRIDES = {
             path: "creator_agent.agent_id",
             account: "AgentRegistration",
           },
-        ],
-      },
-    },
-    {
-      name: "authority_rate_limit",
-      docs: ["Wallet-scoped task/dispute rate limit state shared across all agents"],
-      writable: true,
-      pda: {
-        seeds: [
-          {
-            kind: "const",
-            value: [
-              97, 117, 116, 104, 111, 114, 105, 116, 121, 95, 114, 97, 116, 101, 95, 108, 105,
-              109, 105, 116,
-            ],
-          },
-          { kind: "account", path: "authority" },
         ],
       },
     },

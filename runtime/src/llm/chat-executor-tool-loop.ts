@@ -279,6 +279,77 @@ function buildFailedToolRecoveryHint(
   };
 }
 
+function stableToolFailureValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableToolFailureValue(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(
+        ([key, entryValue]) =>
+          `${JSON.stringify(key)}:${stableToolFailureValue(entryValue)}`,
+      );
+    return `{${entries.join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function toolFailureSignature(
+  name: string,
+  args: Record<string, unknown>,
+): string {
+  return `${name}:${stableToolFailureValue(args)}`;
+}
+
+function toolCallSignature(toolCall: LLMToolCall): string | undefined {
+  try {
+    const parsed = JSON.parse(toolCall.arguments) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return undefined;
+    }
+    return toolFailureSignature(
+      toolCall.name,
+      parsed as Record<string, unknown>,
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+function isRepeatedSameFailedToolPattern(
+  failedCalls: readonly ToolCallRecord[],
+): boolean {
+  const recentFailures = failedCalls.slice(-FAILED_TOOL_RECOVERY_STREAK);
+  if (recentFailures.length < FAILED_TOOL_RECOVERY_STREAK) {
+    return false;
+  }
+  const [first, ...rest] = recentFailures.map((call) =>
+    toolFailureSignature(call.name, call.args),
+  );
+  return rest.every((signature) => signature === first);
+}
+
+function responseRepeatsFailedToolPattern(params: {
+  readonly response: LLMResponse;
+  readonly failedCalls: readonly ToolCallRecord[];
+}): boolean {
+  if (!isRepeatedSameFailedToolPattern(params.failedCalls)) {
+    return false;
+  }
+  const repeatedFailure = params.failedCalls[params.failedCalls.length - 1];
+  if (!repeatedFailure) {
+    return false;
+  }
+  const repeatedSignature = toolFailureSignature(
+    repeatedFailure.name,
+    repeatedFailure.args,
+  );
+  return params.response.toolCalls.every(
+    (toolCall) => toolCallSignature(toolCall) === repeatedSignature,
+  );
+}
+
 function collectRecentConsecutiveFailedToolCalls(
   toolCalls: readonly ToolCallRecord[],
 ): readonly ToolCallRecord[] {
@@ -2088,8 +2159,11 @@ export async function executeToolCallLoop(
       consecutiveFailedToolCalls,
       roundCalls,
     );
+    const recentConsecutiveFailedToolCalls = collectRecentConsecutiveFailedToolCalls(
+      ctx.allToolCalls,
+    );
     const failedToolRecoveryHint = buildFailedToolRecoveryHint(
-      collectRecentConsecutiveFailedToolCalls(ctx.allToolCalls),
+      recentConsecutiveFailedToolCalls,
     );
     const shouldForceFailureRecovery =
       ctx.effectiveFailureBudget > 0 &&
@@ -2193,7 +2267,13 @@ export async function executeToolCallLoop(
     if (!nextResponse) break;
     if (shouldForceFailureRecovery) {
       forcedFailureRecoveryUsed = true;
-      if (responseHasToolCalls(nextResponse)) {
+      if (
+        responseHasToolCalls(nextResponse) &&
+        !responseRepeatsFailedToolPattern({
+          response: nextResponse,
+          failedCalls: recentConsecutiveFailedToolCalls,
+        })
+      ) {
         emitToolProtocolViolation(
           ctx,
           callbacks,

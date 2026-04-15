@@ -73,6 +73,12 @@ jobs:
         with:
           node-version: 20
 
+      - name: Install ripgrep
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ripgrep
+          rg --version
+
       - name: Initialize private registry env
         run: |
           echo "PRIVATE_REGISTRY_INSTANCE=${GITHUB_RUN_ID}-${GITHUB_JOB}" >> "$GITHUB_ENV"

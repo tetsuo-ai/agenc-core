@@ -37,7 +37,7 @@ import { safeStringify } from '../types.js';
 import { TaskOperations } from '../../task/operations.js';
 import { GovernanceOperations } from '../../governance/operations.js';
 import { DisputeOperations } from '../../dispute/operations.js';
-import { findAgentPda, findAuthorityRateLimitPda, findProtocolPda } from '../../agent/pda.js';
+import { findAgentPda, findProtocolPda } from '../../agent/pda.js';
 import { findTaskPda, findEscrowPda } from '../../task/pda.js';
 import {
   taskStatusToString,
@@ -2801,7 +2801,6 @@ export function createCreateTaskTool(
         const taskPda = findTaskPda(creator, taskId, program.programId);
         const escrowPda = findEscrowPda(taskPda, program.programId);
         const protocolPda = findProtocolPda(program.programId);
-        const authorityRateLimitPda = findAuthorityRateLimitPda(creator, program.programId);
         const tokenAccounts = buildCreateTaskTokenAccounts(
           rewardMint,
           escrowPda,
@@ -2826,7 +2825,6 @@ export function createCreateTaskTool(
             escrow: escrowPda,
             protocolConfig: protocolPda,
             creatorAgent: creatorAgentPda,
-            authorityRateLimit: authorityRateLimitPda,
             authority: creator,
             creator,
             systemProgram: SystemProgram.programId,
@@ -2922,7 +2920,6 @@ export function createCreateTaskTool(
             taskTypeId: taskType,
             taskTypeKey: taskTypeToKey(taskType),
             creatorAgentPda: creatorAgentPda.toBase58(),
-            authorityRateLimitPda: authorityRateLimitPda.toBase58(),
             rewardMint: rewardMint?.toBase58() ?? null,
             rewardSymbol: getRewardSymbol(rewardMint),
             constraintHash: constraintHash ? bytesToHex(constraintHash) : null,
