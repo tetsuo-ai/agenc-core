@@ -132,8 +132,16 @@ describe("context compaction", () => {
     });
 
     expect(compacted.summaryText).toContain("supersede earlier blockers");
-    expect(compacted.summaryText).toContain("Compilation test passed");
-    expect(compacted.summaryText).toContain("/tmp/agenc-shell/src/parser.c");
+    expect(
+      compacted.state.artifactRefs.some((artifact) =>
+        artifact.summary.includes("Compilation test passed"),
+      ),
+    ).toBe(true);
+    expect(
+      compacted.state.artifactRefs.some((artifact) =>
+        artifact.title.includes("/tmp/agenc-shell/src/parser.c"),
+      ),
+    ).toBe(true);
     expect(compacted.summaryText).not.toContain("invalid command format and still requires full implementation");
   });
 
@@ -170,11 +178,26 @@ describe("context compaction", () => {
         "Build still failing; preserve the exact compiler drift until the interface is repaired.",
     });
 
-    expect(compacted.state.artifactRefs.some((artifact) => artifact.kind === "compiler_diagnostic")).toBe(true);
-    expect(compacted.summaryText).toContain("compiler_diagnostic");
-    expect(compacted.summaryText).toContain("has no member named 'next'");
-    expect(compacted.summaryText).toContain("did you mean 'Redir'");
-    expect(compacted.summaryText).toContain("TOK_REDIR_IN");
+    expect(
+      compacted.state.artifactRefs.some(
+        (artifact) => artifact.kind === "compiler_diagnostic",
+      ),
+    ).toBe(true);
+    expect(
+      compacted.state.artifactRefs.some((artifact) =>
+        artifact.summary.includes("has no member named 'next'"),
+      ),
+    ).toBe(true);
+    expect(
+      compacted.state.artifactRefs.some((artifact) =>
+        artifact.summary.includes("did you mean 'Redir'"),
+      ),
+    ).toBe(true);
+    expect(
+      compacted.state.artifactRefs.some((artifact) =>
+        artifact.summary.includes("TOK_REDIR_IN"),
+      ),
+    ).toBe(true);
   });
 
   it("rebuilds the compacted history with preserved multimodal messages", () => {

@@ -14,8 +14,6 @@ import {
 } from "./daemon-session-state.js";
 import {
   SESSION_SHELL_PROFILE_METADATA_KEY,
-  SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY,
-  SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY,
   SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY,
   SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY,
   SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY,
@@ -25,10 +23,6 @@ import {
   type Session,
   SESSION_WORKFLOW_STATE_METADATA_KEY,
 } from "./session.js";
-import type {
-  ArtifactCompactionState,
-  ContextArtifactRecord,
-} from "../memory/artifact-store.js";
 import { createRuntimeContractSnapshot } from "../runtime-contract/types.js";
 
 function createSession(metadata: Record<string, unknown> = {}): Session {
@@ -120,41 +114,15 @@ describe("buildSessionStatefulOptions", () => {
     });
   });
 
-  it("returns artifact-backed stateful options when compacted artifact context exists", () => {
-    const artifactContext: ArtifactCompactionState = {
-      version: 1,
-      snapshotId: "snapshot:abc",
-      sessionId: "session:test",
-      createdAt: 1,
-      source: "session_compaction",
-      historyDigest: "digest",
-      sourceMessageCount: 10,
-      retainedTailCount: 4,
-      narrativeSummary: "Compacted shell workspace context",
-      openLoops: ["Verify PLAN.md against src/main.c"],
-      artifactRefs: [
-        {
-          id: "artifact:plan",
-          kind: "plan",
-          title: "PLAN.md",
-          summary: "Shell roadmap and milestones",
-          createdAt: 1,
-          digest: "digest-plan",
-          tags: ["plan", "PLAN.md"],
-        },
-      ],
-    };
-
+  it("returns compacted stateful options without artifact payloads", () => {
     expect(
       buildSessionStatefulOptions(
         createSession({
-          [SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY]: artifactContext,
           [SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY]: true,
         }),
       ),
     ).toEqual({
       historyCompacted: true,
-      artifactContext,
     });
   });
 });
@@ -186,46 +154,8 @@ describe("web session runtime state helpers", () => {
     expect(hydrated.metadata).toEqual({});
   });
 
-  it("persists and hydrates artifact-backed context across web-session resume", async () => {
+  it("does not persist artifact-backed context in the new runtime-state format", async () => {
     const memoryBackend = createMemoryBackendStub();
-    const artifactContext: ArtifactCompactionState = {
-      version: 1,
-      snapshotId: "snapshot:plan",
-      sessionId: "session:test",
-      createdAt: 123,
-      source: "session_compaction",
-      historyDigest: "digest-plan",
-      sourceMessageCount: 8,
-      retainedTailCount: 4,
-      narrativeSummary: "Compacted review loop for the shell workspace",
-      openLoops: ["Verify PLAN.md against parser tests"],
-      artifactRefs: [
-        {
-          id: "artifact:plan",
-          kind: "plan",
-          title: "PLAN.md",
-          summary: "Shell roadmap and current milestones",
-          createdAt: 123,
-          digest: "digest-plan",
-          tags: ["plan", "PLAN.md"],
-        },
-      ],
-    };
-    const artifactRecords: readonly ContextArtifactRecord[] = [
-      {
-        id: "artifact:plan",
-        sessionId: "session:test",
-        kind: "plan",
-        title: "PLAN.md",
-        summary: "Shell roadmap and current milestones",
-        content: "PLAN.md defines the current shell implementation milestones.",
-        createdAt: 123,
-        digest: "digest-plan",
-        tags: ["plan", "PLAN.md"],
-        source: "session_compaction",
-      },
-    ];
-
     await persistSessionRuntimeState(
       memoryBackend,
       "web-session-artifacts",
@@ -235,10 +165,19 @@ describe("web session runtime state helpers", () => {
           reconciliationHash: "hash-123",
         },
         [SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY]: true,
-        [SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY]: artifactContext,
-        [SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY]: artifactRecords,
       }),
     );
+
+    expect(
+      await loadPersistedSessionRuntimeState(memoryBackend, "web-session-artifacts"),
+    ).toMatchObject({
+      version: 7,
+      statefulResumeAnchor: {
+        previousResponseId: "resp-123",
+        reconciliationHash: "hash-123",
+      },
+      statefulHistoryCompacted: true,
+    });
 
     const hydrated = createSession();
     await hydrateSessionRuntimeState(
@@ -247,19 +186,45 @@ describe("web session runtime state helpers", () => {
       hydrated,
     );
 
-    expect(
-      hydrated.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY],
-    ).toEqual(artifactContext);
-    expect(
-      hydrated.metadata[SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY],
-    ).toEqual(artifactRecords);
     expect(buildSessionStatefulOptions(hydrated)).toEqual({
       resumeAnchor: {
         previousResponseId: "resp-123",
         reconciliationHash: "hash-123",
       },
       historyCompacted: true,
-      artifactContext,
+    });
+  });
+
+  it("dual-reads legacy artifact-backed runtime state and rewrites without artifact ids", async () => {
+    const memoryBackend = createMemoryBackendStub();
+    await memoryBackend.set("webchat:runtime-state:web-legacy", {
+      version: 6,
+      statefulResumeAnchor: {
+        previousResponseId: "resp-legacy",
+      },
+      artifactSnapshotId: "snapshot:legacy",
+      artifactSessionId: "session:legacy",
+    });
+
+    const hydrated = createSession();
+    await hydrateSessionRuntimeState(memoryBackend, "web-legacy", hydrated);
+
+    expect(buildSessionStatefulOptions(hydrated)).toEqual({
+      resumeAnchor: {
+        previousResponseId: "resp-legacy",
+      },
+      historyCompacted: true,
+    });
+
+    await persistSessionRuntimeState(memoryBackend, "web-legacy", hydrated);
+    expect(
+      await loadPersistedSessionRuntimeState(memoryBackend, "web-legacy"),
+    ).toEqual({
+      version: 7,
+      statefulResumeAnchor: {
+        previousResponseId: "resp-legacy",
+      },
+      statefulHistoryCompacted: true,
     });
   });
   it("persists and hydrates active task context across web-session resume", async () => {
@@ -433,18 +398,6 @@ describe("web session runtime state helpers", () => {
 
   it("forks persisted runtime state while stripping live task ownership", async () => {
     const memoryBackend = createMemoryBackendStub();
-    const artifactContext: ArtifactCompactionState = {
-      version: 1,
-      snapshotId: "snapshot:fork",
-      sessionId: "session:test",
-      createdAt: 123,
-      source: "session_compaction",
-      historyDigest: "digest-fork",
-      sourceMessageCount: 6,
-      retainedTailCount: 3,
-      openLoops: [],
-      artifactRefs: [],
-    };
 
     await persistSessionRuntimeState(
       memoryBackend,
@@ -462,7 +415,6 @@ describe("web session runtime state helpers", () => {
           previousResponseId: "resp-123",
         },
         [SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY]: true,
-        [SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY]: artifactContext,
         [SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY]: {
           taskId: "task-live",
         },

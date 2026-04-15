@@ -310,13 +310,10 @@ function renderSummaryText(state: ArtifactCompactionState): string {
   if (state.narrativeSummary && state.narrativeSummary.trim().length > 0) {
     lines.push(`Summary: ${state.narrativeSummary.trim()}`);
   }
-  if (state.artifactRefs.length > 0) {
-    lines.push("Artifact refs:");
-    for (const artifact of state.artifactRefs) {
-      lines.push(
-        `- [${artifact.kind}:${artifact.id}] ${artifact.title} — ${artifact.summary}`,
-      );
-    }
+  if (state.sourceMessageCount > 0) {
+    lines.push(
+      `Compacted ${state.sourceMessageCount} earlier message(s); retained tail count ${state.retainedTailCount}.`,
+    );
   }
   if (state.openLoops.length > 0) {
     lines.push("Open loops:");
