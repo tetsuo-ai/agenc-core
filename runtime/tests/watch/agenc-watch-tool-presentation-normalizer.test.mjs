@@ -73,3 +73,35 @@ test("normalizer keeps generic result parsing separate from final transcript cop
   assert.match(normalized.prettyResult, /"status": "ready"/);
   assert.match(normalized.prettyResult, /"detail": "daemon ok"/);
 });
+
+test("normalizer classifies mkdir start and result separately from generic tools", () => {
+  const normalizer = createNormalizer();
+
+  assert.deepEqual(
+    normalizer.normalizeToolStart("system.mkdir", {
+      path: "src/ui",
+    }),
+    {
+      kind: "mkdir-start",
+      dirPathDisplay: "src/ui",
+      dirPathRaw: "src/ui",
+    },
+  );
+
+  assert.deepEqual(
+    normalizer.normalizeToolResult(
+      "system.mkdir",
+      { path: "src/ui" },
+      false,
+      '{"path":"src/ui","created":true}',
+    ),
+    {
+      kind: "mkdir-result",
+      isError: false,
+      dirPathDisplay: "src/ui",
+      dirPathRaw: "src/ui",
+      errorText: null,
+      errorPreview: null,
+    },
+  );
+});

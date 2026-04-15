@@ -91,6 +91,12 @@ export function createWatchToolPresentationCopyBuilder(dependencies = {}) {
           body: data.dirPathDisplay || "(pending directory listing)",
           tone: "slate",
         };
+      case "mkdir-start":
+        return {
+          title: `mkdir ${data.dirPathDisplay || "directory"}`,
+          body: data.dirPathDisplay ? `path: ${data.dirPathDisplay}` : "(pending directory create)",
+          tone: "yellow",
+        };
       case "shell-start":
         return {
           title: `Run ${data.commandText || "command"}`,
@@ -159,6 +165,14 @@ export function createWatchToolPresentationCopyBuilder(dependencies = {}) {
               ? data.entries.join("  ")
               : data.dirPathDisplay || "(directory listed)",
           tone: data.isError ? "red" : "slate",
+        };
+      case "mkdir-result":
+        return {
+          title: `mkdir ${data.dirPathDisplay || "directory"}`,
+          body: data.isError
+            ? (data.errorPreview || "(mkdir failed)")
+            : "Done",
+          tone: data.isError ? "red" : "green",
         };
       case "desktop-editor-result":
         return describeDesktopTextEditorResult(data);

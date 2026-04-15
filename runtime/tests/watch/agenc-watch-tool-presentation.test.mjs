@@ -142,3 +142,32 @@ test("tool presentation formats shell results and generic summaries", () => {
   assert.equal(generic.body, "status: ready");
   assert.equal(generic.tone, "green");
 });
+
+test("tool presentation gives system.mkdir a tool-specific row and terse success body", () => {
+  const tools = createToolPresentation();
+
+  assert.deepEqual(
+    tools.describeToolStart("system.mkdir", {
+      path: "src/ui",
+    }),
+    {
+      title: "mkdir src/ui",
+      body: "path: src/ui",
+      tone: "yellow",
+    },
+  );
+
+  assert.deepEqual(
+    tools.describeToolResult(
+      "system.mkdir",
+      { path: "src/ui" },
+      false,
+      JSON.stringify({ path: "src/ui", created: true }),
+    ),
+    {
+      title: "mkdir src/ui",
+      body: "Done",
+      tone: "green",
+    },
+  );
+});

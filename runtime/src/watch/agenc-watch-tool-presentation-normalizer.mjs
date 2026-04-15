@@ -283,6 +283,17 @@ export function createWatchToolPresentationNormalizer(dependencies = {}) {
           kind: "list-dir-start",
           dirPathDisplay: compactPathForDisplay(payload.path ?? payload.dir ?? payload.directory),
         };
+      case "system.mkdir": {
+        const dirPathValue = payload.path ?? payload.dir ?? payload.directory;
+        return {
+          kind: "mkdir-start",
+          dirPathDisplay: compactPathForDisplay(dirPathValue),
+          dirPathRaw:
+            typeof dirPathValue === "string" && String(dirPathValue).trim().length > 0
+              ? sanitizeInlineText(String(dirPathValue))
+              : null,
+        };
+      }
       case "system.bash":
         return {
           kind: "shell-start",
@@ -377,6 +388,24 @@ export function createWatchToolPresentationNormalizer(dependencies = {}) {
               .filter(Boolean)
             : [],
         };
+      case "system.mkdir": {
+        const dirPathValue = resultObject.path ?? payload.path ?? payload.dir ?? payload.directory;
+        const errorText =
+          typeof resultObject.error === "string" && resultObject.error.trim().length > 0
+            ? resultObject.error
+            : null;
+        return {
+          kind: "mkdir-result",
+          isError,
+          dirPathDisplay: compactPathForDisplay(dirPathValue),
+          dirPathRaw:
+            typeof dirPathValue === "string" && String(dirPathValue).trim().length > 0
+              ? sanitizeInlineText(String(dirPathValue))
+              : null,
+          errorText,
+          errorPreview: isError ? firstMeaningfulLine(errorText ?? tryPrettyJson(result)) : null,
+        };
+      }
       case "desktop.text_editor":
         return normalizeDesktopTextEditorResult(payload, resultObject, isError);
       case "system.bash":
