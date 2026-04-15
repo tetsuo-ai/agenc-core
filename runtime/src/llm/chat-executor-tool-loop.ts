@@ -144,7 +144,7 @@ import {
   type RequestTaskObservationResult,
 } from "./request-task-progress.js";
 import {
-  isTopLevelVerifierRequiredForTurn,
+  hasTopLevelVerifierArtifacts,
   resolveTopLevelVerifierArtifacts,
   runTopLevelVerifierValidation,
 } from "../gateway/top-level-verifier.js";
@@ -2354,10 +2354,32 @@ export async function executeToolCallLoop(
     });
 
     let completionValidationStatus = "passed";
-    const runtimeVerifierRequired = isTopLevelVerifierRequiredForTurn({
+    const verifierArtifacts = resolveTopLevelVerifierArtifacts({
       turnExecutionContract: ctx.turnExecutionContract,
       allToolCalls: ctx.allToolCalls,
       workspaceRoot: ctx.runtimeWorkspaceRoot,
+    });
+    const runtimeVerifierRequired =
+      (
+        ctx.runtimeContractFlags.verifierRuntimeRequired === true ||
+        config.completionValidation?.topLevelVerifier !== undefined
+      ) &&
+      hasTopLevelVerifierArtifacts({
+        turnExecutionContract: ctx.turnExecutionContract,
+        allToolCalls: ctx.allToolCalls,
+        workspaceRoot: verifierArtifacts.workspaceRoot,
+      });
+    ctx.runtimeContractSnapshot = updateRuntimeContractVerifierStage({
+      snapshot: ctx.runtimeContractSnapshot,
+      verifierStages: {
+        ...ctx.runtimeContractSnapshot.verifierStages,
+        runtimeRequired: runtimeVerifierRequired,
+        launcherKind: runtimeVerifierRequired ? "subagent" : "none",
+        stageStatus: runtimeVerifierRequired ? "pending" : "inactive",
+        ...(runtimeVerifierRequired
+          ? { skipReason: undefined }
+          : { skipReason: "runtime_not_required" }),
+      },
     });
     const stopHooksEnabled =
       config.runtimeContractFlags.stopHooksEnabled &&
@@ -2559,84 +2581,16 @@ export async function executeToolCallLoop(
     }
 
     if (ctx.stopReason === "completed" && runtimeVerifierRequired) {
-      const verifierArtifacts = resolveTopLevelVerifierArtifacts({
-        turnExecutionContract: ctx.turnExecutionContract,
-        allToolCalls: ctx.allToolCalls,
-        workspaceRoot: ctx.runtimeWorkspaceRoot,
+      ctx.runtimeContractSnapshot = updateRuntimeContractVerifierStage({
+        snapshot: ctx.runtimeContractSnapshot,
+        verifierStages: {
+          ...ctx.runtimeContractSnapshot.verifierStages,
+          runtimeRequired: true,
+          launcherKind: "subagent",
+          stageStatus: "running",
+          skipReason: undefined,
+        },
       });
-
-      if (stopHooksEnabled && config.stopHookRuntime) {
-        const hookResult = await runStopHookPhase({
-          runtime: config.stopHookRuntime,
-          phase: "VerificationReady",
-          matchKey: ctx.sessionId,
-          context: {
-            phase: "VerificationReady",
-            sessionId: ctx.sessionId,
-            runtimeWorkspaceRoot: ctx.runtimeWorkspaceRoot,
-            allToolCalls: ctx.allToolCalls,
-            verificationReady: {
-              deterministicAcceptanceProbesEnabled: false,
-              topLevelVerifierEnabled: true,
-              targetArtifacts: verifierArtifacts.targetArtifacts,
-            },
-          },
-        });
-        if (hookResult.outcome === "prevent_continuation") {
-          completionValidationStatus = "fail_closed";
-          callbacks.setStopReason(
-            ctx,
-            "validation_error",
-            hookResult.stopReason ??
-              "Verification-ready stop hook prevented verifier launch.",
-          );
-          ctx.validationCode = asDelegationOutputValidationCode(
-            hookResult.stopReason ?? hookResult.reason,
-          );
-          if (ctx.response) {
-            ctx.response = {
-              ...ctx.response,
-              content: "",
-            };
-          }
-        } else if (hookResult.outcome === "retry_with_blocking_message") {
-          const verificationReadyRecovery = await attemptCompletionRecovery({
-            reason: hookResult.reason ?? "verification_ready",
-            blockingMessage: hookResult.blockingMessage,
-            evidence: hookResult.evidence,
-            maxAttempts:
-              config.stopHookRuntime?.maxAttemptsExplicit === true
-                ? config.stopHookRuntime.maxAttempts
-                : ctx.requiredToolEvidence?.maxCorrectionAttemptsExplicit === true
-                  ? ctx.requiredToolEvidence.maxCorrectionAttempts
-                  : 1,
-            budgetReason:
-              "Max model recalls exceeded during verification-ready recovery turn",
-            exhaustedDetail:
-              "Verification-ready recovery exhausted after stop-hook intervention.",
-            stopHookResult: hookResult,
-            continuationSummary,
-          });
-          completionValidationStatus = verificationReadyRecovery
-            ? "recovery_requested"
-            : "recovery_exhausted";
-          callbacks.emitExecutionTrace(ctx, {
-            type: "completion_validation_finished",
-            phase: "tool_followup",
-            callIndex: ctx.callIndex,
-            payload: {
-              status: completionValidationStatus,
-              stopReason: ctx.stopReason,
-              validationCode: ctx.validationCode,
-              runtimeContract: ctx.runtimeContractSnapshot,
-            },
-          });
-          if (verificationReadyRecovery) {
-            continue;
-          }
-        }
-      }
-
       if (ctx.stopReason === "completed") {
         const validation = await runTopLevelVerifierValidation({
           sessionId: ctx.sessionId,

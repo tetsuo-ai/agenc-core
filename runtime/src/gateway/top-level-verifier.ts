@@ -116,7 +116,6 @@ const VERIFY_STRUCTURED_OUTPUT: LLMStructuredOutputRequest = {
   },
 };
 
-const IMPLICIT_VERIFIER_MUTATION_THRESHOLD = 3;
 const IMPLICIT_VERIFIER_MUTATION_TOOL_NAMES = new Set([
   "system.writeFile",
   "system.appendFile",
@@ -194,28 +193,23 @@ function truncate(text: string, max: number): string {
   return `${text.slice(0, max - 1).trimEnd()}…`;
 }
 
-export function isExplicitTopLevelVerifierRequiredForTurn(params: {
+export function hasTopLevelVerifierArtifacts(params: {
   readonly turnExecutionContract:
     | Pick<
         TurnExecutionContract,
-        | "turnClass"
-        | "completionContract"
-        | "verificationContract"
+        | "workspaceRoot"
+        | "sourceArtifacts"
         | "targetArtifacts"
       >
     | undefined;
+  readonly allToolCalls?: readonly ToolCallRecord[];
+  readonly workspaceRoot?: string;
 }): boolean {
-  if (params.turnExecutionContract?.turnClass !== "workflow_implementation") {
-    return false;
-  }
-  const targetArtifacts = params.turnExecutionContract?.targetArtifacts ?? [];
-  if (targetArtifacts.length === 0) {
-    return false;
-  }
-  if (areDocumentationOnlyArtifacts(targetArtifacts)) {
-    return false;
-  }
-  return true;
+  const artifacts = resolveTopLevelVerifierArtifacts(params);
+  return (
+    artifacts.targetArtifacts.length > 0 &&
+    !areDocumentationOnlyArtifacts(artifacts.targetArtifacts)
+  );
 }
 
 function asString(value: unknown): string | undefined {
@@ -302,42 +296,6 @@ export function resolveTopLevelVerifierArtifacts(params: {
       workspaceRoot,
     }),
   };
-}
-
-export function isTopLevelVerifierRequiredForTurn(params: {
-  readonly turnExecutionContract:
-    | Pick<
-        TurnExecutionContract,
-        | "turnClass"
-        | "completionContract"
-        | "verificationContract"
-        | "workspaceRoot"
-        | "sourceArtifacts"
-        | "targetArtifacts"
-      >
-    | undefined;
-  readonly allToolCalls?: readonly ToolCallRecord[];
-  readonly workspaceRoot?: string;
-}): boolean {
-  if (
-    isExplicitTopLevelVerifierRequiredForTurn({
-      turnExecutionContract: params.turnExecutionContract,
-    })
-  ) {
-    return true;
-  }
-  const artifacts = resolveTopLevelVerifierArtifacts({
-    turnExecutionContract: params.turnExecutionContract,
-    allToolCalls: params.allToolCalls,
-    workspaceRoot: params.workspaceRoot,
-  });
-  if (artifacts.targetArtifacts.length < IMPLICIT_VERIFIER_MUTATION_THRESHOLD) {
-    return false;
-  }
-  if (areDocumentationOnlyArtifacts(artifacts.targetArtifacts)) {
-    return false;
-  }
-  return true;
 }
 
 function selectVerifyDefinition(
@@ -558,11 +516,8 @@ function shouldRunTopLevelVerifier(params: TopLevelVerifierParams): boolean {
     allToolCalls: params.result.toolCalls,
   });
   if (
-    !isTopLevelVerifierRequiredForTurn({
-      turnExecutionContract: params.result.turnExecutionContract,
-      allToolCalls: params.result.toolCalls,
-      workspaceRoot: verifierArtifacts.workspaceRoot,
-    })
+    verifierArtifacts.targetArtifacts.length === 0 ||
+    areDocumentationOnlyArtifacts(verifierArtifacts.targetArtifacts)
   ) {
     return false;
   }
@@ -579,17 +534,16 @@ function shouldRunTopLevelVerifier(params: TopLevelVerifierParams): boolean {
 function resolveTopLevelVerifierRequirement(
   params: TopLevelVerifierParams,
 ): VerifierRequirement | null {
-  const verifierRequired = isTopLevelVerifierRequiredForTurn({
-    turnExecutionContract: params.result.turnExecutionContract,
-    allToolCalls: params.result.toolCalls,
-  });
-  if (!verifierRequired) {
-    return null;
-  }
   const verifierArtifacts = resolveTopLevelVerifierArtifacts({
     turnExecutionContract: params.result.turnExecutionContract,
     allToolCalls: params.result.toolCalls,
   });
+  if (
+    verifierArtifacts.targetArtifacts.length === 0 ||
+    areDocumentationOnlyArtifacts(verifierArtifacts.targetArtifacts)
+  ) {
+    return null;
+  }
   if (!params.verifierService) {
     return {
       required: true,

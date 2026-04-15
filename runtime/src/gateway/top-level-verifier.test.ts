@@ -249,7 +249,7 @@ describe("runTopLevelVerifierValidation", () => {
     expect(decision.runtimeVerifier.overall).toBe("fail");
   });
 
-  it("runs verifier work for non-trivial general turns with derived target artifacts", async () => {
+  it("runs verifier work for implementation turns with derived target artifacts", async () => {
     const spawn = vi.fn(async () => "subagent:verify-general");
     const waitForResult = vi.fn(async () => ({
       sessionId: "subagent:verify-general",
@@ -281,20 +281,6 @@ describe("runTopLevelVerifierValidation", () => {
             isError: false,
             durationMs: 5,
           },
-          {
-            name: "system.editFile",
-            args: { path: "include/shell.h" },
-            result: '{"ok":true}',
-            isError: false,
-            durationMs: 5,
-          },
-          {
-            name: "system.appendFile",
-            args: { path: "tests/smoke.c" },
-            result: '{"ok":true}',
-            isError: false,
-            durationMs: 5,
-          },
         ],
         turnExecutionContract: {
           ...createResult().turnExecutionContract,
@@ -315,8 +301,6 @@ describe("runTopLevelVerifierValidation", () => {
           executionEnvelope: expect.objectContaining({
             targetArtifacts: [
               "/workspace/src/main.c",
-              "/workspace/include/shell.h",
-              "/workspace/tests/smoke.c",
             ],
           }),
         }),
