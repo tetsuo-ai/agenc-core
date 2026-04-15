@@ -156,7 +156,7 @@ describe("runTopLevelVerifierValidation", () => {
         requiredToolEvidence: expect.objectContaining({
           executionEnvelope: expect.objectContaining({
             verificationMode: "grounded_read",
-            allowedWriteRoots: ["/workspace", tmpdir()],
+            allowedWriteRoots: [tmpdir()],
             targetArtifacts: ["/workspace/src/main.c"],
           }),
         }),
@@ -165,6 +165,53 @@ describe("runTopLevelVerifierValidation", () => {
     expect(decision.outcome).toBe("retry_with_blocking_message");
     expect(decision.runtimeVerifier.overall).toBe("fail");
     expect(decision.blockingMessage).toContain("Runtime verification blocked completion");
+  });
+
+  it("inherits the parent tool surface minus mutating tools for verifier runs", async () => {
+    const spawn = vi.fn(async () => "subagent:verify-tools");
+    const waitForResult = vi.fn(async () => ({
+      sessionId: "subagent:verify-tools",
+      output: "All good.\nVERDICT: PASS",
+      success: true,
+      durationMs: 10,
+      toolCalls: [],
+      structuredOutput: {
+        type: "json_schema",
+        name: "agenc_top_level_verifier_decision",
+        parsed: {
+          verdict: "pass",
+          summary: "Inherited tool verification passed.",
+        },
+      },
+      completionState: "completed",
+      stopReason: "completed",
+    }));
+
+    await runTopLevelVerifierValidation({
+      sessionId: "session:test",
+      userRequest: "Implement every phase from PLAN.md",
+      result: createResult(),
+      subAgentManager: { spawn, waitForResult },
+      verifierService: createVerifierService(),
+      parentAllowedTools: [
+        "system.readFile",
+        "system.bash",
+        "system.writeFile",
+        "task.create",
+        "execute_with_agent",
+        "verification.runProbe",
+      ],
+    });
+
+    expect(spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tools: [
+          "system.readFile",
+          "system.bash",
+          "verification.runProbe",
+        ],
+      }),
+    );
   });
 
   it("prefers structured verifier verdicts over text parsing", async () => {

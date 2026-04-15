@@ -79,49 +79,61 @@ function createParams(
 function createTopLevelVerifierConfig(params: {
   readonly verdict?: "pass" | "fail" | "retry";
   readonly summary?: string;
+  readonly verdictSequence?: readonly ("pass" | "fail" | "retry")[];
+  readonly summarySequence?: readonly string[];
 } = {}): NonNullable<
   ConstructorParameters<typeof ChatExecutor>[0]
 >["completionValidation"] {
-  const verdict = params.verdict ?? "pass";
-  const summary =
-    params.summary ??
-    (verdict === "pass"
-      ? "Verifier passed."
-      : verdict === "fail"
-        ? "Verifier failed."
-        : "Verifier was inconclusive.");
+  const verdicts =
+    params.verdictSequence && params.verdictSequence.length > 0
+      ? [...params.verdictSequence]
+      : [params.verdict ?? "pass"];
+  const summaries = params.summarySequence
+    ? [...params.summarySequence]
+    : [];
   return {
     topLevelVerifier: {
       subAgentManager: {
         spawn: vi.fn(async () => "subagent:verify"),
-        waitForResult: vi.fn(async () => ({
-          sessionId: "subagent:verify",
-          output: `${summary}\nVERDICT: ${
-            verdict === "pass" ? "PASS" : verdict === "fail" ? "FAIL" : "PARTIAL"
-          }`,
-          success: verdict === "pass",
-          durationMs: 1,
-          toolCalls: [
-            {
-              name: "verification.runProbe",
-              args: { probeId: "generic:build:make" },
-              result:
-                "{\"ok\":true,\"__agencVerification\":{\"probeId\":\"generic:build:make\",\"category\":\"build\",\"profile\":\"generic\"}}",
-              isError: false,
-              durationMs: 1,
+        waitForResult: vi.fn(async () => {
+          const verdict = verdicts.shift() ?? params.verdict ?? "pass";
+          const summary =
+            summaries.shift() ??
+            params.summary ??
+            (verdict === "pass"
+              ? "Verifier passed."
+              : verdict === "fail"
+                ? "Verifier failed."
+                : "Verifier was inconclusive.");
+          return {
+            sessionId: "subagent:verify",
+            output: `${summary}\nVERDICT: ${
+              verdict === "pass" ? "PASS" : verdict === "fail" ? "FAIL" : "PARTIAL"
+            }`,
+            success: verdict === "pass",
+            durationMs: 1,
+            toolCalls: [
+              {
+                name: "verification.runProbe",
+                args: { probeId: "generic:build:make" },
+                result:
+                  "{\"ok\":true,\"__agencVerification\":{\"probeId\":\"generic:build:make\",\"category\":\"build\",\"profile\":\"generic\"}}",
+                isError: false,
+                durationMs: 1,
+              },
+            ],
+            structuredOutput: {
+              type: "json_schema" as const,
+              name: "agenc_top_level_verifier_decision",
+              parsed: {
+                verdict,
+                summary,
+              },
             },
-          ],
-          structuredOutput: {
-            type: "json_schema" as const,
-            name: "agenc_top_level_verifier_decision",
-            parsed: {
-              verdict,
-              summary,
-            },
-          },
-          completionState: "completed" as const,
-          stopReason: "completed" as const,
-        })),
+            completionState: "completed" as const,
+            stopReason: "completed" as const,
+          };
+        }),
       },
       verifierService: {
         resolveVerifierRequirement: vi.fn(() => ({
@@ -620,7 +632,7 @@ describe("top-level artifact evidence gate", () => {
     }
   });
 
-  it("blocks completion after a failed explicit verifier instead of entering inline repair loops", async () => {
+  it("reopens the parent loop after a failed verifier and accepts completion once verification passes", async () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-acceptance-budget-"));
     const sourcePath = join(workspaceRoot, "src/main.c");
     mkdirSync(join(workspaceRoot, "src"), { recursive: true });
@@ -656,8 +668,24 @@ describe("top-level artifact evidence gate", () => {
         )
         .mockResolvedValueOnce(
           mockResponse({
+            content: "",
+            finishReason: "tool_calls",
+            toolCalls: [
+              {
+                id: "tc-2",
+                name: "system.writeFile",
+                arguments: safeJson({
+                  path: sourcePath,
+                  content: "good build",
+                }),
+              },
+            ],
+          }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({
             content:
-              "Implementation completed after the initial build write, and this completion summary is intentionally verbose so the stop gate does not misclassify it as a truncated success claim.",
+              "Implementation completed after addressing the verifier-reported failure, and this completion summary is intentionally verbose so the stop gate does not misclassify it as a truncated success claim.",
           }),
         ),
     });
@@ -677,8 +705,11 @@ describe("top-level artifact evidence gate", () => {
       providers: [provider],
       toolHandler,
       completionValidation: createTopLevelVerifierConfig({
-        verdict: "fail",
-        summary: "Build still fails under verifier-run checks.",
+        verdictSequence: ["fail", "pass"],
+        summarySequence: [
+          "Build still fails under verifier-run checks.",
+          "Verifier passed after the recovery write.",
+        ],
       }),
     });
 
@@ -696,12 +727,12 @@ describe("top-level artifact evidence gate", () => {
         }),
       );
 
-      expect(result.stopReason).toBe("validation_error");
-      expect(result.completionState).toBe("partial");
-      expect(result.verifierSnapshot?.overall).toBe("fail");
-      expect(result.toolCalls.filter((call) => call.name === "system.writeFile")).toHaveLength(1);
-      expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2);
-      expect(readFileSync(sourcePath, "utf8")).toBe("still bad build");
+      expect(result.stopReason).toBe("completed");
+      expect(result.completionState).toBe("completed");
+      expect(result.verifierSnapshot?.overall).toBe("pass");
+      expect(result.toolCalls.filter((call) => call.name === "system.writeFile")).toHaveLength(2);
+      expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(4);
+      expect(readFileSync(sourcePath, "utf8")).toBe("good build");
     } finally {
       rmSync(workspaceRoot, { recursive: true, force: true });
     }

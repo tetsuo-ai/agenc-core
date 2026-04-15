@@ -16,11 +16,6 @@ import type {
   CompletionValidatorId,
   RuntimeContractFlags,
 } from "../runtime-contract/types.js";
-import {
-  isTopLevelVerifierRequiredForTurn,
-  resolveTopLevelVerifierArtifacts,
-  runTopLevelVerifierValidation,
-} from "../gateway/top-level-verifier.js";
 
 export interface CompletionValidatorExecutionResult
   extends CompletionValidatorResult {
@@ -50,79 +45,6 @@ export function buildCompletionValidators(params: {
           params.stopHookRuntime.maxAttempts,
         )
       : sharedCorrectionBudgetCap;
-  const verifierArtifacts = resolveTopLevelVerifierArtifacts({
-    turnExecutionContract: params.ctx.turnExecutionContract,
-    allToolCalls: params.ctx.allToolCalls,
-    workspaceRoot: params.ctx.runtimeWorkspaceRoot,
-  });
-  const topLevelVerifierEnabled = isTopLevelVerifierRequiredForTurn({
-    turnExecutionContract: params.ctx.turnExecutionContract,
-    allToolCalls: params.ctx.allToolCalls,
-    workspaceRoot: verifierArtifacts.workspaceRoot,
-  });
-  let verificationReadyGate:
-    | CompletionValidatorExecutionResult
-    | undefined;
-
-  const ensureVerificationReadyGate =
-    async (): Promise<CompletionValidatorExecutionResult> => {
-      if (verificationReadyGate) {
-        return verificationReadyGate;
-      }
-      if (!topLevelVerifierEnabled) {
-        verificationReadyGate = {
-          id: "top_level_verifier",
-          outcome: "pass",
-        };
-        return verificationReadyGate;
-      }
-      const hookResult = await runStopHookPhase({
-        runtime: params.stopHookRuntime,
-        phase: "VerificationReady",
-        matchKey: params.ctx.sessionId,
-        context: {
-          phase: "VerificationReady",
-          sessionId: params.ctx.sessionId,
-          runtimeWorkspaceRoot: params.ctx.runtimeWorkspaceRoot,
-          allToolCalls: params.ctx.allToolCalls,
-          verificationReady: {
-            deterministicAcceptanceProbesEnabled: false,
-            topLevelVerifierEnabled,
-            targetArtifacts: verifierArtifacts.targetArtifacts,
-          },
-        },
-      });
-      verificationReadyGate =
-        hookResult.outcome === "retry_with_blocking_message"
-          ? {
-              id: "top_level_verifier",
-              outcome: "retry_with_blocking_message",
-              reason: hookResult.reason ?? "verification_ready",
-              blockingMessage: hookResult.blockingMessage,
-              evidence: hookResult.evidence,
-              maxAttempts: stopHookRetryBudgetCap,
-              exhaustedDetail:
-                "Verification-ready recovery exhausted after stop-hook intervention.",
-              stopHookResult: hookResult,
-            }
-          : hookResult.outcome === "prevent_continuation"
-            ? {
-                id: "top_level_verifier",
-                outcome: "fail_closed",
-                reason: hookResult.reason ?? "verification_ready",
-                exhaustedDetail:
-                  hookResult.stopReason ??
-                  "Verification-ready stop hook prevented continuation.",
-                stopHookResult: hookResult,
-              }
-            : {
-                id: "top_level_verifier",
-                outcome: "pass",
-                evidence: hookResult.evidence,
-                stopHookResult: hookResult,
-              };
-      return verificationReadyGate;
-    };
 
   return [
     {
@@ -245,64 +167,6 @@ export function buildCompletionValidators(params: {
           maxAttempts,
           exhaustedDetail:
             "Request task progress recovery exhausted while malformed task metadata remained in the session task state.",
-        };
-      },
-    },
-    {
-      id: "top_level_verifier",
-      enabled: topLevelVerifierEnabled,
-      async execute(): Promise<CompletionValidatorExecutionResult> {
-        if (!topLevelVerifierEnabled) {
-          return { id: "top_level_verifier", outcome: "skipped" };
-        }
-        const gate = await ensureVerificationReadyGate();
-        if (gate.outcome !== "pass") {
-          return {
-            ...gate,
-            id: "top_level_verifier",
-          };
-        }
-        const validation = await runTopLevelVerifierValidation({
-          sessionId: params.ctx.sessionId,
-          userRequest: params.ctx.messageText,
-          result: {
-            content: params.ctx.response?.content ?? "",
-            stopReason: params.ctx.stopReason,
-            completionState: params.ctx.completionState,
-            turnExecutionContract: params.ctx.turnExecutionContract,
-            toolCalls: params.ctx.allToolCalls,
-            stopReasonDetail: params.ctx.stopReasonDetail,
-            validationCode: params.ctx.validationCode,
-            completionProgress: undefined,
-            runtimeContractSnapshot: params.ctx.runtimeContractSnapshot,
-          },
-          subAgentManager:
-            params.completionValidation?.topLevelVerifier?.subAgentManager ??
-            null,
-          verifierService:
-            params.completionValidation?.topLevelVerifier?.verifierService ??
-            null,
-          taskStore:
-            params.completionValidation?.topLevelVerifier?.taskStore ?? null,
-          remoteJobManager:
-            params.completionValidation?.topLevelVerifier?.remoteJobManager ?? null,
-          agentDefinitions:
-            params.completionValidation?.topLevelVerifier?.agentDefinitions,
-          logger: params.completionValidation?.topLevelVerifier?.logger,
-          onTraceEvent:
-            params.completionValidation?.topLevelVerifier?.onTraceEvent,
-        });
-        return {
-          id: "top_level_verifier",
-          outcome: validation.outcome,
-          reason: "top_level_verifier",
-          blockingMessage: validation.blockingMessage,
-          maxAttempts: sharedCorrectionBudgetCap,
-          exhaustedDetail: validation.exhaustedDetail,
-          verifier: validation.runtimeVerifier,
-          verifierTaskId: validation.taskId,
-          verifierRequirement: validation.verifierRequirement,
-          verifierLauncherKind: validation.launcherKind,
         };
       },
     },

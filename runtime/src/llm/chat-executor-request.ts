@@ -34,6 +34,7 @@ import { deriveWorkflowProgressSnapshot } from "../workflow/completion-progress.
 import { buildRuntimeEconomicsSummary } from "./run-budget.js";
 import { deriveActiveTaskContext } from "./turn-execution-contract.js";
 import { resolveWorkflowEvidenceFromRequiredToolEvidence } from "./turn-execution-contract.js";
+import { isTopLevelVerifierRequiredForTurn } from "../gateway/top-level-verifier.js";
 import type {
   ChatExecuteParams,
   ChatExecutorResult,
@@ -237,11 +238,13 @@ export async function executeRequest(
     }
   }
 
-  const computeVerificationRequirement = (terminal: ToolLoopTerminalResult): boolean =>
+  const computeVerificationRequirement = (_terminal: ToolLoopTerminalResult): boolean =>
     ctx.runtimeContractFlags.verifierRuntimeRequired === true &&
-    ctx.turnExecutionContract.turnClass === "workflow_implementation" &&
-    (((ctx.turnExecutionContract.targetArtifacts?.length ?? 0) > 0) ||
-      terminal.mutationDetected);
+    isTopLevelVerifierRequiredForTurn({
+      turnExecutionContract: ctx.turnExecutionContract,
+      allToolCalls: ctx.allToolCalls,
+      workspaceRoot: ctx.runtimeWorkspaceRoot,
+    });
 
   try {
     const terminal = await helpers.executeToolCallLoop(ctx);

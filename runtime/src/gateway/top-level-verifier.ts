@@ -151,6 +151,7 @@ interface TopLevelVerifierParams {
     "start" | "handleWebhook"
   > | null;
   readonly agentDefinitions?: readonly AgentDefinition[];
+  readonly parentAllowedTools?: readonly string[];
   readonly logger?: Logger;
   readonly onTraceEvent?: (
     event: TopLevelVerifierTraceEvent,
@@ -341,14 +342,19 @@ export function isTopLevelVerifierRequiredForTurn(params: {
 
 function selectVerifyDefinition(
   definitions: readonly AgentDefinition[] | undefined,
+  parentAllowedTools?: readonly string[],
 ): {
   readonly tools: readonly string[];
   readonly promptEnvelope: ReturnType<typeof createPromptEnvelope>;
 } {
   const match = definitions?.find((definition) => definition.name === "verify");
-  const tools = match?.tools?.length
-    ? [...new Set(match.tools.map((toolName) => toolName.trim()).filter(Boolean))]
-    : [...DEFAULT_VERIFY_TOOLS];
+  const inheritedTools = buildVerifierToolNames(parentAllowedTools);
+  const tools =
+    inheritedTools.length > 0
+      ? inheritedTools
+      : match?.tools?.length
+        ? [...new Set(match.tools.map((toolName) => toolName.trim()).filter(Boolean))]
+        : [...DEFAULT_VERIFY_TOOLS];
   return {
     tools,
     promptEnvelope: createPromptEnvelope(
@@ -357,6 +363,38 @@ function selectVerifyDefinition(
         : DEFAULT_VERIFY_SYSTEM_PROMPT,
     ),
   };
+}
+
+function buildVerifierToolNames(
+  parentAllowedTools: readonly string[] | undefined,
+): readonly string[] {
+  if (!parentAllowedTools || parentAllowedTools.length === 0) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const tools: string[] = [];
+  for (const rawName of parentAllowedTools) {
+    const toolName = rawName.trim();
+    if (!toolName || seen.has(toolName)) continue;
+    if (
+      toolName === "system.writeFile" ||
+      toolName === "system.appendFile" ||
+      toolName === "system.editFile" ||
+      toolName === "system.applyPatch" ||
+      toolName === "system.delete" ||
+      toolName === "system.mkdir" ||
+      toolName === "system.move" ||
+      toolName === "desktop.text_editor" ||
+      toolName === "execute_with_agent" ||
+      toolName === "coordinator" ||
+      toolName.startsWith("task.")
+    ) {
+      continue;
+    }
+    seen.add(toolName);
+    tools.push(toolName);
+  }
+  return tools;
 }
 
 function buildVerifierPrompt(params: {
@@ -737,12 +775,15 @@ export async function runTopLevelVerifierValidation(
     });
   const sourceArtifacts = verifierArtifacts.sourceArtifacts;
   const targetArtifacts = verifierArtifacts.targetArtifacts;
-  const definition = selectVerifyDefinition(params.agentDefinitions);
   const inspectionArtifacts = [...new Set([...sourceArtifacts, ...targetArtifacts])];
-  const executionEnvelope = createExecutionEnvelope({
+  const definition = selectVerifyDefinition(
+    params.agentDefinitions,
+    params.parentAllowedTools,
+  );
+  const baseExecutionEnvelope = createExecutionEnvelope({
     workspaceRoot,
     allowedReadRoots: workspaceRoot ? [workspaceRoot] : [],
-    allowedWriteRoots: workspaceRoot ? [workspaceRoot, tmpdir()] : [tmpdir()],
+    allowedWriteRoots: [tmpdir()],
     allowedTools: definition.tools,
     inputArtifacts: inspectionArtifacts,
     requiredSourceArtifacts: inspectionArtifacts,
@@ -757,6 +798,15 @@ export async function runTopLevelVerifierValidation(
       partialCompletionAllowed: false,
     },
   });
+  const executionEnvelope =
+    baseExecutionEnvelope && workspaceRoot
+      ? {
+          ...baseExecutionEnvelope,
+          allowedWriteRoots: baseExecutionEnvelope.allowedWriteRoots.filter(
+            (root) => root !== workspaceRoot,
+          ),
+        }
+      : baseExecutionEnvelope;
 
   const spawnConfig: SubAgentConfig = {
     parentSessionId: params.sessionId,
