@@ -6,7 +6,6 @@ import {
   type WorkflowRequestMilestone,
 } from "./request-completion.js";
 import type {
-  PlannerVerificationSnapshot,
   WorkflowCompletionState,
 } from "./completion-state.js";
 import type { WorkflowVerificationContract } from "./verification-obligations.js";
@@ -71,7 +70,6 @@ export function deriveWorkflowProgressSnapshot(params: {
   readonly completedRequestMilestoneIds?: readonly string[];
   readonly updatedAt: number;
   readonly contractFingerprint?: string;
-  readonly verifier?: PlannerVerificationSnapshot;
 }): WorkflowProgressSnapshot | undefined {
   const mergedContract = mergeVerificationContract({
     verificationContract: params.verificationContract,
@@ -101,18 +99,26 @@ export function deriveWorkflowProgressSnapshot(params: {
   const satisfiedRequirements = new Set<WorkflowProgressRequirement>(
     reusableEvidence.map((entry) => entry.requirement),
   );
-  const remainingRequirements = [...requiredRequirements];
+  const remainingRequirements = [...requiredRequirements].filter(
+    (requirement) => !satisfiedRequirements.has(requirement),
+  );
+  const completionState = resolveDerivedCompletionState({
+    latest: params.completionState,
+    remainingRequirements,
+    remainingMilestones: requestCompletion?.remainingMilestones,
+    completionContract: mergedContract?.completionContract,
+  });
   if (
     !mergedContract &&
     reusableEvidence.length === 0 &&
     remainingRequirements.length === 0 &&
-    params.completionState === "completed"
+    completionState === "completed"
   ) {
     return undefined;
   }
 
   return {
-    completionState: params.completionState,
+    completionState,
     stopReason: params.stopReason,
     stopReasonDetail: params.stopReasonDetail,
     validationCode: params.validationCode,
@@ -329,7 +335,12 @@ function resolveMergedCompletionState(params: {
 }): WorkflowCompletionState {
   const latest = params.next.completionState;
   if (params.remainingRequirements.length === 0) {
-    return latest;
+    return resolveDerivedCompletionState({
+      latest,
+      remainingRequirements: params.remainingRequirements,
+      remainingMilestones: params.next.remainingMilestones,
+      completionContract: params.next.completionContract,
+    });
   }
   if (latest === "blocked") {
     return "blocked";
@@ -338,4 +349,21 @@ function resolveMergedCompletionState(params: {
     return params.previous?.completionState === "blocked" ? "blocked" : "partial";
   }
   return latest;
+}
+
+function resolveDerivedCompletionState(params: {
+  readonly latest: WorkflowCompletionState;
+  readonly remainingRequirements: readonly WorkflowProgressRequirement[];
+  readonly remainingMilestones?: readonly WorkflowRequestMilestone[];
+  readonly completionContract?: ImplementationCompletionContract;
+}): WorkflowCompletionState {
+  if (
+    params.latest === "completed" &&
+    params.completionContract?.partialCompletionAllowed === false &&
+    (params.remainingRequirements.length > 0 ||
+      (params.remainingMilestones?.length ?? 0) > 0)
+  ) {
+    return "partial";
+  }
+  return params.latest;
 }

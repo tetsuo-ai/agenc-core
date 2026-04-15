@@ -8,7 +8,10 @@
  */
 
 import type { ChatExecutor } from "../llm/chat-executor.js";
-import type { ChatExecutorResult } from "../llm/chat-executor-types.js";
+import type {
+  ChatExecuteParams,
+  ChatExecutorResult,
+} from "../llm/chat-executor-types.js";
 import type { PromptEnvelopeV1 } from "../llm/prompt-envelope.js";
 import type { LLMMessage, LLMProvider, ToolHandler } from "../llm/types.js";
 import type { GatewayMessage } from "./message.js";
@@ -153,6 +156,15 @@ export interface BackgroundRunSupervisorConfig {
     cycleIndex: number;
     shellProfile: SessionShellProfile;
   }) => ToolHandler;
+  readonly resolveExecutionContext?: (params: {
+    readonly sessionId: string;
+    readonly objective: string;
+    readonly shellProfile: SessionShellProfile;
+    readonly history: readonly LLMMessage[];
+  }) => Promise<{
+    readonly runtimeContext?: ChatExecuteParams["runtimeContext"];
+    readonly requiredToolEvidence?: ChatExecuteParams["requiredToolEvidence"];
+  } | undefined>;
   readonly buildToolRoutingDecision?: (
     sessionId: string,
     messageText: string,

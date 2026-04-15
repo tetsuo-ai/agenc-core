@@ -76,6 +76,7 @@ import type { PersistentWorkerManager } from "./persistent-worker-manager.js";
 import type { SubAgentManager } from "./sub-agent.js";
 import type { TaskStore } from "../tools/system/task-tracker.js";
 import { seedSessionReadState } from "../tools/system/filesystem.js";
+import type { ExecutionEnvelope } from "../workflow/execution-envelope.js";
 
 interface WebChatTurnSignals {
   signalThinking: (sessionId: string) => void;
@@ -119,6 +120,13 @@ interface ExecuteWebChatConversationTurnParams {
   readonly workerManager?: PersistentWorkerManager | null;
   readonly agentDefinitions?: readonly AgentDefinition[];
   readonly taskStore?: TaskStore | null;
+  readonly maybeStartBackgroundRun?: (params: {
+    readonly session: Session;
+    readonly objective: string;
+    readonly runtimeWorkspaceRoot?: string;
+    readonly effectiveHistory: readonly import("../llm/types.js").LLMMessage[];
+    readonly executionEnvelope?: ExecutionEnvelope;
+  }) => Promise<boolean>;
 }
 
 async function resolveWebChatTurnWorkspaceRoot(params: {
@@ -301,6 +309,19 @@ export async function executeWebChatConversationTurn(
       atMentionAttachments.historyPrelude.length > 0
         ? [...session.history, ...atMentionAttachments.historyPrelude]
         : session.history;
+    if (
+      params.maybeStartBackgroundRun &&
+      await params.maybeStartBackgroundRun({
+        session,
+        objective: effectiveMessage.content,
+        runtimeWorkspaceRoot,
+        effectiveHistory,
+        executionEnvelope: atMentionAttachments.executionEnvelope,
+      })
+    ) {
+      webChat.clearAbortController(msg.sessionId);
+      return undefined;
+    }
 
     // Phase E: webchat streaming caller migrated to drain the
     // Phase C generator. onStreamChunk pass-through is handled

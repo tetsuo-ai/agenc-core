@@ -1018,4 +1018,96 @@ You have broad access to this machine via the system.bash tool.`,
     );
   });
 
+  it("promotes explicit full-plan implementation requests into durable workflow execution", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-webchat-bg-"));
+    const planPath = join(workspaceRoot, "PLAN.md");
+    writeFileSync(
+      planPath,
+      ["# PLAN", "## M0 Bootstrap", "## M1 Lexer", "## M2 Parser"].join("\n"),
+      "utf8",
+    );
+
+    const logger = createLoggerStub();
+    const memoryBackend = createMemoryBackendStub();
+    const session = createSession();
+    const sessionMgr = {
+      getOrCreate: vi.fn(() => session),
+      appendMessage: vi.fn(),
+      compact: vi.fn(async () => undefined),
+    } as any;
+    const webChat = {
+      createAbortController: vi.fn(() => new AbortController()),
+      clearAbortController: vi.fn(),
+      send: vi.fn(async () => undefined),
+      pushToSession: vi.fn(),
+      broadcastEvent: vi.fn(),
+      loadSessionWorkspaceRoot: vi.fn(async () => workspaceRoot),
+    } as any;
+    const hooks = {
+      dispatch: vi.fn(async () => ({ completed: true, payload: {} })),
+    } as any;
+    const signals = {
+      signalThinking: vi.fn(),
+      signalIdle: vi.fn(),
+    };
+    const execute = vi.fn(async () => createResult());
+    const maybeStartBackgroundRun = vi.fn(async (params) => {
+      expect(params.runtimeWorkspaceRoot).toBe(workspaceRoot);
+      expect(params.effectiveHistory).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: "tool",
+            toolName: "system.readFile",
+          }),
+        ]),
+      );
+      return true;
+    });
+
+    const result = await executeWebChatConversationTurn({
+      logger,
+      msg: {
+        sessionId: "session:durable-webchat",
+        senderId: "operator-1",
+        channel: "webchat",
+        content: "Read @PLAN.md and implement all phases in full without stopping.",
+      },
+      webChat,
+      chatExecutor: { execute } as any,
+      sessionMgr,
+      getSystemPrompt: () => "system",
+      sessionToolHandler: vi.fn() as any,
+      sessionStreamCallback: vi.fn(),
+      signals,
+      hooks,
+      memoryBackend,
+      sessionTokenBudget: 16_000,
+      defaultMaxToolRounds: 3,
+      contextWindowTokens: 64_000,
+      traceConfig: {
+        enabled: false,
+        includeHistory: true,
+        includeSystemPrompt: true,
+        includeToolArgs: true,
+        includeToolResults: true,
+        includeProviderPayloads: false,
+        maxChars: 20_000,
+      },
+      turnTraceId: "trace-durable-webchat",
+      buildToolRoutingDecision: () => undefined,
+      recordToolRoutingOutcome: vi.fn(),
+      getSessionTokenUsage: () => 0,
+      onModelInfo: vi.fn(),
+      onSubagentSynthesis: vi.fn(),
+      maybeStartBackgroundRun,
+    });
+
+    expect(result).toBeUndefined();
+    expect(maybeStartBackgroundRun).toHaveBeenCalledOnce();
+    expect(execute).not.toHaveBeenCalled();
+    expect(webChat.clearAbortController).toHaveBeenCalledWith(
+      "session:durable-webchat",
+    );
+  });
+
 });

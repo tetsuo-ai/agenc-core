@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ChatExecutor } from "./chat-executor.js";
 import type { ChatExecuteParams } from "./chat-executor.js";
+import { appendToolRecord } from "./chat-executor-ctx-helpers.js";
 import { createPromptEnvelope } from "./prompt-envelope.js";
+import { createRequestTaskProgressState } from "./request-task-progress.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -11,6 +13,7 @@ import type {
   StreamProgressCallback,
 } from "./types.js";
 import type { GatewayMessage } from "../gateway/message.js";
+import { createRuntimeContractSnapshot } from "../runtime-contract/types.js";
 
 // ============================================================================
 // Shared helpers
@@ -86,6 +89,51 @@ function createParams(
 // ============================================================================
 
 describe("ChatExecutor ctx-helpers behavior", () => {
+  describe("verifier invalidation after workspace mutation", () => {
+    it("clears stale verifier state after a successful file mutation", () => {
+      const ctx: any = {
+        allToolCalls: [],
+        failedToolCalls: 0,
+        verifierSnapshot: {
+          overall: "pass",
+          summary: "stale-pass",
+        },
+        runtimeContractSnapshot: createRuntimeContractSnapshot({
+          runtimeContractV2: true,
+          stopHooksEnabled: true,
+          asyncTasksEnabled: true,
+          persistentWorkersEnabled: true,
+          mailboxEnabled: true,
+          verifierRuntimeRequired: true,
+          verifierProjectBootstrap: false,
+          workerIsolationWorktree: false,
+          workerIsolationRemote: false,
+        }),
+        requestTaskState: createRequestTaskProgressState(),
+        completedRequestMilestoneIds: [],
+      };
+
+      appendToolRecord(ctx, {
+        name: "system.writeFile",
+        args: { path: "/tmp/workspace/src/main.c" },
+        result: safeJson({ ok: true }),
+        isError: false,
+        durationMs: 1,
+      });
+
+      expect(ctx.verifierSnapshot).toBeUndefined();
+      expect(ctx.runtimeContractSnapshot.verifier).toEqual({
+        attempted: false,
+        overall: "skipped",
+        summary: "invalidated_after_workspace_mutation",
+      });
+      expect(ctx.runtimeContractSnapshot.verifierStages.stageStatus).toBe(
+        "pending",
+      );
+      expect(ctx.runtimeContractSnapshot.verifierStages.skipReason).toBeUndefined();
+    });
+  });
+
   describe("tool loop stop reason and recovery hints", () => {
     it("does not hard-stop the loop just because the same tool call keeps failing", async () => {
       // Simulate the LLM calling desktop.bash with "mkdir" (no directory),

@@ -171,6 +171,10 @@ function buildBuiltinStopHookDefinitions(): readonly StopHookRuntimeDefinition[]
           snapshot:
             context.turnEndSnapshot ??
             buildTurnEndStopGateSnapshot(context.allToolCalls ?? []),
+          requiredToolEvidence: context.runtimeChecks?.requiredToolEvidence,
+          runtimeContext: {
+            workspaceRoot: context.runtimeWorkspaceRoot,
+          },
         });
         return {
           hookId: BUILTIN_TURN_END_STOP_GATE_ID,
