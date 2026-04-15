@@ -1951,6 +1951,81 @@ describe("createSessionToolHandler", () => {
     );
   });
 
+  it("executes execute_with_agent via the shell agent launcher when available", async () => {
+    const subAgentManager = {
+      spawn: vi.fn(async () => "subagent:spawn-fallback"),
+      getResult: vi.fn(() => makeCompletedChildResult({
+        sessionId: "subagent:launcher-1",
+        output: '{"summary":"child completed"}',
+        success: true,
+        durationMs: 25,
+        toolCalls: [],
+      })),
+      getInfo: vi.fn(() => ({
+        sessionId: "subagent:launcher-1",
+        parentSessionId: "session-parent",
+        depth: 1,
+        status: "completed",
+        startedAt: Date.now() - 100,
+        task: "Inspect file",
+      })),
+    };
+    const launchShellAgentTask = vi.fn(async () => ({
+      sessionId: "subagent:launcher-1",
+      output: "",
+      success: false,
+      status: "running",
+      waited: true,
+      name: "worker-a",
+    }));
+
+    const handler = createSessionToolHandler({
+      sessionId: "session-parent",
+      baseHandler: vi.fn(async () => "should-not-run"),
+      availableToolNames: ["system.readFile", "system.stat"],
+      routerId: "router-a",
+      defaultWorkingDirectory: "/tmp/project-root",
+      send: vi.fn(),
+      delegation: () => ({
+        subAgentManager: subAgentManager as any,
+        policyEngine: null,
+        verifier: null,
+        lifecycleEmitter: null,
+        launchShellAgentTask: launchShellAgentTask as any,
+      }),
+    });
+
+    const result = await handler("execute_with_agent", {
+      task: "Inspect file",
+      objective: "Inspect file",
+      tools: ["system.readFile"],
+    });
+    const parsed = JSON.parse(result) as {
+      success?: boolean;
+      status?: string;
+      subagentSessionId?: string;
+    };
+
+    expect(parsed).toMatchObject({
+      success: true,
+      status: "completed",
+      subagentSessionId: "subagent:launcher-1",
+    });
+    expect(launchShellAgentTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parentSessionId: "session-parent",
+        roleId: "research",
+        objective: "Inspect file",
+        tools: ["system.readFile"],
+        workspaceRoot: "/tmp/project-root",
+        workingDirectory: "/tmp/project-root",
+        createTaskIfMissing: false,
+        wait: true,
+      }),
+    );
+    expect(subAgentManager.spawn).not.toHaveBeenCalled();
+  });
+
   it("allows explicitly scoped nested delegation from a sub-agent session", async () => {
     const subAgentManager = {
       getInfo: vi.fn((sessionId: string) => ({
@@ -2132,6 +2207,105 @@ describe("createSessionToolHandler", () => {
         completionState: "completed",
         continuationSessionId: "subagent:child-async",
       });
+    } finally {
+      rmSync(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("returns a launcher-backed async handle for execute_with_agent when async task handles are enabled", async () => {
+    const outputRoot = createTempDir("agenc-launcher-task-handle-");
+    const taskStore = new TaskStore({
+      memoryBackend: createMockMemoryBackend(),
+      persistenceRootDir: outputRoot,
+    });
+
+    try {
+      const subAgentManager = {
+        getResult: vi.fn(() => null),
+        getInfo: vi.fn(() => ({
+          sessionId: "subagent:launcher-async",
+          parentSessionId: "session-parent",
+          depth: 1,
+          status: "running",
+          startedAt: Date.now() - 100,
+          task: "Inspect file",
+        })),
+      };
+      const launchShellAgentTask = vi.fn(async () => ({
+        sessionId: "subagent:launcher-async",
+        taskId: "task-123",
+        output: "",
+        success: false,
+        status: "running",
+        waited: false,
+        outputPath: "/tmp/runtime-task/output.json",
+      }));
+
+      const handler = createSessionToolHandler({
+        sessionId: "session-parent",
+        baseHandler: vi.fn(async () => "should-not-run"),
+        taskStore,
+        runtimeContractFlags: {
+          runtimeContractV2: true,
+          stopHooksEnabled: false,
+          asyncTasksEnabled: true,
+          persistentWorkersEnabled: false,
+          mailboxEnabled: false,
+          verifierRuntimeRequired: false,
+          verifierProjectBootstrap: false,
+          workerIsolationWorktree: false,
+          workerIsolationRemote: false,
+        },
+        availableToolNames: ["system.readFile"],
+        routerId: "router-a",
+        send: vi.fn(),
+        defaultWorkingDirectory: "/tmp/project-root",
+        delegation: () => ({
+          subAgentManager: subAgentManager as any,
+          policyEngine: null,
+          verifier: null,
+          lifecycleEmitter: null,
+          launchShellAgentTask: launchShellAgentTask as any,
+        }),
+      });
+
+      const result = await handler("execute_with_agent", {
+        task: "Inspect file",
+        tools: ["system.readFile"],
+      });
+      const parsed = JSON.parse(result) as {
+        success?: boolean;
+        status?: string;
+        taskId?: string;
+        outputPath?: string;
+        backgroundHandle?: {
+          id?: string;
+          outputPath?: string;
+        };
+      };
+
+      expect(parsed).toMatchObject({
+        success: true,
+        status: "in_progress",
+        taskId: "task-123",
+        outputPath: "/tmp/runtime-task/output.json",
+        backgroundHandle: {
+          id: "task-123",
+          outputPath: "/tmp/runtime-task/output.json",
+        },
+      });
+      expect(launchShellAgentTask).toHaveBeenCalledWith(
+        expect.objectContaining({
+          parentSessionId: "session-parent",
+          roleId: "research",
+          objective: "Inspect file",
+          tools: ["system.readFile"],
+          workspaceRoot: "/tmp/project-root",
+          workingDirectory: "/tmp/project-root",
+          createTaskIfMissing: true,
+          wait: false,
+        }),
+      );
     } finally {
       rmSync(outputRoot, { recursive: true, force: true });
     }
@@ -3129,6 +3303,54 @@ describe("createSessionToolHandler", () => {
       content: "int main(void) { return 0; }\n",
       [SESSION_ALLOWED_ROOTS_ARG]: ["/tmp/shell-workspace"],
       [SESSION_ID_ARG]: "subagent:child-2",
+    });
+  });
+
+  it("pins delegated verification workspaceRoot to the child workspace when the model passes '.'", async () => {
+    const baseHandler = vi.fn(async () => JSON.stringify({ ok: true }));
+    const workspaceRoot = "/home/tetsuo/git/stream-test/agenc-shell";
+    const subAgentManager = {
+      getInfo: vi.fn(() => ({
+        sessionId: "subagent:verify-child",
+        parentSessionId: "session-parent",
+        depth: 1,
+        status: "running",
+        startedAt: Date.now() - 100,
+        task: "Verify the shell workspace",
+      })),
+      getExecutionContext: vi.fn(() => ({
+        version: "v1",
+        workspaceRoot,
+        allowedReadRoots: [workspaceRoot],
+        allowedWriteRoots: ["/tmp"],
+        targetArtifacts: [join(workspaceRoot, "src", "app", "main.c")],
+      })),
+    };
+
+    const handler = createSessionToolHandler({
+      sessionId: "subagent:verify-child",
+      baseHandler,
+      availableToolNames: ["verification.listProbes"],
+      routerId: "router-a",
+      send: vi.fn(),
+      defaultWorkingDirectory: workspaceRoot,
+      delegation: () => ({
+        subAgentManager: subAgentManager as any,
+        policyEngine: null,
+        verifier: null,
+        lifecycleEmitter: null,
+      }),
+    });
+
+    await handler("verification.listProbes", {
+      workspaceRoot: ".",
+      profiles: ["generic"],
+    });
+
+    expect(baseHandler).toHaveBeenCalledWith("verification.listProbes", {
+      workspaceRoot,
+      profiles: ["generic"],
+      cwd: workspaceRoot,
     });
   });
 

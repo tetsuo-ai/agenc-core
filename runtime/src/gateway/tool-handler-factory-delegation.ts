@@ -109,6 +109,7 @@ export interface ExecuteDelegationToolParams {
   readonly taskStore?: TaskStore | null;
   readonly runtimeContractFlags?: RuntimeContractFlags;
   readonly availableToolNames?: readonly string[];
+  readonly launchShellAgentTask?: DelegationContext["launchShellAgentTask"];
   readonly defaultWorkingDirectory?: string;
   readonly parentAllowedReadRoots?: readonly string[];
   readonly parentAllowedWriteRoots?: readonly string[];
@@ -672,6 +673,142 @@ export async function executeDelegationTool(
       args: toolArgs,
       payload,
     });
+  const finalizeDelegationTerminalResult = (resultParams: {
+    readonly objective: string;
+    readonly childSessionId: string;
+    readonly childResult: NonNullable<
+      ReturnType<DelegationSubAgentManager["getResult"]>
+    >;
+    readonly childInfo: ReturnType<DelegationSubAgentManager["getInfo"]>;
+    readonly runtimeTaskId?: string;
+    readonly verifierRequirement: VerifierRequirement | undefined;
+    readonly executionEnvelopeFingerprint?: string;
+    readonly localExecutionLocation: RuntimeExecutionLocation;
+    readonly admittedInput: ExecuteWithAgentInput;
+  }): string => {
+    const failedChildToolCalls = countFailedChildToolCalls(
+      resultParams.childResult.toolCalls,
+    );
+    const verifierVerdict = mapPlannerVerifierSnapshotToRuntimeVerdict(
+      resultParams.childResult.verifierSnapshot,
+    );
+    const terminalOutcome = resolveDelegatedTerminalOutcome({
+      surface: "direct_child",
+      workerSessionId: resultParams.childSessionId,
+      taskId: resultParams.runtimeTaskId,
+      completionState: resultParams.childResult.completionState,
+      completionProgress: resultParams.childResult.completionProgress,
+      stopReason: resultParams.childResult.stopReason,
+      stopReasonDetail: resultParams.childResult.stopReasonDetail,
+      validationCode: resultParams.childResult.validationCode,
+      reportedStatus: resultParams.childInfo?.status,
+      verifierRequirement: resultParams.verifierRequirement,
+      verifierVerdict,
+      executionLocation: resultParams.localExecutionLocation,
+      executionEnvelopeFingerprint:
+        resultParams.childResult.contractFingerprint ??
+        resultParams.executionEnvelopeFingerprint,
+      continuationSessionId: resultParams.childSessionId,
+      ownedArtifacts:
+        resultParams.admittedInput.delegationAdmission?.ownedArtifacts,
+    });
+    const normalizedChildOutput = normalizeDelegatedSessionHandleOutput({
+      childSessionId: resultParams.childSessionId,
+      input: resultParams.admittedInput,
+      output: resultParams.childResult.output,
+    });
+
+    if (terminalOutcome.success) {
+      lifecycleEmitter?.emit({
+        type: "subagents.completed",
+        timestamp: Date.now(),
+        sessionId,
+        parentSessionId: sessionId,
+        subagentSessionId: resultParams.childSessionId,
+        toolName: name,
+        payload: {
+          objective: resultParams.objective,
+          durationMs: resultParams.childResult.durationMs,
+          toolCalls: resultParams.childResult.toolCalls.length,
+          providerName: resultParams.childResult.providerName,
+          output: normalizedChildOutput,
+          toolCallId,
+          runtimeResult: terminalOutcome.runtimeResult,
+        },
+      });
+      return finalizeDelegationResult({
+        success: true,
+        status: terminalOutcome.terminalStatus,
+        subagentSessionId: resultParams.childSessionId,
+        objective: resultParams.objective,
+        ...(resultParams.runtimeTaskId ? { taskId: resultParams.runtimeTaskId } : {}),
+        output: normalizedChildOutput,
+        durationMs: resultParams.childResult.durationMs,
+        toolCalls: resultParams.childResult.toolCalls.length,
+        failedToolCalls: failedChildToolCalls,
+        providerEvidence: resultParams.childResult.providerEvidence,
+        providerName: resultParams.childResult.providerName,
+        tokenUsage: resultParams.childResult.tokenUsage,
+        completionState: terminalOutcome.runtimeResult.completionState,
+        completionProgress: resultParams.childResult.completionProgress,
+        stopReason: resultParams.childResult.stopReason,
+        stopReasonDetail: resultParams.childResult.stopReasonDetail,
+        validationCode: resultParams.childResult.validationCode,
+        runtimeResult: terminalOutcome.runtimeResult,
+        ...(resultParams.verifierRequirement
+          ? { verifierRequirement: resultParams.verifierRequirement }
+          : {}),
+      });
+    }
+
+    const reason =
+      terminalOutcome.failureReason ??
+      parseDelegationFailureReason(resultParams.childResult.output);
+    lifecycleEmitter?.emit({
+      type:
+        terminalOutcome.terminalStatus === "cancelled"
+          ? "subagents.cancelled"
+          : "subagents.failed",
+      timestamp: Date.now(),
+      sessionId,
+      parentSessionId: sessionId,
+      subagentSessionId: resultParams.childSessionId,
+      toolName: name,
+      payload: {
+        objective: resultParams.objective,
+        reason,
+        output: resultParams.childResult.output,
+        durationMs: resultParams.childResult.durationMs,
+        toolCalls: resultParams.childResult.toolCalls.length,
+        failedToolCalls: failedChildToolCalls,
+        toolCallId,
+        runtimeResult: terminalOutcome.runtimeResult,
+      },
+    });
+    return finalizeDelegationResult({
+      success: false,
+      status: terminalOutcome.terminalStatus,
+      subagentSessionId: resultParams.childSessionId,
+      objective: resultParams.objective,
+      ...(resultParams.runtimeTaskId ? { taskId: resultParams.runtimeTaskId } : {}),
+      error: reason,
+      output: resultParams.childResult.output,
+      durationMs: resultParams.childResult.durationMs,
+      toolCalls: resultParams.childResult.toolCalls.length,
+      failedToolCalls: failedChildToolCalls,
+      providerName: resultParams.childResult.providerName,
+      tokenUsage: resultParams.childResult.tokenUsage,
+      completionState: terminalOutcome.runtimeResult.completionState,
+      completionProgress: resultParams.childResult.completionProgress,
+      stopReason: resultParams.childResult.stopReason,
+      stopReasonDetail: resultParams.childResult.stopReasonDetail,
+      validationCode: resultParams.childResult.validationCode,
+      runtimeResult: terminalOutcome.runtimeResult,
+      ...(resultParams.verifierRequirement
+        ? { verifierRequirement: resultParams.verifierRequirement }
+        : {}),
+    });
+  };
   if (!subAgentManager) {
     return finalizeDelegationResult({
       error:
@@ -907,8 +1044,19 @@ export async function executeDelegationTool(
         : {}),
     ...(workingDirectory ? { workingDirectory } : {}),
   };
+  const continuationSessionId = shouldReusePriorChildSession(input)
+    ? resolveRecallContinuationSessionId(input, sessionId, subAgentManager)
+    : input.continuationSessionId;
+  const childPrompt = buildDelegatedChildPrompt(admittedInput, {
+    continuationAuthorized: Boolean(continuationSessionId),
+    workingDirectory,
+  });
+  const canUseShellAgentLauncher =
+    typeof params.launchShellAgentTask === "function" &&
+    input.forkContext !== true;
+
   let runtimeTaskId: string | undefined;
-  if (taskStore && asyncTaskHandlesEnabled) {
+  if (taskStore && asyncTaskHandlesEnabled && !canUseShellAgentLauncher) {
     try {
       const task = await taskStore.createRuntimeTask({
         listId: sessionId,
@@ -993,14 +1141,170 @@ export async function executeDelegationTool(
     });
   }
   let childSessionId: string;
+  if (canUseShellAgentLauncher) {
+    try {
+      const launched = await params.launchShellAgentTask({
+        parentSessionId: sessionId,
+        roleId: childToolProfile.roleId,
+        objective,
+        prompt: childPrompt,
+        ...(params.shellProfile ? { shellProfile: params.shellProfile } : {}),
+        ...(resolvedChildScope.allowedTools.length > 0
+          ? { tools: resolvedChildScope.allowedTools }
+          : {}),
+        ...(input.requiredToolCapabilities
+          ? { requiredCapabilities: input.requiredToolCapabilities }
+          : {}),
+        ...(effectiveExecutionContext?.workspaceRoot
+          ? { workspaceRoot: effectiveExecutionContext.workspaceRoot }
+          : {}),
+        ...(workingDirectory ? { workingDirectory } : {}),
+        ...(continuationSessionId
+          ? { continuationSessionId }
+          : {}),
+        ...(specRequiresSuccessfulToolEvidence(effectiveInput)
+          ? { requireToolCall: true }
+          : {}),
+        delegationSpec: admittedInput,
+        createTaskIfMissing: asyncTaskHandlesEnabled,
+        ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
+        ...(unsafeBenchmarkMode ? { unsafeBenchmarkMode: true } : {}),
+        wait: !asyncTaskHandlesEnabled,
+      });
+      childSessionId = launched.sessionId;
+      runtimeTaskId = launched.taskId;
+      lifecycleEmitter?.emit({
+        type: "subagents.spawned",
+        timestamp: Date.now(),
+        sessionId,
+        parentSessionId: sessionId,
+        subagentSessionId: childSessionId,
+        toolName: name,
+        payload: {
+          objective,
+          ...(workingDirectory ? { workingDirectory } : {}),
+          ...(effectiveExecutionContext?.workspaceRoot
+            ? { workingDirectorySource: "execution_envelope" as const }
+            : {}),
+          tools: resolvedChildScope.allowedTools,
+          ...(input.requiredToolCapabilities
+            ? { requiredToolCapabilities: input.requiredToolCapabilities }
+            : {}),
+          ...(resolvedChildScope.removedLowSignalBrowserTools.length
+            ? {
+                removedLowSignalBrowserTools:
+                  resolvedChildScope.removedLowSignalBrowserTools,
+              }
+            : {}),
+          ...(resolvedChildScope.removedByPolicy.length
+            ? { removedByPolicy: resolvedChildScope.removedByPolicy }
+            : {}),
+          ...(resolvedChildScope.removedAsDelegationTools.length
+            ? {
+                removedAsDelegationTools:
+                  resolvedChildScope.removedAsDelegationTools,
+              }
+            : {}),
+          ...(resolvedChildScope.removedAsUnknownTools.length
+            ? { removedAsUnknownTools: resolvedChildScope.removedAsUnknownTools }
+            : {}),
+          ...(resolvedChildScope.semanticFallback.length
+            ? { semanticFallback: resolvedChildScope.semanticFallback }
+            : {}),
+          ...(unsafeBenchmarkMode ? { unsafeBenchmarkMode: true } : {}),
+          toolCallId,
+        },
+      });
+      lifecycleEmitter?.emit({
+        type: "subagents.started",
+        timestamp: Date.now(),
+        sessionId,
+        parentSessionId: sessionId,
+        subagentSessionId: childSessionId,
+        toolName: name,
+        payload: {
+          objective,
+          toolCallId,
+        },
+      });
+
+      if (asyncTaskHandlesEnabled) {
+        return finalizeDelegationResult({
+          success: true,
+          status: "in_progress",
+          subagentSessionId: childSessionId,
+          objective,
+          ...(runtimeTaskId ? { taskId: runtimeTaskId } : {}),
+          ...(launched.outputPath ? { outputPath: launched.outputPath } : {}),
+          runtimeResult: buildDelegatedRuntimeResult({
+            surface: "direct_child",
+            workerSessionId: childSessionId,
+            status: "in_progress",
+            taskId: runtimeTaskId,
+            verifierRequirement,
+            executionEnvelopeFingerprint,
+            continuationSessionId: childSessionId,
+            outputReady: false,
+            ownedArtifacts: admittedInput.delegationAdmission?.ownedArtifacts,
+            executionLocation: localExecutionLocation,
+          }),
+          backgroundHandle: {
+            ...(runtimeTaskId ? { id: runtimeTaskId } : { id: childSessionId }),
+            kind: "subagent",
+            status: "in_progress",
+            summary: "Delegated worker running.",
+            ...(launched.outputPath ? { outputPath: launched.outputPath } : {}),
+            executionLocation: localExecutionLocation,
+            outputReady: false,
+            ...(verifierRequirement ? { verifierRequirement } : {}),
+          },
+          ...(verifierRequirement ? { verifierRequirement } : {}),
+        });
+      }
+
+      const childResult = subAgentManager.getResult(childSessionId);
+      if (!childResult) {
+        return finalizeDelegationResult({
+          success: false,
+          status: "failed",
+          subagentSessionId: childSessionId,
+          objective,
+          ...(runtimeTaskId ? { taskId: runtimeTaskId } : {}),
+          error: "Delegated child completed without an inspectable terminal result",
+        });
+      }
+      return finalizeDelegationTerminalResult({
+        objective,
+        childSessionId,
+        childResult,
+        childInfo: subAgentManager.getInfo(childSessionId),
+        runtimeTaskId,
+        verifierRequirement,
+        executionEnvelopeFingerprint,
+        localExecutionLocation,
+        admittedInput,
+      });
+    } catch (error) {
+      const message = toErrorString(error);
+      lifecycleEmitter?.emit({
+        type: "subagents.failed",
+        timestamp: Date.now(),
+        sessionId,
+        parentSessionId: sessionId,
+        toolName: name,
+        payload: {
+          stage: "spawn",
+          objective,
+          reason: message,
+          toolCallId,
+        },
+      });
+      return finalizeDelegationResult({
+        error: `Failed to spawn sub-agent: ${message}`,
+      });
+    }
+  }
   try {
-    const continuationSessionId = shouldReusePriorChildSession(input)
-      ? resolveRecallContinuationSessionId(input, sessionId, subAgentManager)
-      : input.continuationSessionId;
-    const childPrompt = buildDelegatedChildPrompt(admittedInput, {
-      continuationAuthorized: Boolean(continuationSessionId),
-      workingDirectory,
-    });
     childSessionId = await subAgentManager.spawn({
       parentSessionId: sessionId,
       ...(params.shellProfile ? { shellProfile: params.shellProfile } : {}),

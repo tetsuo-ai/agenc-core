@@ -152,6 +152,95 @@ function createTopLevelVerifierConfig(params: {
 }
 
 describe("top-level artifact evidence gate", () => {
+  it("launches the runtime verifier against the active runtime workspace root", async () => {
+    const spawn = vi.fn(async () => "subagent:verify-workspace");
+    const waitForResult = vi.fn(async () => ({
+      sessionId: "subagent:verify-workspace",
+      output: "Workspace-root verification passed.\nVERDICT: PASS",
+      success: true,
+      durationMs: 1,
+      toolCalls: [],
+      structuredOutput: {
+        type: "json_schema" as const,
+        name: "agenc_top_level_verifier_decision",
+        parsed: {
+          verdict: "pass",
+          summary: "Workspace-root verification passed.",
+        },
+      },
+      completionState: "completed" as const,
+      stopReason: "completed" as const,
+    }));
+    const provider = createMockProvider("primary", {
+      chat: vi
+        .fn<[LLMMessage[], LLMChatOptions?], Promise<LLMResponse>>()
+        .mockResolvedValueOnce(
+          mockResponse({
+            content: "",
+            finishReason: "tool_calls",
+            toolCalls: [
+              {
+                id: "tc-1",
+                name: "system.writeFile",
+                arguments: safeJson({
+                  path: "src/main.c",
+                  content: "int main(void) { return 0; }\n",
+                }),
+              },
+            ],
+          }),
+        )
+        .mockResolvedValueOnce(
+          mockResponse({
+            content: "Implemented the shell entry point.",
+          }),
+        ),
+    });
+    const toolHandler = vi.fn(async (_name: string, args: Record<string, unknown>) =>
+      safeJson({ ok: true, path: args.path }),
+    );
+    const executor = new ChatExecutor({
+      providers: [provider],
+      toolHandler,
+      completionValidation: {
+        topLevelVerifier: {
+          subAgentManager: { spawn, waitForResult },
+          verifierService: {
+            resolveVerifierRequirement: vi.fn(() => ({
+              required: true,
+              profiles: ["generic"],
+              probeCategories: ["build"],
+              mutationPolicy: "read_only_workspace" as const,
+              allowTempArtifacts: true,
+              bootstrapSource: "disabled" as const,
+              rationale: ["test"],
+            })),
+            shouldVerifySubAgentResult: vi.fn(() => true),
+          },
+        },
+      },
+    });
+
+    await executor.execute(
+      createParams({
+        runtimeContext: { workspaceRoot: WORKSPACE_ROOT },
+      }),
+    );
+
+    expect(spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceRoot: WORKSPACE_ROOT,
+        workingDirectory: WORKSPACE_ROOT,
+        delegationSpec: expect.objectContaining({
+          executionContext: expect.objectContaining({
+            workspaceRoot: WORKSPACE_ROOT,
+            targetArtifacts: [`${WORKSPACE_ROOT}/src/main.c`],
+          }),
+        }),
+      }),
+    );
+  });
+
   it("forces a recovery tool turn for carried workflow implementation tasks", async () => {
     const activeTaskContext: ActiveTaskContext = {
       version: 1,

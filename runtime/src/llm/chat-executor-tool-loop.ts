@@ -2597,6 +2597,7 @@ export async function executeToolCallLoop(
             content: ctx.response?.content ?? "",
             stopReason: ctx.stopReason,
             completionState: ctx.completionState,
+            runtimeWorkspaceRoot: ctx.runtimeWorkspaceRoot,
             turnExecutionContract: ctx.turnExecutionContract,
             toolCalls: ctx.allToolCalls,
             stopReasonDetail: ctx.stopReasonDetail,

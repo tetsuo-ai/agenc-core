@@ -205,8 +205,10 @@ import {
   SessionManager,
 } from "./session.js";
 import {
+  coerceSessionShellProfile,
   getShellProfilePreferredToolNames,
 } from "./shell-profile.js";
+import type { DelegationContractSpec } from "../utils/delegation-validation.js";
 import {
   getDefaultWorkspacePath,
 } from "./workspace-files.js";
@@ -1169,6 +1171,45 @@ export class DaemonManager {
         policyEngine: this._delegationPolicyEngine,
         verifier: this._delegationVerifierService,
         lifecycleEmitter: this._subAgentLifecycleEmitter,
+        launchShellAgentTask: async (params) =>
+          this.launchShellAgentTask({
+            parentSessionId: params.parentSessionId,
+            roleId: params.roleId,
+            objective: params.objective,
+            ...(params.prompt ? { prompt: params.prompt } : {}),
+            ...(params.shellProfile
+              ? {
+                  shellProfile: coerceSessionShellProfile(params.shellProfile),
+                }
+              : {}),
+            ...(params.tools ? { tools: params.tools } : {}),
+            ...(params.requiredCapabilities
+              ? { requiredCapabilities: params.requiredCapabilities }
+              : {}),
+            ...(params.workspaceRoot ? { workspaceRoot: params.workspaceRoot } : {}),
+            ...(params.workingDirectory
+              ? { workingDirectory: params.workingDirectory }
+              : {}),
+            ...(params.continuationSessionId
+              ? { continuationSessionId: params.continuationSessionId }
+              : {}),
+            ...(params.requireToolCall !== undefined
+              ? { requireToolCall: params.requireToolCall }
+              : {}),
+            ...(params.delegationSpec
+              ? { delegationSpec: params.delegationSpec }
+              : {}),
+            ...(params.worktree ? { worktree: params.worktree } : {}),
+            ...(params.wait !== undefined ? { wait: params.wait } : {}),
+            ...(params.timeoutMs ? { timeoutMs: params.timeoutMs } : {}),
+            ...(params.name ? { name: params.name } : {}),
+            ...(params.createTaskIfMissing !== undefined
+              ? { createTaskIfMissing: params.createTaskIfMissing }
+              : {}),
+            ...(params.unsafeBenchmarkMode !== undefined
+              ? { unsafeBenchmarkMode: params.unsafeBenchmarkMode }
+              : {}),
+          }),
         unsafeBenchmarkMode,
       };
     };
@@ -4505,11 +4546,19 @@ export class DaemonManager {
     readonly taskId?: string;
     readonly shellProfile?: SessionShellProfile;
     readonly toolBundle?: ShellAgentToolBundleName;
+    readonly tools?: readonly string[];
+    readonly requiredCapabilities?: readonly string[];
     readonly workspaceRoot?: string;
     readonly workingDirectory?: string;
+    readonly continuationSessionId?: string;
+    readonly requireToolCall?: boolean;
+    readonly delegationSpec?: DelegationContractSpec;
     readonly worktree?: "auto" | string;
     readonly wait?: boolean;
     readonly timeoutMs?: number;
+    readonly name?: string;
+    readonly createTaskIfMissing?: boolean;
+    readonly unsafeBenchmarkMode?: boolean;
   }): Promise<{
     role: ShellAgentRoleDescriptor;
     sessionId: string;
@@ -4518,6 +4567,8 @@ export class DaemonManager {
     success: boolean;
     status: string;
     waited: boolean;
+    outputPath?: string;
+    name?: string;
   }> {
     const subAgentManager = this._subAgentManager;
     const toolRegistry = this._toolRegistry;
@@ -4550,9 +4601,13 @@ export class DaemonManager {
       throw new Error(admission.reason);
     }
 
+    const resolvedToolNames =
+      params.tools && params.tools.length > 0
+        ? [...params.tools]
+        : [...(resolvedRole.toolNames ?? [])];
     const scope = await this.resolveShellAgentScope({
       parentSessionId: params.parentSessionId,
-      allowedTools: resolvedRole.toolNames,
+      allowedTools: resolvedToolNames,
       workspaceRoot: params.workspaceRoot,
       workingDirectory: params.workingDirectory,
       worktree: params.worktree,
@@ -4585,6 +4640,7 @@ export class DaemonManager {
             toolBundle: resolvedRole.toolBundle,
             shellProfile: resolvedRole.shellProfile,
           },
+          ...(params.name ? { childName: params.name } : {}),
         },
       });
       await taskStore.recordRuntimeProgress({
@@ -4597,7 +4653,7 @@ export class DaemonManager {
           toolBundle: resolvedRole.toolBundle,
         },
       });
-    } else if (taskStore) {
+    } else if (taskStore && params.createTaskIfMissing !== false) {
       const createdTask = await taskStore.createRuntimeTask({
         listId: params.parentSessionId,
         kind: "subagent",
@@ -4611,6 +4667,7 @@ export class DaemonManager {
             toolBundle: resolvedRole.toolBundle,
             shellProfile: resolvedRole.shellProfile,
           },
+          ...(params.name ? { childName: params.name } : {}),
         },
         summary: `${resolvedRole.descriptor.displayName} agent started.`,
         workingDirectory: scope.workingDirectory,
@@ -4633,11 +4690,22 @@ export class DaemonManager {
         ...(resolvedRole.systemPrompt
           ? { promptEnvelope: createPromptEnvelope(resolvedRole.systemPrompt) }
           : {}),
-        ...(resolvedRole.toolNames ? { tools: resolvedRole.toolNames } : {}),
+        ...(resolvedToolNames.length > 0 ? { tools: resolvedToolNames } : {}),
+        ...(params.requiredCapabilities
+          ? { requiredCapabilities: params.requiredCapabilities }
+          : {}),
         workingDirectory: scope.workingDirectory,
         ...(scope.workspaceRoot ? { workspaceRoot: scope.workspaceRoot } : {}),
         executionLocation: scope.executionLocation,
-        ...(scope.executionContext
+        ...(params.continuationSessionId
+          ? { continuationSessionId: params.continuationSessionId }
+          : {}),
+        ...(params.requireToolCall !== undefined
+          ? { requireToolCall: params.requireToolCall }
+          : {}),
+        ...(params.delegationSpec
+          ? { delegationSpec: params.delegationSpec }
+          : scope.executionContext
           ? {
               delegationSpec: {
                 task: params.objective,
@@ -4649,6 +4717,9 @@ export class DaemonManager {
                     : "shell_agent_scope",
               },
             }
+          : {}),
+        ...(params.unsafeBenchmarkMode !== undefined
+          ? { unsafeBenchmarkMode: params.unsafeBenchmarkMode }
           : {}),
         ...(params.timeoutMs ? { timeoutMs: params.timeoutMs } : {}),
       });
@@ -4698,6 +4769,7 @@ export class DaemonManager {
         ...(taskId ? { taskId } : {}),
         ...result,
         waited: true,
+        ...(params.name ? { name: params.name } : {}),
       };
     }
 
@@ -4708,6 +4780,10 @@ export class DaemonManager {
         error: toErrorMessage(error),
       });
     });
+    const outputPath =
+      taskStore && taskId
+        ? taskStore.getTaskOutputPath(params.parentSessionId, taskId)
+        : undefined;
     return {
       role: resolvedRole.descriptor,
       sessionId: childSessionId,
@@ -4716,6 +4792,8 @@ export class DaemonManager {
       success: false,
       status: "running",
       waited: false,
+      ...(outputPath ? { outputPath } : {}),
+      ...(params.name ? { name: params.name } : {}),
     };
   }
 

@@ -1,7 +1,6 @@
-import { resolve as resolvePath } from "node:path";
-
 import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
+import { normalizeEnvelopePath } from "../../workflow/path-normalization.js";
 import {
   buildVerificationProbeDescriptors,
   runVerificationProbe,
@@ -19,13 +18,15 @@ function okResult(data: unknown): ToolResult {
 }
 
 function asWorkspaceRoot(args: Record<string, unknown>): string | undefined {
+  const cwd =
+    typeof args.cwd === "string" && args.cwd.trim().length > 0
+      ? args.cwd.trim()
+      : undefined;
   const value =
     typeof args.workspaceRoot === "string" && args.workspaceRoot.trim().length > 0
       ? args.workspaceRoot.trim()
-      : typeof args.cwd === "string" && args.cwd.trim().length > 0
-        ? args.cwd.trim()
-        : undefined;
-  return value ? resolvePath(value) : undefined;
+      : cwd;
+  return value ? normalizeEnvelopePath(value, cwd) : undefined;
 }
 
 function asProfiles(
