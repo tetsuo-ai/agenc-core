@@ -154,8 +154,9 @@ describe("runTopLevelVerifierValidation", () => {
           }),
         }),
         maxToolRounds: 0,
-        requiredToolEvidence: expect.objectContaining({
-          executionEnvelope: expect.objectContaining({
+        requireToolCall: true,
+        delegationSpec: expect.objectContaining({
+          executionContext: expect.objectContaining({
             verificationMode: "grounded_read",
             allowedWriteRoots: [tmpdir()],
             targetArtifacts: ["/workspace/src/main.c"],
@@ -298,8 +299,9 @@ describe("runTopLevelVerifierValidation", () => {
 
     expect(spawn).toHaveBeenCalledWith(
       expect.objectContaining({
-        requiredToolEvidence: expect.objectContaining({
-          executionEnvelope: expect.objectContaining({
+        requireToolCall: true,
+        delegationSpec: expect.objectContaining({
+          executionContext: expect.objectContaining({
             targetArtifacts: [
               "/workspace/src/main.c",
             ],
@@ -360,8 +362,8 @@ describe("runTopLevelVerifierValidation", () => {
       expect.objectContaining({
         workspaceRoot: "/runtime-workspace",
         workingDirectory: "/runtime-workspace",
-        requiredToolEvidence: expect.objectContaining({
-          executionEnvelope: expect.objectContaining({
+        delegationSpec: expect.objectContaining({
+          executionContext: expect.objectContaining({
             allowedReadRoots: ["/runtime-workspace"],
             targetArtifacts: ["/runtime-workspace/src/main.c"],
           }),
@@ -432,8 +434,8 @@ describe("runTopLevelVerifierValidation", () => {
         workspaceRoot: "/runtime-workspace",
         workingDirectory: "/runtime-workspace",
         prompt: expect.stringContaining("Workspace root: /runtime-workspace"),
-        requiredToolEvidence: expect.objectContaining({
-          executionEnvelope: expect.objectContaining({
+        delegationSpec: expect.objectContaining({
+          executionContext: expect.objectContaining({
             allowedReadRoots: ["/runtime-workspace"],
             targetArtifacts: [
               "/runtime-workspace/src/main.c",

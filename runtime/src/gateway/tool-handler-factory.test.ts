@@ -2591,6 +2591,86 @@ describe("createSessionToolHandler", () => {
     );
   });
 
+  it("applies a public child cwd beneath the trusted parent workspace root", async () => {
+    const hostWorkspaceRoot = "/home/tetsuo/agent-test";
+    const childWorkingDirectory = `${hostWorkspaceRoot}/packages/app`;
+    const subAgentManager = {
+      spawn: vi.fn(async () => "subagent:child-cwd"),
+      getResult: vi.fn(() =>
+        makeCompletedChildResult({
+          sessionId: "subagent:child-cwd",
+          output: JSON.stringify({ stdout: childWorkingDirectory, stderr: "", exitCode: 0 }),
+          success: true,
+          durationMs: 42,
+          toolCalls: [
+            {
+              name: "system.bash",
+              args: { command: "pwd" },
+              result: JSON.stringify({
+                stdout: `${childWorkingDirectory}\n`,
+                stderr: "",
+                exitCode: 0,
+              }),
+              isError: false,
+              durationMs: 5,
+            },
+          ],
+        })),
+      getInfo: vi.fn(() => ({
+        sessionId: "subagent:child-cwd",
+        parentSessionId: "session-parent",
+        depth: 1,
+        status: "completed",
+        startedAt: Date.now() - 100,
+        task: "Print the delegated cwd",
+      })),
+    };
+
+    const handler = createSessionToolHandler({
+      sessionId: "session-parent",
+      baseHandler: vi.fn(async () => "should-not-run"),
+      availableToolNames: ["system.bash"],
+      routerId: "router-a",
+      send: vi.fn(),
+      defaultWorkingDirectory: hostWorkspaceRoot,
+      delegation: () => ({
+        subAgentManager: subAgentManager as any,
+        policyEngine: null,
+        verifier: null,
+        lifecycleEmitter: null,
+      }),
+    });
+
+    const result = await handler("execute_with_agent", {
+      task: "Print the delegated cwd",
+      objective: "Run pwd in the delegated child shell and report it.",
+      tools: ["system.bash"],
+      cwd: "packages/app",
+    });
+    const parsed = JSON.parse(result) as {
+      success?: boolean;
+      status?: string;
+    };
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.status).toBe("completed");
+    expect(subAgentManager.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parentSessionId: "session-parent",
+        workingDirectory: childWorkingDirectory,
+        workingDirectorySource: "execution_envelope",
+        tools: ["system.bash"],
+        delegationSpec: expect.objectContaining({
+          executionContext: expect.objectContaining({
+            workspaceRoot: hostWorkspaceRoot,
+            allowedReadRoots: [hostWorkspaceRoot],
+            allowedWriteRoots: [hostWorkspaceRoot],
+          }),
+        }),
+      }),
+    );
+  });
+
   it("rejects broken delegated local-file contracts before child spawn", async () => {
     const hostWorkspaceRoot = "/home/tetsuo/git/AgenC/agenc-core";
     const subAgentManager = {

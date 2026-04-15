@@ -129,3 +129,10 @@
 - **What worked:** Making the child workspace root authoritative for both verifier artifact resolution and sub-agent runtime/tool routing stopped verifier runs from drifting back to the umbrella repo when the active session workspace was elsewhere.
 - **What didn't:** The verifier had been trusting stale explicit contract artifacts even after the live runtime root changed, so the fix needed both artifact sanitization and child-session workspace propagation instead of a single cwd patch.
 - **Rule added to CLAUDE.md:** no
+
+## PR #397: refactor(runtime): align child cwd and verifier surfaces
+- **Date:** 2026-04-15
+- **Files changed:** `runtime/src/gateway/{delegation-tool,top-level-verifier,daemon-command-registry,daemon-tool-registry,tool-handler-factory-{delegation,coordinator}}.ts`, `runtime/src/utils/delegation-execution-context.ts`, `runtime/src/tools/system/task-tracker.ts`, `runtime/src/cli/{foundation,route-support}.ts`, `runtime/src/gateway/*.test.ts`, `runtime/src/tools/system/task-tracker.test.ts`
+- **What worked:** Making child `cwd` a first-class public delegation field, persisting lightweight session tasks separately, and launching verifier children through the shared child-session contract eliminated the remaining surface mismatches without widening delegated filesystem authority.
+- **What didn't:** The old verifier wrapper and stale task help text had assumptions baked into multiple tests, so the cleanup needed coordinated assertion changes across delegation, verifier, and task-store coverage before the runtime slice was fully green.
+- **Rule added to CLAUDE.md:** no
