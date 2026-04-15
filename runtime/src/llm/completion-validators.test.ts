@@ -5,11 +5,7 @@ import { buildCompletionValidators } from "./completion-validators.js";
 import type { ExecutionContext, ToolCallRecord } from "./chat-executor-types.js";
 import { createRuntimeContractSnapshot } from "../runtime-contract/types.js";
 import type { RuntimeContractFlags } from "../runtime-contract/types.js";
-import {
-  createRequestTaskProgressState,
-  observeRequestTaskToolRecord,
-  setAllowedRequestTaskMilestones,
-} from "./request-task-progress.js";
+import { createRequestTaskProgressState } from "./request-task-progress.js";
 
 function makeFlags(
   overrides: Partial<RuntimeContractFlags> = {},
@@ -101,42 +97,6 @@ function syntheticAcceptanceProbe(result: unknown): ToolCallRecord {
   };
 }
 
-function taskToolResult(params: {
-  readonly toolName?: "task.create" | "task.update" | "task.get";
-  readonly id: string;
-  readonly status: "pending" | "in_progress" | "completed" | "deleted";
-  readonly metadata?: Record<string, unknown>;
-}): ToolCallRecord {
-  const toolName = params.toolName ?? "task.update";
-  return {
-    name: toolName,
-    args: { taskId: params.id },
-    result: JSON.stringify({
-      task: {
-        id: params.id,
-        subject: `Task ${params.id}`,
-        status: params.status,
-      },
-      taskRuntime: {
-        fullTask: {
-          id: params.id,
-          subject: `Task ${params.id}`,
-          description: `Description ${params.id}`,
-          status: params.status,
-          blocks: [],
-          blockedBy: [],
-          ...(params.metadata ? { metadata: params.metadata } : {}),
-          createdAt: 1,
-          updatedAt: 2,
-        },
-        runtimeMetadata: {},
-      },
-    }),
-    isError: false,
-    durationMs: 1,
-  };
-}
-
 describe("completion-validators", () => {
   it("registers only the inline completion-integrity validators", () => {
     const validators = buildCompletionValidators({
@@ -147,7 +107,6 @@ describe("completion-validators", () => {
     expect(validators.map((validator) => validator.id)).toEqual([
       "artifact_evidence",
       "turn_end_stop_gate",
-      "request_task_progress",
     ]);
   });
 
@@ -281,75 +240,14 @@ describe("completion-validators", () => {
     expect(result.blockingMessage).toContain("bounded recovery loop");
   });
 
-  it("does not block finalization when request milestones remain open without an in_progress task", async () => {
-    const ctx = makeCtx({});
-    setAllowedRequestTaskMilestones(ctx.requestTaskState, [
-      { id: "phase_1", description: "Finish phase 1" },
-    ]);
+  it("does not register task progress as a completion gate", () => {
     const validators = buildCompletionValidators({
-      ctx,
+      ctx: makeCtx({}),
       runtimeContractFlags: makeFlags(),
     });
 
-    const result = await validators.find(
-      (validator) => validator.id === "request_task_progress",
-    )!.execute();
-
-    expect(result.outcome).toBe("pass");
-  });
-
-  it("blocks malformed runtime milestone metadata before allowing completion", async () => {
-    const ctx = makeCtx({});
-    setAllowedRequestTaskMilestones(ctx.requestTaskState, [
-      { id: "phase_1", description: "Finish phase 1" },
-    ]);
-    observeRequestTaskToolRecord(
-      ctx.requestTaskState,
-      taskToolResult({
-        id: "1",
-        status: "completed",
-        metadata: {
-          _runtime: {
-            milestoneIds: ["phase_1", "phase_1"],
-          },
-        },
-      }),
-    );
-    ctx.completedRequestMilestoneIds = [...ctx.requestTaskState.completedMilestoneIds];
-    const validators = buildCompletionValidators({
-      ctx,
-      runtimeContractFlags: makeFlags(),
-    });
-
-    const result = await validators.find(
-      (validator) => validator.id === "request_task_progress",
-    )!.execute();
-
-    expect(result.outcome).toBe("retry_with_blocking_message");
-    expect(result.blockingMessage).toContain("malformed");
-    expect(result.blockingMessage).toContain("#1");
-  });
-
-  it("does not require a verification task after three completed non-verification tasks", async () => {
-    const ctx = makeCtx({});
-    for (const id of ["1", "2", "3"]) {
-      observeRequestTaskToolRecord(
-        ctx.requestTaskState,
-        taskToolResult({
-          id,
-          status: "completed",
-        }),
-      );
-    }
-    const validators = buildCompletionValidators({
-      ctx,
-      runtimeContractFlags: makeFlags(),
-    });
-
-    const result = await validators.find(
-      (validator) => validator.id === "request_task_progress",
-    )!.execute();
-
-    expect(result.outcome).toBe("pass");
+    expect(
+      validators.find((validator) => validator.id === "request_task_progress"),
+    ).toBeUndefined();
   });
 });

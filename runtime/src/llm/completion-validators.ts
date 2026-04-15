@@ -132,43 +132,5 @@ export function buildCompletionValidators(params: {
         return { id: "turn_end_stop_gate", outcome: "pass" };
       },
     },
-    {
-      id: "request_task_progress",
-      enabled: true,
-      async execute(): Promise<CompletionValidatorExecutionResult> {
-        const requestTaskState = params.ctx.requestTaskState;
-        const hasMalformedTaskMetadata =
-          requestTaskState.malformedTasks.length > 0;
-        if (!hasMalformedTaskMetadata) {
-          return { id: "request_task_progress", outcome: "pass" };
-        }
-
-        const maxAttempts = sharedCorrectionBudgetCap;
-        const allowedIds = requestTaskState.allowedMilestones.map(
-          (milestone) => milestone.id,
-        );
-        const malformedDetails = requestTaskState.malformedTasks
-          .map((task) => `#${task.taskId}: ${task.errors.join("; ")}`)
-          .join("\n");
-        return {
-          id: "request_task_progress",
-          outcome: "retry_with_blocking_message",
-          reason: "request_task_progress",
-          blockingMessage:
-            "Task runtime metadata is malformed and must be corrected before finalization.\n" +
-            `${malformedDetails}\n` +
-            (allowedIds.length > 0
-              ? `Allowed request milestone ids: ${allowedIds.join(", ")}`
-              : "Remove or correct malformed `metadata._runtime` fields before continuing."),
-          evidence: {
-            malformedTasks: requestTaskState.malformedTasks,
-            allowedMilestoneIds: allowedIds,
-          },
-          maxAttempts,
-          exhaustedDetail:
-            "Request task progress recovery exhausted while malformed task metadata remained in the session task state.",
-        };
-      },
-    },
   ];
 }
