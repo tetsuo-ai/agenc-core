@@ -136,3 +136,10 @@
 - **What worked:** Making child `cwd` a first-class public delegation field, persisting lightweight session tasks separately, and launching verifier children through the shared child-session contract eliminated the remaining surface mismatches without widening delegated filesystem authority.
 - **What didn't:** The old verifier wrapper and stale task help text had assumptions baked into multiple tests, so the cleanup needed coordinated assertion changes across delegation, verifier, and task-store coverage before the runtime slice was fully green.
 - **Rule added to CLAUDE.md:** no
+
+## PR #398: fix(runtime): align child workspace launch flow
+- **Date:** 2026-04-15
+- **Files changed:** `runtime/src/gateway/{daemon-command-registry,daemon,delegation-runtime,tool-handler-factory,tool-handler-factory-delegation}.ts`, `runtime/src/tools/system/verification.ts`, `runtime/src/llm/chat-executor-tool-loop.ts`, `runtime/src/gateway/*.test.ts`, `runtime/src/tools/system/verification.test.ts`, `runtime/src/llm/chat-executor-artifact-evidence.test.ts`, `.claude/notes/pr-log.md`
+- **What worked:** Threading the runtime workspace root all the way into delegated child launches and top-level verifier execution stopped child sessions from drifting back to the umbrella repo, while the richer shell-agent launcher path preserved the intended child scope and handle metadata.
+- **What didn't:** The runtime already had most of the workspace plumbing, but one omitted handoff in the completion loop meant the verifier silently fell back to stale contract roots, so the failure only showed up at the very end of otherwise-correct runs.
+- **Rule added to CLAUDE.md:** no
