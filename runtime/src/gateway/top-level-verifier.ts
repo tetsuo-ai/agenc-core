@@ -193,6 +193,14 @@ interface TopLevelVerifierArtifactResolution {
   readonly targetArtifacts: readonly string[];
 }
 
+function constrainArtifactsToWorkspaceRoot(
+  artifacts: readonly string[],
+  workspaceRoot?: string,
+): readonly string[] {
+  if (!workspaceRoot) return artifacts;
+  return artifacts.filter((artifact) => isPathWithinRoot(artifact, workspaceRoot));
+}
+
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
   return `${text.slice(0, max - 1).trimEnd()}…`;
@@ -278,12 +286,18 @@ export function resolveTopLevelVerifierArtifacts(params: {
   const workspaceRoot = normalizeWorkspaceRoot(
     params.workspaceRoot ?? params.turnExecutionContract?.workspaceRoot,
   );
-  const sourceArtifacts = normalizeArtifactPaths(
-    params.turnExecutionContract?.sourceArtifacts ?? [],
+  const sourceArtifacts = constrainArtifactsToWorkspaceRoot(
+    normalizeArtifactPaths(
+      params.turnExecutionContract?.sourceArtifacts ?? [],
+      workspaceRoot,
+    ),
     workspaceRoot,
   );
-  const explicitTargetArtifacts = normalizeArtifactPaths(
-    params.turnExecutionContract?.targetArtifacts ?? [],
+  const explicitTargetArtifacts = constrainArtifactsToWorkspaceRoot(
+    normalizeArtifactPaths(
+      params.turnExecutionContract?.targetArtifacts ?? [],
+      workspaceRoot,
+    ),
     workspaceRoot,
   );
   if (explicitTargetArtifacts.length > 0) {
@@ -837,7 +851,12 @@ export async function runTopLevelVerifierValidation(
     tools: definition.tools,
     structuredOutput: VERIFY_STRUCTURED_OUTPUT,
     maxToolRounds: 0,
-    ...(workspaceRoot ? { workingDirectory: workspaceRoot } : {}),
+    ...(workspaceRoot
+      ? {
+          workspaceRoot,
+          workingDirectory: workspaceRoot,
+        }
+      : {}),
     requiredToolEvidence: {
       maxCorrectionAttempts: 1,
       executionEnvelope: executionEnvelope!,

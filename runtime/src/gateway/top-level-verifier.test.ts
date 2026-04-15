@@ -358,6 +358,7 @@ describe("runTopLevelVerifierValidation", () => {
 
     expect(spawn).toHaveBeenCalledWith(
       expect.objectContaining({
+        workspaceRoot: "/runtime-workspace",
         workingDirectory: "/runtime-workspace",
         requiredToolEvidence: expect.objectContaining({
           executionEnvelope: expect.objectContaining({
@@ -367,6 +368,86 @@ describe("runTopLevelVerifierValidation", () => {
         }),
       }),
     );
+  });
+
+  it("ignores stale explicit target artifacts outside the active workspace", async () => {
+    const spawn = vi.fn(async () => "subagent:verify-stale-artifacts");
+    const waitForResult = vi.fn(async () => ({
+      sessionId: "subagent:verify-stale-artifacts",
+      output: "All good.\nVERDICT: PASS",
+      success: true,
+      durationMs: 10,
+      toolCalls: [],
+      structuredOutput: {
+        type: "json_schema",
+        name: "agenc_top_level_verifier_decision",
+        parsed: {
+          verdict: "pass",
+          summary: "Active workspace verification passed.",
+        },
+      },
+      completionState: "completed",
+      stopReason: "completed",
+    }));
+
+    await runTopLevelVerifierValidation({
+      sessionId: "session:test",
+      userRequest: "Finish the shell implementation and verify it",
+      result: createResult({
+        runtimeWorkspaceRoot: "/runtime-workspace",
+        toolCalls: [
+          {
+            name: "system.writeFile",
+            args: { path: "src/main.c" },
+            result: '{"ok":true}',
+            isError: false,
+            durationMs: 5,
+          },
+          {
+            name: "system.writeFile",
+            args: { path: "docs/decisions.md" },
+            result: '{"ok":true}',
+            isError: false,
+            durationMs: 5,
+          },
+        ],
+        turnExecutionContract: {
+          ...createResult().turnExecutionContract,
+          workspaceRoot: "/stale-contract-root",
+          sourceArtifacts: [
+            "/home/tetsuo/git/AgenC/PLAN.md",
+          ],
+          targetArtifacts: [
+            "/home/tetsuo/git/AgenC/CMakeLists.txt",
+            "/home/tetsuo/git/AgenC/src/main.c",
+          ],
+        },
+      }),
+      subAgentManager: { spawn, waitForResult },
+      verifierService: createVerifierService(),
+    });
+
+    expect(spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceRoot: "/runtime-workspace",
+        workingDirectory: "/runtime-workspace",
+        prompt: expect.stringContaining("Workspace root: /runtime-workspace"),
+        requiredToolEvidence: expect.objectContaining({
+          executionEnvelope: expect.objectContaining({
+            allowedReadRoots: ["/runtime-workspace"],
+            targetArtifacts: [
+              "/runtime-workspace/src/main.c",
+              "/runtime-workspace/docs/decisions.md",
+            ],
+            requiredSourceArtifacts: [
+              "/runtime-workspace/src/main.c",
+              "/runtime-workspace/docs/decisions.md",
+            ],
+          }),
+        }),
+      }),
+    );
+    expect(spawn.mock.calls[0]?.[0]?.prompt).not.toContain("/home/tetsuo/git/AgenC");
   });
 
   it("still runs verifier work when target artifacts are declared without structured writes", async () => {

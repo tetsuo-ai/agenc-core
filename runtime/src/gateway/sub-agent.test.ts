@@ -1566,6 +1566,57 @@ describe("SubAgentManager", () => {
       }
     });
 
+    it("prefers an explicit child workspace root when working directory is omitted", async () => {
+      const executeSpy = vi.spyOn(ChatExecutor.prototype, "execute")
+        .mockResolvedValueOnce({
+          content: "ok",
+          provider: "mock",
+          model: "mock",
+          usedFallback: false,
+          toolCalls: [],
+          tokenUsage: {
+            promptTokens: 10,
+            completionTokens: 5,
+            totalTokens: 15,
+          },
+          callUsage: [],
+          durationMs: 1,
+          compacted: false,
+          stopReason: "completed",
+          completionState: "completed",
+          completionProgress: {
+            completionState: "completed",
+            stopReason: "completed",
+            requiredRequirements: [],
+            satisfiedRequirements: [],
+            remainingRequirements: [],
+            reusableEvidence: [],
+            updatedAt: 1_700_000_000_000,
+          },
+        });
+
+      try {
+        const manager = new SubAgentManager(makeManagerConfig());
+        const sessionId = await manager.spawn({
+          parentSessionId: "p",
+          task: "Run repo-local verification",
+          workspaceRoot: "/tmp/real-workspace",
+        });
+        await settle();
+
+        expect(manager.getResult(sessionId)?.success).toBe(true);
+        expect(executeSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            runtimeContext: {
+              workspaceRoot: "/tmp/real-workspace",
+            },
+          }),
+        );
+      } finally {
+        executeSpy.mockRestore();
+      }
+    });
+
     it("accepts scaffold summaries that mention script definitions without claiming forbidden execution", async () => {
       const executeSpy = vi.spyOn(ChatExecutor.prototype, "execute")
         .mockResolvedValueOnce({

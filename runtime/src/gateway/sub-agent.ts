@@ -537,12 +537,40 @@ function normalizeForkContextFingerprint(
   });
 }
 
+function trimConfigPath(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
+function resolveSubAgentWorkspaceRoot(
+  config: SubAgentConfig,
+): string | undefined {
+  return (
+    trimConfigPath(config.workspaceRoot) ??
+    trimConfigPath(config.executionLocation?.workspaceRoot) ??
+    trimConfigPath(config.workingDirectory) ??
+    trimConfigPath(config.executionLocation?.workingDirectory)
+  );
+}
+
+function resolveSubAgentWorkingDirectory(
+  config: SubAgentConfig,
+): string | undefined {
+  return (
+    trimConfigPath(config.workingDirectory) ??
+    trimConfigPath(config.executionLocation?.workingDirectory) ??
+    resolveSubAgentWorkspaceRoot(config)
+  );
+}
+
 function validateContinuationCompatibility(params: {
   readonly existing: SubAgentConfig;
   readonly next: SubAgentConfig;
 }): string | undefined {
-  const existingWorkingDirectory = params.existing.workingDirectory?.trim();
-  const nextWorkingDirectory = params.next.workingDirectory?.trim();
+  const existingWorkingDirectory = resolveSubAgentWorkingDirectory(
+    params.existing,
+  );
+  const nextWorkingDirectory = resolveSubAgentWorkingDirectory(params.next);
   if (existingWorkingDirectory !== nextWorkingDirectory) {
     return "continuationSessionId cannot change the delegated working directory";
   }
@@ -762,16 +790,12 @@ export class SubAgentManager {
       ...(handle.config.shellProfile
         ? { shellProfile: handle.config.shellProfile }
         : {}),
-      ...(handle.config.workspaceRoot
-        ? { workspaceRoot: handle.config.workspaceRoot }
-        : handle.config.executionLocation?.workspaceRoot
-          ? { workspaceRoot: handle.config.executionLocation.workspaceRoot }
-          : {}),
-      ...(handle.config.workingDirectory
-        ? { workingDirectory: handle.config.workingDirectory }
-        : handle.config.executionLocation?.workingDirectory
-          ? { workingDirectory: handle.config.executionLocation.workingDirectory }
-          : {}),
+      ...(resolveSubAgentWorkspaceRoot(handle.config)
+        ? { workspaceRoot: resolveSubAgentWorkspaceRoot(handle.config) }
+        : {}),
+      ...(resolveSubAgentWorkingDirectory(handle.config)
+        ? { workingDirectory: resolveSubAgentWorkingDirectory(handle.config) }
+        : {}),
       ...(handle.config.executionLocation?.mode
         ? { executionLocation: handle.config.executionLocation.mode }
         : {}),
@@ -851,16 +875,12 @@ export class SubAgentManager {
         ...(handle.config.shellProfile
           ? { shellProfile: handle.config.shellProfile }
           : {}),
-        ...(handle.config.workspaceRoot
-          ? { workspaceRoot: handle.config.workspaceRoot }
-          : handle.config.executionLocation?.workspaceRoot
-            ? { workspaceRoot: handle.config.executionLocation.workspaceRoot }
-            : {}),
-        ...(handle.config.workingDirectory
-          ? { workingDirectory: handle.config.workingDirectory }
-          : handle.config.executionLocation?.workingDirectory
-            ? { workingDirectory: handle.config.executionLocation.workingDirectory }
-            : {}),
+        ...(resolveSubAgentWorkspaceRoot(handle.config)
+          ? { workspaceRoot: resolveSubAgentWorkspaceRoot(handle.config) }
+          : {}),
+        ...(resolveSubAgentWorkingDirectory(handle.config)
+          ? { workingDirectory: resolveSubAgentWorkingDirectory(handle.config) }
+          : {}),
         ...(handle.config.executionLocation?.mode
           ? { executionLocation: handle.config.executionLocation.mode }
           : {}),
@@ -1227,7 +1247,7 @@ export class SubAgentManager {
             : {}),
         }),
         resolveHostWorkspaceRoot: () =>
-          handle.config.workingDirectory ?? null,
+          resolveSubAgentWorkspaceRoot(handle.config) ?? null,
         ...(this.config.canUseTool ? { canUseTool: this.config.canUseTool } : {}),
         ...(typeof effectiveMaxToolRounds === "number"
           ? { maxToolRounds: effectiveMaxToolRounds }
@@ -1351,6 +1371,7 @@ export class SubAgentManager {
         handle.config.tools.length > 0
           ? [...handle.config.tools]
           : undefined;
+      const runtimeWorkspaceRoot = resolveSubAgentWorkspaceRoot(handle.config);
 
       // Phase K: subagent spawn now routes through the generator
       // surface via runSubagentToLegacyResult. Same semantics as
@@ -1375,10 +1396,10 @@ export class SubAgentManager {
             ...(spawnRoutedTools
               ? { toolRouting: { routedToolNames: spawnRoutedTools } }
               : {}),
-            ...(handle.config.workingDirectory
+            ...(runtimeWorkspaceRoot
               ? {
                 runtimeContext: {
-                  workspaceRoot: handle.config.workingDirectory,
+                  workspaceRoot: runtimeWorkspaceRoot,
                 },
               }
               : {}),
@@ -1613,7 +1634,7 @@ export class SubAgentManager {
       allowedToolNames: handle.config.tools
         ? [...handle.config.tools]
         : undefined,
-      workingDirectory: handle.config.workingDirectory,
+      workingDirectory: resolveSubAgentWorkingDirectory(handle.config),
       executionContext: handle.config.delegationSpec?.executionContext,
       desktopRoutingSessionId: this.resolveDesktopRoutingSessionId(
         handle.parentSessionId,
