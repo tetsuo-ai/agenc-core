@@ -122,3 +122,10 @@
 - **What worked:** Teaching the main file-read tool to handle targeted line windows on the same surface removed the repeated argument-shape failures, and giving verifier children an explicit unlimited round budget stopped retry verification from dying after a single tool call.
 - **What didn't:** The original split between the main read tool and the range-only read tool had leaked into prompt guidance and test assumptions, so the fix needed prompt updates plus a narrower sub-agent budget override instead of a pure tool-schema change.
 - **Rule added to CLAUDE.md:** no
+
+## PR #394: fix(runtime): keep verifier children on the active workspace
+- **Date:** 2026-04-15
+- **Files changed:** `runtime/src/gateway/{top-level-verifier,sub-agent}.ts`, `runtime/src/gateway/{top-level-verifier,sub-agent}.test.ts`
+- **What worked:** Making the child workspace root authoritative for both verifier artifact resolution and sub-agent runtime/tool routing stopped verifier runs from drifting back to the umbrella repo when the active session workspace was elsewhere.
+- **What didn't:** The verifier had been trusting stale explicit contract artifacts even after the live runtime root changed, so the fix needed both artifact sanitization and child-session workspace propagation instead of a single cwd patch.
+- **Rule added to CLAUDE.md:** no
