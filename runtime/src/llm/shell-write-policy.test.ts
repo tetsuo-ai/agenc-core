@@ -34,6 +34,21 @@ describe("evaluateShellWorkspaceWritePolicy", () => {
     expect(decision.observedTargets).toContain("/workspace/build/build.log");
   });
 
+  it("allows mkdir scaffolding in workspace source paths", () => {
+    const decision = evaluateShellWorkspaceWritePolicy({
+      toolName: "system.bash",
+      args: {
+        command: "mkdir -p src/app include/agenc docs",
+      },
+      workspaceRoot,
+      turnClass: "workflow_implementation",
+    });
+
+    expect(decision.blocked).toBe(false);
+    expect(decision.indeterminate).toBe(false);
+    expect(decision.blockedTargets).toEqual([]);
+  });
+
   it("blocks direct-mode tee writes into workspace source paths", () => {
     const decision = evaluateShellWorkspaceWritePolicy({
       toolName: "system.bash",
