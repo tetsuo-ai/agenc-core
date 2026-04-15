@@ -15,8 +15,7 @@ export type WorkflowProgressRequirement =
   | "workflow_verifier_pass"
   | "build_verification"
   | "behavior_verification"
-  | "review_verification"
-  | "request_milestones";
+  | "review_verification";
 
 interface WorkflowProgressEvidence {
   readonly requirement:
@@ -83,10 +82,6 @@ export function deriveWorkflowProgressSnapshot(params: {
     contract: mergedContract?.requestCompletion,
     completedMilestoneIds: params.completedRequestMilestoneIds,
   });
-  if (requestCompletion) {
-    requiredRequirements.add("request_milestones");
-  }
-
   const reusableEvidence: WorkflowProgressEvidence[] = [];
   for (const toolCall of params.toolCalls) {
     if (toolCall.isError) {
@@ -106,15 +101,10 @@ export function deriveWorkflowProgressSnapshot(params: {
   const satisfiedRequirements = new Set<WorkflowProgressRequirement>(
     reusableEvidence.map((entry) => entry.requirement),
   );
-  if (requestCompletion && requestCompletion.remainingMilestones.length === 0) {
-    satisfiedRequirements.add("request_milestones");
-  }
-
-  const remainingRequirements = [...requiredRequirements].filter(
-    (requirement) => !satisfiedRequirements.has(requirement),
-  );
+  const remainingRequirements = [...requiredRequirements];
   if (
     !mergedContract &&
+    reusableEvidence.length === 0 &&
     remainingRequirements.length === 0 &&
     params.completionState === "completed"
   ) {

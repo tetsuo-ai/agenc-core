@@ -374,7 +374,7 @@ export interface ChatExecutorResult {
   readonly completionProgress?: WorkflowProgressSnapshot;
   /** Verifier snapshot observed by the executor-owned completion chain. */
   readonly verifierSnapshot?: import("../workflow/completion-state.js").PlannerVerificationSnapshot;
-  /** Runtime-contract flags, validator outcomes, and verifier state for this turn. */
+  /** Runtime-contract telemetry captured during execution. Not consulted for final completion decisions. */
   readonly runtimeContractSnapshot?: RuntimeContractSnapshot;
   /** Single preflight execution contract that governed this turn. */
   readonly turnExecutionContract: TurnExecutionContract;
@@ -648,8 +648,6 @@ export interface ExecutionContext {
   readonly trace?: ChatExecuteParams["trace"];
   readonly defaultRunClass?: RuntimeRunClass;
   readonly runtimeContractFlags: RuntimeContractFlags;
-  readonly completionValidation?: ChatExecutorConfig["completionValidation"];
-
   // --- Mutable accumulator state ---
   history: readonly LLMMessage[];
   messages: LLMMessage[];
@@ -675,6 +673,7 @@ export interface ExecutionContext {
   stopReason: LLMPipelineStopReason;
   completionState: WorkflowCompletionState;
   verifierSnapshot?: import("../workflow/completion-state.js").PlannerVerificationSnapshot;
+  /** Telemetry-only runtime contract snapshot carried for traces and results. */
   runtimeContractSnapshot: RuntimeContractSnapshot;
   toolProtocolState: ToolProtocolState;
   stopReasonDetail?: string;
@@ -684,7 +683,9 @@ export interface ExecutionContext {
   routedToolsExpanded: boolean;
   routedToolMisses: number;
   plannerSummaryState: FullPlannerSummaryState;
+  /** Advisory task metadata observed from task tools. */
   requestTaskState: RequestTaskProgressState;
+  /** Advisory milestone metadata derived from observed task tools. */
   completedRequestMilestoneIds: readonly string[];
   economicsState: RuntimeEconomicsState;
   continuationState: TurnContinuationState;
@@ -803,8 +804,6 @@ export function buildDefaultExecutionContext(
       }
       : undefined,
     runtimeContractFlags: config.runtimeContractFlags,
-    completionValidation: config.completionValidation,
-
     // --- Mutable accumulator state ---
     history: params.history,
     messages: [],

@@ -472,11 +472,49 @@ describe("completion-progress", () => {
     });
 
     expect(snapshot).toMatchObject({
-      requiredRequirements: ["request_milestones"],
-      remainingRequirements: ["request_milestones"],
+      requiredRequirements: [],
+      remainingRequirements: [],
       satisfiedMilestoneIds: ["phase_1"],
       remainingMilestones: [
         { id: "phase_2", description: "Finish phase 2" },
+      ],
+    });
+  });
+
+  it("keeps milestone telemetry without turning it into a completion requirement", () => {
+    const snapshot = deriveWorkflowProgressSnapshot({
+      stopReason: "completed",
+      completionState: "completed",
+      toolCalls: [],
+      verificationContract: {
+        workspaceRoot: "/workspace",
+        targetArtifacts: ["/workspace/src/main.c"],
+        verificationMode: "mutation_required",
+        requestCompletion: {
+          requiredMilestones: [
+            { id: "phase_1", description: "Finish phase 1" },
+          ],
+        },
+        completionContract: {
+          taskClass: "artifact_only",
+          placeholdersAllowed: false,
+          partialCompletionAllowed: false,
+          placeholderTaxonomy: "implementation",
+        },
+      },
+      updatedAt: 40,
+    });
+
+    expect(snapshot).toMatchObject({
+      completionState: "completed",
+      requiredRequirements: [],
+      satisfiedRequirements: [],
+      remainingRequirements: [],
+      requiredMilestones: [
+        { id: "phase_1", description: "Finish phase 1" },
+      ],
+      remainingMilestones: [
+        { id: "phase_1", description: "Finish phase 1" },
       ],
     });
   });

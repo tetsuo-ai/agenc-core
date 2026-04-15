@@ -227,9 +227,7 @@ export async function executeRequest(
     stopReason: ctx.stopReason,
     toolCalls: ctx.allToolCalls,
     verificationContract: workflowEvidence.verificationContract,
-    completedRequestMilestoneIds: ctx.completedRequestMilestoneIds,
     validationCode: ctx.validationCode,
-    verifier: ctx.verifierSnapshot,
   });
 
   const durationMs = Date.now() - ctx.startTime;
@@ -247,7 +245,6 @@ export async function executeRequest(
     completedRequestMilestoneIds: ctx.completedRequestMilestoneIds,
     updatedAt: Date.now(),
     contractFingerprint: ctx.turnExecutionContract.contractFingerprint,
-    verifier: ctx.verifierSnapshot,
   });
 
   // Phase H: dispatch Stop / StopFailure at the terminal path.
