@@ -666,6 +666,9 @@ async function executePersistentCoordinatorAction(
         workerId: worker.workerId,
         assignment: prepared.assignment,
       });
+      const outputPath = params.taskStore
+        ? params.taskStore.getTaskOutputPath(params.sessionId, queued.task.id)
+        : undefined;
       return JSON.stringify({
         success: true,
         action: "spawn",
@@ -675,14 +678,15 @@ async function executePersistentCoordinatorAction(
           ? { workerSessionId: queued.worker.continuationSessionId }
           : {}),
         worker: queued.worker,
-        task: {
+        taskId: queued.task.id,
+        ...(outputPath ? { outputPath } : {}),
+        backgroundHandle: {
           id: queued.task.id,
           kind: queued.task.kind,
           status: queued.task.status,
           summary: queued.task.summary,
           outputReady: queued.task.outputReady ?? false,
-          waitTool: "task.wait",
-          outputTool: "task.output",
+          ...(outputPath ? { outputPath } : {}),
         },
       });
     }
@@ -714,6 +718,9 @@ async function executePersistentCoordinatorAction(
         workerId: worker.workerId,
         assignment: prepared.assignment,
       });
+      const outputPath = params.taskStore
+        ? params.taskStore.getTaskOutputPath(params.sessionId, queued.task.id)
+        : undefined;
       return JSON.stringify({
         success: true,
         action: input.action,
@@ -723,14 +730,15 @@ async function executePersistentCoordinatorAction(
           ? { workerSessionId: queued.worker.continuationSessionId }
           : {}),
         worker: queued.worker,
-        task: {
+        taskId: queued.task.id,
+        ...(outputPath ? { outputPath } : {}),
+        backgroundHandle: {
           id: queued.task.id,
           kind: queued.task.kind,
           status: queued.task.status,
           summary: queued.task.summary,
           outputReady: queued.task.outputReady ?? false,
-          waitTool: "task.wait",
-          outputTool: "task.output",
+          ...(outputPath ? { outputPath } : {}),
         },
       });
     }

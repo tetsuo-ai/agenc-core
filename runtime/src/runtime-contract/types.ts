@@ -229,8 +229,6 @@ export interface RuntimeTaskHandle {
   readonly executionLocation?: RuntimeExecutionLocation;
   readonly outputReady?: boolean;
   readonly outputPath?: string;
-  readonly waitTool?: "task.wait";
-  readonly outputTool?: "task.output";
 }
 
 export interface RuntimeContractStatusSnapshot {

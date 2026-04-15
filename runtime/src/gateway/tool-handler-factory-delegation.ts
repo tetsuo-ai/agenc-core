@@ -964,6 +964,7 @@ export async function executeDelegationTool(
   });
 
   if (asyncTaskHandlesEnabled && taskStore && runtimeTaskId) {
+    const outputPath = taskStore.getTaskOutputPath(sessionId, runtimeTaskId);
     void subAgentManager
       .waitForResult(childSessionId)
       .then((childResult) =>
@@ -1021,6 +1022,7 @@ export async function executeDelegationTool(
       subagentSessionId: childSessionId,
       objective,
       taskId: runtimeTaskId,
+      outputPath,
       runtimeResult: buildDelegatedRuntimeResult({
         surface: "direct_child",
         workerSessionId: childSessionId,
@@ -1033,24 +1035,16 @@ export async function executeDelegationTool(
         ownedArtifacts: admittedInput.delegationAdmission?.ownedArtifacts,
         executionLocation: localExecutionLocation,
       }),
-      task: {
+      backgroundHandle: {
         id: runtimeTaskId,
         kind: "subagent",
         status: "in_progress",
         summary: "Delegated worker running.",
-        externalRef: {
-          kind: "subagent",
-          id: childSessionId,
-          sessionId: childSessionId,
-        },
+        outputPath,
         executionLocation: localExecutionLocation,
         outputReady: false,
-        waitTool: "task.wait",
-        outputTool: "task.output",
         ...(verifierRequirement ? { verifierRequirement } : {}),
       },
-      waitTool: "task.wait",
-      outputTool: "task.output",
       ...(verifierRequirement ? { verifierRequirement } : {}),
     });
   }

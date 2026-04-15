@@ -481,21 +481,13 @@ describe("createSessionToolHandler", () => {
       __agencTaskActorKind: "main",
       [TASK_LIST_ARG]: "session-b",
     });
-    expect(sessionACreate.taskRuntime).toMatchObject({
-      fullTask: expect.objectContaining({
-        subject: "Session A task",
-      }),
-      runtimeMetadata: expect.objectContaining({
-        hasRuntimeMetadata: false,
-      }),
+    expect(sessionACreate.task).toMatchObject({
+      id: "1",
+      subject: "Session A task",
     });
-    expect(sessionBCreate.taskRuntime).toMatchObject({
-      fullTask: expect.objectContaining({
-        subject: "Session B task",
-      }),
-      runtimeMetadata: expect.objectContaining({
-        hasRuntimeMetadata: false,
-      }),
+    expect(sessionBCreate.task).toMatchObject({
+      id: "1",
+      subject: "Session B task",
     });
 
     const executingMessages = sentMessages.filter(
@@ -546,11 +538,9 @@ describe("createSessionToolHandler", () => {
     );
 
     expect(sessionATasks).toMatchObject({
-      count: 1,
       tasks: [{ subject: "Session A task" }],
     });
     expect(sessionBTasks).toMatchObject({
-      count: 1,
       tasks: [{ subject: "Session B task" }],
     });
   });
@@ -2102,7 +2092,8 @@ describe("createSessionToolHandler", () => {
         readonly success?: boolean;
         readonly status?: string;
         readonly taskId?: string;
-        readonly task?: Record<string, unknown>;
+        readonly outputPath?: string;
+        readonly backgroundHandle?: Record<string, unknown>;
         readonly runtimeResult?: {
           readonly status?: string;
           readonly taskId?: string;
@@ -2118,12 +2109,13 @@ describe("createSessionToolHandler", () => {
         taskId: parsed.taskId,
         outputReady: false,
       });
-      expect(parsed.task).toMatchObject({
+      expect(parsed.outputPath).toMatch(/output\.json$/);
+      expect(parsed.backgroundHandle).toMatchObject({
         id: parsed.taskId,
         kind: "subagent",
         status: "in_progress",
-        waitTool: "task.wait",
-        outputTool: "task.output",
+        outputPath: parsed.outputPath,
+        outputReady: false,
       });
 
       const waited = await taskStore.waitForTask("session-parent", parsed.taskId!, {

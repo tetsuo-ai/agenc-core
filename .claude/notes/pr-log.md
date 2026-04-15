@@ -101,3 +101,10 @@
 - **What worked:** Moving verifier ownership fully into the parent completion flow, removing task-progress from the completion gate, and hardening the verifier envelope write-root handling aligned the runtime with the intended execution model while keeping the delegated verifier contract explicit and test-covered.
 - **What didn't:** The final cleanup exposed a build-only type hole in the verifier envelope path, so the branch needed one last guard before the source build and daemon restart were clean end to end.
 - **Rule added to CLAUDE.md:** no
+
+## PR #376: refactor(runtime): split public tasks from runtime handles
+- **Date:** 2026-04-15
+- **Files changed:** `runtime/src/tools/system/task-tracker.ts`, `runtime/src/gateway/{daemon-command-registry,daemon-session-state,tool-handler-factory-coordinator,tool-handler-factory-delegation}.ts`, `runtime/src/runtime-contract/types.ts`, `runtime/src/gateway/*.test.ts`, `runtime/src/tools/system/task-tracker.test.ts`
+- **What worked:** Splitting lightweight session tasks from runtime handles let the public `task.*` workflow return only session-task fields while delegated and coordinator flows moved to path-first background handles, which brought the runtime surface into one consistent model without losing durable runtime state internally.
+- **What didn't:** The original task tracker and tests assumed one mixed surface, so separating the handle tools required a second factory plus coordinated fixture updates across delegation, coordinator, and daemon command tests before the suite settled.
+- **Rule added to CLAUDE.md:** no

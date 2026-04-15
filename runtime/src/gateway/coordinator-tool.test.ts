@@ -498,14 +498,18 @@ describe("coordinator_mode", () => {
     ) as {
       success?: boolean;
       workerId?: string;
-      task?: { id?: string };
+      taskId?: string;
+      outputPath?: string;
+      backgroundHandle?: { id?: string };
     };
 
     expect(spawned.success).toBe(true);
     expect(spawned.workerId).toBeTruthy();
-    expect(spawned.task?.id).toBeTruthy();
+    expect(spawned.taskId).toBeTruthy();
+    expect(spawned.outputPath).toMatch(/output\.json$/);
+    expect(spawned.backgroundHandle?.id).toBe(spawned.taskId);
 
-    await waitForTaskTerminal(taskStore, "session-a", String(spawned.task?.id));
+    await waitForTaskTerminal(taskStore, "session-a", String(spawned.taskId));
 
     const listed = JSON.parse(
       await executeCoordinatorModeTool({
@@ -582,10 +586,10 @@ describe("coordinator_mode", () => {
       }),
     ) as {
       workerId?: string;
-      task?: { id?: string };
+      taskId?: string;
     };
 
-    await waitForTaskTerminal(taskStore, "session-a", String(initial.task?.id));
+    await waitForTaskTerminal(taskStore, "session-a", String(initial.taskId));
 
     const followUp = JSON.parse(
       await executeCoordinatorModeTool({
@@ -613,31 +617,35 @@ describe("coordinator_mode", () => {
     ) as {
       success?: boolean;
       workerId?: string;
-      task?: {
+      taskId?: string;
+      outputPath?: string;
+      backgroundHandle?: {
         id?: string;
         kind?: string;
         status?: string;
-        waitTool?: string;
-        outputTool?: string;
+        outputPath?: string;
+        outputReady?: boolean;
       };
     };
 
     expect(followUp.success).toBe(true);
     expect(followUp.workerId).toBe(initial.workerId);
-    expect(followUp.task).toEqual(
+    expect(followUp.outputPath).toMatch(/output\.json$/);
+    expect(followUp.backgroundHandle).toEqual(
       expect.objectContaining({
+        id: followUp.taskId,
         kind: "worker_assignment",
         status: "pending",
-        waitTool: "task.wait",
-        outputTool: "task.output",
+        outputPath: followUp.outputPath,
+        outputReady: false,
       }),
     );
 
-    await waitForTaskTerminal(taskStore, "session-a", String(followUp.task?.id));
+    await waitForTaskTerminal(taskStore, "session-a", String(followUp.taskId));
 
     const completed = await taskStore.getTask(
       "session-a",
-      String(followUp.task?.id),
+      String(followUp.taskId),
     );
     expect(completed).toMatchObject({
       status: "completed",
