@@ -1,3 +1,5 @@
+import { tmpdir } from "node:os";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type { ChatExecutorResult } from "../llm/chat-executor.js";
@@ -76,7 +78,7 @@ function createVerifierRequirement(
     profiles: ["generic"],
     probeCategories: ["build"],
     mutationPolicy: "read_only_workspace",
-    allowTempArtifacts: false,
+    allowTempArtifacts: true,
     bootstrapSource: "disabled",
     rationale: ["test requirement"],
     ...overrides,
@@ -139,13 +141,14 @@ describe("runTopLevelVerifierValidation", () => {
           kind: "prompt_envelope_v1",
           baseSystemPrompt: "Verifier system prompt",
         }),
-        tools: [
+        tools: expect.arrayContaining([
           "system.readFile",
+          "system.bash",
           "verification.runProbe",
           "system.listDir",
           "system.stat",
           "verification.listProbes",
-        ],
+        ]),
         structuredOutput: expect.objectContaining({
           enabled: true,
           schema: expect.objectContaining({
@@ -156,6 +159,7 @@ describe("runTopLevelVerifierValidation", () => {
         requiredToolEvidence: expect.objectContaining({
           executionEnvelope: expect.objectContaining({
             verificationMode: "grounded_read",
+            allowedWriteRoots: [tmpdir()],
             targetArtifacts: ["/workspace/src/main.c"],
           }),
         }),
@@ -201,13 +205,14 @@ describe("runTopLevelVerifierValidation", () => {
     expect(decision.runtimeVerifier.overall).toBe("fail");
   });
 
-  it("skips verifier work for ordinary workflow turns with artifact-only completion", async () => {
+  it("skips verifier work when no successful workspace mutation occurred", async () => {
     const spawn = vi.fn(async () => "subagent:verify-1");
 
     const decision = await runTopLevelVerifierValidation({
       sessionId: "session:test",
       userRequest: "hello",
       result: createResult({
+        toolCalls: [],
         turnExecutionContract: {
           ...createResult().turnExecutionContract,
           turnClass: "workflow_implementation",

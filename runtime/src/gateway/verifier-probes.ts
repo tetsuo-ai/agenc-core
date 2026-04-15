@@ -219,6 +219,14 @@ function readJsonObject(
   }
 }
 
+function readTextFile(path: string): string | undefined {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
 function readPackageScripts(
   workspaceRoot: string,
 ): Record<string, string> {
@@ -524,7 +532,7 @@ function addCMakeProbes(
     timeoutMs: DEFAULT_PROBE_TIMEOUT_MS,
     writesTempOnly: false,
   });
-  if (hasExecutableOnPath("ctest")) {
+  if (hasExecutableOnPath("ctest") && hasExplicitCMakeTests(workspaceRoot)) {
     pushProbe(probes, seen, {
       id: "generic:test:ctest",
       label: "ctest",
@@ -537,6 +545,24 @@ function addCMakeProbes(
       writesTempOnly: false,
     });
   }
+}
+
+function hasExplicitCMakeTests(workspaceRoot: string): boolean {
+  const rootCMake = readTextFile(resolvePath(workspaceRoot, "CMakeLists.txt"));
+  if (
+    rootCMake &&
+    /\b(?:enable_testing|add_test)\s*\(/i.test(rootCMake)
+  ) {
+    return true;
+  }
+  if (rootCMake && /\binclude\s*\(\s*CTest\s*\)/i.test(rootCMake)) {
+    return true;
+  }
+  return [
+    resolvePath(workspaceRoot, "CTestTestfile.cmake"),
+    resolvePath(workspaceRoot, "build", "CTestTestfile.cmake"),
+    resolvePath(workspaceRoot, "build", "DartConfiguration.tcl"),
+  ].some((path) => existsSync(path));
 }
 
 function addMakeProbes(
@@ -891,7 +917,7 @@ export function createVerifierRequirement(params: {
       profiles: [],
       probeCategories: [],
       mutationPolicy: "read_only_workspace",
-      allowTempArtifacts: false,
+      allowTempArtifacts: true,
       bootstrapSource: "disabled",
       rationale: ["verification not required for this execution"],
     };
@@ -935,7 +961,7 @@ export function createVerifierRequirement(params: {
     profiles,
     probeCategories,
     mutationPolicy: "read_only_workspace",
-    allowTempArtifacts: false,
+    allowTempArtifacts: true,
     bootstrapSource: source,
     rationale:
       bootstrap?.rationale && bootstrap.rationale.length > 0

@@ -71,6 +71,7 @@ const DEFINITIONS: Record<SessionShellProfile, ShellProfileDefinition> = {
       "Treat the local workspace as the primary source of truth and prefer inspect-edit-verify loops over speculative prose.",
       "Bias toward file, shell, test, task, and delegated implementation tools that materially move code work forward.",
       "When changing code, validate behavior with the smallest useful check before concluding.",
+      "Before reporting non-trivial implementation complete, expect independent verifier confirmation instead of self-certifying the result.",
     ],
     toolPrefixes: ["task.", "verification."],
     exactToolNames: [

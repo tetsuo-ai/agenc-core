@@ -200,7 +200,7 @@ describe("chat-executor-continuation", () => {
       state: ctx.continuationState,
       ctx,
       reason: "validator",
-      validatorId: "deterministic_acceptance_probes",
+      validatorId: "top_level_verifier",
     });
     finishTurnContinuation({ state: ctx.continuationState, ctx });
 

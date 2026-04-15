@@ -76,6 +76,69 @@ function createParams(
   };
 }
 
+function createTopLevelVerifierConfig(params: {
+  readonly verdict?: "pass" | "fail" | "retry";
+  readonly summary?: string;
+} = {}): NonNullable<
+  ConstructorParameters<typeof ChatExecutor>[0]
+>["completionValidation"] {
+  const verdict = params.verdict ?? "pass";
+  const summary =
+    params.summary ??
+    (verdict === "pass"
+      ? "Verifier passed."
+      : verdict === "fail"
+        ? "Verifier failed."
+        : "Verifier was inconclusive.");
+  return {
+    topLevelVerifier: {
+      subAgentManager: {
+        spawn: vi.fn(async () => "subagent:verify"),
+        waitForResult: vi.fn(async () => ({
+          sessionId: "subagent:verify",
+          output: `${summary}\nVERDICT: ${
+            verdict === "pass" ? "PASS" : verdict === "fail" ? "FAIL" : "PARTIAL"
+          }`,
+          success: verdict === "pass",
+          durationMs: 1,
+          toolCalls: [
+            {
+              name: "verification.runProbe",
+              args: { probeId: "generic:build:make" },
+              result:
+                "{\"ok\":true,\"__agencVerification\":{\"probeId\":\"generic:build:make\",\"category\":\"build\",\"profile\":\"generic\"}}",
+              isError: false,
+              durationMs: 1,
+            },
+          ],
+          structuredOutput: {
+            type: "json_schema" as const,
+            name: "agenc_top_level_verifier_decision",
+            parsed: {
+              verdict,
+              summary,
+            },
+          },
+          completionState: "completed" as const,
+          stopReason: "completed" as const,
+        })),
+      },
+      verifierService: {
+        resolveVerifierRequirement: vi.fn(() => ({
+          required: true,
+          profiles: ["generic"],
+          probeCategories: ["build"],
+          mutationPolicy: "read_only_workspace" as const,
+          allowTempArtifacts: true,
+          bootstrapSource: "disabled" as const,
+          rationale: ["test"],
+        })),
+        shouldVerifySubAgentResult: vi.fn(() => true),
+      },
+    },
+  };
+}
+
 describe("top-level artifact evidence gate", () => {
   it("forces a recovery tool turn for carried workflow implementation tasks", async () => {
     const activeTaskContext: ActiveTaskContext = {
@@ -142,7 +205,11 @@ describe("top-level artifact evidence gate", () => {
     const toolHandler = vi.fn(async (_name: string, args: Record<string, unknown>) =>
       safeJson({ ok: true, path: args.path }),
     );
-    const executor = new ChatExecutor({ providers: [provider], toolHandler });
+    const executor = new ChatExecutor({
+      providers: [provider],
+      toolHandler,
+      completionValidation: createTopLevelVerifierConfig(),
+    });
 
     const result = await executor.execute(
       createParams({
@@ -156,6 +223,7 @@ describe("top-level artifact evidence gate", () => {
     expect(result.stopReason).toBe("completed");
     expect(result.completionState).toBe("completed");
     expect(result.validationCode).toBeUndefined();
+    expect(result.verifierSnapshot?.overall).toBe("pass");
     expect(result.toolCalls.filter((call) => call.name === "system.writeFile")).toHaveLength(2);
     expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(4);
     expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls[2]?.[1]).toMatchObject({
@@ -450,7 +518,7 @@ describe("top-level artifact evidence gate", () => {
     }
   });
 
-  it("re-enters the loop when deterministic acceptance probes fail", async () => {
+  it("accepts completion once declared artifacts exist and the explicit verifier passes", async () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-acceptance-probe-"));
     const sourcePath = join(workspaceRoot, "src/main.c");
     mkdirSync(join(workspaceRoot, "src"), { recursive: true });
@@ -519,28 +587,40 @@ describe("top-level artifact evidence gate", () => {
       }
       return safeJson({ exitCode: 0, stdout: "ok" });
     });
-    const executor = new ChatExecutor({ providers: [provider], toolHandler });
+    const executor = new ChatExecutor({
+      providers: [provider],
+      toolHandler,
+      completionValidation: createTopLevelVerifierConfig(),
+    });
 
     try {
       const result = await executor.execute(
         createParams({
           runtimeContext: { workspaceRoot },
+          requiredToolEvidence: {
+            verificationContract: {
+              workspaceRoot,
+              targetArtifacts: [sourcePath],
+              completionContract: {
+                taskClass: "build_required",
+                placeholdersAllowed: false,
+                partialCompletionAllowed: false,
+              },
+            },
+          },
         }),
       );
 
       expect(result.stopReason).toBe("completed");
-      expect(result.toolCalls.filter((call) => call.name === "system.writeFile")).toHaveLength(2);
-      expect(result.toolCalls.filter((call) => call.name === "verification.runProbe")).toHaveLength(2);
-      expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(4);
-      expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls[2]?.[1]).toMatchObject({
-        toolChoice: "required",
-      });
+      expect(result.verifierSnapshot?.overall).toBe("pass");
+      expect(result.toolCalls.filter((call) => call.name === "system.writeFile")).toHaveLength(1);
+      expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2);
     } finally {
       rmSync(workspaceRoot, { recursive: true, force: true });
     }
   });
 
-  it("keeps repairing workflow-owned coding turns while deterministic probes remain productive", async () => {
+  it("blocks completion after a failed explicit verifier instead of entering inline repair loops", async () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-acceptance-budget-"));
     const sourcePath = join(workspaceRoot, "src/main.c");
     mkdirSync(join(workspaceRoot, "src"), { recursive: true });
@@ -576,45 +656,8 @@ describe("top-level artifact evidence gate", () => {
         )
         .mockResolvedValueOnce(
           mockResponse({
-            content: "",
-            finishReason: "tool_calls",
-            toolCalls: [
-              {
-                id: "tc-2",
-                name: "system.writeFile",
-                arguments: safeJson({
-                  path: sourcePath,
-                  content: "still bad build again",
-                }),
-              },
-            ],
-          }),
-        )
-        .mockResolvedValueOnce(
-          mockResponse({
-            content: "Retried the implementation.",
-          }),
-        )
-        .mockResolvedValueOnce(
-          mockResponse({
-            content: "",
-            finishReason: "tool_calls",
-            toolCalls: [
-              {
-                id: "tc-3",
-                name: "system.writeFile",
-                arguments: safeJson({
-                  path: sourcePath,
-                  content: "good build",
-                }),
-              },
-            ],
-          }),
-        )
-        .mockResolvedValueOnce(
-          mockResponse({
             content:
-              "Implementation completed with passing acceptance probes after multiple productive repair turns, and this completion summary is intentionally verbose so the stop gate does not misclassify it as a truncated success claim.",
+              "Implementation completed after the initial build write, and this completion summary is intentionally verbose so the stop gate does not misclassify it as a truncated success claim.",
           }),
         ),
     });
@@ -630,7 +673,14 @@ describe("top-level artifact evidence gate", () => {
       }
       return safeJson({ exitCode: 0, stdout: "ok" });
     });
-    const executor = new ChatExecutor({ providers: [provider], toolHandler });
+    const executor = new ChatExecutor({
+      providers: [provider],
+      toolHandler,
+      completionValidation: createTopLevelVerifierConfig({
+        verdict: "fail",
+        summary: "Build still fails under verifier-run checks.",
+      }),
+    });
 
     try {
       const result = await executor.execute(
@@ -646,11 +696,12 @@ describe("top-level artifact evidence gate", () => {
         }),
       );
 
-      expect(result.stopReason).toBe("completed");
-      expect(result.toolCalls.filter((call) => call.name === "system.writeFile")).toHaveLength(3);
-      expect(result.toolCalls.filter((call) => call.name === "verification.runProbe")).toHaveLength(3);
-      expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(6);
-      expect(readFileSync(sourcePath, "utf8")).toBe("good build");
+      expect(result.stopReason).toBe("validation_error");
+      expect(result.completionState).toBe("partial");
+      expect(result.verifierSnapshot?.overall).toBe("fail");
+      expect(result.toolCalls.filter((call) => call.name === "system.writeFile")).toHaveLength(1);
+      expect((provider.chat as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2);
+      expect(readFileSync(sourcePath, "utf8")).toBe("still bad build");
     } finally {
       rmSync(workspaceRoot, { recursive: true, force: true });
     }
@@ -775,7 +826,7 @@ describe("top-level artifact evidence gate", () => {
               profiles: ["generic"],
               probeCategories: ["build"],
               mutationPolicy: "read_only_workspace",
-              allowTempArtifacts: false,
+              allowTempArtifacts: true,
               bootstrapSource: "disabled",
               rationale: ["test"],
             })),

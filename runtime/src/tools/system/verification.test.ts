@@ -86,4 +86,54 @@ describe("verification tools", () => {
     expect(parsed.__agencVerification?.category).toBe("build");
     expect(parsed.__agencVerification?.probeId).toBe(buildProbe!.id);
   });
+
+  it("does not list ctest when a CMake workspace does not declare tests", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "verification-cmake-no-tests-"));
+    writeFileSync(
+      join(workspaceRoot, "CMakeLists.txt"),
+      [
+        "cmake_minimum_required(VERSION 3.20)",
+        "project(verification_fixture C)",
+        "add_executable(sample main.c)",
+      ].join("\n"),
+    );
+    writeFileSync(join(workspaceRoot, "main.c"), "int main(void) { return 0; }\n");
+
+    const tools = createVerificationTools();
+    const listProbes = findTool(tools, "verification.listProbes");
+    const parsed = JSON.parse(
+      (await listProbes.execute({ workspaceRoot })).content,
+    ) as {
+      probes?: Array<{ id?: string; category?: string }>;
+    };
+
+    expect(
+      parsed.probes?.some((probe) => probe.id === "generic:test:ctest"),
+    ).toBe(false);
+  });
+
+  it("lists ctest when a CMake workspace explicitly declares tests", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "verification-cmake-tests-"));
+    writeFileSync(
+      join(workspaceRoot, "CMakeLists.txt"),
+      [
+        "cmake_minimum_required(VERSION 3.20)",
+        "project(verification_fixture C)",
+        "enable_testing()",
+        "add_test(NAME sample COMMAND ${CMAKE_COMMAND} -E echo ok)",
+      ].join("\n"),
+    );
+
+    const tools = createVerificationTools();
+    const listProbes = findTool(tools, "verification.listProbes");
+    const parsed = JSON.parse(
+      (await listProbes.execute({ workspaceRoot })).content,
+    ) as {
+      probes?: Array<{ id?: string; category?: string }>;
+    };
+
+    expect(
+      parsed.probes?.some((probe) => probe.id === "generic:test:ctest"),
+    ).toBe(true);
+  });
 });
