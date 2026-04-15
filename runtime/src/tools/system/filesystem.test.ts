@@ -573,7 +573,7 @@ describe("system.writeFile", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(parseResult(result).error).toContain("File has not been read yet");
+    expect(parseResult(result).error).toContain("fully read");
     expect(mockWriteFile).not.toHaveBeenCalled();
   });
 
@@ -612,6 +612,39 @@ describe("system.writeFile", () => {
     expect(mockWriteFile).toHaveBeenCalled();
   });
 
+  it.each([
+    "partial",
+    "legacy_unknown",
+  ] as const)("rejects %s snapshots for existing-file writes", async (viewKind) => {
+    const sessionId = `session-${viewKind}`;
+    clearSessionReadState(sessionId);
+    seedSessionReadState(sessionId, [
+      {
+        path: "/workspace/existing.c",
+        content: "hello",
+        timestamp: 1_000,
+        viewKind,
+      },
+    ]);
+
+    mockStat.mockResolvedValueOnce({
+      isFile: () => true,
+      isDirectory: () => false,
+      size: 5,
+      mtimeMs: 1_000,
+    } as never);
+
+    const result = await tool.execute({
+      path: "/workspace/existing.c",
+      content: "world",
+      __agencSessionId: sessionId,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(parseResult(result).error).toContain("fully read");
+    expect(mockWriteFile).not.toHaveBeenCalled();
+  });
+
   it("rejects writing an existing file when no session id is provided", async () => {
     // No __agencSessionId in args -> fail closed unless a seed exists
     mockStat.mockResolvedValueOnce({
@@ -626,7 +659,7 @@ describe("system.writeFile", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(parseResult(result).error).toContain("File has not been read yet");
+    expect(parseResult(result).error).toContain("fully read");
     expect(mockWriteFile).not.toHaveBeenCalled();
   });
 
@@ -701,6 +734,7 @@ describe("system.writeFile", () => {
         path: "/workspace/seeded.txt",
         content: "hello",
         timestamp: 1_000,
+        viewKind: "full",
       },
     ]);
 
@@ -872,7 +906,32 @@ describe("system.editFile", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(parseResult(result).error).toContain("File has not been read yet");
+    expect(parseResult(result).error).toContain("fully read");
+    expect(mockWriteFile).not.toHaveBeenCalled();
+  });
+
+  it("rejects edit after a partial read snapshot", async () => {
+    const before = `int main(void) { return 0; }\n`;
+    setupExistingFile(before);
+    clearSessionReadState("session-partial-edit");
+    seedSessionReadState("session-partial-edit", [
+      {
+        path: "/workspace/no-read.c",
+        content: before,
+        timestamp: 1_000,
+        viewKind: "partial",
+      },
+    ]);
+
+    const result = await tool.execute({
+      path: "/workspace/no-read.c",
+      old_string: "return 0",
+      new_string: "return 1",
+      __agencSessionId: "session-partial-edit",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(parseResult(result).error).toContain("fully read");
     expect(mockWriteFile).not.toHaveBeenCalled();
   });
 
@@ -887,7 +946,7 @@ describe("system.editFile", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(parseResult(result).error).toContain("File has not been read yet");
+    expect(parseResult(result).error).toContain("fully read");
     expect(mockWriteFile).not.toHaveBeenCalled();
   });
 
@@ -1253,7 +1312,7 @@ describe("system.editFile", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(parseResult(result).error).toContain("File has not been read yet");
+    expect(parseResult(result).error).toContain("fully read");
   });
 });
 
@@ -1263,15 +1322,18 @@ describe("system.editFile", () => {
 
 describe("system.appendFile", () => {
   let tool: Tool;
+  let readTool: Tool;
 
   beforeEach(() => {
     vi.clearAllMocks();
     mockRealpath.mockImplementation(async (p: string) => p as never);
     tool = findTool(createFilesystemTools(CONFIG), "system.appendFile");
+    readTool = findTool(createFilesystemTools(CONFIG), "system.readFile");
   });
 
   it("appends content to a file", async () => {
     mockAppendFile.mockResolvedValueOnce(undefined);
+    setupCreateThenReadback("new line\n");
 
     const result = await tool.execute({
       path: "/workspace/log.txt",
@@ -1281,6 +1343,76 @@ describe("system.appendFile", () => {
 
     expect(result.isError).toBeUndefined();
     expect(parsed.bytesAppended).toBe(9);
+  });
+
+  it("allows appending to an existing file after a full read", async () => {
+    const sessionId = "session-append-full";
+    clearSessionReadState(sessionId);
+    mockStat.mockResolvedValueOnce({
+      isFile: () => true,
+      isDirectory: () => false,
+      size: 5,
+      mtimeMs: 1_000,
+    } as never);
+    mockReadFile.mockResolvedValueOnce(Buffer.from("hello"));
+    await readTool.execute({
+      path: "/workspace/log.txt",
+      __agencSessionId: sessionId,
+    });
+
+    mockStat.mockResolvedValueOnce({
+      isFile: () => true,
+      isDirectory: () => false,
+      size: 5,
+      mtimeMs: 1_000,
+    } as never);
+    mockReadFile.mockResolvedValueOnce(Buffer.from("hello"));
+    mockAppendFile.mockResolvedValueOnce(undefined);
+    mockStat.mockResolvedValueOnce({
+      isFile: () => true,
+      isDirectory: () => false,
+      size: 10,
+      mtimeMs: 2_000,
+    } as never);
+    mockReadFile.mockResolvedValueOnce(Buffer.from("hello\nmore"));
+
+    const result = await tool.execute({
+      path: "/workspace/log.txt",
+      content: "more\n",
+      __agencSessionId: sessionId,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(mockAppendFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects appending to an existing file after a partial read", async () => {
+    const sessionId = "session-append-partial";
+    clearSessionReadState(sessionId);
+    seedSessionReadState(sessionId, [
+      {
+        path: "/workspace/log.txt",
+        content: "hello",
+        timestamp: 1_000,
+        viewKind: "partial",
+      },
+    ]);
+
+    mockStat.mockResolvedValueOnce({
+      isFile: () => true,
+      isDirectory: () => false,
+      size: 5,
+    } as never);
+
+    const result = await tool.execute({
+      path: "/workspace/log.txt",
+      content: "more\n",
+      __agencSessionId: sessionId,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(parseResult(result).error).toContain("fully read");
+    expect(mockAppendFile).not.toHaveBeenCalled();
   });
 });
 
@@ -1932,6 +2064,7 @@ describe("system.appendFile parent directory creation", () => {
   it("creates parent directories before appending", async () => {
     mockMkdir.mockResolvedValueOnce(undefined);
     mockAppendFile.mockResolvedValueOnce(undefined);
+    setupCreateThenReadback("first line\n");
 
     const result = await tool.execute({
       path: "/workspace/new/nested/log.txt",

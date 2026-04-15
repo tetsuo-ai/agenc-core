@@ -560,22 +560,11 @@ async function runDegradedProviderRetryScenario(): Promise<PipelineImplementatio
     systemPrompt: "You are an evaluation harness.",
     sessionId: "phase8-reroute",
   });
-  const verificationContract: WorkflowVerificationContract = {
-    workspaceRoot: "/tmp/phase8-reroute",
-    targetArtifacts: ["/tmp/phase8-reroute/src/runner.js"],
-    acceptanceCriteria: ["Behavior verification must pass before completion."],
-    completionContract: {
-      taskClass: "behavior_required",
-      placeholdersAllowed: false,
-      partialCompletionAllowed: false,
-      placeholderTaxonomy: "implementation",
-    },
-  };
   const completionState = resolveWorkflowCompletionState({
     stopReason: "completed",
     toolCalls: [],
-    verificationContract,
-    verifier: { performed: false, overall: "skipped" },
+    requiresVerification: true,
+    verificationSatisfied: false,
   });
   return {
     scenarioId: "degraded_provider_retry_without_false_completion",
@@ -609,22 +598,11 @@ async function runSafetyIncompleteOutputScenario(): Promise<PipelineImplementati
       targets: ["rm -rf ./src"],
     },
   });
-  const verificationContract: WorkflowVerificationContract = {
-    workspaceRoot: "/tmp/agenc-phase8-safety",
-    targetArtifacts: ["/tmp/agenc-phase8-safety/src/main.c"],
-    acceptanceCriteria: ["Behavior verification must still pass before completion."],
-    completionContract: {
-      taskClass: "behavior_required",
-      placeholdersAllowed: false,
-      partialCompletionAllowed: false,
-      placeholderTaxonomy: "implementation",
-    },
-  };
   const completionState = resolveWorkflowCompletionState({
     stopReason: "completed",
     toolCalls: [],
-    verificationContract,
-    verifier: { performed: false, overall: "skipped" },
+    requiresVerification: true,
+    verificationSatisfied: false,
   });
   const blocked = outcome.status === "deny" || outcome.status === "require_approval";
   return {

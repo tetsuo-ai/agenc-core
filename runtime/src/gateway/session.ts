@@ -573,8 +573,10 @@ export class SessionManager {
               source: "session_compaction",
               ...(narrativeSummary ? { narrativeSummary } : {}),
             });
-            delete session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY];
-            delete session.metadata[SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY];
+            session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY] =
+              compacted.state;
+            session.metadata[SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY] =
+              compacted.records;
             session.history = [...compacted.compactedHistory];
             result = {
               messagesRemoved: dropCount,
@@ -614,8 +616,10 @@ export class SessionManager {
               source: "session_compaction",
               ...(narrativeSummary ? { narrativeSummary } : {}),
             });
-            delete session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY];
-            delete session.metadata[SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY];
+            session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY] =
+              compacted.state;
+            session.metadata[SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY] =
+              compacted.records;
             session.history = [...compacted.compactedHistory];
             result = {
               messagesRemoved: dropCount,

@@ -35,9 +35,10 @@ import type { GatewayAutonomyConfig } from "../../gateway/types.js";
 import { DEFAULT_WORKSPACE_ID } from "../../gateway/workspace.js";
 import type { ControlMessage, ControlResponse } from "../../gateway/types.js";
 import {
-  forkSessionRuntimeState,
-  loadPersistedSessionRuntimeState,
-  type PersistedSessionRuntimeState,
+  forkSessionReplayState,
+  loadPersistedSessionReplayContext,
+  loadPersistedSessionReplayState,
+  type PersistedSessionReplayState,
 } from "../../gateway/daemon-session-state.js";
 import type { ActiveTaskContext } from "../../llm/turn-execution-contract-types.js";
 import { safeStringify } from "../../tools/types.js";
@@ -2103,19 +2104,18 @@ export class WebChatChannel
     );
 
     await Promise.resolve(this.deps.hydrateSessionContext?.(targetSessionId));
-    const history = await this.loadSessionHistory(targetSessionId);
-    const runtimeState = this.deps.memoryBackend
-      ? await loadPersistedSessionRuntimeState(
+    const replayContext = this.deps.memoryBackend
+      ? await loadPersistedSessionReplayContext(
           this.deps.memoryBackend,
           targetSessionId,
         )
       : undefined;
     return {
       sessionId: targetSessionId,
-      messageCount: history.length,
+      messageCount: replayContext?.history.length ?? 0,
       ...(workspaceRoot ? { workspaceRoot } : {}),
-      ...(runtimeState?.shellProfile
-        ? { shellProfile: runtimeState.shellProfile }
+      ...(replayContext?.state?.snapshot.shellProfile
+        ? { shellProfile: replayContext.state.snapshot.shellProfile }
         : {}),
     };
   }
@@ -2197,7 +2197,7 @@ export class WebChatChannel
     }
     const continuity = await this.buildSessionContinuityRecord(persisted);
     const runtimeState = this.deps.memoryBackend
-      ? await loadPersistedSessionRuntimeState(
+      ? await loadPersistedSessionReplayState(
           this.deps.memoryBackend,
           sessionId,
         )
@@ -2209,7 +2209,7 @@ export class WebChatChannel
     return {
       ...continuity,
       workflowState:
-        runtimeState?.workflowState ?? {
+        runtimeState?.snapshot.workflowState ?? {
           stage: continuity.workflowStage,
           worktreeMode: "off",
           enteredAt: continuity.updatedAt,
@@ -2217,17 +2217,17 @@ export class WebChatChannel
         },
       runtimeState: runtimeState
         ? {
-            ...(runtimeState.activeTaskContext
-              ? { activeTaskContext: runtimeState.activeTaskContext }
+            ...(runtimeState.snapshot.activeTaskContext
+              ? { activeTaskContext: runtimeState.snapshot.activeTaskContext }
               : {}),
-            ...(runtimeState.reviewSurfaceState?.status
-              ? { reviewStatus: runtimeState.reviewSurfaceState.status }
+            ...(runtimeState.snapshot.reviewSurfaceState?.status
+              ? { reviewStatus: runtimeState.snapshot.reviewSurfaceState.status }
               : {}),
-            ...(runtimeState.verificationSurfaceState?.status
-              ? { verificationStatus: runtimeState.verificationSurfaceState.status }
+            ...(runtimeState.snapshot.verificationSurfaceState?.status
+              ? { verificationStatus: runtimeState.snapshot.verificationSurfaceState.status }
               : {}),
-            ...(runtimeState.verificationSurfaceState?.verdict
-              ? { verificationVerdict: runtimeState.verificationSurfaceState.verdict }
+            ...(runtimeState.snapshot.verificationSurfaceState?.verdict
+              ? { verificationVerdict: runtimeState.snapshot.verificationSurfaceState.verdict }
               : {}),
           }
         : undefined,
@@ -2250,19 +2250,19 @@ export class WebChatChannel
     session: PersistedWebChatSession,
   ): Promise<SessionContinuityRecord> {
     const runtimeState = this.deps.memoryBackend
-      ? await loadPersistedSessionRuntimeState(
+      ? await loadPersistedSessionReplayState(
           this.deps.memoryBackend,
           session.sessionId,
         )
       : undefined;
     const workspaceRoot = session.metadata?.workspaceRoot;
     const { repoRoot, branch, head } = await resolveGitSnapshot(workspaceRoot);
-    const runtimeStatus = runtimeState?.runtimeContractStatusSnapshot as
+    const runtimeStatus = runtimeState?.snapshot.runtimeContractStatusSnapshot as
       | unknown
       | undefined;
     const pendingApprovalCount = this.countPendingApprovals(session.sessionId);
     const preview =
-      runtimeState?.workflowState?.objective ??
+      runtimeState?.snapshot.workflowState?.objective ??
       session.label ??
       session.metadata?.lastAssistantOutputPreview ??
       "New conversation";
@@ -2282,8 +2282,8 @@ export class WebChatChannel
         messageCount: session.messageCount,
         runtimeState,
       }),
-      shellProfile: runtimeState?.shellProfile ?? "general",
-      workflowStage: runtimeState?.workflowState?.stage ?? "idle",
+      shellProfile: runtimeState?.snapshot.shellProfile ?? "general",
+      workflowStage: runtimeState?.snapshot.workflowState?.stage ?? "idle",
       ...(workspaceRoot ? { workspaceRoot } : {}),
       ...(repoRoot ? { repoRoot } : {}),
       ...(branch ? { branch } : {}),
@@ -2311,7 +2311,7 @@ export class WebChatChannel
     connected: boolean;
     workspaceRoot?: string;
     messageCount: number;
-    runtimeState?: PersistedSessionRuntimeState;
+    runtimeState?: PersistedSessionReplayState;
   }): SessionResumabilityState {
     if (params.connected) {
       return "active";
@@ -2334,9 +2334,9 @@ export class WebChatChannel
   }
 
   private summarizeActiveTask(
-    runtimeState: PersistedSessionRuntimeState | undefined,
+    runtimeState: PersistedSessionReplayState | undefined,
   ): string | undefined {
-    const activeTaskContext = runtimeState?.activeTaskContext as
+    const activeTaskContext = runtimeState?.snapshot.activeTaskContext as
       | ActiveTaskContext
       | undefined;
     if (activeTaskContext?.taskLineageId) {
@@ -2351,9 +2351,9 @@ export class WebChatChannel
         : activeTaskContext.taskLineageId;
     }
     const snapshot =
-      runtimeState?.runtimeContractStatusSnapshot &&
-      typeof runtimeState.runtimeContractStatusSnapshot === "object"
-        ? (runtimeState.runtimeContractStatusSnapshot as unknown as Record<
+      runtimeState?.snapshot.runtimeContractStatusSnapshot &&
+      typeof runtimeState.snapshot.runtimeContractStatusSnapshot === "object"
+        ? (runtimeState.snapshot.runtimeContractStatusSnapshot as unknown as Record<
             string,
             unknown
           >)
@@ -2459,7 +2459,7 @@ export class WebChatChannel
     }
 
     if (!forkSource && this.deps.memoryBackend) {
-      const forkedRuntimeState = await forkSessionRuntimeState(
+      const forkedRuntimeState = await forkSessionReplayState(
         this.deps.memoryBackend,
         {
           sourceWebSessionId: sourceSessionId,

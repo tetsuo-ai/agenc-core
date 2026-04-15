@@ -11,12 +11,14 @@ const MAX_FILE_SIZE = 1024 * 1024; // 1MB
 const MAX_UNDO_FILES = 20;
 const SESSION_ID_ARG = "__agencSessionId";
 const LOCAL_FILE_HISTORY_MAX_ENTRIES = 8;
+type SessionReadViewKind = "full" | "partial" | "legacy_unknown";
 
 /** LRU undo buffer — stores the single most recent version per file. */
 const undoBuffer = new Map<string, string>();
 interface SessionReadSnapshot {
   readonly content?: string | null;
   readonly timestamp?: number;
+  readonly viewKind?: SessionReadViewKind;
 }
 
 const sessionReadState = new Map<string, Map<string, SessionReadSnapshot>>();
@@ -85,6 +87,7 @@ function persistLocalFileHistorySnapshot(
     entries.push({
       content: snapshot.content ?? null,
       timestamp: snapshot.timestamp,
+      viewKind: snapshot.viewKind ?? "legacy_unknown",
       recordedAt: Date.now(),
     });
     if (entries.length > LOCAL_FILE_HISTORY_MAX_ENTRIES) {
@@ -110,6 +113,7 @@ function loadPersistedSessionReadSnapshot(
       const entry = parsed[index];
       if (typeof entry !== "object" || entry === null) continue;
       const content = (entry as { content?: unknown }).content;
+      const viewKind = (entry as { viewKind?: unknown }).viewKind;
       const timestampValue = (entry as { timestamp?: unknown }).timestamp;
       const recordedAtValue = (entry as { recordedAt?: unknown }).recordedAt;
       const timestamp =
@@ -119,10 +123,26 @@ function loadPersistedSessionReadSnapshot(
             ? recordedAtValue
             : undefined;
       if (typeof content === "string") {
-        return timestamp === undefined ? { content } : { content, timestamp };
+        return {
+          ...(timestamp === undefined ? { content } : { content, timestamp }),
+          viewKind:
+            viewKind === "full" ||
+            viewKind === "partial" ||
+            viewKind === "legacy_unknown"
+              ? viewKind
+              : "legacy_unknown",
+        };
       }
       if (content === null) {
-        return timestamp === undefined ? { content: null } : { content: null, timestamp };
+        return {
+          ...(timestamp === undefined ? { content: null } : { content: null, timestamp }),
+          viewKind:
+            viewKind === "full" ||
+            viewKind === "partial" ||
+            viewKind === "legacy_unknown"
+              ? viewKind
+              : "legacy_unknown",
+        };
       }
     }
   } catch {
@@ -168,11 +188,17 @@ function recordSessionRead(
     ...(fileMap.get(path) ?? {}),
     ...snapshot,
   };
+  if (nextSnapshot.viewKind === undefined) {
+    nextSnapshot.viewKind = snapshot.viewKind ?? "full";
+  }
   fileMap.set(path, nextSnapshot);
   persistLocalFileHistorySnapshot(sessionId, path, nextSnapshot);
 }
 
-async function readFreshTextSnapshot(path: string): Promise<SessionReadSnapshot> {
+async function readFreshTextSnapshot(
+  path: string,
+  viewKind: SessionReadViewKind,
+): Promise<SessionReadSnapshot> {
   const [content, fileStats] = await Promise.all([
     readFile(path, "utf-8"),
     stat(path),
@@ -183,7 +209,14 @@ async function readFreshTextSnapshot(path: string): Promise<SessionReadSnapshot>
       typeof fileStats.mtimeMs === "number" && Number.isFinite(fileStats.mtimeMs)
         ? fileStats.mtimeMs
         : Date.now(),
+    viewKind,
   };
+}
+
+function requiresFullReadSnapshot(
+  snapshot: SessionReadSnapshot | undefined,
+): boolean {
+  return snapshot?.viewKind !== "full";
 }
 
 function hasFileChangedSinceSnapshot(
@@ -201,10 +234,10 @@ async function loadEditableFile(
   path: string,
 ): Promise<{ content: string } | { error: ToolResult }> {
   const snapshot = getSessionReadSnapshot(sessionId, path);
-  if (!snapshot) {
+  if (requiresFullReadSnapshot(snapshot)) {
     return {
       error: fail(
-        `File has not been read yet. Use view first before modifying ${path}.`,
+        `View the full file before modifying ${path}.`,
       ),
     };
   }
@@ -226,8 +259,12 @@ async function loadEditableFile(
   }
 }
 
-async function recordFreshSnapshot(sessionId: string | undefined, path: string): Promise<void> {
-  const snapshot = await readFreshTextSnapshot(path);
+async function recordFreshSnapshot(
+  sessionId: string | undefined,
+  path: string,
+  viewKind: SessionReadViewKind,
+): Promise<void> {
+  const snapshot = await readFreshTextSnapshot(path, viewKind);
   recordSessionRead(sessionId, path, snapshot);
 }
 
@@ -308,16 +345,25 @@ async function textEditorView(
     }
     const content = await readFile(path, "utf-8");
     const lines = content.split("\n");
-    await recordFreshSnapshot(sessionId, path);
 
     if (viewRange && Array.isArray(viewRange) && viewRange.length === 2) {
       const start = Math.max(1, Number(viewRange[0]));
       const end = Math.min(lines.length, Number(viewRange[1]));
       if (start > end) return fail(`Invalid range: [${start}, ${end}]`);
       const slice = lines.slice(start - 1, end);
+      recordSessionRead(sessionId, path, {
+        content: slice.join("\n"),
+        timestamp: s.mtimeMs,
+        viewKind: "partial",
+      });
       return ok({ output: numberLines(slice.join("\n"), start) });
     }
 
+    recordSessionRead(sessionId, path, {
+      content,
+      timestamp: s.mtimeMs,
+      viewKind: "full",
+    });
     return ok({ output: numberLines(content) });
   } catch (e) {
     return fail(`Failed to read ${path}: ${e instanceof Error ? e.message : e}`);
@@ -344,7 +390,7 @@ async function textEditorCreate(
     }
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, fileText, "utf-8");
-    await recordFreshSnapshot(sessionId, path);
+    await recordFreshSnapshot(sessionId, path, "full");
     return ok({ output: `File created at ${path} (${fileText.split("\n").length} lines)` });
   } catch (e) {
     return fail(`Failed to create ${path}: ${e instanceof Error ? e.message : e}`);
@@ -388,7 +434,7 @@ async function textEditorStrReplace(
 
     const updated = content.replace(oldStr, newStr);
     await writeFile(path, updated, "utf-8");
-    await recordFreshSnapshot(sessionId, path);
+    await recordFreshSnapshot(sessionId, path, "full");
     return ok({ output: `Replacement applied in ${path}` });
   } catch (e) {
     return fail(`str_replace failed: ${e instanceof Error ? e.message : e}`);
@@ -426,7 +472,7 @@ async function textEditorInsert(
     const newLines = newStr.split("\n");
     lines.splice(insertLine, 0, ...newLines);
     await writeFile(path, lines.join("\n"), "utf-8");
-    await recordFreshSnapshot(sessionId, path);
+    await recordFreshSnapshot(sessionId, path, "full");
     return ok({
       output: `Inserted ${newLines.length} line(s) after line ${insertLine} in ${path}`,
     });
@@ -449,7 +495,7 @@ async function textEditorUndo(
       return loaded.error;
     }
     await writeFile(path, prev, "utf-8");
-    await recordFreshSnapshot(sessionId, path);
+    await recordFreshSnapshot(sessionId, path, "full");
     undoBuffer.delete(path);
     return ok({ output: `Reverted ${path} to previous version` });
   } catch (e) {

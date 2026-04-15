@@ -36,11 +36,6 @@ describe("completion-state", () => {
             isError: false,
           },
         ],
-        completionContract: {
-          taskClass: "scaffold_allowed",
-          placeholdersAllowed: true,
-          partialCompletionAllowed: true,
-        },
       }),
     ).toBe("partial");
   });
@@ -58,60 +53,47 @@ describe("completion-state", () => {
             isError: false,
           },
         ],
-        verificationContract: {
-          workspaceRoot: "/workspace",
-          targetArtifacts: ["/workspace/src/shell.c"],
-          acceptanceCriteria: [
-            "Shell job-control behavior is verified with scenario coverage",
-          ],
-          completionContract: {
-            taskClass: "artifact_only",
-            placeholdersAllowed: false,
-            partialCompletionAllowed: false,
-          },
-        },
+        requiresVerification: true,
+        verificationSatisfied: false,
       }),
     ).toBe("partial");
   });
 
-  it("uses the same completion semantics for planner and direct implementation when the workflow contract matches", () => {
+  it("uses the same completion semantics for planner and direct implementation when verification is not required", () => {
     const sharedInput = {
       stopReason: "completed",
       toolCalls: [
         {
           name: "system.writeFile",
           args: { path: "/workspace/src/main.c" },
-          result: JSON.stringify({ ok: true }),
-          isError: false,
-        },
-      ],
-      verificationContract: {
-        workspaceRoot: "/workspace",
-        targetArtifacts: ["/workspace/src/main.c"],
-        verificationMode: "mutation_required" as const,
-        completionContract: {
-          taskClass: "artifact_only" as const,
-          placeholdersAllowed: false,
-          partialCompletionAllowed: false,
-          placeholderTaxonomy: "implementation" as const,
-        },
-      },
-      verifier: {
-        performed: false,
-        overall: "skipped" as const,
-      },
+            result: JSON.stringify({ ok: true }),
+            isError: false,
+          },
+        ],
+      requiresVerification: false,
+      verificationSatisfied: false,
     };
 
     expect(resolveWorkflowCompletionState(sharedInput)).toBe("completed");
+    expect(resolveWorkflowCompletionState({ ...sharedInput })).toBe("completed");
+  });
+
+  it("returns needs_verification when an implementation turn still requires verifier confirmation", () => {
     expect(
       resolveWorkflowCompletionState({
-        ...sharedInput,
-        verificationContract: {
-          ...sharedInput.verificationContract,
-          stepKind: "delegated_write",
-        },
+        stopReason: "completed",
+        toolCalls: [
+          {
+            name: "system.writeFile",
+            args: { path: "/workspace/src/runner.js" },
+            result: JSON.stringify({ ok: true }),
+            isError: false,
+          },
+        ],
+        requiresVerification: true,
+        verificationSatisfied: false,
       }),
-    ).toBe("completed");
+    ).toBe("needs_verification");
   });
 
   it("keeps behavior-required work completed when verification is skipped on a normal turn", () => {
@@ -126,21 +108,8 @@ describe("completion-state", () => {
             isError: false,
           },
         ],
-        verificationContract: {
-          workspaceRoot: "/workspace",
-          targetArtifacts: ["/workspace/src/runner.js"],
-          acceptanceCriteria: ["Behavior verification must pass before completion."],
-          completionContract: {
-            taskClass: "behavior_required",
-            placeholdersAllowed: false,
-            partialCompletionAllowed: false,
-            placeholderTaxonomy: "implementation",
-          },
-        },
-        verifier: {
-          performed: false,
-          overall: "skipped",
-        },
+        requiresVerification: false,
+        verificationSatisfied: false,
       }),
     ).toBe("completed");
   });
@@ -157,10 +126,8 @@ describe("completion-state", () => {
             isError: false,
           },
         ],
-        verifier: {
-          performed: false,
-          overall: "skipped",
-        },
+        requiresVerification: false,
+        verificationSatisfied: false,
       }),
     ).toBe("completed");
   });
@@ -183,28 +150,8 @@ describe("completion-state", () => {
             isError: false,
           },
         ],
-        verificationContract: {
-          workspaceRoot: "/workspace",
-          targetArtifacts: ["/workspace/src/main.c"],
-          verificationMode: "mutation_required",
-          requestCompletion: {
-            requiredMilestones: [
-              { id: "phase_1_impl", description: "Implement phase 1" },
-              { id: "phase_2_verify", description: "Verify phase 2" },
-            ],
-          },
-          completionContract: {
-            taskClass: "build_required",
-            placeholdersAllowed: false,
-            partialCompletionAllowed: false,
-            placeholderTaxonomy: "implementation",
-          },
-        },
-        completedRequestMilestoneIds: ["phase_1_impl"],
-        verifier: {
-          performed: true,
-          overall: "pass",
-        },
+        requiresVerification: true,
+        verificationSatisfied: true,
       }),
     ).toBe("completed");
   });
@@ -221,10 +168,8 @@ describe("completion-state", () => {
             isError: false,
           },
         ],
-        verifier: {
-          performed: true,
-          overall: "fail",
-        },
+        requiresVerification: false,
+        verificationSatisfied: false,
       }),
     ).toBe("completed");
   });

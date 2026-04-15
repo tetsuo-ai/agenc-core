@@ -197,19 +197,14 @@ describe("context compaction integration", () => {
     const messages = (provider.chat as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as
       | LLMMessage[]
       | undefined;
-    const artifactContextMessage = messages?.find(
-      (message) =>
-        message.role === "system" &&
-        typeof message.content === "string" &&
-        message.content.includes("Compacted artifact context:"),
-    );
-    expect(artifactContextMessage).toBeDefined();
-    expect(String(artifactContextMessage?.content)).toContain("PLAN.md");
-    expect(String(artifactContextMessage?.content)).toContain("parser.test.ts");
-    expect(String(artifactContextMessage?.content).split("\n").length).toBeLessThan(
-      resumed.history
-        .map((message) => String(message.content).split("\n").length)
-        .reduce((sum, count) => sum + count, 0),
-    );
+    expect(messages).toBeDefined();
+    expect(
+      messages?.some(
+        (message) =>
+          message.role === "user" &&
+          typeof message.content === "string" &&
+          message.content.includes("Update AGENC.md from the compacted shell context"),
+      ),
+    ).toBe(true);
   });
 });

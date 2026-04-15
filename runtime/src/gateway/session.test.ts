@@ -395,10 +395,13 @@ describe("SessionManager", () => {
       );
       expect(
         session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY],
-      ).toBeUndefined();
+      ).toMatchObject({
+        version: 1,
+        artifactRefs: expect.any(Array),
+      });
       expect(
         session.metadata[SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY],
-      ).toBeUndefined();
+      ).toEqual(expect.any(Array));
       expect(
         session.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY],
       ).toBe(true);
@@ -472,7 +475,10 @@ describe("SessionManager", () => {
       );
       expect(
         session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY],
-      ).toBeUndefined();
+      ).toMatchObject({
+        version: 1,
+        artifactRefs: expect.any(Array),
+      });
     });
 
     it("dedupes artifact refs across repeated compactions during long sessions", async () => {

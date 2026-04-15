@@ -28,6 +28,7 @@ import type {
   ChatExecutionTraceEvent,
   ChatCallUsageRecord,
   ExecutionContext,
+  ToolLoopTerminalResult,
   ToolLoopState,
   ToolCallAction,
   RecoveryHint,
@@ -45,6 +46,7 @@ import {
   repairToolCallArgumentsFromMessageText,
   parseToolCallArguments,
   executeToolWithRetry,
+  didToolCallFail,
   summarizeToolArgumentChanges,
   buildToolLoopRecoveryMessages,
   buildRoutingExpansionMessage,
@@ -208,6 +210,40 @@ export interface ToolLoopCallbacks {
 }
 
 const TOOL_PROTOCOL_REPAIR_ERROR = "tool_protocol_repair";
+const TERMINAL_MUTATION_TOOL_NAMES = new Set([
+  "system.applyPatch",
+  "system.appendFile",
+  "system.delete",
+  "system.editFile",
+  "system.mkdir",
+  "system.move",
+  "system.writeFile",
+  "desktop.text_editor",
+]);
+
+function detectSuccessfulWorkspaceMutation(
+  toolCalls: readonly ToolCallRecord[],
+): boolean {
+  return toolCalls.some(
+    (call) =>
+      TERMINAL_MUTATION_TOOL_NAMES.has(call.name) &&
+      !didToolCallFail(call.isError, call.result),
+  );
+}
+
+function buildToolLoopTerminalResult(
+  ctx: ExecutionContext,
+): ToolLoopTerminalResult {
+  return {
+    content: ctx.finalContent,
+    stopReason: ctx.stopReason,
+    ...(ctx.stopReasonDetail ? { stopReasonDetail: ctx.stopReasonDetail } : {}),
+    ...(ctx.validationCode ? { validationCode: ctx.validationCode } : {}),
+    ...(ctx.verifierSnapshot ? { verifierSnapshot: ctx.verifierSnapshot } : {}),
+    runtimeContractSnapshot: ctx.runtimeContractSnapshot,
+    mutationDetected: detectSuccessfulWorkspaceMutation(ctx.allToolCalls),
+  };
+}
 
 function syncToolProtocolSnapshot(ctx: ExecutionContext): void {
   ctx.runtimeContractSnapshot = updateRuntimeContractToolProtocolSnapshot({
@@ -1381,7 +1417,7 @@ export async function executeToolCallLoop(
   ctx: ExecutionContext,
   config: ToolLoopConfig,
   callbacks: ToolLoopCallbacks,
-): Promise<void> {
+): Promise<ToolLoopTerminalResult> {
   // Phase A wire-up: run the layered compaction chain before the
   // initial provider call. This is the top-of-iteration insertion
   // point for the layered compaction runtime. Phase H added
@@ -2520,6 +2556,8 @@ export async function executeToolCallLoop(
   if (!ctx.finalContent && ctx.stopReason !== "completed" && ctx.stopReasonDetail) {
     ctx.finalContent = ctx.stopReasonDetail;
   }
+
+  return buildToolLoopTerminalResult(ctx);
 }
 
 // ============================================================================

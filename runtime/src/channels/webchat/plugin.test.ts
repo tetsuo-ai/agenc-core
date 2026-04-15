@@ -2123,16 +2123,22 @@ describe("WebChatChannel", () => {
         expect(
           await loadPersistedSessionRuntimeState(memoryBackend, targetSessionId),
         ).toMatchObject({
-          shellProfile: "research",
-          workflowState: expect.objectContaining({
-            objective: "Investigate a variant",
-          }),
+          version: 1,
+          snapshot: {
+            shellProfile: "research",
+            workflowState: expect.objectContaining({
+              objective: "Investigate a variant",
+            }),
+            forkMarker: expect.objectContaining({
+              parentSessionId: "session-source",
+            }),
+          },
         });
         const targetState = await loadPersistedSessionRuntimeState(
           memoryBackend,
           targetSessionId,
         );
-        expect(targetState?.activeTaskContext).toBeUndefined();
+        expect(targetState?.snapshot.activeTaskContext).toBeUndefined();
       } finally {
         rmSync(workspaceRoot, { recursive: true, force: true });
       }

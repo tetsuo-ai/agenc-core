@@ -118,9 +118,19 @@ describe('Functional: system.appendFile', () => {
     const append = findTool(tools, 'system.appendFile');
     const read = findTool(tools, 'system.readFile');
     const filePath = join(sandbox, 'append.txt');
+    const sessionId = 'append-session';
 
-    await write.execute({ path: filePath, content: 'line1\n' });
-    await append.execute({ path: filePath, content: 'line2\n' });
+    await write.execute({
+      path: filePath,
+      content: 'line1\n',
+      __agencSessionId: sessionId,
+    });
+    await read.execute({ path: filePath, __agencSessionId: sessionId });
+    await append.execute({
+      path: filePath,
+      content: 'line2\n',
+      __agencSessionId: sessionId,
+    });
 
     const rr = await read.execute({ path: filePath });
     expect(parse(rr).content).toBe('line1\nline2\n');

@@ -330,7 +330,44 @@ test("text_editor requires a prior view before mutating an existing file", async
     });
     assert.equal(result.isError, true);
     const payload = JSON.parse(result.content) as Record<string, unknown>;
-    assert.match(String(payload.error ?? ""), /has not been read yet/i);
+    assert.match(String(payload.error ?? ""), /view the full file before modifying/i);
+  } finally {
+    __textEditorTestHooks.clearSessionReadState(sessionId);
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("text_editor rejects mutations after a partial view_range read", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "agenc-text-editor-partial-"));
+  const targetPath = join(workspace, "notes.txt");
+  const sessionId = `session-${Date.now().toString(36)}`;
+
+  try {
+    await executeTool("text_editor", {
+      command: "create",
+      path: targetPath,
+      file_text: "hello\nworld\n",
+      __agencSessionId: sessionId,
+    });
+
+    const viewed = await executeTool("text_editor", {
+      command: "view",
+      path: targetPath,
+      view_range: [1, 1],
+      __agencSessionId: sessionId,
+    });
+    assert.notEqual(viewed.isError, true);
+
+    const result = await executeTool("text_editor", {
+      command: "str_replace",
+      path: targetPath,
+      old_str: "world",
+      new_str: "runtime",
+      __agencSessionId: sessionId,
+    });
+    assert.equal(result.isError, true);
+    const payload = JSON.parse(result.content) as Record<string, unknown>;
+    assert.match(String(payload.error ?? ""), /full file/i);
   } finally {
     __textEditorTestHooks.clearSessionReadState(sessionId);
     await rm(workspace, { recursive: true, force: true });

@@ -171,12 +171,16 @@ describe("web session runtime state helpers", () => {
     expect(
       await loadPersistedSessionRuntimeState(memoryBackend, "web-session-artifacts"),
     ).toMatchObject({
-      version: 7,
-      statefulResumeAnchor: {
-        previousResponseId: "resp-123",
-        reconciliationHash: "hash-123",
+      version: 1,
+      boundarySeq: 1,
+      snapshot: {
+        statefulResumeAnchor: {
+          previousResponseId: "resp-123",
+          reconciliationHash: "hash-123",
+        },
+        statefulHistoryCompacted: true,
       },
-      statefulHistoryCompacted: true,
+      tailEvents: expect.any(Array),
     });
 
     const hydrated = createSession();
@@ -219,12 +223,15 @@ describe("web session runtime state helpers", () => {
     await persistSessionRuntimeState(memoryBackend, "web-legacy", hydrated);
     expect(
       await loadPersistedSessionRuntimeState(memoryBackend, "web-legacy"),
-    ).toEqual({
-      version: 7,
-      statefulResumeAnchor: {
-        previousResponseId: "resp-legacy",
+    ).toMatchObject({
+      version: 1,
+      migratedFromLegacyAt: expect.any(Number),
+      snapshot: {
+        statefulResumeAnchor: {
+          previousResponseId: "resp-legacy",
+        },
+        statefulHistoryCompacted: true,
       },
-      statefulHistoryCompacted: true,
     });
   });
   it("persists and hydrates active task context across web-session resume", async () => {
@@ -362,11 +369,11 @@ describe("web session runtime state helpers", () => {
     });
     expect(forked).toBe(true);
     const persisted = await loadPersistedSessionRuntimeState(memoryBackend, "web-target");
-    expect(persisted?.reviewSurfaceState).toMatchObject({
+    expect(persisted?.snapshot.reviewSurfaceState).toMatchObject({
       status: "idle",
       source: "local",
     });
-    expect(persisted?.verificationSurfaceState).toMatchObject({
+    expect(persisted?.snapshot.verificationSurfaceState).toMatchObject({
       status: "idle",
       source: "local",
       verdict: "unknown",
@@ -438,14 +445,20 @@ describe("web session runtime state helpers", () => {
         "web-session-target",
       ),
     ).toMatchObject({
-      shellProfile: "research",
-      workflowState: expect.objectContaining({
-        objective: "Investigate a branch",
-      }),
-      statefulResumeAnchor: {
-        previousResponseId: "resp-123",
+      version: 1,
+      snapshot: {
+        shellProfile: "research",
+        workflowState: expect.objectContaining({
+          objective: "Investigate a branch",
+        }),
+        statefulResumeAnchor: {
+          previousResponseId: "resp-123",
+        },
+        statefulHistoryCompacted: true,
+        forkMarker: expect.objectContaining({
+          parentSessionId: "web-session-source",
+        }),
       },
-      statefulHistoryCompacted: true,
     });
     expect(
       (
@@ -453,7 +466,7 @@ describe("web session runtime state helpers", () => {
           memoryBackend,
           "web-session-target",
         )
-      )?.activeTaskContext,
+      )?.snapshot.activeTaskContext,
     ).toBeUndefined();
   });
 

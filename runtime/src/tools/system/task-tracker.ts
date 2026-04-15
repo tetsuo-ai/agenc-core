@@ -39,6 +39,8 @@ const MAX_OUTPUT_MAX_BYTES = 512 * 1024;
  * into task tools.
  */
 export const TASK_LIST_ARG = "__agencTaskListId";
+export const TASK_ACTOR_KIND_ARG = "__agencTaskActorKind";
+export const TASK_ACTOR_NAME_ARG = "__agencTaskActorName";
 
 /**
  * Default task list id used when the gateway has not injected a
@@ -298,6 +300,13 @@ export interface TaskTrackerToolOptions {
   readonly onTaskAccessEvent?: (
     event: TaskTrackerAccessNotification,
   ) => void | Promise<void>;
+  readonly resolveActingOwner?: (params: {
+    readonly listId: string;
+    readonly args: Record<string, unknown>;
+    readonly task: Task;
+    readonly actorKind: "main" | "subagent";
+    readonly actorName?: string;
+  }) => string | undefined | Promise<string | undefined>;
 }
 
 interface TaskStoreOptions {
@@ -501,6 +510,30 @@ function resolveListId(args: Record<string, unknown>): string {
     return value;
   }
   return DEFAULT_TASK_LIST_ID;
+}
+
+function resolveTaskActor(
+  args: Record<string, unknown>,
+): { readonly kind: "main" | "subagent"; readonly name?: string } {
+  const kind = args[TASK_ACTOR_KIND_ARG] === "subagent" ? "subagent" : "main";
+  const name = asNonEmptyString(args[TASK_ACTOR_NAME_ARG]);
+  return name ? { kind, name } : { kind };
+}
+
+function shouldEmitVerificationNudge(params: {
+  readonly tasks: readonly Task[];
+  readonly actorKind: "main" | "subagent";
+}): boolean {
+  if (params.actorKind !== "main" || params.tasks.length < 3) {
+    return false;
+  }
+  if (!params.tasks.every((task) => task.status === "completed")) {
+    return false;
+  }
+  return !params.tasks.some((task) => {
+    const runtimeMetadata = normalizeRequestTaskRuntimeMetadata(task.metadata);
+    return runtimeMetadata.verification || /verif/i.test(task.subject);
+  });
 }
 
 function errorResult(message: string): ToolResult {
@@ -1973,6 +2006,7 @@ export function createTaskTrackerTools(
       const taskId = asNonEmptyString(args.taskId);
       if (!taskId) return errorResult("taskId must be a non-empty string");
       const listId = resolveListId(args);
+      const actor = resolveTaskActor(args);
       const patch: TaskUpdatePatch = {};
 
       if (args.status !== undefined) {
@@ -2032,6 +2066,25 @@ export function createTaskTrackerTools(
       const current = await taskStore.readTaskState(listId, taskId);
       if (!current) return errorResult(`task ${taskId} not found`);
 
+      if (
+        patch.status === "in_progress" &&
+        patch.owner === undefined &&
+        current.task.owner === undefined
+      ) {
+        const autoOwner =
+          (await options.resolveActingOwner?.({
+            listId,
+            args,
+            task: current.task,
+            actorKind: actor.kind,
+            actorName: actor.name,
+          })) ??
+          (actor.kind === "subagent" ? actor.name : undefined);
+        if (autoOwner) {
+          patch.owner = autoOwner;
+        }
+      }
+
       const isTransitioningToCompleted =
         patch.status === "completed" && current.task.status !== "completed";
       const shouldGuardCompletion =
@@ -2074,10 +2127,21 @@ export function createTaskTrackerTools(
         isTransitioningToCompleted ? current.revision : undefined,
       );
       if (!task) return errorResult(`task ${taskId} not found`);
+      const allTasks =
+        patch.status === "completed"
+          ? await taskStore.listTasks(listId)
+          : [];
+      const verificationNudgeNeeded = shouldEmitVerificationNudge({
+        tasks: allTasks,
+        actorKind: actor.kind,
+      });
       return okResult({
-        message: `Task #${task.id} updated`,
+        message: verificationNudgeNeeded
+          ? `Task #${task.id} updated\n\nNOTE: You just closed out 3+ tasks and none of them was a verification step. Run the verifier before writing the final summary.`
+          : `Task #${task.id} updated`,
         task: summarizeTask(task),
         taskRuntime: taskRuntime(task),
+        ...(verificationNudgeNeeded ? { verificationNudgeNeeded: true } : {}),
       });
     },
   };

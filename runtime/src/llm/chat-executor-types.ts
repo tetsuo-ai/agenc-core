@@ -386,6 +386,18 @@ export interface ChatExecutorResult {
   readonly validationCode?: DelegationOutputValidationCode;
 }
 
+/** Authoritative terminal payload returned from the tool loop. */
+export interface ToolLoopTerminalResult {
+  readonly content: string;
+  readonly stopReason: LLMPipelineStopReason;
+  readonly stopReasonDetail?: string;
+  readonly validationCode?: DelegationOutputValidationCode;
+  readonly completionState?: WorkflowCompletionState;
+  readonly verifierSnapshot?: import("../workflow/completion-state.js").PlannerVerificationSnapshot;
+  readonly runtimeContractSnapshot: RuntimeContractSnapshot;
+  readonly mutationDetected: boolean;
+}
+
 /** Minimal pipeline executor interface required by ChatExecutor planner path. */
 export interface DeterministicPipelineExecutor {
   execute(

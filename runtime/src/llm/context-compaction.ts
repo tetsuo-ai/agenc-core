@@ -52,10 +52,33 @@ interface ArtifactCompactionInput {
 }
 
 interface ArtifactCompactionOutput {
+  readonly boundaryMessage: LLMMessage;
   readonly compactedHistory: readonly LLMMessage[];
   readonly state: ArtifactCompactionState;
   readonly records: readonly ContextArtifactRecord[];
   readonly summaryText: string;
+}
+
+export function createCompactBoundaryMessage(params: {
+  readonly boundaryId: string;
+  readonly source: "session_compaction" | "executor_compaction";
+  readonly sourceMessageCount: number;
+  readonly retainedTailCount: number;
+  readonly summaryText?: string;
+}): LLMMessage {
+  const content = [
+    `[boundary] replay:${params.boundaryId}`,
+    `source=${params.source}`,
+    `messages=${params.sourceMessageCount}`,
+    `retained=${params.retainedTailCount}`,
+    ...(params.summaryText?.trim().length
+      ? [`summary=${truncateText(params.summaryText, 240)}`]
+      : []),
+  ].join(" ");
+  return {
+    role: "system",
+    content,
+  };
 }
 
 function extractText(message: LLMMessage): string {
@@ -443,8 +466,16 @@ export function compactHistoryIntoArtifactContext(
       openLoops: [],
       artifactRefs: [],
     };
+    const boundaryMessage = createCompactBoundaryMessage({
+      boundaryId: emptyState.snapshotId,
+      source: input.source,
+      sourceMessageCount: input.history.length,
+      retainedTailCount: input.history.length,
+      summaryText: renderSummaryText(emptyState),
+    });
     return {
-      compactedHistory: [...input.history],
+      boundaryMessage,
+      compactedHistory: [boundaryMessage, ...input.history],
       state: emptyState,
       records: [],
       summaryText: renderSummaryText(emptyState),
@@ -523,15 +554,20 @@ export function compactHistoryIntoArtifactContext(
     artifactRefs,
   };
   const summaryText = renderSummaryText(state);
+  const boundaryMessage = createCompactBoundaryMessage({
+    boundaryId: state.snapshotId,
+    source: input.source,
+    sourceMessageCount: toCompact.length,
+    retainedTailCount: toKeep.length,
+    summaryText,
+  });
   return {
     compactedHistory: [
-      {
-        role: "system",
-        content: summaryText,
-      },
+      boundaryMessage,
       ...preservedMessages,
       ...toKeep,
     ],
+    boundaryMessage,
     state,
     records: selectedRecords,
     summaryText,

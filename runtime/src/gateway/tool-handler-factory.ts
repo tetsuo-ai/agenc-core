@@ -19,6 +19,8 @@ import {
   SESSION_ID_ARG,
 } from "../tools/system/filesystem.js";
 import {
+  TASK_ACTOR_KIND_ARG,
+  TASK_ACTOR_NAME_ARG,
   TASK_LIST_ARG,
   TASK_TRACKER_TOOL_NAMES,
 } from "../tools/system/task-tracker.js";
@@ -294,9 +296,18 @@ function stripInternalToolArgs(
 ): Record<string, unknown> {
   const hasAllowedRoots = SESSION_ALLOWED_ROOTS_ARG in args;
   const hasTaskListId = TASK_LIST_ARG in args;
+  const hasTaskActorKind = TASK_ACTOR_KIND_ARG in args;
+  const hasTaskActorName = TASK_ACTOR_NAME_ARG in args;
   const hasSessionId = SESSION_ID_ARG in args;
   const hasAdvertisedToolNames = SESSION_ADVERTISED_TOOL_NAMES_ARG in args;
-  if (!hasAllowedRoots && !hasTaskListId && !hasSessionId && !hasAdvertisedToolNames) {
+  if (
+    !hasAllowedRoots &&
+    !hasTaskListId &&
+    !hasTaskActorKind &&
+    !hasTaskActorName &&
+    !hasSessionId &&
+    !hasAdvertisedToolNames
+  ) {
     return args;
   }
   const nextArgs = { ...args };
@@ -305,6 +316,12 @@ function stripInternalToolArgs(
   }
   if (hasTaskListId) {
     delete nextArgs[TASK_LIST_ARG];
+  }
+  if (hasTaskActorKind) {
+    delete nextArgs[TASK_ACTOR_KIND_ARG];
+  }
+  if (hasTaskActorName) {
+    delete nextArgs[TASK_ACTOR_NAME_ARG];
   }
   if (hasSessionId) {
     delete nextArgs[SESSION_ID_ARG];
@@ -329,6 +346,26 @@ function applySessionTaskListId(
   return {
     ...args,
     [TASK_LIST_ARG]: sessionId,
+  };
+}
+
+function applyTaskActorContext(
+  toolName: string,
+  args: Record<string, unknown>,
+  isSubAgentSession: boolean,
+  subAgentInfo: DelegationSubAgentInfo,
+): Record<string, unknown> {
+  if (!TASK_TRACKER_TOOL_NAMES.has(toolName)) {
+    return args;
+  }
+  const actorName =
+    isSubAgentSession
+      ? subAgentInfo?.role?.trim() || subAgentInfo?.sessionId?.trim()
+      : undefined;
+  return {
+    ...args,
+    [TASK_ACTOR_KIND_ARG]: isSubAgentSession ? "subagent" : "main",
+    ...(actorName ? { [TASK_ACTOR_NAME_ARG]: actorName } : {}),
   };
 }
 
@@ -2936,6 +2973,12 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
       delegatedParentAllowedRoots,
     );
     executionArgs = applySessionTaskListId(toolName, executionArgs, sessionIdentity);
+    executionArgs = applyTaskActorContext(
+      toolName,
+      executionArgs,
+      isSubAgentSession,
+      subAgentInfo,
+    );
     executionArgs = applySessionId(toolName, executionArgs, sessionIdentity);
     executionArgs = applyAdvertisedToolNames(
       toolName,

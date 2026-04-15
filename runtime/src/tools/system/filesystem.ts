@@ -66,6 +66,10 @@ const DEFAULT_MAX_WRITE_BYTES = 10_485_760; // 10 MB
 const MAX_LIST_ENTRIES = 10_000;
 const MAX_PATH_LENGTH = 4096;
 export const SESSION_ALLOWED_ROOTS_ARG = "__agencSessionAllowedRoots";
+export type SessionReadViewKind =
+  | "full"
+  | "partial"
+  | "legacy_unknown";
 
 /**
  * Per-session arg name carrying the session identifier into filesystem
@@ -121,12 +125,14 @@ export const SESSION_ID_ARG = "__agencSessionId";
 interface SessionReadSnapshot {
   readonly content?: string | null;
   readonly timestamp?: number;
+  readonly viewKind?: SessionReadViewKind;
 }
 
 export interface SessionReadSeedEntry {
   readonly path: string;
   readonly content?: string | null;
   readonly timestamp?: number;
+  readonly viewKind?: SessionReadViewKind;
 }
 
 const sessionReadState = new Map<string, Map<string, SessionReadSnapshot>>();
@@ -189,6 +195,7 @@ function persistLocalFileHistorySnapshot(
     entries.push({
       content: snapshot.content ?? null,
       timestamp: snapshot.timestamp,
+      viewKind: snapshot.viewKind ?? "legacy_unknown",
       recordedAt: Date.now(),
     });
     if (entries.length > LOCAL_FILE_HISTORY_MAX_ENTRIES) {
@@ -216,6 +223,7 @@ function loadPersistedSessionReadSnapshot(
       const entry = parsed[index];
       if (typeof entry !== "object" || entry === null) continue;
       const content = (entry as { content?: unknown }).content;
+      const viewKind = (entry as { viewKind?: unknown }).viewKind;
       const timestampValue = (entry as { timestamp?: unknown }).timestamp;
       const recordedAtValue = (entry as { recordedAt?: unknown }).recordedAt;
       const timestamp =
@@ -225,12 +233,28 @@ function loadPersistedSessionReadSnapshot(
             ? recordedAtValue
             : undefined;
       if (typeof content === "string") {
-        return timestamp === undefined ? { content } : { content, timestamp };
+        return {
+          ...(timestamp === undefined ? { content } : { content, timestamp }),
+          viewKind:
+            viewKind === "full" ||
+            viewKind === "partial" ||
+            viewKind === "legacy_unknown"
+              ? viewKind
+              : "legacy_unknown",
+        };
       }
       if (content === null) {
-        return timestamp === undefined
-          ? { content: null }
-          : { content: null, timestamp };
+        return {
+          ...(timestamp === undefined
+            ? { content: null }
+            : { content: null, timestamp }),
+          viewKind:
+            viewKind === "full" ||
+            viewKind === "partial" ||
+            viewKind === "legacy_unknown"
+              ? viewKind
+              : "legacy_unknown",
+        };
       }
     }
   } catch {
@@ -279,10 +303,16 @@ export function recordSessionRead(
     sessionReadState.set(sessionId, fileMap);
   }
   const previous = fileMap.get(canonicalPath);
-  const nextSnapshot = {
-    ...(previous ?? {}),
-    ...(snapshot ?? {}),
-  };
+  const nextSnapshot = snapshot
+    ? {
+        ...(previous ?? {}),
+        ...snapshot,
+      }
+    : { viewKind: "full" as SessionReadViewKind };
+  if (nextSnapshot.viewKind === undefined) {
+    nextSnapshot.viewKind =
+      snapshot?.viewKind ?? "full";
+  }
   fileMap.set(canonicalPath, nextSnapshot);
   persistLocalFileHistorySnapshot(sessionId, canonicalPath, nextSnapshot);
 }
@@ -301,15 +331,22 @@ export function seedSessionReadState(
       ...(typeof entry.timestamp === "number" && Number.isFinite(entry.timestamp)
         ? { timestamp: entry.timestamp }
         : {}),
+      viewKind: entry.viewKind ?? "legacy_unknown",
     });
   }
+}
+
+function isFullSessionRead(snapshot: SessionReadSnapshot | undefined): boolean {
+  return snapshot?.viewKind === "full";
 }
 
 export function hasSessionRead(
   sessionId: string | undefined,
   canonicalPath: string,
 ): boolean {
-  return rehydrateSessionReadSnapshot(sessionId, canonicalPath) !== undefined;
+  return isFullSessionRead(
+    rehydrateSessionReadSnapshot(sessionId, canonicalPath),
+  );
 }
 
 export function getSessionReadSnapshot(
@@ -879,6 +916,7 @@ function getFileTimestampMs(fileStats: { mtimeMs?: number }): number | undefined
 
 async function readFreshTextSnapshot(
   path: string,
+  viewKind: SessionReadViewKind,
 ): Promise<SessionReadSnapshot> {
   const [buffer, fileStats] = await Promise.all([
     readFile(path),
@@ -887,7 +925,14 @@ async function readFreshTextSnapshot(
   return {
     content: isBinaryContent(buffer) ? null : buffer.toString("utf-8"),
     timestamp: getFileTimestampMs(fileStats) ?? Date.now(),
+    viewKind,
   };
+}
+
+function requiresFullReadSnapshot(
+  snapshot: SessionReadSnapshot | undefined,
+): boolean {
+  return snapshot?.viewKind !== "full";
 }
 
 function hasFileChangedSinceSnapshot(params: {
@@ -984,6 +1029,7 @@ function createReadFileTool(
         recordSessionRead(resolveSessionId(args), resolved!, {
           content: binary ? null : buffer.toString("utf-8"),
           timestamp: getFileTimestampMs(fileStats),
+          viewKind: "full",
         });
 
         return {
@@ -1072,15 +1118,19 @@ function createWriteFileTool(
           // prior read required.
         }
         const readSnapshot = getSessionReadSnapshot(sessionId, resolved!);
-        if (targetExists && readSnapshot === undefined) {
+        if (targetExists && requiresFullReadSnapshot(readSnapshot)) {
           return errorResult(
-            `File has not been read yet. Read it first before writing to it. ` +
+            `File must be fully read before writing to it. ` +
               `Call system.readFile on "${args.path}" before calling system.writeFile, ` +
               `OR prefer system.editFile (str_replace semantics) for incremental edits.`,
           );
         }
 
-        if (targetExists && readSnapshot?.content !== undefined) {
+        if (
+          targetExists &&
+          readSnapshot?.content !== undefined &&
+          readSnapshot.viewKind === "full"
+        ) {
           const existingBuffer = await readFile(resolved!);
           const existingContent = existingBuffer.toString("utf-8");
           if (
@@ -1137,7 +1187,7 @@ function createWriteFileTool(
         // Successful write counts as the "current state" the model has
         // seen — record the path so subsequent edits to the same file
         // in the same session don't require a redundant readFile.
-        const refreshedSnapshot = await readFreshTextSnapshot(resolved!);
+        const refreshedSnapshot = await readFreshTextSnapshot(resolved!, "full");
         recordSessionRead(sessionId, resolved!, refreshedSnapshot);
 
         return {
@@ -1196,6 +1246,8 @@ function createAppendFileTool(
           );
         }
 
+        const sessionId = resolveSessionId(args);
+
         // Check total resulting file size to prevent disk exhaustion via repeated appends
         try {
           const existing = await stat(resolved!);
@@ -1204,6 +1256,32 @@ function createAppendFileTool(
               `Resulting file size ${existing.size + data.length} bytes exceeds limit of ${maxWriteBytes} bytes`,
             );
           }
+
+          const readSnapshot = getSessionReadSnapshot(sessionId, resolved!);
+          if (requiresFullReadSnapshot(readSnapshot)) {
+            return errorResult(
+              `File must be fully read before appending to it. ` +
+                `Call system.readFile on "${args.path}" before calling system.appendFile.`,
+            );
+          }
+
+          if (
+            readSnapshot?.content !== undefined &&
+            readSnapshot.viewKind === "full"
+          ) {
+            const existingBuffer = await readFile(resolved!);
+            const existingContent = existingBuffer.toString("utf-8");
+            if (
+              hasFileChangedSinceSnapshot({
+                snapshot: readSnapshot,
+                currentContent: existingContent,
+              })
+            ) {
+              return errorResult(
+                `File has been modified since it was last read. Read "${args.path}" again before appending to it.`,
+              );
+            }
+          }
         } catch {
           // File doesn't exist yet — just the append size matters (checked above)
         }
@@ -1211,6 +1289,8 @@ function createAppendFileTool(
         // Create parent directories if needed (consistent with writeFile)
         await mkdir(dirname(resolved!), { recursive: true });
         await appendFile(resolved!, data);
+        const refreshedSnapshot = await readFreshTextSnapshot(resolved!, "full");
+        recordSessionRead(sessionId, resolved!, refreshedSnapshot);
         return {
           content: safeStringify({
             path: args.path,
@@ -1360,9 +1440,9 @@ function createEditFileTool(
         // called system.readFile on this path in the current session.
         const sessionId = resolveSessionId(args);
         const readSnapshot = getSessionReadSnapshot(sessionId, resolved!);
-        if (readSnapshot === undefined) {
+        if (requiresFullReadSnapshot(readSnapshot)) {
           return errorResult(
-            `File has not been read yet. Read it first before editing it. ` +
+            `File must be fully read before editing it. ` +
               `Call system.readFile on "${args.path}" before calling system.editFile. ` +
               `The Read-before-Edit rule exists so you have the literal current contents of the file ` +
               `(including any prior escape mistakes) in your context before generating the new edit.`,
@@ -1452,7 +1532,7 @@ function createEditFileTool(
 
         // Record the post-edit content as "read" so the next edit in
         // this session does not require a redundant readFile.
-        const refreshedSnapshot = await readFreshTextSnapshot(resolved!);
+        const refreshedSnapshot = await readFreshTextSnapshot(resolved!, "full");
         recordSessionRead(sessionId, resolved!, refreshedSnapshot);
 
         return {

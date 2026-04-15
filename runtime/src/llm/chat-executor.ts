@@ -441,7 +441,9 @@ export class ChatExecutor {
   }
 
 
-  private async executeToolCallLoop(ctx: ExecutionContext): Promise<void> {
+  private async executeToolCallLoop(
+    ctx: ExecutionContext,
+  ): Promise<import("./chat-executor-types.js").ToolLoopTerminalResult> {
     // Phase F extraction (PR-5): delegates to the free tool-loop
     // helper. The callback struct wires the pure ctx helpers from
     // chat-executor-ctx-helpers.ts and threads `callModelForPhase`

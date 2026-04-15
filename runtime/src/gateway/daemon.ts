@@ -165,13 +165,13 @@ import {
   type GovernanceAuditEventType,
 } from "../policy/index.js";
 import type { MemoryBackend } from "../memory/types.js";
-import { entryToMessage } from "../memory/types.js";
 import { createMemoryRetrievers } from "./memory-retriever-factory.js";
 import { createMemoryBackend } from "./memory-backend-factory.js";
 // loadWallet moved to ./daemon-tool-registry.ts and ./daemon-feature-wiring.ts
 import {
-  clearWebSessionRuntimeState,
-  hydrateWebSessionRuntimeState,
+  clearWebSessionReplayState,
+  hydrateWebSessionReplayState,
+  loadPersistedSessionReplayContext,
 } from "./daemon-session-state.js";
 import {
   executeWebChatConversationTurn as runWebChatConversationTurn,
@@ -4093,9 +4093,9 @@ export class DaemonManager {
         error: toErrorMessage(error),
       });
     });
-    await clearWebSessionRuntimeState(memoryBackend, webSessionId).catch(
-      (error) => {
-        this.logger.debug("Failed to delete web session runtime state", {
+    await clearWebSessionReplayState(memoryBackend, webSessionId).catch(
+      (error: unknown) => {
+        this.logger.debug("Failed to delete web session replay state", {
           sessionId: webSessionId,
           error: toErrorMessage(error),
         });
@@ -4128,21 +4128,19 @@ export class DaemonManager {
       scope: "dm",
       workspaceId: "default",
     });
-    const thread = await memoryBackend
-      .getThread(webSessionId)
-      .catch((error) => {
-        this.logger.debug("Failed to hydrate web session from memory", {
-          sessionId: webSessionId,
-          error: toErrorMessage(error),
-        });
-        return [];
+    const replayContext = await loadPersistedSessionReplayContext(
+      memoryBackend,
+      webSessionId,
+    ).catch((error) => {
+      this.logger.debug("Failed to hydrate web session from replay state", {
+        sessionId: webSessionId,
+        error: toErrorMessage(error),
       });
-    if (thread.length === 0) {
-      await hydrateWebSessionRuntimeState(memoryBackend, webSessionId, session);
-      return;
-    }
-
-    const history = thread.map((entry) => entryToMessage(entry));
+      return {
+        history: [],
+      };
+    });
+    const history = replayContext.history;
     const historiesMatch =
       session.history.length === history.length &&
       session.history.every((message, index) => {
@@ -4161,7 +4159,7 @@ export class DaemonManager {
     if (!historiesMatch) {
       sessionMgr.replaceHistory(historySessionId, history);
     }
-    await hydrateWebSessionRuntimeState(memoryBackend, webSessionId, session);
+    await hydrateWebSessionReplayState(memoryBackend, webSessionId, session);
   }
 
   private listShellAgentRoles(): readonly ShellAgentRoleDescriptor[] {

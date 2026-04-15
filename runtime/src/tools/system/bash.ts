@@ -34,6 +34,7 @@ import {
 } from "./types.js";
 import { silentLogger } from "../../utils/logger.js";
 import type { Logger } from "../../utils/logger.js";
+import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 
 const SHELL_WRAPPER_COMMANDS = new Set([
   "bash",
@@ -756,6 +757,17 @@ export function createBashTool(config?: BashToolConfig): Tool {
       });
       const shellCommand = builtinShellFallback ?? command;
 
+      // Apply cwd — reject per-call override if lockCwd is enabled.
+      let cwd = defaultCwd;
+      if (input.cwd !== undefined) {
+        if (lockCwd) {
+          return errorResult(
+            "Per-call cwd override is disabled (lockCwd is enabled)",
+          );
+        }
+        cwd = input.cwd;
+      }
+
       // Determine execution mode: shell vs direct
       const useShellMode =
         shellModeEnabled &&
@@ -868,15 +880,19 @@ export function createBashTool(config?: BashToolConfig): Tool {
         execArgs = args;
       }
 
-      // Apply cwd — reject per-call override if lockCwd is enabled
-      let cwd = defaultCwd;
-      if (input.cwd !== undefined) {
-        if (lockCwd) {
-          return errorResult(
-            "Per-call cwd override is disabled (lockCwd is enabled)",
-          );
-        }
-        cwd = input.cwd;
+      const workspaceWriteDecision = classifyShellWorkspaceWritePolicy({
+        toolName: "system.bash",
+        args: useShellMode
+          ? { command: shellCommand, cwd }
+          : { command, args: execArgs, cwd },
+        workspaceRoot: cwd,
+      });
+      if (workspaceWriteDecision.blocked) {
+        const rejectionMessage =
+          workspaceWriteDecision.message ??
+          "Shell workspace write policy blocked the command.";
+        logger.warn(`Bash tool shell write denied: ${rejectionMessage}`);
+        return errorResult(rejectionMessage);
       }
 
       const cwdValidationError = validateWorkingDirectory(cwd);

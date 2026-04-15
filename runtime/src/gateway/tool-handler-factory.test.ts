@@ -462,19 +462,23 @@ describe("createSessionToolHandler", () => {
     };
 
     expect(baseHandler).toHaveBeenNthCalledWith(1, "task.create", {
+      __agencTaskActorKind: "main",
       subject: "Session A task",
       description: "Created through the gateway handler",
       [TASK_LIST_ARG]: "session-a",
     });
     expect(baseHandler).toHaveBeenNthCalledWith(2, "task.create", {
+      __agencTaskActorKind: "main",
       subject: "Session B task",
       description: "Created through the gateway handler",
       [TASK_LIST_ARG]: "session-b",
     });
     expect(baseHandler).toHaveBeenNthCalledWith(3, "task.list", {
+      __agencTaskActorKind: "main",
       [TASK_LIST_ARG]: "session-a",
     });
     expect(baseHandler).toHaveBeenNthCalledWith(4, "task.list", {
+      __agencTaskActorKind: "main",
       [TASK_LIST_ARG]: "session-b",
     });
     expect(sessionACreate.taskRuntime).toMatchObject({

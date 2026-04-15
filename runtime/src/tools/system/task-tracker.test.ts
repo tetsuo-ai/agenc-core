@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import {
+  TASK_ACTOR_KIND_ARG,
+  TASK_ACTOR_NAME_ARG,
   createTaskTrackerTools,
   TaskStore,
   type TaskTrackerToolOptions,
@@ -421,6 +423,21 @@ describe("task-tracker", () => {
       expect((done.body.task as Record<string, unknown>).status).toBe("completed");
     });
 
+    it("auto-claims an in-progress task for a subagent actor when no owner is set", async () => {
+      const start = await callTool(update, {
+        taskId: "1",
+        status: "in_progress",
+        [TASK_ACTOR_KIND_ARG]: "subagent",
+        [TASK_ACTOR_NAME_ARG]: "worker-alpha",
+      });
+
+      expect(start.body.task).toMatchObject({
+        id: "1",
+        status: "in_progress",
+        owner: "worker-alpha",
+      });
+    });
+
     it("merges metadata shallowly and deletes keys set to null", async () => {
       await callTool(update, {
         taskId: "1",
@@ -595,6 +612,45 @@ describe("task-tracker", () => {
       expect(stored?.status).toBe("pending");
       expect(stored?.metadata).toEqual({ changedBy: "guard" });
       expect((result.body.task as Record<string, unknown> | undefined)?.revision).toBeUndefined();
+    });
+
+    it("appends a verification nudge when the main actor closes 3+ tasks without a verification step", async () => {
+      await callTool(create, { subject: "Second", description: "second task" });
+      await callTool(create, { subject: "Third", description: "third task" });
+
+      await callTool(update, { taskId: "1", status: "completed" });
+      await callTool(update, { taskId: "2", status: "completed" });
+      const result = await callTool(update, { taskId: "3", status: "completed" });
+
+      expect(result.body.verificationNudgeNeeded).toBe(true);
+      expect(result.body.message).toContain("Run the verifier");
+    });
+
+    it("does not append the verification nudge for subagent actors", async () => {
+      await callTool(create, { subject: "Second", description: "second task" });
+      await callTool(create, { subject: "Third", description: "third task" });
+
+      await callTool(update, {
+        taskId: "1",
+        status: "completed",
+        [TASK_ACTOR_KIND_ARG]: "subagent",
+        [TASK_ACTOR_NAME_ARG]: "worker-alpha",
+      });
+      await callTool(update, {
+        taskId: "2",
+        status: "completed",
+        [TASK_ACTOR_KIND_ARG]: "subagent",
+        [TASK_ACTOR_NAME_ARG]: "worker-alpha",
+      });
+      const result = await callTool(update, {
+        taskId: "3",
+        status: "completed",
+        [TASK_ACTOR_KIND_ARG]: "subagent",
+        [TASK_ACTOR_NAME_ARG]: "worker-alpha",
+      });
+
+      expect(result.body.verificationNudgeNeeded).toBeUndefined();
+      expect(String(result.body.message)).not.toContain("Run the verifier");
     });
   });
 

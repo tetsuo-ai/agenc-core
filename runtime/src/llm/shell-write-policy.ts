@@ -49,9 +49,15 @@ const DYNAMIC_SHELL_TARGET_RE = /(?:[$*?\[\]{}~]|`|\$\(|<\()/;
 
 export interface ShellWorkspaceWritePolicyDecision {
   readonly blocked: boolean;
+  readonly indeterminate: boolean;
   readonly observedTargets: readonly string[];
   readonly blockedTargets: readonly string[];
   readonly message?: string;
+}
+
+interface ShellWriteTargetCollection {
+  targets: string[];
+  indeterminate: boolean;
 }
 
 function isWritePolicyEnabled(turnClass: string | undefined): boolean {
@@ -74,17 +80,55 @@ function resolveWorkingDirectory(
 function normalizeConcreteTargetPath(
   rawPath: string,
   cwd: string,
-): string | undefined {
+): ShellWriteTargetCollection {
   const trimmed = rawPath.trim();
   if (trimmed.length === 0 || trimmed === "-") {
-    return undefined;
+    return { targets: [], indeterminate: false };
   }
   if (DYNAMIC_SHELL_TARGET_RE.test(trimmed)) {
-    return undefined;
+    return { targets: [], indeterminate: true };
   }
-  return trimmed.startsWith("/")
-    ? resolvePath(trimmed)
-    : resolvePath(cwd, trimmed);
+  return {
+    targets: [
+      trimmed.startsWith("/")
+        ? resolvePath(trimmed)
+        : resolvePath(cwd, trimmed),
+    ],
+    indeterminate: false,
+  };
+}
+
+function emptyTargetCollection(): ShellWriteTargetCollection {
+  return { targets: [], indeterminate: false };
+}
+
+function collectOperandTargets(
+  args: readonly string[],
+  cwd: string,
+): ShellWriteTargetCollection {
+  const collection: ShellWriteTargetCollection = {
+    targets: [],
+    indeterminate: false,
+  };
+  let treatRemainingAsOperands = false;
+  for (const token of args) {
+    if (!token) continue;
+    if (!treatRemainingAsOperands && token === "--") {
+      treatRemainingAsOperands = true;
+      continue;
+    }
+    if (!treatRemainingAsOperands && token.startsWith("-")) {
+      continue;
+    }
+    const normalized = normalizeConcreteTargetPath(token, cwd);
+    collection.indeterminate ||= normalized.indeterminate;
+    for (const target of normalized.targets) {
+      if (!collection.targets.includes(target)) {
+        collection.targets = [...collection.targets, target];
+      }
+    }
+  }
+  return collection;
 }
 
 function isWorkspaceGeneratedOutputPath(
@@ -131,11 +175,7 @@ function extractWrappedShellCommand(args: readonly string[]): string | undefined
   return undefined;
 }
 
-function collectTeeTargets(
-  args: readonly string[],
-  cwd: string,
-): readonly string[] {
-  const targets = new Set<string>();
+function hasWrapperScriptOperand(args: readonly string[]): boolean {
   let treatRemainingAsOperands = false;
   for (const token of args) {
     if (!token) continue;
@@ -146,42 +186,30 @@ function collectTeeTargets(
     if (!treatRemainingAsOperands && token.startsWith("-")) {
       continue;
     }
-    const normalized = normalizeConcreteTargetPath(token, cwd);
-    if (normalized) {
-      targets.add(normalized);
-    }
+    return true;
   }
-  return [...targets];
+  return false;
+}
+
+function collectTeeTargets(
+  args: readonly string[],
+  cwd: string,
+): ShellWriteTargetCollection {
+  return collectOperandTargets(args, cwd);
 }
 
 function collectTouchTargets(
   args: readonly string[],
   cwd: string,
-): readonly string[] {
-  const targets = new Set<string>();
-  let treatRemainingAsOperands = false;
-  for (const token of args) {
-    if (!token) continue;
-    if (!treatRemainingAsOperands && token === "--") {
-      treatRemainingAsOperands = true;
-      continue;
-    }
-    if (!treatRemainingAsOperands && token.startsWith("-")) {
-      continue;
-    }
-    const normalized = normalizeConcreteTargetPath(token, cwd);
-    if (normalized) {
-      targets.add(normalized);
-    }
-  }
-  return [...targets];
+): ShellWriteTargetCollection {
+  return collectOperandTargets(args, cwd);
 }
 
 function collectDestinationTarget(
   command: string,
   args: readonly string[],
   cwd: string,
-): readonly string[] {
+): ShellWriteTargetCollection {
   const operands: string[] = [];
   let targetDirectory: string | undefined;
   let treatRemainingAsOperands = false;
@@ -213,29 +241,39 @@ function collectDestinationTarget(
   }
   const explicitTarget = targetDirectory
     ? normalizeConcreteTargetPath(targetDirectory, cwd)
-    : undefined;
-  if (explicitTarget) {
-    return [explicitTarget];
+    : emptyTargetCollection();
+  const collection = {
+    targets: [...explicitTarget.targets],
+    indeterminate: explicitTarget.indeterminate,
+  };
+  if (collection.targets.length > 0 || collection.indeterminate) {
+    if (collection.targets.length > 0) {
+      return collection;
+    }
+    return collection;
   }
   const destination = operands[operands.length - 1];
   if (!destination) {
-    return [];
+    return collection;
   }
   const normalized = normalizeConcreteTargetPath(destination, cwd);
-  if (!normalized) {
-    return [];
+  collection.indeterminate ||= normalized.indeterminate;
+  for (const target of normalized.targets) {
+    if (!collection.targets.includes(target)) {
+      collection.targets.push(target);
+    }
   }
-  if (command === "install" && operands.length <= 1 && !explicitTarget) {
-    return [];
+  if (command === "install" && operands.length <= 1 && !targetDirectory) {
+    return emptyTargetCollection();
   }
-  return [normalized];
+  return collection;
 }
 
 function collectDirectCommandWriteTargets(params: {
   readonly command: string;
   readonly args: readonly string[];
   readonly cwd: string;
-}): readonly string[] {
+}): ShellWriteTargetCollection {
   const command = basename(params.command);
   if (command === "env") {
     const shellIndex = params.args.findIndex((token) =>
@@ -249,14 +287,17 @@ function collectDirectCommandWriteTargets(params: {
       if (nestedCommand) {
         return collectShellCommandWriteTargets(nestedCommand, params.cwd);
       }
+      return { targets: [], indeterminate: true };
     }
-    return [];
+    return emptyTargetCollection();
   }
   if (SHELL_WRAPPER_COMMANDS.has(command)) {
     const nestedCommand = extractWrappedShellCommand(params.args);
     return nestedCommand
       ? collectShellCommandWriteTargets(nestedCommand, params.cwd)
-      : [];
+      : hasWrapperScriptOperand(params.args)
+        ? emptyTargetCollection()
+        : { targets: [], indeterminate: true };
   }
   if (command === "tee") {
     return collectTeeTargets(params.args, params.cwd);
@@ -264,17 +305,46 @@ function collectDirectCommandWriteTargets(params: {
   if (command === "touch") {
     return collectTouchTargets(params.args, params.cwd);
   }
-  if (command === "cp" || command === "mv" || command === "install") {
+  if (command === "cp" || command === "mv" || command === "install" || command === "ln") {
     return collectDestinationTarget(command, params.args, params.cwd);
   }
-  return [];
+  if (command === "mkdir" || command === "rm" || command === "rmdir" || command === "truncate") {
+    return collectOperandTargets(params.args, params.cwd);
+  }
+  if (command === "dd") {
+    const targets = new Set<string>();
+    let indeterminate = false;
+    for (const token of params.args) {
+      if (!token) continue;
+      if (token.startsWith("of=")) {
+        const normalized = normalizeConcreteTargetPath(token.slice(3), params.cwd);
+        indeterminate ||= normalized.indeterminate;
+        for (const target of normalized.targets) {
+          targets.add(target);
+        }
+      }
+      if (token.startsWith("of=") && token.length === 3) {
+        indeterminate = true;
+      }
+    }
+    return { targets: [...targets], indeterminate };
+  }
+  if (command === "sed" || command === "perl") {
+    const inPlace = params.args.some((token) => token === "-i" || token.startsWith("-i"));
+    if (!inPlace) {
+      return emptyTargetCollection();
+    }
+    return collectOperandTargets(params.args, params.cwd);
+  }
+  return emptyTargetCollection();
 }
 
 function collectRedirectionTargets(
   tokens: readonly string[],
   cwd: string,
-): readonly string[] {
+): ShellWriteTargetCollection {
   const targets = new Set<string>();
+  let indeterminate = false;
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i];
     if (!token || !WRITE_REDIRECT_OPERATORS.has(token)) {
@@ -282,6 +352,7 @@ function collectRedirectionTargets(
     }
     const next = tokens[i + 1];
     if (!next || SHELL_COMMAND_SEPARATORS.has(next) || ALL_REDIRECT_OPERATORS.has(next)) {
+      indeterminate = true;
       continue;
     }
     if (
@@ -291,20 +362,21 @@ function collectRedirectionTargets(
       continue;
     }
     const normalized = normalizeConcreteTargetPath(next, cwd);
-    if (normalized) {
-      targets.add(normalized);
+    indeterminate ||= normalized.indeterminate;
+    for (const target of normalized.targets) {
+      targets.add(target);
     }
   }
-  return [...targets];
+  return { targets: [...targets], indeterminate };
 }
 
 function collectSegmentCommandWriteTargets(
   segment: readonly string[],
   cwd: string,
-): readonly string[] {
+): ShellWriteTargetCollection {
   const stripped = stripRedirections(segment);
   if (stripped.length === 0) {
-    return [];
+    return emptyTargetCollection();
   }
   let commandIndex = 0;
   while (
@@ -315,7 +387,7 @@ function collectSegmentCommandWriteTargets(
   }
   const command = stripped[commandIndex];
   if (!command) {
-    return [];
+    return emptyTargetCollection();
   }
   return collectDirectCommandWriteTargets({
     command,
@@ -327,12 +399,16 @@ function collectSegmentCommandWriteTargets(
 function collectShellCommandWriteTargets(
   commandLine: string,
   cwd: string,
-): readonly string[] {
+): ShellWriteTargetCollection {
   const tokens = tokenizeShellCommand(commandLine);
-  const targets = new Set<string>(collectRedirectionTargets(tokens, cwd));
+  const redirections = collectRedirectionTargets(tokens, cwd);
+  const targets = new Set<string>(redirections.targets);
+  let indeterminate = redirections.indeterminate;
   let segment: string[] = [];
   const flushSegment = (): void => {
-    for (const target of collectSegmentCommandWriteTargets(segment, cwd)) {
+    const collection = collectSegmentCommandWriteTargets(segment, cwd);
+    indeterminate ||= collection.indeterminate;
+    for (const target of collection.targets) {
       targets.add(target);
     }
     segment = [];
@@ -345,7 +421,7 @@ function collectShellCommandWriteTargets(
     segment.push(token);
   }
   flushSegment();
-  return [...targets];
+  return { targets: [...targets], indeterminate };
 }
 
 function buildPolicyMessage(blockedTargets: readonly string[]): string {
@@ -354,47 +430,66 @@ function buildPolicyMessage(blockedTargets: readonly string[]): string {
     "must use structured file tools for project file authoring. Use " +
     "`system.writeFile`, `system.editFile`, `system.appendFile`, " +
     "`desktop.text_editor`, `system.mkdir`, or `system.move` instead of " +
-    "shell redirection, heredocs, `tee`, `cp`, `mv`, `touch`, or `install` " +
-    "for workspace files. Shell writes are only allowed under generated " +
-    "output roots (`build`, `dist`, `logs`, `.cache`, `tmp`, `coverage`)." +
+    "shell redirection, heredocs, `tee`, `cp`, `mv`, `ln`, `touch`, `install`, " +
+    "`rm`, `rmdir`, `truncate`, `dd`, `sed -i`, or `perl -i` for workspace files. " +
+    "Shell writes are only allowed under generated output roots (`build`, `dist`, " +
+    "`logs`, `.cache`, `tmp`, `coverage`)." +
     (blockedTargets.length > 0
       ? ` Blocked target(s): ${blockedTargets.join(", ")}`
       : "")
   );
 }
 
-export function evaluateShellWorkspaceWritePolicy(params: {
+function buildIndeterminatePolicyMessage(
+  observedTargets: readonly string[],
+): string {
+  return (
+    "shell_workspace_file_write_disallowed: Unable to confirm workspace write targets " +
+    "for this shell command. Use structured file tools instead of shell writes, " +
+    "and avoid dynamic shell indirection for file mutations." +
+    (observedTargets.length > 0
+      ? ` Observed target(s): ${observedTargets.join(", ")}`
+      : "")
+  );
+}
+
+export function classifyShellWorkspaceWritePolicy(params: {
   readonly toolName: string;
   readonly args: Record<string, unknown>;
   readonly workspaceRoot?: string;
-  readonly turnClass?: string;
 }): ShellWorkspaceWritePolicyDecision {
-  if (
-    !isWritePolicyEnabled(params.turnClass) ||
-    !params.workspaceRoot ||
-    !SHELL_WORKSPACE_WRITE_TOOL_NAMES.has(params.toolName)
-  ) {
+  if (!SHELL_WORKSPACE_WRITE_TOOL_NAMES.has(params.toolName)) {
     return {
       blocked: false,
+      indeterminate: false,
       observedTargets: [],
       blockedTargets: [],
     };
   }
+  if (!params.workspaceRoot) {
+    return {
+      blocked: true,
+      indeterminate: true,
+      observedTargets: [],
+      blockedTargets: [],
+      message: buildIndeterminatePolicyMessage([]),
+    };
+  }
 
   const cwd = resolveWorkingDirectory(params.workspaceRoot, params.args.cwd);
-  let observedTargets: readonly string[] = [];
+  let collected: ShellWriteTargetCollection = emptyTargetCollection();
   if (Array.isArray(params.args.args)) {
-    observedTargets = collectDirectCommandWriteTargets({
+    collected = collectDirectCommandWriteTargets({
       command:
         typeof params.args.command === "string" ? params.args.command : "",
       args: params.args.args.filter((value): value is string => typeof value === "string"),
       cwd,
     });
   } else if (typeof params.args.command === "string") {
-    observedTargets = collectShellCommandWriteTargets(params.args.command, cwd);
+    collected = collectShellCommandWriteTargets(params.args.command, cwd);
   }
 
-  const blockedTargets = observedTargets.filter((target) => {
+  const blockedTargets = collected.targets.filter((target) => {
     const rel = relative(params.workspaceRoot!, target);
     if (
       rel.length === 0 ||
@@ -407,12 +502,43 @@ export function evaluateShellWorkspaceWritePolicy(params: {
     return !isWorkspaceGeneratedOutputPath(params.workspaceRoot!, target);
   });
 
+  if (collected.indeterminate) {
+    return {
+      blocked: true,
+      indeterminate: true,
+      observedTargets: collected.targets,
+      blockedTargets,
+      message:
+        blockedTargets.length > 0
+          ? `${buildPolicyMessage(blockedTargets)} ${buildIndeterminatePolicyMessage(collected.targets)}`
+          : buildIndeterminatePolicyMessage(collected.targets),
+    };
+  }
+
   return {
     blocked: blockedTargets.length > 0,
-    observedTargets,
+    indeterminate: false,
+    observedTargets: collected.targets,
     blockedTargets,
     ...(blockedTargets.length > 0
       ? { message: buildPolicyMessage(blockedTargets) }
       : {}),
   };
+}
+
+export function evaluateShellWorkspaceWritePolicy(params: {
+  readonly toolName: string;
+  readonly args: Record<string, unknown>;
+  readonly workspaceRoot?: string;
+  readonly turnClass?: string;
+}): ShellWorkspaceWritePolicyDecision {
+  if (!isWritePolicyEnabled(params.turnClass)) {
+    return {
+      blocked: false,
+      indeterminate: false,
+      observedTargets: [],
+      blockedTargets: [],
+    };
+  }
+  return classifyShellWorkspaceWritePolicy(params);
 }

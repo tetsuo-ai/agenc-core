@@ -17,12 +17,18 @@ import {
   updateRuntimeContractTaskLayer,
   updateRuntimeContractWorkerLayer,
 } from "../runtime-contract/types.js";
+import { createCompactBoundaryMessage } from "../llm/context-compaction.js";
+import type { LLMMessage } from "../llm/types.js";
 import type { Task, TaskStore } from "../tools/system/task-tracker.js";
 import type { PersistentWorkerManager } from "./persistent-worker-manager.js";
 import {
   MemoryArtifactStore,
+  type ArtifactCompactionState,
+  type ContextArtifactRecord,
 } from "../memory/artifact-store.js";
+import { entryToMessage } from "../memory/types.js";
 import {
+  clearStatefulContinuationMetadata,
   DEFAULT_SESSION_SHELL_PROFILE,
   SESSION_SHELL_PROFILE_METADATA_KEY,
   SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY,
@@ -47,6 +53,7 @@ import {
   resolveSessionWorkflowState,
   type SessionWorkflowState,
 } from "./workflow-state.js";
+import type { PersistedWebChatForkSource } from "../channels/webchat/session-store.js";
 import {
   clearForkedReviewSurfaceState,
   clearForkedVerificationSurfaceState,
@@ -57,20 +64,26 @@ import {
 } from "./watch-cockpit.js";
 
 const WEB_SESSION_RUNTIME_STATE_KEY_PREFIX = "webchat:runtime-state:";
+const WEB_SESSION_REPLAY_STATE_KEY_PREFIX = "webchat:replay-state:";
 
-export interface PersistedSessionRuntimeState {
-  readonly version: 7;
+export interface PersistedSessionReplayForkMarker {
+  readonly parentSessionId: string;
+  readonly source: PersistedWebChatForkSource;
+  readonly forkedAt: number;
+}
+
+export interface PersistedSessionReplaySnapshot {
   readonly shellProfile?: SessionShellProfile;
   readonly workflowState?: SessionWorkflowState;
   readonly statefulResumeAnchor?: LLMStatefulResumeAnchor;
   readonly statefulHistoryCompacted?: boolean;
-  /** Legacy compacted artifact snapshot ids; read during migration, never written. */
   readonly artifactSnapshotId?: string;
   readonly artifactSessionId?: string;
   readonly runtimeContractSnapshot?: RuntimeContractSnapshot;
   readonly runtimeContractStatusSnapshot?: RuntimeContractStatusSnapshot;
   readonly reviewSurfaceState?: ReviewSurfaceState;
   readonly verificationSurfaceState?: VerificationSurfaceState;
+  readonly forkMarker?: PersistedSessionReplayForkMarker;
   /**
    * Active task carryover for the next compatible turn. Round-trips through
    * web-session resume so a paused implementation/artifact-update task can
@@ -80,8 +93,19 @@ export interface PersistedSessionRuntimeState {
   readonly activeTaskContext?: ActiveTaskContext;
 }
 
-/** @deprecated Use PersistedSessionRuntimeState. */
-export type PersistedWebSessionRuntimeState = PersistedSessionRuntimeState;
+export interface PersistedSessionReplayState {
+  readonly version: 1;
+  readonly boundarySeq: number;
+  readonly migratedFromLegacyAt?: number;
+  readonly snapshot: PersistedSessionReplaySnapshot;
+  readonly tailEvents: readonly LLMMessage[];
+}
+
+/** @deprecated Use PersistedSessionReplayState. */
+export type PersistedSessionRuntimeState = PersistedSessionReplayState;
+
+/** @deprecated Use PersistedSessionReplayState. */
+export type PersistedWebSessionRuntimeState = PersistedSessionReplayState;
 
 const SESSION_STATEFUL_LINEAGE_PHASES = new Set([
   "initial",
@@ -228,9 +252,59 @@ function coerceActiveTaskContext(value: unknown): ActiveTaskContext | undefined 
   return undefined;
 }
 
-function buildPersistedSessionRuntimeState(
+function readArtifactCompactionState(
+  metadata: Record<string, unknown>,
+): ArtifactCompactionState | undefined {
+  const candidate = metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY];
+  if (typeof candidate !== "object" || candidate === null) {
+    return undefined;
+  }
+  const record = candidate as Record<string, unknown>;
+  if (record.version !== 1) {
+    return undefined;
+  }
+  if (typeof record.snapshotId !== "string" || record.snapshotId.trim().length === 0) {
+    return undefined;
+  }
+  if (typeof record.sessionId !== "string" || record.sessionId.trim().length === 0) {
+    return undefined;
+  }
+  if (!Array.isArray(record.artifactRefs)) {
+    return undefined;
+  }
+  return candidate as ArtifactCompactionState;
+}
+
+function readArtifactCompactionRecords(
+  metadata: Record<string, unknown>,
+): readonly ContextArtifactRecord[] {
+  const candidate = metadata[SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY];
+  if (!Array.isArray(candidate)) {
+    return [];
+  }
+  return candidate.filter(
+    (record): record is ContextArtifactRecord =>
+      !!record &&
+      typeof record === "object" &&
+      typeof (record as ContextArtifactRecord).id === "string" &&
+      typeof (record as ContextArtifactRecord).sessionId === "string" &&
+      typeof (record as ContextArtifactRecord).title === "string" &&
+      typeof (record as ContextArtifactRecord).summary === "string" &&
+      typeof (record as ContextArtifactRecord).content === "string",
+  );
+}
+
+function webSessionReplayStateKey(webSessionId: string): string {
+  return `${WEB_SESSION_REPLAY_STATE_KEY_PREFIX}${webSessionId}`;
+}
+
+function cloneReplayTailEvents(tailEvents: readonly LLMMessage[]): readonly LLMMessage[] {
+  return tailEvents.map((event) => JSON.parse(JSON.stringify(event)) as LLMMessage);
+}
+
+function buildPersistedSessionReplaySnapshot(
   session: Session,
-): PersistedSessionRuntimeState | undefined {
+): PersistedSessionReplaySnapshot | undefined {
   const resumeAnchorCandidate =
     session.metadata[SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY];
   const resumeAnchor = isStatefulResumeAnchor(resumeAnchorCandidate)
@@ -241,7 +315,6 @@ function buildPersistedSessionRuntimeState(
   const activeTaskContext = coerceActiveTaskContext(
     session.metadata[SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY],
   );
-  const hasActiveTaskContext = activeTaskContext !== undefined;
   const runtimeContractSnapshot =
     typeof session.metadata[SESSION_RUNTIME_CONTRACT_SNAPSHOT_METADATA_KEY] === "object" &&
       session.metadata[SESSION_RUNTIME_CONTRACT_SNAPSHOT_METADATA_KEY] !== null
@@ -275,11 +348,21 @@ function buildPersistedSessionRuntimeState(
     workflowState.stage !== "idle" ||
     workflowState.worktreeMode !== "off" ||
     Boolean(workflowState.objective);
+  const artifactContext =
+    typeof session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY] === "object" &&
+      session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY] !== null
+      ? (session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY] as ArtifactCompactionState)
+      : undefined;
+  const artifactSnapshotId = artifactContext?.snapshotId;
+  const artifactSessionId = artifactContext?.sessionId;
+  const hasActiveTaskContext = activeTaskContext !== undefined;
   if (
     !hasPersistedShellProfile &&
     !hasPersistedWorkflowState &&
     !resumeAnchor &&
     !historyCompacted &&
+    !artifactSnapshotId &&
+    !artifactSessionId &&
     !runtimeContractSnapshot &&
     !runtimeContractStatusSnapshot &&
     !reviewSurfaceState &&
@@ -289,26 +372,266 @@ function buildPersistedSessionRuntimeState(
     return undefined;
   }
   return {
-    version: 7,
-    ...(hasPersistedShellProfile ? { shellProfile } : {}),
-    ...(hasPersistedWorkflowState ? { workflowState } : {}),
-    ...(resumeAnchor ? { statefulResumeAnchor: resumeAnchor } : {}),
-    ...(historyCompacted ? { statefulHistoryCompacted: true } : {}),
-    ...(runtimeContractSnapshot ? { runtimeContractSnapshot } : {}),
-    ...(runtimeContractStatusSnapshot ? { runtimeContractStatusSnapshot } : {}),
-    ...(reviewSurfaceState ? { reviewSurfaceState } : {}),
-    ...(verificationSurfaceState ? { verificationSurfaceState } : {}),
-    ...(hasActiveTaskContext ? { activeTaskContext } : {}),
+    shellProfile: hasPersistedShellProfile ? shellProfile : undefined,
+    workflowState: hasPersistedWorkflowState ? workflowState : undefined,
+    statefulResumeAnchor: resumeAnchor,
+    statefulHistoryCompacted: historyCompacted ? true : undefined,
+    artifactSnapshotId,
+    artifactSessionId,
+    runtimeContractSnapshot,
+    runtimeContractStatusSnapshot,
+    reviewSurfaceState,
+    verificationSurfaceState,
+    activeTaskContext: hasActiveTaskContext ? activeTaskContext : undefined,
   };
+}
+
+function buildReplayTailEvents(
+  sessionId: string,
+  snapshot: PersistedSessionReplaySnapshot,
+  boundarySeq: number,
+): readonly LLMMessage[] {
+  const summaryParts: string[] = [];
+  if (snapshot.shellProfile) {
+    summaryParts.push(`shell=${snapshot.shellProfile}`);
+  }
+  if (snapshot.workflowState) {
+    summaryParts.push(`workflow=${snapshot.workflowState.stage}`);
+    if (snapshot.workflowState.objective) {
+      summaryParts.push(`objective=${snapshot.workflowState.objective}`);
+    }
+  }
+  if (snapshot.statefulResumeAnchor) {
+    summaryParts.push(`resume=${snapshot.statefulResumeAnchor.previousResponseId}`);
+  }
+  if (snapshot.statefulHistoryCompacted) {
+    summaryParts.push("history_compacted=true");
+  }
+  if (snapshot.runtimeContractSnapshot) {
+    summaryParts.push("runtime_contract=true");
+  }
+  if (snapshot.runtimeContractStatusSnapshot) {
+    summaryParts.push(
+      `runtime_status=${snapshot.runtimeContractStatusSnapshot.completionState ?? snapshot.runtimeContractStatusSnapshot.stopReason ?? "unknown"}`,
+    );
+  }
+  if (snapshot.reviewSurfaceState?.status) {
+    summaryParts.push(`review=${snapshot.reviewSurfaceState.status}`);
+  }
+  if (snapshot.verificationSurfaceState?.status) {
+    summaryParts.push(`verification=${snapshot.verificationSurfaceState.status}`);
+  }
+  if (snapshot.activeTaskContext?.taskLineageId) {
+    summaryParts.push(`task=${snapshot.activeTaskContext.taskLineageId}`);
+  }
+  if (snapshot.forkMarker) {
+    summaryParts.push(`fork=${snapshot.forkMarker.parentSessionId}`);
+  }
+  if (snapshot.artifactSnapshotId) {
+    summaryParts.push(`artifact=${snapshot.artifactSnapshotId}`);
+  }
+  if (snapshot.artifactSessionId) {
+    summaryParts.push(`artifact_session=${snapshot.artifactSessionId}`);
+  }
+  if (summaryParts.length === 0) {
+    return [];
+  }
+  return [
+    createCompactBoundaryMessage({
+      boundaryId: `${sessionId}:${boundarySeq}`,
+      source: "session_compaction",
+      sourceMessageCount: 0,
+      retainedTailCount: 0,
+      summaryText: summaryParts.join(" | "),
+    }),
+  ];
+}
+
+export function buildSessionReplayHistory(
+  thread: readonly LLMMessage[],
+  replayState: PersistedSessionReplayState | undefined,
+): readonly LLMMessage[] {
+  return [
+    ...thread,
+    ...(replayState?.tailEvents ? cloneReplayTailEvents(replayState.tailEvents) : []),
+  ];
+}
+
+function buildPersistedSessionRuntimeState(
+  session: Session,
+  existing?: PersistedSessionReplayState,
+): PersistedSessionReplayState | undefined {
+  const snapshot = buildPersistedSessionReplaySnapshot(session);
+  if (!snapshot) {
+    return undefined;
+  }
+  const nextBoundarySeq = existing
+    ? existing.boundarySeq + 1
+    : 1;
+  const tailEvents = buildReplayTailEvents(session.id, snapshot, nextBoundarySeq);
+  const next: PersistedSessionReplayState = {
+    version: 1,
+    boundarySeq: nextBoundarySeq,
+    ...(existing?.migratedFromLegacyAt
+      ? { migratedFromLegacyAt: existing.migratedFromLegacyAt }
+      : {}),
+    snapshot,
+    tailEvents,
+  };
+  if (
+    existing &&
+    JSON.stringify(existing.snapshot) === JSON.stringify(next.snapshot) &&
+    JSON.stringify(existing.tailEvents) === JSON.stringify(next.tailEvents)
+  ) {
+    return existing;
+  }
+  return next;
 }
 
 function coercePersistedSessionRuntimeState(
   value: unknown,
-): PersistedSessionRuntimeState | undefined {
+): PersistedSessionReplayState | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const candidate = value as Record<string, unknown>;
+  if (candidate.version === 1) {
+    const boundarySeq =
+      typeof candidate.boundarySeq === "number" &&
+      Number.isFinite(candidate.boundarySeq) &&
+      candidate.boundarySeq >= 0
+        ? Math.floor(candidate.boundarySeq)
+        : undefined;
+    const snapshotCandidate = candidate.snapshot as
+      | Record<string, unknown>
+      | undefined;
+    const snapshot =
+      snapshotCandidate && typeof snapshotCandidate === "object"
+        ? {
+            ...(coerceSessionShellProfile(snapshotCandidate.shellProfile)
+              ? { shellProfile: coerceSessionShellProfile(snapshotCandidate.shellProfile) }
+              : {}),
+            ...(coerceSessionWorkflowState(snapshotCandidate.workflowState)
+              ? { workflowState: coerceSessionWorkflowState(snapshotCandidate.workflowState) }
+              : {}),
+            ...(isStatefulResumeAnchor(snapshotCandidate.statefulResumeAnchor)
+              ? {
+                  statefulResumeAnchor: cloneResumeAnchor(
+                    snapshotCandidate.statefulResumeAnchor,
+                  ),
+                }
+              : {}),
+            ...(snapshotCandidate.statefulHistoryCompacted === true
+              ? { statefulHistoryCompacted: true }
+              : {}),
+            ...(typeof snapshotCandidate.artifactSnapshotId === "string" &&
+            snapshotCandidate.artifactSnapshotId.trim().length > 0
+              ? { artifactSnapshotId: snapshotCandidate.artifactSnapshotId.trim() }
+              : {}),
+            ...(typeof snapshotCandidate.artifactSessionId === "string" &&
+            snapshotCandidate.artifactSessionId.trim().length > 0
+              ? { artifactSessionId: snapshotCandidate.artifactSessionId.trim() }
+              : {}),
+            ...(typeof snapshotCandidate.runtimeContractSnapshot === "object" &&
+            snapshotCandidate.runtimeContractSnapshot !== null
+              ? {
+                  runtimeContractSnapshot:
+                    snapshotCandidate.runtimeContractSnapshot as RuntimeContractSnapshot,
+                }
+              : {}),
+            ...(normalizeRuntimeContractStatusSnapshot(
+              snapshotCandidate.runtimeContractStatusSnapshot,
+            )
+              ? {
+                  runtimeContractStatusSnapshot:
+                    normalizeRuntimeContractStatusSnapshot(
+                      snapshotCandidate.runtimeContractStatusSnapshot,
+                    ),
+                }
+              : {}),
+            ...(reconcileReviewSurfaceState(
+              coerceReviewSurfaceState(snapshotCandidate.reviewSurfaceState),
+            )
+              ? {
+                  reviewSurfaceState: reconcileReviewSurfaceState(
+                    coerceReviewSurfaceState(snapshotCandidate.reviewSurfaceState),
+                  ),
+                }
+              : {}),
+            ...(reconcileVerificationSurfaceState(
+              coerceVerificationSurfaceState(snapshotCandidate.verificationSurfaceState),
+            )
+              ? {
+                  verificationSurfaceState: reconcileVerificationSurfaceState(
+                    coerceVerificationSurfaceState(
+                      snapshotCandidate.verificationSurfaceState,
+                    ),
+                  ),
+                }
+              : {}),
+            ...(coerceActiveTaskContext(snapshotCandidate.activeTaskContext)
+              ? {
+                  activeTaskContext: coerceActiveTaskContext(
+                    snapshotCandidate.activeTaskContext,
+                  ),
+                }
+              : {}),
+            ...(snapshotCandidate.forkMarker &&
+            typeof snapshotCandidate.forkMarker === "object"
+              ? {
+                  forkMarker: {
+                    parentSessionId: String(
+                      (snapshotCandidate.forkMarker as Record<string, unknown>)
+                        .parentSessionId ?? "",
+                    ).trim(),
+                    source:
+                      (snapshotCandidate.forkMarker as Record<string, unknown>)
+                        .source === "checkpoint" ||
+                      (snapshotCandidate.forkMarker as Record<string, unknown>)
+                        .source === "runtime_state" ||
+                      (snapshotCandidate.forkMarker as Record<string, unknown>)
+                        .source === "history"
+                        ? ((snapshotCandidate.forkMarker as Record<string, unknown>)
+                            .source as PersistedWebChatForkSource)
+                        : undefined,
+                    forkedAt:
+                      typeof (snapshotCandidate.forkMarker as Record<string, unknown>)
+                        .forkedAt === "number" &&
+                      Number.isFinite(
+                        (snapshotCandidate.forkMarker as Record<string, unknown>)
+                          .forkedAt,
+                      )
+                        ? (snapshotCandidate.forkMarker as Record<string, unknown>)
+                            .forkedAt
+                        : undefined,
+                  } as PersistedSessionReplayForkMarker,
+                }
+              : {}),
+          }
+        : undefined;
+    const tailEvents = Array.isArray(candidate.tailEvents)
+      ? candidate.tailEvents.filter(
+          (event): event is LLMMessage =>
+            !!event &&
+            typeof event === "object" &&
+            typeof (event as LLMMessage).role === "string" &&
+            "content" in event,
+        )
+      : [];
+    if (boundarySeq === undefined || !snapshot) {
+      return undefined;
+    }
+    return {
+      version: 1,
+      boundarySeq,
+      ...(typeof candidate.migratedFromLegacyAt === "number" &&
+      Number.isFinite(candidate.migratedFromLegacyAt)
+        ? { migratedFromLegacyAt: candidate.migratedFromLegacyAt }
+        : {}),
+      snapshot: snapshot as PersistedSessionReplaySnapshot,
+      tailEvents: cloneReplayTailEvents(tailEvents),
+    };
+  }
+
   if (
-    candidate.version !== 1 &&
     candidate.version !== 2 &&
     candidate.version !== 3 &&
     candidate.version !== 4 &&
@@ -318,65 +641,95 @@ function coercePersistedSessionRuntimeState(
   ) {
     return undefined;
   }
-  const shellProfile = coerceSessionShellProfile(candidate.shellProfile);
-  const workflowState = coerceSessionWorkflowState(candidate.workflowState);
-  const resumeAnchor = isStatefulResumeAnchor(candidate.statefulResumeAnchor)
-    ? cloneResumeAnchor(candidate.statefulResumeAnchor)
-    : undefined;
-  const historyCompacted =
-    candidate.statefulHistoryCompacted === true ||
-    (typeof candidate.artifactSnapshotId === "string" &&
-      candidate.artifactSnapshotId.trim().length > 0);
-  const artifactSnapshotId =
-    typeof candidate.artifactSnapshotId === "string" &&
-    candidate.artifactSnapshotId.trim().length > 0
-      ? candidate.artifactSnapshotId.trim()
-      : undefined;
-  const artifactSessionId =
-    typeof candidate.artifactSessionId === "string" &&
-    candidate.artifactSessionId.trim().length > 0
-      ? candidate.artifactSessionId.trim()
-      : undefined;
-  const activeTaskContext = coerceActiveTaskContext(candidate.activeTaskContext);
-  const runtimeContractSnapshot =
-    typeof candidate.runtimeContractSnapshot === "object" &&
-      candidate.runtimeContractSnapshot !== null
-      ? (candidate.runtimeContractSnapshot as RuntimeContractSnapshot)
-      : undefined;
-  const runtimeContractStatusSnapshot =
-    normalizeRuntimeContractStatusSnapshot(candidate.runtimeContractStatusSnapshot);
-  const reviewSurfaceState = reconcileReviewSurfaceState(
-    coerceReviewSurfaceState(candidate.reviewSurfaceState),
-  );
-  const verificationSurfaceState = reconcileVerificationSurfaceState(
-    coerceVerificationSurfaceState(candidate.verificationSurfaceState),
-  );
-  if (
-    !shellProfile &&
-    !workflowState &&
-    !resumeAnchor &&
-    !historyCompacted &&
-    !runtimeContractSnapshot &&
-    !runtimeContractStatusSnapshot &&
-    !reviewSurfaceState &&
-    !verificationSurfaceState &&
-    !activeTaskContext
-  ) {
+
+  const snapshot = buildPersistedSessionReplaySnapshot({
+    id: "legacy",
+    workspaceId: "default",
+    history: [],
+    createdAt: 0,
+    lastActiveAt: 0,
+    metadata: {
+      ...(candidate.shellProfile !== undefined
+        ? { [SESSION_SHELL_PROFILE_METADATA_KEY]: candidate.shellProfile }
+        : {}),
+      ...(candidate.workflowState !== undefined
+        ? { [SESSION_WORKFLOW_STATE_METADATA_KEY]: candidate.workflowState }
+        : {}),
+      ...(candidate.statefulResumeAnchor !== undefined
+        ? { [SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY]: candidate.statefulResumeAnchor }
+        : {}),
+      ...(candidate.statefulHistoryCompacted === true ||
+      typeof candidate.artifactSnapshotId === "string"
+        ? { [SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY]: true }
+        : {}),
+      ...(candidate.artifactSnapshotId !== undefined
+        ? {
+            [SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY]: {
+              version: 1,
+              snapshotId: candidate.artifactSnapshotId,
+              sessionId:
+                typeof candidate.artifactSessionId === "string"
+                  ? candidate.artifactSessionId
+                  : "",
+              createdAt: 0,
+              source: "session_compaction",
+              historyDigest: "",
+              sourceMessageCount: 0,
+              retainedTailCount: 0,
+              openLoops: [],
+              artifactRefs: [],
+            },
+          }
+        : {}),
+      ...(candidate.artifactSessionId !== undefined
+        ? {
+            [SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY]: {
+              sessionId: candidate.artifactSessionId,
+            },
+          }
+        : {}),
+      ...(candidate.runtimeContractSnapshot !== undefined
+        ? {
+            [SESSION_RUNTIME_CONTRACT_SNAPSHOT_METADATA_KEY]:
+              candidate.runtimeContractSnapshot,
+          }
+        : {}),
+      ...(candidate.runtimeContractStatusSnapshot !== undefined
+        ? {
+            [SESSION_RUNTIME_CONTRACT_STATUS_SNAPSHOT_METADATA_KEY]:
+              candidate.runtimeContractStatusSnapshot,
+          }
+        : {}),
+      ...(candidate.reviewSurfaceState !== undefined
+        ? {
+            [SESSION_REVIEW_SURFACE_STATE_METADATA_KEY]:
+              candidate.reviewSurfaceState,
+          }
+        : {}),
+      ...(candidate.verificationSurfaceState !== undefined
+        ? {
+            [SESSION_VERIFICATION_SURFACE_STATE_METADATA_KEY]:
+              candidate.verificationSurfaceState,
+          }
+        : {}),
+      ...(candidate.activeTaskContext !== undefined
+        ? {
+            [SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY]:
+              candidate.activeTaskContext,
+          }
+        : {}),
+    },
+  });
+  if (!snapshot) {
     return undefined;
   }
+  const tailEvents = buildReplayTailEvents("legacy", snapshot, 1);
   return {
-    version: 7,
-    ...(shellProfile ? { shellProfile } : {}),
-    ...(workflowState ? { workflowState } : {}),
-    ...(resumeAnchor ? { statefulResumeAnchor: resumeAnchor } : {}),
-    ...(historyCompacted ? { statefulHistoryCompacted: true } : {}),
-    ...(artifactSnapshotId ? { artifactSnapshotId } : {}),
-    ...(artifactSessionId ? { artifactSessionId } : {}),
-    ...(runtimeContractSnapshot ? { runtimeContractSnapshot } : {}),
-    ...(runtimeContractStatusSnapshot ? { runtimeContractStatusSnapshot } : {}),
-    ...(reviewSurfaceState ? { reviewSurfaceState } : {}),
-    ...(verificationSurfaceState ? { verificationSurfaceState } : {}),
-    ...(activeTaskContext ? { activeTaskContext } : {}),
+    version: 1,
+    boundarySeq: 1,
+    migratedFromLegacyAt: Date.now(),
+    snapshot,
+    tailEvents,
   };
 }
 
@@ -388,14 +741,52 @@ function clonePersistedSessionRuntimeState(
   ) as PersistedSessionRuntimeState;
 }
 
-export async function loadPersistedSessionRuntimeState(
+export async function loadPersistedSessionReplayState(
   memoryBackend: MemoryBackend,
   webSessionId: string,
-): Promise<PersistedSessionRuntimeState | undefined> {
-  return coercePersistedSessionRuntimeState(
+): Promise<PersistedSessionReplayState | undefined> {
+  const replayKey = webSessionReplayStateKey(webSessionId);
+  const persisted = coercePersistedSessionRuntimeState(
+    await memoryBackend.get(replayKey),
+  );
+  if (persisted) {
+    return persisted;
+  }
+
+  const legacy = coercePersistedSessionRuntimeState(
     await memoryBackend.get(webSessionRuntimeStateKey(webSessionId)),
   );
+  if (!legacy) {
+    return undefined;
+  }
+
+  await memoryBackend.set(replayKey, legacy);
+  await memoryBackend.delete(webSessionRuntimeStateKey(webSessionId));
+  return legacy;
 }
+
+export async function loadPersistedSessionReplayContext(
+  memoryBackend: MemoryBackend,
+  webSessionId: string,
+): Promise<{
+  readonly state?: PersistedSessionReplayState;
+  readonly history: readonly LLMMessage[];
+}> {
+  const [state, thread] = await Promise.all([
+    loadPersistedSessionReplayState(memoryBackend, webSessionId),
+    memoryBackend.getThread(webSessionId).catch(() => []),
+  ]);
+  return {
+    state,
+    history: buildSessionReplayHistory(
+      thread.map((entry) => entryToMessage(entry)),
+      state,
+    ),
+  };
+}
+
+/** @deprecated Use loadPersistedSessionReplayState. */
+export const loadPersistedSessionRuntimeState = loadPersistedSessionReplayState;
 
 export function buildSessionStatefulOptions(
   session: Session,
@@ -407,90 +798,138 @@ export function buildSessionStatefulOptions(
     : undefined;
   const historyCompacted =
     session.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY] === true;
-  if (!resumeAnchor && !historyCompacted) return undefined;
+  const artifactContext = readArtifactCompactionState(session.metadata);
+  if (!resumeAnchor && !historyCompacted && !artifactContext) return undefined;
   return {
     ...(resumeAnchor ? { resumeAnchor } : {}),
     ...(historyCompacted ? { historyCompacted: true } : {}),
+    ...(artifactContext ? { artifactContext } : {}),
   };
 }
 
-export async function persistSessionRuntimeState(
+export async function persistSessionReplayState(
   memoryBackend: MemoryBackend,
   webSessionId: string,
   session: Session,
 ): Promise<void> {
   const artifactStore = new MemoryArtifactStore(memoryBackend);
-  const persisted = buildPersistedSessionRuntimeState(session);
-  const key = webSessionRuntimeStateKey(webSessionId);
+  const key = webSessionReplayStateKey(webSessionId);
+  const existing = coercePersistedSessionRuntimeState(
+    await memoryBackend.get(key),
+  ) ?? coercePersistedSessionRuntimeState(
+    await memoryBackend.get(webSessionRuntimeStateKey(webSessionId)),
+  );
+  const persisted = buildPersistedSessionRuntimeState(session, existing);
   if (!persisted) {
     await artifactStore.clearSession(session.id);
     await memoryBackend.delete(key);
+    await memoryBackend.delete(webSessionRuntimeStateKey(webSessionId));
     return;
   }
+  const artifactContext = readArtifactCompactionState(session.metadata);
+  const artifactRecords = readArtifactCompactionRecords(session.metadata);
+  if (artifactContext) {
+    await artifactStore.persistSnapshot({
+      state: artifactContext,
+      records: artifactRecords,
+    });
+  } else {
+    await artifactStore.clearSession(session.id);
+  }
   await memoryBackend.set(key, persisted);
+  await memoryBackend.delete(webSessionRuntimeStateKey(webSessionId));
 }
 
-export async function clearSessionRuntimeState(
+/** @deprecated Use persistSessionReplayState. */
+export const persistSessionRuntimeState = persistSessionReplayState;
+
+export async function clearSessionReplayState(
   memoryBackend: MemoryBackend,
   webSessionId: string,
 ): Promise<void> {
   const artifactStore = new MemoryArtifactStore(memoryBackend);
   const persisted = coercePersistedSessionRuntimeState(
+    await memoryBackend.get(webSessionReplayStateKey(webSessionId)),
+  );
+  const legacy = coercePersistedSessionRuntimeState(
     await memoryBackend.get(webSessionRuntimeStateKey(webSessionId)),
   );
-  if (persisted?.artifactSessionId) {
-    await artifactStore.clearSession(persisted.artifactSessionId);
+  const artifactSessionId =
+    persisted?.snapshot.artifactSessionId ?? legacy?.snapshot.artifactSessionId;
+  if (artifactSessionId) {
+    await artifactStore.clearSession(artifactSessionId);
   }
+  await memoryBackend.delete(webSessionReplayStateKey(webSessionId));
   await memoryBackend.delete(webSessionRuntimeStateKey(webSessionId));
 }
 
-export async function hydrateSessionRuntimeState(
+/** @deprecated Use clearSessionReplayState. */
+export const clearSessionRuntimeState = clearSessionReplayState;
+
+export async function hydrateSessionReplayState(
   memoryBackend: MemoryBackend,
   webSessionId: string,
   session: Session,
 ): Promise<void> {
-  const persisted = coercePersistedSessionRuntimeState(
-    await memoryBackend.get(webSessionRuntimeStateKey(webSessionId)),
+  const artifactStore = new MemoryArtifactStore(memoryBackend);
+  const persisted = await loadPersistedSessionReplayState(
+    memoryBackend,
+    webSessionId,
   );
   if (!persisted) return;
-  if (persisted.shellProfile) {
-    session.metadata[SESSION_SHELL_PROFILE_METADATA_KEY] = persisted.shellProfile;
+  clearStatefulContinuationMetadata(session.metadata);
+  if (persisted.snapshot.shellProfile) {
+    session.metadata[SESSION_SHELL_PROFILE_METADATA_KEY] =
+      persisted.snapshot.shellProfile;
   }
-  if (persisted.workflowState) {
-    session.metadata[SESSION_WORKFLOW_STATE_METADATA_KEY] = persisted.workflowState;
+  if (persisted.snapshot.workflowState) {
+    session.metadata[SESSION_WORKFLOW_STATE_METADATA_KEY] =
+      persisted.snapshot.workflowState;
   }
-  if (persisted.statefulResumeAnchor) {
+  if (persisted.snapshot.statefulResumeAnchor) {
     session.metadata[SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY] =
-      cloneResumeAnchor(persisted.statefulResumeAnchor);
+      cloneResumeAnchor(persisted.snapshot.statefulResumeAnchor);
   }
-  if (persisted.statefulHistoryCompacted) {
+  if (persisted.snapshot.statefulHistoryCompacted) {
     session.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY] = true;
   }
-  delete session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY];
-  delete session.metadata[SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY];
-  if (persisted.activeTaskContext) {
+  if (persisted.snapshot.artifactSessionId) {
+    const artifactSnapshot = await artifactStore.loadSnapshot(
+      persisted.snapshot.artifactSessionId,
+    );
+    if (artifactSnapshot?.state) {
+      session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY] =
+        artifactSnapshot.state;
+      session.metadata[SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY] =
+        artifactSnapshot.records;
+    }
+  }
+  if (persisted.snapshot.activeTaskContext) {
     session.metadata[SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY] =
-      persisted.activeTaskContext;
+      persisted.snapshot.activeTaskContext;
   }
-  if (persisted.reviewSurfaceState) {
+  if (persisted.snapshot.reviewSurfaceState) {
     session.metadata[SESSION_REVIEW_SURFACE_STATE_METADATA_KEY] =
-      persisted.reviewSurfaceState;
+      persisted.snapshot.reviewSurfaceState;
   }
-  if (persisted.verificationSurfaceState) {
+  if (persisted.snapshot.verificationSurfaceState) {
     session.metadata[SESSION_VERIFICATION_SURFACE_STATE_METADATA_KEY] =
-      persisted.verificationSurfaceState;
+      persisted.snapshot.verificationSurfaceState;
   }
-  if (persisted.runtimeContractSnapshot) {
+  if (persisted.snapshot.runtimeContractSnapshot) {
     session.metadata[SESSION_RUNTIME_CONTRACT_SNAPSHOT_METADATA_KEY] =
-      persisted.runtimeContractSnapshot;
+      persisted.snapshot.runtimeContractSnapshot;
   }
-  if (persisted.runtimeContractStatusSnapshot) {
+  if (persisted.snapshot.runtimeContractStatusSnapshot) {
     session.metadata[SESSION_RUNTIME_CONTRACT_STATUS_SNAPSHOT_METADATA_KEY] =
-      persisted.runtimeContractStatusSnapshot;
+      persisted.snapshot.runtimeContractStatusSnapshot;
   }
 }
 
-export async function forkSessionRuntimeState(
+/** @deprecated Use hydrateSessionReplayState. */
+export const hydrateSessionRuntimeState = hydrateSessionReplayState;
+
+export async function forkSessionReplayState(
   memoryBackend: MemoryBackend,
   params: {
     sourceWebSessionId: string;
@@ -499,37 +938,30 @@ export async function forkSessionRuntimeState(
     workflowState?: Partial<SessionWorkflowState>;
   },
 ): Promise<boolean> {
-  const persisted = await loadPersistedSessionRuntimeState(
+  const persisted = await loadPersistedSessionReplayState(
     memoryBackend,
     params.sourceWebSessionId,
   );
   if (!persisted) {
     return false;
   }
-  const next = {
-    ...clonePersistedSessionRuntimeState(persisted),
-  } as {
-    version: 7;
-    shellProfile?: SessionShellProfile;
-    workflowState?: SessionWorkflowState;
-    statefulResumeAnchor?: LLMStatefulResumeAnchor;
-    statefulHistoryCompacted?: boolean;
-    artifactSnapshotId?: string;
-    artifactSessionId?: string;
-    runtimeContractSnapshot?: RuntimeContractSnapshot;
-    runtimeContractStatusSnapshot?: RuntimeContractStatusSnapshot;
-    reviewSurfaceState?: ReviewSurfaceState;
-    verificationSurfaceState?: VerificationSurfaceState;
-    activeTaskContext?: ActiveTaskContext;
-  };
+  const nextSnapshot = {
+    ...clonePersistedSessionRuntimeState(persisted).snapshot,
+    reviewSurfaceState: clearForkedReviewSurfaceState(
+      persisted.snapshot.reviewSurfaceState,
+    ),
+    verificationSurfaceState: clearForkedVerificationSurfaceState(
+      persisted.snapshot.verificationSurfaceState,
+    ),
+  } as Record<string, unknown>;
   const mergedWorkflowState = (() => {
-    if (persisted.workflowState) {
+    if (persisted.snapshot.workflowState) {
       const objective =
         params.workflowState?.objective !== undefined
           ? params.workflowState.objective
-          : persisted.workflowState.objective;
+          : persisted.snapshot.workflowState.objective;
       return {
-        ...persisted.workflowState,
+        ...persisted.snapshot.workflowState,
         ...(params.workflowState?.stage
           ? { stage: params.workflowState.stage }
           : {}),
@@ -553,42 +985,61 @@ export async function forkSessionRuntimeState(
     } satisfies SessionWorkflowState;
   })();
 
-  delete next.activeTaskContext;
-  delete next.runtimeContractSnapshot;
-  delete next.runtimeContractStatusSnapshot;
-  next.reviewSurfaceState = clearForkedReviewSurfaceState(
-    persisted.reviewSurfaceState,
-  );
-  next.verificationSurfaceState = clearForkedVerificationSurfaceState(
-    persisted.verificationSurfaceState,
-  );
-
   if (params.shellProfile) {
-    next.shellProfile = params.shellProfile;
+    nextSnapshot.shellProfile = params.shellProfile;
   }
   if (mergedWorkflowState) {
-    next.workflowState = mergedWorkflowState;
+    nextSnapshot.workflowState = mergedWorkflowState;
   }
-  delete next.artifactSessionId;
-  delete next.artifactSnapshotId;
+  delete nextSnapshot.activeTaskContext;
+  delete nextSnapshot.runtimeContractSnapshot;
+  delete nextSnapshot.runtimeContractStatusSnapshot;
+  delete nextSnapshot.artifactSessionId;
+  delete nextSnapshot.artifactSnapshotId;
+  nextSnapshot.forkMarker = {
+    parentSessionId: params.sourceWebSessionId,
+    source: "history",
+    forkedAt: Date.now(),
+  };
+  const boundarySeq = persisted.boundarySeq + 1;
+  const next: PersistedSessionReplayState = {
+    version: 1,
+    ...(persisted.migratedFromLegacyAt
+      ? { migratedFromLegacyAt: persisted.migratedFromLegacyAt }
+      : {}),
+    boundarySeq,
+    snapshot: nextSnapshot as PersistedSessionReplaySnapshot,
+    tailEvents: buildReplayTailEvents(
+    params.targetWebSessionId,
+    nextSnapshot as PersistedSessionReplaySnapshot,
+    boundarySeq,
+  ),
+  };
 
   await memoryBackend.set(
-    webSessionRuntimeStateKey(params.targetWebSessionId),
+    webSessionReplayStateKey(params.targetWebSessionId),
     next,
+  );
+  await memoryBackend.delete(
+    webSessionRuntimeStateKey(params.targetWebSessionId),
   );
   return true;
 }
 
-/** @deprecated Use loadPersistedSessionRuntimeState. */
-export const loadPersistedWebSessionRuntimeState = loadPersistedSessionRuntimeState;
-/** @deprecated Use persistSessionRuntimeState. */
-export const persistWebSessionRuntimeState = persistSessionRuntimeState;
-/** @deprecated Use clearSessionRuntimeState. */
-export const clearWebSessionRuntimeState = clearSessionRuntimeState;
-/** @deprecated Use hydrateSessionRuntimeState. */
-export const hydrateWebSessionRuntimeState = hydrateSessionRuntimeState;
-/** @deprecated Use forkSessionRuntimeState. */
-export const forkWebSessionRuntimeState = forkSessionRuntimeState;
+/** @deprecated Use forkSessionReplayState. */
+export const forkSessionRuntimeState = forkSessionReplayState;
+/** @deprecated Use loadPersistedSessionReplayState. */
+export const loadPersistedWebSessionRuntimeState = loadPersistedSessionReplayState;
+/** @deprecated Use persistSessionReplayState. */
+export const persistWebSessionRuntimeState = persistSessionReplayState;
+/** @deprecated Use clearSessionReplayState. */
+export const clearWebSessionRuntimeState = clearSessionReplayState;
+export const clearWebSessionReplayState = clearSessionReplayState;
+/** @deprecated Use hydrateSessionReplayState. */
+export const hydrateWebSessionRuntimeState = hydrateSessionReplayState;
+export const hydrateWebSessionReplayState = hydrateSessionReplayState;
+/** @deprecated Use forkSessionReplayState. */
+export const forkWebSessionRuntimeState = forkSessionReplayState;
 
 export function resolveSessionStatefulContinuation(
   result: ChatExecutorResult,

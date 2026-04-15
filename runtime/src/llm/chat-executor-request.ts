@@ -39,6 +39,7 @@ import type {
   ChatExecutorResult,
   ChatPlannerSummary,
   ExecutionContext,
+  ToolLoopTerminalResult,
 } from "./chat-executor-types.js";
 import type { HookContext, HookRegistry } from "./hooks/index.js";
 import type { RuntimeEconomicsPolicy } from "./run-budget.js";
@@ -84,15 +85,24 @@ function buildHookLifecycleContext(
   ctx: ExecutionContext,
   event: "Stop" | "StopFailure",
   failure?: HookFailureDetail,
+  terminal?: Pick<
+    ToolLoopTerminalResult,
+    "content" | "stopReason" | "stopReasonDetail"
+  >,
 ): HookContext {
-  const stopReason = readStringField(failure ?? ctx, "stopReason") ?? ctx.stopReason;
+  const stopReason =
+    readStringField(failure ?? terminal ?? ctx, "stopReason") ?? ctx.stopReason;
   const stopReasonDetail =
-    readStringField(failure ?? ctx, "stopReasonDetail") ?? ctx.stopReasonDetail;
+    readStringField(failure ?? terminal ?? ctx, "stopReasonDetail") ??
+    ctx.stopReasonDetail;
+  const finalContent =
+    readStringField(terminal, "content") ??
+    (terminal?.content !== undefined ? terminal.content : ctx.finalContent);
   return {
     event,
     sessionId: ctx.sessionId,
     messages: ctx.messages,
-    ...(ctx.finalContent ? { finalContent: ctx.finalContent } : {}),
+    ...(finalContent ? { finalContent } : {}),
     ...(stopReason ? { stopReason } : {}),
     ...(stopReasonDetail ? { stopReasonDetail } : {}),
     ...(failure ? { failure } : {}),
@@ -141,7 +151,9 @@ export interface ExecuteRequestDependencies
  * dispatch can check whether this is a first-touch session.
  */
 export interface ExecuteRequestHelpers extends InitializeExecutionContextHelpers {
-  readonly executeToolCallLoop: (ctx: ExecutionContext) => Promise<void>;
+  readonly executeToolCallLoop: (
+    ctx: ExecutionContext,
+  ) => Promise<ToolLoopTerminalResult>;
   readonly sessionTokens: ReadonlyMap<string, number>;
 }
 
@@ -197,8 +209,125 @@ export async function executeRequest(
     });
   }
 
+  const computeVerificationRequirement = (terminal: ToolLoopTerminalResult): boolean =>
+    ctx.runtimeContractFlags.verifierRuntimeRequired === true &&
+    ctx.turnExecutionContract.turnClass === "workflow_implementation" &&
+    (((ctx.turnExecutionContract.targetArtifacts?.length ?? 0) > 0) ||
+      terminal.mutationDetected);
+
   try {
-    await helpers.executeToolCallLoop(ctx);
+    const terminal = await helpers.executeToolCallLoop(ctx);
+
+    checkRequestTimeout(ctx, "finalization");
+
+    const requiresVerification = computeVerificationRequirement(terminal);
+    const verificationSatisfied =
+      terminal.verifierSnapshot?.performed === true &&
+      terminal.verifierSnapshot.overall === "pass";
+    const completionState =
+      terminal.completionState ??
+      resolveWorkflowCompletionState({
+        stopReason: terminal.stopReason,
+        toolCalls: ctx.allToolCalls,
+        validationCode: terminal.validationCode,
+        requiresVerification,
+        verificationSatisfied,
+      });
+
+    const durationMs = Date.now() - ctx.startTime;
+    const plannerSummary: ChatPlannerSummary = ctx.plannerSummaryState;
+    const finalContent = sanitizeFinalContent(terminal.content);
+    const completionProgress = deriveWorkflowProgressSnapshot({
+      stopReason: terminal.stopReason,
+      completionState,
+      stopReasonDetail: terminal.stopReasonDetail,
+      validationCode: terminal.validationCode,
+      toolCalls: ctx.allToolCalls,
+      verificationContract: workflowEvidence.verificationContract,
+      completionContract: workflowEvidence.completionContract,
+      completedRequestMilestoneIds: ctx.completedRequestMilestoneIds,
+      updatedAt: Date.now(),
+      contractFingerprint: ctx.turnExecutionContract.contractFingerprint,
+    });
+
+    if (deps.hookRegistry) {
+      const stopEvent: "Stop" | "StopFailure" =
+        terminal.stopReason === "completed" || terminal.stopReason === "tool_calls"
+          ? "Stop"
+          : "StopFailure";
+      await dispatchHooks({
+        registry: deps.hookRegistry,
+        event: stopEvent,
+        matchKey: ctx.sessionId,
+        executor: defaultHookExecutor,
+        context: buildHookLifecycleContext(
+          ctx,
+          stopEvent,
+          stopEvent === "StopFailure"
+            ? buildHookFailureDetail({
+                name: "StopFailure",
+                message:
+                  terminal.stopReasonDetail ?? "Execution ended in failure.",
+                stopReason: terminal.stopReason,
+                stopReasonDetail: terminal.stopReasonDetail,
+              })
+            : undefined,
+          {
+            content: finalContent,
+            stopReason: terminal.stopReason,
+            stopReasonDetail: terminal.stopReasonDetail,
+          },
+        ),
+      });
+    }
+
+    emitExecutionTrace(ctx, {
+      type: "runtime_contract_snapshot",
+      phase: "tool_followup",
+      callIndex: ctx.callIndex,
+      payload: {
+        stage: "finalized",
+        runtimeContract: terminal.runtimeContractSnapshot,
+      },
+    });
+
+    return {
+      content: finalContent,
+      provider: ctx.providerName,
+      model: ctx.responseModel,
+      usedFallback: ctx.usedFallback,
+      toolCalls: ctx.allToolCalls,
+      providerEvidence: ctx.providerEvidence,
+      structuredOutput: ctx.response?.structuredOutput,
+      tokenUsage: ctx.cumulativeUsage,
+      callUsage: ctx.callUsage,
+      durationMs,
+      compacted: ctx.compacted,
+      statefulSummary: summarizeStateful(ctx.callUsage),
+      toolRoutingSummary: ctx.toolRouting
+        ? {
+          enabled: true,
+          initialToolCount: ctx.initialRoutedToolNames.length,
+          finalToolCount: ctx.activeRoutedToolNames.length,
+          routeMisses: ctx.routedToolMisses,
+          expanded: ctx.routedToolsExpanded,
+        }
+        : undefined,
+      plannerSummary,
+      economicsSummary: buildRuntimeEconomicsSummary(
+        deps.economicsPolicy,
+        ctx.economicsState,
+      ),
+      stopReason: terminal.stopReason,
+      completionState,
+      verifierSnapshot: terminal.verifierSnapshot,
+      runtimeContractSnapshot: terminal.runtimeContractSnapshot,
+      completionProgress,
+      turnExecutionContract: ctx.turnExecutionContract,
+      activeTaskContext: deriveActiveTaskContext(ctx.turnExecutionContract),
+      stopReasonDetail: terminal.stopReasonDetail,
+      validationCode: terminal.validationCode,
+    };
   } catch (error) {
     if (deps.hookRegistry) {
       const failure = buildHookFailureDetail(error);
@@ -219,108 +348,4 @@ export async function executeRequest(
     }
     throw error;
   }
-
-  checkRequestTimeout(ctx, "finalization");
-
-  // Derive the final completion state from stop reason + tool calls.
-  ctx.completionState = resolveWorkflowCompletionState({
-    stopReason: ctx.stopReason,
-    toolCalls: ctx.allToolCalls,
-    verificationContract: workflowEvidence.verificationContract,
-    validationCode: ctx.validationCode,
-  });
-
-  const durationMs = Date.now() - ctx.startTime;
-  const plannerSummary: ChatPlannerSummary = ctx.plannerSummaryState;
-
-  ctx.finalContent = sanitizeFinalContent(ctx.finalContent);
-  const completionProgress = deriveWorkflowProgressSnapshot({
-    stopReason: ctx.stopReason,
-    completionState: ctx.completionState,
-    stopReasonDetail: ctx.stopReasonDetail,
-    validationCode: ctx.validationCode,
-    toolCalls: ctx.allToolCalls,
-    verificationContract: workflowEvidence.verificationContract,
-    completionContract: workflowEvidence.completionContract,
-    completedRequestMilestoneIds: ctx.completedRequestMilestoneIds,
-    updatedAt: Date.now(),
-    contractFingerprint: ctx.turnExecutionContract.contractFingerprint,
-  });
-
-  // Phase H: dispatch Stop / StopFailure at the terminal path.
-  // Stop fires on completed state; StopFailure on any non-
-  // completed state (budget_exceeded, no_progress, cancelled,
-  // provider_error, timeout, etc.).
-  if (deps.hookRegistry) {
-    const stopEvent: "Stop" | "StopFailure" =
-      ctx.stopReason === "completed" || ctx.stopReason === "tool_calls"
-        ? "Stop"
-        : "StopFailure";
-    await dispatchHooks({
-      registry: deps.hookRegistry,
-      event: stopEvent,
-      matchKey: ctx.sessionId,
-      executor: defaultHookExecutor,
-      context: buildHookLifecycleContext(
-        ctx,
-        stopEvent,
-        stopEvent === "StopFailure"
-          ? buildHookFailureDetail({
-              name: "StopFailure",
-              message: ctx.stopReasonDetail ?? "Execution ended in failure.",
-              stopReason: ctx.stopReason,
-              stopReasonDetail: ctx.stopReasonDetail,
-            })
-          : undefined,
-      ),
-    });
-  }
-
-  emitExecutionTrace(ctx, {
-    type: "runtime_contract_snapshot",
-    phase: "tool_followup",
-    callIndex: ctx.callIndex,
-    payload: {
-      stage: "finalized",
-      runtimeContract: ctx.runtimeContractSnapshot,
-    },
-  });
-
-  return {
-    content: ctx.finalContent,
-    provider: ctx.providerName,
-    model: ctx.responseModel,
-    usedFallback: ctx.usedFallback,
-    toolCalls: ctx.allToolCalls,
-    providerEvidence: ctx.providerEvidence,
-    structuredOutput: ctx.response?.structuredOutput,
-    tokenUsage: ctx.cumulativeUsage,
-    callUsage: ctx.callUsage,
-    durationMs,
-    compacted: ctx.compacted,
-    statefulSummary: summarizeStateful(ctx.callUsage),
-    toolRoutingSummary: ctx.toolRouting
-      ? {
-        enabled: true,
-        initialToolCount: ctx.initialRoutedToolNames.length,
-        finalToolCount: ctx.activeRoutedToolNames.length,
-        routeMisses: ctx.routedToolMisses,
-        expanded: ctx.routedToolsExpanded,
-      }
-      : undefined,
-    plannerSummary,
-    economicsSummary: buildRuntimeEconomicsSummary(
-      deps.economicsPolicy,
-      ctx.economicsState,
-    ),
-    stopReason: ctx.stopReason,
-    completionState: ctx.completionState,
-    verifierSnapshot: ctx.verifierSnapshot,
-    runtimeContractSnapshot: ctx.runtimeContractSnapshot,
-    completionProgress,
-    turnExecutionContract: ctx.turnExecutionContract,
-    activeTaskContext: deriveActiveTaskContext(ctx.turnExecutionContract),
-    stopReasonDetail: ctx.stopReasonDetail,
-    validationCode: ctx.validationCode,
-  };
 }

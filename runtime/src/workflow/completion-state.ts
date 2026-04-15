@@ -1,6 +1,5 @@
 import { didToolCallFail } from "../llm/chat-executor-tool-utils.js";
 import type { DelegationOutputValidationCode } from "../utils/delegation-validation.js";
-import type { WorkflowVerificationContract } from "./verification-obligations.js";
 
 export type WorkflowCompletionState =
   | "completed"
@@ -36,10 +35,9 @@ export function resolvePipelineCompletionState(input: {
 export function resolveWorkflowCompletionState(input: {
   readonly stopReason: string;
   readonly toolCalls: readonly CompletionStateToolCall[];
-  readonly verificationContract?: WorkflowVerificationContract;
-  readonly completedRequestMilestoneIds?: readonly string[];
   readonly validationCode?: DelegationOutputValidationCode;
-  readonly verifier?: PlannerVerificationSnapshot;
+  readonly requiresVerification?: boolean;
+  readonly verificationSatisfied?: boolean;
 }): WorkflowCompletionState {
   const successfulToolCalls = input.toolCalls.filter(
     (toolCall) => !didToolCallFail(toolCall.isError, toolCall.result),
@@ -47,6 +45,9 @@ export function resolveWorkflowCompletionState(input: {
   const hasProgress = successfulToolCalls.length > 0;
 
   if (input.stopReason === "completed") {
+    if (input.requiresVerification && !input.verificationSatisfied) {
+      return "needs_verification";
+    }
     return "completed";
   }
 

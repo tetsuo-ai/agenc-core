@@ -222,6 +222,8 @@ describe("context compaction", () => {
 
     expect(compacted.compactedHistory).toHaveLength(3);
     expect(compacted.compactedHistory[0]?.role).toBe("system");
+    expect(String(compacted.compactedHistory[0]?.content)).toContain("[boundary]");
+    expect(compacted.boundaryMessage).toEqual(compacted.compactedHistory[0]);
     expect(compacted.compactedHistory[1]).toMatchObject(history[0]);
     expect(compacted.compactedHistory[1]?.content).toEqual(history[0].content);
     expect(compacted.compactedHistory[2]).toEqual(history[2]);

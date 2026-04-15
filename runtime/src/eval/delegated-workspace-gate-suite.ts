@@ -15,7 +15,6 @@ import {
 } from "../workflow/delegated-filesystem-scope.js";
 import { isPathWithinRoot } from "../workflow/path-normalization.js";
 import { resolveWorkflowCompletionState } from "../workflow/completion-state.js";
-import type { WorkflowVerificationContract } from "../workflow/verification-obligations.js";
 import { TrajectoryReplayEngine } from "./replay.js";
 import { parseTrajectoryTrace } from "./types.js";
 
@@ -380,26 +379,11 @@ async function runDegradedProviderRetryBrokenScopeScenario(): Promise<PipelineDe
       targetArtifacts: ["/tmp/agenc-phase7-retry/PLAN.md"],
     },
   });
-  const verificationContract: WorkflowVerificationContract = {
-    workspaceRoot: "/tmp/agenc-phase7-retry",
-    requiredSourceArtifacts: ["/tmp/agenc-phase7-retry/PLAN.md"],
-    targetArtifacts: ["/tmp/agenc-phase7-retry/PLAN.md"],
-    acceptanceCriteria: ["Do not complete until the delegated scope is valid and grounded."],
-    completionContract: {
-      taskClass: "behavior_required",
-      placeholdersAllowed: false,
-      partialCompletionAllowed: false,
-      placeholderTaxonomy: "implementation",
-    },
-  };
   const completionState = resolveWorkflowCompletionState({
     stopReason: "completed",
     toolCalls: [],
-    verificationContract,
-    verifier: {
-      performed: false,
-      overall: "skipped",
-    },
+    requiresVerification: true,
+    verificationSatisfied: false,
   });
   return {
     scenarioId: "degraded_provider_retry_does_not_complete_broken_scope",

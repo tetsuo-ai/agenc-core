@@ -1,6 +1,10 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createBashTool, isCommandAllowed, validateShellCommand } from "./bash.js";
+import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 import { DEFAULT_DENY_LIST, DEFAULT_DENY_PREFIXES, DANGEROUS_SHELL_PATTERNS } from "./types.js";
 import type { Logger } from "../../utils/logger.js";
 
@@ -11,12 +15,16 @@ vi.mock("node:child_process", () => ({
 }));
 
 // Mock fs operations used by shell mode (temp script file)
-vi.mock("node:fs", () => ({
-  existsSync: vi.fn(() => false),
-  statSync: vi.fn(() => ({ isDirectory: () => true })),
-  writeFileSync: vi.fn(),
-  unlinkSync: vi.fn(),
-}));
+vi.mock("node:fs", async () => {
+  const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+  return {
+    ...actual,
+    existsSync: vi.fn(() => false),
+    statSync: vi.fn(() => ({ isDirectory: () => true })),
+    writeFileSync: vi.fn(),
+    unlinkSync: vi.fn(),
+  };
+});
 
 import { execFile, spawn } from "node:child_process";
 import { statSync, writeFileSync } from "node:fs";
@@ -1121,6 +1129,41 @@ describe("system.bash tool", () => {
       const result = await tool.execute({ command: "dd if=/dev/zero of=/dev/sda bs=1M" });
       expect(result.isError).toBe(true);
       expect(parseContent(result).error).toContain("Raw device");
+    });
+
+    it("fails closed on indeterminate workspace writes", () => {
+      const decision = classifyShellWorkspaceWritePolicy({
+        toolName: "system.bash",
+        workspaceRoot: "/workspace",
+        args: {
+          command: "echo hi > $OUT",
+          cwd: "/workspace",
+        },
+      });
+
+      expect(decision.blocked).toBe(true);
+      expect(decision.indeterminate).toBe(true);
+      expect(decision.message).toContain("Unable to confirm");
+    });
+
+    it("blocks shell writes into the workspace root", async () => {
+      const workspaceRoot = mkdtempSync(
+        join(tmpdir(), "agenc-bash-shell-write-"),
+      );
+
+      try {
+        const tool = createBashTool({ cwd: workspaceRoot });
+        mockSpawnSuccess("");
+
+        const result = await tool.execute({ command: "echo hi > notes.txt" });
+        expect(result.isError).toBe(true);
+        expect(parseContent(result).error).toContain(
+          "shell_workspace_file_write_disallowed",
+        );
+        expect(mockSpawn).not.toHaveBeenCalled();
+      } finally {
+        rmSync(workspaceRoot, { recursive: true, force: true });
+      }
     });
 
     it("blocks dangerous inline shell wrapper scripts", async () => {
