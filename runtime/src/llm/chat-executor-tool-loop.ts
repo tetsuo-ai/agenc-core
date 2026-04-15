@@ -1837,8 +1837,6 @@ export async function executeToolCallLoop(
       callbacks,
       "tool_followup",
     );
-    const stopHookRecoveryReason =
-      params.stopHookResult?.reason ?? params.stopHookResult?.stopReason;
     const shouldRequireRecoveryTool =
       params.validationCode === "missing_file_mutation_evidence" ||
       params.validationCode === "missing_file_artifact_evidence" ||

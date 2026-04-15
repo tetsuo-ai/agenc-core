@@ -42,6 +42,7 @@ import { createSqliteTools } from "../tools/system/sqlite.js";
 import { createSpreadsheetTools } from "../tools/system/spreadsheet.js";
 import {
   createTaskTrackerTools,
+  SessionTaskStore,
   TaskStore,
 } from "../tools/system/task-tracker.js";
 import { createVerificationTools } from "../tools/system/verification.js";
@@ -104,6 +105,7 @@ interface ToolRegistrySideEffects {
   containerMCPConfigs: GatewayMCPServerConfig[];
   mcpManager: import("../mcp-client/manager.js").MCPManager | null;
   connectionManager: ConnectionManager | null;
+  sessionTaskStore: SessionTaskStore;
   taskTrackerStore: TaskStore;
 }
 
@@ -336,6 +338,10 @@ export async function createDaemonToolRegistry(
       logger,
     ),
   );
+  const sessionTaskStore = new SessionTaskStore({
+    memoryBackend,
+    logger,
+  });
   const taskTrackerStore = new TaskStore({
     memoryBackend,
     persistenceRootDir: resolveRuntimePersistencePaths().rootDir,
@@ -382,7 +388,7 @@ export async function createDaemonToolRegistry(
       : {}),
   });
   registry.registerAll(
-    createTaskTrackerTools(taskTrackerStore, {
+    createTaskTrackerTools(sessionTaskStore, {
       onBeforeTaskComplete: async ({ listId, taskId, task, patch }) => {
         const hookResult = await runStopHookPhase({
           runtime: deps.resolveStopHookRuntime?.(),
@@ -772,6 +778,7 @@ export async function createDaemonToolRegistry(
     containerMCPConfigs,
     mcpManager,
     connectionManager,
+    sessionTaskStore,
     taskTrackerStore,
   };
 }

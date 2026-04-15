@@ -19,6 +19,7 @@ import {
 } from "../tools/system/filesystem.js";
 import {
   createTaskTrackerTools,
+  SessionTaskStore,
   TASK_LIST_ARG,
   TaskStore,
 } from "../tools/system/task-tracker.js";
@@ -410,7 +411,7 @@ describe("createSessionToolHandler", () => {
   });
 
   it("injects session task-list ids on the gateway path and strips spoofed internal args", async () => {
-    const taskStore = new TaskStore();
+    const taskStore = new SessionTaskStore();
     const taskTools = new Map(
       createTaskTrackerTools(taskStore).map((tool) => [tool.name, tool]),
     );
@@ -2211,7 +2212,7 @@ describe("createSessionToolHandler", () => {
     expect(parsed.error).toContain("workflow_verifier_pass");
   });
 
-  it("blocks delegated child success when verification is required but the child never passed it", async () => {
+  it("does not block delegated child success on a parent-owned verification requirement", async () => {
     const verifier = {
       resolveVerifierRequirement: vi.fn(() => ({
         required: true,
@@ -2290,14 +2291,13 @@ describe("createSessionToolHandler", () => {
       };
     };
 
-    expect(parsed.success).toBe(false);
-    expect(parsed.status).toBe("failed");
-    expect(parsed.completionState).toBe("needs_verification");
+    expect(parsed.success).toBe(true);
+    expect(parsed.status).toBe("completed");
+    expect(parsed.completionState).toBe("completed");
     expect(parsed.runtimeResult).toMatchObject({
-      completionState: "needs_verification",
-      verifierRequirement: { required: true },
+      completionState: "completed",
     });
-    expect(parsed.error).toContain("requires a passing verifier result");
+    expect(parsed.error).toBeUndefined();
   });
 
   it("allows non-filesystem execute_with_agent delegation without a structured execution envelope", async () => {

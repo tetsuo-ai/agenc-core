@@ -25,8 +25,10 @@ import {
   normalizeRequestTaskRuntimeMetadata,
 } from "../../workflow/request-task-runtime.js";
 
+const SESSION_TASK_LIST_KEY_PREFIX = "session_task_list:";
 const TASK_LIST_KEY_PREFIX = "runtime_task_list:";
 const TASK_OUTPUT_SCHEMA_VERSION = 1;
+const SESSION_TASK_LIST_SCHEMA_VERSION = 1;
 const TASK_LIST_SCHEMA_VERSION = 2;
 const TASK_OUTPUT_DIRNAME = "runtime-task-outputs";
 const DEFAULT_WAIT_TIMEOUT_MS = 5_000;
@@ -143,6 +145,20 @@ export interface TaskCreateInput {
   readonly metadata?: Record<string, unknown>;
 }
 
+export interface SessionTask {
+  readonly id: string;
+  subject: string;
+  description: string;
+  status: PublicTaskStatus | "deleted";
+  activeForm?: string;
+  owner?: string;
+  blocks: string[];
+  blockedBy: string[];
+  metadata?: Record<string, unknown>;
+  readonly createdAt: number;
+  updatedAt: number;
+}
+
 export interface TaskUpdatePatch {
   status?: TaskStatus;
   subject?: string;
@@ -234,6 +250,23 @@ interface StoredTask extends Task {
   revision: number;
 }
 
+interface StoredSessionTask extends SessionTask {
+  revision: number;
+}
+
+interface SessionTaskListEntry {
+  readonly version: number;
+  readonly id: string;
+  tasks: StoredSessionTask[];
+  nextTaskId: number;
+}
+
+interface SessionTaskStoreOptions {
+  readonly memoryBackend?: MemoryBackend;
+  readonly logger?: Logger;
+  readonly now?: () => number;
+}
+
 interface TaskListEntry {
   readonly version: number;
   readonly id: string;
@@ -292,7 +325,7 @@ export interface TaskTrackerToolOptions {
   readonly onBeforeTaskComplete?: (params: {
     readonly listId: string;
     readonly taskId: string;
-    readonly task: Task;
+    readonly task: SessionTask;
     readonly patch: TaskUpdatePatch;
   }) => Promise<TaskCompletionGuardResult | void>;
   readonly onTaskAccessEvent?: (
@@ -301,7 +334,7 @@ export interface TaskTrackerToolOptions {
   readonly resolveActingOwner?: (params: {
     readonly listId: string;
     readonly args: Record<string, unknown>;
-    readonly task: Task;
+    readonly task: SessionTask;
     readonly actorKind: "main" | "subagent";
     readonly actorName?: string;
   }) => string | undefined | Promise<string | undefined>;
@@ -321,6 +354,29 @@ function hashPathSegment(value: string): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+}
+
+function cloneSessionTask(task: SessionTask | StoredSessionTask): SessionTask {
+  return {
+    id: task.id,
+    subject: task.subject,
+    description: task.description,
+    status: task.status,
+    ...(task.activeForm !== undefined ? { activeForm: task.activeForm } : {}),
+    ...(task.owner !== undefined ? { owner: task.owner } : {}),
+    blocks: [...task.blocks],
+    blockedBy: [...task.blockedBy],
+    ...(task.metadata !== undefined ? { metadata: { ...task.metadata } } : {}),
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+  };
+}
+
+function cloneStoredSessionTask(task: StoredSessionTask): StoredSessionTask {
+  return {
+    ...cloneSessionTask(task),
+    revision: task.revision,
+  };
 }
 
 function cloneTaskEvent(event: TaskEventRecord): TaskEventRecord {
@@ -420,18 +476,9 @@ function cloneStoredTask(task: StoredTask): StoredTask {
 }
 
 function isExplicitCompletionFlow(params: {
-  readonly task: Task;
+  readonly task: SessionTask;
   readonly patch: TaskUpdatePatch;
 }): boolean {
-  if (params.task.kind === "verifier") {
-    return true;
-  }
-  if (params.task.externalRef?.kind === "verifier") {
-    return true;
-  }
-  if (params.task.verifierVerdict !== undefined) {
-    return true;
-  }
   const mergedMetadata =
     params.patch.metadata !== undefined
       ? {
@@ -451,9 +498,27 @@ function cloneTaskList(list: TaskListEntry): TaskListEntry {
   };
 }
 
+function cloneSessionTaskList(list: SessionTaskListEntry): SessionTaskListEntry {
+  return {
+    version: list.version,
+    id: list.id,
+    nextTaskId: list.nextTaskId,
+    tasks: list.tasks.map(cloneStoredSessionTask),
+  };
+}
+
 function createEmptyTaskList(listId: string): TaskListEntry {
   return {
     version: TASK_LIST_SCHEMA_VERSION,
+    id: listId,
+    tasks: [],
+    nextTaskId: 1,
+  };
+}
+
+function createEmptySessionTaskList(listId: string): SessionTaskListEntry {
+  return {
+    version: SESSION_TASK_LIST_SCHEMA_VERSION,
     id: listId,
     tasks: [],
     nextTaskId: 1,
@@ -507,7 +572,7 @@ function resolveTaskActor(
 }
 
 function shouldEmitVerificationNudge(params: {
-  readonly tasks: readonly Task[];
+  readonly tasks: readonly SessionTask[];
   readonly actorKind: "main" | "subagent";
 }): boolean {
   if (params.actorKind !== "main" || params.tasks.length < 3) {
@@ -540,15 +605,11 @@ function isPublicTaskStatus(status: TaskStatus): status is PublicTaskStatus {
   );
 }
 
-function isPublicSessionTask(task: Task): boolean {
-  return (
-    task.kind === "manual" &&
-    isPublicTaskStatus(task.status) &&
-    task.metadata?._internal !== true
-  );
+function isPublicSessionTask(task: SessionTask): boolean {
+  return isPublicTaskStatus(task.status) && task.metadata?._internal !== true;
 }
 
-function summarizePublicTask(task: Task): Record<string, unknown> {
+function summarizePublicTask(task: SessionTask): Record<string, unknown> {
   return {
     id: task.id,
     subject: task.subject,
@@ -558,7 +619,7 @@ function summarizePublicTask(task: Task): Record<string, unknown> {
   };
 }
 
-function detailPublicTask(task: Task): Record<string, unknown> {
+function detailPublicTask(task: SessionTask): Record<string, unknown> {
   return {
     id: task.id,
     subject: task.subject,
@@ -842,6 +903,84 @@ function coerceTaskListEntry(value: unknown, listId: string): TaskListEntry | un
   };
 }
 
+function coerceStoredSessionTask(
+  value: unknown,
+): StoredSessionTask | undefined {
+  const raw = asPlainObject(value);
+  if (!raw) {
+    return undefined;
+  }
+  const id = asNonEmptyString(raw.id);
+  const subject = asNonEmptyString(raw.subject);
+  const description = asNonEmptyString(raw.description);
+  const status =
+    raw.status === "pending" ||
+    raw.status === "in_progress" ||
+    raw.status === "completed" ||
+    raw.status === "deleted"
+      ? raw.status
+      : undefined;
+  const createdAt =
+    typeof raw.createdAt === "number" && Number.isFinite(raw.createdAt)
+      ? raw.createdAt
+      : undefined;
+  const updatedAt =
+    typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt)
+      ? raw.updatedAt
+      : undefined;
+  const revision =
+    typeof raw.revision === "number" && Number.isInteger(raw.revision)
+      ? raw.revision
+      : 1;
+  if (!id || !subject || !description || !status || createdAt === undefined || updatedAt === undefined) {
+    return undefined;
+  }
+  return {
+    id,
+    subject,
+    description,
+    status,
+    ...(typeof raw.activeForm === "string" ? { activeForm: raw.activeForm } : {}),
+    ...(typeof raw.owner === "string" ? { owner: raw.owner } : {}),
+    blocks: Array.isArray(raw.blocks)
+      ? raw.blocks.filter((entry): entry is string => typeof entry === "string")
+      : [],
+    blockedBy: Array.isArray(raw.blockedBy)
+      ? raw.blockedBy.filter((entry): entry is string => typeof entry === "string")
+      : [],
+    ...(asPlainObject(raw.metadata) ? { metadata: asPlainObject(raw.metadata) } : {}),
+    createdAt,
+    updatedAt,
+    revision,
+  };
+}
+
+function coerceSessionTaskListEntry(
+  value: unknown,
+  listId: string,
+): SessionTaskListEntry | undefined {
+  const raw = asPlainObject(value);
+  if (!raw) {
+    return createEmptySessionTaskList(listId);
+  }
+  const id = asNonEmptyString(raw.id) ?? listId;
+  const nextTaskId =
+    typeof raw.nextTaskId === "number" && Number.isInteger(raw.nextTaskId)
+      ? raw.nextTaskId
+      : 1;
+  const tasks = Array.isArray(raw.tasks)
+    ? raw.tasks
+        .map((entry) => coerceStoredSessionTask(entry))
+        .filter((entry): entry is StoredSessionTask => entry !== undefined)
+    : [];
+  return {
+    version: SESSION_TASK_LIST_SCHEMA_VERSION,
+    id,
+    tasks,
+    nextTaskId: Math.max(nextTaskId, 1),
+  };
+}
+
 function isTerminalTaskStatus(status: TaskStatus): boolean {
   return (
     status === "completed" ||
@@ -922,6 +1061,234 @@ function coerceTaskOutputEnvelope(value: unknown): TaskOutputEnvelope | undefine
       : {}),
     createdAt,
   };
+}
+
+export class SessionTaskStore {
+  private readonly memoryBackend?: MemoryBackend;
+  private readonly now: () => number;
+  private readonly lists = new Map<string, SessionTaskListEntry>();
+  private readonly loadedLists = new Set<string>();
+  private readonly queue = new Map<string, Promise<void>>();
+
+  constructor(options?: SessionTaskStoreOptions) {
+    this.memoryBackend = options?.memoryBackend;
+    this.now = options?.now ?? (() => Date.now());
+  }
+
+  private listKey(listId: string): string {
+    return `${SESSION_TASK_LIST_KEY_PREFIX}${listId}`;
+  }
+
+  private async runExclusive<T>(
+    key: string,
+    work: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.queue.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const barrier = new Promise<void>((resolvePromise) => {
+      release = resolvePromise;
+    });
+    const chain = previous.catch(() => undefined).then(() => barrier);
+    this.queue.set(key, chain);
+    await previous.catch(() => undefined);
+    try {
+      return await work();
+    } finally {
+      release();
+      if (this.queue.get(key) === chain) {
+        this.queue.delete(key);
+      }
+    }
+  }
+
+  private getOrCreateCachedList(listId: string): SessionTaskListEntry {
+    let list = this.lists.get(listId);
+    if (!list) {
+      list = createEmptySessionTaskList(listId);
+      this.lists.set(listId, list);
+    }
+    return list;
+  }
+
+  private async ensureListLoaded(listId: string): Promise<SessionTaskListEntry> {
+    if (this.loadedLists.has(listId) || !this.memoryBackend) {
+      return this.getOrCreateCachedList(listId);
+    }
+    const persisted = await this.memoryBackend.get(this.listKey(listId));
+    const list =
+      coerceSessionTaskListEntry(persisted, listId) ??
+      createEmptySessionTaskList(listId);
+    this.lists.set(listId, list);
+    this.loadedLists.add(listId);
+    return list;
+  }
+
+  private async persistList(list: SessionTaskListEntry): Promise<void> {
+    if (!this.memoryBackend) {
+      return;
+    }
+    await this.memoryBackend.set(this.listKey(list.id), cloneSessionTaskList(list));
+  }
+
+  list(listId: string): SessionTask[] {
+    const list = this.lists.get(listId);
+    if (!list) return [];
+    return list.tasks
+      .filter((task) => task.status !== "deleted")
+      .map(cloneSessionTask);
+  }
+
+  get(listId: string, taskId: string): SessionTask | undefined {
+    const list = this.lists.get(listId);
+    if (!list) return undefined;
+    const task = list.tasks.find(
+      (entry) => entry.id === taskId && entry.status !== "deleted",
+    );
+    return task ? cloneSessionTask(task) : undefined;
+  }
+
+  readState(
+    listId: string,
+    taskId: string,
+  ): { readonly task: SessionTask; readonly revision: number } | undefined {
+    const list = this.lists.get(listId);
+    if (!list) return undefined;
+    const task = list.tasks.find(
+      (entry) => entry.id === taskId && entry.status !== "deleted",
+    );
+    if (!task) return undefined;
+    return {
+      task: cloneSessionTask(task),
+      revision: task.revision,
+    };
+  }
+
+  async createTask(listId: string, input: TaskCreateInput): Promise<SessionTask> {
+    return this.runExclusive(listId, async () => {
+      const list = await this.ensureListLoaded(listId);
+      const id = String(list.nextTaskId);
+      list.nextTaskId += 1;
+      const now = this.now();
+      const task: StoredSessionTask = {
+        id,
+        subject: input.subject,
+        description: input.description,
+        status: "pending",
+        ...(input.activeForm !== undefined ? { activeForm: input.activeForm } : {}),
+        blocks: [],
+        blockedBy: [],
+        ...(input.metadata !== undefined ? { metadata: { ...input.metadata } } : {}),
+        createdAt: now,
+        updatedAt: now,
+        revision: 1,
+      };
+      list.tasks.push(task);
+      await this.persistList(list);
+      return cloneSessionTask(task);
+    });
+  }
+
+  async listTasks(listId: string): Promise<SessionTask[]> {
+    await this.ensureListLoaded(listId);
+    return this.list(listId);
+  }
+
+  async getTask(listId: string, taskId: string): Promise<SessionTask | undefined> {
+    await this.ensureListLoaded(listId);
+    return this.get(listId, taskId);
+  }
+
+  async readTaskState(
+    listId: string,
+    taskId: string,
+  ): Promise<{ readonly task: SessionTask; readonly revision: number } | undefined> {
+    await this.ensureListLoaded(listId);
+    return this.readState(listId, taskId);
+  }
+
+  async updateTask(
+    listId: string,
+    taskId: string,
+    patch: Pick<
+      TaskUpdatePatch,
+      | "status"
+      | "subject"
+      | "description"
+      | "activeForm"
+      | "owner"
+      | "metadata"
+      | "addBlocks"
+      | "addBlockedBy"
+    >,
+    expectedRevision?: number,
+  ): Promise<SessionTask | undefined> {
+    return this.runExclusive(listId, async () => {
+      const list = await this.ensureListLoaded(listId);
+      const task = list.tasks.find((entry) => entry.id === taskId);
+      if (!task || task.status === "deleted") {
+        return undefined;
+      }
+      if (
+        expectedRevision !== undefined &&
+        task.revision !== expectedRevision
+      ) {
+        return undefined;
+      }
+      if (
+        patch.status !== undefined &&
+        patch.status !== "pending" &&
+        patch.status !== "in_progress" &&
+        patch.status !== "completed" &&
+        patch.status !== "deleted"
+      ) {
+        return undefined;
+      }
+      if (patch.status !== undefined) task.status = patch.status;
+      if (patch.subject !== undefined) task.subject = patch.subject;
+      if (patch.description !== undefined) task.description = patch.description;
+      if (patch.activeForm !== undefined) task.activeForm = patch.activeForm;
+      if (patch.owner !== undefined) {
+        if (patch.owner === null) {
+          delete task.owner;
+        } else {
+          task.owner = patch.owner;
+        }
+      }
+      if (patch.metadata !== undefined) {
+        const merged: Record<string, unknown> = { ...(task.metadata ?? {}) };
+        for (const [key, value] of Object.entries(patch.metadata)) {
+          if (value === null) {
+            delete merged[key];
+          } else {
+            merged[key] = value;
+          }
+        }
+        task.metadata = Object.keys(merged).length > 0 ? merged : undefined;
+      }
+      if (patch.addBlocks && patch.addBlocks.length > 0) {
+        task.blocks = Array.from(new Set([...task.blocks, ...patch.addBlocks]));
+      }
+      if (patch.addBlockedBy && patch.addBlockedBy.length > 0) {
+        task.blockedBy = Array.from(new Set([...task.blockedBy, ...patch.addBlockedBy]));
+      }
+      task.updatedAt = this.now();
+      task.revision += 1;
+      await this.persistList(list);
+      return cloneSessionTask(task);
+    });
+  }
+
+  dropList(listId: string): boolean {
+    const hadCached = this.lists.delete(listId);
+    this.loadedLists.delete(listId);
+    return hadCached;
+  }
+
+  reset(): void {
+    this.lists.clear();
+    this.loadedLists.clear();
+    this.queue.clear();
+  }
 }
 
 /**
@@ -1858,10 +2225,10 @@ const TASK_OUTPUT_DESCRIPTION =
  * Build the task tracker tools sharing a single store.
  */
 export function createTaskTrackerTools(
-  store?: TaskStore,
+  store?: SessionTaskStore,
   options: TaskTrackerToolOptions = {},
 ): Tool[] {
-  const taskStore = store ?? new TaskStore();
+  const taskStore = store ?? new SessionTaskStore();
 
   const taskCreate: Tool = {
     name: "task.create",
@@ -2084,7 +2451,7 @@ export function createTaskTrackerTools(
       }
 
       const current = await taskStore.readTaskState(listId, taskId);
-      if (!current || current.task.kind !== "manual") {
+      if (!current) {
         return okResult({
           success: false,
           taskId,
@@ -2156,7 +2523,7 @@ export function createTaskTrackerTools(
         patch,
         isTransitioningToCompleted ? current.revision : undefined,
       );
-      if (!task || task.kind !== "manual") {
+      if (!task) {
         return okResult({
           success: false,
           taskId,

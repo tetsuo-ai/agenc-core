@@ -29,7 +29,6 @@ import {
 } from "./delegated-scope-preflight.js";
 import {
   computeDelegatedExecutionEnvelopeFingerprint,
-  mergeVerifierRequirements,
 } from "./delegated-runtime-result.js";
 import type { PersistentWorkerManager } from "./persistent-worker-manager.js";
 import {
@@ -414,19 +413,7 @@ async function preparePersistentWorkerAssignment(
       : effectiveExecutionContext
         ? { ...input, executionContext: effectiveExecutionContext }
         : input;
-  const inheritedVerifierRequirement =
-    isSubAgentSessionId(params.sessionId) &&
-      typeof params.subAgentManager?.getVerifierRequirement === "function"
-      ? params.subAgentManager.getVerifierRequirement(params.sessionId)
-      : undefined;
-  const verifierRequirement = mergeVerifierRequirements({
-    inherited: inheritedVerifierRequirement,
-    resolved: params.verifier?.resolveVerifierRequirement({
-      runtimeRequired: params.runtimeContractFlags?.verifierRuntimeRequired,
-      projectBootstrap: params.runtimeContractFlags?.verifierProjectBootstrap,
-      workspaceRoot: workingDirectory,
-    }),
-  });
+  const verifierRequirement = undefined;
   return {
     ok: true,
     assignment: {

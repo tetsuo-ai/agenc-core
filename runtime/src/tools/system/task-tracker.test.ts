@@ -4,6 +4,7 @@ import {
   TASK_ACTOR_NAME_ARG,
   createRuntimeTaskHandleTools,
   createTaskTrackerTools,
+  SessionTaskStore,
   TaskStore,
   type TaskTrackerToolOptions,
   TASK_LIST_ARG,
@@ -74,7 +75,7 @@ async function callTool(
 }
 
 describe("task-tracker", () => {
-  let store: TaskStore;
+  let store: SessionTaskStore;
   let tools: readonly Tool[];
   let create: Tool;
   let list: Tool;
@@ -84,7 +85,7 @@ describe("task-tracker", () => {
 
   beforeEach(() => {
     let now = 1_000;
-    store = new TaskStore({ now: () => now++ });
+    store = new SessionTaskStore({ now: () => now++ });
     toolOptions = {};
     tools = createTaskTrackerTools(store, toolOptions);
     create = findTool(tools, "task.create");
@@ -241,7 +242,8 @@ describe("task-tracker", () => {
 
   describe("runtime claim semantics", () => {
     it("claims pending worker assignments for a specific owner", async () => {
-      const task = await store.createRuntimeTask({
+      const runtimeStore = new TaskStore();
+      const task = await runtimeStore.createRuntimeTask({
         listId: DEFAULT_TASK_LIST_ID,
         kind: "worker_assignment",
         subject: "Implement parser step",
@@ -250,7 +252,7 @@ describe("task-tracker", () => {
         summary: "Queued for a worker.",
       });
 
-      const claimed = await store.claimTask({
+      const claimed = await runtimeStore.claimTask({
         listId: DEFAULT_TASK_LIST_ID,
         taskId: task.id,
         owner: "worker-1",
@@ -267,20 +269,21 @@ describe("task-tracker", () => {
     });
 
     it("releases claimed worker assignments back to pending", async () => {
-      const task = await store.createRuntimeTask({
+      const runtimeStore = new TaskStore();
+      const task = await runtimeStore.createRuntimeTask({
         listId: DEFAULT_TASK_LIST_ID,
         kind: "worker_assignment",
         subject: "Implement lexer step",
         description: "Handle the next bounded worker assignment",
         status: "pending",
       });
-      await store.claimTask({
+      await runtimeStore.claimTask({
         listId: DEFAULT_TASK_LIST_ID,
         taskId: task.id,
         owner: "worker-2",
       });
 
-      const released = await store.releaseTaskClaim({
+      const released = await runtimeStore.releaseTaskClaim({
         listId: DEFAULT_TASK_LIST_ID,
         taskId: task.id,
         owner: "worker-2",
@@ -544,7 +547,7 @@ describe("task-tracker", () => {
     it("rejects stale completion when an explicit verification task changes during the guard", async () => {
       tools = createTaskTrackerTools(store, {
         onBeforeTaskComplete: async () => {
-          store.update(DEFAULT_TASK_LIST_ID, "1", {
+          await store.updateTask(DEFAULT_TASK_LIST_ID, "1", {
             metadata: { changedBy: "guard" },
           });
           return { outcome: "allow" };
@@ -611,10 +614,11 @@ describe("task-tracker", () => {
 
   describe("task.wait and task.output", () => {
     it("returns terminal state and persisted output for runtime-managed tasks", async () => {
-      const runtimeTools = createRuntimeTaskHandleTools(store);
+      const runtimeStore = new TaskStore();
+      const runtimeTools = createRuntimeTaskHandleTools(runtimeStore);
       const wait = findTool(runtimeTools, "task.wait");
       const output = findTool(runtimeTools, "task.output");
-      const runtimeTask = await store.createRuntimeTask({
+      const runtimeTask = await runtimeStore.createRuntimeTask({
         listId: DEFAULT_TASK_LIST_ID,
         kind: "subagent",
         subject: "Implement phase",
@@ -622,7 +626,7 @@ describe("task-tracker", () => {
         summary: "Delegated worker started.",
       });
 
-      await store.finalizeRuntimeTask({
+      await runtimeStore.finalizeRuntimeTask({
         listId: DEFAULT_TASK_LIST_ID,
         taskId: runtimeTask.id,
         status: "completed",

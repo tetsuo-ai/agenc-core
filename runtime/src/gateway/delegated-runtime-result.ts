@@ -119,25 +119,6 @@ export function buildDelegatedIncompleteReason(params: {
   readonly verifierRequirement?: VerifierRequirement;
   readonly verifierVerdict?: RuntimeVerifierVerdict;
 }): string | undefined {
-  const verifierRequired = params.verifierRequirement?.required === true;
-  const verifierPassed = params.verifierVerdict?.overall === "pass";
-  if (
-    verifierRequired &&
-    !verifierPassed &&
-    (!params.completionState ||
-      params.completionState === "completed" ||
-      params.completionState === "needs_verification")
-  ) {
-    const verdict = params.verifierVerdict?.overall;
-    if (verdict === "retry" || verdict === "fail") {
-      const summary = params.verifierVerdict?.summary?.trim();
-      return summary && summary.length > 0
-        ? `Sub-agent requires a passing verifier result before completion. ${summary}`
-        : `Sub-agent requires a passing verifier result before completion. Current verdict: ${verdict}.`;
-    }
-    return "Sub-agent requires a passing verifier result before completion.";
-  }
-
   if (!params.completionState || params.completionState === "completed") {
     return undefined;
   }
@@ -273,15 +254,6 @@ function resolveEffectiveCompletionState(params: {
   readonly verifierRequirement?: VerifierRequirement;
   readonly verifierVerdict?: RuntimeVerifierVerdict;
 }): WorkflowCompletionState | undefined {
-  const verifierRequired = params.verifierRequirement?.required === true;
-  const verifierPassed = params.verifierVerdict?.overall === "pass";
-  if (
-    verifierRequired &&
-    !verifierPassed &&
-    (!params.completionState || params.completionState === "completed")
-  ) {
-    return "needs_verification";
-  }
   return params.completionState;
 }
 

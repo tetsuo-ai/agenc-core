@@ -39,7 +39,6 @@ import {
   buildDelegatedRuntimeResult,
   computeDelegatedExecutionEnvelopeFingerprint,
   mapPlannerVerifierSnapshotToRuntimeVerdict,
-  mergeVerifierRequirements,
   resolveDelegatedTerminalOutcome,
 } from "./delegated-runtime-result.js";
 import type { VerifierRequirement } from "./verifier-probes.js";
@@ -511,7 +510,6 @@ export async function executeDelegationTool(
     toolCallId,
     subAgentManager,
     lifecycleEmitter,
-    verifier,
     availableToolNames,
     unsafeBenchmarkMode = false,
   } = params;
@@ -717,19 +715,7 @@ export async function executeDelegationTool(
           : undefined,
       }
       : effectiveInput;
-  const inheritedVerifierRequirement =
-    isSubAgentSessionId(sessionId) &&
-      typeof subAgentManager.getVerifierRequirement === "function"
-      ? subAgentManager.getVerifierRequirement(sessionId)
-      : undefined;
-  const verifierRequirement = mergeVerifierRequirements({
-    inherited: inheritedVerifierRequirement,
-    resolved: verifier?.resolveVerifierRequirement({
-      runtimeRequired: params.runtimeContractFlags?.verifierRuntimeRequired,
-      projectBootstrap: params.runtimeContractFlags?.verifierProjectBootstrap,
-      workspaceRoot: workingDirectory,
-    }),
-  });
+  const verifierRequirement = undefined;
   const localExecutionLocation = {
     mode: "local" as const,
     ...(effectiveExecutionContext?.workspaceRoot
@@ -757,16 +743,6 @@ export async function executeDelegationTool(
             : {}),
           ...(effectiveExecutionContext
             ? { executionContext: effectiveExecutionContext }
-            : {}),
-          ...(verifierRequirement
-            ? {
-                _runtime: {
-                  verification: verifierRequirement.required,
-                  verifierProfiles: verifierRequirement.profiles,
-                  verifierProbeCategories: verifierRequirement.probeCategories,
-                },
-                verifierRequirement,
-              }
             : {}),
         },
         summary: "Delegated worker started.",
