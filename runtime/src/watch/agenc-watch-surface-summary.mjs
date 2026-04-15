@@ -38,6 +38,34 @@ const BADGE_MAP = Object.freeze({
   voice: { label: "VOICE", tone: "purple" },
 });
 
+function badgeForEvent(event) {
+  const kind = event?.kind;
+  const fallbackBadge = BADGE_MAP[kind] ?? {
+    label: sanitizeText(kind ?? "event", "event").toUpperCase().slice(0, 10),
+    tone: "slate",
+  };
+  const toolState = toolStateFromEvent(event);
+  if (
+    (kind === "tool result" || kind === "subagent tool result") &&
+    toolState === "error"
+  ) {
+    return {
+      label: "ERROR",
+      tone: "red",
+    };
+  }
+  if (
+    (kind === "tool" || kind === "subagent tool") &&
+    toolState === "error"
+  ) {
+    return {
+      label: "ERROR",
+      tone: "red",
+    };
+  }
+  return fallbackBadge;
+}
+
 function sanitizeText(value, fallback = "") {
   const text = String(value ?? "").replace(/\s+/g, " ").trim();
   return text.length > 0 ? text : fallback;
@@ -257,6 +285,17 @@ function toolStateFromKind(kind) {
   }
 }
 
+function toolStateFromEvent(event) {
+  const explicitState = sanitizeText(event?.toolState ?? "", "");
+  if (explicitState) {
+    return explicitState;
+  }
+  if (event?.isError === true) {
+    return "error";
+  }
+  return toolStateFromKind(event?.kind);
+}
+
 function eventMetaLabel(event) {
   if (event.kind === "agent") {
     const title = sanitizeText(event.title ?? "", event.kind);
@@ -348,10 +387,7 @@ export function shouldShowWatchSplash({
 }
 
 export function buildTranscriptEventSummary(event, previewLines = []) {
-  const badge = BADGE_MAP[event?.kind] ?? {
-    label: sanitizeText(event?.kind ?? "event", "event").toUpperCase().slice(0, 10),
-    tone: "slate",
-  };
+  const badge = badgeForEvent(event);
   const title = sanitizeText(event?.title ?? "", badge.label);
   const meta = eventMetaLabel(event ?? {});
   return {
@@ -361,7 +397,7 @@ export function buildTranscriptEventSummary(event, previewLines = []) {
     meta,
     previewLines: Array.isArray(previewLines) ? previewLines : [],
     hasBody: sanitizeText(event?.body ?? "").length > 0,
-    toolState: toolStateFromKind(event?.kind),
+    toolState: toolStateFromEvent(event),
   };
 }
 
@@ -723,8 +759,8 @@ export function buildWatchSurfaceSummary({
       title: sanitizeText(event.title, event.kind),
       meta: eventMetaLabel(event),
       timestamp: sanitizeText(event.timestamp, "--:--:--"),
-      state: toolStateFromKind(event.kind),
-      tone: stateTone(toolStateFromKind(event.kind)),
+      state: toolStateFromEvent(event),
+      tone: stateTone(toolStateFromEvent(event)),
     }));
   const recentAlerts = recentEvents
     .filter((event) => ALERT_EVENT_KINDS.has(event.kind))

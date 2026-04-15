@@ -11,6 +11,8 @@ function createHarness(overrides = {}) {
     detailScrollOffset: 4,
     lastActivityAt: null,
     latestAgentSummary: null,
+    agentStreamingText: null,
+    agentStreamingPreview: null,
     expandedEventId: "evt-stale",
   };
   const calls = [];
@@ -79,14 +81,21 @@ test("event store streams and commits agent replies with summary side effects", 
 
   store.appendAgentStreamChunk("hello ");
   store.appendAgentStreamChunk("world", { done: true });
+
+  assert.equal(events.length, 0);
+  assert.equal(watchState.agentStreamingText, "hello world");
+  assert.equal(watchState.agentStreamingPreview, null);
+
   store.commitAgentMessage("hello world");
 
   assert.equal(events.length, 1);
   assert.equal(events[0].title, "Agent Reply");
   assert.equal(events[0].streamState, "complete");
   assert.equal(events[0].body, "hello world");
+  assert.equal(watchState.agentStreamingText, null);
+  assert.equal(watchState.agentStreamingPreview, null);
   assert.equal(watchState.latestAgentSummary, "hello world");
-  assert.equal(watchState.lastActivityAt, "12:00:03");
+  assert.equal(watchState.lastActivityAt, "12:00:04");
   assert.equal(watchState.transcriptFollowMode, true);
 });
 
@@ -146,9 +155,17 @@ test("event store appends streaming chunks from preserved full assistant body", 
   store.appendAgentStreamChunk("56789");
   store.appendAgentStreamChunk("abcdef", { done: true });
 
-  assert.equal(events.length, 1);
-  assert.equal(events[0].body, "0123456…");
-  assert.equal(events[0].detailBody, "0123456789abcdef");
+  assert.equal(events.length, 0);
+});
+
+test("event store line-buffers the streaming preview until the next newline", () => {
+  const { store, watchState } = createHarness();
+
+  store.appendAgentStreamChunk("hello");
+  assert.equal(watchState.agentStreamingPreview, null);
+
+  store.appendAgentStreamChunk("\nworld");
+  assert.equal(watchState.agentStreamingPreview, "hello\n");
 });
 
 test("event store clears live transcript view and delegation state", () => {
@@ -186,6 +203,24 @@ test("event store replaces latest tool results and clears subagent heartbeats", 
   assert.equal(store.clearSubagentHeartbeatEvents("sub-1"), true);
 
   assert.equal(events[0].kind, "tool result");
+  assert.equal(events[0].toolState, "ok");
   assert.equal(events[0].previewMode, "source");
   assert.equal(events.some((event) => event.subagentHeartbeat), false);
+});
+
+test("event store keeps failed tool completions on the tool result path", () => {
+  const { store, events } = createHarness();
+
+  store.pushEvent("tool", "Run edit", "body", "yellow", { toolName: "system.editFile" });
+  assert.equal(
+    store.replaceLatestToolEvent("system.editFile", true, "No-op edit rejected", {
+      title: "Edit failed",
+      tone: "red",
+    }),
+    true,
+  );
+
+  assert.equal(events[0].kind, "tool result");
+  assert.equal(events[0].toolState, "error");
+  assert.equal(events[0].isError, true);
 });

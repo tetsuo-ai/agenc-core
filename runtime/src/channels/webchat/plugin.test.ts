@@ -1379,6 +1379,40 @@ describe("WebChatChannel", () => {
       );
     });
 
+    it("does not trace outbound chat.stream frames", async () => {
+      const logger = {
+        ...silentLogger,
+        info: vi.fn(),
+      };
+      context = createContext({ logger });
+      channel = new WebChatChannel(deps);
+      await channel.initialize(context);
+      await channel.start();
+
+      const send = vi.fn<(response: ControlResponse) => void>();
+      channel.handleMessage(
+        "client_1",
+        "chat.message",
+        msg("chat.message", { content: "Hello" }),
+        send,
+      );
+
+      channel["traceOutboundControlResponse"](
+        "client_1",
+        "client_1",
+        send,
+        {
+          type: "chat.stream",
+          payload: { content: "partial", done: false },
+        },
+      );
+
+      const outboundLines = logger.info.mock.calls
+        .map((call) => call[0])
+        .filter((line) => typeof line === "string" && line.includes("[trace] webchat.ws.outbound "));
+      expect(outboundLines.some((line) => line.includes("\"type\":\"chat.stream\""))).toBe(false);
+    });
+
     it("should not throw for unmapped session", async () => {
       // No prior messages — no session mapping
       await expect(

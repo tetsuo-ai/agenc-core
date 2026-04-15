@@ -525,6 +525,8 @@ export function createWatchState({
     latestTool: null,
     latestToolState: null,
     latestAgentSummary: null,
+    agentStreamingText: null,
+    agentStreamingPreview: null,
     currentObjective: null,
     runDetail: null,
     activeRunStartedAtMs: null,
