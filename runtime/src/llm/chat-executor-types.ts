@@ -390,8 +390,6 @@ export interface ChatExecutorResult {
   readonly completionState: WorkflowCompletionState;
   /** Structured progress snapshot for long-horizon resume/recovery flows. */
   readonly completionProgress?: WorkflowProgressSnapshot;
-  /** Verifier snapshot observed by the executor-owned completion chain. */
-  readonly verifierSnapshot?: import("../workflow/completion-state.js").PlannerVerificationSnapshot;
   /** Runtime-contract telemetry captured during execution. Not consulted for final completion decisions. */
   readonly runtimeContractSnapshot?: RuntimeContractSnapshot;
   /** Resolved workspace root used for this execution, when available. */
@@ -415,7 +413,6 @@ export interface ToolLoopTerminalResult {
   readonly stopReasonDetail?: string;
   readonly validationCode?: DelegationOutputValidationCode;
   readonly completionState?: WorkflowCompletionState;
-  readonly verifierSnapshot?: import("../workflow/completion-state.js").PlannerVerificationSnapshot;
   readonly runtimeContractSnapshot: RuntimeContractSnapshot;
   readonly mutationDetected: boolean;
 }
@@ -693,7 +690,6 @@ export interface ExecutionContext {
   compactedArtifactContext?: ArtifactCompactionState;
   stopReason: LLMPipelineStopReason;
   completionState: WorkflowCompletionState;
-  verifierSnapshot?: import("../workflow/completion-state.js").PlannerVerificationSnapshot;
   /** Telemetry-only runtime contract snapshot carried for traces and results. */
   runtimeContractSnapshot: RuntimeContractSnapshot;
   toolProtocolState: ToolProtocolState;
@@ -862,7 +858,6 @@ export function buildDefaultExecutionContext(
     compactedArtifactContext: params.stateful?.artifactContext,
     stopReason: "completed",
     completionState: "completed",
-    verifierSnapshot: undefined,
     runtimeContractSnapshot: createRuntimeContractSnapshot(
       config.runtimeContractFlags,
     ),

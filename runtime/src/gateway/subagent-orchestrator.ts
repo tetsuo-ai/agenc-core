@@ -175,7 +175,6 @@ type ExecuteSubagentAttemptOutcome =
     readonly providerName?: string;
     readonly completionState?: SubAgentResult["completionState"];
     readonly completionProgress?: SubAgentResult["completionProgress"];
-    readonly verifierSnapshot?: SubAgentResult["verifierSnapshot"];
     readonly contractFingerprint?: SubAgentResult["contractFingerprint"];
     readonly stopReason?: SubAgentResult["stopReason"];
     readonly stopReasonDetail?: SubAgentResult["stopReasonDetail"];
@@ -1165,9 +1164,7 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
               stopReason: attemptOutcome.stopReason,
               stopReasonDetail: attemptOutcome.stopReasonDetail,
               validationCode: attemptOutcome.validationCode,
-              verifierVerdict: mapPlannerVerifierSnapshotToRuntimeVerdict(
-                attemptOutcome.verifierSnapshot,
-              ),
+              verifierVerdict: mapPlannerVerifierSnapshotToRuntimeVerdict(undefined),
               executionEnvelopeFingerprint:
                 attemptOutcome.contractFingerprint,
               continuationSessionId: attemptOutcome.subagentSessionId,
@@ -1715,7 +1712,6 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
           providerName: result.providerName,
           completionState: result.completionState,
           completionProgress: result.completionProgress,
-          verifierSnapshot: result.verifierSnapshot,
           contractFingerprint: result.contractFingerprint,
           stopReason: result.stopReason,
           stopReasonDetail: result.stopReasonDetail,
@@ -1727,9 +1723,7 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
         completionState: result.completionState,
         completionProgress: result.completionProgress,
         stopReasonDetail: result.stopReasonDetail,
-        verifierVerdict: mapPlannerVerifierSnapshotToRuntimeVerdict(
-          result.verifierSnapshot,
-        ),
+        verifierVerdict: mapPlannerVerifierSnapshotToRuntimeVerdict(undefined),
       });
       const message = completionStateFailure ??
         (

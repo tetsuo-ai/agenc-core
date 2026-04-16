@@ -534,9 +534,7 @@ async function finalizeDelegationTask(params: {
 }): Promise<void> {
   const childResult = params.result;
   const failedChildToolCalls = countFailedChildToolCalls(childResult?.toolCalls);
-  const verifierVerdict = mapPlannerVerifierSnapshotToRuntimeVerdict(
-    childResult?.verifierSnapshot,
-  );
+  const verifierVerdict = mapPlannerVerifierSnapshotToRuntimeVerdict(undefined);
   const terminalOutcome = resolveDelegatedTerminalOutcome({
     surface: "direct_child",
     workerSessionId: params.childSessionId,
@@ -688,9 +686,7 @@ export async function executeDelegationTool(
     const failedChildToolCalls = countFailedChildToolCalls(
       resultParams.childResult.toolCalls,
     );
-    const verifierVerdict = mapPlannerVerifierSnapshotToRuntimeVerdict(
-      resultParams.childResult.verifierSnapshot,
-    );
+    const verifierVerdict = mapPlannerVerifierSnapshotToRuntimeVerdict(undefined);
     const terminalOutcome = resolveDelegatedTerminalOutcome({
       surface: "direct_child",
       workerSessionId: resultParams.childSessionId,
@@ -1559,9 +1555,7 @@ export async function executeDelegationTool(
 
     const childInfo = subAgentManager.getInfo(childSessionId);
     const failedChildToolCalls = countFailedChildToolCalls(childResult.toolCalls);
-    const verifierVerdict = mapPlannerVerifierSnapshotToRuntimeVerdict(
-      childResult.verifierSnapshot,
-    );
+    const verifierVerdict = mapPlannerVerifierSnapshotToRuntimeVerdict(undefined);
     const terminalOutcome = resolveDelegatedTerminalOutcome({
       surface: "direct_child",
       workerSessionId: childSessionId,

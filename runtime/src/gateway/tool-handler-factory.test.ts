@@ -1982,11 +1982,6 @@ describe("createSessionToolHandler", () => {
           updatedAt: 1_700_000_000_000,
         },
         stopReason: "completed",
-        verifierSnapshot: {
-          performed: true,
-          overall: "pass",
-          summary: "Build probe passed.",
-        },
         durationMs: 42,
         toolCalls: [
           {
@@ -2094,7 +2089,6 @@ describe("createSessionToolHandler", () => {
     expect(parsed.runtimeResult).toMatchObject({
       status: "completed",
       completionState: "completed",
-      verifierVerdict: { overall: "pass" },
       continuationSessionId: "subagent:child-1",
     });
 

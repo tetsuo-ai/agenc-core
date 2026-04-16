@@ -246,9 +246,7 @@ export async function executeRequest(
     checkRequestTimeout(ctx, "finalization");
 
     const requiresVerification = computeVerificationRequirement(terminal);
-    const verificationSatisfied =
-      terminal.verifierSnapshot?.performed === true &&
-      terminal.verifierSnapshot.overall === "pass";
+    const verificationSatisfied = false;
     const completionState =
       terminal.completionState ??
       resolveWorkflowCompletionState({
@@ -355,7 +353,6 @@ export async function executeRequest(
       ),
       stopReason: terminal.stopReason,
       completionState,
-      verifierSnapshot: terminal.verifierSnapshot,
       runtimeContractSnapshot: terminal.runtimeContractSnapshot,
       runtimeWorkspaceRoot: ctx.runtimeWorkspaceRoot,
       completionProgress,

@@ -299,11 +299,6 @@ async function runMultiWorkerCompletionScenario(): Promise<PipelineLongHorizonSc
           readonly toolCalls: readonly [];
           readonly completionState: "completed";
           readonly stopReason: "completed";
-          readonly verifierSnapshot?: {
-            readonly performed: true;
-            readonly overall: "pass";
-            readonly summary: string;
-          };
         };
         readonly approvalRequestId?: string;
         approved: boolean;
@@ -316,7 +311,6 @@ async function runMultiWorkerCompletionScenario(): Promise<PipelineLongHorizonSc
         sessionCounter += 1;
         const sessionId = `subagent:long-horizon:${sessionCounter}`;
         const requiresApproval = config.task.includes("approval");
-        const requiresVerifier = config.verifierRequirement?.required === true;
         const approvalRequestId = requiresApproval
           ? `approval:${sessionCounter}`
           : undefined;
@@ -346,15 +340,6 @@ async function runMultiWorkerCompletionScenario(): Promise<PipelineLongHorizonSc
             toolCalls: [],
             completionState: "completed",
             stopReason: "completed",
-            ...(requiresVerifier
-              ? {
-                  verifierSnapshot: {
-                    performed: true,
-                    overall: "pass" as const,
-                    summary: "Worker verifier passed.",
-                  },
-                }
-              : {}),
           },
         });
         return sessionId;

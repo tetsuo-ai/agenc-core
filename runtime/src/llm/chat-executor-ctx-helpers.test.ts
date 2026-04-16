@@ -94,10 +94,6 @@ describe("ChatExecutor ctx-helpers behavior", () => {
       const ctx: any = {
         allToolCalls: [],
         failedToolCalls: 0,
-        verifierSnapshot: {
-          overall: "pass",
-          summary: "stale-pass",
-        },
         runtimeContractSnapshot: createRuntimeContractSnapshot({
           runtimeContractV2: true,
           stopHooksEnabled: true,
@@ -121,7 +117,6 @@ describe("ChatExecutor ctx-helpers behavior", () => {
         durationMs: 1,
       });
 
-      expect(ctx.verifierSnapshot).toBeUndefined();
       expect(ctx.runtimeContractSnapshot.verifier).toEqual({
         attempted: false,
         overall: "skipped",

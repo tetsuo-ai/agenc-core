@@ -235,7 +235,6 @@ export interface SubAgentResult {
   readonly providerName?: string;
   readonly completionState?: ChatExecutorResult["completionState"];
   readonly completionProgress?: ChatExecutorResult["completionProgress"];
-  readonly verifierSnapshot?: ChatExecutorResult["verifierSnapshot"];
   readonly contractFingerprint?: string;
   readonly stopReason?: ChatExecutorResult["stopReason"];
   readonly stopReasonDetail?: string;
@@ -1604,7 +1603,6 @@ export class SubAgentManager {
         providerName: selectedProvider.name,
         completionState: resultOrAbort.completionState,
         completionProgress: resultOrAbort.completionProgress,
-        verifierSnapshot: resultOrAbort.verifierSnapshot,
         contractFingerprint: resultOrAbort.turnExecutionContract?.contractFingerprint,
         stopReason: resultOrAbort.stopReason,
         stopReasonDetail: resultOrAbort.stopReasonDetail,

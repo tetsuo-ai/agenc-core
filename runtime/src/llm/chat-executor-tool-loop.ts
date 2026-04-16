@@ -234,7 +234,6 @@ function buildToolLoopTerminalResult(
     stopReason: ctx.stopReason,
     ...(ctx.stopReasonDetail ? { stopReasonDetail: ctx.stopReasonDetail } : {}),
     ...(ctx.validationCode ? { validationCode: ctx.validationCode } : {}),
-    ...(ctx.verifierSnapshot ? { verifierSnapshot: ctx.verifierSnapshot } : {}),
     runtimeContractSnapshot: ctx.runtimeContractSnapshot,
     mutationDetected: detectSuccessfulWorkspaceMutation(ctx.allToolCalls),
   };

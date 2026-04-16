@@ -65,7 +65,6 @@ export function appendToolRecord(
     return undefined;
   }
   if (VERIFIER_INVALIDATING_MUTATION_TOOLS.has(record.name)) {
-    ctx.verifierSnapshot = undefined;
     ctx.runtimeContractSnapshot = updateRuntimeContractVerifierVerdict({
       snapshot: ctx.runtimeContractSnapshot,
       verifier: {

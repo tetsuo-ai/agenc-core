@@ -1907,9 +1907,7 @@ export class PersistentWorkerManager {
     readonly failureReason?: string;
     readonly verifierVerdict?: RuntimeVerifierVerdict;
   }> {
-    const verifierVerdict = mapPlannerVerifierSnapshotToRuntimeVerdict(
-      params.childResult.verifierSnapshot,
-    );
+    const verifierVerdict = mapPlannerVerifierSnapshotToRuntimeVerdict(undefined);
     const terminalOutcome = resolveDelegatedTerminalOutcome({
       surface: "direct_child",
       workerSessionId: params.childSessionId,
