@@ -230,15 +230,6 @@ export interface RuntimeContractStatusSnapshot {
 
 export type RuntimeMailboxDirection = "parent_to_worker" | "worker_to_parent";
 export type RuntimeMailboxStatus = "pending" | "acknowledged" | "handled";
-export type RuntimeMailboxMessageType =
-  | "idle_notification"
-  | "permission_request"
-  | "permission_response"
-  | "shutdown_request"
-  | "task_assignment"
-  | "mode_change"
-  | "verifier_result"
-  | "worker_summary";
 
 interface RuntimeMailboxMessageBase {
   readonly messageId: string;

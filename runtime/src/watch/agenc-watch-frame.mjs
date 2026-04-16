@@ -3847,6 +3847,14 @@ export function createWatchFrameController(dependencies = {}) {
     for (const line of frame.slice(0, contentRows)) {
       nextFrameLines.push(paintSurface(line ?? "", width, color.panelBg));
     }
+    // Pin the composer + popup to the bottom by padding the body
+    // before them. This gives the right-side art strip a body region
+    // that always spans from below the header down to the composer
+    // regardless of how short the transcript is, so the art doesn't
+    // collapse to a sliver when the chat is near-empty.
+    while (nextFrameLines.length < contentRows) {
+      nextFrameLines.push(paintSurface("", width, color.panelBg));
+    }
     const composerStartRow = nextFrameLines.length + 1;
     const composerInputOffsetRows = statusLines.length + 1;
     for (const cLine of composerBand) {
