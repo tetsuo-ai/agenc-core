@@ -3313,7 +3313,6 @@ export class BackgroundRunSupervisor {
         phase: "background_run",
         detail: `Background run cycle ${run.cycleCount} is still in progress`,
       });
-      await this.publishUpdate(sessionId, content);
       this.scheduleHeartbeat(run, ACTIVE_CYCLE_HEARTBEAT_REPEAT_MS);
       return;
     }
@@ -3332,7 +3331,6 @@ export class BackgroundRunSupervisor {
             ? `Next verification in ~${Math.max(1, Math.ceil((run.nextCheckAt - this.now()) / 1000))}s`
             : "Background run waiting for next verification",
       });
-    await this.publishUpdate(sessionId, content);
     try {
       await this.persistRun(run);
     } catch (error) {
@@ -3681,6 +3679,10 @@ export class BackgroundRunSupervisor {
     return true;
   }
 
+  private shouldUseActorLoopParity(run: ActiveBackgroundRun): boolean {
+    return run.contract.domain === "workspace";
+  }
+
   private async resolveCycleDecision(params: {
     run: ActiveBackgroundRun;
     sessionId: string;
@@ -3887,7 +3889,11 @@ export class BackgroundRunSupervisor {
               ? domainDecision
               : undefined
           ) ??
-          (await this.evaluateDecision(run, actorResult)) ??
+          (
+            this.shouldUseActorLoopParity(run)
+              ? undefined
+              : await this.evaluateDecision(run, actorResult)
+          ) ??
           buildFallbackDecision(run, actorResult);
         decision = groundDecision(run, actorResult, decision, domainDecision);
       }
@@ -4089,7 +4095,11 @@ export class BackgroundRunSupervisor {
     }
 
     const signalDrivenCompletion = buildDeterministicRunDomainDecision(run);
-    if (signalDrivenCompletion && signalDrivenCompletion.state !== "working") {
+    if (
+      !this.shouldUseActorLoopParity(run) &&
+      signalDrivenCompletion &&
+      signalDrivenCompletion.state !== "working"
+    ) {
       decision = signalDrivenCompletion;
     }
 
@@ -4264,114 +4274,17 @@ export class BackgroundRunSupervisor {
       extractLatestProviderContinuation(actorResult, now) ??
       previousCarryForward?.providerContinuation;
     let finalReason: CarryForwardRefreshReason = refreshReason;
-
-    try {
-      const providerTrace =
-        this.traceProviderPayloads
-          ? {
-            trace: {
-              includeProviderPayloads: true as const,
-              onProviderTraceEvent: createProviderTraceEventLogger({
-                logger: this.logger,
-                traceLabel: "background_run.provider",
-                traceId: `background:${run.sessionId}:${run.id}:${run.cycleCount}:carry_forward`,
-                sessionId: run.sessionId,
-                staticFields: {
-                  runId: run.id,
-                  cycleCount: run.cycleCount,
-                  phase: "carry_forward",
-                },
-              }),
-            },
-          }
-          : undefined;
-      const response = await this.supervisorLlm.chat([
-        { role: "system", content: CARRY_FORWARD_SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: buildCarryForwardPrompt({
-            objective: run.objective,
-            contract: run.contract,
-            previous: previousCarryForward,
-            actorResult,
-            latestUpdate: run.lastUserUpdate,
-            latestToolEvidence: run.lastToolEvidence,
-            pendingSignals,
-            observedTargets: run.observedTargets,
-          }),
-        },
-      ], buildModelOnlyChatOptions({
-        toolChoice: "none",
-        ...(providerTrace ?? {}),
-      }));
-      const parsed =
-        parseCarryForwardState(response.content, now) ??
-        buildFallbackCarryForwardState({
-          previous: previousCarryForward,
-          latestUpdate: run.lastUserUpdate,
-          latestToolEvidence: run.lastToolEvidence,
-          pendingSignals,
-          now,
-        });
-      const driftReason = detectCarryForwardDrift({
-        candidate: parsed,
-        actorResult,
+    if (this.shouldUseActorLoopParity(run)) {
+      const fallbackState = buildFallbackCarryForwardState({
         previous: previousCarryForward,
-      });
-      if (driftReason) {
-        finalReason = "repair";
-        run.carryForward = repairCarryForwardState({
-          previous: previousCarryForward,
-          latestUpdate: run.lastUserUpdate,
-          latestToolEvidence: run.lastToolEvidence,
-          pendingSignals,
-          actorResult,
-          now,
-          reason: driftReason,
-          providerContinuation,
-        });
-        this.logger.warn("Background run carry-forward drift detected", {
-          sessionId: run.sessionId,
-          runId: run.id,
-          reason: driftReason,
-        });
-      } else {
-        run.carryForward = {
-          ...parsed,
-          artifacts: previousCarryForward?.artifacts ?? [],
-          memoryAnchors: buildCarryForwardAnchors({
-            previous: previousCarryForward?.memoryAnchors ?? [],
-            providerContinuation,
-            pendingSignals,
-            actorResult,
-            now,
-          }),
-          providerContinuation,
-          summaryHealth: {
-            status: "healthy",
-            driftCount: previousCarryForward?.summaryHealth.driftCount ?? 0,
-            lastDriftAt: previousCarryForward?.summaryHealth.lastDriftAt,
-            lastRepairAt: previousCarryForward?.summaryHealth.lastRepairAt,
-            lastDriftReason: previousCarryForward?.summaryHealth.lastDriftReason,
-          },
-          lastCompactedAt: now,
-        };
-      }
-    } catch (error) {
-      this.logger.debug("Background run carry-forward refresh failed", {
-        sessionId: run.sessionId,
-        runId: run.id,
-        error: toErrorMessage(error),
-      });
-      run.carryForward = buildFallbackCarryForwardState({
-        previous: previousCarryForward,
-        latestUpdate: run.lastUserUpdate,
+        latestUpdate: actorResult?.content ?? run.lastUserUpdate,
         latestToolEvidence: run.lastToolEvidence,
         pendingSignals,
         now,
       });
       run.carryForward = {
-        ...run.carryForward,
+        ...fallbackState,
+        artifacts: previousCarryForward?.artifacts ?? [],
         memoryAnchors: buildCarryForwardAnchors({
           previous: previousCarryForward?.memoryAnchors ?? [],
           providerContinuation,
@@ -4380,11 +4293,137 @@ export class BackgroundRunSupervisor {
           now,
         }),
         providerContinuation,
-        summaryHealth: previousCarryForward?.summaryHealth ?? {
+        summaryHealth: {
           status: "healthy",
-          driftCount: 0,
+          driftCount: previousCarryForward?.summaryHealth.driftCount ?? 0,
+          lastDriftAt: previousCarryForward?.summaryHealth.lastDriftAt,
+          lastRepairAt: previousCarryForward?.summaryHealth.lastRepairAt,
+          lastDriftReason: previousCarryForward?.summaryHealth.lastDriftReason,
         },
+        lastCompactedAt: now,
       };
+    } else {
+      try {
+        const providerTrace =
+          this.traceProviderPayloads
+            ? {
+              trace: {
+                includeProviderPayloads: true as const,
+                onProviderTraceEvent: createProviderTraceEventLogger({
+                  logger: this.logger,
+                  traceLabel: "background_run.provider",
+                  traceId: `background:${run.sessionId}:${run.id}:${run.cycleCount}:carry_forward`,
+                  sessionId: run.sessionId,
+                  staticFields: {
+                    runId: run.id,
+                    cycleCount: run.cycleCount,
+                    phase: "carry_forward",
+                  },
+                }),
+              },
+            }
+            : undefined;
+        const response = await this.supervisorLlm.chat([
+          { role: "system", content: CARRY_FORWARD_SYSTEM_PROMPT },
+          {
+            role: "user",
+            content: buildCarryForwardPrompt({
+              objective: run.objective,
+              contract: run.contract,
+              previous: previousCarryForward,
+              actorResult,
+              latestUpdate: run.lastUserUpdate,
+              latestToolEvidence: run.lastToolEvidence,
+              pendingSignals,
+              observedTargets: run.observedTargets,
+            }),
+          },
+        ], buildModelOnlyChatOptions({
+          toolChoice: "none",
+          ...(providerTrace ?? {}),
+        }));
+        const parsed =
+          parseCarryForwardState(response.content, now) ??
+          buildFallbackCarryForwardState({
+            previous: previousCarryForward,
+            latestUpdate: run.lastUserUpdate,
+            latestToolEvidence: run.lastToolEvidence,
+            pendingSignals,
+            now,
+          });
+        const driftReason = detectCarryForwardDrift({
+          candidate: parsed,
+          actorResult,
+          previous: previousCarryForward,
+        });
+        if (driftReason) {
+          finalReason = "repair";
+          run.carryForward = repairCarryForwardState({
+            previous: previousCarryForward,
+            latestUpdate: run.lastUserUpdate,
+            latestToolEvidence: run.lastToolEvidence,
+            pendingSignals,
+            actorResult,
+            now,
+            reason: driftReason,
+            providerContinuation,
+          });
+          this.logger.warn("Background run carry-forward drift detected", {
+            sessionId: run.sessionId,
+            runId: run.id,
+            reason: driftReason,
+          });
+        } else {
+          run.carryForward = {
+            ...parsed,
+            artifacts: previousCarryForward?.artifacts ?? [],
+            memoryAnchors: buildCarryForwardAnchors({
+              previous: previousCarryForward?.memoryAnchors ?? [],
+              providerContinuation,
+              pendingSignals,
+              actorResult,
+              now,
+            }),
+            providerContinuation,
+            summaryHealth: {
+              status: "healthy",
+              driftCount: previousCarryForward?.summaryHealth.driftCount ?? 0,
+              lastDriftAt: previousCarryForward?.summaryHealth.lastDriftAt,
+              lastRepairAt: previousCarryForward?.summaryHealth.lastRepairAt,
+              lastDriftReason: previousCarryForward?.summaryHealth.lastDriftReason,
+            },
+            lastCompactedAt: now,
+          };
+        }
+      } catch (error) {
+        this.logger.debug("Background run carry-forward refresh failed", {
+          sessionId: run.sessionId,
+          runId: run.id,
+          error: toErrorMessage(error),
+        });
+        run.carryForward = buildFallbackCarryForwardState({
+          previous: previousCarryForward,
+          latestUpdate: run.lastUserUpdate,
+          latestToolEvidence: run.lastToolEvidence,
+          pendingSignals,
+          now,
+        });
+        run.carryForward = {
+          ...run.carryForward,
+          memoryAnchors: buildCarryForwardAnchors({
+            previous: previousCarryForward?.memoryAnchors ?? [],
+            providerContinuation,
+            pendingSignals,
+            actorResult,
+            now,
+          }),
+          providerContinuation,
+          summaryHealth: previousCarryForward?.summaryHealth ?? {
+            status: "healthy",
+            driftCount: 0,
+          },
+        };
+      }
     }
 
     run.compaction = {
@@ -4405,13 +4444,6 @@ export class BackgroundRunSupervisor {
       lastProviderAnchorAt:
         providerContinuation?.updatedAt ?? run.compaction.lastProviderAnchorAt,
     };
-    if (finalReason === "repair") {
-      this.logger.info("Background run repaired carry-forward state", {
-        sessionId: run.sessionId,
-        runId: run.id,
-        refreshCount: run.compaction.refreshCount,
-      });
-    }
     const latestProviderCompactionArtifact = [...run.carryForward.artifacts]
       .reverse()
       .find((artifact) =>

@@ -1137,6 +1137,42 @@ function shouldTreatStopReasonAsBoundedStep(
   );
 }
 
+function hasVerifierPassedOrSkipped(
+  actorResult: ChatExecutorResult,
+): boolean {
+  const verifierStages = actorResult.runtimeContractSnapshot?.verifierStages;
+  if (!verifierStages) {
+    return false;
+  }
+  if (verifierStages.runtimeRequired === true) {
+    return verifierStages.stageStatus === "passed";
+  }
+  return (
+    verifierStages.stageStatus === "inactive" ||
+    verifierStages.stageStatus === "skipped"
+  );
+}
+
+function hasVerifierInFlight(
+  actorResult: ChatExecutorResult,
+): boolean {
+  const stage = actorResult.runtimeContractSnapshot?.verifierStages?.stageStatus;
+  return stage === "pending" || stage === "running" || stage === "retry";
+}
+
+function hasCompletedWorkflowState(
+  actorResult: ChatExecutorResult,
+): boolean {
+  const progress = actorResult.completionProgress;
+  if (!progress) {
+    return actorResult.toolCalls.length === 0;
+  }
+  return (
+    progress.completionState === "completed" &&
+    progress.remainingRequirements.length === 0
+  );
+}
+
 export function buildFallbackDecision(run: ActiveBackgroundRun, actorResult: ChatExecutorResult): BackgroundRunDecision {
   if (shouldTreatStopReasonAsBoundedStep(actorResult)) {
     const detail =
@@ -1154,12 +1190,60 @@ export function buildFallbackDecision(run: ActiveBackgroundRun, actorResult: Cha
       shouldNotifyUser: true,
     };
   }
+  if (hasVerifierInFlight(actorResult)) {
+    const detail =
+      actorResult.stopReasonDetail ??
+      actorResult.content ??
+      "Verification is still in progress.";
+    return {
+      state: "working",
+      userUpdate: truncate(
+        actorResult.content || "Verification is still in progress.",
+        MAX_USER_UPDATE_CHARS,
+      ),
+      internalSummary: detail,
+      nextCheckMs: MIN_POLL_INTERVAL_MS,
+      shouldNotifyUser: true,
+    };
+  }
+  if (
+    actorResult.stopReason === "completed" &&
+    actorResult.completionState === "completed" &&
+    hasVerifierPassedOrSkipped(actorResult) &&
+    hasCompletedWorkflowState(actorResult)
+  ) {
+    const detail =
+      actorResult.stopReasonDetail ??
+      actorResult.content ??
+      "Background run completed successfully.";
+    return {
+      state: "completed",
+      userUpdate: truncate(
+        actorResult.content || "Background run completed successfully.",
+        MAX_USER_UPDATE_CHARS,
+      ),
+      internalSummary: detail,
+      shouldNotifyUser: true,
+    };
+  }
   if (actorResult.stopReason !== "completed") {
     const detail = actorResult.stopReasonDetail ?? actorResult.content ?? "Background run did not complete cleanly.";
     return {
       state: "failed",
       userUpdate: truncate(detail, MAX_USER_UPDATE_CHARS),
       internalSummary: detail,
+      shouldNotifyUser: true,
+    };
+  }
+  if (actorResult.toolCalls.length === 0 && !run.lastToolEvidence) {
+    return {
+      state: "blocked",
+      userUpdate: truncate(
+        "Background run cannot mark itself complete without verified tool evidence.",
+        MAX_USER_UPDATE_CHARS,
+      ),
+      internalSummary:
+        "Rejected completion because there is no verified tool evidence in the current or previous cycle.",
       shouldNotifyUser: true,
     };
   }

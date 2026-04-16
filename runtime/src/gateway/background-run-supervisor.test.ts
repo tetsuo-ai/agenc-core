@@ -2264,7 +2264,7 @@ describe("background-run-supervisor", () => {
     expect(snapshot?.nextCheckAt).toBeTypeOf("number");
   });
 
-  it("publishes a runtime heartbeat while a background cycle is still running", async () => {
+  it("keeps a runtime heartbeat scheduled while a background cycle is still running", async () => {
     let resolveExecute: ((result: ChatExecutorResult) => void) | undefined;
     const publishUpdate = vi.fn(async () => undefined);
     const execute = vi.fn(
@@ -2301,12 +2301,11 @@ describe("background-run-supervisor", () => {
     });
     await vi.advanceTimersByTimeAsync(8_000);
 
-    expect(publishUpdate).toHaveBeenNthCalledWith(
-      2,
-      "session-running-heartbeat",
-      expect.stringContaining("Still working on the current background cycle."),
-    );
+    expect(publishUpdate).toHaveBeenCalledTimes(1);
     expect(supervisor.getStatusSnapshot("session-running-heartbeat")?.state).toBe("running");
+    expect(
+      supervisor.getStatusSnapshot("session-running-heartbeat")?.nextHeartbeatAt,
+    ).toBeTypeOf("number");
 
     resolveExecute?.(
       makeResult({
