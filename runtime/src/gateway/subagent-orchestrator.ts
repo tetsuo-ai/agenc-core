@@ -101,11 +101,6 @@ import {
   resolveParentSessionId,
 } from "./subagent-dependency-summarization.js";
 import {
-  buildSubagentAcceptanceProbePlans,
-  renderDeterministicCommandSummary,
-  buildWorkspaceStateGuidanceLines,
-} from "./subagent-workspace-probes.js";
-import {
   buildDelegatedIncompleteReason,
   buildDelegatedRuntimeResult,
   mapPlannerVerifierSnapshotToRuntimeVerdict,
@@ -1028,30 +1023,6 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
         lifecycleEmitter,
         signal,
       });
-      if (attemptOutcome.status === "completed") {
-        const acceptanceProbeFailure =
-          await this.runCompletedSubagentAcceptanceProbes({
-            step: preparedStep,
-            pipeline,
-            results,
-            parentSessionId,
-            subagentSessionId: attemptOutcome.subagentSessionId,
-            toolCalls: attemptOutcome.toolCalls,
-            tokenUsage: attemptOutcome.tokenUsage,
-            durationMs: attemptOutcome.durationMs,
-            lifecycleEmitter,
-          });
-        if (acceptanceProbeFailure) {
-          attemptOutcome = {
-            status: "failed",
-            failure: {
-              ...acceptanceProbeFailure,
-              message: `${acceptanceProbeFailure.message} (original output preserved for diagnostics)`,
-              originalOutput: attemptOutcome.output,
-            },
-          };
-        }
-      }
       const spawnedChild =
         attemptOutcome.status === "completed"
           ? true
@@ -1807,121 +1778,6 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
     }
   }
 
-  private async runCompletedSubagentAcceptanceProbes(params: {
-    readonly step: PipelinePlannerSubagentStep;
-    readonly pipeline: Pipeline;
-    readonly results: Record<string, string>;
-    readonly parentSessionId: string;
-    readonly subagentSessionId: string;
-    readonly toolCalls: SubAgentResult["toolCalls"];
-    readonly tokenUsage?: LLMUsage;
-    readonly durationMs: number;
-    readonly lifecycleEmitter: SubAgentLifecycleEmitter | null;
-  }): Promise<SubagentFailureOutcome | undefined> {
-    const probes = buildSubagentAcceptanceProbePlans(
-      params.step,
-      params.pipeline,
-      params.toolCalls,
-    );
-    if (probes.length === 0) {
-      return undefined;
-    }
-
-    for (const probe of probes) {
-      const probeArgs = probe.step.args as {
-        readonly command?: string;
-        readonly args?: readonly string[];
-        readonly cwd?: string;
-      };
-      params.lifecycleEmitter?.emit({
-        type: "subagents.acceptance_probe.started",
-        timestamp: Date.now(),
-        sessionId: params.parentSessionId,
-        parentSessionId: params.parentSessionId,
-        subagentSessionId: params.subagentSessionId,
-        toolName: probe.step.tool,
-        payload: {
-          stepName: params.step.name,
-          probeName: probe.name,
-          category: probe.category,
-          command: probeArgs.command ?? null,
-          args: probeArgs.args ?? [],
-          cwd: probeArgs.cwd ?? null,
-        },
-      });
-
-      const startedAt = Date.now();
-      const outcome = await this.executeDeterministicStep(
-        probe.step,
-        params.pipeline,
-        params.results,
-      );
-      const durationMs = Date.now() - startedAt;
-
-      if (outcome.status === "completed") {
-        params.lifecycleEmitter?.emit({
-          type: "subagents.acceptance_probe.completed",
-          timestamp: Date.now(),
-          sessionId: params.parentSessionId,
-          parentSessionId: params.parentSessionId,
-          subagentSessionId: params.subagentSessionId,
-          toolName: probe.step.tool,
-          payload: {
-            stepName: params.step.name,
-            probeName: probe.name,
-            category: probe.category,
-            durationMs,
-            result: outcome.result,
-          },
-        });
-        continue;
-      }
-
-      const commandSummary = renderDeterministicCommandSummary(probe.step);
-      const cwdSummary =
-        typeof probeArgs.cwd === "string" && probeArgs.cwd.trim().length > 0
-          ? ` in \`${sanitizeExecutionPromptText(probeArgs.cwd, {
-            preserveAbsolutePathsWithin: [probeArgs.cwd],
-          })}\``
-          : "";
-      const failureMessage =
-        `Parent-side deterministic acceptance probe failed for step "${params.step.name}" ` +
-        `(${probe.category})${cwdSummary}: ${commandSummary}. ${outcome.error}`;
-      const probeStopReasonHint =
-        outcome.status === "failed" ? outcome.stopReasonHint : undefined;
-      params.lifecycleEmitter?.emit({
-        type: "subagents.acceptance_probe.failed",
-        timestamp: Date.now(),
-        sessionId: params.parentSessionId,
-        parentSessionId: params.parentSessionId,
-        subagentSessionId: params.subagentSessionId,
-        toolName: probe.step.tool,
-        payload: {
-          stepName: params.step.name,
-          probeName: probe.name,
-          category: probe.category,
-          durationMs,
-          command: probeArgs.command ?? null,
-          args: probeArgs.args ?? [],
-          cwd: probeArgs.cwd ?? null,
-          error: outcome.error,
-        },
-      });
-      return {
-        failureClass: "malformed_result_contract",
-        message: failureMessage,
-        validationCode: "acceptance_probe_failed",
-        stopReasonHint: probeStopReasonHint ?? "validation_error",
-        childSessionId: params.subagentSessionId,
-        durationMs: params.durationMs,
-        toolCallCount: params.toolCalls.length,
-        tokenUsage: params.tokenUsage,
-      };
-    }
-
-    return undefined;
-  }
-
   private async buildSubagentTaskPrompt(
     step: PipelinePlannerSubagentStep,
     pipeline: Pipeline,
@@ -2054,12 +1910,6 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
       `${effectiveStep.objective} ${effectiveStep.inputContract} ${effectiveContextRequirements.join(" ")}`,
       toolContextBudgets.artifactContext ?? 0,
       trustedExecutionRoots,
-    );
-    const workspaceStateGuidanceLines = buildWorkspaceStateGuidanceLines(
-      effectiveStep,
-      pipeline,
-      promptArtifactCandidates,
-      delegatedWorkingDirectory?.path,
     );
     const hostToolingSection = buildHostToolingPromptSectionFn(
       effectiveStep,
@@ -2206,12 +2056,6 @@ export class SubAgentOrchestrator implements DeterministicPipelineExecutor {
           "Compacted session artifact context:\n" +
             "- These are durable references from earlier work. Prefer them over re-reading old transcript text.\n" +
             artifactContextSection.lines.map((line) => `- ${line}`).join("\n"),
-        );
-      }
-      if (workspaceStateGuidanceLines.length > 0) {
-        sections.push(
-          "Observed workspace state:\n" +
-            workspaceStateGuidanceLines.map((line) => `- ${line}`).join("\n"),
         );
       }
       if (historySection.lines.length > 0) {
