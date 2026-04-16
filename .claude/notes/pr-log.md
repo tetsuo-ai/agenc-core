@@ -192,3 +192,10 @@
 - **What worked:** Passing the resolved advertised tool bundle into background actor cycles and child-session launches kept both paths on the same scoped tool surface as foreground turns, which prevents provider-side trimming from broad fallback catalogs.
 - **What didn't:** Background and child execution had each kept their own fallback path to the executor-wide allowlist, so fixing the live overflow required patching both call sites and adding dedicated regressions instead of relying on the earlier foreground-only routing work.
 - **Rule added to CLAUDE.md:** no
+
+## PR #408: fix(runtime): suppress full-catalog tools on no-tool calls
+- **Date:** 2026-04-15
+- **Files changed:** `runtime/src/llm/{model-only-options,chat-executor-fallback,executor}.ts`, `runtime/src/llm/grok/adapter.ts`, `runtime/src/gateway/{background-run-supervisor,daemon-command-registry,heartbeat-actions}.ts`, `runtime/src/memory/{reflection,ingestion}.ts`, `runtime/src/autonomous/{self-learning,desktop-awareness,desktop-executor}.ts`, and the matching runtime tests
+- **What worked:** Centralizing model-only provider options and forcing explicit empty allowlists on helper calls, recovery turns, and legacy executor requests closed the remaining full-catalog attachment paths without widening the normal routed-tool surfaces.
+- **What didn't:** The overflow issue was spread across multiple helper call sites plus two separate fail-open fallbacks in executor and provider layers, so fixing it required a broad parity pass and direct regression coverage instead of a single routing tweak.
+- **Rule added to CLAUDE.md:** no
