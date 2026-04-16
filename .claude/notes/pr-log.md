@@ -199,3 +199,10 @@
 - **What worked:** Centralizing model-only provider options and forcing explicit empty allowlists on helper calls, recovery turns, and legacy executor requests closed the remaining full-catalog attachment paths without widening the normal routed-tool surfaces.
 - **What didn't:** The overflow issue was spread across multiple helper call sites plus two separate fail-open fallbacks in executor and provider layers, so fixing it required a broad parity pass and direct regression coverage instead of a single routing tweak.
 - **Rule added to CLAUDE.md:** no
+
+## PR #409: fix(runtime): simplify workspace background supervision
+- **Date:** 2026-04-16
+- **Files changed:** `runtime/src/gateway/{background-run-supervisor,background-run-supervisor-helpers}.ts`, `runtime/src/gateway/background-run-supervisor.test.ts`
+- **What worked:** Letting workspace background runs follow the actor result directly removed the extra supervisor decision and carry-forward model passes, cut the user-facing heartbeat spam, and tightened fallback completion so false successes without verified evidence get blocked.
+- **What didn't:** The only stale failure after the runtime change was a test that still expected heartbeat publishes, so the suite needed one expectation update to match the new non-publishing heartbeat behavior.
+- **Rule added to CLAUDE.md:** no
