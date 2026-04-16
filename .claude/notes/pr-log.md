@@ -164,3 +164,10 @@
 - **What worked:** Carrying interactive context as an explicit request payload, persisting it through replay and transcript metadata, and restoring read-state during hydration made resume and child/verifier launches reuse one consistent execution-location and prompt snapshot path.
 - **What didn't:** The new path had to be threaded through session replay, transcript projection, executor init, and child launch points together, because any one missing handoff would have left resume state coherent in one surface and stale in another.
 - **Rule added to CLAUDE.md:** no
+
+## PR #404: fix(runtime): defer specialist tools and normalize model routing
+- **Date:** 2026-04-15
+- **Files changed:** `runtime/src/gateway/{daemon,daemon-webchat-turn,daemon-text-channel-turn,channel-wiring,daemon-command-registry,tool-routing,shell-profile,interactive-context,chat-usage,model-route}.ts`, `runtime/src/llm/{chat-executor-types,chat-executor-fallback,chat-executor-model-orchestration,chat-executor-request,chat-executor-tool-loop}.ts`, `runtime/src/llm/grok/{adapter,xai-strict-filter}.ts`, `runtime/src/watch/{agenc-watch-session-utils,agenc-watch-surface-dispatch}.mjs`, `runtime/src/gateway/{daemon,tool-routing}.test.ts`, `runtime/src/llm/grok/xai-strict-filter.test.ts`
+- **What worked:** Moving non-default tools behind runtime-side discovery kept the default advertised bundle small while preserving later-turn access through persisted discovered tool state, and shared model-route normalization removed alias-only mismatch noise across runtime and watch surfaces.
+- **What didn't:** The runtime had previously treated the callable tool universe and the advertised tool bundle as the same thing, so the fix needed coordinated daemon, executor, and watch updates before the provider-cap behavior and route display lined up cleanly.
+- **Rule added to CLAUDE.md:** no
