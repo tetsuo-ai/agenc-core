@@ -185,3 +185,10 @@
 - **What worked:** Moving local compaction onto current-view effective-window accounting made the executor, `/context`, daemon status, and watch header all agree on the same pressure signal, and the targeted executor test updates kept the runtime behavior verified against the new threshold model instead of the old cumulative-budget assumptions.
 - **What didn't:** A few compaction tests were still asserting cumulative token spend and an older per-iteration threshold shape, so the parity pass needed both runtime code changes and fixture recalibration before the suite reflected the intended behavior.
 - **Rule added to CLAUDE.md:** no
+
+## PR #407: fix(runtime): keep background and child tool bundles scoped
+- **Date:** 2026-04-15
+- **Files changed:** `runtime/src/gateway/{background-run-supervisor,background-run-supervisor-types,daemon,sub-agent}.ts`, `runtime/src/gateway/{background-run-supervisor,sub-agent}.test.ts`
+- **What worked:** Passing the resolved advertised tool bundle into background actor cycles and child-session launches kept both paths on the same scoped tool surface as foreground turns, which prevents provider-side trimming from broad fallback catalogs.
+- **What didn't:** Background and child execution had each kept their own fallback path to the executor-wide allowlist, so fixing the live overflow required patching both call sites and adding dedicated regressions instead of relying on the earlier foreground-only routing work.
+- **Rule added to CLAUDE.md:** no
