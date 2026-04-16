@@ -2054,6 +2054,10 @@ function handleSubagentLifecycleMessage(type, payload) {
   return watchSubagentController.handleSubagentLifecycleMessage(type, payload);
 }
 
+function getActiveSubagentProgress(parentToolCallId) {
+  return watchSubagentController.getActiveSubagentProgress(parentToolCallId);
+}
+
 function handlePlannerTraceEvent(type, payload) {
   return watchPlannerController.handlePlannerTraceEvent(type, payload);
 }

@@ -658,6 +658,81 @@ test("frame controller routes file tag palette rows through ansi-aware fitting",
   );
 });
 
+test("frame controller overlays child tool name when a subagent progress entry is active", () => {
+  const harness = createWatchFrameHarness({
+    width: 140,
+    height: 40,
+    watchState: {
+      activeSubagentProgressByParentToolCallId: new Map([
+        [
+          "parent-call-xyz",
+          {
+            subagentSessionId: "subagent:child-1",
+            toolUseCount: 4,
+            tokenCount: 12345,
+            lastToolName: "system.bash",
+            lastActivity: { toolName: "system.bash", isError: false, ts: 1 },
+            recentActivities: [{ toolName: "system.bash", ts: 1 }],
+            elapsedMs: 1200,
+            lastUpdatedAt: Date.now(),
+          },
+        ],
+      ]),
+      parentToolCallIdBySubagentSession: new Map([
+        ["subagent:child-1", "parent-call-xyz"],
+      ]),
+    },
+    dependencies: {
+      currentSurfaceSummary() {
+        return {
+          overview: {
+            connectionState: "live",
+            sessionToken: "12345678",
+            phaseLabel: "thinking",
+            queuedInputCount: 0,
+            // Parent session's latestTool is the execute_with_agent
+            // delegation call. Without the overlay the header would
+            // show only "execute_with_agent" (uninformative once the
+            // child is working).
+            latestTool: "execute_with_agent",
+            latestToolState: "running",
+            usage: "",
+            lastActivityAt: "",
+            activeAgentCount: 1,
+            planCount: 0,
+            transcriptMode: "follow",
+            fallbackState: "standby",
+            runtimeState: "healthy",
+            runtimeLabel: "live",
+            activeLine: "",
+            durableActiveTotal: 0,
+            durableQueuedSignalsTotal: 0,
+            durableRunsState: "ready",
+          },
+          routeLabel: "grok-4",
+          providerLabel: "grok",
+          objective: "",
+          routeState: "primary",
+          routeTone: "teal",
+          recentTools: [],
+          attention: {
+            approvalAlertCount: 0,
+            errorAlertCount: 0,
+            queuedInputCount: 0,
+            items: [],
+          },
+        };
+      },
+    },
+  });
+
+  const snapshot = harness.controller.buildVisibleFrameSnapshot();
+  const hasOverlay = snapshot.lines.some((line) =>
+    String(line).includes("execute_with_agent › system.bash"),
+  );
+  assert.equal(hasOverlay, true);
+});
+
 test("frame controller keeps the full usage summary visible in the header", () => {
   const usage = "80k in · 12k out · 3 cached · 41% window";
   const harness = createWatchFrameHarness({

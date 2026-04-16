@@ -524,6 +524,15 @@ export function createWatchState({
     connectionState: "connecting",
     latestTool: null,
     latestToolState: null,
+    // Active sub-agent progress indexed by the parent's
+    // execute_with_agent tool-call id. Populated from
+    // `subagents.progress` events carrying payload.progress +
+    // payload.parentToolCallId. Mirrors
+    // `progressMessagesByToolUseID` in
+    // `../claude_code/utils/messages.ts::buildMessageLookups`.
+    activeSubagentProgressByParentToolCallId: new Map(),
+    // Reverse index so we can clean up when a sub-agent terminates.
+    parentToolCallIdBySubagentSession: new Map(),
     latestAgentSummary: null,
     agentStreamingText: null,
     agentStreamingPreview: null,

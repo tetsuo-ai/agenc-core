@@ -2578,6 +2578,7 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
     const policyEngine = delegationContext?.policyEngine ?? null;
     const verifier = delegationContext?.verifier ?? null;
     const lifecycleEmitter = delegationContext?.lifecycleEmitter ?? null;
+    const progressTracker = delegationContext?.progressTracker ?? null;
     const unsafeBenchmarkMode = delegationContext?.unsafeBenchmarkMode === true;
     const subAgentInfo = isSubAgentSession
       ? subAgentManager?.getInfo(sessionIdentity) ?? null
@@ -2878,8 +2879,46 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
         sessionId,
         subagentSessionId: sessionId,
         toolName,
-        payload: { args: normalizedArgs, toolCallId },
+        payload: {
+          args: normalizedArgs,
+          toolCallId,
+          ...(subAgentInfo?.parentToolCallId
+            ? { parentToolCallId: subAgentInfo.parentToolCallId }
+            : {}),
+        },
       });
+      if (progressTracker) {
+        progressTracker.onToolExecuting({
+          subagentSessionId: sessionId,
+          ...(subAgentInfo?.parentSessionId
+            ? { parentSessionId: subAgentInfo.parentSessionId }
+            : {}),
+          ...(subAgentInfo?.parentToolCallId
+            ? { parentToolCallId: subAgentInfo.parentToolCallId }
+            : {}),
+          toolName,
+          args: normalizedArgs,
+        });
+        const snapshot = progressTracker.consumeSnapshotIfDue(sessionId);
+        if (snapshot) {
+          lifecycleEmitter.emit({
+            type: "subagents.progress",
+            timestamp: Date.now(),
+            sessionId,
+            ...(subAgentInfo?.parentSessionId
+              ? { parentSessionId: subAgentInfo.parentSessionId }
+              : {}),
+            subagentSessionId: sessionId,
+            toolName,
+            payload: {
+              progress: snapshot,
+              ...(subAgentInfo?.parentToolCallId
+                ? { parentToolCallId: subAgentInfo.parentToolCallId }
+                : {}),
+            },
+          });
+        }
+      }
     }
 
     if (
@@ -3239,11 +3278,47 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
           durationMs,
           isError,
           toolCallId,
+          ...(subAgentInfo?.parentToolCallId
+            ? { parentToolCallId: subAgentInfo.parentToolCallId }
+            : {}),
           ...(verifierRequirement
             ? { verifierRequirement }
             : {}),
         },
       });
+      if (progressTracker) {
+        progressTracker.onToolResult({
+          subagentSessionId: sessionId,
+          ...(subAgentInfo?.parentSessionId
+            ? { parentSessionId: subAgentInfo.parentSessionId }
+            : {}),
+          ...(subAgentInfo?.parentToolCallId
+            ? { parentToolCallId: subAgentInfo.parentToolCallId }
+            : {}),
+          toolName,
+          isError,
+          durationMs,
+        });
+        const snapshot = progressTracker.flushSnapshot(sessionId);
+        if (snapshot) {
+          lifecycleEmitter.emit({
+            type: "subagents.progress",
+            timestamp: Date.now(),
+            sessionId,
+            ...(subAgentInfo?.parentSessionId
+              ? { parentSessionId: subAgentInfo.parentSessionId }
+              : {}),
+            subagentSessionId: sessionId,
+            toolName,
+            payload: {
+              progress: snapshot,
+              ...(subAgentInfo?.parentToolCallId
+                ? { parentToolCallId: subAgentInfo.parentToolCallId }
+                : {}),
+            },
+          });
+        }
+      }
     }
 
     // 8. Hook: tool:after (progress tracking)

@@ -83,6 +83,7 @@ import {
 import {
   SubAgentManager,
 } from "./sub-agent.js";
+import { SubAgentProgressTracker } from "./sub-agent-progress.js";
 import {
   DelegationPolicyEngine,
   DelegationVerifierService,
@@ -1060,6 +1061,8 @@ export class DaemonManager {
   private _delegationPolicyEngine: DelegationPolicyEngine | null = null;
   private _delegationVerifierService: DelegationVerifierService | null = null;
   private _subAgentLifecycleEmitter: SubAgentLifecycleEmitter | null = null;
+  private readonly _subAgentProgressTracker: SubAgentProgressTracker =
+    new SubAgentProgressTracker();
   private _delegationTrajectorySink: InMemoryDelegationTrajectorySink | null =
     null;
   private _subAgentLifecycleUnsubscribe: (() => void) | null = null;
@@ -1206,6 +1209,7 @@ export class DaemonManager {
         policyEngine: this._delegationPolicyEngine,
         verifier: this._delegationVerifierService,
         lifecycleEmitter: this._subAgentLifecycleEmitter,
+        progressTracker: this._subAgentProgressTracker,
         launchShellAgentTask: async (params) =>
           this.launchShellAgentTask({
             parentSessionId: params.parentSessionId,
@@ -6649,6 +6653,14 @@ export class DaemonManager {
     if (!lifecycleEmitter) return;
     this._subAgentLifecycleUnsubscribe = lifecycleEmitter.on((event) => {
       this.relaySubAgentLifecycleEvent(webChat, event);
+      if (
+        event.subagentSessionId &&
+        (event.type === "subagents.completed" ||
+          event.type === "subagents.failed" ||
+          event.type === "subagents.cancelled")
+      ) {
+        this._subAgentProgressTracker.detach(event.subagentSessionId);
+      }
     });
   }
 

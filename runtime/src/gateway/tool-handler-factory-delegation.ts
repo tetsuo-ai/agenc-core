@@ -1307,6 +1307,7 @@ export async function executeDelegationTool(
   try {
     childSessionId = await subAgentManager.spawn({
       parentSessionId: sessionId,
+      ...(toolCallId ? { parentToolCallId: toolCallId } : {}),
       ...(params.shellProfile ? { shellProfile: params.shellProfile } : {}),
       task: objective,
       ...(input.forkContext === true
@@ -1548,6 +1549,7 @@ export async function executeDelegationTool(
             objective,
             elapsedMs: now - startedAt,
             toolCallId,
+            parentToolCallId: toolCallId,
           },
         });
         lastProgressAt = now;

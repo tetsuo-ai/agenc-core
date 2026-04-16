@@ -12,6 +12,7 @@ import {
   type SubAgentManager,
 } from "./sub-agent.js";
 import type { PersistentWorkerManager } from "./persistent-worker-manager.js";
+import type { SubAgentProgressTracker } from "./sub-agent-progress.js";
 import type { GatewaySubagentFallbackBehavior } from "./types.js";
 import type { DelegationContractSpec } from "../utils/delegation-validation.js";
 import {
@@ -269,6 +270,16 @@ export interface DelegationToolCompositionContext {
   readonly policyEngine: DelegationPolicyEngine | null;
   readonly verifier: DelegationVerifierService | null;
   readonly lifecycleEmitter: SubAgentLifecycleEmitter | null;
+  /**
+   * Per-sub-agent progress aggregator. When present, tool-handler emit
+   * sites call `onToolExecuting` / `onToolResult` and then emit an
+   * enriched `subagents.progress` event carrying
+   * `payload.progress = SubAgentAgentProgress` so UIs can render
+   * live tool counts, tokens, and last-tool name under the spawning
+   * `execute_with_agent` card — mirrors `AgentProgressLine` in
+   * `../claude_code/components/AgentProgressLine.tsx`.
+   */
+  readonly progressTracker?: SubAgentProgressTracker | null;
   readonly launchShellAgentTask?: (params: {
     readonly parentSessionId: string;
     readonly roleId: string;

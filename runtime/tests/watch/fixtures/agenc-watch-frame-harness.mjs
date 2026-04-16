@@ -40,6 +40,8 @@ export function createWatchFrameHarness(overrides = {}) {
     activeRunStartedAtMs: null,
     bootstrapAttempts: 0,
     marketTaskBrowser: null,
+    activeSubagentProgressByParentToolCallId: new Map(),
+    parentToolCallIdBySubagentSession: new Map(),
     ...overrides.watchState,
   };
   const transportState = {

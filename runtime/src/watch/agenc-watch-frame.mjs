@@ -1087,11 +1087,50 @@ export function createWatchFrameController(dependencies = {}) {
     // show a `—` placeholder so the tool row doesn't echo the phase row.
     const rawLatestTool = sanitizeInlineText(overview.latestTool, "");
     const hasMeaningfulTool = rawLatestTool.length > 0 && rawLatestTool !== "idle";
-    const toolCell = stat(
-      "tool",
-      hasMeaningfulTool ? rawLatestTool : "—",
-      hasMeaningfulTool ? stateTone(overview.latestToolState) : "slate",
+
+    // Sub-agent tool overlay: when the parent is dispatched into an
+    // `execute_with_agent` delegation the parent session's
+    // `latestTool` goes idle while the child runs. Surface the child's
+    // most recent tool name so the cockpit reflects actual activity.
+    // Mirrors the live `lastToolName` field in
+    // `../claude_code/components/AgentProgressLine.tsx`.
+    const activeSubagentMap =
+      watchState.activeSubagentProgressByParentToolCallId instanceof Map
+        ? watchState.activeSubagentProgressByParentToolCallId
+        : null;
+    let subagentOverlayToolName = null;
+    let subagentOverlayTone = null;
+    let subagentOverlayExtras = null;
+    if (activeSubagentMap && activeSubagentMap.size > 0) {
+      let bestEntry = null;
+      for (const entry of activeSubagentMap.values()) {
+        if (!bestEntry || (entry?.lastUpdatedAt ?? 0) > (bestEntry.lastUpdatedAt ?? 0)) {
+          bestEntry = entry;
+        }
+      }
+      if (bestEntry && typeof bestEntry.lastToolName === "string") {
+        subagentOverlayToolName = bestEntry.lastToolName.trim();
+        const lastActivityError = bestEntry.lastActivity?.isError === true;
+        subagentOverlayTone = lastActivityError ? "red" : "cyan";
+        subagentOverlayExtras = bestEntry;
+      }
+    }
+    const shouldOverlaySubagent = Boolean(
+      subagentOverlayToolName &&
+        (!hasMeaningfulTool || rawLatestTool === "execute_with_agent"),
     );
+    const toolCellValue = shouldOverlaySubagent
+      ? `execute_with_agent › ${truncate(subagentOverlayToolName, 18)}`
+      : hasMeaningfulTool
+        ? rawLatestTool
+        : "—";
+    const toolCellTone = shouldOverlaySubagent
+      ? subagentOverlayTone ?? "cyan"
+      : hasMeaningfulTool
+        ? stateTone(overview.latestToolState)
+        : "slate";
+    const toolCell = stat("tool", toolCellValue, toolCellTone);
+    void subagentOverlayExtras;
 
     // ── Pad right column to uniform width ────────────────────────────────
     const rightColumnCells = [runCell, statusCell, phaseCell, toolCell];

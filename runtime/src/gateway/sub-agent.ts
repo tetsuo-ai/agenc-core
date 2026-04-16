@@ -175,6 +175,14 @@ export type SubAgentStatus =
 
 export interface SubAgentConfig {
   readonly parentSessionId: string;
+  /**
+   * Parent's tool-call id for the `execute_with_agent` invocation that
+   * spawned this sub-agent. Used by lifecycle event consumers (TUI,
+   * webchat UI) to thread child progress under the correct parent tool
+   * card. Matches the `parentToolUseID` concept in
+   * `../claude_code/utils/messages.ts::createProgressMessage`.
+   */
+  readonly parentToolCallId?: string;
   readonly shellProfile?: SessionShellProfile;
   readonly task: string;
   readonly role?: string;
@@ -299,6 +307,7 @@ interface ResolvedSubAgentExecutionBudget {
 export interface SubAgentInfo {
   readonly sessionId: string;
   readonly parentSessionId: string;
+  readonly parentToolCallId?: string;
   readonly depth: number;
   readonly status: SubAgentStatus;
   readonly startedAt: number;
@@ -887,6 +896,9 @@ export class SubAgentManager {
     return {
       sessionId: handle.sessionId,
       parentSessionId: handle.parentSessionId,
+      ...(handle.config.parentToolCallId
+        ? { parentToolCallId: handle.config.parentToolCallId }
+        : {}),
       depth: handle.depth,
       status: handle.status,
       startedAt: handle.startedAt,

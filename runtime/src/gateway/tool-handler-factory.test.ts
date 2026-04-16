@@ -1795,6 +1795,169 @@ describe("createSessionToolHandler", () => {
     expect(resultPayload?.subagentSessionId).toBe("subagent:test-session");
   });
 
+  it("threads parentToolCallId from SubAgentInfo onto tool lifecycle events", async () => {
+    // Regression: sub-agent tool events previously carried only
+    // `subagentSessionId`, so the TUI could not correlate child activity
+    // to the spawning parent `execute_with_agent` tool card. Threading
+    // `parentToolCallId` through `SubAgentManager.getInfo()` onto the
+    // payload closes that gap.
+    const sentMessages: ControlResponse[] = [];
+    const send = vi.fn((msg: ControlResponse): void => {
+      sentMessages.push(msg);
+    });
+    const lifecycleEvents: Array<Record<string, unknown>> = [];
+
+    const policyEngine = {
+      evaluate: vi.fn(() => ({ allowed: true, threshold: 0.7 })),
+      isDelegationTool: vi.fn(() => false),
+      snapshot: vi.fn(() => ({ spawnDecisionThreshold: 0.7 })),
+    };
+    const verifier = {
+      resolveVerifierRequirement: vi.fn(() => ({
+        required: false,
+        profiles: [],
+        probeCategories: [],
+        mutationPolicy: "read_only_workspace",
+        allowTempArtifacts: false,
+        bootstrapSource: "disabled",
+        rationale: [],
+      })),
+      shouldVerifySubAgentResult: vi.fn(() => false),
+    };
+    const subAgentManager = {
+      getInfo: vi.fn(() => ({
+        sessionId: "subagent:child-42",
+        parentSessionId: "session-parent",
+        parentToolCallId: "parent-call-id-789",
+        depth: 1,
+        status: "running",
+        startedAt: Date.now() - 10,
+        task: "inspect",
+      })),
+    };
+    const lifecycleEmitter = {
+      emit: vi.fn((event: Record<string, unknown>) => {
+        lifecycleEvents.push(event);
+      }),
+    };
+
+    const handler = createSessionToolHandler({
+      sessionId: "subagent:child-42",
+      baseHandler: vi.fn(async () => "ok"),
+      routerId: "router-a",
+      send,
+      delegation: () => ({
+        subAgentManager: subAgentManager as any,
+        policyEngine: policyEngine as any,
+        verifier: verifier as any,
+        lifecycleEmitter: lifecycleEmitter as any,
+      }),
+    });
+
+    await handler("system.health", { verbose: true });
+
+    expect(lifecycleEvents).toHaveLength(2);
+    const executingPayload = lifecycleEvents[0].payload as {
+      parentToolCallId?: string;
+    };
+    const resultPayload = lifecycleEvents[1].payload as {
+      parentToolCallId?: string;
+    };
+    expect(executingPayload.parentToolCallId).toBe("parent-call-id-789");
+    expect(resultPayload.parentToolCallId).toBe("parent-call-id-789");
+  });
+
+  it("emits enriched subagents.progress when a progressTracker is wired into delegation context", async () => {
+    // When the delegation context supplies a SubAgentProgressTracker,
+    // every sub-agent tool round produces an additional
+    // `subagents.progress` event carrying payload.progress with
+    // toolUseCount, tokenCount, lastToolName, and recentActivities.
+    // The TUI consumes this to render an AgentProgressLine-equivalent
+    // row under the spawning execute_with_agent card.
+    const { SubAgentProgressTracker } = await import("./sub-agent-progress.js");
+    const progressTracker = new SubAgentProgressTracker({ emitIntervalMs: 0 });
+    const sentMessages: ControlResponse[] = [];
+    const send = vi.fn((msg: ControlResponse): void => {
+      sentMessages.push(msg);
+    });
+    const lifecycleEvents: Array<Record<string, unknown>> = [];
+
+    const policyEngine = {
+      evaluate: vi.fn(() => ({ allowed: true, threshold: 0.7 })),
+      isDelegationTool: vi.fn(() => false),
+      snapshot: vi.fn(() => ({ spawnDecisionThreshold: 0.7 })),
+    };
+    const verifier = {
+      resolveVerifierRequirement: vi.fn(() => ({
+        required: false,
+        profiles: [],
+        probeCategories: [],
+        mutationPolicy: "read_only_workspace",
+        allowTempArtifacts: false,
+        bootstrapSource: "disabled",
+        rationale: [],
+      })),
+      shouldVerifySubAgentResult: vi.fn(() => false),
+    };
+    const subAgentManager = {
+      getInfo: vi.fn(() => ({
+        sessionId: "subagent:child-7",
+        parentSessionId: "session-parent",
+        parentToolCallId: "parent-call-progress",
+        depth: 1,
+        status: "running",
+        startedAt: Date.now() - 10,
+        task: "inspect",
+      })),
+    };
+    const lifecycleEmitter = {
+      emit: vi.fn((event: Record<string, unknown>) => {
+        lifecycleEvents.push(event);
+      }),
+    };
+
+    const handler = createSessionToolHandler({
+      sessionId: "subagent:child-7",
+      baseHandler: vi.fn(async () => "ok"),
+      routerId: "router-a",
+      send,
+      delegation: () => ({
+        subAgentManager: subAgentManager as any,
+        policyEngine: policyEngine as any,
+        verifier: verifier as any,
+        lifecycleEmitter: lifecycleEmitter as any,
+        progressTracker,
+      }),
+    });
+
+    await handler("system.readFile", { path: "/tmp/a.txt" });
+
+    // Expect: tool.executing → progress (on executing) → tool.result → progress (on result)
+    const types = lifecycleEvents.map((event) => event.type);
+    expect(types).toEqual([
+      "subagents.tool.executing",
+      "subagents.progress",
+      "subagents.tool.result",
+      "subagents.progress",
+    ]);
+    const lastProgress = lifecycleEvents[3] as {
+      payload?: {
+        progress?: {
+          toolUseCount?: number;
+          lastToolName?: string;
+          recentActivities?: Array<{ toolName: string; isError?: boolean }>;
+        };
+        parentToolCallId?: string;
+      };
+    };
+    expect(lastProgress.payload?.parentToolCallId).toBe("parent-call-progress");
+    expect(lastProgress.payload?.progress?.toolUseCount).toBe(1);
+    expect(lastProgress.payload?.progress?.lastToolName).toBe("system.readFile");
+    expect(lastProgress.payload?.progress?.recentActivities?.[0]?.toolName).toBe(
+      "system.readFile",
+    );
+  });
+
   it("executes execute_with_agent via SubAgentManager instead of base handler", async () => {
     const sentMessages: ControlResponse[] = [];
     const send = vi.fn((msg: ControlResponse): void => {

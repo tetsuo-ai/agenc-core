@@ -6,6 +6,8 @@ import { createWatchSubagentController } from "../../src/watch/agenc-watch-subag
 function createSubagentHarness() {
   const watchState = {
     sessionId: "sess-1",
+    activeSubagentProgressByParentToolCallId: new Map(),
+    parentToolCallIdBySubagentSession: new Map(),
   };
   const recentSubagentLifecycleFingerprints = new Map();
   const subagentLiveActivity = new Map();
@@ -227,4 +229,72 @@ test("subagent controller preserves rich completion truth on synthesized results
         entry.body.includes("completion state: needs verification"),
     ),
   );
+});
+
+test("subagent controller upserts activeSubagentProgress keyed by parentToolCallId", () => {
+  const { controller, watchState } = createSubagentHarness();
+
+  controller.handleSubagentLifecycleMessage("subagents.progress", {
+    subagentSessionId: "child-prog-1",
+    data: {
+      parentToolCallId: "parent-call-xyz",
+      progress: {
+        toolUseCount: 3,
+        tokenCount: 4200,
+        lastToolName: "system.bash",
+        recentActivities: [{ toolName: "system.bash", ts: 1 }],
+        elapsedMs: 900,
+      },
+    },
+  });
+
+  const entry = controller.getActiveSubagentProgress("parent-call-xyz");
+  assert.ok(entry);
+  assert.equal(entry.toolUseCount, 3);
+  assert.equal(entry.lastToolName, "system.bash");
+  assert.equal(entry.subagentSessionId, "child-prog-1");
+  assert.equal(
+    watchState.parentToolCallIdBySubagentSession.get("child-prog-1"),
+    "parent-call-xyz",
+  );
+});
+
+test("subagent controller clears activeSubagentProgress on terminal events", () => {
+  const { controller } = createSubagentHarness();
+
+  controller.handleSubagentLifecycleMessage("subagents.progress", {
+    subagentSessionId: "child-term",
+    data: {
+      parentToolCallId: "parent-call-term",
+      progress: {
+        toolUseCount: 1,
+        tokenCount: 10,
+        lastToolName: "system.stat",
+        recentActivities: [],
+        elapsedMs: 5,
+      },
+    },
+  });
+  assert.ok(controller.getActiveSubagentProgress("parent-call-term"));
+
+  controller.handleSubagentLifecycleMessage("subagents.completed", {
+    subagentSessionId: "child-term",
+    data: { output: "done" },
+  });
+  assert.equal(controller.getActiveSubagentProgress("parent-call-term"), null);
+});
+
+test("subagent controller ignores progress events without parentToolCallId", () => {
+  const { controller } = createSubagentHarness();
+
+  controller.handleSubagentLifecycleMessage("subagents.progress", {
+    subagentSessionId: "child-heartbeat",
+    data: {
+      // heartbeat-only emit (no progress object, no parentToolCallId)
+      elapsedMs: 500,
+      objective: "wait",
+    },
+  });
+
+  assert.equal(controller.getActiveSubagentProgress("parent-nope"), null);
 });

@@ -91,6 +91,16 @@ export function createWatchSubagentController(dependencies = {}) {
     assertFunction(name, value);
   }
 
+  function clearActiveSubagentProgress(subagentSessionId) {
+    if (!subagentSessionId) return;
+    const parentToolCallId =
+      watchState.parentToolCallIdBySubagentSession.get(subagentSessionId);
+    if (parentToolCallId) {
+      watchState.activeSubagentProgressByParentToolCallId.delete(parentToolCallId);
+    }
+    watchState.parentToolCallIdBySubagentSession.delete(subagentSessionId);
+  }
+
   function subagentPayloadData(payload) {
     if (
       payload &&
@@ -334,6 +344,37 @@ export function createWatchSubagentController(dependencies = {}) {
         );
         return;
       case "subagents.progress": {
+        // Upsert the parent-keyed progress map when the enriched
+        // payload shape is present (see
+        // `SubAgentProgressTracker` in
+        // `runtime/src/gateway/sub-agent-progress.ts`). Mirrors the
+        // `progressMessagesByToolUseID` index in
+        // `../claude_code/utils/messages.ts::buildMessageLookups`.
+        const parentToolCallId =
+          typeof data.parentToolCallId === "string"
+            ? data.parentToolCallId
+            : null;
+        const subagentSessionId = payload?.subagentSessionId ?? null;
+        const snapshot = data.progress;
+        if (
+          parentToolCallId &&
+          subagentSessionId &&
+          snapshot &&
+          typeof snapshot === "object"
+        ) {
+          watchState.activeSubagentProgressByParentToolCallId.set(
+            parentToolCallId,
+            {
+              ...snapshot,
+              subagentSessionId,
+              lastUpdatedAt: Date.now(),
+            },
+          );
+          watchState.parentToolCallIdBySubagentSession.set(
+            subagentSessionId,
+            parentToolCallId,
+          );
+        }
         const liveActivity = getSubagentLiveActivity(payload?.subagentSessionId);
         const elapsedSeconds = Number.isFinite(Number(data.elapsedMs))
           ? Math.round(Number(data.elapsedMs) / 1000)
@@ -453,6 +494,7 @@ export function createWatchSubagentController(dependencies = {}) {
         clearSubagentHeartbeatEvents(payload?.subagentSessionId);
         clearSubagentLiveActivity(payload?.subagentSessionId);
         clearSubagentToolArgs(watchState, payload?.subagentSessionId);
+        clearActiveSubagentProgress(payload?.subagentSessionId);
         const toolCallCount = Number.isFinite(Number(data.toolCalls)) ? Number(data.toolCalls) : 0;
         const durationSec = Number.isFinite(Number(data.durationMs))
           ? Math.round(Number(data.durationMs) / 1000)
@@ -584,6 +626,7 @@ export function createWatchSubagentController(dependencies = {}) {
         clearSubagentHeartbeatEvents(payload?.subagentSessionId);
         clearSubagentLiveActivity(payload?.subagentSessionId);
         clearSubagentToolArgs(watchState, payload?.subagentSessionId);
+        clearActiveSubagentProgress(payload?.subagentSessionId);
         updateSubagentPlanStep({
           stepName,
           objective,
@@ -626,6 +669,7 @@ export function createWatchSubagentController(dependencies = {}) {
         clearSubagentHeartbeatEvents(payload?.subagentSessionId);
         clearSubagentLiveActivity(payload?.subagentSessionId);
         clearSubagentToolArgs(watchState, payload?.subagentSessionId);
+        clearActiveSubagentProgress(payload?.subagentSessionId);
         updateSubagentPlanStep({
           stepName,
           objective,
@@ -767,8 +811,16 @@ export function createWatchSubagentController(dependencies = {}) {
     return true;
   }
 
+  function getActiveSubagentProgress(parentToolCallId) {
+    if (!parentToolCallId) return null;
+    return (
+      watchState.activeSubagentProgressByParentToolCallId.get(parentToolCallId) ?? null
+    );
+  }
+
   return {
     resetDelegationState,
     handleSubagentLifecycleMessage,
+    getActiveSubagentProgress,
   };
 }
