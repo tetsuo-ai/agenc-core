@@ -8,7 +8,7 @@ import {
   marketTaskBrowserLoadingLabel,
 } from "../marketplace/surfaces.mjs";
 import { createWatchSplashRenderer } from "./agenc-watch-splash.mjs";
-import { visibleLength, wrapBlock } from "./agenc-watch-text-utils.mjs";
+import { padAnsi, visibleLength, wrapBlock } from "./agenc-watch-text-utils.mjs";
 
 export function createWatchFrameController(dependencies = {}) {
   const {
@@ -3785,6 +3785,33 @@ export function createWatchFrameController(dependencies = {}) {
       1,
       Math.min(height, composerStartRow + composerInputOffsetRows + (composer.cursorRow ?? 0)),
     );
+
+    // Right-side ANSI art panel overlay. When `watchState.artPanelRows`
+    // is populated (rasterized by the art controller in
+    // agenc-watch-app.mjs and refreshed on terminal resize), replace
+    // the right strip of each rendered row with the matching art
+    // line. The controller sizes the art to `artPanelCols`, so
+    // `leftCols + artPanelCols === width` by construction.
+    const artPanelRows = Array.isArray(watchState.artPanelRows)
+      ? watchState.artPanelRows
+      : null;
+    const artPanelCols = Number.isFinite(Number(watchState.artPanelCols))
+      ? Math.max(0, Math.floor(Number(watchState.artPanelCols)))
+      : 0;
+    if (
+      artPanelRows &&
+      artPanelRows.length > 0 &&
+      artPanelCols > 0 &&
+      artPanelCols < width
+    ) {
+      const leftCols = width - artPanelCols;
+      for (let rowIndex = 0; rowIndex < nextFrameLines.length; rowIndex += 1) {
+        const leftPart = padAnsi(String(nextFrameLines[rowIndex] ?? ""), leftCols);
+        const artRow = artPanelRows[rowIndex] ?? "";
+        nextFrameLines[rowIndex] = leftPart + artRow;
+      }
+    }
+
     return {
       lines: nextFrameLines,
       width,

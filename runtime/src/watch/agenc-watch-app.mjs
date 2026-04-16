@@ -122,6 +122,7 @@ import {
   writeWatchExportBundle,
 } from "./agenc-watch-export-bundle.mjs";
 import { validateXaiApiKey } from "../onboarding/xai-validation.js";
+import { createAnsiArtRenderer } from "./agenc-watch-art.mjs";
 import {
   buildWatchInsightsReport,
   buildWatchMaintenanceReport,
@@ -417,6 +418,9 @@ let resizeListener = null;
 let startupTimer = null;
 let started = false;
 let disposed = false;
+let artRenderer = null;
+let artRendererImagePath = null;
+let artRefreshPending = false;
 let resolvedExitCode = null;
 let resolveClosed = () => {};
 const closed = new Promise((resolve) => {
@@ -2008,6 +2012,84 @@ function scheduleRender() {
   watchFrameController?.scheduleRender();
 }
 
+// Right-side ANSI art panel: loads the configured image once, then
+// re-rasterizes on terminal resize. Mirrors the ansi_art.py output
+// (standard ramp + 24-bit color) in the runtime TUI. Config lives in
+// gateway `config.watch.art` and is read from the same extensibility
+// surface the rest of the watch UI uses.
+function readArtPanelConfig() {
+  try {
+    const { configSnapshot } = readExtensibilityContext();
+    const cfg = configSnapshot?.config?.watch?.art;
+    if (!cfg || typeof cfg !== "object") return null;
+    const enabled = cfg.enabled === true;
+    const imagePath =
+      typeof cfg.imagePath === "string" && cfg.imagePath.length > 0
+        ? cfg.imagePath
+        : null;
+    const widthFractionRaw = Number(cfg.widthFraction);
+    const widthFraction =
+      Number.isFinite(widthFractionRaw) && widthFractionRaw > 0
+        ? Math.min(0.8, Math.max(0.05, widthFractionRaw))
+        : 0.4;
+    const ramp = typeof cfg.ramp === "string" ? cfg.ramp : "standard";
+    const invert = cfg.invert === true;
+    if (!enabled || !imagePath) return null;
+    return { imagePath, widthFraction, ramp, invert };
+  } catch {
+    return null;
+  }
+}
+
+async function refreshArtPanel() {
+  if (artRefreshPending) return;
+  artRefreshPending = true;
+  try {
+    const cfg = readArtPanelConfig();
+    if (!cfg) {
+      watchState.artPanelRows = null;
+      watchState.artPanelCols = 0;
+      return;
+    }
+    if (!artRenderer || artRendererImagePath !== cfg.imagePath) {
+      artRenderer = await createAnsiArtRenderer({
+        imagePath: cfg.imagePath,
+        ramp: cfg.ramp,
+        invert: cfg.invert,
+      });
+      artRendererImagePath = cfg.imagePath;
+    }
+    if (!artRenderer) {
+      watchState.artPanelRows = null;
+      watchState.artPanelCols = 0;
+      return;
+    }
+    const width = termWidth();
+    const height = termHeight();
+    const artCols = Math.max(
+      10,
+      Math.min(
+        Math.floor(width * 0.6),
+        Math.floor(width * cfg.widthFraction),
+      ),
+    );
+    if (artCols >= width) {
+      watchState.artPanelRows = null;
+      watchState.artPanelCols = 0;
+      return;
+    }
+    const rows = await artRenderer.render({ cols: artCols, rows: height });
+    watchState.artPanelRows = rows;
+    watchState.artPanelCols = artCols;
+    scheduleRender();
+  } catch {
+    watchState.artPanelRows = null;
+    watchState.artPanelCols = 0;
+  } finally {
+    artRefreshPending = false;
+  }
+}
+
 function scheduleReconnect() {
   return watchTransportController.scheduleReconnect();
 }
@@ -2619,11 +2701,13 @@ async function start() {
     };
     resizeListener = () => {
       scheduleRender();
+      void refreshArtPanel();
     };
     process.stdin.on("data", inputListener);
     process.stdout.on("resize", resizeListener);
     connect();
     scheduleRender();
+    void refreshArtPanel();
     ensureActivityPulseTimer();
     startupTimer = setTimeout(() => {
       startupTimer = null;
