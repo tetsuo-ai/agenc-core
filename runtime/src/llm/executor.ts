@@ -21,6 +21,7 @@ import type { MetricsProvider } from "../task/types.js";
 import { TELEMETRY_METRIC_NAMES } from "../telemetry/metric-names.js";
 import type { MemoryGraph, MemoryGraphResult } from "../memory/graph.js";
 import { createProviderTraceEventLogger } from "./provider-trace-logger.js";
+import { buildModelOnlyChatOptions } from "./model-only-options.js";
 import { assertValidLLMResponse } from "./response-validation.js";
 import {
   createPromptEnvelope,
@@ -125,6 +126,25 @@ export class LLMTaskExecutor implements TaskExecutor {
     this.traceProviderPayloads = config.traceProviderPayloads ?? false;
   }
 
+  private buildToolRoutingOptions() {
+    if (!this.toolHandler) {
+      return buildModelOnlyChatOptions();
+    }
+    if (this.allowedTools) {
+      return { toolRouting: { allowedToolNames: [...this.allowedTools] } };
+    }
+    return undefined;
+  }
+
+  private mergeProviderChatOptions(
+    traceOptions: ReturnType<LLMTaskExecutor["buildProviderTraceOptions"]>,
+  ) {
+    return {
+      ...(this.buildToolRoutingOptions() ?? {}),
+      ...(traceOptions ?? {}),
+    };
+  }
+
   private buildProviderTraceOptions(params: {
     sessionId: string;
     taskPda: string;
@@ -188,13 +208,16 @@ export class LLMTaskExecutor implements TaskExecutor {
           await this.provider.chatStream(
             messages,
             this.onStreamChunk,
-            initialTrace,
+            this.mergeProviderChatOptions(initialTrace),
           ),
         );
       } else {
         response = assertValidLLMResponse(
           this.provider.name,
-          await this.provider.chat(messages, initialTrace),
+          await this.provider.chat(
+              messages,
+              this.mergeProviderChatOptions(initialTrace),
+            ),
         );
       }
       this.recordLLMMetrics(response, Date.now() - chatStart);
@@ -304,13 +327,16 @@ export class LLMTaskExecutor implements TaskExecutor {
             await this.provider.chatStream(
               messages,
               this.onStreamChunk,
-              followupTrace,
+              this.mergeProviderChatOptions(followupTrace),
             ),
           );
         } else {
           response = assertValidLLMResponse(
             this.provider.name,
-            await this.provider.chat(messages, followupTrace),
+            await this.provider.chat(
+              messages,
+              this.mergeProviderChatOptions(followupTrace),
+            ),
           );
         }
         this.recordLLMMetrics(response, Date.now() - chatStart);

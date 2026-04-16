@@ -716,4 +716,55 @@ describe("LLMTaskExecutor", () => {
       expect(firstCall.ttlMs).toBe(customTtl);
     });
   });
+  it("passes an explicit empty tool allowlist when no tool handler is configured", async () => {
+    const provider = createMockProvider();
+    const executor = new LLMTaskExecutor({ provider });
+
+    await executor.execute(createMockTask());
+
+    expect(provider.chat).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.objectContaining({
+        toolRouting: { allowedToolNames: [] },
+        parallelToolCalls: false,
+      }),
+    );
+  });
+
+  it("passes configured allowed tools through to provider follow-up calls", async () => {
+    const toolCallResponse: LLMResponse = {
+      content: "",
+      toolCalls: [{ id: "call_1", name: "lookup", arguments: "{}" }],
+      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+      model: "mock-model",
+      finishReason: "tool_calls",
+    };
+    const finalResponse: LLMResponse = {
+      content: "final answer",
+      toolCalls: [],
+      usage: { promptTokens: 20, completionTokens: 10, totalTokens: 30 },
+      model: "mock-model",
+      finishReason: "stop",
+    };
+    const chat = vi
+      .fn<[LLMMessage[], LLMChatOptions?], Promise<LLMResponse>>()
+      .mockResolvedValueOnce(toolCallResponse)
+      .mockResolvedValueOnce(finalResponse);
+    const provider = createMockProvider({ chat });
+    const executor = new LLMTaskExecutor({
+      provider,
+      toolHandler: vi.fn().mockResolvedValue("ok"),
+      allowedTools: ["lookup"],
+    });
+
+    await executor.execute(createMockTask());
+
+    expect(chat.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+      toolRouting: { allowedToolNames: ["lookup"] },
+    }));
+    expect(chat.mock.calls[1]?.[1]).toEqual(expect.objectContaining({
+      toolRouting: { allowedToolNames: ["lookup"] },
+    }));
+  });
+
 });

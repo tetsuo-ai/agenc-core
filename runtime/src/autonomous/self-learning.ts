@@ -14,6 +14,7 @@ import type {
   HeartbeatResult,
 } from "../gateway/heartbeat.js";
 import type { LLMProvider } from "../llm/types.js";
+import { buildModelOnlyChatOptions } from "../llm/model-only-options.js";
 import { createProviderTraceEventLogger } from "../llm/provider-trace-logger.js";
 import type { MemoryBackend } from "../memory/types.js";
 import { entryToMessage } from "../memory/types.js";
@@ -137,7 +138,8 @@ export function createSelfLearningAction(
             role: "user",
             content: `Analyze these ${entries.length} recent interactions:\n\n${formatted}`,
           },
-        ], config.traceProviderPayloads === true
+        ], buildModelOnlyChatOptions(
+          config.traceProviderPayloads === true
           ? {
             trace: {
               includeProviderPayloads: true,
@@ -152,7 +154,8 @@ export function createSelfLearningAction(
               }),
             },
           }
-          : undefined);
+          : undefined,
+        ));
 
         if (!response.content) {
           return { hasOutput: false, quiet: true };

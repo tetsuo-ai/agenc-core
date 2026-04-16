@@ -283,4 +283,25 @@ describe("callWithFallback", () => {
     expect(serializedMessages[0]).not.toHaveProperty("runtimeOnly");
     expect(serializedMessages[1]).not.toHaveProperty("runtimeOnly");
   });
+  it("passes an explicit empty allowlist for no-tool recovery turns", async () => {
+    const provider = createMockProvider();
+
+    await callWithFallback(
+      createDeps(provider),
+      [{ role: "user", content: "reply with exactly ACK" }],
+      undefined,
+      undefined,
+      {
+        callPhase: "initial",
+        toolChoice: "none",
+      },
+    );
+
+    const options = (provider.chat as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
+    expect(options).toEqual(expect.objectContaining({
+      toolChoice: "none",
+      toolRouting: { allowedToolNames: [] },
+    }));
+  });
+
 });

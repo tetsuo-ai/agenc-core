@@ -132,6 +132,8 @@ describe("createDesktopAwarenessAction", () => {
     expect(llm.chat).toHaveBeenCalledWith(
       expect.any(Array),
       expect.objectContaining({
+        toolRouting: { allowedToolNames: [] },
+        parallelToolCalls: false,
         trace: expect.objectContaining({
           includeProviderPayloads: true,
           onProviderTraceEvent: expect.any(Function),

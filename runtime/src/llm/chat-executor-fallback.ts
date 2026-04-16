@@ -179,7 +179,9 @@ export async function callWithFallback(
     hasStatefulSessionId && options?.statefulResumeAnchor !== undefined;
   const hasStatefulHistoryCompacted =
     hasStatefulSessionId && options?.statefulHistoryCompacted === true;
-  const hasRoutedToolNames = options?.routedToolNames !== undefined;
+  const resolvedRoutedToolNames =
+    options?.routedToolNames ?? (options?.toolChoice === "none" ? [] : undefined);
+  const hasRoutedToolNames = resolvedRoutedToolNames !== undefined;
   const hasToolChoice = options?.toolChoice !== undefined;
   const hasStructuredOutput = options?.structuredOutput !== undefined;
   const hasAbortSignal = options?.signal !== undefined;
@@ -212,7 +214,7 @@ export async function callWithFallback(
           }
           : {}),
         ...(hasRoutedToolNames
-          ? { toolRouting: { allowedToolNames: options?.routedToolNames } }
+          ? { toolRouting: { allowedToolNames: resolvedRoutedToolNames } }
           : {}),
         ...(hasToolChoice ? { toolChoice: options?.toolChoice } : {}),
         ...(hasStructuredOutput

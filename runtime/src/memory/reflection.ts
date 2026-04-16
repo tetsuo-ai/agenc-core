@@ -10,6 +10,7 @@
  */
 
 import type { LLMProvider, LLMMessage } from "../llm/types.js";
+import { buildModelOnlyChatOptions } from "../llm/model-only-options.js";
 import type { AgentIdentityManager, AgentBelief } from "./agent-identity.js";
 import type { Logger } from "../utils/logger.js";
 
@@ -65,7 +66,7 @@ export async function runReflection(params: {
     const response = await llmProvider.chat([
       { role: "system", content: REFLECTION_SYSTEM_PROMPT },
       { role: "user", content: historyText },
-    ]);
+    ], buildModelOnlyChatOptions());
 
     const content = response.content.trim();
     const jsonMatch = content.match(/\{[\s\S]*\}/);

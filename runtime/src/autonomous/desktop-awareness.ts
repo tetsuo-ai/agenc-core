@@ -11,6 +11,7 @@
 import type { HeartbeatAction, HeartbeatContext, HeartbeatResult } from "../gateway/heartbeat.js";
 import type { MemoryBackend } from "../memory/types.js";
 import type { LLMProvider } from "../llm/types.js";
+import { buildModelOnlyChatOptions } from "../llm/model-only-options.js";
 import { createProviderTraceEventLogger } from "../llm/provider-trace-logger.js";
 import type { Tool } from "../tools/types.js";
 
@@ -74,7 +75,8 @@ export function createDesktopAwarenessAction(
 
         const llmResult = await llm.chat([
           { role: "user", content: analysisPrompt },
-        ], config.traceProviderPayloads === true
+        ], buildModelOnlyChatOptions(
+          config.traceProviderPayloads === true
           ? {
             trace: {
               includeProviderPayloads: true,
@@ -89,7 +91,8 @@ export function createDesktopAwarenessAction(
               }),
             },
           }
-          : undefined);
+          : undefined,
+        ));
 
         const analysis = llmResult.content ?? "Unable to analyze desktop.";
 

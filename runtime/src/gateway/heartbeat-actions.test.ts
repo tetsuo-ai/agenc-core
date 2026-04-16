@@ -206,6 +206,11 @@ describe("createSummaryAction", () => {
     expect(result.output).toBe("A concise summary.");
 
     const chatCall = (llm.chat as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const chatOptions = (llm.chat as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    expect(chatOptions).toEqual(expect.objectContaining({
+      toolRouting: { allowedToolNames: [] },
+      parallelToolCalls: false,
+    }));
     expect(chatCall[0].role).toBe("system");
     expect(chatCall[0].content).toContain("concise summarizer");
     expect(chatCall[1].role).toBe("user");

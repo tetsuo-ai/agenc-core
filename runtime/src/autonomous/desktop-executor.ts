@@ -16,6 +16,7 @@ import type { ChatExecutor } from "../llm/chat-executor.js";
 import type { ToolCallRecord } from "../llm/chat-executor-types.js";
 import { executeChatToLegacyResult } from "../llm/execute-chat.js";
 import { createPromptEnvelope } from "../llm/prompt-envelope.js";
+import { buildModelOnlyChatOptions } from "../llm/model-only-options.js";
 import type { ToolHandler, LLMProvider } from "../llm/types.js";
 import {
   createExecutionTraceEventLogger,
@@ -461,7 +462,7 @@ export class DesktopExecutor {
             `{"success": true/false, "confidence": 0.0-1.0, "description": "what you observe"}`;
           const verifyResult = await this.llm.chat([
             { role: "user", content: verifyPrompt },
-          ], {
+          ], buildModelOnlyChatOptions({
             trace: this.buildProviderTraceOptions({
               goalId,
               sessionId,
@@ -469,7 +470,7 @@ export class DesktopExecutor {
               traceId: `${sessionId}:verify:${stepNumber}:${verifyStart}`,
               stepNumber,
             }),
-          });
+          }));
 
           verification = parseVerification(verifyResult.content);
         } catch {

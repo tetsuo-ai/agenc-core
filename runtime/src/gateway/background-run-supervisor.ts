@@ -14,6 +14,7 @@ import type { ChatExecutor } from "../llm/chat-executor.js";
 import type { ChatExecutorResult } from "../llm/chat-executor-types.js";
 import { executeChatToLegacyResult } from "../llm/execute-chat.js";
 import { normalizePromptEnvelope } from "../llm/prompt-envelope.js";
+import { buildModelOnlyChatOptions } from "../llm/model-only-options.js";
 import type { LLMProvider, ToolHandler } from "../llm/types.js";
 import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";
@@ -4227,10 +4228,10 @@ export class BackgroundRunSupervisor {
             ),
           }),
         },
-      ], {
+      ], buildModelOnlyChatOptions({
         toolChoice: "none",
         ...(providerTrace ?? {}),
-      });
+      }));
       return parseDecision(response.content);
     } catch (error) {
       this.logger.debug("Background run decision evaluation failed", {
@@ -4299,10 +4300,10 @@ export class BackgroundRunSupervisor {
             observedTargets: run.observedTargets,
           }),
         },
-      ], {
+      ], buildModelOnlyChatOptions({
         toolChoice: "none",
         ...(providerTrace ?? {}),
-      });
+      }));
       const parsed =
         parseCarryForwardState(response.content, now) ??
         buildFallbackCarryForwardState({
@@ -4464,10 +4465,10 @@ export class BackgroundRunSupervisor {
       const response = await this.supervisorLlm.chat([
         { role: "system", content: CONTRACT_SYSTEM_PROMPT },
         { role: "user", content: buildContractPrompt(objective) },
-      ], {
+      ], buildModelOnlyChatOptions({
         toolChoice: "none",
         ...(providerTrace ?? {}),
-      });
+      }));
       return parseContract(response.content, objective) ?? buildFallbackContract(objective);
     } catch (error) {
       this.logger.debug("Background run contract planning failed", {

@@ -963,6 +963,8 @@ describe("background-run-supervisor", () => {
       expect.any(Array),
       expect.objectContaining({
         toolChoice: "none",
+        toolRouting: { allowedToolNames: [] },
+        parallelToolCalls: false,
         trace: expect.objectContaining({
           includeProviderPayloads: true,
           onProviderTraceEvent: expect.any(Function),

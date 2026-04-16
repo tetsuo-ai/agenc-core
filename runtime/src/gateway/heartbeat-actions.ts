@@ -24,6 +24,7 @@ import type { TaskScanner } from "../autonomous/scanner.js";
 import type { MemoryBackend } from "../memory/types.js";
 import { entryToMessage } from "../memory/types.js";
 import type { LLMProvider } from "../llm/types.js";
+import { buildModelOnlyChatOptions } from "../llm/model-only-options.js";
 import { createProviderTraceEventLogger } from "../llm/provider-trace-logger.js";
 
 // ============================================================================
@@ -131,7 +132,8 @@ export function createSummaryAction(
             role: "user",
             content: `Summarize this conversation:\n\n${formatted}`,
           },
-        ], config.traceProviderPayloads === true
+        ], buildModelOnlyChatOptions(
+          config.traceProviderPayloads === true
           ? {
             trace: {
               includeProviderPayloads: true,
@@ -146,7 +148,8 @@ export function createSummaryAction(
               }),
             },
           }
-          : undefined);
+          : undefined,
+        ));
 
         if (!response.content) return QUIET;
 
@@ -305,7 +308,8 @@ export function createProactiveCommsAction(
             role: "user",
             content: `Recent activity:\n${formatted}\n\nShould I proactively message users?`,
           },
-        ], config.traceProviderPayloads === true
+        ], buildModelOnlyChatOptions(
+          config.traceProviderPayloads === true
           ? {
             trace: {
               includeProviderPayloads: true,
@@ -319,7 +323,8 @@ export function createProactiveCommsAction(
               }),
             },
           }
-          : undefined);
+          : undefined,
+        ));
 
         if (
           !response.content ||

@@ -1629,6 +1629,7 @@ export class GrokProvider implements LLMProvider {
     if (!this.statefulConfig.enabled || !sessionId) {
       const toolSelection = this.resolveResponseTools(
         options?.toolRouting?.allowedToolNames,
+        options?.toolChoice,
       );
       const built = this.buildParams(messages, {
         store: false,
@@ -1766,6 +1767,7 @@ export class GrokProvider implements LLMProvider {
 
     const toolSelection = this.resolveResponseTools(
       options?.toolRouting?.allowedToolNames,
+      options?.toolChoice,
     );
     const statefulInput =
       continued && anchorMatched && anchorRelevantMessageIndex !== undefined
@@ -2160,6 +2162,7 @@ export class GrokProvider implements LLMProvider {
 
   private resolveResponseTools(
     allowedToolNames?: readonly string[],
+    toolChoice?: LLMToolChoice,
   ): ToolSelectionDiagnostics {
     const providerNativeTools = this.providerNativeTools;
     const providerCatalogToolCount =
@@ -2173,6 +2176,19 @@ export class GrokProvider implements LLMProvider {
       ...providerNativeTools.map((definition) => definition.payload),
     ];
     if (allowedToolNames === undefined) {
+      if (toolChoice === "none") {
+        return {
+          tools: [],
+          chars: 0,
+          requestedToolNames: [],
+          resolvedToolNames: [],
+          missingRequestedToolNames: [],
+          providerCatalogToolCount,
+          toolResolution: "all_tools_empty_filter",
+          toolsAttached: false,
+          toolSuppressionReason: "tool_choice_none",
+        };
+      }
       return {
         tools: fullCatalogTools,
         chars: this.toolChars,

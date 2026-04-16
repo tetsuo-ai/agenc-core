@@ -20,6 +20,7 @@ import type {
   LLMStoredResponse,
   ToolHandler,
 } from "../llm/types.js";
+import { buildModelOnlyChatOptions } from "../llm/model-only-options.js";
 import type { MemoryBackend } from "../memory/types.js";
 import { SlashCommandRegistry, createDefaultCommands } from "./commands.js";
 import {
@@ -5016,7 +5017,7 @@ export function createDaemonCommandRegistry(
               },
               { role: "user", content: prompt },
             ],
-            evalProviderTrace,
+            buildModelOnlyChatOptions(evalProviderTrace),
           );
           const durationMs = Date.now() - started;
           if (response.finishReason === "error" || response.error) {

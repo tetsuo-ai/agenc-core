@@ -23,6 +23,7 @@ import type {
 } from "./structured.js";
 import { NoopEntityExtractor } from "./structured.js";
 import type { LLMProvider, LLMMessage } from "../llm/types.js";
+import { buildModelOnlyChatOptions } from "../llm/model-only-options.js";
 import { createProviderTraceEventLogger } from "../llm/provider-trace-logger.js";
 import type { HookHandler, HookContext, HookResult } from "../gateway/hooks.js";
 import type { Logger } from "../utils/logger.js";
@@ -376,7 +377,8 @@ export class MemoryIngestionEngine {
         const response = await this.llmProvider.chat([
           { role: "system", content: SUMMARY_PROMPT },
           { role: "user", content: conversationText },
-        ], this.traceProviderPayloads
+        ], buildModelOnlyChatOptions(
+          this.traceProviderPayloads
           ? {
             trace: {
               includeProviderPayloads: true,
@@ -391,7 +393,8 @@ export class MemoryIngestionEngine {
               }),
             },
           }
-          : undefined);
+          : undefined,
+        ));
         summary = normalizeSummary(response.content, this.maxSummaryChars);
 
         // Store summary with embedding in vector store

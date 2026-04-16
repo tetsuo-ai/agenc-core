@@ -411,6 +411,42 @@ describe("GrokProvider", () => {
     });
   });
 
+  it("suppresses tools when toolChoice none is set without an explicit allowlist", async () => {
+    mockCreate.mockResolvedValueOnce(makeCompletion());
+
+    const provider = new GrokProvider({
+      apiKey: "test-key",
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "system.bash",
+            description: "run command",
+            parameters: {
+              type: "object",
+              properties: { command: { type: "string" } },
+            },
+          },
+        },
+      ],
+    });
+
+    const response = await provider.chat(
+      [{ role: "user", content: "reply with exactly ACK" }],
+      { toolChoice: "none" },
+    );
+
+    const params = mockCreate.mock.calls.at(-1)?.[0];
+    expect(params.tools).toBeUndefined();
+    expect(response.requestMetrics).toMatchObject({
+      toolCount: 0,
+      toolResolution: "all_tools_empty_filter",
+      toolSuppressionReason: "tool_choice_none",
+      toolsAttached: false,
+    });
+  });
+
+
   it("normalizes forced function tool_choice for the Responses API", async () => {
     mockCreate.mockResolvedValueOnce(makeCompletion());
 
