@@ -41,6 +41,7 @@ import {
 } from "./xai-strict-filter.js";
 import { ensureLazyImport } from "../lazy-import.js";
 import {
+  assertXaiReasoningEffortCompatibility,
   assertXaiStructuredOutputToolCompatibility,
   resolveLLMStatefulResponsesConfig,
   type ResolvedLLMStatefulResponsesConfig,
@@ -2019,6 +2020,11 @@ export class GrokProvider implements LLMProvider {
     const reasoningEffort =
       options?.reasoningEffort ?? this.config.reasoningEffort;
     if (reasoningEffort) {
+      assertXaiReasoningEffortCompatibility({
+        providerName: this.name,
+        model,
+        reasoningEffortRequested: true,
+      });
       params.reasoning = { effort: reasoningEffort };
     }
     const includeEncryptedReasoning =

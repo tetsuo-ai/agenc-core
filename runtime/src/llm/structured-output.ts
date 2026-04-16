@@ -1,9 +1,16 @@
 /**
- * Structured-output helpers shared by provider adapters and planner/verifier flows.
+ * Structured-output + capability helpers shared by provider adapters and
+ * planner / verifier flows.
  *
  * xAI MCP source of truth:
  * - Structured outputs are supported by all language models.
  * - Structured outputs with tools are only supported by the Grok 4 family.
+ * - `reasoning_effort` is not supported by `grok-4.20` or `grok-4-1-fast`.
+ *   Per xAI docs (developers/model-capabilities/text/reasoning), the
+ *   ONLY model that accepts a `reasoning` parameter is
+ *   `grok-4.20-multi-agent` — and there it controls agent count, not
+ *   thinking depth. Sending `reasoning_effort` on any other current
+ *   Grok 4 model returns an API error.
  *
  * @module
  */
@@ -18,6 +25,21 @@ export function supportsXaiStructuredOutputsWithTools(
 ): boolean {
   if (typeof model !== "string") return false;
   return /^grok-4(?:[.-]|$)/i.test(model.trim());
+}
+
+/**
+ * Returns true when the xAI model accepts the `reasoning_effort`
+ * request parameter. Only `grok-4.20-multi-agent*` variants accept it.
+ *
+ * All other Grok 4 reasoning models reason automatically and reject
+ * the parameter with an API error; non-reasoning Grok 4 models
+ * (`*-non-reasoning`) naturally reject it too.
+ */
+export function supportsXaiReasoningEffortParam(
+  model: string | undefined,
+): boolean {
+  if (typeof model !== "string") return false;
+  return /^grok-4[.-]20-multi-agent/i.test(model.trim());
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
