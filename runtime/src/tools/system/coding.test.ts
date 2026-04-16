@@ -80,6 +80,7 @@ describe("createCodingTools", () => {
       allowedPaths: [root],
       persistenceRootDir: root,
       getToolCatalog: () => registry.listCatalog(),
+      codeIntelligenceTools: true,
     });
     registry.registerAll(tools);
 
@@ -104,6 +105,7 @@ describe("createCodingTools", () => {
     const tools = createCodingTools({
       allowedPaths: [root, join(root, "worktrees")],
       persistenceRootDir: root,
+      codeIntelligenceTools: true,
     });
 
     await writeFile(join(root, "README.md"), "# changed\n", "utf8");

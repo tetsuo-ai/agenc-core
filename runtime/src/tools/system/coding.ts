@@ -23,6 +23,15 @@ export interface CodingToolConfig {
   readonly persistenceRootDir: string;
   readonly logger?: Logger;
   readonly getToolCatalog?: () => readonly ToolCatalogEntry[];
+  /**
+   * Enable the heavier "code intelligence" tools that are not in the
+   * upstream reference runtime: system.repoInventory, system.git*,
+   * system.symbol*. Defaults to false for coding-parity (upstream
+   * uses Bash + grep + glob instead). Marketplace / operator flows
+   * that genuinely need structured git output or the semantic symbol
+   * index can pass true.
+   */
+  readonly codeIntelligenceTools?: boolean;
 }
 
 const MAX_RESULTS = 200;
@@ -1374,22 +1383,24 @@ export function createCodingTools(config: CodingToolConfig): readonly Tool[] {
     },
   };
 
-  return [
-    grepTool,
-    globTool,
-    repoInventoryTool,
-    gitStatusTool,
-    gitDiffTool,
-    gitShowTool,
-    gitBranchInfoTool,
-    gitChangeSummaryTool,
-    gitWorktreeListTool,
-    gitWorktreeCreateTool,
-    gitWorktreeRemoveTool,
-    gitWorktreeStatusTool,
-    symbolSearchTool,
-    symbolDefinitionTool,
-    symbolReferencesTool,
-    searchToolsTool,
-  ];
+  const tools: Tool[] = [grepTool, globTool];
+  if (config.codeIntelligenceTools === true) {
+    tools.push(
+      repoInventoryTool,
+      gitStatusTool,
+      gitDiffTool,
+      gitShowTool,
+      gitBranchInfoTool,
+      gitChangeSummaryTool,
+      gitWorktreeListTool,
+      gitWorktreeCreateTool,
+      gitWorktreeRemoveTool,
+      gitWorktreeStatusTool,
+      symbolSearchTool,
+      symbolDefinitionTool,
+      symbolReferencesTool,
+    );
+  }
+  tools.push(searchToolsTool);
+  return tools;
 }
