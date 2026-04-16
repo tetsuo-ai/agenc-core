@@ -1137,29 +1137,6 @@ function shouldTreatStopReasonAsBoundedStep(
   );
 }
 
-function hasVerifierPassedOrSkipped(
-  actorResult: ChatExecutorResult,
-): boolean {
-  const verifierStages = actorResult.runtimeContractSnapshot?.verifierStages;
-  if (!verifierStages) {
-    return false;
-  }
-  if (verifierStages.runtimeRequired === true) {
-    return verifierStages.stageStatus === "passed";
-  }
-  return (
-    verifierStages.stageStatus === "inactive" ||
-    verifierStages.stageStatus === "skipped"
-  );
-}
-
-function hasVerifierInFlight(
-  actorResult: ChatExecutorResult,
-): boolean {
-  const stage = actorResult.runtimeContractSnapshot?.verifierStages?.stageStatus;
-  return stage === "pending" || stage === "running" || stage === "retry";
-}
-
 function hasCompletedWorkflowState(
   actorResult: ChatExecutorResult,
 ): boolean {
@@ -1190,26 +1167,9 @@ export function buildFallbackDecision(run: ActiveBackgroundRun, actorResult: Cha
       shouldNotifyUser: true,
     };
   }
-  if (hasVerifierInFlight(actorResult)) {
-    const detail =
-      actorResult.stopReasonDetail ??
-      actorResult.content ??
-      "Verification is still in progress.";
-    return {
-      state: "working",
-      userUpdate: truncate(
-        actorResult.content || "Verification is still in progress.",
-        MAX_USER_UPDATE_CHARS,
-      ),
-      internalSummary: detail,
-      nextCheckMs: MIN_POLL_INTERVAL_MS,
-      shouldNotifyUser: true,
-    };
-  }
   if (
     actorResult.stopReason === "completed" &&
     actorResult.completionState === "completed" &&
-    hasVerifierPassedOrSkipped(actorResult) &&
     hasCompletedWorkflowState(actorResult)
   ) {
     const detail =
