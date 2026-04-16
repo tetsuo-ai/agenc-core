@@ -178,3 +178,10 @@
 - **What worked:** Persisting interactive continuation state for background runs, reusing verifier child sessions, keeping workspace runs from self-completing on weak evidence, and carrying child resume anchors across restarts removed the repeated verifier respawns and the long-run replay drift.
 - **What didn't:** The continuation behavior was split across provider defaults, background-run state, child-session persistence, and verifier verdict parsing, so closing the gap required coordinated changes and test updates instead of a single runtime toggle.
 - **Rule added to CLAUDE.md:** no
+
+## PR #406: refactor(runtime): align compaction with current-view context
+- **Date:** 2026-04-15
+- **Files changed:** `runtime/src/llm/compact/*`, `runtime/src/llm/chat-executor-{init,in-flight-compaction,history-compaction}.ts`, `runtime/src/gateway/{chat-usage,daemon,daemon-command-registry,llm-provider-manager,llm-stateful-defaults,session-summary-store}.ts`, `runtime/src/watch/agenc-watch-format-payloads.mjs`, and the matching runtime/watch tests
+- **What worked:** Moving local compaction onto current-view effective-window accounting made the executor, `/context`, daemon status, and watch header all agree on the same pressure signal, and the targeted executor test updates kept the runtime behavior verified against the new threshold model instead of the old cumulative-budget assumptions.
+- **What didn't:** A few compaction tests were still asserting cumulative token spend and an older per-iteration threshold shape, so the parity pass needed both runtime code changes and fixture recalibration before the suite reflected the intended behavior.
+- **Rule added to CLAUDE.md:** no
