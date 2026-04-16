@@ -30,20 +30,6 @@ import type {
 import type { LLMMessage } from "./types.js";
 import type { LLMPipelineStopReason } from "./policy.js";
 import type { PromptBudgetSection } from "./prompt-budget.js";
-import {
-  updateRuntimeContractVerifierStage,
-  updateRuntimeContractVerifierVerdict,
-} from "../runtime-contract/types.js";
-
-const VERIFIER_INVALIDATING_MUTATION_TOOLS = new Set([
-  "system.applyPatch",
-  "system.appendFile",
-  "system.editFile",
-  "system.move",
-  "system.writeFile",
-  "desktop.text_editor",
-]);
-
 /**
  * Push a tool call record onto the ctx's tool call ledger and
  * increment the failure counter when the record reports an error.
@@ -63,28 +49,6 @@ export function appendToolRecord(
   }
   if (didToolCallFail(record.isError, record.result)) {
     return undefined;
-  }
-  if (VERIFIER_INVALIDATING_MUTATION_TOOLS.has(record.name)) {
-    ctx.runtimeContractSnapshot = updateRuntimeContractVerifierVerdict({
-      snapshot: ctx.runtimeContractSnapshot,
-      verifier: {
-        attempted: false,
-        overall: "skipped",
-        summary: "invalidated_after_workspace_mutation",
-      },
-    });
-    const previousStage = ctx.runtimeContractSnapshot.verifierStages;
-    ctx.runtimeContractSnapshot = updateRuntimeContractVerifierStage({
-      snapshot: ctx.runtimeContractSnapshot,
-      verifierStages: {
-        ...previousStage,
-        stageStatus:
-          previousStage.runtimeRequired === true ? "pending" : "inactive",
-        ...(previousStage.runtimeRequired === true
-          ? { skipReason: undefined }
-          : { skipReason: previousStage.skipReason ?? "runtime_not_required" }),
-      },
-    });
   }
   const observation = observeRequestTaskToolRecord(ctx.requestTaskState, record);
   if (observation) {
