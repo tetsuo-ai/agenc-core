@@ -7,6 +7,48 @@
 
 import { sanitizeInlineText } from "./agenc-watch-text-utils.mjs";
 
+const GROK_MODEL_ALIASES = new Map([
+  ["grok-4.20-0309-reasoning", "grok-4.20-beta-0309-reasoning"],
+  ["grok-4.20-0309-non-reasoning", "grok-4.20-beta-0309-non-reasoning"],
+  ["grok-4.20-multi-agent-0309", "grok-4.20-multi-agent-beta-0309"],
+  ["grok-4.20-reasoning", "grok-4.20-beta-0309-reasoning"],
+  ["grok-4.20-non-reasoning", "grok-4.20-beta-0309-non-reasoning"],
+  ["grok-4.20-multi-agent", "grok-4.20-multi-agent-beta-0309"],
+  ["grok-4.20-beta-latest-reasoning", "grok-4.20-beta-0309-reasoning"],
+  ["grok-4.20-beta-latest-non-reasoning", "grok-4.20-beta-0309-non-reasoning"],
+  ["grok-4.20-multi-agent-beta-latest", "grok-4.20-multi-agent-beta-0309"],
+]);
+
+function canonicalizeProviderModel(provider, model) {
+  const normalizedProvider = sanitizeInlineText(provider ?? "").toLowerCase();
+  const normalizedModel = sanitizeInlineText(model ?? "");
+  if (!normalizedModel) {
+    return null;
+  }
+  if (normalizedProvider === "grok") {
+    return GROK_MODEL_ALIASES.get(normalizedModel) ?? normalizedModel;
+  }
+  return normalizedModel;
+}
+
+function formatCanonicalModelLabel(route) {
+  if (!route) {
+    return "unknown";
+  }
+  const configuredModel = sanitizeInlineText(route.configuredModel ?? "");
+  const resolvedModel =
+    sanitizeInlineText(route.resolvedModel ?? "") ||
+    sanitizeInlineText(route.model ?? "");
+  if (
+    configuredModel &&
+    resolvedModel &&
+    configuredModel !== resolvedModel
+  ) {
+    return `${configuredModel} (${resolvedModel})`;
+  }
+  return resolvedModel || configuredModel || "unknown";
+}
+
 export function normalizeSessionValue(value) {
   const text = sanitizeInlineText(String(value ?? ""));
   if (!text) {
@@ -30,22 +72,32 @@ export function normalizeModelRoute(input = {}, nowMs) {
     input.provider ??
       input.llmProvider ??
       "",
-  );
-  const model = sanitizeInlineText(
-    input.model ??
+  ) || "unknown";
+  const configuredModel = sanitizeInlineText(
+    input.configuredModel ??
+      input.model ??
       input.llmModel ??
       "",
   );
+  const resolvedModel = canonicalizeProviderModel(
+    provider,
+    input.resolvedModel ??
+      input.model ??
+      input.llmModel ??
+      input.configuredModel,
+  );
+  if (!configuredModel && !resolvedModel) {
+    return null;
+  }
   const source = sanitizeInlineText(
     input.source ??
       "",
   );
-  if (!provider && !model) {
-    return null;
-  }
   return {
-    provider: provider || "unknown",
-    model: model || "unknown",
+    provider,
+    model: resolvedModel || configuredModel || "unknown",
+    ...(configuredModel ? { configuredModel } : {}),
+    ...(resolvedModel ? { resolvedModel } : {}),
     usedFallback: input.usedFallback === true,
     ...(source ? { source } : {}),
     updatedAt: Number.isFinite(Number(input.updatedAt))
@@ -59,7 +111,7 @@ export function formatModelRouteLabel(route, { includeProvider = true } = {}) {
     return "routing pending";
   }
   const provider = sanitizeInlineText(route.provider ?? "");
-  const model = sanitizeInlineText(route.model ?? "");
+  const model = formatCanonicalModelLabel(route);
   const parts = [];
   if (model) {
     parts.push(model);
@@ -77,6 +129,27 @@ export function modelRouteTone(route, hasLiveRoute) {
   if (!route) return "slate";
   if (route.usedFallback) return "amber";
   return hasLiveRoute ? "teal" : "slate";
+}
+
+export function modelRoutesMatch(left, right) {
+  const leftProvider = sanitizeInlineText(left?.provider ?? "");
+  const rightProvider = sanitizeInlineText(right?.provider ?? "");
+  const leftModel = canonicalizeProviderModel(
+    leftProvider,
+    left?.resolvedModel ?? left?.model ?? left?.configuredModel,
+  );
+  const rightModel = canonicalizeProviderModel(
+    rightProvider,
+    right?.resolvedModel ?? right?.model ?? right?.configuredModel,
+  );
+  return Boolean(
+    leftProvider &&
+      rightProvider &&
+      leftModel &&
+      rightModel &&
+      leftProvider === rightProvider &&
+      leftModel === rightModel,
+  );
 }
 
 export function shouldSurfaceTransientStatus(value) {

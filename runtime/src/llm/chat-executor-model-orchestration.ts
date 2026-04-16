@@ -57,6 +57,7 @@ import {
   type RuntimeEconomicsPolicy,
   type RuntimeRunClass,
 } from "./run-budget.js";
+import { canonicalizeProviderModel } from "../gateway/model-route.js";
 import { trackTokenUsage } from "./chat-executor-state.js";
 import type {
   ChatCallUsageRecord,
@@ -424,6 +425,11 @@ export async function callModelForPhase(
   ctx.lastModelStreamedContent = next.streamedContent;
   ctx.providerName = next.providerName;
   ctx.responseModel = next.response.model;
+  ctx.configuredModel = next.configuredModel;
+  ctx.resolvedModel = canonicalizeProviderModel(
+    next.providerName,
+    next.response.model ?? next.configuredModel,
+  );
   ctx.providerEvidence = mergeProviderEvidence(
     ctx.providerEvidence,
     next.response.providerEvidence,

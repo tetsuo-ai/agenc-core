@@ -1,9 +1,9 @@
 /**
- * Tool routing — claude_code-shaped static allowed tools (Cut 4.2).
+ * Tool routing — static allowed tools (Cut 4.2).
  *
  * Replaces the previous 1,848-LOC `ToolRouter` machinery whose entire
  * job was per-phase narrowing of the tool set during planner-driven
- * turns. claude_code exposes a single static tool list per query, so
+ * turns. The runtime now exposes a single static tool list per query, so
  * the runtime no longer maintains per-cluster routing caches, schema
  * cost ledgers, or invalidation signals.
  *
@@ -25,6 +25,7 @@ import {
   getShellProfilePreferredToolNames,
   type SessionShellProfile,
 } from "./shell-profile.js";
+import type { ToolCatalogEntry } from "../tools/types.js";
 
 export interface ToolRoutingDecision {
   readonly routedToolNames: readonly string[];
@@ -71,6 +72,103 @@ const FAMILY_PREFIXES: Readonly<Record<string, readonly string[]>> = {
   sandbox: ["system.sandbox"],
   operator: ["agenc.", "social.", "wallet."],
 };
+
+const ALWAYS_INLINE_TOOL_NAMES = new Set([
+  "system.searchTools",
+  "execute_with_agent",
+  "coordinator",
+  "task.create",
+  "task.list",
+  "task.get",
+  "task.update",
+  "verification.listProbes",
+  "verification.runProbe",
+]);
+
+const DEFERRED_NAME_PREFIXES = [
+  "mcp.",
+  "mcp:",
+  "system.remoteJob",
+  "system.remoteSession",
+  "system.sandbox",
+  "system.server",
+  "system.process",
+  "system.research",
+  "social.",
+  "wallet.",
+];
+
+const DEFERRED_NAME_PATTERNS = [
+  /^playwright\.browser_(?:session|attach|connect|transfer|share|handoff|close|tabs?)/i,
+  /^browser_(?:session|attach|connect|transfer|share|handoff|close|tabs?)/i,
+];
+
+function uniqueToolNames(toolNames: readonly string[]): readonly string[] {
+  return Array.from(
+    new Set(toolNames.map((toolName) => toolName.trim()).filter(Boolean)),
+  );
+}
+
+function isDeferredToolName(toolName: string): boolean {
+  if (ALWAYS_INLINE_TOOL_NAMES.has(toolName)) {
+    return false;
+  }
+  return (
+    DEFERRED_NAME_PREFIXES.some((prefix) => toolName.startsWith(prefix)) ||
+    DEFERRED_NAME_PATTERNS.some((pattern) => pattern.test(toolName))
+  );
+}
+
+function isDeferredCatalogEntry(entry: ToolCatalogEntry): boolean {
+  if (ALWAYS_INLINE_TOOL_NAMES.has(entry.name)) {
+    return false;
+  }
+  if (entry.metadata.hiddenByDefault || entry.metadata.source === "mcp") {
+    return true;
+  }
+  if (entry.metadata.family === "operator" && entry.metadata.mutating) {
+    return true;
+  }
+  return isDeferredToolName(entry.name);
+}
+
+export function buildAdvertisedToolBundle(params: {
+  readonly toolCatalog: readonly ToolCatalogEntry[];
+  readonly providerNativeToolNames?: readonly string[];
+  readonly shellProfile?: SessionShellProfile;
+  readonly discoveredToolNames?: readonly string[];
+  readonly explicitAllowedToolNames?: readonly string[];
+}): readonly string[] {
+  if (params.explicitAllowedToolNames && params.explicitAllowedToolNames.length > 0) {
+    return uniqueToolNames(params.explicitAllowedToolNames);
+  }
+
+  const profile = params.shellProfile ?? "general";
+  const inlineCatalogToolNames = params.toolCatalog
+    .filter((entry) => !isDeferredCatalogEntry(entry))
+    .map((entry) => entry.name);
+  const preferredInlineToolNames = getShellProfilePreferredToolNames({
+    profile,
+    availableToolNames: inlineCatalogToolNames,
+  });
+  const effectiveInlineToolNames =
+    preferredInlineToolNames.length > 0
+      ? preferredInlineToolNames
+      : inlineCatalogToolNames;
+  const providerNativeToolNames = (params.providerNativeToolNames ?? []).filter(
+    (toolName) => !isDeferredToolName(toolName),
+  );
+  const discoveredToolNames = (params.discoveredToolNames ?? []).filter(
+    (toolName) =>
+      params.toolCatalog.some((entry) => entry.name === toolName) ||
+      (params.providerNativeToolNames ?? []).includes(toolName),
+  );
+  return uniqueToolNames([
+    ...effectiveInlineToolNames,
+    ...providerNativeToolNames,
+    ...discoveredToolNames,
+  ]);
+}
 
 function estimateToolSchemaChars(toolNames: readonly string[]): number {
   return toolNames.reduce((total, toolName) => total + toolName.length, 0);

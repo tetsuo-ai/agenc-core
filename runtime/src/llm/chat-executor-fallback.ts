@@ -320,6 +320,8 @@ export async function callWithFallback(
           )
           : await provider.chat(serializedBoundedMessages, providerChatOptions);
         const response = assertValidLLMResponse(provider.name, rawResponse);
+        const configuredModel =
+          (await provider.getExecutionProfile?.())?.model;
 
         if (response.finishReason === "error") {
           throw (
@@ -351,6 +353,7 @@ export async function callWithFallback(
         return {
           response,
           providerName: provider.name,
+          configuredModel,
           usedFallback: i > 0,
           durationMs: Math.max(1, Date.now() - callStartedAt),
           beforeBudget,

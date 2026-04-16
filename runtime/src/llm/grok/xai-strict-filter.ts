@@ -19,17 +19,15 @@
  * The validators exist because the OpenAI Node SDK is a thin HTTP client
  * with no xAI-specific schema validation. xAI accepts almost any request
  * body, returns 200, and the failure surfaces as semantic degradation that
- * the runtime never catches. The CLAUDE.md learned rule
- * **"xAI Compatibility: Treat undocumented 200s as untrusted until
- * semantics are proven"** captures the failure class this module enforces.
+ * the runtime never catches. The runtime compatibility rule
+ * **"Treat undocumented 200s as untrusted until semantics are proven"**
+ * captures the failure class this module enforces.
  *
  * Every field, model ID, and shape constraint in this file was sourced
  * directly from `mcp__xai-docs__get_doc_page` against `developers/models`,
  * `developers/model-capabilities/text/generate-text`,
  * `developers/model-capabilities/text/reasoning`, and
- * `developers/tools/function-calling` on 2026-04-09. See
- * `/home/tetsuo/.claude/plans/ethereal-twirling-cerf.md` for the source
- * citations and the failure modes this module is designed to catch.
+ * `developers/tools/function-calling` on 2026-04-09.
  *
  * Three real failures from 2026-04-09 that this filter would have caught
  * before the user ever saw them:
@@ -54,6 +52,7 @@
 
 import { LLMProviderError } from "../errors.js";
 import type { LLMFailureClass, LLMPipelineStopReason } from "../policy.js";
+import { canonicalizeProviderModel } from "../../gateway/model-route.js";
 
 // ---------------------------------------------------------------------------
 // Section A — documented xAI Responses API contract
@@ -159,8 +158,8 @@ const SERVER_SIDE_TOOL_CALL_OUTPUT_TYPES: ReadonlySet<string> = new Set([
  *
  * The validator rejects any `model` value that does not appear here OR in
  * {@link DOCUMENTED_XAI_MODEL_ALIASES}. xAI silently aliases unknown model
- * IDs server-side, which we treat as untrusted under the CLAUDE.md
- * "xAI Compatibility: Treat undocumented 200s as untrusted" rule.
+ * IDs server-side, which we treat as untrusted under the runtime
+ * compatibility rule for undocumented 200s.
  */
 const DOCUMENTED_XAI_MODEL_IDS: ReadonlySet<string> = new Set([
   // Grok 4 family — current
@@ -902,10 +901,19 @@ export function validateXaiResponsePostFlight(params: {
     typeof params.request.model === "string" ? params.request.model : "";
   const responseModel =
     typeof params.response.model === "string" ? params.response.model : "";
+  const requestedCanonicalModel = canonicalizeProviderModel(
+    "grok",
+    requestedModel,
+  );
+  const responseCanonicalModel = canonicalizeProviderModel(
+    "grok",
+    responseModel,
+  );
   if (
     requestedModel.length > 0 &&
     responseModel.length > 0 &&
-    requestedModel !== responseModel
+    requestedModel !== responseModel &&
+    requestedCanonicalModel !== responseCanonicalModel
   ) {
     const expectedAlias = DOCUMENTED_XAI_MODEL_ALIASES.get(requestedModel);
     if (expectedAlias !== responseModel) {
@@ -917,7 +925,16 @@ export function validateXaiResponsePostFlight(params: {
           `the response payload. This may be a silent server-side alias ` +
           `that the documented alias map does not cover. Verify the ` +
           `configured model is in the xAI catalog.`,
-        evidence: { requestedModel, responseModel },
+        evidence: {
+          requestedModel,
+          responseModel,
+          ...(requestedCanonicalModel
+            ? { requestedCanonicalModel }
+            : {}),
+          ...(responseCanonicalModel
+            ? { responseCanonicalModel }
+            : {}),
+        },
       });
     }
   }

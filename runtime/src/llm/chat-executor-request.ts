@@ -320,6 +320,8 @@ export async function executeRequest(
       content: finalContent,
       provider: ctx.providerName,
       model: ctx.responseModel,
+      configuredModel: ctx.configuredModel,
+      resolvedModel: ctx.resolvedModel,
       usedFallback: ctx.usedFallback,
       toolCalls: ctx.allToolCalls,
       providerEvidence: ctx.providerEvidence,
@@ -338,6 +340,14 @@ export async function executeRequest(
           expanded: ctx.routedToolsExpanded,
         }
         : undefined,
+      ...(ctx.toolDiscoveryEnabled
+        ? {
+            toolDiscoverySummary: {
+              advertisedToolNames: ctx.defaultAdvertisedToolNames,
+              discoveredToolNames: ctx.discoveredToolNames,
+            },
+          }
+        : {}),
       plannerSummary,
       economicsSummary: buildRuntimeEconomicsSummary(
         deps.economicsPolicy,

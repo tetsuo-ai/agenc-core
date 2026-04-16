@@ -236,12 +236,16 @@ export interface ChatExecuteParams {
   readonly interactiveContext?: InteractiveContextRequest;
   /** Optional per-turn tool-routing subset and expansion policy. */
   readonly toolRouting?: {
+    /** Effective advertised bundle for this turn before any lexical narrowing. */
+    readonly advertisedToolNames?: readonly string[];
     /** Initial routed subset for this turn. */
     readonly routedToolNames?: readonly string[];
     /** One-turn expanded subset used on suspected routing misses. */
     readonly expandedToolNames?: readonly string[];
     /** Enable one-turn expansion retry on routed-tool misses. */
     readonly expandOnMiss?: boolean;
+    /** Enable discovery-driven widening for later model recalls in the same turn. */
+    readonly persistDiscovery?: boolean;
   };
   /** Require at least one successful tool call before accepting a final answer. */
   readonly requiredToolEvidence?: {
@@ -349,12 +353,19 @@ export interface ChatToolRoutingSummary {
   readonly expanded: boolean;
 }
 
+export interface ChatToolDiscoverySummary {
+  readonly advertisedToolNames: readonly string[];
+  readonly discoveredToolNames: readonly string[];
+}
+
 /** Result returned from ChatExecutor.execute(). */
 export interface ChatExecutorResult {
   readonly content: string;
   readonly provider: string;
   /** Actual model identifier returned by the provider for the final response. */
   readonly model?: string;
+  readonly configuredModel?: string;
+  readonly resolvedModel?: string;
   readonly usedFallback: boolean;
   readonly toolCalls: readonly ToolCallRecord[];
   readonly providerEvidence?: LLMProviderEvidence;
@@ -370,6 +381,8 @@ export interface ChatExecutorResult {
   readonly statefulSummary?: ChatStatefulSummary;
   /** Per-turn dynamic tool-routing diagnostics for this execution. */
   readonly toolRoutingSummary?: ChatToolRoutingSummary;
+  /** Discovery-driven deferred-tool state captured for this execution. */
+  readonly toolDiscoverySummary?: ChatToolDiscoverySummary;
   /** Planner/executor routing summary and ROI diagnostics. */
   readonly plannerSummary?: ChatPlannerSummary;
   /** Runtime-owned economics summary for routing, ceilings, and downgrades. */
@@ -582,6 +595,7 @@ export interface CooldownEntry {
 export interface FallbackResult {
   response: LLMResponse;
   providerName: string;
+  configuredModel?: string;
   usedFallback: boolean;
   beforeBudget: ChatPromptShape;
   afterBudget: ChatPromptShape;
@@ -657,6 +671,8 @@ export interface ExecutionContext {
   readonly requestDeadlineAt: number;
   readonly initialRoutedToolNames: readonly string[];
   readonly expandedRoutedToolNames: readonly string[];
+  readonly defaultAdvertisedToolNames: readonly string[];
+  readonly toolDiscoveryEnabled: boolean;
   readonly canExpandOnRoutingMiss: boolean;
   readonly hasHistory: boolean;
   readonly plannerDecision: PlannerDecision;
@@ -691,6 +707,8 @@ export interface ExecutionContext {
   usedFallback: boolean;
   providerName: string;
   responseModel?: string;
+  configuredModel?: string;
+  resolvedModel?: string;
   response?: LLMResponse;
   finalContent: string;
   lastModelStreamedContent: string;
@@ -706,6 +724,7 @@ export interface ExecutionContext {
   validationCode?: DelegationOutputValidationCode;
   activeRoutedToolNames: readonly string[];
   transientRoutedToolNames: readonly string[] | undefined;
+  discoveredToolNames: readonly string[];
   routedToolsExpanded: boolean;
   routedToolMisses: number;
   plannerSummaryState: FullPlannerSummaryState;
@@ -805,6 +824,9 @@ export function buildDefaultExecutionContext(
         : Number.POSITIVE_INFINITY,
     initialRoutedToolNames: params.initialRoutedToolNames,
     expandedRoutedToolNames: params.expandedRoutedToolNames,
+    defaultAdvertisedToolNames:
+      params.toolRouting?.advertisedToolNames ?? params.initialRoutedToolNames,
+    toolDiscoveryEnabled: params.toolRouting?.persistDiscovery === true,
     canExpandOnRoutingMiss: Boolean(
       params.toolRouting?.expandOnMiss &&
       params.expandedRoutedToolNames.length > 0,
@@ -852,6 +874,8 @@ export function buildDefaultExecutionContext(
     usedFallback: false,
     providerName: config.providerName,
     responseModel: undefined,
+    configuredModel: undefined,
+    resolvedModel: undefined,
     response: undefined,
     finalContent: "",
     lastModelStreamedContent: "",
@@ -868,6 +892,7 @@ export function buildDefaultExecutionContext(
     validationCode: undefined,
     activeRoutedToolNames: params.initialRoutedToolNames,
     transientRoutedToolNames: undefined,
+    discoveredToolNames: [],
     routedToolsExpanded: false,
     routedToolMisses: 0,
     plannerSummaryState: {

@@ -44,6 +44,8 @@ export interface InteractiveContextState {
   readonly version: 1;
   readonly executionLocation?: InteractiveContextExecutionLocation;
   readonly readSeeds: readonly SessionReadSeedEntry[];
+  readonly defaultAdvertisedToolNames?: readonly string[];
+  readonly discoveredToolNames?: readonly string[];
   readonly cacheSafePromptSnapshot?: InteractiveContextPromptSnapshot;
   readonly summaryRef?: InteractiveContextSummaryRef;
   readonly forkCarryover?: InteractiveContextForkCarryover;
@@ -115,6 +117,22 @@ function cloneReadSeeds(
         : {}),
       ...(entry.viewKind ? { viewKind: entry.viewKind } : {}),
     }));
+}
+
+function cloneToolNames(
+  toolNames: readonly string[] | undefined,
+): readonly string[] {
+  if (!toolNames || toolNames.length === 0) {
+    return [];
+  }
+  return Array.from(
+    new Set(
+      toolNames
+        .filter((toolName): toolName is string => typeof toolName === "string")
+        .map((toolName) => toolName.trim())
+        .filter((toolName) => toolName.length > 0),
+    ),
+  );
 }
 
 export function buildInteractiveToolScopeFingerprint(
@@ -295,6 +313,16 @@ export function coerceInteractiveContextState(
       ? (record.readSeeds as readonly SessionReadSeedEntry[])
       : [],
   );
+  const defaultAdvertisedToolNames = cloneToolNames(
+    Array.isArray(record.defaultAdvertisedToolNames)
+      ? (record.defaultAdvertisedToolNames as readonly string[])
+      : [],
+  );
+  const discoveredToolNames = cloneToolNames(
+    Array.isArray(record.discoveredToolNames)
+      ? (record.discoveredToolNames as readonly string[])
+      : [],
+  );
   const cacheSafePromptSnapshot = coercePromptSnapshot(
     record.cacheSafePromptSnapshot,
   );
@@ -304,6 +332,10 @@ export function coerceInteractiveContextState(
     version: 1,
     readSeeds,
     ...(executionLocation ? { executionLocation } : {}),
+    ...(defaultAdvertisedToolNames.length > 0
+      ? { defaultAdvertisedToolNames }
+      : {}),
+    ...(discoveredToolNames.length > 0 ? { discoveredToolNames } : {}),
     ...(cacheSafePromptSnapshot ? { cacheSafePromptSnapshot } : {}),
     ...(summaryRef ? { summaryRef } : {}),
     ...(forkCarryover ? { forkCarryover } : {}),
@@ -325,6 +357,16 @@ export function cloneInteractiveContextState(
             state.executionLocation,
           )!,
         }
+      : {}),
+    ...(state.defaultAdvertisedToolNames
+      ? {
+          defaultAdvertisedToolNames: cloneToolNames(
+            state.defaultAdvertisedToolNames,
+          ),
+        }
+      : {}),
+    ...(state.discoveredToolNames
+      ? { discoveredToolNames: cloneToolNames(state.discoveredToolNames) }
       : {}),
     ...(state.cacheSafePromptSnapshot
       ? {

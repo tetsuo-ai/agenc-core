@@ -827,6 +827,7 @@ export class GrokProvider implements LLMProvider {
     string,
     ProviderNativeToolDefinition
   >();
+  private readonly warnedPostFlightAnomalies = new Set<string>();
   private readonly toolChars: number;
   private readonly statefulConfig: ResolvedLLMStatefulResponsesConfig;
   private readonly statefulSessions = new Map<string, StatefulSessionAnchor>();
@@ -881,6 +882,27 @@ export class GrokProvider implements LLMProvider {
         (sum, definition) => sum + definition.schemaChars,
         0,
       );
+  }
+
+  private logPostFlightAnomaly(anomaly: {
+    code: string;
+    message: string;
+    evidence?: Record<string, unknown>;
+  }): void {
+    const warningKey =
+      anomaly.code === "model_silently_aliased"
+        ? `${anomaly.code}:${String(anomaly.evidence?.requestedModel ?? "")}:${String(anomaly.evidence?.responseModel ?? "")}`
+        : undefined;
+    if (warningKey) {
+      if (this.warnedPostFlightAnomalies.has(warningKey)) {
+        return;
+      }
+      this.warnedPostFlightAnomalies.add(warningKey);
+    }
+    console.warn(
+      `[GrokProvider] xAI post-flight anomaly (${anomaly.code}): ${anomaly.message}`,
+      anomaly.evidence,
+    );
   }
 
   async chat(
@@ -1327,10 +1349,7 @@ export class GrokProvider implements LLMProvider {
               );
             }
             if (anomaly.code === "truncated_response_mid_sentence") continue;
-            console.warn(
-              `[GrokProvider] xAI post-flight anomaly (${anomaly.code}): ${anomaly.message}`,
-              anomaly.evidence,
-            );
+            this.logPostFlightAnomaly(anomaly);
           }
 
           this.emitToolCallNormalizationIssues(
@@ -2077,10 +2096,9 @@ export class GrokProvider implements LLMProvider {
       // with tools. The previous "graceful fallback" silently stripped the
       // structured output and continued, which masked configuration errors
       // (e.g. a planner step routed to grok-code-fast-1 instead of a Grok 4
-      // model). The CLAUDE.md learned rule "xAI Compatibility: Treat
-      // undocumented 200s as untrusted until semantics are proven" applies:
-      // raise the assertion at the adapter boundary so the user fixes the
-      // config instead of getting a degraded run.
+      // model). The runtime compatibility rule for undocumented 200s
+      // applies here: raise the assertion at the adapter boundary so the
+      // user fixes the config instead of getting a degraded run.
       assertXaiStructuredOutputToolCompatibility({
         providerName: this.name,
         model: typeof params.model === "string" ? params.model : this.config.model,
@@ -2664,10 +2682,7 @@ export class GrokProvider implements LLMProvider {
         // response that bypassed the mitigation. Either way the
         // truncation has already been logged; don't re-log here.
         if (anomaly.code === "truncated_response_mid_sentence") continue;
-        console.warn(
-          `[GrokProvider] xAI post-flight anomaly (${anomaly.code}): ${anomaly.message}`,
-          anomaly.evidence,
-        );
+        this.logPostFlightAnomaly(anomaly);
       }
     }
 

@@ -693,10 +693,10 @@ describe("validateXaiResponsePostFlight (silent-drop detection — the bug we hi
 });
 
 describe("validateXaiResponsePostFlight (model aliasing)", () => {
-  it("detects silent server alias when requested ≠ response and not in alias map", () => {
+  it("detects a true model mismatch after canonical normalization", () => {
     const result = validateXaiResponsePostFlight({
       request: { ...plainTextRequest(), model: "grok-4.20-beta-0309-reasoning" },
-      response: responseWith({ model: "grok-4.20-0309-reasoning" }),
+      response: responseWith({ model: "grok-code-fast-1" }),
     });
     expect(result).toHaveLength(1);
     expect(result[0]).toMatchObject({
@@ -705,8 +705,18 @@ describe("validateXaiResponsePostFlight (model aliasing)", () => {
     });
     expect(result[0]?.evidence).toMatchObject({
       requestedModel: "grok-4.20-beta-0309-reasoning",
-      responseModel: "grok-4.20-0309-reasoning",
+      responseModel: "grok-code-fast-1",
     });
+  });
+
+  it("does NOT flag canonical alias-equivalent model IDs as silent aliasing", () => {
+    const result = validateXaiResponsePostFlight({
+      request: { ...plainTextRequest(), model: "grok-4.20-beta-0309-reasoning" },
+      response: responseWith({ model: "grok-4.20-0309-reasoning" }),
+    });
+    expect(
+      result.find((a) => a.code === "model_silently_aliased"),
+    ).toBeUndefined();
   });
 
   it("does NOT flag documented bare-name alias as silent aliasing", () => {

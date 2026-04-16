@@ -17,6 +17,7 @@ import { hasActionableStatefulFallback } from "../llm/chat-executor-recovery.js"
 import type { GatewayMessage } from "./message.js";
 import {
   resolveSessionShellProfile,
+  type SessionShellProfile,
   type Session,
   type SessionManager,
 } from "./session.js";
@@ -83,6 +84,12 @@ import {
 const CONCORDIA_GENERATED_AGENTS_SCHEMA_NAME =
   "concordia_generated_agents";
 
+function uniqueToolNames(toolNames: readonly string[]): readonly string[] {
+  return Array.from(
+    new Set(toolNames.map((toolName) => toolName.trim()).filter(Boolean)),
+  );
+}
+
 function buildConcordiaGenerateAgentsStructuredOutput(
   msg: GatewayMessage,
 ): LLMStructuredOutputRequest | undefined {
@@ -130,7 +137,8 @@ function buildInteractiveTurnState(params: {
   readonly runtimeWorkspaceRoot?: string;
   readonly baseSystemPrompt: string;
   readonly readSeeds: readonly import("../tools/system/filesystem.js").SessionReadSeedEntry[];
-  readonly routedToolNames?: readonly string[];
+  readonly advertisedToolNames: readonly string[];
+  readonly discoveredToolNames?: readonly string[];
 }): InteractiveContextState {
   const existing =
     params.session.metadata["interactiveContextState"] as
@@ -157,9 +165,19 @@ function buildInteractiveTurnState(params: {
       sessionStartContextMessages:
         existing?.cacheSafePromptSnapshot?.sessionStartContextMessages ?? [],
       toolScopeFingerprint: buildInteractiveToolScopeFingerprint(
-        params.routedToolNames,
+        params.advertisedToolNames,
       ),
     }),
+    ...(params.advertisedToolNames.length > 0
+      ? { defaultAdvertisedToolNames: params.advertisedToolNames }
+      : existing?.defaultAdvertisedToolNames
+        ? { defaultAdvertisedToolNames: existing.defaultAdvertisedToolNames }
+        : {}),
+    ...(params.discoveredToolNames && params.discoveredToolNames.length > 0
+      ? { discoveredToolNames: params.discoveredToolNames }
+      : existing?.discoveredToolNames
+        ? { discoveredToolNames: existing.discoveredToolNames }
+        : {}),
     ...(existing?.summaryRef ? { summaryRef: existing.summaryRef } : {}),
     ...(existing?.forkCarryover ? { forkCarryover: existing.forkCarryover } : {}),
   };
@@ -184,7 +202,13 @@ interface ExecuteTextChannelTurnParams {
     sessionId: string,
     content: string,
     history: Session["history"],
+    advertisedToolNames: readonly string[],
   ) => ToolRoutingDecision | undefined;
+  readonly resolveAdvertisedToolNames?: (
+    sessionId: string,
+    shellProfile: SessionShellProfile,
+    discoveredToolNames?: readonly string[],
+  ) => readonly string[];
   readonly recordToolRoutingOutcome: (
     sessionId: string,
     summary: ChatToolRoutingSummary | undefined,
@@ -219,15 +243,28 @@ export async function executeTextChannelTurn(
     includeTraceArtifacts = false,
     includePlannerSummaryInTrace = false,
     buildToolRoutingDecision,
+    resolveAdvertisedToolNames,
     recordToolRoutingOutcome,
     persistToDaemonMemory = shouldPersistToDaemonMemory(msg),
     taskStore = null,
   } = params;
 
+  const shellProfile = resolveSessionShellProfile(session.metadata);
+  const existingInteractiveState =
+    session.metadata["interactiveContextState"] as
+      | InteractiveContextState
+      | undefined;
+  const advertisedToolNames =
+    resolveAdvertisedToolNames?.(
+      msg.sessionId,
+      shellProfile,
+      existingInteractiveState?.discoveredToolNames,
+    ) ?? [];
   const toolRoutingDecision = buildToolRoutingDecision(
     msg.sessionId,
     msg.content,
     session.history,
+    advertisedToolNames,
   );
   if (memoryBackend) {
     await appendTranscriptBatch(memoryBackend, msg.sessionId, [
@@ -240,7 +277,7 @@ export async function executeTextChannelTurn(
   }
   const profileAwareSystemPrompt = appendShellProfilePromptSection({
     systemPrompt,
-    profile: resolveSessionShellProfile(session.metadata),
+    profile: shellProfile,
   });
   const effectiveSystemPrompt = filterSystemPromptForToolRouting({
     systemPrompt: profileAwareSystemPrompt,
@@ -264,7 +301,8 @@ export async function executeTextChannelTurn(
     runtimeWorkspaceRoot,
     baseSystemPrompt: effectiveSystemPrompt,
     readSeeds: atMentionAttachments.readSeeds,
-    routedToolNames: toolRoutingDecision?.routedToolNames,
+    advertisedToolNames,
+    discoveredToolNames: existingInteractiveState?.discoveredToolNames,
   });
   persistSessionInteractiveContext(session, interactiveTurnState);
   const sessionInteractiveContext = buildSessionInteractiveContext(session, {
@@ -354,6 +392,12 @@ export async function executeTextChannelTurn(
     defaultMaxToolRounds,
     toolRoutingDecision,
   );
+  const routedToolNames =
+    toolRoutingDecision?.routedToolNames ?? advertisedToolNames;
+  const expandedToolNames = uniqueToolNames([
+    ...advertisedToolNames,
+    ...(toolRoutingDecision?.expandedToolNames ?? []),
+  ]);
   // Phase E: text-channel caller now drains the Phase C generator
   // via executeChatToLegacyResult. Identical semantics to the
   // direct chatExecutor.execute() call under the adapter shape —
@@ -384,13 +428,13 @@ export async function executeTextChannelTurn(
     ...(isConcordiaGenerateAgentsTurn
       ? { contextInjection: { memory: false } }
       : {}),
-    toolRouting: toolRoutingDecision
-      ? {
-          routedToolNames: toolRoutingDecision.routedToolNames,
-          expandedToolNames: toolRoutingDecision.expandedToolNames,
-          expandOnMiss: true,
-        }
-      : undefined,
+    toolRouting: {
+      advertisedToolNames,
+      routedToolNames,
+      expandedToolNames,
+      expandOnMiss: true,
+      persistDiscovery: true,
+    },
     ...(traceConfig.enabled
       ? {
           trace: {
@@ -586,9 +630,12 @@ export async function executeTextChannelTurn(
         result.sessionStartContextMessages ??
         interactiveTurnState.cacheSafePromptSnapshot?.sessionStartContextMessages,
       toolScopeFingerprint: buildInteractiveToolScopeFingerprint(
-        toolRoutingDecision?.routedToolNames,
+        advertisedToolNames,
       ),
     }),
+    discoveredToolNames:
+      result.toolDiscoverySummary?.discoveredToolNames ??
+      interactiveTurnState.discoveredToolNames,
   });
   sessionMgr.appendMessage(session.id, {
     role: "user",

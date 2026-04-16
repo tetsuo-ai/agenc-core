@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { buildStaticToolRoutingDecision } from "./tool-routing.js";
+import {
+  buildAdvertisedToolBundle,
+  buildStaticToolRoutingDecision,
+} from "./tool-routing.js";
 
 const TOOLS = [
   "system.readFile",
@@ -111,5 +114,100 @@ describe("buildStaticToolRoutingDecision", () => {
       "playwright.browser_click",
     ]);
     expect(decision?.diagnostics.clusterKey).toBe("shell-profile:coding:expanded");
+  });
+});
+
+describe("buildAdvertisedToolBundle", () => {
+  it("keeps deferred specialist tools out of the default general bundle", () => {
+    const toolNames = buildAdvertisedToolBundle({
+      shellProfile: "general",
+      toolCatalog: [
+        {
+          name: "system.readFile",
+          description: "Read files",
+          inputSchema: {},
+          metadata: {
+            family: "filesystem",
+            source: "builtin",
+            hiddenByDefault: false,
+            mutating: false,
+          },
+        },
+        {
+          name: "system.searchTools",
+          description: "Discover tools",
+          inputSchema: {},
+          metadata: {
+            family: "meta",
+            source: "builtin",
+            hiddenByDefault: false,
+            mutating: false,
+          },
+        },
+        {
+          name: "mcp.remote.inspect",
+          description: "Inspect remote MCP state",
+          inputSchema: {},
+          metadata: {
+            family: "remote",
+            source: "mcp",
+            hiddenByDefault: false,
+            mutating: false,
+          },
+        },
+        {
+          name: "system.remoteSession.start",
+          description: "Start a remote session",
+          inputSchema: {},
+          metadata: {
+            family: "remote",
+            source: "builtin",
+            hiddenByDefault: false,
+            mutating: true,
+          },
+        },
+      ],
+    });
+
+    expect(toolNames).toEqual([
+      "system.readFile",
+      "system.searchTools",
+    ]);
+  });
+
+  it("re-advertises discovered deferred tools on later turns", () => {
+    const toolNames = buildAdvertisedToolBundle({
+      shellProfile: "general",
+      discoveredToolNames: ["mcp.remote.inspect"],
+      toolCatalog: [
+        {
+          name: "system.searchTools",
+          description: "Discover tools",
+          inputSchema: {},
+          metadata: {
+            family: "meta",
+            source: "builtin",
+            hiddenByDefault: false,
+            mutating: false,
+          },
+        },
+        {
+          name: "mcp.remote.inspect",
+          description: "Inspect remote MCP state",
+          inputSchema: {},
+          metadata: {
+            family: "remote",
+            source: "mcp",
+            hiddenByDefault: false,
+            mutating: false,
+          },
+        },
+      ],
+    });
+
+    expect(toolNames).toEqual([
+      "system.searchTools",
+      "mcp.remote.inspect",
+    ]);
   });
 });

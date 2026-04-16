@@ -24,6 +24,8 @@ export interface ChatUsagePayload {
   readonly compacted: boolean;
   readonly provider?: string;
   readonly model?: string;
+  readonly configuredModel?: string;
+  readonly resolvedModel?: string;
   readonly usedFallback?: boolean;
   readonly contextWindowTokens?: number;
   readonly promptTokens?: number;
@@ -51,6 +53,8 @@ interface BuildChatUsagePayloadInput {
   readonly compacted: boolean;
   readonly provider?: string;
   readonly model?: string;
+  readonly configuredModel?: string;
+  readonly resolvedModel?: string;
   readonly usedFallback?: boolean;
   readonly contextWindowTokens?: number;
   readonly callUsage?: readonly ChatCallUsageRecord[];
@@ -111,6 +115,8 @@ export function buildChatUsagePayload(
     compacted: input.compacted === true,
     ...(input.provider ? { provider: input.provider } : {}),
     ...(input.model ? { model: input.model } : {}),
+    ...(input.configuredModel ? { configuredModel: input.configuredModel } : {}),
+    ...(input.resolvedModel ? { resolvedModel: input.resolvedModel } : {}),
     ...(input.usedFallback === true ? { usedFallback: true } : {}),
     ...(input.economicsSummary
       ? {

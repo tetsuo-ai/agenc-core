@@ -206,8 +206,8 @@ import {
 } from "./session.js";
 import {
   coerceSessionShellProfile,
-  getShellProfilePreferredToolNames,
 } from "./shell-profile.js";
+import { coerceInteractiveContextState } from "./interactive-context.js";
 import type { DelegationContractSpec } from "../utils/delegation-validation.js";
 import {
   getDefaultWorkspacePath,
@@ -231,7 +231,6 @@ import {
 import { ProgressTracker, summarizeToolResult } from "./progress.js";
 import {
   inferContextWindowTokens,
-  normalizeGrokModel,
 } from "./context-window.js";
 import {
   buildModelRoutingPolicy,
@@ -254,7 +253,15 @@ import {
   type ExternalChannelRegistry,
 } from "./channel-wiring.js";
 import { createChannelHostServices } from "../plugins/channel-host-services.js";
-import { buildStaticToolRoutingDecision } from "./tool-routing.js";
+import {
+  buildAdvertisedToolBundle,
+  buildStaticToolRoutingDecision,
+} from "./tool-routing.js";
+import {
+  canonicalizeProviderModel,
+  formatModelRouteModelLabel,
+  normalizeModelRouteSnapshot,
+} from "./model-route.js";
 import type { ProactiveCommunicator } from "./proactive.js";
 import {
   loadAgentDefinitions,
@@ -1139,6 +1146,8 @@ export class DaemonManager {
     {
       provider: string;
       model: string;
+      configuredModel?: string;
+      resolvedModel?: string;
       usedFallback: boolean;
       updatedAt: number;
     }
@@ -2209,7 +2218,7 @@ export class DaemonManager {
     this._chatExecutor = createChatExecutor({
       providers,
       toolHandler: baseToolHandler,
-      allowedTools: this.getAdvertisedToolNames(),
+      allowedTools: this.getCallableToolNames(),
       skillInjector,
       memoryRetriever,
       learningProvider,
@@ -2532,6 +2541,7 @@ export class DaemonManager {
                 }).allowed
                   ? effectiveProfile
                   : DEFAULT_SESSION_SHELL_PROFILE,
+                this.getDiscoveredToolNamesForSession(sessionId),
               ),
               shellProfile: effectiveProfile,
             });
@@ -3602,10 +3612,26 @@ export class DaemonManager {
               }).allowed
                 ? effectiveProfile
                 : DEFAULT_SESSION_SHELL_PROFILE,
+              this.getDiscoveredToolNamesForSession(sessionId),
             ),
             shellProfile: effectiveProfile,
           });
         },
+      resolveAdvertisedToolNames: (sessionId, shellProfile, discoveredToolNames) =>
+        this.getAdvertisedToolNames(
+          undefined,
+          this.evaluateShellFeatureAdmission({
+            sessionId,
+            feature: "codingCommands",
+            domain: "shell",
+          }).allowed
+            ? this.resolveEffectiveShellProfile({
+                sessionId,
+                preferred: shellProfile,
+              })
+            : DEFAULT_SESSION_SHELL_PROFILE,
+          discoveredToolNames,
+        ),
       recordToolRoutingOutcome: () => {
         /* no-op: static routing, nothing to record */
       },
@@ -3841,7 +3867,7 @@ export class DaemonManager {
       fallbackBehavior: resolvedSubAgentConfig.fallbackBehavior,
       unsafeBenchmarkMode: resolvedSubAgentConfig.unsafeBenchmarkMode,
       resolveAvailableToolNames: () =>
-        this.getAdvertisedToolNames(
+        this.getCallableToolNames(
           this._subAgentToolCatalog.map((tool) => tool.name),
         ),
     });
@@ -3899,7 +3925,7 @@ export class DaemonManager {
       this._chatExecutor = createChatExecutor({
         providers,
         toolHandler: this._baseToolHandler!,
-        allowedTools: this.getAdvertisedToolNames(),
+        allowedTools: this.getCallableToolNames(),
         skillInjector,
         memoryRetriever,
         learningProvider,
@@ -6396,25 +6422,58 @@ export class DaemonManager {
     return event.sessionId;
   }
 
-  private getAdvertisedToolNames(
-    toolNames: readonly string[] = this._llmTools.map(
-      (tool) => tool.function.name,
-    ),
-    shellProfile: SessionShellProfile = DEFAULT_SESSION_SHELL_PROFILE,
+  private getCallableToolNames(
+    toolNames?: readonly string[],
   ): readonly string[] {
+    const baseToolNames =
+      toolNames ??
+      this._llmTools.map((tool) => tool.function.name);
     const providerNative = getProviderNativeAdvertisedToolNames(this._primaryLlmConfig);
-    const merged = Array.from(new Set([...toolNames, ...providerNative]));
-    if (shellProfile === DEFAULT_SESSION_SHELL_PROFILE) {
-      return merged;
-    }
-    const preferred = getShellProfilePreferredToolNames({
-      profile: shellProfile,
-      availableToolNames: merged,
+    return Array.from(new Set([...baseToolNames, ...providerNative]));
+  }
+
+  private getDiscoveredToolNamesForSession(
+    sessionId: string,
+  ): readonly string[] {
+    const metadata = this._webSessionManager?.get(sessionId)?.metadata;
+    const interactiveState = coerceInteractiveContextState(
+      metadata?.interactiveContextState,
+    );
+    return interactiveState?.discoveredToolNames ?? [];
+  }
+
+  private getAdvertisedToolNames(
+    toolNames?: readonly string[],
+    shellProfile: SessionShellProfile = DEFAULT_SESSION_SHELL_PROFILE,
+    discoveredToolNames?: readonly string[],
+  ): readonly string[] {
+    const resolvedToolNames = this.getCallableToolNames(toolNames);
+    const allowedToolNames = new Set(resolvedToolNames);
+    const providerNative = getProviderNativeAdvertisedToolNames(this._primaryLlmConfig)
+      .filter((toolName) => allowedToolNames.has(toolName));
+    const fullCatalog = this._toolRegistry?.listCatalog() ?? [];
+    const filteredCatalog =
+      fullCatalog.length > 0
+        ? fullCatalog.filter((entry) => allowedToolNames.has(entry.name))
+        : resolvedToolNames.map((toolName) => ({
+            name: toolName,
+            description: "",
+            inputSchema: {},
+            metadata: {
+              family: "other",
+              source: providerNative.includes(toolName)
+                ? ("provider_native" as const)
+                : ("builtin" as const),
+              hiddenByDefault: false,
+              mutating: false,
+            },
+          }));
+    return buildAdvertisedToolBundle({
+      toolCatalog: filteredCatalog,
+      providerNativeToolNames: providerNative,
+      shellProfile,
+      discoveredToolNames,
     });
-    if (!preferred.includes("system.searchTools") && merged.includes("system.searchTools")) {
-      return [...preferred, "system.searchTools"];
-    }
-    return preferred;
   }
 
   private relaySubAgentLifecycleEvent(
@@ -6842,6 +6901,7 @@ export class DaemonManager {
       availableToolNames: this.getAdvertisedToolNames(
         undefined,
         advertisedShellProfile,
+        this.getDiscoveredToolNamesForSession(sessionId),
       ),
       defaultWorkingDirectory: this._hostWorkspacePath ?? undefined,
       workspaceAliasRoot: this._hostWorkspacePath ?? undefined,
@@ -6967,6 +7027,7 @@ export class DaemonManager {
       availableToolNames: this.getAdvertisedToolNames(
         undefined,
         advertisedShellProfile,
+        this.getDiscoveredToolNamesForSession(sessionId),
       ),
       defaultWorkingDirectory: this._hostWorkspacePath ?? undefined,
       workspaceAliasRoot: this._hostWorkspacePath ?? undefined,
@@ -7111,24 +7172,36 @@ export class DaemonManager {
     if (MODEL_QUERY_RE.test(msg.content)) {
       const last = this._sessionModelInfo.get(msg.sessionId);
       if (last) {
+        const modelLabel = formatModelRouteModelLabel(last);
         await webChat.send({
           sessionId: msg.sessionId,
           content:
-            `Last completion model: ${last.model} ` +
+            `Last completion model: ${modelLabel} ` +
             `(provider: ${last.provider}${last.usedFallback ? ", fallback used" : ""})`,
         });
         return;
       }
 
       const configuredProvider = this.gateway?.config.llm?.provider ?? "none";
-      const configuredModel =
-        normalizeGrokModel(this.gateway?.config.llm?.model) ??
-        (configuredProvider === "grok" ? DEFAULT_GROK_MODEL : "unknown");
+      const configuredRoute = normalizeModelRouteSnapshot({
+        provider: configuredProvider,
+        configuredModel:
+          this.gateway?.config.llm?.model ??
+          (configuredProvider === "grok" ? DEFAULT_GROK_MODEL : "unknown"),
+        resolvedModel:
+          canonicalizeProviderModel(
+            configuredProvider,
+            this.gateway?.config.llm?.model,
+          ) ??
+          (configuredProvider === "grok" ? DEFAULT_GROK_MODEL : "unknown"),
+      });
       await webChat.send({
         sessionId: msg.sessionId,
         content:
           `No completion recorded yet for this session. ` +
-          `Configured primary is ${configuredProvider}:${configuredModel}.`,
+          `Configured primary is ${configuredProvider}:${
+            formatModelRouteModelLabel(configuredRoute)
+          }.`,
       });
       return;
     }
@@ -7435,24 +7508,52 @@ export class DaemonManager {
                     metadata: sessionMgr.get(sessionId)?.metadata ?? {},
                   })
                 : DEFAULT_SESSION_SHELL_PROFILE,
+              this.getDiscoveredToolNamesForSession(sessionId),
             ),
             shellProfile: this.resolveEffectiveShellProfile({
               sessionId,
               metadata: sessionMgr.get(sessionId)?.metadata ?? {},
             }),
           }),
+        resolveAdvertisedToolNames: (sessionId, shellProfile, discoveredToolNames) =>
+          this.getAdvertisedToolNames(
+            undefined,
+            shellProfile === DEFAULT_SESSION_SHELL_PROFILE
+              ? this.evaluateShellFeatureAdmission({
+                  sessionId,
+                  feature: "codingCommands",
+                  domain: "shell",
+                }).allowed
+                ? this.resolveEffectiveShellProfile({
+                    sessionId,
+                    metadata: sessionMgr.get(sessionId)?.metadata ?? {},
+                  })
+                : DEFAULT_SESSION_SHELL_PROFILE
+              : shellProfile,
+            discoveredToolNames,
+          ),
         recordToolRoutingOutcome: () => {
           /* no-op */
         },
         getSessionTokenUsage: (sessionId) =>
           chatExecutor.getSessionTokenUsage(sessionId),
         onModelInfo: (result) => {
-          if (!result.model) return;
-          this._sessionModelInfo.set(msg.sessionId, {
+          const route = normalizeModelRouteSnapshot({
             provider: result.provider,
             model: result.model,
+            configuredModel: result.configuredModel,
+            resolvedModel: result.resolvedModel,
             usedFallback: result.usedFallback,
             updatedAt: Date.now(),
+          });
+          if (!route) return;
+          this._sessionModelInfo.set(msg.sessionId, {
+            provider: route.provider,
+            model: route.model,
+            configuredModel: route.configuredModel,
+            resolvedModel: route.resolvedModel,
+            usedFallback: route.usedFallback,
+            updatedAt: route.updatedAt,
           });
         },
         taskStore: this._taskTrackerStore,

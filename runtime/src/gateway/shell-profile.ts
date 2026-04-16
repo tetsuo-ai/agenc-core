@@ -10,6 +10,53 @@ export type SessionShellProfile =
 
 export const DEFAULT_SESSION_SHELL_PROFILE: SessionShellProfile = "general";
 
+const GENERAL_DEFAULT_TOOL_NAMES = [
+  "system.readFile",
+  "system.readFileRange",
+  "system.writeFile",
+  "system.appendFile",
+  "system.editFile",
+  "system.listDir",
+  "system.stat",
+  "system.mkdir",
+  "system.move",
+  "system.delete",
+  "system.bash",
+  "system.grep",
+  "system.glob",
+  "system.searchFiles",
+  "system.repoInventory",
+  "system.gitStatus",
+  "system.gitDiff",
+  "system.gitShow",
+  "system.gitBranchInfo",
+  "system.gitChangeSummary",
+  "system.gitWorktreeList",
+  "system.gitWorktreeStatus",
+  "system.applyPatch",
+  "system.symbolSearch",
+  "system.symbolDefinition",
+  "system.symbolReferences",
+  "system.searchTools",
+  "system.httpGet",
+  "system.httpPost",
+  "system.httpFetch",
+  "system.browse",
+  "system.extractLinks",
+  "system.htmlToMarkdown",
+  "verification.listProbes",
+  "verification.runProbe",
+  "task.create",
+  "task.list",
+  "task.get",
+  "task.update",
+  "execute_with_agent",
+  "coordinator",
+  "web_search",
+  "x_search",
+  "file_search",
+] as const;
+
 const SESSION_SHELL_PROFILES = [
   "general",
   "coding",
@@ -52,11 +99,12 @@ const DEFINITIONS: Record<SessionShellProfile, ShellProfileDefinition> = {
     promptHeading: "General Shell Defaults",
     promptRules: [
       "Handle mixed operator, coding, research, and workflow requests without assuming one narrow mode.",
-      "Prefer direct progress with the current tool surface, but do not over-specialize toward repository work unless the user is clearly doing coding.",
+      "Prefer direct progress with the current default tool bundle, but use system.searchTools to discover non-default tools before trying them.",
       "Keep delegation, tool choice, and verification proportional to the task.",
       "When a general turn becomes non-trivial implementation work, expect independent verifier confirmation before reporting completion instead of self-certifying the result.",
     ],
     toolPrefixes: [],
+    exactToolNames: GENERAL_DEFAULT_TOOL_NAMES,
     delegationDefault: "balanced",
     approvalHints: {
       readOnlyBias: false,
@@ -264,10 +312,6 @@ export function getShellProfilePreferredToolNames(params: {
   availableToolNames: readonly string[];
 }): readonly string[] {
   const definition = getShellProfileDefinition(params.profile);
-  if (definition.name === "general") {
-    return params.availableToolNames;
-  }
-
   const matches = params.availableToolNames.filter((toolName) => {
     if (definition.exactToolNames?.includes(toolName)) {
       return true;

@@ -825,6 +825,36 @@ function enforceTopLevelExecutionEnvelope(params: {
   return undefined;
 }
 
+function extractDiscoveredToolNamesFromSearchResult(
+  toolName: string,
+  result: string,
+): readonly string[] {
+  if (toolName !== "system.searchTools") {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(result) as { results?: unknown };
+    if (!Array.isArray(parsed.results)) {
+      return [];
+    }
+    return Array.from(
+      new Set(
+        parsed.results
+          .map((entry) =>
+            typeof entry === "object" &&
+            entry !== null &&
+            typeof (entry as { name?: unknown }).name === "string"
+              ? String((entry as { name: string }).name).trim()
+              : "",
+          )
+          .filter((toolName) => toolName.length > 0),
+      ),
+    );
+  } catch {
+    return [];
+  }
+}
+
 export async function executeSingleToolCall(
   ctx: ExecutionContext,
   toolCall: LLMToolCall,
@@ -1281,6 +1311,24 @@ export async function executeSingleToolCall(
     durationMs: exec.durationMs,
     toolCallId: toolCall.id,
   });
+  if (!exec.toolFailed && ctx.toolDiscoveryEnabled) {
+    const discoveredToolNames = extractDiscoveredToolNamesFromSearchResult(
+      toolCall.name,
+      result,
+    );
+    if (discoveredToolNames.length > 0) {
+      ctx.discoveredToolNames = Array.from(
+        new Set([...ctx.discoveredToolNames, ...discoveredToolNames]),
+      );
+      applyActiveRoutedToolNames(ctx, [
+        ...ctx.activeRoutedToolNames,
+        ...discoveredToolNames,
+      ]);
+      loopState.activeRoutedToolSet = buildActiveRoutedToolSet(
+        ctx.activeRoutedToolNames,
+      );
+    }
+  }
   callbacks.emitExecutionTrace(ctx, {
     type: "tool_dispatch_finished",
     phase: "tool_followup",

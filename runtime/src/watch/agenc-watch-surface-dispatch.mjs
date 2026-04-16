@@ -67,9 +67,19 @@ function preferredRunSurfaceState(payload, priorState) {
 
 function modelRoutesMatch(left, right) {
   const leftProvider = String(left?.provider ?? "").trim();
-  const leftModel = String(left?.model ?? "").trim();
+  const leftModel = String(
+    left?.resolvedModel ??
+      left?.model ??
+      left?.configuredModel ??
+      "",
+  ).trim();
   const rightProvider = String(right?.provider ?? "").trim();
-  const rightModel = String(right?.model ?? "").trim();
+  const rightModel = String(
+    right?.resolvedModel ??
+      right?.model ??
+      right?.configuredModel ??
+      "",
+  ).trim();
   return Boolean(
     leftProvider &&
     leftModel &&

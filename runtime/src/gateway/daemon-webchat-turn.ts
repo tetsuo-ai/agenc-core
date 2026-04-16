@@ -65,6 +65,7 @@ import type { GatewayMessage } from "./message.js";
 import {
   resolveSessionShellProfile,
   SESSION_SHELL_PROFILE_METADATA_KEY,
+  type SessionShellProfile,
   type Session,
   type SessionManager,
 } from "./session.js";
@@ -111,7 +112,13 @@ interface ExecuteWebChatConversationTurnParams {
     sessionId: string,
     content: string,
     history: Session["history"],
+    advertisedToolNames: readonly string[],
   ) => ToolRoutingDecision | undefined;
+  readonly resolveAdvertisedToolNames?: (
+    sessionId: string,
+    shellProfile: SessionShellProfile,
+    discoveredToolNames?: readonly string[],
+  ) => readonly string[];
   readonly recordToolRoutingOutcome: (
     sessionId: string,
     summary: ChatToolRoutingSummary | undefined,
@@ -134,6 +141,10 @@ interface ExecuteWebChatConversationTurnParams {
     readonly effectiveHistory: readonly import("../llm/types.js").LLMMessage[];
     readonly executionEnvelope?: ExecutionEnvelope;
   }) => Promise<boolean>;
+}
+
+function uniqueToolNames(toolNames: readonly string[]): readonly string[] {
+  return Array.from(new Set(toolNames.map((toolName) => toolName.trim()).filter(Boolean)));
 }
 
 async function resolveWebChatTurnWorkspaceRoot(params: {
@@ -165,7 +176,8 @@ function buildInteractiveTurnState(params: {
   readonly runtimeWorkspaceRoot?: string;
   readonly baseSystemPrompt: string;
   readonly readSeeds: readonly import("../tools/system/filesystem.js").SessionReadSeedEntry[];
-  readonly routedToolNames?: readonly string[];
+  readonly advertisedToolNames: readonly string[];
+  readonly discoveredToolNames?: readonly string[];
 }): InteractiveContextState {
   const existing =
     params.session.metadata["interactiveContextState"] as
@@ -192,9 +204,19 @@ function buildInteractiveTurnState(params: {
       sessionStartContextMessages:
         existing?.cacheSafePromptSnapshot?.sessionStartContextMessages ?? [],
       toolScopeFingerprint: buildInteractiveToolScopeFingerprint(
-        params.routedToolNames,
+        params.advertisedToolNames,
       ),
     }),
+    ...(params.advertisedToolNames.length > 0
+      ? { defaultAdvertisedToolNames: params.advertisedToolNames }
+      : existing?.defaultAdvertisedToolNames
+        ? { defaultAdvertisedToolNames: existing.defaultAdvertisedToolNames }
+        : {}),
+    ...(params.discoveredToolNames && params.discoveredToolNames.length > 0
+      ? { discoveredToolNames: params.discoveredToolNames }
+      : existing?.discoveredToolNames
+        ? { discoveredToolNames: existing.discoveredToolNames }
+        : {}),
     ...(existing?.summaryRef ? { summaryRef: existing.summaryRef } : {}),
     ...(existing?.forkCarryover ? { forkCarryover: existing.forkCarryover } : {}),
   };
@@ -221,6 +243,7 @@ export async function executeWebChatConversationTurn(
     traceConfig,
     turnTraceId,
     buildToolRoutingDecision,
+    resolveAdvertisedToolNames,
     recordToolRoutingOutcome,
     getSessionTokenUsage,
     onModelInfo,
@@ -240,10 +263,22 @@ export async function executeWebChatConversationTurn(
       shellProfile:
         msg.metadata?.[SESSION_SHELL_PROFILE_METADATA_KEY],
     });
+    const shellProfile = resolveSessionShellProfile(session.metadata);
+    const existingInteractiveState =
+      session.metadata["interactiveContextState"] as
+        | InteractiveContextState
+        | undefined;
+    const advertisedToolNames =
+      resolveAdvertisedToolNames?.(
+        msg.sessionId,
+        shellProfile,
+        existingInteractiveState?.discoveredToolNames,
+      ) ?? [];
     const toolRoutingDecision = buildToolRoutingDecision(
       msg.sessionId,
       msg.content,
       session.history,
+      advertisedToolNames,
     );
     await appendTranscriptBatch(memoryBackend, msg.sessionId, [
       createTranscriptMessageEvent({
@@ -254,7 +289,7 @@ export async function executeWebChatConversationTurn(
     ]);
     const profileAwareSystemPrompt = appendShellProfilePromptSection({
       systemPrompt: getSystemPrompt(),
-      profile: resolveSessionShellProfile(session.metadata),
+      profile: shellProfile,
     });
     const effectiveSystemPrompt = filterSystemPromptForToolRouting({
       systemPrompt: profileAwareSystemPrompt,
@@ -352,12 +387,19 @@ export async function executeWebChatConversationTurn(
       workspaceRoot: runtimeWorkspaceRoot,
     });
     seedSessionReadState(msg.sessionId, atMentionAttachments.readSeeds);
+    const routedToolNames =
+      toolRoutingDecision?.routedToolNames ?? advertisedToolNames;
+    const expandedToolNames = uniqueToolNames([
+      ...advertisedToolNames,
+      ...(toolRoutingDecision?.expandedToolNames ?? []),
+    ]);
     const interactiveTurnState = buildInteractiveTurnState({
       session,
       runtimeWorkspaceRoot,
       baseSystemPrompt: effectiveSystemPrompt,
       readSeeds: atMentionAttachments.readSeeds,
-      routedToolNames: toolRoutingDecision?.routedToolNames,
+      advertisedToolNames,
+      discoveredToolNames: existingInteractiveState?.discoveredToolNames,
     });
     persistSessionInteractiveContext(session, interactiveTurnState);
     const sessionInteractiveContext = buildSessionInteractiveContext(session, {
@@ -418,13 +460,13 @@ export async function executeWebChatConversationTurn(
       ...(sessionInteractiveContext
         ? { interactiveContext: sessionInteractiveContext }
         : {}),
-      toolRouting: toolRoutingDecision
-        ? {
-            routedToolNames: toolRoutingDecision.routedToolNames,
-            expandedToolNames: toolRoutingDecision.expandedToolNames,
-            expandOnMiss: true,
-          }
-        : undefined,
+      toolRouting: {
+        advertisedToolNames,
+        routedToolNames,
+        expandedToolNames,
+        expandOnMiss: true,
+        persistDiscovery: true,
+      },
       trace: {
         ...(traceConfig.enabled && traceConfig.includeProviderPayloads
           ? {
@@ -615,6 +657,9 @@ export async function executeWebChatConversationTurn(
     persistSessionStartContextMessages(session, result);
     persistSessionInteractiveContext(session, {
       ...interactiveTurnState,
+      discoveredToolNames:
+        result.toolDiscoverySummary?.discoveredToolNames ??
+        interactiveTurnState.discoveredToolNames,
       cacheSafePromptSnapshot: buildInteractivePromptSnapshot({
         baseSystemPrompt: effectiveSystemPrompt,
         systemContextBlocks: [],
@@ -623,7 +668,7 @@ export async function executeWebChatConversationTurn(
           result.sessionStartContextMessages ??
           interactiveTurnState.cacheSafePromptSnapshot?.sessionStartContextMessages,
         toolScopeFingerprint: buildInteractiveToolScopeFingerprint(
-          toolRoutingDecision?.routedToolNames,
+          advertisedToolNames,
         ),
       }),
     });
@@ -683,6 +728,8 @@ export async function executeWebChatConversationTurn(
         compacted: result.compacted ?? false,
         provider: result.provider,
         model: result.model,
+        configuredModel: result.configuredModel,
+        resolvedModel: result.resolvedModel,
         usedFallback: result.usedFallback,
         contextWindowTokens,
         callUsage: result.callUsage,

@@ -38,6 +38,10 @@ import {
   type SessionShellProfile,
 } from "./session.js";
 import {
+  formatModelRouteModelLabel,
+  normalizeModelRouteSnapshot,
+} from "./model-route.js";
+import {
   formatSessionWorkflowStage,
   formatSessionWorktreeMode,
   resolveSessionWorkflowState,
@@ -1611,6 +1615,8 @@ export interface CommandRegistryDaemonContext {
   getSessionModelInfo(sessionId: string): {
     provider: string;
     model: string;
+    configuredModel?: string;
+    resolvedModel?: string;
     usedFallback: boolean;
   } | undefined;
   handleConfigReload(): Promise<void>;
@@ -3956,6 +3962,9 @@ export function createDaemonCommandRegistry(
           taskResult: tasks,
           childInfos: ctx.listSubAgentInfo(resolvedSessionId),
         });
+        const modelLabel = modelInfo
+          ? `${modelInfo.provider}:${formatModelRouteModelLabel(modelInfo)}${modelInfo.usedFallback ? " (fallback)" : ""}`
+          : "unknown";
         await cmdCtx.replyResult({
           text: [
             "Shell session:",
@@ -3969,11 +3978,7 @@ export function createDaemonCommandRegistry(
               : []),
             `  Workspace root: ${workspaceRoot}`,
             `  History messages: ${session?.history.length ?? 0}`,
-            `  Model: ${
-              modelInfo
-                ? `${modelInfo.provider}:${modelInfo.model}${modelInfo.usedFallback ? " (fallback)" : ""}`
-                : "unknown"
-            }`,
+            `  Model: ${modelLabel}`,
             "",
             formatWorkflowOwnershipReply(ownership),
           ].join("\n"),
@@ -3990,7 +3995,7 @@ export function createDaemonCommandRegistry(
               historyMessages: session?.history.length ?? 0,
               ...(modelInfo
                 ? {
-                    model: `${modelInfo.provider}:${modelInfo.model}${modelInfo.usedFallback ? " (fallback)" : ""}`,
+                    model: modelLabel,
                   }
                 : {}),
               ownership: ownership.map((entry) => ({ ...entry })),
@@ -5515,11 +5520,21 @@ export function createDaemonCommandRegistry(
       const arg = cmdCtx.args.trim();
       const argLower = arg.toLowerCase();
       const configuredPrimaryProvider = ctx.gateway?.config.llm?.provider ?? "none";
+      const configuredPrimaryRoute = normalizeModelRouteSnapshot({
+        provider: configuredPrimaryProvider,
+        configuredModel:
+          ctx.gateway?.config.llm?.model ??
+          (configuredPrimaryProvider === "grok"
+            ? DEFAULT_GROK_MODEL
+            : "unknown"),
+        resolvedModel:
+          configuredPrimaryProvider === "grok"
+            ? normalizeGrokModel(ctx.gateway?.config.llm?.model) ??
+              DEFAULT_GROK_MODEL
+            : ctx.gateway?.config.llm?.model ?? "unknown",
+      });
       const configuredPrimaryModel =
-        configuredPrimaryProvider === "grok"
-          ? normalizeGrokModel(ctx.gateway?.config.llm?.model) ??
-            DEFAULT_GROK_MODEL
-          : ctx.gateway?.config.llm?.model ?? "unknown";
+        formatModelRouteModelLabel(configuredPrimaryRoute);
       const configuredFallbacks =
         ctx.gateway?.config.llm?.fallback?.map((entry) => (
           `${entry.provider}:${
@@ -5537,7 +5552,7 @@ export function createDaemonCommandRegistry(
         const lines = [
           "Model routing:",
           last
-            ? `  Last completion: ${last.model} (provider: ${last.provider}${last.usedFallback ? ", fallback used" : ""})`
+            ? `  Last completion: ${formatModelRouteModelLabel(last)} (provider: ${last.provider}${last.usedFallback ? ", fallback used" : ""})`
             : "  Last completion: none recorded for this session",
           `  Primary: ${configuredPrimaryProvider}:${configuredPrimaryModel}`,
           `  Fallbacks: ${configuredFallbacks.length > 0 ? configuredFallbacks.join(", ") : "none"}`,
@@ -5552,7 +5567,7 @@ export function createDaemonCommandRegistry(
             {
               label: "Last Completion",
               value: last
-                ? `${last.provider}:${last.model}${last.usedFallback ? " (fallback)" : ""}`
+                ? `${last.provider}:${formatModelRouteModelLabel(last)}${last.usedFallback ? " (fallback)" : ""}`
                 : "none recorded",
             },
             {

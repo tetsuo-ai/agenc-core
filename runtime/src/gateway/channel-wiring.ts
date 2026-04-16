@@ -117,6 +117,11 @@ export interface ChannelWiringDeps {
     history: readonly LLMMessage[],
     shellProfile?: SessionShellProfile,
   ): ToolRoutingDecision | undefined;
+  resolveAdvertisedToolNames?(
+    sessionId: string,
+    shellProfile: SessionShellProfile,
+    discoveredToolNames?: readonly string[],
+  ): readonly string[];
 
   recordToolRoutingOutcome(
     sessionId: string,
@@ -343,13 +348,23 @@ async function wireTelegram(
         includeTraceArtifacts: true,
         includePlannerSummaryInTrace: true,
         persistToDaemonMemory: true,
-        buildToolRoutingDecision: (sessionId, content, history) =>
+        buildToolRoutingDecision: (sessionId, content, history, _advertisedToolNames) =>
           deps.buildToolRoutingDecision(
             sessionId,
             content,
             history,
             resolveSessionShellProfile(session.metadata),
           ),
+        resolveAdvertisedToolNames: (
+          sessionId,
+          shellProfile,
+          discoveredToolNames,
+        ) =>
+          deps.resolveAdvertisedToolNames?.(
+            sessionId,
+            shellProfile,
+            discoveredToolNames,
+          ) ?? [],
         recordToolRoutingOutcome: (sessionId, summary) => {
           deps.recordToolRoutingOutcome(sessionId, summary);
         },
@@ -544,13 +559,23 @@ export async function wireExternalChannel(
         turnTraceId,
         memoryBackend: deps.memoryBackend,
         persistToDaemonMemory: channelName !== "concordia",
-        buildToolRoutingDecision: (sessionId, content, history) =>
+        buildToolRoutingDecision: (sessionId, content, history, _advertisedToolNames) =>
           deps.buildToolRoutingDecision(
             sessionId,
             content,
             history,
             resolveSessionShellProfile(session.metadata),
           ),
+        resolveAdvertisedToolNames: (
+          sessionId,
+          shellProfile,
+          discoveredToolNames,
+        ) =>
+          deps.resolveAdvertisedToolNames?.(
+            sessionId,
+            shellProfile,
+            discoveredToolNames,
+          ) ?? [],
         recordToolRoutingOutcome: (sessionId, summary) => {
           deps.recordToolRoutingOutcome(sessionId, summary);
         },

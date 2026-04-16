@@ -2586,7 +2586,6 @@ describe("DaemonManager", () => {
     }];
 
     expect((dm as any).getAdvertisedToolNames()).toEqual([
-      "desktop.bash",
       "web_search",
     ]);
   });
