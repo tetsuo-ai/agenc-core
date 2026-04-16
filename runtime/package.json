@@ -119,6 +119,7 @@
     "@tetsuo-ai/protocol": "0.2.0",
     "@tetsuo-ai/sdk": "1.4.0",
     "bn.js": "^5.2.3",
+    "jimp": "^1.6.1",
     "undici": "^7.22.0"
   },
   "devDependencies": {
