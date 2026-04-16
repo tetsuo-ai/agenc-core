@@ -10,7 +10,7 @@
  * this layer just gives the executor a uniform shape to call into so
  * it can be replaced piecewise later.
  *
- * Cut 5.1 of the claude_code-alignment refactor.
+ * Cut 5.1 of the context-alignment refactor.
  *
  * @module
  */
@@ -74,14 +74,11 @@ interface AutocompactResult {
 export function applyAutocompact(input: AutocompactInput): AutocompactResult {
   const thresholdTokens =
     input.thresholdTokens ?? DEFAULT_AUTOCOMPACT_THRESHOLD_TOKENS;
-  // U0: snipTokensFreed is accepted but not yet consumed by the threshold
-  // comparison. U1 will subtract it from tokensBefore before the check so
-  // a snip that already pruned enough can avoid a needless autocompact.
-  void input.snipTokensFreed;
-  const tokensBefore = tokenCountWithEstimation({
+  const rawTokensBefore = tokenCountWithEstimation({
     messages: input.messages,
     lastResponseUsage: input.lastResponseUsage,
   });
+  const tokensBefore = Math.max(0, rawTokensBefore - (input.snipTokensFreed ?? 0));
 
   if (tokensBefore < thresholdTokens) {
     return {

@@ -455,6 +455,7 @@ export class ChatExecutor {
       retryPolicyMatrix: this.retryPolicyMatrix,
       allowedTools: this.allowedTools,
       contextWindowTokens: this.promptBudget.contextWindowTokens,
+      maxOutputTokens: this.promptBudget.maxOutputTokens,
       runtimeContractFlags: this.runtimeContractFlags,
       ...(this.stopHookRuntime ? { stopHookRuntime: this.stopHookRuntime } : {}),
       completionValidation: this.completionValidation,

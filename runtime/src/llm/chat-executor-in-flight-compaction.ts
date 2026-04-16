@@ -24,11 +24,10 @@
 
 import { findInFlightCompactionTailStartIndex } from "./chat-executor-tool-loop.js";
 import {
-  ChatBudgetExceededError,
   type CooldownEntry,
   type ExecutionContext,
 } from "./chat-executor-types.js";
-import { getSessionCompactionState } from "./chat-executor-state.js";
+import { buildCurrentContextUsageSnapshot } from "./compact/context-window.js";
 import type {
   HistoryCompactionDependencies,
 } from "./chat-executor-history-compaction.js";
@@ -92,16 +91,16 @@ export async function maybeCompactInFlightCallInput(
   readonly callSections?: readonly PromptBudgetSection[];
   readonly statefulHistoryCompacted: boolean;
 }> {
-  const compactionState = getSessionCompactionState(
-    deps.sessionTokens,
-    ctx.sessionId,
-    deps.sessionTokenBudget,
-    deps.sessionCompactionThreshold,
-  );
+  const compactionState = buildCurrentContextUsageSnapshot({
+    messages: input.callMessages,
+    contextWindowTokens: deps.promptBudget.contextWindowTokens,
+    maxOutputTokens: deps.promptBudget.maxOutputTokens,
+    lastResponseUsage: ctx.response?.usage,
+  });
   const statefulHistoryCompacted =
     input.statefulHistoryCompacted === true || ctx.compacted;
   if (
-    compactionState.softThresholdReached &&
+    compactionState.isAboveAutocompactThreshold &&
     shouldSkipHistoryCompactionForCircuitBreaker(
       ctx.perIterationCompaction.autocompact.consecutiveFailures,
     )
@@ -114,8 +113,7 @@ export async function maybeCompactInFlightCallInput(
     };
   }
   if (
-    !compactionState.hardBudgetReached &&
-    !compactionState.softThresholdReached
+    !compactionState.isAboveAutocompactThreshold
   ) {
     return {
       callMessages: input.callMessages,
@@ -136,13 +134,6 @@ export async function maybeCompactInFlightCallInput(
       input.callReconciliationMessages === ctx.reconciliationMessages
     );
   if (!usesLiveExecutionMessages) {
-    if (compactionState.hardBudgetReached) {
-      throw new ChatBudgetExceededError(
-        ctx.sessionId,
-        compactionState.used,
-        deps.sessionTokenBudget!,
-      );
-    }
     return {
       callMessages: input.callMessages,
       callReconciliationMessages: input.callReconciliationMessages,
@@ -158,13 +149,6 @@ export async function maybeCompactInFlightCallInput(
   const replayTail = input.callMessages.slice(replayTailStartIndex);
   const inFlightKeepTailCount = 3;
   if (replayTail.length <= inFlightKeepTailCount) {
-    if (compactionState.hardBudgetReached) {
-      throw new ChatBudgetExceededError(
-        ctx.sessionId,
-        compactionState.used,
-        deps.sessionTokenBudget!,
-      );
-    }
     return {
       callMessages: input.callMessages,
       callReconciliationMessages: input.callReconciliationMessages,
@@ -173,9 +157,7 @@ export async function maybeCompactInFlightCallInput(
     };
   }
 
-  const cooldownSnapshot = compactionState.hardBudgetReached
-    ? undefined
-    : new Map<string, CooldownEntry>(deps.cooldowns);
+  const cooldownSnapshot = new Map<string, CooldownEntry>(deps.cooldowns);
   try {
     const compacted =
       trySessionMemoryCompaction({
@@ -183,8 +165,7 @@ export async function maybeCompactInFlightCallInput(
         sessionId: ctx.sessionId,
         existingArtifactContext: ctx.compactedArtifactContext,
         keepTailCount: inFlightKeepTailCount,
-        thresholdTokens:
-          deps.sessionCompactionThreshold ?? deps.sessionTokenBudget,
+        thresholdTokens: compactionState.autocompactThresholdTokens,
       }) ??
       await compactHistory(
         replayTail,
@@ -262,21 +243,9 @@ export async function maybeCompactInFlightCallInput(
         ctx.perIterationCompaction.autocompact,
       ),
     };
-    if (compactionState.hardBudgetReached) {
-      if (error instanceof ChatBudgetExceededError) {
-        throw error;
-      }
-      throw new ChatBudgetExceededError(
-        ctx.sessionId,
-        compactionState.used,
-        deps.sessionTokenBudget!,
-      );
-    }
-    if (cooldownSnapshot) {
-      deps.cooldowns.clear();
-      for (const [providerName, cooldown] of cooldownSnapshot.entries()) {
-        deps.cooldowns.set(providerName, cooldown);
-      }
+    deps.cooldowns.clear();
+    for (const [providerName, cooldown] of cooldownSnapshot.entries()) {
+      deps.cooldowns.set(providerName, cooldown);
     }
     return {
       callMessages: input.callMessages,

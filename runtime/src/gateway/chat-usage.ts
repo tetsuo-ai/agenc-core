@@ -1,5 +1,8 @@
 import type { ChatCallUsageRecord } from "../llm/chat-executor-types.js";
 import type { RuntimeEconomicsSummary } from "../llm/run-budget.js";
+import {
+  buildCurrentContextUsageSnapshot,
+} from "../llm/compact/context-window.js";
 
 type ChatUsageSectionId =
   | "system"
@@ -28,6 +31,10 @@ export interface ChatUsagePayload {
   readonly resolvedModel?: string;
   readonly usedFallback?: boolean;
   readonly contextWindowTokens?: number;
+  readonly effectiveContextWindowTokens?: number;
+  readonly autocompactThresholdTokens?: number;
+  readonly contextPercentUsed?: number;
+  readonly freeTokens?: number;
   readonly promptTokens?: number;
   readonly promptTokenBudget?: number;
   readonly maxOutputTokens?: number;
@@ -159,9 +166,23 @@ export function buildChatUsagePayload(
   const usageRecord = selectUsageRecord(input.callUsage);
   if (!usageRecord) {
     if ((input.contextWindowTokens ?? 0) > 0) {
+      const snapshot = buildCurrentContextUsageSnapshot({
+        messages: [],
+        contextWindowTokens: input.contextWindowTokens,
+      });
       return {
         ...payload,
         contextWindowTokens: normalizeNonNegativeInt(input.contextWindowTokens ?? 0),
+        ...(snapshot.effectiveContextWindowTokens
+          ? {
+              effectiveContextWindowTokens: normalizeNonNegativeInt(
+                snapshot.effectiveContextWindowTokens,
+              ),
+              autocompactThresholdTokens: normalizeNonNegativeInt(
+                snapshot.autocompactThresholdTokens,
+              ),
+            }
+          : {}),
       };
     }
     return payload;
@@ -171,12 +192,40 @@ export function buildChatUsagePayload(
   const charPerToken = diagnostics?.model.charPerToken ?? DEFAULT_CHAR_PER_TOKEN;
   const promptTokens = charsToTokens(usageRecord.afterBudget.estimatedChars, charPerToken);
   const contextWindowTokens = diagnostics?.model.contextWindowTokens ?? input.contextWindowTokens;
+  const thresholdSnapshot = buildCurrentContextUsageSnapshot({
+    messages: [],
+    contextWindowTokens,
+    maxOutputTokens: diagnostics?.model.maxOutputTokens,
+  });
 
   const withPromptShape: ChatUsagePayload = {
     ...payload,
     promptTokens,
     ...(contextWindowTokens && contextWindowTokens > 0
       ? { contextWindowTokens: normalizeNonNegativeInt(contextWindowTokens) }
+      : {}),
+    ...(thresholdSnapshot.effectiveContextWindowTokens
+      ? {
+          effectiveContextWindowTokens: normalizeNonNegativeInt(
+            thresholdSnapshot.effectiveContextWindowTokens,
+          ),
+          autocompactThresholdTokens: normalizeNonNegativeInt(
+            thresholdSnapshot.autocompactThresholdTokens,
+          ),
+          contextPercentUsed:
+            thresholdSnapshot.effectiveContextWindowTokens > 0
+              ? roundPercent(
+                  (promptTokens / thresholdSnapshot.effectiveContextWindowTokens) *
+                    100,
+                )
+              : 0,
+          freeTokens: Math.max(
+            0,
+            normalizeNonNegativeInt(
+              thresholdSnapshot.effectiveContextWindowTokens,
+            ) - promptTokens,
+          ),
+        }
       : {}),
     ...(diagnostics
       ? {

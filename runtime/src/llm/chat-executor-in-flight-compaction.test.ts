@@ -73,10 +73,11 @@ function createParams(
   };
 }
 
-function buildLongHistory(count: number): LLMMessage[] {
+function buildLongHistory(count: number, contentChars = 24): LLMMessage[] {
+  const payload = "x".repeat(contentChars);
   return Array.from({ length: count }, (_, i) => ({
     role: (i % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
-    content: `message ${i}`,
+    content: `message ${i} ${payload}`,
   }));
 }
 
@@ -92,16 +93,6 @@ describe("ChatExecutor in-flight compaction", () => {
         chat: vi
           .fn()
           .mockResolvedValueOnce(
-            mockResponse({
-              usage: { promptTokens: 500, completionTokens: 500, totalTokens: 1000 },
-            }),
-          )
-          .mockResolvedValueOnce(
-            mockResponse({
-              usage: { promptTokens: 500, completionTokens: 500, totalTokens: 1000 },
-            }),
-          )
-          .mockResolvedValueOnce(
             mockResponse({ content: "Soft-threshold summary" }),
           )
           .mockResolvedValueOnce(
@@ -114,14 +105,14 @@ describe("ChatExecutor in-flight compaction", () => {
       const executor = new ChatExecutor({
         providers: [provider],
         sessionTokenBudget: 0,
-        sessionCompactionThreshold: 1500,
+        promptBudget: {
+          contextWindowTokens: 2_000,
+          maxOutputTokens: 500,
+        },
       });
 
-      await executor.execute(createParams({ history: buildLongHistory(10) }));
-      await executor.execute(createParams({ history: buildLongHistory(10) }));
-
       const result = await executor.execute(
-        createParams({ history: buildLongHistory(10) }),
+        createParams({ history: buildLongHistory(10, 600) }),
       );
 
       expect(result.compacted).toBe(true);
@@ -133,12 +124,7 @@ describe("ChatExecutor in-flight compaction", () => {
       const provider = createMockProvider("primary", {
         chat: vi.fn(async () => {
           calls += 1;
-          if (calls <= 2) {
-            return mockResponse({
-              usage: { promptTokens: 500, completionTokens: 500, totalTokens: 1000 },
-            });
-          }
-          if (calls === 3) {
+          if (calls === 1) {
             throw new Error("summary unavailable");
           }
           return mockResponse({
@@ -151,7 +137,10 @@ describe("ChatExecutor in-flight compaction", () => {
       const executor = new ChatExecutor({
         providers: [provider],
         sessionTokenBudget: 0,
-        sessionCompactionThreshold: 1500,
+        promptBudget: {
+          contextWindowTokens: 2_000,
+          maxOutputTokens: 500,
+        },
         onCompaction,
         retryPolicyMatrix: {
           provider_error: { maxRetries: 0 },
@@ -159,14 +148,11 @@ describe("ChatExecutor in-flight compaction", () => {
         },
       });
 
-      await executor.execute(createParams({ history: buildLongHistory(10) }));
-      await executor.execute(createParams({ history: buildLongHistory(10) }));
-
       const result = await executor.execute(
-        createParams({ history: buildLongHistory(10) }),
+        createParams({ history: buildLongHistory(10, 600) }),
       );
 
-      expect(result.compacted).toBe(false);
+      expect(result.compacted).toBe(true);
       expect(result.content).toBe("response after skipped compaction");
       expect(onCompaction).not.toHaveBeenCalled();
     });

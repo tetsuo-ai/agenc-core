@@ -82,14 +82,18 @@ import {
 // ResolvedTraceLoggingConfig used indirectly via resolveTraceLoggingConfig
 import {
   resolveSessionTokenBudget,
-  resolveLocalCompactionThreshold,
   DEFAULT_GROK_MODEL,
 } from "./llm-provider-manager.js";
 import {
+  buildSessionStatefulOptions,
   clearWebSessionRuntimeState,
   persistWebSessionRuntimeState,
 } from "./daemon-session-state.js";
 import { hasRuntimeLimit } from "../llm/runtime-limit-policy.js";
+import {
+  buildCurrentApiView,
+  buildCurrentContextUsageSnapshot,
+} from "../llm/compact/context-window.js";
 import {
   listKnownGrokModels,
   normalizeGrokModel,
@@ -1964,67 +1968,63 @@ export function createDaemonCommandRegistry(
         return;
       }
 
-      const totalTokens = executor.getSessionTokenUsage(cmdCtx.sessionId);
       const contextWindowTokens = ctx.getResolvedContextWindowTokens();
       const sessionTokenBudget = resolveSessionTokenBudget(
         ctx.gateway?.config.llm,
         contextWindowTokens,
       );
-      const localCompactionThreshold = resolveLocalCompactionThreshold(
-        ctx.gateway?.config.llm,
-        contextWindowTokens,
-      );
-      const displayThreshold =
-        hasRuntimeLimit(localCompactionThreshold)
-          ? Number(localCompactionThreshold)
-          : hasRuntimeLimit(sessionTokenBudget)
-            ? Number(sessionTokenBudget)
-            : undefined;
-      const ratio =
-        typeof displayThreshold === "number" && displayThreshold > 0
-          ? totalTokens / displayThreshold
-          : 0;
-      const percent = Math.min(100, Math.max(0, ratio * 100));
 
       // Build breakdown
       const sessionId = resolveSessionId(cmdCtx.sessionId);
       const session = sessionMgr.get(sessionId);
-      const historyLen = session?.history.length ?? 0;
       const systemPrompt = ctx.getSystemPrompt();
-      const systemPromptChars = (systemPrompt ?? "").length;
-      const systemPromptTokens = Math.ceil(systemPromptChars / 4);
+      const stateful = session ? buildSessionStatefulOptions(session) : undefined;
+      const usageSnapshot = buildCurrentContextUsageSnapshot({
+        messages: buildCurrentApiView({
+          baseSystemPrompt: systemPrompt,
+          artifactContext: stateful?.artifactContext,
+          history: session?.history ?? [],
+        }),
+        contextWindowTokens,
+        maxOutputTokens: ctx.gateway?.config.llm?.maxTokens,
+      });
       const toolCount = registry.size;
       const model = normalizeGrokModel(ctx.gateway?.config.llm?.model) ?? "unknown";
       const provider = ctx.gateway?.config.llm?.provider ?? "unknown";
 
-      const compactionPending =
-        typeof displayThreshold === "number" && totalTokens > displayThreshold;
       const lines = [
         `Context Window: ${(contextWindowTokens ?? 0).toLocaleString()} tokens (${model} via ${provider})`,
+        `Effective Window: ${
+          usageSnapshot.effectiveContextWindowTokens?.toLocaleString() ?? "unknown"
+        } tokens`,
         `Session Budget: ${
           hasRuntimeLimit(sessionTokenBudget)
             ? `${sessionTokenBudget.toLocaleString()} tokens`
             : "unlimited"
         }`,
-        `Used: ${totalTokens.toLocaleString()} tokens (${percent.toFixed(percent >= 10 ? 0 : 1)}%)` +
-          (compactionPending
-            ? " — COMPACTION PENDING (next message will compact)"
+        `Current View: ${usageSnapshot.currentTokens.toLocaleString()} tokens (${(
+          usageSnapshot.percentUsed ?? 0
+        ).toFixed((usageSnapshot.percentUsed ?? 0) >= 10 ? 0 : 1)}%)` +
+          (usageSnapshot.isAboveAutocompactThreshold
+            ? " — COMPACTION PENDING"
             : ""),
         `Free: ${
-          typeof displayThreshold === "number"
-            ? `${compactionPending ? "0" : Math.max(0, displayThreshold - totalTokens).toLocaleString()} tokens`
+          typeof usageSnapshot.freeTokens === "number"
+            ? `${usageSnapshot.freeTokens.toLocaleString()} tokens`
             : "unknown"
         }`,
-        `Compaction: local ${
-          typeof displayThreshold === "number"
-            ? `enabled @ ${displayThreshold.toLocaleString()} tokens`
-            : "enabled (threshold unavailable)"
-        }; provider disabled`,
+        `Autocompact Threshold: ${usageSnapshot.autocompactThresholdTokens.toLocaleString()} tokens`,
+        `Blocking Limit: ${
+          usageSnapshot.blockingThresholdTokens?.toLocaleString() ?? "unknown"
+        } tokens`,
+        "Compaction: local current-view autocompact; provider disabled",
         "",
         "Breakdown:",
-        `  System prompt: ~${systemPromptTokens.toLocaleString()} tokens`,
+        ...usageSnapshot.sections.map(
+          (section) => `  ${section.label}: ~${section.tokens.toLocaleString()} tokens`,
+        ),
         `  Tools: ${toolCount} registered`,
-        `  History: ${historyLen} messages`,
+        `  History: ${(session?.history.length ?? 0).toLocaleString()} messages`,
         `  Memory: ${ctx.getMemoryBackendName() ?? "none"}`,
         "",
         "Workspace files loaded:",
@@ -2069,25 +2069,27 @@ export function createDaemonCommandRegistry(
         ? lines.slice(lines.indexOf("Memory health:") + 1)
         : [];
       await replyRuntimeResult(cmdCtx, "context", lines.join("\n"), {
-        status: compactionPending ? "warning" : "healthy",
+        status: usageSnapshot.isAboveAutocompactThreshold ? "warning" : "healthy",
         metrics: [
           {
             label: "Context Window",
             value: `${(contextWindowTokens ?? 0).toLocaleString()} tokens`,
           },
           {
-            label: "Used",
-            value: `${totalTokens.toLocaleString()} tokens (${percent.toFixed(percent >= 10 ? 0 : 1)}%)`,
-            tone: compactionPending ? "warning" : "neutral",
+            label: "Current View",
+            value: `${usageSnapshot.currentTokens.toLocaleString()} tokens (${(
+              usageSnapshot.percentUsed ?? 0
+            ).toFixed((usageSnapshot.percentUsed ?? 0) >= 10 ? 0 : 1)}%)`,
+            tone: usageSnapshot.isAboveAutocompactThreshold ? "warning" : "neutral",
           },
           {
             label: "Free",
             value:
-              typeof displayThreshold === "number"
-                ? `${Math.max(0, displayThreshold - totalTokens).toLocaleString()} tokens`
+              typeof usageSnapshot.freeTokens === "number"
+                ? `${usageSnapshot.freeTokens.toLocaleString()} tokens`
                 : "unknown",
           },
-          { label: "History", value: `${historyLen} messages` },
+          { label: "History", value: `${session?.history.length ?? 0} messages` },
           { label: "Tools", value: `${toolCount}` },
           { label: "Memory", value: ctx.getMemoryBackendName() ?? "none" },
         ],
@@ -2104,13 +2106,13 @@ export function createDaemonCommandRegistry(
           sessionId: cmdCtx.sessionId,
           contextWindowTokens: contextWindowTokens ?? 0,
           sessionTokenBudget,
-          localCompactionThreshold,
-          totalTokens,
-          displayThreshold,
-          compactionPending,
-          systemPromptTokens,
+          autocompactThresholdTokens: usageSnapshot.autocompactThresholdTokens,
+          effectiveContextWindowTokens: usageSnapshot.effectiveContextWindowTokens,
+          currentTokens: usageSnapshot.currentTokens,
+          blockingThresholdTokens: usageSnapshot.blockingThresholdTokens,
+          compactionPending: usageSnapshot.isAboveAutocompactThreshold,
           toolCount,
-          historyLen,
+          historyLen: session?.history.length ?? 0,
           provider,
           model,
         },

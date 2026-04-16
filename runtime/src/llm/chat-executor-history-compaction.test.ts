@@ -73,10 +73,11 @@ function createParams(
   };
 }
 
-function buildLongHistory(count: number): LLMMessage[] {
+function buildLongHistory(count: number, contentChars = 24): LLMMessage[] {
+  const payload = "x".repeat(contentChars);
   return Array.from({ length: count }, (_, i) => ({
     role: (i % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
-    content: `message ${i}`,
+    content: `message ${i} ${payload}`,
   }));
 }
 
@@ -86,7 +87,7 @@ function buildLongHistory(count: number): LLMMessage[] {
 
 describe("ChatExecutor history compaction", () => {
   describe("context compaction", () => {
-    it("compacts instead of throwing when budget exceeded", async () => {
+    it("compacts instead of throwing when the current view exceeds the local threshold", async () => {
       const provider = createMockProvider("primary", {
         chat: vi
           .fn()
@@ -116,14 +117,18 @@ describe("ChatExecutor history compaction", () => {
       const executor = new ChatExecutor({
         providers: [provider],
         sessionTokenBudget: 1500,
+        promptBudget: {
+          contextWindowTokens: 2_000,
+          maxOutputTokens: 500,
+        },
       });
 
-      await executor.execute(createParams({ history: buildLongHistory(10) }));
-      await executor.execute(createParams({ history: buildLongHistory(10) }));
+      await executor.execute(createParams({ history: buildLongHistory(4, 12) }));
+      await executor.execute(createParams({ history: buildLongHistory(4, 12) }));
 
-      // Third call — budget exceeded, compaction succeeds, execution continues
+      // Third call — current-view threshold exceeded, compaction succeeds, execution continues
       const result = await executor.execute(
-        createParams({ history: buildLongHistory(10) }),
+        createParams({ history: buildLongHistory(10, 600) }),
       );
 
       expect(result.compacted).toBe(true);
@@ -158,13 +163,17 @@ describe("ChatExecutor history compaction", () => {
       const executor = new ChatExecutor({
         providers: [provider],
         sessionTokenBudget: 1500,
+        promptBudget: {
+          contextWindowTokens: 2_000,
+          maxOutputTokens: 500,
+        },
       });
 
-      await executor.execute(createParams({ history: buildLongHistory(10) }));
-      await executor.execute(createParams({ history: buildLongHistory(10) }));
+      await executor.execute(createParams({ history: buildLongHistory(4, 12) }));
+      await executor.execute(createParams({ history: buildLongHistory(4, 12) }));
       expect(executor.getSessionTokenUsage("session-1")).toBe(2000);
 
-      await executor.execute(createParams({ history: buildLongHistory(10) }));
+      await executor.execute(createParams({ history: buildLongHistory(10, 600) }));
 
       // After compaction, counter was reset then new usage accumulated
       expect(executor.getSessionTokenUsage("session-1")).toBe(20);
@@ -200,11 +209,15 @@ describe("ChatExecutor history compaction", () => {
       const executor = new ChatExecutor({
         providers: [provider],
         sessionTokenBudget: 1500,
+        promptBudget: {
+          contextWindowTokens: 2_000,
+          maxOutputTokens: 500,
+        },
       });
 
       await executor.execute(
         createParams({
-          history: buildLongHistory(10),
+          history: buildLongHistory(4, 12),
           trace: {
             includeProviderPayloads: true,
             onProviderTraceEvent: (event) => traceEvents.push(event),
@@ -213,7 +226,7 @@ describe("ChatExecutor history compaction", () => {
       );
       await executor.execute(
         createParams({
-          history: buildLongHistory(10),
+          history: buildLongHistory(4, 12),
           trace: {
             includeProviderPayloads: true,
             onProviderTraceEvent: (event) => traceEvents.push(event),
@@ -222,7 +235,7 @@ describe("ChatExecutor history compaction", () => {
       );
       await executor.execute(
         createParams({
-          history: buildLongHistory(10),
+          history: buildLongHistory(10, 600),
           trace: {
             includeProviderPayloads: true,
             onProviderTraceEvent: (event) => traceEvents.push(event),
@@ -266,12 +279,16 @@ describe("ChatExecutor history compaction", () => {
       const executor = new ChatExecutor({
         providers: [provider],
         sessionTokenBudget: 1500,
+        promptBudget: {
+          contextWindowTokens: 2_000,
+          maxOutputTokens: 500,
+        },
         onCompaction,
       });
 
-      await executor.execute(createParams({ history: buildLongHistory(10) }));
-      await executor.execute(createParams({ history: buildLongHistory(10) }));
-      await executor.execute(createParams({ history: buildLongHistory(10) }));
+      await executor.execute(createParams({ history: buildLongHistory(4, 12) }));
+      await executor.execute(createParams({ history: buildLongHistory(4, 12) }));
+      await executor.execute(createParams({ history: buildLongHistory(10, 600) }));
 
       expect(onCompaction).toHaveBeenCalledOnce();
       expect(onCompaction).toHaveBeenCalledWith(
@@ -306,15 +323,17 @@ describe("ChatExecutor history compaction", () => {
       const executor = new ChatExecutor({
         providers: [provider],
         sessionTokenBudget: 1500,
+        promptBudget: {
+          contextWindowTokens: 2_000,
+          maxOutputTokens: 500,
+        },
       });
 
-      await executor.execute(createParams({ history: buildLongHistory(3) }));
-      await executor.execute(createParams({ history: buildLongHistory(3) }));
+      await executor.execute(createParams({ history: buildLongHistory(3, 12) }));
+      await executor.execute(createParams({ history: buildLongHistory(3, 12) }));
 
       // Short history (<=5 msgs) — no summary LLM call needed
-      const result = await executor.execute(
-        createParams({ history: buildLongHistory(3) }),
-      );
+      const result = await executor.execute(createParams({ history: buildLongHistory(3, 1600) }));
 
       expect(result.compacted).toBe(true);
       // Token counter reset + new usage
@@ -371,15 +390,19 @@ describe("ChatExecutor history compaction", () => {
       const executor = new ChatExecutor({
         providers: [provider],
         sessionTokenBudget: 150,
+        promptBudget: {
+          contextWindowTokens: 2_000,
+          maxOutputTokens: 500,
+        },
         onCompaction,
       });
 
-      await executor.execute(createParams({ history: buildLongHistory(10) }));
-      await executor.execute(createParams({ history: buildLongHistory(10) }));
+      await executor.execute(createParams({ history: buildLongHistory(4, 12) }));
+      await executor.execute(createParams({ history: buildLongHistory(4, 12) }));
 
       // First compaction
       const r1 = await executor.execute(
-        createParams({ history: buildLongHistory(10) }),
+        createParams({ history: buildLongHistory(10, 600) }),
       );
       expect(r1.compacted).toBe(true);
       expect(executor.getSessionTokenUsage("session-1")).toBe(100);

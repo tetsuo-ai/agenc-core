@@ -36,7 +36,10 @@ import {
   pushMessage,
   setStopReason,
 } from "./chat-executor-ctx-helpers.js";
-import { getSessionCompactionState } from "./chat-executor-state.js";
+import {
+  buildCurrentApiView,
+  buildCurrentContextUsageSnapshot,
+} from "./compact/context-window.js";
 import {
   extractMessageText,
   normalizeHistory,
@@ -56,7 +59,6 @@ import {
 import { isConcordiaSimulationTurnMessage } from "./chat-executor-turn-contracts.js";
 import {
   buildDefaultExecutionContext,
-  ChatBudgetExceededError,
   type ChatExecuteParams,
   type CooldownEntry,
   type ExecutionContext,
@@ -218,18 +220,20 @@ export async function initializeExecutionContext(
   // Pre-check token budget — attempt compaction instead of hard fail
   let compacted = false;
   let compactedArtifactContext = params.stateful?.artifactContext;
-  const compactionState = getSessionCompactionState(
-    deps.sessionTokens,
-    sessionId,
-    deps.sessionTokenBudget,
-    deps.sessionCompactionThreshold,
-  );
+  const preflightCompactionState = buildCurrentContextUsageSnapshot({
+    messages: buildCurrentApiView({
+      baseSystemPrompt: interactivePromptEnvelope.baseSystemPrompt,
+      artifactContext: params.stateful?.artifactContext,
+      summaryText: params.interactiveContext?.summaryText,
+      history,
+    }),
+    contextWindowTokens: deps.promptBudget.contextWindowTokens,
+    maxOutputTokens: deps.promptBudget.maxOutputTokens,
+  });
   if (
-    compactionState.hardBudgetReached || compactionState.softThresholdReached
+    preflightCompactionState.isAboveAutocompactThreshold
   ) {
-    const cooldownSnapshot = compactionState.hardBudgetReached
-      ? undefined
-      : new Map<string, CooldownEntry>(deps.cooldowns);
+    const cooldownSnapshot = new Map<string, CooldownEntry>(deps.cooldowns);
     try {
       const compactedResult = await compactHistory(
         history,
@@ -247,18 +251,9 @@ export async function initializeExecutionContext(
       helpers.resetSessionTokens(sessionId);
       compacted = true;
     } catch {
-      if (compactionState.hardBudgetReached) {
-        throw new ChatBudgetExceededError(
-          sessionId,
-          compactionState.used,
-          deps.sessionTokenBudget!,
-        );
-      }
-      if (cooldownSnapshot) {
-        deps.cooldowns.clear();
-        for (const [providerName, cooldown] of cooldownSnapshot.entries()) {
-          deps.cooldowns.set(providerName, cooldown);
-        }
+      deps.cooldowns.clear();
+      for (const [providerName, cooldown] of cooldownSnapshot.entries()) {
+        deps.cooldowns.set(providerName, cooldown);
       }
     }
   }

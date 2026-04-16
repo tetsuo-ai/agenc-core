@@ -192,6 +192,7 @@ export function resolveLocalCompactionThreshold(
     return provider === "grok"
       ? resolveDefaultGrokCompactionThreshold(
           contextWindowTokens ?? inferContextWindowTokens(llmConfig),
+          normalizeOptionalPositiveInt(llmConfig?.maxTokens),
         )
       : undefined;
   }

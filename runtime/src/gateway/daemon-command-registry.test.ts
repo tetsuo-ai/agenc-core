@@ -643,15 +643,17 @@ async function dispatchAndCollect(
 }
 
 describe("createDaemonCommandRegistry /context", () => {
-  it("reports a finite local compaction window even when the hard session budget is unlimited", async () => {
+  it("reports current-view context pressure with effective-window thresholds", async () => {
     const { registry } = makeCommandRegistry();
     const replies = await dispatchAndCollect(registry, "/context");
 
     expect(replies).toHaveLength(1);
+    expect(replies[0]).toContain("Effective Window:");
     expect(replies[0]).toContain("Session Budget: unlimited");
-    expect(replies[0]).toContain("Free: 574,864 tokens");
+    expect(replies[0]).toContain("Current View:");
+    expect(replies[0]).toContain("Autocompact Threshold:");
     expect(replies[0]).toContain(
-      "Compaction: local enabled @ 600,000 tokens; provider disabled",
+      "Compaction: local current-view autocompact; provider disabled",
     );
   });
 });

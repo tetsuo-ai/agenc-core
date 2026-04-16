@@ -365,7 +365,7 @@ describe("applyPerIterationCompaction", () => {
       messages: history,
       state,
       nowMs: T0 + DEFAULT_SNIP_GAP_MS + 1,
-      autocompactThresholdTokens: 1_000,
+      autocompactThresholdTokens: 0,
     });
 
     expect(result.action).toBe("compacted");

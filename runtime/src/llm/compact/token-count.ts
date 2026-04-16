@@ -25,10 +25,9 @@ export interface TokenCountInput {
  * Returns the canonical token estimate for a message history. The
  * heuristic is:
  *
- * 1. If `lastResponseUsage` is provided, treat its `inputTokens +
- *    cacheReadInputTokens + cacheCreationInputTokens` as the floor —
- *    these are the tokens the API actually billed on the most recent
- *    call. Otherwise start from 0.
+ * 1. If `lastResponseUsage` is provided, treat its prompt/input tokens
+ *    as the floor — these are the tokens the API actually billed for the
+ *    request context on the most recent call. Otherwise start from 0.
  * 2. Add a rough character-based estimate for any messages whose
  *    payload size we cannot read from cached usage (i.e. anything
  *    appended after the last API response).
@@ -41,7 +40,7 @@ export function tokenCountWithEstimation(input: TokenCountInput): number {
   const { messages, lastResponseUsage } = input;
   let billed = 0;
   if (lastResponseUsage) {
-    billed = lastResponseUsage.totalTokens ?? 0;
+    billed = lastResponseUsage.promptTokens ?? 0;
   }
 
   // Estimate roughly 1 token per 4 characters of message content for

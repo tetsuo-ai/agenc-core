@@ -15,7 +15,7 @@ import type { WebChatSessionStore } from "../channels/webchat/session-store.js";
 import { KeyedAsyncQueue } from "../utils/keyed-async-queue.js";
 import type { InteractiveContextSummaryRef } from "./interactive-context.js";
 
-const DEFAULT_SESSION_MEMORY_ROOT = join(homedir(), ".agenc", "session-memory");
+const DEFAULT_SESSION_MEMORY_ROOT = join(homedir(), ".agenc", "projects");
 const SUMMARY_FILENAME = "summary.md";
 
 interface SessionSummaryStoreConfig {
@@ -46,7 +46,13 @@ export class SessionSummaryStore {
   }
 
   private resolveSummaryPath(ownerKeyHash: string, sessionId: string): string {
-    return join(this.rootDir, ownerKeyHash, sessionId, SUMMARY_FILENAME);
+    return join(
+      this.rootDir,
+      ownerKeyHash,
+      sessionId,
+      "session-memory",
+      SUMMARY_FILENAME,
+    );
   }
 
   async load(

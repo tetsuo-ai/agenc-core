@@ -623,6 +623,7 @@ export interface ToolLoopConfig {
    * falls back to DEFAULT_AUTOCOMPACT_THRESHOLD_TOKENS (120K).
    */
   readonly contextWindowTokens?: number;
+  readonly maxOutputTokens?: number;
   /** Cut 5.2: hook registry for PreToolUse / PostToolUse / PostToolUseFailure. */
   readonly hookRegistry?: HookRegistry;
   /**
@@ -1448,7 +1449,10 @@ async function runPerIterationCompactionBeforeModelCall(
     messages: ctx.messages,
     state: ctx.perIterationCompaction,
     nowMs: Date.now(),
-    autocompactThresholdTokens: computeAutocompactThreshold(config.contextWindowTokens),
+    autocompactThresholdTokens: computeAutocompactThreshold(
+      config.contextWindowTokens,
+      config.maxOutputTokens,
+    ),
     lastResponseUsage: ctx.response?.usage,
     collapseHook: (messages) => {
       const projected = tryProjectedContextCollapse({
@@ -1457,6 +1461,7 @@ async function runPerIterationCompactionBeforeModelCall(
         existingArtifactContext: ctx.compactedArtifactContext,
         autocompactThresholdTokens: computeAutocompactThreshold(
           config.contextWindowTokens,
+          config.maxOutputTokens,
         ),
       });
       if (!projected) {

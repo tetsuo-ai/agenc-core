@@ -130,6 +130,10 @@ import {
   type LLMProviderConfigCatalogEntry,
 } from "./llm-provider-manager.js";
 import { buildChatUsagePayload } from "./chat-usage.js";
+import {
+  buildCurrentApiView,
+  buildCurrentContextUsageSnapshot,
+} from "../llm/compact/context-window.js";
 import type {
   ChatExecutorResult,
   DeterministicPipelineExecutor,
@@ -180,6 +184,7 @@ import {
 } from "./session-transcript.js";
 // loadWallet moved to ./daemon-tool-registry.ts and ./daemon-feature-wiring.ts
 import {
+  buildSessionStatefulOptions,
   clearWebSessionReplayState,
   hydrateWebSessionReplayState,
   loadPersistedSessionReplayContext,
@@ -5601,7 +5606,18 @@ export class DaemonManager {
     if (!executor) {
       return null;
     }
-    return buildChatUsagePayload({
+    const session = this._webSessionManager?.get(sessionId);
+    const stateful = session ? buildSessionStatefulOptions(session) : undefined;
+    const usageSnapshot = buildCurrentContextUsageSnapshot({
+      messages: buildCurrentApiView({
+        baseSystemPrompt: this._systemPrompt,
+        artifactContext: stateful?.artifactContext,
+        history: session?.history ?? [],
+      }),
+      contextWindowTokens,
+      maxOutputTokens: effectiveLlmConfig?.maxTokens,
+    });
+    const payload = buildChatUsagePayload({
       sessionId,
       totalTokens: executor.getSessionTokenUsage(sessionId),
       sessionTokenBudget: resolveSessionTokenBudget(
@@ -5613,6 +5629,21 @@ export class DaemonManager {
       model: effectiveLlmConfig?.model,
       contextWindowTokens,
     });
+    return {
+      ...payload,
+      promptTokens: usageSnapshot.currentTokens,
+      ...(usageSnapshot.effectiveContextWindowTokens
+        ? {
+            effectiveContextWindowTokens:
+              usageSnapshot.effectiveContextWindowTokens,
+            autocompactThresholdTokens:
+              usageSnapshot.autocompactThresholdTokens,
+            contextPercentUsed: usageSnapshot.percentUsed,
+            freeTokens: usageSnapshot.freeTokens,
+          }
+        : {}),
+      sections: usageSnapshot.sections,
+    };
   }
 
   private buildWatchCockpitApprovals(sessionId: string): WatchCockpitSnapshot["approvals"] {
