@@ -157,6 +157,66 @@ describe("OllamaProvider", () => {
     expect(result.finishReason).toBe("tool_calls");
   });
 
+  it("assigns unique IDs to duplicate-named tool calls (non-streaming)", async () => {
+    const response = makeResponse({
+      message: {
+        content: "",
+        role: "assistant",
+        tool_calls: [
+          { function: { name: "search", arguments: { q: "first" } } },
+          { function: { name: "search", arguments: { q: "second" } } },
+        ],
+      },
+    });
+    mockChat.mockResolvedValueOnce(response);
+
+    const provider = new OllamaProvider({});
+    const result = await provider.chat([{ role: "user", content: "test" }]);
+
+    expect(result.toolCalls).toHaveLength(2);
+    expect(result.toolCalls[0].name).toBe("search");
+    expect(result.toolCalls[1].name).toBe("search");
+    expect(result.toolCalls[0].id).not.toBe(result.toolCalls[1].id);
+    expect(result.toolCalls[0].id).not.toBe("search");
+    expect(result.toolCalls[1].id).not.toBe("search");
+  });
+
+  it("assigns unique IDs to duplicate-named tool calls (streaming)", async () => {
+    const chunks = [
+      {
+        message: {
+          content: "",
+          role: "assistant",
+          tool_calls: [
+            { function: { name: "search", arguments: { q: "first" } } },
+            { function: { name: "search", arguments: { q: "second" } } },
+          ],
+        },
+        model: "llama3",
+        prompt_eval_count: 5,
+        eval_count: 10,
+      },
+    ];
+    mockChat.mockResolvedValueOnce(
+      (async function* () {
+        for (const c of chunks) yield c;
+      })(),
+    );
+
+    const provider = new OllamaProvider({});
+    const result = await provider.chatStream(
+      [{ role: "user", content: "test" }],
+      () => undefined,
+    );
+
+    expect(result.toolCalls).toHaveLength(2);
+    expect(result.toolCalls[0].name).toBe("search");
+    expect(result.toolCalls[1].name).toBe("search");
+    expect(result.toolCalls[0].id).not.toBe(result.toolCalls[1].id);
+    expect(result.toolCalls[0].id).not.toBe("search");
+    expect(result.toolCalls[1].id).not.toBe("search");
+  });
+
   it("handles streaming via async iterable", async () => {
     const chunks = [
       { message: { content: "Hello" }, model: "llama3" },

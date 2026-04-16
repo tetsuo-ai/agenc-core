@@ -7,6 +7,7 @@
  * @module
  */
 
+import { randomUUID } from "node:crypto";
 import type {
   LLMChatOptions,
   LLMProvider,
@@ -355,7 +356,7 @@ export class OllamaProvider implements LLMProvider {
         if (chunk.message?.tool_calls) {
           for (const tc of chunk.message.tool_calls) {
             const validated = validateToolCall({
-              id: tc.function?.name ?? `call_${toolCalls.length}`,
+              id: randomUUID(),
               name: tc.function?.name ?? "",
               arguments: JSON.stringify(tc.function?.arguments ?? {}),
             });
@@ -646,9 +647,9 @@ export class OllamaProvider implements LLMProvider {
     const content = message.content ?? "";
 
     const toolCalls: LLMToolCall[] = (message.tool_calls ?? [])
-      .map((tc: any, i: number) =>
+      .map((tc: any) =>
         validateToolCall({
-          id: tc.function?.name ?? `call_${i}`,
+          id: randomUUID(),
           name: tc.function?.name ?? "",
           arguments: JSON.stringify(tc.function?.arguments ?? {}),
         }),
