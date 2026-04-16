@@ -157,3 +157,10 @@
 - **What worked:** Promoting the accepted agent reply to a canonical block while hiding ordinary agent rows from the scrolling transcript makes the cockpit read like a final answer plus supporting detail instead of a blended stream of provisional output and tool chatter.
 - **What didn't:** The frame logic needed coordinated changes to transcript slicing, hidden-line markers, export behavior, and replay fixtures, so the UI adjustment touched more than just the renderer and needed full watch-suite coverage to prove it stayed stable.
 - **Rule added to CLAUDE.md:** no
+
+## PR #401: feat(runtime): persist interactive session context
+- **Date:** 2026-04-15
+- **Files changed:** `runtime/src/gateway/{interactive-context,session-summary-store,daemon-session-state,daemon-webchat-turn,daemon-text-channel-turn,session-transcript,session,sub-agent,top-level-verifier,daemon}.ts`, `runtime/src/channels/webchat/plugin.ts`, `runtime/src/llm/{chat-executor-init,chat-executor-types}.ts`, `runtime/src/gateway/{daemon-session-state,session-summary-store}.test.ts`, `runtime/src/gateway/{daemon-webchat-turn,daemon-text-channel-turn}.test.ts`, `runtime/src/llm/chat-executor-init.test.ts`
+- **What worked:** Carrying interactive context as an explicit request payload, persisting it through replay and transcript metadata, and restoring read-state during hydration made resume and child/verifier launches reuse one consistent execution-location and prompt snapshot path.
+- **What didn't:** The new path had to be threaded through session replay, transcript projection, executor init, and child launch points together, because any one missing handoff would have left resume state coherent in one surface and stale in another.
+- **Rule added to CLAUDE.md:** no
