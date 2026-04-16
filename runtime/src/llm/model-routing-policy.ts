@@ -4,6 +4,7 @@ import type {
   RuntimeEconomicsPolicy,
   RuntimeRunClass,
 } from "./run-budget.js";
+import { supportsXaiStructuredOutputsWithTools } from "./structured-output.js";
 
 interface ProviderRouteDescriptor {
   readonly index: number;
@@ -120,9 +121,18 @@ function buildProviderDescriptor(
     providerConfigs,
   );
   const model = config?.model;
+  // xAI exposes structured outputs on all Grok models, but structured
+  // outputs combined with tools are Grok-4 family only. Treating every
+  // "grok" descriptor as capable caused the router to route tool-using
+  // structured-output calls to grok-code-fast-1, where the adapter's
+  // fail-closed boundary would then reject the request and the runtime
+  // would bake the provider error into conversation history. Check the
+  // model family here so prioritizeStructuredOutputProviders() actually
+  // reorders capable Grok-4 models ahead of incompatible ones.
   const supportsStructuredOutputWithTools =
-    provider.name === "grok" ||
-    config?.structuredOutputs?.enabled !== false;
+    provider.name === "grok"
+      ? supportsXaiStructuredOutputsWithTools(model)
+      : config?.structuredOutputs?.enabled !== false;
 
   return {
     index,
