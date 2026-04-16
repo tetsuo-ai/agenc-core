@@ -126,7 +126,6 @@ import {
   type CompletionValidatorId,
   updateRuntimeContractValidatorSnapshot,
   updateRuntimeContractToolProtocolSnapshot,
-  updateRuntimeContractVerifierStage,
 } from "../runtime-contract/types.js";
 import {
   getPendingToolProtocolCalls,
@@ -2397,16 +2396,6 @@ export async function executeToolCallLoop(
     });
 
     let completionValidationStatus = "passed";
-    ctx.runtimeContractSnapshot = updateRuntimeContractVerifierStage({
-      snapshot: ctx.runtimeContractSnapshot,
-      verifierStages: {
-        ...ctx.runtimeContractSnapshot.verifierStages,
-        runtimeRequired: false,
-        launcherKind: "none",
-        stageStatus: "inactive",
-        skipReason: "runtime_not_required",
-      },
-    });
     const stopHooksEnabled =
       config.runtimeContractFlags.stopHooksEnabled &&
       config.stopHookRuntime !== undefined;

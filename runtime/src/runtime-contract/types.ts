@@ -401,17 +401,21 @@ export function createRuntimeContractSnapshot(
         : "flag_disabled",
     },
     verifierStages: {
-      bootstrapConfigured: flags.verifierProjectBootstrap,
+      // Runtime verifier has been removed. Regardless of the
+      // verifierRuntimeRequired / verifierProjectBootstrap config
+      // flags, the initial + only-ever snapshot reflects the inert
+      // post-refactor state: no bootstrap, no launcher, no
+      // runtime-required stage. Callers that read this field (traces,
+      // runtime-status reports) get a consistent "verifier off" view.
+      bootstrapConfigured: false,
       bootstrapAttempted: false,
-      runtimeRequired: flags.verifierRuntimeRequired,
-      launcherKind: flags.verifierRuntimeRequired ? "subagent" : "none",
-      bootstrapSource: flags.verifierProjectBootstrap ? "fallback" : "disabled",
+      runtimeRequired: false,
+      launcherKind: "none",
+      bootstrapSource: "disabled",
       profiles: [],
       probeCategories: [],
-      stageStatus: flags.verifierRuntimeRequired ? "pending" : "inactive",
-      ...(flags.verifierRuntimeRequired
-        ? {}
-        : { skipReason: "runtime_not_required" }),
+      stageStatus: "inactive",
+      skipReason: "runtime_not_required",
     },
     toolProtocol: {
       open: false,
