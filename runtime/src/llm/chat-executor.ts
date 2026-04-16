@@ -153,7 +153,6 @@ export class ChatExecutor {
   private readonly defaultRunClass?: RuntimeRunClass;
   private readonly runtimeContractFlags: RuntimeContractFlags;
   private readonly stopHookRuntime?: StopHookRuntime;
-  private readonly completionValidation: ChatExecutorConfig["completionValidation"];
   /**
    * Cut 5.2: optional hook registry. When set, the chat-executor fires
    * PreToolUse/PostToolUse/PostToolUseFailure events at the tool
@@ -298,7 +297,6 @@ export class ChatExecutor {
       (this.runtimeContractFlags.stopHooksEnabled
         ? buildStopHookRuntime({})
         : undefined);
-    this.completionValidation = config.completionValidation;
     this.hookRegistry = config.hookRegistry;
     this.canUseTool = config.canUseTool;
     this.isConcurrencySafe = config.isConcurrencySafe;
@@ -363,7 +361,6 @@ export class ChatExecutor {
       onStreamChunk: this.onStreamChunk,
       resolveHostWorkspaceRoot: this.resolveHostWorkspaceRoot,
       runtimeContractFlags: this.runtimeContractFlags,
-      completionValidation: this.completionValidation,
       // Hook registry (optional)
       hookRegistry: this.hookRegistry,
     };
@@ -458,7 +455,6 @@ export class ChatExecutor {
       maxOutputTokens: this.promptBudget.maxOutputTokens,
       runtimeContractFlags: this.runtimeContractFlags,
       ...(this.stopHookRuntime ? { stopHookRuntime: this.stopHookRuntime } : {}),
-      completionValidation: this.completionValidation,
       ...(this.hookRegistry ? { hookRegistry: this.hookRegistry } : {}),
       ...(this.canUseTool ? { canUseTool: this.canUseTool } : {}),
       ...(this.isConcurrencySafe

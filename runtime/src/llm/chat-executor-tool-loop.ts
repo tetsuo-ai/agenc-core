@@ -666,7 +666,6 @@ export interface ToolLoopConfig {
   };
   readonly runtimeContractFlags: import("../runtime-contract/types.js").RuntimeContractFlags;
   readonly stopHookRuntime?: import("./hooks/stop-hooks.js").StopHookRuntime;
-  readonly completionValidation?: import("./chat-executor-types.js").ChatExecutorConfig["completionValidation"];
 }
 
 // ============================================================================

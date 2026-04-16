@@ -51,7 +51,6 @@ import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";
 import type { SessionContinuityRecord } from "../channels/webchat/types.js";
 import {
-  buildRuntimeContractVerifierTraceId,
   buildRuntimeContractWorkerTraceId,
   logTraceErrorEvent,
   logTraceEvent,
@@ -386,7 +385,6 @@ import {
 import {
   createDaemonToolRegistry,
 } from "./daemon-tool-registry.js";
-import type { TopLevelVerifierTraceEvent } from "./top-level-verifier.js";
 import {
   wireSocial as wireSocialStandalone,
   type FeatureWiringContext,
@@ -2200,7 +2198,6 @@ export class DaemonManager {
     const resolvedSubAgentConfig = resolveSubAgentRuntimeConfig(config.llm, {
       unsafeBenchmarkMode: this.yolo,
     });
-    const traceConfig = resolveTraceLoggingConfig(config.logging);
     await this.refreshHostToolingProfile({
       enabled: resolvedSubAgentConfig.enabled,
       logging: config.logging,
@@ -2242,41 +2239,6 @@ export class DaemonManager {
         toolAllowList: config.policy?.toolAllowList,
         toolDenyList: config.policy?.toolDenyList,
       }),
-      completionValidation: {
-        topLevelVerifier: {
-          subAgentManager: this._subAgentManager,
-          verifierService: this._delegationVerifierService,
-          agentDefinitions: this._agentDefinitions,
-          availableToolNames: this._toolRegistry?.listCatalog().map((entry) => entry.name),
-          logger: this.logger,
-          taskStore: this._taskTrackerStore,
-          remoteJobManager: this._remoteJobManager,
-          ...(traceConfig.enabled
-            ? {
-                onTraceEvent: async (event: TopLevelVerifierTraceEvent) => {
-                  logTraceEvent(
-                    this.logger,
-                    `runtime_contract.verifier.${event.type}`,
-                    {
-                      traceId: buildRuntimeContractVerifierTraceId(
-                        event.sessionId,
-                        event.taskId,
-                      ),
-                      sessionId: event.sessionId,
-                      ...(event.taskId ? { taskId: event.taskId } : {}),
-                      ...(event.launcherKind
-                        ? { launcherKind: event.launcherKind }
-                        : {}),
-                      ...(event.summary ? { summary: event.summary } : {}),
-                      ...(event.verdict ? { verdict: event.verdict } : {}),
-                    },
-                    traceConfig.maxChars,
-                  );
-                },
-              }
-            : {}),
-        },
-      },
     });
 
     const sessionMgr = this.createSessionManager(hooks);
@@ -3907,7 +3869,6 @@ export class DaemonManager {
         newConfig.llm,
         { unsafeBenchmarkMode: this.yolo },
       );
-      const traceConfig = resolveTraceLoggingConfig(newConfig.logging);
       await this.refreshHostToolingProfile({
         enabled: resolvedSubAgentConfig.enabled,
         logging: newConfig.logging,
@@ -3950,41 +3911,6 @@ export class DaemonManager {
           toolAllowList: newConfig.policy?.toolAllowList,
           toolDenyList: newConfig.policy?.toolDenyList,
         }),
-        completionValidation: {
-          topLevelVerifier: {
-            subAgentManager: this._subAgentManager,
-            verifierService: this._delegationVerifierService,
-            agentDefinitions: this._agentDefinitions,
-            availableToolNames: this._toolRegistry?.listCatalog().map((entry) => entry.name),
-            logger: this.logger,
-            taskStore: this._taskTrackerStore,
-            remoteJobManager: this._remoteJobManager,
-            ...(traceConfig.enabled
-              ? {
-                  onTraceEvent: async (event: TopLevelVerifierTraceEvent) => {
-                    logTraceEvent(
-                      this.logger,
-                      `runtime_contract.verifier.${event.type}`,
-                      {
-                        traceId: buildRuntimeContractVerifierTraceId(
-                          event.sessionId,
-                          event.taskId,
-                        ),
-                        sessionId: event.sessionId,
-                        ...(event.taskId ? { taskId: event.taskId } : {}),
-                        ...(event.launcherKind
-                          ? { launcherKind: event.launcherKind }
-                          : {}),
-                        ...(event.summary ? { summary: event.summary } : {}),
-                        ...(event.verdict ? { verdict: event.verdict } : {}),
-                      },
-                      traceConfig.maxChars,
-                    );
-                  },
-                }
-              : {}),
-          },
-        },
       });
 
       const providerNames = providers.map((p) => p.name).join(" → ") || "none";

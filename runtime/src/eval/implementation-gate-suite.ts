@@ -275,52 +275,6 @@ async function runWrongArtifactVerifierScenario(): Promise<PipelineImplementatio
         workerIsolationWorktree: false,
         workerIsolationRemote: false,
       },
-      completionValidation: {
-        topLevelVerifier: {
-          subAgentManager: {
-            spawn: async () => "subagent:verify-wrong-artifact",
-            waitForResult: async () => ({
-              sessionId: "subagent:verify-wrong-artifact",
-              output: "Build fails.\nVERDICT: FAIL",
-              success: false,
-              durationMs: 12,
-              toolCalls: [
-                {
-                  name: "verification.runProbe",
-                  args: { probeId: "build" },
-                  result:
-                    "{\"ok\":false,\"__agencVerification\":{\"probeId\":\"build\",\"category\":\"build\",\"profile\":\"generic\"}}",
-                  isError: false,
-                  durationMs: 2,
-                },
-              ],
-              structuredOutput: {
-                type: "json_schema" as const,
-                name: "agenc_top_level_verifier_decision",
-                parsed: {
-                  verdict: "fail",
-                  summary:
-                    "The artifact is non-empty, but the verifier caught duplicate symbol definitions.",
-                },
-              },
-              completionState: "completed" as const,
-              stopReason: "completed" as const,
-            }),
-          },
-          verifierService: {
-            resolveVerifierRequirement: () => ({
-              required: true,
-              profiles: ["generic"],
-              probeCategories: ["build"],
-              mutationPolicy: "read_only_workspace",
-              allowTempArtifacts: false,
-              bootstrapSource: "disabled",
-              rationale: ["Phase 12 wrong-artifact gate"],
-            }),
-            shouldVerifySubAgentResult: () => true,
-          },
-        },
-      },
     });
     const artifactPath = path.join(workspaceRoot, "src/main.c");
     const result = await executeChatToLegacyResult(executor, {

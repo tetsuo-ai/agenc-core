@@ -107,8 +107,6 @@ interface CreateChatExecutorParams {
   permissionRules?: readonly ToolRule[];
   /** Optional cap on tool call rate per minute (used by the budget service). */
   maxToolCallRatePerMinute?: number;
-  /** Optional runtime completion-validation services. */
-  completionValidation?: ChatExecutorConfig["completionValidation"];
 }
 
 // ---------------------------------------------------------------------------
@@ -193,7 +191,6 @@ export function createChatExecutor(
     modelRoutingPolicy,
     runtimeContractFlags,
     ...(stopHookRuntime ? { stopHookRuntime } : {}),
-    completionValidation: params.completionValidation,
     ...(canUseTool ? { canUseTool } : {}),
   });
 }

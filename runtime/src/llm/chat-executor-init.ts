@@ -123,7 +123,6 @@ export interface InitializeExecutionContextDependencies {
   readonly onStreamChunk: StreamProgressCallback | undefined;
   readonly resolveHostWorkspaceRoot: (() => string | null) | undefined;
   readonly runtimeContractFlags: import("../runtime-contract/types.js").RuntimeContractFlags;
-  readonly completionValidation: import("./chat-executor-types.js").ChatExecutorConfig["completionValidation"] | undefined;
   // History compaction sub-struct
   readonly historyCompaction: HistoryCompactionDependencies;
 }
@@ -324,7 +323,6 @@ export async function initializeExecutionContext(
       defaultRunClass: deps.defaultRunClass,
       economicsPolicy: deps.economicsPolicy,
       runtimeContractFlags: deps.runtimeContractFlags,
-      completionValidation: deps.completionValidation,
     },
   );
 

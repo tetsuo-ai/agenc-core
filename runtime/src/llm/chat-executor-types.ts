@@ -61,12 +61,7 @@ import type {
   DelegationOutputValidationCode,
 } from "../utils/delegation-validation.js";
 import type { HostToolingProfile } from "../gateway/host-tooling.js";
-import type { AgentDefinition } from "../gateway/agent-loader.js";
-import type { DelegationVerifierService } from "../gateway/delegation-runtime.js";
 import type { InteractiveContextRequest } from "../gateway/interactive-context.js";
-import type { SubAgentManager } from "../gateway/sub-agent.js";
-import type { TaskStore } from "../tools/system/task-tracker.js";
-import type { SystemRemoteJobManager } from "../tools/system/remote-job.js";
 import type { ActiveTaskContext, TurnExecutionContract } from "./turn-execution-contract-types.js";
 import type {
   RuntimeContractFlags,
@@ -562,27 +557,6 @@ export interface ChatExecutorConfig {
   readonly runtimeContractFlags?: RuntimeContractFlags;
   /** Optional runtime-owned stop-hook chain used by validators and task/worker gates. */
   readonly stopHookRuntime?: StopHookRuntime;
-  /** Optional runtime services for executor-owned completion validation. */
-  readonly completionValidation?: {
-    readonly topLevelVerifier?: {
-      readonly subAgentManager?: Pick<SubAgentManager, "spawn" | "waitForResult"> | null;
-      readonly verifierService?: Pick<
-        DelegationVerifierService,
-        "resolveVerifierRequirement" | "shouldVerifySubAgentResult"
-      > | null;
-      readonly agentDefinitions?: readonly AgentDefinition[];
-      readonly availableToolNames?: readonly string[];
-      readonly logger?: import("../utils/logger.js").Logger;
-      readonly taskStore?: TaskStore | null;
-      readonly remoteJobManager?: Pick<
-        SystemRemoteJobManager,
-        "start" | "handleWebhook"
-      > | null;
-      readonly onTraceEvent?: (
-        event: import("../gateway/top-level-verifier.js").TopLevelVerifierTraceEvent,
-      ) => void | Promise<void>;
-    };
-  };
 }
 
 // ============================================================================
@@ -790,7 +764,6 @@ interface BuildExecutionContextConfig {
   readonly defaultRunClass?: RuntimeRunClass;
   readonly economicsPolicy: RuntimeEconomicsPolicy;
   readonly runtimeContractFlags: RuntimeContractFlags;
-  readonly completionValidation?: ChatExecutorConfig["completionValidation"];
 }
 
 /** Build the default ExecutionContext object with all mutable state initialized. */
