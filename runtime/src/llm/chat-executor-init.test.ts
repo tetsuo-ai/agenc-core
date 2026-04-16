@@ -433,5 +433,126 @@ describe("ChatExecutor initialization and prompt budgeting", () => {
           (diagnostics?.sections.system_runtime.truncatedMessages ?? 0),
       ).toBeGreaterThan(0);
     });
+
+    it("uses the interactive prompt snapshot and summary text when present", async () => {
+      const provider = createMockProvider("primary", {
+        chat: vi.fn().mockResolvedValue(mockResponse({ content: "ok" })),
+      });
+      const executor = new ChatExecutor({
+        providers: [provider],
+      });
+
+      await executor.execute(
+        createParams({
+          promptEnvelope: createPromptEnvelope("ignored root prompt"),
+          interactiveContext: {
+            state: {
+              version: 1,
+              readSeeds: [],
+              cacheSafePromptSnapshot: {
+                baseSystemPrompt: "interactive base prompt",
+                systemContextBlocks: [
+                  { source: "interactive_system", content: "interactive system block" },
+                ],
+                userContextBlocks: [
+                  { source: "interactive_user", content: "interactive user block" },
+                ],
+                sessionStartContextMessages: [
+                  { role: "system", content: "interactive carryover" },
+                ],
+                toolScopeFingerprint: "tool-scope-1",
+              },
+            },
+            summaryText: "Persisted session summary.",
+          },
+        }),
+      );
+
+      const messages = (provider.chat as ReturnType<typeof vi.fn>).mock
+        .calls[0][0] as LLMMessage[];
+      expect(messages[0]).toMatchObject({
+        role: "system",
+        content: "interactive base prompt",
+      });
+      expect(
+        messages.some(
+          (message) =>
+            message.role === "system" &&
+            message.content === "interactive system block",
+        ),
+      ).toBe(true);
+      expect(
+        messages.some(
+          (message) =>
+            message.role === "system" &&
+            message.content === "interactive carryover",
+        ),
+      ).toBe(true);
+      expect(
+        messages.some(
+          (message) =>
+            message.role === "system" &&
+            message.content === "Persisted session summary.",
+        ),
+      ).toBe(true);
+      expect(
+        messages.some(
+          (message) =>
+            message.role === "user" &&
+            typeof message.content === "string" &&
+            message.content.includes("interactive user block"),
+        ),
+      ).toBe(true);
+    });
+
+    it("suppresses semantic, learning, and progress retrieval when interactive context is present", async () => {
+      const provider = createMockProvider("primary", {
+        chat: vi.fn().mockResolvedValue(mockResponse({ content: "ok" })),
+      });
+      const memoryRetriever = {
+        retrieve: vi.fn().mockResolvedValue("memory"),
+      };
+      const learningProvider = {
+        retrieve: vi.fn().mockResolvedValue("learning"),
+      };
+      const progressProvider = {
+        retrieve: vi.fn().mockResolvedValue("progress"),
+      };
+      const skillInjector = {
+        inject: vi.fn().mockResolvedValue("skill"),
+      };
+
+      const executor = new ChatExecutor({
+        providers: [provider],
+        memoryRetriever,
+        learningProvider,
+        progressProvider,
+        skillInjector,
+      });
+
+      await executor.execute(
+        createParams({
+          history: [{ role: "assistant", content: "prior turn" }],
+          interactiveContext: {
+            state: {
+              version: 1,
+              readSeeds: [],
+              cacheSafePromptSnapshot: {
+                baseSystemPrompt: "interactive base prompt",
+                systemContextBlocks: [],
+                userContextBlocks: [],
+                sessionStartContextMessages: [],
+                toolScopeFingerprint: "tool-scope-1",
+              },
+            },
+          },
+        }),
+      );
+
+      expect(skillInjector.inject).toHaveBeenCalled();
+      expect(memoryRetriever.retrieve).not.toHaveBeenCalled();
+      expect(learningProvider.retrieve).not.toHaveBeenCalled();
+      expect(progressProvider.retrieve).not.toHaveBeenCalled();
+    });
   });
 });

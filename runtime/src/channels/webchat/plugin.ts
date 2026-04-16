@@ -40,6 +40,7 @@ import {
   loadPersistedSessionReplayState,
   type PersistedSessionReplayState,
 } from "../../gateway/daemon-session-state.js";
+import { normalizeInteractiveExecutionLocation } from "../../gateway/interactive-context.js";
 import type { ActiveTaskContext } from "../../llm/turn-execution-contract-types.js";
 import type { LLMMessage } from "../../llm/types.js";
 import { safeStringify } from "../../tools/types.js";
@@ -2337,10 +2338,14 @@ export class WebChatChannel
           session.sessionId,
         )
       : undefined;
+    const executionLocation = normalizeInteractiveExecutionLocation(
+      runtimeState?.snapshot.interactiveContextState?.executionLocation,
+    );
     const continuityHistory = await this.loadSessionHistory(session.sessionId, undefined, {
       includeTools: false,
     });
-    const workspaceRoot = session.metadata?.workspaceRoot;
+    const workspaceRoot =
+      executionLocation?.workspaceRoot ?? session.metadata?.workspaceRoot;
     const { repoRoot, branch, head } = await resolveGitSnapshot(workspaceRoot);
     const runtimeStatus = runtimeState?.snapshot.runtimeContractStatusSnapshot as
       | unknown
@@ -2412,7 +2417,12 @@ export class WebChatChannel
     if (params.connected) {
       return "active";
     }
-    if (params.workspaceRoot && !existsSync(params.workspaceRoot)) {
+    const executionLocation = normalizeInteractiveExecutionLocation(
+      params.runtimeState?.snapshot.interactiveContextState?.executionLocation,
+    );
+    const effectiveWorkspaceRoot =
+      executionLocation?.workspaceRoot ?? params.workspaceRoot;
+    if (effectiveWorkspaceRoot && !existsSync(effectiveWorkspaceRoot)) {
       return "missing-workspace";
     }
     if (params.messageCount > 0 || params.runtimeState) {

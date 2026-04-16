@@ -177,6 +177,15 @@ export async function initializeExecutionContext(
         )
       : deps.maxFailureBudgetPerRequest;
   const messageText = extractMessageText(message);
+  const interactivePromptSnapshot =
+    params.interactiveContext?.state.cacheSafePromptSnapshot;
+  const interactivePromptEnvelope = interactivePromptSnapshot
+    ? normalizePromptEnvelope({
+        baseSystemPrompt: interactivePromptSnapshot.baseSystemPrompt,
+        systemSections: interactivePromptSnapshot.systemContextBlocks,
+        userSections: interactivePromptSnapshot.userContextBlocks,
+      })
+    : normalizePromptEnvelope(params.promptEnvelope);
   const initialRoutedToolNames = params.toolRouting?.routedToolNames
     ? Array.from(new Set(params.toolRouting.routedToolNames))
     : [];
@@ -258,7 +267,7 @@ export async function initializeExecutionContext(
     base: params.requiredToolEvidence,
     turnExecutionContract,
   });
-  const promptEnvelope = normalizePromptEnvelope(params.promptEnvelope);
+  const promptEnvelope = interactivePromptEnvelope;
 
   const ctx = buildDefaultExecutionContext(
     {
@@ -277,12 +286,20 @@ export async function initializeExecutionContext(
       streamCallback: params.onStreamChunk ?? deps.onStreamChunk,
       toolRouting: params.toolRouting,
       stateful:
-        params.stateful || compactedArtifactContext
+        params.stateful ||
+        compactedArtifactContext ||
+        interactivePromptSnapshot?.sessionStartContextMessages?.length
           ? {
               ...params.stateful,
               ...(compacted ? { historyCompacted: true } : {}),
               ...(compactedArtifactContext
                 ? { artifactContext: compactedArtifactContext }
+                : {}),
+              ...(interactivePromptSnapshot?.sessionStartContextMessages?.length
+                ? {
+                    sessionStartContextMessages:
+                      interactivePromptSnapshot.sessionStartContextMessages,
+                  }
                 : {}),
             }
           : undefined,
@@ -344,13 +361,25 @@ export async function initializeExecutionContext(
       content: renderArtifactContextPrompt(ctx.stateful.artifactContext),
     });
   }
+  if (
+    typeof params.interactiveContext?.summaryText === "string" &&
+    params.interactiveContext.summaryText.trim().length > 0
+  ) {
+    systemSections.push({
+      source: "interactive_summary",
+      content: params.interactiveContext.summaryText.trim(),
+    });
+  }
 
   const isConcordiaTurn = isConcordiaTurnMessage;
+  const hasInteractiveContext = params.interactiveContext !== undefined;
   const enableSkillContext =
     params.contextInjection?.skills !== false && !isConcordiaTurn;
   const enableIdentityContext = !isConcordiaTurn;
   const enableMemoryContext =
-    params.contextInjection?.memory !== false && !isConcordiaTurn;
+    params.contextInjection?.memory !== false &&
+    !isConcordiaTurn &&
+    !hasInteractiveContext;
 
   // Context injection — skill, identity, memory, and learning (all best-effort)
   const contextInjectionDeps = { promptBudget: deps.promptBudget };

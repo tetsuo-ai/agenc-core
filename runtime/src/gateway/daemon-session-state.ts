@@ -50,6 +50,14 @@ import {
   type VerificationSurfaceState,
 } from "./session.js";
 import {
+  SESSION_INTERACTIVE_CONTEXT_STATE_METADATA_KEY,
+  cloneInteractiveContextState,
+  coerceInteractiveContextState,
+  normalizeInteractiveExecutionLocation,
+  type InteractiveContextRequest,
+  type InteractiveContextState,
+} from "./interactive-context.js";
+import {
   coerceSessionWorkflowState,
   resolveSessionWorkflowState,
   type SessionWorkflowState,
@@ -63,6 +71,14 @@ import {
   reconcileReviewSurfaceState,
   reconcileVerificationSurfaceState,
 } from "./watch-cockpit.js";
+import {
+  clearSessionReadCache,
+  seedSessionReadState,
+} from "../tools/system/filesystem.js";
+import {
+  isPathWithinRoot,
+  normalizeWorkspaceRoot,
+} from "../workflow/path-normalization.js";
 
 const WEB_SESSION_RUNTIME_STATE_KEY_PREFIX = "webchat:runtime-state:";
 const WEB_SESSION_REPLAY_STATE_KEY_PREFIX = "webchat:replay-state:";
@@ -76,6 +92,7 @@ export interface PersistedSessionReplayForkMarker {
 export interface PersistedSessionReplaySnapshot {
   readonly shellProfile?: SessionShellProfile;
   readonly workflowState?: SessionWorkflowState;
+  readonly interactiveContextState?: InteractiveContextState;
   readonly statefulResumeAnchor?: LLMStatefulResumeAnchor;
   readonly statefulHistoryCompacted?: boolean;
   readonly sessionStartContextMessages?: readonly LLMMessage[];
@@ -253,6 +270,49 @@ function coerceActiveTaskContext(value: unknown): ActiveTaskContext | undefined 
   return undefined;
 }
 
+function readInteractiveContextState(
+  metadata: Record<string, unknown>,
+): InteractiveContextState | undefined {
+  return coerceInteractiveContextState(
+    metadata[SESSION_INTERACTIVE_CONTEXT_STATE_METADATA_KEY],
+  );
+}
+
+function filterReadSeedsToWorkspace(
+  state: InteractiveContextState | undefined,
+  workspaceRoot: string | undefined,
+): InteractiveContextState | undefined {
+  if (!state) {
+    return undefined;
+  }
+  const normalizedWorkspaceRoot = normalizeWorkspaceRoot(
+    workspaceRoot ?? state.executionLocation?.workspaceRoot,
+  );
+  const readSeeds = normalizedWorkspaceRoot
+    ? state.readSeeds.filter((entry) => {
+        const normalizedPath = normalizeWorkspaceRoot(entry.path);
+        return Boolean(
+          normalizedPath &&
+            isPathWithinRoot(normalizedPath, normalizedWorkspaceRoot),
+        );
+      })
+    : state.readSeeds;
+  return {
+    ...cloneInteractiveContextState(state)!,
+    readSeeds,
+    ...(normalizedWorkspaceRoot
+      ? {
+          executionLocation: state.executionLocation
+            ? {
+                ...state.executionLocation,
+                workspaceRoot: normalizedWorkspaceRoot,
+              }
+            : undefined,
+        }
+      : {}),
+  };
+}
+
 function readArtifactCompactionState(
   metadata: Record<string, unknown>,
 ): ArtifactCompactionState | undefined {
@@ -331,6 +391,7 @@ function buildPersistedSessionReplaySnapshot(
   const activeTaskContext = coerceActiveTaskContext(
     session.metadata[SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY],
   );
+  const interactiveContextState = readInteractiveContextState(session.metadata);
   const runtimeContractSnapshot =
     typeof session.metadata[SESSION_RUNTIME_CONTRACT_SNAPSHOT_METADATA_KEY] === "object" &&
       session.metadata[SESSION_RUNTIME_CONTRACT_SNAPSHOT_METADATA_KEY] !== null
@@ -376,6 +437,7 @@ function buildPersistedSessionReplaySnapshot(
     !hasPersistedShellProfile &&
     !hasPersistedWorkflowState &&
     !resumeAnchor &&
+    !interactiveContextState &&
     !historyCompacted &&
     sessionStartContextMessages.length === 0 &&
     !artifactSnapshotId &&
@@ -391,6 +453,9 @@ function buildPersistedSessionReplaySnapshot(
   return {
     shellProfile: hasPersistedShellProfile ? shellProfile : undefined,
     workflowState: hasPersistedWorkflowState ? workflowState : undefined,
+    ...(interactiveContextState
+      ? { interactiveContextState: cloneInteractiveContextState(interactiveContextState) }
+      : {}),
     statefulResumeAnchor: resumeAnchor,
     statefulHistoryCompacted: historyCompacted ? true : undefined,
     ...(sessionStartContextMessages.length > 0
@@ -476,6 +541,17 @@ function coercePersistedSessionRuntimeState(
               : {}),
             ...(coerceSessionWorkflowState(snapshotCandidate.workflowState)
               ? { workflowState: coerceSessionWorkflowState(snapshotCandidate.workflowState) }
+              : {}),
+            ...(coerceInteractiveContextState(
+              snapshotCandidate.interactiveContextState,
+            )
+              ? {
+                  interactiveContextState: cloneInteractiveContextState(
+                    coerceInteractiveContextState(
+                      snapshotCandidate.interactiveContextState,
+                    ),
+                  ),
+                }
               : {}),
             ...(isStatefulResumeAnchor(snapshotCandidate.statefulResumeAnchor)
               ? {
@@ -825,6 +901,66 @@ export function buildSessionStatefulOptions(
   };
 }
 
+export function buildSessionInteractiveContext(
+  session: Session,
+  options?: {
+    readonly overrideState?: InteractiveContextState;
+    readonly summaryText?: string;
+  },
+): InteractiveContextRequest | undefined {
+  const state =
+    options?.overrideState ?? readInteractiveContextState(session.metadata);
+  const normalized = cloneInteractiveContextState(state);
+  if (!normalized) {
+    return undefined;
+  }
+  return {
+    state: normalized,
+    ...(typeof options?.summaryText === "string" &&
+    options.summaryText.trim().length > 0
+      ? { summaryText: options.summaryText.trim() }
+      : {}),
+  };
+}
+
+export function persistSessionInteractiveContext(
+  session: Session,
+  state: InteractiveContextState | undefined,
+): void {
+  if (!state) {
+    delete session.metadata[SESSION_INTERACTIVE_CONTEXT_STATE_METADATA_KEY];
+    return;
+  }
+  session.metadata[SESSION_INTERACTIVE_CONTEXT_STATE_METADATA_KEY] =
+    cloneInteractiveContextState(state);
+}
+
+export function rebindSessionExecutionLocation(
+  session: Session,
+  executionLocation: InteractiveContextState["executionLocation"] | undefined,
+): void {
+  const current = readInteractiveContextState(session.metadata);
+  if (!current && !executionLocation) {
+    return;
+  }
+  persistSessionInteractiveContext(session, {
+    version: 1,
+    readSeeds: current?.readSeeds ?? [],
+    ...(executionLocation
+      ? {
+          executionLocation: normalizeInteractiveExecutionLocation(
+            executionLocation,
+          ),
+        }
+      : {}),
+    ...(current?.cacheSafePromptSnapshot
+      ? { cacheSafePromptSnapshot: current.cacheSafePromptSnapshot }
+      : {}),
+    ...(current?.summaryRef ? { summaryRef: current.summaryRef } : {}),
+    ...(current?.forkCarryover ? { forkCarryover: current.forkCarryover } : {}),
+  });
+}
+
 export async function persistSessionReplayState(
   memoryBackend: MemoryBackend,
   webSessionId: string,
@@ -904,6 +1040,26 @@ export async function hydrateSessionReplayState(
     session.metadata[SESSION_WORKFLOW_STATE_METADATA_KEY] =
       persisted.snapshot.workflowState;
   }
+  if (persisted.snapshot.interactiveContextState) {
+    session.metadata[SESSION_INTERACTIVE_CONTEXT_STATE_METADATA_KEY] =
+      cloneInteractiveContextState(
+        filterReadSeedsToWorkspace(
+          persisted.snapshot.interactiveContextState,
+          persisted.snapshot.interactiveContextState.executionLocation?.workspaceRoot,
+        ),
+      );
+    clearSessionReadCache(session.id);
+    seedSessionReadState(
+      session.id,
+      (
+        session.metadata[
+          SESSION_INTERACTIVE_CONTEXT_STATE_METADATA_KEY
+        ] as InteractiveContextState
+      ).readSeeds,
+    );
+  } else {
+    clearSessionReadCache(session.id);
+  }
   if (persisted.snapshot.statefulResumeAnchor) {
     session.metadata[SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY] =
       cloneResumeAnchor(persisted.snapshot.statefulResumeAnchor);
@@ -980,6 +1136,23 @@ export async function forkSessionReplayState(
       persisted.snapshot.verificationSurfaceState,
     ),
   } as Record<string, unknown>;
+  const interactiveContextState = coerceInteractiveContextState(
+    nextSnapshot.interactiveContextState,
+  );
+  if (interactiveContextState) {
+    const clonedInteractiveState =
+      cloneInteractiveContextState(interactiveContextState);
+    nextSnapshot.interactiveContextState = {
+      ...(clonedInteractiveState ?? {
+        version: 1 as const,
+        readSeeds: [],
+      }),
+      forkCarryover: {
+        sourceSessionId: params.sourceWebSessionId,
+        mode: "same_location",
+      },
+    } satisfies InteractiveContextState;
+  }
   const mergedWorkflowState = (() => {
     if (persisted.snapshot.workflowState) {
       const objective =

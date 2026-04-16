@@ -409,10 +409,14 @@ export {
   clearWebSessionRuntimeState,
   hydrateWebSessionRuntimeState,
   persistSessionStatefulContinuation,
+  rebindSessionExecutionLocation,
   persistWebSessionRuntimeState,
   resolveSessionStatefulContinuation,
 } from "./daemon-session-state.js";
-import { persistWebSessionRuntimeState } from "./daemon-session-state.js";
+import {
+  persistWebSessionRuntimeState,
+  rebindSessionExecutionLocation,
+} from "./daemon-session-state.js";
 import {
   coerceReviewSurfaceState,
   coerceVerificationSurfaceState,
@@ -4294,6 +4298,21 @@ export class DaemonManager {
       };
     }
     await hydrateWebSessionReplayState(memoryBackend, webSessionId, session);
+    const reboundWorkspaceRoot =
+      typeof session.metadata.workspaceRoot === "string" &&
+      session.metadata.workspaceRoot.trim().length > 0
+        ? session.metadata.workspaceRoot.trim()
+        : undefined;
+    if (reboundWorkspaceRoot) {
+      rebindSessionExecutionLocation(session, {
+        mode: "local",
+        workspaceRoot: reboundWorkspaceRoot,
+        workingDirectory: reboundWorkspaceRoot,
+      });
+      await persistWebSessionRuntimeState(memoryBackend, webSessionId, session).catch(
+        () => undefined,
+      );
+    }
   }
 
   private listShellAgentRoles(): readonly ShellAgentRoleDescriptor[] {

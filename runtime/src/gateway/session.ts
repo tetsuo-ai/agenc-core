@@ -43,6 +43,7 @@ import {
   type ReviewSurfaceState,
   type VerificationSurfaceState,
 } from "./watch-cockpit.js";
+import { SESSION_INTERACTIVE_CONTEXT_STATE_METADATA_KEY } from "./interactive-context.js";
 
 export const SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY =
   "statefulResumeAnchor";
@@ -74,6 +75,7 @@ export function clearStatefulContinuationMetadata(
   delete metadata[SESSION_STATEFUL_SESSION_START_CONTEXT_MESSAGES_METADATA_KEY];
   delete metadata[SESSION_REVIEW_SURFACE_STATE_METADATA_KEY];
   delete metadata[SESSION_VERIFICATION_SURFACE_STATE_METADATA_KEY];
+  delete metadata[SESSION_INTERACTIVE_CONTEXT_STATE_METADATA_KEY];
 }
 
 export function buildSessionRuntimeContractSnapshot(
@@ -105,6 +107,7 @@ export {
   resolveSessionShellProfile,
 };
 export type { SessionShellProfile };
+export { SESSION_INTERACTIVE_CONTEXT_STATE_METADATA_KEY };
 export {
   DEFAULT_SESSION_WORKFLOW_STATE,
   SESSION_WORKFLOW_STATE_METADATA_KEY,

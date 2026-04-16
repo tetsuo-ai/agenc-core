@@ -76,6 +76,10 @@ import {
   recoverTranscriptHistory,
   subAgentTranscriptStreamId,
 } from "./session-transcript.js";
+import {
+  normalizeInteractiveExecutionLocation,
+  sameInteractiveExecutionLocation,
+} from "./interactive-context.js";
 
 // ============================================================================
 // Constants
@@ -194,6 +198,7 @@ export interface SubAgentConfig {
   readonly requiredCapabilities?: readonly string[];
   readonly requireToolCall?: boolean;
   readonly structuredOutput?: ChatExecuteParams["structuredOutput"];
+  readonly interactiveContext?: ChatExecuteParams["interactiveContext"];
   readonly delegationSpec?: DelegationContractSpec;
   readonly verifierRequirement?: VerifierRequirement;
   readonly requiredToolEvidence?: ChatExecuteParams["requiredToolEvidence"];
@@ -567,6 +572,28 @@ function validateContinuationCompatibility(params: {
   readonly existing: SubAgentConfig;
   readonly next: SubAgentConfig;
 }): string | undefined {
+  const existingExecutionLocation = normalizeInteractiveExecutionLocation(
+    params.existing.executionLocation ?? {
+      mode: "local",
+      workspaceRoot: resolveSubAgentWorkspaceRoot(params.existing),
+      workingDirectory: resolveSubAgentWorkingDirectory(params.existing),
+    },
+  );
+  const nextExecutionLocation = normalizeInteractiveExecutionLocation(
+    params.next.executionLocation ?? {
+      mode: "local",
+      workspaceRoot: resolveSubAgentWorkspaceRoot(params.next),
+      workingDirectory: resolveSubAgentWorkingDirectory(params.next),
+    },
+  );
+  if (
+    !sameInteractiveExecutionLocation(
+      existingExecutionLocation,
+      nextExecutionLocation,
+    )
+  ) {
+    return "continuationSessionId cannot change the delegated execution location";
+  }
   const existingWorkingDirectory = resolveSubAgentWorkingDirectory(
     params.existing,
   );
@@ -1411,6 +1438,9 @@ export class SubAgentManager {
               : {}),
             ...(handle.config.structuredOutput
               ? { structuredOutput: handle.config.structuredOutput }
+              : {}),
+            ...(handle.config.interactiveContext
+              ? { interactiveContext: handle.config.interactiveContext }
               : {}),
             ...(providerTrace ? { trace: providerTrace } : {}),
           },

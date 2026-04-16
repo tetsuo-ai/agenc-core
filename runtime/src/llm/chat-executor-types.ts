@@ -63,6 +63,7 @@ import type {
 import type { HostToolingProfile } from "../gateway/host-tooling.js";
 import type { AgentDefinition } from "../gateway/agent-loader.js";
 import type { DelegationVerifierService } from "../gateway/delegation-runtime.js";
+import type { InteractiveContextRequest } from "../gateway/interactive-context.js";
 import type { SubAgentManager } from "../gateway/sub-agent.js";
 import type { TaskStore } from "../tools/system/task-tracker.js";
 import type { SystemRemoteJobManager } from "../tools/system/remote-job.js";
@@ -222,7 +223,7 @@ export interface ChatExecuteParams {
   readonly maxFailureBudgetPerRequest?: number;
   /** Per-call end-to-end timeout in milliseconds — overrides the constructor default. 0 = unlimited. */
   readonly requestTimeoutMs?: number;
-  /** Optional explicit per-turn output-token continuation budget. Null disables Claude-style budget continuation. */
+  /** Optional explicit per-turn output-token continuation budget. Null disables output-budget continuation. */
   readonly turnOutputTokenBudget?: number | null;
   /** Per-call context injection controls for bounded/system-owned executions. */
   readonly contextInjection?: {
@@ -231,6 +232,8 @@ export interface ChatExecuteParams {
     /** When false, skip memory/learning/progress retrieval for this call. */
     readonly memory?: boolean;
   };
+  /** Optional replay/hydration context for interactive resume/fork parity. */
+  readonly interactiveContext?: InteractiveContextRequest;
   /** Optional per-turn tool-routing subset and expansion policy. */
   readonly toolRouting?: {
     /** Initial routed subset for this turn. */

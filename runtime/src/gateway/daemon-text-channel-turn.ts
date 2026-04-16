@@ -30,11 +30,13 @@ import {
   isConcordiaGenerateAgentsMessage,
 } from "../llm/chat-executor-turn-contracts.js";
 import {
+  buildSessionInteractiveContext,
   buildRuntimeContractStatusSnapshotForSession,
   buildSessionActiveTaskContext,
   buildSessionStatefulOptions,
   enrichRuntimeContractSnapshotForSession,
   persistSessionActiveTaskContext,
+  persistSessionInteractiveContext,
   persistSessionStartContextMessages,
   persistSessionRuntimeContractSnapshot,
   persistSessionRuntimeContractStatusSnapshot,
@@ -72,6 +74,11 @@ import {
   type ResolvedTraceLoggingConfig,
 } from "./daemon-trace.js";
 import { seedSessionReadState } from "../tools/system/filesystem.js";
+import {
+  buildInteractivePromptSnapshot,
+  buildInteractiveToolScopeFingerprint,
+  type InteractiveContextState,
+} from "./interactive-context.js";
 
 const CONCORDIA_GENERATED_AGENTS_SCHEMA_NAME =
   "concordia_generated_agents";
@@ -115,6 +122,46 @@ function buildConcordiaGenerateAgentsStructuredOutput(
         },
       },
     },
+  };
+}
+
+function buildInteractiveTurnState(params: {
+  readonly session: Session;
+  readonly runtimeWorkspaceRoot?: string;
+  readonly baseSystemPrompt: string;
+  readonly readSeeds: readonly import("../tools/system/filesystem.js").SessionReadSeedEntry[];
+  readonly routedToolNames?: readonly string[];
+}): InteractiveContextState {
+  const existing =
+    params.session.metadata["interactiveContextState"] as
+      | InteractiveContextState
+      | undefined;
+  return {
+    version: 1,
+    readSeeds: params.readSeeds,
+    ...(params.runtimeWorkspaceRoot
+      ? {
+          executionLocation: {
+            mode: "local",
+            workspaceRoot: params.runtimeWorkspaceRoot,
+            workingDirectory: params.runtimeWorkspaceRoot,
+          } as const,
+        }
+      : existing?.executionLocation
+        ? { executionLocation: existing.executionLocation }
+        : {}),
+    cacheSafePromptSnapshot: buildInteractivePromptSnapshot({
+      baseSystemPrompt: params.baseSystemPrompt,
+      systemContextBlocks: [],
+      userContextBlocks: [],
+      sessionStartContextMessages:
+        existing?.cacheSafePromptSnapshot?.sessionStartContextMessages ?? [],
+      toolScopeFingerprint: buildInteractiveToolScopeFingerprint(
+        params.routedToolNames,
+      ),
+    }),
+    ...(existing?.summaryRef ? { summaryRef: existing.summaryRef } : {}),
+    ...(existing?.forkCarryover ? { forkCarryover: existing.forkCarryover } : {}),
   };
 }
 
@@ -212,6 +259,17 @@ export async function executeTextChannelTurn(
     workspaceRoot: runtimeWorkspaceRoot,
   });
   seedSessionReadState(msg.sessionId, atMentionAttachments.readSeeds);
+  const interactiveTurnState = buildInteractiveTurnState({
+    session,
+    runtimeWorkspaceRoot,
+    baseSystemPrompt: effectiveSystemPrompt,
+    readSeeds: atMentionAttachments.readSeeds,
+    routedToolNames: toolRoutingDecision?.routedToolNames,
+  });
+  persistSessionInteractiveContext(session, interactiveTurnState);
+  const sessionInteractiveContext = buildSessionInteractiveContext(session, {
+    overrideState: interactiveTurnState,
+  });
   const effectiveHistory =
     atMentionAttachments.historyPrelude.length > 0
       ? [...session.history, ...atMentionAttachments.historyPrelude]
@@ -319,6 +377,9 @@ export async function executeTextChannelTurn(
     toolHandler,
     maxToolRounds: effectiveMaxToolRounds,
     ...(sessionStateful ? { stateful: sessionStateful } : {}),
+    ...(sessionInteractiveContext
+      ? { interactiveContext: sessionInteractiveContext }
+      : {}),
     ...(structuredOutput ? { structuredOutput } : {}),
     ...(isConcordiaGenerateAgentsTurn
       ? { contextInjection: { memory: false } }
@@ -515,6 +576,20 @@ export async function executeTextChannelTurn(
   persistSessionStatefulContinuation(session, result);
   persistSessionActiveTaskContext(session, result);
   persistSessionStartContextMessages(session, result);
+  persistSessionInteractiveContext(session, {
+    ...interactiveTurnState,
+    cacheSafePromptSnapshot: buildInteractivePromptSnapshot({
+      baseSystemPrompt: effectiveSystemPrompt,
+      systemContextBlocks: [],
+      userContextBlocks: [],
+      sessionStartContextMessages:
+        result.sessionStartContextMessages ??
+        interactiveTurnState.cacheSafePromptSnapshot?.sessionStartContextMessages,
+      toolScopeFingerprint: buildInteractiveToolScopeFingerprint(
+        toolRoutingDecision?.routedToolNames,
+      ),
+    }),
+  });
   sessionMgr.appendMessage(session.id, {
     role: "user",
     content: msg.content,

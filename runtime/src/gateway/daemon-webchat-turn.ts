@@ -19,8 +19,10 @@ import { toErrorMessage } from "../utils/async.js";
 import { buildChatUsagePayload } from "./chat-usage.js";
 import { summarizeLLMFailureForSurface } from "./daemon-llm-failure.js";
 import {
+  buildSessionInteractiveContext,
   buildRuntimeContractStatusSnapshotForSession,
   buildSessionActiveTaskContext,
+  persistSessionInteractiveContext,
   buildSessionStatefulOptions,
   enrichRuntimeContractSnapshotForSession,
   persistSessionActiveTaskContext,
@@ -77,6 +79,11 @@ import type { SubAgentManager } from "./sub-agent.js";
 import type { TaskStore } from "../tools/system/task-tracker.js";
 import { seedSessionReadState } from "../tools/system/filesystem.js";
 import type { ExecutionEnvelope } from "../workflow/execution-envelope.js";
+import {
+  buildInteractivePromptSnapshot,
+  buildInteractiveToolScopeFingerprint,
+  type InteractiveContextState,
+} from "./interactive-context.js";
 
 interface WebChatTurnSignals {
   signalThinking: (sessionId: string) => void;
@@ -151,6 +158,46 @@ async function resolveWebChatTurnWorkspaceRoot(params: {
     return params.messageWorkspaceRoot.trim();
   }
   return undefined;
+}
+
+function buildInteractiveTurnState(params: {
+  readonly session: Session;
+  readonly runtimeWorkspaceRoot?: string;
+  readonly baseSystemPrompt: string;
+  readonly readSeeds: readonly import("../tools/system/filesystem.js").SessionReadSeedEntry[];
+  readonly routedToolNames?: readonly string[];
+}): InteractiveContextState {
+  const existing =
+    params.session.metadata["interactiveContextState"] as
+      | InteractiveContextState
+      | undefined;
+  return {
+    version: 1,
+    readSeeds: params.readSeeds,
+    ...(params.runtimeWorkspaceRoot
+      ? {
+          executionLocation: {
+            mode: "local",
+            workspaceRoot: params.runtimeWorkspaceRoot,
+            workingDirectory: params.runtimeWorkspaceRoot,
+          } as const,
+        }
+      : existing?.executionLocation
+        ? { executionLocation: existing.executionLocation }
+        : {}),
+    cacheSafePromptSnapshot: buildInteractivePromptSnapshot({
+      baseSystemPrompt: params.baseSystemPrompt,
+      systemContextBlocks: [],
+      userContextBlocks: [],
+      sessionStartContextMessages:
+        existing?.cacheSafePromptSnapshot?.sessionStartContextMessages ?? [],
+      toolScopeFingerprint: buildInteractiveToolScopeFingerprint(
+        params.routedToolNames,
+      ),
+    }),
+    ...(existing?.summaryRef ? { summaryRef: existing.summaryRef } : {}),
+    ...(existing?.forkCarryover ? { forkCarryover: existing.forkCarryover } : {}),
+  };
 }
 
 export async function executeWebChatConversationTurn(
@@ -305,6 +352,17 @@ export async function executeWebChatConversationTurn(
       workspaceRoot: runtimeWorkspaceRoot,
     });
     seedSessionReadState(msg.sessionId, atMentionAttachments.readSeeds);
+    const interactiveTurnState = buildInteractiveTurnState({
+      session,
+      runtimeWorkspaceRoot,
+      baseSystemPrompt: effectiveSystemPrompt,
+      readSeeds: atMentionAttachments.readSeeds,
+      routedToolNames: toolRoutingDecision?.routedToolNames,
+    });
+    persistSessionInteractiveContext(session, interactiveTurnState);
+    const sessionInteractiveContext = buildSessionInteractiveContext(session, {
+      overrideState: interactiveTurnState,
+    });
     const effectiveHistory =
       atMentionAttachments.historyPrelude.length > 0
         ? [...session.history, ...atMentionAttachments.historyPrelude]
@@ -357,6 +415,9 @@ export async function executeWebChatConversationTurn(
       signal: abortController.signal,
       maxToolRounds: effectiveMaxToolRounds,
       ...(sessionStateful ? { stateful: sessionStateful } : {}),
+      ...(sessionInteractiveContext
+        ? { interactiveContext: sessionInteractiveContext }
+        : {}),
       toolRouting: toolRoutingDecision
         ? {
             routedToolNames: toolRoutingDecision.routedToolNames,
@@ -552,6 +613,20 @@ export async function executeWebChatConversationTurn(
     persistSessionStatefulContinuation(session, result);
     persistSessionActiveTaskContext(session, result);
     persistSessionStartContextMessages(session, result);
+    persistSessionInteractiveContext(session, {
+      ...interactiveTurnState,
+      cacheSafePromptSnapshot: buildInteractivePromptSnapshot({
+        baseSystemPrompt: effectiveSystemPrompt,
+        systemContextBlocks: [],
+        userContextBlocks: [],
+        sessionStartContextMessages:
+          result.sessionStartContextMessages ??
+          interactiveTurnState.cacheSafePromptSnapshot?.sessionStartContextMessages,
+        toolScopeFingerprint: buildInteractiveToolScopeFingerprint(
+          toolRoutingDecision?.routedToolNames,
+        ),
+      }),
+    });
     if (result.compacted) {
       await sessionMgr.compact(session.id);
     }

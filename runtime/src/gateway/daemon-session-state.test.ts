@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { MemoryBackend } from "../memory/types.js";
 import {
+  buildSessionInteractiveContext,
   buildRuntimeContractStatusSnapshotForSession,
   buildSessionReplayHistory,
   buildSessionStatefulOptions,
@@ -18,6 +19,7 @@ import {
   SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY,
   SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY,
   SESSION_ACTIVE_TASK_CONTEXT_METADATA_KEY,
+  SESSION_INTERACTIVE_CONTEXT_STATE_METADATA_KEY,
   SESSION_REVIEW_SURFACE_STATE_METADATA_KEY,
   SESSION_RUNTIME_CONTRACT_STATUS_SNAPSHOT_METADATA_KEY,
   SESSION_STATEFUL_SESSION_START_CONTEXT_MESSAGES_METADATA_KEY,
@@ -25,6 +27,7 @@ import {
   type Session,
   SESSION_WORKFLOW_STATE_METADATA_KEY,
 } from "./session.js";
+import { getSessionReadSnapshot } from "../tools/system/filesystem.js";
 import { createRuntimeContractSnapshot } from "../runtime-contract/types.js";
 
 function createSession(metadata: Record<string, unknown> = {}): Session {
@@ -326,6 +329,61 @@ describe("web session runtime state helpers", () => {
 
     expect(buildSessionStatefulOptions(hydrated)).toMatchObject({
       sessionStartContextMessages,
+    });
+  });
+
+  it("persists, hydrates, and rebuilds interactive context state", async () => {
+    const memoryBackend = createMemoryBackendStub();
+    const interactiveContextState = {
+      version: 1 as const,
+      executionLocation: {
+        mode: "local" as const,
+        workspaceRoot: "/workspace",
+        workingDirectory: "/workspace",
+      },
+      readSeeds: [
+        {
+          path: "/workspace/PLAN.md",
+          content: "# Plan",
+          viewKind: "full" as const,
+        },
+      ],
+      cacheSafePromptSnapshot: {
+        baseSystemPrompt: "You are a helpful assistant.",
+        systemContextBlocks: [],
+        userContextBlocks: [],
+        sessionStartContextMessages: [],
+        toolScopeFingerprint: "scope-1",
+      },
+    };
+
+    await persistSessionRuntimeState(
+      memoryBackend,
+      "web-session-interactive-context",
+      createSession({
+        [SESSION_INTERACTIVE_CONTEXT_STATE_METADATA_KEY]:
+          interactiveContextState,
+      }),
+    );
+
+    const hydrated = createSession();
+    await hydrateSessionRuntimeState(
+      memoryBackend,
+      "web-session-interactive-context",
+      hydrated,
+    );
+
+    expect(
+      hydrated.metadata[SESSION_INTERACTIVE_CONTEXT_STATE_METADATA_KEY],
+    ).toEqual(interactiveContextState);
+    expect(
+      getSessionReadSnapshot("session:test", "/workspace/PLAN.md"),
+    ).toMatchObject({
+      content: "# Plan",
+      viewKind: "full",
+    });
+    expect(buildSessionInteractiveContext(hydrated)).toEqual({
+      state: interactiveContextState,
     });
   });
 

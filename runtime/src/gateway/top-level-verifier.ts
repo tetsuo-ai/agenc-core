@@ -13,6 +13,10 @@ import {
   normalizeWorkspaceRoot,
   isPathWithinRoot,
 } from "../workflow/path-normalization.js";
+import {
+  buildInteractivePromptSnapshot,
+  buildInteractiveToolScopeFingerprint,
+} from "./interactive-context.js";
 import type { Logger } from "../utils/logger.js";
 import type { AgentDefinition } from "./agent-loader.js";
 import type { DelegationVerifierService } from "./delegation-runtime.js";
@@ -855,6 +859,25 @@ export async function runTopLevelVerifierValidation(
       ? {
           workspaceRoot,
           workingDirectory: workspaceRoot,
+          interactiveContext: {
+            state: {
+              version: 1,
+              executionLocation: {
+                mode: "local",
+                workspaceRoot,
+                workingDirectory: workspaceRoot,
+              },
+              readSeeds: [],
+              cacheSafePromptSnapshot: buildInteractivePromptSnapshot({
+                baseSystemPrompt: definition.promptEnvelope.baseSystemPrompt,
+                systemContextBlocks: definition.promptEnvelope.systemSections,
+                userContextBlocks: definition.promptEnvelope.userSections,
+                toolScopeFingerprint: buildInteractiveToolScopeFingerprint(
+                  definition.tools,
+                ),
+              }),
+            },
+          },
         }
       : {}),
   };
