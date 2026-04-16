@@ -3891,6 +3891,23 @@ export function createWatchFrameController(dependencies = {}) {
     const artPanelCols = Number.isFinite(Number(watchState.artPanelCols))
       ? Math.max(0, Math.floor(Number(watchState.artPanelCols)))
       : 0;
+    const bodyStart = headerRowCount;
+    const bodyEndExclusive = Math.max(bodyStart, composerStartRow - 1);
+    const measuredBodyHeight = Math.max(0, bodyEndExclusive - bodyStart);
+    // Publish the exact body dimensions every frame so refreshArtPanel
+    // can size the art to match. A change in body dimensions (resize,
+    // popup show/hide, composer band growth) bumps the revision
+    // counter so the art controller can detect the mismatch and
+    // request a re-render asynchronously.
+    if (
+      watchState.currentBodyWidth !== width ||
+      watchState.currentBodyHeight !== measuredBodyHeight
+    ) {
+      watchState.currentBodyWidth = width;
+      watchState.currentBodyHeight = measuredBodyHeight;
+      watchState.currentBodyRevision =
+        (Number(watchState.currentBodyRevision) || 0) + 1;
+    }
     if (
       !isSplashShown &&
       artPanelRows &&
@@ -3898,8 +3915,6 @@ export function createWatchFrameController(dependencies = {}) {
       artPanelCols > 0 &&
       artPanelCols <= width
     ) {
-      const bodyStart = headerRowCount;
-      const bodyEndExclusive = Math.max(bodyStart, composerStartRow - 1);
       for (let rowIndex = bodyStart; rowIndex < bodyEndExclusive; rowIndex += 1) {
         const artRowIdx = rowIndex - bodyStart;
         nextFrameLines[rowIndex] = compositeRowWithArt(

@@ -2010,6 +2010,15 @@ function render() {
 
 function scheduleRender() {
   watchFrameController?.scheduleRender();
+  // If the frame controller's last measured body dimensions have
+  // changed since the art was last rasterized, request a refresh so
+  // the art re-stretches to the new body size. No-op if dimensions
+  // match.
+  const currentRev = Number(watchState.currentBodyRevision) || 0;
+  const lastArtRev = Number(watchState.artPanelBodyRevision) || 0;
+  if (currentRev !== lastArtRev) {
+    void refreshArtPanel();
+  }
 }
 
 // Right-side ANSI art panel: loads the configured image once, then
@@ -2084,18 +2093,18 @@ async function refreshArtPanel() {
         ? Math.max(20, Math.floor(width * cfgFraction))
         : width;
     const artCols = Math.max(1, Math.min(width, desiredCols));
-    // Render at body height (terminal minus header and composer
-    // budget) so the source image's full vertical extent maps 1:1
-    // into the visible body. Previously we passed full termHeight
-    // which stretched the image taller than the region we display,
-    // shifting the subject vertically and clipping the bottom.
-    // Reservation matches typical layout: header ~8 rows, composer
-    // ~2 rows, popup headroom ~2 rows.
-    const RESERVED_HEADER_FOOTER_ROWS = 12;
-    const bodyHeight = Math.max(10, height - RESERVED_HEADER_FOOTER_ROWS);
+    // Use the actual measured body dimensions published by the frame
+    // controller after it last rendered. Falls back to a conservative
+    // estimate on first boot before any frame has rendered.
+    const measuredBodyHeight = Number(watchState.currentBodyHeight);
+    const bodyHeight =
+      Number.isFinite(measuredBodyHeight) && measuredBodyHeight > 0
+        ? Math.floor(measuredBodyHeight)
+        : Math.max(10, height - 12);
     const rows = await artRenderer.render({ cols: artCols, rows: bodyHeight });
     watchState.artPanelRows = rows;
     watchState.artPanelCols = artCols;
+    watchState.artPanelBodyRevision = Number(watchState.currentBodyRevision) || 0;
     scheduleRender();
   } catch {
     watchState.artPanelRows = null;
