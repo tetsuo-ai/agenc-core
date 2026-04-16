@@ -2315,7 +2315,43 @@ describe("SubAgentManager", () => {
           usedFallback: false,
           toolCalls: [],
           tokenUsage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
-          callUsage: [],
+          callUsage: [
+            {
+              callIndex: 1,
+              phase: "initial",
+              provider: "mock-llm",
+              model: "mock-llm",
+              finishReason: "stop",
+              usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+              beforeBudget: {
+                messageCount: 1,
+                systemMessages: 1,
+                userMessages: 0,
+                assistantMessages: 0,
+                toolMessages: 0,
+                estimatedChars: 20,
+                systemPromptChars: 10,
+              },
+              afterBudget: {
+                messageCount: 1,
+                systemMessages: 1,
+                userMessages: 0,
+                assistantMessages: 0,
+                toolMessages: 0,
+                estimatedChars: 20,
+                systemPromptChars: 10,
+              },
+              statefulDiagnostics: {
+                enabled: true,
+                attempted: true,
+                continued: true,
+                store: true,
+                fallbackToStateless: true,
+                responseId: "resp-child-1",
+                reconciliationHash: "hash-child-1",
+              },
+            },
+          ],
           durationMs: 10,
           compacted: false,
           stopReason: "completed",
@@ -2377,6 +2413,12 @@ describe("SubAgentManager", () => {
             { role: "user", content: "Store the token for later recall" },
             { role: "assistant", content: "CHILD-STORED-S1" },
           ],
+          stateful: {
+            resumeAnchor: {
+              previousResponseId: "resp-child-1",
+              reconciliationHash: "hash-child-1",
+            },
+          },
         });
       } finally {
         executeSpy.mockRestore();
@@ -2392,7 +2434,43 @@ describe("SubAgentManager", () => {
           usedFallback: false,
           toolCalls: [],
           tokenUsage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
-          callUsage: [],
+          callUsage: [
+            {
+              callIndex: 1,
+              phase: "initial",
+              provider: "mock-llm",
+              model: "mock-llm",
+              finishReason: "stop",
+              usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+              beforeBudget: {
+                messageCount: 1,
+                systemMessages: 1,
+                userMessages: 0,
+                assistantMessages: 0,
+                toolMessages: 0,
+                estimatedChars: 20,
+                systemPromptChars: 10,
+              },
+              afterBudget: {
+                messageCount: 1,
+                systemMessages: 1,
+                userMessages: 0,
+                assistantMessages: 0,
+                toolMessages: 0,
+                estimatedChars: 20,
+                systemPromptChars: 10,
+              },
+              statefulDiagnostics: {
+                enabled: true,
+                attempted: true,
+                continued: true,
+                store: true,
+                fallbackToStateless: true,
+                responseId: "resp-child-persisted-1",
+                reconciliationHash: "hash-child-persisted-1",
+              },
+            },
+          ],
           durationMs: 10,
           compacted: false,
           stopReason: "completed",
@@ -2460,6 +2538,12 @@ describe("SubAgentManager", () => {
             { role: "user", content: "Store the token for later recall" },
             { role: "assistant", content: "STORED-CHILD-RESULT" },
           ],
+          stateful: {
+            resumeAnchor: {
+              previousResponseId: "resp-child-persisted-1",
+              reconciliationHash: "hash-child-persisted-1",
+            },
+          },
         });
       } finally {
         executeSpy.mockRestore();

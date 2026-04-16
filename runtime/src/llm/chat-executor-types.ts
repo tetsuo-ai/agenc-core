@@ -234,6 +234,8 @@ export interface ChatExecuteParams {
   };
   /** Optional replay/hydration context for interactive resume/fork parity. */
   readonly interactiveContext?: InteractiveContextRequest;
+  /** Optional durable verifier child session to resume instead of spawning a new verifier worker. */
+  readonly runtimeVerifierContinuationSessionId?: string;
   /** Optional per-turn tool-routing subset and expansion policy. */
   readonly toolRouting?: {
     /** Effective advertised bundle for this turn before any lexical narrowing. */
@@ -678,6 +680,7 @@ export interface ExecutionContext {
   readonly plannerDecision: PlannerDecision;
   readonly toolRouting?: ChatExecuteParams["toolRouting"];
   readonly stateful?: ChatExecuteParams["stateful"];
+  readonly runtimeVerifierContinuationSessionId?: string;
   readonly requiredToolEvidence?: {
     readonly maxCorrectionAttempts: number;
     readonly maxCorrectionAttemptsExplicit: boolean;
@@ -766,6 +769,7 @@ interface BuildExecutionContextParams {
   readonly streamCallback?: StreamProgressCallback;
   readonly toolRouting?: ChatExecuteParams["toolRouting"];
   readonly stateful?: ChatExecuteParams["stateful"];
+  readonly runtimeVerifierContinuationSessionId?: string;
   readonly requiredToolEvidence?: ChatExecuteParams["requiredToolEvidence"];
   readonly trace?: ChatExecuteParams["trace"];
   readonly initialRoutedToolNames: readonly string[];
@@ -835,6 +839,8 @@ export function buildDefaultExecutionContext(
     plannerDecision: params.plannerDecision,
     toolRouting: params.toolRouting,
     stateful: params.stateful,
+    runtimeVerifierContinuationSessionId:
+      params.runtimeVerifierContinuationSessionId,
     trace: params.trace,
     defaultRunClass: config.defaultRunClass,
     requiredToolEvidence: params.requiredToolEvidence

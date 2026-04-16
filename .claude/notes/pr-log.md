@@ -171,3 +171,10 @@
 - **What worked:** Moving non-default tools behind runtime-side discovery kept the default advertised bundle small while preserving later-turn access through persisted discovered tool state, and shared model-route normalization removed alias-only mismatch noise across runtime and watch surfaces.
 - **What didn't:** The runtime had previously treated the callable tool universe and the advertised tool bundle as the same thing, so the fix needed coordinated daemon, executor, and watch updates before the provider-cap behavior and route display lined up cleanly.
 - **Rule added to CLAUDE.md:** no
+
+## PR #405: refactor(runtime): stabilize background continuation and verifier reuse
+- **Date:** 2026-04-15
+- **Files changed:** `runtime/src/gateway/{background-run-store,background-run-supervisor,background-run-supervisor-types,run-domains,sub-agent,top-level-verifier}.ts`, `runtime/src/llm/{chat-executor-tool-loop,chat-executor-types}.ts`, `runtime/src/llm/grok/adapter.ts`, `runtime/src/llm/provider-capabilities.ts`, and the matching runtime tests
+- **What worked:** Persisting interactive continuation state for background runs, reusing verifier child sessions, keeping workspace runs from self-completing on weak evidence, and carrying child resume anchors across restarts removed the repeated verifier respawns and the long-run replay drift.
+- **What didn't:** The continuation behavior was split across provider defaults, background-run state, child-session persistence, and verifier verdict parsing, so closing the gap required coordinated changes and test updates instead of a single runtime toggle.
+- **Rule added to CLAUDE.md:** no

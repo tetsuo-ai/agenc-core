@@ -169,6 +169,34 @@ describe("runTopLevelVerifierValidation", () => {
     expect(decision.blockingMessage).toContain("Runtime verification blocked completion");
   });
 
+  it("reuses a prior verifier child session when a continuation session is provided", async () => {
+    const spawn = vi.fn(async () => "subagent:verify-1");
+    const waitForResult = vi.fn(async () => ({
+      sessionId: "subagent:verify-1",
+      output: "VERDICT: PARTIAL",
+      success: false,
+      durationMs: 10,
+      toolCalls: [],
+      completionState: "completed",
+      stopReason: "completed",
+    }));
+
+    await runTopLevelVerifierValidation({
+      sessionId: "session:test",
+      userRequest: "Implement every phase from PLAN.md",
+      result: createResult(),
+      subAgentManager: { spawn, waitForResult },
+      verifierService: createVerifierService(),
+      continuationSessionId: "subagent:verify-prev",
+    });
+
+    expect(spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        continuationSessionId: "subagent:verify-prev",
+      }),
+    );
+  });
+
   it("inherits the parent tool surface minus mutating tools for verifier runs", async () => {
     const spawn = vi.fn(async () => "subagent:verify-tools");
     const waitForResult = vi.fn(async () => ({
@@ -598,7 +626,7 @@ describe("runTopLevelVerifierValidation", () => {
     expect(decision.runtimeVerifier.overall).toBe("pass");
   });
 
-  it("accepts PASS verdicts even when the verifier includes weak green probe output", async () => {
+  it("rejects PASS verdicts when the verifier includes weak green probe output", async () => {
     const spawn = vi.fn(async () => "subagent:verify-weak");
     const waitForResult = vi.fn(async () => ({
       sessionId: "subagent:verify-weak",
@@ -649,9 +677,9 @@ describe("runTopLevelVerifierValidation", () => {
       ),
     });
 
-    expect(decision.outcome).toBe("pass");
-    expect(decision.summary).toContain("Verifier thinks the build is correct.");
-    expect(decision.runtimeVerifier.overall).toBe("pass");
+    expect(decision.outcome).toBe("retry_with_blocking_message");
+    expect(decision.summary).toContain("weak or contradictory");
+    expect(decision.runtimeVerifier.overall).toBe("retry");
   });
 
   it("records remote-job verifier handles when remote isolation is enabled", async () => {

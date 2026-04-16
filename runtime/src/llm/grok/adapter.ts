@@ -1667,8 +1667,7 @@ export class GrokProvider implements LLMProvider {
     const persistedResumeAnchor = options?.stateful?.resumeAnchor;
     const memoryAnchor = this.statefulSessions.get(sessionId);
     const anchor = memoryAnchor ?? (
-      persistedResumeAnchor?.previousResponseId &&
-      persistedResumeAnchor.reconciliationHash
+      persistedResumeAnchor?.previousResponseId
         ? {
             responseId: persistedResumeAnchor.previousResponseId,
             reconciliationHash: persistedResumeAnchor.reconciliationHash,
@@ -1701,18 +1700,25 @@ export class GrokProvider implements LLMProvider {
         detail: `session=${sessionId}`,
       });
 
-      const anchorRelativeIndex = reconciliation.chain.lastIndexOf(
-        anchor.reconciliationHash,
-      );
-      anchorMatched = anchorRelativeIndex >= 0;
-      if (anchorMatched) {
-        anchorRelevantMessageIndex =
-          reconciliation.messageCountUsed - reconciliation.chain.length +
-          anchorRelativeIndex;
+      if (anchor.reconciliationHash) {
+        const anchorRelativeIndex = reconciliation.chain.lastIndexOf(
+          anchor.reconciliationHash,
+        );
+        anchorMatched = anchorRelativeIndex >= 0;
+        if (anchorMatched) {
+          anchorRelevantMessageIndex =
+            reconciliation.messageCountUsed - reconciliation.chain.length +
+            anchorRelativeIndex;
+        }
       }
       if (anchorMatched) {
         continued = true;
         appendStatefulEvent(events, "stateful_continuation_success");
+      } else if (!anchor.reconciliationHash) {
+        continued = true;
+        appendStatefulEvent(events, "stateful_continuation_success", {
+          detail: `session=${sessionId}; reconciliation_hash=missing`,
+        });
       } else if (historyCompacted) {
         continued = true;
         compactedHistoryTrusted = true;
@@ -1979,7 +1985,7 @@ export class GrokProvider implements LLMProvider {
     const params: Record<string, unknown> = {
       model,
       input,
-      store: options?.store ?? this.statefulConfig?.store ?? false,
+      store: options?.store ?? this.statefulConfig?.store ?? true,
     };
     if (options?.previousResponseId) {
       params.previous_response_id = options.previousResponseId;

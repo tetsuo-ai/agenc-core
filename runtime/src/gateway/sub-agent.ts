@@ -39,6 +39,7 @@ import type {
   LLMProviderExecutionProfile,
   LLMMessage,
   LLMProviderEvidence,
+  LLMStatefulResumeAnchor,
   LLMStructuredOutputResult,
   LLMUsage,
   ToolHandler,
@@ -77,6 +78,8 @@ import {
   subAgentTranscriptStreamId,
 } from "./session-transcript.js";
 import {
+  buildInteractivePromptSnapshot,
+  buildInteractiveToolScopeFingerprint,
   normalizeInteractiveExecutionLocation,
   sameInteractiveExecutionLocation,
 } from "./interactive-context.js";
@@ -329,6 +332,7 @@ interface SubAgentHandle {
   timeoutTimer: ReturnType<typeof setTimeout> | null;
   execution: Promise<void>;
   finishedAt: number | null;
+  statefulResumeAnchor?: LLMStatefulResumeAnchor;
 }
 
 interface PersistedSubAgentState {
@@ -342,6 +346,7 @@ interface PersistedSubAgentState {
   readonly result: SubAgentResult | null;
   readonly startedAt: number;
   readonly finishedAt: number | null;
+  readonly statefulResumeAnchor?: LLMStatefulResumeAnchor;
 }
 
 interface LegacySubAgentConfigRecord extends Record<string, unknown> {
@@ -370,12 +375,44 @@ function normalizeSubAgentConfig(
   config: SubAgentConfig,
   managerPromptEnvelope?: PromptEnvelopeV1,
 ): SubAgentConfig {
+  const promptEnvelope = normalizeSubAgentPromptEnvelope(
+    config.promptEnvelope,
+    managerPromptEnvelope?.baseSystemPrompt ?? DEFAULT_SUB_AGENT_SYSTEM_PROMPT,
+  );
+  const workspaceRoot = resolveSubAgentWorkspaceRoot(config);
+  const workingDirectory = resolveSubAgentWorkingDirectory(config);
+  const normalizedExecutionLocation = normalizeInteractiveExecutionLocation(
+    config.executionLocation ?? {
+      mode: "local",
+      workspaceRoot,
+      workingDirectory,
+    },
+  );
+  const interactiveContext =
+    config.interactiveContext ??
+    (workspaceRoot || workingDirectory
+      ? {
+          state: {
+            version: 1 as const,
+            readSeeds: [],
+            ...(normalizedExecutionLocation
+              ? { executionLocation: normalizedExecutionLocation }
+              : {}),
+            cacheSafePromptSnapshot: buildInteractivePromptSnapshot({
+              baseSystemPrompt: promptEnvelope.baseSystemPrompt,
+              systemContextBlocks: promptEnvelope.systemSections,
+              userContextBlocks: promptEnvelope.userSections,
+              toolScopeFingerprint: buildInteractiveToolScopeFingerprint(
+                config.tools ?? [],
+              ),
+            }),
+          },
+        }
+      : undefined);
   return {
     ...config,
-    promptEnvelope: normalizeSubAgentPromptEnvelope(
-      config.promptEnvelope,
-      managerPromptEnvelope?.baseSystemPrompt ?? DEFAULT_SUB_AGENT_SYSTEM_PROMPT,
-    ),
+    promptEnvelope,
+    ...(interactiveContext ? { interactiveContext } : {}),
   };
 }
 
@@ -456,6 +493,28 @@ function coercePersistedSubAgentState(
       typeof raw.finishedAt === "number" && Number.isFinite(raw.finishedAt)
         ? raw.finishedAt
         : null,
+    ...(raw.statefulResumeAnchor &&
+    typeof raw.statefulResumeAnchor === "object" &&
+    !Array.isArray(raw.statefulResumeAnchor) &&
+    typeof (raw.statefulResumeAnchor as Record<string, unknown>).previousResponseId ===
+      "string"
+      ? {
+          statefulResumeAnchor: {
+            previousResponseId: (
+              raw.statefulResumeAnchor as Record<string, unknown>
+            ).previousResponseId as string,
+            ...(typeof (
+              raw.statefulResumeAnchor as Record<string, unknown>
+            ).reconciliationHash === "string"
+              ? {
+                  reconciliationHash: (
+                    raw.statefulResumeAnchor as Record<string, unknown>
+                  ).reconciliationHash as string,
+                }
+              : {}),
+          } satisfies LLMStatefulResumeAnchor,
+        }
+      : {}),
   };
 }
 
@@ -474,6 +533,27 @@ function normalizeStringList(values: readonly string[] | undefined): readonly st
     .map((value) => value.trim())
     .filter((value) => value.length > 0)
     .sort((left, right) => left.localeCompare(right));
+}
+
+function extractStatefulResumeAnchor(
+  result: ChatExecutorResult | null | undefined,
+): LLMStatefulResumeAnchor | undefined {
+  if (!result) {
+    return undefined;
+  }
+  const latestUsage = [...result.callUsage]
+    .reverse()
+    .find((entry) => entry.statefulDiagnostics?.responseId);
+  const responseId = latestUsage?.statefulDiagnostics?.responseId?.trim();
+  if (!responseId) {
+    return undefined;
+  }
+  const reconciliationHash =
+    latestUsage?.statefulDiagnostics?.reconciliationHash?.trim();
+  return {
+    previousResponseId: responseId,
+    ...(reconciliationHash ? { reconciliationHash } : {}),
+  };
 }
 
 function stableConfigFragment(value: unknown): string {
@@ -767,6 +847,7 @@ export class SubAgentManager {
       timeoutTimer: null,
       execution: Promise.resolve(),
       finishedAt: null,
+      statefulResumeAnchor: continuationHandle?.statefulResumeAnchor,
     };
 
     this.handles.set(sessionId, handle);
@@ -1035,6 +1116,9 @@ export class SubAgentManager {
       result: handle.result ? cloneJson(handle.result) : null,
       startedAt: handle.startedAt,
       finishedAt: handle.finishedAt,
+      ...(handle.statefulResumeAnchor
+        ? { statefulResumeAnchor: handle.statefulResumeAnchor }
+        : {}),
     };
     await memoryBackend.set(subAgentStateKey(handle.sessionId), persisted);
   }
@@ -1099,6 +1183,7 @@ export class SubAgentManager {
       timeoutTimer: null,
       execution: Promise.resolve(),
       finishedAt: persisted.finishedAt,
+      statefulResumeAnchor: persisted.statefulResumeAnchor,
     };
   }
 
@@ -1430,6 +1515,13 @@ export class SubAgentManager {
                 },
               }
               : {}),
+            ...(handle.statefulResumeAnchor
+              ? {
+                  stateful: {
+                    resumeAnchor: handle.statefulResumeAnchor,
+                  },
+                }
+              : undefined),
             ...(typeof effectiveToolBudgetPerRequest === "number"
               ? { toolBudgetPerRequest: effectiveToolBudgetPerRequest }
               : {}),
@@ -1481,6 +1573,8 @@ export class SubAgentManager {
         user: { role: "user", content: handle.config.prompt ?? handle.task },
         assistant: { role: "assistant", content: output },
       });
+      handle.statefulResumeAnchor =
+        extractStatefulResumeAnchor(resultOrAbort) ?? handle.statefulResumeAnchor;
 
       this.markTerminalState(handle, terminalStatus, {
         sessionId: handle.sessionId,

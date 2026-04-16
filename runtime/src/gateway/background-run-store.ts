@@ -23,11 +23,13 @@ import {
   loadTranscript,
   recoverTranscriptHistory,
 } from "./session-transcript.js";
+import type { InteractiveContextState } from "./interactive-context.js";
 import {
   coerceSessionShellProfile,
   DEFAULT_SESSION_SHELL_PROFILE,
   type SessionShellProfile,
 } from "./shell-profile.js";
+import { coerceInteractiveContextState } from "./interactive-context.js";
 import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";
 import { KeyedAsyncQueue } from "../utils/keyed-async-queue.js";
@@ -316,6 +318,11 @@ export interface BackgroundRunCompactionState {
   readonly lastProviderAnchorAt?: number;
 }
 
+export type BackgroundRunContinuationMode =
+  | "provider_continuation"
+  | "transcript_resume"
+  | "full_replay_fallback";
+
 export interface BackgroundRunRecentSnapshot {
   readonly version: typeof AGENT_RUN_SCHEMA_VERSION;
   readonly runId: string;
@@ -344,6 +351,9 @@ export interface BackgroundRunRecentSnapshot {
   readonly fenceToken: number;
   readonly preferredWorkerId?: string;
   readonly workerAffinityKey?: string;
+  readonly continuationMode?: BackgroundRunContinuationMode;
+  readonly verifierSessionId?: string;
+  readonly verifierStage?: RuntimeVerifierStage;
 }
 
 export interface PersistedBackgroundRun {
@@ -369,6 +379,10 @@ export interface PersistedBackgroundRun {
   readonly lastWakeReason?: BackgroundRunLastWakeReason;
   readonly completionProgress?: WorkflowProgressSnapshot;
   readonly carryForward?: BackgroundRunCarryForwardState;
+  readonly interactiveContextState?: InteractiveContextState;
+  readonly continuationMode?: BackgroundRunContinuationMode;
+  readonly verifierSessionId?: string;
+  readonly verifierStage?: RuntimeVerifierStage;
   readonly blocker?: BackgroundRunBlockerState;
   readonly approvalState: BackgroundRunApprovalState;
   readonly budgetState: BackgroundRunBudgetState;
@@ -384,6 +398,15 @@ export interface PersistedBackgroundRun {
   readonly leaseOwnerId?: string;
   readonly leaseExpiresAt?: number;
 }
+
+type RuntimeVerifierStage =
+  | "inactive"
+  | "pending"
+  | "running"
+  | "passed"
+  | "retry"
+  | "failed"
+  | "skipped";
 
 export interface BackgroundRunDispatchItem {
   readonly version: typeof AGENT_RUN_SCHEMA_VERSION;
@@ -1972,8 +1995,33 @@ interface CoercedRunCore {
   readonly contract: BackgroundRunContract;
   readonly completionProgress?: WorkflowProgressSnapshot;
   readonly carryForward?: BackgroundRunCarryForwardState;
+  readonly interactiveContextState?: InteractiveContextState;
   readonly pendingSignals: BackgroundRunSignal[];
   readonly observedTargets: BackgroundRunObservedTarget[];
+}
+
+function isBackgroundRunContinuationMode(
+  value: unknown,
+): value is BackgroundRunContinuationMode {
+  return (
+    value === "provider_continuation" ||
+    value === "transcript_resume" ||
+    value === "full_replay_fallback"
+  );
+}
+
+function isRuntimeVerifierStage(
+  value: unknown,
+): value is NonNullable<PersistedBackgroundRun["verifierStage"]> {
+  return (
+    value === "inactive" ||
+    value === "pending" ||
+    value === "running" ||
+    value === "passed" ||
+    value === "retry" ||
+    value === "failed" ||
+    value === "skipped"
+  );
 }
 
 function coerceRunCore(value: unknown): CoercedRunCore | undefined {
@@ -2006,6 +2054,9 @@ function coerceRunCore(value: unknown): CoercedRunCore | undefined {
     contract,
     completionProgress: coerceCompletionProgress(raw.completionProgress),
     carryForward: coerceCarryForward(raw.carryForward),
+    interactiveContextState: coerceInteractiveContextState(
+      raw.interactiveContextState,
+    ),
     pendingSignals: Array.isArray(raw.pendingSignals)
       ? raw.pendingSignals
         .map((item) => coerceSignal(item))
@@ -2199,7 +2250,14 @@ function coerceRunLineage(value: unknown): BackgroundRunLineage | undefined {
 function coerceRun(value: unknown): PersistedBackgroundRun | undefined {
   const core = coerceRunCore(value);
   if (!core) return undefined;
-  const { raw, contract, carryForward, pendingSignals, observedTargets } = core;
+  const {
+    raw,
+    contract,
+    carryForward,
+    interactiveContextState,
+    pendingSignals,
+    observedTargets,
+  } = core;
   const id = raw.id as string;
   const sessionId = raw.sessionId as string;
   const objective = raw.objective as string;
@@ -2256,6 +2314,17 @@ function coerceRun(value: unknown): PersistedBackgroundRun | undefined {
         : undefined,
     completionProgress: core.completionProgress,
     carryForward,
+    interactiveContextState,
+    continuationMode: isBackgroundRunContinuationMode(raw.continuationMode)
+      ? raw.continuationMode
+      : undefined,
+    verifierSessionId:
+      typeof raw.verifierSessionId === "string"
+        ? raw.verifierSessionId
+        : undefined,
+    verifierStage: isRuntimeVerifierStage(raw.verifierStage)
+      ? raw.verifierStage
+      : undefined,
     blocker: durableState.blocker,
     approvalState: durableState.approvalState,
     budgetState: durableState.budgetState,

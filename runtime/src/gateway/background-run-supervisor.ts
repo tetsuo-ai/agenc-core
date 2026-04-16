@@ -71,6 +71,14 @@ import {
 } from "./background-run-store.js";
 import { BackgroundRunWakeBus } from "./background-run-wake-bus.js";
 import type { RunDomainRetryPolicy } from "./run-domains.js";
+import {
+  buildInteractivePromptSnapshot,
+  buildInteractiveToolScopeFingerprint,
+  cloneInteractiveContextState,
+  normalizeInteractiveExecutionLocation,
+  type InteractiveContextRequest,
+  type InteractiveContextState,
+} from "./interactive-context.js";
 
 // --- Re-export from extracted constants ---
 import {
@@ -288,6 +296,97 @@ function buildActorPrompt(run: ActiveBackgroundRun): string {
     "Take the next best bounded step toward this objective. " +
     "Use tools when necessary. If the task is already running independently, verify its current state instead of narrating.\n"
   );
+}
+
+function resolveRunWorkspaceRoot(
+  run: ActiveBackgroundRun,
+  runtimeWorkspaceRoot?: string,
+): string | undefined {
+  return (
+    runtimeWorkspaceRoot ??
+    run.interactiveContextState?.executionLocation?.workspaceRoot ??
+    run.lineage?.scope.workspaceRoot
+  );
+}
+
+function buildBackgroundRunInteractiveContextState(params: {
+  readonly run: ActiveBackgroundRun;
+  readonly promptEnvelope: ReturnType<typeof normalizePromptEnvelope>;
+  readonly runtimeWorkspaceRoot?: string;
+  readonly advertisedToolNames?: readonly string[];
+}): InteractiveContextState {
+  const executionLocation = normalizeInteractiveExecutionLocation({
+    mode:
+      params.run.lineage?.scope.workspaceRoot ||
+      params.run.interactiveContextState?.executionLocation?.mode === "worktree"
+        ? params.run.interactiveContextState?.executionLocation?.mode ?? "local"
+        : "local",
+    workspaceRoot: resolveRunWorkspaceRoot(
+      params.run,
+      params.runtimeWorkspaceRoot,
+    ),
+    workingDirectory: resolveRunWorkspaceRoot(
+      params.run,
+      params.runtimeWorkspaceRoot,
+    ),
+    gitRoot: params.run.interactiveContextState?.executionLocation?.gitRoot,
+    worktreePath:
+      params.run.interactiveContextState?.executionLocation?.worktreePath,
+    worktreeRef:
+      params.run.interactiveContextState?.executionLocation?.worktreeRef,
+  });
+  const existing = params.run.interactiveContextState;
+  const advertisedToolNames =
+    params.advertisedToolNames && params.advertisedToolNames.length > 0
+      ? params.advertisedToolNames
+      : existing?.defaultAdvertisedToolNames ?? [];
+  const discoveredToolNames = existing?.discoveredToolNames ?? [];
+  return {
+    version: 1,
+    readSeeds: existing?.readSeeds ?? [],
+    ...(executionLocation ? { executionLocation } : {}),
+    cacheSafePromptSnapshot: buildInteractivePromptSnapshot({
+      baseSystemPrompt: params.promptEnvelope.baseSystemPrompt,
+      systemContextBlocks: params.promptEnvelope.systemSections,
+      userContextBlocks: params.promptEnvelope.userSections,
+      sessionStartContextMessages:
+        existing?.cacheSafePromptSnapshot?.sessionStartContextMessages ?? [],
+      toolScopeFingerprint: buildInteractiveToolScopeFingerprint([
+        ...advertisedToolNames,
+        ...discoveredToolNames,
+      ]),
+    }),
+    ...(advertisedToolNames.length > 0
+      ? { defaultAdvertisedToolNames: advertisedToolNames }
+      : {}),
+    ...(discoveredToolNames.length > 0 ? { discoveredToolNames } : {}),
+    ...(existing?.summaryRef ? { summaryRef: existing.summaryRef } : {}),
+    ...(existing?.forkCarryover ? { forkCarryover: existing.forkCarryover } : {}),
+  };
+}
+
+function resolveBackgroundContinuationMode(
+  actorResult: ChatExecutorResult,
+): "provider_continuation" | "transcript_resume" | "full_replay_fallback" {
+  const latestUsage = [...actorResult.callUsage].reverse().find(Boolean);
+  const diagnostics = latestUsage?.statefulDiagnostics;
+  if (diagnostics?.continued === true && diagnostics.previousResponseId) {
+    return "provider_continuation";
+  }
+  if (
+    diagnostics?.fallbackReason === "store_disabled" ||
+    diagnostics?.fallbackReason === "missing_previous_response_id" ||
+    diagnostics?.fallbackReason === "state_reconciliation_mismatch"
+  ) {
+    return "transcript_resume";
+  }
+  if (
+    diagnostics?.attempted === true &&
+    diagnostics.continued !== true
+  ) {
+    return "full_replay_fallback";
+  }
+  return "transcript_resume";
 }
 
 function formatCompletionProgressState(
@@ -1755,6 +1854,10 @@ export class BackgroundRunSupervisor {
       lastWakeReason: "start",
       completionProgress: undefined,
       carryForward: undefined,
+      interactiveContextState: undefined,
+      continuationMode: undefined,
+      verifierSessionId: undefined,
+      verifierStage: "inactive",
       blocker: undefined,
       approvalState: { status: "none" },
       budgetState: buildInitialBudgetState(contract, now),
@@ -3646,6 +3749,17 @@ export class BackgroundRunSupervisor {
           allowedTools: getScopedAllowedTools(run),
           toolRoutingDecision: baseToolRoutingDecision,
         });
+        const interactiveContextState = buildBackgroundRunInteractiveContextState({
+          run,
+          promptEnvelope: actorPromptEnvelope,
+          runtimeWorkspaceRoot: resolvedExecutionContext?.runtimeContext?.workspaceRoot,
+          advertisedToolNames:
+            toolRoutingDecision?.routedToolNames ??
+            run.interactiveContextState?.defaultAdvertisedToolNames,
+        });
+        run.interactiveContextState = cloneInteractiveContextState(
+          interactiveContextState,
+        );
         const abortSignal = run.abortController?.signal;
         if (!abortSignal) {
           throw new Error("Background cycle missing abort signal");
@@ -3659,10 +3773,18 @@ export class BackgroundRunSupervisor {
           sessionId,
           runtimeContext: resolvedExecutionContext?.runtimeContext,
           requiredToolEvidence: resolvedExecutionContext?.requiredToolEvidence,
+          interactiveContext: {
+            state: interactiveContextState,
+            ...(typeof run.carryForward?.summary === "string" &&
+            run.carryForward.summary.trim().length > 0
+              ? { summaryText: run.carryForward.summary.trim() }
+              : {}),
+          } satisfies InteractiveContextRequest,
           requestTimeoutMs: BACKGROUND_RUN_ACTOR_REQUEST_TIMEOUT_MS,
+          runtimeVerifierContinuationSessionId: run.verifierSessionId,
           stateful: run.carryForward?.providerContinuation
             ? {
-              resumeAnchor: {
+                resumeAnchor: {
                 previousResponseId: run.carryForward.providerContinuation.responseId,
                 ...(run.carryForward.providerContinuation.reconciliationHash
                   ? {
@@ -3700,6 +3822,10 @@ export class BackgroundRunSupervisor {
         run.lastVerifiedAt = this.now();
         recordToolEvidence(run, actorResult.toolCalls);
         recordProviderCompactionArtifacts(run, actorResult);
+        run.continuationMode = resolveBackgroundContinuationMode(actorResult);
+        const verifierStages = actorResult.runtimeContractSnapshot?.verifierStages;
+        run.verifierSessionId = verifierStages?.taskId ?? run.verifierSessionId;
+        run.verifierStage = verifierStages?.stageStatus ?? run.verifierStage;
         const providerContinuation = extractLatestProviderContinuation(
           actorResult,
           run.lastVerifiedAt,

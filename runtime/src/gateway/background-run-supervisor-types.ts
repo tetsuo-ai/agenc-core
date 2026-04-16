@@ -34,6 +34,7 @@ import {
   AGENT_RUN_SCHEMA_VERSION,
 } from "./agent-run-contract.js";
 import {
+  type BackgroundRunContinuationMode,
   type BackgroundRunApprovalState,
   type BackgroundRunBlockerState,
   type BackgroundRunBudgetState,
@@ -50,6 +51,7 @@ import {
   type PersistedBackgroundRun,
   BackgroundRunStore,
 } from "./background-run-store.js";
+import type { InteractiveContextState } from "./interactive-context.js";
 import type { BackgroundRunLineage } from "./subrun-contract.js";
 import type {
   BackgroundRunEventRecord,
@@ -77,6 +79,16 @@ export interface BackgroundRunStatusSnapshot {
   readonly blockerSummary?: string;
   readonly watchCount: number;
   readonly fenceToken: number;
+  readonly continuationMode?: BackgroundRunContinuationMode;
+  readonly verifierSessionId?: string;
+  readonly verifierStage?:
+    | "inactive"
+    | "pending"
+    | "running"
+    | "passed"
+    | "retry"
+    | "failed"
+    | "skipped";
 }
 
 export interface BackgroundRunAlert {
@@ -128,6 +140,17 @@ export interface ActiveBackgroundRun {
   lastWakeReason?: BackgroundRunLastWakeReason;
   completionProgress?: WorkflowProgressSnapshot;
   carryForward?: BackgroundRunCarryForwardState;
+  interactiveContextState?: InteractiveContextState;
+  continuationMode?: BackgroundRunContinuationMode;
+  verifierSessionId?: string;
+  verifierStage?:
+    | "inactive"
+    | "pending"
+    | "running"
+    | "passed"
+    | "retry"
+    | "failed"
+    | "skipped";
   blocker?: BackgroundRunBlockerState;
   approvalState: BackgroundRunApprovalState;
   budgetState: BackgroundRunBudgetState;
@@ -273,6 +296,9 @@ export function toStatusSnapshot(params: {
     blockerSummary: run.blocker?.summary,
     watchCount: run.watchRegistrations.length,
     fenceToken: run.fenceToken,
+    continuationMode: run.continuationMode,
+    verifierSessionId: run.verifierSessionId,
+    verifierStage: run.verifierStage,
   };
 }
 
@@ -301,6 +327,10 @@ export function toPersistedRun(run: ActiveBackgroundRun): PersistedBackgroundRun
     lastWakeReason: run.lastWakeReason,
     completionProgress: run.completionProgress,
     carryForward: run.carryForward,
+    interactiveContextState: run.interactiveContextState,
+    continuationMode: run.continuationMode,
+    verifierSessionId: run.verifierSessionId,
+    verifierStage: run.verifierStage,
     blocker: run.blocker,
     approvalState: run.approvalState,
     budgetState: run.budgetState,
@@ -349,6 +379,9 @@ export function toRecentSnapshot(
     fenceToken: run.fenceToken,
     preferredWorkerId: run.preferredWorkerId,
     workerAffinityKey: run.workerAffinityKey,
+    continuationMode: run.continuationMode,
+    verifierSessionId: run.verifierSessionId,
+    verifierStage: run.verifierStage,
   };
 }
 
@@ -377,6 +410,10 @@ export function toActiveRun(run: PersistedBackgroundRun): ActiveBackgroundRun {
     lastWakeReason: run.lastWakeReason,
     completionProgress: run.completionProgress,
     carryForward: run.carryForward,
+    interactiveContextState: run.interactiveContextState,
+    continuationMode: run.continuationMode,
+    verifierSessionId: run.verifierSessionId,
+    verifierStage: run.verifierStage,
     blocker: run.blocker,
     approvalState: run.approvalState,
     budgetState: run.budgetState,

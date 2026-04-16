@@ -488,30 +488,12 @@ function workspaceCompletionSatisfied(
   run: RunDomainRun,
   info: ParsedDomainSignal,
 ): boolean {
-  if (!allowsDeterministicCompletion(run)) {
-    return false;
-  }
-  const corpus = criteriaCorpus(run);
-  if (
-    /\b(file|write|update|create|modify|patch|save)\b/.test(corpus) &&
-    workspaceSignalMatches(info) &&
-    (Boolean(info.path) || info.category === "filesystem")
-  ) {
-    return true;
-  }
-  if (
-    /\b(build|test|lint|typecheck|compile|format)\b/.test(corpus) &&
-    commandLooksLikeBuildOrTest(info.command)
-  ) {
-    return true;
-  }
-  if (
-    /\b(run|execute|command|shell|bash|workspace)\b/.test(corpus) &&
-    typeof info.command === "string" &&
-    info.command.trim().length > 0
-  ) {
-    return true;
-  }
+  void run;
+  void info;
+  // Workspace implementation runs must not self-complete on weak filesystem
+  // or generic shell evidence. Explicit one-shot command execution is handled
+  // by executeWorkspaceNativeCycle(), and all other workspace objectives need
+  // stronger actor/verifier-backed completion.
   return false;
 }
 

@@ -143,7 +143,7 @@ describe("run-domains", () => {
     });
   });
 
-  it("workspace domain completes deterministic build/test objectives from command signals", () => {
+  it("workspace domain does not self-complete implementation objectives from generic command signals", () => {
     const domain = createWorkspaceRunDomain();
     const run = makeRun({
       objective: "Run the workspace test suite successfully.",
@@ -173,42 +173,8 @@ describe("run-domains", () => {
     });
 
     expect(domain.detectDeterministicVerification(run)).toMatchObject({
-      state: "success",
-    });
-  });
-
-  it("workspace domain completes finite workspace command objectives from generic shell evidence", () => {
-    const domain = createWorkspaceRunDomain();
-    const run = makeRun({
-      objective: "Run `git status --short` in the workspace and tell me when the command succeeds.",
-      contract: {
-        domain: "workspace",
-        kind: "finite",
-        successCriteria: ["Execute the workspace command successfully."],
-        completionCriteria: ["Verify the command succeeds in the workspace."],
-        blockedCriteria: ["Workspace tooling is missing."],
-        nextCheckMs: 4_000,
-        requiresUserStop: false,
-      },
-      pendingSignals: [
-        {
-          id: "sig-workspace-command",
-          type: "tool_result",
-          content: "Tool result observed for desktop.bash.",
-          timestamp: 3,
-          data: {
-            category: "generic",
-            toolName: "desktop.bash",
-            command: "git status --short",
-            failed: false,
-          },
-        },
-      ],
-    });
-
-    expect(domain.detectDeterministicVerification(run)).toMatchObject({
-      state: "success",
-      userUpdate: "Tool result observed for desktop.bash. Objective satisfied.",
+      state: "safe_to_continue",
+      safeToContinue: true,
     });
   });
 

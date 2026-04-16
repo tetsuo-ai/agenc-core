@@ -23,6 +23,7 @@ import type { DelegationVerifierService } from "./delegation-runtime.js";
 import { isSubAgentSessionId } from "./delegation-runtime.js";
 import {
   type VerifierRequirement,
+  extractVerificationProbeCoverage,
 } from "./verifier-probes.js";
 import type { TurnExecutionContract } from "../llm/turn-execution-contract-types.js";
 import type {
@@ -160,6 +161,7 @@ interface TopLevelVerifierParams {
   readonly agentDefinitions?: readonly AgentDefinition[];
   readonly availableToolNames?: readonly string[];
   readonly parentAllowedTools?: readonly string[];
+  readonly continuationSessionId?: string;
   readonly logger?: Logger;
   readonly onTraceEvent?: (
     event: TopLevelVerifierTraceEvent,
@@ -566,6 +568,14 @@ function parseVerifierSnapshot(result: SubAgentResult | null): {
   return { snapshot, summary };
 }
 
+function verifierPassHasWeakProbeEvidence(result: SubAgentResult | null): boolean {
+  if (!result?.toolCalls?.length) {
+    return false;
+  }
+  const coverage = extractVerificationProbeCoverage(result.toolCalls);
+  return coverage.failedProbeIds.length > 0 || coverage.weakProbeIds.length > 0;
+}
+
 function toRuntimeVerifierVerdict(params: {
   readonly snapshot: PlannerVerificationSnapshot;
   readonly summary: string;
@@ -955,6 +965,9 @@ export async function runTopLevelVerifierValidation(
   try {
     childSessionId = await subAgentManager.spawn({
       ...spawnConfig,
+      ...(params.continuationSessionId
+        ? { continuationSessionId: params.continuationSessionId }
+        : {}),
       ...(workspaceRoot ? { workingDirectorySource: "execution_envelope" as const } : {}),
       ...(verifierDelegationSpec ? { delegationSpec: verifierDelegationSpec } : {}),
       requireToolCall: true,
@@ -1050,7 +1063,35 @@ export async function runTopLevelVerifierValidation(
       verifier: effectiveParsed.snapshot,
       runtimeVerifier,
       summary: effectiveParsed.summary,
+      taskId: childSessionId,
       exhaustedDetail: `Top-level verifier retry: ${effectiveParsed.summary}`,
+      verifierRequirement: effectiveVerifierRequirement,
+      launcherKind: remoteJobHandle ? "remote_job" : "subagent",
+    };
+  }
+  if (
+    effectiveParsed.snapshot.overall === "pass" &&
+    verifierPassHasWeakProbeEvidence(verifierResult)
+  ) {
+    return {
+      outcome: "retry_with_blocking_message",
+      verifier: { performed: true, overall: "retry" },
+      runtimeVerifier: {
+        attempted: true,
+        overall: "retry",
+        summary:
+          "Runtime verifier reported PASS, but probe output was weak or contradictory.",
+      },
+      summary:
+        "Runtime verifier reported PASS, but probe output was weak or contradictory.",
+      taskId: childSessionId,
+      blockingMessage: buildVerifierBlockingMessage({
+        summary:
+          "Probe output was weak or contradictory. Strengthen verification until the probes produce grounded evidence.",
+        verdict: "retry",
+      }),
+      exhaustedDetail:
+        "Top-level verifier retry: probe output was weak or contradictory.",
       verifierRequirement: effectiveVerifierRequirement,
       launcherKind: remoteJobHandle ? "remote_job" : "subagent",
     };
@@ -1061,6 +1102,7 @@ export async function runTopLevelVerifierValidation(
       verifier: effectiveParsed.snapshot,
       runtimeVerifier,
       summary: effectiveParsed.summary,
+      taskId: childSessionId,
       verifierRequirement: effectiveVerifierRequirement,
       launcherKind: remoteJobHandle ? "remote_job" : "subagent",
     };
@@ -1070,6 +1112,7 @@ export async function runTopLevelVerifierValidation(
     verifier: effectiveParsed.snapshot,
     runtimeVerifier,
     summary: effectiveParsed.summary,
+    taskId: childSessionId,
     blockingMessage: buildVerifierBlockingMessage({
       summary: effectiveParsed.summary,
       verdict: runtimeVerifier.overall,

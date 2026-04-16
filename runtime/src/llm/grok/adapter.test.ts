@@ -2375,15 +2375,12 @@ describe("GrokProvider", () => {
 
     const firstParams = mockCreate.mock.calls[0][0];
     const secondParams = mockCreate.mock.calls[1][0];
-    expect(firstParams.store).toBe(false);
-    expect(secondParams.store).toBe(false);
-    expect(secondParams.previous_response_id).toBeUndefined();
-    expect(second.stateful?.attempted).toBe(false);
-    expect(second.stateful?.continued).toBe(false);
-    expect(second.stateful?.fallbackReason).toBe("store_disabled");
-    expect(
-      second.stateful?.events?.some((event) => event.reason === "store_disabled"),
-    ).toBe(true);
+    expect(firstParams.store).toBe(true);
+    expect(secondParams.store).toBe(true);
+    expect(secondParams.previous_response_id).toBe("resp_default_store_1");
+    expect(second.stateful?.attempted).toBe(true);
+    expect(second.stateful?.continued).toBe(true);
+    expect(second.stateful?.fallbackReason).toBeUndefined();
     expect(second.stateful?.responseId).toBe("resp_default_store_2");
   });
 

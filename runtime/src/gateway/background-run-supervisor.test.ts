@@ -24,6 +24,7 @@ import {
   deriveDefaultBackgroundRunMaxCycles,
 } from "./background-run-store.js";
 import { AGENT_RUN_SCHEMA_VERSION } from "./agent-run-contract.js";
+import { createRuntimeContractSnapshot } from "../runtime-contract/types.js";
 
 function makeResult(
   overrides: Partial<ChatExecutorResult> = {},
@@ -639,6 +640,122 @@ describe("background-run-supervisor", () => {
       2,
       "session-natural-language-server",
       "HTTP server is running in the background.",
+    );
+  });
+
+  it("passes interactive context into background actor cycles and reuses verifier child sessions", async () => {
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce(
+        makeResult({
+          callUsage: [
+            makeCallUsageRecord({
+              statefulDiagnostics: {
+                enabled: true,
+                attempted: true,
+                continued: true,
+                store: true,
+                fallbackToStateless: true,
+                previousResponseId: "resp-bg-1",
+                responseId: "resp-bg-2",
+              },
+            }),
+          ],
+          runtimeContractSnapshot: {
+            ...createRuntimeContractSnapshot({
+              runtimeContractV2: false,
+              stopHooksEnabled: false,
+              asyncTasksEnabled: false,
+              persistentWorkersEnabled: false,
+              mailboxEnabled: false,
+              verifierRuntimeRequired: true,
+              verifierProjectBootstrap: false,
+              workerIsolationWorktree: false,
+              workerIsolationRemote: false,
+            }),
+            verifierStages: {
+              ...createRuntimeContractSnapshot({
+                runtimeContractV2: false,
+                stopHooksEnabled: false,
+                asyncTasksEnabled: false,
+                persistentWorkersEnabled: false,
+                mailboxEnabled: false,
+                verifierRuntimeRequired: true,
+                verifierProjectBootstrap: false,
+                workerIsolationWorktree: false,
+                workerIsolationRemote: false,
+              }).verifierStages,
+              taskId: "subagent:verify-bg-1",
+              stageStatus: "retry",
+            },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(makeResult());
+    const resolveExecutionContext = vi.fn(async () => ({
+      runtimeContext: { workspaceRoot: "/tmp/workspace" },
+    }));
+    const supervisor = new BackgroundRunSupervisor({
+      chatExecutor: { execute } as any,
+      supervisorLlm: {
+        chat: vi.fn(async () => ({
+          content:
+            '{"state":"working","userUpdate":"Cycle still running.","internalSummary":"verification pending","nextCheckMs":4000,"shouldNotifyUser":true}',
+        })),
+      } as any,
+      getSystemPrompt: () => "system prompt",
+      createToolHandler: () => vi.fn(async () => JSON.stringify({ ok: true })),
+      resolveExecutionContext,
+      publishUpdate: vi.fn(async () => undefined),
+      runStore: createRunStore(),
+      logger: createLoggerStub(),
+    });
+
+    await supervisor.startRun({
+      sessionId: "session:bg-interactive",
+      objective: "Read PLAN.md and implement all phases in full.",
+      options: {
+        silent: true,
+        contract: {
+          domain: "workspace",
+          kind: "finite",
+          successCriteria: ["Implementation is complete."],
+          completionCriteria: ["Verification passes."],
+          blockedCriteria: ["Verification fails."],
+          nextCheckMs: 1_000,
+          requiresUserStop: false,
+        },
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await eventuallyAsync(async () => {
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+    expect(execute).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        interactiveContext: expect.objectContaining({
+          state: expect.objectContaining({
+            executionLocation: expect.objectContaining({
+              workspaceRoot: "/tmp/workspace",
+              workingDirectory: "/tmp/workspace",
+            }),
+            cacheSafePromptSnapshot: expect.objectContaining({
+              baseSystemPrompt: expect.stringContaining("system prompt"),
+            }),
+          }),
+        }),
+        runtimeVerifierContinuationSessionId: undefined,
+      }),
+    );
+
+    await (supervisor as any).executeCycle("session:bg-interactive");
+    expect(execute).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        runtimeVerifierContinuationSessionId: "subagent:verify-bg-1",
+      }),
     );
   });
 
@@ -3189,34 +3306,6 @@ describe("background-run-supervisor", () => {
       expectedUpdate: "Application window launched and focused. Objective satisfied.",
     },
     {
-      label: "workspace",
-      record: makePersistedRunRecord({
-        sessionId: "session-workspace-recover",
-        objective: "Run `git status --short` in the workspace and tell me when the command succeeds.",
-        contract: {
-          domain: "workspace",
-          successCriteria: ["Execute the workspace command successfully."],
-          completionCriteria: ["Verify the command succeeds in the workspace."],
-          blockedCriteria: ["Workspace tooling is missing."],
-        },
-        pendingSignals: [
-          {
-            id: "sig-workspace-recover",
-            type: "tool_result",
-            content: "Tool result observed for desktop.bash.",
-            timestamp: 2,
-            data: {
-              category: "generic",
-              toolName: "desktop.bash",
-              command: "git status --short",
-              failed: false,
-            },
-          },
-        ],
-      }),
-      expectedUpdate: "Tool result observed for desktop.bash. Objective satisfied.",
-    },
-    {
       label: "research",
       record: makePersistedRunRecord({
         sessionId: "session-research-recover",
@@ -5333,7 +5422,7 @@ describe("background-run-supervisor", () => {
     expect(supervisor.hasActiveRun("session-browser-grounding")).toBe(true);
   });
 
-  it("completes workspace runs deterministically from internal command evidence", async () => {
+  it("keeps workspace implementation runs active after internal command evidence", async () => {
     const publishUpdate = vi.fn(async () => undefined);
     const execute = vi.fn().mockResolvedValueOnce(
       makeResult({
@@ -5391,8 +5480,11 @@ describe("background-run-supervisor", () => {
     });
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(supervisor.getStatusSnapshot("session-workspace-complete")).toBeUndefined();
-    expect(publishUpdate).toHaveBeenLastCalledWith(
+    expect(supervisor.getStatusSnapshot("session-workspace-complete")).toMatchObject({
+      sessionId: "session-workspace-complete",
+      state: "working",
+    });
+    expect(publishUpdate).not.toHaveBeenCalledWith(
       "session-workspace-complete",
       "Tool result observed for system.bash. Objective satisfied.",
     );

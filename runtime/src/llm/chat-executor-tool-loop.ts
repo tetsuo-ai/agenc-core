@@ -2667,6 +2667,9 @@ export async function executeToolCallLoop(
           parentAllowedTools: config.allowedTools
             ? [...config.allowedTools]
             : undefined,
+          continuationSessionId:
+            ctx.runtimeVerifierContinuationSessionId ??
+            ctx.runtimeContractSnapshot.verifierStages.taskId,
           logger: config.completionValidation?.topLevelVerifier?.logger,
           onTraceEvent:
             config.completionValidation?.topLevelVerifier?.onTraceEvent,

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { resolveLLMStatefulResponsesConfig } from "./provider-capabilities.js";
 
 describe("resolveLLMStatefulResponsesConfig", () => {
-  it("defaults store=false when stateful responses are enabled without an explicit store override", () => {
+  it("defaults store=true when stateful responses are enabled without an explicit store override", () => {
     expect(
       resolveLLMStatefulResponsesConfig({
         enabled: true,
@@ -11,7 +11,7 @@ describe("resolveLLMStatefulResponsesConfig", () => {
       }),
     ).toMatchObject({
       enabled: true,
-      store: false,
+      store: true,
       fallbackToStateless: true,
     });
   });
