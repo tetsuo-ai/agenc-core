@@ -8,7 +8,7 @@ import {
   marketTaskBrowserLoadingLabel,
 } from "../marketplace/surfaces.mjs";
 import { createWatchSplashRenderer } from "./agenc-watch-splash.mjs";
-import { padAnsi, visibleLength, wrapBlock } from "./agenc-watch-text-utils.mjs";
+import { visibleLength, wrapBlock } from "./agenc-watch-text-utils.mjs";
 
 export function createWatchFrameController(dependencies = {}) {
   const {
@@ -3700,6 +3700,25 @@ export function createWatchFrameController(dependencies = {}) {
   }
 
   function buildVisibleFrameSnapshot({ width = termWidth(), height = termHeight() } = {}) {
+    // When the right-side ANSI art panel is active, render the rest
+    // of the frame into a narrowed width (`width - artPanelCols`) so
+    // the cockpit, composer, and event cards naturally fit the
+    // remaining budget instead of being clipped with an ellipsis
+    // marker at blit time.
+    const artPanelRows = Array.isArray(watchState.artPanelRows)
+      ? watchState.artPanelRows
+      : null;
+    const rawArtPanelCols = Number.isFinite(Number(watchState.artPanelCols))
+      ? Math.max(0, Math.floor(Number(watchState.artPanelCols)))
+      : 0;
+    const artPanelCols =
+      artPanelRows && artPanelRows.length > 0 && rawArtPanelCols > 0 && rawArtPanelCols < width
+        ? rawArtPanelCols
+        : 0;
+    const fullTerminalWidth = width;
+    if (artPanelCols > 0) {
+      width = width - artPanelCols;
+    }
     let frame = [];
     let diffNavigation = null;
     const { popup } = currentBottomPopupLayout(width, height);
@@ -3786,27 +3805,13 @@ export function createWatchFrameController(dependencies = {}) {
       Math.min(height, composerStartRow + composerInputOffsetRows + (composer.cursorRow ?? 0)),
     );
 
-    // Right-side ANSI art panel overlay. When `watchState.artPanelRows`
-    // is populated (rasterized by the art controller in
-    // agenc-watch-app.mjs and refreshed on terminal resize), replace
-    // the right strip of each rendered row with the matching art
-    // line. The controller sizes the art to `artPanelCols`, so
-    // `leftCols + artPanelCols === width` by construction.
-    const artPanelRows = Array.isArray(watchState.artPanelRows)
-      ? watchState.artPanelRows
-      : null;
-    const artPanelCols = Number.isFinite(Number(watchState.artPanelCols))
-      ? Math.max(0, Math.floor(Number(watchState.artPanelCols)))
-      : 0;
-    if (
-      artPanelRows &&
-      artPanelRows.length > 0 &&
-      artPanelCols > 0 &&
-      artPanelCols < width
-    ) {
-      const leftCols = width - artPanelCols;
+    // Right-side ANSI art panel overlay. The frame above was
+    // rendered at `width = fullTerminalWidth - artPanelCols` so every
+    // row already fits the left column exactly. Just append the
+    // matching art row — no clipping, no ellipsis marker.
+    if (artPanelCols > 0 && artPanelRows && artPanelRows.length > 0) {
       for (let rowIndex = 0; rowIndex < nextFrameLines.length; rowIndex += 1) {
-        const leftPart = padAnsi(String(nextFrameLines[rowIndex] ?? ""), leftCols);
+        const leftPart = nextFrameLines[rowIndex] ?? "";
         const artRow = artPanelRows[rowIndex] ?? "";
         nextFrameLines[rowIndex] = leftPart + artRow;
       }
@@ -3814,7 +3819,7 @@ export function createWatchFrameController(dependencies = {}) {
 
     return {
       lines: nextFrameLines,
-      width,
+      width: artPanelCols > 0 ? fullTerminalWidth : width,
       height,
       composer: {
         ...composer,
