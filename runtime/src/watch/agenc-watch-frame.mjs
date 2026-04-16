@@ -3783,12 +3783,15 @@ export function createWatchFrameController(dependencies = {}) {
     const composerBandRows = composerBand.length;
     const contentRows = Math.max(4, height - popup.length - composerBandRows);
 
-    if (splashRenderer.shouldShowSplash()) {
+    let headerRowCount = 0;
+    const isSplashShown = splashRenderer.shouldShowSplash();
+    if (isSplashShown) {
       frame = contentRows >= 14
         ? splashRenderer.renderSplash(width, contentRows)
         : splashRenderer.renderCompactSplash(width, contentRows);
     } else {
       const header = headerLines(width);
+      headerRowCount = header.length;
       const {
         useSidebar,
         sidebarWidth,
@@ -3860,11 +3863,14 @@ export function createWatchFrameController(dependencies = {}) {
       Math.min(height, composerStartRow + composerInputOffsetRows + (composer.cursorRow ?? 0)),
     );
 
-    // Right-side ANSI art wallpaper compositing. TUI renders at
-    // natural full terminal width; the rightmost `artPanelCols`
-    // columns are composited against the art — TUI chars on top,
-    // space cells show art underneath. Left columns (chat area) are
-    // left exactly as the TUI produced them so text stays readable.
+    // Right-side ANSI art wallpaper compositing, confined to the
+    // BODY region of the frame: rows strictly between the cockpit
+    // header (first `headerRowCount` rows) and the composer/popup
+    // footer band (starts at `composerStartRow - 1`). Header and
+    // footer render cleanly without any art intrusion. Splash
+    // screen disables the compositor entirely. Within body rows,
+    // TUI non-space cells stay opaque and space cells fall through
+    // to the art pixel at that column.
     const artPanelRows = Array.isArray(watchState.artPanelRows)
       ? watchState.artPanelRows
       : null;
@@ -3872,15 +3878,19 @@ export function createWatchFrameController(dependencies = {}) {
       ? Math.max(0, Math.floor(Number(watchState.artPanelCols)))
       : 0;
     if (
+      !isSplashShown &&
       artPanelRows &&
       artPanelRows.length > 0 &&
       artPanelCols > 0 &&
       artPanelCols < width
     ) {
-      for (let rowIndex = 0; rowIndex < nextFrameLines.length; rowIndex += 1) {
+      const bodyStart = headerRowCount;
+      const bodyEndExclusive = Math.max(bodyStart, composerStartRow - 1);
+      for (let rowIndex = bodyStart; rowIndex < bodyEndExclusive; rowIndex += 1) {
+        const artRowIdx = rowIndex - bodyStart;
         nextFrameLines[rowIndex] = compositeRowWithArt(
           String(nextFrameLines[rowIndex] ?? ""),
-          artPanelRows[rowIndex] ?? "",
+          artPanelRows[artRowIdx] ?? "",
           width,
           artPanelCols,
         );
