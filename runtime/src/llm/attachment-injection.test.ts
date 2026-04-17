@@ -165,36 +165,14 @@ describe("collectAttachments", () => {
     expect(todoIdx).toBeLessThan(taskIdx);
   });
 
-  it("emits the verify_reminder after 3+ mutating edits without a verifier spawn", () => {
-    const history: LLMMessage[] = [
-      ...buildStaleHistory(),
-      {
-        role: "assistant",
-        content: "",
-        toolCalls: [
-          { id: "w1", name: "system.writeFile", arguments: "{}" },
-        ],
-      },
-      {
-        role: "assistant",
-        content: "",
-        toolCalls: [
-          { id: "w2", name: "system.editFile", arguments: "{}" },
-        ],
-      },
-      {
-        role: "assistant",
-        content: "",
-        toolCalls: [
-          { id: "w3", name: "system.writeFile", arguments: "{}" },
-        ],
-      },
-    ];
+  it("emits the verify_reminder when counters exceed threshold and execute_with_agent is advertised", () => {
     const result = collectAttachments({
-      history,
+      history: buildStaleHistory(),
       activeToolNames: new Set([TODO_WRITE_TOOL_NAME, "execute_with_agent"]),
       todos: [],
       tasks: [],
+      mutatingEditsSinceLastVerifierSpawn: 5,
+      assistantTurnsSinceLastVerifyReminder: 12,
     });
     const verifyMsg = result.messages.find((m) =>
       (m.content as string).includes("You have made unverified file edits"),
@@ -202,36 +180,60 @@ describe("collectAttachments", () => {
     expect(verifyMsg).toBeDefined();
   });
 
-  it("does not emit verify_reminder when execute_with_agent is not available", () => {
-    const history: LLMMessage[] = [
-      ...buildStaleHistory(),
-      {
-        role: "assistant",
-        content: "",
-        toolCalls: [
-          { id: "w1", name: "system.writeFile", arguments: "{}" },
-        ],
-      },
-      {
-        role: "assistant",
-        content: "",
-        toolCalls: [
-          { id: "w2", name: "system.writeFile", arguments: "{}" },
-        ],
-      },
-      {
-        role: "assistant",
-        content: "",
-        toolCalls: [
-          { id: "w3", name: "system.writeFile", arguments: "{}" },
-        ],
-      },
-    ];
+  it("does not emit verify_reminder when counters are omitted (interactive surface)", () => {
     const result = collectAttachments({
-      history,
+      history: buildStaleHistory(),
+      activeToolNames: new Set([TODO_WRITE_TOOL_NAME, "execute_with_agent"]),
+      todos: [],
+      tasks: [],
+    });
+    expect(
+      result.messages.some((m) =>
+        (m.content as string).includes("You have made unverified file edits"),
+      ),
+    ).toBe(false);
+  });
+
+  it("does not emit verify_reminder when execute_with_agent is not advertised", () => {
+    const result = collectAttachments({
+      history: buildStaleHistory(),
       activeToolNames: new Set([TODO_WRITE_TOOL_NAME]),
       todos: [],
       tasks: [],
+      mutatingEditsSinceLastVerifierSpawn: 100,
+      assistantTurnsSinceLastVerifyReminder: 100,
+    });
+    expect(
+      result.messages.some((m) =>
+        (m.content as string).includes("You have made unverified file edits"),
+      ),
+    ).toBe(false);
+  });
+
+  it("suppresses verify_reminder when edit counter is below threshold", () => {
+    const result = collectAttachments({
+      history: buildStaleHistory(),
+      activeToolNames: new Set([TODO_WRITE_TOOL_NAME, "execute_with_agent"]),
+      todos: [],
+      tasks: [],
+      mutatingEditsSinceLastVerifierSpawn: 2,
+      assistantTurnsSinceLastVerifyReminder: 100,
+    });
+    expect(
+      result.messages.some((m) =>
+        (m.content as string).includes("You have made unverified file edits"),
+      ),
+    ).toBe(false);
+  });
+
+  it("suppresses verify_reminder when turn counter is below cadence", () => {
+    const result = collectAttachments({
+      history: buildStaleHistory(),
+      activeToolNames: new Set([TODO_WRITE_TOOL_NAME, "execute_with_agent"]),
+      todos: [],
+      tasks: [],
+      mutatingEditsSinceLastVerifierSpawn: 10,
+      assistantTurnsSinceLastVerifyReminder: 3,
     });
     expect(
       result.messages.some((m) =>

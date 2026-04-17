@@ -17,7 +17,14 @@ import { normalizePromptEnvelope } from "../llm/prompt-envelope.js";
 import { buildModelOnlyChatOptions } from "../llm/model-only-options.js";
 import { getCompactPrompt, formatCompactSummary } from "../llm/compact/prompt.js";
 import type { LLMMessage, LLMProvider, ToolHandler } from "../llm/types.js";
+import { partitionByAnchorPreserve } from "../llm/types.js";
 import { collectAttachments } from "../llm/attachment-injection.js";
+import {
+  containsVerdictMarkerInToolResult,
+  isMutatingTool,
+  isVerifierSpawnFromRecord,
+  messageContainsVerifyReminderPrefix,
+} from "../llm/verify-reminder.js";
 import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";
 import { toErrorMessage } from "../utils/async.js";
@@ -1866,6 +1873,10 @@ export class BackgroundRunSupervisor {
       cycleCount: 0,
       stableWorkingCycles: 0,
       consecutiveErrorCycles: 0,
+      mutatingEditsSinceLastVerifierSpawn: 0,
+      // Infinity so the first verify_reminder is eligible to fire as
+      // soon as the edit threshold is reached on a fresh run.
+      assistantTurnsSinceLastVerifyReminder: Number.POSITIVE_INFINITY,
       anchorFiles: initialAnchorFiles,
       lastVerifiedAt: undefined,
       lastUserUpdate: undefined,
@@ -3884,6 +3895,31 @@ export class BackgroundRunSupervisor {
         ]);
         run.lastVerifiedAt = this.now();
         recordToolEvidence(run, actorResult.toolCalls);
+        // Update runtime counters that back the verify_reminder trigger.
+        // These live on ActiveBackgroundRun, not in LLM history —
+        // compaction-safe. Read at the start of the NEXT cycle by
+        // `collectAttachments` in `prepareCycleContext`. One-cycle
+        // latency is acceptable given the 10-turn reminder cadence.
+        //
+        // Verifier spawn and VERDICT-result resets target only the
+        // edit counter. The turn counter resets exclusively when the
+        // reminder actually fires (see prepareCycleContext below) so
+        // that spawning a verifier does not suppress the reminder for
+        // the following 10 turns — if the model fails to verify and
+        // keeps making edits after a spawn, the reminder fires again
+        // once the next edit threshold crosses.
+        for (const call of actorResult.toolCalls) {
+          if (isMutatingTool(call.name)) {
+            run.mutatingEditsSinceLastVerifierSpawn += 1;
+          }
+          if (isVerifierSpawnFromRecord(call)) {
+            run.mutatingEditsSinceLastVerifierSpawn = 0;
+          }
+          if (containsVerdictMarkerInToolResult(call)) {
+            run.mutatingEditsSinceLastVerifierSpawn = 0;
+          }
+        }
+        run.assistantTurnsSinceLastVerifyReminder += 1;
         recordProviderCompactionArtifacts(run, actorResult);
         run.continuationMode = resolveBackgroundContinuationMode(actorResult);
         const verifierStages = actorResult.runtimeContractSnapshot?.verifierStages;
@@ -4062,9 +4098,23 @@ export class BackgroundRunSupervisor {
       activeToolNames,
       todos,
       tasks,
+      mutatingEditsSinceLastVerifierSpawn:
+        run.mutatingEditsSinceLastVerifierSpawn,
+      assistantTurnsSinceLastVerifyReminder:
+        run.assistantTurnsSinceLastVerifyReminder,
     });
     for (const attachment of attachments.messages) {
       run.internalHistory.push(attachment);
+    }
+    // Reset the turn counter if a verify_reminder was just emitted.
+    // Scans up to ~3 messages (the attachment payload is tiny) —
+    // cheaper than extending AttachmentInjectionResult and keeping
+    // the webchat/text-channel call sites in sync with a field they
+    // would never use.
+    if (
+      attachments.messages.some((m) => messageContainsVerifyReminderPrefix(m))
+    ) {
+      run.assistantTurnsSinceLastVerifyReminder = 0;
     }
 
     return {
@@ -4263,21 +4313,16 @@ export class BackgroundRunSupervisor {
     }
     const toSummarize = history.slice(0, -keepTail);
     const kept = history.slice(-keepTail);
-    try {
-      const historyText = toSummarize
-        .map((m) => `[${m.role}]: ${typeof m.content === "string" ? m.content : JSON.stringify(m.content)}`)
-        .join("\n\n");
-      const response = await this.supervisorLlm.chat(
-        [
-          { role: "system", content: getCompactPrompt() },
-          { role: "user", content: historyText },
-        ],
-        buildModelOnlyChatOptions({ toolChoice: "none" }),
-      );
-      const summary = formatCompactSummary(response.content).trim();
-      if (summary.length === 0) {
-        return history;
-      }
+    // Anchor-marked messages survive compaction boundaries —
+    // upstream's `messagesToKeep` pattern. Runtime-injected
+    // reminders rely on their own prior presence as a re-emission
+    // anti-spam anchor; if compaction summarized them away, the
+    // next cycle would re-inject immediately.
+    const { anchorPreserved, rest: toActuallySummarize } =
+      partitionByAnchorPreserve(toSummarize);
+    // Breaking the xAI stateful chain is independent of whether
+    // summarization actually runs — any compaction pass clears it.
+    const breakProviderContinuation = (): void => {
       run.compaction = {
         ...run.compaction,
         refreshCount: run.compaction.refreshCount + 1,
@@ -4293,8 +4338,42 @@ export class BackgroundRunSupervisor {
           providerContinuation: undefined,
         };
       }
+    };
+    // All summarizable messages were anchor-preserved → nothing to
+    // ask the summarizer model. Emit a stub system message so the
+    // result always starts with a system role (consistent with the
+    // normal compaction output) and skip the provider call.
+    if (toActuallySummarize.length === 0) {
+      breakProviderContinuation();
+      return [
+        {
+          role: "system",
+          content:
+            "[previous messages compacted; anchor-preserved reminders retained]",
+        } as LLMMessage,
+        ...anchorPreserved,
+        ...kept,
+      ];
+    }
+    try {
+      const historyText = toActuallySummarize
+        .map((m) => `[${m.role}]: ${typeof m.content === "string" ? m.content : JSON.stringify(m.content)}`)
+        .join("\n\n");
+      const response = await this.supervisorLlm.chat(
+        [
+          { role: "system", content: getCompactPrompt() },
+          { role: "user", content: historyText },
+        ],
+        buildModelOnlyChatOptions({ toolChoice: "none" }),
+      );
+      const summary = formatCompactSummary(response.content).trim();
+      if (summary.length === 0) {
+        return history;
+      }
+      breakProviderContinuation();
       return [
         { role: "system", content: summary } as LLMMessage,
+        ...anchorPreserved,
         ...kept,
       ];
     } catch {

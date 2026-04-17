@@ -45,6 +45,18 @@ export interface LLMMessage {
    */
   runtimeOnly?: {
     readonly mergeBoundary?: "user_context";
+    /**
+     * When `true`, this message is preserved across compaction
+     * boundaries. Compaction extracts anchor-marked messages from
+     * the segment being summarized and retains them alongside the
+     * kept tail — matches upstream's `messagesToKeep` pattern at
+     * `services/compact/compact.ts`. Reserved for messages the
+     * runtime depends on for trigger anchoring (e.g. injected
+     * reminders whose re-emission gates scan for prior-injection
+     * headers in history). Use sparingly; anchor messages that
+     * accumulate indefinitely inflate post-compact history.
+     */
+    readonly anchorPreserve?: boolean;
   };
   /** For assistant messages that request tool execution */
   toolCalls?: LLMToolCall[];
@@ -737,4 +749,34 @@ export function validateToolCallDetailed(
 
 export function validateToolCall(raw: unknown): LLMToolCall | null {
   return validateToolCallDetailed(raw).toolCall;
+}
+
+/**
+ * Returns `true` if the message should survive compaction boundaries.
+ * Compaction callers partition history into `anchorPreserved` (retained
+ * alongside the kept tail) and the rest (summarized into a single
+ * system message). Matches upstream's `messagesToKeep` pattern.
+ */
+export function isAnchorPreserved(message: LLMMessage): boolean {
+  return message.runtimeOnly?.anchorPreserve === true;
+}
+
+/**
+ * Split a history slice into the anchor-preserved subset and the rest.
+ * Order is preserved within each subset. Used by compaction to decide
+ * what to summarize (non-anchor) vs what to retain verbatim (anchor).
+ */
+export function partitionByAnchorPreserve(
+  messages: readonly LLMMessage[],
+): { anchorPreserved: LLMMessage[]; rest: LLMMessage[] } {
+  const anchorPreserved: LLMMessage[] = [];
+  const rest: LLMMessage[] = [];
+  for (const message of messages) {
+    if (isAnchorPreserved(message)) {
+      anchorPreserved.push(message);
+    } else {
+      rest.push(message);
+    }
+  }
+  return { anchorPreserved, rest };
 }

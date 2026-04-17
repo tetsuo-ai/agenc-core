@@ -5,257 +5,217 @@ import {
   VERIFY_REMINDER_HEADER_PREFIX,
   VERIFY_REMINDER_TURNS_BETWEEN_REMINDERS,
   buildVerifyReminderMessage,
-  getMutatingEditsSinceLastVerifierSpawn,
-  getTurnsSinceLastVerifyReminder,
+  containsVerdictMarkerInToolResult,
+  isMutatingTool,
+  isVerifierSpawnFromRecord,
+  messageContainsVerifyReminderPrefix,
   shouldInjectVerifyReminder,
 } from "./verify-reminder.js";
 
-function userText(content: string): LLMMessage {
-  return { role: "user", content };
-}
-
-function assistantText(content: string): LLMMessage {
-  return { role: "assistant", content };
-}
-
-function toolResult(content: string, toolCallId = "call-1"): LLMMessage {
-  return { role: "tool", content, toolCallId };
-}
-
-function assistantMutation(toolName: string): LLMMessage {
-  return {
-    role: "assistant",
-    content: "",
-    toolCalls: [
-      {
-        id: `call-${toolName}-${Math.random()}`,
-        name: toolName,
-        arguments: "{}",
-      },
-    ],
-  };
-}
-
-function assistantVerifierSpawn(
-  obligations: readonly string[] = ["build passes"],
-): LLMMessage {
-  return {
-    role: "assistant",
-    content: "",
-    toolCalls: [
-      {
-        id: "call-ewa",
-        name: "execute_with_agent",
-        arguments: JSON.stringify({
-          task: "verify the implementation",
-          delegationAdmission: { verifierObligations: obligations },
-        }),
-      },
-    ],
-  };
-}
-
-describe("getMutatingEditsSinceLastVerifierSpawn", () => {
-  it("returns 0 for empty history", () => {
-    expect(getMutatingEditsSinceLastVerifierSpawn([])).toBe(0);
-  });
-
-  it("counts writeFile/editFile/appendFile/mkdir/move/delete", () => {
-    const history: LLMMessage[] = [
-      assistantMutation("system.writeFile"),
-      assistantMutation("system.editFile"),
-      assistantMutation("system.appendFile"),
-      assistantMutation("system.mkdir"),
-      assistantMutation("system.move"),
-      assistantMutation("system.delete"),
-    ];
-    expect(getMutatingEditsSinceLastVerifierSpawn(history)).toBe(6);
-  });
-
-  it("does NOT count task.*, readFile, listDir, bash, or non-mutating tools", () => {
-    const history: LLMMessage[] = [
-      assistantMutation("system.readFile"),
-      assistantMutation("system.listDir"),
-      assistantMutation("system.bash"),
-      assistantMutation("task.create"),
-      assistantMutation("task.update"),
-      assistantMutation("TodoWrite"),
-    ];
-    expect(getMutatingEditsSinceLastVerifierSpawn(history)).toBe(0);
-  });
-
-  it("stops counting at the most recent execute_with_agent spawn with verifierObligations", () => {
-    const history: LLMMessage[] = [
-      assistantMutation("system.writeFile"),
-      assistantMutation("system.editFile"),
-      assistantVerifierSpawn(["build passes"]),
-      assistantMutation("system.writeFile"),
-    ];
-    // Only the write after the spawn is counted.
-    expect(getMutatingEditsSinceLastVerifierSpawn(history)).toBe(1);
-  });
-
-  it("ignores execute_with_agent calls without verifierObligations", () => {
-    const bareSpawn: LLMMessage = {
-      role: "assistant",
-      content: "",
-      toolCalls: [
-        {
-          id: "call-ewa-bare",
-          name: "execute_with_agent",
-          arguments: JSON.stringify({ task: "do a thing" }),
-        },
-      ],
-    };
-    const history: LLMMessage[] = [
-      assistantMutation("system.writeFile"),
-      bareSpawn,
-      assistantMutation("system.writeFile"),
-    ];
-    expect(getMutatingEditsSinceLastVerifierSpawn(history)).toBe(2);
-  });
-
-  it("stops counting at a tool-role message containing VERDICT: PASS", () => {
-    const history: LLMMessage[] = [
-      assistantMutation("system.writeFile"),
-      assistantMutation("system.editFile"),
-      toolResult("some output...\n\nVERDICT: PASS\n"),
-      assistantMutation("system.writeFile"),
-    ];
-    expect(getMutatingEditsSinceLastVerifierSpawn(history)).toBe(1);
-  });
-
-  it("recognizes FAIL and PARTIAL verdict markers too", () => {
-    for (const verdict of ["VERDICT: FAIL", "VERDICT: PARTIAL"]) {
-      const history: LLMMessage[] = [
-        assistantMutation("system.writeFile"),
-        toolResult(`output\n${verdict}\n`),
-        assistantMutation("system.editFile"),
-      ];
-      expect(getMutatingEditsSinceLastVerifierSpawn(history)).toBe(1);
+describe("isMutatingTool", () => {
+  it("identifies structured file-modification tools", () => {
+    for (const name of [
+      "system.writeFile",
+      "system.editFile",
+      "system.appendFile",
+      "system.mkdir",
+      "system.move",
+      "system.delete",
+    ]) {
+      expect(isMutatingTool(name)).toBe(true);
     }
   });
 
-  it("does NOT treat VERDICT text in assistant messages as a terminator", () => {
-    // Gaming-resistance: only role === "tool" messages reset the counter.
-    const history: LLMMessage[] = [
-      assistantMutation("system.writeFile"),
-      assistantMutation("system.editFile"),
-      assistantText("I've done the work. VERDICT: PASS"),
-      assistantMutation("system.writeFile"),
-    ];
-    expect(getMutatingEditsSinceLastVerifierSpawn(history)).toBe(3);
-  });
-
-  it("does NOT treat VERDICT text in user messages as a terminator", () => {
-    const history: LLMMessage[] = [
-      assistantMutation("system.writeFile"),
-      userText("user wrote: VERDICT: PASS"),
-      assistantMutation("system.editFile"),
-    ];
-    expect(getMutatingEditsSinceLastVerifierSpawn(history)).toBe(2);
+  it("does NOT count read-only or shell tools", () => {
+    for (const name of [
+      "system.readFile",
+      "system.listDir",
+      "system.stat",
+      "system.grep",
+      "system.bash",
+      "task.create",
+      "task.update",
+      "TodoWrite",
+      "execute_with_agent",
+    ]) {
+      expect(isMutatingTool(name)).toBe(false);
+    }
   });
 });
 
-describe("getTurnsSinceLastVerifyReminder", () => {
-  it("returns Infinity when no reminder has been injected", () => {
+describe("isVerifierSpawnFromRecord", () => {
+  const args = (payload: Record<string, unknown>) => payload;
+
+  it("returns true for execute_with_agent with non-empty verifierObligations", () => {
     expect(
-      getTurnsSinceLastVerifyReminder([
-        userText("u1"),
-        assistantText("a1"),
-      ]),
-    ).toBe(Number.POSITIVE_INFINITY);
+      isVerifierSpawnFromRecord({
+        name: "execute_with_agent",
+        args: args({
+          task: "verify",
+          delegationAdmission: { verifierObligations: ["build passes"] },
+        }),
+      }),
+    ).toBe(true);
   });
 
-  it("detects a prior reminder via the header prefix", () => {
-    const reminder: LLMMessage = {
-      role: "user",
-      content: `<system-reminder>\n${VERIFY_REMINDER_HEADER_PREFIX} ...\n</system-reminder>`,
-    };
-    const history: LLMMessage[] = [
-      userText("other"),
-      reminder,
-      assistantText("a"),
-      assistantText("b"),
-    ];
-    expect(getTurnsSinceLastVerifyReminder(history)).toBe(2);
-  });
-});
-
-describe("shouldInjectVerifyReminder", () => {
-  const activeTools = new Set<string>(["execute_with_agent"]);
-
-  it("returns false when execute_with_agent is not in the toolset", () => {
-    const history: LLMMessage[] = [
-      assistantMutation("system.writeFile"),
-      assistantMutation("system.writeFile"),
-      assistantMutation("system.writeFile"),
-    ];
+  it("returns false for execute_with_agent without verifierObligations", () => {
     expect(
-      shouldInjectVerifyReminder({
-        history,
-        activeToolNames: new Set<string>(),
+      isVerifierSpawnFromRecord({
+        name: "execute_with_agent",
+        args: args({ task: "something" }),
       }),
     ).toBe(false);
   });
 
-  it("returns false when under the edit threshold", () => {
-    const history: LLMMessage[] = [
-      assistantMutation("system.writeFile"),
-      assistantMutation("system.writeFile"),
-    ];
+  it("returns false for execute_with_agent with empty verifierObligations array", () => {
     expect(
-      shouldInjectVerifyReminder({ history, activeToolNames: activeTools }),
+      isVerifierSpawnFromRecord({
+        name: "execute_with_agent",
+        args: args({ delegationAdmission: { verifierObligations: [] } }),
+      }),
     ).toBe(false);
   });
 
-  it("returns true at exactly the edit threshold with no recent reminder", () => {
-    const history: LLMMessage[] = Array.from(
-      { length: VERIFY_REMINDER_EDIT_THRESHOLD },
-      () => assistantMutation("system.writeFile"),
-    );
+  it("returns false for non execute_with_agent tools even with the field", () => {
     expect(
-      shouldInjectVerifyReminder({ history, activeToolNames: activeTools }),
+      isVerifierSpawnFromRecord({
+        name: "task.create",
+        args: args({
+          delegationAdmission: { verifierObligations: ["x"] },
+        }),
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("containsVerdictMarkerInToolResult", () => {
+  it("matches VERDICT: PASS|FAIL|PARTIAL only in execute_with_agent results", () => {
+    for (const verdict of ["VERDICT: PASS", "VERDICT: FAIL", "VERDICT: PARTIAL"]) {
+      expect(
+        containsVerdictMarkerInToolResult({
+          name: "execute_with_agent",
+          result: `some output\n${verdict}\n`,
+        }),
+      ).toBe(true);
+    }
+  });
+
+  it("does NOT match VERDICT strings in unrelated tool results (scoping)", () => {
+    for (const toolName of ["system.bash", "system.grep", "system.readFile"]) {
+      expect(
+        containsVerdictMarkerInToolResult({
+          name: toolName,
+          result: "here is some grep output containing VERDICT: PASS",
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it("returns false when execute_with_agent result has no marker", () => {
+    expect(
+      containsVerdictMarkerInToolResult({
+        name: "execute_with_agent",
+        result: "subagent completed; no verdict line",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("messageContainsVerifyReminderPrefix", () => {
+  it("matches the header prefix in string content", () => {
+    const msg: LLMMessage = {
+      role: "user",
+      content: `<system-reminder>\n${VERIFY_REMINDER_HEADER_PREFIX} More text\n</system-reminder>`,
+    };
+    expect(messageContainsVerifyReminderPrefix(msg)).toBe(true);
+  });
+
+  it("matches the header prefix in content parts", () => {
+    const msg: LLMMessage = {
+      role: "user",
+      content: [
+        { type: "text", text: "before" },
+        {
+          type: "text",
+          text: `<system-reminder>\n${VERIFY_REMINDER_HEADER_PREFIX} …\n</system-reminder>`,
+        },
+      ],
+    };
+    expect(messageContainsVerifyReminderPrefix(msg)).toBe(true);
+  });
+
+  it("returns false when the prefix is not present", () => {
+    expect(
+      messageContainsVerifyReminderPrefix({
+        role: "user",
+        content: "ordinary user message",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldInjectVerifyReminder", () => {
+  const active = new Set<string>(["execute_with_agent"]);
+
+  it("returns false when execute_with_agent is not advertised", () => {
+    expect(
+      shouldInjectVerifyReminder({
+        activeToolNames: new Set<string>(),
+        mutatingEditsSinceLastVerifierSpawn: 999,
+        assistantTurnsSinceLastVerifyReminder: 999,
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false when the edit counter is undefined (interactive surface)", () => {
+    expect(
+      shouldInjectVerifyReminder({
+        activeToolNames: active,
+        mutatingEditsSinceLastVerifierSpawn: undefined,
+        assistantTurnsSinceLastVerifyReminder: 999,
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false when edit counter is below the threshold", () => {
+    expect(
+      shouldInjectVerifyReminder({
+        activeToolNames: active,
+        mutatingEditsSinceLastVerifierSpawn: VERIFY_REMINDER_EDIT_THRESHOLD - 1,
+        assistantTurnsSinceLastVerifyReminder: 999,
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false when turn counter is below the between-reminders cadence", () => {
+    expect(
+      shouldInjectVerifyReminder({
+        activeToolNames: active,
+        mutatingEditsSinceLastVerifierSpawn: VERIFY_REMINDER_EDIT_THRESHOLD,
+        assistantTurnsSinceLastVerifyReminder:
+          VERIFY_REMINDER_TURNS_BETWEEN_REMINDERS - 1,
+      }),
+    ).toBe(false);
+  });
+
+  it("returns true at exactly threshold edits and threshold turns", () => {
+    expect(
+      shouldInjectVerifyReminder({
+        activeToolNames: active,
+        mutatingEditsSinceLastVerifierSpawn: VERIFY_REMINDER_EDIT_THRESHOLD,
+        assistantTurnsSinceLastVerifyReminder:
+          VERIFY_REMINDER_TURNS_BETWEEN_REMINDERS,
+      }),
     ).toBe(true);
   });
 
-  it("suppresses when a reminder was injected within the last 10 turns", () => {
-    const reminder: LLMMessage = {
-      role: "user",
-      content: `<system-reminder>\n${VERIFY_REMINDER_HEADER_PREFIX}\n</system-reminder>`,
-    };
-    const history: LLMMessage[] = [
-      assistantMutation("system.writeFile"),
-      assistantMutation("system.editFile"),
-      assistantMutation("system.writeFile"),
-      reminder,
-      ...Array.from(
-        { length: VERIFY_REMINDER_TURNS_BETWEEN_REMINDERS - 1 },
-        (_, i) => assistantText(`x${i}`),
-      ),
-    ];
+  it("treats undefined turn counter as infinity (first-emission eligibility)", () => {
     expect(
-      shouldInjectVerifyReminder({ history, activeToolNames: activeTools }),
-    ).toBe(false);
-  });
-
-  it("resumes firing once the last reminder is past the 10-turn window", () => {
-    const reminder: LLMMessage = {
-      role: "user",
-      content: `<system-reminder>\n${VERIFY_REMINDER_HEADER_PREFIX}\n</system-reminder>`,
-    };
-    const history: LLMMessage[] = [
-      reminder,
-      ...Array.from(
-        { length: VERIFY_REMINDER_TURNS_BETWEEN_REMINDERS + 1 },
-        (_, i) => assistantText(`x${i}`),
-      ),
-      assistantMutation("system.writeFile"),
-      assistantMutation("system.editFile"),
-      assistantMutation("system.writeFile"),
-    ];
-    expect(
-      shouldInjectVerifyReminder({ history, activeToolNames: activeTools }),
+      shouldInjectVerifyReminder({
+        activeToolNames: active,
+        mutatingEditsSinceLastVerifierSpawn: VERIFY_REMINDER_EDIT_THRESHOLD,
+        assistantTurnsSinceLastVerifyReminder: undefined,
+      }),
     ).toBe(true);
   });
 });
@@ -278,9 +238,10 @@ describe("buildVerifyReminderMessage", () => {
     expect(content).toContain("PARTIAL");
   });
 
-  it("emits user role with runtime-only user_context merge boundary", () => {
+  it("emits user role with runtime-only user_context merge boundary and anchorPreserve", () => {
     const msg = buildVerifyReminderMessage();
     expect(msg.role).toBe("user");
     expect(msg.runtimeOnly?.mergeBoundary).toBe("user_context");
+    expect(msg.runtimeOnly?.anchorPreserve).toBe(true);
   });
 });

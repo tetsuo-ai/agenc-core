@@ -129,6 +129,6 @@ export function buildTaskReminderMessage(
   return {
     role: "user",
     content: `<system-reminder>\n${TASK_REMINDER_HEADER}${list}\n</system-reminder>`,
-    runtimeOnly: { mergeBoundary: "user_context" },
+    runtimeOnly: { mergeBoundary: "user_context", anchorPreserve: true },
   };
 }
