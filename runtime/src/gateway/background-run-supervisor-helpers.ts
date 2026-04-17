@@ -71,7 +71,6 @@ import {
   UNTIL_STOP_RE,
   CONTINUOUS_RE,
   BACKGROUND_RE,
-  EXHAUSTIVE_INTENT_RE,
 } from "./background-run-supervisor-constants.js";
 
 // ---------------------------------------------------------------------------
@@ -1356,23 +1355,6 @@ export function groundDecision(
 
   if (
     decision.state === "completed" &&
-    run.contract.requiresUserStop
-  ) {
-    return {
-      state: "working",
-      userUpdate: truncate(
-        decision.userUpdate || "Task is still running until you tell me to stop.",
-        MAX_USER_UPDATE_CHARS,
-      ),
-      internalSummary:
-        "Rejected premature completion because the run contract requires an explicit user stop.",
-      nextCheckMs: clampPollIntervalMs(run.contract.nextCheckMs),
-      shouldNotifyUser: decision.shouldNotifyUser,
-    };
-  }
-
-  if (
-    decision.state === "completed" &&
     successfulToolCalls.length === 0 &&
     !run.lastToolEvidence
   ) {
@@ -1502,17 +1484,6 @@ export function applyZeroToolCompletionGuard(
     nextCheckMs: MIN_POLL_INTERVAL_MS,
     shouldNotifyUser: true,
   };
-}
-
-function resolveRequiresUserStop(
-  objective: string | undefined,
-  plannedValue: boolean | undefined,
-  kind: BackgroundRunContract["kind"],
-): boolean {
-  const base =
-    typeof plannedValue === "boolean" ? plannedValue : kind === "until_stopped";
-  if (base) return true;
-  return typeof objective === "string" && EXHAUSTIVE_INTENT_RE.test(objective);
 }
 
 // ---------------------------------------------------------------------------
@@ -1730,13 +1701,10 @@ export function parseContract(
       parsed.blockedCriteria,
       "Block when required tools, permissions, or external preconditions are missing.",
     );
-    const requiresUserStop = resolveRequiresUserStop(
-      objective,
+    const requiresUserStop =
       typeof parsed.requiresUserStop === "boolean"
         ? parsed.requiresUserStop
-        : undefined,
-      kind,
-    );
+        : kind === "until_stopped";
     const normalizedManagedProcessPolicy =
       managedProcessPolicy !== undefined
         ? {
@@ -1786,7 +1754,7 @@ export function buildFallbackContract(objective: string): BackgroundRunContract 
     : continuous
       ? "until_condition"
       : "finite";
-  const requiresUserStop = resolveRequiresUserStop(objective, undefined, kind);
+  const requiresUserStop = kind === "until_stopped";
   const managedProcessPolicyMode = inferManagedProcessPolicyMode(objective);
   const successCriteria = [
     "Use tools to make measurable progress and verify the result.",

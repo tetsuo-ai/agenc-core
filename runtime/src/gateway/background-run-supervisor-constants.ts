@@ -105,8 +105,6 @@ export const RESUME_REQUEST_RE =
   /^\s*(?:resume|continue|continue\s+it|continue\s+that|unpause|restart\s+the\s+run)\s*$/i;
 export const STATUS_REQUEST_RE =
   /^\s*(?:status|update|progress|how(?:'s|\s+is)\s+it\s+going|what(?:'s|\s+is)\s+the\s+status)\s*$/i;
-export const EXHAUSTIVE_INTENT_RE =
-  /\b(?:in\s+full|implement\s+all\s+of|complete\s+all\s+of|do\s+not\s+stop|don't\s+stop|before\s+(?:you\s+)?stop|do\s+not\s+move\s+on|until\s+(?:it\s+is|it's)\s+(?:all\s+)?done)\b/i;
 
 export const BACKGROUND_ACTOR_SECTION =
   "## Background Run Mode\n" +

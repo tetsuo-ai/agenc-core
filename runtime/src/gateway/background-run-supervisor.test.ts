@@ -2379,7 +2379,7 @@ describe("background-run-supervisor", () => {
     ).toBe("working");
   });
 
-  it("keeps until-stopped runs working even when the supervisor suggests completion", async () => {
+  it("accepts supervisor-suggested completion for until-stopped runs (no user-stop override)", async () => {
     const publishUpdate = vi.fn(async () => undefined);
     const supervisor = new BackgroundRunSupervisor({
       chatExecutor: {
@@ -2433,7 +2433,9 @@ describe("background-run-supervisor", () => {
     });
     await vi.runOnlyPendingTimersAsync();
 
-    expect(supervisor.getStatusSnapshot("session-until-stop")?.state).toBe("working");
+    expect(
+      (supervisor as any).activeRuns.get("session-until-stop"),
+    ).toBeUndefined();
   });
 
   it("does not expire an until-stopped run just because it exceeds the runtime cap", async () => {

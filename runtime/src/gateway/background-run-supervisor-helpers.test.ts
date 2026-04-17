@@ -130,7 +130,7 @@ describe("applyZeroToolCompletionGuard", () => {
   });
 });
 
-describe("exhaustive-intent override for requiresUserStop", () => {
+describe("contract requiresUserStop defaults", () => {
   const plannedContractJson = (overrides: Record<string, unknown> = {}) =>
     JSON.stringify({
       domain: "workspace",
@@ -144,55 +144,41 @@ describe("exhaustive-intent override for requiresUserStop", () => {
       ...overrides,
     });
 
-  it("parseContract: forces requiresUserStop=true when objective contains 'in full'", () => {
-    const contract = parseContract(
-      plannedContractJson(),
-      "Implement all of PLAN.md in full.",
-    );
-    expect(contract?.requiresUserStop).toBe(true);
-  });
-
-  it("parseContract: forces requiresUserStop=true for 'before you stop'", () => {
-    const contract = parseContract(
-      plannedContractJson(),
-      "Finish the refactor before you stop.",
-    );
-    expect(contract?.requiresUserStop).toBe(true);
-  });
-
-  it("parseContract: forces requiresUserStop=true for 'do not move on'", () => {
-    const contract = parseContract(
-      plannedContractJson(),
-      "Do not move on until the tests pass.",
-    );
-    expect(contract?.requiresUserStop).toBe(true);
-  });
-
-  it("parseContract: leaves requiresUserStop=false for plain objectives", () => {
-    const contract = parseContract(
-      plannedContractJson(),
+  it("parseContract: honors the planner-set boolean verbatim", () => {
+    const withFalse = parseContract(
+      plannedContractJson({ requiresUserStop: false }),
       "Update the README.",
     );
-    expect(contract?.requiresUserStop).toBe(false);
-  });
+    expect(withFalse?.requiresUserStop).toBe(false);
 
-  it("parseContract: preserves planner-set requiresUserStop=true even without the regex match", () => {
-    const contract = parseContract(
+    const withTrue = parseContract(
       plannedContractJson({ requiresUserStop: true }),
       "Update the README.",
     );
-    expect(contract?.requiresUserStop).toBe(true);
+    expect(withTrue?.requiresUserStop).toBe(true);
   });
 
-  it("buildFallbackContract: forces requiresUserStop=true for exhaustive-intent objectives", () => {
-    const contract = buildFallbackContract(
-      "Implement all of the plan in full and do not stop.",
-    );
-    expect(contract.requiresUserStop).toBe(true);
+  it("parseContract: defaults to kind === 'until_stopped' when the planner omits the boolean", () => {
+    const raw = JSON.parse(plannedContractJson()) as Record<string, unknown>;
+    delete raw.requiresUserStop;
+    const finiteContract = parseContract(JSON.stringify(raw), "Update README.");
+    expect(finiteContract?.requiresUserStop).toBe(false);
+
+    raw.kind = "until_stopped";
+    const untilStoppedContract = parseContract(JSON.stringify(raw), "Watch it.");
+    expect(untilStoppedContract?.requiresUserStop).toBe(true);
   });
 
-  it("buildFallbackContract: leaves requiresUserStop=false for plain objectives", () => {
-    const contract = buildFallbackContract("Run npm test");
-    expect(contract.requiresUserStop).toBe(false);
+  it("buildFallbackContract: only sets requiresUserStop=true when UNTIL_STOP_RE matches", () => {
+    expect(buildFallbackContract("Run npm test").requiresUserStop).toBe(false);
+    expect(
+      buildFallbackContract("Keep watching this until I say stop").requiresUserStop,
+    ).toBe(true);
+    // Exhaustive-intent phrasing is no longer special-cased — matches
+    // reference-runtime behavior where only an explicit user-stop
+    // directive flips the flag.
+    expect(
+      buildFallbackContract("Implement @PLAN.md in full").requiresUserStop,
+    ).toBe(false);
   });
 });
