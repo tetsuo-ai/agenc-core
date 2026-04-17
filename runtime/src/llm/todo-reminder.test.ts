@@ -8,7 +8,6 @@ import {
   TODO_REMINDER_TURNS_SINCE_WRITE,
   buildTodoReminderMessage,
   getTurnsSinceLastTodoReminder,
-  getTurnsSinceRecentTaskToolUse,
   getTurnsSinceTodoWrite,
   shouldInjectTodoReminder,
 } from "./todo-reminder.js";
@@ -123,25 +122,6 @@ describe("getTurnsSinceLastTodoReminder", () => {
   });
 });
 
-describe("getTurnsSinceRecentTaskToolUse", () => {
-  it("returns Infinity when no task.* tool has been called", () => {
-    expect(
-      getTurnsSinceRecentTaskToolUse(buildHistoryWithAssistantTurns(3)),
-    ).toBe(Number.POSITIVE_INFINITY);
-  });
-
-  it("detects task.create and task.update calls", () => {
-    const history: LLMMessage[] = [
-      userText("go"),
-      assistantToolCall("task.create"),
-      toolResult("call-task.create", "{}"),
-      userText("next"),
-      assistantText("replied"),
-    ];
-    expect(getTurnsSinceRecentTaskToolUse(history)).toBe(1);
-  });
-});
-
 describe("shouldInjectTodoReminder", () => {
   it("returns false when TodoWrite is not in the active toolset", () => {
     const history = buildHistoryWithAssistantTurns(
@@ -172,7 +152,7 @@ describe("shouldInjectTodoReminder", () => {
     ).toBe(false);
   });
 
-  it("returns true when both thresholds are met and no task.* recently used", () => {
+  it("returns true when both thresholds are met", () => {
     const history = buildHistoryWithAssistantTurns(
       TODO_REMINDER_TURNS_SINCE_WRITE + 1,
     );
@@ -184,22 +164,7 @@ describe("shouldInjectTodoReminder", () => {
     ).toBe(true);
   });
 
-  it("suppresses when task.* was used within the last 10 assistant turns", () => {
-    const history: LLMMessage[] = [
-      userText("go"),
-      assistantToolCall("task.create"),
-      toolResult("call-task.create", "{}"),
-      ...buildHistoryWithAssistantTurns(5),
-    ];
-    expect(
-      shouldInjectTodoReminder({
-        history,
-        activeToolNames: DEFAULT_ACTIVE_TOOLS,
-      }),
-    ).toBe(false);
-  });
-
-  it("stops suppressing once task.* is past the 10-turn window", () => {
+  it("does not suppress based on task.* tool-call history (independent sibling reminder)", () => {
     const history: LLMMessage[] = [
       userText("go"),
       assistantToolCall("task.create"),

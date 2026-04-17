@@ -227,6 +227,11 @@ interface ExecuteTextChannelTurnParams {
   ) => Promise<
     readonly import("../tools/system/todo-store.js").TodoItem[]
   >;
+  readonly readTasksForSession?: (
+    sessionId: string,
+  ) => Promise<
+    readonly import("../llm/task-reminder.js").ReminderTaskView[]
+  >;
 }
 
 export async function executeTextChannelTurn(
@@ -320,10 +325,14 @@ export async function executeTextChannelTurn(
   const todosForAttachment = params.readTodosForSession
     ? await params.readTodosForSession(msg.sessionId)
     : [];
+  const tasksForAttachment = params.readTasksForSession
+    ? await params.readTasksForSession(msg.sessionId)
+    : [];
   const runtimeAttachments = collectAttachments({
     history: historyBeforeAttachments,
     activeToolNames: new Set<string>(advertisedToolNames),
     todos: todosForAttachment,
+    tasks: tasksForAttachment,
   });
   const effectiveHistory =
     runtimeAttachments.messages.length > 0

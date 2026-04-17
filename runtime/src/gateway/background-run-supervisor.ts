@@ -585,6 +585,7 @@ export class BackgroundRunSupervisor {
   private readonly resolveAdvertisedToolNames?: BackgroundRunSupervisorConfig["resolveAdvertisedToolNames"];
   private readonly seedHistoryForSession?: BackgroundRunSupervisorConfig["seedHistoryForSession"];
   private readonly readTodosForSession?: BackgroundRunSupervisorConfig["readTodosForSession"];
+  private readonly readTasksForSession?: BackgroundRunSupervisorConfig["readTasksForSession"];
   private readonly isSessionBusy?: BackgroundRunSupervisorConfig["isSessionBusy"];
   private readonly onStatus?: BackgroundRunSupervisorConfig["onStatus"];
   private readonly publishUpdate: BackgroundRunSupervisorConfig["publishUpdate"];
@@ -626,6 +627,7 @@ export class BackgroundRunSupervisor {
     this.resolveAdvertisedToolNames = config.resolveAdvertisedToolNames;
     this.seedHistoryForSession = config.seedHistoryForSession;
     this.readTodosForSession = config.readTodosForSession;
+    this.readTasksForSession = config.readTasksForSession;
     this.isSessionBusy = config.isSessionBusy;
     this.onStatus = config.onStatus;
     this.publishUpdate = config.publishUpdate;
@@ -4052,10 +4054,14 @@ export class BackgroundRunSupervisor {
     const todos = this.readTodosForSession
       ? await this.readTodosForSession(sessionId)
       : [];
+    const tasks = this.readTasksForSession
+      ? await this.readTasksForSession(sessionId)
+      : [];
     const attachments = collectAttachments({
       history: run.internalHistory,
       activeToolNames,
       todos,
+      tasks,
     });
     for (const attachment of attachments.messages) {
       run.internalHistory.push(attachment);

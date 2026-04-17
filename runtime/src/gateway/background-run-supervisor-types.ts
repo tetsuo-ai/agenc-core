@@ -237,6 +237,18 @@ export interface BackgroundRunSupervisorConfig {
   ) => Promise<
     readonly import("../tools/system/todo-store.js").TodoItem[]
   >;
+  /**
+   * Optional callback returning the session's current task list. Used by
+   * the shared attachment-injection hook to render the `task_reminder`.
+   * Returns the minimal `ReminderTaskView` shape (`id`, `subject`,
+   * `status`) so both `Task` (TaskStore) and `SessionTask` values are
+   * structurally assignable.
+   */
+  readonly readTasksForSession?: (
+    sessionId: string,
+  ) => Promise<
+    readonly import("../llm/task-reminder.js").ReminderTaskView[]
+  >;
   readonly isSessionBusy?: (sessionId: string) => boolean;
   readonly onStatus?: (
     sessionId: string,
