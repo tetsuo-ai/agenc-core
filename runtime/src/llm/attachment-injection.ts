@@ -89,8 +89,11 @@ export function collectAttachments(
   }
   if (
     shouldInjectVerifyReminder({
-      history: ctx.history,
       activeToolNames: ctx.activeToolNames,
+      mutatingEditsSinceLastVerifierSpawn:
+        ctx.mutatingEditsSinceLastVerifierSpawn,
+      assistantTurnsSinceLastVerifyReminder:
+        ctx.assistantTurnsSinceLastVerifyReminder,
     })
   ) {
     messages.push(buildVerifyReminderMessage());
