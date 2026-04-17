@@ -586,6 +586,12 @@ describe("task-tracker", () => {
       const result = await callTool(update, { taskId: "3", status: "completed" });
 
       expect(result.body.verificationNudgeNeeded).toBe(true);
+      expect(String(result.body.message)).toContain(
+        "spawn the verifier with execute_with_agent",
+      );
+      expect(String(result.body.message)).toContain(
+        "only the verifier issues a verdict",
+      );
     });
 
     it("does not append the verification nudge for subagent actors", async () => {
@@ -612,6 +618,9 @@ describe("task-tracker", () => {
       });
 
       expect(result.body.verificationNudgeNeeded).toBeUndefined();
+      expect(String(result.body.message)).not.toContain(
+        "spawn the verifier with execute_with_agent",
+      );
     });
   });
 

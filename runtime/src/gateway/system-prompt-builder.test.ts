@@ -54,6 +54,17 @@ describe("buildBaseSystemPrompt", () => {
     );
   });
 
+  it("includes the verification contract clause naming execute_with_agent and verifierObligations", async () => {
+    const prompt = await buildDefaultPersonalityPrompt();
+    expect(prompt).toContain(
+      "### Independent verification before reporting completion",
+    );
+    expect(prompt).toContain("execute_with_agent");
+    expect(prompt).toContain("delegationAdmission.verifierObligations");
+    expect(prompt).toContain("you cannot self-assign PARTIAL");
+    expect(prompt).toContain("only the verifier assigns a verdict");
+  });
+
   it("renders the post-refactor shape: task execution protocol + marketplace rules, no desktop or model disclosure", async () => {
     const prompt = await buildDefaultPersonalityPrompt();
 
