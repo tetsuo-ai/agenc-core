@@ -232,5 +232,6 @@ describe("buildTodoReminderMessage", () => {
   it("marks the runtime-only merge boundary so downstream surfaces filter it", () => {
     const message = buildTodoReminderMessage([]);
     expect(message.runtimeOnly?.mergeBoundary).toBe("user_context");
+    expect(message.runtimeOnly?.anchorPreserve).toBe(true);
   });
 });

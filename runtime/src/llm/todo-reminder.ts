@@ -148,6 +148,6 @@ export function buildTodoReminderMessage(
   return {
     role: "user",
     content: `<system-reminder>\n${TODO_REMINDER_HEADER}${list}\n</system-reminder>`,
-    runtimeOnly: { mergeBoundary: "user_context" },
+    runtimeOnly: { mergeBoundary: "user_context", anchorPreserve: true },
   };
 }
