@@ -2608,10 +2608,20 @@ export function createTaskTrackerTools(
         tasks: allTasks,
         actorKind: actor.kind,
       });
+      const baseMessage = `Updated task #${task.id}: ${updatedFields.join(", ")}`;
+      const nudgeNote = verificationNudgeNeeded
+        ? "\n\nNOTE: You just closed out 3+ tasks and none of them was a " +
+          "verification step. Before writing your final summary, spawn the " +
+          "verifier with execute_with_agent and set " +
+          "delegationAdmission.verifierObligations to the checks you want " +
+          "verified. You cannot self-assign PARTIAL by listing caveats in " +
+          "your summary \u2014 only the verifier issues a verdict."
+        : "";
       return okResult({
         success: true,
         taskId: task.id,
         updatedFields,
+        message: baseMessage + nudgeNote,
         ...(patch.status !== undefined
           ? {
               statusChange: {

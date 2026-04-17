@@ -134,4 +134,68 @@ describe("TodoWrite tool", () => {
     const payload = parseResult(result.content);
     expect(payload.newTodos).toEqual([]);
   });
+
+  describe("verification nudge", () => {
+    const NUDGE_ANCHOR = "spawn the verifier with execute_with_agent";
+
+    it("appends the nudge when 3+ completed todos have no verif item", async () => {
+      const tool = createTodoWriteTool(new TodoStore());
+      const result = await tool.execute({
+        [TODO_WRITE_SESSION_ARG]: "session-a",
+        todos: [
+          makeTodo("build the lexer", { status: "completed" }),
+          makeTodo("build the parser", { status: "completed" }),
+          makeTodo("wire the executor", { status: "completed" }),
+        ],
+      });
+      const payload = parseResult(result.content);
+      expect(String(payload.message)).toContain(NUDGE_ANCHOR);
+      expect(String(payload.message)).toContain(
+        "only the verifier issues a verdict",
+      );
+    });
+
+    it("omits the nudge when a todo content mentions verification", async () => {
+      const tool = createTodoWriteTool(new TodoStore());
+      const result = await tool.execute({
+        [TODO_WRITE_SESSION_ARG]: "session-a",
+        todos: [
+          makeTodo("build the lexer", { status: "completed" }),
+          makeTodo("build the parser", { status: "completed" }),
+          makeTodo("run end-to-end verification smoke", {
+            status: "completed",
+          }),
+        ],
+      });
+      const payload = parseResult(result.content);
+      expect(String(payload.message)).not.toContain(NUDGE_ANCHOR);
+    });
+
+    it("omits the nudge when fewer than 3 todos closed", async () => {
+      const tool = createTodoWriteTool(new TodoStore());
+      const result = await tool.execute({
+        [TODO_WRITE_SESSION_ARG]: "session-a",
+        todos: [
+          makeTodo("a", { status: "completed" }),
+          makeTodo("b", { status: "completed" }),
+        ],
+      });
+      const payload = parseResult(result.content);
+      expect(String(payload.message)).not.toContain(NUDGE_ANCHOR);
+    });
+
+    it("omits the nudge when any item is still pending or in_progress", async () => {
+      const tool = createTodoWriteTool(new TodoStore());
+      const result = await tool.execute({
+        [TODO_WRITE_SESSION_ARG]: "session-a",
+        todos: [
+          makeTodo("a", { status: "completed" }),
+          makeTodo("b", { status: "completed" }),
+          makeTodo("c", { status: "pending" }),
+        ],
+      });
+      const payload = parseResult(result.content);
+      expect(String(payload.message)).not.toContain(NUDGE_ANCHOR);
+    });
+  });
 });

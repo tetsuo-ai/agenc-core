@@ -49,6 +49,22 @@ const TODO_WRITE_SUCCESS_TEXT =
   "use the todo list to track your progress. Please proceed with the " +
   "current tasks if applicable";
 
+const TODO_WRITE_NUDGE_NOTE =
+  "\n\nNOTE: You just closed out 3+ tasks and none of them was a " +
+  "verification step. Before writing your final summary, spawn the " +
+  "verifier with execute_with_agent and set " +
+  "delegationAdmission.verifierObligations to the checks you want " +
+  "verified. You cannot self-assign PARTIAL by listing caveats in your " +
+  "summary \u2014 only the verifier issues a verdict.";
+
+// TodoWrite is wired as a main-thread-only tool; if that ever changes,
+// add an actor-kind guard here to avoid nudging subagents.
+function shouldEmitTodoNudge(todos: readonly TodoItem[]): boolean {
+  if (todos.length < 3) return false;
+  if (!todos.every((t) => t.status === "completed")) return false;
+  return !todos.some((t) => /verif/i.test(t.content));
+}
+
 function isTodoStatus(value: unknown): value is TodoStatus {
   return (
     value === "pending" || value === "in_progress" || value === "completed"
@@ -168,9 +184,11 @@ export function createTodoWriteTool(store: TodoStore): Tool {
         return errorResult(parsed.error);
       }
       const result = await store.setTodos(sessionId, parsed);
+      const nudgeNeeded = shouldEmitTodoNudge(parsed);
       return {
         content: safeStringify({
-          message: TODO_WRITE_SUCCESS_TEXT,
+          message:
+            TODO_WRITE_SUCCESS_TEXT + (nudgeNeeded ? TODO_WRITE_NUDGE_NOTE : ""),
           oldTodos: result.oldTodos,
           newTodos: result.newTodos,
         }),
