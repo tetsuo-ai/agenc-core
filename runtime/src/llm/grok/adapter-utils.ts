@@ -402,6 +402,17 @@ export function isContinuationRetrievalFailure(error: unknown): boolean {
   const status = Number.isFinite(parsedStatus) ? parsedStatus : undefined;
   const message = String(e?.message ?? "").toLowerCase();
 
+  // Empty-content errors from the server-side stateful chain: the
+  // chain accumulated messages with empty content from before our
+  // adapter fixes. The only recovery is to break the chain and
+  // retry without previous_response_id.
+  if (
+    status === 400 &&
+    message.includes("content element")
+  ) {
+    return true;
+  }
+
   if (status === 404 && message.includes("response")) return true;
   if (!message.includes("previous") && !message.includes("response")) {
     return false;
