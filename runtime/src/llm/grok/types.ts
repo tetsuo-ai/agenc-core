@@ -6,11 +6,8 @@
 
 import type {
   LLMProviderConfig,
-  LLMStatefulResponsesConfig,
   LLMXaiCapabilitySurface,
 } from "../types.js";
-
-export interface GrokStatefulResponsesConfig extends LLMStatefulResponsesConfig {}
 
 /**
  * Configuration specific to the Grok (xAI) provider.
@@ -30,6 +27,4 @@ export interface GrokProviderConfig
   parallelToolCalls?: boolean;
   /** Vision-capable model to auto-switch to when images are present (default: 'grok-2-vision-1212') */
   visionModel?: string;
-  /** Optional stateful continuation controls for Responses API. */
-  statefulResponses?: GrokStatefulResponsesConfig;
 }

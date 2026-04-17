@@ -81,24 +81,6 @@ export interface GatewayLLMConfig extends LLMXaiCapabilitySurface {
   economicsMode?: "report_only" | "enforce";
   /** Allow model-emitted parallel tool calls. Default: false (serialized). */
   parallelToolCalls?: boolean;
-  /** Optional xAI Responses API stateful continuation controls. */
-  statefulResponses?: {
-    /** Enable session-scoped continuation using provider-managed response IDs. */
-    enabled?: boolean;
-    /** Explicit `store` value sent to provider calls while stateful mode is enabled. */
-    store?: boolean;
-    /** Retry once statelessly when continuation anchors are missing/mismatched/stale. */
-    fallbackToStateless?: boolean;
-    /** Optional local/runtime compaction controls layered on stateful responses. */
-    compaction?: {
-      /** Enable compaction-aware runtime behavior. */
-      enabled?: boolean;
-      /** Rendered-token threshold for local compaction. */
-      compactThreshold?: number;
-      /** Retry once without provider hints if a provider rejects them. */
-      fallbackOnUnsupported?: boolean;
-    };
-  };
   /** Optional Phase 6 dynamic tool-routing controls. */
   toolRouting?: {
     /** Enable per-turn tool subset routing. */

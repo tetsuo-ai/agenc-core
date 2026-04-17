@@ -2117,7 +2117,6 @@ export function createDaemonCommandRegistry(
       const historyLen = session?.history.length ?? 0;
       const providerNames =
         providers.map((provider) => provider.name).join(" → ") || "none";
-      const statefulConfig = ctx.gateway?.config.llm?.statefulResponses;
       const encryptedReasoningEnabled =
         ctx.gateway?.config.llm?.includeEncryptedReasoning === true;
       const responseAnchor = getSessionResumeAnchorResponseId(session);
@@ -2135,11 +2134,8 @@ export function createDaemonCommandRegistry(
           `Workflow Stage: ${formatSessionWorkflowStage(workflowState.stage)}\n` +
           `Worktree Mode: ${formatSessionWorktreeMode(workflowState.worktreeMode)}\n` +
           `LLM: ${providerNames}\n` +
-          `Stateful: ${
-            statefulConfig?.enabled === true
-              ? `enabled (store=${statefulConfig.store === true ? "yes" : "no"}, encrypted_reasoning=${encryptedReasoningEnabled ? "yes" : "no"}, anchor=${responseAnchor ?? "none"})`
-              : "disabled"
-          }\n` +
+          `Encrypted reasoning: ${encryptedReasoningEnabled ? "enabled" : "disabled"}\n` +
+          `Response anchor: ${responseAnchor ?? "none"}\n` +
           `Memory: ${memoryBackend.name}\n` +
           `Tools: ${registry.size}\n` +
           `Skills: ${availableSkills.length}`;
@@ -2157,11 +2153,9 @@ export function createDaemonCommandRegistry(
         sections: [
           { title: "LLM", items: [providerNames] },
           {
-            title: "Stateful Responses",
+            title: "Transport",
             items: [
-              statefulConfig?.enabled === true
-                ? `enabled (store=${statefulConfig.store === true ? "yes" : "no"}, encrypted_reasoning=${encryptedReasoningEnabled ? "yes" : "no"}, anchor=${responseAnchor ?? "none"})`
-                : "disabled",
+              `stateless (encrypted_reasoning=${encryptedReasoningEnabled ? "yes" : "no"}, anchor=${responseAnchor ?? "none"})`,
             ],
           },
         ],
@@ -2171,7 +2165,6 @@ export function createDaemonCommandRegistry(
           shellProfile,
           workflowState,
           providerNames,
-          statefulEnabled: statefulConfig?.enabled === true,
           encryptedReasoningEnabled,
           responseAnchor,
           memoryBackend: memoryBackend.name,

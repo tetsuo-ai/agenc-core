@@ -17,7 +17,6 @@ export type {
   LLMCompactionDiagnostics,
   LLMCompactionFallbackReason,
   LLMCompactionItemRef,
-  LLMStatefulResponsesConfig,
   LLMStoredResponse,
   LLMStoredResponseDeleteResult,
   LLMResponse,

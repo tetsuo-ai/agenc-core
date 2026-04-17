@@ -1824,77 +1824,18 @@ function validateLlmRetryPolicySection(
   }
 }
 
+/**
+ * Legacy `llm.statefulResponses` validator — silently ignores the
+ * whole section now that the runtime is unconditionally stateless.
+ * Existing operator configs may still carry the field; we tolerate it
+ * rather than fail config load.
+ */
 function validateLlmStatefulResponsesSection(
-  provider: GatewayLLMConfig["provider"] | undefined,
-  statefulResponsesValue: unknown,
-  errors: string[],
+  _provider: GatewayLLMConfig["provider"] | undefined,
+  _statefulResponsesValue: unknown,
+  _errors: string[],
 ): void {
-  if (statefulResponsesValue === undefined) return;
-  if (!isRecord(statefulResponsesValue)) {
-    errors.push("llm.statefulResponses must be an object");
-    return;
-  }
-
-  if (
-    statefulResponsesValue.enabled !== undefined &&
-    typeof statefulResponsesValue.enabled !== "boolean"
-  ) {
-    errors.push("llm.statefulResponses.enabled must be a boolean");
-  }
-  if (
-    statefulResponsesValue.store !== undefined &&
-    typeof statefulResponsesValue.store !== "boolean"
-  ) {
-    errors.push("llm.statefulResponses.store must be a boolean");
-  }
-  if (
-    statefulResponsesValue.fallbackToStateless !== undefined &&
-    typeof statefulResponsesValue.fallbackToStateless !== "boolean"
-  ) {
-    errors.push("llm.statefulResponses.fallbackToStateless must be a boolean");
-  }
-
-  const compactionValue = statefulResponsesValue.compaction;
-  if (compactionValue === undefined) {
-    return;
-  }
-  if (!isRecord(compactionValue)) {
-    errors.push("llm.statefulResponses.compaction must be an object");
-    return;
-  }
-
-  if (
-    compactionValue.enabled !== undefined &&
-    typeof compactionValue.enabled !== "boolean"
-  ) {
-    errors.push("llm.statefulResponses.compaction.enabled must be a boolean");
-  }
-  if (compactionValue.compactThreshold !== undefined) {
-    requireIntRange(
-      compactionValue.compactThreshold,
-      "llm.statefulResponses.compaction.compactThreshold",
-      1,
-      Number.MAX_SAFE_INTEGER,
-      errors,
-    );
-  }
-  if (
-    compactionValue.fallbackOnUnsupported !== undefined &&
-    typeof compactionValue.fallbackOnUnsupported !== "boolean"
-  ) {
-    errors.push(
-      "llm.statefulResponses.compaction.fallbackOnUnsupported must be a boolean",
-    );
-  }
-  if (
-    compactionValue.enabled === true &&
-    compactionValue.compactThreshold === undefined &&
-    provider !== "grok"
-  ) {
-    errors.push(
-      "llm.statefulResponses.compaction.compactThreshold is required when compaction.enabled is true",
-    );
-  }
+  // intentionally no-op
 }
 
 function validateLlmCollectionsSearchSection(
@@ -2861,7 +2802,7 @@ function validateLlmSection(llm: unknown, errors: string[]): void {
   validateLlmStructuredOutputsSection(llm.structuredOutputs, errors);
   validateLlmStatefulResponsesSection(
     llmProvider,
-    llm.statefulResponses,
+    (llm as Record<string, unknown>).statefulResponses,
     errors,
   );
   validateLlmToolRoutingSection(llm.toolRouting, errors);

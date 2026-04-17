@@ -1131,111 +1131,23 @@ describe("config loading", () => {
     );
   });
 
-  it("validateGatewayConfig accepts llm.statefulResponses booleans", () => {
+  it("validateGatewayConfig silently tolerates legacy llm.statefulResponses field on disk", () => {
     const result = validateGatewayConfig(
       makeConfig({
         llm: {
           provider: "grok",
           apiKey: "test",
+          // legacy field — no longer honored; validator no-ops it
           statefulResponses: {
             enabled: true,
             store: true,
-            fallbackToStateless: true,
-            compaction: {
-              enabled: true,
-              compactThreshold: 120_000,
-              fallbackOnUnsupported: true,
-            },
           },
-        },
+        } as Record<string, unknown>,
       }),
     );
 
     expect(result.valid).toBe(true);
     expect(result.errors).toEqual([]);
-  });
-
-  it("validateGatewayConfig rejects invalid llm.statefulResponses fields", () => {
-    const result = validateGatewayConfig(
-      makeConfig({
-        llm: {
-          provider: "grok",
-          apiKey: "test",
-          statefulResponses: {
-            enabled: "yes" as unknown as boolean,
-            store: 1 as unknown as boolean,
-            fallbackToStateless: "no" as unknown as boolean,
-            compaction: {
-              enabled: "yes" as unknown as boolean,
-              compactThreshold: 0,
-              fallbackOnUnsupported: "no" as unknown as boolean,
-            },
-          },
-        },
-      }),
-    );
-
-    expect(result.valid).toBe(false);
-    expect(result.errors).toContain(
-      "llm.statefulResponses.enabled must be a boolean",
-    );
-    expect(result.errors).toContain(
-      "llm.statefulResponses.store must be a boolean",
-    );
-    expect(result.errors).toContain(
-      "llm.statefulResponses.fallbackToStateless must be a boolean",
-    );
-    expect(result.errors).toContain(
-      "llm.statefulResponses.compaction.enabled must be a boolean",
-    );
-    expect(result.errors).toContain(
-      "llm.statefulResponses.compaction.compactThreshold must be an integer between 1 and 9007199254740991",
-    );
-    expect(result.errors).toContain(
-      "llm.statefulResponses.compaction.fallbackOnUnsupported must be a boolean",
-    );
-  });
-
-  it("validateGatewayConfig allows Grok compaction defaults when the threshold is omitted", () => {
-    const result = validateGatewayConfig(
-      makeConfig({
-        llm: {
-          provider: "grok",
-          apiKey: "test",
-          statefulResponses: {
-            enabled: true,
-            compaction: {
-              enabled: true,
-            },
-          },
-        },
-      }),
-    );
-
-    expect(result.valid).toBe(true);
-    expect(result.errors).toEqual([]);
-  });
-
-  it("validateGatewayConfig still requires a compaction threshold for non-Grok providers", () => {
-    const result = validateGatewayConfig(
-      makeConfig({
-        llm: {
-          provider: "ollama",
-          apiKey: "test",
-          statefulResponses: {
-            enabled: true,
-            compaction: {
-              enabled: true,
-            },
-          },
-        },
-      }),
-    );
-
-    expect(result.valid).toBe(false);
-    expect(result.errors).toContain(
-      "llm.statefulResponses.compaction.compactThreshold is required when compaction.enabled is true",
-    );
   });
 
   it("validateGatewayConfig accepts llm.toolRouting fields", () => {
