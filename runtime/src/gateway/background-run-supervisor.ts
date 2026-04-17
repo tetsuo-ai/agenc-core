@@ -15,7 +15,8 @@ import type { ChatExecutorResult } from "../llm/chat-executor-types.js";
 import { executeChatToLegacyResult } from "../llm/execute-chat.js";
 import { normalizePromptEnvelope } from "../llm/prompt-envelope.js";
 import { buildModelOnlyChatOptions } from "../llm/model-only-options.js";
-import type { LLMProvider, ToolHandler } from "../llm/types.js";
+import { getCompactPrompt, formatCompactSummary } from "../llm/compact/prompt.js";
+import type { LLMMessage, LLMProvider, ToolHandler } from "../llm/types.js";
 import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";
 import { toErrorMessage } from "../utils/async.js";
@@ -116,6 +117,7 @@ import {
   PAUSE_REQUEST_RE,
   RESUME_REQUEST_RE,
   STATUS_REQUEST_RE,
+  HISTORY_COMPACTION_THRESHOLD,
 } from "./background-run-supervisor-constants.js";
 
 // --- Re-export from extracted types ---
@@ -3834,11 +3836,20 @@ export class BackgroundRunSupervisor {
           ...(actorTrace ? { trace: actorTrace } : {}),
         });
 
-        run.internalHistory = trimHistory([
+        const extendedHistory: LLMMessage[] = [
           ...run.internalHistory,
-          { role: "user", content: actorPrompt },
-          { role: "assistant", content: actorResult.content, phase: "commentary" },
-        ]);
+          { role: "user", content: actorPrompt } as LLMMessage,
+          { role: "assistant", content: actorResult.content, phase: "commentary" } as LLMMessage,
+        ];
+        if (extendedHistory.length >= HISTORY_COMPACTION_THRESHOLD) {
+          run.internalHistory = await this.compactInternalHistory(
+            run,
+            extendedHistory,
+          );
+        } else {
+          run.internalHistory = extendedHistory;
+        }
+        run.internalHistory = trimHistory(run.internalHistory);
         await this.runStore.appendConversationTurn(sessionId, [
           { role: "user", content: actorPrompt },
           { role: "assistant", content: actorResult.content, phase: "commentary" },
@@ -4200,6 +4211,44 @@ export class BackgroundRunSupervisor {
       return;
     }
     await this.handleResolvedCycleOutcome(outcome);
+  }
+
+  private async compactInternalHistory(
+    run: ActiveBackgroundRun,
+    history: LLMMessage[],
+  ): Promise<LLMMessage[]> {
+    const keepTail = 4;
+    if (history.length <= keepTail + 1) {
+      return history;
+    }
+    const toSummarize = history.slice(0, -keepTail);
+    const kept = history.slice(-keepTail);
+    try {
+      const historyText = toSummarize
+        .map((m) => `[${m.role}]: ${typeof m.content === "string" ? m.content : JSON.stringify(m.content)}`)
+        .join("\n\n");
+      const response = await this.supervisorLlm.chat(
+        [
+          { role: "system", content: getCompactPrompt() },
+          { role: "user", content: historyText },
+        ],
+        buildModelOnlyChatOptions({ toolChoice: "none" }),
+      );
+      const summary = formatCompactSummary(response.content).trim();
+      if (summary.length === 0) {
+        return history;
+      }
+      run.compaction = {
+        ...run.compaction,
+        refreshCount: run.compaction.refreshCount + 1,
+      };
+      return [
+        { role: "system", content: summary } as LLMMessage,
+        ...kept,
+      ];
+    } catch {
+      return history;
+    }
   }
 
   private async evaluateDecision(
