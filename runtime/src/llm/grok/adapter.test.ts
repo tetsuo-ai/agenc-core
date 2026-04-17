@@ -2117,7 +2117,10 @@ describe("GrokProvider", () => {
     ]);
 
     const params = mockCreate.mock.calls[0][0];
-    expect(params.input[2]).toEqual({
+    // Index shifts by 1 because assistant messages with empty content
+    // + toolCalls now emit a placeholder message before function_call
+    // items to satisfy xAI's "each message must have content" rule.
+    expect(params.input[3]).toEqual({
       type: "function_call_output",
       call_id: "call_1",
       output: "result data",
@@ -2151,6 +2154,10 @@ describe("GrokProvider", () => {
 
     const params = mockCreate.mock.calls[0][0];
     expect(params.input[1]).toEqual({
+      role: "assistant",
+      content: "Calling tool.",
+    });
+    expect(params.input[2]).toEqual({
       type: "function_call",
       call_id: "call_1",
       name: "desktop.bash",
