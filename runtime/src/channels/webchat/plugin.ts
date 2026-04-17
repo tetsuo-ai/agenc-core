@@ -615,7 +615,8 @@ export class WebChatChannel
     const isHighFrequencyPoll =
       response.type === "status.update" ||
       response.type === "chat.session.list" ||
-      response.type === "session.command.catalog";
+      response.type === "session.command.catalog" ||
+      response.type === "watch.cockpit";
     if (isHighFrequencyPoll) {
       return;
     }

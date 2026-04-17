@@ -1277,6 +1277,35 @@ export function groundDecision(
     };
   }
 
+  // Upstream reference runtime pattern: tool errors flow back into
+  // history and the model adapts on the next iteration. There is no
+  // "blocked" concept for a cycle where the actor executed tools.
+  // A decision model claiming "blocked" after the actor successfully
+  // ran tools (even if the underlying command failed — e.g. cmake
+  // exit-code 1) is a supervisor artefact that upstream does not have.
+  // Override it to "working" so the next cycle lets the model retry.
+  if (
+    decision.state === "blocked" &&
+    actorResult.toolCalls.length > 0 &&
+    successfulToolCalls.length > 0
+  ) {
+    return {
+      state: "working",
+      userUpdate: truncate(
+        decision.userUpdate ||
+        actorResult.content ||
+        "Cycle had tool activity; retrying with error context.",
+        MAX_USER_UPDATE_CHARS,
+      ),
+      internalSummary:
+        `Overrode blocked decision: actor executed ${actorResult.toolCalls.length} tool calls ` +
+        `(${successfulToolCalls.length} ok, ${failedToolCalls.length} failed). ` +
+        `Error context flows to next cycle.`,
+      nextCheckMs: DEFAULT_POLL_INTERVAL_MS,
+      shouldNotifyUser: true,
+    };
+  }
+
   if (
     decision.state === "completed" &&
     run.contract.requiresUserStop
