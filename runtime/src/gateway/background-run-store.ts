@@ -332,7 +332,6 @@ export interface BackgroundRunRecentSnapshot {
   readonly policyScope?: PolicyEvaluationScope;
   readonly state: BackgroundRunState;
   readonly contractKind: BackgroundRunKind;
-  readonly requiresUserStop: boolean;
   readonly cycleCount: number;
   readonly createdAt: number;
   readonly updatedAt: number;
@@ -1472,7 +1471,10 @@ function buildDefaultBudgetState(params: {
       maxRuntimeMs: DEFAULT_BACKGROUND_RUN_MAX_RUNTIME_MS,
       nextCheckMs: params.contract.nextCheckMs,
     }),
-    maxIdleMs: params.contract.requiresUserStop ? undefined : DEFAULT_BACKGROUND_RUN_MAX_IDLE_MS,
+    maxIdleMs:
+      params.contract.kind === "until_stopped"
+        ? undefined
+        : DEFAULT_BACKGROUND_RUN_MAX_IDLE_MS,
     nextCheckIntervalMs: params.contract.nextCheckMs,
     heartbeatIntervalMs: params.contract.heartbeatMs,
   };
@@ -1728,7 +1730,6 @@ function coerceRecentSnapshot(
     typeof raw.runId !== "string" ||
     typeof raw.sessionId !== "string" ||
     typeof raw.objective !== "string" ||
-    typeof raw.requiresUserStop !== "boolean" ||
     typeof raw.cycleCount !== "number" ||
     typeof raw.createdAt !== "number" ||
     typeof raw.updatedAt !== "number" ||
@@ -1746,7 +1747,6 @@ function coerceRecentSnapshot(
     policyScope: coercePolicyScope(raw.policyScope),
     state,
     contractKind,
-    requiresUserStop: raw.requiresUserStop,
     cycleCount: raw.cycleCount,
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt,
@@ -1985,7 +1985,6 @@ function coerceContract(
           successCriteria: normalizeStringArray(raw.successCriteria),
           completionCriteria: normalizeStringArray(raw.completionCriteria),
           blockedCriteria: normalizeStringArray(raw.blockedCriteria),
-          requiresUserStop: Boolean(raw.requiresUserStop),
           managedProcessPolicy: normalizedManagedProcessPolicy,
         }),
     kind: raw.kind,
@@ -1994,7 +1993,6 @@ function coerceContract(
     blockedCriteria: normalizeStringArray(raw.blockedCriteria),
     nextCheckMs,
     heartbeatMs,
-    requiresUserStop: Boolean(raw.requiresUserStop),
     managedProcessPolicy: normalizedManagedProcessPolicy,
   };
   try {

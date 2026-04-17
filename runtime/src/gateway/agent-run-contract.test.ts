@@ -57,7 +57,6 @@ describe("agent-run-contract", () => {
         blockedCriteria: ["missing required tool access"],
         nextCheckMs: 4_000,
         heartbeatMs: 10_000,
-        requiresUserStop: false,
         managedProcessPolicy: {
           mode: "restart_on_exit",
           maxRestarts: 3,
@@ -76,7 +75,6 @@ describe("agent-run-contract", () => {
         completionCriteria: ["done"],
         blockedCriteria: ["blocked"],
         nextCheckMs: 0,
-        requiresUserStop: false,
       }),
     ).toThrow("successCriteria");
 
@@ -88,7 +86,6 @@ describe("agent-run-contract", () => {
         completionCriteria: ["done"],
         blockedCriteria: ["blocked"],
         nextCheckMs: 1_000,
-        requiresUserStop: false,
         managedProcessPolicy: {
           mode: "restart_on_exit",
           maxRestarts: 0,

@@ -23,7 +23,6 @@ function makeRun(
       blockedCriteria: ["Missing process controls."],
       nextCheckMs: 4_000,
       heartbeatMs: 12_000,
-      requiresUserStop: false,
     },
     state: "working",
     fenceToken: 1,

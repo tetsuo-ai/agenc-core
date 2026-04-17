@@ -562,7 +562,7 @@ function shouldKeepRunningAfterProcessExit(run: ActiveBackgroundRun): boolean {
 }
 
 function allowsHeuristicProcessExitCompletion(run: ActiveBackgroundRun): boolean {
-  if (run.contract.requiresUserStop || run.contract.kind === "until_stopped") {
+  if (run.contract.kind === "until_stopped") {
     return false;
   }
   if (shouldKeepRunningAfterProcessExit(run)) {
@@ -594,7 +594,7 @@ export function buildManagedProcessIdentity(
 function buildManagedProcessCompletionDecision(
   run: ActiveBackgroundRun,
 ): BackgroundRunDecision | undefined {
-  if (run.contract.requiresUserStop || run.contract.kind === "until_stopped") {
+  if (run.contract.kind === "until_stopped") {
     return undefined;
   }
   const target = [...run.observedTargets]

@@ -17,7 +17,6 @@ describe("background-run-operator", () => {
         requiresApproval: true,
         requiresOperatorAction: true,
       },
-      requiresUserStop: false,
       now: 10,
     });
 
@@ -33,7 +32,6 @@ describe("background-run-operator", () => {
       buildBackgroundRunExplanation({
         state: "paused",
         approval: { status: "none" },
-        requiresUserStop: false,
         now: 10,
       }),
     ).toEqual({
@@ -52,7 +50,6 @@ describe("background-run-operator", () => {
           retryable: false,
           requiresOperatorAction: true,
         },
-        requiresUserStop: false,
         now: 10,
       }),
     ).toEqual({
@@ -67,7 +64,7 @@ describe("background-run-operator", () => {
       state: "working",
       approval: { status: "none" },
       nextCheckAt: 9_000,
-      requiresUserStop: true,
+      contractKind: "until_stopped",
       now: 5_100,
     });
 

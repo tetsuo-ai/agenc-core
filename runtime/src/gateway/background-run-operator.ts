@@ -71,7 +71,6 @@ export interface BackgroundRunOperatorSummary {
   readonly cycleCount: number;
   readonly contractKind: BackgroundRunContract["kind"];
   readonly contractDomain: BackgroundRunContract["domain"];
-  readonly requiresUserStop: boolean;
   readonly pendingSignals: number;
   readonly watchCount: number;
   readonly fenceToken: number;
@@ -146,7 +145,6 @@ export type BackgroundRunControlAction =
       readonly blockedCriteria?: readonly string[];
       readonly nextCheckMs?: number;
       readonly heartbeatMs?: number;
-      readonly requiresUserStop?: boolean;
     };
     readonly reason?: string;
   }
@@ -217,7 +215,7 @@ export function buildBackgroundRunExplanation(params: {
   readonly nextCheckAt?: number;
   readonly nextHeartbeatAt?: number;
   readonly lastWakeReason?: BackgroundRunLastWakeReason;
-  readonly requiresUserStop: boolean;
+  readonly contractKind?: BackgroundRunContract["kind"];
   readonly now?: number;
 }): { currentPhase: string; explanation: string; unsafeToContinue: boolean } {
   const now = params.now ?? Date.now();
@@ -269,7 +267,7 @@ export function buildBackgroundRunExplanation(params: {
     return {
       currentPhase: "active",
       explanation:
-        params.requiresUserStop
+        params.contractKind === "until_stopped"
           ? `Run is active and will continue until explicitly stopped.${cadence}`
           : `Run is active and waiting for the next verification cycle.${cadence}`,
       unsafeToContinue: false,

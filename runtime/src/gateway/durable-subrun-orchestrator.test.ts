@@ -166,7 +166,6 @@ function makeParentRun(
       blockedCriteria: ["Missing child evidence blocks completion."],
       nextCheckMs: 4_000,
       heartbeatMs: 12_000,
-      requiresUserStop: false,
       managedProcessPolicy: { mode: "none" },
     },
     state: "working",

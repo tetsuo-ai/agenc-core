@@ -135,7 +135,6 @@ function makeContract() {
     blockedCriteria: ["Runtime prerequisites are missing."],
     nextCheckMs: 1_000,
     heartbeatMs: 5_000,
-    requiresUserStop: false,
     managedProcessPolicy: { mode: "none" as const },
   };
 }

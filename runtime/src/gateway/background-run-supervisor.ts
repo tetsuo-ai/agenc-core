@@ -2526,9 +2526,10 @@ export class BackgroundRunSupervisor {
         ...run.budgetState,
         nextCheckIntervalMs: nextContract.nextCheckMs,
         heartbeatIntervalMs: nextContract.heartbeatMs,
-        maxIdleMs: nextContract.requiresUserStop
-          ? undefined
-          : run.budgetState.maxIdleMs ?? DEFAULT_BACKGROUND_RUN_MAX_IDLE_MS,
+        maxIdleMs:
+          nextContract.kind === "until_stopped"
+            ? undefined
+            : run.budgetState.maxIdleMs ?? DEFAULT_BACKGROUND_RUN_MAX_IDLE_MS,
       };
       run.preferredWorkerId = this.instanceId;
       run.workerAffinityKey = resolveWorkerAffinityKey(run);
@@ -2634,7 +2635,6 @@ export class BackgroundRunSupervisor {
       readonly blockedCriteria?: readonly string[];
       readonly nextCheckMs?: number;
       readonly heartbeatMs?: number;
-      readonly requiresUserStop?: boolean;
     },
     reason = "Updated the run constraints.",
   ): Promise<boolean> {
@@ -2662,8 +2662,6 @@ export class BackgroundRunSupervisor {
             ? normalizePositiveInteger(constraints.heartbeatMs) ??
               run.contract.heartbeatMs
             : run.contract.heartbeatMs,
-        requiresUserStop:
-          constraints.requiresUserStop ?? run.contract.requiresUserStop,
       };
       assertValidAgentRunContract(nextContract, "amendRunConstraints");
       run.contract = nextContract;
@@ -2676,9 +2674,10 @@ export class BackgroundRunSupervisor {
         ...run.budgetState,
         nextCheckIntervalMs: nextContract.nextCheckMs,
         heartbeatIntervalMs: nextContract.heartbeatMs,
-        maxIdleMs: nextContract.requiresUserStop
-          ? undefined
-          : run.budgetState.maxIdleMs ?? DEFAULT_BACKGROUND_RUN_MAX_IDLE_MS,
+        maxIdleMs:
+          nextContract.kind === "until_stopped"
+            ? undefined
+            : run.budgetState.maxIdleMs ?? DEFAULT_BACKGROUND_RUN_MAX_IDLE_MS,
       };
       recordRunActivity(run, now, "progress");
     };
@@ -3455,7 +3454,7 @@ export class BackgroundRunSupervisor {
       return undefined;
     }
     if (
-      !run.contract.requiresUserStop &&
+      run.contract.kind !== "until_stopped" &&
       isRuntimeLimitExceeded(
         this.now() - run.budgetState.runtimeStartedAt,
         run.budgetState.maxRuntimeMs,
@@ -3470,7 +3469,7 @@ export class BackgroundRunSupervisor {
       return undefined;
     }
     if (
-      !run.contract.requiresUserStop &&
+      run.contract.kind !== "until_stopped" &&
       isRuntimeLimitExceeded(run.cycleCount, run.budgetState.maxCycles)
     ) {
       await this.finishRun(run, {

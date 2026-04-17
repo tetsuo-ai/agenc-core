@@ -17,7 +17,6 @@ describe("background-run replay", () => {
       objective: "Replay the background run.",
       state: "completed",
       contractKind: "finite",
-      requiresUserStop: false,
       cycleCount: 1,
       createdAt: 1,
       updatedAt: 5,

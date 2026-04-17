@@ -206,7 +206,6 @@ function buildChildContract(
     ],
     nextCheckMs,
     heartbeatMs,
-    requiresUserStop: false,
     managedProcessPolicy: { mode: "none" },
   };
 }

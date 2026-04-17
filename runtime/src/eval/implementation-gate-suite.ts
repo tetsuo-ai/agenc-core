@@ -296,7 +296,6 @@ async function runResumeAfterPartialScenario(): Promise<PipelineImplementationGa
         blockedCriteria: ["Verification evidence is still missing."],
         nextCheckMs: 4_000,
         heartbeatMs: 12_000,
-        requiresUserStop: false,
         managedProcessPolicy: { mode: "none" },
       },
       state: "working",

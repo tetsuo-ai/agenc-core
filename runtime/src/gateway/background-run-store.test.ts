@@ -29,7 +29,6 @@ function makeRun(
       blockedCriteria: ["Missing process controls."],
       nextCheckMs: 4_000,
       heartbeatMs: 12_000,
-      requiresUserStop: false,
       managedProcessPolicy: {
         mode: "until_exit",
         maxRestarts: 3,
@@ -415,7 +414,6 @@ describe("BackgroundRunStore", () => {
       },
       state: "completed",
       contractKind: "until_condition",
-      requiresUserStop: false,
       cycleCount: 2,
       createdAt: 1,
       updatedAt: 20,
@@ -444,7 +442,6 @@ describe("BackgroundRunStore", () => {
       },
       state: "completed",
       contractKind: "until_condition",
-      requiresUserStop: false,
       cycleCount: 2,
       createdAt: 1,
       updatedAt: 20,
@@ -513,7 +510,6 @@ describe("BackgroundRunStore", () => {
       policyScope: run.policyScope,
       state: run.state,
       contractKind: run.contract.kind,
-      requiresUserStop: run.contract.requiresUserStop,
       cycleCount: run.cycleCount,
       createdAt: run.createdAt,
       updatedAt: run.updatedAt,
@@ -757,7 +753,6 @@ describe("BackgroundRunStore", () => {
       objective: "Done",
       state: "completed",
       contractKind: "finite",
-      requiresUserStop: false,
       cycleCount: 1,
       createdAt: 1,
       updatedAt: 1,
@@ -978,7 +973,6 @@ describe("BackgroundRunStore", () => {
           blockedCriteria: ["Browser automation fails."],
           nextCheckMs: 4_000,
           heartbeatMs: 12_000,
-          requiresUserStop: false,
         },
         pendingSignals: [
           {
@@ -1009,7 +1003,6 @@ describe("BackgroundRunStore", () => {
           blockedCriteria: ["Workspace tooling is missing."],
           nextCheckMs: 4_000,
           heartbeatMs: 12_000,
-          requiresUserStop: false,
         },
         pendingSignals: [
           {
@@ -1040,7 +1033,6 @@ describe("BackgroundRunStore", () => {
           blockedCriteria: ["Research tools fail."],
           nextCheckMs: 4_000,
           heartbeatMs: 12_000,
-          requiresUserStop: false,
         },
         pendingSignals: [
           {
@@ -1069,7 +1061,6 @@ describe("BackgroundRunStore", () => {
           blockedCriteria: ["Pipeline health fails."],
           nextCheckMs: 4_000,
           heartbeatMs: 12_000,
-          requiresUserStop: false,
         },
         pendingSignals: [
           {
@@ -1099,7 +1090,6 @@ describe("BackgroundRunStore", () => {
           blockedCriteria: ["Remote MCP job fails."],
           nextCheckMs: 4_000,
           heartbeatMs: 12_000,
-          requiresUserStop: false,
         },
         pendingSignals: [
           {
@@ -1131,7 +1121,6 @@ describe("BackgroundRunStore", () => {
           blockedCriteria: ["Approval is still pending."],
           nextCheckMs: 4_000,
           heartbeatMs: 12_000,
-          requiresUserStop: false,
         },
         state: "blocked",
         blocker: {
@@ -1545,6 +1534,88 @@ describe("BackgroundRunStore", () => {
     await expect(store.getDispatchStats()).resolves.toMatchObject({
       totalQueued: 0,
       totalClaimed: 0,
+    });
+  });
+
+  describe("legacy persisted records that still carry requiresUserStop", () => {
+    it("loads a record with {kind: until_stopped, requiresUserStop: true} and strips the field", async () => {
+      const backend = new InMemoryBackend();
+      const store = new BackgroundRunStore({ memoryBackend: backend });
+      const run = makeRun({
+        sessionId: "session-legacy-until-stopped",
+        contract: {
+          domain: "managed_process",
+          kind: "until_stopped",
+          successCriteria: ["keep watching"],
+          completionCriteria: ["user explicitly stops it"],
+          blockedCriteria: ["watcher unreachable"],
+          nextCheckMs: 4_000,
+          heartbeatMs: 12_000,
+          managedProcessPolicy: { mode: "keep_running" },
+        },
+      });
+      await store.saveRun(run);
+      const rawKey = `background-run:session:${run.sessionId}`;
+      const stored = await backend.get(rawKey);
+      const mutated = {
+        ...(stored as Record<string, unknown>),
+        requiresUserStop: true,
+        contract: {
+          ...(stored as { contract: Record<string, unknown> }).contract,
+          requiresUserStop: true,
+        },
+      };
+      await backend.set(rawKey, mutated);
+
+      const loaded = await store.loadRun(run.sessionId);
+      expect(loaded).toBeDefined();
+      expect(loaded?.contract.kind).toBe("until_stopped");
+      expect(
+        (loaded?.contract as unknown as Record<string, unknown>).requiresUserStop,
+      ).toBeUndefined();
+      expect(
+        (loaded as unknown as Record<string, unknown>).requiresUserStop,
+      ).toBeUndefined();
+    });
+
+    it("loads an inconsistent legacy record {kind: finite, requiresUserStop: true} without consulting the boolean", async () => {
+      const backend = new InMemoryBackend();
+      const store = new BackgroundRunStore({ memoryBackend: backend });
+      const run = makeRun({
+        sessionId: "session-legacy-inconsistent",
+        contract: {
+          domain: "generic",
+          kind: "finite",
+          successCriteria: ["finish the implementation"],
+          completionCriteria: ["pass the remaining verifier obligations"],
+          blockedCriteria: ["missing runtime evidence"],
+          nextCheckMs: 4_000,
+          heartbeatMs: 12_000,
+          managedProcessPolicy: { mode: "none" },
+        },
+      });
+      await store.saveRun(run);
+      const rawKey = `background-run:session:${run.sessionId}`;
+      const stored = await backend.get(rawKey);
+      const mutated = {
+        ...(stored as Record<string, unknown>),
+        requiresUserStop: true,
+        contract: {
+          ...(stored as { contract: Record<string, unknown> }).contract,
+          requiresUserStop: true,
+        },
+      };
+      await backend.set(rawKey, mutated);
+
+      const loaded = await store.loadRun(run.sessionId);
+      expect(loaded).toBeDefined();
+      // Legacy boolean is no longer consulted — kind remains the sole
+      // signal. A finite run still reads as finite regardless of the
+      // stray legacy flag.
+      expect(loaded?.contract.kind).toBe("finite");
+      expect(
+        (loaded?.contract as unknown as Record<string, unknown>).requiresUserStop,
+      ).toBeUndefined();
     });
   });
 });

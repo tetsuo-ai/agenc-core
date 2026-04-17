@@ -1038,7 +1038,7 @@ test("command controller forwards extended durable run controls onto run.control
   assert.equal(controller.dispatchOperatorInput("/run-cancel operator abort"), true);
   assert.equal(controller.dispatchOperatorInput("/run-objective Watch the verifier until it exits"), true);
   assert.equal(
-    controller.dispatchOperatorInput('/run-constraints {"nextCheckMs":7000,"requiresUserStop":true}'),
+    controller.dispatchOperatorInput('/run-constraints {"nextCheckMs":7000}'),
     true,
   );
   assert.equal(
@@ -1072,7 +1072,6 @@ test("command controller forwards extended durable run controls onto run.control
       sessionId: "sess-1",
       constraints: {
         nextCheckMs: 7000,
-        requiresUserStop: true,
       },
       reason: "operator amended durable run constraints",
     },

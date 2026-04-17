@@ -918,7 +918,7 @@ export function buildInitialBudgetState(
       maxRuntimeMs: 0,
       nextCheckMs: contract.nextCheckMs,
     }),
-    maxIdleMs: contract.requiresUserStop ? undefined : 0,
+    maxIdleMs: contract.kind === "until_stopped" ? undefined : 0,
     nextCheckIntervalMs: contract.nextCheckMs,
     heartbeatIntervalMs: contract.heartbeatMs,
   };
@@ -1532,7 +1532,7 @@ export function buildContractPrompt(objective: string): string {
   return (
     `User objective:\n${objective}\n\n` +
     "Return JSON only in this shape:\n" +
-    '{"domain":"generic|managed_process|approval|browser|desktop_gui|workspace|research|pipeline|remote_mcp|remote_session","kind":"finite|until_condition|until_stopped","successCriteria":["..."],"completionCriteria":["..."],"blockedCriteria":["..."],"nextCheckMs":8000,"heartbeatMs":15000,"requiresUserStop":false,"managedProcessPolicy":{"mode":"none|until_exit|keep_running|restart_on_exit","maxRestarts":5,"restartBackoffMs":5000}}\n\n' +
+    '{"domain":"generic|managed_process|approval|browser|desktop_gui|workspace|research|pipeline|remote_mcp|remote_session","kind":"finite|until_condition|until_stopped","successCriteria":["..."],"completionCriteria":["..."],"blockedCriteria":["..."],"nextCheckMs":8000,"heartbeatMs":15000,"managedProcessPolicy":{"mode":"none|until_exit|keep_running|restart_on_exit","maxRestarts":5,"restartBackoffMs":5000}}\n\n' +
     "Rules:\n" +
     "- Choose the domain that best matches the primary runtime surface being supervised.\n" +
     "- Use until_stopped only when the user explicitly says the task should continue until they stop it.\n" +
@@ -1701,10 +1701,6 @@ export function parseContract(
       parsed.blockedCriteria,
       "Block when required tools, permissions, or external preconditions are missing.",
     );
-    const requiresUserStop =
-      typeof parsed.requiresUserStop === "boolean"
-        ? parsed.requiresUserStop
-        : kind === "until_stopped";
     const normalizedManagedProcessPolicy =
       managedProcessPolicy !== undefined
         ? {
@@ -1722,7 +1718,6 @@ export function parseContract(
       successCriteria,
       completionCriteria,
       blockedCriteria,
-      requiresUserStop,
       managedProcessPolicy: normalizedManagedProcessPolicy,
     });
     return {
@@ -1738,7 +1733,6 @@ export function parseContract(
       blockedCriteria,
       nextCheckMs,
       heartbeatMs,
-      requiresUserStop,
       managedProcessPolicy: normalizedManagedProcessPolicy,
     };
   } catch {
@@ -1754,13 +1748,12 @@ export function buildFallbackContract(objective: string): BackgroundRunContract 
     : continuous
       ? "until_condition"
       : "finite";
-  const requiresUserStop = kind === "until_stopped";
   const managedProcessPolicyMode = inferManagedProcessPolicyMode(objective);
   const successCriteria = [
     "Use tools to make measurable progress and verify the result.",
   ];
   const completionCriteria = [
-    requiresUserStop
+    kind === "until_stopped"
       ? "Do not complete until the user explicitly stops the run."
       : "Only complete once tool evidence shows the objective is satisfied.",
   ];
@@ -1787,7 +1780,6 @@ export function buildFallbackContract(objective: string): BackgroundRunContract 
       successCriteria,
       completionCriteria,
       blockedCriteria,
-      requiresUserStop,
       managedProcessPolicy,
     }),
     kind,
@@ -1796,7 +1788,6 @@ export function buildFallbackContract(objective: string): BackgroundRunContract 
     blockedCriteria,
     nextCheckMs: DEFAULT_POLL_INTERVAL_MS,
     heartbeatMs: continuous ? HEARTBEAT_MIN_DELAY_MS : undefined,
-    requiresUserStop,
     managedProcessPolicy,
   };
 }
@@ -1879,8 +1870,7 @@ export function toOperatorSummary(params: {
     nextCheckAt: params.snapshot.nextCheckAt,
     nextHeartbeatAt: params.snapshot.nextHeartbeatAt,
     lastWakeReason: params.snapshot.lastWakeReason,
-    requiresUserStop:
-      params.contract?.requiresUserStop ?? params.snapshot.requiresUserStop,
+    contractKind: params.contract?.kind ?? params.snapshot.contractKind,
     now: params.now,
   });
 
@@ -1900,8 +1890,6 @@ export function toOperatorSummary(params: {
     cycleCount: params.snapshot.cycleCount,
     contractKind: params.snapshot.contractKind,
     contractDomain: params.contract?.domain ?? "generic",
-    requiresUserStop:
-      params.contract?.requiresUserStop ?? params.snapshot.requiresUserStop,
     pendingSignals: params.snapshot.pendingSignals,
     watchCount: params.snapshot.watchCount,
     fenceToken: params.snapshot.fenceToken,

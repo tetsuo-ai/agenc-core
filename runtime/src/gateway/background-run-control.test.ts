@@ -46,7 +46,6 @@ function makeRecentSnapshot(
     objective: "Monitor the process.",
     state: "completed",
     contractKind: "until_condition",
-    requiresUserStop: false,
     cycleCount: 4,
     createdAt: 1_000,
     updatedAt: 12_000,

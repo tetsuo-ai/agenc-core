@@ -130,7 +130,7 @@ describe("applyZeroToolCompletionGuard", () => {
   });
 });
 
-describe("contract requiresUserStop defaults", () => {
+describe("contract kind parsing defaults", () => {
   const plannedContractJson = (overrides: Record<string, unknown> = {}) =>
     JSON.stringify({
       domain: "workspace",
@@ -140,45 +140,41 @@ describe("contract requiresUserStop defaults", () => {
       blockedCriteria: ["missing inputs"],
       nextCheckMs: 5_000,
       heartbeatMs: 10_000,
-      requiresUserStop: false,
       ...overrides,
     });
 
-  it("parseContract: honors the planner-set boolean verbatim", () => {
-    const withFalse = parseContract(
-      plannedContractJson({ requiresUserStop: false }),
+  it("parseContract: honors the planner-set kind verbatim", () => {
+    const finiteContract = parseContract(
+      plannedContractJson({ kind: "finite" }),
       "Update the README.",
     );
-    expect(withFalse?.requiresUserStop).toBe(false);
+    expect(finiteContract?.kind).toBe("finite");
 
-    const withTrue = parseContract(
-      plannedContractJson({ requiresUserStop: true }),
-      "Update the README.",
+    const untilStoppedContract = parseContract(
+      plannedContractJson({ kind: "until_stopped" }),
+      "Watch forever.",
     );
-    expect(withTrue?.requiresUserStop).toBe(true);
+    expect(untilStoppedContract?.kind).toBe("until_stopped");
   });
 
-  it("parseContract: defaults to kind === 'until_stopped' when the planner omits the boolean", () => {
+  it("parseContract: silently ignores a stray requiresUserStop field on legacy input", () => {
     const raw = JSON.parse(plannedContractJson()) as Record<string, unknown>;
-    delete raw.requiresUserStop;
-    const finiteContract = parseContract(JSON.stringify(raw), "Update README.");
-    expect(finiteContract?.requiresUserStop).toBe(false);
-
-    raw.kind = "until_stopped";
-    const untilStoppedContract = parseContract(JSON.stringify(raw), "Watch it.");
-    expect(untilStoppedContract?.requiresUserStop).toBe(true);
+    raw.requiresUserStop = true;
+    const contract = parseContract(JSON.stringify(raw), "Update README.");
+    expect(contract).toBeDefined();
+    expect((contract as Record<string, unknown> | undefined)?.requiresUserStop).toBeUndefined();
   });
 
-  it("buildFallbackContract: only sets requiresUserStop=true when UNTIL_STOP_RE matches", () => {
-    expect(buildFallbackContract("Run npm test").requiresUserStop).toBe(false);
+  it("buildFallbackContract: infers 'until_stopped' kind only when UNTIL_STOP_RE matches", () => {
+    expect(buildFallbackContract("Run npm test").kind).toBe("finite");
     expect(
-      buildFallbackContract("Keep watching this until I say stop").requiresUserStop,
-    ).toBe(true);
-    // Exhaustive-intent phrasing is no longer special-cased — matches
-    // reference-runtime behavior where only an explicit user-stop
-    // directive flips the flag.
+      buildFallbackContract("Keep watching this until I say stop").kind,
+    ).toBe("until_stopped");
+    // Exhaustive-intent phrasing ("in full") is not special-cased —
+    // matches reference-runtime behavior where only an explicit
+    // user-stop directive promotes the run kind.
     expect(
-      buildFallbackContract("Implement @PLAN.md in full").requiresUserStop,
-    ).toBe(false);
+      buildFallbackContract("Implement @PLAN.md in full").kind,
+    ).toBe("finite");
   });
 });

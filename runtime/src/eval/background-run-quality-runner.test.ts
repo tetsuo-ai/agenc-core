@@ -73,7 +73,7 @@ describe("background-run-quality runner", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"domain":"generic","kind":"until_stopped","successCriteria":["Keep making progress until stopped."],"completionCriteria":["Receive a stop request."],"blockedCriteria":["Runtime unavailable."],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":true}',
+            '{"domain":"generic","kind":"until_stopped","successCriteria":["Keep making progress until stopped."],"completionCriteria":["Receive a stop request."],"blockedCriteria":["Runtime unavailable."],"nextCheckMs":4000,"heartbeatMs":12000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "background-run-soak-test",

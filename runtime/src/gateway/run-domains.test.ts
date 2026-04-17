@@ -27,7 +27,6 @@ function makeRun(
       completionCriteria: ["Observe the success condition."],
       blockedCriteria: ["Missing required access."],
       nextCheckMs: 4_000,
-      requiresUserStop: false,
       managedProcessPolicy: { mode: "none" },
     },
     approvalState: { status: "none" },
@@ -90,7 +89,6 @@ describe("run-domains", () => {
         completionCriteria: ["Observe the report download completing."],
         blockedCriteria: ["Browser automation fails."],
         nextCheckMs: 4_000,
-        requiresUserStop: false,
       },
       pendingSignals: [
         {
@@ -154,7 +152,6 @@ describe("run-domains", () => {
         completionCriteria: ["Verify the test command succeeds."],
         blockedCriteria: ["Workspace tooling is missing."],
         nextCheckMs: 4_000,
-        requiresUserStop: false,
       },
       pendingSignals: [
         {
@@ -189,7 +186,6 @@ describe("run-domains", () => {
         completionCriteria: ["Verify the command succeeds in the workspace."],
         blockedCriteria: ["Workspace tooling is missing."],
         nextCheckMs: 4_000,
-        requiresUserStop: false,
       },
     });
     const toolHandler = async (name: string, args: Record<string, unknown>) => {
@@ -225,7 +221,6 @@ describe("run-domains", () => {
         completionCriteria: ["Persist the report to disk."],
         blockedCriteria: ["Research tools fail."],
         nextCheckMs: 4_000,
-        requiresUserStop: false,
       },
       pendingSignals: [
         {
@@ -285,7 +280,6 @@ describe("run-domains", () => {
         completionCriteria: ["Receive a completion event from the remote server."],
         blockedCriteria: ["Remote MCP job fails."],
         nextCheckMs: 4_000,
-        requiresUserStop: false,
       },
       pendingSignals: [
         {
@@ -320,7 +314,6 @@ describe("run-domains", () => {
         completionCriteria: ["Receive a completion event from the remote session handle."],
         blockedCriteria: ["Remote session fails."],
         nextCheckMs: 4_000,
-        requiresUserStop: false,
       },
       pendingSignals: [
         {

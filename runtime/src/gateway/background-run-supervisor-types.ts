@@ -392,7 +392,6 @@ export function toRecentSnapshot(
     policyScope: run.policyScope,
     state: run.state,
     contractKind: run.contract.kind,
-    requiresUserStop: run.contract.requiresUserStop,
     cycleCount: run.cycleCount,
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,

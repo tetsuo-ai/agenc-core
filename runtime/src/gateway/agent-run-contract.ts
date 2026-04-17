@@ -77,7 +77,6 @@ export interface AgentRunContract {
   readonly blockedCriteria: readonly string[];
   readonly nextCheckMs: number;
   readonly heartbeatMs?: number;
-  readonly requiresUserStop: boolean;
   readonly managedProcessPolicy?: AgentRunManagedProcessPolicy;
 }
 
@@ -212,9 +211,6 @@ export function assertValidAgentRunContract(
   ) {
     throw new Error(`${context}: heartbeatMs must be a positive finite number`);
   }
-  if (typeof contract.requiresUserStop !== "boolean") {
-    throw new Error(`${context}: requiresUserStop must be a boolean`);
-  }
   if (contract.managedProcessPolicy) {
     if (!isAgentManagedProcessPolicyMode(contract.managedProcessPolicy.mode)) {
       throw new Error(`${context}: managedProcessPolicy.mode is invalid`);
@@ -245,7 +241,6 @@ export function inferAgentRunDomain(params: {
   readonly successCriteria?: readonly string[];
   readonly completionCriteria?: readonly string[];
   readonly blockedCriteria?: readonly string[];
-  readonly requiresUserStop?: boolean;
   readonly managedProcessPolicy?: AgentRunManagedProcessPolicy;
 }): AgentRunDomain {
   if (params.managedProcessPolicy && params.managedProcessPolicy.mode !== "none") {
@@ -305,10 +300,6 @@ export function inferAgentRunDomain(params: {
     )
   ) {
     return "remote_session";
-  }
-
-  if (params.requiresUserStop) {
-    return "generic";
   }
 
   return "generic";

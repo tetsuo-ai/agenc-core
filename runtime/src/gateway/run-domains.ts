@@ -246,7 +246,7 @@ function criteriaCorpus(run: RunDomainRun): string {
 }
 
 function allowsDeterministicCompletion(run: RunDomainRun): boolean {
-  return run.contract.kind !== "until_stopped" && !run.contract.requiresUserStop;
+  return run.contract.kind !== "until_stopped";
 }
 
 

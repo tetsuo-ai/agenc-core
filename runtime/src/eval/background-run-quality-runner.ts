@@ -217,7 +217,7 @@ async function runCompletionScenario(
       },
     ]) as any,
     supervisorLlm: createScriptedSupervisorLlm([
-      '{"domain":"managed_process","kind":"until_condition","successCriteria":["Watch the process until it exits."],"completionCriteria":["Observe the managed process exit."],"blockedCriteria":["Managed process tooling unavailable."],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":false,"managedProcessPolicy":{"mode":"until_exit"}}',
+      '{"domain":"managed_process","kind":"until_condition","successCriteria":["Watch the process until it exits."],"completionCriteria":["Observe the managed process exit."],"blockedCriteria":["Managed process tooling unavailable."],"nextCheckMs":4000,"heartbeatMs":12000,"managedProcessPolicy":{"mode":"until_exit"}}',
       '{"state":"working","userUpdate":"Watcher is running.","internalSummary":"verified running","nextCheckMs":4000,"shouldNotifyUser":true}',
       '{"summary":"Watcher is running until exit is observed.","verifiedFacts":["Watcher is running."],"openLoops":["Wait for the managed process to exit."],"nextFocus":"Observe the exit signal."}',
     ]),
@@ -276,7 +276,7 @@ async function runBlockedScenario(
       makeActorResult("Need approval.", 9),
     ]) as any,
     supervisorLlm: createScriptedSupervisorLlm([
-      '{"domain":"generic","kind":"finite","successCriteria":["Complete the task."],"completionCriteria":["Observe success."],"blockedCriteria":["Operator input required."],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":false}',
+      '{"domain":"generic","kind":"finite","successCriteria":["Complete the task."],"completionCriteria":["Observe success."],"blockedCriteria":["Operator input required."],"nextCheckMs":4000,"heartbeatMs":12000}',
       '{"state":"blocked","userUpdate":"Need operator input before I can continue.","internalSummary":"approval required","shouldNotifyUser":true}',
       '{"summary":"Run is blocked on operator input.","verifiedFacts":[],"openLoops":["Wait for operator input."],"nextFocus":"Pause."}',
     ]),
@@ -326,7 +326,7 @@ async function runStopScenario(
       makeActorResult("Still running.", 6),
     ]) as any,
     supervisorLlm: createScriptedSupervisorLlm([
-      '{"domain":"generic","kind":"until_stopped","successCriteria":["Keep running until stopped."],"completionCriteria":["User cancels the run."],"blockedCriteria":["Runtime unavailable."],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":true}',
+      '{"domain":"generic","kind":"until_stopped","successCriteria":["Keep running until stopped."],"completionCriteria":["User cancels the run."],"blockedCriteria":["Runtime unavailable."],"nextCheckMs":4000,"heartbeatMs":12000}',
       '{"state":"working","userUpdate":"Still running.","internalSummary":"background task active","nextCheckMs":4000,"shouldNotifyUser":true}',
       '{"summary":"Task is active and waiting for a stop request.","verifiedFacts":["Task started."],"openLoops":["Wait for a stop request."],"nextFocus":"Keep monitoring."}',
     ]),
@@ -395,7 +395,7 @@ async function runRecoveryScenario(
       },
     ]) as any,
     supervisorLlm: createScriptedSupervisorLlm([
-      '{"domain":"managed_process","kind":"until_condition","successCriteria":["Complete after restart."],"completionCriteria":["Observe the managed process exit after recovery."],"blockedCriteria":["Managed process tooling unavailable."],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":false,"managedProcessPolicy":{"mode":"until_exit"}}',
+      '{"domain":"managed_process","kind":"until_condition","successCriteria":["Complete after restart."],"completionCriteria":["Observe the managed process exit after recovery."],"blockedCriteria":["Managed process tooling unavailable."],"nextCheckMs":4000,"heartbeatMs":12000,"managedProcessPolicy":{"mode":"until_exit"}}',
       '{"state":"working","userUpdate":"Watcher is running before restart.","internalSummary":"waiting for restart recovery","nextCheckMs":4000,"shouldNotifyUser":true}',
       '{"summary":"Task is waiting for a recovery-time exit signal.","verifiedFacts":["Watcher started before restart."],"openLoops":["Wait for recovery signal."],"nextFocus":"Continue after restart."}',
     ]),
@@ -477,7 +477,7 @@ async function runSoakScenario(
       makeActorResult("Completed after extended supervision.", 5),
     ]) as any,
     supervisorLlm: createScriptedSupervisorLlm([
-      '{"domain":"generic","kind":"until_stopped","successCriteria":["Keep making progress until the operator stops the run."],"completionCriteria":["Receive an operator stop request."],"blockedCriteria":["Runtime unavailable."],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":true}',
+      '{"domain":"generic","kind":"until_stopped","successCriteria":["Keep making progress until the operator stops the run."],"completionCriteria":["Receive an operator stop request."],"blockedCriteria":["Runtime unavailable."],"nextCheckMs":4000,"heartbeatMs":12000}',
       '{"state":"working","userUpdate":"Cycle 1 complete.","internalSummary":"cycle 1","nextCheckMs":4000,"shouldNotifyUser":true}',
       '{"summary":"Cycle 1 complete.","verifiedFacts":["Cycle 1 finished."],"openLoops":["Continue the task."],"nextFocus":"Run cycle 2."}',
       '{"state":"working","userUpdate":"Cycle 2 complete.","internalSummary":"cycle 2","nextCheckMs":4000,"shouldNotifyUser":true}',
@@ -577,7 +577,7 @@ async function runProviderStallScenario(
       },
     } as any,
     supervisorLlm: createScriptedSupervisorLlm([
-      '{"domain":"managed_process","kind":"until_condition","successCriteria":["Complete despite a provider stall."],"completionCriteria":["Observe the managed process exit."],"blockedCriteria":["Managed process tooling unavailable."],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":false,"managedProcessPolicy":{"mode":"until_exit"}}',
+      '{"domain":"managed_process","kind":"until_condition","successCriteria":["Complete despite a provider stall."],"completionCriteria":["Observe the managed process exit."],"blockedCriteria":["Managed process tooling unavailable."],"nextCheckMs":4000,"heartbeatMs":12000,"managedProcessPolicy":{"mode":"until_exit"}}',
       '{"state":"working","userUpdate":"Recovered from a provider stall and watcher is running.","internalSummary":"provider stall tolerated","nextCheckMs":4000,"shouldNotifyUser":true}',
       '{"summary":"Provider stall recovered successfully and the watcher is active.","verifiedFacts":["Actor call completed after a delay.","Watcher is running."],"openLoops":["Wait for the managed process exit."],"nextFocus":"Observe the exit signal."}',
     ]),

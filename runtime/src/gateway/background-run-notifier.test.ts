@@ -19,7 +19,6 @@ function makeSummary(overrides: Partial<BackgroundRunOperatorSummary> = {}): Bac
     cycleCount: 1,
     contractKind: "until_condition",
     contractDomain: "managed_process",
-    requiresUserStop: false,
     pendingSignals: 0,
     watchCount: 1,
     fenceToken: 1,

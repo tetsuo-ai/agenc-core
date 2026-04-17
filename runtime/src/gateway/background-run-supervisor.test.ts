@@ -159,7 +159,6 @@ function makePersistedRunRecord(
       blockedCriteria: ["Required runtime evidence is missing."],
       nextCheckMs: 4_000,
       heartbeatMs: 12_000,
-      requiresUserStop: false,
       managedProcessPolicy: { mode: "none" },
       ...contractOverrides,
     },
@@ -225,7 +224,6 @@ function makePersistedRunRecord(
       blockedCriteria: ["Required runtime evidence is missing."],
       nextCheckMs: 4_000,
       heartbeatMs: 12_000,
-      requiresUserStop: false,
       managedProcessPolicy: { mode: "none" },
       ...contractOverrides,
     },
@@ -509,7 +507,6 @@ describe("background-run-supervisor", () => {
           completionCriteria: ["Implementation is complete."],
           blockedCriteria: ["Verification is blocked."],
           nextCheckMs: 1_000,
-          requiresUserStop: false,
         },
       },
     });
@@ -724,7 +721,6 @@ describe("background-run-supervisor", () => {
           completionCriteria: ["Verification passes."],
           blockedCriteria: ["Verification fails."],
           nextCheckMs: 1_000,
-          requiresUserStop: false,
         },
       },
     });
@@ -1006,7 +1002,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"kind":"until_condition","successCriteria":["finish"],"completionCriteria":["verify completion"],"blockedCriteria":["actor failure"],"nextCheckMs":1000,"requiresUserStop":false}',
+            '{"kind":"until_condition","successCriteria":["finish"],"completionCriteria":["verify completion"],"blockedCriteria":["actor failure"],"nextCheckMs":1000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -1475,7 +1471,6 @@ describe("background-run-supervisor", () => {
         blockedCriteria: ["Server exits unexpectedly."],
         nextCheckMs: 4_000,
         heartbeatMs: 12_000,
-        requiresUserStop: true,
         managedProcessPolicy: { mode: "keep_running" },
       },
     });
@@ -1600,7 +1595,6 @@ describe("background-run-supervisor", () => {
         blockedCriteria: ["Process cannot be stopped."],
         nextCheckMs: 4_000,
         heartbeatMs: 12_000,
-        requiresUserStop: true,
         managedProcessPolicy: { mode: "keep_running" },
       },
     });
@@ -2058,7 +2052,7 @@ describe("background-run-supervisor", () => {
           .fn()
           .mockResolvedValueOnce({
             content:
-              '{"kind":"until_stopped","successCriteria":["keep watcher running"],"completionCriteria":["user explicitly stops it"],"blockedCriteria":["missing process controls"],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":true}',
+              '{"kind":"until_stopped","successCriteria":["keep watcher running"],"completionCriteria":["user explicitly stops it"],"blockedCriteria":["missing process controls"],"nextCheckMs":4000,"heartbeatMs":12000}',
             toolCalls: [],
             usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
             model: "supervisor-model",
@@ -2195,7 +2189,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"kind":"until_condition","successCriteria":["verify the file state"],"completionCriteria":["file appears"],"blockedCriteria":["missing filesystem access"],"nextCheckMs":30000,"heartbeatMs":12000,"requiresUserStop":false}',
+            '{"kind":"until_condition","successCriteria":["verify the file state"],"completionCriteria":["file appears"],"blockedCriteria":["missing filesystem access"],"nextCheckMs":30000,"heartbeatMs":12000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -2404,7 +2398,7 @@ describe("background-run-supervisor", () => {
           .fn()
           .mockResolvedValueOnce({
             content:
-              '{"kind":"until_stopped","successCriteria":["keep task running"],"completionCriteria":["user explicitly stops it"],"blockedCriteria":["missing tooling"],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":true}',
+              '{"kind":"until_stopped","successCriteria":["keep task running"],"completionCriteria":["user explicitly stops it"],"blockedCriteria":["missing tooling"],"nextCheckMs":4000,"heartbeatMs":12000}',
             toolCalls: [],
             usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
             model: "supervisor-model",
@@ -2463,7 +2457,7 @@ describe("background-run-supervisor", () => {
           .fn()
           .mockResolvedValueOnce({
             content:
-              '{"kind":"until_stopped","successCriteria":["keep task running"],"completionCriteria":["user explicitly stops it"],"blockedCriteria":["missing tooling"],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":true}',
+              '{"kind":"until_stopped","successCriteria":["keep task running"],"completionCriteria":["user explicitly stops it"],"blockedCriteria":["missing tooling"],"nextCheckMs":4000,"heartbeatMs":12000}',
             toolCalls: [],
             usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
             model: "supervisor-model",
@@ -2530,7 +2524,7 @@ describe("background-run-supervisor", () => {
           .fn()
           .mockResolvedValueOnce({
             content:
-              '{"kind":"until_stopped","successCriteria":["keep task running"],"completionCriteria":["user explicitly stops it"],"blockedCriteria":["missing tooling"],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":true}',
+              '{"kind":"until_stopped","successCriteria":["keep task running"],"completionCriteria":["user explicitly stops it"],"blockedCriteria":["missing tooling"],"nextCheckMs":4000,"heartbeatMs":12000}',
             toolCalls: [],
             usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
             model: "supervisor-model",
@@ -2628,7 +2622,7 @@ describe("background-run-supervisor", () => {
           .fn()
           .mockResolvedValueOnce({
             content:
-              '{"kind":"until_condition","successCriteria":["verify the watcher"],"completionCriteria":["condition becomes true"],"blockedCriteria":["missing process tooling"],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":false}',
+              '{"kind":"until_condition","successCriteria":["verify the watcher"],"completionCriteria":["condition becomes true"],"blockedCriteria":["missing process tooling"],"nextCheckMs":4000,"heartbeatMs":12000}',
             toolCalls: [],
             usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
             model: "supervisor-model",
@@ -2869,7 +2863,7 @@ describe("background-run-supervisor", () => {
             .fn()
             .mockResolvedValueOnce({
               content:
-                '{"kind":"finite","successCriteria":["finish the implementation"],"completionCriteria":["pass the remaining verifier obligations"],"blockedCriteria":["missing runtime evidence"],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":false}',
+                '{"kind":"finite","successCriteria":["finish the implementation"],"completionCriteria":["pass the remaining verifier obligations"],"blockedCriteria":["missing runtime evidence"],"nextCheckMs":4000,"heartbeatMs":12000}',
               toolCalls: [],
               usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
               model: "supervisor-model",
@@ -3113,7 +3107,6 @@ describe("background-run-supervisor", () => {
           blockedCriteria: ["Missing watcher tooling."],
           nextCheckMs: 4_000,
           heartbeatMs: 12_000,
-          requiresUserStop: true,
         },
         state: "working",
         fenceToken: 1,
@@ -3619,7 +3612,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"kind":"until_condition","successCriteria":["continue until approved"],"completionCriteria":["verify the task resumes"],"blockedCriteria":["missing approval token"],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":false}',
+            '{"kind":"until_condition","successCriteria":["continue until approved"],"completionCriteria":["verify the task resumes"],"blockedCriteria":["missing approval token"],"nextCheckMs":4000,"heartbeatMs":12000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -3733,7 +3726,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"kind":"until_condition","successCriteria":["watch the process"],"completionCriteria":["observe the terminal state"],"blockedCriteria":["missing process tooling"],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":false}',
+            '{"kind":"until_condition","successCriteria":["watch the process"],"completionCriteria":["observe the terminal state"],"blockedCriteria":["missing process tooling"],"nextCheckMs":4000,"heartbeatMs":12000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -3846,7 +3839,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"domain":"generic","kind":"until_stopped","successCriteria":["Keep making progress until stopped."],"completionCriteria":["Receive a stop request."],"blockedCriteria":["Runtime unavailable."],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":true}',
+            '{"domain":"generic","kind":"until_stopped","successCriteria":["Keep making progress until stopped."],"completionCriteria":["Receive a stop request."],"blockedCriteria":["Runtime unavailable."],"nextCheckMs":4000,"heartbeatMs":12000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -3981,7 +3974,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"kind":"until_condition","successCriteria":["keep the watcher running"],"completionCriteria":["observe the watcher exit"],"blockedCriteria":["missing process controls"],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":false}',
+            '{"kind":"until_condition","successCriteria":["keep the watcher running"],"completionCriteria":["observe the watcher exit"],"blockedCriteria":["missing process controls"],"nextCheckMs":4000,"heartbeatMs":12000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -4110,7 +4103,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"kind":"until_condition","successCriteria":["keep watching the process"],"completionCriteria":["observe the watcher exit"],"blockedCriteria":["missing process controls"],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":false}',
+            '{"kind":"until_condition","successCriteria":["keep watching the process"],"completionCriteria":["observe the watcher exit"],"blockedCriteria":["missing process controls"],"nextCheckMs":4000,"heartbeatMs":12000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -4240,7 +4233,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"kind":"until_condition","successCriteria":["watch the process"],"completionCriteria":["observe it exit"],"blockedCriteria":["missing process controls"],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":false}',
+            '{"kind":"until_condition","successCriteria":["watch the process"],"completionCriteria":["observe it exit"],"blockedCriteria":["missing process controls"],"nextCheckMs":4000,"heartbeatMs":12000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -4336,7 +4329,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"kind":"until_condition","successCriteria":["capture screenshot evidence"],"completionCriteria":["observe the expected GUI state"],"blockedCriteria":["desktop tooling missing"],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":false}',
+            '{"kind":"until_condition","successCriteria":["capture screenshot evidence"],"completionCriteria":["observe the expected GUI state"],"blockedCriteria":["desktop tooling missing"],"nextCheckMs":4000,"heartbeatMs":12000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -4412,7 +4405,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"kind":"until_condition","successCriteria":["watch the process until it exits"],"completionCriteria":["observe the process exit"],"blockedCriteria":["missing process tooling"],"nextCheckMs":60000,"heartbeatMs":15000,"requiresUserStop":false}',
+            '{"kind":"until_condition","successCriteria":["watch the process until it exits"],"completionCriteria":["observe the process exit"],"blockedCriteria":["missing process tooling"],"nextCheckMs":60000,"heartbeatMs":15000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -4493,7 +4486,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"kind":"until_condition","successCriteria":["watch the process until it exits"],"completionCriteria":["observe the process exit"],"blockedCriteria":["missing process tooling"],"nextCheckMs":4000,"heartbeatMs":15000,"requiresUserStop":false}',
+            '{"kind":"until_condition","successCriteria":["watch the process until it exits"],"completionCriteria":["observe the process exit"],"blockedCriteria":["missing process tooling"],"nextCheckMs":4000,"heartbeatMs":15000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -4584,7 +4577,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"kind":"until_condition","successCriteria":["watch the host process until it exits"],"completionCriteria":["observe the terminal state"],"blockedCriteria":["missing process tooling"],"nextCheckMs":4000,"heartbeatMs":15000,"requiresUserStop":false,"managedProcessPolicy":{"mode":"until_exit"}}',
+            '{"kind":"until_condition","successCriteria":["watch the host process until it exits"],"completionCriteria":["observe the terminal state"],"blockedCriteria":["missing process tooling"],"nextCheckMs":4000,"heartbeatMs":15000,"managedProcessPolicy":{"mode":"until_exit"}}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -4706,7 +4699,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"kind":"until_stopped","successCriteria":["start the typed server handle"],"completionCriteria":["only stop after explicit user stop"],"blockedCriteria":["server handle fails to start"],"nextCheckMs":10000,"heartbeatMs":30000,"requiresUserStop":true,"managedProcessPolicy":{"mode":"keep_running"}}',
+            '{"kind":"until_stopped","successCriteria":["start the typed server handle"],"completionCriteria":["only stop after explicit user stop"],"blockedCriteria":["server handle fails to start"],"nextCheckMs":10000,"heartbeatMs":30000,"managedProcessPolicy":{"mode":"keep_running"}}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -4814,7 +4807,7 @@ describe("background-run-supervisor", () => {
           .fn()
           .mockResolvedValueOnce({
             content:
-              '{"kind":"until_stopped","successCriteria":["start the typed server handle"],"completionCriteria":["only stop after explicit user stop"],"blockedCriteria":["server handle fails to start"],"nextCheckMs":4000,"heartbeatMs":15000,"requiresUserStop":true,"managedProcessPolicy":{"mode":"keep_running"}}',
+              '{"kind":"until_stopped","successCriteria":["start the typed server handle"],"completionCriteria":["only stop after explicit user stop"],"blockedCriteria":["server handle fails to start"],"nextCheckMs":4000,"heartbeatMs":15000,"managedProcessPolicy":{"mode":"keep_running"}}',
             toolCalls: [],
             usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
             model: "supervisor-model",
@@ -4960,7 +4953,7 @@ describe("background-run-supervisor", () => {
           .fn()
           .mockResolvedValueOnce({
             content:
-              '{"kind":"until_stopped","successCriteria":["start the typed server handle"],"completionCriteria":["only stop after explicit user stop"],"blockedCriteria":["server handle fails to start"],"nextCheckMs":4000,"heartbeatMs":15000,"requiresUserStop":true,"managedProcessPolicy":{"mode":"keep_running"}}',
+              '{"kind":"until_stopped","successCriteria":["start the typed server handle"],"completionCriteria":["only stop after explicit user stop"],"blockedCriteria":["server handle fails to start"],"nextCheckMs":4000,"heartbeatMs":15000,"managedProcessPolicy":{"mode":"keep_running"}}',
             toolCalls: [],
             usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
             model: "supervisor-model",
@@ -5047,7 +5040,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"kind":"until_condition","successCriteria":["watch the process"],"completionCriteria":["observe the terminal state"],"blockedCriteria":["missing process tooling"],"nextCheckMs":60000,"heartbeatMs":15000,"requiresUserStop":false,"managedProcessPolicy":{"mode":"restart_on_exit","maxRestarts":3,"restartBackoffMs":2000}}',
+            '{"kind":"until_condition","successCriteria":["watch the process"],"completionCriteria":["observe the terminal state"],"blockedCriteria":["missing process tooling"],"nextCheckMs":60000,"heartbeatMs":15000,"managedProcessPolicy":{"mode":"restart_on_exit","maxRestarts":3,"restartBackoffMs":2000}}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -5164,7 +5157,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"kind":"until_condition","successCriteria":["watch the host process"],"completionCriteria":["observe the terminal state"],"blockedCriteria":["missing process tooling"],"nextCheckMs":60000,"heartbeatMs":15000,"requiresUserStop":false,"managedProcessPolicy":{"mode":"restart_on_exit","maxRestarts":3,"restartBackoffMs":2000}}',
+            '{"kind":"until_condition","successCriteria":["watch the host process"],"completionCriteria":["observe the terminal state"],"blockedCriteria":["missing process tooling"],"nextCheckMs":60000,"heartbeatMs":15000,"managedProcessPolicy":{"mode":"restart_on_exit","maxRestarts":3,"restartBackoffMs":2000}}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -5278,7 +5271,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"kind":"until_condition","successCriteria":["watch the process until it exits"],"completionCriteria":["observe the process exit"],"blockedCriteria":["missing process tooling"],"nextCheckMs":4000,"heartbeatMs":15000,"requiresUserStop":false,"managedProcessPolicy":{"mode":"until_exit"}}',
+            '{"kind":"until_condition","successCriteria":["watch the process until it exits"],"completionCriteria":["observe the process exit"],"blockedCriteria":["missing process tooling"],"nextCheckMs":4000,"heartbeatMs":15000,"managedProcessPolicy":{"mode":"until_exit"}}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -5372,7 +5365,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"kind":"until_condition","successCriteria":["watch the process until it exits"],"completionCriteria":["observe the process exit"],"blockedCriteria":["missing process tooling"],"nextCheckMs":4000,"heartbeatMs":15000,"requiresUserStop":false,"managedProcessPolicy":{"mode":"until_exit"}}',
+            '{"kind":"until_condition","successCriteria":["watch the process until it exits"],"completionCriteria":["observe the process exit"],"blockedCriteria":["missing process tooling"],"nextCheckMs":4000,"heartbeatMs":15000,"managedProcessPolicy":{"mode":"until_exit"}}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -5438,7 +5431,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"domain":"browser","kind":"finite","successCriteria":["Download the report artifact."],"completionCriteria":["Observe the report download completing."],"blockedCriteria":["Browser automation fails."],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":false}',
+            '{"domain":"browser","kind":"finite","successCriteria":["Download the report artifact."],"completionCriteria":["Observe the report download completing."],"blockedCriteria":["Browser automation fails."],"nextCheckMs":4000,"heartbeatMs":12000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -5510,7 +5503,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"domain":"generic","kind":"finite","successCriteria":["Execute the workspace tests."],"completionCriteria":["Verify the test command succeeds."],"blockedCriteria":["Workspace tooling is missing."],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":false}',
+            '{"domain":"generic","kind":"finite","successCriteria":["Execute the workspace tests."],"completionCriteria":["Verify the test command succeeds."],"blockedCriteria":["Workspace tooling is missing."],"nextCheckMs":4000,"heartbeatMs":12000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -5570,7 +5563,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"domain":"generic","kind":"until_condition","successCriteria":["Execute the workspace command successfully."],"completionCriteria":["Verify the command succeeds in the workspace."],"blockedCriteria":["Workspace tooling is missing."],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":false}',
+            '{"domain":"generic","kind":"until_condition","successCriteria":["Execute the workspace command successfully."],"completionCriteria":["Verify the command succeeds in the workspace."],"blockedCriteria":["Workspace tooling is missing."],"nextCheckMs":4000,"heartbeatMs":12000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -5625,7 +5618,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"domain":"workspace","kind":"finite","successCriteria":["Execute the workspace validation successfully."],"completionCriteria":["Verify the workspace command succeeds."],"blockedCriteria":["Workspace tooling is missing."],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":false}',
+            '{"domain":"workspace","kind":"finite","successCriteria":["Execute the workspace validation successfully."],"completionCriteria":["Verify the workspace command succeeds."],"blockedCriteria":["Workspace tooling is missing."],"nextCheckMs":4000,"heartbeatMs":12000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -5702,7 +5695,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"domain":"browser","kind":"finite","successCriteria":["Download the report artifact."],"completionCriteria":["Observe the report download completing."],"blockedCriteria":["Browser automation fails."],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":false}',
+            '{"domain":"browser","kind":"finite","successCriteria":["Download the report artifact."],"completionCriteria":["Observe the report download completing."],"blockedCriteria":["Browser automation fails."],"nextCheckMs":4000,"heartbeatMs":12000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -5787,7 +5780,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"domain":"browser","kind":"until_condition","successCriteria":["Open the browser page."],"completionCriteria":["Observe the page reach the requested state."],"blockedCriteria":["Browser automation fails."],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":false}',
+            '{"domain":"browser","kind":"until_condition","successCriteria":["Open the browser page."],"completionCriteria":["Observe the page reach the requested state."],"blockedCriteria":["Browser automation fails."],"nextCheckMs":4000,"heartbeatMs":12000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -5856,7 +5849,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"domain":"remote_mcp","kind":"finite","successCriteria":["Observe the remote MCP job complete."],"completionCriteria":["Receive a completion event from the remote server."],"blockedCriteria":["Remote MCP job fails."],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":false}',
+            '{"domain":"remote_mcp","kind":"finite","successCriteria":["Observe the remote MCP job complete."],"completionCriteria":["Receive a completion event from the remote server."],"blockedCriteria":["Remote MCP job fails."],"nextCheckMs":4000,"heartbeatMs":12000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -5960,7 +5953,7 @@ describe("background-run-supervisor", () => {
         name: "supervisor",
         chat: vi.fn(async () => ({
           content:
-            '{"domain":"generic","kind":"finite","successCriteria":["Complete the task."],"completionCriteria":["Observe success."],"blockedCriteria":["Runtime unavailable."],"nextCheckMs":4000,"heartbeatMs":12000,"requiresUserStop":false}',
+            '{"domain":"generic","kind":"finite","successCriteria":["Complete the task."],"completionCriteria":["Observe success."],"blockedCriteria":["Runtime unavailable."],"nextCheckMs":4000,"heartbeatMs":12000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -6015,7 +6008,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"kind":"until_condition","successCriteria":["watch the process until it exits"],"completionCriteria":["observe the process exit"],"blockedCriteria":["missing process tooling"],"nextCheckMs":60000,"heartbeatMs":15000,"requiresUserStop":false,"managedProcessPolicy":{"mode":"until_exit"}}',
+            '{"kind":"until_condition","successCriteria":["watch the process until it exits"],"completionCriteria":["observe the process exit"],"blockedCriteria":["missing process tooling"],"nextCheckMs":60000,"heartbeatMs":15000,"managedProcessPolicy":{"mode":"until_exit"}}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -6085,7 +6078,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"kind":"until_condition","successCriteria":["watch the process until it exits"],"completionCriteria":["observe the process exit"],"blockedCriteria":["missing process tooling"],"nextCheckMs":60000,"heartbeatMs":15000,"requiresUserStop":false}',
+            '{"kind":"until_condition","successCriteria":["watch the process until it exits"],"completionCriteria":["observe the process exit"],"blockedCriteria":["missing process tooling"],"nextCheckMs":60000,"heartbeatMs":15000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -6191,7 +6184,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"kind":"until_condition","successCriteria":["monitor the process and react to external events"],"completionCriteria":["observe the requested terminal state"],"blockedCriteria":["missing process tooling"],"nextCheckMs":60000,"heartbeatMs":15000,"requiresUserStop":false}',
+            '{"kind":"until_condition","successCriteria":["monitor the process and react to external events"],"completionCriteria":["observe the requested terminal state"],"blockedCriteria":["missing process tooling"],"nextCheckMs":60000,"heartbeatMs":15000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -6300,7 +6293,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"domain":"generic","kind":"finite","successCriteria":["Keep checking."],"completionCriteria":["Observe deterministic completion."],"blockedCriteria":["Runtime unavailable."],"nextCheckMs":2000,"heartbeatMs":12000,"requiresUserStop":false}',
+            '{"domain":"generic","kind":"finite","successCriteria":["Keep checking."],"completionCriteria":["Observe deterministic completion."],"blockedCriteria":["Runtime unavailable."],"nextCheckMs":2000,"heartbeatMs":12000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -6366,7 +6359,7 @@ describe("background-run-supervisor", () => {
         .fn()
         .mockResolvedValueOnce({
           content:
-            '{"domain":"generic","kind":"finite","successCriteria":["Keep checking."],"completionCriteria":["Observe deterministic completion."],"blockedCriteria":["Runtime unavailable."],"nextCheckMs":2000,"heartbeatMs":12000,"requiresUserStop":false}',
+            '{"domain":"generic","kind":"finite","successCriteria":["Keep checking."],"completionCriteria":["Observe deterministic completion."],"blockedCriteria":["Runtime unavailable."],"nextCheckMs":2000,"heartbeatMs":12000}',
           toolCalls: [],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
           model: "supervisor-model",
@@ -6468,7 +6461,6 @@ describe("background-run-supervisor", () => {
           blockedCriteria: ["Runtime unavailable."],
           nextCheckMs: 4_000,
           heartbeatMs: 12_000,
-          requiresUserStop: false,
           managedProcessPolicy: { mode: "none" },
         },
         observedTargets: [
