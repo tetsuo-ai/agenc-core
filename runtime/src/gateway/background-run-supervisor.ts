@@ -4805,6 +4805,14 @@ export class BackgroundRunSupervisor {
       });
     }
     const latencyMs = Math.max(0, run.updatedAt - run.createdAt);
+    const durationSec = Math.max(1, Math.round(latencyMs / 1000));
+    const completionDetail = decision.userUpdate || run.lastUserUpdate || "";
+    this.onStatus?.(run.sessionId, {
+      phase: "idle",
+      detail: completionDetail.length > 0
+        ? `Background run ${decision.state} (${run.cycleCount} cycles, ${durationSec}s). ${completionDetail}`
+        : `Background run ${decision.state} (${run.cycleCount} cycles, ${durationSec}s)`,
+    });
     this.recordRunTelemetry(
       TELEMETRY_METRIC_NAMES.BACKGROUND_RUN_LATENCY_MS,
       latencyMs,
