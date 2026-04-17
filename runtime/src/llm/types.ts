@@ -177,32 +177,6 @@ export interface LLMCompactionDiagnostics {
   readonly fallbackReason?: LLMCompactionFallbackReason;
 }
 
-/**
- * Shared provider-managed stateful continuation controls.
- *
- * Providers may fully support these controls, ignore them with explicit
- * unsupported diagnostics, or selectively support subsets such as
- * `previous_response_id` without provider-managed state items.
- */
-export interface LLMStatefulResponsesConfig {
-  /** Enable session-scoped continuation using provider-managed response IDs. */
-  readonly enabled?: boolean;
-  /** Explicit `store` value sent to provider calls while stateful mode is enabled. */
-  readonly store?: boolean;
-  /** Retry once statelessly when continuation anchors are missing/mismatched/stale. */
-  readonly fallbackToStateless?: boolean;
-  /** Number of recent normalized turns used for reconciliation hashing. */
-  readonly reconciliationWindow?: number;
-  /** Optional runtime/provider continuation-state controls. */
-  readonly compaction?: {
-    /** Enable continuation-state compaction behavior when supported. */
-    readonly enabled?: boolean;
-    /** Rendered-token threshold for local/provider compaction policy. */
-    readonly compactThreshold?: number;
-    /** Retry once without the compaction hint if the provider rejects it. */
-    readonly fallbackOnUnsupported?: boolean;
-  };
-}
 
 
 export type LLMContextWindowSource =
