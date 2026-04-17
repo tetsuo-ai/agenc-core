@@ -32,7 +32,6 @@
 import { collectContextSections } from "./chat-executor-context-injection.js";
 import { compactHistory } from "./chat-executor-history-compaction.js";
 import { runPostCompactCleanup } from "./compact/post-compact-cleanup.js";
-import { renderArtifactContextPrompt } from "./context-compaction.js";
 import {
   pushMessage,
   setStopReason,
@@ -220,11 +219,10 @@ export async function initializeExecutionContext(
 
   // Pre-check token budget — attempt compaction instead of hard fail
   let compacted = false;
-  let compactedArtifactContext = params.stateful?.artifactContext;
   const preflightCompactionState = buildCurrentContextUsageSnapshot({
     messages: buildCurrentApiView({
       baseSystemPrompt: interactivePromptEnvelope.baseSystemPrompt,
-      artifactContext: params.stateful?.artifactContext,
+      artifactContext: undefined,
       summaryText: params.interactiveContext?.summaryText,
       history,
     }),
@@ -242,13 +240,9 @@ export async function initializeExecutionContext(
         deps.historyCompaction,
         {
           ...(params.trace ? { trace: params.trace } : {}),
-          ...(params.stateful?.artifactContext
-            ? { existingArtifactContext: params.stateful.artifactContext }
-            : {}),
         },
       );
       history = compactedResult.history;
-      compactedArtifactContext = compactedResult.artifactContext;
       helpers.resetSessionTokens(sessionId);
       compacted = true;
       runPostCompactCleanup(sessionId);
@@ -282,24 +276,6 @@ export async function initializeExecutionContext(
       toolHandler: params.toolHandler ?? deps.toolHandler,
       streamCallback: params.onStreamChunk ?? deps.onStreamChunk,
       toolRouting: params.toolRouting,
-      stateful:
-        params.stateful ||
-        compactedArtifactContext ||
-        interactivePromptSnapshot?.sessionStartContextMessages?.length
-          ? {
-              ...params.stateful,
-              ...(compacted ? { historyCompacted: true } : {}),
-              ...(compactedArtifactContext
-                ? { artifactContext: compactedArtifactContext }
-                : {}),
-              ...(interactivePromptSnapshot?.sessionStartContextMessages?.length
-                ? {
-                    sessionStartContextMessages:
-                      interactivePromptSnapshot.sessionStartContextMessages,
-                  }
-                : {}),
-            }
-          : undefined,
       trace: params.trace,
       requiredToolEvidence: resolvedRequiredToolEvidence,
       initialRoutedToolNames,
@@ -338,10 +314,10 @@ export async function initializeExecutionContext(
   const systemSections: PromptSection[] = [...ctx.promptEnvelope.systemSections];
   const userSections: PromptSection[] = [...ctx.promptEnvelope.userSections];
   if (
-    ctx.stateful?.sessionStartContextMessages &&
-    ctx.stateful.sessionStartContextMessages.length > 0
+    interactivePromptSnapshot?.sessionStartContextMessages &&
+    interactivePromptSnapshot.sessionStartContextMessages.length > 0
   ) {
-    for (const message of ctx.stateful.sessionStartContextMessages) {
+    for (const message of interactivePromptSnapshot.sessionStartContextMessages) {
       if (typeof message.content !== "string" || message.content.trim().length === 0) {
         continue;
       }
@@ -350,12 +326,6 @@ export async function initializeExecutionContext(
         content: message.content.trim(),
       });
     }
-  }
-  if (ctx.stateful?.artifactContext) {
-    systemSections.push({
-      source: "artifact_context",
-      content: renderArtifactContextPrompt(ctx.stateful.artifactContext),
-    });
   }
   if (
     typeof params.interactiveContext?.summaryText === "string" &&

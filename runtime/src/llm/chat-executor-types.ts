@@ -16,9 +16,6 @@ import type {
   LLMStructuredOutputResult,
   LLMUsage,
   LLMRequestMetrics,
-  LLMStatefulDiagnostics,
-  LLMStatefulFallbackReason,
-  LLMStatefulResumeAnchor,
   StreamProgressCallback,
   ToolHandler,
   LLMProvider,
@@ -268,13 +265,6 @@ export interface ChatExecuteParams {
     /** Optional execution envelope used to bound top-level tool access for explicit artifact tasks. */
     readonly executionEnvelope?: ExecutionEnvelope;
   };
-  /** Optional provider-managed continuation hints restored by the runtime. */
-  readonly stateful?: {
-    readonly resumeAnchor?: LLMStatefulResumeAnchor;
-    readonly historyCompacted?: boolean;
-    readonly artifactContext?: ArtifactCompactionState;
-    readonly sessionStartContextMessages?: readonly LLMMessage[];
-  };
   /** Optional provider-payload tracing hooks for incident diagnostics. */
   readonly trace?: {
     readonly includeProviderPayloads?: boolean;
@@ -313,8 +303,6 @@ export interface ChatCallUsageRecord {
   readonly providerRequestMetrics?: LLMRequestMetrics;
   /** Prompt-budget diagnostics (sections dropped/truncated, caps, and totals). */
   readonly budgetDiagnostics?: PromptBudgetDiagnostics;
-  /** Stateful continuation diagnostics for this provider call (when supported). */
-  readonly statefulDiagnostics?: LLMStatefulDiagnostics;
   /** Provider-native compaction diagnostics for this provider call (when supported). */
   readonly compactionDiagnostics?: LLMCompactionDiagnostics;
 }
@@ -339,15 +327,6 @@ export interface PlannerDiagnostic {
   readonly code: string;
   readonly message: string;
   readonly details?: Readonly<Record<string, string | number | boolean>>;
-}
-
-/** Aggregated stateful continuation counters for one execute() invocation. */
-export interface ChatStatefulSummary {
-  readonly enabled: boolean;
-  readonly attemptedCalls: number;
-  readonly continuedCalls: number;
-  readonly fallbackCalls: number;
-  readonly fallbackReasons: Readonly<Record<LLMStatefulFallbackReason, number>>;
 }
 
 /** Aggregated tool-routing diagnostics for one execute() invocation. */
@@ -383,8 +362,6 @@ export interface ChatExecutorResult {
   readonly durationMs: number;
   /** True if conversation history was compacted during this execution. */
   readonly compacted: boolean;
-  /** Aggregated stateful continuation diagnostics for this execution. */
-  readonly statefulSummary?: ChatStatefulSummary;
   /** Per-turn dynamic tool-routing diagnostics for this execution. */
   readonly toolRoutingSummary?: ChatToolRoutingSummary;
   /** Discovery-driven deferred-tool state captured for this execution. */
@@ -659,7 +636,6 @@ export interface ExecutionContext {
   readonly hasHistory: boolean;
   readonly plannerDecision: PlannerDecision;
   readonly toolRouting?: ChatExecuteParams["toolRouting"];
-  readonly stateful?: ChatExecuteParams["stateful"];
   readonly requiredToolEvidence?: {
     readonly maxCorrectionAttempts: number;
     readonly maxCorrectionAttemptsExplicit: boolean;
@@ -746,7 +722,6 @@ interface BuildExecutionContextParams {
   readonly toolHandler?: ToolHandler;
   readonly streamCallback?: StreamProgressCallback;
   readonly toolRouting?: ChatExecuteParams["toolRouting"];
-  readonly stateful?: ChatExecuteParams["stateful"];
   readonly requiredToolEvidence?: ChatExecuteParams["requiredToolEvidence"];
   readonly trace?: ChatExecuteParams["trace"];
   readonly initialRoutedToolNames: readonly string[];
@@ -814,7 +789,6 @@ export function buildDefaultExecutionContext(
     hasHistory,
     plannerDecision: params.plannerDecision,
     toolRouting: params.toolRouting,
-    stateful: params.stateful,
     trace: params.trace,
     defaultRunClass: config.defaultRunClass,
     requiredToolEvidence: params.requiredToolEvidence
@@ -860,7 +834,7 @@ export function buildDefaultExecutionContext(
     finalContent: "",
     lastModelStreamedContent: "",
     compacted: params.compacted,
-    compactedArtifactContext: params.stateful?.artifactContext,
+    compactedArtifactContext: undefined,
     stopReason: "completed",
     completionState: "completed",
     runtimeContractSnapshot: createRuntimeContractSnapshot(

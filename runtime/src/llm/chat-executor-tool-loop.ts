@@ -7,7 +7,6 @@
 import type {
   LLMResponse,
   StreamProgressCallback,
-  LLMStatefulResumeAnchor,
   LLMStructuredOutputRequest,
   LLMToolChoice,
 } from "./types.js";
@@ -134,9 +133,7 @@ export interface ToolLoopCallbacks {
       callMessages: readonly import("./types.js").LLMMessage[];
       callSections?: readonly PromptBudgetSection[];
       onStreamChunk?: StreamProgressCallback;
-      statefulSessionId?: string;
-      statefulResumeAnchor?: LLMStatefulResumeAnchor;
-      statefulHistoryCompacted?: boolean;
+      promptCacheKey?: string;
       routedToolNames?: readonly string[];
       persistRoutedToolNames?: boolean;
       toolChoice?: LLMToolChoice;
@@ -292,9 +289,7 @@ export async function executeToolCallLoop(
       callSections: ctx.messageSections,
       onStreamChunk: ctx.activeStreamCallback,
       structuredOutput: ctx.structuredOutput,
-      statefulSessionId: ctx.sessionId,
-      statefulResumeAnchor: ctx.stateful?.resumeAnchor,
-      statefulHistoryCompacted: ctx.stateful?.historyCompacted,
+      promptCacheKey: ctx.sessionId,
       preparationDiagnostics: {
         plannerReason: ctx.plannerDecision.reason,
         plannerShouldPlan: ctx.plannerDecision.shouldPlan,
@@ -605,9 +600,7 @@ export async function executeToolCallLoop(
         callSections: ctx.messageSections,
         onStreamChunk: ctx.activeStreamCallback,
         structuredOutput: ctx.structuredOutput,
-        statefulSessionId: ctx.sessionId,
-        statefulResumeAnchor: ctx.stateful?.resumeAnchor,
-        statefulHistoryCompacted: ctx.stateful?.historyCompacted,
+        promptCacheKey: ctx.sessionId,
         ...(shouldForceFailureRecovery ? { toolChoice: "none" as const } : {}),
         budgetReason:
           "Max model recalls exceeded while following up after tool calls",

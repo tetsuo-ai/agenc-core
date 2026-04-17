@@ -1,10 +1,8 @@
 import type {
-  ChatExecuteParams,
   ChatExecutorResult,
 } from "../llm/chat-executor-types.js";
 import type { LLMPipelineStopReason } from "../llm/policy.js";
 import type { ActiveTaskContext } from "../llm/turn-execution-contract-types.js";
-import type { LLMStatefulResumeAnchor } from "../llm/types.js";
 import type { MemoryBackend } from "../memory/types.js";
 import { repairToolTurnSequence } from "../llm/tool-turn-validator.js";
 import type {
@@ -37,8 +35,6 @@ import {
   SESSION_RUNTIME_CONTRACT_STATUS_SNAPSHOT_METADATA_KEY,
   SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY,
   SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY,
-  SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY,
-  SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY,
   SESSION_STATEFUL_SESSION_START_CONTEXT_MESSAGES_METADATA_KEY,
   SESSION_VERIFICATION_SURFACE_STATE_METADATA_KEY,
   SESSION_WORKFLOW_STATE_METADATA_KEY,
@@ -93,8 +89,6 @@ export interface PersistedSessionReplaySnapshot {
   readonly shellProfile?: SessionShellProfile;
   readonly workflowState?: SessionWorkflowState;
   readonly interactiveContextState?: InteractiveContextState;
-  readonly statefulResumeAnchor?: LLMStatefulResumeAnchor;
-  readonly statefulHistoryCompacted?: boolean;
   readonly sessionStartContextMessages?: readonly LLMMessage[];
   readonly artifactSnapshotId?: string;
   readonly artifactSessionId?: string;
@@ -127,10 +121,6 @@ export type PersistedSessionRuntimeState = PersistedSessionReplayState;
 /** @deprecated Use PersistedSessionReplayState. */
 export type PersistedWebSessionRuntimeState = PersistedSessionReplayState;
 
-const SESSION_STATEFUL_LINEAGE_PHASES = new Set([
-  "initial",
-  "tool_followup",
-]);
 const MAX_STATUS_SNAPSHOT_TASKS = 20;
 const MAX_STATUS_SNAPSHOT_WORKERS = 10;
 const MAX_STATUS_SNAPSHOT_MILESTONES = 20;
@@ -223,33 +213,6 @@ function normalizeRuntimeContractStatusSnapshot(
       Number.isFinite(snapshot.omittedMilestoneCount)
         ? snapshot.omittedMilestoneCount
         : 0,
-  };
-}
-
-function isStatefulResumeAnchor(
-  value: unknown,
-): value is LLMStatefulResumeAnchor {
-  if (typeof value !== "object" || value === null) return false;
-  const candidate = value as Record<string, unknown>;
-  if (typeof candidate.previousResponseId !== "string") return false;
-  if (candidate.previousResponseId.trim().length === 0) return false;
-  if (
-    candidate.reconciliationHash !== undefined &&
-    typeof candidate.reconciliationHash !== "string"
-  ) {
-    return false;
-  }
-  return true;
-}
-
-function cloneResumeAnchor(
-  anchor: LLMStatefulResumeAnchor,
-): LLMStatefulResumeAnchor {
-  return {
-    previousResponseId: anchor.previousResponseId,
-    ...(anchor.reconciliationHash
-      ? { reconciliationHash: anchor.reconciliationHash }
-      : {}),
   };
 }
 
@@ -366,13 +329,6 @@ function cloneReplayHistory(history: readonly LLMMessage[]): readonly LLMMessage
 function buildPersistedSessionReplaySnapshot(
   session: Session,
 ): PersistedSessionReplaySnapshot | undefined {
-  const resumeAnchorCandidate =
-    session.metadata[SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY];
-  const resumeAnchor = isStatefulResumeAnchor(resumeAnchorCandidate)
-    ? cloneResumeAnchor(resumeAnchorCandidate)
-    : undefined;
-  const historyCompacted =
-    session.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY] === true;
   const sessionStartContextMessages = Array.isArray(
     session.metadata[SESSION_STATEFUL_SESSION_START_CONTEXT_MESSAGES_METADATA_KEY],
   )
@@ -436,9 +392,7 @@ function buildPersistedSessionReplaySnapshot(
   if (
     !hasPersistedShellProfile &&
     !hasPersistedWorkflowState &&
-    !resumeAnchor &&
     !interactiveContextState &&
-    !historyCompacted &&
     sessionStartContextMessages.length === 0 &&
     !artifactSnapshotId &&
     !artifactSessionId &&
@@ -456,8 +410,6 @@ function buildPersistedSessionReplaySnapshot(
     ...(interactiveContextState
       ? { interactiveContextState: cloneInteractiveContextState(interactiveContextState) }
       : {}),
-    statefulResumeAnchor: resumeAnchor,
-    statefulHistoryCompacted: historyCompacted ? true : undefined,
     ...(sessionStartContextMessages.length > 0
       ? { sessionStartContextMessages: cloneReplayHistory(sessionStartContextMessages) }
       : {}),
@@ -552,16 +504,6 @@ function coercePersistedSessionRuntimeState(
                     ),
                   ),
                 }
-              : {}),
-            ...(isStatefulResumeAnchor(snapshotCandidate.statefulResumeAnchor)
-              ? {
-                  statefulResumeAnchor: cloneResumeAnchor(
-                    snapshotCandidate.statefulResumeAnchor,
-                  ),
-                }
-              : {}),
-            ...(snapshotCandidate.statefulHistoryCompacted === true
-              ? { statefulHistoryCompacted: true }
               : {}),
             ...(Array.isArray(snapshotCandidate.sessionStartContextMessages)
               ? {
@@ -719,13 +661,6 @@ function coercePersistedSessionRuntimeState(
       ...(candidate.workflowState !== undefined
         ? { [SESSION_WORKFLOW_STATE_METADATA_KEY]: candidate.workflowState }
         : {}),
-      ...(candidate.statefulResumeAnchor !== undefined
-        ? { [SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY]: candidate.statefulResumeAnchor }
-        : {}),
-      ...(candidate.statefulHistoryCompacted === true ||
-      typeof candidate.artifactSnapshotId === "string"
-        ? { [SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY]: true }
-        : {}),
       ...(candidate.artifactSnapshotId !== undefined
         ? {
             [SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY]: {
@@ -855,50 +790,15 @@ export async function loadPersistedSessionReplayContext(
 /** @deprecated Use loadPersistedSessionReplayState. */
 export const loadPersistedSessionRuntimeState = loadPersistedSessionReplayState;
 
+/**
+ * Legacy stateful-continuation option builder. Retained as a no-op so
+ * callers still compile; stateless transport carries no server-side
+ * anchors so there is no state to thread through.
+ */
 export function buildSessionStatefulOptions(
-  session: Session,
-): ChatExecuteParams["stateful"] | undefined {
-  const resumeAnchorCandidate =
-    session.metadata[SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY];
-  const resumeAnchor = isStatefulResumeAnchor(resumeAnchorCandidate)
-    ? resumeAnchorCandidate
-    : undefined;
-  const historyCompacted =
-    session.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY] === true;
-  const artifactContext = readArtifactCompactionState(session.metadata);
-  const sessionStartContextMessages = Array.isArray(
-    session.metadata[SESSION_STATEFUL_SESSION_START_CONTEXT_MESSAGES_METADATA_KEY],
-  )
-    ? cloneReplayHistory(
-        (
-          session.metadata[
-            SESSION_STATEFUL_SESSION_START_CONTEXT_MESSAGES_METADATA_KEY
-          ] as readonly LLMMessage[]
-        ).filter(
-          (message): message is LLMMessage =>
-            !!message &&
-            typeof message === "object" &&
-            typeof message.role === "string" &&
-            "content" in message,
-        ),
-      )
-    : [];
-  if (
-    !resumeAnchor &&
-    !historyCompacted &&
-    !artifactContext &&
-    sessionStartContextMessages.length === 0
-  ) {
-    return undefined;
-  }
-  return {
-    ...(resumeAnchor ? { resumeAnchor } : {}),
-    ...(historyCompacted ? { historyCompacted: true } : {}),
-    ...(artifactContext ? { artifactContext } : {}),
-    ...(sessionStartContextMessages.length > 0
-      ? { sessionStartContextMessages }
-      : {}),
-  };
+  _session: Session,
+): undefined {
+  return undefined;
 }
 
 export function buildSessionInteractiveContext(
@@ -1059,13 +959,6 @@ export async function hydrateSessionReplayState(
     );
   } else {
     clearSessionReadCache(session.id);
-  }
-  if (persisted.snapshot.statefulResumeAnchor) {
-    session.metadata[SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY] =
-      cloneResumeAnchor(persisted.snapshot.statefulResumeAnchor);
-  }
-  if (persisted.snapshot.statefulHistoryCompacted) {
-    session.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY] = true;
   }
   if (
     persisted.snapshot.sessionStartContextMessages &&
@@ -1241,78 +1134,16 @@ export const hydrateWebSessionReplayState = hydrateSessionReplayState;
 /** @deprecated Use forkSessionReplayState. */
 export const forkWebSessionRuntimeState = forkSessionReplayState;
 
-export function resolveSessionStatefulContinuation(
-  result: ChatExecutorResult,
-):
-  | {
-    readonly mode: "persist";
-    readonly anchor: LLMStatefulResumeAnchor;
-    readonly preserveHistoryCompacted?: boolean;
-  }
-  | {
-    readonly mode: "clear";
-  }
-  | {
-    readonly mode: "noop";
-  } {
-  if (result.callUsage.length === 0) {
-    return { mode: "noop" };
-  }
-
-  const latestLineageDiagnostics = [...result.callUsage]
-    .reverse()
-    .find((entry) => {
-      if (!SESSION_STATEFUL_LINEAGE_PHASES.has(entry.phase)) {
-        return false;
-      }
-      const responseId = entry.statefulDiagnostics?.responseId?.trim();
-      return typeof responseId === "string" && responseId.length > 0;
-    })
-    ?.statefulDiagnostics;
-  const responseId = latestLineageDiagnostics?.responseId?.trim();
-  const reconciliationHash =
-    latestLineageDiagnostics?.reconciliationHash?.trim();
-  const preserveHistoryCompacted =
-    latestLineageDiagnostics?.historyCompacted === true &&
-    latestLineageDiagnostics?.continued === true &&
-    latestLineageDiagnostics?.anchorMatched === false;
-  if (responseId && responseId.length > 0) {
-    return {
-      mode: "persist",
-      anchor: {
-        previousResponseId: responseId,
-        ...(reconciliationHash ? { reconciliationHash } : {}),
-      },
-      ...(preserveHistoryCompacted ? { preserveHistoryCompacted: true } : {}),
-    };
-  }
-
-  return { mode: "clear" };
-}
-
+/**
+ * Legacy stateful-continuation persister. Retained as a no-op so
+ * callers still compile; stateless transport carries no server-side
+ * anchors so there is nothing to persist.
+ */
 export function persistSessionStatefulContinuation(
-  session: Session,
-  result: ChatExecutorResult,
+  _session: Session,
+  _result: ChatExecutorResult,
 ): void {
-  const continuation = resolveSessionStatefulContinuation(result);
-  if (continuation.mode === "noop") {
-    return;
-  }
-  if (continuation.mode === "persist") {
-    session.metadata[SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY] =
-      continuation.anchor;
-    if (continuation.preserveHistoryCompacted) {
-      session.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY] = true;
-      return;
-    }
-    delete session.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY];
-    return;
-  }
-
-  delete session.metadata[SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY];
-  delete session.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY];
-  delete session.metadata[SESSION_STATEFUL_ARTIFACT_CONTEXT_METADATA_KEY];
-  delete session.metadata[SESSION_STATEFUL_ARTIFACT_RECORDS_METADATA_KEY];
+  // intentionally no-op
 }
 
 export function buildSessionActiveTaskContext(

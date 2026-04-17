@@ -37,7 +37,6 @@ import {
   type BackgroundRunContract,
   type BackgroundRunMemoryAnchor,
   type BackgroundRunObservedTarget,
-  type BackgroundRunProviderContinuation,
   type BackgroundRunRecentSnapshot,
   type BackgroundRunSignal,
   type BackgroundRunWakeReason,
@@ -552,7 +551,6 @@ export function buildEmptyCarryForwardState(
     nextFocus: undefined,
     artifacts: [],
     memoryAnchors: [],
-    providerContinuation: undefined,
     summaryHealth: {
       status: "healthy",
       driftCount: 0,
@@ -587,11 +585,6 @@ export function formatCarryForwardState(
           `${artifact.kind}:${truncate(artifact.locator, 64)}`
         )
         .join(" | ")}`,
-    );
-  }
-  if (carryForward.providerContinuation) {
-    parts.push(
-      `Provider continuation: ${carryForward.providerContinuation.provider}#${carryForward.providerContinuation.responseId}`,
     );
   }
   if (carryForward.summaryHealth.status === "repairing") {
@@ -633,7 +626,6 @@ export function buildFallbackCarryForwardState(params: {
         : previous?.nextFocus,
     artifacts: previous?.artifacts ?? [],
     memoryAnchors: previous?.memoryAnchors ?? [],
-    providerContinuation: previous?.providerContinuation,
     summaryHealth: previous?.summaryHealth ?? {
       status: "healthy",
       driftCount: 0,
@@ -674,45 +666,13 @@ function mergeMemoryAnchors(
   return merged.slice(-MAX_MEMORY_ANCHORS);
 }
 
-export function extractLatestProviderContinuation(
-  actorResult: ChatExecutorResult | undefined,
-  now: number,
-): BackgroundRunProviderContinuation | undefined {
-  if (!actorResult) return undefined;
-  const latestUsage = [...actorResult.callUsage]
-    .reverse()
-    .find((entry) => entry.statefulDiagnostics?.responseId);
-  const responseId = latestUsage?.statefulDiagnostics?.responseId;
-  if (!latestUsage || !responseId) {
-    return undefined;
-  }
-  return {
-    provider: latestUsage.provider,
-    responseId,
-    reconciliationHash: latestUsage.statefulDiagnostics?.reconciliationHash,
-    updatedAt: now,
-    mode: "previous_response_id",
-  };
-}
-
 export function buildCarryForwardAnchors(params: {
   previous: readonly BackgroundRunMemoryAnchor[];
-  providerContinuation?: BackgroundRunProviderContinuation;
   pendingSignals: readonly BackgroundRunSignal[];
   actorResult?: ChatExecutorResult;
   now: number;
 }): BackgroundRunMemoryAnchor[] {
   const additions: BackgroundRunMemoryAnchor[] = [];
-  if (params.providerContinuation) {
-    additions.push(
-      buildMemoryAnchor(
-        "provider_response",
-        params.providerContinuation.responseId,
-        `${params.providerContinuation.provider} previous_response_id anchor`,
-        params.providerContinuation.updatedAt,
-      ),
-    );
-  }
   const signalAnchor = params.pendingSignals[0];
   if (signalAnchor) {
     additions.push(
@@ -813,7 +773,6 @@ export function repairCarryForwardState(params: {
   actorResult?: ChatExecutorResult;
   now: number;
   reason: string;
-  providerContinuation?: BackgroundRunProviderContinuation;
 }): BackgroundRunCarryForwardState {
   const repaired = buildFallbackCarryForwardState({
     previous: params.previous,
@@ -827,13 +786,10 @@ export function repairCarryForwardState(params: {
     artifacts: params.previous?.artifacts ?? [],
     memoryAnchors: buildCarryForwardAnchors({
       previous: params.previous?.memoryAnchors ?? [],
-      providerContinuation: params.providerContinuation ?? params.previous?.providerContinuation,
       pendingSignals: params.pendingSignals,
       actorResult: params.actorResult,
       now: params.now,
     }),
-    providerContinuation:
-      params.providerContinuation ?? params.previous?.providerContinuation,
     summaryHealth: {
       status: "repairing",
       driftCount: (params.previous?.summaryHealth.driftCount ?? 0) + 1,

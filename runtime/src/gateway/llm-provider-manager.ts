@@ -24,7 +24,6 @@ import {
 import { supportsProviderNativeWebSearch } from "../llm/provider-native-search.js";
 import {
   resolveDefaultGrokCompactionThreshold,
-  resolveGatewayStatefulResponses,
 } from "./llm-stateful-defaults.js";
 import { hasRuntimeLimit } from "../llm/runtime-limit-policy.js";
 
@@ -172,31 +171,12 @@ export function resolveLocalCompactionThreshold(
   }
   const provider = llmConfig?.provider;
   if (!provider) return undefined;
-  const resolvedStatefulResponses = resolveGatewayStatefulResponses(
-    provider,
-    llmConfig?.statefulResponses,
-  );
-  if (
-    resolvedStatefulResponses.config?.enabled === false ||
-    resolvedStatefulResponses.config?.compaction?.enabled !== true
-  ) {
-    return undefined;
-  }
-  const compactThreshold =
-    resolvedStatefulResponses.config.compaction.compactThreshold;
-  if (
-    typeof compactThreshold !== "number" ||
-    !Number.isFinite(compactThreshold) ||
-    compactThreshold <= 0
-  ) {
-    return provider === "grok"
-      ? resolveDefaultGrokCompactionThreshold(
-          contextWindowTokens ?? inferContextWindowTokens(llmConfig),
-          normalizeOptionalPositiveInt(llmConfig?.maxTokens),
-        )
-      : undefined;
-  }
-  return Math.floor(compactThreshold);
+  return provider === "grok"
+    ? resolveDefaultGrokCompactionThreshold(
+        contextWindowTokens ?? inferContextWindowTokens(llmConfig),
+        normalizeOptionalPositiveInt(llmConfig?.maxTokens),
+      )
+    : undefined;
 }
 
 // ============================================================================
@@ -377,17 +357,12 @@ export async function createSingleLLMProvider(
     timeoutMs,
     parallelToolCalls,
     maxTokens,
-    statefulResponses,
   } = llmConfig;
 
   switch (provider) {
     case "grok": {
       const { GrokProvider } = await import("../llm/grok/adapter.js");
       const normalizedModel = normalizeGrokModel(model) ?? DEFAULT_GROK_MODEL;
-      const resolvedStatefulResponses = resolveGatewayStatefulResponses(
-        provider,
-        statefulResponses,
-      );
       const nativeWebSearchEnabled = supportsProviderNativeWebSearch({
         provider,
         model: normalizedModel,
@@ -398,15 +373,6 @@ export async function createSingleLLMProvider(
         llmConfig,
         nativeWebSearchEnabled,
       );
-      if (resolvedStatefulResponses.usedDefaults) {
-        logger.info(
-          "Enabled Grok stateful response defaults for provider continuity",
-          {
-            model: normalizedModel,
-            statefulResponses: resolvedStatefulResponses.config,
-          },
-        );
-      }
       return new GrokProvider({
         apiKey: apiKey ?? "",
         model: normalizedModel,
@@ -417,7 +383,6 @@ export async function createSingleLLMProvider(
         timeoutMs,
         maxTokens: normalizeOptionalPositiveInt(maxTokens),
         parallelToolCalls,
-        statefulResponses: resolvedStatefulResponses.config,
         tools,
         ...grokCapabilitySurface,
       });
@@ -430,7 +395,6 @@ export async function createSingleLLMProvider(
         timeoutMs,
         maxTokens: normalizeOptionalPositiveInt(maxTokens),
         numCtx: normalizeOptionalPositiveInt(llmConfig.contextWindowTokens),
-        statefulResponses,
         tools,
       });
     }
@@ -503,7 +467,6 @@ export async function createLLMProviders(
         promptSafetyMarginTokens: config.llm.promptSafetyMarginTokens,
         promptCharPerToken: config.llm.promptCharPerToken,
         maxRuntimeHints: config.llm.maxRuntimeHints,
-        statefulResponses: config.llm.statefulResponses,
       });
     }
   }

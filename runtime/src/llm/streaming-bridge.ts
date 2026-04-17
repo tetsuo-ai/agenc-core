@@ -52,7 +52,6 @@ export interface ChatExecutorResultSeed {
   readonly completionState: ChatExecutorResult["completionState"];
   readonly stopReason: ChatExecutorResult["stopReason"];
   readonly providerEvidence?: ChatExecutorResult["providerEvidence"];
-  readonly statefulSummary?: ChatExecutorResult["statefulSummary"];
   readonly toolRoutingSummary?: ChatExecutorResult["toolRoutingSummary"];
   readonly plannerSummary?: ChatExecutorResult["plannerSummary"];
   readonly economicsSummary?: ChatExecutorResult["economicsSummary"];
@@ -227,7 +226,6 @@ export function buildChatExecutorResultFromEvents(
     callUsage: seed.callUsage,
     durationMs: terminal.durationMs,
     compacted: accumulated.compacted,
-    statefulSummary: seed.statefulSummary,
     toolRoutingSummary: seed.toolRoutingSummary,
     plannerSummary: seed.plannerSummary,
     economicsSummary: seed.economicsSummary,

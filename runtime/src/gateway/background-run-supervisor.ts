@@ -177,10 +177,8 @@ import {
   buildWakeDedupeKey,
   recordToolEvidence,
   recordProviderCompactionArtifacts,
-  buildEmptyCarryForwardState,
   buildFallbackCarryForwardState,
   buildCarryForwardAnchors,
-  extractLatestProviderContinuation,
   deriveCarryForwardRefreshReason,
   detectCarryForwardDrift,
   repairCarryForwardState,
@@ -380,26 +378,8 @@ function buildBackgroundRunInteractiveContextState(params: {
 }
 
 function resolveBackgroundContinuationMode(
-  actorResult: ChatExecutorResult,
+  _actorResult: ChatExecutorResult,
 ): "provider_continuation" | "transcript_resume" | "full_replay_fallback" {
-  const latestUsage = [...actorResult.callUsage].reverse().find(Boolean);
-  const diagnostics = latestUsage?.statefulDiagnostics;
-  if (diagnostics?.continued === true && diagnostics.previousResponseId) {
-    return "provider_continuation";
-  }
-  if (
-    diagnostics?.fallbackReason === "store_disabled" ||
-    diagnostics?.fallbackReason === "missing_previous_response_id" ||
-    diagnostics?.fallbackReason === "state_reconciliation_mismatch"
-  ) {
-    return "transcript_resume";
-  }
-  if (
-    diagnostics?.attempted === true &&
-    diagnostics.continued !== true
-  ) {
-    return "full_replay_fallback";
-  }
   return "transcript_resume";
 }
 
@@ -3861,22 +3841,6 @@ export class BackgroundRunSupervisor {
               : {}),
           } satisfies InteractiveContextRequest,
           requestTimeoutMs: BACKGROUND_RUN_ACTOR_REQUEST_TIMEOUT_MS,
-          stateful: run.carryForward?.providerContinuation
-            ? {
-                resumeAnchor: {
-                previousResponseId: run.carryForward.providerContinuation.responseId,
-                ...(run.carryForward.providerContinuation.reconciliationHash
-                  ? {
-                    reconciliationHash:
-                      run.carryForward.providerContinuation.reconciliationHash,
-                  }
-                  : {}),
-              },
-              ...(run.compaction.refreshCount > 0
-                ? { historyCompacted: true }
-                : {}),
-            }
-            : undefined,
           toolHandler: cycleToolHandler,
           signal: abortSignal,
           maxToolRounds: BACKGROUND_RUN_MAX_TOOL_ROUNDS,
@@ -3920,28 +3884,6 @@ export class BackgroundRunSupervisor {
         const verifierStages = actorResult.runtimeContractSnapshot?.verifierStages;
         run.verifierSessionId = verifierStages?.taskId ?? run.verifierSessionId;
         run.verifierStage = verifierStages?.stageStatus ?? run.verifierStage;
-        const providerContinuation = extractLatestProviderContinuation(
-          actorResult,
-          run.lastVerifiedAt,
-        );
-        if (providerContinuation) {
-          run.carryForward = {
-            ...(run.carryForward ?? buildEmptyCarryForwardState(run.lastVerifiedAt)),
-            providerContinuation,
-            memoryAnchors: buildCarryForwardAnchors({
-              previous: run.carryForward?.memoryAnchors ?? [],
-              providerContinuation,
-              pendingSignals: [],
-              actorResult,
-              now: run.lastVerifiedAt,
-            }),
-            lastCompactedAt: run.carryForward?.lastCompactedAt ?? run.lastVerifiedAt,
-          };
-          run.compaction = {
-            ...run.compaction,
-            lastProviderAnchorAt: providerContinuation.updatedAt,
-          };
-        }
         if (actorResult.toolCalls.length > 0) {
           run.pendingSignals = [
             ...run.pendingSignals,
@@ -4399,9 +4341,6 @@ export class BackgroundRunSupervisor {
       pendingSignals,
     });
     if (!refreshReason) return;
-    const providerContinuation =
-      extractLatestProviderContinuation(actorResult, now) ??
-      previousCarryForward?.providerContinuation;
     let finalReason: CarryForwardRefreshReason = refreshReason;
     if (this.shouldUseActorLoopParity(run)) {
       const fallbackState = buildFallbackCarryForwardState({
@@ -4416,12 +4355,10 @@ export class BackgroundRunSupervisor {
         artifacts: previousCarryForward?.artifacts ?? [],
         memoryAnchors: buildCarryForwardAnchors({
           previous: previousCarryForward?.memoryAnchors ?? [],
-          providerContinuation,
           pendingSignals,
           actorResult,
           now,
         }),
-        providerContinuation,
         summaryHealth: {
           status: "healthy",
           driftCount: previousCarryForward?.summaryHealth.driftCount ?? 0,
@@ -4495,7 +4432,6 @@ export class BackgroundRunSupervisor {
             actorResult,
             now,
             reason: driftReason,
-            providerContinuation,
           });
           this.logger.warn("Background run carry-forward drift detected", {
             sessionId: run.sessionId,
@@ -4508,12 +4444,10 @@ export class BackgroundRunSupervisor {
             artifacts: previousCarryForward?.artifacts ?? [],
             memoryAnchors: buildCarryForwardAnchors({
               previous: previousCarryForward?.memoryAnchors ?? [],
-              providerContinuation,
               pendingSignals,
               actorResult,
               now,
             }),
-            providerContinuation,
             summaryHealth: {
               status: "healthy",
               driftCount: previousCarryForward?.summaryHealth.driftCount ?? 0,
@@ -4541,12 +4475,10 @@ export class BackgroundRunSupervisor {
           ...run.carryForward,
           memoryAnchors: buildCarryForwardAnchors({
             previous: previousCarryForward?.memoryAnchors ?? [],
-            providerContinuation,
             pendingSignals,
             actorResult,
             now,
           }),
-          providerContinuation,
           summaryHealth: previousCarryForward?.summaryHealth ?? {
             status: "healthy",
             driftCount: 0,
@@ -4570,8 +4502,7 @@ export class BackgroundRunSupervisor {
         finalReason === "repair"
           ? run.compaction.repairCount + 1
           : run.compaction.repairCount,
-      lastProviderAnchorAt:
-        providerContinuation?.updatedAt ?? run.compaction.lastProviderAnchorAt,
+      lastProviderAnchorAt: run.compaction.lastProviderAnchorAt,
     };
     const latestProviderCompactionArtifact = [...run.carryForward.artifacts]
       .reverse()

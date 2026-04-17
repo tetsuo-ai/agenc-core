@@ -25,9 +25,8 @@ import { LLMProviderError, mapLLMError } from "../errors.js";
 import { ensureLazyImport } from "../lazy-import.js";
 import {
   buildUnsupportedCompactionDiagnostics,
-  buildUnsupportedStatefulDiagnostics,
-  resolveLLMStatefulResponsesConfig,
-  type ResolvedLLMStatefulResponsesConfig,
+  resolveLLMCompactionConfig,
+  type ResolvedLLMCompactionConfig,
 } from "../provider-capabilities.js";
 import { withTimeout } from "../timeout.js";
 import { repairToolTurnSequence, validateToolTurnSequence } from "../tool-turn-validator.js";
@@ -164,7 +163,6 @@ function collectParamDiagnostics(
     toolChoice: undefined,
     toolSchemaChars,
     serializedChars,
-    previousResponseId: undefined,
     store: undefined,
     parallelToolCalls: undefined,
     stream: typeof params.stream === "boolean" ? params.stream : undefined,
@@ -240,7 +238,7 @@ export class OllamaProvider implements LLMProvider {
   private client: unknown | null = null;
   private readonly config: OllamaProviderConfig;
   private readonly tools: LLMTool[];
-  private readonly statefulConfig: ResolvedLLMStatefulResponsesConfig;
+  private readonly compactionConfig: ResolvedLLMCompactionConfig;
 
   constructor(config: OllamaProviderConfig) {
     this.config = {
@@ -249,9 +247,7 @@ export class OllamaProvider implements LLMProvider {
       host: config.host ?? DEFAULT_HOST,
     };
     this.tools = config.tools ?? [];
-    this.statefulConfig = resolveLLMStatefulResponsesConfig(
-      config.statefulResponses,
-    );
+    this.compactionConfig = resolveLLMCompactionConfig(undefined);
   }
 
   async chat(
@@ -457,21 +453,6 @@ export class OllamaProvider implements LLMProvider {
     }
   }
 
-  getCapabilities() {
-    return {
-      provider: this.name,
-      stateful: {
-        assistantPhase: false,
-        previousResponseId: false,
-        encryptedReasoning: false,
-        storedResponseRetrieval: false,
-        storedResponseDeletion: false,
-        opaqueCompaction: false,
-        deterministicFallback: true,
-      },
-    } as const;
-  }
-
   async getExecutionProfile() {
     return (
       await resolveContextWindowProfile({
@@ -629,20 +610,12 @@ export class OllamaProvider implements LLMProvider {
   }
 
   private buildUnsupportedDiagnostics(
-    options?: LLMChatOptions,
-  ): Pick<LLMResponse, "stateful" | "compaction"> {
-    const hasSessionId =
-      typeof options?.stateful?.sessionId === "string" &&
-      options.stateful.sessionId.trim().length > 0;
+    _options?: LLMChatOptions,
+  ): Pick<LLMResponse, "compaction"> {
     return {
-      stateful: buildUnsupportedStatefulDiagnostics({
-        provider: this.name,
-        config: this.statefulConfig,
-        hasSessionId,
-      }),
       compaction: buildUnsupportedCompactionDiagnostics({
         provider: this.name,
-        config: this.statefulConfig,
+        compaction: this.compactionConfig,
       }),
     };
   }

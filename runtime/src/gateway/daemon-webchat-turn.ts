@@ -5,7 +5,6 @@ import type {
   ChatToolRoutingSummary,
 } from "../llm/chat-executor.js";
 import type { ChatExecutionTraceEvent } from "../llm/chat-executor-types.js";
-import { hasActionableStatefulFallback } from "../llm/chat-executor-recovery.js";
 import { executeChatToLegacyResult } from "../llm/execute-chat.js";
 import { normalizePromptEnvelope } from "../llm/prompt-envelope.js";
 import type {
@@ -558,7 +557,6 @@ export async function executeWebChatConversationTurn(
         tokenUsage: result.tokenUsage,
         requestShape: summarizeInitialRequestShape(result.callUsage),
         callUsage: summarizeCallUsageForTrace(result.callUsage),
-        statefulSummary: result.statefulSummary,
         plannerSummary: result.plannerSummary,
         economicsSummary: result.economicsSummary,
         toolRoutingDecision:
@@ -610,7 +608,6 @@ export async function executeWebChatConversationTurn(
             tokenUsage: result.tokenUsage,
             requestShape: summarizeInitialRequestShape(result.callUsage),
             callUsage: result.callUsage,
-            statefulSummary: result.statefulSummary,
             plannerSummary: result.plannerSummary,
             economicsSummary: result.economicsSummary,
             toolRoutingDecision,
@@ -642,14 +639,6 @@ export async function executeWebChatConversationTurn(
         stopReasonDetail,
       });
     }
-    if (hasActionableStatefulFallback(result.statefulSummary)) {
-      logger.warn("[stateful] webchat fallback_to_stateless", {
-        traceId: turnTraceId,
-        sessionId: msg.sessionId,
-        summary: result.statefulSummary,
-      });
-    }
-
     persistSessionStatefulContinuation(session, result);
     persistSessionActiveTaskContext(session, result);
     persistSessionStartContextMessages(session, result);

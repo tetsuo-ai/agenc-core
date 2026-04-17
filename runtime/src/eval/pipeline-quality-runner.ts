@@ -9,7 +9,6 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { GatewayMessage } from "../gateway/message.js";
 import {
-  buildSessionStatefulOptions,
 } from "../gateway/daemon-session-state.js";
 import { SessionManager } from "../gateway/session.js";
 import {
@@ -402,10 +401,7 @@ async function runContextAndTokenBenchmark(
   let totalTokens = 0;
 
   for (let turn = 0; turn < turns; turn++) {
-    if (
-      session.history.length >= 4 &&
-      !buildSessionStatefulOptions(session)?.artifactContext
-    ) {
+    if (session.history.length >= 4) {
       await sessionManager.compact(session.id);
     }
     const content =
@@ -417,7 +413,6 @@ async function runContextAndTokenBenchmark(
       promptEnvelope: createPromptEnvelope(systemPrompt),
       sessionId,
       maxToolRounds: 1,
-      stateful: buildSessionStatefulOptions(session),
     });
 
     const promptTokens = result.callUsage.reduce(

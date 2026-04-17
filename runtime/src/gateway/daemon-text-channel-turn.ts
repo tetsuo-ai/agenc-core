@@ -13,7 +13,6 @@ import type {
 import type { MemoryBackend } from "../memory/types.js";
 import type { Logger } from "../utils/logger.js";
 import type { ChatExecutionTraceEvent } from "../llm/chat-executor-types.js";
-import { hasActionableStatefulFallback } from "../llm/chat-executor-recovery.js";
 import type { GatewayMessage } from "./message.js";
 import {
   resolveSessionShellProfile,
@@ -525,7 +524,6 @@ export async function executeTextChannelTurn(
       tokenUsage: result.tokenUsage,
       requestShape: summarizeInitialRequestShape(result.callUsage),
       callUsage: summarizeCallUsageForTrace(result.callUsage),
-      statefulSummary: result.statefulSummary,
       ...(includePlannerSummaryInTrace
         ? { plannerSummary: result.plannerSummary }
         : {}),
@@ -580,7 +578,6 @@ export async function executeTextChannelTurn(
               tokenUsage: result.tokenUsage,
               requestShape: summarizeInitialRequestShape(result.callUsage),
               callUsage: result.callUsage,
-              statefulSummary: result.statefulSummary,
               ...(includePlannerSummaryInTrace
                 ? { plannerSummary: result.plannerSummary }
                 : {}),
@@ -605,14 +602,6 @@ export async function executeTextChannelTurn(
           }
         : undefined,
     );
-  }
-
-  if (hasActionableStatefulFallback(result.statefulSummary)) {
-    logger.warn(`[stateful] ${channelName} fallback_to_stateless`, {
-      traceId: turnTraceId,
-      sessionId: msg.sessionId,
-      summary: result.statefulSummary,
-    });
   }
 
   persistSessionStatefulContinuation(session, result);

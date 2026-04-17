@@ -15,7 +15,6 @@ import { executeChatToLegacyResult } from "../llm/execute-chat.js";
 import { createPromptEnvelope } from "../llm/prompt-envelope.js";
 import { SessionManager, type SessionLookupParams } from "../gateway/session.js";
 import {
-  buildSessionStatefulOptions,
   hydrateWebSessionRuntimeState,
   persistWebSessionRuntimeState,
 } from "../gateway/daemon-session-state.js";
@@ -237,7 +236,6 @@ async function buildCompactionScenario(params: {
       "long-horizon-web-session",
       resumed,
     );
-    const stateful = buildSessionStatefulOptions(resumed);
     const provider = createMockProvider();
     const executor = new ChatExecutor({ providers: [provider] });
     await executeChatToLegacyResult(executor, {
@@ -254,9 +252,8 @@ async function buildCompactionScenario(params: {
       history: resumed.history,
       promptEnvelope: createPromptEnvelope("You are a benchmark assistant."),
       sessionId: "long-horizon-session",
-      stateful,
     });
-    const artifactRefs = stateful?.artifactContext?.artifactRefs.length ?? 0;
+    const artifactRefs = 0;
     return {
       scenarioId:
         params.category === "hundred_step"

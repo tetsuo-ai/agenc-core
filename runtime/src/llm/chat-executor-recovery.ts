@@ -9,19 +9,13 @@ import { resolve as resolvePath } from "node:path";
 import type {
   ToolCallRecord,
   RecoveryHint,
-  ChatCallUsageRecord,
-  ChatStatefulSummary,
 } from "./chat-executor-types.js";
-import type { LLMStatefulDiagnostics, LLMStatefulFallbackReason } from "./types.js";
-import { createLLMStatefulFallbackReasonCounts } from "./types.js";
 import { SHELL_BUILTIN_COMMANDS } from "./chat-executor-constants.js";
 import {
   didToolCallFail,
   extractToolFailureText,
   parseToolResultObject,
 } from "./chat-executor-tool-utils.js";
-
-const NON_ACTIONABLE_STATEFUL_FALLBACK_REASONS = new Set<LLMStatefulFallbackReason>(["store_disabled"]);
 
 const DESKTOP_BIASED_SYSTEM_COMMANDS = new Set([
   "chromium",
@@ -1121,55 +1115,6 @@ function normalizeSemanticValue(value: unknown): string {
       .join(",")}}`;
   }
   return String(value);
-}
-
-export function summarizeStateful(
-  callUsage: readonly ChatCallUsageRecord[],
-): ChatStatefulSummary | undefined {
-  const entries = callUsage
-    .map((entry) => entry.statefulDiagnostics)
-    .filter(
-      (entry): entry is LLMStatefulDiagnostics =>
-        entry !== undefined && entry.enabled,
-    );
-  if (entries.length === 0) return undefined;
-
-  const fallbackReasons: Record<LLMStatefulFallbackReason, number> =
-    createLLMStatefulFallbackReasonCounts();
-  let attemptedCalls = 0;
-  let continuedCalls = 0;
-  let fallbackCalls = 0;
-
-  for (const entry of entries) {
-    if (entry.attempted) attemptedCalls++;
-    if (entry.continued) continuedCalls++;
-    if (entry.fallbackReason) {
-      fallbackCalls++;
-      fallbackReasons[entry.fallbackReason] += 1;
-    }
-  }
-
-  return {
-    enabled: true,
-    attemptedCalls,
-    continuedCalls,
-    fallbackCalls,
-    fallbackReasons,
-  };
-}
-
-export function hasActionableStatefulFallback(
-  summary: ChatStatefulSummary | undefined,
-): boolean {
-  if (!summary || summary.fallbackCalls <= 0) {
-    return false;
-  }
-  return Object.entries(summary.fallbackReasons).some(([reason, count]) =>
-    count > 0 &&
-    !NON_ACTIONABLE_STATEFUL_FALLBACK_REASONS.has(
-      reason as LLMStatefulFallbackReason,
-    )
-  );
 }
 
 export function buildRecoveryHints(

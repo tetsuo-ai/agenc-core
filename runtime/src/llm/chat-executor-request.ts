@@ -27,7 +27,6 @@ import {
   type InitializeExecutionContextHelpers,
 } from "./chat-executor-init.js";
 import { sanitizeFinalContent } from "./chat-executor-text.js";
-import { summarizeStateful } from "./chat-executor-recovery.js";
 import { dispatchHooks, defaultHookExecutor } from "./hooks/index.js";
 import { resolveWorkflowCompletionState } from "../workflow/completion-state.js";
 import { deriveWorkflowProgressSnapshot } from "../workflow/completion-progress.js";
@@ -328,7 +327,6 @@ export async function executeRequest(
       callUsage: ctx.callUsage,
       durationMs,
       compacted: ctx.compacted,
-      statefulSummary: summarizeStateful(ctx.callUsage),
       toolRoutingSummary: ctx.toolRouting
         ? {
           enabled: true,

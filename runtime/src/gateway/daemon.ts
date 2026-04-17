@@ -184,7 +184,6 @@ import {
 } from "./session-transcript.js";
 // loadWallet moved to ./daemon-tool-registry.ts and ./daemon-feature-wiring.ts
 import {
-  buildSessionStatefulOptions,
   clearWebSessionReplayState,
   hydrateWebSessionReplayState,
   loadPersistedSessionReplayContext,
@@ -421,7 +420,6 @@ export {
   persistSessionStatefulContinuation,
   rebindSessionExecutionLocation,
   persistWebSessionRuntimeState,
-  resolveSessionStatefulContinuation,
 } from "./daemon-session-state.js";
 import {
   persistWebSessionRuntimeState,
@@ -5532,7 +5530,6 @@ export class DaemonManager {
       return null;
     }
     const session = this._webSessionManager?.get(sessionId);
-    const stateful = session ? buildSessionStatefulOptions(session) : undefined;
 
     const totalTokens = executor.getSessionTokenUsage(sessionId);
     // Show per-call context window occupancy (from the last model
@@ -5548,7 +5545,7 @@ export class DaemonManager {
     const usageSnapshot = buildCurrentContextUsageSnapshot({
       messages: buildCurrentApiView({
         baseSystemPrompt: this._systemPrompt,
-        artifactContext: stateful?.artifactContext,
+        artifactContext: undefined,
         history: session?.history ?? [],
       }),
       contextWindowTokens,

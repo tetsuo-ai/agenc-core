@@ -14,15 +14,9 @@ export type {
   LLMContentPart,
   LLMMessage,
   LLMChatOptions,
-  LLMChatStatefulOptions,
   LLMCompactionDiagnostics,
   LLMCompactionFallbackReason,
   LLMCompactionItemRef,
-  LLMProviderCapabilities,
-  LLMStatefulDiagnostics,
-  LLMStatefulEvent,
-  LLMStatefulEventType,
-  LLMStatefulFallbackReason,
   LLMStatefulResponsesConfig,
   LLMStoredResponse,
   LLMStoredResponseDeleteResult,
@@ -37,13 +31,10 @@ export type {
 } from "./types.js";
 export { validateToolCall } from "./types.js";
 export {
-  resolveLLMStatefulResponsesConfig,
   buildUnsupportedCompactionDiagnostics,
-  buildUnsupportedStatefulDiagnostics,
 } from "./provider-capabilities.js";
 export type {
   ResolvedLLMCompactionConfig,
-  ResolvedLLMStatefulResponsesConfig,
 } from "./provider-capabilities.js";
 
 // Error classes
@@ -113,7 +104,6 @@ export type {
   ChatExecutorConfig,
   ChatExecuteParams,
   ChatExecutorResult,
-  ChatStatefulSummary,
   ChatPromptShape,
   ChatCallUsageRecord,
   PlannerDiagnostic,

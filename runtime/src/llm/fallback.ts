@@ -107,18 +107,6 @@ export class FallbackLLMProvider implements LLMProvider {
     return false;
   }
 
-  resetSessionState(sessionId: string): void {
-    for (const provider of this.providers) {
-      provider.resetSessionState?.(sessionId);
-    }
-  }
-
-  clearSessionState(): void {
-    for (const provider of this.providers) {
-      provider.clearSessionState?.();
-    }
-  }
-
   private shouldFallback(err: Error): boolean {
     if (err instanceof LLMTimeoutError) {
       return this.fallbackErrors.has("timeout");

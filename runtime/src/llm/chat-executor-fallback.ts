@@ -8,7 +8,6 @@ import type {
   LLMChatOptions,
   LLMProvider,
   LLMMessage,
-  LLMStatefulResumeAnchor,
   LLMStreamChunk,
   LLMToolChoice,
   StreamProgressCallback,
@@ -110,10 +109,7 @@ interface CallWithFallbackDeps {
 }
 
 interface CallWithFallbackOptions {
-  statefulSessionId?: string;
-  statefulResumeAnchor?: LLMStatefulResumeAnchor;
-  statefulHistoryCompacted?: boolean;
-  reconciliationMessages?: readonly LLMMessage[];
+  promptCacheKey?: string;
   routedToolNames?: readonly string[];
   toolChoice?: LLMToolChoice;
   /**
@@ -174,11 +170,7 @@ export async function callWithFallback(
   ];
   const afterBudget = estimatePromptShape(boundedMessages);
   const budgetDiagnostics = budgeted.diagnostics;
-  const hasStatefulSessionId = Boolean(options?.statefulSessionId);
-  const hasStatefulResumeAnchor =
-    hasStatefulSessionId && options?.statefulResumeAnchor !== undefined;
-  const hasStatefulHistoryCompacted =
-    hasStatefulSessionId && options?.statefulHistoryCompacted === true;
+  const hasPromptCacheKey = Boolean(options?.promptCacheKey);
   const resolvedRoutedToolNames =
     options?.routedToolNames ?? (options?.toolChoice === "none" ? [] : undefined);
   const hasRoutedToolNames = resolvedRoutedToolNames !== undefined;
@@ -189,29 +181,15 @@ export async function callWithFallback(
     options?.trace?.includeProviderPayloads === true ||
     options?.trace?.onProviderTraceEvent !== undefined;
   const baseChatOptions: LLMChatOptions | undefined =
-    hasStatefulSessionId ||
+    hasPromptCacheKey ||
       hasRoutedToolNames ||
       hasToolChoice ||
       hasStructuredOutput ||
       hasAbortSignal ||
       hasProviderTrace
       ? {
-        ...(hasStatefulSessionId
-          ? {
-            stateful: {
-              sessionId: String(options?.statefulSessionId),
-              reconciliationMessages:
-                stripRuntimeOnlyPromptMetadata(
-                  options?.reconciliationMessages ?? messages,
-                ),
-              ...(hasStatefulHistoryCompacted
-                ? { historyCompacted: true }
-                : {}),
-              ...(hasStatefulResumeAnchor
-                ? { resumeAnchor: options?.statefulResumeAnchor }
-                : {}),
-            },
-          }
+        ...(hasPromptCacheKey
+          ? { promptCacheKey: String(options?.promptCacheKey) }
           : {}),
         ...(hasRoutedToolNames
           ? { toolRouting: { allowedToolNames: resolvedRoutedToolNames } }

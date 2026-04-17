@@ -103,7 +103,6 @@ export type {
   ChatCallUsageRecord,
   ChatPlannerSummary,
   PlannerDiagnostic,
-  ChatStatefulSummary,
   ChatToolRoutingSummary,
   ChatExecutorResult,
   DeterministicPipelineExecutor,
@@ -491,17 +490,11 @@ export class ChatExecutor {
   /** Reset token usage for a specific session. */
   resetSessionTokens(sessionId: string): void {
     this.sessionTokens.delete(sessionId);
-    for (const provider of this.providers) {
-      provider.resetSessionState?.(sessionId);
-    }
   }
 
   /** Clear all session token tracking. */
   clearAllSessionTokens(): void {
     this.sessionTokens.clear();
-    for (const provider of this.providers) {
-      provider.clearSessionState?.();
-    }
   }
 
   /** Clear all provider cooldowns. */

@@ -32,7 +32,6 @@ import {
   resolveSessionShellProfile,
   SessionManager,
   SESSION_REVIEW_SURFACE_STATE_METADATA_KEY,
-  SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY,
   SESSION_STATEFUL_RESUME_ANCHOR_METADATA_KEY,
   SESSION_VERIFICATION_SURFACE_STATE_METADATA_KEY,
   type Session,
@@ -86,7 +85,6 @@ import {
   DEFAULT_GROK_MODEL,
 } from "./llm-provider-manager.js";
 import {
-  buildSessionStatefulOptions,
   clearWebSessionRuntimeState,
   persistWebSessionRuntimeState,
 } from "./daemon-session-state.js";
@@ -383,9 +381,6 @@ function getSessionResumeAnchorResponseId(session: Session | undefined): string 
     : undefined;
 }
 
-function getSessionHistoryCompacted(session: Session | undefined): boolean {
-  return session?.metadata[SESSION_STATEFUL_HISTORY_COMPACTED_METADATA_KEY] === true;
-}
 
 const SESSION_SHELL_PROFILES: readonly SessionShellProfile[] = [
   "general",
@@ -1967,11 +1962,10 @@ export function createDaemonCommandRegistry(
       const sessionId = resolveSessionId(cmdCtx.sessionId);
       const session = sessionMgr.get(sessionId);
       const systemPrompt = ctx.getSystemPrompt();
-      const stateful = session ? buildSessionStatefulOptions(session) : undefined;
       const usageSnapshot = buildCurrentContextUsageSnapshot({
         messages: buildCurrentApiView({
           baseSystemPrompt: systemPrompt,
-          artifactContext: stateful?.artifactContext,
+          artifactContext: undefined,
           history: session?.history ?? [],
         }),
         contextWindowTokens,
@@ -4227,24 +4221,16 @@ export function createDaemonCommandRegistry(
         "retrieve",
       );
       const capabilityProvider = providersWithReplay[0];
-      const capabilityStateful = capabilityProvider?.getCapabilities?.().stateful;
       const encryptedReasoningEnabled =
         ctx.gateway?.config.llm?.includeEncryptedReasoning === true;
-      const statefulConfig = ctx.gateway?.config.llm?.statefulResponses;
 
       if (subcommand === "status") {
         await cmdCtx.reply(
           [
             "Stored response state:",
             `  Replay provider available: ${capabilityProvider ? "yes" : "no"}`,
-            `  Retrieval supported: ${capabilityStateful?.storedResponseRetrieval === true ? "yes" : "no"}`,
-            `  Deletion supported: ${capabilityStateful?.storedResponseDeletion === true ? "yes" : "no"}`,
-            `  Encrypted reasoning support: ${capabilityStateful?.encryptedReasoning === true ? "yes" : "no"}`,
-            `  Stateful responses: ${statefulConfig?.enabled === true ? "enabled" : "disabled"}`,
-            `  Provider storage: ${statefulConfig?.store === true ? "enabled" : "disabled"}`,
             `  Runtime includeEncryptedReasoning: ${encryptedReasoningEnabled ? "enabled" : "disabled"}`,
             `  Current response anchor: ${responseAnchor ?? "none"}`,
-            `  History compacted: ${getSessionHistoryCompacted(session) ? "yes" : "no"}`,
           ].join("\n"),
         );
         return;

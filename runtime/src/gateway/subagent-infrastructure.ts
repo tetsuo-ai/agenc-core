@@ -308,30 +308,10 @@ export function createDelegatingSubAgentLLMProvider(
       if (!provider) return false;
       return provider.healthCheck();
     },
-    getCapabilities() {
-      return resolve().getCapabilities?.() ?? {
-        provider: resolve().name,
-        stateful: {
-          assistantPhase: false,
-          previousResponseId: false,
-          encryptedReasoning: false,
-          storedResponseRetrieval: false,
-          storedResponseDeletion: false,
-          opaqueCompaction: false,
-          deterministicFallback: true,
-        },
-      };
-    },
     async getExecutionProfile() {
       return (
         await resolve().getExecutionProfile?.()
       ) ?? { provider: resolve().name };
-    },
-    resetSessionState(sessionId) {
-      resolve().resetSessionState?.(sessionId);
-    },
-    clearSessionState() {
-      resolve().clearSessionState?.();
     },
     retrieveStoredResponse(responseId) {
       const provider = resolve();

@@ -71,19 +71,12 @@ import type {
   LLMProvider,
   LLMProviderEvidence,
   LLMResponse,
-  LLMStatefulResumeAnchor,
   LLMStructuredOutputRequest,
   LLMToolChoice,
   StreamProgressCallback,
 } from "./types.js";
 import type { PromptBudgetConfig, PromptBudgetSection } from "./prompt-budget.js";
 import type { LLMRetryPolicyMatrix } from "./policy.js";
-
-function shouldUseSessionStatefulContinuationForPhase(
-  phase: ChatCallUsageRecord["phase"],
-): boolean {
-  return phase === "initial" || phase === "tool_followup";
-}
 
 function mergeProviderEvidence(
   current: LLMProviderEvidence | undefined,
@@ -176,12 +169,9 @@ export interface CallModelForPhaseHelpers {
 export interface CallModelForPhaseInput {
   readonly phase: ChatCallUsageRecord["phase"];
   readonly callMessages: readonly LLMMessage[];
-  readonly callReconciliationMessages?: readonly LLMMessage[];
   readonly callSections?: readonly PromptBudgetSection[];
   readonly onStreamChunk?: StreamProgressCallback;
-  readonly statefulSessionId?: string;
-  readonly statefulResumeAnchor?: LLMStatefulResumeAnchor;
-  readonly statefulHistoryCompacted?: boolean;
+  readonly promptCacheKey?: string;
   readonly routedToolNames?: readonly string[];
   readonly persistRoutedToolNames?: boolean;
   readonly toolChoice?: LLMToolChoice;
@@ -221,8 +211,6 @@ export async function callModelForPhase(
     activeRoutedToolNames: ctx.activeRoutedToolNames,
     allowedTools: deps.allowedTools ?? undefined,
   });
-  const allowStatefulContinuation =
-    shouldUseSessionStatefulContinuationForPhase(input.phase);
   if (input.persistRoutedToolNames !== false) {
     applyActiveRoutedToolNames(ctx, effectiveRoutedToolNames);
     ctx.transientRoutedToolNames = undefined;
@@ -233,9 +221,7 @@ export async function callModelForPhase(
     ctx,
     {
       callMessages: input.callMessages,
-      callReconciliationMessages: input.callReconciliationMessages,
       callSections: input.callSections,
-      statefulHistoryCompacted: input.statefulHistoryCompacted,
     },
     {
       ...deps.historyCompaction,
@@ -254,15 +240,6 @@ export async function callModelForPhase(
       input.structuredOutput?.schema === undefined
       ? undefined
       : input.structuredOutput;
-  const statefulContinuationRequired =
-    allowStatefulContinuation &&
-    Boolean(input.statefulSessionId) &&
-    (
-      input.phase === "tool_followup" ||
-      Boolean(input.statefulResumeAnchor) ||
-      compactedCallInput.statefulHistoryCompacted === true ||
-      ctx.history.length > 0
-    );
   let routingDecision: ReturnType<typeof resolveRoutingDecision>;
   try {
     routingDecision = resolveRoutingDecision(
@@ -281,7 +258,7 @@ export async function callModelForPhase(
         .filter(([, cooldown]) => cooldown.availableAt > Date.now())
         .map(([providerName]) => providerName),
       {
-        statefulContinuationRequired,
+        statefulContinuationRequired: false,
         structuredOutputRequired: requestedStructuredOutput !== undefined,
         routedToolNames: effectiveRoutedToolNames,
       },
@@ -382,19 +359,8 @@ export async function callModelForPhase(
         requestDeadlineAt: ctx.requestDeadlineAt,
         requestTimeoutMs: ctx.effectiveRequestTimeoutMs,
         signal: ctx.signal,
-        ...(allowStatefulContinuation && input.statefulSessionId
-          ? {
-            statefulSessionId: input.statefulSessionId,
-            reconciliationMessages:
-              compactedCallInput.callReconciliationMessages ??
-              ctx.reconciliationMessages,
-            ...(compactedCallInput.statefulHistoryCompacted
-              ? { statefulHistoryCompacted: true }
-              : {}),
-            ...(input.statefulResumeAnchor
-              ? { statefulResumeAnchor: input.statefulResumeAnchor }
-              : {}),
-          }
+        ...(input.promptCacheKey
+          ? { promptCacheKey: input.promptCacheKey }
           : {}),
         ...(effectiveRoutedToolNames !== undefined
           ? { routedToolNames: effectiveRoutedToolNames }

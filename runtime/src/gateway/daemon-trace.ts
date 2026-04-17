@@ -524,30 +524,6 @@ function summarizeBudgetDiagnosticsForTrace(
   };
 }
 
-function summarizeStatefulDiagnosticsForTrace(
-  diagnostics: ChatCallUsageRecord["statefulDiagnostics"],
-): Record<string, unknown> | undefined {
-  if (!diagnostics) return undefined;
-  return {
-    enabled: diagnostics.enabled,
-    attempted: diagnostics.attempted,
-    continued: diagnostics.continued,
-    store: diagnostics.store,
-    fallbackToStateless: diagnostics.fallbackToStateless,
-    previousResponseId: diagnostics.previousResponseId,
-    responseId: diagnostics.responseId,
-    reconciliationHash: diagnostics.reconciliationHash,
-    previousReconciliationHash: diagnostics.previousReconciliationHash,
-    reconciliationMessageCount: diagnostics.reconciliationMessageCount,
-    reconciliationSource: diagnostics.reconciliationSource,
-    anchorMatched: diagnostics.anchorMatched,
-    historyCompacted: diagnostics.historyCompacted,
-    compactedHistoryTrusted: diagnostics.compactedHistoryTrusted,
-    fallbackReason: diagnostics.fallbackReason,
-    events: diagnostics.events,
-  };
-}
-
 export function summarizeCallUsageForTrace(
   callUsage: readonly ChatCallUsageRecord[],
 ): unknown[] {
@@ -563,9 +539,6 @@ export function summarizeCallUsageForTrace(
     providerRequestMetrics: entry.providerRequestMetrics,
     budgetDiagnostics: summarizeBudgetDiagnosticsForTrace(
       entry.budgetDiagnostics,
-    ),
-    statefulDiagnostics: summarizeStatefulDiagnosticsForTrace(
-      entry.statefulDiagnostics,
     ),
   }));
 }
@@ -596,9 +569,6 @@ export function summarizeInitialRequestShape(
     toolSchemaChars: first.providerRequestMetrics?.toolSchemaChars,
     budgetDiagnostics: summarizeBudgetDiagnosticsForTrace(
       first.budgetDiagnostics,
-    ),
-    statefulDiagnostics: summarizeStatefulDiagnosticsForTrace(
-      first.statefulDiagnostics,
     ),
   };
 }

@@ -41,8 +41,7 @@ export interface LLMMessage {
   phase?: LLMAssistantPhase;
   /**
    * Runtime-only metadata used to preserve prompt-envelope semantics before
-   * provider serialization. This must be stripped before adapter payloads or
-   * stateful reconciliation hashing.
+   * provider serialization. This must be stripped before adapter payloads.
    */
   runtimeOnly?: {
     readonly mergeBoundary?: "user_context";
@@ -130,97 +129,9 @@ export interface LLMRequestMetrics {
   structuredOutputName?: string;
   structuredOutputStrict?: boolean;
   serializedChars: number;
-  previousResponseId?: string;
-  statefulInputMode?: "full_replay" | "incremental_delta";
-  statefulOmittedMessageCount?: number;
   store?: boolean;
   parallelToolCalls?: boolean;
   stream?: boolean;
-}
-
-/**
- * Stateful response fallback reasons when continuation cannot be used.
- */
-const LLM_STATEFUL_FALLBACK_REASONS = [
-  "missing_previous_response_id",
-  "store_disabled",
-  "provider_retrieval_failure",
-  "state_reconciliation_mismatch",
-  "unsupported",
-] as const;
-
-export type LLMStatefulFallbackReason =
-  (typeof LLM_STATEFUL_FALLBACK_REASONS)[number];
-
-export function createLLMStatefulFallbackReasonCounts(): Record<
-  LLMStatefulFallbackReason,
-  number
-> {
-  return Object.fromEntries(
-    LLM_STATEFUL_FALLBACK_REASONS.map((reason) => [reason, 0]),
-  ) as Record<LLMStatefulFallbackReason, number>;
-}
-
-/**
- * Structured stateful event types for trace logging/diagnostics.
- */
-export type LLMStatefulEventType =
-  | "stateful_continuation_attempt"
-  | "stateful_continuation_success"
-  | "stateful_fallback"
-  | "state_reconciliation_mismatch";
-
-/**
- * A single stateful-mode diagnostic event.
- */
-export interface LLMStatefulEvent {
-  readonly type: LLMStatefulEventType;
-  readonly reason?: LLMStatefulFallbackReason;
-  readonly detail?: string;
-}
-
-/**
- * Per-call diagnostics for provider-managed stateful continuation.
- */
-export interface LLMStatefulDiagnostics {
-  /** True when provider-level stateful mode is enabled for this call. */
-  readonly enabled: boolean;
-  /** True when this call attempted to continue from a previous response ID. */
-  readonly attempted: boolean;
-  /** True when `previous_response_id` was accepted and used. */
-  readonly continued: boolean;
-  /** Explicit `store` value sent to the provider for this call. */
-  readonly store: boolean;
-  /** Fallback policy used for this call. */
-  readonly fallbackToStateless: boolean;
-  /** Previously persisted response ID used for continuation (if any). */
-  readonly previousResponseId?: string;
-  /** New response ID returned by the provider (if any). */
-  readonly responseId?: string;
-  /** Reconciliation anchor hash for this call (provider-defined). */
-  readonly reconciliationHash?: string;
-  /** Previous reconciliation anchor restored from local/provider session state. */
-  readonly previousReconciliationHash?: string;
-  /** Number of messages used to compute the reconciliation chain for this call. */
-  readonly reconciliationMessageCount?: number;
-  /** Which message set was used to build the reconciliation chain. */
-  readonly reconciliationSource?: "non_system_messages" | "all_messages";
-  /** Whether the restored anchor hash matched the current reconciliation chain. */
-  readonly anchorMatched?: boolean;
-  /**
-   * True when the runtime compacted local history after the previous anchor was
-   * recorded, so a mismatch can be expected.
-   */
-  readonly historyCompacted?: boolean;
-  /**
-   * True when continuation proceeded despite a mismatch because the runtime
-   * trusted its own compaction boundary.
-   */
-  readonly compactedHistoryTrusted?: boolean;
-  /** Fallback reason when continuation was bypassed or retried statelessly. */
-  readonly fallbackReason?: LLMStatefulFallbackReason;
-  /** Structured trace events emitted during stateful decisioning. */
-  readonly events?: readonly LLMStatefulEvent[];
 }
 
 /**
@@ -293,29 +204,6 @@ export interface LLMStatefulResponsesConfig {
   };
 }
 
-interface LLMProviderStatefulCapabilities {
-  /** Provider supports assistant `phase` replay metadata. */
-  readonly assistantPhase: boolean;
-  /** Provider supports `previous_response_id` / equivalent continuation. */
-  readonly previousResponseId: boolean;
-  /** Provider supports requesting encrypted reasoning content via include. */
-  readonly encryptedReasoning: boolean;
-  /** Provider supports fetching stored responses by ID. */
-  readonly storedResponseRetrieval: boolean;
-  /** Provider supports deleting stored responses by ID. */
-  readonly storedResponseDeletion: boolean;
-  /** Provider supports opaque provider-managed compaction state. */
-  readonly opaqueCompaction: boolean;
-  /** Runtime can safely fall back to stateless replay for unsupported features. */
-  readonly deterministicFallback: boolean;
-}
-
-export interface LLMProviderCapabilities {
-  /** Provider name exposed by the adapter. */
-  readonly provider: string;
-  /** Stateful continuation and compaction feature support. */
-  readonly stateful: LLMProviderStatefulCapabilities;
-}
 
 export type LLMContextWindowSource =
   | "explicit_config"
@@ -340,41 +228,6 @@ export interface LLMProviderExecutionProfile {
   readonly maxOutputTokens?: number;
 }
 
-/**
- * Persisted provider-managed continuation anchor.
- *
- * Stored by the runtime so a daemon restart can restore provider-native
- * continuation state instead of falling back to stateless replay.
- */
-export interface LLMStatefulResumeAnchor {
-  /** Response ID that should be used as `previous_response_id` when resuming. */
-  readonly previousResponseId: string;
-  /** Provider reconciliation hash captured when the anchor was created. */
-  readonly reconciliationHash?: string;
-}
-
-/**
- * Optional stateful continuation hints passed to provider calls.
- */
-export interface LLMChatStatefulOptions {
-  /** Session key used by providers to scope response-id anchors. */
-  readonly sessionId: string;
-  /** Persisted continuation anchor restored by the runtime after restart. */
-  readonly resumeAnchor?: LLMStatefulResumeAnchor;
-  /**
-   * True when the local session manager compacted history after the previous
-   * anchor was recorded.
-   */
-  readonly historyCompacted?: boolean;
-  /**
-   * Full local dialogue lineage used only for reconciliation hashing.
-   *
-   * This lets the runtime keep provider prompt payloads budgeted/truncated
-   * while still validating `previous_response_id` against the complete local
-   * conversation state.
-   */
-  readonly reconciliationMessages?: readonly LLMMessage[];
-}
 
 /**
  * Optional turn-time tool routing hints passed to provider calls.
@@ -598,7 +451,13 @@ export type LLMToolChoice =
  * Optional provider call options.
  */
 export interface LLMChatOptions {
-  readonly stateful?: LLMChatStatefulOptions;
+  /**
+   * Optional stable session key passed to providers that expose a
+   * prompt-cache routing hint (xAI `prompt_cache_key`, etc.). Pure
+   * optimization — has no effect on correctness. No server-side
+   * conversation state is implied.
+   */
+  readonly promptCacheKey?: string;
   readonly toolRouting?: LLMChatToolRoutingOptions;
   readonly toolChoice?: LLMToolChoice;
   /** Optional request-scoped structured output contract. */
@@ -680,8 +539,6 @@ export interface LLMResponse {
   model: string;
   /** Provider-computed request diagnostics for this call. */
   requestMetrics?: LLMRequestMetrics;
-  /** Stateful continuation diagnostics, when supported by the provider. */
-  stateful?: LLMStatefulDiagnostics;
   /** Provider-native compaction diagnostics, when supported by the provider. */
   compaction?: LLMCompactionDiagnostics;
   /** Provider-side evidence from built-in/server-side tools. */
@@ -731,14 +588,8 @@ export interface LLMProvider {
     options?: LLMChatOptions,
   ): Promise<LLMResponse>;
   healthCheck(): Promise<boolean>;
-  /** Report provider-native continuation / compaction support. */
-  getCapabilities?(): LLMProviderCapabilities;
   /** Report the effective model/context profile used for prompt budgeting. */
   getExecutionProfile?(): Promise<LLMProviderExecutionProfile>;
-  /** Optional lifecycle hook for session-scoped provider state cleanup. */
-  resetSessionState?(sessionId: string): void;
-  /** Optional lifecycle hook to clear all provider-managed session state. */
-  clearSessionState?(): void;
   /** Optional debug/replay hook for fetching a stored provider response by ID. */
   retrieveStoredResponse?(responseId: string): Promise<LLMStoredResponse>;
   /** Optional debug/replay hook for deleting a stored provider response by ID. */

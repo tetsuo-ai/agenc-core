@@ -62,7 +62,6 @@ export function createCallUsageRecord(input: {
     afterBudget: input.afterBudget,
     providerRequestMetrics: input.response.requestMetrics,
     budgetDiagnostics: input.budgetDiagnostics,
-    statefulDiagnostics: input.response.stateful,
     compactionDiagnostics: input.response.compaction,
   };
 }
