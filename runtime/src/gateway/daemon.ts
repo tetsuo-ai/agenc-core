@@ -152,7 +152,11 @@ import {
 import { ToolRegistry } from "../tools/registry.js";
 import { SystemRemoteJobManager } from "../tools/system/remote-job.js";
 import { SystemRemoteSessionManager } from "../tools/system/remote-session.js";
-import { TaskStore } from "../tools/system/task-tracker.js";
+import {
+  SessionTaskStore,
+  TaskStore,
+  listOpenTasksForSession,
+} from "../tools/system/task-tracker.js";
 import { TodoStore } from "../tools/system/todo-store.js";
 import { DEFAULT_TIMEOUT_MS as DEFAULT_BASH_TOOL_TIMEOUT_MS } from "../tools/system/types.js";
 import {
@@ -1143,6 +1147,7 @@ export class DaemonManager {
   private _remoteSessionManager: SystemRemoteSessionManager | null = null;
   private _taskTrackerStore: TaskStore | null = null;
   private _todoStore: TodoStore | null = null;
+  private _sessionTaskStore: SessionTaskStore | null = null;
   private _persistentWorkerManager: PersistentWorkerManager | null = null;
   private _sessionModelInfo = new Map<
     string,
@@ -2569,6 +2574,11 @@ export class DaemonManager {
             subject: task.subject,
             status: task.status,
           }));
+        },
+        readOpenTasksForSession: async (sessionId, limit) => {
+          const store = this._sessionTaskStore;
+          if (!store) return [];
+          return listOpenTasksForSession(store, sessionId, limit);
         },
         isSessionBusy: (sessionId) =>
           this._foregroundSessionLocks.has(sessionId),
@@ -4070,6 +4080,7 @@ export class DaemonManager {
     this._remoteSessionManager = result.remoteSessionManager;
     this._taskTrackerStore = result.taskTrackerStore;
     this._todoStore = result.todoStore;
+    this._sessionTaskStore = result.sessionTaskStore;
     await this._taskTrackerStore.repairRuntimeState();
     await this.configurePersistentWorkerManager(config);
     this._containerMCPConfigs = result.containerMCPConfigs;
@@ -7874,6 +7885,9 @@ export class DaemonManager {
       }
       if (this._todoStore !== null) {
         this._todoStore = null;
+      }
+      if (this._sessionTaskStore !== null) {
+        this._sessionTaskStore = null;
       }
       this._toolRegistry = null;
       if (this._memoryBackend !== null) {
