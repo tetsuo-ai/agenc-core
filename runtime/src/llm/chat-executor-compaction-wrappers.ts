@@ -35,7 +35,11 @@ import {
   computeAutocompactThreshold,
 } from "./compact/index.js";
 import { applyReactiveCompact } from "./compact/reactive-compact.js";
-import { tryProjectedContextCollapse } from "./chat-executor-history-compaction.js";
+import {
+  compactHistory,
+  tryProjectedContextCollapse,
+} from "./chat-executor-history-compaction.js";
+import { runPostCompactCleanup } from "./compact/post-compact-cleanup.js";
 import { LLMContextWindowExceededError } from "./errors.js";
 import { dispatchHooks, defaultHookExecutor } from "./hooks/index.js";
 import { sealPendingToolProtocol } from "./chat-executor-tool-protocol-helpers.js";
@@ -199,6 +203,7 @@ export async function callModelWithReactiveCompact(
   callbacks: ToolLoopCallbacks,
   phase: ChatCallUsageRecord["phase"],
   buildInput: () => Parameters<ToolLoopCallbacks["callModelForPhase"]>[1],
+  compactionDeps?: import("./chat-executor-history-compaction.js").HistoryCompactionDependencies,
 ): Promise<LLMResponse | undefined> {
   // eslint-disable-next-line no-constant-condition
   while (true) {
@@ -214,14 +219,57 @@ export async function callModelWithReactiveCompact(
           attemptIndex: 0,
           lastTriggerMs: null,
         };
+
+      // On first 413, try summarization before truncation. The
+      // reference runtime's proactive autocompact prevents most 413s,
+      // but when one slips through, summarization preserves more
+      // context than blind oldest-first truncation.
+      if (reactiveState.attemptIndex === 0 && compactionDeps) {
+        try {
+          const compacted = await compactHistory(
+            ctx.messages,
+            ctx.sessionId,
+            compactionDeps,
+            {
+              existingArtifactContext: ctx.compactedArtifactContext,
+            },
+          );
+          ctx.messages = [...compacted.history];
+          ctx.compactedArtifactContext = compacted.artifactContext;
+          ctx.compacted = true;
+          runPostCompactCleanup(ctx.sessionId);
+          ctx.perIterationCompaction = {
+            ...ctx.perIterationCompaction,
+            reactiveCompact: {
+              attemptIndex: 1,
+              lastTriggerMs: Date.now(),
+            },
+          };
+          callbacks.emitExecutionTrace(ctx, {
+            type: "compaction_triggered",
+            phase,
+            callIndex: ctx.callIndex,
+            payload: {
+              layer: "reactive-compact",
+              boundary:
+                "[reactive-compact] summarized context on 413 (attempt 1)",
+              messagesAfter: ctx.messages.length,
+              attempt: 1,
+            },
+          });
+          continue;
+        } catch {
+          // Summarization failed (may have 413'd itself) — fall
+          // through to the truncation chain.
+        }
+      }
+
       const result = applyReactiveCompact({
         messages: ctx.messages,
         state: reactiveState,
         nowMs: Date.now(),
       });
       if (result.action === "exhausted" || result.action === "noop") {
-        // Give up and bubble the original 413 — the caller's error
-        // handling decides what to surface to the user.
         throw err;
       }
       ctx.messages = [...result.messages];
@@ -242,7 +290,6 @@ export async function callModelWithReactiveCompact(
           },
         });
       }
-      // Loop back and retry with trimmed history.
     }
   }
 }
