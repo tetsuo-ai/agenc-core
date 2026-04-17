@@ -17,6 +17,7 @@ import { normalizePromptEnvelope } from "../llm/prompt-envelope.js";
 import { buildModelOnlyChatOptions } from "../llm/model-only-options.js";
 import { getCompactPrompt, formatCompactSummary } from "../llm/compact/prompt.js";
 import type { LLMMessage, LLMProvider, ToolHandler } from "../llm/types.js";
+import { partitionByAnchorPreserve } from "../llm/types.js";
 import { collectAttachments } from "../llm/attachment-injection.js";
 import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";
@@ -4263,21 +4264,16 @@ export class BackgroundRunSupervisor {
     }
     const toSummarize = history.slice(0, -keepTail);
     const kept = history.slice(-keepTail);
-    try {
-      const historyText = toSummarize
-        .map((m) => `[${m.role}]: ${typeof m.content === "string" ? m.content : JSON.stringify(m.content)}`)
-        .join("\n\n");
-      const response = await this.supervisorLlm.chat(
-        [
-          { role: "system", content: getCompactPrompt() },
-          { role: "user", content: historyText },
-        ],
-        buildModelOnlyChatOptions({ toolChoice: "none" }),
-      );
-      const summary = formatCompactSummary(response.content).trim();
-      if (summary.length === 0) {
-        return history;
-      }
+    // Anchor-marked messages survive compaction boundaries —
+    // upstream's `messagesToKeep` pattern. Runtime-injected
+    // reminders rely on their own prior presence as a re-emission
+    // anti-spam anchor; if compaction summarized them away, the
+    // next cycle would re-inject immediately.
+    const { anchorPreserved, rest: toActuallySummarize } =
+      partitionByAnchorPreserve(toSummarize);
+    // Breaking the xAI stateful chain is independent of whether
+    // summarization actually runs — any compaction pass clears it.
+    const breakProviderContinuation = (): void => {
       run.compaction = {
         ...run.compaction,
         refreshCount: run.compaction.refreshCount + 1,
@@ -4293,8 +4289,42 @@ export class BackgroundRunSupervisor {
           providerContinuation: undefined,
         };
       }
+    };
+    // All summarizable messages were anchor-preserved → nothing to
+    // ask the summarizer model. Emit a stub system message so the
+    // result always starts with a system role (consistent with the
+    // normal compaction output) and skip the provider call.
+    if (toActuallySummarize.length === 0) {
+      breakProviderContinuation();
+      return [
+        {
+          role: "system",
+          content:
+            "[previous messages compacted; anchor-preserved reminders retained]",
+        } as LLMMessage,
+        ...anchorPreserved,
+        ...kept,
+      ];
+    }
+    try {
+      const historyText = toActuallySummarize
+        .map((m) => `[${m.role}]: ${typeof m.content === "string" ? m.content : JSON.stringify(m.content)}`)
+        .join("\n\n");
+      const response = await this.supervisorLlm.chat(
+        [
+          { role: "system", content: getCompactPrompt() },
+          { role: "user", content: historyText },
+        ],
+        buildModelOnlyChatOptions({ toolChoice: "none" }),
+      );
+      const summary = formatCompactSummary(response.content).trim();
+      if (summary.length === 0) {
+        return history;
+      }
+      breakProviderContinuation();
       return [
         { role: "system", content: summary } as LLMMessage,
+        ...anchorPreserved,
         ...kept,
       ];
     } catch {

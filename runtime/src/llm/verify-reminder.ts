@@ -180,6 +180,6 @@ export function buildVerifyReminderMessage(): LLMMessage {
   return {
     role: "user",
     content: `<system-reminder>\n${VERIFY_REMINDER_HEADER}\n</system-reminder>`,
-    runtimeOnly: { mergeBoundary: "user_context" },
+    runtimeOnly: { mergeBoundary: "user_context", anchorPreserve: true },
   };
 }

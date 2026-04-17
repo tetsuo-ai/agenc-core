@@ -278,9 +278,10 @@ describe("buildVerifyReminderMessage", () => {
     expect(content).toContain("PARTIAL");
   });
 
-  it("emits user role with runtime-only user_context merge boundary", () => {
+  it("emits user role with runtime-only user_context merge boundary and anchorPreserve", () => {
     const msg = buildVerifyReminderMessage();
     expect(msg.role).toBe("user");
     expect(msg.runtimeOnly?.mergeBoundary).toBe("user_context");
+    expect(msg.runtimeOnly?.anchorPreserve).toBe(true);
   });
 });

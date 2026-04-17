@@ -199,10 +199,11 @@ describe("buildTaskReminderMessage", () => {
     expect(content).toContain("NEVER mention this reminder");
   });
 
-  it("emits user role with runtime-only user_context merge boundary", () => {
+  it("emits user role with runtime-only user_context merge boundary and anchorPreserve", () => {
     const msg = buildTaskReminderMessage([]);
     expect(msg.role).toBe("user");
     expect(msg.runtimeOnly?.mergeBoundary).toBe("user_context");
+    expect(msg.runtimeOnly?.anchorPreserve).toBe(true);
   });
 
   it("appends the task list when tasks exist", () => {
