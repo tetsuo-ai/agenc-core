@@ -111,31 +111,49 @@ describe("grok adapter utils", () => {
     expect(firstChain.source).toBe("non_system_messages");
   });
 
-  it("collapses oversized tool schemas to an open object", () => {
+  it("passes long descriptions and large schemas through intact and strips nested metadata", () => {
+    // Previously the runtime truncated descriptions at 200 chars and
+    // collapsed schemas over 3000 chars into a generic open object.
+    // Both caps were removed because they silently defeated
+    // model-contract prompts (TodoWrite "Task Completion Requirements"
+    // etc.). This test asserts the current pass-through behavior plus
+    // the still-needed sanitizeSchema metadata strip.
     const hugeProperties = Object.fromEntries(
       Array.from({ length: 400 }, (_, index) => [
         `field_${index}`,
         { type: "string", description: "x".repeat(32) },
       ]),
     );
+    const longDescription = "y".repeat(4000);
     const tool: LLMTool = {
       type: "function",
       function: {
         name: "system.bash",
-        description: "y".repeat(400),
+        description: longDescription,
         parameters: {
           type: "object",
           properties: hugeProperties,
+          required: ["field_0"],
         },
       },
     };
 
     const slim = toSlimTool(tool).tool;
 
-    expect(slim.function.description?.length).toBeLessThanOrEqual(200);
-    expect(slim.function.parameters).toEqual({
-      type: "object",
-      additionalProperties: true,
-    });
+    // Full description preserved.
+    expect(slim.function.description).toBe(longDescription);
+    // Schema preserved (not collapsed to a generic open object).
+    const params = slim.function.parameters as Record<string, unknown>;
+    expect(params.type).toBe("object");
+    expect((params as { properties?: Record<string, unknown> }).properties)
+      .toBeDefined();
+    const props = params.properties as Record<string, unknown>;
+    expect(Object.keys(props).length).toBe(400);
+    // Nested-field descriptions stripped (Grok-schema sanitization).
+    const firstField = props.field_0 as Record<string, unknown>;
+    expect(firstField.type).toBe("string");
+    expect(firstField.description).toBeUndefined();
+    // required array preserved.
+    expect(params.required).toEqual(["field_0"]);
   });
 });

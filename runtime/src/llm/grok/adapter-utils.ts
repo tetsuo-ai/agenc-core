@@ -14,9 +14,6 @@ import type {
 import { sanitizeToolCallArgumentsForReplay } from "../chat-executor-tool-utils.js";
 import { safeStringify } from "../../tools/types.js";
 
-const MAX_TOOL_DESCRIPTION_CHARS = 200;
-const MAX_TOOL_SCHEMA_CHARS_PER_TOOL = 3_000;
-const MAX_TOOL_SCHEMA_CHARS_TOTAL = 40_000;
 const MAX_STATEFUL_RECONCILIATION_WINDOW = 256;
 const STATEFUL_HASH_VERSION = "v1";
 const TOOL_METADATA_KEYS = new Set([
@@ -453,6 +450,15 @@ function toolPriority(name: string): number {
   return 3;
 }
 
+/**
+ * Orders tools by priority and sanitizes nested-schema metadata that
+ * the Grok API rejects (stripping per-field `description`, `title`,
+ * `examples`, etc.). Descriptions and parameter schemas are passed
+ * through intact — previous versions truncated descriptions at 200
+ * chars and collapsed >3000-char schemas to a generic open object,
+ * which silently defeated tool prompts like the full TodoWrite
+ * "Task Completion Requirements" text. Those caps are gone.
+ */
 export function slimTools(
   tools: readonly LLMTool[],
 ): { tools: LLMTool[]; chars: number } {
@@ -470,48 +476,16 @@ export function slimTools(
 
   for (const tool of ordered) {
     const sanitizedParams = sanitizeSchema(tool.function.parameters);
-    let normalizedParams = sanitizedParams;
-    if (
-      JSON.stringify(sanitizedParams).length > MAX_TOOL_SCHEMA_CHARS_PER_TOOL
-    ) {
-      normalizedParams = { type: "object", additionalProperties: true };
-    }
-
     const slim: LLMTool = {
       type: "function",
       function: {
         name: tool.function.name,
-        description: truncate(
-          tool.function.description ?? "",
-          MAX_TOOL_DESCRIPTION_CHARS,
-        ),
-        parameters: normalizedParams as Record<string, unknown>,
+        description: tool.function.description ?? "",
+        parameters: sanitizedParams as Record<string, unknown>,
       },
     };
-
-    const slimChars = JSON.stringify(slim).length;
-    if (usedChars + slimChars > MAX_TOOL_SCHEMA_CHARS_TOTAL) {
-      continue;
-    }
     selected.push(slim);
-    usedChars += slimChars;
-  }
-
-  if (selected.length === 0) {
-    const first = ordered[0];
-    const fallbackTool: LLMTool = {
-      type: "function",
-      function: {
-        name: first.function.name,
-        description: truncate(
-          first.function.description ?? "",
-          MAX_TOOL_DESCRIPTION_CHARS,
-        ),
-        parameters: { type: "object", additionalProperties: true },
-      },
-    };
-    const chars = JSON.stringify(fallbackTool).length;
-    return { tools: [fallbackTool], chars };
+    usedChars += JSON.stringify(slim).length;
   }
 
   return { tools: selected, chars: usedChars };
@@ -519,25 +493,14 @@ export function slimTools(
 
 export function toSlimTool(tool: LLMTool): { tool: LLMTool; chars: number } {
   const sanitizedParams = sanitizeSchema(tool.function.parameters);
-  let normalizedParams = sanitizedParams;
-  if (
-    JSON.stringify(sanitizedParams).length > MAX_TOOL_SCHEMA_CHARS_PER_TOOL
-  ) {
-    normalizedParams = { type: "object", additionalProperties: true };
-  }
-
   const slim: LLMTool = {
     type: "function",
     function: {
       name: tool.function.name,
-      description: truncate(
-        tool.function.description ?? "",
-        MAX_TOOL_DESCRIPTION_CHARS,
-      ),
-      parameters: normalizedParams as Record<string, unknown>,
+      description: tool.function.description ?? "",
+      parameters: sanitizedParams as Record<string, unknown>,
     },
   };
-
   return {
     tool: slim,
     chars: JSON.stringify(slim).length,
