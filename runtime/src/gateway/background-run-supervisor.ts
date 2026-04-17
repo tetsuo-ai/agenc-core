@@ -4804,6 +4804,10 @@ export class BackgroundRunSupervisor {
         run: summary,
       });
     }
+    this.onStatus?.(run.sessionId, {
+      phase: "idle",
+      detail: `Background run ${decision.state}`,
+    });
     const latencyMs = Math.max(0, run.updatedAt - run.createdAt);
     this.recordRunTelemetry(
       TELEMETRY_METRIC_NAMES.BACKGROUND_RUN_LATENCY_MS,
