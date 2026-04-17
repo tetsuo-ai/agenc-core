@@ -3811,6 +3811,9 @@ export class BackgroundRunSupervisor {
                   }
                   : {}),
               },
+              ...(run.compaction.refreshCount > 0
+                ? { historyCompacted: true }
+                : {}),
             }
             : undefined,
           toolHandler: cycleToolHandler,
