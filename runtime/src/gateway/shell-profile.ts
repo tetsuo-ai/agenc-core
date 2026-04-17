@@ -45,6 +45,7 @@ const GENERAL_DEFAULT_TOOL_NAMES = [
   "task.list",
   "task.get",
   "task.update",
+  "TodoWrite",
   "execute_with_agent",
   "coordinator",
   "web_search",
@@ -143,6 +144,7 @@ const DEFINITIONS: Record<SessionShellProfile, ShellProfileDefinition> = {
       "system.symbolDefinition",
       "system.symbolReferences",
       "system.searchTools",
+      "TodoWrite",
       "execute_with_agent",
       "coordinator",
     ],
@@ -163,7 +165,7 @@ const DEFINITIONS: Record<SessionShellProfile, ShellProfileDefinition> = {
       "Use delegation primarily for bounded investigation, synthesis, and source-backed analysis.",
     ],
     toolPrefixes: ["system.browse", "system.http", "playwright.", "browser_", "task."],
-    exactToolNames: ["execute_with_agent"],
+    exactToolNames: ["TodoWrite", "execute_with_agent"],
     delegationDefault: "research",
     approvalHints: {
       readOnlyBias: true,
@@ -181,7 +183,7 @@ const DEFINITIONS: Record<SessionShellProfile, ShellProfileDefinition> = {
       "Prefer explicit checks, logs, tests, and run output over intuition.",
     ],
     toolPrefixes: ["system.", "desktop.", "task."],
-    exactToolNames: ["execute_with_agent"],
+    exactToolNames: ["TodoWrite", "execute_with_agent"],
     delegationDefault: "verify",
     approvalHints: {
       readOnlyBias: true,
@@ -199,7 +201,7 @@ const DEFINITIONS: Record<SessionShellProfile, ShellProfileDefinition> = {
       "Keep structure and wording clear, but still verify referenced commands or paths when they matter.",
     ],
     toolPrefixes: ["system.", "task."],
-    exactToolNames: ["execute_with_agent"],
+    exactToolNames: ["TodoWrite", "execute_with_agent"],
     delegationDefault: "coding",
     approvalHints: {
       readOnlyBias: false,
@@ -217,7 +219,7 @@ const DEFINITIONS: Record<SessionShellProfile, ShellProfileDefinition> = {
       "Keep awareness of system state, long-running handles, and operational visibility.",
     ],
     toolPrefixes: ["agenc.", "system.", "social.", "wallet.", "task."],
-    exactToolNames: ["execute_with_agent", "coordinator"],
+    exactToolNames: ["TodoWrite", "execute_with_agent", "coordinator"],
     delegationDefault: "operator",
     approvalHints: {
       readOnlyBias: false,
