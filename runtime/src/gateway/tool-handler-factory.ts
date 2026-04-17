@@ -26,6 +26,10 @@ import {
 } from "../tools/system/task-tracker.js";
 import type { TaskStore } from "../tools/system/task-tracker.js";
 import {
+  TODO_WRITE_SESSION_ARG,
+  TODO_WRITE_TOOL_NAME,
+} from "../tools/system/todo-write.js";
+import {
   buildShellProfileApprovalContext,
   type SessionShellProfile,
 } from "./shell-profile.js";
@@ -289,13 +293,15 @@ function stripInternalToolArgs(
   const hasTaskActorName = TASK_ACTOR_NAME_ARG in args;
   const hasSessionId = SESSION_ID_ARG in args;
   const hasAdvertisedToolNames = SESSION_ADVERTISED_TOOL_NAMES_ARG in args;
+  const hasTodoSessionId = TODO_WRITE_SESSION_ARG in args;
   if (
     !hasAllowedRoots &&
     !hasTaskListId &&
     !hasTaskActorKind &&
     !hasTaskActorName &&
     !hasSessionId &&
-    !hasAdvertisedToolNames
+    !hasAdvertisedToolNames &&
+    !hasTodoSessionId
   ) {
     return args;
   }
@@ -318,7 +324,27 @@ function stripInternalToolArgs(
   if (hasAdvertisedToolNames) {
     delete nextArgs[SESSION_ADVERTISED_TOOL_NAMES_ARG];
   }
+  if (hasTodoSessionId) {
+    delete nextArgs[TODO_WRITE_SESSION_ARG];
+  }
   return nextArgs;
+}
+
+function applyTodoWriteSessionId(
+  toolName: string,
+  args: Record<string, unknown>,
+  sessionId: string | undefined,
+): Record<string, unknown> {
+  if (toolName !== TODO_WRITE_TOOL_NAME) {
+    return args;
+  }
+  if (!sessionId || sessionId.trim().length === 0) {
+    return args;
+  }
+  return {
+    ...args,
+    [TODO_WRITE_SESSION_ARG]: sessionId,
+  };
 }
 
 function applySessionTaskListId(
@@ -3042,6 +3068,7 @@ export function createSessionToolHandler(config: SessionToolHandlerConfig): Tool
       delegatedParentAllowedRoots,
     );
     executionArgs = applySessionTaskListId(toolName, executionArgs, sessionIdentity);
+    executionArgs = applyTodoWriteSessionId(toolName, executionArgs, sessionIdentity);
     executionArgs = applyTaskActorContext(
       toolName,
       executionArgs,
