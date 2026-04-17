@@ -226,6 +226,17 @@ export interface BackgroundRunSupervisorConfig {
     discoveredToolNames?: readonly string[],
   ) => readonly string[];
   readonly seedHistoryForSession?: (sessionId: string) => readonly LLMMessage[];
+  /**
+   * Optional callback returning the session's current TodoWrite list.
+   * Used by the shared attachment-injection hook to render the
+   * 10-turn reminder with the right list contents. When absent, the
+   * reminder still fires on cadence but with an empty list payload.
+   */
+  readonly readTodosForSession?: (
+    sessionId: string,
+  ) => Promise<
+    readonly import("../tools/system/todo-store.js").TodoItem[]
+  >;
   readonly isSessionBusy?: (sessionId: string) => boolean;
   readonly onStatus?: (
     sessionId: string,

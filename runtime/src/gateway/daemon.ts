@@ -2525,6 +2525,8 @@ export class DaemonManager {
           ),
         seedHistoryForSession: (sessionId) =>
           sessionMgr.get(sessionId)?.history ?? [],
+        readTodosForSession: async (sessionId) =>
+          this._todoStore ? await this._todoStore.getTodos(sessionId) : [],
         isSessionBusy: (sessionId) =>
           this._foregroundSessionLocks.has(sessionId),
         onStatus: (sessionId, payload) => {
@@ -7556,6 +7558,8 @@ export class DaemonManager {
           });
         },
         taskStore: this._taskTrackerStore,
+        readTodosForSession: async (sessionId) =>
+          this._todoStore ? await this._todoStore.getTodos(sessionId) : [],
         workerManager,
         maybeStartBackgroundRun,
         onSubagentSynthesis: (result) => {

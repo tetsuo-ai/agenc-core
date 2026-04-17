@@ -6,6 +6,7 @@ import type {
 } from "../llm/chat-executor.js";
 import type { ChatExecutionTraceEvent } from "../llm/chat-executor-types.js";
 import { executeChatToLegacyResult } from "../llm/execute-chat.js";
+import { collectAttachments } from "../llm/attachment-injection.js";
 import { normalizePromptEnvelope } from "../llm/prompt-envelope.js";
 import type {
   LLMProviderTraceEvent,
@@ -133,6 +134,11 @@ interface ExecuteWebChatConversationTurnParams {
   readonly workerManager?: PersistentWorkerManager | null;
   readonly agentDefinitions?: readonly AgentDefinition[];
   readonly taskStore?: TaskStore | null;
+  readonly readTodosForSession?: (
+    sessionId: string,
+  ) => Promise<
+    readonly import("../tools/system/todo-store.js").TodoItem[]
+  >;
   readonly maybeStartBackgroundRun?: (params: {
     readonly session: Session;
     readonly objective: string;
@@ -404,10 +410,22 @@ export async function executeWebChatConversationTurn(
     const sessionInteractiveContext = buildSessionInteractiveContext(session, {
       overrideState: interactiveTurnState,
     });
-    const effectiveHistory =
+    const historyBeforeAttachments =
       atMentionAttachments.historyPrelude.length > 0
         ? [...session.history, ...atMentionAttachments.historyPrelude]
         : session.history;
+    const todosForAttachment = params.readTodosForSession
+      ? await params.readTodosForSession(msg.sessionId)
+      : [];
+    const runtimeAttachments = collectAttachments({
+      history: historyBeforeAttachments,
+      activeToolNames: new Set<string>(advertisedToolNames),
+      todos: todosForAttachment,
+    });
+    const effectiveHistory =
+      runtimeAttachments.messages.length > 0
+        ? [...historyBeforeAttachments, ...runtimeAttachments.messages]
+        : historyBeforeAttachments;
     if (
       params.maybeStartBackgroundRun &&
       await params.maybeStartBackgroundRun({

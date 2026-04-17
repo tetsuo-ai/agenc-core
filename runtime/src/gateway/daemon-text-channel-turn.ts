@@ -4,6 +4,7 @@ import type {
   ChatToolRoutingSummary,
 } from "../llm/chat-executor.js";
 import { executeChatToLegacyResult } from "../llm/execute-chat.js";
+import { collectAttachments } from "../llm/attachment-injection.js";
 import { normalizePromptEnvelope } from "../llm/prompt-envelope.js";
 import type {
   LLMProviderTraceEvent,
@@ -221,6 +222,11 @@ interface ExecuteTextChannelTurnParams {
   readonly workerManager?: PersistentWorkerManager | null;
   readonly agentDefinitions?: readonly AgentDefinition[];
   readonly taskStore?: TaskStore | null;
+  readonly readTodosForSession?: (
+    sessionId: string,
+  ) => Promise<
+    readonly import("../tools/system/todo-store.js").TodoItem[]
+  >;
 }
 
 export async function executeTextChannelTurn(
@@ -307,10 +313,22 @@ export async function executeTextChannelTurn(
   const sessionInteractiveContext = buildSessionInteractiveContext(session, {
     overrideState: interactiveTurnState,
   });
-  const effectiveHistory =
+  const historyBeforeAttachments =
     atMentionAttachments.historyPrelude.length > 0
       ? [...session.history, ...atMentionAttachments.historyPrelude]
       : session.history;
+  const todosForAttachment = params.readTodosForSession
+    ? await params.readTodosForSession(msg.sessionId)
+    : [];
+  const runtimeAttachments = collectAttachments({
+    history: historyBeforeAttachments,
+    activeToolNames: new Set<string>(advertisedToolNames),
+    todos: todosForAttachment,
+  });
+  const effectiveHistory =
+    runtimeAttachments.messages.length > 0
+      ? [...historyBeforeAttachments, ...runtimeAttachments.messages]
+      : historyBeforeAttachments;
   const promptEnvelope = normalizePromptEnvelope({
     baseSystemPrompt: effectiveSystemPrompt,
   });
