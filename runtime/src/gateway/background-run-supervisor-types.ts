@@ -155,6 +155,20 @@ export interface ActiveBackgroundRun {
   cycleCount: number;
   stableWorkingCycles: number;
   consecutiveErrorCycles: number;
+  /**
+   * Runtime counters backing the `verify_reminder` trigger. These are
+   * persisted state rather than scan-derived from history because their
+   * anchors are singular past events — a verifier spawn, a prior
+   * reminder emission — that history compaction can summarize away.
+   * Separation of "runtime bookkeeping state" from "model-visible
+   * context" matches the reference runtime's `AppState.pendingPlanVerification`
+   * pattern and the SOTA position from ESAA / LangGraph / OpenAI
+   * Assistants runs. Read by `collectAttachments` at the start of the
+   * next cycle; written at the end of the current cycle after
+   * `recordToolEvidence`.
+   */
+  mutatingEditsSinceLastVerifierSpawn: number;
+  assistantTurnsSinceLastVerifyReminder: number;
   anchorFiles: AnchorFileSnapshot[];
   nextCheckAt?: number;
   nextHeartbeatAt?: number;
@@ -372,6 +386,10 @@ export function toPersistedRun(run: ActiveBackgroundRun): PersistedBackgroundRun
     cycleCount: run.cycleCount,
     stableWorkingCycles: run.stableWorkingCycles,
     consecutiveErrorCycles: run.consecutiveErrorCycles,
+    mutatingEditsSinceLastVerifierSpawn:
+      run.mutatingEditsSinceLastVerifierSpawn,
+    assistantTurnsSinceLastVerifyReminder:
+      run.assistantTurnsSinceLastVerifyReminder,
     anchorFiles: [...run.anchorFiles],
     nextCheckAt: run.nextCheckAt,
     nextHeartbeatAt: run.nextHeartbeatAt,
@@ -455,6 +473,20 @@ export function toActiveRun(run: PersistedBackgroundRun): ActiveBackgroundRun {
     cycleCount: run.cycleCount,
     stableWorkingCycles: run.stableWorkingCycles,
     consecutiveErrorCycles: run.consecutiveErrorCycles,
+    // Explicit defaults for runs persisted before the counters landed:
+    //   - edit counter defaults to 0 so only post-upgrade mutating
+    //     tool calls accrue toward the verify_reminder threshold.
+    //   - turn counter defaults to Infinity so the first reminder
+    //     fires as soon as the edit threshold hits after an upgrade
+    //     (no spurious 10-turn delay on first boot after this PR).
+    mutatingEditsSinceLastVerifierSpawn:
+      typeof run.mutatingEditsSinceLastVerifierSpawn === "number"
+        ? run.mutatingEditsSinceLastVerifierSpawn
+        : 0,
+    assistantTurnsSinceLastVerifyReminder:
+      typeof run.assistantTurnsSinceLastVerifyReminder === "number"
+        ? run.assistantTurnsSinceLastVerifyReminder
+        : Number.POSITIVE_INFINITY,
     anchorFiles: [...run.anchorFiles],
     nextCheckAt: run.nextCheckAt,
     nextHeartbeatAt: run.nextHeartbeatAt,

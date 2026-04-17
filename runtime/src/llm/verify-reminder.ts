@@ -48,7 +48,16 @@ const VERIFY_REMINDER_HEADER =
   "elsewhere. Make sure that you NEVER mention this reminder to the " +
   "user.";
 
-const MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set([
+/**
+ * Tool names that count toward the "unverified edits" threshold.
+ *
+ * Explicitly excludes `system.bash`: shell-sourced mutations are not
+ * individually trackable (one `bash` call can create many files or
+ * none), so the runtime delegates shell-level verification to the
+ * verifier-obligation contract at the run level rather than trying
+ * to count shell mutations as equivalent to structured file writes.
+ */
+export const MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set([
   "system.writeFile",
   "system.editFile",
   "system.appendFile",
@@ -58,6 +67,52 @@ const MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 const EXECUTE_WITH_AGENT_TOOL_NAME = "execute_with_agent";
+
+export function isMutatingTool(name: string): boolean {
+  return MUTATING_TOOL_NAMES.has(name);
+}
+
+/**
+ * Detect a verifier spawn from an already-parsed `ToolCallRecord`
+ * (supervisor-side shape; args is `Record<string, unknown>`). The
+ * corresponding `LLMMessage`/raw-JSON-arguments path used by the
+ * history scan functions below is intentionally separate to avoid
+ * type ambiguity across two parsing models in the same module.
+ */
+export function isVerifierSpawnFromRecord(call: {
+  readonly name: string;
+  readonly args: Record<string, unknown>;
+}): boolean {
+  if (call.name !== EXECUTE_WITH_AGENT_TOOL_NAME) return false;
+  return hasVerifierObligations(call.args);
+}
+
+/**
+ * Detect a `VERDICT: PASS|FAIL|PARTIAL` marker in a verifier tool's
+ * own tool_result. Scoped to `execute_with_agent` results only so an
+ * unrelated tool (e.g. a `grep` hit that happens to contain the word
+ * "VERDICT") cannot spuriously reset the edit counter.
+ */
+export function containsVerdictMarkerInToolResult(call: {
+  readonly name: string;
+  readonly result: string;
+}): boolean {
+  if (call.name !== EXECUTE_WITH_AGENT_TOOL_NAME) return false;
+  return VERDICT_MARKERS.some((marker) => call.result.includes(marker));
+}
+
+/**
+ * Returns `true` if the message content contains the static verify-
+ * reminder header prefix. Used by the supervisor to detect whether
+ * a just-emitted reminder came through `collectAttachments` so the
+ * turn counter can be reset.
+ */
+export function messageContainsVerifyReminderPrefix(
+  message: LLMMessage,
+): boolean {
+  const content = stringContent(message);
+  return content.includes(VERIFY_REMINDER_HEADER_PREFIX);
+}
 
 const VERDICT_MARKERS: readonly string[] = [
   "VERDICT: PASS",

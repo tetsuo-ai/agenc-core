@@ -383,6 +383,13 @@ export interface PersistedBackgroundRun {
   readonly cycleCount: number;
   readonly stableWorkingCycles: number;
   readonly consecutiveErrorCycles: number;
+  /**
+   * Persisted runtime counters for the `verify_reminder` trigger.
+   * Optional because records persisted before this field landed
+   * need a deserialization default — see `toActiveRun`.
+   */
+  readonly mutatingEditsSinceLastVerifierSpawn?: number;
+  readonly assistantTurnsSinceLastVerifyReminder?: number;
   readonly anchorFiles: readonly PersistedAnchorFileSnapshot[];
   readonly nextCheckAt?: number;
   readonly nextHeartbeatAt?: number;

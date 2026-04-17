@@ -45,6 +45,22 @@ export interface AttachmentContext {
   readonly activeToolNames: ReadonlySet<string>;
   readonly todos: readonly TodoItem[];
   readonly tasks: readonly ReminderTaskView[];
+  /**
+   * Runtime counters that back the `verify_reminder` trigger. Supplied
+   * by the background-run supervisor (where they live on
+   * `ActiveBackgroundRun`); omitted by interactive (webchat,
+   * text-channel) call sites where the reminder is out of scope —
+   * interactive turns are short-horizon and do not accumulate
+   * unverified edits the way background runs do.
+   *
+   * Separating these counters from history (rather than scanning for
+   * an anchor event such as an `execute_with_agent` tool_use with
+   * `verifierObligations`) matches the reference runtime's
+   * `AppState.pendingPlanVerification` pattern and survives history
+   * compaction.
+   */
+  readonly mutatingEditsSinceLastVerifierSpawn?: number;
+  readonly assistantTurnsSinceLastVerifyReminder?: number;
 }
 
 export interface AttachmentInjectionResult {
