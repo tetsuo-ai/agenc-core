@@ -31,6 +31,7 @@
 
 import { collectContextSections } from "./chat-executor-context-injection.js";
 import { compactHistory } from "./chat-executor-history-compaction.js";
+import { runPostCompactCleanup } from "./compact/post-compact-cleanup.js";
 import { renderArtifactContextPrompt } from "./context-compaction.js";
 import {
   pushMessage,
@@ -249,6 +250,7 @@ export async function initializeExecutionContext(
       compactedArtifactContext = compactedResult.artifactContext;
       helpers.resetSessionTokens(sessionId);
       compacted = true;
+      runPostCompactCleanup(sessionId);
     } catch {
       deps.cooldowns.clear();
       for (const [providerName, cooldown] of cooldownSnapshot.entries()) {

@@ -42,6 +42,7 @@ import {
   markAutocompactFailure,
   markAutocompactSuccess,
 } from "./compact/autocompact.js";
+import { runPostCompactCleanup } from "./compact/post-compact-cleanup.js";
 
 /**
  * Dependency struct for `maybeCompactInFlightCallInput`.
@@ -223,6 +224,7 @@ export async function maybeCompactInFlightCallInput(
     ctx.messageSections = [...nextSections];
     ctx.compacted = true;
     ctx.compactedArtifactContext = compacted.artifactContext;
+    runPostCompactCleanup(ctx.sessionId);
     ctx.perIterationCompaction = {
       ...ctx.perIterationCompaction,
       autocompact: markAutocompactSuccess(
