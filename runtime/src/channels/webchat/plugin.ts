@@ -606,6 +606,19 @@ export class WebChatChannel
       typeof payload.sessionId === "string"
         ? payload.sessionId
         : undefined;
+    // Suppress trace logging for high-frequency status polling messages.
+    // The UI polls every ~5 seconds; logging each poll at INFO floods
+    // the daemon log with 500+ entries/hour of pure noise while
+    // obscuring actual turn/tool/model events. status.update,
+    // chat.session.list, and session.command.catalog are operational
+    // heartbeats, not diagnostic signals.
+    const isHighFrequencyPoll =
+      response.type === "status.update" ||
+      response.type === "chat.session.list" ||
+      response.type === "session.command.catalog";
+    if (isHighFrequencyPoll) {
+      return;
+    }
     const traceLine = {
       clientId,
       ...(payloadSessionId || sessionId
