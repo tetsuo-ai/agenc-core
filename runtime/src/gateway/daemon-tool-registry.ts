@@ -45,6 +45,8 @@ import {
   SessionTaskStore,
   TaskStore,
 } from "../tools/system/task-tracker.js";
+import { TodoStore } from "../tools/system/todo-store.js";
+import { createTodoWriteTool } from "../tools/system/todo-write.js";
 import { runStopHookPhase, type StopHookRuntime } from "../llm/hooks/stop-hooks.js";
 import {
   buildRuntimeContractTaskTraceId,
@@ -106,6 +108,7 @@ interface ToolRegistrySideEffects {
   connectionManager: ConnectionManager | null;
   sessionTaskStore: SessionTaskStore;
   taskTrackerStore: TaskStore;
+  todoStore: TodoStore;
 }
 
 // ============================================================================
@@ -342,6 +345,8 @@ export async function createDaemonToolRegistry(
     persistenceRootDir: resolveRuntimePersistencePaths().rootDir,
     logger,
   });
+  const todoStore = new TodoStore({ memoryBackend });
+  registry.register(createTodoWriteTool(todoStore));
   const taskTrackerStore = new TaskStore({
     memoryBackend,
     persistenceRootDir: resolveRuntimePersistencePaths().rootDir,
@@ -779,5 +784,6 @@ export async function createDaemonToolRegistry(
     connectionManager,
     sessionTaskStore,
     taskTrackerStore,
+    todoStore,
   };
 }

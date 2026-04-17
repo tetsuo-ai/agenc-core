@@ -152,6 +152,7 @@ import { ToolRegistry } from "../tools/registry.js";
 import { SystemRemoteJobManager } from "../tools/system/remote-job.js";
 import { SystemRemoteSessionManager } from "../tools/system/remote-session.js";
 import { TaskStore } from "../tools/system/task-tracker.js";
+import { TodoStore } from "../tools/system/todo-store.js";
 import { DEFAULT_TIMEOUT_MS as DEFAULT_BASH_TOOL_TIMEOUT_MS } from "../tools/system/types.js";
 import {
   SkillDiscovery,
@@ -1140,6 +1141,7 @@ export class DaemonManager {
   private _remoteJobManager: SystemRemoteJobManager | null = null;
   private _remoteSessionManager: SystemRemoteSessionManager | null = null;
   private _taskTrackerStore: TaskStore | null = null;
+  private _todoStore: TodoStore | null = null;
   private _persistentWorkerManager: PersistentWorkerManager | null = null;
   private _sessionModelInfo = new Map<
     string,
@@ -2523,6 +2525,8 @@ export class DaemonManager {
           ),
         seedHistoryForSession: (sessionId) =>
           sessionMgr.get(sessionId)?.history ?? [],
+        readTodosForSession: async (sessionId) =>
+          this._todoStore ? await this._todoStore.getTodos(sessionId) : [],
         isSessionBusy: (sessionId) =>
           this._foregroundSessionLocks.has(sessionId),
         onStatus: (sessionId, payload) => {
@@ -4022,6 +4026,7 @@ export class DaemonManager {
     this._remoteJobManager = result.remoteJobManager;
     this._remoteSessionManager = result.remoteSessionManager;
     this._taskTrackerStore = result.taskTrackerStore;
+    this._todoStore = result.todoStore;
     await this._taskTrackerStore.repairRuntimeState();
     await this.configurePersistentWorkerManager(config);
     this._containerMCPConfigs = result.containerMCPConfigs;
@@ -7553,6 +7558,8 @@ export class DaemonManager {
           });
         },
         taskStore: this._taskTrackerStore,
+        readTodosForSession: async (sessionId) =>
+          this._todoStore ? await this._todoStore.getTodos(sessionId) : [],
         workerManager,
         maybeStartBackgroundRun,
         onSubagentSynthesis: (result) => {
@@ -7811,6 +7818,9 @@ export class DaemonManager {
       }
       if (this._taskTrackerStore !== null) {
         this._taskTrackerStore = null;
+      }
+      if (this._todoStore !== null) {
+        this._todoStore = null;
       }
       this._toolRegistry = null;
       if (this._memoryBackend !== null) {

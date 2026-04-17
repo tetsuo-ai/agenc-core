@@ -17,6 +17,7 @@ import { normalizePromptEnvelope } from "../llm/prompt-envelope.js";
 import { buildModelOnlyChatOptions } from "../llm/model-only-options.js";
 import { getCompactPrompt, formatCompactSummary } from "../llm/compact/prompt.js";
 import type { LLMMessage, LLMProvider, ToolHandler } from "../llm/types.js";
+import { collectAttachments } from "../llm/attachment-injection.js";
 import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";
 import { toErrorMessage } from "../utils/async.js";
@@ -583,6 +584,7 @@ export class BackgroundRunSupervisor {
   private readonly buildToolRoutingDecision?: BackgroundRunSupervisorConfig["buildToolRoutingDecision"];
   private readonly resolveAdvertisedToolNames?: BackgroundRunSupervisorConfig["resolveAdvertisedToolNames"];
   private readonly seedHistoryForSession?: BackgroundRunSupervisorConfig["seedHistoryForSession"];
+  private readonly readTodosForSession?: BackgroundRunSupervisorConfig["readTodosForSession"];
   private readonly isSessionBusy?: BackgroundRunSupervisorConfig["isSessionBusy"];
   private readonly onStatus?: BackgroundRunSupervisorConfig["onStatus"];
   private readonly publishUpdate: BackgroundRunSupervisorConfig["publishUpdate"];
@@ -623,6 +625,7 @@ export class BackgroundRunSupervisor {
     this.buildToolRoutingDecision = config.buildToolRoutingDecision;
     this.resolveAdvertisedToolNames = config.resolveAdvertisedToolNames;
     this.seedHistoryForSession = config.seedHistoryForSession;
+    this.readTodosForSession = config.readTodosForSession;
     this.isSessionBusy = config.isSessionBusy;
     this.onStatus = config.onStatus;
     this.publishUpdate = config.publishUpdate;
@@ -4036,6 +4039,28 @@ export class BackgroundRunSupervisor {
         now: this.now(),
       });
     }
+
+    // Runtime-injected attachments (today: the TodoWrite 10-turn
+    // reminder). Shared with the webchat chat-executor via
+    // `collectAttachments` so both surfaces emit identical nudges.
+    const activeToolNames = new Set<string>(
+      this.resolveAdvertisedToolNames?.(
+        sessionId,
+        run.shellProfile ?? DEFAULT_SESSION_SHELL_PROFILE,
+      ) ?? [],
+    );
+    const todos = this.readTodosForSession
+      ? await this.readTodosForSession(sessionId)
+      : [];
+    const attachments = collectAttachments({
+      history: run.internalHistory,
+      activeToolNames,
+      todos,
+    });
+    for (const attachment of attachments.messages) {
+      run.internalHistory.push(attachment);
+    }
+
     return {
       run,
       sessionId,
