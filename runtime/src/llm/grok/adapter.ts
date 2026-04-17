@@ -2401,6 +2401,16 @@ export class GrokProvider implements LLMProvider {
           role,
           content: normalizedContent,
         });
+      } else if (toolCalls.length > 0) {
+        // xAI requires every message to have at least one content
+        // element. When an assistant message carries tool calls but
+        // has empty content (e.g. at-mention file injection preludes),
+        // emit a minimal placeholder so the function_call items are
+        // not orphaned.
+        items.push({
+          role,
+          content: "Calling tool.",
+        });
       }
       for (const tc of toolCalls) {
         const functionData = (tc.function as Record<string, unknown> | undefined) ?? {};
