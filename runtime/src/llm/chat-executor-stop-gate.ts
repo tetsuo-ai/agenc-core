@@ -21,8 +21,9 @@
  *     it was claiming completion.
  *   - The anti-fabrication writeFile gate (`anti_fabrication_harness_overwrite`)
  *     fires on a write over a failing harness, which didn't happen here.
- *   - `assertNoSilentToolDropOnFollowup` only catches the "tools were
- *     stripped at the adapter boundary" case.
+ *   - The legacy silent-tool-drop detector only caught the "tools were
+ *     stripped at the adapter boundary" case (removed with stateless
+ *     transport migration).
  *   - The `Report outcomes faithfully` system prompt rule from PR #300
  *     bans the behavior, but Grok ignored it.
  *

@@ -32,11 +32,9 @@ import type {
 import { validateToolCallDetailed } from "../types.js";
 import { LLMProviderError, mapLLMError } from "../errors.js";
 import {
-  assertNoSilentToolDropOnFollowup,
   DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS,
   validateXaiRequestPreFlight,
   validateXaiResponsePostFlight,
-  XaiSilentToolDropError,
   XAI_RESPONSES_MAX_TOOL_COUNT,
 } from "./xai-strict-filter.js";
 import { ensureLazyImport } from "../lazy-import.js";
@@ -971,17 +969,7 @@ export class GrokProvider implements LLMProvider {
           options,
           "chat",
         );
-        const silentDropMitigatedResponse =
-          await this.maybeRetrySilentToolDrop(
-            client,
-            activePlan.params as Record<string, unknown>,
-            (truncationMitigatedResponse ??
-              originalResponse) as Record<string, unknown>,
-            options,
-            "chat",
-          );
         const response = (
-          silentDropMitigatedResponse ??
           truncationMitigatedResponse ??
           originalResponse
         ) as typeof originalResponse;
@@ -1264,17 +1252,7 @@ export class GrokProvider implements LLMProvider {
             options,
             "chat_stream",
           );
-          const silentDropMitigatedResponse =
-            await this.maybeRetrySilentToolDrop(
-              client,
-              params,
-              (truncationMitigatedResponse ??
-                response) as Record<string, unknown>,
-              options,
-              "chat_stream",
-            );
-          const mitigatedResponse =
-            silentDropMitigatedResponse ?? truncationMitigatedResponse;
+          const mitigatedResponse = truncationMitigatedResponse;
           if (mitigatedResponse) {
             response = mitigatedResponse;
             // Reset stream-accumulated tool calls; the mitigation
@@ -1340,15 +1318,6 @@ export class GrokProvider implements LLMProvider {
             response: response as Record<string, unknown>,
           });
           for (const anomaly of xaiAnomalies) {
-            if (
-              anomaly.severity === "error" &&
-              anomaly.code === "silent_tool_drop_promised_in_text"
-            ) {
-              throw new XaiSilentToolDropError(
-                "incoming_promised_tools_missing",
-                anomaly.evidence,
-              );
-            }
             if (anomaly.code === "truncated_response_mid_sentence") continue;
             this.logPostFlightAnomaly(anomaly);
           }
@@ -2141,25 +2110,6 @@ export class GrokProvider implements LLMProvider {
     // that the sanitize step would silently strip.
     validateXaiRequestPreFlight(params);
 
-    // Inline silent-tool-drop assertion. Catches the legacy
-    // MAX_TOOL_SCHEMA_CHARS_FOLLOWUP bug pattern: the runtime selected
-    // tools (`selectedTools.tools.length > 0`) but the final params has
-    // no `tools` field. The pre-flight validator can't catch this with
-    // the params alone — it needs the runtime's selection intent.
-    //
-    // The `toolSuppressionReason` argument tells the assertion when an
-    // empty `tools` field is *intentional* (e.g.
-    // `vision_model_without_tool_support` when an image is sent to a
-    // vision model that lacks tool support, or `empty_allowlist` when
-    // the routed tool subset resolves to zero matches). In those cases
-    // the assertion is a no-op — the runtime deliberately suppressed
-    // tools and that is not a bug.
-    assertNoSilentToolDropOnFollowup({
-      runtimeIntendedToolCount: selectedTools.tools.length,
-      toolSuppressionReason: selectedTools.toolSuppressionReason,
-      outgoingParams: params,
-    });
-
     return {
       params: sanitizeToDocumentedXaiResponsesParams(params),
       toolSelection: selectedTools,
@@ -2573,105 +2523,10 @@ export class GrokProvider implements LLMProvider {
         return undefined;
       }
 
-      const silentDropRecovered = await this.maybeRetrySilentToolDrop(
-        client,
-        retryParams,
-        retryResponse,
-        options,
-        transport,
-      );
-      if (silentDropRecovered) {
-        return silentDropRecovered;
-      }
-
       return retryResponse;
     } catch (err) {
       console.warn(
         `[GrokProvider] xAI mid-sentence truncation retry failed:`,
-        err instanceof Error ? err.message : String(err),
-      );
-      return undefined;
-    }
-  }
-
-  private async maybeRetrySilentToolDrop(
-    client: unknown,
-    originalParams: Record<string, unknown>,
-    originalResponse: Record<string, unknown>,
-    options: LLMChatOptions | undefined,
-    transport: "chat" | "chat_stream",
-  ): Promise<Record<string, unknown> | undefined> {
-    const anomalies = validateXaiResponsePostFlight({
-      request: originalParams,
-      response: originalResponse,
-    });
-    const silentDrop = anomalies.find(
-      (a) => a.code === "silent_tool_drop_promised_in_text",
-    );
-    if (!silentDrop) return undefined;
-
-    const retryParams: Record<string, unknown> = {
-      ...originalParams,
-      tool_choice: "required",
-      stream: false,
-    };
-
-    emitProviderTraceEvent(options, {
-      kind: "request",
-      transport,
-      provider: this.name,
-      model: String(retryParams.model ?? this.config.model),
-      payload:
-        cloneProviderTracePayload(retryParams) ??
-        { error: "provider_retry_request_trace_unavailable" },
-      context: {
-        retryReason: "xai_silent_tool_drop_mitigation",
-        originalEvidence: silentDrop.evidence,
-      } as unknown as ReturnType<typeof buildProviderRequestTraceContext>,
-    });
-
-    try {
-      const retryResult = await createWithResponseMetadata<
-        Record<string, unknown>
-      >(client, retryParams, undefined);
-      const retryResponse = retryResult.data;
-
-      emitProviderTraceEvent(options, {
-        kind: "response",
-        transport,
-        provider: this.name,
-        model: String(
-          (retryResponse as { model?: unknown }).model ?? retryParams.model,
-        ),
-        payload:
-          cloneProviderTracePayload(retryResponse) ??
-          { error: "provider_retry_response_trace_unavailable" },
-        context: {
-          retryReason: "xai_silent_tool_drop_mitigation",
-        } as unknown as ReturnType<typeof buildProviderResponseTraceContext>,
-      });
-
-      const retryAnomalies = validateXaiResponsePostFlight({
-        request: retryParams,
-        response: retryResponse,
-      });
-      const retryStillBroken = retryAnomalies.some(
-        (a) =>
-          a.code === "silent_tool_drop_promised_in_text" ||
-          a.code === "truncated_response_mid_sentence",
-      );
-      if (retryStillBroken) {
-        console.warn(
-          `[GrokProvider] xAI silent-tool-drop retry with tool_choice="required" ` +
-            `also returned a broken tool transition; falling through to original.`,
-        );
-        return undefined;
-      }
-
-      return retryResponse;
-    } catch (err) {
-      console.warn(
-        `[GrokProvider] xAI silent-tool-drop retry failed:`,
         err instanceof Error ? err.message : String(err),
       );
       return undefined;
@@ -2704,15 +2559,6 @@ export class GrokProvider implements LLMProvider {
         response: response as Record<string, unknown>,
       });
       for (const anomaly of anomalies) {
-        if (
-          anomaly.severity === "error" &&
-          anomaly.code === "silent_tool_drop_promised_in_text"
-        ) {
-          throw new XaiSilentToolDropError(
-            "incoming_promised_tools_missing",
-            anomaly.evidence,
-          );
-        }
         // truncated_response_mid_sentence is handled upstream by
         // maybeRetryMidSentenceTruncation() BEFORE parseResponse is
         // called. If it surfaces here, it means the retry ran and

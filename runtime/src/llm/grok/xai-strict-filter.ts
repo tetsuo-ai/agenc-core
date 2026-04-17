@@ -347,62 +347,6 @@ export class XaiUndocumentedFieldError extends LLMProviderError {
   }
 }
 
-/**
- * Thrown when the strict filter detects the silent-tool-drop failure mode
- * in either direction:
- *
- *   - `outgoing_followup_tools_empty`: pre-flight detected that AgenC is
- *     about to send a tool-followup request (input contains a
- *     `function_call_output` item) with `tools.length === 0`. xAI accepts
- *     this silently but the model has no tools to call, the response is
- *     text-only, and the executor exits the tool loop after one tool call
- *     per chat turn. This is the bug AgenC's `MAX_TOOL_SCHEMA_CHARS_FOLLOWUP`
- *     guard caused for months.
- *
- *   - `incoming_promised_tools_missing`: post-flight detected that we sent
- *     tools, the response has zero `function_call` blocks, and the
- *     assistant message text contains promise language like "I will call",
- *     "now executing", "continuing with tool calls". xAI may have silently
- *     dropped the tools or the model degraded its output mid-turn.
- */
-export class XaiSilentToolDropError extends LLMProviderError {
-  public readonly failureClass: LLMFailureClass = "provider_error";
-  public readonly stopReason: LLMPipelineStopReason = "provider_error";
-  public readonly turnKind:
-    | "outgoing_followup_tools_empty"
-    | "incoming_promised_tools_missing";
-  public readonly evidence: Record<string, unknown>;
-
-  constructor(
-    turnKind:
-      | "outgoing_followup_tools_empty"
-      | "incoming_promised_tools_missing",
-    evidence: Record<string, unknown>,
-  ) {
-    super(
-      "grok",
-      turnKind === "outgoing_followup_tools_empty"
-        ? `xAI silent tool drop (outgoing): tool-followup request would be ` +
-          `sent with empty tools[] array. The prior turn produced a tool ` +
-          `call, the input contains a function_call_output item, but the ` +
-          `runtime is about to send tools=[]. xAI accepts this and the ` +
-          `model has no tools to call, which exits the tool loop after one ` +
-          `tool call per chat turn.`
-        : `xAI silent tool drop (incoming): response contains zero ` +
-          `function_call blocks but the model promised tool execution in ` +
-          `its message text. xAI may have silently dropped the tools or the ` +
-          `model degraded its output. Evidence: ` +
-          JSON.stringify(evidence).slice(0, 240),
-      // Use HTTP 200 to signal "request succeeded at the transport layer
-      // but the payload is semantically wrong" — distinct from real 4xx/5xx.
-      200,
-    );
-    this.name = "XaiSilentToolDropError";
-    this.turnKind = turnKind;
-    this.evidence = evidence;
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Section C — pre-flight validator
 // ---------------------------------------------------------------------------
@@ -617,14 +561,13 @@ export function validateXaiRequestPreFlight(
 /**
  * One detected anomaly produced by {@link validateXaiResponsePostFlight}.
  *
- * `severity: "error"` cases trigger a thrown error in the adapter (via
- * {@link XaiSilentToolDropError}). `severity: "warn"` cases are surfaced
- * as `ToolCallNormalizationIssue` entries on the parsed `LLMResponse`,
- * which appear in trace events but do not fail the turn.
+ * `severity: "warn"` cases are surfaced as `ToolCallNormalizationIssue`
+ * entries on the parsed `LLMResponse`, which appear in trace events but
+ * do not fail the turn. `severity: "error"` cases are rare and surface
+ * through the adapter's normal error path.
  */
 export interface XaiResponseAnomaly {
   readonly code:
-    | "silent_tool_drop_promised_in_text"
     | "model_silently_aliased"
     | "incomplete_response"
     | "failed_response"
@@ -963,33 +906,7 @@ export function validateXaiResponsePostFlight(params: {
   const assistantMessageText = extractAssistantMessageText(output);
   const reasoningBlockCount = countReasoningOutputBlocks(output);
 
-  // 1. Silent tool drop (incoming).
-  if (
-    sentTools.length > 0 &&
-    toolCallBlockCount === 0 &&
-    messageText.length > 0 &&
-    PROMISE_LANGUAGE_RE.test(messageText)
-  ) {
-    anomalies.push({
-      code: "silent_tool_drop_promised_in_text",
-      severity: "error",
-      message:
-        `Sent ${sentTools.length} tools, response has 0 tool-call output ` +
-        `blocks (function_call / web_search_call / x_search_call / ` +
-        `code_interpreter_call / file_search_call / mcp_call), but the ` +
-        `assistant message or reasoning text contains promise language ` +
-        `("I will call", "now executing", "continuing with tool calls", ` +
-        `etc). xAI may have silently dropped the tools or the model ` +
-        `degraded its output.`,
-      evidence: {
-        sentToolCount: sentTools.length,
-        toolCallBlockCount,
-        messageTextPreview: messageText.slice(0, 240),
-      },
-    });
-  }
-
-  // 2. Model silent aliasing.
+  // 1. Model silent aliasing.
   const requestedModel =
     typeof params.request.model === "string" ? params.request.model : "";
   const responseModel =
@@ -1240,93 +1157,3 @@ export function validateXaiResponsePostFlight(params: {
   return anomalies;
 }
 
-// ---------------------------------------------------------------------------
-// Section E — silent-tool-drop guard (uses runtime tool-selection diagnostics)
-// ---------------------------------------------------------------------------
-
-/**
- * Inline assertion for the legacy `MAX_TOOL_SCHEMA_CHARS_FOLLOWUP` bug
- * pattern: the runtime's tool selection produced a non-empty tool catalog
- * (`runtimeIntendedToolCount > 0`) but the final outgoing params contains
- * an empty or missing `tools` field. xAI accepts this silently and the
- * model has no tools to call, which exits the tool loop after one tool
- * call per chat turn.
- *
- * This check lives outside `validateXaiRequestPreFlight` because it needs
- * the runtime's tool-selection intent — knowing how many tools the
- * adapter *meant* to send and whether the suppression was intentional.
- * The pre-flight validator only sees the final params and cannot
- * distinguish "intentional zero tools" from "tools were stripped after
- * selection".
- *
- * Pass `toolSuppressionReason` from `selectedTools.toolSuppressionReason`
- * (the diagnostics object the adapter's `resolveResponseTools()` produces).
- * When suppression was intentional (e.g.
- * `vision_model_without_tool_support`, `empty_allowlist`,
- * `followup_tool_schema_limit`), the helper returns without throwing —
- * the empty `tools` field was on purpose, not a bug.
- *
- * Call this in `buildParams()` immediately after the tool attachment
- * gate, with:
- *   - `runtimeIntendedToolCount = selectedTools.tools.length`
- *   - `toolSuppressionReason = selectedTools.toolSuppressionReason`
- *
- * Throws {@link XaiSilentToolDropError} only when the runtime intended to
- * send tools, no suppression reason was set, and the outgoing params have
- * an empty or missing `tools` field. Does nothing otherwise.
- *
- * The thrown error's `turnKind` discriminator is set based on whether the
- * outgoing input actually contains a `function_call_output` item:
- *   - `outgoing_followup_tools_empty` — true follow-up turn (the original
- *     bug pattern from MAX_TOOL_SCHEMA_CHARS_FOLLOWUP)
- *   - the helper currently only supports the followup discriminator;
- *     non-followup empty-tools cases are still detected but the
- *     discriminator is the same. A future variant can split them.
- */
-export function assertNoSilentToolDropOnFollowup(params: {
-  readonly runtimeIntendedToolCount: number;
-  readonly outgoingParams: Record<string, unknown>;
-  readonly toolSuppressionReason?: string;
-}): void {
-  if (params.runtimeIntendedToolCount === 0) {
-    return; // intentional no-tools call — not the bug pattern
-  }
-  if (params.toolSuppressionReason) {
-    return; // suppression was intentional (e.g. vision model without
-    // tool support, empty allowlist) — not the bug pattern
-  }
-  const outgoingTools = Array.isArray(params.outgoingParams.tools)
-    ? params.outgoingParams.tools
-    : [];
-  if (outgoingTools.length > 0) {
-    return; // tools made it through — no drop
-  }
-  // The runtime had tools to send, suppression was NOT intentional, and
-  // the params are about to go out empty. This is the bug pattern.
-  // Detect whether this is a tool-followup turn (has function results in
-  // input) so the error message and evidence can pinpoint the case.
-  const inputItems = Array.isArray(params.outgoingParams.input)
-    ? params.outgoingParams.input
-    : [];
-  let toolFollowupCount = 0;
-  for (const item of inputItems) {
-    if (
-      item &&
-      typeof item === "object" &&
-      (item as { type?: unknown }).type === "function_call_output"
-    ) {
-      toolFollowupCount++;
-    }
-  }
-  throw new XaiSilentToolDropError("outgoing_followup_tools_empty", {
-    runtimeIntendedToolCount: params.runtimeIntendedToolCount,
-    outgoingToolCount: 0,
-    toolFollowupCount,
-    isFollowupTurn: toolFollowupCount > 0,
-    inputItemCount: inputItems.length,
-    model:
-      typeof params.outgoingParams.model === "string"
-        ? params.outgoingParams.model
-        : "",
-  });
-}
