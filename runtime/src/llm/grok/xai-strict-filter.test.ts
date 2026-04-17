@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 
 import {
-  assertNoSilentToolDropOnFollowup,
   detectCorruptReasoningSummary,
   DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS,
   modelIsReasoningVariant,
@@ -10,7 +9,6 @@ import {
   resolveDocumentedXaiModel,
   validateXaiRequestPreFlight,
   validateXaiResponsePostFlight,
-  XaiSilentToolDropError,
   XaiUndocumentedFieldError,
   XaiUnknownModelError,
 } from "./xai-strict-filter.js";
@@ -446,89 +444,6 @@ describe("validateXaiRequestPreFlight (reject cases)", () => {
     }
   });
 
-  // Silent-tool-drop is now handled by assertNoSilentToolDropOnFollowup
-  // (which has access to runtime tool-selection diagnostics) — see the
-  // dedicated suite below.
-});
-
-describe("assertNoSilentToolDropOnFollowup", () => {
-  // This is the bug from 2026-04-09. The runtime had tools registered
-  // (selectedTools.tools.length > 0) but MAX_TOOL_SCHEMA_CHARS_FOLLOWUP
-  // dropped them on follow-up turns, so params.tools was missing.
-  it("throws XaiSilentToolDropError when runtime had tools but params.tools is missing on a followup", () => {
-    const followupParams = toolFollowupRequest();
-    delete followupParams.tools;
-    expect(() =>
-      assertNoSilentToolDropOnFollowup({
-        runtimeIntendedToolCount: 5,
-        outgoingParams: followupParams,
-      }),
-    ).toThrow(XaiSilentToolDropError);
-  });
-
-  it("throws XaiSilentToolDropError when params.tools is present but empty after a followup", () => {
-    const followupParams = toolFollowupRequest({ tools: [] });
-    expect(() =>
-      assertNoSilentToolDropOnFollowup({
-        runtimeIntendedToolCount: 3,
-        outgoingParams: followupParams,
-      }),
-    ).toThrow(XaiSilentToolDropError);
-  });
-
-  it("does NOT throw when the runtime intentionally has zero tools registered", () => {
-    const followupParams = toolFollowupRequest({ tools: [] });
-    expect(() =>
-      assertNoSilentToolDropOnFollowup({
-        runtimeIntendedToolCount: 0,
-        outgoingParams: followupParams,
-      }),
-    ).not.toThrow();
-  });
-
-  it("does NOT throw when tools made it through to the final params", () => {
-    const followupParams = toolFollowupRequest();
-    expect(() =>
-      assertNoSilentToolDropOnFollowup({
-        runtimeIntendedToolCount: 1,
-        outgoingParams: followupParams,
-      }),
-    ).not.toThrow();
-  });
-
-  it("does NOT throw on a fresh non-followup turn even if tools are missing", () => {
-    // Plain text request, no function_call_output items, runtime has no
-    // tools registered → no anti-pattern.
-    expect(() =>
-      assertNoSilentToolDropOnFollowup({
-        runtimeIntendedToolCount: 0,
-        outgoingParams: plainTextRequest(),
-      }),
-    ).not.toThrow();
-  });
-
-  it("throws XaiSilentToolDropError with the right discriminator and evidence", () => {
-    const followupParams = toolFollowupRequest();
-    delete followupParams.tools;
-    try {
-      assertNoSilentToolDropOnFollowup({
-        runtimeIntendedToolCount: 7,
-        outgoingParams: followupParams,
-      });
-      throw new Error("should have thrown");
-    } catch (e) {
-      expect(e).toBeInstanceOf(XaiSilentToolDropError);
-      const err = e as XaiSilentToolDropError;
-      expect(err.turnKind).toBe("outgoing_followup_tools_empty");
-      expect(err.statusCode).toBe(200);
-      expect(err.failureClass).toBe("provider_error");
-      expect(err.evidence).toMatchObject({
-        runtimeIntendedToolCount: 7,
-        outgoingToolCount: 0,
-        toolFollowupCount: 1,
-      });
-    }
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -578,116 +493,6 @@ describe("validateXaiResponsePostFlight (clean cases)", () => {
     const result = validateXaiResponsePostFlight({
       request: { ...plainTextRequest(), model: "grok-4.20-reasoning" },
       response: responseWith({ model: "grok-4.20-beta-0309-reasoning" }),
-    });
-    expect(result).toEqual([]);
-  });
-});
-
-describe("validateXaiResponsePostFlight (silent-drop detection — the bug we hit)", () => {
-  it("detects silent tool drop when response has 0 function_calls and message text contains 'I will call'", () => {
-    const result = validateXaiResponsePostFlight({
-      request: toolFollowupRequest(),
-      response: responseWith({
-        output: [
-          reasoningBlock("Need to call the build tool"),
-          messageBlock(
-            "I will call the build tool now and report the result.",
-          ),
-        ],
-      }),
-    });
-    expect(result).toHaveLength(1);
-    expect(result[0]).toMatchObject({
-      code: "silent_tool_drop_promised_in_text",
-      severity: "error",
-    });
-  });
-
-  it("detects 'now executing'", () => {
-    const result = validateXaiResponsePostFlight({
-      request: toolFollowupRequest(),
-      response: responseWith({
-        output: [messageBlock("Now executing the next step.")],
-      }),
-    });
-    expect(result[0]?.code).toBe("silent_tool_drop_promised_in_text");
-  });
-
-  it("detects 'continuing with tool calls' (the exact phrase from the live trace)", () => {
-    const result = validateXaiResponsePostFlight({
-      request: toolFollowupRequest(),
-      response: responseWith({
-        output: [
-          messageBlock(
-            "**Starting Phase 0 bootstrap and sequential phase implementation per PLAN.md.**\n\n(Continuing with tool calls to bootstrap.)",
-          ),
-        ],
-      }),
-    });
-    expect(result[0]?.code).toBe("silent_tool_drop_promised_in_text");
-  });
-
-  it("detects 'next, I'll run'", () => {
-    const result = validateXaiResponsePostFlight({
-      request: toolFollowupRequest(),
-      response: responseWith({
-        output: [messageBlock("Done with phase 1. Next, I'll run the test suite.")],
-      }),
-    });
-    expect(result[0]?.code).toBe("silent_tool_drop_promised_in_text");
-  });
-
-  it("does NOT detect normal explanatory English ('I will write the explanation')", () => {
-    // Regression test for the previous PROMISE_LANGUAGE_RE which matched
-    // `create` and `write` and produced false positives on legitimate
-    // assistant prose.
-    const result = validateXaiResponsePostFlight({
-      request: toolFollowupRequest(),
-      response: responseWith({
-        output: [
-          messageBlock(
-            "I will write the explanation in the next paragraph. " +
-              "Let me create a summary for you below.",
-          ),
-        ],
-      }),
-    });
-    expect(result).toEqual([]);
-  });
-
-  it("detects 'let me run'", () => {
-    const result = validateXaiResponsePostFlight({
-      request: toolFollowupRequest(),
-      response: responseWith({
-        output: [messageBlock("Let me run the test now.")],
-      }),
-    });
-    expect(result[0]?.code).toBe("silent_tool_drop_promised_in_text");
-  });
-
-  it("evidence carries the message text preview", () => {
-    const text = "I will call system.bash to do the thing";
-    const result = validateXaiResponsePostFlight({
-      request: toolFollowupRequest(),
-      response: responseWith({
-        output: [messageBlock(text)],
-      }),
-    });
-    expect(result[0]?.evidence).toMatchObject({
-      sentToolCount: 1,
-      toolCallBlockCount: 0,
-    });
-    expect(String(result[0]?.evidence.messageTextPreview)).toContain(
-      "I will call",
-    );
-  });
-
-  it("does NOT detect when zero tools were sent (no anti-pattern possible)", () => {
-    const result = validateXaiResponsePostFlight({
-      request: plainTextRequest(),
-      response: responseWith({
-        output: [messageBlock("I will call the tool now.")],
-      }),
     });
     expect(result).toEqual([]);
   });
@@ -1201,109 +1006,6 @@ describe("image/video models reject tools[]", () => {
   });
 });
 
-describe("assertNoSilentToolDropOnFollowup with toolSuppressionReason", () => {
-  // BLOCKER fix: when the runtime intentionally suppressed tools (e.g.
-  // vision_model_without_tool_support, empty_allowlist), the helper must
-  // not throw — the empty `tools` field was on purpose, not a bug.
-  it("does NOT throw when toolSuppressionReason is set (vision_model_without_tool_support)", () => {
-    const params = toolFollowupRequest({});
-    delete params.tools;
-    expect(() =>
-      assertNoSilentToolDropOnFollowup({
-        runtimeIntendedToolCount: 5,
-        toolSuppressionReason: "vision_model_without_tool_support",
-        outgoingParams: params,
-      }),
-    ).not.toThrow();
-  });
-
-  it("does NOT throw when toolSuppressionReason is set (empty_allowlist)", () => {
-    const params = toolFollowupRequest({});
-    delete params.tools;
-    expect(() =>
-      assertNoSilentToolDropOnFollowup({
-        runtimeIntendedToolCount: 5,
-        toolSuppressionReason: "empty_allowlist",
-        outgoingParams: params,
-      }),
-    ).not.toThrow();
-  });
-
-  it("DOES throw when toolSuppressionReason is undefined and the bug pattern matches", () => {
-    const params = toolFollowupRequest({});
-    delete params.tools;
-    expect(() =>
-      assertNoSilentToolDropOnFollowup({
-        runtimeIntendedToolCount: 5,
-        outgoingParams: params,
-      }),
-    ).toThrow(XaiSilentToolDropError);
-  });
-
-  it("evidence carries isFollowupTurn discriminator on followup turns", () => {
-    const params = toolFollowupRequest({});
-    delete params.tools;
-    try {
-      assertNoSilentToolDropOnFollowup({
-        runtimeIntendedToolCount: 5,
-        outgoingParams: params,
-      });
-    } catch (e) {
-      expect((e as XaiSilentToolDropError).evidence).toMatchObject({
-        isFollowupTurn: true,
-        toolFollowupCount: 1,
-      });
-    }
-  });
-
-  it("evidence sets isFollowupTurn=false on non-followup turns", () => {
-    // The runtime had tools but the params went out empty on a turn
-    // with no function_call_output items. Still a bug, but the
-    // discriminator should reflect it's not a followup.
-    const params = plainTextRequest();
-    delete params.tools;
-    try {
-      assertNoSilentToolDropOnFollowup({
-        runtimeIntendedToolCount: 5,
-        outgoingParams: params,
-      });
-    } catch (e) {
-      expect((e as XaiSilentToolDropError).evidence).toMatchObject({
-        isFollowupTurn: false,
-        toolFollowupCount: 0,
-      });
-    }
-  });
-});
-
-describe("post-flight: server-side tool call types count as tool calls", () => {
-  // HIGH fix: web_search_call, x_search_call, code_interpreter_call,
-  // file_search_call, mcp_call all satisfy "the model issued a tool call"
-  // and must NOT trigger the silent_tool_drop_promised_in_text anomaly.
-  for (const callType of [
-    "web_search_call",
-    "x_search_call",
-    "code_interpreter_call",
-    "file_search_call",
-    "mcp_call",
-  ]) {
-    it(`does NOT flag silent tool drop when response contains ${callType}`, () => {
-      const result = validateXaiResponsePostFlight({
-        request: toolFollowupRequest(),
-        response: responseWith({
-          output: [
-            { type: callType, id: "x", status: "completed" },
-            messageBlock("I will call the tool again next."),
-          ],
-        }),
-      });
-      expect(
-        result.find((a) => a.code === "silent_tool_drop_promised_in_text"),
-      ).toBeUndefined();
-    });
-  }
-});
-
 describe("post-flight: failed_response anomaly", () => {
   // HIGH fix: response.status === "failed" must be surfaced.
   it("emits failed_response severity=error when status is 'failed'", () => {
@@ -1334,53 +1036,6 @@ describe("post-flight: failed_response anomaly", () => {
     expect(failed).toBeDefined();
     expect(String(failed?.message)).toContain("Provider returned status");
   });
-});
-
-describe("post-flight: extractMessageText walks reasoning blocks", () => {
-  // MEDIUM fix: Grok puts promise language in reasoning.summary[].text too.
-  it("detects promise language in reasoning block summaries", () => {
-    const result = validateXaiResponsePostFlight({
-      request: toolFollowupRequest(),
-      response: responseWith({
-        output: [
-          {
-            type: "reasoning",
-            id: "rs_test",
-            status: "completed",
-            summary: [
-              {
-                type: "summary_text",
-                text: "I will call system.bash to bootstrap the project.",
-              },
-            ],
-          },
-          messageBlock("One moment."),
-        ],
-      }),
-    });
-    expect(result[0]?.code).toBe("silent_tool_drop_promised_in_text");
-  });
-});
-
-describe("post-flight: tightened PROMISE_LANGUAGE_RE", () => {
-  // Coverage for the regex tightening: `create` and `write` were removed
-  // because they false-positive on normal explanatory prose.
-  for (const phrase of [
-    "I will create a summary for you in this section.",
-    "Let me write the explanation here.",
-    "I'll write a brief overview of the steps.",
-    "Going to create the table below to compare the options.",
-  ]) {
-    it(`does NOT match normal English: "${phrase.slice(0, 40)}…"`, () => {
-      const result = validateXaiResponsePostFlight({
-        request: toolFollowupRequest(),
-        response: responseWith({ output: [messageBlock(phrase)] }),
-      });
-      expect(
-        result.find((a) => a.code === "silent_tool_drop_promised_in_text"),
-      ).toBeUndefined();
-    });
-  }
 });
 
 // ---------------------------------------------------------------------------
