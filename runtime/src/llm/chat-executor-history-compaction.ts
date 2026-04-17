@@ -18,6 +18,7 @@
  */
 
 import { annotateFailureError } from "./chat-executor-provider-retry.js";
+import { getCompactPrompt, formatCompactSummary } from "./compact/prompt.js";
 import { callWithFallback } from "./chat-executor-fallback.js";
 import {
   compactHistoryIntoArtifactContext,
@@ -122,13 +123,7 @@ export async function compactHistory(
         maxCooldownMs: deps.maxCooldownMs,
       },
       [
-        {
-          role: "system",
-          content:
-            "Summarize only the durable task state from this history. Preserve key decisions, important tool outcomes, current artifacts, explicit blockers, and unfinished implementation or verification work. " +
-            "If the history contains stubs, placeholders, partial work, denied commands, or anything still needing verification, list that as unresolved work. " +
-            "Never say there is no unresolved work unless the history explicitly shows final completion and verification closure. Omit pleasantries.",
-        },
+        { role: "system", content: getCompactPrompt() },
         { role: "user", content: historyText },
       ],
       undefined,
@@ -146,7 +141,8 @@ export async function compactHistory(
         parallelToolCalls: false,
       },
     );
-    narrativeSummary = compactResponse.response.content.trim() || undefined;
+    narrativeSummary =
+      formatCompactSummary(compactResponse.response.content).trim() || undefined;
   } catch (error) {
     throw annotateFailureError(error, "history compaction").error;
   }
