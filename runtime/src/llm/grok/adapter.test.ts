@@ -1462,7 +1462,7 @@ describe("GrokProvider", () => {
     expect(params.parallel_tool_calls).toBe(true);
   });
 
-  it("sanitizes oversized tool schemas and strips verbose metadata", async () => {
+  it("preserves full tool descriptions and strips nested schema metadata Grok rejects", async () => {
     mockCreate.mockResolvedValueOnce(makeCompletion());
 
     const noisyTool: LLMTool = {
@@ -1492,7 +1492,11 @@ describe("GrokProvider", () => {
 
     const params = mockCreate.mock.calls[0][0];
     const tool = params.tools[0];
-    expect(tool.description.length).toBeLessThanOrEqual(200);
+    // Description passes through intact — the 200-char cap was
+    // structurally defeating model-contract prompts.
+    expect(tool.description).toBe("D".repeat(800));
+    // Nested-schema metadata (description, title, etc.) is still
+    // stripped because Grok rejects those fields.
     const paramsJson = JSON.stringify(tool.parameters);
     expect(paramsJson.includes("description")).toBe(false);
   });
