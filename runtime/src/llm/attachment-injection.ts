@@ -9,10 +9,17 @@
  * shared `getAttachments` pipeline; having two independent hooks
  * here would create drift between interactive and background paths.
  *
- * Today the module emits at most one message: the TodoWrite reminder
- * from `todo-reminder.ts`. Future attachments (plan-mode
- * re-attachment, other runtime reminders) land here in the same
- * priority order the upstream runtime uses.
+ * Emitted reminders, in upstream priority order:
+ *   1. `todo_reminder`   — stale TodoWrite list (`todo-reminder.ts`).
+ *   2. `task_reminder`   — stale task.create/task.update (`task-reminder.ts`).
+ *   3. `verify_reminder` — cumulative unverified edits since the most
+ *                           recent verifier spawn (`verify-reminder.ts`).
+ *                           Plan-mode-less adaptation of the upstream
+ *                           `verify_plan_reminder`.
+ *
+ * All three reminders can fire on the same turn. They are independent
+ * by design — each one anchors on a different signal, so a single-
+ * counter deadlock cannot suppress all of them at once.
  *
  * @module
  */
@@ -23,11 +30,21 @@ import {
   buildTodoReminderMessage,
   shouldInjectTodoReminder,
 } from "./todo-reminder.js";
+import {
+  buildTaskReminderMessage,
+  shouldInjectTaskReminder,
+  type ReminderTaskView,
+} from "./task-reminder.js";
+import {
+  buildVerifyReminderMessage,
+  shouldInjectVerifyReminder,
+} from "./verify-reminder.js";
 
 export interface AttachmentContext {
   readonly history: readonly LLMMessage[];
   readonly activeToolNames: ReadonlySet<string>;
   readonly todos: readonly TodoItem[];
+  readonly tasks: readonly ReminderTaskView[];
 }
 
 export interface AttachmentInjectionResult {
@@ -45,6 +62,22 @@ export function collectAttachments(
     })
   ) {
     messages.push(buildTodoReminderMessage(ctx.todos));
+  }
+  if (
+    shouldInjectTaskReminder({
+      history: ctx.history,
+      activeToolNames: ctx.activeToolNames,
+    })
+  ) {
+    messages.push(buildTaskReminderMessage(ctx.tasks));
+  }
+  if (
+    shouldInjectVerifyReminder({
+      history: ctx.history,
+      activeToolNames: ctx.activeToolNames,
+    })
+  ) {
+    messages.push(buildVerifyReminderMessage());
   }
   return { messages };
 }

@@ -2527,6 +2527,16 @@ export class DaemonManager {
           sessionMgr.get(sessionId)?.history ?? [],
         readTodosForSession: async (sessionId) =>
           this._todoStore ? await this._todoStore.getTodos(sessionId) : [],
+        readTasksForSession: async (sessionId) => {
+          const store = this._taskTrackerStore;
+          if (!store) return [];
+          const tasks = await store.listTasks(sessionId);
+          return tasks.map((task) => ({
+            id: task.id,
+            subject: task.subject,
+            status: task.status,
+          }));
+        },
         isSessionBusy: (sessionId) =>
           this._foregroundSessionLocks.has(sessionId),
         onStatus: (sessionId, payload) => {
@@ -7560,6 +7570,16 @@ export class DaemonManager {
         taskStore: this._taskTrackerStore,
         readTodosForSession: async (sessionId) =>
           this._todoStore ? await this._todoStore.getTodos(sessionId) : [],
+        readTasksForSession: async (sessionId) => {
+          const store = this._taskTrackerStore;
+          if (!store) return [];
+          const tasks = await store.listTasks(sessionId);
+          return tasks.map((task) => ({
+            id: task.id,
+            subject: task.subject,
+            status: task.status,
+          }));
+        },
         workerManager,
         maybeStartBackgroundRun,
         onSubagentSynthesis: (result) => {

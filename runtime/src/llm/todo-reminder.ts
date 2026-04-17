@@ -20,13 +20,15 @@
  *
  * Trigger: both counters must be `>= 10`.
  *
- * Suppression, in order:
+ * Suppression:
  *   - `TodoWrite` not in the active toolset — the model can't act on
  *     the reminder anyway. Matches upstream's tool-availability gate.
- *   - `task.*` tool call in the last 10 assistant turns — the model is
- *     using the richer sub-agent orchestration surface; nagging it
- *     toward TodoWrite would be incoherent. AgenC-specific (upstream
- *     has no `task.*` family).
+ *
+ * No mutual suppression with the `task.*` family. The sibling reminder
+ * in `task-reminder.ts` fires independently — upstream runs both at
+ * once without cross-suppression, and a previous AgenC-specific gate
+ * that suppressed the todo reminder when `task.*` was recently used
+ * was removed when `task-reminder.ts` landed.
  *
  * The emitted message content is the verbatim upstream header text
  * (trailing newline included), followed by the current list rendered
@@ -115,22 +117,6 @@ export function getTurnsSinceLastTodoReminder(
   return Number.POSITIVE_INFINITY;
 }
 
-export function getTurnsSinceRecentTaskToolUse(
-  history: readonly LLMMessage[],
-): number {
-  for (let index = history.length - 1; index >= 0; index -= 1) {
-    const message = history[index]!;
-    if (message.role !== "assistant") continue;
-    const hadTaskCall = (message.toolCalls ?? []).some((call) =>
-      call.name.startsWith("task."),
-    );
-    if (hadTaskCall) {
-      return countAssistantTurnsBetween(history, index, history.length);
-    }
-  }
-  return Number.POSITIVE_INFINITY;
-}
-
 export interface ShouldInjectTodoReminderParams {
   readonly history: readonly LLMMessage[];
   readonly activeToolNames: ReadonlySet<string>;
@@ -140,8 +126,6 @@ export function shouldInjectTodoReminder(
   params: ShouldInjectTodoReminderParams,
 ): boolean {
   if (!params.activeToolNames.has(TODO_WRITE_TOOL_NAME)) return false;
-  const turnsSinceTaskUse = getTurnsSinceRecentTaskToolUse(params.history);
-  if (turnsSinceTaskUse < TODO_REMINDER_TURNS_SINCE_WRITE) return false;
   const turnsSinceWrite = getTurnsSinceTodoWrite(params.history);
   if (turnsSinceWrite < TODO_REMINDER_TURNS_SINCE_WRITE) return false;
   const turnsSinceReminder = getTurnsSinceLastTodoReminder(params.history);
