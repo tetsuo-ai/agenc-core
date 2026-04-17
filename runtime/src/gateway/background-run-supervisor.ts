@@ -296,8 +296,9 @@ function buildActorPrompt(run: ActiveBackgroundRun): string {
     recentHistory +
     recentToolEvidence +
     firstCycleGuidance +
-    "Take the next best bounded step toward this objective. " +
-    "Use tools when necessary. If the task is already running independently, verify its current state instead of narrating.\n"
+    "Continue from where you left off. Do not stop until the full objective is satisfied. " +
+    "Use tools to make progress. If you completed a phase or milestone, continue to the next one immediately without stopping. " +
+    "Only stop calling tools when the ENTIRE objective is done, not just one part of it.\n"
   );
 }
 
@@ -3682,7 +3683,10 @@ export class BackgroundRunSupervisor {
   }
 
   private shouldUseActorLoopParity(run: ActiveBackgroundRun): boolean {
-    return run.contract.domain === "workspace";
+    return (
+      run.contract.domain === "workspace" ||
+      run.contract.domain === "pipeline"
+    );
   }
 
   private async resolveCycleDecision(params: {

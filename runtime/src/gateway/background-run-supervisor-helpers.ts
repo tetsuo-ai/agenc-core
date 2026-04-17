@@ -1172,6 +1172,31 @@ export function buildFallbackDecision(run: ActiveBackgroundRun, actorResult: Cha
     actorResult.completionState === "completed" &&
     hasCompletedWorkflowState(actorResult)
   ) {
+    // For coding domains (generic/workspace/pipeline): only declare
+    // the run truly completed when the actor stopped WITHOUT
+    // requesting any tools. If the actor called tools this cycle, it
+    // was still doing work — the upstream pattern is that the loop
+    // continues as long as the model uses tools. When the actor
+    // genuinely finishes (text-only output, no tool calls), that's
+    // the real completion signal.
+    // Non-coding domains (managed_process, browser, etc.) can
+    // legitimately complete after one cycle with tool calls.
+    const isCodingDomain =
+      run.contract.domain === "workspace" ||
+      run.contract.domain === "pipeline";
+    if (isCodingDomain && actorResult.toolCalls.length > 0) {
+      return {
+        state: "working",
+        userUpdate: truncate(
+          actorResult.content || `Background run cycle ${run.cycleCount} completed.`,
+          MAX_USER_UPDATE_CHARS,
+        ),
+        internalSummary:
+          actorResult.content || "Cycle completed with tool calls; continuing.",
+        nextCheckMs: MIN_POLL_INTERVAL_MS,
+        shouldNotifyUser: true,
+      };
+    }
     const detail =
       actorResult.stopReasonDetail ??
       actorResult.content ??
