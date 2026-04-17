@@ -152,6 +152,7 @@ export interface CallModelForPhaseDependencies {
   readonly allowedTools: Set<string> | null;
   readonly defaultRunClass: RuntimeRunClass | undefined;
   readonly sessionTokens: Map<string, number>;
+  readonly lastCallInputTokens?: Map<string, number>;
   readonly sessionTokenBudget: number | undefined;
   readonly sessionCompactionThreshold: number | undefined;
   readonly maxTrackedSessions: number;
@@ -442,6 +443,12 @@ export async function callModelForPhase(
     next.response.usage.totalTokens,
     deps.maxTrackedSessions,
   );
+  if (deps.lastCallInputTokens) {
+    deps.lastCallInputTokens.set(
+      ctx.sessionId,
+      next.response.usage.promptTokens || next.response.usage.totalTokens,
+    );
+  }
   recordRuntimeModelCall({
     policy: deps.economicsPolicy,
     state: ctx.economicsState,

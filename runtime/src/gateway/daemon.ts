@@ -5535,6 +5535,15 @@ export class DaemonManager {
     const stateful = session ? buildSessionStatefulOptions(session) : undefined;
 
     const totalTokens = executor.getSessionTokenUsage(sessionId);
+    // Show per-call context window occupancy (from the last model
+    // response's input_tokens), not cumulative lifetime total. This
+    // matches the reference runtime's getCurrentUsage() which reads
+    // the last API response. Falls back to the message-based estimate
+    // when no model call has happened yet.
+    const lastCallTokens =
+      typeof executor.getLastCallInputTokens === "function"
+        ? executor.getLastCallInputTokens(sessionId)
+        : 0;
 
     const usageSnapshot = buildCurrentContextUsageSnapshot({
       messages: buildCurrentApiView({
@@ -5557,15 +5566,9 @@ export class DaemonManager {
       model: effectiveLlmConfig?.model,
       contextWindowTokens,
     });
-    // The web session's history only has the initial prompt (~2.6K
-    // tokens). During a background run, the real context grows with
-    // every model call but session.history doesn't reflect that.
-    // Use the higher of the snapshot estimate and the executor's
-    // tracked total so the TUI's "current" number moves.
-    const effectivePromptTokens = Math.max(
-      usageSnapshot.currentTokens,
-      totalTokens,
-    );
+    const effectivePromptTokens = lastCallTokens > 0
+      ? lastCallTokens
+      : Math.max(usageSnapshot.currentTokens, totalTokens);
     const effectivePercentUsed =
       usageSnapshot.effectiveContextWindowTokens
         ? effectivePromptTokens / usageSnapshot.effectiveContextWindowTokens

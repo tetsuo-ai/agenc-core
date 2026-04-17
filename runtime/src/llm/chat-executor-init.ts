@@ -115,6 +115,7 @@ export interface InitializeExecutionContextDependencies {
   readonly progressProvider: MemoryRetriever | undefined;
   // Session state + thresholds
   readonly sessionTokens: Map<string, number>;
+  readonly lastCallInputTokens?: Map<string, number>;
   readonly sessionTokenBudget: number | undefined;
   readonly sessionCompactionThreshold: number | undefined;
   readonly cooldowns: Map<string, CooldownEntry>;

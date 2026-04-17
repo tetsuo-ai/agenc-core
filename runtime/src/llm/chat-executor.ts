@@ -203,6 +203,7 @@ export class ChatExecutor {
 
   private readonly cooldowns = new Map<string, CooldownEntry>();
   private readonly sessionTokens = new Map<string, number>();
+  private readonly lastCallInputTokens = new Map<string, number>();
 
   private static normalizeRequestTimeoutMs(timeoutMs: number | undefined): number {
     return normalizeRuntimeLimit(timeoutMs, DEFAULT_REQUEST_TIMEOUT_MS);
@@ -352,6 +353,7 @@ export class ChatExecutor {
       progressProvider: this.progressProvider,
       // Session state + thresholds
       sessionTokens: this.sessionTokens,
+      lastCallInputTokens: this.lastCallInputTokens,
       sessionTokenBudget: this.sessionTokenBudget,
       sessionCompactionThreshold: this.sessionCompactionThreshold,
       cooldowns: this.cooldowns,
@@ -478,6 +480,11 @@ export class ChatExecutor {
   /** Get accumulated token usage for a session. */
   getSessionTokenUsage(sessionId: string): number {
     return this.sessionTokens.get(sessionId) ?? 0;
+  }
+
+  /** Get the input token count from the most recent model call for a session. */
+  getLastCallInputTokens(sessionId: string): number {
+    return this.lastCallInputTokens.get(sessionId) ?? 0;
   }
 
   /** Reset token usage for a specific session. */

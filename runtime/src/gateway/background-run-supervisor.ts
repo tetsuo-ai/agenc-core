@@ -4242,6 +4242,17 @@ export class BackgroundRunSupervisor {
         ...run.compaction,
         refreshCount: run.compaction.refreshCount + 1,
       };
+      // Break the xAI stateful chain so the server starts fresh
+      // with just the compacted history. Without this, the server
+      // accumulates ALL prior messages and input_tokens grows
+      // unbounded (~166K+ observed) even though local history is
+      // trimmed to 12 messages.
+      if (run.carryForward) {
+        run.carryForward = {
+          ...run.carryForward,
+          providerContinuation: undefined,
+        };
+      }
       return [
         { role: "system", content: summary } as LLMMessage,
         ...kept,
