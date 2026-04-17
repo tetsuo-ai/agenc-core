@@ -165,6 +165,81 @@ describe("collectAttachments", () => {
     expect(todoIdx).toBeLessThan(taskIdx);
   });
 
+  it("emits the verify_reminder after 3+ mutating edits without a verifier spawn", () => {
+    const history: LLMMessage[] = [
+      ...buildStaleHistory(),
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          { id: "w1", name: "system.writeFile", arguments: "{}" },
+        ],
+      },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          { id: "w2", name: "system.editFile", arguments: "{}" },
+        ],
+      },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          { id: "w3", name: "system.writeFile", arguments: "{}" },
+        ],
+      },
+    ];
+    const result = collectAttachments({
+      history,
+      activeToolNames: new Set([TODO_WRITE_TOOL_NAME, "execute_with_agent"]),
+      todos: [],
+      tasks: [],
+    });
+    const verifyMsg = result.messages.find((m) =>
+      (m.content as string).includes("You have made unverified file edits"),
+    );
+    expect(verifyMsg).toBeDefined();
+  });
+
+  it("does not emit verify_reminder when execute_with_agent is not available", () => {
+    const history: LLMMessage[] = [
+      ...buildStaleHistory(),
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          { id: "w1", name: "system.writeFile", arguments: "{}" },
+        ],
+      },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          { id: "w2", name: "system.writeFile", arguments: "{}" },
+        ],
+      },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          { id: "w3", name: "system.writeFile", arguments: "{}" },
+        ],
+      },
+    ];
+    const result = collectAttachments({
+      history,
+      activeToolNames: new Set([TODO_WRITE_TOOL_NAME]),
+      todos: [],
+      tasks: [],
+    });
+    expect(
+      result.messages.some((m) =>
+        (m.content as string).includes("You have made unverified file edits"),
+      ),
+    ).toBe(false);
+  });
+
   it("returns the same result for identical inputs regardless of caller", () => {
     const ctx = {
       history: buildStaleHistory(),
