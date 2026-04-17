@@ -13,6 +13,8 @@ import {
   TASK_LIST_ARG,
   DEFAULT_TASK_LIST_ID,
   TASK_TRACKER_TOOL_NAMES,
+  isOpenTaskStatus,
+  listOpenTasksForSession,
 } from "./task-tracker.js";
 import type { Tool, ToolResult } from "../types.js";
 import type { MemoryBackend } from "../../memory/types.js";
@@ -853,6 +855,89 @@ describe("task-tracker", () => {
           ready: false,
         }),
       ]);
+    });
+  });
+
+  describe("listOpenTasksForSession", () => {
+    it("returns only pending and in_progress tasks", async () => {
+      const store = new SessionTaskStore();
+      const sessionId = "session-open-tasks";
+      await store.createTask(sessionId, {
+        subject: "pending one",
+        description: "",
+      });
+      const inProgress = await store.createTask(sessionId, {
+        subject: "in progress",
+        description: "",
+      });
+      await store.updateTask(sessionId, inProgress.id, {
+        status: "in_progress",
+      });
+      const completed = await store.createTask(sessionId, {
+        subject: "already done",
+        description: "",
+      });
+      await store.updateTask(sessionId, completed.id, { status: "completed" });
+      const deleted = await store.createTask(sessionId, {
+        subject: "removed",
+        description: "",
+      });
+      await store.updateTask(sessionId, deleted.id, { status: "deleted" });
+
+      const open = await listOpenTasksForSession(store, sessionId);
+      expect(open).toHaveLength(2);
+      expect(open.map((task) => task.status).sort()).toEqual([
+        "in_progress",
+        "pending",
+      ]);
+      expect(open.map((task) => task.subject).sort()).toEqual([
+        "in progress",
+        "pending one",
+      ]);
+    });
+
+    it("respects the limit parameter", async () => {
+      const store = new SessionTaskStore();
+      const sessionId = "session-limit";
+      for (let i = 0; i < 5; i += 1) {
+        await store.createTask(sessionId, {
+          subject: `task ${i}`,
+          description: "",
+        });
+      }
+      const open = await listOpenTasksForSession(store, sessionId, 3);
+      expect(open).toHaveLength(3);
+    });
+
+    it("returns an empty array when the session has no tasks", async () => {
+      const store = new SessionTaskStore();
+      const open = await listOpenTasksForSession(store, "session-empty");
+      expect(open).toEqual([]);
+    });
+
+    it("returns OpenTaskSummary shape (id, status, subject only)", async () => {
+      const store = new SessionTaskStore();
+      const sessionId = "session-shape";
+      await store.createTask(sessionId, {
+        subject: "subject only",
+        description: "full description",
+        activeForm: "working on it",
+      });
+      const [task] = await listOpenTasksForSession(store, sessionId);
+      expect(task).toBeDefined();
+      expect(Object.keys(task!).sort()).toEqual(["id", "status", "subject"]);
+    });
+  });
+
+  describe("isOpenTaskStatus", () => {
+    it("treats pending and in_progress as open", () => {
+      expect(isOpenTaskStatus("pending")).toBe(true);
+      expect(isOpenTaskStatus("in_progress")).toBe(true);
+    });
+
+    it("treats terminal statuses as closed", () => {
+      expect(isOpenTaskStatus("completed")).toBe(false);
+      expect(isOpenTaskStatus("deleted")).toBe(false);
     });
   });
 });

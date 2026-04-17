@@ -2742,6 +2742,51 @@ export function createTaskTrackerTools(
   return [taskCreate, taskList, taskGet, taskUpdate];
 }
 
+/** Shape returned by {@link listOpenTasksForSession}. */
+export interface OpenTaskSummary {
+  readonly id: string;
+  readonly status: "pending" | "in_progress";
+  readonly subject: string;
+}
+
+/**
+ * True when a {@link SessionTask.status} should be treated as "still open"
+ * for scheduling / reminder purposes. Completed, failed, cancelled, and
+ * deleted tasks are all treated as closed.
+ */
+export function isOpenTaskStatus(
+  status: SessionTask["status"],
+): status is "pending" | "in_progress" {
+  return status === "pending" || status === "in_progress";
+}
+
+/**
+ * Return a summary of the session's currently-open tasks, ordered by
+ * insertion order of the underlying list (which matches the caller's
+ * mental model — tasks surface in the order they were created).
+ *
+ * The session's list id is the session id, matching the convention
+ * established in {@link tool-handler-factory.applyTaskListContext}.
+ */
+export async function listOpenTasksForSession(
+  store: SessionTaskStore,
+  sessionId: string,
+  limit = 20,
+): Promise<OpenTaskSummary[]> {
+  const all = await store.listTasks(sessionId);
+  const open: OpenTaskSummary[] = [];
+  for (const task of all) {
+    if (!isOpenTaskStatus(task.status)) continue;
+    open.push({
+      id: task.id,
+      status: task.status,
+      subject: task.subject,
+    });
+    if (open.length >= limit) break;
+  }
+  return open;
+}
+
 export function createRuntimeTaskHandleTools(
   store?: TaskStore,
   options: Pick<TaskTrackerToolOptions, "onTaskAccessEvent"> = {},
