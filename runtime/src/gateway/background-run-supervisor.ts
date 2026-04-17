@@ -4170,7 +4170,27 @@ export class BackgroundRunSupervisor {
       run.consecutiveErrorCycles = consecutiveErrorCycles;
       decision = groundDecision(run, actorResult, decision);
       decision = applyRepeatedErrorGuard(decision, consecutiveErrorCycles);
-      decision = applyZeroToolCompletionGuard(run, actorResult, decision);
+      const zeroToolGuardResult = applyZeroToolCompletionGuard(
+        run,
+        actorResult,
+        decision,
+      );
+      decision = zeroToolGuardResult.decision;
+      const zeroToolGuardFired = zeroToolGuardResult.guardFired;
+      const anyTaskToolCall = actorResult.toolCalls.some((toolCall) =>
+        toolCall.name.startsWith("task."),
+      );
+      run.cyclesSinceTaskTool = anyTaskToolCall
+        ? 0
+        : run.cyclesSinceTaskTool + 1;
+      const hasSuccessfulToolCalls = actorResult.toolCalls.some(
+        (toolCall) => !toolCall.isError,
+      );
+      if (hasSuccessfulToolCalls) {
+        run.consecutiveNudgeCycles = 0;
+      } else if (zeroToolGuardFired) {
+        run.consecutiveNudgeCycles += 1;
+      }
       run.pendingSignals = dropSyntheticInternalSignals(run.pendingSignals);
       recordRunActivity(
         run,

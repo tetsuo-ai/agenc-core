@@ -43,6 +43,7 @@ import {
   type BackgroundRunWorkerPool,
 } from "./background-run-store.js";
 import { buildBackgroundRunSignalFromToolResult } from "./background-run-wake-adapters.js";
+import { MAX_CONSECUTIVE_NUDGE_CYCLES } from "./background-run-continuation.js";
 import {
   parseToolResultObject,
 } from "../llm/chat-executor-tool-utils.js";
@@ -1404,17 +1405,22 @@ export function applyRepeatedErrorGuard(
   };
 }
 
+export interface ZeroToolCompletionGuardResult {
+  readonly decision: BackgroundRunDecision;
+  readonly guardFired: boolean;
+}
+
 export function applyZeroToolCompletionGuard(
   run: ActiveBackgroundRun,
   actorResult: ChatExecutorResult,
   decision: BackgroundRunDecision,
-): BackgroundRunDecision {
-  if (decision.state !== "completed") return decision;
+): ZeroToolCompletionGuardResult {
+  if (decision.state !== "completed") return { decision, guardFired: false };
   const successfulToolCalls = actorResult.toolCalls.filter(
     (toolCall) => !toolCall.isError,
   );
-  if (successfulToolCalls.length > 0) return decision;
-  if (!run.lastToolEvidence) return decision;
+  if (successfulToolCalls.length > 0) return { decision, guardFired: false };
+  if (!run.lastToolEvidence) return { decision, guardFired: false };
   // Explicit completion-progress signal: trust the actor only when it
   // emits a workflow-tracker result stating completion with no
   // remaining requirements. Without that, a text-only cycle after
@@ -1425,20 +1431,31 @@ export function applyZeroToolCompletionGuard(
     progress.completionState === "completed" &&
     progress.remainingRequirements.length === 0
   ) {
-    return decision;
+    return { decision, guardFired: false };
+  }
+  // Nudge-budget exhaustion: after MAX_CONSECUTIVE_NUDGE_CYCLES
+  // unsuccessful zero-tool cycles we accept the actor's terminal
+  // decision unchanged. Prevents infinite nudge loops when the model
+  // refuses to resume tool use; the run reaches the normal
+  // finishRun path with the actor's content as userUpdate.
+  if (run.consecutiveNudgeCycles >= MAX_CONSECUTIVE_NUDGE_CYCLES) {
+    return { decision, guardFired: false };
   }
   return {
-    state: "working",
-    userUpdate: truncate(
-      actorResult.content ||
-        "Background run had no tool calls this cycle; verifying completion.",
-      MAX_USER_UPDATE_CHARS,
-    ),
-    internalSummary:
-      "Downgraded premature completion: cycle produced no tool calls and no explicit completion-progress signal. " +
-      "Actor must run verification tools or emit completion progress.",
-    nextCheckMs: MIN_POLL_INTERVAL_MS,
-    shouldNotifyUser: true,
+    decision: {
+      state: "working",
+      userUpdate: truncate(
+        actorResult.content ||
+          "Background run had no tool calls this cycle; verifying completion.",
+        MAX_USER_UPDATE_CHARS,
+      ),
+      internalSummary:
+        "Downgraded premature completion: cycle produced no tool calls and no explicit completion-progress signal. " +
+        "Actor must run verification tools or emit completion progress.",
+      nextCheckMs: MIN_POLL_INTERVAL_MS,
+      shouldNotifyUser: true,
+    },
+    guardFired: true,
   };
 }
 

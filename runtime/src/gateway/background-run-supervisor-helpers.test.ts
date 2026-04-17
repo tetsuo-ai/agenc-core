@@ -51,7 +51,8 @@ describe("applyZeroToolCompletionGuard", () => {
       state: "working",
     };
     const out = applyZeroToolCompletionGuard(run, makeActorResult(), workingDecision);
-    expect(out).toBe(workingDecision);
+    expect(out.decision).toBe(workingDecision);
+    expect(out.guardFired).toBe(false);
   });
 
   it("passes through when the cycle has successful tool calls", () => {
@@ -68,13 +69,15 @@ describe("applyZeroToolCompletionGuard", () => {
       ],
     });
     const out = applyZeroToolCompletionGuard(run, result, baseDecision);
-    expect(out).toBe(baseDecision);
+    expect(out.decision).toBe(baseDecision);
+    expect(out.guardFired).toBe(false);
   });
 
   it("passes through when there is no prior tool evidence (groundDecision owns the never-started path)", () => {
     const run = makeRun({ lastToolEvidence: undefined });
     const out = applyZeroToolCompletionGuard(run, makeActorResult(), baseDecision);
-    expect(out).toBe(baseDecision);
+    expect(out.decision).toBe(baseDecision);
+    expect(out.guardFired).toBe(false);
   });
 
   it("downgrades 'completed' to 'working' when the zero-tool cycle has prior evidence and no explicit completion signal", () => {
@@ -84,9 +87,10 @@ describe("applyZeroToolCompletionGuard", () => {
       makeActorResult({ content: "M1 progress: still compiling" }),
       baseDecision,
     );
-    expect(out.state).toBe("working");
-    expect(out.internalSummary).toContain("Downgraded premature completion");
-    expect(out.userUpdate).toContain("M1 progress");
+    expect(out.decision.state).toBe("working");
+    expect(out.decision.internalSummary).toContain("Downgraded premature completion");
+    expect(out.decision.userUpdate).toContain("M1 progress");
+    expect(out.guardFired).toBe(true);
   });
 
   it("accepts 'completed' when completionProgress explicitly says completed with no remaining requirements", () => {
@@ -106,7 +110,8 @@ describe("applyZeroToolCompletionGuard", () => {
       }),
       baseDecision,
     );
-    expect(out).toBe(baseDecision);
+    expect(out.decision).toBe(baseDecision);
+    expect(out.guardFired).toBe(false);
   });
 
   it("downgrades when completionProgress claims completed but remaining requirements exist", () => {
@@ -126,7 +131,22 @@ describe("applyZeroToolCompletionGuard", () => {
       }),
       baseDecision,
     );
-    expect(out.state).toBe("working");
+    expect(out.decision.state).toBe("working");
+    expect(out.guardFired).toBe(true);
+  });
+
+  it("accepts the actor's terminal 'completed' decision once the nudge budget is exhausted", () => {
+    const run = makeRun({
+      lastToolEvidence: "evidence",
+      consecutiveNudgeCycles: 2,
+    });
+    const out = applyZeroToolCompletionGuard(
+      run,
+      makeActorResult({ content: "Understood. Objective complete." }),
+      baseDecision,
+    );
+    expect(out.decision).toBe(baseDecision);
+    expect(out.guardFired).toBe(false);
   });
 });
 
