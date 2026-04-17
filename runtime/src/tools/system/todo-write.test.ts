@@ -28,7 +28,9 @@ describe("TodoWrite tool", () => {
   it("exposes the expected name and schema", () => {
     const tool = createTodoWriteTool(new TodoStore());
     expect(tool.name).toBe(TODO_WRITE_TOOL_NAME);
-    expect(tool.description).toMatch(/track multi-step work/);
+    expect(tool.description).toMatch(/## When to Use This Tool/);
+    expect(tool.description).toMatch(/Task Completion Requirements/);
+    expect(tool.description).toMatch(/Never mark a task as completed if/);
     const schema = tool.inputSchema as {
       required?: readonly string[];
       additionalProperties?: boolean;
