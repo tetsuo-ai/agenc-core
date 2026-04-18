@@ -588,6 +588,9 @@ export function isBackgroundRunStatusRequest(message: string): boolean {
 export class BackgroundRunSupervisor {
   private readonly chatExecutor: ChatExecutor;
   private readonly supervisorLlm: LLMProvider;
+  private readonly supervisorFastLlm: LLMProvider;
+  private readonly compactionThresholdTokens: number | undefined;
+  private readonly compactionCharPerToken: number;
   private readonly getSystemPrompt: () => string;
   private readonly createToolHandler: BackgroundRunSupervisorConfig["createToolHandler"];
   private readonly resolveExecutionContext?: BackgroundRunSupervisorConfig["resolveExecutionContext"];
@@ -630,6 +633,19 @@ export class BackgroundRunSupervisor {
   constructor(config: BackgroundRunSupervisorConfig) {
     this.chatExecutor = config.chatExecutor;
     this.supervisorLlm = config.supervisorLlm;
+    this.supervisorFastLlm = config.supervisorFastLlm ?? config.supervisorLlm;
+    this.compactionThresholdTokens =
+      typeof config.compactionThresholdTokens === "number" &&
+      Number.isFinite(config.compactionThresholdTokens) &&
+      config.compactionThresholdTokens > 0
+        ? Math.floor(config.compactionThresholdTokens)
+        : undefined;
+    this.compactionCharPerToken =
+      typeof config.compactionCharPerToken === "number" &&
+      Number.isFinite(config.compactionCharPerToken) &&
+      config.compactionCharPerToken > 0
+        ? config.compactionCharPerToken
+        : 4;
     this.getSystemPrompt = config.getSystemPrompt;
     this.createToolHandler = config.createToolHandler;
     this.resolveExecutionContext = config.resolveExecutionContext;
@@ -3635,14 +3651,26 @@ export class BackgroundRunSupervisor {
     actorResult: ChatExecutorResult | undefined;
     decision: BackgroundRunDecision;
     heartbeatMs?: number;
+    carryForwardRefreshPromise?: Promise<void>;
   }): Promise<boolean> {
-    const { run, sessionId, actorResult, decision, heartbeatMs } = params;
-    const carryForwardSignalSnapshot = cloneSignals(run.pendingSignals);
-    await this.refreshCarryForwardState({
+    const {
       run,
+      sessionId,
       actorResult,
-      signalSnapshot: carryForwardSignalSnapshot,
-    });
+      decision,
+      heartbeatMs,
+      carryForwardRefreshPromise,
+    } = params;
+    if (carryForwardRefreshPromise !== undefined) {
+      await carryForwardRefreshPromise;
+    } else {
+      const carryForwardSignalSnapshot = cloneSignals(run.pendingSignals);
+      await this.refreshCarryForwardState({
+        run,
+        actorResult,
+        signalSnapshot: carryForwardSignalSnapshot,
+      });
+    }
     if (!this.isActiveRun(run)) {
       return true;
     }
@@ -3753,11 +3781,13 @@ export class BackgroundRunSupervisor {
     actorResult?: ChatExecutorResult;
     decision: BackgroundRunDecision;
     heartbeatMs?: number;
+    carryForwardRefreshPromise?: Promise<void>;
   }> {
     const { run, sessionId, cycleToolHandler, actorPrompt, actorPromptEnvelope } = params;
     let actorResult: ChatExecutorResult | undefined;
     let decision: BackgroundRunDecision;
     let heartbeatMs: number | undefined;
+    let carryForwardRefreshPromise: Promise<void> | undefined;
     // Per-tool-call observer that updates the verify_reminder
     // counters on `ActiveBackgroundRun`. Runs INSIDE the actor turn
     // (one event per tool dispatch_finished), not after the turn
@@ -3936,7 +3966,7 @@ export class BackgroundRunSupervisor {
           { role: "user", content: actorPrompt } as LLMMessage,
           { role: "assistant", content: actorResult.content, phase: "commentary" } as LLMMessage,
         ];
-        if (extendedHistory.length >= HISTORY_COMPACTION_THRESHOLD) {
+        if (this.shouldCompactHistory(extendedHistory)) {
           run.internalHistory = await this.compactInternalHistory(
             run,
             extendedHistory,
@@ -3984,18 +4014,48 @@ export class BackgroundRunSupervisor {
         }
         getRunDomain(run).observeActorResult?.(run, actorResult, run.lastVerifiedAt);
         const domainDecision = buildDeterministicRunDomainDecision(run);
+        // Non-parity decision resolution runs an LLM call
+        // (`evaluateDecision`). Downstream cycle handling will also
+        // run `refreshCarryForwardState`, which is another LLM call
+        // for non-parity runs. Those two calls are independent — they
+        // read the same cycle state and write to disjoint fields.
+        // Start the refresh in parallel with the decision call and
+        // hand its Promise to the branch handlers via the outcome,
+        // so the two supervisor LLM calls run concurrently rather
+        // than serially.
+        const shouldShortCircuitOnDomainDecision =
+          domainDecision !== undefined && domainDecision.state !== "working";
+        const isParity = this.shouldUseActorLoopParity(run);
+        // Kick off both LLM calls before awaiting either, so they run
+        // concurrently inside the provider adapter. evaluateDecision is
+        // started BEFORE refreshCarryForwardState so its `.chat()`
+        // invocation is queued first — mock sequences in tests, and
+        // the observable provider request order in production logs,
+        // remain `decision → refresh`. The pre-refresh uses the same
+        // non-forced semantics as the working-path branch: the
+        // `deriveCarryForwardRefreshReason` heuristic decides whether
+        // the LLM call actually runs. Non-working branches still
+        // force-refresh themselves if needed, so we don't speculate
+        // on a force refresh here.
+        const decisionPromise: Promise<BackgroundRunDecision | undefined> =
+          shouldShortCircuitOnDomainDecision
+            ? Promise.resolve(domainDecision)
+            : isParity
+              ? Promise.resolve(undefined)
+              : this.evaluateDecision(run, actorResult);
+        if (
+          !shouldShortCircuitOnDomainDecision &&
+          !isParity
+        ) {
+          carryForwardRefreshPromise = this.refreshCarryForwardState({
+            run,
+            actorResult,
+            signalSnapshot: cloneSignals(run.pendingSignals),
+          });
+        }
+        const resolvedDecision = await decisionPromise;
         decision =
-          (
-            domainDecision && domainDecision.state !== "working"
-              ? domainDecision
-              : undefined
-          ) ??
-          (
-            this.shouldUseActorLoopParity(run)
-              ? undefined
-              : await this.evaluateDecision(run, actorResult)
-          ) ??
-          buildFallbackDecision(run, actorResult);
+          resolvedDecision ?? buildFallbackDecision(run, actorResult);
         decision = groundDecision(run, actorResult, decision, domainDecision);
       }
 
@@ -4105,6 +4165,9 @@ export class BackgroundRunSupervisor {
       actorResult,
       decision,
       heartbeatMs,
+      ...(carryForwardRefreshPromise === undefined
+        ? {}
+        : { carryForwardRefreshPromise }),
     };
   }
 
@@ -4204,6 +4267,7 @@ export class BackgroundRunSupervisor {
     let actorResult: ChatExecutorResult | undefined;
     let decision: BackgroundRunDecision;
     let heartbeatMs: number | undefined;
+    let carryForwardRefreshPromise: Promise<void> | undefined;
     try {
       const preCycleDecision = buildPreCycleDomainDecision(run);
       if (preCycleDecision) {
@@ -4225,7 +4289,12 @@ export class BackgroundRunSupervisor {
           heartbeatMs: undefined,
         };
       }
-      ({ actorResult, decision, heartbeatMs } = await this.resolveCycleDecision({
+      ({
+        actorResult,
+        decision,
+        heartbeatMs,
+        carryForwardRefreshPromise,
+      } = await this.resolveCycleDecision({
         run,
         sessionId,
         cycleToolHandler,
@@ -4275,6 +4344,9 @@ export class BackgroundRunSupervisor {
       actorResult,
       decision,
       heartbeatMs,
+      ...(carryForwardRefreshPromise === undefined
+        ? {}
+        : { carryForwardRefreshPromise }),
     };
   }
 
@@ -4287,6 +4359,7 @@ export class BackgroundRunSupervisor {
       actorResult,
       decision,
       heartbeatMs,
+      carryForwardRefreshPromise,
     } = outcome;
 
     if (decision.state === "working") {
@@ -4294,6 +4367,7 @@ export class BackgroundRunSupervisor {
         run,
         sessionId,
         actorResult,
+        carryForwardRefreshPromise,
         decision,
         heartbeatMs,
       })) {
@@ -4306,6 +4380,7 @@ export class BackgroundRunSupervisor {
       run,
       actorResult,
       decision,
+      carryForwardRefreshPromise,
     });
   }
 
@@ -4313,8 +4388,20 @@ export class BackgroundRunSupervisor {
     run: ActiveBackgroundRun;
     actorResult?: ChatExecutorResult;
     decision: BackgroundRunDecision;
+    carryForwardRefreshPromise?: Promise<void>;
   }): Promise<void> {
-    const { run, actorResult, decision } = params;
+    const { run, actorResult, decision, carryForwardRefreshPromise } = params;
+    // The parallel pre-refresh ran under the `derive…Reason` heuristic
+    // (no `force`) so a working-path outcome wouldn't over-refresh.
+    // Finalizing a non-working run still wants the forced refresh the
+    // original path used, so await the pre-refresh first and then run
+    // the force pass. The forced pass is a no-op if the heuristic had
+    // already refreshed, since it re-reads the same state; the extra
+    // LLM round-trip only happens when the heuristic skipped and the
+    // run is actually terminating.
+    if (carryForwardRefreshPromise !== undefined) {
+      await carryForwardRefreshPromise;
+    }
     await this.refreshCarryForwardState({ run, actorResult, force: true });
     if (!this.isActiveRun(run)) {
       return;
@@ -4347,6 +4434,46 @@ export class BackgroundRunSupervisor {
       return;
     }
     await this.handleResolvedCycleOutcome(outcome);
+  }
+
+  /**
+   * Return true when `history` should be compacted before the next
+   * actor turn. Matches the upstream reference runtime's trigger:
+   * compact reactively when the estimated prompt tokens approach the
+   * effective context window, NOT proactively on every cycle.
+   *
+   * When a token threshold is configured (via
+   * `compactionThresholdTokens`), the gate is token-aware and
+   * message-count is ignored. When no token threshold is configured
+   * (dev/test fixtures), falls back to the legacy message-count
+   * heuristic so existing test scaffolds keep working.
+   */
+  private shouldCompactHistory(history: readonly LLMMessage[]): boolean {
+    if (this.compactionThresholdTokens !== undefined) {
+      return (
+        this.estimateHistoryTokens(history) >= this.compactionThresholdTokens
+      );
+    }
+    return history.length >= HISTORY_COMPACTION_THRESHOLD;
+  }
+
+  /**
+   * Cheap char-based token estimate. Sum the serialized content
+   * length across messages and divide by `compactionCharPerToken`.
+   * Good enough for a compaction trigger — the actual prompt
+   * budgeting happens later during packing.
+   */
+  private estimateHistoryTokens(history: readonly LLMMessage[]): number {
+    let totalChars = 0;
+    for (const message of history) {
+      const content = message.content;
+      if (typeof content === "string") {
+        totalChars += content.length;
+      } else if (Array.isArray(content) || typeof content === "object") {
+        totalChars += JSON.stringify(content).length;
+      }
+    }
+    return Math.ceil(totalChars / this.compactionCharPerToken);
   }
 
   private async compactInternalHistory(
@@ -4481,7 +4608,7 @@ export class BackgroundRunSupervisor {
             },
           }
           : undefined;
-      const response = await this.supervisorLlm.chat([
+      const response = await this.supervisorFastLlm.chat([
         { role: "system", content: DECISION_SYSTEM_PROMPT },
         {
           role: "user",
@@ -4575,7 +4702,7 @@ export class BackgroundRunSupervisor {
               },
             }
             : undefined;
-        const response = await this.supervisorLlm.chat([
+        const response = await this.supervisorFastLlm.chat([
           { role: "system", content: CARRY_FORWARD_SYSTEM_PROMPT },
           {
             role: "user",

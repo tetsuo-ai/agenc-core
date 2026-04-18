@@ -211,6 +211,30 @@ export interface ActiveBackgroundRun {
 export interface BackgroundRunSupervisorConfig {
   readonly chatExecutor: ChatExecutor;
   readonly supervisorLlm: LLMProvider;
+  /**
+   * Optional fast provider for short JSON-only supervisor calls
+   * (`evaluateDecision`, `refreshCarryForwardState`). Compaction
+   * intentionally continues to use `supervisorLlm` to match the
+   * upstream reference runtime, which preserves same-model continuity
+   * between the actor prompt and its summaries.
+   *
+   * Falls back to `supervisorLlm` when undefined.
+   */
+  readonly supervisorFastLlm?: LLMProvider;
+  /**
+   * Token threshold at which the supervisor compacts `internalHistory`
+   * before the next actor turn. Matches the upstream reference
+   * runtime's `effectiveContextWindow - AUTOCOMPACT_BUFFER_TOKENS`
+   * trigger. When undefined, the supervisor falls back to the legacy
+   * message-count heuristic.
+   */
+  readonly compactionThresholdTokens?: number;
+  /**
+   * Char-to-token ratio for the cheap prompt-size estimate used by the
+   * compaction gate. Mirrors `llm.promptCharPerToken` from gateway
+   * config (default 4).
+   */
+  readonly compactionCharPerToken?: number;
   readonly getSystemPrompt: () => string;
   readonly createToolHandler: (params: {
     sessionId: string;
@@ -316,6 +340,16 @@ export interface ResolvedCycleOutcome {
   readonly actorResult?: ChatExecutorResult;
   readonly decision: BackgroundRunDecision;
   readonly heartbeatMs?: number;
+  /**
+   * Carry-forward refresh started in parallel with `evaluateDecision`
+   * during non-parity cycle resolution. Downstream branches (working /
+   * finishing) await this instead of firing a fresh refresh, so the
+   * two LLM calls run concurrently rather than serially.
+   *
+   * Undefined when we took the parity path (synchronous fallback) or
+   * a deterministic domain decision short-circuited the LLM path.
+   */
+  readonly carryForwardRefreshPromise?: Promise<void>;
 }
 
 export interface NativeManagedProcessCycleResult {
