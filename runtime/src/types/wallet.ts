@@ -150,6 +150,17 @@ export function getDefaultKeypairPath(): string {
 }
 
 /**
+ * Expand a leading `~/` to the user's home directory.
+ * Absolute paths and relative paths without a tilde are returned unchanged.
+ */
+export function expandPath(p: string): string {
+  if (p.startsWith("~/")) {
+    return path.join(os.homedir(), p.slice(2));
+  }
+  return p;
+}
+
+/**
  * Parse keypair JSON content into a Keypair.
  *
  * @param content - The JSON string content
@@ -219,6 +230,7 @@ function parseKeypairJson(content: string, filePath: string): Keypair {
  *         or doesn't contain a valid 64-byte array
  */
 export async function loadKeypairFromFile(filePath: string): Promise<Keypair> {
+  filePath = expandPath(filePath);
   let content: string;
   try {
     content = await fsPromises.readFile(filePath, "utf-8");
@@ -254,6 +266,7 @@ export async function loadKeypairFromFile(filePath: string): Promise<Keypair> {
  *         or doesn't contain a valid 64-byte array
  */
 export function loadKeypairFromFileSync(filePath: string): Keypair {
+  filePath = expandPath(filePath);
   let content: string;
   try {
     content = fs.readFileSync(filePath, "utf-8");
