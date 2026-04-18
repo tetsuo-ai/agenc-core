@@ -4359,12 +4359,42 @@ export class BackgroundRunSupervisor {
       const historyText = toActuallySummarize
         .map((m) => `[${m.role}]: ${typeof m.content === "string" ? m.content : JSON.stringify(m.content)}`)
         .join("\n\n");
+      // Trace the supervisor's compaction LLM call alongside the
+      // actor's. Without this, compaction is one of the silent
+      // contributors to the per-cycle gap between actor turn end
+      // and the next request — the call happens, takes 5-15s, and
+      // emits no provider.request/.response trace events. The
+      // wrapping pattern matches `evaluateDecision` /
+      // `refreshCarryForwardState` / `planRunContract` which use the
+      // same `createProviderTraceEventLogger` shape; phase label
+      // `compaction` distinguishes the cause.
+      const providerTrace = this.traceProviderPayloads
+        ? {
+            trace: {
+              includeProviderPayloads: true as const,
+              onProviderTraceEvent: createProviderTraceEventLogger({
+                logger: this.logger,
+                traceLabel: "background_run.provider",
+                traceId: `background:${run.sessionId}:${run.id}:${run.cycleCount}:compaction`,
+                sessionId: run.sessionId,
+                staticFields: {
+                  runId: run.id,
+                  cycleCount: run.cycleCount,
+                  phase: "compaction",
+                },
+              }),
+            },
+          }
+        : undefined;
       const response = await this.supervisorLlm.chat(
         [
           { role: "system", content: getCompactPrompt() },
           { role: "user", content: historyText },
         ],
-        buildModelOnlyChatOptions({ toolChoice: "none" }),
+        buildModelOnlyChatOptions({
+          toolChoice: "none",
+          ...(providerTrace ?? {}),
+        }),
       );
       const summary = formatCompactSummary(response.content).trim();
       if (summary.length === 0) {
