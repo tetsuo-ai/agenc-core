@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { ChatBudgetExceededError, ChatExecutor } from "./chat-executor.js";
+import { ChatExecutor } from "./chat-executor.js";
 import type { ChatExecuteParams } from "./chat-executor.js";
 import { createPromptEnvelope } from "./prompt-envelope.js";
 import type {
@@ -86,7 +86,7 @@ function buildLongHistory(count: number): LLMMessage[] {
 
 describe("ChatExecutor state tracking", () => {
   describe("token budget", () => {
-    it("throws ChatBudgetExceededError when compaction fails", async () => {
+    it("does not hard-fail solely because cumulative session usage exceeds the budget", async () => {
       const provider = createMockProvider("primary", {
         chat: vi
           .fn()
@@ -108,8 +108,7 @@ describe("ChatExecutor state tracking", () => {
               },
             }),
           )
-          // Third call triggers compaction — summarization fails
-          .mockRejectedValueOnce(new Error("LLM unavailable")),
+          .mockRejectedValue(new Error("LLM unavailable")),
       });
       const executor = new ChatExecutor({
         providers: [provider],
@@ -125,11 +124,12 @@ describe("ChatExecutor state tracking", () => {
       await executor.execute(
         createParams({ history: buildLongHistory(10) }),
       );
+      expect(executor.getSessionTokenUsage("session-1")).toBe(2000);
 
-      // Third call: 2000 >= 1500. Compaction attempted, fails, throws original error.
+      // Current-context compaction is separate from cumulative usage tracking.
       await expect(
         executor.execute(createParams({ history: buildLongHistory(10) })),
-      ).rejects.toThrow(ChatBudgetExceededError);
+      ).rejects.toThrow("LLM unavailable");
     });
 
     it("accumulates across multiple executions; resetSessionTokens clears", async () => {

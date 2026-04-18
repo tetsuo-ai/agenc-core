@@ -529,6 +529,26 @@ function formatUnknownError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function isUnsupportedJobSpecMetadataInstructionError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('instructionfallbacknotfound') ||
+    normalized.includes('fallback functions are not supported')
+  );
+}
+
+function formatJobSpecPublishWarning(error: unknown): string {
+  const message = formatUnknownError(error);
+  if (isUnsupportedJobSpecMetadataInstructionError(message)) {
+    return (
+      'Task was created, but the deployed marketplace program does not support ' +
+      `job spec metadata publishing: ${message}`
+    );
+  }
+
+  return `Task was created, but job spec metadata publishing failed: ${message}`;
+}
+
 function buildVerifiedTaskJobSpec(
   source: SerializedTaskJobSpec['source'],
   base: Omit<SerializedTaskJobSpec, 'source' | 'verified' | 'jobSpecPath' | 'integrity' | 'payload' | 'error'>,
@@ -2877,8 +2897,7 @@ export function createCreateTaskTool(
             taskJobSpecPda = published.taskJobSpecPda.toBase58();
             jobSpecTransactionSignature = published.transactionSignature;
           } catch (error) {
-            jobSpecPublishWarning =
-              error instanceof Error ? error.message : String(error);
+            jobSpecPublishWarning = formatJobSpecPublishWarning(error);
           }
         }
 

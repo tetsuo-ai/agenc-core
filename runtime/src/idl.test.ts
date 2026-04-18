@@ -121,6 +121,25 @@ describe('IDL exports', () => {
     }
   });
 
+  it('uses the deployed devnet create_task account order', () => {
+    const createTask = IDL.instructions.find((ix) => ix.name === 'create_task');
+
+    expect(createTask?.accounts.map((account) => account.name)).toEqual([
+      'task',
+      'escrow',
+      'protocol_config',
+      'creator_agent',
+      'authority',
+      'creator',
+      'system_program',
+      'reward_mint',
+      'creator_token_account',
+      'token_escrow_ata',
+      'token_program',
+      'associated_token_program',
+    ]);
+  });
+
   it('has accounts array with entries', () => {
     expect(Array.isArray(IDL.accounts)).toBe(true);
     expect(IDL.accounts.length).toBeGreaterThan(0);

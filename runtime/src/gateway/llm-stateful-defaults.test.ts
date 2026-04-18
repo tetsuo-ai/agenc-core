@@ -12,7 +12,7 @@ describe("resolveGatewayStatefulResponses", () => {
     expect(resolved.usedDefaults).toBe(true);
     expect(resolved.config).toEqual({
       enabled: true,
-      store: false,
+      store: true,
       fallbackToStateless: true,
       compaction: {
         enabled: true,
@@ -32,7 +32,7 @@ describe("resolveGatewayStatefulResponses", () => {
     expect(resolved.usedDefaults).toBe(true);
     expect(resolved.config).toEqual({
       enabled: true,
-      store: false,
+      store: true,
       fallbackToStateless: true,
       compaction: {
         enabled: false,
@@ -93,8 +93,8 @@ describe("resolveGatewayStatefulResponses", () => {
 });
 
 describe("resolveDefaultGrokCompactionThreshold", () => {
-  it("uses 30% of the resolved context window when available", () => {
-    expect(resolveDefaultGrokCompactionThreshold(128_000)).toBe(38_400);
+  it("uses the shared auto-compact threshold when a context window is available", () => {
+    expect(resolveDefaultGrokCompactionThreshold(128_000)).toBe(95_000);
   });
 
   it("falls back to the legacy 16k threshold when the context window is unknown", () => {
