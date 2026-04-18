@@ -3,8 +3,12 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
 import { ObservabilityService } from "./observability.js";
-import { persistTracePayloadArtifact } from "../utils/trace-payload-store.js";
+import {
+  awaitTracePayloadDrain,
+  persistTracePayloadArtifact,
+} from "../utils/trace-payload-store.js";
 
 let tempDir = "";
 
@@ -287,5 +291,79 @@ sqliteDescribe("ObservabilityService", () => {
     expect(
       readFileSync(join(tempDir, "daemon.errors.log"), "utf8"),
     ).toContain("webchat.provider.error");
+  });
+
+  it("getArtifact reads a JSONL line by sha256 anchor", async () => {
+    const traceId = "trace-getartifact-jsonl";
+    const ref = persistTracePayloadArtifact({
+      traceId,
+      eventName: "evt.one",
+      payload: { idx: 1, marker: "expected-body" },
+    });
+    expect(ref).toBeDefined();
+    await awaitTracePayloadDrain(traceId);
+
+    const service = createService();
+    const result = await service.getArtifact(ref!.path);
+    const body = result.body as Record<string, unknown>;
+    expect(body.sha256).toBe(ref!.sha256);
+    expect(body.eventName).toBe("evt.one");
+    expect(body.traceId).toBe(traceId);
+    expect(body.payload).toEqual({ idx: 1, marker: "expected-body" });
+
+    rmSync(
+      join(homedir(), ".agenc/trace-payloads", `${traceId}.jsonl`),
+      { force: true },
+    );
+  });
+
+  it("getArtifact reads a legacy per-event JSON file", async () => {
+    // Simulate an old-format artifact: a .json file at any path
+    // under ~/.agenc/trace-payloads, no #sha256= anchor on the ref.
+    const legacyDir = join(homedir(), ".agenc/trace-payloads/legacy-trace");
+    mkdirSync(legacyDir, { recursive: true });
+    const legacyFile = join(legacyDir, "legacy-event.json");
+    writeFileSync(
+      legacyFile,
+      JSON.stringify({
+        eventName: "evt.legacy",
+        traceId: "legacy-trace",
+        payload: { from: "old-format" },
+      }),
+      "utf8",
+    );
+
+    const service = createService();
+    const result = await service.getArtifact(legacyFile);
+    const body = result.body as Record<string, unknown>;
+    expect(body.eventName).toBe("evt.legacy");
+    expect(body.payload).toEqual({ from: "old-format" });
+    expect(result.path).toBe(legacyFile);
+
+    rmSync(legacyDir, { recursive: true, force: true });
+  });
+
+  it("getArtifact throws when sha256 anchor does not match any line", async () => {
+    const traceId = "trace-getartifact-miss";
+    const ref = persistTracePayloadArtifact({
+      traceId,
+      eventName: "evt.one",
+      payload: { idx: 1 },
+    });
+    expect(ref).toBeDefined();
+    await awaitTracePayloadDrain(traceId);
+
+    // Construct an anchored path with the right file but a wrong sha.
+    const wrongSha = "0".repeat(64);
+    const wrongPath = ref!.path.replace(/#sha256=.*/, `#sha256=${wrongSha}`);
+    const service = createService();
+    await expect(service.getArtifact(wrongPath)).rejects.toThrow(
+      /Artifact not found in JSONL/,
+    );
+
+    rmSync(
+      join(homedir(), ".agenc/trace-payloads", `${traceId}.jsonl`),
+      { force: true },
+    );
   });
 });

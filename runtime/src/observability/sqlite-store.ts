@@ -401,10 +401,35 @@ export class SqliteObservabilityStore {
   }
 
   async getArtifact(path: string): Promise<ObservabilityArtifactResponse> {
-    const resolved = resolvePath(path);
+    const parsed = parseArtifactPath(path);
+    const resolved = resolvePath(parsed.filePath);
     if (!resolved.startsWith(TRACE_ARTIFACT_ROOT)) {
       throw new ObservabilityStoreError("Artifact path is outside trace payload root");
     }
+    if (parsed.kind === "jsonl-anchor") {
+      // New per-traceId JSONL format. Each line is a self-contained
+      // event document with a stored `sha256` field; scan for the
+      // matching one. O(N) over events in this traceId — typically
+      // tens to a few hundred — completes in well under 50ms even
+      // on hundreds of KB of JSONL.
+      const content = await readFile(resolved, "utf8");
+      for (const line of content.split("\n")) {
+        if (line.length === 0) continue;
+        let entry: { sha256?: string } & Record<string, unknown>;
+        try {
+          entry = JSON.parse(line) as typeof entry;
+        } catch {
+          continue;
+        }
+        if (entry.sha256 === parsed.sha256) {
+          return { path, body: entry };
+        }
+      }
+      throw new ObservabilityStoreError(
+        `Artifact not found in JSONL for sha256=${parsed.sha256}`,
+      );
+    }
+    // Legacy per-event file format. Whole file is one JSON object.
     const bodyText = await readFile(resolved, "utf8");
     return {
       path: resolved,
@@ -660,4 +685,30 @@ export class SqliteObservabilityStore {
       issues,
     };
   }
+}
+
+/**
+ * Parse an artifact ref path into its filesystem path and (for the
+ * new JSONL format) its sha256 anchor. The legacy format is a bare
+ * filesystem path with no `#` fragment; the new format appends
+ * `#sha256=<hex>` so the reader can locate the matching JSONL line
+ * without a separate index file. Stripping the fragment before
+ * passing to `resolvePath` is required because `path.resolve` would
+ * otherwise treat `#` as a literal filename character.
+ */
+function parseArtifactPath(input: string): {
+  readonly kind: "jsonl-anchor" | "legacy-file";
+  readonly filePath: string;
+  readonly sha256?: string;
+} {
+  const anchor = "#sha256=";
+  const anchorIdx = input.indexOf(anchor);
+  if (anchorIdx === -1) {
+    return { kind: "legacy-file", filePath: input };
+  }
+  return {
+    kind: "jsonl-anchor",
+    filePath: input.slice(0, anchorIdx),
+    sha256: input.slice(anchorIdx + anchor.length),
+  };
 }
