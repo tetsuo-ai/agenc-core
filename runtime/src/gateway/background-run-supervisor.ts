@@ -11,7 +11,10 @@
  */
 
 import type { ChatExecutor } from "../llm/chat-executor.js";
-import type { ChatExecutorResult } from "../llm/chat-executor-types.js";
+import type {
+  ChatExecutionTraceEvent,
+  ChatExecutorResult,
+} from "../llm/chat-executor-types.js";
 import { executeChatToLegacyResult } from "../llm/execute-chat.js";
 import { normalizePromptEnvelope } from "../llm/prompt-envelope.js";
 import { buildModelOnlyChatOptions } from "../llm/model-only-options.js";
@@ -3755,34 +3758,87 @@ export class BackgroundRunSupervisor {
     let actorResult: ChatExecutorResult | undefined;
     let decision: BackgroundRunDecision;
     let heartbeatMs: number | undefined;
-    const actorTrace =
-      this.traceProviderPayloads
+    // Per-tool-call observer that updates the verify_reminder
+    // counters on `ActiveBackgroundRun`. Runs INSIDE the actor turn
+    // (one event per tool dispatch_finished), not after the turn
+    // ends. Without this, a single long actor turn with hundreds of
+    // tool calls would never increment the counter from
+    // `collectAttachments`'s perspective until the cycle boundary —
+    // and verify_reminder would never fire on long-running cycles.
+    // Always installed regardless of `traceProviderPayloads`; trace
+    // logging itself is gated separately below.
+    const updateVerifyReminderCountersFromExecutionEvent = (
+      event: ChatExecutionTraceEvent,
+    ): void => {
+      if (event.type !== "tool_dispatch_finished") return;
+      const payload = event.payload as Record<string, unknown>;
+      const toolName =
+        typeof payload.tool === "string" ? payload.tool : undefined;
+      if (!toolName) return;
+      if (isMutatingTool(toolName)) {
+        run.mutatingEditsSinceLastVerifierSpawn += 1;
+      }
+      const args =
+        payload.args && typeof payload.args === "object"
+          ? (payload.args as Record<string, unknown>)
+          : undefined;
+      if (args && isVerifierSpawnFromRecord({ name: toolName, args })) {
+        run.mutatingEditsSinceLastVerifierSpawn = 0;
+      }
+      const rawResult = payload.result;
+      const resultString =
+        typeof rawResult === "string"
+          ? rawResult
+          : rawResult === undefined || rawResult === null
+            ? ""
+            : JSON.stringify(rawResult);
+      if (
+        containsVerdictMarkerInToolResult({
+          name: toolName,
+          result: resultString,
+        })
+      ) {
+        run.mutatingEditsSinceLastVerifierSpawn = 0;
+      }
+    };
+
+    const actorExecutionTraceLogger = this.traceProviderPayloads
+      ? createExecutionTraceEventLogger({
+          logger: this.logger,
+          traceLabel: "background_run.executor",
+          traceId: `background:${sessionId}:${run.id}:${run.cycleCount}:actor`,
+          sessionId,
+          staticFields: {
+            runId: run.id,
+            cycleCount: run.cycleCount,
+            phase: "actor",
+          },
+        })
+      : undefined;
+
+    const actorTrace = {
+      includeProviderPayloads: this.traceProviderPayloads,
+      onExecutionTraceEvent: (event: ChatExecutionTraceEvent): void => {
+        // Counter mutation is always-on; trace logging gated.
+        updateVerifyReminderCountersFromExecutionEvent(event);
+        actorExecutionTraceLogger?.(event);
+      },
+      ...(this.traceProviderPayloads
         ? {
-          includeProviderPayloads: true as const,
-          onProviderTraceEvent: createProviderTraceEventLogger({
-            logger: this.logger,
-            traceLabel: "background_run.provider",
-            traceId: `background:${sessionId}:${run.id}:${run.cycleCount}:actor`,
-            sessionId,
-            staticFields: {
-              runId: run.id,
-              cycleCount: run.cycleCount,
-              phase: "actor",
-            },
-          }),
-          onExecutionTraceEvent: createExecutionTraceEventLogger({
-            logger: this.logger,
-            traceLabel: "background_run.executor",
-            traceId: `background:${sessionId}:${run.id}:${run.cycleCount}:actor`,
-            sessionId,
-            staticFields: {
-              runId: run.id,
-              cycleCount: run.cycleCount,
-              phase: "actor",
-            },
-          }),
-        }
-        : undefined;
+            onProviderTraceEvent: createProviderTraceEventLogger({
+              logger: this.logger,
+              traceLabel: "background_run.provider",
+              traceId: `background:${sessionId}:${run.id}:${run.cycleCount}:actor`,
+              sessionId,
+              staticFields: {
+                runId: run.id,
+                cycleCount: run.cycleCount,
+                phase: "actor",
+              },
+            }),
+          }
+        : {}),
+    };
 
     try {
       const previousToolEvidence = run.lastToolEvidence;
@@ -3872,7 +3928,7 @@ export class BackgroundRunSupervisor {
                 persistDiscovery: true,
               }
               : undefined,
-          ...(actorTrace ? { trace: actorTrace } : {}),
+          trace: actorTrace,
         });
 
         const extendedHistory: LLMMessage[] = [
@@ -3895,30 +3951,20 @@ export class BackgroundRunSupervisor {
         ]);
         run.lastVerifiedAt = this.now();
         recordToolEvidence(run, actorResult.toolCalls);
-        // Update runtime counters that back the verify_reminder trigger.
-        // These live on ActiveBackgroundRun, not in LLM history —
-        // compaction-safe. Read at the start of the NEXT cycle by
-        // `collectAttachments` in `prepareCycleContext`. One-cycle
-        // latency is acceptable given the 10-turn reminder cadence.
+        // verify_reminder counter is updated per-tool-call inside the
+        // actor turn via `updateVerifyReminderCountersFromExecutionEvent`
+        // wired into the actorTrace.onExecutionTraceEvent callback.
+        // The previous end-of-actor-turn aggregation loop is removed
+        // because, on a long actor turn (hundreds of tool calls in
+        // one cycle), counters need to advance continuously — not in
+        // a single batch at cycle boundary — so that the next cycle's
+        // `collectAttachments` sees the accumulated work.
         //
-        // Verifier spawn and VERDICT-result resets target only the
-        // edit counter. The turn counter resets exclusively when the
-        // reminder actually fires (see prepareCycleContext below) so
-        // that spawning a verifier does not suppress the reminder for
-        // the following 10 turns — if the model fails to verify and
-        // keeps making edits after a spawn, the reminder fires again
-        // once the next edit threshold crosses.
-        for (const call of actorResult.toolCalls) {
-          if (isMutatingTool(call.name)) {
-            run.mutatingEditsSinceLastVerifierSpawn += 1;
-          }
-          if (isVerifierSpawnFromRecord(call)) {
-            run.mutatingEditsSinceLastVerifierSpawn = 0;
-          }
-          if (containsVerdictMarkerInToolResult(call)) {
-            run.mutatingEditsSinceLastVerifierSpawn = 0;
-          }
-        }
+        // The turn counter still resets only when the reminder actually
+        // fires (see prepareCycleContext below) — spawning a verifier
+        // does NOT suppress the next reminder; the model has to keep
+        // making edits without a fresh verdict for the threshold to
+        // re-cross.
         run.assistantTurnsSinceLastVerifyReminder += 1;
         recordProviderCompactionArtifacts(run, actorResult);
         run.continuationMode = resolveBackgroundContinuationMode(actorResult);
