@@ -945,6 +945,13 @@ function hasFileChangedSinceSnapshot(params: {
   if (params.snapshot?.content == null) {
     return false;
   }
+  if (params.snapshot.viewKind === "partial") {
+    // Partial reads captured only a line window. Treat the file as
+    // drifted when the exact window the model saw is no longer a
+    // verbatim substring of the current content — that signals an
+    // external mutation overlapped the viewed region.
+    return !params.currentContent.includes(params.snapshot.content);
+  }
   return params.currentContent !== params.snapshot.content;
 }
 
@@ -1522,8 +1529,12 @@ function createAppendFileTool(
  *   - The file MUST have been read in this session via
  *     `system.readFile` (or written via `system.writeFile` /
  *     `system.editFile` which auto-record the new content as "read").
- *     The Read-before-Edit rule is enforced at the tool boundary
- *     before any filesystem mutation.
+ *     Either a full read or a line-windowed partial read (via
+ *     `offset`/`limit`) is accepted — the tool's own `old_string`
+ *     existence and uniqueness checks are what keep replacements
+ *     safe, not the width of the prior read. `system.writeFile`
+ *     still requires a full snapshot because it overwrites the
+ *     whole file.
  *   - `old_string` MUST appear EXACTLY ONCE in the file unless
  *     `replace_all === true`. If zero matches: returns an error
  *     pointing the model at the actual file content. If multiple
@@ -1550,6 +1561,7 @@ function createEditFileTool(
       "expose the model to JSON-escape mistakes in nested string literals like #include directives, shell " +
       "single-quotes, or printf format strings. The file must exist and must have been read in this session " +
       "(via system.readFile, or implicitly via a prior system.writeFile / system.editFile in the same session). " +
+      "A line-windowed read (with offset/limit) is accepted — a full read is not required for editFile. " +
       "old_string must match exactly once unless replace_all is true. If old_string is not unique, narrow it " +
       "with more surrounding context or pass replace_all: true. Use the smallest old_string that is clearly " +
       "unique — usually 2-4 adjacent lines are enough. Preserve the exact indentation and whitespace from the " +
@@ -1633,17 +1645,25 @@ function createEditFileTool(
           );
         }
 
-        // Read-before-Edit enforcement (Claude Code FileEditTool prompt:5
-        // pattern). Same rule as system.writeFile: the model must have
-        // called system.readFile on this path in the current session.
+        // Read-before-Edit enforcement. The model must have called
+        // system.readFile on this path in the current session, but
+        // either a full or a partial read (offset/limit line window)
+        // suffices: system.editFile is surgical — old_string must
+        // match verbatim against the file's current bytes, and the
+        // uniqueness check below prevents collateral replacements.
+        // Partial reads give the model enough context to identify
+        // the region it is editing without forcing an unnecessary
+        // full re-read of large source files. system.writeFile still
+        // requires a full snapshot because it overwrites the entire
+        // file.
         const sessionId = resolveSessionId(args);
         const readSnapshot = getSessionReadSnapshot(sessionId, resolved!);
-        if (requiresFullReadSnapshot(readSnapshot)) {
+        if (readSnapshot === undefined) {
           return errorResult(
-            `File must be fully read before editing it. ` +
+            `File has not been read in this session. ` +
               `Call system.readFile on "${args.path}" before calling system.editFile. ` +
-              `The Read-before-Edit rule exists so you have the literal current contents of the file ` +
-              `(including any prior escape mistakes) in your context before generating the new edit.`,
+              `A line-windowed read (via offset/limit) is sufficient — the Read-before-Edit rule ` +
+              `only requires that you have seen the current contents before generating the edit.`,
           );
         }
 
