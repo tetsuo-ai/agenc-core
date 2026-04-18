@@ -1043,22 +1043,24 @@ describe("system.editFile", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(parseResult(result).error).toContain("fully read");
+    expect(parseResult(result).error).toContain("has not been read in this session");
     expect(mockWriteFile).not.toHaveBeenCalled();
   });
 
-  it("rejects edit after a partial read snapshot", async () => {
+  it("accepts edit after a partial read snapshot whose window is still present", async () => {
     const before = `int main(void) { return 0; }\n`;
     setupExistingFile(before);
     clearSessionReadState("session-partial-edit");
     seedSessionReadState("session-partial-edit", [
       {
         path: "/workspace/no-read.c",
-        content: before,
+        // Partial snapshot captures only the body of main, not the whole file.
+        content: "int main(void) { return 0; }",
         timestamp: 1_000,
         viewKind: "partial",
       },
     ]);
+    mockWriteFile.mockResolvedValueOnce(undefined);
 
     const result = await tool.execute({
       path: "/workspace/no-read.c",
@@ -1067,8 +1069,37 @@ describe("system.editFile", () => {
       __agencSessionId: "session-partial-edit",
     });
 
+    expect(result.isError).toBeUndefined();
+    expect(parseResult(result).replacements).toBe(1);
+    expect(mockWriteFile).toHaveBeenCalledTimes(1);
+    const [, written] = mockWriteFile.mock.calls[0];
+    expect((written as Buffer).toString()).toBe(
+      `int main(void) { return 1; }\n`,
+    );
+  });
+
+  it("rejects edit when the partial window is no longer present in the file (external drift)", async () => {
+    // File on disk has diverged from the partial window the model saw.
+    setupExistingFile(`int other(void) { return 42; }\n`);
+    clearSessionReadState("session-partial-drift");
+    seedSessionReadState("session-partial-drift", [
+      {
+        path: "/workspace/drift.c",
+        content: "int main(void) { return 0; }",
+        timestamp: 1_000,
+        viewKind: "partial",
+      },
+    ]);
+
+    const result = await tool.execute({
+      path: "/workspace/drift.c",
+      old_string: "return 42",
+      new_string: "return 0",
+      __agencSessionId: "session-partial-drift",
+    });
+
     expect(result.isError).toBe(true);
-    expect(parseResult(result).error).toContain("fully read");
+    expect(parseResult(result).error).toContain("modified since it was last read");
     expect(mockWriteFile).not.toHaveBeenCalled();
   });
 
@@ -1083,7 +1114,7 @@ describe("system.editFile", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(parseResult(result).error).toContain("fully read");
+    expect(parseResult(result).error).toContain("has not been read in this session");
     expect(mockWriteFile).not.toHaveBeenCalled();
   });
 
@@ -1449,7 +1480,7 @@ describe("system.editFile", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(parseResult(result).error).toContain("fully read");
+    expect(parseResult(result).error).toContain("has not been read in this session");
   });
 });
 
