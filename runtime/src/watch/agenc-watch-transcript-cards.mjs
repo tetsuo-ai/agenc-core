@@ -68,24 +68,44 @@ export function computeTranscriptPreviewMaxLines({
   if (eventKind === "market") {
     return latestIsCurrent ? 8 : 6;
   }
-  if (eventKind === "subagent") {
-    return 2;
-  }
+  // Tool and subagent outputs are where code and file contents land. The
+  // old 2-line cap reduced an editFile diff, a readFile of a 200-line
+  // source file, or a bash build log to "first line + ellipsis", which
+  // is exactly what made every non-trivial tool result look "cut off".
+  // Use the same proportional sizing as `sourceInlineBudget` so tool
+  // output respects the viewport instead of a hard cap.
   if (
+    eventKind === "tool" ||
+    eventKind === "tool result" ||
+    eventKind === "tool error" ||
     eventKind === "subagent tool" ||
     eventKind === "subagent tool result" ||
     eventKind === "subagent error"
   ) {
-    return 2;
+    return Math.min(
+      maxPreviewSourceLines,
+      Math.max(
+        latestIsCurrent ? 20 : 10,
+        Math.floor(viewport * (latestIsCurrent ? 0.55 : 0.3)),
+      ),
+    );
+  }
+  if (eventKind === "subagent") {
+    // Subagent status cards are lighter than their tool output — a
+    // short summary is enough — but 2 was too aggressive; show the
+    // full summary headline + progress lines.
+    return latestIsCurrent ? 6 : 4;
   }
   if (eventKind === "you" || eventKind === "operator" || eventKind === "queued") {
     return 3;
   }
-  if (eventKind === "tool" || eventKind === "tool result" || eventKind === "tool error") {
-    return 2;
-  }
   if (eventKind === "error" || eventKind === "approval") {
     return 3;
   }
+  // Keep the conservative default for unrecognized event kinds. The
+  // tool/subagent cases above are where the "code is cut off"
+  // symptom lives; unknown kinds are rare and a tight default
+  // prevents spam when new event types are added without explicit
+  // sizing.
   return 2;
 }

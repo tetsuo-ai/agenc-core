@@ -120,7 +120,52 @@ export function createWatchFrameController(dependencies = {}) {
     lastRenderedFrameLines: [],
     lastRenderedFrameWidth: 0,
     lastRenderedFrameHeight: 0,
+    // Interval that force-ticks the renderer while a run is active
+    // so spinners, elapsed-time, and "Thinking" verbs refresh even
+    // during long silent gaps (a 20s provider call emits no
+    // intermediate events; without this the UI looks frozen).
+    activeRunTicker: null,
   };
+
+  // Re-render cadence while a run is in-flight. 500 ms is fast
+  // enough for smooth spinner animation and once-per-second elapsed
+  // time changes, slow enough to keep CPU cost negligible.
+  const ACTIVE_RUN_TICK_INTERVAL_MS = 500;
+
+  function ensureActiveRunTicker() {
+    const shouldRun =
+      watchState?.activeRunStartedAtMs != null ||
+      (typeof hasActiveSurfaceRun === "function" && hasActiveSurfaceRun());
+    if (shouldRun && !frameState.activeRunTicker) {
+      frameState.activeRunTicker = setInterval(() => {
+        // Re-check on every tick; if the run ended between ticks, stop.
+        const stillActive =
+          watchState?.activeRunStartedAtMs != null ||
+          (typeof hasActiveSurfaceRun === "function" && hasActiveSurfaceRun());
+        if (!stillActive) {
+          if (frameState.activeRunTicker) {
+            clearInterval(frameState.activeRunTicker);
+            frameState.activeRunTicker = null;
+          }
+          return;
+        }
+        // Kick a render regardless of whether new events arrived — the
+        // whole point of the ticker is to keep animated state fresh
+        // during silent provider calls.
+        if (!frameState.renderPending) {
+          frameState.renderPending = true;
+          setTimer(render, 0);
+        }
+      }, ACTIVE_RUN_TICK_INTERVAL_MS);
+      // Don't keep the Node process alive just for animation ticks.
+      if (typeof frameState.activeRunTicker?.unref === "function") {
+        frameState.activeRunTicker.unref();
+      }
+    } else if (!shouldRun && frameState.activeRunTicker) {
+      clearInterval(frameState.activeRunTicker);
+      frameState.activeRunTicker = null;
+    }
+  }
 
   // Split an ANSI-colored row into an array of per-cell entries
   // `{sgr, char}` up to `width` columns. `sgr` is the FULL active
@@ -4002,6 +4047,13 @@ export function createWatchFrameController(dependencies = {}) {
   }
 
   function scheduleRender() {
+    // Make sure the active-run ticker reflects current run state: a
+    // brand-new activeRunStartedAtMs (e.g. the first event of a new
+    // actor turn) should start the steady tick immediately, and a
+    // cycle boundary that cleared activeRunStartedAtMs should stop
+    // it. Putting this here is cheap — O(1) per render call — and
+    // avoids a separate wiring point in every state-mutation site.
+    ensureActiveRunTicker();
     if (frameState.renderPending) {
       return;
     }

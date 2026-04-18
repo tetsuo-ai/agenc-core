@@ -221,7 +221,26 @@ export function createWatchTransportController(dependencies = {}) {
       return;
     }
     const normalizedMessage = normalizeOperatorMessage(msg);
-    if (shouldIgnoreOperatorMessage(normalizedMessage, watchState.sessionId)) {
+    // The watch TUI is a daemon-wide observation surface by design —
+    // the operator wants to see cross-session activity, not only
+    // events scoped to the watcher's own chat session. Passing
+    // `null` disables `shouldIgnoreOperatorMessage`'s per-session
+    // gate (the function short-circuits to "do not ignore" when the
+    // active session id is empty). `subagents.*` / `planner_*` /
+    // other session-scoped lifecycle events therefore flow through
+    // the dispatch pipeline regardless of which session the user is
+    // currently composing chat for. Operators that want the old
+    // per-session-only view can still enable it by setting
+    // `AGENC_WATCH_SCOPE_SESSION=1` in the environment.
+    const scopeToSession =
+      typeof process !== "undefined" &&
+      process?.env?.AGENC_WATCH_SCOPE_SESSION === "1";
+    if (
+      shouldIgnoreOperatorMessage(
+        normalizedMessage,
+        scopeToSession ? watchState.sessionId : null,
+      )
+    ) {
       return;
     }
     const surfaceEvent = projectOperatorSurfaceEvent(normalizedMessage);
