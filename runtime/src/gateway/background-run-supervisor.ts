@@ -629,6 +629,24 @@ export class BackgroundRunSupervisor {
   private workerHeartbeatTimer: ReturnType<typeof setTimeout> | null = null;
   private dispatchPumpRunning = false;
   private workerDraining = false;
+  /**
+   * In-flight concurrent dispatch cycles. The pump fills this set up
+   * to `workerMaxConcurrentRuns` and keeps draining the claim queue
+   * as slots free up. Without this, a single long-running cycle
+   * (e.g. a subagent tool loop) would serially block every other
+   * session's scheduled wake-up even though Node handles those
+   * sessions' I/O awaits concurrently at the event loop level.
+   */
+  private readonly inFlightDispatches = new Set<Promise<void>>();
+  /**
+   * Set of sessionIds currently running a dispatched cycle. Ensures
+   * the concurrent pump never runs two cycles of the SAME session
+   * simultaneously — a late operator signal overlapping an expired
+   * timer dispatch would otherwise show up as two separate claimed
+   * items, and without this guard both would run, double-cycling
+   * the session.
+   */
+  private readonly inFlightSessionIds = new Set<string>();
 
   constructor(config: BackgroundRunSupervisorConfig) {
     this.chatExecutor = config.chatExecutor;
@@ -674,9 +692,16 @@ export class BackgroundRunSupervisor {
       `background-supervisor-${Math.random().toString(36).slice(2, 10)}`;
     this.now = config.now ?? (() => Date.now());
     this.workerPools = sanitizeWorkerPools(config.workerPools);
+    // Default to 8 concurrent cycles per worker. The dispatch pump
+    // runs this many in parallel (see `pumpDispatchQueue`). Pre-8
+    // default was 1, which meant a single long cycle serialized
+    // every other session's scheduled wake-up. 8 is comfortably
+    // below typical per-host socket limits for outbound HTTPS and
+    // leaves headroom for MCP + tool I/O. Operators can override
+    // via `autonomy.backgroundRuns.workerMaxConcurrentRuns`.
     this.workerMaxConcurrentRuns = Math.max(
       1,
-      Math.floor(config.workerMaxConcurrentRuns ?? 1),
+      Math.floor(config.workerMaxConcurrentRuns ?? 8),
     );
     this.wakeBus = new BackgroundRunWakeBus({
       runStore: this.runStore,
@@ -1506,17 +1531,79 @@ export class BackgroundRunSupervisor {
     this.dispatchPumpRunning = true;
     try {
       await this.heartbeatWorker();
+      // Concurrent dispatch: the pump claims up to
+      // `workerMaxConcurrentRuns` dispatches and runs them in
+      // parallel via `handleClaimedDispatch`. Whenever a slot frees,
+      // we try to claim more. Without this, a single long cycle
+      // (subagent tool loops are the typical offender) would block
+      // every other session's scheduled wake even though JS I/O
+      // awaits in the cycle already yield to the event loop —
+      // concurrent sessions would run fine, the bottleneck is
+      // strictly the old serial claim→await loop below.
       while (!this.workerDraining) {
-        const claim = await this.runStore.claimDispatchForWorker({
-          workerId: this.instanceId,
-          pools: this.workerPools,
-          now: this.now(),
-        });
-        if (!claim.claimed || !claim.item) {
+        while (
+          !this.workerDraining &&
+          this.inFlightDispatches.size < this.workerMaxConcurrentRuns
+        ) {
+          const claim = await this.runStore.claimDispatchForWorker({
+            workerId: this.instanceId,
+            pools: this.workerPools,
+            now: this.now(),
+          });
+          if (!claim.claimed || !claim.item) {
+            break;
+          }
+          const item = claim.item;
+          // Per-session serialization: if we already have an
+          // in-flight dispatch for this session (e.g. a late signal
+          // claim racing with an already-running timer claim),
+          // release the duplicate back to the queue instead of
+          // double-running the cycle.
+          if (this.inFlightSessionIds.has(item.sessionId)) {
+            await this.runStore.releaseDispatch({
+              dispatchId: item.id,
+              workerId: this.instanceId,
+              now: this.now(),
+              availableAt: this.now() + DEFAULT_DISPATCH_RETRY_MS,
+              preferredWorkerId: item.preferredWorkerId,
+            });
+            continue;
+          }
+          this.inFlightSessionIds.add(item.sessionId);
+          const inFlight = (async () => {
+            try {
+              await this.handleClaimedDispatch(item);
+            } finally {
+              this.inFlightSessionIds.delete(item.sessionId);
+              try {
+                await this.heartbeatWorker();
+              } catch {
+                // Heartbeat failures are logged inside
+                // `heartbeatWorker`'s call sites; ignore here so the
+                // slot still frees for the next claim.
+              }
+            }
+          })();
+          this.inFlightDispatches.add(inFlight);
+          inFlight.finally(() => {
+            this.inFlightDispatches.delete(inFlight);
+          });
+        }
+        if (this.inFlightDispatches.size === 0) {
+          // Nothing in flight AND no new items claimed → queue drained.
           break;
         }
-        await this.handleClaimedDispatch(claim.item);
-        await this.heartbeatWorker();
+        // Wait until at least one in-flight dispatch finishes before
+        // attempting the next claim round. `Promise.race` returns on
+        // the first settle (fulfill or reject); individual error
+        // handling is inside `handleClaimedDispatch`.
+        await Promise.race(this.inFlightDispatches).catch(() => undefined);
+      }
+      // Drain any still-in-flight dispatches before marking the pump
+      // idle so callers that await `pumpDispatchQueue` see the true
+      // completion boundary.
+      if (this.inFlightDispatches.size > 0) {
+        await Promise.allSettled(this.inFlightDispatches);
       }
     } finally {
       this.dispatchPumpRunning = false;
