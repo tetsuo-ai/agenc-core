@@ -121,6 +121,7 @@ import {
 } from "../llm/provider-native-search.js";
 import {
   createLLMProviders as createLLMProvidersStandalone,
+  createSingleLLMProvider,
   resolveLlmContextWindowTokens as resolveLlmContextWindowTokensStandalone,
   resolveProviderExecutionBudget as resolveProviderExecutionBudgetStandalone,
   buildPromptBudgetConfig,
@@ -2438,9 +2439,41 @@ export class DaemonManager {
               logger: this.logger,
             })
           : undefined;
+      // Build a fast, non-reasoning supervisor provider for the
+      // short JSON-only calls (`evaluateDecision`,
+      // `refreshCarryForwardState`). Compaction continues to use the
+      // primary provider to match the upstream reference runtime,
+      // which preserves same-model continuity for summaries. Falls
+      // back silently to the primary when the primary provider isn't
+      // Grok (other adapters don't expose a fast variant here).
+      let supervisorFastLlm: LLMProvider | undefined;
+      if (config.llm?.provider === "grok") {
+        supervisorFastLlm =
+          (await createSingleLLMProvider(
+            {
+              ...config.llm,
+              model: "grok-4-fast-non-reasoning",
+              // Fast supervisor calls never use tools; strip the tool
+              // config so the fast provider never spins up tool
+              // routing state for its own calls.
+              parallelToolCalls: false,
+            },
+            [],
+            this.logger,
+          )) ?? undefined;
+      }
       this._backgroundRunSupervisor = new BackgroundRunSupervisor({
         chatExecutor: this._chatExecutor,
         supervisorLlm: providers[0],
+        ...(supervisorFastLlm ? { supervisorFastLlm } : {}),
+        ...(typeof sessionCompactionThreshold === "number" &&
+        sessionCompactionThreshold > 0
+          ? { compactionThresholdTokens: sessionCompactionThreshold }
+          : {}),
+        ...(typeof config.llm?.promptCharPerToken === "number" &&
+        config.llm.promptCharPerToken > 0
+          ? { compactionCharPerToken: config.llm.promptCharPerToken }
+          : {}),
         getSystemPrompt: () => this._systemPrompt,
         runStore,
         policyEngine: this._policyEngine ?? undefined,
