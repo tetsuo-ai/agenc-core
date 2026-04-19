@@ -137,6 +137,14 @@ export function createWatchInputController(dependencies = {}) {
     return true;
   }
 
+  // Upper bound for a single bracketed-paste payload. 4 MB is well
+  // past any legitimate paste a user would make interactively and
+  // caps memory usage if a runaway producer (or malicious input)
+  // never emits the end marker. When the bound is hit, the excess
+  // bytes are dropped and the paste is accepted with what was
+  // buffered so far.
+  const BRACKETED_PASTE_MAX_BYTES = 4 * 1024 * 1024;
+
   function consumeBracketedPaste(input, index, { insertText = insertPastedText } = {}) {
     const source = String(input ?? "");
     if (
@@ -155,6 +163,21 @@ export function createWatchInputController(dependencies = {}) {
     const endIndex = source.indexOf(BRACKETED_PASTE_END, scanIndex);
     if (endIndex === -1) {
       pendingBracketedPaste += source.slice(scanIndex);
+      if (pendingBracketedPaste.length > BRACKETED_PASTE_MAX_BYTES) {
+        // Truncate and commit whatever we have. Subsequent bytes up
+        // to the next end marker are dropped silently (nextIndex
+        // jumps to source end so the outer loop skips them).
+        const truncated = pendingBracketedPaste.slice(
+          0,
+          BRACKETED_PASTE_MAX_BYTES,
+        );
+        pendingBracketedPaste = null;
+        const didMutate = insertText(truncated);
+        return {
+          nextIndex: source.length,
+          didMutate,
+        };
+      }
       return {
         nextIndex: source.length,
         didMutate: false,
@@ -162,6 +185,12 @@ export function createWatchInputController(dependencies = {}) {
     }
 
     pendingBracketedPaste += source.slice(scanIndex, endIndex);
+    if (pendingBracketedPaste.length > BRACKETED_PASTE_MAX_BYTES) {
+      pendingBracketedPaste = pendingBracketedPaste.slice(
+        0,
+        BRACKETED_PASTE_MAX_BYTES,
+      );
+    }
     const didMutate = insertText(pendingBracketedPaste);
     pendingBracketedPaste = null;
     return {
@@ -259,8 +288,15 @@ export function createWatchInputController(dependencies = {}) {
       scheduleRender();
       return;
     }
+    // Enter in an active palette accepts the highlighted selection —
+    // it must NOT also fire submit in the same keystroke. Previously
+    // selecting `/plan` from the dropdown accepted the selection and
+    // immediately submitted the filled-in command, giving the user
+    // no chance to edit the arguments before send.
     if (hasActiveComposerPalette()) {
       acceptComposerPaletteSelection();
+      scheduleRender();
+      return;
     }
     const value = watchState.composerInput.trim();
     if (!value) {
@@ -385,6 +421,19 @@ export function createWatchInputController(dependencies = {}) {
       { seq: "\x1b[4~", run: () => {
         watchState.composerCursor = watchState.composerInput.length;
       } },
+      // Alt-Enter and Alt-Return send `\x1b\r` / `\x1b\n` in most
+      // terminals. Insert a literal newline into the composer instead
+      // of submitting — Shift-Enter equivalents (`\x1b[13;2u`) are
+      // handled by terminals that support kitty keyboard protocol; for
+      // now Alt-Enter is the universal fallback for multi-line input.
+      { seq: "\x1b\r", run: () => {
+        insertComposerTextValue("\n");
+        watchState.composerHistoryIndex = -1;
+      } },
+      { seq: "\x1b\n", run: () => {
+        insertComposerTextValue("\n");
+        watchState.composerHistoryIndex = -1;
+      } },
     ];
 
     for (const entry of sequenceTable) {
@@ -394,7 +443,23 @@ export function createWatchInputController(dependencies = {}) {
       }
     }
 
-    if (rest === "\x1b") {
+    // Treat any Escape not followed by a recognized CSI/OSC/SS3/DCS
+    // introducer as a bare-escape press. Previously this only fired
+    // when `rest === "\x1b"` exactly; if the user pressed Esc quickly
+    // enough that a follow-up byte landed in the same input buffer,
+    // the whole sequence fell through to consumeUnknownEscapeSequence
+    // and the palette stayed open. Accept escape-plus-noise too.
+    const isBareEscape =
+      rest === "\x1b" ||
+      (rest.startsWith("\x1b") &&
+        rest.length > 1 &&
+        rest[1] !== "[" &&
+        rest[1] !== "O" &&
+        rest[1] !== "]" &&
+        rest[1] !== "P" &&
+        rest[1] !== "\r" &&
+        rest[1] !== "\n");
+    if (isBareEscape) {
       if (hasActiveMarketTaskBrowser()) {
         dismissMarketTaskBrowser();
       } else if (watchState.expandedEventId) {
@@ -465,6 +530,18 @@ export function createWatchInputController(dependencies = {}) {
         shutdownWatch(0);
         return;
       }
+      // Ctrl-D: EOF on empty composer (like a shell), delete-forward
+      // otherwise. Previously Ctrl-D was silently discarded.
+      if (char === "\x04") {
+        if ((watchState.composerInput ?? "").length === 0) {
+          shutdownWatch(0);
+          return;
+        }
+        deleteComposerForward();
+        didMutate = true;
+        index += 1;
+        continue;
+      }
       if (char === "\x0f") {
         toggleExpandedEvent();
         didMutate = true;
@@ -493,6 +570,25 @@ export function createWatchInputController(dependencies = {}) {
         }
       }
       if (char === "\x0c") {
+        // Ctrl-L: dismiss any open overlay first — otherwise the
+        // cleared view still has the dropdown drawn on top and the
+        // user has to press a second key to get a clean screen.
+        // Collapse expanded event, close market-task browser, or
+        // clear the composer palette trigger. Only when no overlay
+        // is active does Ctrl-L clear the transcript itself.
+        if (watchState.expandedEventId) {
+          watchState.expandedEventId = null;
+          watchState.detailScrollOffset = 0;
+          didMutate = true;
+          index += 1;
+          continue;
+        }
+        if (hasActiveMarketTaskBrowser()) {
+          dismissMarketTaskBrowser();
+          didMutate = true;
+          index += 1;
+          continue;
+        }
         clearLiveTranscriptView();
         didMutate = true;
         index += 1;

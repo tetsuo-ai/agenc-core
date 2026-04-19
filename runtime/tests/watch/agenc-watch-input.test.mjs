@@ -182,7 +182,7 @@ test("input controller limits input while terminal selection mode is active", ()
   assert.equal(calls.some((entry) => entry.type === "insert"), false);
 });
 
-test("input controller applies the active palette selection before submitting on enter", () => {
+test("input controller accepts the active palette selection on enter without submitting", () => {
   const { controller, watchState, calls } = createInputHarness({
     hasActiveComposerPalette: () => true,
     acceptComposerPaletteSelection() {
@@ -197,20 +197,18 @@ test("input controller applies the active palette selection before submitting on
 
   controller.handleTerminalInput("\r");
 
+  // Enter on an active palette must accept the highlighted entry but
+  // not fire submit in the same keystroke — selecting `/plan` must
+  // leave the filled-in command in the composer so the user can edit
+  // arguments before hitting Enter again to send.
   assert.ok(calls.some((entry) => entry.type === "acceptPaletteSelection"));
-  assert.ok(
-    calls.some(
-      (entry) =>
-        entry.type === "submit" &&
-        entry.value === "/model grok-4-1-fast-reasoning",
-    ),
+  assert.equal(
+    calls.some((entry) => entry.type === "submit"),
+    false,
   );
-  assert.ok(
-    calls.some(
-      (entry) =>
-        entry.type === "recordHistory" &&
-        entry.value === "/model grok-4-1-fast-reasoning",
-    ),
+  assert.equal(
+    calls.some((entry) => entry.type === "recordHistory"),
+    false,
   );
 });
 
