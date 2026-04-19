@@ -196,8 +196,29 @@ const PLAN_MODE_ALWAYS_ALLOWED = new Set([
   "system.searchTools",
 ]);
 
+/**
+ * Explicit deny list of tools known to mutate workspace / environment
+ * state. Used by plan-mode filtering because the tool registrations in
+ * `src/tools/` do NOT reliably populate `metadata.mutating = true` — at
+ * the time of writing only `TodoWrite` declares that flag, so relying
+ * purely on `entry.metadata.mutating !== true` lets every filesystem
+ * write through. Keep this list synchronized with the actual mutating
+ * surfaces; anything not present here is treated as read-only in plan
+ * mode.
+ */
+const PLAN_MODE_DENY_BY_NAME = new Set([
+  "system.writeFile",
+  "system.editFile",
+  "system.appendFile",
+  "system.mkdir",
+  "system.move",
+  "system.delete",
+  "system.bash",
+]);
+
 function isPlanModeAllowedEntry(entry: ToolCatalogEntry): boolean {
   if (PLAN_MODE_ALWAYS_ALLOWED.has(entry.name)) return true;
+  if (PLAN_MODE_DENY_BY_NAME.has(entry.name)) return false;
   return entry.metadata.mutating !== true;
 }
 
