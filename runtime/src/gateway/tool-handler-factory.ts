@@ -21,6 +21,7 @@ import {
 import {
   TASK_ACTOR_KIND_ARG,
   TASK_ACTOR_NAME_ARG,
+  TASK_HANDLE_TOOL_NAMES,
   TASK_LIST_ARG,
   TASK_TRACKER_TOOL_NAMES,
 } from "../tools/system/task-tracker.js";
@@ -358,7 +359,10 @@ function applySessionTaskListId(
   args: Record<string, unknown>,
   sessionId: string | undefined,
 ): Record<string, unknown> {
-  if (!TASK_TRACKER_TOOL_NAMES.has(toolName)) {
+  if (
+    !TASK_TRACKER_TOOL_NAMES.has(toolName) &&
+    !TASK_HANDLE_TOOL_NAMES.has(toolName)
+  ) {
     return args;
   }
   if (!sessionId || sessionId.trim().length === 0) {
@@ -376,7 +380,10 @@ function applyTaskActorContext(
   isSubAgentSession: boolean,
   subAgentInfo: DelegationSubAgentInfo,
 ): Record<string, unknown> {
-  if (!TASK_TRACKER_TOOL_NAMES.has(toolName)) {
+  if (
+    !TASK_TRACKER_TOOL_NAMES.has(toolName) &&
+    !TASK_HANDLE_TOOL_NAMES.has(toolName)
+  ) {
     return args;
   }
   const actorName =

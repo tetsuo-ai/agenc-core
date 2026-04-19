@@ -5,6 +5,8 @@ import { describe, it, expect, beforeEach } from "vitest";
 import {
   TASK_ACTOR_KIND_ARG,
   TASK_ACTOR_NAME_ARG,
+  TASK_HANDLE_MAX_TIMEOUT_MS,
+  TASK_HANDLE_TOOL_NAMES,
   createRuntimeTaskHandleTools,
   createTaskTrackerTools,
   SessionTaskStore,
@@ -739,6 +741,77 @@ describe("task-tracker", () => {
         worktreePath: "/tmp/worktree-1",
       });
       expect(persistedOutput.body.events).toBeInstanceOf(Array);
+    });
+
+    it("clamps a model-supplied timeoutMs to the handle-tool cap", async () => {
+      const runtimeStore = new TaskStore();
+      const observed: number[] = [];
+      const originalWait = runtimeStore.waitForTask.bind(runtimeStore);
+      runtimeStore.waitForTask = (async (
+        listId: string,
+        taskId: string,
+        options?: { timeoutMs?: number },
+      ) => {
+        if (options?.timeoutMs !== undefined) observed.push(options.timeoutMs);
+        return originalWait(listId, taskId, options);
+      }) as typeof runtimeStore.waitForTask;
+      const tools = createRuntimeTaskHandleTools(runtimeStore);
+      const wait = findTool(tools, "task.wait");
+      const runtimeTask = await runtimeStore.createRuntimeTask({
+        listId: DEFAULT_TASK_LIST_ID,
+        kind: "subagent",
+        subject: "Delegated",
+        description: "delegated",
+      });
+      await runtimeStore.finalizeRuntimeTask({
+        listId: DEFAULT_TASK_LIST_ID,
+        taskId: runtimeTask.id,
+        status: "completed",
+        summary: "done",
+      });
+
+      await callTool(wait, {
+        taskId: runtimeTask.id,
+        until: "terminal",
+        timeoutMs: 10 * 60 * 1000,
+      });
+
+      expect(observed).toHaveLength(1);
+      expect(observed[0]).toBeLessThanOrEqual(TASK_HANDLE_MAX_TIMEOUT_MS);
+    });
+
+    it("returns not found when a task belongs to a different session listId", async () => {
+      const runtimeStore = new TaskStore();
+      const tools = createRuntimeTaskHandleTools(runtimeStore);
+      const output = findTool(tools, "task.output");
+      const otherTask = await runtimeStore.createRuntimeTask({
+        listId: "session-other",
+        kind: "subagent",
+        subject: "Someone else's task",
+        description: "not reachable from session-mine",
+      });
+      await runtimeStore.finalizeRuntimeTask({
+        listId: "session-other",
+        taskId: otherTask.id,
+        status: "completed",
+        summary: "done",
+        output: "secret",
+      });
+
+      const result = await callTool(output, {
+        [TASK_LIST_ARG]: "session-mine",
+        taskId: otherTask.id,
+      });
+
+      expect(result.raw.isError).toBe(true);
+      expect(result.body.error).toContain("not found");
+    });
+
+    it("exports stable handle tool names matching the registered tools", () => {
+      const runtimeStore = new TaskStore();
+      const tools = createRuntimeTaskHandleTools(runtimeStore);
+      const registered = new Set(tools.map((t) => t.name));
+      expect(registered).toEqual(TASK_HANDLE_TOOL_NAMES);
     });
   });
 

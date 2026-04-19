@@ -41,6 +41,7 @@ import { createServerTools } from "../tools/system/server.js";
 import { createSqliteTools } from "../tools/system/sqlite.js";
 import { createSpreadsheetTools } from "../tools/system/spreadsheet.js";
 import {
+  createRuntimeTaskHandleTools,
   createTaskTrackerTools,
   SessionTaskStore,
   TaskStore,
@@ -434,6 +435,47 @@ export async function createDaemonToolRegistry(
               : hookResult.blockingMessage,
         };
       },
+      ...(traceConfig.enabled
+        ? {
+            onTaskAccessEvent: async (event) => {
+              logTraceEvent(
+                logger,
+                `runtime_contract.task.${event.type}`,
+                {
+                  traceId: buildRuntimeContractTaskTraceId(
+                    event.listId,
+                    event.taskId,
+                  ),
+                  sessionId: event.listId,
+                  taskId: event.taskId,
+                  timestamp: event.timestamp,
+                  ...(event.until ? { until: event.until } : {}),
+                  ...(event.timeoutMs !== undefined
+                    ? { timeoutMs: event.timeoutMs }
+                    : {}),
+                  ...(event.includeEvents !== undefined
+                    ? { includeEvents: event.includeEvents }
+                    : {}),
+                  ...(event.maxBytes !== undefined
+                    ? { maxBytes: event.maxBytes }
+                    : {}),
+                  ...(event.ready !== undefined ? { ready: event.ready } : {}),
+                  ...(event.task
+                    ? {
+                        taskStatus: event.task.status,
+                        taskOutputReady: event.task.outputReady === true,
+                      }
+                    : {}),
+                },
+                traceConfig.maxChars,
+              );
+            },
+          }
+        : {}),
+    }),
+  );
+  registry.registerAll(
+    createRuntimeTaskHandleTools(taskTrackerStore, {
       ...(traceConfig.enabled
         ? {
             onTaskAccessEvent: async (event) => {

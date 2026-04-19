@@ -61,6 +61,26 @@ export const TASK_TRACKER_TOOL_NAMES: ReadonlySet<string> = new Set([
   "task.update",
 ]);
 
+/**
+ * Tool names for the runtime task-handle surface (task.wait, task.output).
+ * These are separate from {@link TASK_TRACKER_TOOL_NAMES} because they
+ * operate against {@link TaskStore} (runtime tasks) rather than
+ * {@link SessionTaskStore} (session tasks), but they share the same
+ * session-scoped listId injection so the model can only reach tasks
+ * created under its own session.
+ */
+export const TASK_HANDLE_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "task.wait",
+  "task.output",
+]);
+
+/**
+ * Maximum blocking timeout a model-facing task handle tool will accept,
+ * in milliseconds. Larger values are clamped to this cap. Keeps async
+ * delegation reads from tying up a turn indefinitely.
+ */
+export const TASK_HANDLE_MAX_TIMEOUT_MS = 60_000;
+
 export type TaskStatus =
   | "pending"
   | "in_progress"
@@ -2808,10 +2828,14 @@ export function createRuntimeTaskHandleTools(
     async execute(args) {
       const taskId = asNonEmptyString(args.taskId);
       if (!taskId) return errorResult("taskId must be a non-empty string");
-      const timeoutMs =
+      const requestedTimeoutMs =
         args.timeoutMs === undefined
           ? undefined
           : asPositiveInt(args.timeoutMs) ?? 0;
+      const timeoutMs =
+        requestedTimeoutMs === undefined
+          ? undefined
+          : Math.min(requestedTimeoutMs, TASK_HANDLE_MAX_TIMEOUT_MS);
       const until =
         args.until === "terminal" || args.until === "output_ready"
           ? args.until
@@ -2890,8 +2914,12 @@ export function createRuntimeTaskHandleTools(
       const taskId = asNonEmptyString(args.taskId);
       if (!taskId) return errorResult("taskId must be a non-empty string");
       const listId = resolveListId(args);
-      const timeoutMs =
+      const requestedTimeoutMs =
         args.timeoutMs !== undefined ? asPositiveInt(args.timeoutMs) ?? 0 : undefined;
+      const timeoutMs =
+        requestedTimeoutMs === undefined
+          ? undefined
+          : Math.min(requestedTimeoutMs, TASK_HANDLE_MAX_TIMEOUT_MS);
       const includeEvents = args.includeEvents === true;
       const maxBytes =
         args.maxBytes !== undefined
