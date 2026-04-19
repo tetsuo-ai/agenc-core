@@ -3440,16 +3440,23 @@ export function createDaemonCommandRegistry(
         );
         return;
       }
-      const subcommand =
-        typeof jsonArgs?.subcommand === "string"
-          ? jsonArgs.subcommand.trim().toLowerCase()
-          : cmdCtx.argv[0]?.toLowerCase() ?? "status";
       const shellProfile = resolveEffectiveShellProfileForSession({
         ctx,
         sessionId,
         preferred: resolveSessionShellProfile(session?.metadata ?? {}),
       });
       const currentWorkflowState = resolveSessionWorkflowState(session.metadata);
+      // Bare `/plan` toggles into plan mode on first invocation (matches
+      // Claude Code's behavior — user types `/plan`, stage flips, next
+      // turn runs with read-only tools). If already in plan mode, bare
+      // `/plan` shows the current plan/surface instead of silently
+      // re-flipping. Explicit subcommands (`status|enter|exit|…`) still
+      // win over the toggle default.
+      const subcommand =
+        typeof jsonArgs?.subcommand === "string"
+          ? jsonArgs.subcommand.trim().toLowerCase()
+          : cmdCtx.argv[0]?.toLowerCase()
+            ?? (currentWorkflowState.stage === "plan" ? "status" : "enter");
       const wantsDelegate =
         jsonArgs?.delegate === true || hasInlineFlag(cmdCtx.argv, "delegate");
       if (
