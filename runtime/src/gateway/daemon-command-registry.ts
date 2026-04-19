@@ -3588,6 +3588,17 @@ export function createDaemonCommandRegistry(
           typeof jsonArgs?.worktreeMode === "string"
             ? jsonArgs.worktreeMode
             : parseInlineFlag(cmdCtx.argv, "worktrees");
+        // `oneshot: true` (set by the TUI's `/plan <free text>`
+        // shortcut) tells the daemon to auto-restore the prior
+        // workflow stage after the next webchat turn completes —
+        // otherwise the user's single-shot `/plan come up with a
+        // plan for X` would leave the session stuck in plan mode for
+        // every subsequent message until they manually `/plan exit`.
+        // Bare `/plan` (no JSON args) keeps its sticky toggle
+        // behavior so an explicit user intent to enter plan mode is
+        // respected.
+        const oneshotRequested = jsonArgs?.oneshot === true;
+        const priorStageBeforeFlip = currentWorkflowState.stage;
         const workflowState = updateSessionWorkflowState(
           session.metadata,
           {
@@ -3603,9 +3614,14 @@ export function createDaemonCommandRegistry(
             ...(objective !== undefined ? { objective } : {}),
           },
         );
+        if (oneshotRequested) {
+          (session.metadata as Record<string, unknown>).__planOneshotPending = true;
+          (session.metadata as Record<string, unknown>).__planOneshotPriorStage =
+            priorStageBeforeFlip;
+        }
         await persistWebSessionRuntimeState(memoryBackend, cmdCtx.sessionId, session);
         await cmdCtx.replyResult({
-          text: `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}.\n\n${formatPlanSurface(workflowState)}`,
+          text: `Workflow stage set to ${formatSessionWorkflowStage(workflowState.stage)}${oneshotRequested ? " (one-shot)" : ""}.\n\n${formatPlanSurface(workflowState)}`,
           viewKind: "workflow",
           data: buildPlanData(workflowState),
         });

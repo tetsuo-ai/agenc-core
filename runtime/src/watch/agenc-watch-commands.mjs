@@ -1798,11 +1798,19 @@ export function createWatchCommandController(dependencies = {}) {
         const first = parsedSlash.args[0]?.toLowerCase() ?? "";
         if (parsedSlash.args.length > 0 && !workflowSubcommands.has(first)) {
           const freeText = parsedSlash.args.join(" ").trim();
-          dispatchSessionCommand("/plan", {
-            title: "Plan Mode",
-            body: "Entering plan mode before submitting prompt.",
-            allowBootstrapQueue: false,
-          });
+          // `oneshot: true` tells the daemon to auto-restore the prior
+          // workflow stage after this turn completes, so the user's
+          // single `/plan <text>` invocation doesn't leave the session
+          // stuck in plan mode for every subsequent message. Bare
+          // `/plan` (no free text) keeps its sticky toggle behavior.
+          dispatchSessionCommand(
+            '/plan {"subcommand":"enter","oneshot":true}',
+            {
+              title: "Plan Mode",
+              body: "Entering plan mode (one-shot) before submitting prompt.",
+              allowBootstrapQueue: false,
+            },
+          );
           // The daemon's `session.command.execute` and `chat.message`
           // handlers run on separate async paths, so Node's event loop
           // can (and does) interleave the chat handler in the middle

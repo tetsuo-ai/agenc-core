@@ -70,6 +70,10 @@ import {
   type SessionManager,
 } from "./session.js";
 import { appendShellProfilePromptSection } from "./shell-profile.js";
+import {
+  updateSessionWorkflowState,
+  type SessionWorkflowStage,
+} from "./workflow-state.js";
 import type { ToolRoutingDecision } from "./tool-routing.js";
 import { resolveTurnMaxToolRounds } from "./tool-round-budget.js";
 import { buildAssistantDelegatedScopeMetadata } from "../utils/delegated-scope-trust.js";
@@ -274,6 +278,22 @@ export async function executeWebChatConversationTurn(
         msg.metadata?.[SESSION_SHELL_PROFILE_METADATA_KEY],
     });
     const shellProfile = resolveSessionShellProfile(session.metadata);
+    // One-shot plan-mode capture: the `/plan {"oneshot":true}` shortcut
+    // sets `__planOneshotPending` on session metadata. Move it to a
+    // turn-local flag here so subsequent turns don't keep auto-
+    // exiting, and remember the prior stage so we can restore it
+    // when this turn ends. See PR #473/#474/#477 et al for the
+    // shortcut wiring.
+    const sessionMetaAny = session.metadata as Record<string, unknown>;
+    const oneshotPlanActive =
+      sessionMetaAny.__planOneshotPending === true;
+    const oneshotPlanPriorStage =
+      typeof sessionMetaAny.__planOneshotPriorStage === "string"
+        ? (sessionMetaAny.__planOneshotPriorStage as string)
+        : undefined;
+    if (oneshotPlanActive) {
+      delete sessionMetaAny.__planOneshotPending;
+    }
     const existingInteractiveState =
       session.metadata["interactiveContextState"] as
         | InteractiveContextState
@@ -750,6 +770,21 @@ export async function executeWebChatConversationTurn(
           ]
         : []),
     ]);
+    // One-shot plan-mode auto-exit: if this turn was kicked off via
+    // `/plan {"oneshot":true}` (see capture above), restore the
+    // workflow stage to whatever it was before the flip so the user
+    // is not stuck in plan mode for every follow-up message. Runs
+    // before the persist so the restored stage is what gets stored.
+    if (oneshotPlanActive) {
+      const validStages = new Set(["idle", "plan", "implement", "review", "verify"]);
+      const restoreStage = (
+        oneshotPlanPriorStage && validStages.has(oneshotPlanPriorStage)
+          ? oneshotPlanPriorStage
+          : "idle"
+      ) as SessionWorkflowStage;
+      updateSessionWorkflowState(session.metadata, { stage: restoreStage });
+      delete (session.metadata as Record<string, unknown>).__planOneshotPriorStage;
+    }
     await persistWebSessionRuntimeState(memoryBackend, msg.sessionId, session);
 
     await webChat.send({
