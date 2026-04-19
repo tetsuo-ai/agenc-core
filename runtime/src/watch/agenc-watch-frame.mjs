@@ -265,7 +265,13 @@ export function createWatchFrameController(dependencies = {}) {
     renderPanel,
     row,
   });
-  const hiddenTranscriptKinds = new Set(["status", "agent"]);
+  // Previously this set excluded "agent" because the canonical-reply
+  // pin rendered the latest agent message at the top of the activity
+  // panel, so the transcript path treated the agent event as already
+  // shown. With the pin removed (one chronological scrollable list,
+  // Claude Code pattern), the agent event MUST appear in the
+  // transcript — otherwise scrolling makes the reply vanish entirely.
+  const hiddenTranscriptKinds = new Set(["status"]);
   const transcriptBlockInset = "  ";
   const transcriptBodyInset = "    ";
   // Medium gray so the user-prompt rounded pill stands out clearly against
@@ -3320,50 +3326,27 @@ export function createWatchFrameController(dependencies = {}) {
   }
 
   function activityPanelLines(width, targetHeight) {
-    // The canonical-reply pin keeps the latest agent reply visible
-    // at the top of the panel during follow mode (default UX). But
-    // it ALSO takes most of the panel height, leaving only a tiny
-    // (~6-row) scrollback window — and the agent reply is already
-    // rendered as a regular event inside the transcript anyway.
-    // Result: users wheel-up and `sliced.normalizedOffset` clamps
-    // them at maxOffset within seconds; they see "scroll doesn't
-    // work."
-    //
-    // Fix: suppress the pin when the user is in manual-scroll mode
-    // (transcriptFollowMode === false). The transcript region
-    // expands to the full panel height and the user can scroll
-    // freely through the reply (still rendered in the transcript)
-    // and any earlier content. Returning to follow mode (scroll to
-    // bottom) restores the pin.
-    const replyRows = watchState.transcriptFollowMode
-      ? canonicalReplyRows(width)
-      : [];
+    // Canonical-reply pin removed. The latest agent reply is now
+    // rendered as a regular event inside the transcript itself
+    // (kind: "agent" with forced showBody so it never collapses).
+    // Previously the pin took most of the panel height and the
+    // transcript path EXCLUDED kind:"agent" via
+    // hiddenTranscriptKinds — so when the pin disappeared on
+    // manual scroll the reply vanished entirely from the visible
+    // frame. One chronological scrollable list (Claude Code
+    // pattern) avoids the layout-jump-on-first-wheel symptom and
+    // keeps scroll behaviour predictable.
+    void canonicalReplyRows;
     const transcriptView = flattenTranscriptView(width);
-    const hasTranscript = transcriptView.rows.length > 0;
-    const reservedTranscriptRows = hasTranscript
-      ? Math.min(Math.max(1, transcriptView.rows.length), Math.max(0, Math.min(1, targetHeight - 1)))
-      : 0;
-    const availableReplyRows = replyRows.length > 0
-      ? Math.max(0, targetHeight - (hasTranscript ? reservedTranscriptRows + 1 : 0))
-      : 0;
-    const visibleReplyRows = availableReplyRows > 0
-      ? replyRows.slice(0, availableReplyRows)
-      : [];
-    const transcriptTargetHeight = Math.max(
-      0,
-      targetHeight - visibleReplyRows.length - (visibleReplyRows.length > 0 && hasTranscript ? 1 : 0),
-    );
+    const transcriptTargetHeight = Math.max(0, targetHeight);
     const sliced = sliceViewportRowsFromBottom(
       transcriptView.rows,
       transcriptTargetHeight,
       watchState.transcriptScrollOffset,
     );
     watchState.transcriptScrollOffset = sliced.normalizedOffset;
-    const lines = [...visibleReplyRows];
-    if (visibleReplyRows.length > 0 && sliced.rows.length > 0) {
-      lines.push(blankRow(width));
-    }
-    lines.push(...sliced.rows);
+    const lines = [...sliced.rows];
+    const visibleReplyRows = [];
     return {
       lines,
       hiddenAbove: sliced.hiddenAbove,
@@ -3590,25 +3573,15 @@ export function createWatchFrameController(dependencies = {}) {
       ].filter(Boolean).join("\n\n").trim();
     }
 
-    const sections = [];
-    const replyEvent = currentCanonicalReplyEvent();
-    if (replyEvent) {
-      sections.push(
-        [
-          `[${replyEvent.timestamp}] ${sanitizeDisplayText(replyEvent.title)}`,
-          storedEventBodyText(replyEvent),
-        ].join("\n"),
-      );
-    }
-
-    sections.push(
-      ...visibleTranscriptEvents()
-        .map((event) => [
-          `[${event.timestamp}] ${sanitizeDisplayText(event.title)}`,
-          storedEventBodyText(event),
-        ].join("\n"))
-        .filter((block) => block.trim().length > 0),
-    );
+    // Canonical-reply pin removal: the agent reply is now part of
+    // `visibleTranscriptEvents()` so we don't prepend it as a
+    // separate section — that would duplicate it in the export.
+    const sections = visibleTranscriptEvents()
+      .map((event) => [
+        `[${event.timestamp}] ${sanitizeDisplayText(event.title)}`,
+        storedEventBodyText(event),
+      ].join("\n"))
+      .filter((block) => block.trim().length > 0);
     return sections.join("\n\n").trim();
   }
 
