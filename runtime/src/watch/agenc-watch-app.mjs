@@ -2052,9 +2052,26 @@ function readArtPanelConfig() {
   }
 }
 
+let artRefreshQueued = false;
 async function refreshArtPanel() {
-  if (artRefreshPending) return;
+  if (artRefreshPending) {
+    // Queue one follow-up refresh so a resize that arrives mid-flight
+    // gets rendered at the new dimensions. Previously the pending flag
+    // dropped the resize and `artPanelBodyRevision` was stamped with
+    // the current `currentBodyRevision` at the end of the async work,
+    // so subsequent frames saw equal revisions and never re-triggered.
+    // Art could get stuck at old dimensions after a resize.
+    artRefreshQueued = true;
+    return;
+  }
   artRefreshPending = true;
+  // Capture the revision at refresh start. The async render may take
+  // longer than the user's resize-to-settle interval, and we must
+  // detect whether the body grew under us before stamping the panel
+  // revision. Otherwise stamping the post-refresh revision (which is
+  // the NEW one, not the one we actually rendered) hides the stale
+  // dimensions from the next render.
+  const revisionAtStart = Number(watchState.currentBodyRevision) || 0;
   try {
     const cfg = readArtPanelConfig();
     if (!cfg) {
@@ -2106,13 +2123,21 @@ async function refreshArtPanel() {
     const rows = await artRenderer.render({ cols: artCols, rows: bodyHeight });
     watchState.artPanelRows = rows;
     watchState.artPanelCols = artCols;
-    watchState.artPanelBodyRevision = Number(watchState.currentBodyRevision) || 0;
+    // Stamp the revision we ACTUALLY rendered at, not whatever
+    // currentBodyRevision has drifted to while we were rendering. If
+    // those differ, the next scheduleRender() will see the mismatch
+    // and fire another refresh (via the queued flag).
+    watchState.artPanelBodyRevision = revisionAtStart;
     scheduleRender();
   } catch {
     watchState.artPanelRows = null;
     watchState.artPanelCols = 0;
   } finally {
     artRefreshPending = false;
+    if (artRefreshQueued) {
+      artRefreshQueued = false;
+      void refreshArtPanel();
+    }
   }
 }
 

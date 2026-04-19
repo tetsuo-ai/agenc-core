@@ -181,21 +181,46 @@ export function createWatchFrameController(dependencies = {}) {
     const cells = new Array(width);
     let index = 0;
     let activeSgr = "";
+    // Pending OSC 8 hyperlink prefix attached to the next cell. OSC
+    // sequences are zero-width metadata — previously splitAnsiCells
+    // only matched SGR (`\x1b[...m`) and fell through to the cell
+    // branch, counting every OSC byte as a literal content cell. That
+    // corrupted column math in `compositeRowWithArt`, shifted art
+    // occlusion by the OSC byte count, and poisoned all
+    // `visibleLength`-based truncation. Skip OSC sequences and carry
+    // the bytes forward so hyperlink state still reaches the output.
+    let pendingHyperlink = "";
     let col = 0;
     while (index < row.length && col < width) {
       if (row[index] === "\x1b") {
-        const match = row.slice(index).match(/^\x1b\[[0-9;]*m/);
-        if (match) {
-          if (match[0] === "\x1b[0m" || match[0] === "\x1b[m") {
+        const sgrMatch = row.slice(index).match(/^\x1b\[[0-9;]*m/);
+        if (sgrMatch) {
+          if (sgrMatch[0] === "\x1b[0m" || sgrMatch[0] === "\x1b[m") {
             activeSgr = "";
           } else {
-            activeSgr += match[0];
+            activeSgr += sgrMatch[0];
           }
-          index += match[0].length;
+          index += sgrMatch[0].length;
+          continue;
+        }
+        // OSC 8 hyperlink: `\x1b]8;params;url\x07` opens, `\x1b]8;;\x07`
+        // closes. Terminator is BEL (`\x07`) or ST (`\x1b\\`).
+        const oscMatch = row
+          .slice(index)
+          .match(/^\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)/);
+        if (oscMatch) {
+          pendingHyperlink += oscMatch[0];
+          index += oscMatch[0].length;
           continue;
         }
       }
-      cells[col] = { sgr: activeSgr, char: row[index] };
+      cells[col] = {
+        sgr: pendingHyperlink
+          ? `${activeSgr}${pendingHyperlink}`
+          : activeSgr,
+        char: row[index],
+      };
+      pendingHyperlink = "";
       index += 1;
       col += 1;
     }
@@ -4128,7 +4153,15 @@ export function createWatchFrameController(dependencies = {}) {
         if (nextFrameLines[rowIndex] === frameState.lastRenderedFrameLines[rowIndex]) {
           continue;
         }
-        stdout.write(`\x1b[${rowIndex + 1};1H\x1b[2K${nextFrameLines[rowIndex]}`);
+        // Re-prime the panel background before clearing the row.
+        // `\x1b[2K` erases to the terminal's default bg, not the panel
+        // bg the full-clear path uses. Without the leading panelBg the
+        // cleared cells flash terminal-default color for one frame
+        // before the new line's SGR sequences repaint them. Write
+        // panelBg first so the erase uses it, then the new row.
+        stdout.write(
+          `\x1b[${rowIndex + 1};1H${color.panelBg}\x1b[2K${nextFrameLines[rowIndex]}`,
+        );
       }
     }
     frameState.lastRenderedFrameLines = nextFrameLines;
