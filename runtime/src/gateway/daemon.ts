@@ -7492,7 +7492,11 @@ export class DaemonManager {
     const sessionStreamCallback: StreamProgressCallback = (chunk) => {
       webChat.pushToSession(msg.sessionId, {
         type: "chat.stream",
-        payload: { content: chunk.content, done: chunk.done },
+        payload: {
+          content: chunk.content,
+          done: chunk.done,
+          ...(chunk.resetBuffer === true ? { resetBuffer: true } : {}),
+        },
       });
     };
 

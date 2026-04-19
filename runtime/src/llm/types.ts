@@ -547,6 +547,16 @@ export interface LLMStreamChunk {
   content: string;
   done: boolean;
   toolCalls?: LLMToolCall[];
+  /**
+   * When true, `content` is the full-so-far snapshot of the assistant
+   * reply rather than an incremental delta. Downstream consumers MUST
+   * replace any previously-accumulated streaming buffer with this
+   * content instead of appending to it. Only set by adapter paths that
+   * emit corrected/rewritten snapshots mid-stream (e.g. Grok's
+   * mitigation path at grok/adapter.ts when a partial reply gets
+   * repaired). The normal delta path leaves this undefined.
+   */
+  resetBuffer?: boolean;
 }
 
 /**

@@ -1159,9 +1159,18 @@ export class GrokProvider implements LLMProvider {
                 ? correctedText
                 : correctedFromOutput ?? "";
             if (effectiveCorrected.length > 0) {
-              // Signal the correction as a delta replacing the
-              // truncated stream the UI has already rendered.
-              onChunk({ content: effectiveCorrected, done: false });
+              // Signal the correction as a SNAPSHOT (full replacement)
+              // rather than a delta. The TUI appends delta chunks into a
+              // running buffer; if we emit a delta here the corrected
+              // text gets concatenated AFTER the truncated stream and
+              // the user sees duplicate/garbled content. `resetBuffer`
+              // tells downstream consumers to replace the accumulated
+              // stream with this content instead of appending.
+              onChunk({
+                content: effectiveCorrected,
+                done: false,
+                resetBuffer: true,
+              });
               content = effectiveCorrected;
             }
           }

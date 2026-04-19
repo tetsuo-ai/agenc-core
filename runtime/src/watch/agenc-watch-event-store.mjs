@@ -294,16 +294,25 @@ export function createWatchEventStore(dependencies = {}) {
     return findLatestPendingAgentEvent(events);
   }
 
-  function appendAgentStreamChunk(chunk, { done = false } = {}) {
+  function appendAgentStreamChunk(chunk, { done = false, resetBuffer = false } = {}) {
     void done;
     const safeChunk = stripTerminalControlSequences(sanitizeLargeText(chunk ?? ""));
     return withPreservedManualTranscriptViewport(({ shouldFollow }) => {
       const timestamp = nowStamp();
       // Keep provider stream text provisional until a final chat.message
       // arrives. The runtime can still reject a streamed "done" summary
-      // during stop hooks or verification, so committing it into the
-      // transcript early makes the UI lie about turn completion.
-      const nextStreamingText = `${watchState.agentStreamingText ?? ""}${safeChunk}`;
+      // during stop hooks or verification, so committing it early makes
+      // the UI lie about turn completion.
+      //
+      // `resetBuffer: true` signals a snapshot chunk (the full-so-far
+      // reply as a replacement). Grok's mitigation path emits this when
+      // an earlier partial was garbled and the adapter recovers with a
+      // corrected full reply. Treat it as a hard replace — do NOT
+      // concatenate, or the user sees the truncated partial followed by
+      // the corrected text glued together.
+      const nextStreamingText = resetBuffer
+        ? safeChunk
+        : `${watchState.agentStreamingText ?? ""}${safeChunk}`;
       watchState.agentStreamingText = nextStreamingText || null;
       watchState.agentStreamingPreview = deriveStreamingPreviewText(nextStreamingText);
       if (safeChunk && introDismissKinds.has("agent")) {
@@ -311,7 +320,7 @@ export function createWatchEventStore(dependencies = {}) {
       }
       updateActivity(timestamp);
       followTranscriptIfNeeded(shouldFollow);
-      scheduleRender();
+      scheduleRender({ reason: "stream" });
       return watchState.agentStreamingPreview;
     });
   }

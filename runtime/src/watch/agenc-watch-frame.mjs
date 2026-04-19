@@ -9,6 +9,7 @@ import {
 } from "../marketplace/surfaces.mjs";
 import { createWatchSplashRenderer } from "./agenc-watch-splash.mjs";
 import { visibleLength, wrapBlock } from "./agenc-watch-text-utils.mjs";
+import { buildStreamingMarkdownDisplayLines } from "./agenc-watch-markdown-stream.mjs";
 
 export function createWatchFrameController(dependencies = {}) {
   const {
@@ -3119,12 +3120,105 @@ export function createWatchFrameController(dependencies = {}) {
     return rows;
   }
 
+  // Cache for the streaming preview block. The markdown builder is the
+  // hot path during chunk streaming — every chunk arrival invalidates
+  // watchState.agentStreamingText and triggers a render, which rebuilds
+  // the streaming block. Memoizing by (committedPortion, width) avoids
+  // re-parsing the whole accumulated markdown on every delta. Claude
+  // Code uses a stable-prefix re-lex with an LRU token cache
+  // (components/Markdown.tsx:22-71, 186-234); this is the lightweight
+  // equivalent — full re-parse only when the committed text changes.
+  const streamingPreviewCache = { text: null, width: null, rows: null };
+
   function buildStreamingPreviewBlock(width) {
-    void width;
-    // The transcript should only show committed agent replies. Provisional
-    // provider stream text can still be rejected by verification or stop
-    // hooks, so leave streaming content out of the transcript surface.
-    return [];
+    // Render the in-flight assistant stream as agent-style rows below the
+    // committed transcript. Claude Code pattern (screens/REPL.tsx:1458-
+    // 1473): only complete lines (up through the last "\n") are shown;
+    // the incomplete trailing line is hidden until its newline arrives.
+    // This avoids mid-word flicker without losing streaming feel.
+    //
+    // `commitAgentMessage` clears watchState.agentStreamingText atomically
+    // when the final chat.message lands, so this block disappears and the
+    // committed agent event takes its place with the canonical final
+    // text. Defensive fallback for stop-hook/verification rejection is
+    // preserved: the commit is authoritative, so any streamed partial
+    // that never gets committed simply vanishes when a new turn starts.
+    const streamingText =
+      typeof watchState.agentStreamingText === "string"
+        ? watchState.agentStreamingText
+        : null;
+    if (!streamingText || streamingText.length === 0) {
+      return [];
+    }
+    const lastNewlineIndex = streamingText.lastIndexOf("\n");
+    const committedPortion =
+      lastNewlineIndex >= 0
+        ? streamingText.slice(0, lastNewlineIndex + 1)
+        : "";
+    if (committedPortion.length === 0) {
+      return [];
+    }
+    if (
+      streamingPreviewCache.text === committedPortion &&
+      streamingPreviewCache.width === width &&
+      Array.isArray(streamingPreviewCache.rows)
+    ) {
+      return streamingPreviewCache.rows;
+    }
+    const previewWidth = Math.max(12, width - 4);
+    const displayLines = buildStreamingMarkdownDisplayLines(committedPortion, {
+      width: previewWidth,
+    });
+    if (!Array.isArray(displayLines) || displayLines.length === 0) {
+      return [];
+    }
+    const rows = [];
+    let markerEmitted = false;
+    displayLines.forEach((entry) => {
+      const line =
+        typeof entry === "string" ? entry : displayLinePlainText(entry);
+      const trimmed = sanitizeDisplayText(line ?? "").trimEnd();
+      if (trimmed.length === 0) {
+        if (rows.length > 0 && !markerEmitted) {
+          return;
+        }
+        if (rows.length > 0) {
+          rows.push(fitAnsi(transcriptBodyInset, width));
+        }
+        return;
+      }
+      if (!markerEmitted) {
+        const markerPrefix = `${transcriptBlockInset}${color.ink}${color.bold}●${color.reset} `;
+        const available = Math.max(8, width - visibleLength(markerPrefix));
+        rows.push(
+          fitAnsi(
+            `${markerPrefix}${color.ink}${truncate(trimmed, available)}${color.reset}`,
+            width,
+          ),
+        );
+        markerEmitted = true;
+        return;
+      }
+      const available = Math.max(
+        8,
+        width - visibleLength(transcriptBodyInset),
+      );
+      rows.push(
+        fitAnsi(
+          `${transcriptBodyInset}${color.ink}${truncate(trimmed, available)}${color.reset}`,
+          width,
+        ),
+      );
+    });
+    // Collapse trailing blanks so the streaming block doesn't push a gap
+    // onto the viewport right before the composer.
+    while (rows.length > 0 && rows[rows.length - 1] === fitAnsi(transcriptBodyInset, width)) {
+      rows.pop();
+    }
+    streamingPreviewCache.text = committedPortion;
+    streamingPreviewCache.width = width;
+    streamingPreviewCache.rows = rows;
+    return rows;
   }
 
   function flattenTranscriptView(width) {
@@ -4046,7 +4140,19 @@ export function createWatchFrameController(dependencies = {}) {
     stdout.write(color.reset);
   }
 
-  function scheduleRender() {
+  // Minimum gap between streaming-chunk-triggered frames. The custom
+  // renderer diff-rebuilds the full ~150KB frame on every render; at
+  // the ~50-80 tok/s rate Grok streams, that can burn CPU rebuilding
+  // the same frame multiple times per 16ms. Ink batches automatically
+  // via its render loop; we get the same effect by collapsing rapid
+  // streaming-reason schedules into a single frame every STREAM_RENDER_MIN_GAP_MS.
+  //
+  // Non-streaming reasons (user input, tool events, status changes,
+  // ticker) bypass the gap and render immediately — those MUST be
+  // low-latency for the UI to feel responsive.
+  const STREAM_RENDER_MIN_GAP_MS = 33;
+
+  function scheduleRender(options) {
     // Make sure the active-run ticker reflects current run state: a
     // brand-new activeRunStartedAtMs (e.g. the first event of a new
     // actor turn) should start the steady tick immediately, and a
@@ -4057,8 +4163,30 @@ export function createWatchFrameController(dependencies = {}) {
     if (frameState.renderPending) {
       return;
     }
+    const reason =
+      options && typeof options === "object"
+        ? String(options.reason ?? "")
+        : "";
+    if (reason === "stream") {
+      const now = Date.now();
+      const lastRenderedAt = frameState.lastRenderedAtMs ?? 0;
+      const elapsed = now - lastRenderedAt;
+      const gap =
+        elapsed >= STREAM_RENDER_MIN_GAP_MS
+          ? 0
+          : STREAM_RENDER_MIN_GAP_MS - elapsed;
+      frameState.renderPending = true;
+      setTimer(() => {
+        frameState.lastRenderedAtMs = Date.now();
+        render();
+      }, gap);
+      return;
+    }
     frameState.renderPending = true;
-    setTimer(render, 0);
+    setTimer(() => {
+      frameState.lastRenderedAtMs = Date.now();
+      render();
+    }, 0);
   }
 
   return {

@@ -348,7 +348,18 @@ function handleChatSurfaceEvent(surfaceEvent, state, api) {
               ? payload.delta
               : "";
         if (chunk || payload.done) {
-          api.eventStore.appendAgentStreamChunk(chunk, { done: payload.done === true });
+          // Grok's mitigation path sends a full-reply SNAPSHOT mid-
+          // stream; the TUI must replace its accumulated buffer
+          // instead of appending. See runtime/src/llm/grok/adapter.ts
+          // and LLMStreamChunk.resetBuffer for the wire contract. The
+          // resetBuffer key is only set when true so existing tests
+          // and downstream consumers that expect the legacy `{ done }`
+          // shape keep working.
+          const streamOptions = { done: payload.done === true };
+          if (payload.resetBuffer === true) {
+            streamOptions.resetBuffer = true;
+          }
+          api.eventStore.appendAgentStreamChunk(chunk, streamOptions);
         }
         if (payload.done === true) {
           api.setTransientStatus("agent stream complete");
@@ -1052,11 +1063,27 @@ function handleAgentSurfaceEvent(surfaceEvent, state, api) {
     state.runState = "idle";
     state.activeRunStartedAtMs = null;
   }
-  api.setTransientStatus(
-    payload.phase
-      ? `phase ${payload.phase}`
-      : "agent status updated",
-  );
+  // Tool-call visibility: show the specific tool name in the footer
+  // instead of just "phase tool_call". The daemon sends detail like
+  // "Calling system.readFile" when the chat executor dispatches a
+  // tool. Surfacing that in the transient status gives the operator a
+  // one-glance signal of what the model is actually doing — matches
+  // the Claude Code pattern where the spinner verb is tool-active.
+  const detailTrimmed =
+    typeof payload.detail === "string" ? payload.detail.trim() : "";
+  let statusText;
+  if (payload.phase === "tool_call" && detailTrimmed.length > 0) {
+    statusText = detailTrimmed;
+  } else if (payload.phase === "thinking") {
+    statusText = "thinking…";
+  } else if (payload.phase === "generating") {
+    statusText = "generating…";
+  } else if (payload.phase) {
+    statusText = `phase ${payload.phase}`;
+  } else {
+    statusText = "agent status updated";
+  }
+  api.setTransientStatus(statusText);
   if (payload.phase !== "idle") {
     api.requestRunInspect("agent status");
   }
