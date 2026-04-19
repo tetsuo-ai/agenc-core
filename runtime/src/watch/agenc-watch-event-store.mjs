@@ -89,8 +89,34 @@ export function createWatchEventStore(dependencies = {}) {
   }
 
   function trimBoundedHistory() {
+    // Evict from the oldest end, but NEVER shift off a pending agent
+    // event (one still in `streaming` or `pending-final`). If we lose
+    // the streaming target mid-turn, `commitAgentMessage`'s
+    // findLatestPendingAgentEvent returns null, the fallback branch
+    // creates a fresh "Agent Reply" event, and any buffered
+    // agentStreamingText is orphaned — users see a new reply appear
+    // while the streamed partial disappears.
+    //
+    // The guard: skip eviction slots whose event has a non-complete
+    // stream state. If we can't find an evictable slot (every buffered
+    // event is pending), fall back to shifting the oldest regardless,
+    // because growing past maxEvents unbounded is worse than losing
+    // one pending target.
     while (events.length > maxEvents) {
-      events.shift();
+      let evictedIndex = -1;
+      for (let index = 0; index < events.length; index += 1) {
+        const candidate = events[index];
+        const streamState = candidate?.streamState;
+        if (streamState !== "streaming" && streamState !== "pending-final") {
+          evictedIndex = index;
+          break;
+        }
+      }
+      if (evictedIndex === -1) {
+        events.shift();
+      } else {
+        events.splice(evictedIndex, 1);
+      }
     }
     clampExpandedEventSelection();
   }
@@ -148,6 +174,26 @@ export function createWatchEventStore(dependencies = {}) {
     }
     if ((previousEvent.toolName ?? null) !== (nextEvent.toolName ?? null)) {
       return false;
+    }
+    // For tool events we must distinguish distinct invocations even
+    // when their visible name+body+title are identical. Two back-to-
+    // back `ls` or `Read` calls are common and the second result
+    // must not silently collapse into the first. Require the
+    // tool-use / tool-call id to match before coalescing. Tool
+    // events without an id fall through to the time window so
+    // rapid-fire status/log lines still merge.
+    if (previousEvent.kind === "tool") {
+      const previousId =
+        previousEvent.toolCallId ??
+        previousEvent.toolUseId ??
+        null;
+      const nextId =
+        nextEvent.toolCallId ??
+        nextEvent.toolUseId ??
+        null;
+      if (previousId !== null || nextId !== null) {
+        return previousId === nextId;
+      }
     }
     const previousCreatedAt = Number(previousEvent.createdAtMs);
     const nextCreatedAt = Number(nextEvent.createdAtMs);
@@ -306,7 +352,6 @@ export function createWatchEventStore(dependencies = {}) {
   }
 
   function appendAgentStreamChunk(chunk, { done = false, resetBuffer = false } = {}) {
-    void done;
     const safeChunk = stripTerminalControlSequences(sanitizeLargeText(chunk ?? ""));
     return withPreservedManualTranscriptViewport(({ shouldFollow }) => {
       const timestamp = nowStamp();
@@ -326,6 +371,22 @@ export function createWatchEventStore(dependencies = {}) {
         : `${watchState.agentStreamingText ?? ""}${safeChunk}`;
       watchState.agentStreamingText = nextStreamingText || null;
       watchState.agentStreamingPreview = deriveStreamingPreviewText(nextStreamingText);
+      // `done: true` transitions the pending agent event from
+      // `streaming` to `pending-final` so the ring-buffer eviction
+      // guard continues to protect it while the runtime runs its
+      // stop-hook chain before the final chat.message. Previously
+      // the `done` parameter was declared but never applied, so the
+      // state machine documented in nextAgentStreamState never
+      // advanced past `streaming`.
+      if (done) {
+        const pending = findLatestPendingAgentEvent(events);
+        if (pending) {
+          pending.streamState = nextAgentStreamState({
+            previous: pending.streamState ?? "streaming",
+            done: true,
+          });
+        }
+      }
       if (safeChunk && introDismissKinds.has("agent")) {
         dismissIntro();
       }
@@ -514,25 +575,46 @@ export function createWatchEventStore(dependencies = {}) {
 
   function replaceLatestToolEvent(toolName, isError, body, descriptor) {
     return withPreservedManualTranscriptViewport(({ shouldFollow }) => {
-      const lastEvent = events[events.length - 1];
-      if (!lastEvent || lastEvent.kind !== "tool") {
-        return false;
+      // Walk backward for the nearest still-pending `tool` event of
+      // the same name. Previously the matcher only checked
+      // `events[events.length - 1]`, so if anything landed between
+      // `tools.executing` and `tools.result` (a status event, a
+      // subagent progress burst, a runtime hint) the result became a
+      // new event instead of replacing the pending one. Consumers
+      // then saw two cards for one call.
+      let target = null;
+      for (let index = events.length - 1; index >= 0; index -= 1) {
+        const candidate = events[index];
+        if (!candidate) continue;
+        if (candidate.kind === "tool" && candidate.toolName === toolName) {
+          target = candidate;
+          break;
+        }
+        // Stop if we cross another tool boundary of a different name
+        // or a result of the same name — those mark the current
+        // pending candidate as stale.
+        if (
+          (candidate.kind === "tool" || candidate.kind === "tool result") &&
+          candidate.toolName === toolName
+        ) {
+          break;
+        }
       }
-      if (lastEvent.toolName !== toolName) {
+      if (!target) {
         return false;
       }
       const normalized = normalizeEventBody(body);
-      lastEvent.kind = "tool result";
-      lastEvent.toolState = isError ? "error" : "ok";
-      lastEvent.isError = isError;
-      lastEvent.title = descriptor?.title ?? toolName;
-      lastEvent.tone = descriptor?.tone ?? (isError ? "red" : "green");
-      lastEvent.timestamp = nowStamp();
-      lastEvent.createdAtMs = nowMs();
-      lastEvent.body = normalized.body;
-      lastEvent.bodyTruncated = normalized.bodyTruncated;
-      applyDescriptorRenderingMetadata(lastEvent, descriptor);
-      updateActivity(lastEvent.timestamp);
+      target.kind = "tool result";
+      target.toolState = isError ? "error" : "ok";
+      target.isError = isError;
+      target.title = descriptor?.title ?? toolName;
+      target.tone = descriptor?.tone ?? (isError ? "red" : "green");
+      target.timestamp = nowStamp();
+      target.createdAtMs = nowMs();
+      target.body = normalized.body;
+      target.bodyTruncated = normalized.bodyTruncated;
+      applyDescriptorRenderingMetadata(target, descriptor);
+      updateActivity(target.timestamp);
       followTranscriptIfNeeded(shouldFollow);
       scheduleRender();
       return true;

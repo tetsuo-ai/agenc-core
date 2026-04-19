@@ -1,36 +1,10 @@
-const REQUIRED_STATE_KEYS = Object.freeze([
-  "sessionId",
-  "ownerToken",
-  "sessionAttachedAtMs",
-  "runDetail",
-  "runState",
-  "runPhase",
-  "bootstrapReady",
-  "manualSessionsRequestPending",
-  "pendingResumeHistoryRestore",
-  "currentObjective",
-  "activeRunStartedAtMs",
-  "latestAgentSummary",
-  "latestTool",
-  "latestToolState",
-  "runInspectPending",
-  "lastUsageSummary",
-  "liveSessionModelRoute",
-  "lastStatus",
-  "cockpit",
-  "cockpitUpdatedAt",
-  "cockpitFingerprint",
-  "configuredModelRoute",
-  "lastStatusFeedFingerprint",
-  "manualSessionsQuery",
-  // Without this key here, `state.sharedCommandCatalog = ...` in the
-  // session-command-catalog dispatch case writes a plain own property
-  // on the bridge proxy instead of forwarding to real watchState, and
-  // the autocomplete read from watchState.sharedCommandCatalog always
-  // sees the initial []. Observed: /plan never appeared in the TUI
-  // slash-command palette because of this exact miss.
-  "sharedCommandCatalog",
-]);
+// Re-exported from agenc-watch-state so the bridge and the state
+// module share one source of truth — otherwise adding a new key
+// (like `sharedCommandCatalog`, PR #468) to only one of the two
+// arrays silently lets the proxy drop writes to real watchState.
+import { SHARED_WATCH_STATE_KEYS } from "./agenc-watch-state.mjs";
+
+const REQUIRED_STATE_KEYS = SHARED_WATCH_STATE_KEYS;
 
 const REQUIRED_HELPER_KEYS = Object.freeze([
   "now",

@@ -105,7 +105,16 @@ const WATCH_CHECKPOINT_STATE_KEYS = Object.freeze([
 
 export const DEFAULT_WATCH_CHECKPOINT_LIMIT = 12;
 
-const DEFAULT_BOUND_STATE_KEYS = Object.freeze([
+// Canonical list of watchState keys the surface bridge and bindings
+// must both forward. Previously `DEFAULT_BOUND_STATE_KEYS` (here) and
+// `REQUIRED_STATE_KEYS` (in agenc-watch-surface-bridge.mjs) were two
+// hand-maintained frozen arrays with no single source of truth and no
+// test asserting equality. Divergence produced visible bugs — e.g.
+// PR #468 was the fallout of `sharedCommandCatalog` being present in
+// one list but not the other, which made `/plan` never appear in the
+// TUI slash palette. Both modules now derive from this list so any
+// future key addition propagates automatically.
+export const SHARED_WATCH_STATE_KEYS = Object.freeze([
   "sessionId",
   "ownerToken",
   "sessionAttachedAtMs",
@@ -133,6 +142,8 @@ const DEFAULT_BOUND_STATE_KEYS = Object.freeze([
   "eventCategoryFilter",
   "sharedCommandCatalog",
 ]);
+
+const DEFAULT_BOUND_STATE_KEYS = SHARED_WATCH_STATE_KEYS;
 
 function normalizeStoredValue(value) {
   return typeof value === "string" && value.trim().length > 0
