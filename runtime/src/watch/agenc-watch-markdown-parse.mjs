@@ -21,6 +21,12 @@ export function stripTerminalControlSequences(value) {
   return String(value ?? "")
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
     .replace(/\x1bP[\s\S]*?\x1b\\/g, "")
+    // Screen/line-erasing CSI commands must leave a newline behind —
+    // otherwise `line1\x1b[2Jline2` collapses to `line1line2` and
+    // transcript/tool output silently glues unrelated output
+    // together. Handle the common erase/cursor-move sequences
+    // explicitly before the catch-all strip.
+    .replace(/\x1b\[(?:2J|H|2K|0K|1K|K|\d*;\d*H|\d*;\d*f)/g, "\n")
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/[\x00-\x08\x0b-\x1a\x1c-\x1f\x7f]/g, "");
 }
@@ -53,12 +59,27 @@ export function normalizeInlineMarkdown(value) {
       return `${normalizedLabel} (${normalizedUrl})`;
     })
     .replace(/<((?:https?:\/\/|mailto:)[^>]+)>/g, "$1")
-    .replace(/`([^`]*)`/g, "'$1'")
-    .replace(/\*\*(.*?)\*\*/g, "$1")
-    .replace(/__(.*?)__/g, "$1")
-    .replace(/\*(.*?)\*/g, "$1")
-    .replace(/_(.*?)_/g, "$1")
-    .replace(/~~(.*?)~~/g, "$1")
+    // Code span: require the backticks to NOT be adjacent to another
+    // backtick. `` `x`y`z` `` used to match the outer span and drop
+    // the middle `y` pair because the greedy scanner left the
+    // adjacent pairs orphaned. Negative lookbehind/lookahead on
+    // backticks plus requiring non-empty content avoids both the
+    // empty-span and chained-adjacent-backtick failure modes.
+    .replace(/(?<!`)`([^`\n]+)`(?!`)/g, "'$1'")
+    // Bold: require the inner content to not start or end with the
+    // delimiter so `** *a*** ` doesn't over-merge.
+    .replace(/\*\*(?!\s)([^*\n]+?)(?<!\s)\*\*/g, "$1")
+    // Bold with underscores: require a non-word boundary around the
+    // outer `__` so `foo__bar__baz` is left alone.
+    .replace(/(^|[^A-Za-z0-9_])__(?!\s)([^_\n]+?)(?<!\s)__(?=[^A-Za-z0-9_]|$)/g, "$1$2")
+    // Italic with asterisks: single `*` must not be flanked by
+    // whitespace on the open side AND a word-character on the open
+    // side (opposite for close).
+    .replace(/(?<!\*)\*(?!\s|\*)([^*\n]+?)(?<!\s)\*(?!\*)/g, "$1")
+    // Italic with underscores: same word-boundary rule as __ so
+    // `foo_bar_baz.py` is preserved.
+    .replace(/(^|[^A-Za-z0-9_])_(?!\s)([^_\n]+?)(?<!\s)_(?=[^A-Za-z0-9_]|$)/g, "$1$2")
+    .replace(/~~(?!\s)([^~\n]+?)(?<!\s)~~/g, "$1")
     .replace(/\\([\\`*_{}\[\]()#+\-.!>])/g, "$1");
 }
 

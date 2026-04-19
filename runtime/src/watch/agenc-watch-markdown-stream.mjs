@@ -24,7 +24,16 @@ function findTrailingTableCandidateStart(rawLines) {
   while (index >= 0 && looksLikeTableLine(rawLines[index])) {
     index -= 1;
   }
-  return index === endIndex ? -1 : index + 1;
+  const candidateStart = index + 1;
+  // Require at least two `|`-leading lines to treat the tail as a
+  // trailing table. A single `| foo |` line below a stable paragraph
+  // is more likely prose than an incomplete table header; the
+  // previous detector held such a line back as preview forever
+  // because it never resolved to a header+separator pair.
+  if (candidateStart > endIndex || endIndex - candidateStart < 1) {
+    return -1;
+  }
+  return candidateStart;
 }
 
 function hasPotentiallyIncompleteInlineMarkdown(rawLine) {
