@@ -3707,11 +3707,20 @@ export function createWatchFrameController(dependencies = {}) {
   }
 
   function scrollTranscriptBy(delta) {
-    watchState.transcriptScrollOffset = applyViewportScrollDelta(
+    const nextOffset = applyViewportScrollDelta(
       watchState.transcriptScrollOffset,
       delta,
     );
-    watchState.transcriptFollowMode = watchState.transcriptScrollOffset === 0;
+    watchState.transcriptScrollOffset = nextOffset;
+    // Re-engage follow mode on near-bottom landings (tolerance of 2
+    // rows). Exact-0 match punished users who overshot the bottom with
+    // the wheel or ended up at offset=1 after content coalesced — they
+    // stayed unpinned and new content piled up below their viewport.
+    const STICKY_BOTTOM_TOLERANCE = 2;
+    watchState.transcriptFollowMode = nextOffset <= STICKY_BOTTOM_TOLERANCE;
+    if (watchState.transcriptFollowMode) {
+      watchState.transcriptScrollOffset = 0;
+    }
     scheduleRender();
   }
 
