@@ -307,10 +307,7 @@ import {
   isBackgroundRunStatusRequest,
   isBackgroundRunStopRequest,
 } from "./background-run-supervisor.js";
-import {
-  buildBackgroundRunWorkflowContext,
-  shouldPromoteImplementationBackgroundRun,
-} from "./background-run-workflow-context.js";
+import { buildBackgroundRunWorkflowContext } from "./background-run-workflow-context.js";
 import type { RuntimeFaultInjector } from "../eval/fault-injection.js";
 
 function firstSurfaceSummaryLine(value: unknown): string | undefined {
@@ -448,19 +445,6 @@ export {
   DEFAULT_GROK_MODEL,
   DEFAULT_GROK_FALLBACK_MODEL,
 } from "./llm-provider-manager.js";
-
-function effectiveHistoryForBackgroundRun(params: {
-  readonly history: readonly import("../llm/types.js").LLMMessage[];
-  readonly objective: string;
-}): readonly import("../llm/types.js").LLMMessage[] {
-  return [
-    ...params.history,
-    {
-      role: "user",
-      content: params.objective,
-    },
-  ];
-}
 
 // ============================================================================
 // Constants
@@ -7448,47 +7432,17 @@ export class DaemonManager {
       traceConfig,
       turnTraceId,
       workerManager: this._persistentWorkerManager,
-      maybeStartBackgroundRun: async ({
-        session,
-        objective,
-        effectiveHistory,
-      }) => {
-        if (
-          !this._backgroundRunSupervisor ||
-          !shouldPromoteImplementationBackgroundRun(objective)
-        ) {
-          return false;
-        }
-        const admission = this.evaluateBackgroundRunAdmission({
-          sessionId: msg.sessionId,
-          domain: "workspace",
-        });
-        if (!admission.allowed) {
-          await webChat.send({
-            sessionId: msg.sessionId,
-            content: formatBackgroundRunAdmissionDenied(admission.reason),
-          });
-          return true;
-        }
-        const shellProfile = this.resolveEffectiveShellProfile({
-          sessionId: msg.sessionId,
-          metadata: session.metadata ?? {},
-        });
-        await this._backgroundRunSupervisor.startRun({
-          sessionId: msg.sessionId,
-          objective,
-          options: {
-            seedHistory: [
-              ...effectiveHistoryForBackgroundRun({
-                history: effectiveHistory,
-                objective,
-              }),
-            ],
-            shellProfile,
-          },
-        });
-        return true;
-      },
+      // Background runs are never auto-started from user text. A prior
+      // regex classifier (`shouldPromoteImplementationBackgroundRun`)
+      // promoted any prompt containing `@PLAN.md` + a milestone token
+      // (e.g. `M0`) into a persistent bg-run, which then looped forever
+      // because the completion gate requires tool-based artifact
+      // evidence that a conversational prompt can never produce. Claude
+      // Code's reference design has no such promotion path: every user
+      // turn stays foreground and ends when the model stops emitting
+      // tool calls. Explicit bg-run entry points (slash command, etc.)
+      // remain available through other code paths.
+      maybeStartBackgroundRun: async () => false,
     });
   }
 

@@ -2473,3 +2473,102 @@ describe("system.readFile FILE_UNCHANGED_STUB", () => {
     expect(JSON.parse(result.content as string).content).toBe(content);
   });
 });
+
+
+// ============================================================================
+// snapshotTopRecentReads — compact-and-re-attach support
+// ============================================================================
+
+import { snapshotTopRecentReads, seedSessionReadState as seedRead } from "./filesystem.js";
+
+describe("snapshotTopRecentReads", () => {
+  const sessionId = "session-snapshot-top";
+
+  beforeEach(() => {
+    clearSessionReadState(sessionId);
+  });
+
+  it("returns top-N by most recent timestamp, newest first", () => {
+    seedRead(sessionId, [
+      { path: "/ws/a.ts", content: "A", timestamp: 100, viewKind: "full" },
+      { path: "/ws/b.ts", content: "B", timestamp: 300, viewKind: "full" },
+      { path: "/ws/c.ts", content: "C", timestamp: 200, viewKind: "full" },
+    ]);
+    const out = snapshotTopRecentReads({
+      sessionId,
+      maxFiles: 2,
+      perFileBudgetChars: 100,
+      totalBudgetChars: 1000,
+    });
+    expect(out.map((s) => s.path)).toEqual(["/ws/b.ts", "/ws/c.ts"]);
+    expect(out[0]?.content).toBe("B");
+  });
+
+  it("truncates any single file to the per-file budget", () => {
+    const big = "x".repeat(5000);
+    seedRead(sessionId, [
+      { path: "/ws/big.ts", content: big, timestamp: 10, viewKind: "full" },
+    ]);
+    const out = snapshotTopRecentReads({
+      sessionId,
+      maxFiles: 3,
+      perFileBudgetChars: 100,
+      totalBudgetChars: 10_000,
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0]?.content.length).toBe(100);
+  });
+
+  it("stops adding files once the total budget is exhausted", () => {
+    seedRead(sessionId, [
+      { path: "/ws/a.ts", content: "x".repeat(60), timestamp: 5, viewKind: "full" },
+      { path: "/ws/b.ts", content: "y".repeat(60), timestamp: 4, viewKind: "full" },
+      { path: "/ws/c.ts", content: "z".repeat(60), timestamp: 3, viewKind: "full" },
+    ]);
+    const out = snapshotTopRecentReads({
+      sessionId,
+      maxFiles: 10,
+      perFileBudgetChars: 200,
+      totalBudgetChars: 130,
+    });
+    expect(out.map((s) => s.path)).toEqual(["/ws/a.ts", "/ws/b.ts"]);
+  });
+
+  it("skips entries with missing content or timestamp", () => {
+    seedRead(sessionId, [
+      { path: "/ws/no-ts.ts", content: "keep-me", viewKind: "full" }, // no timestamp → skip
+      { path: "/ws/no-content.ts", timestamp: 50, viewKind: "full" }, // no content → skip
+      { path: "/ws/real.ts", content: "real", timestamp: 25, viewKind: "full" },
+    ]);
+    const out = snapshotTopRecentReads({
+      sessionId,
+      maxFiles: 5,
+      perFileBudgetChars: 100,
+      totalBudgetChars: 1000,
+    });
+    expect(out.map((s) => s.path)).toEqual(["/ws/real.ts"]);
+  });
+
+  it("returns empty array for an unknown or empty session", () => {
+    const out = snapshotTopRecentReads({
+      sessionId: "does-not-exist",
+      maxFiles: 5,
+      perFileBudgetChars: 100,
+      totalBudgetChars: 1000,
+    });
+    expect(out).toEqual([]);
+  });
+
+  it("preserves viewKind in the exported snapshot", () => {
+    seedRead(sessionId, [
+      { path: "/ws/x.ts", content: "x", timestamp: 1, viewKind: "line_window" },
+    ]);
+    const out = snapshotTopRecentReads({
+      sessionId,
+      maxFiles: 1,
+      perFileBudgetChars: 100,
+      totalBudgetChars: 100,
+    });
+    expect(out[0]?.viewKind).toBe("line_window");
+  });
+});

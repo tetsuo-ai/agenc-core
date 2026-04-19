@@ -1430,7 +1430,7 @@ describe("webchat background-run routing", () => {
     executeWebChatConversationTurnSpy.mockRestore();
   });
 
-  it("promotes explicit full-plan implementation requests into background supervision", async () => {
+  it("never auto-promotes a webchat message into a background run from objective text alone", async () => {
     const dm = new DaemonManager({ configPath: "/tmp/config.json" });
     const startRun = vi.fn(async () => undefined);
     const getStatusSnapshot = vi.fn(() => undefined);
@@ -1457,7 +1457,7 @@ describe("webchat background-run routing", () => {
           runtimeWorkspaceRoot: "/home/tetsuo/git/stream-test/agenc-shell",
           effectiveHistory: [],
         });
-        expect(started).toBe(true);
+        expect(started).toBe(false);
         return undefined;
       });
 
@@ -1499,20 +1499,7 @@ describe("webchat background-run routing", () => {
       },
     );
 
-    expect(startRun).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionId: "session-background-implementation",
-        objective: "Read @PLAN.md and implement all phases in full without stopping.",
-        options: expect.objectContaining({
-          seedHistory: expect.arrayContaining([
-            expect.objectContaining({
-              role: "user",
-              content: "Read @PLAN.md and implement all phases in full without stopping.",
-            }),
-          ]),
-        }),
-      }),
-    );
+    expect(startRun).not.toHaveBeenCalled();
     expect(executeWebChatConversationTurnSpy).toHaveBeenCalledOnce();
     executeWebChatConversationTurnSpy.mockRestore();
   });
