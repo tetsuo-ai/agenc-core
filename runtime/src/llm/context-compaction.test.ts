@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { compactHistoryIntoArtifactContext } from "./context-compaction.js";
+import {
+  compactHistoryIntoArtifactContext,
+  createCompactBoundaryMessage,
+  isCompactBoundaryMessage,
+} from "./context-compaction.js";
 import type { LLMMessage } from "./types.js";
 
 function multimodalMessage(): LLMMessage {
@@ -260,5 +264,100 @@ describe("context compaction", () => {
     });
 
     expect(compacted.compactedHistory.slice(1, 5)).toEqual(history);
+  });
+
+  it("preserves a pre-existing boundary verbatim across re-compaction", () => {
+    const priorBoundary = createCompactBoundaryMessage({
+      boundaryId: "snapshot:priorboundary1",
+      source: "executor_compaction",
+      sourceMessageCount: 12,
+      retainedTailCount: 3,
+      summaryText: "earlier summary text",
+    });
+    const history: LLMMessage[] = [
+      priorBoundary,
+      { role: "assistant", content: "work after prior boundary" },
+      { role: "assistant", content: "more work" },
+      { role: "user", content: "continue" },
+      { role: "assistant", content: "will do" },
+    ];
+
+    const compacted = compactHistoryIntoArtifactContext({
+      sessionId: "session-rec",
+      history,
+      keepTailCount: 1,
+      source: "executor_compaction",
+    });
+
+    // Prior boundary must appear verbatim at its original relative
+    // position so the prefix hash seen by the provider cache does not
+    // drift across successive compactions.
+    expect(compacted.compactedHistory[0]).toEqual(priorBoundary);
+    // The new boundary is the second message (after the prior one).
+    expect(compacted.boundaryMessage).toBe(compacted.compactedHistory[1]);
+    expect(isCompactBoundaryMessage(compacted.compactedHistory[1]!)).toBe(true);
+  });
+
+  it("excludes prior-boundary content from the new boundary's hash", () => {
+    const priorBoundaryA = createCompactBoundaryMessage({
+      boundaryId: "snapshot:aaaaaaaa",
+      source: "executor_compaction",
+      sourceMessageCount: 9,
+      retainedTailCount: 2,
+      summaryText: "summary A",
+    });
+    const priorBoundaryB = createCompactBoundaryMessage({
+      boundaryId: "snapshot:bbbbbbbb",
+      source: "executor_compaction",
+      sourceMessageCount: 11,
+      retainedTailCount: 3,
+      summaryText: "summary B — totally different text",
+    });
+    const nonBoundaryTail: LLMMessage[] = [
+      { role: "assistant", content: "identical work item 1" },
+      { role: "assistant", content: "identical work item 2" },
+      { role: "user", content: "same user prompt" },
+    ];
+
+    const compactedWithA = compactHistoryIntoArtifactContext({
+      sessionId: "session-hash",
+      history: [priorBoundaryA, ...nonBoundaryTail],
+      keepTailCount: 1,
+      source: "executor_compaction",
+    });
+    const compactedWithB = compactHistoryIntoArtifactContext({
+      sessionId: "session-hash",
+      history: [priorBoundaryB, ...nonBoundaryTail],
+      keepTailCount: 1,
+      source: "executor_compaction",
+    });
+
+    // The new boundary's hash is derived from the non-boundary content
+    // only, so swapping the prior boundary produces the same
+    // snapshotId. This is what keeps the xAI prompt_cache_key prefix
+    // match region stable across successive compactions that carry
+    // different prior-summary text forward.
+    expect(compactedWithA.state.snapshotId).toBe(compactedWithB.state.snapshotId);
+  });
+
+  it("isCompactBoundaryMessage recognizes both boundary shapes", () => {
+    const executorBoundary = createCompactBoundaryMessage({
+      boundaryId: "snapshot:aa",
+      source: "executor_compaction",
+      sourceMessageCount: 1,
+      retainedTailCount: 1,
+    });
+    const reactiveBoundary: LLMMessage = {
+      role: "system",
+      content: "[reactive-compact] trimmed 5 oldest messages (attempt 1)",
+    };
+    const regularSystem: LLMMessage = {
+      role: "system",
+      content: "You are a helpful assistant.",
+    };
+
+    expect(isCompactBoundaryMessage(executorBoundary)).toBe(true);
+    expect(isCompactBoundaryMessage(reactiveBoundary)).toBe(true);
+    expect(isCompactBoundaryMessage(regularSystem)).toBe(false);
   });
 });

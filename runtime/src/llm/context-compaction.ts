@@ -87,6 +87,54 @@ export function createCompactBoundaryMessage(params: {
   };
 }
 
+/**
+ * True when `message` is a compact boundary marker produced by a prior
+ * compaction pass. Used to keep pre-existing boundaries verbatim across
+ * subsequent compactions so the prefix (and xAI `prompt_cache_key`
+ * match region) stays stable. Mirrors Claude Code's "anchor-preserved"
+ * message pattern: once a boundary is placed, it is not re-summarized.
+ */
+export function isCompactBoundaryMessage(message: LLMMessage): boolean {
+  if (message.role !== "system") return false;
+  const text =
+    typeof message.content === "string"
+      ? message.content
+      : message.content
+          .filter((part): part is { type: "text"; text: string } => part.type === "text")
+          .map((part) => part.text)
+          .join("");
+  const trimmed = text.trimStart();
+  return (
+    trimmed.startsWith("[boundary] replay:") ||
+    trimmed.startsWith("[reactive-compact]")
+  );
+}
+
+/**
+ * Split a candidate-for-compaction slice into prior boundary messages
+ * (which must be preserved verbatim in the output) and the remaining
+ * messages that can be summarized/hashed. Preserving prior boundaries
+ * keeps the cacheable prefix stable across successive compactions
+ * instead of rehashing it every time.
+ */
+function partitionBoundariesFromCompactable(
+  messages: readonly LLMMessage[],
+): {
+  readonly priorBoundaries: readonly LLMMessage[];
+  readonly compactable: readonly LLMMessage[];
+} {
+  const priorBoundaries: LLMMessage[] = [];
+  const compactable: LLMMessage[] = [];
+  for (const message of messages) {
+    if (isCompactBoundaryMessage(message)) {
+      priorBoundaries.push(message);
+      continue;
+    }
+    compactable.push(message);
+  }
+  return { priorBoundaries, compactable };
+}
+
 function extractText(message: LLMMessage): string {
   if (typeof message.content === "string") {
     return message.content;
@@ -540,9 +588,15 @@ export function compactHistoryIntoArtifactContext(
   );
   const toCompact = input.history.slice(0, retainedTailStartIndex);
   const toKeep = input.history.slice(retainedTailStartIndex);
-  const preservedMessages = collectPreservedMessages(toCompact);
+  // Separate pre-existing boundary messages from the messages that will
+  // actually be hashed/summarized into the new boundary. Prior
+  // boundaries are preserved verbatim in the output so the cacheable
+  // prefix remains byte-identical across successive compactions.
+  const { priorBoundaries, compactable: compactableToCompact } =
+    partitionBoundariesFromCompactable(toCompact);
+  const preservedMessages = collectPreservedMessages(compactableToCompact);
   const now = Date.now();
-  const records = toCompact
+  const records = compactableToCompact
     .map((message, index) => {
       const normalizedContent = normalizeArtifactContent(message);
       return {
@@ -582,9 +636,11 @@ export function compactHistoryIntoArtifactContext(
     tags: record.tags,
   }));
   const historyDigest = sha256Hex(
-    toCompact.map((message) => `${message.role}:${extractText(message)}`).join("\n"),
+    compactableToCompact
+      .map((message) => `${message.role}:${extractText(message)}`)
+      .join("\n"),
   );
-  const openLoops = collectOpenLoops(toCompact);
+  const openLoops = collectOpenLoops(compactableToCompact);
   const narrativeSummary = sanitizeNarrativeSummary(
     input.narrativeSummary && input.narrativeSummary.trim().length > 0
       ? truncateText(input.narrativeSummary, 320)
@@ -599,7 +655,7 @@ export function compactHistoryIntoArtifactContext(
     createdAt: now,
     source: input.source,
     historyDigest,
-    sourceMessageCount: toCompact.length,
+    sourceMessageCount: compactableToCompact.length,
     retainedTailCount: toKeep.length,
     ...(narrativeSummary ? { narrativeSummary } : {}),
     openLoops,
@@ -609,12 +665,13 @@ export function compactHistoryIntoArtifactContext(
   const boundaryMessage = createCompactBoundaryMessage({
     boundaryId: state.snapshotId,
     source: input.source,
-    sourceMessageCount: toCompact.length,
+    sourceMessageCount: compactableToCompact.length,
     retainedTailCount: toKeep.length,
     summaryText,
   });
   return {
     compactedHistory: [
+      ...priorBoundaries,
       boundaryMessage,
       ...preservedMessages,
       ...toKeep,

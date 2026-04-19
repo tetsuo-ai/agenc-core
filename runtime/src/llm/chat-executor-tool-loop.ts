@@ -89,6 +89,30 @@ import { executeSingleToolCall } from "./chat-executor-single-tool-dispatch.js";
 import { evaluateTurnEndStopGate } from "./chat-executor-stop-gate-evaluation.js";
 
 // ============================================================================
+// Stall-escalation tripwire
+// ============================================================================
+
+/**
+ * Number of times one recovery-hint key may fire in a single turn before
+ * the loop escalates to a text-only user handoff. Chosen to match the
+ * existing `FAILED_TOOL_RECOVERY_STREAK`: after three rounds of the same
+ * specific diagnostic, the model is not recovering on its own.
+ */
+const STALL_HINT_REPEAT_LIMIT = 3;
+
+/**
+ * Recovery-hint key prefixes that count toward the stall tripwire. Kept
+ * narrow to observed pathological loops (build-fail → edit → rebuild at
+ * the same compiler location) so generic/advisory hint keys do not
+ * short-circuit healthy long-running turns.
+ */
+const STALL_ESCALATION_HINT_PREFIXES: readonly string[] = [
+  "system-bash-compiler-diagnostic",
+  "system-bash-compiler-interface-drift",
+  "system-bash-compiler-header-ordering",
+];
+
+// ============================================================================
 // Callback interfaces
 // ============================================================================
 
@@ -309,6 +333,16 @@ export async function executeToolCallLoop(
   };
   let consecutiveFailedToolCalls = 0;
   let forcedFailureRecoveryUsed = false;
+
+  // Per-turn stall-escalation state. Tracks how many times each
+  // recovery-hint key has fired so a model stuck in a repeating
+  // build-fail → edit → rebuild cycle is forced to summarize for the
+  // user instead of burning more rounds. Keys matching
+  // `STALL_ESCALATION_HINT_PREFIXES` count toward the cap — other keys
+  // are tracked for observability only.
+  const hintKeyRepeatCounts = new Map<string, number>();
+  let stallEscalationTriggered = false;
+  let stallEscalationKey: string | undefined;
 
   // Turn-end completion validation now shares one turn-local
   // continuation controller instead of per-validator attempt maps.
@@ -551,6 +585,64 @@ export async function executeToolCallLoop(
     )) {
       callbacks.pushMessage(ctx, msg, "system_runtime");
     }
+
+    // Stall-escalation tripwire: track per-turn repetition of specific
+    // failure-diagnostic hint keys. When the same key fires
+    // `STALL_HINT_REPEAT_LIMIT` times, the model is stuck in a loop
+    // text-only hints cannot break (e.g. build-fail → edit → rebuild
+    // at the same compiler location, flailing between permutations of
+    // the same fix). Inject a strong system message instructing the
+    // model to summarize for the user, then force the next provider
+    // call to be text-only so the loop ends cleanly on the model's
+    // response instead of burning another round of tool calls.
+    let stallEscalatedThisRound = false;
+    if (!stallEscalationTriggered) {
+      for (const hint of recoveryHints) {
+        if (
+          !STALL_ESCALATION_HINT_PREFIXES.some((prefix) =>
+            hint.key.startsWith(prefix),
+          )
+        ) {
+          continue;
+        }
+        const nextCount = (hintKeyRepeatCounts.get(hint.key) ?? 0) + 1;
+        hintKeyRepeatCounts.set(hint.key, nextCount);
+        if (nextCount >= STALL_HINT_REPEAT_LIMIT) {
+          stallEscalatedThisRound = true;
+          stallEscalationTriggered = true;
+          stallEscalationKey = hint.key;
+        }
+      }
+    }
+    if (stallEscalatedThisRound && stallEscalationKey) {
+      const repeatCount =
+        hintKeyRepeatCounts.get(stallEscalationKey) ?? STALL_HINT_REPEAT_LIMIT;
+      const stallMessage: import("./types.js").LLMMessage = {
+        role: "system",
+        content:
+          `STALL DETECTED: the same failure-recovery hint has fired ${repeatCount} ` +
+          `times this turn without the underlying error changing ` +
+          `(\`${stallEscalationKey}\`). ` +
+          `Stop calling tools immediately. Reply to the user in plain text with: ` +
+          `(a) the exact error or failure you keep hitting, ` +
+          `(b) every fix approach you already tried in this turn and the outcome of each, ` +
+          `(c) your best hypothesis for what is actually blocking progress. ` +
+          `Wait for the user's guidance before invoking any more tools.`,
+      };
+      callbacks.pushMessage(ctx, stallMessage, "system_runtime");
+      callbacks.emitExecutionTrace(ctx, {
+        type: "stall_escalated",
+        phase: "tool_followup",
+        callIndex: ctx.callIndex + 1,
+        payload: {
+          hintKey: stallEscalationKey,
+          repeatCount,
+          repeatLimit: STALL_HINT_REPEAT_LIMIT,
+          hintKeyCounts: Object.fromEntries(hintKeyRepeatCounts),
+        },
+      });
+    }
+
     // Routing expansion on miss.
     if (loopState.expandAfterRound && ctx.expandedRoutedToolNames.length > 0) {
       const previousRoutedToolNames = [...ctx.activeRoutedToolNames];
@@ -601,7 +693,9 @@ export async function executeToolCallLoop(
         onStreamChunk: ctx.activeStreamCallback,
         structuredOutput: ctx.structuredOutput,
         promptCacheKey: ctx.sessionId,
-        ...(shouldForceFailureRecovery ? { toolChoice: "none" as const } : {}),
+        ...(shouldForceFailureRecovery || stallEscalatedThisRound
+          ? { toolChoice: "none" as const }
+          : {}),
         budgetReason:
           "Max model recalls exceeded while following up after tool calls",
       }),
@@ -633,6 +727,30 @@ export async function executeToolCallLoop(
         ctx.response = { ...nextResponse, content: "" };
         break;
       }
+    }
+    if (stallEscalatedThisRound) {
+      ctx.response = nextResponse;
+      if (responseHasToolCalls(nextResponse)) {
+        // Model ignored `toolChoice: none` after stall escalation.
+        // Close the turn anyway — continuing would defeat the tripwire.
+        emitToolProtocolViolation(
+          ctx,
+          callbacks,
+          "tool_choice_none_ignored_after_stall_escalation",
+          {
+            toolNames: nextResponse.toolCalls.map((toolCall) => toolCall.name),
+            finishReason: nextResponse.finishReason,
+            stallHintKey: stallEscalationKey ?? null,
+          },
+        );
+        sealPendingToolProtocol(ctx, callbacks, "stall_escalated");
+      }
+      callbacks.setStopReason(
+        ctx,
+        "no_progress",
+        `Stall escalation: recovery hint \`${stallEscalationKey}\` fired ${STALL_HINT_REPEAT_LIMIT}+ times without progress. Handed back to the user with a model-written summary.`,
+      );
+      break;
     }
     ctx.response = nextResponse;
     failClosedOnMalformedToolContinuation(ctx, callbacks);

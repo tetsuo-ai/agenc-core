@@ -23,6 +23,7 @@ import { callWithFallback } from "./chat-executor-fallback.js";
 import {
   compactHistoryIntoArtifactContext,
   createCompactBoundaryMessage,
+  isCompactBoundaryMessage,
 } from "./context-compaction.js";
 import { MAX_COMPACT_INPUT } from "./chat-executor-constants.js";
 import type { ArtifactCompactionState } from "../memory/artifact-store.js";
@@ -54,6 +55,10 @@ export interface SessionMemoryCompactionResult {
   readonly history: readonly LLMMessage[];
   readonly artifactContext: ArtifactCompactionState;
   readonly postCompactTokenCount: number;
+  /** The newly-minted boundary message (the one produced by this pass). */
+  readonly boundaryMessage: LLMMessage;
+  /** Count of messages in `history` that come AFTER `boundaryMessage`. */
+  readonly retainedAfterNewBoundaryCount: number;
 }
 
 const DEFAULT_SESSION_MEMORY_COMPACT_KEEP_TAIL = 3;
@@ -83,6 +88,8 @@ export async function compactHistory(
 ): Promise<{
   readonly history: readonly LLMMessage[];
   readonly artifactContext?: ArtifactCompactionState;
+  readonly boundaryMessage?: LLMMessage;
+  readonly retainedAfterNewBoundaryCount?: number;
 }> {
   const effectiveKeepTailCount = Math.max(1, options?.keepTailCount ?? 5);
   if (history.length <= effectiveKeepTailCount) {
@@ -94,7 +101,14 @@ export async function compactHistory(
 
   let narrativeSummary: string | undefined;
   const toSummarize = history.slice(0, history.length - effectiveKeepTailCount);
-  let historyText = toSummarize
+  // Skip pre-existing compact boundary markers — they have already been
+  // summarized and re-feeding them to the summarizer produces nested
+  // "summary of a summary" text that still changes turn-to-turn and
+  // invalidates the provider's prompt cache past the first boundary.
+  const summarizableMessages = toSummarize.filter(
+    (message) => !isCompactBoundaryMessage(message),
+  );
+  let historyText = summarizableMessages
     .map((message) => {
       const content =
         typeof message.content === "string"
@@ -169,9 +183,18 @@ export async function compactHistory(
     }
   }
 
+  const newBoundaryIndex = compacted.compactedHistory.indexOf(
+    compacted.boundaryMessage,
+  );
+  const retainedAfterNewBoundaryCount =
+    newBoundaryIndex >= 0
+      ? compacted.compactedHistory.length - newBoundaryIndex - 1
+      : Math.max(0, compacted.compactedHistory.length - 1);
   return {
     history: compacted.compactedHistory,
     artifactContext: compacted.state,
+    boundaryMessage: compacted.boundaryMessage,
+    retainedAfterNewBoundaryCount,
   };
 }
 
@@ -206,10 +229,19 @@ export function trySessionMemoryCompaction(params: {
   ) {
     return null;
   }
+  const newBoundaryIndex = compacted.compactedHistory.indexOf(
+    compacted.boundaryMessage,
+  );
+  const retainedAfterNewBoundaryCount =
+    newBoundaryIndex >= 0
+      ? compacted.compactedHistory.length - newBoundaryIndex - 1
+      : Math.max(0, compacted.compactedHistory.length - 1);
   return {
     history: compacted.compactedHistory,
     artifactContext: compacted.state,
     postCompactTokenCount,
+    boundaryMessage: compacted.boundaryMessage,
+    retainedAfterNewBoundaryCount,
   };
 }
 

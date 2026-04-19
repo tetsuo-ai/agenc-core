@@ -170,6 +170,7 @@ export const CHAT_EXECUTION_TRACE_EVENT_TYPES = [
   "recovery_hints_injected",
   "route_expanded",
   "runtime_contract_snapshot",
+  "stall_escalated",
   "stop_hook_blocked",
   "stop_hook_execution_finished",
   "stop_hook_exhausted",

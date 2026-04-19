@@ -43,6 +43,7 @@ import {
   markAutocompactSuccess,
 } from "./compact/autocompact.js";
 import { runPostCompactCleanup } from "./compact/post-compact-cleanup.js";
+import { reattachRecentFilesOnCompaction } from "./compact/post-compact-attachments.js";
 
 /**
  * Dependency struct for `maybeCompactInFlightCallInput`.
@@ -180,30 +181,89 @@ export async function maybeCompactInFlightCallInput(
           keepTailCount: inFlightKeepTailCount,
         },
       );
-    const retainedTailCount = Math.max(0, compacted.history.length - 1);
+    // Derive the number of items kept AFTER the newly-minted boundary
+    // (preserved-multimodal + keep-tail messages). Falls back to the
+    // legacy "everything except index 0" assumption for shapes that do
+    // not expose the new-boundary split (e.g. the trivial-history
+    // early-exit path).
+    const retainedAfterNewBoundaryCount =
+      compacted.retainedAfterNewBoundaryCount ??
+      Math.max(0, compacted.history.length - 1);
+    const newBoundaryMessage: LLMMessage =
+      compacted.boundaryMessage ??
+      ({
+        role: "system" as const,
+        content:
+          typeof compacted.history[0]?.content === "string"
+            ? (compacted.history[0].content as string)
+            : "",
+      });
+    // Snapshot the top-N most-recently-read files and build anchor
+    // messages to re-inject their bytes immediately after the boundary.
+    // Mirrors Claude Code's `createPostCompactFileAttachments`: after
+    // compaction, the raw tool_result bytes are gone from the prompt,
+    // so the model would otherwise re-call `system.readFile` for the
+    // same paths round after round. Anchors short-circuit that. Also
+    // clears the in-memory read cache so the FILE_UNCHANGED_STUB
+    // short-circuit does not point at content that has been
+    // summarized away.
+    const anchorFileMessages = reattachRecentFilesOnCompaction(ctx.sessionId);
     const replayTailReconciliationMessages = (
       input.callReconciliationMessages ?? ctx.reconciliationMessages
     ).slice(replayTailStartIndex);
     const replayTailSections = (
       input.callSections ?? ctx.messageSections
     ).slice(replayTailStartIndex);
+    const anchorReconciliationMessages: readonly LLMMessage[] = anchorFileMessages.map(
+      (message) => ({
+        role: "system" as const,
+        content:
+          typeof message.content === "string"
+            ? (message.content as string)
+            : "",
+      }),
+    );
+    const anchorSections: readonly PromptBudgetSection[] = anchorFileMessages.map(
+      () => "memory_working",
+    );
     const compactedReconciliationMessages: readonly LLMMessage[] = [
       {
         role: "system",
         content:
-          typeof compacted.history[0]?.content === "string"
-            ? compacted.history[0].content
+          typeof newBoundaryMessage.content === "string"
+            ? newBoundaryMessage.content
             : "",
       },
-      ...replayTailReconciliationMessages.slice(-retainedTailCount),
+      ...anchorReconciliationMessages,
+      ...replayTailReconciliationMessages.slice(-retainedAfterNewBoundaryCount),
     ];
     const compactedSections: readonly PromptBudgetSection[] = [
       "memory_working",
-      ...replayTailSections.slice(-retainedTailCount),
+      ...anchorSections,
+      ...replayTailSections.slice(-retainedAfterNewBoundaryCount),
     ];
+    // Build the final compacted history. Structure:
+    //   [...head, ...priorBoundaries, newBoundary, ...anchors, ...preserved, ...toKeep]
+    // The prior boundaries (if any) come from `compacted.history` up to
+    // the new boundary. Anchors are spliced immediately after the new
+    // boundary so they sit inside the cacheable prefix but before the
+    // recent tail.
+    const newBoundaryIndex = compacted.history.indexOf(newBoundaryMessage);
+    const beforeNewBoundary =
+      newBoundaryIndex >= 0
+        ? compacted.history.slice(0, newBoundaryIndex + 1)
+        : [compacted.history[0]].filter(
+            (entry): entry is LLMMessage => entry !== undefined,
+          );
+    const afterNewBoundary =
+      newBoundaryIndex >= 0
+        ? compacted.history.slice(newBoundaryIndex + 1)
+        : compacted.history.slice(1);
     const nextMessages = [
       ...input.callMessages.slice(0, replayTailStartIndex),
-      ...compacted.history,
+      ...beforeNewBoundary,
+      ...anchorFileMessages,
+      ...afterNewBoundary,
     ];
     const nextReconciliationMessages = [
       ...(input.callReconciliationMessages ?? ctx.reconciliationMessages).slice(
@@ -224,6 +284,11 @@ export async function maybeCompactInFlightCallInput(
     ctx.messageSections = [...nextSections];
     ctx.compacted = true;
     ctx.compactedArtifactContext = compacted.artifactContext;
+    // NOTE: we already cleared the read cache inside
+    // `reattachRecentFilesOnCompaction`. `runPostCompactCleanup` is
+    // retained for any additional per-session cleanup the compact
+    // module may grow in the future (currently it only clears the
+    // read cache, which is now a no-op on second call).
     runPostCompactCleanup(ctx.sessionId);
     ctx.perIterationCompaction = {
       ...ctx.perIterationCompaction,
