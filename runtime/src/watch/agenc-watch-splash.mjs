@@ -22,6 +22,19 @@ export function createWatchSplashRenderer(dependencies = {}) {
   } = dependencies;
 
   function shouldShowSplash() {
+    // Single-pass, early-return scan for the first non-status event in
+    // the intro-dismiss set. Previously this built an intermediate
+    // kinds array on every render (O(n) map + filter); the splash
+    // renderer fires at 30Hz during streaming so a 500-event history
+    // walked the whole list per frame just to answer a boolean.
+    let hasNonStatusDismissEvent = false;
+    for (let index = 0; index < events.length; index += 1) {
+      const kind = events[index]?.kind;
+      if (introDismissKinds.has(kind) && kind !== "status") {
+        hasNonStatusDismissEvent = true;
+        break;
+      }
+    }
     return shouldShowWatchSplash({
       introDismissed: watchState.introDismissed,
       currentObjective: watchState.currentObjective,
@@ -29,7 +42,7 @@ export function createWatchSplashRenderer(dependencies = {}) {
       bootstrapReady: watchState.bootstrapReady,
       launchedAtMs,
       startupSplashMinMs,
-      eventKinds: events.map((event) => event.kind).filter((kind) => introDismissKinds.has(kind)),
+      eventKinds: hasNonStatusDismissEvent ? ["__non_status_dismiss"] : [],
       nowMs: nowMs(),
     });
   }

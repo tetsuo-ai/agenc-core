@@ -212,16 +212,17 @@ export function createWatchFrameController(dependencies = {}) {
     const cells = new Array(width);
     let index = 0;
     let activeSgr = "";
-    // Pending OSC 8 hyperlink prefix attached to the next cell. OSC
-    // sequences are zero-width metadata — previously splitAnsiCells
-    // only matched SGR (`\x1b[...m`) and fell through to the cell
-    // branch, counting every OSC byte as a literal content cell. That
-    // corrupted column math in `compositeRowWithArt`, shifted art
-    // occlusion by the OSC byte count, and poisoned all
-    // `visibleLength`-based truncation. Skip OSC sequences and carry
-    // the bytes forward so hyperlink state still reaches the output.
-    let pendingHyperlink = "";
+    // Active OSC 8 hyperlink opener (or empty string when none is
+    // active). Hyperlinks persist across cells until the terminator
+    // `\x1b]8;;\x07` closes them — just like SGR state, the current
+    // hyperlink must be part of each cell's reconstructed prefix so
+    // downstream consumers (compositor, truncator) can emit it at any
+    // boundary without losing the link.
+    let activeHyperlink = "";
     let col = 0;
+    const isHyperlinkCloser = (seq) => /^\x1b\]8;[^\x07\x1b]*;(\x07|\x1b\\)/.test(seq)
+      ? /^\x1b\]8;;/.test(seq)
+      : false;
     while (index < row.length && col < width) {
       if (row[index] === "\x1b") {
         const sgrMatch = row.slice(index).match(/^\x1b\[[0-9;]*m/);
@@ -240,18 +241,21 @@ export function createWatchFrameController(dependencies = {}) {
           .slice(index)
           .match(/^\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)/);
         if (oscMatch) {
-          pendingHyperlink += oscMatch[0];
+          if (isHyperlinkCloser(oscMatch[0])) {
+            activeHyperlink = "";
+          } else {
+            activeHyperlink = oscMatch[0];
+          }
           index += oscMatch[0].length;
           continue;
         }
       }
       cells[col] = {
-        sgr: pendingHyperlink
-          ? `${activeSgr}${pendingHyperlink}`
+        sgr: activeHyperlink
+          ? `${activeSgr}${activeHyperlink}`
           : activeSgr,
         char: row[index],
       };
-      pendingHyperlink = "";
       index += 1;
       col += 1;
     }
@@ -3200,7 +3204,16 @@ export function createWatchFrameController(dependencies = {}) {
   // Code uses a stable-prefix re-lex with an LRU token cache
   // (components/Markdown.tsx:22-71, 186-234); this is the lightweight
   // equivalent — full re-parse only when the committed text changes.
-  const streamingPreviewCache = { text: null, width: null, rows: null };
+  // Cache key includes `sessionId` so a session switch invalidates a
+  // prior session's cached rows — otherwise an incoming session with a
+  // coincidentally identical `committedPortion` could show the old
+  // session's pre-composed rows.
+  const streamingPreviewCache = {
+    text: null,
+    width: null,
+    rows: null,
+    sessionId: null,
+  };
 
   function buildStreamingPreviewBlock(width) {
     // Render the in-flight assistant stream as agent-style rows below the
@@ -3230,9 +3243,11 @@ export function createWatchFrameController(dependencies = {}) {
     if (committedPortion.length === 0) {
       return [];
     }
+    const currentSessionId = watchState?.sessionId ?? null;
     if (
       streamingPreviewCache.text === committedPortion &&
       streamingPreviewCache.width === width &&
+      streamingPreviewCache.sessionId === currentSessionId &&
       Array.isArray(streamingPreviewCache.rows)
     ) {
       return streamingPreviewCache.rows;
@@ -3290,6 +3305,7 @@ export function createWatchFrameController(dependencies = {}) {
     streamingPreviewCache.text = committedPortion;
     streamingPreviewCache.width = width;
     streamingPreviewCache.rows = rows;
+    streamingPreviewCache.sessionId = watchState?.sessionId ?? null;
     return rows;
   }
 
@@ -3812,6 +3828,13 @@ export function createWatchFrameController(dependencies = {}) {
     }
     stdout.write(buildAltScreenEnterSequence({ enableMouseTracking }));
     frameState.enteredAltScreen = true;
+    // Match leaveAltScreen by invalidating the frame cache on entry.
+    // Otherwise re-entering the alt screen with stale cached rows can
+    // produce a partial selective-diff against the freshly cleared
+    // terminal — visible as a transient render.
+    frameState.lastRenderedFrameLines = [];
+    frameState.lastRenderedFrameWidth = 0;
+    frameState.lastRenderedFrameHeight = 0;
   }
 
   function leaveAltScreen() {
@@ -4209,8 +4232,13 @@ export function createWatchFrameController(dependencies = {}) {
     frameState.lastRenderedFrameWidth = width;
     frameState.lastRenderedFrameHeight = height;
     const cursorRow = composer.absoluteRow ?? height;
-    stdout.write(`\x1b[${cursorRow};${composer.cursorColumn}H\x1b[?25h`);
+    // Emit the SGR reset BEFORE showing the cursor so the cursor
+    // repaint on input uses the terminal's default attributes. With
+    // `\x1b[?25h` first, the cursor gets drawn against whatever bg/fg
+    // state the last row left active — visible as a flash of the
+    // wrong color on the first keystroke after a frame.
     stdout.write(color.reset);
+    stdout.write(`\x1b[${cursorRow};${composer.cursorColumn}H\x1b[?25h`);
   }
 
   // Minimum gap between streaming-chunk-triggered frames. The custom
