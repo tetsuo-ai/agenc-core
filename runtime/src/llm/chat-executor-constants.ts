@@ -92,17 +92,14 @@ export const DEFAULT_TOOL_CALL_TIMEOUT_MS = 0;
 /** Default end-to-end timeout for one execute() invocation in ms. 0 = unlimited. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 0;
 /**
- * Absolute adaptive ceiling for tool rounds per turn. Claude Code's
- * query.ts has `maxTurns` as an opt-in SDK param; for the AgenC
- * daemon we need a safe default because otherwise the only structural
- * backstops against runaway are content-heuristic regexes (stall
- * tripwire + stop-gate narration detectors), which have accumulated
- * a chain of reactive guards and counter-softeners. 200 rounds is
- * ~4x the largest legitimate multi-phase implementation turn seen
- * in traces and ~2x the 97-call pathological loop that kicked off
- * the defensive PR chain. Explicit `0` in user config still means
- * unlimited — this constant is only the default when no value is
- * configured. Set to 0 in the daemon config to opt out.
+ * Absolute adaptive ceiling for tool rounds per turn. Safe default so
+ * the only structural backstop against runaway loops is not a chain
+ * of content-heuristic regexes. 200 rounds is ~4x the largest
+ * legitimate multi-phase implementation turn seen in traces and ~2x
+ * the 97-call pathological loop that kicked off the defensive PR
+ * chain. Explicit `0` in user config still means unlimited — this
+ * constant is only the default when no value is configured. Set to 0
+ * in the daemon config to opt out.
  */
 export const MAX_ADAPTIVE_TOOL_ROUNDS = 200;
 /** Default minimum verifier confidence for accepting subagent outputs. */
