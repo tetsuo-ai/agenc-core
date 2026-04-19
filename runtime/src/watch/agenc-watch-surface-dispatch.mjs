@@ -273,10 +273,17 @@ function handleSessionSurfaceEvent(surfaceEvent, state, api) {
       return handleSessionListResult({ sessions: surfaceEvent.payloadList ?? [] }, state, api);
     }
     case "session.command.catalog":
-      state.sharedCommandCatalog = Array.isArray(surfaceEvent.payloadList)
-        ? surfaceEvent.payloadList
-        : [];
-      api.setTransientStatus("command catalog updated");
+      // Preserve the existing catalog on a malformed payload. Previously
+      // this silently replaced it with [] on any non-array, emptying
+      // the slash-command palette and giving no error UI. Keep what
+      // we had so the palette keeps working until a well-formed
+      // response arrives.
+      if (Array.isArray(surfaceEvent.payloadList)) {
+        state.sharedCommandCatalog = surfaceEvent.payloadList;
+        api.setTransientStatus("command catalog updated");
+      } else {
+        api.setTransientStatus("command catalog update ignored (malformed payload)");
+      }
       return true;
     case "chat.history": {
       const history = surfaceEvent.payloadList ?? [];

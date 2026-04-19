@@ -176,10 +176,19 @@ export function createWatchTransportController(dependencies = {}) {
     if (shuttingDown() || transportState.reconnectTimer) {
       return;
     }
-    const delayMs = Math.min(
+    // Exponential backoff with jitter. Previously this was linear
+    // (`min * attempts`) and capped at `reconnectMaxDelayMs` after
+    // ~5 attempts, so a downed daemon got hammered at the cap every
+    // 5s forever. Exponential gives the server room to recover and
+    // jitter avoids a thundering herd when many watch clients
+    // reconnect simultaneously.
+    const attempt = Math.max(1, transportState.reconnectAttempts);
+    const exponential = Math.min(
       reconnectMaxDelayMs,
-      reconnectMinDelayMs * Math.max(1, transportState.reconnectAttempts),
+      reconnectMinDelayMs * Math.pow(2, Math.min(6, attempt - 1)),
     );
+    const jitter = Math.floor(Math.random() * Math.max(100, exponential * 0.3));
+    const delayMs = Math.min(reconnectMaxDelayMs, exponential + jitter);
     transportState.reconnectTimer = setTimeoutFn(() => {
       transportState.reconnectTimer = null;
       connect();
@@ -275,9 +284,18 @@ export function createWatchTransportController(dependencies = {}) {
     } else {
       setTransientStatus("websocket reconnecting");
     }
-    if (!transportState.isOpen) {
-      scheduleReconnect();
+    // Mark the socket as closed and schedule a reconnect. Some WS
+    // implementations skip `close` on hard errors, so relying on
+    // `!isOpen` alone (which stayed `true` until the close fired)
+    // meant reconnect was never scheduled after certain transport
+    // errors. Force the state transition here so the reconnect
+    // timer always kicks.
+    if (transportState.isOpen) {
+      transportState.isOpen = false;
+      transportState.ws = null;
+      transportState.connectionState = "reconnecting";
     }
+    scheduleReconnect();
   }
 
   function attachSocket(socket) {

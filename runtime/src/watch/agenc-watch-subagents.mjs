@@ -519,6 +519,13 @@ export function createWatchSubagentController(dependencies = {}) {
           "green",
           baseMetadata,
         );
+        // Retire any still-open planner DAG nodes for this subagent.
+        // Previously only `subagents.synthesized` retired nodes, so a
+        // completion event that arrived without a matching synth
+        // left the plan step stuck in a running state forever — the
+        // plan DAG UI kept a spinner for a child that had actually
+        // finished.
+        retirePlannerDagOpenNodes("completed", outputLine || `tool calls ${toolCallCount}`);
         return;
       }
       case "subagents.acceptance_probe.started": {
