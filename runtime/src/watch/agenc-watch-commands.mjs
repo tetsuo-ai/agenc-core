@@ -1803,10 +1803,22 @@ export function createWatchCommandController(dependencies = {}) {
             body: "Entering plan mode before submitting prompt.",
             allowBootstrapQueue: false,
           });
-          return sendPreparedChatMessage(freeText, {
-            title: "Prompt (plan mode)",
-            body: freeText,
-          });
+          // The daemon's `session.command.execute` and `chat.message`
+          // handlers run on separate async paths, so Node's event loop
+          // can (and does) interleave the chat handler in the middle
+          // of the /plan handler's awaits. In a live trace the chat
+          // message reached the daemon 60ms before `/plan` finished
+          // flipping the stage, so the turn's catalog was still
+          // unfiltered. A short delay here keeps /plan's synchronous
+          // and awaited work ahead of the chat in every realistic
+          // case and costs the user nothing perceptible.
+          setTimeout(() => {
+            sendPreparedChatMessage(freeText, {
+              title: "Prompt (plan mode)",
+              body: freeText,
+            });
+          }, 300);
+          return true;
         }
         return dispatchSessionCommand(parsedSlash.raw, {
           title: "Plan",
