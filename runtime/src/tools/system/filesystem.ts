@@ -154,6 +154,39 @@ const LOCAL_FILE_HISTORY_MAX_ENTRIES = 8;
 export const FILE_UNCHANGED_STUB =
   "File unchanged since previous read in this session. No need to re-read; use the prior content already in context.";
 
+/**
+ * Per-session, per-path counter of how many times we've returned the
+ * `FILE_UNCHANGED_STUB` short-circuit instead of full content. The
+ * stub assumes the model still has the prior content in its
+ * conversation context, but after compaction or aggressive history
+ * rotation that's no longer true — and the model loops, re-reading
+ * the same path forever expecting fresh bytes. After
+ * `FILE_UNCHANGED_STUB_MAX_REPEATS` consecutive stubs for the same
+ * (session, path), we abandon the optimization for this path and
+ * return the full content again, breaking the loop.
+ */
+const sessionPathStubCounts: Map<string, Map<string, number>> = new Map();
+const FILE_UNCHANGED_STUB_MAX_REPEATS = 2;
+
+function bumpStubCount(sessionId: string, path: string): number {
+  let inner = sessionPathStubCounts.get(sessionId);
+  if (!inner) {
+    inner = new Map();
+    sessionPathStubCounts.set(sessionId, inner);
+  }
+  const next = (inner.get(path) ?? 0) + 1;
+  inner.set(path, next);
+  return next;
+}
+
+function clearStubCount(sessionId: string, path: string): void {
+  sessionPathStubCounts.get(sessionId)?.delete(path);
+}
+
+export function clearSessionStubCounts(sessionId: string): void {
+  sessionPathStubCounts.delete(sessionId);
+}
+
 function resolveLocalFileHistoryRoot(): string {
   const configuredRoot = process.env.AGENC_FILESYSTEM_HISTORY_ROOT?.trim();
   return configuredRoot && configuredRoot.length > 0
@@ -1219,7 +1252,22 @@ function createReadFileTool(
             typeof currentTimestamp === "number" &&
             priorTimestamp === currentTimestamp
           ) {
-            return { content: FILE_UNCHANGED_STUB };
+            // The stub assumes the model still has the prior content in
+            // context. After compaction or aggressive history rotation
+            // that breaks; the model then loops, re-reading the same
+            // path expecting fresh bytes. Cap the optimization at
+            // `FILE_UNCHANGED_STUB_MAX_REPEATS` consecutive stubs per
+            // (session, path) and fall through to the full read on
+            // repeat misses. Observed in production: lexer.c stubbed
+            // 57 times in a single turn before this guard.
+            const stubCount = bumpStubCount(cacheHitSessionId, resolved!);
+            if (stubCount <= FILE_UNCHANGED_STUB_MAX_REPEATS) {
+              return { content: FILE_UNCHANGED_STUB };
+            }
+            // Reset the counter so we don't keep tripping the bypass
+            // forever; subsequent reads will re-stub if the model
+            // actually has the content.
+            clearStubCount(cacheHitSessionId, resolved!);
           }
         }
 
