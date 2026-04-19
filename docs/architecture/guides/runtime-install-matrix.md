@@ -36,14 +36,14 @@ Current support statement:
 
 ## Public wrapper install support
 
-The public `@tetsuo-ai/agenc` wrapper install path currently supports exactly
-one validated tuple:
+The public `@tetsuo-ai/agenc` wrapper install path currently supports these
+validated tuples:
 
-- Linux `x64`
-- Node `>=18.0.0`
+- Linux `x64`, Node `>=18.0.0`
+- macOS `arm64` (Apple Silicon), Node `>=18.0.0`
 
 That support is enforced both in the wrapper and in the runtime-artifact build
-pipeline, and the release gate now proves:
+pipeline, and the release gate now proves (for every supported tuple):
 
 - fresh install
 - wrapper-managed upgrade to a newer embedded runtime manifest
@@ -52,8 +52,8 @@ pipeline, and the release gate now proves:
 Other tuples must fail clearly as unsupported until explicit release coverage is
 added.
 
-Public first-use marketplace write rehearsal is only documented for that same
-wrapper tuple. It assumes:
+Public first-use marketplace write rehearsal is documented for the supported
+wrapper tuples. It assumes:
 
 - Solana CLI installed separately from the wrapper
 - funded devnet signer keypair(s)

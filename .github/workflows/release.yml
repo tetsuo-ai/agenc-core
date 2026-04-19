@@ -1,0 +1,277 @@
+# Release workflow for the public @tetsuo-ai/agenc wrapper.
+#
+# Builds the runtime artifacts for every supported tuple, merges them into a
+# single signed manifest, and attaches the tarballs + manifest assets to a
+# GitHub Release keyed off the wrapper version in packages/agenc/package.json.
+#
+# Supported tuples (kept in sync with scripts/build-public-runtime-artifacts.mjs
+# and packages/agenc/lib/runtime-manager.js):
+#   - linux-x64  (built on ubuntu-latest)
+#   - darwin-arm64 (built on macos-14, Apple Silicon)
+#
+# Required repo secrets:
+#   - AGENC_RELEASE_SIGNING_KEY_PEM : Ed25519 private key (PEM) used to sign
+#     the merged manifest. Only the linux-x64 job touches it.
+#   - AGENC_RELEASE_KEY_ID (optional): keyId baked into the signed manifest.
+#     Defaults to agenc-v<wrapperVersion> to match the existing release tags.
+#
+# Trigger: workflow_dispatch (manual) only. Creates a draft release by default
+# so a maintainer can review the assets before publishing. After the draft is
+# published, the maintainer runs `npm publish` from packages/agenc with its
+# generated manifest to ship @tetsuo-ai/agenc@<wrapperVersion> to npm.
+#
+# Bundled external plugins (runtime/package.json#agenc.bundledExternalPlugins)
+# live in sibling repos that are not cloned by actions/checkout. This workflow
+# passes --allow-missing-bundled-external-plugins so the release succeeds when
+# the sibling repos are absent. A maintainer who wants the plugin bundled into
+# the runtime artifact must add a checkout step for the sibling repo before
+# the "Build runtime artifact" step in the matching build job.
+
+name: Release agenc CLI
+
+on:
+  workflow_dispatch:
+    inputs:
+      draft:
+        description: "Create the GitHub release as a draft (maintainer publishes manually)."
+        type: boolean
+        default: true
+      dry_run:
+        description: "Build and sign artifacts but skip GitHub release creation."
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-agenc-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve-version:
+    runs-on: ubuntu-latest
+    outputs:
+      wrapper_version: ${{ steps.read.outputs.wrapper_version }}
+      runtime_version: ${{ steps.read.outputs.runtime_version }}
+      release_tag: ${{ steps.read.outputs.release_tag }}
+      artifact_base_url: ${{ steps.read.outputs.artifact_base_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read wrapper + runtime versions
+        id: read
+        run: |
+          set -eu
+          WRAPPER_VERSION=$(node -p "require('./packages/agenc/package.json').version")
+          RUNTIME_VERSION=$(node -p "require('./runtime/package.json').version")
+          RELEASE_TAG="agenc-v${WRAPPER_VERSION}"
+          ARTIFACT_BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+          {
+            echo "wrapper_version=${WRAPPER_VERSION}"
+            echo "runtime_version=${RUNTIME_VERSION}"
+            echo "release_tag=${RELEASE_TAG}"
+            echo "artifact_base_url=${ARTIFACT_BASE_URL}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "Resolved wrapper=${WRAPPER_VERSION} runtime=${RUNTIME_VERSION} tag=${RELEASE_TAG}"
+
+  build-darwin-arm64:
+    needs: resolve-version
+    runs-on: macos-14
+    env:
+      RELEASE_TAG: ${{ needs.resolve-version.outputs.release_tag }}
+      ARTIFACT_BASE_URL: ${{ needs.resolve-version.outputs.artifact_base_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install workspace dependencies
+        run: npm install --no-fund
+
+      - name: Build private-kernel packages
+        run: AGENC_SKIP_DASHBOARD_BUILD=1 npm run build:private-kernel
+
+      - name: Build dashboard surface
+        run: AGENC_DASHBOARD_BASE=/ui/ npm run build --workspace=@tetsuo-ai/web
+
+      - name: Sync dashboard assets
+        run: npm run sync:dashboard-assets
+
+      - name: Build darwin-arm64 runtime artifact
+        # No --private-key-file: the builder auto-generates an ephemeral key so
+        # the per-host manifest is well-formed. The linux-x64 job re-signs the
+        # merged manifest with the real release key, and only that signature
+        # ships. The URL baked in here must match the linux job so the merged
+        # manifest's per-artifact URLs stay consistent.
+        run: |
+          node scripts/build-public-runtime-artifacts.mjs \
+            --out-dir artifacts/public-runtime \
+            --artifact-base-url "${ARTIFACT_BASE_URL}" \
+            --release-repository "${GITHUB_REPOSITORY}" \
+            --release-tag "${RELEASE_TAG}" \
+            --allow-missing-bundled-external-plugins \
+            --skip-build
+
+      - name: Upload darwin-arm64 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-runtime-darwin-arm64
+          path: artifacts/public-runtime/
+          if-no-files-found: error
+          retention-days: 7
+
+  build-linux-x64:
+    needs: [resolve-version, build-darwin-arm64]
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ needs.resolve-version.outputs.release_tag }}
+      ARTIFACT_BASE_URL: ${{ needs.resolve-version.outputs.artifact_base_url }}
+      WRAPPER_VERSION: ${{ needs.resolve-version.outputs.wrapper_version }}
+      RUNTIME_VERSION: ${{ needs.resolve-version.outputs.runtime_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install workspace dependencies
+        run: npm install --no-fund
+
+      - name: Build private-kernel packages
+        run: AGENC_SKIP_DASHBOARD_BUILD=1 npm run build:private-kernel
+
+      - name: Build dashboard surface
+        run: AGENC_DASHBOARD_BASE=/ui/ npm run build --workspace=@tetsuo-ai/web
+
+      - name: Sync dashboard assets
+        run: npm run sync:dashboard-assets
+
+      - name: Download darwin-arm64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: public-runtime-darwin-arm64
+          path: artifacts/darwin-arm64
+
+      - name: Verify release signing secret is provisioned
+        env:
+          AGENC_RELEASE_SIGNING_KEY_PEM: ${{ secrets.AGENC_RELEASE_SIGNING_KEY_PEM }}
+        run: |
+          if [ -z "${AGENC_RELEASE_SIGNING_KEY_PEM}" ]; then
+            echo "::error::Repo secret AGENC_RELEASE_SIGNING_KEY_PEM is not set."
+            echo "::error::A maintainer must provision the release signing key before this workflow can sign a release."
+            exit 1
+          fi
+
+      - name: Write signing key to temp file
+        id: signing_key
+        env:
+          AGENC_RELEASE_SIGNING_KEY_PEM: ${{ secrets.AGENC_RELEASE_SIGNING_KEY_PEM }}
+        run: |
+          set -eu
+          KEY_FILE="${RUNNER_TEMP}/agenc-release-signing-key.pem"
+          umask 0077
+          printf '%s' "${AGENC_RELEASE_SIGNING_KEY_PEM}" > "${KEY_FILE}"
+          echo "path=${KEY_FILE}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build linux-x64 runtime artifact + signed merged manifest
+        env:
+          PRIVATE_KEY_FILE: ${{ steps.signing_key.outputs.path }}
+          KEY_ID: ${{ secrets.AGENC_RELEASE_KEY_ID || format('agenc-v{0}', needs.resolve-version.outputs.wrapper_version) }}
+        run: |
+          node scripts/build-public-runtime-artifacts.mjs \
+            --out-dir artifacts/public-runtime \
+            --artifact-base-url "${ARTIFACT_BASE_URL}" \
+            --release-repository "${GITHUB_REPOSITORY}" \
+            --release-tag "${RELEASE_TAG}" \
+            --private-key-file "${PRIVATE_KEY_FILE}" \
+            --key-id "${KEY_ID}" \
+            --merge-manifest artifacts/darwin-arm64/agenc-runtime-manifest.json \
+            --allow-missing-bundled-external-plugins \
+            --skip-build
+
+      - name: Redact signing key from disk
+        if: always()
+        run: rm -f "${{ steps.signing_key.outputs.path }}" || true
+
+      - name: Embed signed manifest into wrapper package
+        run: node scripts/prepare-public-agenc-package.mjs --artifact-dir artifacts/public-runtime
+
+      - name: Pack wrapper tarball
+        id: pack_wrapper
+        working-directory: packages/agenc
+        run: |
+          set -eu
+          PACKED_JSON=$(npm pack --json)
+          PACKED_FILENAME=$(node -e 'const j=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(j[0].filename)' <<<"${PACKED_JSON}")
+          echo "filename=${PACKED_FILENAME}" >> "${GITHUB_OUTPUT}"
+
+      - name: Assemble final release directory
+        env:
+          WRAPPER_TARBALL: ${{ steps.pack_wrapper.outputs.filename }}
+        run: |
+          set -eu
+          mkdir -p artifacts/release
+          cp artifacts/public-runtime/agenc-runtime-manifest.json            artifacts/release/
+          cp artifacts/public-runtime/agenc-runtime-manifest.json.sig        artifacts/release/
+          cp artifacts/public-runtime/agenc-runtime-public-key.pem           artifacts/release/
+          cp artifacts/public-runtime/agenc-runtime-trust-policy.json        artifacts/release/
+          cp "artifacts/public-runtime/agenc-runtime-${RUNTIME_VERSION}-linux-x64.tar.gz"   artifacts/release/
+          cp "artifacts/darwin-arm64/agenc-runtime-${RUNTIME_VERSION}-darwin-arm64.tar.gz"  artifacts/release/
+          cp "packages/agenc/${WRAPPER_TARBALL}"                             artifacts/release/
+          echo "--- release assets ---"
+          ls -la artifacts/release/
+
+      - name: Upload final release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: artifacts/release/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-release:
+    needs: [resolve-version, build-linux-x64]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.resolve-version.outputs.release_tag }}
+      WRAPPER_VERSION: ${{ needs.resolve-version.outputs.wrapper_version }}
+      DRAFT_FLAG: ${{ inputs.draft && '--draft' || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: release-assets
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release ${RELEASE_TAG} already exists; uploading assets with --clobber."
+            gh release upload "${RELEASE_TAG}" release-assets/* --repo "${GITHUB_REPOSITORY}" --clobber
+          else
+            gh release create "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --title "agenc v${WRAPPER_VERSION}" \
+              --notes "Public agenc CLI release ${RELEASE_TAG}. Runtime artifacts for linux-x64 and darwin-arm64 (Apple Silicon), plus the signed manifest assets." \
+              ${DRAFT_FLAG} \
+              release-assets/*
+          fi
