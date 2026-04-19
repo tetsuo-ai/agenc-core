@@ -492,6 +492,30 @@ export async function executeWebChatConversationTurn(
         expandedToolNames,
         expandOnMiss: true,
         persistDiscovery: true,
+        // Re-read the advertised catalog from live session state
+        // between provider calls. This is what makes
+        // `workflow.enterPlan`'s stage flip from `idle → plan`
+        // actually take effect on the next provider call — without
+        // this, the catalog is frozen at the top of the user turn.
+        ...(resolveAdvertisedToolNames
+          ? {
+              resolveAdvertisedToolNames: () => {
+                const latestProfile =
+                  resolveSessionShellProfile(session.metadata);
+                const latestInteractive =
+                  session.metadata["interactiveContextState"] as
+                    | InteractiveContextState
+                    | undefined;
+                return (
+                  resolveAdvertisedToolNames(
+                    msg.sessionId,
+                    latestProfile,
+                    latestInteractive?.discoveredToolNames,
+                  ) ?? []
+                );
+              },
+            }
+          : {}),
       },
       trace: {
         ...(traceConfig.enabled && traceConfig.includeProviderPayloads
