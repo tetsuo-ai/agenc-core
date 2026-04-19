@@ -1771,42 +1771,50 @@ export function createWatchCommandController(dependencies = {}) {
         return true;
       }
 
-      if (!canonicalName) {
-        // `/plan <free text>` shortcut: user types `/plan come up with a
-        // plan for M1` expecting that single input to both flip the
-        // session into plan mode AND submit the free-text portion as a
-        // chat message. Without this shortcut the daemon sees "come" as
-        // a subcommand token and replies with a usage error. When the
-        // args aren't one of the known workflow subcommands, split the
-        // input: dispatch bare `/plan` first (stage flip), then submit
-        // the free text as a chat message. WebSocket ordering
-        // guarantees the daemon processes `/plan` before the chat
-        // message, so the very next turn runs with the plan-mode
-        // catalog filter.
-        if (parsedSlash.commandToken === "/plan") {
-          const workflowSubcommands = new Set([
-            "status",
-            "enter",
-            "exit",
-            "implement",
-            "review",
-            "verify",
-            "open",
-          ]);
-          const first = parsedSlash.args[0]?.toLowerCase() ?? "";
-          if (parsedSlash.args.length > 0 && !workflowSubcommands.has(first)) {
-            const freeText = parsedSlash.args.join(" ").trim();
-            dispatchSessionCommand("/plan", {
-              title: "Plan Mode",
-              body: "Entering plan mode before submitting prompt.",
-              allowBootstrapQueue: false,
-            });
-            return sendPreparedChatMessage(freeText, {
-              title: "Prompt (plan mode)",
-              body: freeText,
-            });
-          }
+      // `/plan <free text>` shortcut: user types `/plan come up with a
+      // plan for M1` expecting that single input to both flip the
+      // session into plan mode AND submit the free-text portion as a
+      // chat message. Without this shortcut the daemon sees "come" as
+      // a subcommand token and replies with a usage error. When the
+      // args aren't one of the known workflow subcommands, split the
+      // input: dispatch bare `/plan` first (stage flip), then submit
+      // the free text as a chat message. WebSocket ordering guarantees
+      // the daemon processes `/plan` before the chat message, so the
+      // very next turn runs with the plan-mode catalog filter.
+      //
+      // Placed OUTSIDE the `if (!canonicalName)` branch because `/plan`
+      // is now present in the merged command catalog from the daemon
+      // and resolves to `canonicalName === "/plan"`.
+      if (canonicalName === "/plan") {
+        const workflowSubcommands = new Set([
+          "status",
+          "enter",
+          "exit",
+          "implement",
+          "review",
+          "verify",
+          "open",
+        ]);
+        const first = parsedSlash.args[0]?.toLowerCase() ?? "";
+        if (parsedSlash.args.length > 0 && !workflowSubcommands.has(first)) {
+          const freeText = parsedSlash.args.join(" ").trim();
+          dispatchSessionCommand("/plan", {
+            title: "Plan Mode",
+            body: "Entering plan mode before submitting prompt.",
+            allowBootstrapQueue: false,
+          });
+          return sendPreparedChatMessage(freeText, {
+            title: "Prompt (plan mode)",
+            body: freeText,
+          });
         }
+        return dispatchSessionCommand(parsedSlash.raw, {
+          title: "Plan",
+          body: `Forwarding ${parsedSlash.raw} to the daemon command bus.`,
+        });
+      }
+
+      if (!canonicalName) {
         return dispatchSessionCommand(parsedSlash.raw, {
           title: "Command",
           body: `Forwarding ${parsedSlash.commandToken} to the daemon command bus.`,
