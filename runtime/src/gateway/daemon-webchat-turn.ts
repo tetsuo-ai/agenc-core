@@ -71,6 +71,7 @@ import {
 } from "./session.js";
 import { appendShellProfilePromptSection } from "./shell-profile.js";
 import {
+  resolveSessionWorkflowState,
   updateSessionWorkflowState,
   type SessionWorkflowStage,
 } from "./workflow-state.js";
@@ -480,17 +481,26 @@ export async function executeWebChatConversationTurn(
       history: effectiveHistory,
       promptEnvelope,
       sessionId: msg.sessionId,
-      runtimeContext:
-        typeof runtimeWorkspaceRoot === "string" || sessionActiveTaskContext
-          ? {
-              ...(typeof runtimeWorkspaceRoot === "string"
-                ? { workspaceRoot: runtimeWorkspaceRoot }
-                : {}),
-              ...(sessionActiveTaskContext
-                ? { activeTaskContext: sessionActiveTaskContext }
-                : {}),
-            }
-          : undefined,
+      runtimeContext: (() => {
+        const turnWorkflowStage =
+          resolveSessionWorkflowState(session.metadata).stage;
+        if (
+          typeof runtimeWorkspaceRoot !== "string" &&
+          !sessionActiveTaskContext &&
+          turnWorkflowStage === "idle"
+        ) {
+          return undefined;
+        }
+        return {
+          ...(typeof runtimeWorkspaceRoot === "string"
+            ? { workspaceRoot: runtimeWorkspaceRoot }
+            : {}),
+          ...(sessionActiveTaskContext
+            ? { activeTaskContext: sessionActiveTaskContext }
+            : {}),
+          workflowStage: turnWorkflowStage,
+        };
+      })(),
       ...(atMentionAttachments.executionEnvelope
         ? {
             requiredToolEvidence: {

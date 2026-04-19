@@ -168,7 +168,17 @@ const SECTION_BEHAVIOR: Record<PromptBudgetSection, SectionBehavior> = {
   memory_episodic: { dropAllowed: true, newestFirst: true },
   memory_semantic: { dropAllowed: true, newestFirst: true },
   history: { dropAllowed: true, newestFirst: true },
-  tools: { dropAllowed: false, newestFirst: false },
+  // Drop older tool results entirely instead of truncating each one to a
+  // useless prefix. Per-message truncation (the previous
+  // `dropAllowed:false` behavior) divided the tools cap evenly across N
+  // tool messages, so on a turn with 16 readFile results each one was
+  // clipped to ~1.4KB. The model then saw a half-shown prefix of every
+  // prior read and could not tell whether the line it needed was in the
+  // truncated tail — so it re-read the file. Dropping older entries
+  // keeps the most recent reads intact (model has accurate context for
+  // its current reasoning) and the absence of the older entries is
+  // honest signal rather than a misleading prefix.
+  tools: { dropAllowed: true, newestFirst: true },
   user: { dropAllowed: false, newestFirst: false },
   assistant_runtime: { dropAllowed: false, newestFirst: false },
   other: { dropAllowed: true, newestFirst: true },

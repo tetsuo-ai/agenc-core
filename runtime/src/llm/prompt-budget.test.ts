@@ -113,6 +113,11 @@ describe("prompt-budget", () => {
 
     expect(result.diagnostics.constrained).toBe(true);
     expect(result.diagnostics.sections.history.droppedMessages).toBeGreaterThan(0);
-    expect(result.diagnostics.sections.tools.truncatedMessages).toBeGreaterThan(0);
+    // Tools section now drops older entries entirely instead of
+    // truncating each message to a misleading prefix. The model gets
+    // the most recent reads in full and an honest absence for the
+    // older ones rather than a useless half-shown clipboard view that
+    // induces re-reads.
+    expect(result.diagnostics.sections.tools.droppedMessages).toBeGreaterThan(0);
   });
 });

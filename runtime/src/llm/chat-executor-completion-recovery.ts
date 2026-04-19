@@ -75,6 +75,18 @@ export interface CompletionRecoveryResult {
   readonly recovered: boolean;
 }
 
+/**
+ * Default cap on stop-hook recovery retries when neither the
+ * stopHookRuntime nor requiredToolEvidence supplies an explicit value.
+ * Without this default the cap was `undefined` (= unlimited), so a
+ * single misclassified `narrated_future_tool_work` rejection could
+ * pump the model into hundreds of `tool_choice: required` rounds with
+ * no exit. Two attempts is enough for a real recovery (one nudge, one
+ * retry) without becoming an infinite retry pump on detector
+ * misfires.
+ */
+const DEFAULT_COMPLETION_RECOVERY_MAX_ATTEMPTS = 2;
+
 export async function attemptCompletionRecovery(
   params: CompletionRecoveryParams,
 ): Promise<CompletionRecoveryResult> {
@@ -82,7 +94,7 @@ export async function attemptCompletionRecovery(
   const continuationCap =
     params.maxAttempts !== undefined
       ? Math.max(0, params.maxAttempts)
-      : undefined;
+      : DEFAULT_COMPLETION_RECOVERY_MAX_ATTEMPTS;
   const shouldExhaustForDiminishingReturns = shouldStopForDiminishingReturns(
     ctx.continuationState,
   );

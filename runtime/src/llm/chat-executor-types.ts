@@ -210,6 +210,15 @@ export interface ChatExecuteParams {
     readonly workspaceRoot?: string;
     /** Typed active-task carryover used only when the current turn explicitly continues that task. */
     readonly activeTaskContext?: ActiveTaskContext;
+    /**
+     * Active session workflow stage (idle/plan/implement/review/verify).
+     * When `"plan"`, the stop-gate is suppressed because plan-mode answers
+     * are inherently text-only — the user asked for a plan, the assistant
+     * delivers one as the final reply, and the `narrated_future_tool_work`
+     * detector would otherwise misclassify the plan as a checkpoint and
+     * force endless `tool_choice: required` recovery rounds.
+     */
+    readonly workflowStage?: string;
   };
   /** Per-call tool handler — overrides the constructor handler for this call. */
   readonly toolHandler?: ToolHandler;
@@ -631,6 +640,8 @@ export interface ExecutionContext {
   readonly sessionId: string;
   readonly structuredOutput?: ChatExecuteParams["structuredOutput"];
   readonly runtimeWorkspaceRoot?: string;
+  /** Active workflow stage at turn start (e.g. "plan"); see ChatExecuteParams.runtimeContext.workflowStage. */
+  readonly runtimeWorkflowStage?: string;
   readonly turnExecutionContract: TurnExecutionContract;
   readonly signal?: AbortSignal;
   readonly activeToolHandler?: ToolHandler;
@@ -777,6 +788,7 @@ export function buildDefaultExecutionContext(
     structuredOutput: params.structuredOutput,
     runtimeWorkspaceRoot:
       params.turnExecutionContract.workspaceRoot ?? params.runtimeContext?.workspaceRoot,
+    runtimeWorkflowStage: params.runtimeContext?.workflowStage,
     turnExecutionContract: params.turnExecutionContract,
     signal: params.signal,
     activeToolHandler: params.toolHandler,

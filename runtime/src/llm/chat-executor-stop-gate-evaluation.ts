@@ -82,6 +82,19 @@ export async function evaluateTurnEndStopGate(
   ) {
     return { shouldContinueLoop: false };
   }
+  // Plan-mode is read-only and the user explicitly asked for a plan as
+  // text (e.g. `/plan come up with a plan for M1`). The
+  // `narrated_future_tool_work` and `truncated_success_claim` detectors
+  // that the stop-gate fires are designed for execution flows where the
+  // assistant should be calling mutation tools instead of describing
+  // them. Forcing plan-mode answers through that gate causes the
+  // detector to reject the plan as a "checkpoint" and pump the model
+  // into endless `tool_choice: required` recovery rounds reading the
+  // same files over and over. Skip the gate entirely when the active
+  // workflow stage is `plan`.
+  if (ctx.runtimeWorkflowStage === "plan") {
+    return { shouldContinueLoop: false };
+  }
 
   const continuationSummary = ctx.continuationState.active
     ? emitContinuationEvaluation()
