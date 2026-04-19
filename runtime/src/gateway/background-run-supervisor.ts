@@ -23,6 +23,11 @@ import type { LLMMessage, LLMProvider, ToolHandler } from "../llm/types.js";
 import { partitionByAnchorPreserve } from "../llm/types.js";
 import { collectAttachments } from "../llm/attachment-injection.js";
 import {
+  clearSessionReadCache,
+  snapshotTopRecentReads,
+  type SessionReadSnapshotExport,
+} from "../tools/system/filesystem.js";
+import {
   containsVerdictMarkerInToolResult,
   isMutatingTool,
   isVerifierSpawnFromRecord,
@@ -250,6 +255,35 @@ import {
   type RuntimeFaultInjector,
 } from "../eval/fault-injection.js";
 import { hasStopHookHandlers, runStopHookPhase } from "../llm/hooks/stop-hooks.js";
+
+// ---------------------------------------------------------------------------
+// Post-compaction file re-attachment budget
+// ---------------------------------------------------------------------------
+//
+// Mirrors the reference runtime's POST_COMPACT_MAX_FILES_TO_RESTORE +
+// 50K-token / 5K-per-file envelope. Chars are a cheap proxy for tokens
+// at the grok/claude tokenizer ratio (~4 chars/token) — over-budget
+// files get truncated at read-time; the compacted prompt's total bytes
+// remain bounded.
+//
+const POST_COMPACT_MAX_FILES_TO_REATTACH = 5;
+const POST_COMPACT_PER_FILE_BUDGET_CHARS = 20_000;
+const POST_COMPACT_TOTAL_BUDGET_CHARS = 200_000;
+
+function buildAnchorFileMessage(
+  snapshot: SessionReadSnapshotExport,
+): LLMMessage {
+  const header =
+    `<anchor-file path="${snapshot.path}" viewKind="${snapshot.viewKind ?? "full"}">`;
+  const footer = "</anchor-file>";
+  return {
+    role: "system",
+    content:
+      `${header}\n${snapshot.content}\n${footer}\n` +
+      `[reattached from pre-compaction read cache; refer to the anchor-file ` +
+      `block above instead of re-calling system.readFile for this path]`,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Domain-dependent free functions (kept here to avoid circular deps)
@@ -4614,6 +4648,37 @@ export class BackgroundRunSupervisor {
     return Math.ceil(totalChars / this.compactionCharPerToken);
   }
 
+  /**
+   * Snapshot the top-N most-recently read files for this session, clear
+   * the in-memory read cache so the FILE_UNCHANGED_STUB short-circuit
+   * doesn't lie post-compaction, and return the snapshots as
+   * system-role anchor messages that re-embed the content verbatim in
+   * the compacted tail. Mirrors the reference runtime's
+   * compact-and-re-attach pattern — drop tool results from the summary
+   * but re-inject the actual bytes of the most relevant files so the
+   * next cycle does not have to re-read them.
+   */
+  private reattachRecentFilesOnCompaction(
+    sessionId: string,
+  ): LLMMessage[] {
+    const snapshots = snapshotTopRecentReads({
+      sessionId,
+      maxFiles: POST_COMPACT_MAX_FILES_TO_REATTACH,
+      perFileBudgetChars: POST_COMPACT_PER_FILE_BUDGET_CHARS,
+      totalBudgetChars: POST_COMPACT_TOTAL_BUDGET_CHARS,
+    });
+    // Unconditionally clear the cache: the compacted prompt no longer
+    // contains the prior raw tool_result bytes, so a later
+    // FILE_UNCHANGED_STUB reply would point at content that has been
+    // summarized away. Re-attachments below supply the bytes that
+    // matter; the cache will refill naturally on next read.
+    clearSessionReadCache(sessionId);
+    if (snapshots.length === 0) {
+      return [];
+    }
+    return snapshots.map((s) => buildAnchorFileMessage(s));
+  }
+
   private async compactInternalHistory(
     run: ActiveBackgroundRun,
     history: LLMMessage[],
@@ -4656,6 +4721,7 @@ export class BackgroundRunSupervisor {
     // normal compaction output) and skip the provider call.
     if (toActuallySummarize.length === 0) {
       breakProviderContinuation();
+      const anchorFiles = this.reattachRecentFilesOnCompaction(run.sessionId);
       return [
         {
           role: "system",
@@ -4663,6 +4729,7 @@ export class BackgroundRunSupervisor {
             "[previous messages compacted; anchor-preserved reminders retained]",
         } as LLMMessage,
         ...anchorPreserved,
+        ...anchorFiles,
         ...kept,
       ];
     }
@@ -4712,9 +4779,11 @@ export class BackgroundRunSupervisor {
         return history;
       }
       breakProviderContinuation();
+      const anchorFiles = this.reattachRecentFilesOnCompaction(run.sessionId);
       return [
         { role: "system", content: summary } as LLMMessage,
         ...anchorPreserved,
+        ...anchorFiles,
         ...kept,
       ];
     } catch {

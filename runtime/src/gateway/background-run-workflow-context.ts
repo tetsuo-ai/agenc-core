@@ -13,10 +13,6 @@ import {
   type AnchorFileRegistration,
 } from "./at-mention-attachments.js";
 
-const FULL_IMPLEMENTATION_RE =
-  /\b(?:implement|complete|finish|build)\b[\s\S]{0,160}\b(?:in full|fully|entirely|the full plan|all phases|every phase)\b/i;
-const DO_NOT_STOP_RE =
-  /\b(?:do not stop|don't stop|without stopping|until complete|until it's complete|until it is complete|keep going until)\b/i;
 const PLAN_REFERENCE_RE = /(?:^|\s)@?PLAN\.md\b/i;
 const PHASED_REQUEST_RE =
   /\b(?:all phases|every phase|phase-by-phase|milestones?|m\d+\b)\b/i;
@@ -40,23 +36,6 @@ export interface BackgroundRunWorkflowContext {
   readonly anchorRegistrations: readonly AnchorFileRegistration[];
 }
 
-export function shouldPromoteImplementationBackgroundRun(
-  content: string,
-): boolean {
-  const trimmed = content.trim();
-  if (trimmed.length === 0) {
-    return false;
-  }
-  return (
-    FULL_IMPLEMENTATION_RE.test(trimmed) ||
-    (PLAN_REFERENCE_RE.test(trimmed) &&
-      (DO_NOT_STOP_RE.test(trimmed) || PHASED_REQUEST_RE.test(trimmed))) ||
-    (DO_NOT_STOP_RE.test(trimmed) &&
-      /\b(?:implement|build|complete|finish)\b/i.test(trimmed) &&
-      PHASED_REQUEST_RE.test(trimmed))
-  );
-}
-
 export async function buildBackgroundRunWorkflowContext(params: {
   readonly objective: string;
   readonly workspaceRoot?: string;
@@ -78,12 +57,15 @@ export async function buildBackgroundRunWorkflowContext(params: {
         workspaceRoot,
       })
     : [];
-  const strictWorkflowRequest =
-    shouldPromoteImplementationBackgroundRun(params.objective) ||
-    requestMilestones.length > 0;
-  const completionContract = strictWorkflowRequest
-    ? STRICT_IMPLEMENTATION_COMPLETION_CONTRACT
-    : undefined;
+  // Strict implementation contract only applies when the objective
+  // actually references milestones parsed out of PLAN.md. Earlier logic
+  // also promoted on regex hits against the raw objective text, but that
+  // classifier was too aggressive and is gone — explicit bg-run entry
+  // with a milestone-bearing PLAN is the only trigger.
+  const completionContract =
+    requestMilestones.length > 0
+      ? STRICT_IMPLEMENTATION_COMPLETION_CONTRACT
+      : undefined;
   const verificationContract = buildVerificationContract({
     workspaceRoot,
     requestMilestones,

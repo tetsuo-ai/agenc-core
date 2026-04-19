@@ -397,6 +397,70 @@ export function clearSessionReadCache(sessionId: string): void {
   sessionReadState.delete(sessionId);
 }
 
+export interface SessionReadSnapshotExport {
+  readonly path: string;
+  readonly content: string;
+  readonly timestamp: number;
+  readonly viewKind?: SessionReadViewKind;
+}
+
+/**
+ * Return the top-N most-recently-read file snapshots for a session,
+ * truncated to fit a total character budget with a per-file cap.
+ * Entries without content (unknown timestamp or null content) are
+ * skipped. The caller typically uses this right before
+ * `clearSessionReadCache` during compaction, then re-injects the
+ * returned content back into the prompt as anchor messages — matching
+ * the reference runtime's compact-and-re-attach pattern.
+ */
+export function snapshotTopRecentReads(params: {
+  readonly sessionId: string;
+  readonly maxFiles: number;
+  readonly perFileBudgetChars: number;
+  readonly totalBudgetChars: number;
+}): readonly SessionReadSnapshotExport[] {
+  const { sessionId, maxFiles, perFileBudgetChars, totalBudgetChars } = params;
+  if (maxFiles <= 0 || perFileBudgetChars <= 0 || totalBudgetChars <= 0) {
+    return [];
+  }
+  const fileMap = sessionReadState.get(sessionId);
+  if (!fileMap || fileMap.size === 0) {
+    return [];
+  }
+  const entries: SessionReadSnapshotExport[] = [];
+  for (const [path, snapshot] of fileMap) {
+    if (
+      typeof snapshot.content !== "string" ||
+      snapshot.content.length === 0 ||
+      typeof snapshot.timestamp !== "number" ||
+      !Number.isFinite(snapshot.timestamp)
+    ) {
+      continue;
+    }
+    entries.push({
+      path,
+      content: snapshot.content,
+      timestamp: snapshot.timestamp,
+      ...(snapshot.viewKind ? { viewKind: snapshot.viewKind } : {}),
+    });
+  }
+  entries.sort((a, b) => b.timestamp - a.timestamp);
+  const kept: SessionReadSnapshotExport[] = [];
+  let usedChars = 0;
+  for (const entry of entries) {
+    if (kept.length >= maxFiles) break;
+    const slice = entry.content.length > perFileBudgetChars
+      ? entry.content.slice(0, perFileBudgetChars)
+      : entry.content;
+    if (usedChars + slice.length > totalBudgetChars) {
+      continue;
+    }
+    kept.push({ ...entry, content: slice });
+    usedChars += slice.length;
+  }
+  return kept;
+}
+
 /**
  * Resolve the session ID from tool args (injected by the gateway via
  * `applySessionId`). Returns `undefined` when no session ID is present
