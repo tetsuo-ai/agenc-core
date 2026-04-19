@@ -492,15 +492,12 @@ describe("task-tracker", () => {
       expect(result.raw.isError).toBe(true);
     });
 
-    it("allows ordinary task completion even when a completion guard is configured", async () => {
-      let guardCalled = false;
+    it("invokes the completion guard on every completion transition", async () => {
+      let guardCalled = 0;
       tools = createTaskTrackerTools(store, {
         onBeforeTaskComplete: async () => {
-          guardCalled = true;
-          return {
-            outcome: "block",
-            message: "completion blocked",
-          };
+          guardCalled += 1;
+          return { outcome: "allow" };
         },
       });
       update = findTool(tools, "task.update");
@@ -517,7 +514,51 @@ describe("task-tracker", () => {
         },
       });
       expect(store.get(DEFAULT_TASK_LIST_ID, "1")?.status).toBe("completed");
-      expect(guardCalled).toBe(false);
+      expect(guardCalled).toBe(1);
+    });
+
+    it("invokes the completion guard for tasks with unresolved blockedBy entries", async () => {
+      await callTool(create, { subject: "Blocker", description: "blocker" });
+      await callTool(update, { taskId: "1", addBlockedBy: ["2"] });
+
+      let guardCalled = 0;
+      tools = createTaskTrackerTools(store, {
+        onBeforeTaskComplete: async () => {
+          guardCalled += 1;
+          return { outcome: "allow" };
+        },
+      });
+      update = findTool(tools, "task.update");
+
+      const result = await callTool(update, { taskId: "1", status: "completed" });
+
+      expect(result.raw.isError).toBeUndefined();
+      expect(result.body).toMatchObject({
+        success: true,
+        statusChange: { from: "pending", to: "completed" },
+      });
+      expect(guardCalled).toBe(1);
+    });
+
+    it("lets the completion guard block ordinary (non-verification) completions", async () => {
+      let guardCalled = false;
+      tools = createTaskTrackerTools(store, {
+        onBeforeTaskComplete: async () => {
+          guardCalled = true;
+          return {
+            outcome: "block",
+            message: "completion blocked",
+          };
+        },
+      });
+      update = findTool(tools, "task.update");
+
+      const result = await callTool(update, { taskId: "1", status: "completed" });
+
+      expect(result.raw.isError).toBe(true);
+      expect(result.body.error).toContain("completion blocked");
+      expect(store.get(DEFAULT_TASK_LIST_ID, "1")?.status).toBe("pending");
+      expect(guardCalled).toBe(true);
     });
 
     it("still blocks explicit verification tasks when the completion guard rejects them", async () => {

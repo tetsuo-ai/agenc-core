@@ -477,20 +477,6 @@ function cloneStoredTask(task: StoredTask): StoredTask {
   };
 }
 
-function isExplicitCompletionFlow(params: {
-  readonly task: SessionTask;
-  readonly patch: TaskUpdatePatch;
-}): boolean {
-  const mergedMetadata =
-    params.patch.metadata !== undefined
-      ? {
-          ...(params.task.metadata ?? {}),
-          ...params.patch.metadata,
-        }
-      : params.task.metadata;
-  return normalizeRequestTaskRuntimeMetadata(mergedMetadata).verification;
-}
-
 function cloneTaskList(list: TaskListEntry): TaskListEntry {
   return {
     version: list.version,
@@ -2657,13 +2643,7 @@ export function createTaskTrackerTools(
 
       const isTransitioningToCompleted =
         patch.status === "completed" && current.task.status !== "completed";
-      const shouldGuardCompletion =
-        isTransitioningToCompleted &&
-        isExplicitCompletionFlow({
-          task: current.task,
-          patch,
-        });
-      if (shouldGuardCompletion && options.onBeforeTaskComplete) {
+      if (isTransitioningToCompleted && options.onBeforeTaskComplete) {
         const guardResult = await options.onBeforeTaskComplete({
           listId,
           taskId,
