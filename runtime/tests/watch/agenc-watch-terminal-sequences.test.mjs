@@ -22,10 +22,22 @@ test("terminal sequences leave mouse tracking disabled by default", () => {
   assert.match(buildAltScreenLeaveSequence(), /\?2004l/);
 });
 
-test("terminal sequences opt into alternate scroll and mouse tracking explicitly", () => {
-  assert.match(buildAltScreenEnterSequence({ enableMouseTracking: true }), /\?1007h/);
+test("terminal sequences enable SGR mouse reporting without alternate scroll mode (1007)", () => {
+  // 1007 (DECSET alternate scroll mode) translates wheel events into
+  // arrow-key escapes, which suppresses SGR 1006 mouse reports and
+  // misroutes wheel scroll to composer history. We deliberately opt
+  // INTO 1000/1002/1006 for mouse tracking but skip 1007.
+  const enter = buildAltScreenEnterSequence({ enableMouseTracking: true });
+  assert.match(enter, /\?1000h/);
+  assert.match(enter, /\?1002h/);
+  assert.match(enter, /\?1006h/);
+  assert.doesNotMatch(enter, /\?1007h/);
   assert.match(buildAltScreenEnterSequence(), /\?2004h/);
-  assert.match(buildAltScreenLeaveSequence({ enableMouseTracking: true }), /\?1007l/);
+  const leave = buildAltScreenLeaveSequence({ enableMouseTracking: true });
+  assert.match(leave, /\?1000l/);
+  assert.match(leave, /\?1002l/);
+  assert.match(leave, /\?1006l/);
+  assert.doesNotMatch(leave, /\?1007l/);
   assert.match(buildAltScreenLeaveSequence(), /\?2004l/);
 });
 

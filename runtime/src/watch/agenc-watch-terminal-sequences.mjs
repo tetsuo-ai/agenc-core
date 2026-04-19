@@ -2,14 +2,22 @@ export function buildAltScreenEnterSequence({ enableMouseTracking = false } = {}
   if (!enableMouseTracking) {
     return "\x1b[?1049h\x1b[?2004h\x1b[?25h";
   }
-  return "\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1007h\x1b[?2004h\x1b[?25h";
+  // DECSET 1007 ("alternate scroll mode") translates wheel events into
+  // arrow-key escapes while the alt screen is active, which suppresses
+  // the SGR 1006 mouse reports that `parseMouseWheelSequence` expects
+  // and misroutes wheel scroll to composer history navigation. Drop it
+  // so the wheel actually emits as `\x1b[<N;x;yM|m` and the input
+  // handler can dispatch to `scrollCurrentViewBy`.
+  return "\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?2004h\x1b[?25h";
 }
 
 export function buildAltScreenLeaveSequence({ enableMouseTracking = false } = {}) {
   if (!enableMouseTracking) {
     return "\x1b[?25h\x1b[?2004l\x1b[?1049l";
   }
-  return "\x1b[?25h\x1b[?2004l\x1b[?1007l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1049l";
+  // DECRST 1007 omitted deliberately — we never enabled it. See
+  // buildAltScreenEnterSequence for the rationale.
+  return "\x1b[?25h\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1049l";
 }
 
 export function supportsTerminalHyperlinks({

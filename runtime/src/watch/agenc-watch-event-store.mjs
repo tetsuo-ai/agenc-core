@@ -381,12 +381,24 @@ export function createWatchEventStore(dependencies = {}) {
       result = target;
     }
     clearAgentStreamingPreview();
-    // Force-snap to the new reply AFTER any nested wrapper has run. This
-    // line MUST be outside withPreservedManualTranscriptViewport — the
-    // wrapper's cleanup overwrote it in PR #310, which is exactly why
-    // agent replies were still invisible despite landing in events[].
-    watchState.transcriptFollowMode = true;
-    watchState.transcriptScrollOffset = 0;
+    // Respect the user's scroll position. Previously this path force-
+    // snapped transcriptFollowMode=true / transcriptScrollOffset=0 on
+    // every agent reply to guarantee visibility (PR #310 regression
+    // fix). That fix cured invisible-message at the cost of making
+    // manual scroll impossible — any time the user scrolled up to
+    // read earlier context, the next reply yanked them back to
+    // bottom. Only snap when the user is ALREADY following at
+    // bottom; otherwise leave their manual viewport alone and trust
+    // the scrollback + the reply appearing at the bottom of the
+    // committed events list. The reply still lands visibly in events[]
+    // so the invisible-message regression cannot recur.
+    const wasFollowingAtCommit =
+      watchState.transcriptFollowMode === true &&
+      (watchState.transcriptScrollOffset ?? 0) === 0;
+    if (wasFollowingAtCommit) {
+      watchState.transcriptFollowMode = true;
+      watchState.transcriptScrollOffset = 0;
+    }
     scheduleRender();
     return result;
   }

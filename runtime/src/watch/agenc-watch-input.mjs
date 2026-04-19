@@ -316,6 +316,16 @@ export function createWatchInputController(dependencies = {}) {
       { seq: "\x1bf", run: () => moveComposerCursorByWord(1) },
       { seq: "\x1b[5~", run: () => scrollCurrentViewBy(12) },
       { seq: "\x1b[6~", run: () => scrollCurrentViewBy(-12) },
+      // Modifier forms emitted by modern terminals for Shift/Ctrl/Alt+
+      // PageUp/PageDown (`\x1b[5;2~` etc). Without these the modifier
+      // combinations fall into consumeUnknownEscapeSequence and scroll
+      // silently fails for those keystrokes.
+      { seq: "\x1b[5;2~", run: () => scrollCurrentViewBy(24) },
+      { seq: "\x1b[5;3~", run: () => scrollCurrentViewBy(24) },
+      { seq: "\x1b[5;5~", run: () => scrollCurrentViewBy(24) },
+      { seq: "\x1b[6;2~", run: () => scrollCurrentViewBy(-24) },
+      { seq: "\x1b[6;3~", run: () => scrollCurrentViewBy(-24) },
+      { seq: "\x1b[6;5~", run: () => scrollCurrentViewBy(-24) },
       { seq: "\x1b[3~", run: () => {
         deleteComposerForward();
       } },
@@ -328,6 +338,19 @@ export function createWatchInputController(dependencies = {}) {
           navigateComposerPalette(-1);
           return;
         }
+        // When the composer is empty and no palette is active, the
+        // user's intent on arrow-up is to scroll the transcript, not
+        // to navigate composer history (which only has meaning when
+        // there IS composer text to replace). Previously every plain
+        // Up arrow went straight to navigateComposer and the user
+        // had no keyboard-scroll path short of PageUp.
+        if (
+          typeof watchState.composerInput === "string" &&
+          watchState.composerInput.length === 0
+        ) {
+          scrollCurrentViewBy(3);
+          return;
+        }
         navigateComposer(-1);
       } },
       { seq: "\x1b[B", run: () => {
@@ -337,6 +360,13 @@ export function createWatchInputController(dependencies = {}) {
         }
         if (hasActiveComposerPalette()) {
           navigateComposerPalette(1);
+          return;
+        }
+        if (
+          typeof watchState.composerInput === "string" &&
+          watchState.composerInput.length === 0
+        ) {
+          scrollCurrentViewBy(-3);
           return;
         }
         navigateComposer(1);
