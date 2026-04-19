@@ -98,11 +98,29 @@ export async function maybeCompactInFlightCallInput(
     contextWindowTokens: deps.promptBudget.contextWindowTokens,
     maxOutputTokens: deps.promptBudget.maxOutputTokens,
     lastResponseUsage: ctx.response?.usage,
+    ...(deps.promptBudget.cachePreservationThresholdTokens !== undefined
+      ? {
+          cachePreservationThresholdTokens:
+            deps.promptBudget.cachePreservationThresholdTokens,
+        }
+      : {}),
   });
   const statefulHistoryCompacted =
     input.statefulHistoryCompacted === true || ctx.compacted;
+  // Two independent triggers both route into the same compaction
+  // path: autocompact protects against hitting the model's context
+  // window, cache-preservation protects against the xAI prompt-cache
+  // cliff at ~20K input tokens per call. Either one firing is enough
+  // to compact. See DEFAULT_CACHE_PRESERVATION_THRESHOLD_TOKENS for
+  // the cache cliff evidence.
+  const shouldCompactForContextWindow =
+    compactionState.isAboveAutocompactThreshold;
+  const shouldCompactForCachePreservation =
+    compactionState.isAboveCachePreservationThreshold;
+  const shouldCompact =
+    shouldCompactForContextWindow || shouldCompactForCachePreservation;
   if (
-    compactionState.isAboveAutocompactThreshold &&
+    shouldCompact &&
     shouldSkipHistoryCompactionForCircuitBreaker(
       ctx.perIterationCompaction.autocompact.consecutiveFailures,
     )
@@ -114,9 +132,7 @@ export async function maybeCompactInFlightCallInput(
       statefulHistoryCompacted,
     };
   }
-  if (
-    !compactionState.isAboveAutocompactThreshold
-  ) {
+  if (!shouldCompact) {
     return {
       callMessages: input.callMessages,
       callReconciliationMessages: input.callReconciliationMessages,

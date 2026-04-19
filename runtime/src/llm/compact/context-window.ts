@@ -12,6 +12,39 @@ export const ERROR_THRESHOLD_BUFFER_TOKENS = 20_000;
 export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000;
 export const DEFAULT_AUTOCOMPACT_THRESHOLD_TOKENS = 120_000;
 
+/**
+ * Cache-preservation compaction threshold. The xAI server-side prompt
+ * cache reliably retains the full conversation prefix only when the
+ * per-call input stays under roughly 20K tokens for the grok-4.x
+ * family. Empirically (trace session_2ea674f...18bac08d, 2026-04-19):
+ *
+ *   ci=4 (11.5K in) → cached 11.2K tokens (97% hit)
+ *   ci=8 (14.8K in) → cached 14.8K tokens (99% hit)
+ *   ci=10 (15.2K in) → cached 15.2K tokens (99% hit)
+ *   ci=37 (28.7K in) → cached 9.0K tokens (31% — stuck at system+tools)
+ *   ci=41 (29.1K in) → cached 9.0K tokens (31% — permanent ceiling)
+ *
+ * Once the conversation prefix is evicted past ~20K input tokens, the
+ * xAI cache never repopulates beyond the system+tools baseline — the
+ * rest of the turn pays full input token cost forever. Triggering
+ * history compaction at a much lower threshold than
+ * `DEFAULT_AUTOCOMPACT_THRESHOLD_TOKENS` (which guards only against
+ * hitting the model's context window) keeps the working set in the
+ * cache-eligible zone.
+ *
+ * Set conservatively to 18K tokens: below the observed cliff at 20K,
+ * above the typical system+tools baseline of ~9K so a fresh session
+ * doesn't immediately trigger compaction on its first tool call.
+ *
+ * This is a floor, not a cap — if a provider has a higher autocompact
+ * threshold from its own config, the floor still fires first because
+ * the runtime takes the MIN of both thresholds when deciding whether
+ * a compact is due. Callers can override via
+ * `PromptBudgetConfig.cachePreservationThresholdTokens` (set to 0 to
+ * disable).
+ */
+export const DEFAULT_CACHE_PRESERVATION_THRESHOLD_TOKENS = 18_000;
+
 const BOUNDARY_PREFIXES = [
   "[snip]",
   "[microcompact]",
@@ -32,12 +65,25 @@ export interface CurrentContextUsageSnapshot {
   readonly currentTokens: number;
   readonly effectiveContextWindowTokens?: number;
   readonly autocompactThresholdTokens: number;
+  /**
+   * Lower threshold that fires to keep the per-call input inside the
+   * xAI prompt-cache sweet spot. See
+   * `DEFAULT_CACHE_PRESERVATION_THRESHOLD_TOKENS` for the rationale.
+   */
+  readonly cachePreservationThresholdTokens: number;
   readonly warningThresholdTokens?: number;
   readonly errorThresholdTokens?: number;
   readonly blockingThresholdTokens?: number;
   readonly percentUsed?: number;
   readonly freeTokens?: number;
   readonly isAboveAutocompactThreshold: boolean;
+  /**
+   * True when `currentTokens >= cachePreservationThresholdTokens`.
+   * Gates the cache-preservation compaction layer so older tool
+   * results fold into a summary before the request crosses the xAI
+   * cache cliff at ~20K input tokens per call.
+   */
+  readonly isAboveCachePreservationThreshold: boolean;
   readonly isAtBlockingLimit: boolean;
   readonly sections: readonly CurrentContextUsageSection[];
 }
@@ -210,6 +256,12 @@ export function buildCurrentContextUsageSnapshot(params: {
   readonly contextWindowTokens?: number;
   readonly maxOutputTokens?: number;
   readonly lastResponseUsage?: LLMUsage;
+  /**
+   * Override for the cache-preservation threshold. When `undefined`,
+   * falls back to `DEFAULT_CACHE_PRESERVATION_THRESHOLD_TOKENS`. Set
+   * to `0` to disable cache-preservation compaction entirely.
+   */
+  readonly cachePreservationThresholdTokens?: number;
 }): CurrentContextUsageSnapshot {
   const currentTokens = tokenCountWithEstimation({
     messages: params.messages,
@@ -223,6 +275,12 @@ export function buildCurrentContextUsageSnapshot(params: {
     contextWindowTokens: params.contextWindowTokens,
     maxOutputTokens: params.maxOutputTokens,
   });
+  const cachePreservationThresholdTokens =
+    typeof params.cachePreservationThresholdTokens === "number" &&
+    Number.isFinite(params.cachePreservationThresholdTokens) &&
+    params.cachePreservationThresholdTokens >= 0
+      ? Math.floor(params.cachePreservationThresholdTokens)
+      : DEFAULT_CACHE_PRESERVATION_THRESHOLD_TOKENS;
   const warningThresholdTokens =
     effectiveContextWindowTokens !== undefined
       ? Math.max(0, autocompactThresholdTokens - WARNING_THRESHOLD_BUFFER_TOKENS)
@@ -251,12 +309,16 @@ export function buildCurrentContextUsageSnapshot(params: {
     currentTokens,
     effectiveContextWindowTokens,
     autocompactThresholdTokens,
+    cachePreservationThresholdTokens,
     warningThresholdTokens,
     errorThresholdTokens,
     blockingThresholdTokens,
     freeTokens,
     percentUsed,
     isAboveAutocompactThreshold: currentTokens >= autocompactThresholdTokens,
+    isAboveCachePreservationThreshold:
+      cachePreservationThresholdTokens > 0 &&
+      currentTokens >= cachePreservationThresholdTokens,
     isAtBlockingLimit:
       blockingThresholdTokens !== undefined &&
       currentTokens >= blockingThresholdTokens,

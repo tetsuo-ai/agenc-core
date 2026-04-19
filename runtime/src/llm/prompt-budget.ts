@@ -43,6 +43,16 @@ export interface PromptBudgetConfig {
   readonly memoryRoleContracts?: PromptBudgetMemoryRoleContracts;
   /** Upper bound for additive runtime hint system messages per execution. */
   readonly maxRuntimeHints?: number;
+  /**
+   * Override for the cache-preservation compaction threshold (tokens).
+   * When undefined, the runtime uses
+   * `DEFAULT_CACHE_PRESERVATION_THRESHOLD_TOKENS`. Set to `0` to
+   * disable cache-preservation compaction entirely and rely only on
+   * the traditional context-window autocompact threshold. See
+   * `DEFAULT_CACHE_PRESERVATION_THRESHOLD_TOKENS` in
+   * `./compact/context-window.ts` for the empirical rationale.
+   */
+  readonly cachePreservationThresholdTokens?: number;
 }
 
 interface PromptBudgetModelProfile {
