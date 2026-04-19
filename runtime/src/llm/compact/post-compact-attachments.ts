@@ -10,12 +10,12 @@
  * re-inject the file contents as `<anchor-file>` system messages that
  * sit just after the compaction boundary in the new prompt.
  *
- * The chars-per-file and total-chars budgets are conservative. Over the
- * grok/claude ~4-chars-per-token ratio these roughly match upstream's
- * 5K/file + 50K envelope. The helpers are shared between the chat
- * executor's in-flight compaction path and the background-run
- * supervisor's internal compaction path so both exits produce
- * byte-identical anchor messages for the same snapshot input.
+ * The chars-per-file and total-chars budgets are conservative, sized
+ * for a ~4-chars-per-token ratio and a 5K/file + 50K envelope. The
+ * helpers are shared between the chat executor's in-flight compaction
+ * path and the background-run supervisor's internal compaction path so
+ * both exits produce byte-identical anchor messages for the same
+ * snapshot input.
  *
  * @module
  */

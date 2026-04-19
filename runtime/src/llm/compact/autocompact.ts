@@ -1,6 +1,6 @@
 /**
  * Autocompact layer — proactive history summarization above a token
- * threshold. Mirrors `claude_code/services/compact/autoCompact.ts`.
+ * threshold.
  *
  * The actual summarization step is intentionally pluggable: this
  * module exposes the threshold + tracking state, and a small

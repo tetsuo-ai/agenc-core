@@ -1,10 +1,8 @@
 /**
  * Per-tool result budget + disk persistence (Cut 5.3).
  *
- * Mirrors `claude_code/utils/toolResultStorage.ts`.
- *
  * Today the runtime truncates large tool results in-memory via
- * `prepareToolResultForPrompt` (~12 KB cap). Claude Code persists
+ * `prepareToolResultForPrompt` (~12 KB cap). This module persists
  * oversized results to disk and replaces the wire payload with a
  * 2 KB preview + file path. The model can then use the file path to
  * read the full content if it needs to.

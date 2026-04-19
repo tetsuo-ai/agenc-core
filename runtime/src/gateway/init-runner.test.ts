@@ -129,9 +129,9 @@ describe("init-runner", () => {
     // Previously this asserted the output contained the word "future", which
     // came from the hard-coded string "PLAN.md references a future CMake-based
     // build, but no CMakeLists.txt exists in the repository yet." That string
-    // was removed on 2026-04-06 along with the C-shell-specific PLAN.md
-    // hard-coding in init-runner.ts that violated the global CLAUDE.md learned
-    // rule "Never make runtime behavior depend on a filename like PLAN.md".
+    // was removed on 2026-04-06 along with the PLAN.md filename special-casing
+    // in init-runner.ts — runtime behavior must not depend on any particular
+    // filename.
   });
 
   it("renders planned structure from tree-style PLAN.md without double bullets or repo-root noise", async () => {

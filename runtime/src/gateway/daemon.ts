@@ -7533,11 +7533,10 @@ export class DaemonManager {
       // promoted any prompt containing `@PLAN.md` + a milestone token
       // (e.g. `M0`) into a persistent bg-run, which then looped forever
       // because the completion gate requires tool-based artifact
-      // evidence that a conversational prompt can never produce. Claude
-      // Code's reference design has no such promotion path: every user
-      // turn stays foreground and ends when the model stops emitting
-      // tool calls. Explicit bg-run entry points (slash command, etc.)
-      // remain available through other code paths.
+      // evidence that a conversational prompt can never produce. Every
+      // user turn stays foreground and ends when the model stops
+      // emitting tool calls. Explicit bg-run entry points (slash
+      // command, etc.) remain available through other code paths.
       maybeStartBackgroundRun: async () => false,
     });
   }

@@ -1,14 +1,12 @@
 /**
- * Per-sub-agent progress tracker that mirrors Claude Code's
- * `ProgressTracker` (see
- * `../claude_code/tasks/LocalAgentTask/LocalAgentTask.tsx`).
+ * Per-sub-agent progress tracker.
  *
  * For every live sub-agent session the tracker maintains:
  *   - `toolUseCount` — number of tool rounds dispatched by the child.
- *   - `latestInputTokens` / `cumulativeOutputTokens` — matches Claude's
- *     token accounting: Claude's API reports `input_tokens` as the
- *     cumulative-per-turn number and `output_tokens` as per-turn, so we
- *     keep the latest input and sum outputs.
+ *   - `latestInputTokens` / `cumulativeOutputTokens` — provider APIs
+ *     typically report `input_tokens` as cumulative-per-turn and
+ *     `output_tokens` as per-turn, so we keep the latest input and sum
+ *     outputs.
  *   - `recentActivities` — ring buffer (cap 5) of the most recent tool
  *     activities for the "last: <tool>" line.
  *

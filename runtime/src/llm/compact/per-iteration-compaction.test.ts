@@ -229,8 +229,7 @@ describe("applyPerIterationCompaction", () => {
     );
     expect(microBoundary).toBeDefined();
     // Cold tool result bodies should be replaced with the
-    // TIME_BASED_MC_CLEARED_MESSAGE placeholder (byte-identical to
-    // Claude Code's placeholder string).
+    // TIME_BASED_MC_CLEARED_MESSAGE placeholder.
     const placeholderHits = result.messages.filter(
       (m) =>
         m.role === "tool" &&
@@ -409,7 +408,7 @@ describe("applyPerIterationCompaction", () => {
 });
 
 // ============================================================================
-// applyMicrocompact — Claude Code time-based MC parity
+// applyMicrocompact — time-based microcompact
 // ============================================================================
 
 import {
@@ -419,8 +418,8 @@ import {
   COMPACTABLE_TOOL_NAMES,
 } from "./microcompact.js";
 
-describe("applyMicrocompact (time-based parity)", () => {
-  const GAP_MS = 60 * 60 * 1000; // 60 min, matching Claude Code default
+describe("applyMicrocompact (time-based)", () => {
+  const GAP_MS = 60 * 60 * 1000; // 60 min default
 
   it("noops when the gap has not elapsed", () => {
     const state = {
@@ -533,11 +532,11 @@ describe("applyMicrocompact (time-based parity)", () => {
     expect(r.action).toBe("noop");
   });
 
-  it("uses TIME_BASED_MC_CLEARED_MESSAGE placeholder verbatim (Claude parity)", () => {
+  it("uses TIME_BASED_MC_CLEARED_MESSAGE placeholder verbatim", () => {
     expect(TIME_BASED_MC_CLEARED_MESSAGE).toBe("[Old tool result content cleared]");
   });
 
-  it("COMPACTABLE_TOOL_NAMES includes Claude Code's equivalents", () => {
+  it("COMPACTABLE_TOOL_NAMES includes the expected tools", () => {
     for (const expected of [
       "system.readFile",
       "system.editFile",

@@ -6,8 +6,8 @@
  * time config fields (`economicsPolicy`, `modelRoutingPolicy`,
  * `defaultRunClass`, `promptBudget`) and turn them into
  * phase-specific decisions. They are exposed as free functions
- * that take the relevant config as explicit arguments, matching
- * the claude_code state-as-argument pattern.
+ * that take the relevant config as explicit arguments (the
+ * state-as-argument pattern).
  *
  * The class keeps 1-line delegators that thread its private
  * fields through to these helpers until PR-8 eliminates the

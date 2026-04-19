@@ -34,8 +34,8 @@ const __dirname = dirname(__filename);
 const runtimeRoot = resolve(__dirname, "..");
 const repoRoot = resolve(runtimeRoot, "..");
 
-// Floors for the claude_code-alignment refactor. Adjust ONLY when a
-// PR legitimately deletes test files for deleted dead code.
+// Floors for the executor test coverage. Adjust ONLY when a PR
+// legitimately deletes test files for deleted dead code.
 //
 // 2026-04-07 U0:   357 test files / 5976 it() blocks (initial baseline)
 // 2026-04-07 U9-L: 358 test files / 5949 it() blocks
@@ -53,20 +53,15 @@ const repoRoot = resolve(runtimeRoot, "..");
 const MIN_TEST_FILES = 372;
 const MIN_IT_BLOCKS = 5983;
 
-// Ban phrases that are *unambiguously* AI-attribution markers. We do
-// NOT ban the bare words "Claude" or "Anthropic" because the user's
-// codebase legitimately references `claude_code` as the upstream repo
-// used as a behavioral reference for this refactor — commit subjects
-// and branch names routinely include that slug.
+// Ban phrases that are *unambiguously* AI-attribution markers.
 //
 // There are two kinds of markers:
 //   - **Trailer-shaped**: only meaningful when they appear at the
 //     start of a line (e.g. `Co-Authored-By: ...`, `Generated with
-//     Claude Code`). Prose describing the policy can mention them
-//     inline without tripping the check.
-//   - **Anywhere**: the robot emoji and the `noreply@anthropic.com`
-//     email address, which never appear legitimately in any commit
-//     on this repo.
+//     <tool>`). Prose describing the policy can mention them inline
+//     without tripping the check.
+//   - **Anywhere**: the robot emoji and AI-vendor email addresses,
+//     which never appear legitimately in any commit on this repo.
 //
 // Ordering-independent; checked in a single scan.
 const BANNED_TRAILER_PATTERNS = [

@@ -27,15 +27,13 @@
  *   - The `Report outcomes faithfully` system prompt rule from PR #300
  *     bans the behavior, but Grok ignored it.
  *
- * Modeled on Claude Code's `query/stopHooks.ts` `handleStopHooks()` flow:
- * the gate runs at turn-end (after the inner tool loop has exited),
+ * The gate runs at turn-end (after the inner tool loop has exited),
  * inspects the final assistant text against the turn's tool ledger, and
  * either lets the turn end normally or pushes a `blockingMessage` into
  * the model's context as a synthetic user message and grants the model
- * one recovery turn. Claude Code calls this `preventContinuation` /
- * `blockingErrors`. AgenC implements one recovery attempt; on the second
- * detection in the same turn the gate yields and lets the model's
- * response through (preventing infinite loops).
+ * one recovery turn. AgenC implements one recovery attempt; on the
+ * second detection in the same turn the gate yields and lets the
+ * model's response through (preventing infinite loops).
  *
  * @module
  */

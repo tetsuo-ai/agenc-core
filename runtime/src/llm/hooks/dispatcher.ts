@@ -1,6 +1,5 @@
 /**
- * Hook dispatcher (Cut 5.2). Mirrors the chain in
- * `claude_code/utils/hooks.ts:executeHooks`.
+ * Hook dispatcher (Cut 5.2).
  *
  * Walks every hook definition registered for the given event, runs the
  * matching ones in parallel with a per-hook timeout, and folds their

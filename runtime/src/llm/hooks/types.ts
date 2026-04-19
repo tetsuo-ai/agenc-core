@@ -1,9 +1,8 @@
 /**
  * Hook system types — Phase H narrowed vocabulary.
  *
- * Mirrors a subset of `/home/tetsuo/git/claude_code/utils/hooks.ts`:
- * the events this runtime actually fires, plus the ones it has a
- * clear wiring plan for. Phase H (16-phase refactor, TODO.MD)
+ * Covers the events this runtime actually fires, plus the ones it has
+ * a clear wiring plan for. Phase H (16-phase refactor, TODO.MD)
  * deleted 8 event types that were declared but never dispatched:
  * `UserPromptSubmit`, `Notification`, `FileChanged`, `ConfigChange`,
  * `PermissionRequest`, `PermissionDenied`, `SubagentStart`,

@@ -213,7 +213,7 @@ describe("buildAdvertisedToolBundle", () => {
 });
 
 // ============================================================================
-// Plan-mode tool filtering (Claude Code parity)
+// Plan-mode tool filtering
 // ============================================================================
 
 describe("buildAdvertisedToolBundle — plan-mode filter", () => {

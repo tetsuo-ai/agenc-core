@@ -2,8 +2,7 @@
  * `executeChat` — async-generator entry point for the agent loop
  * (Phase C of the 16-phase refactor in TODO.MD).
  *
- * This file lands the new async-generator shape that mirrors
- * `/home/tetsuo/git/claude_code/query.ts:219`. It runs in PARALLEL
+ * This file lands the new async-generator shape. It runs in PARALLEL
  * with the existing `ChatExecutor.execute()` class method — both
  * coexist until Phase F deletes the class and its helpers become
  * free functions.

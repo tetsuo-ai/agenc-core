@@ -3,8 +3,7 @@
  * subagent execution (Phase K of the 16-phase refactor in
  * TODO.MD).
  *
- * Mirrors `claude_code/tools/AgentTool/runAgent.ts` in shape: a
- * subagent spawn is a recursive `executeChat()` call with a
+ * A subagent spawn is a recursive `executeChat()` call with a
  * restricted tool surface, a scoped system prompt, and a
  * derived execution context. The wrapper yields the child's
  * events up to the parent stream (so a parent webchat or

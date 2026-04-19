@@ -1,8 +1,6 @@
 /**
  * AgentDefinition loader (Cut 5.6).
  *
- * Mirrors `claude_code/tools/AgentTool/loadAgentsDir.ts`.
- *
  * Loads markdown agent definition files from:
  *   1. `runtime/src/gateway/agent-definitions/*.md`  (built-in)
  *   2. `<projectRoot>/.agenc/agents/*.md`            (project-level)

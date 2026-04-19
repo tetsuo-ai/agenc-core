@@ -598,7 +598,7 @@ export interface LLMProvider {
  * Shared configuration for all LLM providers
  */
 export interface LLMProviderConfig {
-  /** Model identifier (e.g. 'grok-3', 'claude-sonnet-4-5-20250929', 'llama3') */
+  /** Model identifier (e.g. 'grok-3', 'grok-4', 'llama3') */
   model: string;
   /** System prompt prepended to conversations */
   systemPrompt?: string;

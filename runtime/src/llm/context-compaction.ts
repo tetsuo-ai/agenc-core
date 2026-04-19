@@ -91,8 +91,8 @@ export function createCompactBoundaryMessage(params: {
  * True when `message` is a compact boundary marker produced by a prior
  * compaction pass. Used to keep pre-existing boundaries verbatim across
  * subsequent compactions so the prefix (and xAI `prompt_cache_key`
- * match region) stays stable. Mirrors Claude Code's "anchor-preserved"
- * message pattern: once a boundary is placed, it is not re-summarized.
+ * match region) stays stable. Anchor-preserved: once a boundary is
+ * placed, it is not re-summarized.
  */
 export function isCompactBoundaryMessage(message: LLMMessage): boolean {
   if (message.role !== "system") return false;

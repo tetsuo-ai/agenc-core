@@ -9,9 +9,8 @@
  * point, and Phase E migrates the 10 production callers to
  * `for await (const event of executeChat(...))`.
  *
- * The shapes mirror `/home/tetsuo/git/claude_code/types/message.ts`
- * with AgenC-specific extensions (trace correlation, compaction
- * boundary reasons, subagent lineage) inlined where they diverge.
+ * The shapes carry AgenC-specific extensions (trace correlation,
+ * compaction boundary reasons, subagent lineage) where needed.
  *
  * @module
  */

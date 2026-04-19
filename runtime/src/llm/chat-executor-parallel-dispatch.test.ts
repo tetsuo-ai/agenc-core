@@ -1,8 +1,7 @@
 /**
  * Phase B acceptance test: the tool loop dispatches consecutive
- * concurrency-safe tool calls in parallel via `Promise.all`,
- * matching the `claude_code/services/tools/toolOrchestration.ts`
- * shape. Before Phase B, the dispatch was serial regardless of the
+ * concurrency-safe tool calls in parallel via `Promise.all`. Before
+ * Phase B, the dispatch was serial regardless of the
  * `isConcurrencySafe` predicate — the predicate only drove
  * telemetry, not execution.
  *

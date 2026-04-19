@@ -931,8 +931,8 @@ describe("system.writeFile", () => {
 });
 
 // ============================================================================
-// system.editFile (Claude-Code-style string replace, Read-before-Edit
-// enforced at the tool boundary)
+// system.editFile (string replace, Read-before-Edit enforced at the tool
+// boundary)
 // ============================================================================
 
 describe("system.editFile", () => {

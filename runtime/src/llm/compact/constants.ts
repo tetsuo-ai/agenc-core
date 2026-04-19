@@ -1,17 +1,14 @@
 /**
  * Constants shared by the layered compaction modules.
  *
- * Mirrors `claude_code/services/compact/constants.ts`.
- *
  * @module
  */
 
 /**
- * Token ceiling for the per-call `max_output_tokens` escalation. Mirrors
- * `claude_code/utils/context.ts:ESCALATED_MAX_TOKENS`. Used by the
- * reactive-compact path when a withheld `max_output_tokens` error
- * surfaces and we want to retry with a larger output budget before
- * compacting history.
+ * Token ceiling for the per-call `max_output_tokens` escalation. Used
+ * by the reactive-compact path when a withheld `max_output_tokens`
+ * error surfaces and we want to retry with a larger output budget
+ * before compacting history.
  */
 export const ESCALATED_MAX_TOKENS = 64_000;
 
@@ -39,8 +36,8 @@ export { DEFAULT_AUTOCOMPACT_THRESHOLD_TOKENS };
 
 /**
  * Default time gap between activity bursts that allows the snip layer
- * to drop the oldest tail messages. 15 minutes mirrors claude_code's
- * default snip window.
+ * to drop the oldest tail messages. 15 minutes is the default snip
+ * window.
  */
 export const DEFAULT_SNIP_GAP_MS = 15 * 60 * 1000;
 

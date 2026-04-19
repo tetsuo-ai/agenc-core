@@ -92,8 +92,8 @@ describe("ChatExecutor ctx-helpers behavior", () => {
   describe("tool loop stop reason and recovery hints", () => {
     it("does not hard-stop the loop just because the same tool call keeps failing", async () => {
       // Simulate the LLM calling desktop.bash with "mkdir" (no directory),
-      // which returns exitCode:1 every time. Claude-style behavior is to
-      // let the normal runtime round budget stop the loop rather than a
+      // which returns exitCode:1 every time. Expected behavior is to let
+      // the normal runtime round budget stop the loop rather than a
       // local repeated-failure fuse.
       const toolHandler = vi
         .fn()

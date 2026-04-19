@@ -14,8 +14,7 @@
  * objective so the operator sees it in `/plan status`. The operator
  * then approves by calling the existing `/plan implement` slash
  * command (or any other verb that flips stage out of "plan"), which
- * re-opens the mutating tool surface. That slash-command approval step
- * is the AgenC equivalent of Claude Code's UI "proceed" button — it
+ * re-opens the mutating tool surface. The slash-command approval step
  * deliberately requires an explicit human act to unlock execution.
  *
  * @module

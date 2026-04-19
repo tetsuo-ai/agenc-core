@@ -12,10 +12,10 @@
  *     touched by this module)
  *
  * They are exposed as free functions that take the Map (plus any
- * companion config like budget thresholds) as explicit arguments,
- * matching the claude_code state-as-argument pattern. The class
- * keeps the Maps as private fields and calls these helpers via
- * 1-line delegators until PR-8 eliminates the delegators.
+ * companion config like budget thresholds) as explicit arguments
+ * (the state-as-argument pattern). The class keeps the Maps as
+ * private fields and calls these helpers via 1-line delegators until
+ * PR-8 eliminates the delegators.
  *
  * @module
  */

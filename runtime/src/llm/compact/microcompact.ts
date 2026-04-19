@@ -3,11 +3,9 @@
  * with a placeholder so the model doesn't pay token cost to recall
  * stale tool output.
  *
- * Mirrors `claude_code/services/compact/microCompact.ts` (time-based
- * path). Claude Code has a second path (cached microcompact) that uses
- * Anthropic's cache-editing API to surgically delete tool results
- * without invalidating the cached prefix. xAI does not expose an
- * equivalent cache-editing API, so only the time-based path is ported.
+ * Time-based path only. xAI does not expose a cache-editing API, so we
+ * cannot surgically delete tool results without invalidating the cached
+ * prefix; the time-based trigger is a reasonable approximation.
  *
  * Trigger: the gap since the last activity touch exceeds `gapMs`. When
  * the gap fires, the xAI server-side prompt cache has almost certainly
@@ -25,9 +23,9 @@ import {
 } from "./constants.js";
 
 /**
- * Placeholder that replaces the content of a cold tool result. Matches
- * Claude Code's `TIME_BASED_MC_CLEARED_MESSAGE` byte-for-byte so the
- * runtime's text filters, tests, and any parity checks line up.
+ * Placeholder that replaces the content of a cold tool result. Kept
+ * stable so the runtime's text filters, tests, and parity checks
+ * line up.
  */
 export const TIME_BASED_MC_CLEARED_MESSAGE =
   "[Old tool result content cleared]";
@@ -38,13 +36,12 @@ export const TIME_BASED_MC_CLEARED_MESSAGE =
  * status reads) are left alone because their results are already small
  * and carry state the model actively depends on.
  *
- * Mirrors Claude Code's `COMPACTABLE_TOOLS` set:
- *   - FileRead / FileEdit / FileWrite
- *   - Bash (SHELL_TOOL_NAMES)
- *   - Grep / Glob
- *   - WebSearch / WebFetch
- *
- * Adapted to AgenC's native tool surface.
+ * Covers:
+ *   - file read/edit/write
+ *   - shell
+ *   - grep/glob
+ *   - directory listing
+ *   - web browse / fetch
  */
 export const COMPACTABLE_TOOL_NAMES: ReadonlySet<string> = new Set([
   // File I/O
@@ -90,9 +87,9 @@ interface MicrocompactInput {
   readonly gapMs?: number;
   /**
    * How many of the most-recent compactable tool results to leave
-   * untouched. Default mirrors Claude Code's `keepRecent: 5`. Older
-   * compactable results get their `content` replaced with the
-   * placeholder; newer results pass through unchanged.
+   * untouched. Default is 5. Older compactable results get their
+   * `content` replaced with the placeholder; newer results pass
+   * through unchanged.
    */
   readonly keepRecent?: number;
 }

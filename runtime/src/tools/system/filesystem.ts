@@ -10,9 +10,9 @@
  * - system.writeFile — write/overwrite a full file (creates parent dirs)
  * - system.appendFile — append to file
  * - system.editFile — string-replace edit on an existing file
- *                     (Claude-Code-style old_string/new_string semantics;
- *                      preferred over writeFile for incremental edits to
- *                      avoid JSON-escape bugs in nested string literals)
+ *                     (old_string/new_string semantics; preferred over
+ *                      writeFile for incremental edits to avoid
+ *                      JSON-escape bugs in nested string literals)
  * - system.listDir — list directory entries
  * - system.stat — file/directory metadata
  * - system.mkdir — create directories
@@ -22,14 +22,13 @@
  * Read-before-Write rule:
  * `system.writeFile` and `system.editFile` enforce that the model has
  * called `system.readFile` on the target path in the current session
- * before any modification (modeled on Claude Code's
- * `tools/FileWriteTool/FileWriteTool.ts:198-206` check). This forces
- * the model to have the LITERAL pre-edit bytes in its context before
- * generating the next write, which is the highest-leverage structural
- * defense against the Grok JSON-escape bug. The rule is skipped for
- * non-existent files (creating new files does not require a prior
- * read) and can be rehydrated from the persisted local history cache
- * after compaction or restart.
+ * before any modification. This forces the model to have the LITERAL
+ * pre-edit bytes in its context before generating the next write,
+ * which is the highest-leverage structural defense against the Grok
+ * JSON-escape bug. The rule is skipped for non-existent files
+ * (creating new files does not require a prior read) and can be
+ * rehydrated from the persisted local history cache after compaction
+ * or restart.
  *
  * @module
  */
@@ -89,9 +88,7 @@ export const SESSION_ID_ARG = "__agencSessionId";
 /**
  * Per-session readFileState map. Tracks which files have been read in
  * each session so that `system.writeFile` and `system.editFile` can
- * enforce a Read-before-Write rule modeled on Claude Code's
- * `tools/FileWriteTool/FileWriteTool.ts:198-206` check (see report.txt
- * §References for the upstream pattern).
+ * enforce a Read-before-Write rule.
  *
  * The rationale is documented in detail in PR #314: forcing the model
  * to call `system.readFile` before any modification is the highest-
@@ -110,8 +107,7 @@ export const SESSION_ID_ARG = "__agencSessionId";
  *     have a canonical form yet)
  *   - `system.writeFile` and `system.editFile` consult this map only
  *     when the target path EXISTS — creating a new file does not
- *     require a prior read (Claude Code's FileWriteTool.ts:191-196
- *     uses the same ENOENT escape hatch)
+ *     require a prior read (ENOENT escape hatch)
  *   - The latest snapshots are also mirrored into a bounded local
  *     history cache under a temp-root outside the tracked workspace
  *     tree so recent source-of-truth content is available for
@@ -130,9 +126,8 @@ interface SessionReadSnapshot {
   /**
    * For partial reads (`viewKind === "partial"`), the exact line offset
    * the model passed. Stored so a subsequent read with the identical
-   * `(offset, limit)` and unchanged mtime can serve from the cache
-   * stub — matches Claude Code's range-aware FILE_UNCHANGED dedup
-   * (claude_code/tools/FileReadTool/FileReadTool.ts:547-573).
+   * `(offset, limit)` and unchanged mtime can serve from the cache stub
+   * via range-aware FILE_UNCHANGED dedup.
    */
   readonly readOffset?: number;
   /** For partial reads, the exact line limit the model passed. */
@@ -1237,12 +1232,10 @@ function createReadFileTool(
 
         // Cache-hit short-circuit: if this session already read this
         // path and the file's mtime is unchanged, return the
-        // FILE_UNCHANGED_STUB instead of re-reading. Mirrors Claude
-        // Code's range-aware FILE_UNCHANGED dedup
-        // (claude_code/tools/FileReadTool/FileReadTool.ts:547-573):
-        // full reads dedup against a prior full read; partial reads
-        // dedup only when the exact `(offset, limit)` matches the
-        // prior partial read for the same path. A different slice
+        // FILE_UNCHANGED_STUB instead of re-reading. Range-aware
+        // dedup: full reads dedup against a prior full read; partial
+        // reads dedup only when the exact `(offset, limit)` matches
+        // the prior partial read for the same path. A different slice
         // always falls through.
         const cacheHitSessionId = resolveSessionId(args);
         const requestedReadWindow = resolveReadWindow(args);
@@ -1441,12 +1434,11 @@ function createWriteFileTool(
           return errorResult("content must be a string");
         }
 
-        // Read-before-Write enforcement (Claude Code FileWriteTool.ts:198-206
-        // pattern). If the target path EXISTS and the model has not called
-        // system.readFile on it in the current session, reject the write
-        // with a structured error that names the rule. Non-existent paths
-        // are allowed through unconditionally so brand-new file creation
-        // continues to work without a prior read.
+        // Read-before-Write enforcement. If the target path EXISTS and the
+        // model has not called system.readFile on it in the current session,
+        // reject the write with a structured error that names the rule.
+        // Non-existent paths are allowed through unconditionally so
+        // brand-new file creation continues to work without a prior read.
         const sessionId = resolveSessionId(args);
         let targetExists = false;
         try {
@@ -1647,12 +1639,11 @@ function createAppendFileTool(
 }
 
 /**
- * `system.editFile` — Claude-Code-style string-replacement edit tool.
+ * `system.editFile` — string-replacement edit tool.
  *
- * Mirrors `tools/FileEditTool/FileEditTool.ts` from Claude Code. Takes
- * `{path, old_string, new_string, replace_all?}` and performs an exact
- * string replacement on the file at `path`. The model uses this tool
- * for incremental edits instead of `system.writeFile` (full file
+ * Takes `{path, old_string, new_string, replace_all?}` and performs an
+ * exact string replacement on the file at `path`. The model uses this
+ * tool for incremental edits instead of `system.writeFile` (full file
  * replacement). The architectural reason is in the `system.writeFile`
  * description: rewriting a 200-line C source file via a JSON tool
  * call exposes hundreds of nested-quote escape opportunities, every
@@ -1834,10 +1825,10 @@ function createEditFileTool(
         );
 
         // Find occurrences of old_string in the existing content after
-        // Claude-Code-style normalization (quote reconciliation,
-        // desanitization, and replacement whitespace cleanup). Matching
-        // remains literal and deterministic; normalization only widens
-        // common representational drift before the safety checks below.
+        // Text normalization pass (quote reconciliation, desanitization,
+        // and replacement whitespace cleanup). Matching remains literal
+        // and deterministic; normalization only widens common
+        // representational drift before the safety checks below.
         let occurrences = 0;
         let searchFrom = 0;
         // eslint-disable-next-line no-constant-condition

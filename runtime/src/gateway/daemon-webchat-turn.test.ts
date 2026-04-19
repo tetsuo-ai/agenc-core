@@ -802,9 +802,8 @@ You have broad access to this machine via the system.bash tool.`,
         runtimeContext: {
           workspaceRoot: "/home/tetsuo/git/stream-test/agenc-shell",
           // workflowStage is plumbed through so the chat-executor stop-gate
-          // can suppress the narrated_future_tool_work detector when the
-          // session is in plan mode (PR #481) and so user-asked-for-report
-          // suppression has access to the live session stage if needed.
+          // knows whether the session is in plan mode and so the live
+          // session stage is available where needed.
           workflowStage: "idle",
         },
         message: expect.objectContaining({

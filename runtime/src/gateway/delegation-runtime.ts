@@ -276,8 +276,7 @@ export interface DelegationToolCompositionContext {
    * enriched `subagents.progress` event carrying
    * `payload.progress = SubAgentAgentProgress` so UIs can render
    * live tool counts, tokens, and last-tool name under the spawning
-   * `execute_with_agent` card — mirrors `AgentProgressLine` in
-   * `../claude_code/components/AgentProgressLine.tsx`.
+   * `execute_with_agent` card.
    */
   readonly progressTracker?: SubAgentProgressTracker | null;
   readonly launchShellAgentTask?: (params: {

@@ -1,8 +1,8 @@
 /**
- * Layered compaction (Cut 5.1, claude_code-alignment).
+ * Layered compaction (Cut 5.1).
  *
- * Replaces the legacy `prompt-budget.ts` ad-hoc compaction with a
- * `claude_code/services/compact/`-style ordered chain:
+ * Replaces the legacy `prompt-budget.ts` ad-hoc compaction with an
+ * ordered chain:
  *
  *     snip → microcompact → autocompact   (per-iteration)
  *     reactiveCompact                     (post-error 413 fallback)
@@ -144,9 +144,8 @@ export interface PerIterationCompactionResult {
 }
 
 /**
- * Orchestrator for the snip → microcompact → autocompact chain. Mirrors
- * `claude_code/query.ts` per-iteration compaction wire-up (~lines
- * 395–426 in the reference). Runs at the top of each provider call:
+ * Orchestrator for the snip → microcompact → autocompact chain.
+ * Runs at the top of each provider call:
  *
  *   1. `applySnip` — drops the oldest messages from a long-idle session
  *      without touching the ones the model still needs. Tracks how many
@@ -168,8 +167,8 @@ export interface PerIterationCompactionResult {
  * user), and reports a single combined `action` of `"noop"` or
  * `"compacted"`. Boundary messages are returned separately from the
  * pruned message list — the caller decides whether to inject them into
- * the outgoing conversation or just log them. Mirror behavior of
- * claude_code: boundary messages are observational, not model-facing.
+ * the outgoing conversation or just log them. Boundary messages are
+ * observational, not model-facing.
  */
 export function applyPerIterationCompaction(
   input: PerIterationCompactionInput,
@@ -279,8 +278,8 @@ export function applyPerIterationCompaction(
 
 /**
  * Conservative token estimate per snipped message used by the
- * snip → autocompact handoff. 192 is the claude_code reference value
- * for an average assistant/user message in a tool-heavy conversation.
+ * snip → autocompact handoff. 192 is a reasonable approximation for
+ * an average assistant/user message in a tool-heavy conversation.
  * Overestimating is safer than underestimating — if snip frees more
  * tokens than we claim, autocompact might trigger unnecessarily; if
  * we overstate, we may skip a legitimate autocompact. The real

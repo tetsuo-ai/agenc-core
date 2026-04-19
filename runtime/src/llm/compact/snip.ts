@@ -1,13 +1,13 @@
 /**
  * Snip layer — drops the oldest messages from a long-idle session
- * before any model call. Mirrors `claude_code/services/compact/snip.ts`.
+ * before any model call.
  *
  * Snip is a non-summarizing trim. It just removes messages from the
  * head of the array when the session has been idle for `gapMs` and
  * the history is longer than `keepRecent`. The intent is to keep
  * cold sessions cheap to resume without paying compaction overhead.
  *
- * Cut 5.1 of the claude_code-alignment refactor.
+ * Cut 5.1.
  *
  * @module
  */

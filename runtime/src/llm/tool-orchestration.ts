@@ -1,8 +1,6 @@
 /**
  * `runTools` — concurrency-safe tool dispatch (Cut 5.5).
  *
- * Mirrors `claude_code/services/tools/toolOrchestration.ts` (~188 LOC).
- *
  * Partitions tool calls into batches of:
  *  - consecutive *concurrency-safe* (read-only) tools, run in parallel
  *  - one *non-concurrency-safe* tool at a time, run serially

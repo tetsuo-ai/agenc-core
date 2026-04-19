@@ -1,5 +1,5 @@
 /**
- * Hook matcher (Cut 5.2). Mirrors `claude_code/utils/hooks.ts:matchesPattern`.
+ * Hook matcher (Cut 5.2).
  *
  * Supports:
  *   - exact name        `Bash`

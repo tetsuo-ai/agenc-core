@@ -6,9 +6,8 @@
  * referencing a verification harness path (test/spec file), and the model
  * immediately follows up with a `system.writeFile` / `system.appendFile` /
  * `desktop.text_editor` targeting that same harness, the dispatch loop
- * refuses the write. This mirrors Claude Code's layered approach of removing
- * the affordance to lie rather than trusting the model to heed a recovery
- * hint it is free to ignore.
+ * refuses the write. The gate removes the affordance to lie rather than
+ * trusting the model to heed a recovery hint it is free to ignore.
  *
  * The canonical `TEST_FILE_PATH_RE` lives here and is re-exported so the
  * gateway verification-metadata tagger uses the same source of truth as the

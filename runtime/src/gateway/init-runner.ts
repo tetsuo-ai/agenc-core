@@ -86,11 +86,10 @@ const KEY_FILE_PATTERNS = [
   /^claude\.md$/i,
   /^agents\.md$/i,
   // Generic planning/spec markdown files at the repo root. Replaces a
-  // hard-coded `^plan\.md$` pattern that special-cased a single filename and
-  // violated the global CLAUDE.md learned rule "Never make runtime behavior
-  // depend on a filename like PLAN.md". Anything matching `*.md` at the root
-  // that is not README/CLAUDE/AGENTS will be picked up as a candidate
-  // planning document and filtered downstream in synthesizeInitGuide.
+  // hard-coded `^plan\.md$` pattern that special-cased a single filename.
+  // Anything matching `*.md` at the root that is not README/CLAUDE/AGENTS
+  // will be picked up as a candidate planning document and filtered
+  // downstream in synthesizeInitGuide.
   /^[A-Za-z0-9._-]+\.md$/i,
 ] as const;
 
@@ -306,11 +305,8 @@ function synthesizeInitGuide(params: {
   const claude = params.evidence.keyFiles.find((file) => /^CLAUDE\.md$/i.test(file.path));
   const agents = params.evidence.keyFiles.find((file) => /^AGENTS\.md$/i.test(file.path));
   // Markdown files at the repo root that look like planning/spec documents,
-  // generically. Discovered by extension, not by a hard-coded filename — the
-  // previous code special-cased PLAN.md and emitted C-shell-specific strings
-  // like "PLAN.md specifies K&R-style C function definitions for the planned
-  // shell implementation", which violated the global CLAUDE.md learned rule
-  // "Never make runtime behavior depend on a filename like PLAN.md".
+  // generically. Discovered by extension, not by a hard-coded filename —
+  // runtime behavior must not depend on any particular filename.
   const planningDocs = params.evidence.keyFiles.filter(
     (file) =>
       /\.md$/i.test(file.path) &&

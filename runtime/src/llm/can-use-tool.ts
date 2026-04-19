@@ -1,9 +1,9 @@
 /**
  * `canUseTool` permission hook (Cut 5.7).
  *
- * Mirrors `claude_code/hooks/useCanUseTool.ts` — a single async function
- * the dispatcher calls before invoking each tool. The default
- * implementation chains the existing AgenC permission stack:
+ * A single async function the dispatcher calls before invoking each
+ * tool. The default implementation chains the existing AgenC
+ * permission stack:
  *
  *   1. tool's own `Tool.checkPermissions()` (if defined)
  *   2. configured allow/deny rule patterns

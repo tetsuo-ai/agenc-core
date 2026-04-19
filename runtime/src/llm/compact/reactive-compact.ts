@@ -1,14 +1,13 @@
 /**
  * Reactive compact layer — fired when a model call returns a withheld
- * 413 (`prompt_too_long`) or `max_output_tokens` overflow. Mirrors
- * `claude_code/services/compact/reactiveCompact.ts`.
+ * 413 (`prompt_too_long`) or `max_output_tokens` overflow.
  *
  * Unlike autocompact, this is suffix-preserving: it walks the head of
  * the message array and trims the *oldest* messages first, then
  * retries the model call. The first attempt drops the oldest 25%; if
  * that still 413s, drop another 25%; etc.
  *
- * Cut 5.1 of the claude_code-alignment refactor.
+ * Cut 5.1.
  *
  * @module
  */

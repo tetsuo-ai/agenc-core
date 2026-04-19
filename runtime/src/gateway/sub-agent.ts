@@ -178,8 +178,7 @@ export interface SubAgentConfig {
    * Parent's tool-call id for the `execute_with_agent` invocation that
    * spawned this sub-agent. Used by lifecycle event consumers (TUI,
    * webchat UI) to thread child progress under the correct parent tool
-   * card. Matches the `parentToolUseID` concept in
-   * `../claude_code/utils/messages.ts::createProgressMessage`.
+   * card.
    */
   readonly parentToolCallId?: string;
   readonly shellProfile?: SessionShellProfile;

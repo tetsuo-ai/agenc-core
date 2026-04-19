@@ -1,12 +1,12 @@
 /**
  * `tokenCountWithEstimation` — canonical token counter for compaction
- * decisions. Mirrors `claude_code/utils/tokens.ts:tokenCountWithEstimation`.
+ * decisions.
  *
  * Walks backward to the last API response with usage metadata, then
  * estimates token cost for any messages added since. Returns a single
  * integer count comparable across compaction layers.
  *
- * Cut 5.1 of the claude_code-alignment refactor.
+ * Cut 5.1.
  *
  * @module
  */
@@ -44,8 +44,7 @@ export function tokenCountWithEstimation(input: TokenCountInput): number {
   }
 
   // Estimate roughly 1 token per 4 characters of message content for
-  // anything we don't have a billed measurement for. This is the same
-  // shape as claude_code's `roughTokenCountEstimationForMessages`.
+  // anything we don't have a billed measurement for.
   let estimated = 0;
   for (const message of messages) {
     if (typeof message.content === "string") {

@@ -1,7 +1,7 @@
 /**
  * Reads `runtime/dist/VERSION` (written by `scripts/write-build-version.mjs`)
  * so the daemon can prove which build is running. This is the verification
- * primitive for Cut 6.2 of the claude_code-alignment refactor.
+ * primitive for Cut 6.2.
  *
  * The file lives next to the running daemon entry point at
  * `<runtimeRoot>/dist/VERSION`. We resolve via `process.argv[1]` so the

@@ -8,7 +8,7 @@
  *   - `gateway/tool-policy.ts:matchesPattern`
  *   - `gateway/approvals.ts:globMatch`
  *
- * Supports the same syntax claude_code's permission system uses:
+ * Supports:
  *   - exact name              `Bash`
  *   - wildcard match-any      `Bash(*)`
  *   - prefix wildcard         `Bash(npm *)`

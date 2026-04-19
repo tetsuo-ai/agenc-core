@@ -3,7 +3,7 @@
  * Write `runtime/dist/VERSION` containing { commit, buildTime, runtimeVersion }
  * so the daemon can print a startup banner that proves which build is running.
  *
- * Cut 6.2 of the AgenC runtime claude_code-alignment refactor (TODO.MD).
+ * Cut 6.2 of the AgenC runtime refactor (TODO.MD).
  */
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";

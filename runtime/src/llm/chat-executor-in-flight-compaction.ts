@@ -216,13 +216,12 @@ export async function maybeCompactInFlightCallInput(
       });
     // Snapshot the top-N most-recently-read files and build anchor
     // messages to re-inject their bytes immediately after the boundary.
-    // Mirrors Claude Code's `createPostCompactFileAttachments`: after
-    // compaction, the raw tool_result bytes are gone from the prompt,
-    // so the model would otherwise re-call `system.readFile` for the
-    // same paths round after round. Anchors short-circuit that. Also
-    // clears the in-memory read cache so the FILE_UNCHANGED_STUB
-    // short-circuit does not point at content that has been
-    // summarized away.
+    // After compaction, the raw tool_result bytes are gone from the
+    // prompt, so the model would otherwise re-call `system.readFile`
+    // for the same paths round after round. Anchors short-circuit that.
+    // Also clears the in-memory read cache so the FILE_UNCHANGED_STUB
+    // short-circuit does not point at content that has been summarized
+    // away.
     const anchorFileMessages = reattachRecentFilesOnCompaction(ctx.sessionId);
     const replayTailReconciliationMessages = (
       input.callReconciliationMessages ?? ctx.reconciliationMessages
