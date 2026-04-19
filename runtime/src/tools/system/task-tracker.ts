@@ -38,6 +38,26 @@ const DEFAULT_OUTPUT_MAX_BYTES = 64 * 1024;
 const MAX_OUTPUT_MAX_BYTES = 512 * 1024;
 
 /**
+ * Cap on the per-task event log. The first `created` event and every
+ * status-transition event (started/completed/failed/cancelled/deleted/
+ * output_ready) are always retained; "updated" and "ref_attached"
+ * entries are the only ones pruned when the log exceeds this cap. A
+ * single marker event is inserted when pruning happens so downstream
+ * readers can see that the log was compacted.
+ */
+export const TASK_EVENT_RETENTION_CAP = 64;
+const TASK_EVENT_TRUNCATION_MARKER_SUMMARY =
+  "Event log truncated to retention cap";
+
+/**
+ * Number of persist calls between soft-delete compaction sweeps. A
+ * tombstoned task (status=\`deleted\`) is retained until the next sweep
+ * so in-flight readers can still resolve the id; once the sweep runs,
+ * the entry is removed from the backing array.
+ */
+export const TASK_SOFT_DELETE_GC_INTERVAL = 50;
+
+/**
  * Magic arg key used by the gateway to thread the current session id
  * into task tools.
  */
@@ -60,6 +80,26 @@ export const TASK_TRACKER_TOOL_NAMES: ReadonlySet<string> = new Set([
   "task.get",
   "task.update",
 ]);
+
+/**
+ * Tool names for the runtime task-handle surface (task.wait, task.output).
+ * These are separate from {@link TASK_TRACKER_TOOL_NAMES} because they
+ * operate against {@link TaskStore} (runtime tasks) rather than
+ * {@link SessionTaskStore} (session tasks), but they share the same
+ * session-scoped listId injection so the model can only reach tasks
+ * created under its own session.
+ */
+export const TASK_HANDLE_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "task.wait",
+  "task.output",
+]);
+
+/**
+ * Maximum blocking timeout a model-facing task handle tool will accept,
+ * in milliseconds. Larger values are clamped to this cap. Keeps async
+ * delegation reads from tying up a turn indefinitely.
+ */
+export const TASK_HANDLE_MAX_TIMEOUT_MS = 60_000;
 
 export type TaskStatus =
   | "pending"
@@ -115,7 +155,6 @@ export interface Task {
   readonly id: string;
   readonly kind: TaskKind;
   readonly ownerSessionId: string;
-  readonly parentTaskId?: string;
   subject: string;
   description: string;
   status: TaskStatus;
@@ -174,7 +213,6 @@ export interface TaskUpdatePatch {
 export interface RuntimeTaskCreateParams extends TaskCreateInput {
   readonly listId: string;
   readonly kind: TaskKind;
-  readonly parentTaskId?: string;
   readonly owner?: string;
   readonly status?: Exclude<TaskStatus, "deleted">;
   readonly summary?: string;
@@ -433,7 +471,6 @@ function cloneTask(task: Task | StoredTask): Task {
     id: task.id,
     kind: task.kind,
     ownerSessionId: task.ownerSessionId,
-    ...(task.parentTaskId !== undefined ? { parentTaskId: task.parentTaskId } : {}),
     subject: task.subject,
     description: task.description,
     status: task.status,
@@ -477,20 +514,6 @@ function cloneStoredTask(task: StoredTask): StoredTask {
   };
 }
 
-function isExplicitCompletionFlow(params: {
-  readonly task: SessionTask;
-  readonly patch: TaskUpdatePatch;
-}): boolean {
-  const mergedMetadata =
-    params.patch.metadata !== undefined
-      ? {
-          ...(params.task.metadata ?? {}),
-          ...params.patch.metadata,
-        }
-      : params.task.metadata;
-  return normalizeRequestTaskRuntimeMetadata(mergedMetadata).verification;
-}
-
 function cloneTaskList(list: TaskListEntry): TaskListEntry {
   return {
     version: list.version,
@@ -525,6 +548,154 @@ function createEmptySessionTaskList(listId: string): SessionTaskListEntry {
     tasks: [],
     nextTaskId: 1,
   };
+}
+
+const STATUS_TRANSITION_EVENT_TYPES: ReadonlySet<TaskEventType> = new Set([
+  "started",
+  "completed",
+  "failed",
+  "cancelled",
+  "deleted",
+  "output_ready",
+]);
+
+/**
+ * Truncate a task's event log in place when it exceeds
+ * {@link TASK_EVENT_RETENTION_CAP}. The first \`created\` event and every
+ * status-transition event are always preserved. Remaining slots are
+ * filled with the most recent non-transition events (e.g. \`updated\`,
+ * \`ref_attached\`). When any events are dropped, a single marker event
+ * is inserted once so subsequent readers can tell the log was
+ * compacted. Returns true when mutation happened.
+ */
+export function pruneTaskEventsInPlace(task: Task): boolean {
+  if (task.events.length <= TASK_EVENT_RETENTION_CAP) return false;
+  const createdIndex = task.events.findIndex((event) => event.type === "created");
+  const createdEvent = createdIndex >= 0 ? task.events[createdIndex] : undefined;
+  const transitionEvents = task.events.filter((event) =>
+    STATUS_TRANSITION_EVENT_TYPES.has(event.type),
+  );
+  const otherEvents = task.events.filter(
+    (event) =>
+      event.type !== "created" &&
+      !STATUS_TRANSITION_EVENT_TYPES.has(event.type),
+  );
+  const alreadyMarked = task.events.some(
+    (event) =>
+      event.type === "updated" &&
+      event.summary === TASK_EVENT_TRUNCATION_MARKER_SUMMARY,
+  );
+  const preservedCount =
+    (createdEvent ? 1 : 0) +
+    transitionEvents.length +
+    (alreadyMarked ? 0 : 1);
+  const slotsForOthers = Math.max(
+    0,
+    TASK_EVENT_RETENTION_CAP - preservedCount,
+  );
+  const keptOthers = otherEvents.slice(-slotsForOthers);
+  const dropped = task.events.length - (
+    (createdEvent ? 1 : 0) + transitionEvents.length + keptOthers.length
+  );
+  if (dropped <= 0) return false;
+  const rebuilt: TaskEventRecord[] = [];
+  if (createdEvent) rebuilt.push(createdEvent);
+  if (!alreadyMarked) {
+    const markerTimestamp =
+      createdEvent?.timestamp !== undefined
+        ? createdEvent.timestamp + 1
+        : (task.events[0]?.timestamp ?? Date.now());
+    rebuilt.push({
+      id: `${markerTimestamp.toString(36)}-truncation-marker`,
+      type: "updated",
+      summary: TASK_EVENT_TRUNCATION_MARKER_SUMMARY,
+      timestamp: markerTimestamp,
+      data: { droppedEventCount: dropped },
+    });
+  }
+  const tailSorted = [...transitionEvents, ...keptOthers].sort(
+    (a, b) => a.timestamp - b.timestamp,
+  );
+  rebuilt.push(...tailSorted);
+  task.events.length = 0;
+  for (const event of rebuilt) task.events.push(event);
+  return true;
+}
+
+/**
+ * Compact a list by removing soft-deleted tasks. Used by the periodic
+ * GC sweep. Returns the number of entries removed.
+ */
+export function compactDeletedTasksInPlace(
+  tasks: { status: string }[],
+): number {
+  const before = tasks.length;
+  const kept = tasks.filter((task) => task.status !== "deleted");
+  if (kept.length === before) return 0;
+  tasks.length = 0;
+  for (const task of kept) tasks.push(task as unknown as typeof tasks[number]);
+  return before - kept.length;
+}
+
+/**
+ * Detect whether adding the proposed addBlocks / addBlockedBy entries
+ * to a task would produce a cycle in the block relation. Edges are
+ * interpreted as "A blocks B", derived from the union of
+ * \`task.blocks\` entries and the reverse \`task.blockedBy\` entries.
+ * Returns a short message when the patch must be rejected, or
+ * \`undefined\` when it is safe to apply.
+ *
+ * Direct self-loops (taskId appears in its own addBlocks or
+ * addBlockedBy) are rejected up front. Indirect cycles are found via
+ * DFS on the merged graph with the proposed edges already applied.
+ */
+export function detectBlockCycleForPatch(params: {
+  readonly tasks: readonly {
+    readonly id: string;
+    readonly blocks: readonly string[];
+    readonly blockedBy: readonly string[];
+  }[];
+  readonly taskId: string;
+  readonly addBlocks?: readonly string[];
+  readonly addBlockedBy?: readonly string[];
+}): string | undefined {
+  const addBlocks = params.addBlocks ?? [];
+  const addBlockedBy = params.addBlockedBy ?? [];
+  if (addBlocks.includes(params.taskId)) {
+    return `task ${params.taskId} cannot block itself`;
+  }
+  if (addBlockedBy.includes(params.taskId)) {
+    return `task ${params.taskId} cannot be blocked by itself`;
+  }
+  if (addBlocks.length === 0 && addBlockedBy.length === 0) return undefined;
+  const graph = new Map<string, Set<string>>();
+  const edge = (from: string, to: string): void => {
+    let neighbours = graph.get(from);
+    if (!neighbours) {
+      neighbours = new Set<string>();
+      graph.set(from, neighbours);
+    }
+    neighbours.add(to);
+  };
+  for (const task of params.tasks) {
+    for (const blocked of task.blocks) edge(task.id, blocked);
+    for (const blocker of task.blockedBy) edge(blocker, task.id);
+  }
+  for (const blocked of addBlocks) edge(params.taskId, blocked);
+  for (const blocker of addBlockedBy) edge(blocker, params.taskId);
+  const visited = new Set<string>();
+  const stack = [...(graph.get(params.taskId) ?? [])];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (node === params.taskId) {
+      return `adding these dependencies would create a cycle involving task ${params.taskId}`;
+    }
+    if (visited.has(node)) continue;
+    visited.add(node);
+    const next = graph.get(node);
+    if (next) for (const neighbour of next) stack.push(neighbour);
+  }
+  return undefined;
 }
 
 function isTaskStatus(value: unknown): value is TaskStatus {
@@ -637,7 +808,6 @@ function fullTask(task: Task): Record<string, unknown> {
     id: task.id,
     kind: task.kind,
     ownerSessionId: task.ownerSessionId,
-    ...(task.parentTaskId !== undefined ? { parentTaskId: task.parentTaskId } : {}),
     subject: task.subject,
     description: task.description,
     status: task.status,
@@ -827,9 +997,6 @@ function coerceStoredTask(value: unknown, ownerSessionId: string): StoredTask | 
     kind,
     ownerSessionId:
       asNonEmptyString(raw.ownerSessionId) ?? ownerSessionId,
-    ...(asNonEmptyString(raw.parentTaskId)
-      ? { parentTaskId: asNonEmptyString(raw.parentTaskId) }
-      : {}),
     subject,
     description,
     status,
@@ -1073,6 +1240,7 @@ export class SessionTaskStore {
   private readonly lists = new Map<string, SessionTaskListEntry>();
   private readonly loadedLists = new Set<string>();
   private readonly queue = new Map<string, Promise<void>>();
+  private readonly persistCountByList = new Map<string, number>();
 
   constructor(options?: SessionTaskStoreOptions) {
     this.memoryBackend = options?.memoryBackend;
@@ -1178,6 +1346,11 @@ export class SessionTaskStore {
   }
 
   private async persistList(list: SessionTaskListEntry): Promise<void> {
+    const nextCount = (this.persistCountByList.get(list.id) ?? 0) + 1;
+    this.persistCountByList.set(list.id, nextCount);
+    if (nextCount % TASK_SOFT_DELETE_GC_INTERVAL === 0) {
+      compactDeletedTasksInPlace(list.tasks);
+    }
     if (!this.memoryBackend) {
       await this.persistListToDisk(list);
       return;
@@ -1377,6 +1550,7 @@ export class TaskStore {
   private readonly lists = new Map<string, TaskListEntry>();
   private readonly loadedLists = new Set<string>();
   private readonly queue = new Map<string, Promise<void>>();
+  private readonly persistCountByList = new Map<string, number>();
 
   constructor(options?: TaskStoreOptions) {
     this.memoryBackend = options?.memoryBackend;
@@ -1448,6 +1622,14 @@ export class TaskStore {
   }
 
   private async persistList(list: TaskListEntry): Promise<void> {
+    for (const task of list.tasks) {
+      pruneTaskEventsInPlace(task);
+    }
+    const nextCount = (this.persistCountByList.get(list.id) ?? 0) + 1;
+    this.persistCountByList.set(list.id, nextCount);
+    if (nextCount % TASK_SOFT_DELETE_GC_INTERVAL === 0) {
+      compactDeletedTasksInPlace(list.tasks);
+    }
     if (!this.memoryBackend) {
       return;
     }
@@ -1737,7 +1919,6 @@ export class TaskStore {
         id,
         kind: params.kind,
         ownerSessionId: params.listId,
-        ...(params.parentTaskId ? { parentTaskId: params.parentTaskId } : {}),
         subject: params.subject,
         description: params.description,
         status: params.status ?? "in_progress",
@@ -2331,7 +2512,10 @@ const TASK_UPDATE_DESCRIPTION = `Use this tool to update a task in the task list
 
 **Delete tasks:**
 - When a task is no longer relevant or was created in error
-- Setting status to \`deleted\` permanently removes the task
+- Setting status to \`deleted\` hides the task from future task.list / task.get
+  responses. The task is retained internally (with status=\`deleted\`) so that
+  event history and output references stay valid for in-flight readers, and
+  the runtime reclaims the entry during a background compaction pass.
 
 **Update task details:**
 - When requirements change or become clearer
@@ -2352,7 +2536,8 @@ const TASK_UPDATE_DESCRIPTION = `Use this tool to update a task in the task list
 
 Status progresses: \`pending\` → \`in_progress\` → \`completed\`
 
-Use \`deleted\` to permanently remove a task.
+Use \`deleted\` to retire a task. It is filtered out of subsequent listings but
+the underlying entry is retained until the next compaction sweep.
 
 ## Staleness
 
@@ -2437,6 +2622,11 @@ export function createTaskTrackerTools(
       const description = asNonEmptyString(args.description) ?? subject;
       const activeForm = asNonEmptyString(args.activeForm);
       const metadata = asPlainObject(args.metadata);
+      if (metadata && "_internal" in metadata) {
+        return errorResult(
+          "metadata._internal is reserved for runtime-created tasks and cannot be set via task.create",
+        );
+      }
 
       const task = await taskStore.createTask(resolveListId(args), {
         subject,
@@ -2603,6 +2793,11 @@ export function createTaskTrackerTools(
         if (metadata === undefined) {
           return errorResult("metadata must be a plain object");
         }
+        if ("_internal" in metadata) {
+          return errorResult(
+            "metadata._internal is reserved for runtime-created tasks and cannot be set via task.update",
+          );
+        }
         patch.metadata = metadata;
         updatedFields.push("metadata");
       }
@@ -2633,6 +2828,17 @@ export function createTaskTrackerTools(
         });
       }
 
+      if (patch.addBlocks || patch.addBlockedBy) {
+        const existingTasks = await taskStore.listTasks(listId);
+        const cycleReason = detectBlockCycleForPatch({
+          tasks: existingTasks,
+          taskId,
+          ...(patch.addBlocks ? { addBlocks: patch.addBlocks } : {}),
+          ...(patch.addBlockedBy ? { addBlockedBy: patch.addBlockedBy } : {}),
+        });
+        if (cycleReason) return errorResult(cycleReason);
+      }
+
       if (
         patch.status === "in_progress" &&
         patch.owner === undefined &&
@@ -2657,13 +2863,7 @@ export function createTaskTrackerTools(
 
       const isTransitioningToCompleted =
         patch.status === "completed" && current.task.status !== "completed";
-      const shouldGuardCompletion =
-        isTransitioningToCompleted &&
-        isExplicitCompletionFlow({
-          task: current.task,
-          patch,
-        });
-      if (shouldGuardCompletion && options.onBeforeTaskComplete) {
+      if (isTransitioningToCompleted && options.onBeforeTaskComplete) {
         const guardResult = await options.onBeforeTaskComplete({
           listId,
           taskId,
@@ -2828,10 +3028,14 @@ export function createRuntimeTaskHandleTools(
     async execute(args) {
       const taskId = asNonEmptyString(args.taskId);
       if (!taskId) return errorResult("taskId must be a non-empty string");
-      const timeoutMs =
+      const requestedTimeoutMs =
         args.timeoutMs === undefined
           ? undefined
           : asPositiveInt(args.timeoutMs) ?? 0;
+      const timeoutMs =
+        requestedTimeoutMs === undefined
+          ? undefined
+          : Math.min(requestedTimeoutMs, TASK_HANDLE_MAX_TIMEOUT_MS);
       const until =
         args.until === "terminal" || args.until === "output_ready"
           ? args.until
@@ -2910,8 +3114,12 @@ export function createRuntimeTaskHandleTools(
       const taskId = asNonEmptyString(args.taskId);
       if (!taskId) return errorResult("taskId must be a non-empty string");
       const listId = resolveListId(args);
-      const timeoutMs =
+      const requestedTimeoutMs =
         args.timeoutMs !== undefined ? asPositiveInt(args.timeoutMs) ?? 0 : undefined;
+      const timeoutMs =
+        requestedTimeoutMs === undefined
+          ? undefined
+          : Math.min(requestedTimeoutMs, TASK_HANDLE_MAX_TIMEOUT_MS);
       const includeEvents = args.includeEvents === true;
       const maxBytes =
         args.maxBytes !== undefined

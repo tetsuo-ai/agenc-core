@@ -5,8 +5,14 @@ import { describe, it, expect, beforeEach } from "vitest";
 import {
   TASK_ACTOR_KIND_ARG,
   TASK_ACTOR_NAME_ARG,
+  TASK_EVENT_RETENTION_CAP,
+  TASK_HANDLE_MAX_TIMEOUT_MS,
+  TASK_HANDLE_TOOL_NAMES,
+  compactDeletedTasksInPlace,
   createRuntimeTaskHandleTools,
   createTaskTrackerTools,
+  detectBlockCycleForPatch,
+  pruneTaskEventsInPlace,
   SessionTaskStore,
   TaskStore,
   type TaskTrackerToolOptions,
@@ -16,6 +22,7 @@ import {
   isOpenTaskStatus,
   listOpenTasksForSession,
 } from "./task-tracker.js";
+import type { Task } from "./task-tracker.js";
 import type { Tool, ToolResult } from "../types.js";
 import type { MemoryBackend } from "../../memory/types.js";
 
@@ -492,15 +499,12 @@ describe("task-tracker", () => {
       expect(result.raw.isError).toBe(true);
     });
 
-    it("allows ordinary task completion even when a completion guard is configured", async () => {
-      let guardCalled = false;
+    it("invokes the completion guard on every completion transition", async () => {
+      let guardCalled = 0;
       tools = createTaskTrackerTools(store, {
         onBeforeTaskComplete: async () => {
-          guardCalled = true;
-          return {
-            outcome: "block",
-            message: "completion blocked",
-          };
+          guardCalled += 1;
+          return { outcome: "allow" };
         },
       });
       update = findTool(tools, "task.update");
@@ -517,7 +521,51 @@ describe("task-tracker", () => {
         },
       });
       expect(store.get(DEFAULT_TASK_LIST_ID, "1")?.status).toBe("completed");
-      expect(guardCalled).toBe(false);
+      expect(guardCalled).toBe(1);
+    });
+
+    it("invokes the completion guard for tasks with unresolved blockedBy entries", async () => {
+      await callTool(create, { subject: "Blocker", description: "blocker" });
+      await callTool(update, { taskId: "1", addBlockedBy: ["2"] });
+
+      let guardCalled = 0;
+      tools = createTaskTrackerTools(store, {
+        onBeforeTaskComplete: async () => {
+          guardCalled += 1;
+          return { outcome: "allow" };
+        },
+      });
+      update = findTool(tools, "task.update");
+
+      const result = await callTool(update, { taskId: "1", status: "completed" });
+
+      expect(result.raw.isError).toBeUndefined();
+      expect(result.body).toMatchObject({
+        success: true,
+        statusChange: { from: "pending", to: "completed" },
+      });
+      expect(guardCalled).toBe(1);
+    });
+
+    it("lets the completion guard block ordinary (non-verification) completions", async () => {
+      let guardCalled = false;
+      tools = createTaskTrackerTools(store, {
+        onBeforeTaskComplete: async () => {
+          guardCalled = true;
+          return {
+            outcome: "block",
+            message: "completion blocked",
+          };
+        },
+      });
+      update = findTool(tools, "task.update");
+
+      const result = await callTool(update, { taskId: "1", status: "completed" });
+
+      expect(result.raw.isError).toBe(true);
+      expect(result.body.error).toContain("completion blocked");
+      expect(store.get(DEFAULT_TASK_LIST_ID, "1")?.status).toBe("pending");
+      expect(guardCalled).toBe(true);
     });
 
     it("still blocks explicit verification tasks when the completion guard rejects them", async () => {
@@ -698,6 +746,77 @@ describe("task-tracker", () => {
         worktreePath: "/tmp/worktree-1",
       });
       expect(persistedOutput.body.events).toBeInstanceOf(Array);
+    });
+
+    it("clamps a model-supplied timeoutMs to the handle-tool cap", async () => {
+      const runtimeStore = new TaskStore();
+      const observed: number[] = [];
+      const originalWait = runtimeStore.waitForTask.bind(runtimeStore);
+      runtimeStore.waitForTask = (async (
+        listId: string,
+        taskId: string,
+        options?: { timeoutMs?: number },
+      ) => {
+        if (options?.timeoutMs !== undefined) observed.push(options.timeoutMs);
+        return originalWait(listId, taskId, options);
+      }) as typeof runtimeStore.waitForTask;
+      const tools = createRuntimeTaskHandleTools(runtimeStore);
+      const wait = findTool(tools, "task.wait");
+      const runtimeTask = await runtimeStore.createRuntimeTask({
+        listId: DEFAULT_TASK_LIST_ID,
+        kind: "subagent",
+        subject: "Delegated",
+        description: "delegated",
+      });
+      await runtimeStore.finalizeRuntimeTask({
+        listId: DEFAULT_TASK_LIST_ID,
+        taskId: runtimeTask.id,
+        status: "completed",
+        summary: "done",
+      });
+
+      await callTool(wait, {
+        taskId: runtimeTask.id,
+        until: "terminal",
+        timeoutMs: 10 * 60 * 1000,
+      });
+
+      expect(observed).toHaveLength(1);
+      expect(observed[0]).toBeLessThanOrEqual(TASK_HANDLE_MAX_TIMEOUT_MS);
+    });
+
+    it("returns not found when a task belongs to a different session listId", async () => {
+      const runtimeStore = new TaskStore();
+      const tools = createRuntimeTaskHandleTools(runtimeStore);
+      const output = findTool(tools, "task.output");
+      const otherTask = await runtimeStore.createRuntimeTask({
+        listId: "session-other",
+        kind: "subagent",
+        subject: "Someone else's task",
+        description: "not reachable from session-mine",
+      });
+      await runtimeStore.finalizeRuntimeTask({
+        listId: "session-other",
+        taskId: otherTask.id,
+        status: "completed",
+        summary: "done",
+        output: "secret",
+      });
+
+      const result = await callTool(output, {
+        [TASK_LIST_ARG]: "session-mine",
+        taskId: otherTask.id,
+      });
+
+      expect(result.raw.isError).toBe(true);
+      expect(result.body.error).toContain("not found");
+    });
+
+    it("exports stable handle tool names matching the registered tools", () => {
+      const runtimeStore = new TaskStore();
+      const tools = createRuntimeTaskHandleTools(runtimeStore);
+      const registered = new Set(tools.map((t) => t.name));
+      expect(registered).toEqual(TASK_HANDLE_TOOL_NAMES);
     });
   });
 
@@ -938,6 +1057,238 @@ describe("task-tracker", () => {
     it("treats terminal statuses as closed", () => {
       expect(isOpenTaskStatus("completed")).toBe(false);
       expect(isOpenTaskStatus("deleted")).toBe(false);
+    });
+  });
+
+  describe("metadata._internal invariant", () => {
+    it("rejects task.create with metadata._internal set", async () => {
+      const result = await callTool(create, {
+        subject: "Malicious internal task",
+        description: "should not be allowed",
+        metadata: { _internal: true },
+      });
+      expect(result.raw.isError).toBe(true);
+      expect(result.body.error).toContain("_internal");
+    });
+
+    it("rejects task.update metadata patches that include _internal", async () => {
+      await callTool(create, { subject: "Normal", description: "normal" });
+      const result = await callTool(update, {
+        taskId: "1",
+        metadata: { _internal: true },
+      });
+      expect(result.raw.isError).toBe(true);
+      expect(result.body.error).toContain("_internal");
+    });
+  });
+
+  describe("block cycle detection", () => {
+    beforeEach(async () => {
+      await callTool(create, { subject: "A", description: "a" });
+      await callTool(create, { subject: "B", description: "b" });
+      await callTool(create, { subject: "C", description: "c" });
+    });
+
+    it("rejects a self-block via addBlocks", async () => {
+      const result = await callTool(update, {
+        taskId: "1",
+        addBlocks: ["1"],
+      });
+      expect(result.raw.isError).toBe(true);
+      expect(result.body.error).toContain("cannot block itself");
+    });
+
+    it("rejects a self-block via addBlockedBy", async () => {
+      const result = await callTool(update, {
+        taskId: "1",
+        addBlockedBy: ["1"],
+      });
+      expect(result.raw.isError).toBe(true);
+      expect(result.body.error).toContain("blocked by itself");
+    });
+
+    it("rejects a direct 2-task cycle", async () => {
+      await callTool(update, { taskId: "1", addBlocks: ["2"] });
+      const result = await callTool(update, {
+        taskId: "2",
+        addBlocks: ["1"],
+      });
+      expect(result.raw.isError).toBe(true);
+      expect(result.body.error).toContain("cycle");
+    });
+
+    it("rejects an indirect 3-task cycle", async () => {
+      await callTool(update, { taskId: "1", addBlocks: ["2"] });
+      await callTool(update, { taskId: "2", addBlocks: ["3"] });
+      const result = await callTool(update, {
+        taskId: "3",
+        addBlocks: ["1"],
+      });
+      expect(result.raw.isError).toBe(true);
+      expect(result.body.error).toContain("cycle");
+    });
+
+    it("allows non-cyclic additions", async () => {
+      await callTool(update, { taskId: "1", addBlocks: ["2"] });
+      const result = await callTool(update, {
+        taskId: "2",
+        addBlocks: ["3"],
+      });
+      expect(result.raw.isError).toBeUndefined();
+      expect(result.body.success).toBe(true);
+    });
+  });
+
+  describe("pruneTaskEventsInPlace", () => {
+    function buildTaskWithEvents(count: number): Task {
+      const events = [
+        {
+          id: "ev-0",
+          type: "created" as const,
+          summary: "created",
+          timestamp: 0,
+        },
+      ];
+      for (let i = 1; i <= count; i += 1) {
+        events.push({
+          id: `ev-${i}`,
+          type: "updated" as const,
+          summary: `update ${i}`,
+          timestamp: i,
+        });
+      }
+      events.push({
+        id: `ev-final`,
+        type: "completed" as const,
+        summary: "done",
+        timestamp: count + 1,
+      });
+      return {
+        id: "1",
+        kind: "manual",
+        ownerSessionId: "list-a",
+        subject: "s",
+        description: "d",
+        status: "completed",
+        blocks: [],
+        blockedBy: [],
+        events,
+        createdAt: 0,
+        updatedAt: count + 1,
+      };
+    }
+
+    it("is a no-op when events are below the retention cap", () => {
+      const task = buildTaskWithEvents(5);
+      const mutated = pruneTaskEventsInPlace(task);
+      expect(mutated).toBe(false);
+      expect(task.events).toHaveLength(7);
+    });
+
+    it("preserves the created event and all transition events when pruning", () => {
+      const task = buildTaskWithEvents(TASK_EVENT_RETENTION_CAP + 20);
+      const mutated = pruneTaskEventsInPlace(task);
+      expect(mutated).toBe(true);
+      expect(task.events[0]?.type).toBe("created");
+      expect(task.events.some((event) => event.type === "completed")).toBe(true);
+      expect(task.events.length).toBeLessThanOrEqual(TASK_EVENT_RETENTION_CAP);
+    });
+
+    it("inserts a single truncation marker event when pruning happens", () => {
+      const task = buildTaskWithEvents(TASK_EVENT_RETENTION_CAP + 40);
+      pruneTaskEventsInPlace(task);
+      const markers = task.events.filter(
+        (event) =>
+          event.type === "updated" &&
+          event.summary === "Event log truncated to retention cap",
+      );
+      expect(markers).toHaveLength(1);
+
+      pruneTaskEventsInPlace(task);
+      const markersAgain = task.events.filter(
+        (event) =>
+          event.type === "updated" &&
+          event.summary === "Event log truncated to retention cap",
+      );
+      expect(markersAgain).toHaveLength(1);
+    });
+  });
+
+  describe("compactDeletedTasksInPlace", () => {
+    it("removes only deleted entries and preserves order", () => {
+      const tasks = [
+        { status: "pending" },
+        { status: "deleted" },
+        { status: "completed" },
+        { status: "deleted" },
+        { status: "in_progress" },
+      ];
+      const removed = compactDeletedTasksInPlace(tasks);
+      expect(removed).toBe(2);
+      expect(tasks.map((t) => t.status)).toEqual([
+        "pending",
+        "completed",
+        "in_progress",
+      ]);
+    });
+
+    it("is a no-op when nothing is deleted", () => {
+      const tasks = [{ status: "pending" }, { status: "completed" }];
+      expect(compactDeletedTasksInPlace(tasks)).toBe(0);
+    });
+  });
+
+  describe("detectBlockCycleForPatch helper", () => {
+    it("flags direct self-blocks", () => {
+      expect(
+        detectBlockCycleForPatch({
+          tasks: [],
+          taskId: "1",
+          addBlocks: ["1"],
+        }),
+      ).toMatch(/cannot block itself/);
+    });
+
+    it("flags cycles formed via addBlockedBy", () => {
+      expect(
+        detectBlockCycleForPatch({
+          tasks: [{ id: "1", blocks: ["2"], blockedBy: [] }],
+          taskId: "2",
+          addBlocks: ["1"],
+        }),
+      ).toMatch(/cycle/);
+    });
+
+    it("returns undefined for non-cyclic additions", () => {
+      expect(
+        detectBlockCycleForPatch({
+          tasks: [{ id: "1", blocks: [], blockedBy: [] }],
+          taskId: "1",
+          addBlocks: ["2"],
+        }),
+      ).toBeUndefined();
+    });
+  });
+
+  describe("soft-delete compaction", () => {
+    it("removes deleted tasks from the backing list on the next GC sweep", async () => {
+      await callTool(create, { subject: "A", description: "a" });
+      await callTool(create, { subject: "B", description: "b" });
+      await callTool(update, { taskId: "1", status: "deleted" });
+
+      const rawBeforeGc = store.get(DEFAULT_TASK_LIST_ID, "1");
+      expect(rawBeforeGc).toBeUndefined();
+
+      // Drive 50 more persists so the interval (50) triggers compaction.
+      for (let i = 0; i < 50; i += 1) {
+        await callTool(update, {
+          taskId: "2",
+          description: `revision ${i}`,
+        });
+      }
+      const listed = store.list(DEFAULT_TASK_LIST_ID);
+      expect(listed).toHaveLength(1);
+      expect(listed[0]?.id).toBe("2");
     });
   });
 });

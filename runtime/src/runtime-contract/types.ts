@@ -197,6 +197,16 @@ export interface RuntimeTaskHandle {
   readonly kind: string;
   readonly status: string;
   readonly updatedAt?: number;
+  /** Brief, human-readable task title (e.g. "Run migration"). */
+  readonly subject?: string;
+  /**
+   * Present-continuous form of the subject shown while the task is
+   * in_progress (e.g. "Running migration"). When absent, renderers
+   * should fall back to the subject.
+   */
+  readonly activeForm?: string;
+  /** Agent id or name currently claiming the task. */
+  readonly owner?: string;
   readonly summary?: string;
   readonly externalRef?: {
     readonly kind: string;
@@ -226,6 +236,12 @@ export interface RuntimeContractStatusSnapshot {
   readonly omittedTaskCount: number;
   readonly omittedWorkerCount: number;
   readonly omittedMilestoneCount: number;
+  /**
+   * Small tail of tasks that recently reached a terminal status. Used
+   * by read-only panels to show "just-completed" context alongside
+   * {@link openTasks}. Kept bounded so snapshots stay small.
+   */
+  readonly recentCompletedTasks?: readonly RuntimeTaskHandle[];
 }
 
 export type RuntimeMailboxDirection = "parent_to_worker" | "worker_to_parent";

@@ -461,6 +461,9 @@ export async function executeWebChatConversationTurn(
       activeToolNames: new Set<string>(advertisedToolNames),
       todos: todosForAttachment,
       tasks: tasksForAttachment,
+      ...(sessionActiveTaskContext
+        ? { activeTaskContext: sessionActiveTaskContext }
+        : {}),
     });
     const effectiveHistory =
       runtimeAttachments.messages.length > 0

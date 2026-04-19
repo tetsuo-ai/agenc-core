@@ -328,11 +328,16 @@ export async function executeTextChannelTurn(
   const tasksForAttachment = params.readTasksForSession
     ? await params.readTasksForSession(msg.sessionId)
     : [];
+  const sessionActiveTaskContextForAttachment =
+    buildSessionActiveTaskContext(session);
   const runtimeAttachments = collectAttachments({
     history: historyBeforeAttachments,
     activeToolNames: new Set<string>(advertisedToolNames),
     todos: todosForAttachment,
     tasks: tasksForAttachment,
+    ...(sessionActiveTaskContextForAttachment
+      ? { activeTaskContext: sessionActiveTaskContextForAttachment }
+      : {}),
   });
   const effectiveHistory =
     runtimeAttachments.messages.length > 0
@@ -410,7 +415,7 @@ export async function executeTextChannelTurn(
   }
 
   const sessionStateful = buildSessionStatefulOptions(session);
-  const sessionActiveTaskContext = buildSessionActiveTaskContext(session);
+  const sessionActiveTaskContext = sessionActiveTaskContextForAttachment;
   const isConcordiaGenerateAgentsTurn = isConcordiaGenerateAgentsMessage(msg);
   const structuredOutput =
     buildConcordiaGenerateAgentsStructuredOutput(msg);

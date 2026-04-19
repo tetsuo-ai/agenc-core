@@ -26,6 +26,7 @@
 
 import type { LLMMessage } from "./types.js";
 import type { TodoItem } from "../tools/system/todo-store.js";
+import type { ActiveTaskContext } from "./turn-execution-contract-types.js";
 import {
   buildTodoReminderMessage,
   shouldInjectTodoReminder,
@@ -39,6 +40,10 @@ import {
   buildVerifyReminderMessage,
   shouldInjectVerifyReminder,
 } from "./verify-reminder.js";
+import {
+  buildActiveTaskContextMessage,
+  shouldInjectActiveTaskContext,
+} from "./active-task-context-prompt.js";
 
 export interface AttachmentContext {
   readonly history: readonly LLMMessage[];
@@ -61,6 +66,14 @@ export interface AttachmentContext {
    */
   readonly mutatingEditsSinceLastVerifierSpawn?: number;
   readonly assistantTurnsSinceLastVerifyReminder?: number;
+  /**
+   * Current turn-execution contract. Surfaces workspace root and the
+   * source/target artifact lists to the model via a compact
+   * system-reminder block. Injection is fingerprint-deduplicated
+   * against history so the block refreshes when the context changes
+   * but does not accumulate when it stays the same.
+   */
+  readonly activeTaskContext?: ActiveTaskContext;
 }
 
 export interface AttachmentInjectionResult {
@@ -97,6 +110,14 @@ export function collectAttachments(
     })
   ) {
     messages.push(buildVerifyReminderMessage());
+  }
+  if (
+    shouldInjectActiveTaskContext({
+      history: ctx.history,
+      activeTaskContext: ctx.activeTaskContext,
+    })
+  ) {
+    messages.push(buildActiveTaskContextMessage(ctx.activeTaskContext!));
   }
   return { messages };
 }

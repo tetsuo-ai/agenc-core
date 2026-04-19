@@ -124,6 +124,7 @@ export type PersistedWebSessionRuntimeState = PersistedSessionReplayState;
 const MAX_STATUS_SNAPSHOT_TASKS = 20;
 const MAX_STATUS_SNAPSHOT_WORKERS = 10;
 const MAX_STATUS_SNAPSHOT_MILESTONES = 20;
+const MAX_STATUS_SNAPSHOT_RECENT_COMPLETED = 3;
 
 function isTerminalStopReason(
   value: unknown,
@@ -155,6 +156,9 @@ function buildRuntimeTaskHandle(task: Task): RuntimeTaskHandle {
     kind: task.kind,
     status: task.status,
     updatedAt: task.updatedAt,
+    ...(task.subject !== undefined ? { subject: task.subject } : {}),
+    ...(task.activeForm !== undefined ? { activeForm: task.activeForm } : {}),
+    ...(task.owner !== undefined ? { owner: task.owner } : {}),
     ...(task.summary !== undefined ? { summary: task.summary } : {}),
     ...(task.externalRef !== undefined
       ? { externalRef: { ...task.externalRef } }
@@ -1215,19 +1219,30 @@ export async function buildRuntimeContractStatusSnapshotForSession(params: {
     return undefined;
   }
 
-  const tasks = params.taskStore
-    ? (await params.taskStore.listTasks(params.sessionId)).filter(
-        (task) =>
-          task.status !== "deleted" &&
-          task.status !== "completed" &&
-          task.status !== "failed" &&
-          task.status !== "cancelled",
-      )
+  const allTasks = params.taskStore
+    ? await params.taskStore.listTasks(params.sessionId)
     : [];
+  const tasks = allTasks.filter(
+    (task) =>
+      task.status !== "deleted" &&
+      task.status !== "completed" &&
+      task.status !== "failed" &&
+      task.status !== "cancelled",
+  );
   const openTasks = tasks
     .sort((left, right) => right.updatedAt - left.updatedAt)
     .map(buildRuntimeTaskHandle);
   const truncatedTasks = openTasks.slice(0, MAX_STATUS_SNAPSHOT_TASKS);
+  const recentCompletedTasks = allTasks
+    .filter(
+      (task) =>
+        task.status === "completed" ||
+        task.status === "failed" ||
+        task.status === "cancelled",
+    )
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .slice(0, MAX_STATUS_SNAPSHOT_RECENT_COMPLETED)
+    .map(buildRuntimeTaskHandle);
 
   const workers = params.workerManager
     ? (await params.workerManager.listWorkers(params.sessionId)).filter(
@@ -1272,6 +1287,9 @@ export async function buildRuntimeContractStatusSnapshotForSession(params: {
       0,
       remainingMilestones.length - truncatedMilestones.length,
     ),
+    ...(recentCompletedTasks.length > 0
+      ? { recentCompletedTasks }
+      : {}),
   };
 }
 
