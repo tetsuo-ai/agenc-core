@@ -94,11 +94,33 @@ import { evaluateTurnEndStopGate } from "./chat-executor-stop-gate-evaluation.js
 
 /**
  * Number of times one recovery-hint key may fire in a single turn before
- * the loop escalates to a text-only user handoff. Chosen to match the
- * existing `FAILED_TOOL_RECOVERY_STREAK`: after three rounds of the same
- * specific diagnostic, the model is not recovering on its own.
+ * the loop escalates to a text-only user handoff. Only rounds where the
+ * model made NO successful workspace mutation count toward the limit —
+ * when the model is actively editing files between the same recurring
+ * hint (classic "fix errors one at a time, some iterations re-trigger
+ * the same diagnostic"), we're progressing and should not escalate.
+ *
+ * Observed session pre-mutation-gating: 83 calls, 3 compiler hints fired
+ * for the same `lexer.c:295:30` location while the model was editing
+ * alias.c, shell_state.h, and alias.c again in between. The tripwire
+ * killed the turn at "no_progress" even though workspace state was
+ * actively changing.
  */
 const STALL_HINT_REPEAT_LIMIT = 3;
+
+/**
+ * Tool names that count as a "successful workspace mutation" for the
+ * purposes of gating the stall tripwire. Kept in sync with
+ * `SUCCESSFUL_MUTATION_TOOL_NAMES` in chat-executor-continuation.ts.
+ */
+const STALL_MUTATION_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "system.appendFile",
+  "system.editFile",
+  "system.mkdir",
+  "system.move",
+  "system.writeFile",
+  "desktop.text_editor",
+]);
 
 /**
  * Recovery-hint key prefixes that count toward the stall tripwire. Kept
@@ -596,6 +618,16 @@ export async function executeToolCallLoop(
     // call to be text-only so the loop ends cleanly on the model's
     // response instead of burning another round of tool calls.
     let stallEscalatedThisRound = false;
+    // Mutation gate: if this round produced any successful workspace
+    // mutation, the model is actively progressing (just not on the
+    // exact error the hint keys on). Reset all stall counters for
+    // STALL_ESCALATION prefixes so the turn keeps going. Only pure
+    // rebuild-without-edit cycles escalate.
+    const roundHadSuccessfulMutation = roundCalls.some(
+      (call) =>
+        STALL_MUTATION_TOOL_NAMES.has(call.name) &&
+        !didToolCallFail(call.isError, call.result),
+    );
     if (!stallEscalationTriggered) {
       for (const hint of recoveryHints) {
         if (
@@ -603,6 +635,13 @@ export async function executeToolCallLoop(
             hint.key.startsWith(prefix),
           )
         ) {
+          continue;
+        }
+        if (roundHadSuccessfulMutation) {
+          // Model edited something this round — reset the stall
+          // counter for this hint key. Fresh 3-strike window starts
+          // only after an unbroken streak of zero-mutation rounds.
+          hintKeyRepeatCounts.set(hint.key, 0);
           continue;
         }
         const nextCount = (hintKeyRepeatCounts.get(hint.key) ?? 0) + 1;
