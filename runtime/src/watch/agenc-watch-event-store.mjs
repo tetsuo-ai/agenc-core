@@ -207,10 +207,21 @@ export function createWatchEventStore(dependencies = {}) {
     if (!Array.isArray(history)) {
       return;
     }
+    // Preserve the user's manual scroll position across a history
+    // restore. Previously this unconditionally reset
+    // transcriptScrollOffset=0 and transcriptFollowMode=true so every
+    // reconnect/history replay dumped the user back at the bottom
+    // mid-read. If they were actively following (at bottom) we still
+    // want to stay pinned; otherwise keep their offset and mode.
+    const wasFollowingAtRestore =
+      watchState.transcriptFollowMode === true &&
+      (watchState.transcriptScrollOffset ?? 0) === 0;
     events.length = 0;
     clearAgentStreamingPreview();
-    watchState.transcriptScrollOffset = 0;
-    watchState.transcriptFollowMode = true;
+    if (wasFollowingAtRestore) {
+      watchState.transcriptScrollOffset = 0;
+      watchState.transcriptFollowMode = true;
+    }
     watchState.detailScrollOffset = 0;
     for (const entry of history.slice(-maxEvents)) {
       const sender = String(entry?.sender ?? "").toLowerCase();

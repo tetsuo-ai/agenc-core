@@ -113,9 +113,28 @@ test("event store restores transcript history and clears stale expanded selectio
   assert.equal(events[1].renderMode, "markdown");
   assert.equal(events[1].canonicalReply, true);
   assert.equal(events[1].timestamp, "history:2026-03-14T00:00:01.000Z");
-  assert.equal(watchState.transcriptScrollOffset, 0);
+  // Harness starts with transcriptScrollOffset=12, transcriptFollowMode=false
+  // (user was manually scrolled up). History restore must preserve that
+  // scroll state — the prior behavior unconditionally snapped to
+  // bottom, which yanked users mid-read on reconnect/replay.
+  assert.equal(watchState.transcriptScrollOffset, 12);
+  assert.equal(watchState.transcriptFollowMode, false);
   assert.equal(watchState.detailScrollOffset, 0);
   assert.equal(watchState.expandedEventId, null);
+});
+
+test("event store history restore keeps a follow-mode user pinned at bottom", () => {
+  const { store, watchState } = createHarness();
+  watchState.transcriptScrollOffset = 0;
+  watchState.transcriptFollowMode = true;
+
+  store.restoreTranscriptFromHistory([
+    { sender: "user", content: "hi", timestamp: "2026-03-14T00:00:00.000Z" },
+    { sender: "assistant", content: "there", timestamp: "2026-03-14T00:00:01.000Z" },
+  ]);
+
+  assert.equal(watchState.transcriptScrollOffset, 0);
+  assert.equal(watchState.transcriptFollowMode, true);
 });
 
 test("event store preserves full truncated assistant history as detail body", () => {

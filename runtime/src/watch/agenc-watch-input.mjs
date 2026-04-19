@@ -441,10 +441,14 @@ export function createWatchInputController(dependencies = {}) {
     while (index < input.length) {
       const mouseWheel = parseMouseWheelSequence(input, index);
       if (mouseWheel) {
+        // Only trigger a render when an actual wheel scroll fired —
+        // non-wheel mouse events (clicks, drags) were previously
+        // flagged as mutations and forced a full re-render each time
+        // the user moved the cursor across the terminal.
         if (mouseWheel.isWheel && mouseWheel.delta !== 0) {
           scrollCurrentViewBy(mouseWheel.delta);
+          didMutate = true;
         }
-        didMutate = true;
         index += mouseWheel.length;
         continue;
       }
@@ -533,6 +537,24 @@ export function createWatchInputController(dependencies = {}) {
       if (char === "\x1b") {
         index = handleTerminalEscapeSequence(input, index);
         didMutate = true;
+        continue;
+      }
+      // `j` / `k` scroll the transcript when the composer is empty,
+      // regardless of keybinding profile. Previously these only
+      // scrolled in vim-normal mode, leaving default-profile users
+      // with no single-key scroll path. When the composer has text,
+      // fall through so they insert as literal characters.
+      if (
+        (char === "j" || char === "k") &&
+        typeof watchState.composerInput === "string" &&
+        watchState.composerInput.length === 0 &&
+        !hasActiveComposerPalette() &&
+        !hasActiveMarketTaskBrowser() &&
+        !isVimNormalMode()
+      ) {
+        scrollCurrentViewBy(char === "k" ? 1 : -1);
+        didMutate = true;
+        index += 1;
         continue;
       }
       if (isVimNormalMode()) {
