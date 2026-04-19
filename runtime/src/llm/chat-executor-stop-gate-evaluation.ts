@@ -170,6 +170,7 @@ export async function evaluateTurnEndStopGate(
         sessionId: ctx.sessionId,
         runtimeWorkspaceRoot: ctx.runtimeWorkspaceRoot,
         finalContent: ctx.response?.content ?? "",
+        userMessageText: ctx.messageText,
         allToolCalls: ctx.allToolCalls,
         turnEndSnapshot: buildTurnEndStopGateSnapshot(ctx.allToolCalls),
         runtimeChecks: {

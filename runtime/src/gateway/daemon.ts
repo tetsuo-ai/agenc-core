@@ -1033,6 +1033,26 @@ export class DaemonManager {
     | null = null;
   private _sessionCredentialBroker: SessionCredentialBroker | null = null;
   private _webSessionManager: SessionManager | null = null;
+  /**
+   * Per-session inbound serialization queue. Two messages on the same
+   * session that arrive close together (e.g. the TUI dispatching `/plan
+   * {oneshot:true}` followed by the actual chat text 60ms later, or
+   * any user double-tap) used to interleave async handlers because
+   * `handleWebChatInboundMessage` was fire-and-forget. The chat
+   * handler's session.metadata read could race the command handler's
+   * write, breaking the one-shot plan-mode flag and any other
+   * mid-handler state.
+   *
+   * Each session keeps a tail Promise; new inbound work chains onto
+   * the tail so messages are processed strictly in arrival order on
+   * each session. Cross-session work remains parallel. Cleared when a
+   * session's chain settles to keep the map bounded.
+   *
+   * Replaces the 300ms `setTimeout` band-aid in PR #476 with a real
+   * runtime-level guarantee.
+   */
+  private readonly _webSessionInboundChain: Map<string, Promise<void>> =
+    new Map();
   private _telemetry: UnifiedTelemetryCollector | null = null;
   private _incidentDiagnostics: RuntimeIncidentDiagnostics | null = null;
   private _hookDispatcher: HookDispatcher | null = null;
@@ -6715,8 +6735,20 @@ export class DaemonManager {
   private createWebChatMessageHandler(
     params: WebChatMessageHandlerDeps,
   ): (msg: GatewayMessage) => Promise<void> {
-    return async (msg: GatewayMessage): Promise<void> =>
-      this.handleWebChatInboundMessage(msg, params);
+    return (msg: GatewayMessage): Promise<void> => {
+      const key = msg.sessionId;
+      const prior = this._webSessionInboundChain.get(key) ?? Promise.resolve();
+      const next = prior
+        .catch(() => undefined)
+        .then(() => this.handleWebChatInboundMessage(msg, params));
+      this._webSessionInboundChain.set(key, next);
+      void next.finally(() => {
+        if (this._webSessionInboundChain.get(key) === next) {
+          this._webSessionInboundChain.delete(key);
+        }
+      });
+      return next;
+    };
   }
 
   private createTracedSessionToolHandler(params: {

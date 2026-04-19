@@ -127,6 +127,16 @@ interface SessionReadSnapshot {
   readonly content?: string | null;
   readonly timestamp?: number;
   readonly viewKind?: SessionReadViewKind;
+  /**
+   * For partial reads (`viewKind === "partial"`), the exact line offset
+   * the model passed. Stored so a subsequent read with the identical
+   * `(offset, limit)` and unchanged mtime can serve from the cache
+   * stub — matches Claude Code's range-aware FILE_UNCHANGED dedup
+   * (claude_code/tools/FileReadTool/FileReadTool.ts:547-573).
+   */
+  readonly readOffset?: number;
+  /** For partial reads, the exact line limit the model passed. */
+  readonly readLimit?: number;
 }
 
 export interface SessionReadSeedEntry {
@@ -1226,32 +1236,44 @@ function createReadFileTool(
         }
 
         // Cache-hit short-circuit: if this session already read this
-        // path in full and the file's mtime is unchanged, return the
-        // FILE_UNCHANGED_STUB instead of re-reading. Mirrors the
-        // upstream reference runtime's readFileCache. Only fires for
-        // full-file reads (no offset/limit narrowing) to keep the
-        // semantics simple; partial reads always go through the
-        // normal path.
+        // path and the file's mtime is unchanged, return the
+        // FILE_UNCHANGED_STUB instead of re-reading. Mirrors Claude
+        // Code's range-aware FILE_UNCHANGED dedup
+        // (claude_code/tools/FileReadTool/FileReadTool.ts:547-573):
+        // full reads dedup against a prior full read; partial reads
+        // dedup only when the exact `(offset, limit)` matches the
+        // prior partial read for the same path. A different slice
+        // always falls through.
         const cacheHitSessionId = resolveSessionId(args);
         const requestedReadWindow = resolveReadWindow(args);
-        if (
-          cacheHitSessionId &&
+        const requestedIsFull =
           requestedReadWindow.startLine === undefined &&
-          requestedReadWindow.limit === undefined
-        ) {
+          requestedReadWindow.limit === undefined;
+        if (cacheHitSessionId) {
           const priorSnapshot = getSessionReadSnapshot(
             cacheHitSessionId,
             resolved!,
           );
           const priorTimestamp = priorSnapshot?.timestamp;
           const currentTimestamp = getFileTimestampMs(fileStats);
-          if (
+          const mtimeMatches =
             priorSnapshot !== undefined &&
-            priorSnapshot.viewKind === "full" &&
             typeof priorTimestamp === "number" &&
             typeof currentTimestamp === "number" &&
-            priorTimestamp === currentTimestamp
-          ) {
+            priorTimestamp === currentTimestamp;
+          const priorIsFull =
+            priorSnapshot?.viewKind === "full" &&
+            priorSnapshot.readOffset === undefined &&
+            priorSnapshot.readLimit === undefined;
+          const partialRangeMatches =
+            priorSnapshot?.viewKind === "partial" &&
+            !requestedIsFull &&
+            priorSnapshot.readOffset === requestedReadWindow.startLine &&
+            priorSnapshot.readLimit === requestedReadWindow.limit;
+          const cacheEligible =
+            mtimeMatches &&
+            ((requestedIsFull && priorIsFull) || partialRangeMatches);
+          if (cacheEligible) {
             // The stub assumes the model still has the prior content in
             // context. After compaction or aggressive history rotation
             // that breaks; the model then loops, re-reading the same
@@ -1303,6 +1325,12 @@ function createReadFileTool(
             content: sliced.content,
             timestamp: getFileTimestampMs(fileStats),
             viewKind: sliced.viewKind,
+            ...(readWindow.startLine !== undefined
+              ? { readOffset: readWindow.startLine }
+              : {}),
+            ...(readWindow.limit !== undefined
+              ? { readLimit: readWindow.limit }
+              : {}),
           });
           return {
             content: safeStringify({

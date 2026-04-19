@@ -193,6 +193,42 @@ const TERMINAL_COMPLETION_RE =
   /\b(?:task\s+(?:complete|completed|done|finished)|all\s+phases?\s+(?:complete|completed|done|finished|implemented)|all\s+phases?\s+of\s+[^\n]{0,120}?\s+have\s+been\s+(?:complete|completed|done|finished|implemented)|all\s+phases?\b(?:[^.!?\n]{0,80})\b(?:complete|completed|done|finished|implemented)|implementation\s+(?:complete|completed|done|finished)|implementation\s+of\s+[^\n]{0,160}?\s+(?:is\s+)?(?:complete|completed|done|finished)|nothing\s+(?:more|else)\s+to\s+(?:do|implement)|session\s+(?:complete|done|finished)|finished\s+the\s+(?:task|work|implementation|plan)|project\s+(?:complete|completed|done|finished))/i;
 
 /**
+ * Patterns in the user's most recent message that explicitly request a
+ * textual report, list, summary, or gap analysis. When detected, the
+ * narration detector is suppressed for the resulting turn — the user
+ * asked for prose enumerating future or incomplete work, so an answer
+ * that mentions Phase 2, what's incomplete, or next milestones is
+ * exactly the requested output rather than a checkpoint.
+ *
+ * Observed false positive (PR pre-trace at 2026-04-19T08:06): user
+ * asked "verify Phase 1 builds and tests pass and report what's
+ * incomplete from the plan", model produced a full Verification
+ * Result + gap enumeration, stop-gate matched "Phase 2 (Token Model
+ * & Lexer Core) – only partially done" against
+ * NARRATED_FUTURE_TOOL_WORK_RE and pumped 2 retry rounds before the
+ * model surrendered with a watered-down "M1 Phase 1 is complete"
+ * handwave that DROPPED the requested gap enumeration entirely.
+ */
+const REPORT_REQUEST_RE =
+  /\b(?:report|list|enumerate|summari[sz]e|tell\s+me|explain|describe|what['']s\s+(?:incomplete|missing|left|remaining|unfinished|next|done|complete|finished|covered)|what\s+(?:is|are)\s+(?:incomplete|missing|left|remaining|unfinished|next|done|complete|finished|covered)|gaps?\b|status\s+(?:report|update|of|on))/i;
+
+/**
+ * Detects structured report output: a response that has at least two
+ * markdown headings (bold or hash) AND at least three bulleted list
+ * items. The combination is a strong signal that the model is producing
+ * a deliberate textual report rather than an off-the-cuff checkpoint.
+ * Used as a softener for the narration detector when the response also
+ * shows substantive prior tool work in the same turn.
+ */
+function looksLikeStructuredReport(finalContent: string): boolean {
+  const headingMatches =
+    finalContent.match(/(?:^|\n)\s*(?:#{1,6}\s+\S|\*\*[^*\n]{2,80}\*\*)/g) ?? [];
+  const bulletMatches =
+    finalContent.match(/(?:^|\n)\s*(?:[-*+]\s+\S|\d+\.\s+\S)/g) ?? [];
+  return headingMatches.length >= 2 && bulletMatches.length >= 3;
+}
+
+/**
  * Tool names whose failures count as "this turn had a failed shell
  * command", which is the strongest signal that a success claim is fake.
  * Reading file errors and lookup failures are excluded to avoid
@@ -278,6 +314,13 @@ export interface EvaluateTurnEndStopGateParams {
   readonly snapshot?: TurnEndStopGateSnapshot;
   readonly requiredToolEvidence?: ChatExecuteParams["requiredToolEvidence"];
   readonly runtimeContext?: ChatExecuteParams["runtimeContext"];
+  /**
+   * The user's most recent inbound message text for this turn. When the
+   * user explicitly asked for a report/list/gap-analysis the narration
+   * detector is suppressed because the answer is the requested output,
+   * not a checkpoint.
+   */
+  readonly userMessageText?: string;
 }
 
 export interface TurnEndStopGateSnapshot {
@@ -873,6 +916,9 @@ export function evaluateTurnEndStopGate(
       refusedCalls,
       evidence,
       requiredToolEvidence: params.requiredToolEvidence,
+      ...(typeof params.userMessageText === "string"
+        ? { userMessageText: params.userMessageText }
+        : {}),
     });
   }
 
@@ -967,6 +1013,9 @@ export function evaluateTurnEndStopGate(
     refusedCalls,
     evidence,
     requiredToolEvidence: params.requiredToolEvidence,
+    ...(typeof params.userMessageText === "string"
+      ? { userMessageText: params.userMessageText }
+      : {}),
   });
 }
 
@@ -1153,6 +1202,7 @@ function maybeFireNarratedFutureToolWork(params: {
   readonly refusedCalls: readonly ToolCallRecord[];
   readonly evidence: StopGateEvidence;
   readonly requiredToolEvidence?: ChatExecuteParams["requiredToolEvidence"];
+  readonly userMessageText?: string;
 }): StopGateInterventionDecision {
   const trimmed = params.finalContent.trimEnd();
   if (params.allToolCalls.length === 0) {
@@ -1164,6 +1214,30 @@ function maybeFireNarratedFutureToolWork(params: {
   const narrated = NARRATED_FUTURE_TOOL_WORK_RE.test(params.finalContent);
   const permissionQuestion = MID_TASK_PERMISSION_QUESTION_RE.test(trimmed);
   if (!narrated && !permissionQuestion) {
+    return { shouldIntervene: false, evidence: params.evidence };
+  }
+  // The user explicitly asked for a textual report/list/gap-analysis
+  // reply. Whatever the model produced — including phrasing like "Phase
+  // 2 is the next milestone" or "X is partially done" — is the
+  // requested deliverable, not a checkpoint to recover from. Skip the
+  // narration detector entirely so we don't pump retry rounds against
+  // the user's own request.
+  if (
+    typeof params.userMessageText === "string" &&
+    REPORT_REQUEST_RE.test(params.userMessageText)
+  ) {
+    return { shouldIntervene: false, evidence: params.evidence };
+  }
+  // Structured-report softener: when the model produced a multi-heading
+  // bulleted report AND the turn already did substantive tool work
+  // (>= 5 calls), trust that the prose is the deliberate report and
+  // skip the narration detector. This catches gap-enumeration outputs
+  // even when the user's prompt didn't use the explicit "report"
+  // wording the regex above looks for.
+  if (
+    params.allToolCalls.length >= 5 &&
+    looksLikeStructuredReport(params.finalContent)
+  ) {
     return { shouldIntervene: false, evidence: params.evidence };
   }
   if (

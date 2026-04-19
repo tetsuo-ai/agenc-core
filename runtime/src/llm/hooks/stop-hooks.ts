@@ -70,6 +70,13 @@ export interface StopHookContext {
   readonly sessionId: string;
   readonly runtimeWorkspaceRoot?: string;
   readonly finalContent?: string;
+  /**
+   * The user's most recent inbound message text for this turn. Used by
+   * the turn_end_stop_gate's narration detector to suppress
+   * intervention when the user explicitly asked for a textual report,
+   * list, gap analysis, or "what's incomplete" enumeration.
+   */
+  readonly userMessageText?: string;
   readonly allToolCalls?: readonly ToolCallRecord[];
   readonly turnEndSnapshot?: TurnEndStopGateSnapshot;
   readonly runtimeChecks?: {
@@ -175,6 +182,9 @@ function buildBuiltinStopHookDefinitions(): readonly StopHookRuntimeDefinition[]
           runtimeContext: {
             workspaceRoot: context.runtimeWorkspaceRoot,
           },
+          ...(typeof context.userMessageText === "string"
+            ? { userMessageText: context.userMessageText }
+            : {}),
         });
         return {
           hookId: BUILTIN_TURN_END_STOP_GATE_ID,
