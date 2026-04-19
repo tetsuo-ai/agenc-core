@@ -1128,11 +1128,6 @@ export function buildRecoveryHints(
     emittedHints.add(roundHint.key);
     hints.push(roundHint);
   }
-  const repeatReadHint = inferRepeatReadFileHint(recentCalls);
-  if (repeatReadHint && !emittedHints.has(repeatReadHint.key)) {
-    emittedHints.add(repeatReadHint.key);
-    hints.push(repeatReadHint);
-  }
   for (const call of roundCalls) {
     const hint = inferRecoveryHint(call);
     if (!hint) continue;
@@ -1141,65 +1136,6 @@ export function buildRecoveryHints(
     hints.push(hint);
   }
   return hints;
-}
-
-/**
- * Repeat-read-on-success detector. Every other recovery-hint branch
- * gates on `didToolCallFail`, so a model that cheerfully calls
- * `system.readFile` on the same path 9 times in one turn (because it
- * keeps deciding the prior content might be stale) emits zero hints
- * and zero stall escalations. PR #481 fixed the cost driver
- * (truncated tool results making prior reads look incomplete), but
- * the runtime still has no defense if the model self-induces a read
- * loop for any other reason.
- *
- * When the same file path appears as a successful `system.readFile`
- * target three or more times in the recent-call window, inject a
- * single hint reminding the model that the prior content is still in
- * its context. The hint is keyed by tool+path so it dedupes across
- * rounds and only nudges once per loop.
- */
-function inferRepeatReadFileHint(
-  recentCalls: readonly ToolCallRecord[],
-): RecoveryHint | undefined {
-  const REPEAT_READ_THRESHOLD = 3;
-  const counts = new Map<string, number>();
-  for (const call of recentCalls) {
-    // ToolCallRecord uses `name`, not `tool` — the original PR #482
-    // wording assumed `tool` (copying from chat.dispatch events).
-    // With the wrong field, every comparison was `undefined !==
-    // "system.readFile"` → always continue → counts always empty →
-    // hint never fires. Traced in a 126-call session that re-read
-    // lexer.c 19 times, alias.c 15 times, heredoc.c 12 times with
-    // zero recovery_hints_injected events.
-    if (call.name !== "system.readFile") continue;
-    if (didToolCallFail(call.isError, call.result)) continue;
-    const argsObject =
-      call.args && typeof call.args === "object"
-        ? (call.args as Record<string, unknown>)
-        : undefined;
-    const path = argsObject?.path;
-    if (typeof path !== "string" || path.length === 0) continue;
-    counts.set(path, (counts.get(path) ?? 0) + 1);
-  }
-  let loopedPath: string | undefined;
-  let loopedCount = 0;
-  for (const [path, count] of counts) {
-    if (count < REPEAT_READ_THRESHOLD) continue;
-    if (count > loopedCount) {
-      loopedPath = path;
-      loopedCount = count;
-    }
-  }
-  if (!loopedPath) return undefined;
-  return {
-    key: `system-readfile-repeat:${loopedPath}`,
-    message:
-      `You have called system.readFile on \`${loopedPath}\` ${loopedCount} times in this turn. ` +
-      "The full content from the most recent successful read is still in your conversation context — " +
-      "use the prior tool_result instead of re-reading. If you genuinely need a different region, " +
-      "pass an explicit `offset`/`limit` to read a different slice; otherwise move on to the next step.",
-  };
 }
 
 function inferRoundRecoveryHint(
