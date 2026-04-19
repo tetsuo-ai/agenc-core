@@ -250,6 +250,20 @@ export interface ChatExecuteParams {
     readonly expandOnMiss?: boolean;
     /** Enable discovery-driven widening for later model recalls in the same turn. */
     readonly persistDiscovery?: boolean;
+    /**
+     * Optional callback invoked before each follow-up provider call to
+     * re-resolve the advertised tool catalog against the current
+     * session state. When provided and it returns a list that differs
+     * from the initial `advertisedToolNames`, the executor updates
+     * `activeRoutedToolNames` for the next call. Primary motivation:
+     * workflow-stage changes made by tools mid-turn (e.g.
+     * `workflow.enterPlan` flipping stage from `idle` → `plan`) must
+     * take effect on the very next provider call, not just on the
+     * next user turn. Without this hook the catalog is frozen at turn
+     * start and plan mode can't actually gate mutating tools until a
+     * follow-up user message.
+     */
+    readonly resolveAdvertisedToolNames?: () => readonly string[];
   };
   /** Require at least one successful tool call before accepting a final answer. */
   readonly requiredToolEvidence?: {

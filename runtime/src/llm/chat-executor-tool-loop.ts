@@ -670,6 +670,37 @@ export async function executeToolCallLoop(
       }
     }
 
+    // Re-resolve the advertised tool catalog against the current
+    // session state before the next follow-up call. Tools dispatched
+    // in the round above may have changed the session workflow stage
+    // (for example `workflow.enterPlan` flipping stage `idle → plan`),
+    // and plan mode's catalog filter must take effect on the very
+    // next provider call — not on the next user turn. Without this
+    // re-resolve the advertised catalog is frozen at turn start and
+    // plan mode cannot actually gate mutating tools mid-turn.
+    const resolveAdvertisedToolNames = ctx.toolRouting?.resolveAdvertisedToolNames;
+    if (resolveAdvertisedToolNames) {
+      const nextAdvertised = resolveAdvertisedToolNames();
+      const prev = ctx.activeRoutedToolNames;
+      const changed =
+        nextAdvertised.length !== prev.length ||
+        nextAdvertised.some((name, index) => name !== prev[index]);
+      if (changed) {
+        const previousRoutedToolNames = [...prev];
+        applyActiveRoutedToolNames(ctx, nextAdvertised);
+        callbacks.emitExecutionTrace(ctx, {
+          type: "route_expanded",
+          phase: "tool_followup",
+          callIndex: ctx.callIndex + 1,
+          payload: {
+            previousRoutedToolNames,
+            nextRoutedToolNames: ctx.activeRoutedToolNames,
+            reason: "session_state_refresh",
+          },
+        });
+      }
+    }
+
     // Phase A wire-up: run the layered compaction chain before the
     // follow-up provider call. Phase I wire-up: wrap the call in
     // reactive compaction recovery so a 413 triggers a retry with
