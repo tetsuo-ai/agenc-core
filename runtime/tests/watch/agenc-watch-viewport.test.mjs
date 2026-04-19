@@ -54,14 +54,28 @@ test("sliceRowsAroundRange focuses a recent mutation block", () => {
   assert.equal(sliced.hiddenAbove, 4);
 });
 
-test("bottomAlignRows pads short views and isTranscriptFollowing respects offset", () => {
+test("bottomAlignRows pads short views and isTranscriptFollowing trusts mode flag", () => {
   assert.deepEqual(bottomAlignRows(["x", "y"], 4), ["", "", "x", "y"]);
+  // Follow mode is the SOLE source of truth for user intent.
+  // mode=false means "user manually scrolled — do not auto-snap"
+  // regardless of where offset currently sits. The previous "or
+  // offset===0" union flipped follow back on whenever content
+  // shrank under the user's scroll position, causing the next
+  // event to snap to bottom and breaking manual scroll.
   assert.equal(
     isTranscriptFollowing({ transcriptFollowMode: false, transcriptScrollOffset: 2 }),
     false,
   );
   assert.equal(
     isTranscriptFollowing({ transcriptFollowMode: false, transcriptScrollOffset: 0 }),
+    false,
+  );
+  assert.equal(
+    isTranscriptFollowing({ transcriptFollowMode: true, transcriptScrollOffset: 0 }),
+    true,
+  );
+  assert.equal(
+    isTranscriptFollowing({ transcriptFollowMode: true, transcriptScrollOffset: 5 }),
     true,
   );
 });

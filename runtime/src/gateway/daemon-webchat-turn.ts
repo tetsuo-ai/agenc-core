@@ -129,6 +129,15 @@ interface ExecuteWebChatConversationTurnParams {
     summary: ChatToolRoutingSummary | undefined,
   ) => void;
   readonly getSessionTokenUsage: (sessionId: string) => number;
+  /**
+   * Optional accessor for cumulative USD cost of a session. Returns
+   * `undefined` for unpriced providers / models so the TUI can omit
+   * the cost chip rather than asserting "$0.0000". When omitted on
+   * the deps object (legacy callers), chat.usage payloads will not
+   * carry sessionCostUsd and the TUI's lastUsageSummary loses the
+   * cost line on every turn.
+   */
+  readonly getSessionCostUsd?: (sessionId: string) => number | undefined;
   readonly onModelInfo?: (result: ChatExecutorResult) => void;
   readonly onSubagentSynthesis?: (result: ChatExecutorResult) => void;
   readonly subAgentManager?: Pick<SubAgentManager, "spawn" | "waitForResult"> | null;
@@ -261,6 +270,7 @@ export async function executeWebChatConversationTurn(
     resolveAdvertisedToolNames,
     recordToolRoutingOutcome,
     getSessionTokenUsage,
+    getSessionCostUsd,
     onModelInfo,
     onSubagentSynthesis,
     taskStore = null,
@@ -809,6 +819,15 @@ export async function executeWebChatConversationTurn(
       payload: buildChatUsagePayload({
         sessionId: msg.sessionId,
         totalTokens: getSessionTokenUsage(msg.sessionId),
+        // Pull cumulative cost so the TUI's session cost chip
+        // survives across turns. Without this, every chat.usage
+        // overwrites the previous chat.session's cost-bearing
+        // payload with one that omits sessionCostUsd, and the
+        // displayed "$x session" line silently disappears after
+        // each model call.
+        ...(typeof getSessionCostUsd === "function"
+          ? { sessionCostUsd: getSessionCostUsd(msg.sessionId) }
+          : {}),
         sessionTokenBudget,
         compacted: result.compacted ?? false,
         provider: result.provider,

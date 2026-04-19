@@ -7653,6 +7653,10 @@ export class DaemonManager {
         },
         getSessionTokenUsage: (sessionId) =>
           chatExecutor.getSessionTokenUsage(sessionId),
+        getSessionCostUsd: (sessionId) =>
+          typeof chatExecutor.getSessionCostUsd === "function"
+            ? chatExecutor.getSessionCostUsd(sessionId)
+            : undefined,
         onModelInfo: (result) => {
           const route = normalizeModelRouteSnapshot({
             provider: result.provider,

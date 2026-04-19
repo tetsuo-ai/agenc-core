@@ -6,7 +6,19 @@ export function isTranscriptFollowing({
   transcriptFollowMode,
   transcriptScrollOffset,
 }) {
-  return Boolean(transcriptFollowMode) || Number(transcriptScrollOffset ?? 0) === 0;
+  // Follow mode is the SOLE source of truth for user intent. Previously
+  // the helper returned `mode || offset===0` — but that union flipped
+  // back to `true` whenever content shrank under the user (streaming
+  // preview disappearing, events coalescing) and dragged offset back
+  // to 0, even though `preserveManualTranscriptViewport` had already
+  // recorded `mode=false` to preserve the user's scroll intent. The
+  // very next event arrival saw shouldFollow=true and snapped to
+  // bottom — exactly the "scroll works for a second then breaks"
+  // symptom users still see despite PR #485 + #486. Trust the mode
+  // flag exclusively; `scrollTranscriptBy` keeps it consistent with
+  // offset on intentional scroll-to-bottom.
+  void transcriptScrollOffset;
+  return Boolean(transcriptFollowMode);
 }
 
 export function preserveManualTranscriptViewport({
