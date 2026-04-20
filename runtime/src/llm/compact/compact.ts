@@ -125,6 +125,52 @@ import {
 export const POST_COMPACT_MAX_FILES_TO_RESTORE = 5
 export const POST_COMPACT_TOKEN_BUDGET = 50_000
 export const POST_COMPACT_MAX_TOKENS_PER_FILE = 5_000
+
+/**
+ * I-18 (docs/plan/invariants.md): compaction shrink ratio.
+ * Default: summary must be strictly less than 70% of original tokens.
+ * Override via env `AGENC_COMPACTION_MIN_SHRINK_RATIO` (float in
+ * (0, 1]). Values at or above 1 disable the check. Invalid values
+ * fall back to the default.
+ */
+export const DEFAULT_COMPACTION_MIN_SHRINK_RATIO = 0.7
+
+export function getCompactionMinShrinkRatio(): number {
+  const raw = process.env.AGENC_COMPACTION_MIN_SHRINK_RATIO
+  if (!raw) return DEFAULT_COMPACTION_MIN_SHRINK_RATIO
+  const n = Number.parseFloat(raw)
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_COMPACTION_MIN_SHRINK_RATIO
+  if (n >= 1) return Number.POSITIVE_INFINITY // disable check
+  return n
+}
+
+/**
+ * Thrown when a compaction summary fails to shrink below the
+ * `minShrinkRatio` threshold. Auto-compact's existing catch block
+ * increments the MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES circuit breaker
+ * so the next turn skips auto-compact and falls through to alternative
+ * recovery.
+ */
+export class CompactionShrinkRatioError extends Error {
+  readonly preCompactTokenCount: number
+  readonly postCompactTokenCount: number
+  readonly minShrinkRatio: number
+  constructor(
+    preCompactTokenCount: number,
+    postCompactTokenCount: number,
+    minShrinkRatio: number,
+  ) {
+    super(
+      `I-18 compaction shrink assertion failed: ` +
+        `post=${postCompactTokenCount} tokens is not strictly below ` +
+        `${(minShrinkRatio * 100).toFixed(0)}% of pre=${preCompactTokenCount}`,
+    )
+    this.name = 'CompactionShrinkRatioError'
+    this.preCompactTokenCount = preCompactTokenCount
+    this.postCompactTokenCount = postCompactTokenCount
+    this.minShrinkRatio = minShrinkRatio
+  }
+}
 // Skills can be large (verify=18.7KB, claude-api=20.1KB). Previously re-injected
 // unbounded on every compact → 5-10K tok/compact. Per-skill truncation beats
 // dropping — instructions at the top of a skill file are usually the critical
@@ -755,6 +801,30 @@ export async function compactConversation(
     ]
       .filter(Boolean)
       .join('\n')
+
+    // I-18 (docs/plan/invariants.md): compaction shrink assertion.
+    // The summary must be strictly smaller than the original by at
+    // least `minShrinkRatio` (default 0.7 — summary must be <70% of
+    // original tokens). A near-identity summary is a compaction
+    // failure: it wastes a round-trip without reducing context, and
+    // if we re-enter auto-compact on the next turn we'd loop forever.
+    // On failure: throw CompactionShrinkRatioError. The existing
+    // auto-compact.ts catch block (line 344) increments the
+    // MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES=3 circuit breaker so
+    // subsequent turns skip auto-compact and fall through to
+    // alternative recovery (reactive-compact / collapse-drain / PTL
+    // blocking limit).
+    const minShrinkRatio = getCompactionMinShrinkRatio()
+    if (
+      preCompactTokenCount > 0 &&
+      truePostCompactTokenCount >= preCompactTokenCount * minShrinkRatio
+    ) {
+      throw new CompactionShrinkRatioError(
+        preCompactTokenCount,
+        truePostCompactTokenCount,
+        minShrinkRatio,
+      )
+    }
 
     return {
       boundaryMarker,

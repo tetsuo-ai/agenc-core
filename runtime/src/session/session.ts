@@ -38,6 +38,7 @@ import { AsyncQueue } from "../utils/async-queue.js";
 import { BehaviorSubject } from "../utils/behavior-subject.js";
 import { monotonicMs } from "../utils/monotonic.js";
 import type { LLMProvider } from "../llm/types.js";
+import type { BudgetTracker } from "../llm/token-budget.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import type {
   AuthManager,
@@ -388,6 +389,10 @@ export interface SessionOpts {
   readonly eventQueue?: AsyncQueue<Event>;
   /** Initial AgentStatus (default: idle). */
   readonly agentStatus?: AgentStatus;
+  /** I-22: token-budget tracker. Null = budgeting disabled. T10
+   *  wires the real config resolver; T5 accepts it via opts for
+   *  CLI-level override. */
+  readonly budgetTracker?: BudgetTracker | null;
 }
 
 /**
@@ -460,6 +465,11 @@ export class Session {
   /** I-13: pending mid-stream provider/model switch. Honored by run-turn at top-of-loop. */
   pendingProviderSwitch: { provider: string; model: string } | null = null;
 
+  /** I-22: token-budget tracker (null = budgeting disabled). Set at
+   *  session construction by SessionOpts.budgetTracker; updated per
+   *  emitted token by stream-model phase. */
+  budgetTracker: BudgetTracker | null = null;
+
   /** I-7: session-level AbortController; phases observe `signal.aborted`. */
   readonly abortController: AbortController = new AbortController();
 
@@ -496,6 +506,7 @@ export class Session {
     this.jsRepl = opts.jsRepl;
     this.nextInternalSubIdValue = 0;
     this.agentTaskRegistrationLock = new AsyncLock<void>(undefined);
+    this.budgetTracker = opts.budgetTracker ?? null;
   }
 
   // ───────────────────────────────────────────────────────────

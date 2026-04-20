@@ -63,25 +63,91 @@ function resolveApiKey(): string {
   return key;
 }
 
-async function readStdin(): Promise<string> {
+async function readStdin(signal: AbortSignal): Promise<string> {
   if (process.stdin.isTTY) return "";
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) {
+    if (signal.aborted) break;
     chunks.push(chunk instanceof Buffer ? chunk : Buffer.from(chunk));
+  }
+  if (signal.aborted) {
+    throw new InitAbortedError("stdin read aborted");
   }
   return Buffer.concat(chunks).toString("utf8").trim();
 }
 
-async function resolveUserMessage(): Promise<string> {
+async function resolveUserMessage(signal: AbortSignal): Promise<string> {
   const argv = process.argv.slice(2);
   if (argv.length > 0) {
     return argv.join(" ").trim();
   }
-  const piped = await readStdin();
+  const piped = await readStdin(signal);
   if (piped) return piped;
   throw new Error(
     "no prompt provided — pass as argv (`agenc ...`) or pipe via stdin",
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// I-51: Init step abort propagates cleanly.
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Thrown when an init step observes its AbortSignal. The top-level
+ * IIFE recognises this error type + exits with code 130 (SIGINT
+ * conventional) after running reverse-cleanup. Mirrors I-51 rule
+ * "emit error:'init_aborted'".
+ */
+class InitAbortedError extends Error {
+  constructor(message: string) {
+    super(`init_aborted: ${message}`);
+    this.name = "InitAbortedError";
+  }
+}
+
+/**
+ * Reverse-cleanup stack for init. Each init step that opens a
+ * resource pushes a finaliser onto this stack; on abort the stack is
+ * drained in LIFO order. No-op entries are cheap; callers should
+ * guard finalisers against double-close.
+ */
+class InitCleanupStack {
+  private readonly finalisers: Array<{ name: string; run: () => Promise<void> | void }> = [];
+
+  push(name: string, run: () => Promise<void> | void): void {
+    this.finalisers.push({ name, run });
+  }
+
+  async unwind(onError: (name: string, err: unknown) => void): Promise<void> {
+    while (this.finalisers.length > 0) {
+      const { name, run } = this.finalisers.pop()!;
+      try {
+        await run();
+      } catch (err) {
+        onError(name, err);
+      }
+    }
+  }
+}
+
+/**
+ * Wire pre-session signal handlers to the init-stage AbortController.
+ * Ctrl+C / SIGTERM / SIGHUP during init propagates to every async
+ * init step, which in turn throws InitAbortedError; the top-level
+ * catcher runs reverse-cleanup before exit.
+ */
+function installInitSignalHandlers(initAbort: AbortController): () => void {
+  const onSigInt = () => initAbort.abort("SIGINT during init");
+  const onSigTerm = () => initAbort.abort("SIGTERM during init");
+  const onSigHup = () => initAbort.abort("SIGHUP during init");
+  process.once("SIGINT", onSigInt);
+  process.once("SIGTERM", onSigTerm);
+  process.once("SIGHUP", onSigHup);
+  return () => {
+    process.removeListener("SIGINT", onSigInt);
+    process.removeListener("SIGTERM", onSigTerm);
+    process.removeListener("SIGHUP", onSigHup);
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -360,91 +426,157 @@ function buildMinimalModelInfo(slug: string): ModelInfo {
 // ─────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<number> {
-  validateAgencHome();
+  // I-51: init step abort + reverse-cleanup stack. Signal handlers for
+  // Ctrl+C / SIGTERM / SIGHUP during init feed this controller; each
+  // async init step observes signal.aborted.
+  const initAbort = new AbortController();
+  const cleanup = new InitCleanupStack();
+  const uninstallInitSignals = installInitSignalHandlers(initAbort);
 
-  const apiKey = resolveApiKey();
-  const userMessage = await resolveUserMessage();
-  const workspaceRoot = process.env.AGENC_WORKSPACE ?? processCwd();
-  const model = process.env.AGENC_MODEL ?? DEFAULT_MODEL;
-
-  const registry = buildToolRegistry({ workspaceRoot });
-  const provider = new GrokProvider({
-    apiKey,
-    model,
-    tools: registry.toLLMTools(),
-  });
-
-  const conversationId = `conv-${Date.now().toString(36)}`;
-  const config = buildMinimalConfig(workspaceRoot, model);
-  const modelInfo = buildMinimalModelInfo(model);
-  const services = buildPlaceholderServices(provider, registry);
-
-  const initialState: SessionState = {
-    sessionConfiguration: {
-      cwd: workspaceRoot,
-      approvalPolicy: { value: "never" },
-      sandboxPolicy: { value: "read_only" },
-      fileSystemSandboxPolicy: {
-        allowWrite: [],
-        denyWrite: [],
-        allowRead: [],
-        denyRead: [],
-      },
-      networkSandboxPolicy: {
-        allowlist: [],
-        denylist: [],
-        allowManagedDomainsOnly: false,
-      },
-      windowsSandboxLevel: "none",
-      collaborationMode: { model },
-      dynamicTools: [],
-      sessionSource: "cli_main",
-    },
-    history: [],
-    idlePendingInput: [],
+  const throwIfAborted = (step: string) => {
+    if (initAbort.signal.aborted) {
+      throw new InitAbortedError(`${step}: ${String(initAbort.signal.reason ?? "aborted")}`);
+    }
   };
 
-  const session = new Session({
-    conversationId,
-    initialState,
-    features: config.features,
-    services,
-    jsRepl: { id: `repl-${conversationId}` },
-  });
-  let sessionRef: Session | null = session;
-  installSignalHandlers(() => sessionRef);
-
-  const subId = session.nextInternalSubId();
-  const ctx = buildTurnContext({
-    conversationId,
-    subId,
-    config,
-    modelInfo,
-    provider,
-    sessionConfiguration: initialState.sessionConfiguration,
-  });
-
   try {
-    for await (const event of runTurn(session, ctx, userMessage, {
-      systemPrompt: SYSTEM_PROMPT,
-    })) {
-      renderEvent(event);
-      if (event.type === "turn_complete") {
-        if (event.stopReason === "error") return 1;
-        if (event.stopReason === "cancelled") return 130;
-        return 0;
-      }
-    }
-  } finally {
-    sessionRef = null;
-    await session.shutdown().catch(() => {
-      /* best effort */
-    });
-  }
+    // Step 1: validate HOME (I-52).
+    validateAgencHome();
+    throwIfAborted("validateAgencHome");
 
-  // Generator ended without yielding turn_complete — shouldn't happen,
-  // but surface as an error rather than a silent 0 exit.
-  return 1;
+    // Step 2: resolve API key.
+    const apiKey = resolveApiKey();
+    throwIfAborted("resolveApiKey");
+
+    // Step 3: resolve user message (may block on stdin).
+    const userMessage = await resolveUserMessage(initAbort.signal);
+    throwIfAborted("resolveUserMessage");
+
+    const workspaceRoot = process.env.AGENC_WORKSPACE ?? processCwd();
+    const model = process.env.AGENC_MODEL ?? DEFAULT_MODEL;
+
+    // Step 4: build tool registry.
+    const registry = buildToolRegistry({ workspaceRoot });
+    throwIfAborted("buildToolRegistry");
+
+    // Step 5: construct provider.
+    const provider = new GrokProvider({
+      apiKey,
+      model,
+      tools: registry.toLLMTools(),
+    });
+    throwIfAborted("GrokProvider");
+
+    const conversationId = `conv-${Date.now().toString(36)}`;
+    const config = buildMinimalConfig(workspaceRoot, model);
+    const modelInfo = buildMinimalModelInfo(model);
+    const services = buildPlaceholderServices(provider, registry);
+
+    const initialState: SessionState = {
+      sessionConfiguration: {
+        cwd: workspaceRoot,
+        approvalPolicy: { value: "never" },
+        sandboxPolicy: { value: "read_only" },
+        fileSystemSandboxPolicy: {
+          allowWrite: [],
+          denyWrite: [],
+          allowRead: [],
+          denyRead: [],
+        },
+        networkSandboxPolicy: {
+          allowlist: [],
+          denylist: [],
+          allowManagedDomainsOnly: false,
+        },
+        windowsSandboxLevel: "none",
+        collaborationMode: { model },
+        dynamicTools: [],
+        sessionSource: "cli_main",
+      },
+      history: [],
+      idlePendingInput: [],
+    };
+
+    // Step 6: construct Session. Push its shutdown into the reverse-
+    // cleanup stack so abort during subsequent init steps unwinds it.
+    const session = new Session({
+      conversationId,
+      initialState,
+      features: config.features,
+      services,
+      jsRepl: { id: `repl-${conversationId}` },
+    });
+    cleanup.push("session.shutdown", () => session.shutdown());
+    throwIfAborted("Session");
+
+    let sessionRef: Session | null = session;
+    installSignalHandlers(() => sessionRef);
+
+    // Step 7: build TurnContext.
+    const subId = session.nextInternalSubId();
+    const ctx = buildTurnContext({
+      conversationId,
+      subId,
+      config,
+      modelInfo,
+      provider,
+      sessionConfiguration: initialState.sessionConfiguration,
+    });
+    throwIfAborted("buildTurnContext");
+
+    // Init complete — tear down init-phase signal handlers (Session
+    // now owns its own) and drop the cleanup stack since the session
+    // finally-block below takes over.
+    uninstallInitSignals();
+    // Drain the stack without running finalisers; session.shutdown()
+    // below handles the Session cleanup.
+    await cleanup.unwind(() => {
+      /* swallow — we're handing off to session's own lifecycle */
+    });
+
+    try {
+      for await (const event of runTurn(session, ctx, userMessage, {
+        systemPrompt: SYSTEM_PROMPT,
+      })) {
+        renderEvent(event);
+        if (event.type === "turn_complete") {
+          if (event.stopReason === "error") return 1;
+          if (event.stopReason === "cancelled") return 130;
+          return 0;
+        }
+      }
+    } finally {
+      sessionRef = null;
+      await session.shutdown().catch(() => {
+        /* best effort */
+      });
+    }
+
+    // Generator ended without yielding turn_complete — shouldn't happen,
+    // but surface as an error rather than a silent 0 exit.
+    return 1;
+  } catch (error) {
+    // I-51: on abort, run reverse cleanup + emit init_aborted.
+    if (error instanceof InitAbortedError) {
+      process.stderr.write(`agenc: ${error.message}\n`);
+      await cleanup.unwind((name, err) => {
+        process.stderr.write(
+          `agenc: cleanup[${name}] failed: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      });
+      return 130;
+    }
+    // Other init errors: still run cleanup, then re-throw so the
+    // top-level catch surfaces the message.
+    await cleanup.unwind((name, err) => {
+      process.stderr.write(
+        `agenc: cleanup[${name}] failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    });
+    throw error;
+  } finally {
+    uninstallInitSignals();
+  }
 }
 
 void (async () => {

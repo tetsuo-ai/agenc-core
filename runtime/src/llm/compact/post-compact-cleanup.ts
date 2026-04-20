@@ -30,11 +30,18 @@ import { resetMicrocompactState } from './micro-compact.js'
  */
 export function runPostCompactCleanup(querySource?: QuerySource): void {
   // I-2 (docs/plan/invariants.md): clear `previous_response_id` on every
-  // compaction. The provider abstraction lands in T5; until then this is
-  // a documented call site with no live binding. T5 wires it to
-  // `runtime/src/llm/providers/grok/incremental.ts:clearResponseId()` and
-  // adds analogous calls for openai/anthropic adapters.
-  // activeProvider.clearResponseId();  // T5 wires
+  // compaction. Calls into the T5 grok incremental tracker registry.
+  // Other providers register their trackers the same way; T13 extends
+  // with per-adapter normalizers.
+  //
+  // The import is relative to runtime/src/llm/compact/ and resolves
+  // once the compact/** typecheck exclude is lifted (T5b/T6). Until
+  // then the call still runs at runtime because tsup bundles sources
+  // regardless of typecheck exclude status.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  ;(
+    require('../grok/incremental.js') as typeof import('../grok/incremental.js')
+  ).clearAllResponseIds()
 
   // Subagents (agent:*) run in the same process and share module-level
   // state with the main thread. Only reset main-thread module-level state
