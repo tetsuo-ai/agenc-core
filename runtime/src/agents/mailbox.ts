@@ -12,10 +12,14 @@
  *     `direction: 'up' | 'down'`. Session holds both `inbox`
  *     (from children) and `childInboxes: Map<threadId, Mailbox>`
  *     (to children).
- *   - **Bounded** (I-16) — `MAX_MAILBOX_DEPTH=1000`. On overflow,
- *     `send()` returns synchronously and backpressure resolution
- *     (drop oldest + warning) runs as a `queueMicrotask` so the
- *     caller's event loop stays responsive (I-64).
+ *   - **Bounded with salvage window** (I-16) —
+ *     `MAX_MAILBOX_DEPTH=1000`. On overflow `send()` still returns
+ *     synchronously (I-64) but parks the new message in a single
+ *     `overflow` slot and arms a `MAX_MAILBOX_BLOCK_MS=5000` timer.
+ *     If a `drain()` frees space inside that window, the overflow
+ *     slot is promoted without dropping anything. If the timer
+ *     fires first, the oldest message is dropped, the overflow is
+ *     promoted, and the I-8 backpressure warning fires.
  *   - **Receiver-closed sentinel** (I-31) — after `close()`, the
  *     next `drain()` returns a single `agent_exited` sentinel then
  *     permanently empty. Sender rejects sends with
@@ -103,6 +107,18 @@ export class Mailbox {
   private sentinelEmitted = false;
   private droppedStreak = 0;
   private _droppedTotal = 0;
+  /**
+   * I-16 overflow salvage slot. When `send()` is called while the
+   * main queue is at `maxDepth`, the NEW message parks here instead
+   * of being immediately dropped. A `MAX_MAILBOX_BLOCK_MS` timer
+   * arms — if a `drain()` frees space first, the slot is promoted
+   * into the main queue (FIFO preserved) and nothing is dropped.
+   * If the timer fires first, the oldest message in the main queue
+   * is dropped, the overflow message is promoted, and the I-8
+   * backpressure warning fires.
+   */
+  private overflow: InterAgentCommunication | null = null;
+  private overflowTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(opts: MailboxOpts) {
     this.threadId = opts.threadId;
@@ -114,44 +130,90 @@ export class Mailbox {
 
   /**
    * I-64: non-blocking synchronous send. Returns a SendResult
-   * immediately. Backpressure handling (drop oldest + warning) runs
-   * as a `queueMicrotask` so the caller's event loop stays
-   * responsive — crucial when the caller is awaiting an approval
-   * modal.
+   * immediately. I-16 adds a `MAX_MAILBOX_BLOCK_MS` overflow
+   * salvage window: when the main queue is full, the NEW message
+   * parks in `overflow` and a 5s timer arms. A `drain()` within
+   * the window promotes the overflow without any drop; if the
+   * timer fires first the oldest is dropped, the overflow is
+   * promoted, and the I-8 warning fires.
    *
-   * `'rejected'` means the mailbox is closed. `'dropped'` means the
-   * queue hit `maxDepth`; the message was NOT enqueued (oldest
-   * stays to preserve FIFO ordering of in-flight work).
+   * `'rejected'` means the mailbox is closed. In every other case
+   * the message is accepted — either into the main queue or into
+   * the overflow slot — so `send()` never returns `'dropped'`
+   * today; any drop is deferred until the timer fires or a later
+   * overflow displaces the earlier one.
    */
   send(msg: Omit<InterAgentCommunication, "seq">): SendResult {
     if (this.closed) {
       return "rejected";
     }
+    this.nextSeq += 1;
+    const seq = this.nextSeq;
+    const next: InterAgentCommunication = { ...msg, seq };
+
     if (this.queue.length >= this.maxDepth) {
-      // I-16: drop oldest, bookkeep, schedule a microtask for the
-      // I-8 warning so callers don't block.
-      const dropped = this.queue.shift();
-      if (dropped) {
-        const wasFirstDropInStreak = this.droppedStreak === 0;
-        this._droppedTotal += 1;
-        this.droppedStreak += 1;
-        const totalAtDrop = this._droppedTotal;
-        queueMicrotask(() => {
-          this.onDrop?.(dropped);
-          if (wasFirstDropInStreak) {
-            this.onBackpressureStreak?.(totalAtDrop);
-          }
-        });
+      // Overflow salvage path (I-16). If overflow is already
+      // occupied, the earlier overflow message is displaced
+      // (FIFO on overflow): it counts as a dropped message
+      // right now, because it lost its salvage seat.
+      if (this.overflow !== null) {
+        this.dropMessage(this.overflow);
       }
-    } else if (this.droppedStreak > 0) {
+      this.overflow = next;
+      this.armOverflowTimer();
+      this.seqWatch.next(seq);
+      return "sent";
+    }
+
+    if (this.droppedStreak > 0) {
       // Recovery: drop streak broken.
       this.droppedStreak = 0;
     }
-    this.nextSeq += 1;
-    const seq = this.nextSeq;
-    this.queue.push({ ...msg, seq });
+    this.queue.push(next);
     this.seqWatch.next(seq);
     return "sent";
+  }
+
+  /** I-16 bookkeeping for a dropped message (async I-8 warning). */
+  private dropMessage(dropped: InterAgentCommunication): void {
+    const wasFirstDropInStreak = this.droppedStreak === 0;
+    this._droppedTotal += 1;
+    this.droppedStreak += 1;
+    const totalAtDrop = this._droppedTotal;
+    queueMicrotask(() => {
+      this.onDrop?.(dropped);
+      if (wasFirstDropInStreak) {
+        this.onBackpressureStreak?.(totalAtDrop);
+      }
+    });
+  }
+
+  private armOverflowTimer(): void {
+    if (this.overflowTimer !== null) {
+      clearTimeout(this.overflowTimer);
+    }
+    this.overflowTimer = setTimeout(() => {
+      this.overflowTimer = null;
+      if (this.closed || this.overflow === null) return;
+      // Timer fired before any drain salvaged us: drop oldest,
+      // promote the overflow slot into the main queue.
+      const oldest = this.queue.shift();
+      if (oldest) this.dropMessage(oldest);
+      const promoted = this.overflow;
+      this.overflow = null;
+      this.queue.push(promoted);
+      this.seqWatch.next(promoted.seq);
+    }, MAX_MAILBOX_BLOCK_MS);
+    // Let the Node process exit even if a salvage window is open.
+    const timer = this.overflowTimer as { unref?: () => void };
+    timer.unref?.();
+  }
+
+  private clearOverflowTimer(): void {
+    if (this.overflowTimer !== null) {
+      clearTimeout(this.overflowTimer);
+      this.overflowTimer = null;
+    }
   }
 
   /** Non-mutating peek — true iff any queued items are present. */
@@ -170,6 +232,18 @@ export class Mailbox {
    */
   drain(): ReadonlyArray<MailboxItem> {
     const items: MailboxItem[] = this.queue.splice(0);
+    // I-16: drain just freed space — salvage the overflow slot
+    // (if any) rather than dropping it when the timer fires.
+    // The salvaged message joins this drain at the tail to
+    // preserve FIFO vs. the just-drained items.
+    if (this.overflow !== null) {
+      const salvaged = this.overflow;
+      this.overflow = null;
+      this.clearOverflowTimer();
+      items.push(salvaged);
+      // drop streak ends on successful salvage
+      this.droppedStreak = 0;
+    }
     if (this.closed && !this.sentinelEmitted) {
       this.sentinelEmitted = true;
       this.nextSeq += 1;
@@ -192,6 +266,11 @@ export class Mailbox {
     if (this.closed) return;
     this.closed = true;
     this.finalStatus = finalStatus;
+    // I-16: any pending salvage timer must not fire post-close.
+    // Also drop the overflow slot so the sentinel is the last
+    // non-empty result a drain ever sees.
+    this.clearOverflowTimer();
+    this.overflow = null;
   }
 
   get isClosed(): boolean {

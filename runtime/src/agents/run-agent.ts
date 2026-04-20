@@ -18,9 +18,15 @@
  * @module
  */
 
-import type { LLMMessage } from "../llm/types.js";
+import type {
+  LLMChatOptions,
+  LLMMessage,
+  LLMProvider,
+  LLMResponse,
+} from "../llm/types.js";
 import type { Session } from "../session/session.js";
 import type { LiveAgent } from "./control.js";
+import type { AgentRoleConfig } from "./role.js";
 import type { WorktreeHandle } from "./worktree.js";
 import { emitWarning } from "../session/event-log.js";
 import type { ThreadId } from "./registry.js";
@@ -46,7 +52,10 @@ export interface RunAgentParams {
 export type RunAgentProgressEvent =
   | { readonly kind: "status"; readonly text: string }
   | { readonly kind: "message"; readonly message: LLMMessage }
-  | { readonly kind: "tool_call"; readonly callId: string; readonly toolName: string };
+  | { readonly kind: "tool_call"; readonly callId: string; readonly toolName: string }
+  | { readonly kind: "run_complete"; readonly finalMessage?: string; readonly toolCallCount: number }
+  | { readonly kind: "run_error"; readonly error: string }
+  | { readonly kind: "run_interrupted"; readonly reason: string };
 
 export interface RunAgentResult {
   readonly threadId: ThreadId;
@@ -54,6 +63,8 @@ export interface RunAgentResult {
   readonly durationMs: number;
   readonly outcome: "completed" | "errored" | "interrupted" | "aborted";
   readonly error?: unknown;
+  /** Number of tool-call intents observed on the assistant reply. */
+  readonly toolCallCount?: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -61,41 +72,113 @@ export interface RunAgentResult {
 // ─────────────────────────────────────────────────────────────────────
 
 export const MCP_INIT_TIMEOUT_MS = 30_000;
+const MCP_POLL_INTERVAL_MS = 500;
+
+interface RoleLikeConfig {
+  readonly requiredMcpServers?: ReadonlyArray<string>;
+}
+
+/**
+ * Minimal shape we lean on from the session to check MCP readiness.
+ * T10 will extend SessionServices with a first-class mcpManager
+ * surface; for now we read it defensively off `session.services`.
+ */
+interface McpManagerLike {
+  isConnected(name: string): boolean;
+}
+
+function readMcpManager(parent: Session): McpManagerLike | undefined {
+  const services = (parent as unknown as { services?: Record<string, unknown> })
+    .services;
+  if (!services || typeof services !== "object") return undefined;
+  const raw = (services as { mcpManager?: unknown }).mcpManager;
+  if (
+    raw &&
+    typeof raw === "object" &&
+    typeof (raw as McpManagerLike).isConnected === "function"
+  ) {
+    return raw as McpManagerLike;
+  }
+  return undefined;
+}
 
 /**
  * Wait for MCP servers to be ready. I-50: cancellable via abort
- * signal; on abort, return immediately + the caller surfaces a
- * typed warning.
+ * signal; on abort, resolve immediately with `reason: 'aborted'`.
+ *
+ * Branches:
+ *   - No `requiredMcpServers` → resolve `ready: true` on next
+ *     microtask (preserve current "trust session boot" semantics).
+ *   - No `mcpManager` attached → same as above (cannot poll; T9 today).
+ *   - Otherwise poll `isConnected(name)` every 500ms until every
+ *     required server reports ready, the overall timeout fires, or
+ *     the caller aborts.
  */
 export async function initMcpForAgent(opts: {
   readonly parent: Session;
   readonly signal: AbortSignal;
   readonly timeoutMs?: number;
+  readonly roleConfig?: RoleLikeConfig;
 }): Promise<{ readonly ready: boolean; readonly reason?: string }> {
   const timeout = opts.timeoutMs ?? MCP_INIT_TIMEOUT_MS;
-  const deadline = Date.now() + timeout;
+  const required = opts.roleConfig?.requiredMcpServers ?? [];
+
+  if (opts.signal.aborted) {
+    return { ready: false, reason: "aborted" };
+  }
+
+  // No required servers → immediate ready.
+  if (required.length === 0) {
+    await Promise.resolve();
+    return { ready: true };
+  }
+
+  const mcpManager = readMcpManager(opts.parent);
+  // No manager attached → fall back to session-boot trust.
+  if (!mcpManager) {
+    await Promise.resolve();
+    return { ready: true };
+  }
 
   return new Promise<{ ready: boolean; reason?: string }>((resolve) => {
-    const check = () => {
-      if (opts.signal.aborted) {
-        resolve({ ready: false, reason: "aborted" });
-        return;
-      }
-      // T9 MCP manager extension (I-50) wires real readiness. For now
-      // we rely on the session's services having been initialized
-      // during session boot, so this always resolves ready.
-      resolve({ ready: true });
+    let settled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const settle = (value: { ready: boolean; reason?: string }) => {
+      if (settled) return;
+      settled = true;
+      if (pollTimer !== null) clearTimeout(pollTimer);
+      if (timeoutTimer !== null) clearTimeout(timeoutTimer);
+      opts.signal.removeEventListener("abort", onAbort);
+      resolve(value);
     };
 
-    if (Date.now() >= deadline) {
-      resolve({ ready: false, reason: "timeout" });
-      return;
-    }
-    const onAbort = () => {
-      opts.signal.removeEventListener("abort", onAbort);
-      resolve({ ready: false, reason: "aborted" });
-    };
+    const onAbort = () => settle({ ready: false, reason: "aborted" });
     opts.signal.addEventListener("abort", onAbort, { once: true });
+
+    const check = () => {
+      if (settled) return;
+      for (const name of required) {
+        if (!mcpManager.isConnected(name)) {
+          pollTimer = setTimeout(check, MCP_POLL_INTERVAL_MS);
+          return;
+        }
+      }
+      settle({ ready: true });
+    };
+
+    timeoutTimer = setTimeout(() => {
+      if (settled) return;
+      // Identify the first server still missing for richer diagnostics.
+      const missing = required.find((n) => !mcpManager.isConnected(n));
+      settle(
+        missing
+          ? { ready: false, reason: `missing_server:${missing}` }
+          : { ready: false, reason: "timeout" },
+      );
+    }, timeout);
+
     check();
   });
 }
@@ -106,6 +189,40 @@ export async function initMcpForAgent(opts: {
 
 export interface RunAgentIterator {
   [Symbol.asyncIterator](): AsyncIterator<RunAgentProgressEvent, RunAgentResult>;
+}
+
+function providerFromParent(parent: Session): LLMProvider | undefined {
+  const services = (parent as unknown as { services?: Record<string, unknown> })
+    .services;
+  if (!services || typeof services !== "object") return undefined;
+  const provider = (services as { provider?: unknown }).provider;
+  if (provider && typeof (provider as LLMProvider).chat === "function") {
+    return provider as LLMProvider;
+  }
+  return undefined;
+}
+
+function buildChatOptions(
+  signal: AbortSignal,
+  roleConfig: AgentRoleConfig,
+  timeoutOverrideMs?: number,
+): LLMChatOptions {
+  const opts: {
+    -readonly [K in keyof LLMChatOptions]: LLMChatOptions[K];
+  } = { signal };
+  // Only forward reasoning-effort values the provider options type
+  // accepts — AgentRole allows "none", LLMChatOptions does not.
+  if (
+    roleConfig.reasoningEffort &&
+    roleConfig.reasoningEffort !== "none"
+  ) {
+    opts.reasoningEffort = roleConfig.reasoningEffort;
+  }
+  const effectiveTimeout = timeoutOverrideMs ?? roleConfig.timeoutMs;
+  if (typeof effectiveTimeout === "number" && effectiveTimeout > 0) {
+    opts.timeoutMs = effectiveTimeout;
+  }
+  return opts as LLMChatOptions;
 }
 
 /**
@@ -151,6 +268,8 @@ export async function* runAgent(
     );
   }
 
+  const turnId = crypto.randomUUID();
+
   try {
     yield {
       kind: "status",
@@ -162,6 +281,7 @@ export async function* runAgent(
       parent,
       signal: merged.signal,
       ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
+      roleConfig: live.role.config as RoleLikeConfig,
     });
     if (!mcp.ready) {
       emitWarning(
@@ -173,10 +293,9 @@ export async function* runAgent(
     }
 
     if (merged.signal.aborted) {
-      live.status.markInterrupted(
-        live.agentId,
-        String(merged.signal.reason ?? "aborted"),
-      );
+      const reason = String(merged.signal.reason ?? "aborted");
+      live.status.markInterrupted(turnId, reason);
+      yield { kind: "run_interrupted", reason };
       return {
         threadId: live.agentId,
         durationMs: Date.now() - startedAt,
@@ -185,43 +304,185 @@ export async function* runAgent(
     }
 
     // Mark running.
-    live.status.markRunning(live.agentId);
+    live.status.markRunning(turnId);
 
-    // T9 ships the driver surface; the actual child-session run-turn
-    // loop is wired by delegate.ts (which constructs the child
-    // Session, ToolRegistry, etc.). Here we yield the caller's
-    // initial messages as a status event + wait for the downInbox
-    // to be drained.
+    // Stream the fork-context messages as progress events so callers
+    // observing the generator can record the child's initial history.
     for (const message of params.initialMessages) {
       yield { kind: "message", message };
     }
 
-    // Park until live.abortController fires OR the caller signals
-    // completion by closing the upInbox. This lets delegate.ts
-    // drive the child's turn machine externally while run-agent
-    // stays responsible for the lifecycle + cleanup envelope.
-    await awaitAbort(merged.signal);
-
-    const outcome: RunAgentResult["outcome"] = merged.signal.aborted
-      ? live.abortController.signal.aborted
-        ? "interrupted"
-        : "aborted"
-      : "completed";
-
-    if (outcome === "completed") {
-      live.status.markCompleted(live.agentId, params.taskPrompt);
+    // Resolve the parent provider (subagents share model access).
+    const provider = providerFromParent(parent);
+    if (!provider) {
+      const err = new Error(
+        "subagent has no provider on parent.services.provider",
+      );
+      live.status.markErrored(turnId, err.message);
+      yield { kind: "run_error", error: err.message };
+      return {
+        threadId: live.agentId,
+        durationMs: Date.now() - startedAt,
+        outcome: "errored",
+        error: err,
+      };
     }
+
+    // Build the chat options. Honor per-role timeoutMs via an inner
+    // AbortController wired into the merged signal so we can label the
+    // timeout reason distinctly ("role_timeout") without clobbering
+    // the parent's abort reason.
+    const roleTimeoutMs = params.timeoutMs ?? live.role.config.timeoutMs;
+    const callController = new AbortController();
+    const forwardMergedAbort = () => {
+      if (!callController.signal.aborted) {
+        callController.abort(String(merged.signal.reason ?? "aborted"));
+      }
+    };
+    if (merged.signal.aborted) forwardMergedAbort();
+    merged.signal.addEventListener("abort", forwardMergedAbort, { once: true });
+
+    let roleTimeoutFired = false;
+    const roleTimeoutHandle =
+      typeof roleTimeoutMs === "number" && roleTimeoutMs > 0
+        ? setTimeout(() => {
+            if (!callController.signal.aborted) {
+              roleTimeoutFired = true;
+              callController.abort("role_timeout");
+            }
+          }, roleTimeoutMs)
+        : null;
+
+    const chatOptions = buildChatOptions(
+      callController.signal,
+      live.role.config,
+      params.timeoutMs,
+    );
+
+    // Log the tool-allowlist intent. Deeper subagent tool integration
+    // (actually filtering + executing child tool calls) lands with
+    // the T-future subagent tool loop — this stays a no-op for now.
+    const allowlist =
+      params.toolAllowlist ?? live.role.config.allowlist ?? undefined;
+    if (allowlist && allowlist.length > 0) {
+      emitWarning(
+        parent.eventLog,
+        parent.nextInternalSubId(),
+        "subagent_tool_allowlist",
+        `subagent ${live.agentPath} allowlist intent: ${allowlist.join(",")} (tool execution deferred to T-future)`,
+      );
+    }
+
+    let response: LLMResponse;
+    try {
+      response = await provider.chat(
+        params.initialMessages.map((m) => ({ ...m })),
+        chatOptions,
+      );
+    } finally {
+      if (roleTimeoutHandle !== null) clearTimeout(roleTimeoutHandle);
+      merged.signal.removeEventListener("abort", forwardMergedAbort);
+    }
+
+    const assistantText = response.content ?? "";
+    const toolCalls = response.toolCalls ?? [];
+
+    // Emit an assistant-message progress event so the caller's stream
+    // reflects the completed turn (mirrors openclaude's per-message
+    // fan-out on the subagent iterator).
+    yield {
+      kind: "message",
+      message: {
+        role: "assistant",
+        content: assistantText,
+        ...(toolCalls.length > 0 ? { toolCalls: [...toolCalls] } : {}),
+      },
+    };
+    for (const call of toolCalls) {
+      yield { kind: "tool_call", callId: call.id, toolName: call.name };
+    }
+
+    // If the caller aborted during the provider call, surface that
+    // outcome instead of completion. `role_timeout` is a distinct
+    // bucket routed through run_error so delegate.ts can retry.
+    if (merged.signal.aborted) {
+      const reason = String(merged.signal.reason ?? "aborted");
+      live.status.markInterrupted(turnId, reason);
+      yield { kind: "run_interrupted", reason };
+      return {
+        threadId: live.agentId,
+        durationMs: Date.now() - startedAt,
+        outcome: "interrupted",
+      };
+    }
+    if (roleTimeoutFired) {
+      const message = `role_timeout after ${roleTimeoutMs}ms`;
+      live.status.markErrored(turnId, message);
+      yield { kind: "run_error", error: message };
+      return {
+        threadId: live.agentId,
+        durationMs: Date.now() - startedAt,
+        outcome: "errored",
+        error: new Error(message),
+      };
+    }
+
+    // Forward the assistant text back to the parent via upInbox so
+    // the parent's mailbox sees the completion (I-5: direction=up).
+    try {
+      live.upInbox.send({
+        author: live.agentPath,
+        recipient: parent.conversationId ?? "/root",
+        content: assistantText,
+        triggerTurn: true,
+        direction: "up",
+        metadata: {
+          kind: "subagent_complete",
+          turnId,
+          toolCallCount: toolCalls.length,
+        },
+      });
+    } catch (err) {
+      // Mailbox closed mid-run — log but still mark the turn completed
+      // since the provider call succeeded.
+      emitWarning(
+        parent.eventLog,
+        parent.nextInternalSubId(),
+        "subagent_mailbox_closed",
+        `subagent ${live.agentPath} upInbox closed before delivery: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    live.status.markCompleted(turnId, assistantText);
+    yield {
+      kind: "run_complete",
+      ...(assistantText !== undefined ? { finalMessage: assistantText } : {}),
+      toolCallCount: toolCalls.length,
+    };
 
     return {
       threadId: live.agentId,
       durationMs: Date.now() - startedAt,
-      outcome,
+      outcome: "completed",
+      finalMessage: assistantText,
+      toolCallCount: toolCalls.length,
     };
   } catch (err) {
-    live.status.markErrored(
-      live.agentId,
-      err instanceof Error ? err.message : String(err),
-    );
+    // Signal-abort-driven failures can surface as thrown errors from
+    // the provider — prefer the interrupted outcome in that case.
+    if (merged.signal.aborted) {
+      const reason = String(merged.signal.reason ?? "aborted");
+      live.status.markInterrupted(turnId, reason);
+      yield { kind: "run_interrupted", reason };
+      return {
+        threadId: live.agentId,
+        durationMs: Date.now() - startedAt,
+        outcome: "interrupted",
+      };
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    live.status.markErrored(turnId, message);
+    yield { kind: "run_error", error: message };
     return {
       threadId: live.agentId,
       durationMs: Date.now() - startedAt,
@@ -234,7 +495,9 @@ export async function* runAgent(
   }
 }
 
-function awaitAbort(signal: AbortSignal): Promise<void> {
+/** @internal Kept for legacy callers that relied on the park-until-abort
+ *  shape. Safe to remove once nothing outside this module references it. */
+export function awaitAbort(signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.resolve();
   return new Promise<void>((resolve) => {
     signal.addEventListener("abort", () => resolve(), { once: true });

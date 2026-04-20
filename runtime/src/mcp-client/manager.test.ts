@@ -9,12 +9,66 @@ vi.mock("./connection.js", () => ({
 vi.mock("./tool-bridge.js", () => ({
   createToolBridge: vi.fn(),
 }));
+vi.mock("./resource-bridge.js", () => ({
+  createResourceBridge: vi.fn(),
+}));
+vi.mock("./prompt-bridge.js", () => ({
+  createPromptBridge: vi.fn(),
+}));
 
 import { createMCPConnection } from "./connection.js";
 import { createToolBridge } from "./tool-bridge.js";
+import { createResourceBridge } from "./resource-bridge.js";
+import { createPromptBridge } from "./prompt-bridge.js";
 
 const mockCreateMCPConnection = vi.mocked(createMCPConnection);
 const mockCreateToolBridge = vi.mocked(createToolBridge);
+const mockCreateResourceBridge = vi.mocked(createResourceBridge);
+const mockCreatePromptBridge = vi.mocked(createPromptBridge);
+
+function makeMockResourceBridge(
+  serverName: string,
+  resources: Array<{ uri: string; name?: string }> = [],
+) {
+  return {
+    serverName,
+    listResources: vi.fn().mockResolvedValue(
+      resources.map((r) => ({
+        serverName,
+        uri: r.uri,
+        namespacedName: `mcp.${serverName}.${r.uri}`,
+        ...(r.name !== undefined ? { name: r.name } : {}),
+      })),
+    ),
+    readResource: vi.fn().mockResolvedValue({
+      uri: "",
+      truncated: false,
+      bytesReturned: 0,
+    }),
+    dispose: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+function makeMockPromptBridge(
+  serverName: string,
+  prompts: Array<{ name: string }> = [],
+) {
+  return {
+    serverName,
+    listPrompts: vi.fn().mockResolvedValue(
+      prompts.map((p) => ({
+        serverName,
+        name: p.name,
+        namespacedName: `mcp.${serverName}.${p.name}`,
+      })),
+    ),
+    renderPrompt: vi.fn().mockResolvedValue({
+      promptName: "",
+      messages: [],
+    }),
+    dispose: vi.fn().mockResolvedValue(undefined),
+  };
+}
 
 function makeConfig(name: string, overrides?: Partial<MCPServerConfig>): MCPServerConfig {
   return { name, command: "npx", args: ["-y", `@test/${name}`], ...overrides };
@@ -36,6 +90,14 @@ function makeMockBridge(serverName: string, toolNames: string[]) {
 describe("MCPManager", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // By default, resource + prompt bridges succeed with empty lists so
+    // existing tool-focused tests don't need to know about them.
+    mockCreateResourceBridge.mockImplementation((_client, serverName) =>
+      Promise.resolve(makeMockResourceBridge(serverName)),
+    );
+    mockCreatePromptBridge.mockImplementation((_client, serverName) =>
+      Promise.resolve(makeMockPromptBridge(serverName)),
+    );
   });
 
   // --------------------------------------------------------------------------
@@ -329,5 +391,183 @@ describe("MCPManager", () => {
     await manager.start();
     // srv1 should connect; srv2 should fail the name-shadow check.
     expect(manager.getConnectedServers()).toEqual(["srv1"]);
+  });
+
+  // --------------------------------------------------------------------------
+  // T9-D: MCP resource + prompt bridges
+  // --------------------------------------------------------------------------
+
+  it("connect creates resource and prompt bridges alongside tool bridge", async () => {
+    const bridge = makeMockBridge("srv1", ["tool"]);
+    mockCreateMCPConnection.mockResolvedValueOnce("client1");
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    await manager.start();
+
+    expect(mockCreateResourceBridge).toHaveBeenCalledOnce();
+    expect(mockCreateResourceBridge).toHaveBeenCalledWith(
+      "client1",
+      "srv1",
+      expect.anything(),
+      expect.any(Object),
+    );
+    expect(mockCreatePromptBridge).toHaveBeenCalledOnce();
+    expect(mockCreatePromptBridge).toHaveBeenCalledWith(
+      "client1",
+      "srv1",
+      expect.anything(),
+      expect.any(Object),
+    );
+  });
+
+  it("connect survives a resource-bridge construction failure", async () => {
+    const bridge = makeMockBridge("srv1", ["tool"]);
+    mockCreateMCPConnection.mockResolvedValueOnce("client1");
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+    mockCreateResourceBridge.mockRejectedValueOnce(new Error("resource rpc gone"));
+
+    const logger = { info: vi.fn(), error: vi.fn(), warn: vi.fn() };
+    const manager = new MCPManager([makeConfig("srv1")], logger as any);
+    await manager.start();
+
+    expect(manager.getConnectedServers()).toEqual(["srv1"]);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("resource bridge unavailable"),
+      expect.any(Error),
+    );
+    // prompt bridge should still be built
+    expect(mockCreatePromptBridge).toHaveBeenCalledOnce();
+  });
+
+  it("getResources flattens descriptors across all connected servers", async () => {
+    const bridge1 = makeMockBridge("srv1", ["t1"]);
+    const bridge2 = makeMockBridge("srv2", ["t2"]);
+    const resourceBridge1 = makeMockResourceBridge("srv1", [
+      { uri: "file:///a.txt" },
+      { uri: "file:///b.txt" },
+    ]);
+    const resourceBridge2 = makeMockResourceBridge("srv2", [
+      { uri: "file:///c.txt" },
+    ]);
+
+    mockCreateMCPConnection.mockResolvedValueOnce("c1").mockResolvedValueOnce("c2");
+    mockCreateToolBridge
+      .mockResolvedValueOnce(bridge1)
+      .mockResolvedValueOnce(bridge2);
+    mockCreateResourceBridge
+      .mockResolvedValueOnce(resourceBridge1)
+      .mockResolvedValueOnce(resourceBridge2);
+
+    const manager = new MCPManager([makeConfig("srv1"), makeConfig("srv2")]);
+    await manager.start();
+
+    const resources = await manager.getResources();
+    expect(resources).toHaveLength(3);
+    expect(resources.map((r) => r.namespacedName)).toEqual([
+      "mcp.srv1.file:///a.txt",
+      "mcp.srv1.file:///b.txt",
+      "mcp.srv2.file:///c.txt",
+    ]);
+  });
+
+  it("readResource routes by namespaced name and returns null for unknown servers", async () => {
+    const bridge = makeMockBridge("srv1", ["t"]);
+    const resourceBridge = makeMockResourceBridge("srv1");
+    resourceBridge.readResource.mockResolvedValueOnce({
+      uri: "file:///a.txt",
+      text: "hello",
+      truncated: false,
+      bytesReturned: 5,
+    });
+
+    mockCreateMCPConnection.mockResolvedValueOnce("c1");
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+    mockCreateResourceBridge.mockResolvedValueOnce(resourceBridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    await manager.start();
+
+    const content = await manager.readResource("mcp.srv1.file:///a.txt");
+    expect(content).toEqual({
+      uri: "file:///a.txt",
+      text: "hello",
+      truncated: false,
+      bytesReturned: 5,
+    });
+    expect(resourceBridge.readResource).toHaveBeenCalledWith("file:///a.txt");
+
+    // Unknown server → null, not an error
+    expect(await manager.readResource("mcp.other.anything")).toBeNull();
+    // Malformed namespace → null
+    expect(await manager.readResource("not-prefixed")).toBeNull();
+    expect(await manager.readResource("mcp.srv1.")).toBeNull();
+  });
+
+  it("renderPrompt routes by namespaced name and listPrompts fans out", async () => {
+    const bridge = makeMockBridge("srv1", ["t"]);
+    const promptBridge = makeMockPromptBridge("srv1", [
+      { name: "summarize" },
+    ]);
+    promptBridge.renderPrompt.mockResolvedValueOnce({
+      promptName: "summarize",
+      messages: [{ role: "user", text: "hi" }],
+    });
+
+    mockCreateMCPConnection.mockResolvedValueOnce("c1");
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+    mockCreatePromptBridge.mockResolvedValueOnce(promptBridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    await manager.start();
+
+    const prompts = await manager.listPrompts();
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0].namespacedName).toBe("mcp.srv1.summarize");
+
+    const rendered = await manager.renderPrompt(
+      "mcp.srv1.summarize",
+      { topic: "x" },
+    );
+    expect(rendered).toEqual({
+      promptName: "summarize",
+      messages: [{ role: "user", text: "hi" }],
+    });
+    expect(promptBridge.renderPrompt).toHaveBeenCalledWith("summarize", {
+      topic: "x",
+    });
+
+    expect(await manager.renderPrompt("mcp.nope.x")).toBeNull();
+  });
+
+  it("stop disposes resource and prompt bridges alongside tool bridges", async () => {
+    const bridge1 = makeMockBridge("srv1", ["t"]);
+    const bridge2 = makeMockBridge("srv2", ["t"]);
+    const resourceBridge1 = makeMockResourceBridge("srv1");
+    const resourceBridge2 = makeMockResourceBridge("srv2");
+    const promptBridge1 = makeMockPromptBridge("srv1");
+    const promptBridge2 = makeMockPromptBridge("srv2");
+
+    mockCreateMCPConnection.mockResolvedValueOnce("c1").mockResolvedValueOnce("c2");
+    mockCreateToolBridge
+      .mockResolvedValueOnce(bridge1)
+      .mockResolvedValueOnce(bridge2);
+    mockCreateResourceBridge
+      .mockResolvedValueOnce(resourceBridge1)
+      .mockResolvedValueOnce(resourceBridge2);
+    mockCreatePromptBridge
+      .mockResolvedValueOnce(promptBridge1)
+      .mockResolvedValueOnce(promptBridge2);
+
+    const manager = new MCPManager([makeConfig("srv1"), makeConfig("srv2")]);
+    await manager.start();
+    await manager.stop();
+
+    expect(resourceBridge1.dispose).toHaveBeenCalledOnce();
+    expect(resourceBridge2.dispose).toHaveBeenCalledOnce();
+    expect(promptBridge1.dispose).toHaveBeenCalledOnce();
+    expect(promptBridge2.dispose).toHaveBeenCalledOnce();
+    expect(await manager.getResources()).toHaveLength(0);
+    expect(await manager.listPrompts()).toHaveLength(0);
   });
 });

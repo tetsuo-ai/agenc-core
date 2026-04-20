@@ -373,17 +373,103 @@ export class AgentControl {
   // ─────────────────────────────────────────────────────────────────
 
   /**
-   * Port of codex `resume_agent_from_rollout`. T6 wires the real
-   * rollout-backed rehydration; T9 ships the surface so subsequent
-   * tranches can drop in the persisted `SpawnEdge` reader.
+   * Port of codex `resume_agent_from_rollout`. T9 provides an
+   * in-memory rehydrate: given metadata for a previously known
+   * subagent path, rebuild a fresh `LiveAgent` handle with new
+   * mailboxes/status/abort so a caller can reconnect.
+   *
+   * NOTE: T10 will extend this with rollout-backed state
+   * rehydration (persisted spawn edges, turn history, pending
+   * tool state). For now we only rebuild the live handle.
    */
-  async resume(_opts: {
+  async resume(opts: {
     readonly parentPath: AgentPath;
     readonly metadata: AgentMetadata;
   }): Promise<LiveAgent | null> {
-    // TODO T10/T11: consult session-store for the persisted spawn
-    // edge + reconstruct the child's state. Today returns null.
-    return null;
+    const { metadata, parentPath } = opts;
+    const threadId = metadata.agentId;
+    const agentPath = metadata.agentPath;
+    if (!threadId || !agentPath) return null;
+
+    // I-1: depth cap. Use metadata.depth as authority, fall back to
+    // parent-path-derived depth + 1 if metadata is missing depth.
+    const depth =
+      metadata.depth ?? depthOfAgentPath(parentPath) + 1;
+    if (depth > this.maxDepth) {
+      emitError(this.session.eventLog, this.session.nextInternalSubId(), {
+        cause: "max_depth_exceeded",
+        message: `resume depth ${depth} exceeds cap ${this.maxDepth}`,
+      });
+      throw new MaxDepthExceededError(depth, this.maxDepth);
+    }
+
+    // Idempotency: if already live on this agentPath, return it.
+    const existing = this.getLiveByPath(agentPath);
+    if (existing) return existing;
+
+    // Registry: if unknown, reserve a slot + finalize with the metadata.
+    // If registry already knows the thread, the slot is already charged.
+    if (!this.registry.agentMetadataForThread(threadId)) {
+      const reservation = await this.registry.reserveSpawnSlot();
+      try {
+        reservation.finalize(metadata);
+      } catch (err) {
+        reservation.release();
+        throw err;
+      }
+    }
+
+    const role = resolveAgentRole(metadata.agentRole);
+    const nickname = metadata.agentNickname ?? `resumed-${threadId}`;
+    const upInbox = new Mailbox({
+      threadId,
+      onBackpressureStreak: (count) => {
+        emitWarning(
+          this.session.eventLog,
+          this.session.nextInternalSubId(),
+          "mailbox_backpressure",
+          `child→parent mailbox dropped ${count} messages (thread=${threadId})`,
+        );
+      },
+    });
+    const downInbox = new Mailbox({
+      threadId: `${threadId}-down`,
+      onBackpressureStreak: (count) => {
+        emitWarning(
+          this.session.eventLog,
+          this.session.nextInternalSubId(),
+          "mailbox_backpressure",
+          `parent→child mailbox dropped ${count} messages (thread=${threadId})`,
+        );
+      },
+    });
+
+    const agent: LiveAgent = {
+      agentId: threadId,
+      agentPath,
+      role,
+      depth,
+      nickname,
+      status: new AgentStatusTracker(),
+      upInbox,
+      downInbox,
+      abortController: new AbortController(),
+    };
+
+    this.session.childInboxes.set(threadId, upInbox as unknown as never);
+    this.live.set(threadId, agent);
+    if (!this.parentTokens.has(agent.agentPath)) {
+      this.parentTokens.set(agent.agentPath, agent.abortController);
+    }
+
+    emitWarning(
+      this.session.eventLog,
+      this.session.nextInternalSubId(),
+      "agent_resumed",
+      `resumed ${agent.agentPath} (${nickname})`,
+    );
+
+    return agent;
   }
 
   // ─────────────────────────────────────────────────────────────────

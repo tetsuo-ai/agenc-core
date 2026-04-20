@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   Mailbox,
   MailboxClosedError,
+  MAX_MAILBOX_BLOCK_MS,
   MAX_MAILBOX_DEPTH,
   isAgentExitedSentinel,
   type InterAgentCommunication,
@@ -42,19 +43,20 @@ describe("Mailbox", () => {
     }
   });
 
-  it("I-16: drops oldest on overflow", async () => {
+  it("I-16: overflow parks new msg in salvage slot (no immediate drop)", async () => {
     const mb = new Mailbox({ threadId: "t1", maxDepth: 3 });
     expect(mb.send(makeMsg({ content: "a" }))).toBe("sent");
     expect(mb.send(makeMsg({ content: "b" }))).toBe("sent");
     expect(mb.send(makeMsg({ content: "c" }))).toBe("sent");
-    // Exceeds cap — drops oldest but accepts new.
+    // Queue full — new msg parks in overflow slot. No drop yet.
     expect(mb.send(makeMsg({ content: "d" }))).toBe("sent");
+    // drain() within salvage window: promotes overflow, no drops.
     const drained = mb.drain();
     const contents = drained
       .filter((m): m is InterAgentCommunication => !isAgentExitedSentinel(m))
       .map((m) => m.content);
-    expect(contents).toEqual(["b", "c", "d"]);
-    expect(mb.droppedTotal).toBe(1);
+    expect(contents).toEqual(["a", "b", "c", "d"]);
+    expect(mb.droppedTotal).toBe(0);
   });
 
   it("I-64: send is synchronous — never returns a Promise", () => {
@@ -115,5 +117,108 @@ describe("Mailbox", () => {
     const err = new MailboxClosedError("abc");
     expect(err.threadId).toBe("abc");
     expect(err.name).toBe("MailboxClosedError");
+  });
+
+  it("I-16: overflow salvaged when drain() happens within the window", () => {
+    const onDrop = vi.fn();
+    const mb = new Mailbox({
+      threadId: "t1",
+      maxDepth: 2,
+      onDrop,
+    });
+    mb.send(makeMsg({ content: "a" }));
+    mb.send(makeMsg({ content: "b" }));
+    // Parks in overflow, no drop.
+    mb.send(makeMsg({ content: "c" }));
+    expect(mb.droppedTotal).toBe(0);
+    // drain() within the 5s window promotes overflow, nothing dropped.
+    const drained = mb
+      .drain()
+      .filter((m): m is InterAgentCommunication => !isAgentExitedSentinel(m))
+      .map((m) => m.content);
+    expect(drained).toEqual(["a", "b", "c"]);
+    expect(mb.droppedTotal).toBe(0);
+    // onDrop is only fired via microtask, but since no drop happened,
+    // flushing the microtask queue should still show zero calls.
+    return Promise.resolve().then(() => {
+      expect(onDrop).not.toHaveBeenCalled();
+    });
+  });
+
+  it("I-16: overflow promoted after timer fires (oldest is dropped)", async () => {
+    vi.useFakeTimers();
+    try {
+      const onDrop = vi.fn();
+      const onStreak = vi.fn();
+      const mb = new Mailbox({
+        threadId: "t1",
+        maxDepth: 2,
+        onDrop,
+        onBackpressureStreak: onStreak,
+      });
+      mb.send(makeMsg({ content: "a" }));
+      mb.send(makeMsg({ content: "b" }));
+      mb.send(makeMsg({ content: "c" }));
+      expect(mb.droppedTotal).toBe(0);
+      // Fire the salvage timer without a drain in between.
+      vi.advanceTimersByTime(MAX_MAILBOX_BLOCK_MS);
+      // Flush the microtask that emits onDrop + onBackpressureStreak.
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(mb.droppedTotal).toBe(1);
+      expect(onDrop).toHaveBeenCalledTimes(1);
+      expect(onStreak).toHaveBeenCalledTimes(1);
+      const drained = mb
+        .drain()
+        .filter((m): m is InterAgentCommunication => !isAgentExitedSentinel(m))
+        .map((m) => m.content);
+      expect(drained).toEqual(["b", "c"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("I-16: close() cancels a pending overflow timer (no late drops)", async () => {
+    vi.useFakeTimers();
+    try {
+      const onDrop = vi.fn();
+      const mb = new Mailbox({ threadId: "t1", maxDepth: 1, onDrop });
+      mb.send(makeMsg({ content: "a" }));
+      mb.send(makeMsg({ content: "b" })); // parks in overflow
+      mb.close();
+      // Advance well past the salvage window.
+      vi.advanceTimersByTime(MAX_MAILBOX_BLOCK_MS * 2);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(onDrop).not.toHaveBeenCalled();
+      expect(mb.droppedTotal).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("I-16: droppedTotal counts post-timer drops, not salvaged ones", async () => {
+    vi.useFakeTimers();
+    try {
+      const mb = new Mailbox({ threadId: "t1", maxDepth: 2 });
+      // First salvage window — drain before timer fires: no drop.
+      mb.send(makeMsg({ content: "a" }));
+      mb.send(makeMsg({ content: "b" }));
+      mb.send(makeMsg({ content: "c" })); // overflow
+      expect(mb.droppedTotal).toBe(0);
+      mb.drain(); // salvage
+      expect(mb.droppedTotal).toBe(0);
+
+      // Second overflow — let timer fire: one drop.
+      mb.send(makeMsg({ content: "d" }));
+      mb.send(makeMsg({ content: "e" }));
+      mb.send(makeMsg({ content: "f" })); // overflow
+      vi.advanceTimersByTime(MAX_MAILBOX_BLOCK_MS);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(mb.droppedTotal).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

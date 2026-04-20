@@ -60,17 +60,79 @@ export interface ReactiveCompactDriver {
 }
 
 /**
- * Default driver: uses plain api-errors.ts predicates for withhold
- * detection; `tryReactiveCompact` returns null (no reduction). When
- * the `compact/` exclude lifts (T5b/T6), this default upgrades to
- * call the real `tryReactiveCompact` via runtime-dynamic require.
+ * Minimum history length required to trigger inline reactive
+ * compaction. Under this size the collapse would leave the tail
+ * unchanged and cannot guarantee I-18 shrink, so the driver reports
+ * nothing to compact.
+ */
+export const MIN_COMPACTABLE_TURNS = 6;
+
+/**
+ * Number of trailing user/assistant/tool messages the inline
+ * compactor preserves verbatim. Older messages between the system
+ * prompt and this tail are collapsed into one synthetic summary.
+ */
+export const KEEP_LAST_TURNS = 3;
+
+/**
+ * Collapse history into `[system?] + summary + tail`. Returns the
+ * new message array and the number of dropped messages, or null
+ * when input is too short. Enforces I-18 shrink: the output MUST
+ * have fewer messages than the input, otherwise throws so the I-40
+ * guard in `runReactiveCompact` records a circuit-breaker failure.
+ */
+export function inlineCollapseMessages(
+  messages: ReadonlyArray<LLMMessage>,
+): { compacted: LLMMessage[]; droppedCount: number } | null {
+  if (messages.length < MIN_COMPACTABLE_TURNS) {
+    return null;
+  }
+  const hasSystem = messages[0]?.role === "system";
+  const systemPrefix: LLMMessage[] = hasSystem ? [messages[0]!] : [];
+  const tailStart = Math.max(systemPrefix.length, messages.length - KEEP_LAST_TURNS);
+  const middle = messages.slice(systemPrefix.length, tailStart);
+  const tail = messages.slice(tailStart);
+  if (middle.length === 0) {
+    return null;
+  }
+  const summary: LLMMessage = {
+    role: "user",
+    content: `[summary of ${middle.length} earlier messages, elided for context pressure]`,
+  };
+  const compacted: LLMMessage[] = [...systemPrefix, summary, ...tail];
+  if (compacted.length >= messages.length) {
+    // I-18: shrink assertion. Must never produce a no-shrink result.
+    throw new Error(
+      `I-18 shrink assertion failed: input=${messages.length} output=${compacted.length}`,
+    );
+  }
+  return { compacted, droppedCount: middle.length };
+}
+
+/**
+ * Default driver: inline deterministic compactor. Preserves the
+ * system prompt (if present) and the last `KEEP_LAST_TURNS`
+ * messages, collapsing everything in between into a single
+ * synthetic summary user message. Returns null when the history
+ * is below `MIN_COMPACTABLE_TURNS`. This is the bounded fallback
+ * that lets I-10 + I-40 fire in production until the full
+ * openclaude compaction port lands.
  */
 export const DEFAULT_REACTIVE_COMPACT_DRIVER: ReactiveCompactDriver = Object.freeze({
-  isReactiveCompactEnabled: () => false,
+  isReactiveCompactEnabled: () => true,
   isWithheldPromptTooLong: (msg: AssistantMessage) => isPromptTooLongMessage(msg),
   isWithheldMediaSizeError: (msg: AssistantMessage) => isMediaTooLargeMessage(msg),
-  async tryReactiveCompact(): Promise<ReactiveCompactResult | null> {
-    return null;
+  async tryReactiveCompact(input: {
+    readonly messages: ReadonlyArray<LLMMessage>;
+  }): Promise<ReactiveCompactResult | null> {
+    const collapsed = inlineCollapseMessages(input.messages);
+    if (!collapsed) {
+      return null;
+    }
+    return {
+      compactedMessages: collapsed.compacted,
+      summary: `Collapsed ${collapsed.droppedCount} earlier messages into a single summary.`,
+    };
   },
 });
 

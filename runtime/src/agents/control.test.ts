@@ -4,7 +4,7 @@ import {
   MAX_AGENT_DEPTH,
   MaxDepthExceededError,
 } from "./control.js";
-import { AgentRegistry } from "./registry.js";
+import { AgentRegistry, type AgentMetadata } from "./registry.js";
 import { _resetNicknamePoolForTesting } from "./role.js";
 
 function stubSession() {
@@ -104,5 +104,104 @@ describe("AgentControl", () => {
     const descendants = control.descendantsOf(parent.agentPath);
     expect(descendants.map((d) => d.agentId)).toEqual([child.agentId]);
     void other;
+  });
+
+  it("resume() registers unknown metadata and returns a LiveAgent", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    const metadata: AgentMetadata = {
+      agentId: "thread-resume-1",
+      agentPath: "/root/scout",
+      agentNickname: "scout",
+      agentRole: "explorer",
+      depth: 1,
+    };
+    const live = await control.resume({ parentPath: "/root", metadata });
+    expect(live).not.toBeNull();
+    expect(live!.agentId).toBe("thread-resume-1");
+    expect(live!.agentPath).toBe("/root/scout");
+    expect(live!.nickname).toBe("scout");
+    expect(live!.depth).toBe(1);
+    expect(live!.role.name).toBe("explorer");
+    expect(registry.agentMetadataForThread("thread-resume-1")).toBeDefined();
+    expect(registry.activeCount).toBe(1);
+  });
+
+  it("resume() is idempotent for an already-live path", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    const spawned = await control.spawn({ parentPath: "/root" });
+    const metadata: AgentMetadata = {
+      agentId: spawned.agentId,
+      agentPath: spawned.agentPath,
+      agentNickname: spawned.nickname,
+      agentRole: spawned.role.name,
+      depth: spawned.depth,
+    };
+    const resumed = await control.resume({
+      parentPath: "/root",
+      metadata,
+    });
+    expect(resumed).toBe(spawned);
+    expect(registry.activeCount).toBe(1);
+  });
+
+  it("resume() respects I-1 depth cap", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry, maxDepth: 2 });
+    const metadata: AgentMetadata = {
+      agentId: "thread-too-deep",
+      agentPath: "/root/a/b/c",
+      agentNickname: "too-deep",
+      agentRole: "default",
+      depth: 3,
+    };
+    await expect(
+      control.resume({ parentPath: "/root/a/b", metadata }),
+    ).rejects.toBeInstanceOf(MaxDepthExceededError);
+  });
+
+  it("resume() attaches the upInbox to session.childInboxes", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    const metadata: AgentMetadata = {
+      agentId: "thread-attach-1",
+      agentPath: "/root/attach",
+      agentNickname: "attach",
+      agentRole: "default",
+      depth: 1,
+    };
+    const live = await control.resume({ parentPath: "/root", metadata });
+    expect(live).not.toBeNull();
+    const inboxes = (session as unknown as { childInboxes: Map<string, unknown> })
+      .childInboxes;
+    expect(inboxes.get("thread-attach-1")).toBe(live!.upInbox);
+  });
+
+  it("resume() emits an agent_resumed warning", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    const metadata: AgentMetadata = {
+      agentId: "thread-emit-1",
+      agentPath: "/root/emit",
+      agentNickname: "emit",
+      agentRole: "default",
+      depth: 1,
+    };
+    await control.resume({ parentPath: "/root", metadata });
+    const emitted = (session as unknown as { _emitted: Array<{ msg: { type: string; payload?: { cause?: string; message?: string } } }> })
+      ._emitted;
+    const resumed = emitted.find(
+      (e) =>
+        e?.msg?.type === "warning" && e?.msg?.payload?.cause === "agent_resumed",
+    );
+    expect(resumed).toBeDefined();
+    expect(resumed!.msg.payload!.message).toContain("/root/emit");
+    expect(resumed!.msg.payload!.message).toContain("emit");
   });
 });

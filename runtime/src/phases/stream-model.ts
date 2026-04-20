@@ -33,6 +33,8 @@ import {
   installStreamWatchdog,
   STREAM_IDLE_ABORT_REASON,
 } from "../llm/stream-watchdog.js";
+import { sanitizeModelOutput } from "../llm/stream-parser.js";
+import { normalizeToolCallsForProvider } from "../llm/tool-call-normalize.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { AssistantMessage, ToolUseBlock, TurnState } from "../session/turn-state.js";
@@ -57,12 +59,36 @@ function parseToolUseBlocks(toolCalls: LLMToolCall[]): ToolUseBlock[] {
 
 function assistantMessageFromResponse(
   response: LLMResponse,
+  providerName: string,
+  session: Session,
 ): AssistantMessage {
+  // I-77: strip UI-spoof patterns from model output before it reaches
+  // history or any renderer. On a match, emit a warning so post-mortem
+  // telemetry can see the spoof attempt.
+  const sanitized = sanitizeModelOutput(response.content ?? "");
+  if (sanitized.spoofed) {
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "warning",
+        payload: {
+          cause: "model_ui_spoof_pattern",
+          message: `model output matched spoof pattern(s): ${sanitized.matches.join(", ")}`,
+        },
+      },
+    });
+  }
+  // I-55: normalize tool_use blocks into canonical shape before the
+  // validator sees them (provider-family quirks collapsed here).
+  const normalizedToolCalls = normalizeToolCallsForProvider(
+    providerName,
+    response.toolCalls ?? [],
+  );
   return {
     uuid: crypto.randomUUID(),
     role: "assistant",
-    text: response.content,
-    toolCalls: response.toolCalls ?? [],
+    text: sanitized.text,
+    toolCalls: normalizedToolCalls,
     apiError: response.finishReason === "error" ? "provider_error" : undefined,
   };
 }
@@ -211,9 +237,13 @@ export async function streamModel(
     if (signal) signal.removeEventListener("abort", onExternalAbort);
   }
 
-  const assistant = assistantMessageFromResponse(response);
+  const assistant = assistantMessageFromResponse(
+    response,
+    session.services.provider.name,
+    session,
+  );
   state.assistantMessages = [assistant];
-  state.toolUseBlocks = parseToolUseBlocks(response.toolCalls ?? []);
+  state.toolUseBlocks = parseToolUseBlocks([...assistant.toolCalls]);
   state.needsFollowUp = state.toolUseBlocks.length > 0;
 
   // Full final assistant_message event for renderers that batch on
