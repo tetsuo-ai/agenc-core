@@ -318,12 +318,24 @@ async function tryRunSamplingRequest(
   await prepareContext(state, ctx, session, signal);
 
   // Phase 2: stream model.
+  let streamModelError: StreamModelError | null = null;
   try {
     await streamModel(state, ctx, session, signal);
   } catch (error) {
-    // Retryable: stream_idle / transient provider errors.
-    if (error instanceof StreamModelError) throw error;
-    throw new StreamModelError(error);
+    if (error instanceof StreamModelError) {
+      streamModelError = error;
+    } else {
+      streamModelError = new StreamModelError(error);
+    }
+  }
+
+  // T8: stash any wire-layer error on state for the recovery ladder
+  // to consume. FallbackTriggeredError + stream_idle + provider 5xx
+  // all become stream errors here; the ladder classifies them via
+  // `state.lastStreamError` + ordered trigger evaluation (I-10).
+  if (streamModelError) {
+    (state as TurnState & { lastStreamError?: unknown }).lastStreamError =
+      streamModelError.cause ?? streamModelError;
   }
 
   const assistantText = state.assistantMessages.at(-1)?.text ?? "";
@@ -331,8 +343,23 @@ async function tryRunSamplingRequest(
     events.push({ type: "assistant_text", content: assistantText });
   }
 
-  // Phase 3: post-sample recovery.
+  // Phase 3: post-sample recovery. Always runs — even on stream
+  // error — so the ladder can decide between recovery vs terminal.
   await postSampleRecovery(state, ctx, session, signal);
+
+  // If recovery applied a transition (any of I-10's triggers fired),
+  // swallow the stream error and let the outer loop re-enter
+  // PrepareContext.
+  if (state.transition !== undefined) {
+    (state as TurnState & { lastStreamError?: unknown }).lastStreamError = undefined;
+    streamModelError = null;
+  }
+
+  // Still-unrecovered stream error → bubble for runSamplingRequest's
+  // retry policy to decide (stream_idle + transient).
+  if (streamModelError) {
+    throw streamModelError;
+  }
 
   // Phase 4: continuation nudge.
   await continuationNudge(state, ctx, session, signal);
