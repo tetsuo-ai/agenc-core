@@ -158,4 +158,81 @@ describe("I-29 memory write lock registry", () => {
     await Promise.all(tasks);
     expect(order).toEqual([0, 1, 2, 3]);
   });
+
+  test("getMemoryWriteLock normalizes equivalent-but-differently-spelled paths", () => {
+    _clearMemoryWriteLocksForTest();
+    // All three resolve to /tmp/memdir/x.md — they must share one lock
+    // instance so two callers cannot race on the same physical file.
+    const canonical = getMemoryWriteLock("/tmp/memdir/x.md");
+    const dotdot = getMemoryWriteLock("/tmp/memdir/../memdir/x.md");
+    const doubled = getMemoryWriteLock("/tmp//memdir/./x.md");
+    expect(dotdot).toBe(canonical);
+    expect(doubled).toBe(canonical);
+    // Registry size reflects normalization: only one key is stored.
+    expect(_memoryWriteLocksForTest().size).toBe(1);
+  });
+});
+
+describe("loadMemoryPrompt cap precision", () => {
+  test("maxLines cap counts actual newlines, not split-piece over-count", async () => {
+    const dir = await makeTempMemdir();
+    const mdPath = join(dir, "MEMORY.md");
+    // Index has exactly 2 newlines (`# idx\n- [A](a.md)\n`).
+    await writeFile(mdPath, "# idx\n- [A](a.md)\n");
+    // Topic file: frontmatter + 10 body lines. parseFrontmatter strips
+    // the trailing newlines from the body, so body ends up as
+    // "line\nline\n...line" (9 newlines between 10 "line"s). The emitted
+    // chunk is `## A\n<body>\n\n` — that's 1 (header) + 9 (body) + 2
+    // (trailing \n\n) = 12 newlines.
+    const body = "line\n".repeat(10);
+    await writeFile(join(dir, "a.md"), `---\nname: A\ntype: user\n---\n${body}`);
+
+    // The index header chunk is `# MEMORY.md\n<indexText trimmed>\n\n`
+    // i.e. `# MEMORY.md\n# idx\n- [A](a.md)\n\n` -> 4 newlines.
+    // Total newlines accumulated on success: 4 + 12 = 16.
+    // With maxLines=16 both chunks fit; with maxLines=15 the topic chunk
+    // must trip truncation. Under the old over-count (split("\n").length
+    // added one extra per chunk), this boundary was off-by-two.
+    const ok = await loadMemoryPrompt({
+      memoryDir: dir,
+      memoryMdPath: mdPath,
+      maxLines: 16,
+    });
+    expect(ok.truncated).toBe(false);
+    expect(ok.entries.length).toBe(1);
+    expect(ok.lineCount).toBe(16);
+
+    const capped = await loadMemoryPrompt({
+      memoryDir: dir,
+      memoryMdPath: mdPath,
+      maxLines: 15,
+    });
+    expect(capped.truncated).toBe(true);
+    expect(capped.entries.length).toBe(0);
+  });
+
+  test("maxBytes cap counts UTF-8 bytes, not code units (multi-byte safe)", async () => {
+    const dir = await makeTempMemdir();
+    const mdPath = join(dir, "MEMORY.md");
+    await writeFile(mdPath, "# idx\n- [A](a.md)\n");
+    // 100 × 4-byte emoji = 400 bytes of body, even though String.length
+    // is 200 (surrogate pairs). Confirms Buffer.byteLength is used.
+    const emoji = "\u{1F600}";
+    const body = emoji.repeat(100);
+    await writeFile(
+      join(dir, "a.md"),
+      `---\nname: A\ntype: user\n---\n${body}\n`,
+    );
+    const result = await loadMemoryPrompt({
+      memoryDir: dir,
+      memoryMdPath: mdPath,
+      // Generous cap to accept header+body. Byte total far exceeds string
+      // length; truncation must NOT fire since we sized against bytes.
+      maxBytes: 1_000,
+    });
+    expect(result.truncated).toBe(false);
+    expect(result.entries.length).toBe(1);
+    // Body alone is 400 bytes → result.byteCount must be > 400.
+    expect(result.byteCount).toBeGreaterThan(400);
+  });
 });

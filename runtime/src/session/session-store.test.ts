@@ -1,9 +1,19 @@
-import { fsyncSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  fsyncSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { ROLLOUT_SCHEMA_VERSION } from "./event-log.js";
 import {
+  DEFAULT_SESSION_ROOT_MARKERS,
+  findProjectRootSync,
+  getProjectDir,
   I4_FSYNC_RETRY_MS,
   readIndexSnapshot,
   SessionLock,
@@ -327,5 +337,86 @@ describe("session-store", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // ───────────────────────────────────────────────────────────────────
+  // T10 Fix-E integration point 5 — project-root slug uses ancestor
+  // walk so two checkouts nested under the same `.git` root share the
+  // same `~/.agenc/projects/<slug>/` directory.
+  // ───────────────────────────────────────────────────────────────────
+
+  test("getProjectDir slugs from .git ancestor when cwd is nested under it", () => {
+    const repo = mkdtempSync(join(tmpdir(), "agenc-proj-root-"));
+    try {
+      mkdirSync(join(repo, ".git"));
+      const nested = join(repo, "packages", "alpha", "src");
+      mkdirSync(nested, { recursive: true });
+
+      const dirFromNested = getProjectDir(nested);
+      const dirFromRepo = getProjectDir(repo);
+      // Both should resolve to the same slug because the ancestor
+      // walk finds the `.git` marker at `repo`.
+      expect(dirFromNested).toBe(dirFromRepo);
+      expect(dirFromNested).toContain(slugifyCwd(repo));
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("getProjectDir falls back to raw cwd when no marker ancestor exists", () => {
+    // Build an isolated subtree under the test HOME so we guarantee
+    // no .git/package.json/etc exists anywhere on the way up. Using
+    // the test `home` (AGENC_HOME) keeps the walk contained to this
+    // temp tree; tmpdir() itself may be inside a repo on developer
+    // machines.
+    const walled = mkdtempSync(join(home, "no-marker-"));
+    try {
+      const dir = getProjectDir(walled, ["agenc-no-such-marker-xyzzy"]);
+      // With a custom marker list that cannot match, the store must
+      // slug from the raw cwd (not a non-existent ancestor).
+      expect(dir).toContain(slugifyCwd(walled));
+    } finally {
+      rmSync(walled, { recursive: true, force: true });
+    }
+  });
+
+  test("two cwds under the same .git root slug to the same project dir", () => {
+    const repo = mkdtempSync(join(tmpdir(), "agenc-shared-root-"));
+    try {
+      mkdirSync(join(repo, ".git"));
+      const a = join(repo, "apps", "web");
+      const b = join(repo, "apps", "api", "src");
+      mkdirSync(a, { recursive: true });
+      mkdirSync(b, { recursive: true });
+
+      const dirA = getProjectDir(a);
+      const dirB = getProjectDir(b);
+      expect(dirA).toBe(dirB);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("findProjectRootSync locates .git ancestor and returns rootDir + marker", () => {
+    const repo = mkdtempSync(join(tmpdir(), "agenc-walk-"));
+    try {
+      mkdirSync(join(repo, ".git"));
+      const nested = join(repo, "a", "b", "c");
+      mkdirSync(nested, { recursive: true });
+      const root = findProjectRootSync(nested);
+      expect(root).not.toBeNull();
+      expect(root!.rootDir).toBe(repo);
+      expect(root!.marker).toBe(".git");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("DEFAULT_SESSION_ROOT_MARKERS covers common ecosystem roots", () => {
+    // Guards against accidental drift between this list and the
+    // project-instructions loader; a full equality check would couple
+    // the two, so just assert coverage of the codex-rooted minimum.
+    expect(DEFAULT_SESSION_ROOT_MARKERS).toContain(".git");
+    expect(DEFAULT_SESSION_ROOT_MARKERS).toContain("package.json");
   });
 });

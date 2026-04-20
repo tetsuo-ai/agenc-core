@@ -112,6 +112,20 @@ export interface ManagedWorkspacesConfig {
   readonly [k: string]: unknown;
 }
 
+export type McpTransport = "stdio" | "sse" | "http";
+
+export interface McpServerConfig {
+  readonly command?: string;
+  readonly args?: readonly string[];
+  readonly env?: Readonly<Record<string, string>>;
+  readonly transport?: McpTransport;
+  readonly endpoint?: string;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly enabled?: boolean;
+  readonly timeout?: number;
+  readonly required?: boolean;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Canonical AgenCConfig
 // ─────────────────────────────────────────────────────────────────────
@@ -134,6 +148,7 @@ export interface AgenCConfig {
   readonly tools_config?: ToolsConfig;
   readonly compact_prompt?: string;
   readonly hooks?: HooksMap;
+  readonly mcp_servers?: Readonly<Record<string, McpServerConfig>>;
 
   // ── Openclaude-rooted fields ──────────────────────────────────────
   readonly autoUpdates?: boolean;
@@ -149,6 +164,8 @@ export interface AgenCConfig {
   readonly stream_watchdog_timeout_ms?: number;
   readonly max_turns?: number;
   readonly agenc_home?: string;
+  readonly workspace?: string;
+  readonly simpleMode?: boolean;
 
   // ── Forward-compat side-table ─────────────────────────────────────
   readonly _unknown?: Readonly<Record<string, unknown>>;
@@ -176,6 +193,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "tools_config",
   "compact_prompt",
   "hooks",
+  "mcp_servers",
   "autoUpdates",
   "bypassPermissionsModeAcceptedIn",
   "experiments",
@@ -187,6 +205,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "stream_watchdog_timeout_ms",
   "max_turns",
   "agenc_home",
+  "workspace",
+  "simpleMode",
   "_unknown",
 ]);
 
@@ -274,6 +294,68 @@ export function mergeConfigs(
     override as Record<string, unknown>,
   ) as AgenCConfig;
   return deepFreeze(merged);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Codex TOML alias normalization
+// ─────────────────────────────────────────────────────────────────────
+
+// Codex TOML uses some field names that differ from AgenC canonical keys.
+// This mapping lets users drop a codex config.toml unchanged and have it
+// work. Aliases are applied BEFORE `normalizeRawConfig` so renamed fields
+// land on the `KNOWN_CONFIG_KEYS` fast path instead of `_unknown`.
+const CODEX_TOP_LEVEL_ALIASES: Readonly<Record<string, string>> = Object.freeze({
+  tools: "tools_config",
+  model_reasoning_effort: "reasoning_effort",
+  model_reasoning_summary: "reasoning_summary",
+});
+
+/**
+ * Remap codex-style TOML keys onto canonical AgenC keys.
+ *
+ * Rules:
+ * - Top-level aliases from `CODEX_TOP_LEVEL_ALIASES` are renamed; if the
+ *   canonical key is also present, the canonical key wins and the alias is
+ *   dropped (forward-compat for mixed configs).
+ * - `agents.max_depth` → `agent_max_depth` (codex nests this).
+ *
+ * The returned object is a shallow copy; nested values are passed through
+ * by reference. Callers should not mutate `raw` after calling.
+ */
+export function normalizeCodexKeyAliases(
+  raw: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...raw };
+  for (const [alias, canonical] of Object.entries(CODEX_TOP_LEVEL_ALIASES)) {
+    if (alias in out) {
+      if (!(canonical in out)) {
+        out[canonical] = out[alias];
+      }
+      delete out[alias];
+    }
+  }
+  // agents.max_depth → agent_max_depth
+  const agents = out.agents;
+  if (
+    typeof agents === "object" &&
+    agents !== null &&
+    !Array.isArray(agents)
+  ) {
+    const agentsObj = agents as Record<string, unknown>;
+    if ("max_depth" in agentsObj && !("agent_max_depth" in out)) {
+      out.agent_max_depth = agentsObj.max_depth;
+    }
+    // Drop the `agents` table if max_depth was the only thing we care about;
+    // otherwise leave it for _unknown preservation.
+    const remaining = { ...agentsObj };
+    delete remaining.max_depth;
+    if (Object.keys(remaining).length === 0) {
+      delete out.agents;
+    } else {
+      out.agents = remaining;
+    }
+  }
+  return out;
 }
 
 // ─────────────────────────────────────────────────────────────────────

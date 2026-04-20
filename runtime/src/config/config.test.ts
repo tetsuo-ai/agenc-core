@@ -7,6 +7,7 @@ import {
   defaultConfig,
   mergeConfigs,
   normalizeRawConfig,
+  normalizeCodexKeyAliases,
   AgenCConfig,
   resolveModelDisambiguated,
   AmbiguousModelError,
@@ -91,6 +92,64 @@ describe("schema: normalizeRawConfig", () => {
   test("no _unknown table when all keys are known", () => {
     const out = normalizeRawConfig({ model: "x" });
     expect(out._unknown).toBeUndefined();
+  });
+});
+
+describe("schema: defaultConfig independence", () => {
+  test("consecutive calls return independent snapshots (no shared state)", () => {
+    const a = defaultConfig();
+    const b = defaultConfig();
+    // Top-level objects are distinct (each call creates fresh literal).
+    expect(a).not.toBe(b);
+    // Nested readonly structures are distinct too.
+    expect(a.project_root_markers).not.toBe(b.project_root_markers);
+    expect(a.toolBudget).not.toBe(b.toolBudget);
+    // Values are equal, though.
+    expect(a.project_root_markers).toEqual(b.project_root_markers);
+    expect(a.toolBudget).toEqual(b.toolBudget);
+  });
+});
+
+describe("schema: normalizeCodexKeyAliases", () => {
+  test("tools → tools_config", () => {
+    const out = normalizeCodexKeyAliases({
+      tools: { web_search: true },
+    });
+    expect(out.tools_config).toEqual({ web_search: true });
+    expect(out.tools).toBeUndefined();
+  });
+
+  test("model_reasoning_effort → reasoning_effort", () => {
+    const out = normalizeCodexKeyAliases({
+      model_reasoning_effort: "high",
+    });
+    expect(out.reasoning_effort).toBe("high");
+    expect(out.model_reasoning_effort).toBeUndefined();
+  });
+
+  test("model_reasoning_summary → reasoning_summary", () => {
+    const out = normalizeCodexKeyAliases({
+      model_reasoning_summary: "detailed",
+    });
+    expect(out.reasoning_summary).toBe("detailed");
+    expect(out.model_reasoning_summary).toBeUndefined();
+  });
+
+  test("agents.max_depth → agent_max_depth", () => {
+    const out = normalizeCodexKeyAliases({
+      agents: { max_depth: 3 },
+    });
+    expect(out.agent_max_depth).toBe(3);
+    expect(out.agents).toBeUndefined();
+  });
+
+  test("canonical key wins when both alias and canonical present", () => {
+    const out = normalizeCodexKeyAliases({
+      tools: { web_search: true },
+      tools_config: { web_search: false },
+    });
+    expect(out.tools_config).toEqual({ web_search: false });
+    expect(out.tools).toBeUndefined();
   });
 });
 
@@ -266,6 +325,58 @@ mystery_key = 42
     const out = await loadConfig({ home: dir });
     expect(out.config._unknown?.mystery_key).toBe(42);
   });
+
+  test("mcp_servers loaded from TOML [mcp_servers.<name>] tables", async () => {
+    writeFileSync(
+      join(dir, "config.toml"),
+      `
+[mcp_servers.github]
+command = "gh-mcp"
+args = ["--stdio"]
+transport = "stdio"
+enabled = true
+
+[mcp_servers.docs]
+transport = "http"
+endpoint = "https://docs.example.com/mcp"
+required = false
+      `,
+    );
+    const out = await loadConfig({ home: dir });
+    const servers = out.config.mcp_servers;
+    expect(servers).toBeDefined();
+    expect(servers?.github?.command).toBe("gh-mcp");
+    expect(servers?.github?.args).toEqual(["--stdio"]);
+    expect(servers?.github?.transport).toBe("stdio");
+    expect(servers?.github?.enabled).toBe(true);
+    expect(servers?.docs?.endpoint).toBe("https://docs.example.com/mcp");
+    expect(servers?.docs?.transport).toBe("http");
+    expect(servers?.docs?.required).toBe(false);
+  });
+
+  test("codex key aliases: tools → tools_config via loader", async () => {
+    writeFileSync(
+      join(dir, "config.toml"),
+      `
+[tools]
+web_search = true
+      `,
+    );
+    const out = await loadConfig({ home: dir });
+    expect(out.config.tools_config?.web_search).toBe(true);
+    // The codex-style `tools` key should not leak into _unknown.
+    expect(out.config._unknown?.tools).toBeUndefined();
+  });
+
+  test("codex key aliases: model_reasoning_effort → reasoning_effort via loader", async () => {
+    writeFileSync(
+      join(dir, "config.toml"),
+      `model_reasoning_effort = "high"\n`,
+    );
+    const out = await loadConfig({ home: dir });
+    expect(out.config.reasoning_effort).toBe("high");
+    expect(out.config._unknown?.model_reasoning_effort).toBeUndefined();
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -325,6 +436,42 @@ describe("profiles: resolveProfile", () => {
   test("listProfiles returns sorted names", () => {
     const cfg = withProfiles();
     expect(listProfiles(cfg)).toEqual(["fast", "strict"]);
+  });
+
+  test("model_provider override is applied from profile", () => {
+    const cfg = mergeConfigs(defaultConfig(), {
+      profiles: {
+        remote: {
+          model: "grok-4-fast",
+          model_provider: "openrouter",
+        },
+      },
+    });
+    const out = resolveProfile(cfg, "remote");
+    expect(out.model).toBe("grok-4-fast");
+    expect(out.model_provider).toBe("openrouter");
+  });
+
+  test("non-whitelisted profile keys are silently dropped", () => {
+    // compact_prompt is a valid AgenCConfig field but NOT overridable via
+    // profile — it must be dropped rather than propagated.
+    const cfg = mergeConfigs(defaultConfig(), {
+      compact_prompt: "base-compact",
+      profiles: {
+        weird: {
+          // cast through unknown to bypass the ProfileOverride compile check
+          ...(({ compact_prompt: "profile-compact" }) as unknown as Record<
+            string,
+            unknown
+          >),
+          model: "grok-3",
+        },
+      },
+    });
+    const out = resolveProfile(cfg, "weird");
+    expect(out.model).toBe("grok-3");
+    // compact_prompt on the result should come from the base, not the profile.
+    expect(out.compact_prompt).toBe("base-compact");
   });
 });
 
@@ -386,6 +533,36 @@ describe("env: resolvers", () => {
     const base = defaultConfig();
     const out = applyEnvOverrides(base, {});
     expect(out.model).toBe(base.model);
+  });
+
+  test("applyEnvOverrides propagates AGENC_WORKSPACE and AGENC_SIMPLE", () => {
+    const base = defaultConfig();
+    const out = applyEnvOverrides(base, {
+      AGENC_WORKSPACE: "/work/project",
+      AGENC_SIMPLE: "true",
+    });
+    expect(out.workspace).toBe("/work/project");
+    expect(out.simpleMode).toBe(true);
+  });
+
+  test("applyEnvOverrides: AGENC_SIMPLE=false yields simpleMode=false", () => {
+    const base = defaultConfig();
+    const out = applyEnvOverrides(base, { AGENC_SIMPLE: "no" });
+    expect(out.simpleMode).toBe(false);
+  });
+
+  test("applyEnvOverrides does NOT leak API keys into config snapshot", () => {
+    const base = defaultConfig();
+    const out = applyEnvOverrides(base, {
+      XAI_API_KEY: "secret-xai",
+      GROK_API_KEY: "secret-grok",
+      AGENC_XAI_API_KEY: "secret-agenc",
+    });
+    // No api-key field should appear anywhere in the merged snapshot.
+    const json = JSON.stringify(out);
+    expect(json).not.toContain("secret-xai");
+    expect(json).not.toContain("secret-grok");
+    expect(json).not.toContain("secret-agenc");
   });
 });
 

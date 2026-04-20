@@ -3,6 +3,7 @@
 // Profiles are named override bundles stored under `config.profiles`.
 // Only these keys may be overridden by a profile:
 //   - model
+//   - model_provider
 //   - approval_policy
 //   - sandbox_mode
 //   - reasoning_effort
@@ -43,6 +44,7 @@ export class UnknownProfileError extends Error {
 export const OVERRIDABLE_PROFILE_KEYS: readonly (keyof ProfileOverride)[] =
   Object.freeze([
     "model",
+    "model_provider",
     "approval_policy",
     "sandbox_mode",
     "reasoning_effort",
@@ -72,6 +74,8 @@ export function resolveProfile(
 
   const override: Mutable<Partial<AgenCConfig>> = {};
   if (profile.model !== undefined) override.model = profile.model;
+  if (profile.model_provider !== undefined)
+    override.model_provider = profile.model_provider;
   if (profile.approval_policy !== undefined)
     override.approval_policy = profile.approval_policy;
   if (profile.sandbox_mode !== undefined)

@@ -1,5 +1,6 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
@@ -11,6 +12,9 @@ import {
   type TierEntry,
   type TieredInstructions,
 } from "./claude-md.js";
+
+const POSIX = platform() !== "win32";
+const posixTest = POSIX ? test : test.skip;
 
 describe("claude-md (T10-B tiered + @include)", () => {
   let tmp = "";
@@ -183,8 +187,10 @@ describe("claude-md (T10-B tiered + @include)", () => {
     expect(res.dropped).toHaveLength(1);
     expect(res.dropped[0]!.reason).toBe("path_escape");
     expect(res.text).not.toContain("SECRET");
-    // Marker still left.
-    expect(res.text).toContain("<!-- @include ../outside/secret.md -->");
+    // Rejection marker left so the drop is visible downstream.
+    expect(res.text).toContain(
+      "<!-- @include ../outside/secret.md (rejected: path_escape) -->",
+    );
   });
 
   test("I-75: absolute /etc/passwd-style @include rejected", async () => {
@@ -240,7 +246,7 @@ describe("claude-md (T10-B tiered + @include)", () => {
       maxBytes: 500,
     });
     expect(res.dropped[0]!.reason).toBe("max_bytes");
-    expect(res.text).toContain("<!-- @include big.md -->");
+    expect(res.text).toContain("<!-- @include big.md (rejected: max_bytes");
     expect(res.text).not.toContain("x".repeat(1000));
   });
 
@@ -268,7 +274,9 @@ describe("claude-md (T10-B tiered + @include)", () => {
       projectRoot: repo,
     });
     expect(res.dropped[0]!.reason).toBe("not_found");
-    expect(res.text).toContain("<!-- @include nope.md -->");
+    expect(res.text).toContain(
+      "<!-- @include nope.md (rejected: not_found) -->",
+    );
   });
 
   test("isPathWithin boundary check rejects `..` escapes and absolute escapes", () => {
@@ -276,6 +284,159 @@ describe("claude-md (T10-B tiered + @include)", () => {
     expect(isPathWithin("/root/x", "/root/x")).toBe(true);
     expect(isPathWithin("/root/y", "/root/x")).toBe(false);
     expect(isPathWithin("/etc/passwd", "/root/x")).toBe(false);
+  });
+
+  // ---- T10 Fix-B: realpath boundary + non-regular file rejection ----
+
+  posixTest(
+    "I-75 realpath: symlink inside project pointing outside is rejected",
+    async () => {
+      const repo = join(tmp, "repo");
+      const outside = join(tmp, "outside");
+      mkdirSync(repo);
+      mkdirSync(outside);
+      writeFileSync(join(outside, "secret.md"), "SECRET");
+      // Attack: in-tree name, out-of-tree target.
+      symlinkSync(join(outside, "secret.md"), join(repo, "leak.md"));
+      const res = await resolveIncludes("@include leak.md", {
+        baseDir: repo,
+        projectRoot: repo,
+      });
+      expect(res.included).toHaveLength(0);
+      expect(res.dropped).toHaveLength(1);
+      expect(res.dropped[0]!.reason).toBe("path_escape");
+      expect(res.text).not.toContain("SECRET");
+      expect(res.text).toContain(
+        "<!-- @include leak.md (rejected: path_escape) -->",
+      );
+    },
+  );
+
+  posixTest("broken symlink is rejected (not_found)", async () => {
+    const repo = join(tmp, "repo");
+    mkdirSync(repo);
+    symlinkSync(join(tmp, "does-not-exist"), join(repo, "dangling.md"));
+    const res = await resolveIncludes("@include dangling.md", {
+      baseDir: repo,
+      projectRoot: repo,
+    });
+    expect(res.dropped).toHaveLength(1);
+    expect(res.dropped[0]!.reason).toBe("not_found");
+    expect(res.text).toContain(
+      "<!-- @include dangling.md (rejected: not_found) -->",
+    );
+  });
+
+  test("null-byte in @include path is rejected as invalid_path", async () => {
+    const repo = join(tmp, "repo");
+    mkdirSync(repo);
+    writeFileSync(join(repo, "safe.md"), "SAFE");
+    // Raw null byte smuggled through the directive line.
+    const res = await resolveIncludes("@include safe\0.md", {
+      baseDir: repo,
+      projectRoot: repo,
+    });
+    expect(res.included).toHaveLength(0);
+    expect(res.dropped).toHaveLength(1);
+    expect(res.dropped[0]!.reason).toBe("invalid_path");
+    expect(res.text).not.toContain("SAFE");
+  });
+
+  posixTest("FIFO under project root is rejected (not_regular_file)", async () => {
+    const repo = join(tmp, "repo");
+    mkdirSync(repo);
+    const fifo = join(repo, "pipe.md");
+    execFileSync("mkfifo", [fifo]);
+    const res = await resolveIncludes("@include pipe.md", {
+      baseDir: repo,
+      projectRoot: repo,
+    });
+    expect(res.included).toHaveLength(0);
+    expect(res.dropped).toHaveLength(1);
+    expect(res.dropped[0]!.reason).toBe("not_regular_file");
+    expect(res.text).toContain(
+      "<!-- @include pipe.md (rejected: not_regular_file) -->",
+    );
+  });
+
+  posixTest(
+    "symlink to character device (/dev/null) is rejected via realpath boundary",
+    async () => {
+      const repo = join(tmp, "repo");
+      mkdirSync(repo);
+      symlinkSync("/dev/null", join(repo, "dev.md"));
+      const res = await resolveIncludes("@include dev.md", {
+        baseDir: repo,
+        projectRoot: repo,
+      });
+      expect(res.included).toHaveLength(0);
+      expect(res.dropped).toHaveLength(1);
+      // realpath resolves through the symlink; `/dev/null` is outside the
+      // project boundary, so the boundary check fires first.
+      expect(res.dropped[0]!.reason).toBe("path_escape");
+    },
+  );
+
+  posixTest(
+    "in-tree symlink to in-tree regular file still works (sanity)",
+    async () => {
+      const repo = join(tmp, "repo");
+      mkdirSync(repo);
+      writeFileSync(join(repo, "real.md"), "REAL");
+      symlinkSync(join(repo, "real.md"), join(repo, "alias.md"));
+      const res = await resolveIncludes("@include alias.md", {
+        baseDir: repo,
+        projectRoot: repo,
+      });
+      expect(res.dropped).toHaveLength(0);
+      expect(res.text).toContain("REAL");
+    },
+  );
+
+  test("circular @include emits rejection marker", async () => {
+    const repo = join(tmp, "repo");
+    mkdirSync(repo);
+    writeFileSync(join(repo, "a.md"), "A\n@include b.md");
+    writeFileSync(join(repo, "b.md"), "B\n@include a.md");
+    const res = await resolveIncludes("@include a.md", {
+      baseDir: repo,
+      projectRoot: repo,
+    });
+    const cyc = res.dropped.find((d) => d.reason === "circular");
+    expect(cyc).toBeDefined();
+    expect(res.text).toContain("(rejected: circular");
+    expect(res.text).toContain("@include a.md");
+  });
+
+  test("max_depth rejection emits marker with depth info", async () => {
+    const repo = join(tmp, "repo");
+    mkdirSync(repo);
+    writeFileSync(join(repo, "a.md"), "A\n@include b.md");
+    writeFileSync(join(repo, "b.md"), "B\n@include c.md");
+    writeFileSync(join(repo, "c.md"), "C");
+    const res = await resolveIncludes("@include a.md", {
+      baseDir: repo,
+      projectRoot: repo,
+      maxDepth: 1,
+    });
+    expect(res.dropped.some((d) => d.reason === "max_depth")).toBe(true);
+    expect(res.text).toContain("(rejected: max_depth");
+    expect(res.text).toContain("depth=");
+  });
+
+  test("max_bytes rejection emits marker with cap info", async () => {
+    const repo = join(tmp, "repo");
+    mkdirSync(repo);
+    writeFileSync(join(repo, "big.md"), "x".repeat(2048));
+    const res = await resolveIncludes("@include big.md", {
+      baseDir: repo,
+      projectRoot: repo,
+      maxBytes: 256,
+    });
+    expect(res.dropped).toHaveLength(1);
+    expect(res.dropped[0]!.reason).toBe("max_bytes");
+    expect(res.text).toContain("(rejected: max_bytes");
+    expect(res.text).toContain("cap=256B");
   });
 
   test("loadTieredInstructions propagates @include into project tier", async () => {

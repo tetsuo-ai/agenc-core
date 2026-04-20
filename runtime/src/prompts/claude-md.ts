@@ -27,7 +27,7 @@
  *
  * @module
  */
-import { readFile, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 
@@ -99,7 +99,9 @@ export interface DroppedInclude {
     | "max_depth"
     | "max_bytes"
     | "not_found"
-    | "read_error";
+    | "read_error"
+    | "not_regular_file"
+    | "invalid_path";
   readonly includingFile: string;
 }
 
@@ -144,10 +146,15 @@ async function pathExists(p: string): Promise<boolean> {
 }
 
 /**
- * I-75 boundary check. Returns true when `candidate` is inside
+ * I-75 boundary check (lexical). Returns true when `candidate` is inside
  * `boundary` (or equal to it). Uses resolved absolute paths and
  * `path.relative` to detect escapes (including via `..` or absolute
  * overrides).
+ *
+ * NOTE: lexical-only — does not follow symlinks. Production expansion
+ * routes through {@link isPathWithinReal} which resolves symlinks via
+ * `fs.realpath` to close the symlink-escape attack. Kept exported for
+ * callers that want pure-lexical reasoning on paths that may not exist.
  */
 export function isPathWithin(candidate: string, boundary: string): boolean {
   const absBoundary = resolve(boundary);
@@ -156,6 +163,43 @@ export function isPathWithin(candidate: string, boundary: string): boolean {
   const rel = relative(absBoundary, absCandidate);
   if (rel === "" ) return true;
   // Any `..` component or an absolute rel path means candidate escapes.
+  if (rel.startsWith("..")) return false;
+  if (isAbsolute(rel)) return false;
+  return true;
+}
+
+/**
+ * I-75 boundary check (realpath-aware, async). Canonicalizes both
+ * `candidate` and `boundary` via `fs.realpath` before comparing. This
+ * closes the symlink-escape attack where an in-tree symlink points to
+ * a file outside the project root (e.g. `<repo>/bad -> /etc/passwd`):
+ * the lexical {@link isPathWithin} would pass, but the realpath version
+ * rejects.
+ *
+ * Fails closed (returns `false`) when either side's `realpath` fails —
+ * e.g. the candidate does not exist yet, or a broken symlink. Missing
+ * targets are surfaced separately through the `not_found` drop reason
+ * after this check, so a false here is safe.
+ */
+export async function isPathWithinReal(
+  candidate: string,
+  boundary: string,
+): Promise<boolean> {
+  let realBoundary: string;
+  let realCandidate: string;
+  try {
+    realBoundary = await realpath(resolve(boundary));
+  } catch {
+    return false;
+  }
+  try {
+    realCandidate = await realpath(resolve(candidate));
+  } catch {
+    return false;
+  }
+  if (realCandidate === realBoundary) return true;
+  const rel = relative(realBoundary, realCandidate);
+  if (rel === "") return true;
   if (rel.startsWith("..")) return false;
   if (isAbsolute(rel)) return false;
   return true;
@@ -234,79 +278,103 @@ async function expandText(ctx: ExpandCtx): Promise<string> {
     out += ctx.text.slice(cursor, match.start);
     cursor = match.end;
 
-    const resolved = resolve(ctx.baseDir, match.target);
-    const marker = `<!-- @include ${match.target} -->`;
-
-    // I-75 boundary check.
-    if (!isPathWithin(resolved, ctx.projectRoot)) {
+    const drop = (
+      reason: DroppedInclude["reason"],
+      extra?: string,
+    ): string => {
       ctx.dropped.push({
         requestedPath: match.target,
-        reason: "path_escape",
+        reason,
         includingFile: ctx.includingFile,
       });
-      out += marker;
+      // Every reason carries a human-readable rejection marker with the
+      // reason (and optional extra context such as cycle entry, depth
+      // limit, or byte cap) so the downstream prompt makes the drop
+      // visible instead of failing silently.
+      return extra !== undefined
+        ? `<!-- @include ${match.target} (rejected: ${reason}; ${extra}) -->`
+        : `<!-- @include ${match.target} (rejected: ${reason}) -->`;
+    };
+
+    // Null-byte / control-char guard. POSIX `open(2)` treats `\0` as the
+    // path terminator and would silently truncate; reject up front so an
+    // attacker can't smuggle `foo\0.md` past later checks.
+    if (match.target.includes("\0")) {
+      out += drop("invalid_path");
+      continue;
+    }
+
+    const resolved = resolve(ctx.baseDir, match.target);
+
+    // I-75 boundary check (realpath-aware). Closes the symlink-escape
+    // attack where `<repo>/bad -> /etc/passwd` would pass lexical checks.
+    // Also rejects broken symlinks via the fail-closed realpath variant.
+    const within = await isPathWithinReal(resolved, ctx.projectRoot);
+    if (!within) {
+      // Distinguish "exists, escapes boundary" (path_escape) from "does
+      // not exist at all" (not_found) so callers get an honest signal.
+      // `isPathWithinReal` fails closed on missing paths too, so probe
+      // separately here.
+      if (!(await pathExists(resolved))) {
+        out += drop("not_found");
+      } else {
+        out += drop("path_escape");
+      }
       continue;
     }
 
     // Cycle detection: resolved path already on the active stack.
     if (ctx.stack.includes(resolved)) {
-      ctx.dropped.push({
-        requestedPath: match.target,
-        reason: "circular",
-        includingFile: ctx.includingFile,
-      });
-      out += marker;
+      out += drop(
+        "circular",
+        `cycle via ${ctx.stack.length > 0 ? ctx.stack.join(" -> ") : "self"}`,
+      );
       continue;
     }
 
     // Depth guard.
     if (ctx.depth + 1 > ctx.maxDepth) {
-      ctx.dropped.push({
-        requestedPath: match.target,
-        reason: "max_depth",
-        includingFile: ctx.includingFile,
-      });
-      out += marker;
+      out += drop("max_depth", `depth=${ctx.depth + 1} > max=${ctx.maxDepth}`);
       continue;
     }
 
-    // Existence + read.
-    if (!(await pathExists(resolved))) {
-      ctx.dropped.push({
-        requestedPath: match.target,
-        reason: "not_found",
-        includingFile: ctx.includingFile,
-      });
-      out += marker;
+    // Regular-file gate. Must follow the realpath boundary check so we
+    // stat the canonical target. Rejects FIFOs, sockets, block/char
+    // devices (reading would block or leak `/dev/*`), symlinks to such
+    // nodes, and directories.
+    let targetStat;
+    try {
+      targetStat = await stat(resolved);
+    } catch {
+      out += drop("not_found");
       continue;
     }
+    if (!targetStat.isFile()) {
+      out += drop("not_regular_file");
+      continue;
+    }
+
     let raw: string;
     try {
       raw = await readTextFile(resolved);
     } catch {
-      ctx.dropped.push({
-        requestedPath: match.target,
-        reason: "read_error",
-        includingFile: ctx.includingFile,
-      });
-      out += marker;
+      out += drop("read_error");
       continue;
     }
 
     // Byte-budget guard before recursion.
     const addBytes = Buffer.byteLength(raw, "utf8");
     if (ctx.state.totalBytes + addBytes > ctx.maxBytes) {
-      ctx.dropped.push({
-        requestedPath: match.target,
-        reason: "max_bytes",
-        includingFile: ctx.includingFile,
-      });
-      out += marker;
+      out += drop(
+        "max_bytes",
+        `would add ${addBytes}B; cap=${ctx.maxBytes}B; used=${ctx.state.totalBytes}B`,
+      );
       continue;
     }
     ctx.state.totalBytes += addBytes;
 
     ctx.included.push(resolved);
+    const okMarker = `<!-- @include ${match.target} -->`;
     const nested = await expandText({
       text: raw,
       baseDir: pathDir(resolved),
@@ -320,7 +388,7 @@ async function expandText(ctx: ExpandCtx): Promise<string> {
       dropped: ctx.dropped,
       state: ctx.state,
     });
-    out += `${marker}\n${nested}`;
+    out += `${okMarker}\n${nested}`;
   }
   out += ctx.text.slice(cursor);
   return out;

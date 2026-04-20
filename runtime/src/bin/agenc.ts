@@ -28,8 +28,8 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { cwd as processCwd } from "node:process";
-import { GrokProvider } from "../llm/grok/index.js";
-import type { LLMToolCall } from "../llm/types.js";
+import { createProvider, type ProviderName } from "../llm/provider.js";
+import type { LLMProvider, LLMToolCall } from "../llm/types.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { Session } from "../session/session.js";
 import type {
@@ -43,6 +43,7 @@ import {
   type SessionConfiguration,
 } from "../session/turn-context.js";
 import { runTurn } from "../session/run-turn.js";
+import type { Terminal } from "../session/turn-state.js";
 import { buildToolRegistry } from "../tool-registry.js";
 import { RolloutStore } from "../session/rollout-store.js";
 import {
@@ -414,7 +415,7 @@ function renderEvent(event: PhaseEvent): void {
 // ─────────────────────────────────────────────────────────────────────
 
 function buildPlaceholderServices(
-  provider: GrokProvider,
+  provider: LLMProvider,
   registry: ReturnType<typeof buildToolRegistry>,
 ): SessionServices {
   const noopAsync = async () => {
@@ -591,6 +592,12 @@ function mapSandboxPolicy(
  * Build a fresh SessionConfiguration from a loaded AgenCConfig + the
  * resolved workspace + model. Used at init time and (future) between
  * turns on config reload so session state mirrors the config snapshot.
+ *
+ * Propagates the following codex-rooted AgenCConfig fields into the
+ * session configuration so a reload carries them forward:
+ *   - `personality`           → `personality`
+ *   - `reasoning_summary`     → `modelReasoningSummary`
+ *   - `compact_prompt`        → `compactPrompt`
  */
 export function sessionConfigurationFromAgenCConfig(params: {
   readonly config: AgenCConfig;
@@ -599,7 +606,7 @@ export function sessionConfigurationFromAgenCConfig(params: {
 }): SessionConfiguration {
   const approval = mapApprovalPolicy(params.config.approval_policy);
   const sandbox = mapSandboxPolicy(params.config.sandbox_mode);
-  return {
+  const base: SessionConfiguration = {
     cwd: params.workspaceRoot,
     approvalPolicy: { value: approval },
     sandboxPolicy: { value: sandbox },
@@ -618,6 +625,21 @@ export function sessionConfigurationFromAgenCConfig(params: {
     collaborationMode: { model: params.model },
     dynamicTools: [],
     sessionSource: "cli_main",
+  };
+  // Propagate the shared codex-rooted fields when present on the
+  // loaded config. Undefined values stay off so callers can distinguish
+  // "operator set a default" from "operator set X explicitly".
+  return {
+    ...base,
+    ...(params.config.personality !== undefined
+      ? { personality: params.config.personality }
+      : {}),
+    ...(params.config.reasoning_summary !== undefined
+      ? { modelReasoningSummary: params.config.reasoning_summary }
+      : {}),
+    ...(params.config.compact_prompt !== undefined
+      ? { compactPrompt: params.config.compact_prompt }
+      : {}),
   };
 }
 
@@ -669,31 +691,283 @@ export function resolveModelOrExit(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Build an `ExtractMemoriesFn` that (when T9 delegate is reachable)
- * spawns an explorer-role subagent to parse a transcript into memory
- * candidates. Today T9 delegate is reachable only through the CLI's
- * `buildDelegateTool` surface; this helper exposes the adapter shape
- * so the sidecar registration in `main()` can hand it in cleanly.
+ * Default timeout applied to the extraction subagent. The extractor is
+ * a best-effort summarizer; if the child hangs we drop the attempt and
+ * let the next turn retry once more growth accrues.
+ */
+export const EXTRACT_MEMORIES_TIMEOUT_MS = 30_000;
+
+/**
+ * Inline prompt handed to the extraction subagent. Kept as a template
+ * literal (not a prompt file) so changes stay auditable in this file
+ * and so the surface remains obvious during runtime triage.
+ */
+function buildExtractPrompt(transcript: string): string {
+  return [
+    "You are extracting durable memories from the current session. Input: the last N assistant+user messages. Output: JSON array of candidates with shape:",
+    "[ { \"name\": \"<slug>\", \"description\": \"<one-line>\", \"type\": \"user\"|\"feedback\"|\"project\"|\"reference\", \"body\": \"<the memory content>\" } ]",
+    "Only extract non-ephemeral, user-specific, durable facts. Skip code patterns, ephemeral state, PR/commit references. Output ONLY valid JSON, no prose.",
+    "",
+    "--- TRANSCRIPT ---",
+    transcript,
+  ].join("\n");
+}
+
+/**
+ * Allowed values for the extractor's memory `type` frontmatter field.
+ * Mirrors the MEMORY_TYPES set from the memory subsystem but kept local
+ * so the bridge doesn't pull in extra module surface.
+ */
+const EXTRACT_MEMORY_TYPES: ReadonlySet<string> = new Set([
+  "user",
+  "feedback",
+  "project",
+  "reference",
+]);
+
+/**
+ * Parse a subagent's final message as a JSON array of memory candidates
+ * and convert each valid entry into a `MemoryCandidate` rooted under
+ * `memoryDir`. Malformed entries are skipped; a fully malformed JSON
+ * response throws so the caller can emit the parse-failure warning.
+ */
+export function parseExtractedMemoryCandidates(
+  raw: string,
+  memoryDir: string,
+): readonly MemoryCandidate[] {
+  const parsed = JSON.parse(raw);
+  if (!Array.isArray(parsed)) {
+    throw new Error("extractor response was not a JSON array");
+  }
+  const out: MemoryCandidate[] = [];
+  for (const item of parsed) {
+    if (item === null || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    const name = typeof rec.name === "string" ? rec.name.trim() : "";
+    const description =
+      typeof rec.description === "string" ? rec.description.trim() : "";
+    const type =
+      typeof rec.type === "string" && EXTRACT_MEMORY_TYPES.has(rec.type)
+        ? (rec.type as "user" | "feedback" | "project" | "reference")
+        : undefined;
+    const body = typeof rec.body === "string" ? rec.body : "";
+    if (name === "" || type === undefined || body.length === 0) continue;
+    // Slugify the name for the filename; strip unsafe chars so the
+    // path join below stays confined to memoryDir.
+    const slug = name
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    if (slug.length === 0) continue;
+    out.push({
+      filePath: join(memoryDir, `${slug}.md`),
+      frontmatter: {
+        name,
+        description,
+        type,
+        extra: {},
+      },
+      body,
+    });
+  }
+  return out;
+}
+
+/**
+ * Build an `ExtractMemoriesFn` that spawns an `explorer`-role subagent
+ * via `delegate()` to parse a transcript into memory candidates. The
+ * child is asked for a strict JSON array; the final message is parsed
+ * and validated against the `MemoryCandidate` shape.
  *
- * The extractor returns an empty list if the delegate path is
- * unreachable (e.g. during startup before the Session wires in) —
- * the sidecar swallows that gracefully.
+ * Failure policy:
+ *   - `session()` returns null → return [] (startup / post-shutdown).
+ *   - JSON parse failure       → emit warning `memory_extract_parse_failed`, return [].
+ *   - subagent error / timeout → emit warning `memory_extract_failed`, return [].
+ *
+ * Timeout: `EXTRACT_MEMORIES_TIMEOUT_MS` (30s). The timeout is a guard
+ * against a hung child; the promise race ensures the sidecar's
+ * fire-and-forget invocation doesn't keep a handle around forever.
  */
 export function buildExtractMemoriesViaSubagent(params: {
   readonly session: () => Session | null;
   readonly memoryDir: string;
+  readonly delegateFn?: typeof import("../agents/delegate.js").delegate;
+  readonly timeoutMs?: number;
 }): ExtractMemoriesFn {
-  return async (): Promise<readonly MemoryCandidate[]> => {
+  return async (
+    transcript: string,
+  ): Promise<readonly MemoryCandidate[]> => {
     const s = params.session();
     if (s === null) return [];
-    // Minimum-viable: today we have no structured-JSON subagent pipeline
-    // wired end-to-end for extraction. Return empty so the sidecar stays
-    // harmless until the parsing contract lands in a follow-up.
-    // The presence of this closure keeps the wire-up visible for review;
-    // when T9's structured-output path is live it replaces the body.
-    void params.memoryDir;
-    return [];
+    const timeoutMs = params.timeoutMs ?? EXTRACT_MEMORIES_TIMEOUT_MS;
+
+    const emitWarning = (cause: string, message: string): void => {
+      try {
+        s.emit({
+          id: s.nextInternalSubId(),
+          msg: {
+            type: "warning",
+            payload: { cause, message },
+          },
+        });
+      } catch {
+        /* best effort — warning emission must not mask the caller. */
+      }
+    };
+
+    let rawFinal: string;
+    try {
+      // Lazy-import to avoid pulling the delegate graph in when the
+      // CLI short-circuits (slash commands, init_aborted, etc.).
+      const delegateFn =
+        params.delegateFn ??
+        (await import("../agents/delegate.js")).delegate;
+      const { control, registry } = (
+        await import("./delegate-tool.js")
+      ).ensureAgentControl(s);
+
+      const deadline = new Promise<never>((_, reject) => {
+        setTimeout(
+          () =>
+            reject(
+              new Error(
+                `memory_extract_timeout: extraction did not finish within ${timeoutMs}ms`,
+              ),
+            ),
+          timeoutMs,
+        ).unref?.();
+      });
+
+      const dispatch = delegateFn({
+        parent: s,
+        parentPath: "/root",
+        control,
+        registry,
+        taskPrompt: buildExtractPrompt(transcript),
+        role: "explorer",
+      });
+
+      const outcome = await Promise.race([dispatch, deadline]);
+      if (outcome.kind !== "sync_completed") {
+        emitWarning(
+          "memory_extract_failed",
+          outcome.kind === "rejected"
+            ? `delegate rejected: ${outcome.reason}`
+            : `unexpected delegate outcome: ${outcome.kind}`,
+        );
+        return [];
+      }
+      rawFinal = outcome.result.finalMessage ?? "";
+      if (rawFinal.trim().length === 0) {
+        emitWarning(
+          "memory_extract_parse_failed",
+          "extractor returned an empty final message",
+        );
+        return [];
+      }
+    } catch (err) {
+      emitWarning(
+        "memory_extract_failed",
+        err instanceof Error ? err.message : String(err),
+      );
+      return [];
+    }
+
+    try {
+      return parseExtractedMemoryCandidates(rawFinal, params.memoryDir);
+    } catch (err) {
+      emitWarning(
+        "memory_extract_parse_failed",
+        err instanceof Error ? err.message : String(err),
+      );
+      return [];
+    }
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// T10 Group I — runSingleTurn seam (R1: multi-turn future-proofing)
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Inputs the single-turn helper needs per invocation. Kept narrow so a
+ * future multi-turn REPL loop can call `runSingleTurn` repeatedly with
+ * the same shared state and a fresh `input` each pass.
+ */
+export interface RunSingleTurnOpts {
+  readonly session: Session;
+  readonly ctx: ReturnType<typeof buildTurnContext>;
+  readonly input: string;
+  /** T10: config snapshot + latch so `maybeReloadConfigBetweenTurns` can drain SIGUSR1. */
+  readonly configStore: ConfigStore;
+  readonly configReloadLatch: ConfigReloadLatch;
+  /** Pre-built, per-session memory + project-instructions inputs. */
+  readonly projectInstructions: string;
+  readonly memoryPromptText: string;
+  readonly allMemories: readonly MemoryEntry[];
+  /** Tool registry + MCP inputs that shape the system prompt. */
+  readonly enabledToolNames: ReadonlySet<string>;
+  readonly mcpServers: readonly McpServerInstructionsInput[];
+  readonly provider: string;
+  /** Optional: injected for tests so we don't have to spin real runTurn. */
+  readonly runTurnFn?: typeof runTurn;
+  readonly reloadConfigFn?: typeof maybeReloadConfigBetweenTurns;
+  readonly assembleSystemPromptFn?: typeof assembleSystemPrompt;
+}
+
+/**
+ * Drive a single LLM turn through the T10 pipeline:
+ *   1. drain the I-47 config-reload latch (between-turn only)
+ *   2. assemble the system prompt (tiered instructions + memory tail)
+ *   3. inject per-turn memory attachments
+ *   4. invoke `runTurn` and forward every event
+ *
+ * A future multi-turn REPL loop calls this repeatedly with the same
+ * session + ctx and a fresh `input` each iteration. Today `main()`
+ * calls it exactly once for the one-shot CLI flow.
+ */
+export async function* runSingleTurn(
+  opts: RunSingleTurnOpts,
+): AsyncGenerator<PhaseEvent, Terminal | undefined> {
+  const reload = opts.reloadConfigFn ?? maybeReloadConfigBetweenTurns;
+  const assemble = opts.assembleSystemPromptFn ?? assembleSystemPrompt;
+  const drive = opts.runTurnFn ?? runTurn;
+
+  // I-47: drain SIGUSR1 before we build the system prompt + send the
+  // turn so any reload takes effect on this exact turn, not the one
+  // after. Call is idempotent when the latch is unset.
+  await reload({
+    latch: opts.configReloadLatch,
+    store: opts.configStore,
+    session: opts.session,
+  });
+
+  const assembled = await assemble({
+    session: opts.session,
+    ctx: opts.ctx,
+    projectInstructions: opts.projectInstructions,
+    memoryPrompt: opts.memoryPromptText,
+    mcpServers: [...opts.mcpServers],
+    enabledToolNames: opts.enabledToolNames,
+    provider: opts.provider,
+  });
+
+  const selectedMemories = selectRelevantMemoriesForTurn(
+    opts.allMemories,
+    opts.input,
+    opts.session,
+  );
+  const systemPrompt = injectAttachmentsIntoPrompt(
+    assembled.text,
+    selectedMemories,
+  );
+
+  const iter = drive(opts.session, opts.ctx, opts.input, { systemPrompt });
+  while (true) {
+    const step = await iter.next();
+    if (step.done) return step.value;
+    yield step.value;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -749,7 +1023,6 @@ async function main(): Promise<number> {
     // with a clear `provider:model` recommendation instead of letting
     // the provider silently pick one arm.
     const { provider: resolvedProvider, model } = resolveModelOrExit(rawModel);
-    void resolvedProvider;
 
     // Step 4: build tool registry. T6 gap #119 — the bash tool
     // lifecycle observer needs the Session to emit events through,
@@ -780,13 +1053,17 @@ async function main(): Promise<number> {
     });
     throwIfAborted("buildToolRegistry");
 
-    // Step 5: construct provider.
-    const provider = new GrokProvider({
+    // Step 5: construct provider via the factory so T13's multi-
+    // provider work hooks in cleanly and the I-60 disambiguation
+    // result (`resolvedProvider`) actually drives routing. Today the
+    // factory only wires Grok; other providers throw
+    // `ProviderNotImplementedError` until T13 lands the adapters.
+    const provider: LLMProvider = createProvider(resolvedProvider as ProviderName, {
       apiKey,
       model,
       tools: registry.toLLMTools(),
     });
-    throwIfAborted("GrokProvider");
+    throwIfAborted("createProvider");
 
     const conversationId = `conv-${Date.now().toString(36)}`;
     const config = buildMinimalConfig(workspaceRoot, model);
@@ -861,12 +1138,20 @@ async function main(): Promise<number> {
     // I-49 schema version). On SessionLockedError, bail fast with
     // the holder PID (another AgenC process owns the session).
     // On SchemaMismatchError, bail with the migration message.
+    // Resolve project-root markers from config so the store slugs
+    // from the nearest `.git` (or other marker) ancestor. Two checkouts
+    // nested under the same repo now map to the same projects/<slug>/
+    // directory. Undefined → store uses its own defaults.
+    const sessionProjectRootMarkers = configStore.current().project_root_markers;
     let rolloutStore: RolloutStore | null = null;
     try {
       rolloutStore = new RolloutStore({
         cwd: workspaceRoot,
         sessionId: conversationId,
         agencVersion: "0.2.0",
+        ...(sessionProjectRootMarkers !== undefined
+          ? { projectRootMarkers: sessionProjectRootMarkers }
+          : {}),
       });
       rolloutStore.open({
         sessionId: conversationId,
@@ -904,7 +1189,7 @@ async function main(): Promise<number> {
         // report snapshot_behind_rollout.
         const indexSnapshot = readIndexSnapshot(
           join(
-            getProjectDir(workspaceRoot),
+            getProjectDir(workspaceRoot, sessionProjectRootMarkers),
             "sessions",
             conversationId,
             "index.json",
@@ -939,7 +1224,7 @@ async function main(): Promise<number> {
     }
 
     // Step 7c: mount sidecars (T6 §C).
-    const projectDir = getProjectDir(workspaceRoot);
+    const projectDir = getProjectDir(workspaceRoot, sessionProjectRootMarkers);
     const sidecarManager = new SidecarManager({
       onDiagnostic: (d) => {
         // Route sidecar diagnostics through the event log so they
@@ -1140,45 +1425,28 @@ async function main(): Promise<number> {
     const memoryScan = await scanMemoryDir(memoryDir);
     const allMemories: readonly MemoryEntry[] = memoryScan.entries;
 
-    // I-47 between-turn reload hook. The single-turn CLI only needs
-    // to drain the latch once (before the first/only turn), but the
-    // call is idempotent and matches the multi-turn runtime contract.
-    await maybeReloadConfigBetweenTurns({
-      latch: configReloadLatch,
-      store: configStore,
-      session,
-    });
-
     const mcpServers: McpServerInstructionsInput[] = [];
     const enabledToolNames = new Set<string>(
       registry.tools.map((t) => t.name),
     );
 
-    const assembled = await assembleSystemPrompt({
-      session,
-      ctx,
-      projectInstructions: assembledProjectInstructions,
-      memoryPrompt: loadedMemory.text,
-      mcpServers,
-      enabledToolNames,
-      provider: "grok",
-    });
-
-    // Per-turn memory attachments — select the most-relevant memories
-    // for this user message and splice them into the system prompt.
-    const selectedMemories = selectRelevantMemoriesForTurn(
-      allMemories,
-      userMessage,
-      session,
-    );
-    const systemPrompt = injectAttachmentsIntoPrompt(
-      assembled.text,
-      selectedMemories,
-    );
-
+    // R1 seam: one LLM turn runs through `runSingleTurn`, which owns
+    // the between-turn reload + system-prompt assembly + runTurn loop.
+    // A future multi-turn REPL iterates this helper in a while-loop;
+    // the single-shot CLI just runs it exactly once.
     try {
-      for await (const event of runTurn(session, ctx, userMessage, {
-        systemPrompt,
+      for await (const event of runSingleTurn({
+        session,
+        ctx,
+        input: userMessage,
+        configStore,
+        configReloadLatch,
+        projectInstructions: assembledProjectInstructions,
+        memoryPromptText: loadedMemory.text,
+        allMemories,
+        enabledToolNames,
+        mcpServers,
+        provider: "grok",
       })) {
         renderEvent(event);
         if (event.type === "turn_complete") {

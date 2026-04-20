@@ -29,7 +29,9 @@ import {
   PROVIDER_MODEL_CATALOG,
   buildExtractMemoriesViaSubagent,
   maybeReloadConfigBetweenTurns,
+  parseExtractedMemoryCandidates,
   resolveModelOrExit,
+  runSingleTurn,
   sessionConfigurationFromAgenCConfig,
   type ConfigReloadLatch,
 } from "./agenc.js";
@@ -507,6 +509,43 @@ describe("sessionConfigurationFromAgenCConfig", () => {
     });
     expect(sc.approvalPolicy.value).toBe("on_failure");
   });
+
+  it("propagates personality, reasoning_summary, and compact_prompt", () => {
+    const cfg = {
+      ...defaultConfig(),
+      personality: "terse" as const,
+      reasoning_summary: "detailed" as const,
+      compact_prompt: "COMPACT: keep only the durable facts.",
+    };
+    const sc = sessionConfigurationFromAgenCConfig({
+      config: cfg,
+      workspaceRoot: "/tmp/ws",
+      model: "grok-4-fast",
+    });
+    expect(sc.personality).toBe("terse");
+    expect(sc.modelReasoningSummary).toBe("detailed");
+    expect(sc.compactPrompt).toBe("COMPACT: keep only the durable facts.");
+  });
+
+  it("leaves propagated fields undefined when config omits them", () => {
+    const cfg = { ...defaultConfig() };
+    // defaultConfig() sets personality=default — override to undefined
+    // to confirm the bridge skips the field entirely.
+    const override = {
+      ...cfg,
+      personality: undefined,
+      reasoning_summary: undefined,
+      compact_prompt: undefined,
+    } as typeof cfg;
+    const sc = sessionConfigurationFromAgenCConfig({
+      config: override,
+      workspaceRoot: "/tmp/ws",
+      model: "grok-4-fast",
+    });
+    expect(sc.personality).toBeUndefined();
+    expect(sc.modelReasoningSummary).toBeUndefined();
+    expect(sc.compactPrompt).toBeUndefined();
+  });
 });
 
 describe("I-47: maybeReloadConfigBetweenTurns", () => {
@@ -742,16 +781,183 @@ describe("buildExtractMemoriesViaSubagent adapter", () => {
   });
 
   it("is shaped as ExtractMemoriesFn (async, returns readonly array)", async () => {
-    const fakeSession = {} as never;
+    const fakeSession = { emit: vi.fn(), nextInternalSubId: () => "sub" } as never;
+    // Inject a delegateFn that rejects so the adapter returns [] without
+    // touching the real AgentControl/registry graph.
+    const delegateFn = vi.fn().mockResolvedValue({
+      kind: "rejected",
+      reason: "test-stub",
+    });
     const fn = buildExtractMemoriesViaSubagent({
       session: () => fakeSession,
       memoryDir: "/tmp/memory",
+      delegateFn: delegateFn as never,
     });
     const out = await fn("transcript", {
       memoryDir: "/tmp/memory",
       memoryMdPath: "/tmp/memory/MEMORY.md",
     });
     expect(Array.isArray(out)).toBe(true);
+    expect(delegateFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("spawns an explorer subagent and parses valid JSON into MemoryCandidates", async () => {
+    const emit = vi.fn();
+    const session = {
+      emit,
+      nextInternalSubId: () => "sub-a",
+    } as never;
+    const delegateFn = vi.fn().mockResolvedValue({
+      kind: "sync_completed",
+      thread: { threadId: "t1", live: { agentPath: "/root/ex" } },
+      result: {
+        threadId: "t1",
+        outcome: "completed",
+        durationMs: 5,
+        finalMessage: JSON.stringify([
+          {
+            name: "user-fact-1",
+            description: "likes dark mode",
+            type: "user",
+            body: "User prefers dark themes in all tools.",
+          },
+          {
+            name: "ignored-no-body",
+            description: "no body",
+            type: "feedback",
+            body: "",
+          },
+          {
+            name: "ignored-bad-type",
+            description: "bad",
+            type: "other",
+            body: "should be dropped",
+          },
+        ]),
+        toolCallCount: 0,
+      },
+    });
+    const fn = buildExtractMemoriesViaSubagent({
+      session: () => session,
+      memoryDir: "/tmp/mem",
+      delegateFn: delegateFn as never,
+    });
+    const out = await fn("a transcript", {
+      memoryDir: "/tmp/mem",
+      memoryMdPath: "/tmp/mem/MEMORY.md",
+    });
+    expect(out.length).toBe(1);
+    expect(out[0]!.frontmatter.name).toBe("user-fact-1");
+    expect(out[0]!.frontmatter.type).toBe("user");
+    expect(out[0]!.filePath).toBe("/tmp/mem/user-fact-1.md");
+    expect(delegateFn).toHaveBeenCalledTimes(1);
+    const call = delegateFn.mock.calls[0]![0];
+    expect(call.role).toBe("explorer");
+    expect(call.parentPath).toBe("/root");
+    expect(call.taskPrompt).toMatch(/JSON array/);
+    expect(call.taskPrompt).toMatch(/a transcript/);
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it("emits memory_extract_parse_failed warning and returns [] on malformed JSON", async () => {
+    const emit = vi.fn();
+    const session = {
+      emit,
+      nextInternalSubId: () => "sub-p",
+    } as never;
+    const delegateFn = vi.fn().mockResolvedValue({
+      kind: "sync_completed",
+      thread: { threadId: "t1", live: { agentPath: "/root/ex" } },
+      result: {
+        threadId: "t1",
+        outcome: "completed",
+        durationMs: 5,
+        finalMessage: "this is not json at all",
+        toolCallCount: 0,
+      },
+    });
+    const fn = buildExtractMemoriesViaSubagent({
+      session: () => session,
+      memoryDir: "/tmp/mem",
+      delegateFn: delegateFn as never,
+    });
+    const out = await fn("t", {
+      memoryDir: "/tmp/mem",
+      memoryMdPath: "/tmp/mem/MEMORY.md",
+    });
+    expect(out).toEqual([]);
+    expect(emit).toHaveBeenCalledTimes(1);
+    const payload = emit.mock.calls[0]![0].msg.payload;
+    expect(payload.cause).toBe("memory_extract_parse_failed");
+  });
+
+  it("emits memory_extract_failed warning when delegate throws", async () => {
+    const emit = vi.fn();
+    const session = {
+      emit,
+      nextInternalSubId: () => "sub-e",
+    } as never;
+    const delegateFn = vi.fn().mockRejectedValue(new Error("spawn boom"));
+    const fn = buildExtractMemoriesViaSubagent({
+      session: () => session,
+      memoryDir: "/tmp/mem",
+      delegateFn: delegateFn as never,
+    });
+    const out = await fn("t", {
+      memoryDir: "/tmp/mem",
+      memoryMdPath: "/tmp/mem/MEMORY.md",
+    });
+    expect(out).toEqual([]);
+    expect(emit).toHaveBeenCalledTimes(1);
+    const payload = emit.mock.calls[0]![0].msg.payload;
+    expect(payload.cause).toBe("memory_extract_failed");
+    expect(payload.message).toMatch(/spawn boom/);
+  });
+
+  it("emits memory_extract_failed warning on a rejected delegate outcome", async () => {
+    const emit = vi.fn();
+    const session = {
+      emit,
+      nextInternalSubId: () => "sub-r",
+    } as never;
+    const delegateFn = vi.fn().mockResolvedValue({
+      kind: "rejected",
+      reason: "max depth exceeded",
+    });
+    const fn = buildExtractMemoriesViaSubagent({
+      session: () => session,
+      memoryDir: "/tmp/mem",
+      delegateFn: delegateFn as never,
+    });
+    const out = await fn("t", {
+      memoryDir: "/tmp/mem",
+      memoryMdPath: "/tmp/mem/MEMORY.md",
+    });
+    expect(out).toEqual([]);
+    expect(emit).toHaveBeenCalledTimes(1);
+    const payload = emit.mock.calls[0]![0].msg.payload;
+    expect(payload.cause).toBe("memory_extract_failed");
+    expect(payload.message).toMatch(/max depth exceeded/);
+  });
+});
+
+describe("parseExtractedMemoryCandidates", () => {
+  it("filters entries missing name/type/body", () => {
+    const raw = JSON.stringify([
+      { name: "ok", description: "d", type: "user", body: "enough body" },
+      { name: "", description: "d", type: "user", body: "no name" },
+      { name: "bad-type", description: "d", type: "xxx", body: "b" },
+      { name: "no-body", description: "d", type: "feedback", body: "" },
+      "not-an-object",
+      null,
+    ]);
+    const out = parseExtractedMemoryCandidates(raw, "/mem");
+    expect(out.length).toBe(1);
+    expect(out[0]!.frontmatter.name).toBe("ok");
+  });
+
+  it("throws when top-level is not an array", () => {
+    expect(() => parseExtractedMemoryCandidates("{}", "/mem")).toThrow();
   });
 });
 
@@ -854,5 +1060,132 @@ describe("per-turn memory attachments pipeline", () => {
     const mem = await loadMemoryPrompt({ memoryDir: dir, memoryMdPath: mdPath });
     expect(mem.text).toBe("");
     expect(mem.entries).toEqual([]);
+  });
+});
+
+describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
+  it("invokes maybeReloadConfigBetweenTurns exactly once per call", async () => {
+    const reloadConfigFn = vi
+      .fn()
+      .mockResolvedValue({ reloaded: false });
+    const assembleSystemPromptFn = vi
+      .fn()
+      .mockResolvedValue({ text: "SYS" });
+    async function* fakeRunTurn(): AsyncGenerator<unknown, unknown> {
+      // empty — terminate immediately
+      return { reason: "completed" };
+    }
+    const runTurnFn = vi.fn(fakeRunTurn);
+
+    const store = new ConfigStore({ env: {} });
+    await store.reload();
+    const latch: ConfigReloadLatch = { requested: false };
+    const session = { emit: vi.fn() } as never;
+    const ctx = {} as never;
+
+    const iter = runSingleTurn({
+      session,
+      ctx,
+      input: "hi",
+      configStore: store,
+      configReloadLatch: latch,
+      projectInstructions: "",
+      memoryPromptText: "",
+      allMemories: [],
+      enabledToolNames: new Set<string>(),
+      mcpServers: [],
+      provider: "grok",
+      reloadConfigFn: reloadConfigFn as never,
+      assembleSystemPromptFn: assembleSystemPromptFn as never,
+      runTurnFn: runTurnFn as never,
+    });
+    // Drain the generator.
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const step = await iter.next();
+      if (step.done) break;
+    }
+    expect(reloadConfigFn).toHaveBeenCalledTimes(1);
+    expect(assembleSystemPromptFn).toHaveBeenCalledTimes(1);
+    expect(runTurnFn).toHaveBeenCalledTimes(1);
+    // runTurn must receive the assembled system prompt through opts.
+    const rtCall = runTurnFn.mock.calls[0]!;
+    expect(rtCall[3]!.systemPrompt.length).toBeGreaterThan(0);
+  });
+
+  it("calls reload again when invoked a second time (multi-turn loop compat)", async () => {
+    const reloadConfigFn = vi
+      .fn()
+      .mockResolvedValue({ reloaded: false });
+    const assembleSystemPromptFn = vi
+      .fn()
+      .mockResolvedValue({ text: "SYS" });
+    async function* fakeRunTurn(): AsyncGenerator<unknown, unknown> {
+      return { reason: "completed" };
+    }
+    const runTurnFn = vi.fn(fakeRunTurn);
+    const store = new ConfigStore({ env: {} });
+    await store.reload();
+    const latch: ConfigReloadLatch = { requested: false };
+
+    for (let i = 0; i < 3; i++) {
+      const iter = runSingleTurn({
+        session: { emit: vi.fn() } as never,
+        ctx: {} as never,
+        input: `t${i}`,
+        configStore: store,
+        configReloadLatch: latch,
+        projectInstructions: "",
+        memoryPromptText: "",
+        allMemories: [],
+        enabledToolNames: new Set<string>(),
+        mcpServers: [],
+        provider: "grok",
+        reloadConfigFn: reloadConfigFn as never,
+        assembleSystemPromptFn: assembleSystemPromptFn as never,
+        runTurnFn: runTurnFn as never,
+      });
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const step = await iter.next();
+        if (step.done) break;
+      }
+    }
+    expect(reloadConfigFn).toHaveBeenCalledTimes(3);
+    expect(runTurnFn).toHaveBeenCalledTimes(3);
+  });
+
+  it("forwards every event yielded by runTurn", async () => {
+    const events = [
+      { type: "turn_start", turnIndex: 0 },
+      { type: "assistant_text", content: "hello" },
+    ];
+    async function* fakeRunTurn(): AsyncGenerator<unknown, unknown> {
+      for (const e of events) yield e;
+      return { reason: "completed" };
+    }
+    const runTurnFn = vi.fn(fakeRunTurn);
+    const store = new ConfigStore({ env: {} });
+    await store.reload();
+    const latch: ConfigReloadLatch = { requested: false };
+    const collected: unknown[] = [];
+    const iter = runSingleTurn({
+      session: { emit: vi.fn() } as never,
+      ctx: {} as never,
+      input: "hi",
+      configStore: store,
+      configReloadLatch: latch,
+      projectInstructions: "",
+      memoryPromptText: "",
+      allMemories: [],
+      enabledToolNames: new Set<string>(),
+      mcpServers: [],
+      provider: "grok",
+      reloadConfigFn: (async () => ({ reloaded: false })) as never,
+      assembleSystemPromptFn: (async () => ({ text: "SYS" })) as never,
+      runTurnFn: runTurnFn as never,
+    });
+    for await (const ev of iter) collected.push(ev);
+    expect(collected).toEqual(events);
   });
 });

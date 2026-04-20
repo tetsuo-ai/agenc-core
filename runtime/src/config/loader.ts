@@ -30,6 +30,7 @@ import type { AgenCConfig } from "./schema.js";
 import {
   defaultConfig,
   mergeConfigs,
+  normalizeCodexKeyAliases,
   normalizeRawConfig,
 } from "./schema.js";
 import { resolveAgencHome } from "./env.js";
@@ -577,7 +578,8 @@ export async function loadConfig(
     });
   }
 
-  const normalized = normalizeRawConfig(parsed);
+  const aliased = normalizeCodexKeyAliases(parsed);
+  const normalized = normalizeRawConfig(aliased);
   const merged = mergeConfigs(base, normalized);
   return Object.freeze({
     config: merged,

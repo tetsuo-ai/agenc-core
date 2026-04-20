@@ -240,6 +240,27 @@ describe("maybeAutoSaveMemory", () => {
     const lines = idx.split("\n").filter((l) => l.includes("(topic.md)"));
     expect(lines.length).toBe(1);
   });
+
+  test("upsertIndexEntry writes forward-slash relative paths regardless of host sep", async () => {
+    const session = await makeSession();
+    // Nested candidate path: `topics/sub/topic.md` relative to memoryDir.
+    const cand = candidate(session, {
+      filePath: join(session.memoryDir, "topics", "sub", "topic.md"),
+      frontmatter: {
+        name: "nested-topic",
+        description: "nested hook",
+        type: "feedback",
+        extra: {},
+      },
+    });
+    await upsertIndexEntry(session.memoryMdPath, cand);
+    const idx = await readFile(session.memoryMdPath, "utf8");
+    // Cross-platform invariant: the link target in MEMORY.md must use
+    // forward slashes so the index file is portable. The host may write
+    // files under \\ (Windows) but the index content is normalized.
+    expect(idx).toContain("(topics/sub/topic.md)");
+    expect(idx).not.toMatch(/\(topics\\sub\\topic\.md\)/);
+  });
 });
 
 describe("writeMemoryFile", () => {

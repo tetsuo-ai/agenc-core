@@ -22,7 +22,9 @@ import { readTextFile } from "../../utils/file-read.js";
 import { AsyncLock } from "../../utils/async-lock.js";
 import { scanMemoryIndex } from "./scan.js";
 import { parseFrontmatter, type MemoryEntry } from "./types.js";
+import { withFsLock, type FsLockOpts } from "./fs-lock.js";
 import { stat } from "node:fs/promises";
+import { resolve as resolvePath } from "node:path";
 
 /** Default line cap for the assembled memory prompt. */
 export const DEFAULT_MEMORY_MAX_LINES = 200;
@@ -88,8 +90,15 @@ export async function loadMemoryPrompt(
   let byteCount = 0;
   let truncated = false;
 
+  // Precise line accounting: count actual newline characters. `split("\n")`
+  // over-counts by one per chunk (and chunks ending in `\n\n` look like
+  // three pieces, not one real line), which fires the maxLines cap
+  // earlier than intended.
+  const countNewlines = (chunk: string): number =>
+    chunk === "" ? 0 : chunk.match(/\n/g)?.length ?? 0;
+
   const appendChunk = (chunk: string): boolean => {
-    const chunkLines = chunk.split("\n").length;
+    const chunkLines = countNewlines(chunk);
     const chunkBytes = Buffer.byteLength(chunk, "utf8");
     if (
       lineCount + chunkLines > maxLines ||
@@ -115,7 +124,7 @@ export async function loadMemoryPrompt(
         const cutAt = sliced.lastIndexOf("\n");
         const safe = cutAt > 0 ? sliced.slice(0, cutAt) : sliced;
         accumulated += safe;
-        lineCount += safe.split("\n").length;
+        lineCount += countNewlines(safe);
         byteCount += Buffer.byteLength(safe, "utf8");
       }
       return {
@@ -167,8 +176,31 @@ export async function loadMemoryPrompt(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
+ * Per-path write lock returned by {@link getMemoryWriteLock}. Composes
+ * an in-process `AsyncLock<void>` (cheap intra-process serialization)
+ * with a cross-process `withFsLock` exclusive lockfile (I-29 Fix-F).
+ *
+ * Callers treat this as a mutex with the same `with()` surface as
+ * `AsyncLock`. The AsyncLock is the outer gate so same-process writers
+ * never open competing `<path>.lock` files against themselves.
+ */
+export interface MemoryWriteLock {
+  /**
+   * Run `fn` with exclusive access to the file. `opts` tunes the
+   * cross-process acquisition (timeout, retry interval); defaults are
+   * the 2s / 50ms values from the I-29 spec.
+   */
+  with<T>(fn: () => Promise<T>, opts?: FsLockOpts): Promise<T>;
+  /**
+   * Test-only escape hatch for suites that want to exercise the outer
+   * AsyncLock directly without touching the filesystem lockfile.
+   */
+  readonly _inner: AsyncLock<void>;
+}
+
+/**
  * Per-path write-lock registry. Auto-extract (async subagent) and
- * manual edits (CLI, /memory add) acquire the same `AsyncLock<void>`
+ * manual edits (CLI, /memory add) acquire the same `MemoryWriteLock`
  * for the exact file path they are about to write, so interleaved
  * writers cannot corrupt a memory file or the MEMORY.md index.
  *
@@ -176,23 +208,38 @@ export async function loadMemoryPrompt(
  * runtime process — an AsyncLock has no resources to release, and
  * stale entries cost a single Map slot each. No eviction needed.
  */
-const memoryWriteLocks = new Map<string, AsyncLock<void>>();
+const memoryWriteLocks = new Map<string, MemoryWriteLock>();
 
 /**
  * Obtain the canonical write lock for `absolutePath`. All writers
  * for the same path receive the same lock instance — that is the
  * whole point. Callers should use the lock's `.with()` method.
  *
- * Paths are compared byte-identically: normalize (resolve, realpath)
- * at the call site before locking if you want two equivalent paths
- * to collide.
+ * Paths are normalized via `path.resolve` before lookup so that
+ * equivalent-but-differently-spelled inputs (e.g. `/a/b/../b/x.md`
+ * vs `/a/b/x.md`) resolve to the same lock and cannot race. Symlinks
+ * are not resolved — if you need `realpath` equivalence, call it at
+ * the call site and pass the canonical result in.
+ *
+ * I-29 Fix-F: the returned lock wraps every `with()` call in an
+ * `fs.open(path.lock, 'wx')` cross-process critical section with a
+ * 2s default timeout and 50ms retry cadence. The AsyncLock remains
+ * the outer gate so intra-process writers never contend on the
+ * lockfile against themselves.
  */
-export function getMemoryWriteLock(absolutePath: string): AsyncLock<void> {
-  let lock = memoryWriteLocks.get(absolutePath);
-  if (lock === undefined) {
-    lock = new AsyncLock<void>(undefined);
-    memoryWriteLocks.set(absolutePath, lock);
-  }
+export function getMemoryWriteLock(absolutePath: string): MemoryWriteLock {
+  const key = resolvePath(absolutePath);
+  const existing = memoryWriteLocks.get(key);
+  if (existing !== undefined) return existing;
+
+  const inner = new AsyncLock<void>(undefined);
+  const lock: MemoryWriteLock = {
+    async with<T>(fn: () => Promise<T>, opts?: FsLockOpts): Promise<T> {
+      return inner.with(() => withFsLock(key, fn, opts));
+    },
+    _inner: inner,
+  };
+  memoryWriteLocks.set(key, lock);
   return lock;
 }
 
@@ -202,7 +249,7 @@ export function getMemoryWriteLock(absolutePath: string): AsyncLock<void> {
  */
 export function _memoryWriteLocksForTest(): ReadonlyMap<
   string,
-  AsyncLock<void>
+  MemoryWriteLock
 > {
   return memoryWriteLocks;
 }

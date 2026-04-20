@@ -108,5 +108,14 @@ export function applyEnvOverrides(
   if (e.AGENC_HOME && e.AGENC_HOME.length > 0) {
     override.agenc_home = e.AGENC_HOME;
   }
+  if (e.AGENC_WORKSPACE && e.AGENC_WORKSPACE.length > 0) {
+    override.workspace = e.AGENC_WORKSPACE;
+  }
+  if (e.AGENC_SIMPLE !== undefined && e.AGENC_SIMPLE.length > 0) {
+    override.simpleMode = TRUTHY.has(e.AGENC_SIMPLE.toLowerCase());
+  }
+  // NOTE: API-key env vars (XAI_API_KEY / GROK_API_KEY / AGENC_XAI_API_KEY)
+  // are intentionally NOT layered onto the config snapshot. `resolveApiKey`
+  // is the right seam — secrets should not be persisted into the config.
   return mergeConfigs(config, override);
 }

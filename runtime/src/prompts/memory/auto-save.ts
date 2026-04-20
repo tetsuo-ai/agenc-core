@@ -26,8 +26,13 @@
  */
 
 import { writeFile, mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, relative, sep } from "node:path";
 import { getMemoryWriteLock } from "./loader.js";
+import {
+  FsLockTimeoutError,
+  FsLockUnavailableError,
+  type FsLockOpts,
+} from "./fs-lock.js";
 import { serializeMemory, type MemoryFrontmatter } from "./types.js";
 import type { Sidecar } from "../../session/sidecar.js";
 import type { Event } from "../../session/event-log.js";
@@ -178,25 +183,62 @@ export function isMemoryWorthy(candidate: MemoryCandidate): boolean {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
+ * I-29 journal fallback, minimum viable form: when the cross-process
+ * lock cannot be acquired or the filesystem refuses the lockfile, we
+ * log a `memory_write_contention` warning and skip the write. A later
+ * tranche (T11) will add real journal append + replay.
+ */
+function emitWriteContentionWarning(
+  filePath: string,
+  err: FsLockTimeoutError | FsLockUnavailableError,
+): void {
+  // Keep this as a bare `console.warn` so it flows through whatever
+  // log capture the runtime has installed, without pulling logger
+  // config into the memory module.
+  console.warn(
+    `memory_write_contention: skipped write to ${filePath} (${err.name}: ${err.message})`,
+  );
+}
+
+/**
  * Write a single memory file under I-29. The caller passes an already
  * resolved absolute `filePath`; this helper owns lock acquisition,
  * parent-dir creation, and file serialization.
+ *
+ * I-29 Fix-F: acquisition goes through `MemoryWriteLock.with` which
+ * composes the in-process `AsyncLock` with a cross-process lockfile.
+ * `opts` lets callers override the 2s/50ms defaults (tests use this).
+ * On `FsLockTimeoutError` or `FsLockUnavailableError` the write is
+ * skipped and a `memory_write_contention` warning is emitted; a future
+ * tranche will add real journal replay.
  */
 export async function writeMemoryFile(
   candidate: MemoryCandidate,
+  opts?: FsLockOpts,
 ): Promise<void> {
   const lock = getMemoryWriteLock(candidate.filePath);
-  await lock.with(async () => {
-    await mkdir(dirname(candidate.filePath), { recursive: true });
-    const serialized = serializeMemory({
-      frontmatter: candidate.frontmatter,
-      body: candidate.body,
-    });
-    await writeFile(candidate.filePath, serialized, {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-  });
+  try {
+    await lock.with(async () => {
+      await mkdir(dirname(candidate.filePath), { recursive: true });
+      const serialized = serializeMemory({
+        frontmatter: candidate.frontmatter,
+        body: candidate.body,
+      });
+      await writeFile(candidate.filePath, serialized, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+    }, opts);
+  } catch (err) {
+    if (
+      err instanceof FsLockTimeoutError ||
+      err instanceof FsLockUnavailableError
+    ) {
+      emitWriteContentionWarning(candidate.filePath, err);
+      return;
+    }
+    throw err;
+  }
 }
 
 /**
@@ -205,50 +247,70 @@ export async function writeMemoryFile(
  * already exists, the existing line is preserved.
  *
  * The MEMORY.md write is serialized via its own I-29 lock instance so
- * concurrent pointer-writes don't interleave.
+ * concurrent pointer-writes don't interleave. Contention (timeout /
+ * read-only fs) triggers the same `memory_write_contention` warning +
+ * skip path as {@link writeMemoryFile}.
  */
 export async function upsertIndexEntry(
   memoryMdPath: string,
   candidate: MemoryCandidate,
+  opts?: FsLockOpts,
 ): Promise<void> {
   const lock = getMemoryWriteLock(memoryMdPath);
-  await lock.with(async () => {
-    const relPath = candidate.filePath.startsWith(dirname(memoryMdPath) + "/")
-      ? candidate.filePath.slice(dirname(memoryMdPath).length + 1)
-      : candidate.filePath;
-    const title =
-      candidate.frontmatter.name ??
-      relPath.replace(/\.md$/, "").replace(/[_-]/g, " ");
-    const hook = candidate.frontmatter.description ?? "";
-    const newLine =
-      hook.length > 0
-        ? `- [${title}](${relPath}) — ${hook}`
-        : `- [${title}](${relPath})`;
+  try {
+    await lock.with(async () => {
+      // Portability: use `path.relative` so the separator matches the host
+      // (Windows `\\` vs POSIX `/`), then normalize the written MEMORY.md
+      // link to forward slashes so the index stays platform-invariant.
+      const memoryDir = dirname(memoryMdPath);
+      const rel = relative(memoryDir, candidate.filePath);
+      const escapesDir = rel.length === 0 || rel.startsWith(`..${sep}`);
+      const relPath = escapesDir
+        ? candidate.filePath
+        : rel.split(sep).join("/");
+      const title =
+        candidate.frontmatter.name ??
+        relPath.replace(/\.md$/, "").replace(/[_-]/g, " ");
+      const hook = candidate.frontmatter.description ?? "";
+      const newLine =
+        hook.length > 0
+          ? `- [${title}](${relPath}) — ${hook}`
+          : `- [${title}](${relPath})`;
 
-    let existing = "";
-    try {
-      const { readFile } = await import("node:fs/promises");
-      existing = await readFile(memoryMdPath, "utf8");
-    } catch {
-      existing = "";
+      let existing = "";
+      try {
+        const { readFile } = await import("node:fs/promises");
+        existing = await readFile(memoryMdPath, "utf8");
+      } catch {
+        existing = "";
+      }
+
+      // If any line already references this exact path, leave it alone.
+      const alreadyIndexed = existing
+        .split("\n")
+        .some((line) => line.includes(`(${relPath})`));
+      if (alreadyIndexed) return;
+
+      await mkdir(dirname(memoryMdPath), { recursive: true });
+      const next =
+        existing.length === 0
+          ? `${newLine}\n`
+          : existing.replace(/\n*$/, "") + `\n${newLine}\n`;
+      await writeFile(memoryMdPath, next, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+    }, opts);
+  } catch (err) {
+    if (
+      err instanceof FsLockTimeoutError ||
+      err instanceof FsLockUnavailableError
+    ) {
+      emitWriteContentionWarning(memoryMdPath, err);
+      return;
     }
-
-    // If any line already references this exact path, leave it alone.
-    const alreadyIndexed = existing
-      .split("\n")
-      .some((line) => line.includes(`(${relPath})`));
-    if (alreadyIndexed) return;
-
-    await mkdir(dirname(memoryMdPath), { recursive: true });
-    const next =
-      existing.length === 0
-        ? `${newLine}\n`
-        : existing.replace(/\n*$/, "") + `\n${newLine}\n`;
-    await writeFile(memoryMdPath, next, {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-  });
+    throw err;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────

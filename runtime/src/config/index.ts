@@ -28,6 +28,8 @@ export type {
   IdeConnectorConfig,
   ManagedWorkspacesConfig,
   PrivateStorageConfig,
+  McpServerConfig,
+  McpTransport,
   ProviderModelPair,
 } from "./schema.js";
 
@@ -35,6 +37,7 @@ export {
   defaultConfig,
   mergeConfigs,
   normalizeRawConfig,
+  normalizeCodexKeyAliases,
   resolveModelDisambiguated,
   AmbiguousModelError,
   UnknownModelError,

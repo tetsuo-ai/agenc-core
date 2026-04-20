@@ -151,12 +151,77 @@ export function getAgencHomeDir(): string {
   return join(home, ".agenc");
 }
 
-export function getProjectDir(cwd: string): string {
-  return join(getAgencHomeDir(), "projects", slugifyCwd(cwd));
+/**
+ * Default project-root markers scanned synchronously when the caller
+ * does not pass an explicit list. Mirrors `DEFAULT_PROJECT_ROOT_MARKERS`
+ * in `prompts/project-instructions.ts`; duplicated here to keep the
+ * session-store module sync-only (no fs/promises import) and free of
+ * cross-module churn during T10.
+ */
+export const DEFAULT_SESSION_ROOT_MARKERS: readonly string[] = [
+  ".git",
+  "package.json",
+  "Cargo.toml",
+  "pyproject.toml",
+  "go.mod",
+  ".hg",
+];
+
+/**
+ * Synchronous ancestor walk to the nearest directory that contains one
+ * of the configured project-root markers. Returns `null` when no marker
+ * is found before reaching the filesystem root.
+ *
+ * Kept sync (unlike `findProjectRoot` in `prompts/project-instructions.ts`)
+ * because `getProjectDir` and the SessionStore constructor are called
+ * from synchronous init paths that cannot await. The two implementations
+ * stay behaviourally equivalent: same markers list, same short-circuit
+ * "first marker in first ancestor" semantics.
+ */
+export function findProjectRootSync(
+  cwd: string,
+  markers: readonly string[] = DEFAULT_SESSION_ROOT_MARKERS,
+): { rootDir: string; marker: string } | null {
+  if (markers.length === 0) return null;
+  let currentDir = cwd;
+  while (true) {
+    for (const marker of markers) {
+      if (existsSync(join(currentDir, marker))) {
+        return { rootDir: currentDir, marker };
+      }
+    }
+    const parent = dirname(currentDir);
+    if (parent === currentDir) return null;
+    currentDir = parent;
+  }
 }
 
-export function getSessionDir(cwd: string, sessionId: string): string {
-  return join(getProjectDir(cwd), "sessions", sessionId);
+/**
+ * Resolve the slug directory for a working directory. When a project
+ * root marker is found by ancestor walk, the slug is computed from the
+ * ancestor root so two checkouts nested under the same `.git` root map
+ * to the same `~/.agenc/projects/<slug>/` directory. Falls back to the
+ * raw cwd when no marker ancestor exists.
+ *
+ * The markers list should come from config (`AgenCConfig.project_root_markers`).
+ * Passing it explicitly (instead of reading a module-global) avoids
+ * implicit coupling and keeps the function testable.
+ */
+export function getProjectDir(
+  cwd: string,
+  projectRootMarkers: readonly string[] = DEFAULT_SESSION_ROOT_MARKERS,
+): string {
+  const root = findProjectRootSync(cwd, projectRootMarkers);
+  const slugInput = root ? root.rootDir : cwd;
+  return join(getAgencHomeDir(), "projects", slugifyCwd(slugInput));
+}
+
+export function getSessionDir(
+  cwd: string,
+  sessionId: string,
+  projectRootMarkers: readonly string[] = DEFAULT_SESSION_ROOT_MARKERS,
+): string {
+  return join(getProjectDir(cwd, projectRootMarkers), "sessions", sessionId);
 }
 
 export function buildRolloutFilename(
@@ -379,6 +444,15 @@ export interface SessionStoreOpts {
   readonly agencVersion: string;
   /** Whether to open existing rollout (resume) or create new. */
   readonly resume?: boolean;
+  /**
+   * Marker files/directories used to resolve the project root slug.
+   * When provided, the store slugs from the nearest ancestor that
+   * contains one of these markers so checkouts nested under the same
+   * repo map to the same `~/.agenc/projects/<slug>/` dir. Falls back
+   * to the default marker list (`DEFAULT_SESSION_ROOT_MARKERS`) when
+   * omitted, and to the raw cwd when no marker ancestor exists.
+   */
+  readonly projectRootMarkers?: readonly string[];
 }
 
 export interface AppendOptions {
@@ -456,7 +530,11 @@ export class SessionStore {
     this.cwd = opts.cwd;
     this.sessionId = opts.sessionId;
     this.agencVersion = opts.agencVersion;
-    this.sessionDir = getSessionDir(opts.cwd, opts.sessionId);
+    this.sessionDir = getSessionDir(
+      opts.cwd,
+      opts.sessionId,
+      opts.projectRootMarkers ?? DEFAULT_SESSION_ROOT_MARKERS,
+    );
     mkdirSync(this.sessionDir, { recursive: true });
     const rolloutFilename = buildRolloutFilename(Date.now(), opts.sessionId);
     // If resuming, find the most-recent rollout in the session dir.
@@ -1052,8 +1130,12 @@ export class SessionStore {
   }
 
   /** Verify read/write permission on the rollout dir. Call early. */
-  static assertWritable(cwd: string, sessionId: string): void {
-    const dir = getSessionDir(cwd, sessionId);
+  static assertWritable(
+    cwd: string,
+    sessionId: string,
+    projectRootMarkers: readonly string[] = DEFAULT_SESSION_ROOT_MARKERS,
+  ): void {
+    const dir = getSessionDir(cwd, sessionId, projectRootMarkers);
     mkdirSync(dir, { recursive: true });
     accessSync(dir, fsConstants.W_OK);
   }
