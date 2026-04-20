@@ -583,7 +583,14 @@ export class SessionManager {
           summaryGenerated: false,
         };
       } else {
-        const keepCount = Math.ceil(history.length / 2);
+        const maxHistory =
+          this.resolveConfigForId(sessionId).maxHistoryLength ??
+          DEFAULT_MAX_HISTORY;
+        const targetKeepCount = Math.max(1, Math.ceil(maxHistory / 2));
+        const keepCount = Math.min(
+          Math.ceil(history.length / 2),
+          targetKeepCount,
+        );
         const dropCount = history.length - keepCount;
 
         switch (strategy) {

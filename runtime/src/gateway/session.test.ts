@@ -523,6 +523,37 @@ describe("SessionManager", () => {
       ).toBe(true);
     });
 
+    it("bounds retained live history by maxHistoryLength across repeated artifact compactions", async () => {
+      const summarizer: Summarizer = vi
+        .fn()
+        .mockResolvedValue("PLAN.md remains the active implementation artifact.");
+      const mgr = new SessionManager(
+        makeConfig({ compaction: "summarize", maxHistoryLength: 4 }),
+        { summarizer },
+      );
+      const session = mgr.getOrCreate(makeParams());
+
+      for (let i = 0; i < 8; i++) {
+        session.history.push(
+          msg("user", `Update PLAN.md for turn ${i}.`),
+          msg("assistant", `ack ${i}`),
+        );
+
+        await mgr.compact(session.id);
+
+        const liveMessages = session.history.filter(
+          (message) => message.role !== "system",
+        );
+        expect(liveMessages.length).toBeLessThanOrEqual(2);
+        expect(liveMessages.at(-1)?.content).toBe(`ack ${i}`);
+        if (liveMessages.length > 1) {
+          expect(liveMessages.at(-2)?.content).toBe(
+            `Update PLAN.md for turn ${i}.`,
+          );
+        }
+      }
+    });
+
     it("returns null for unknown session", async () => {
       expect(await manager.compact("nonexistent")).toBeNull();
     });
