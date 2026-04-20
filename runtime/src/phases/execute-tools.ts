@@ -55,7 +55,15 @@ import { routerFromRegistry, toolCallFromLLMToolCall } from "../tools/router.js"
 import {
   attemptWithRetry,
   classifyToolApproval,
-  type RetryDecision,
+  defaultToolRetryPolicy,
+  isApprovalAccepted,
+  isSandboxDeniedError,
+  requestApproval,
+  type ApprovalCtx,
+  type ApprovalPolicy as OrchestratorApprovalPolicy,
+  type ApprovalResolver,
+  type PermissionRequestHook,
+  type SandboxMode,
 } from "../tools/orchestrator.js";
 import { resolveMaxToolUseConcurrency } from "../tools/orchestration.js";
 import {
@@ -127,23 +135,35 @@ function resolveHookRegistry(session: Session): ToolHookRegistry {
 }
 
 /**
- * Orchestrator retry policy: retry once on `tool_timeout` or
- * transient-sounding `tool_threw` errors. Anything else bubbles.
- * Mirrors the codex `orchestrator.rs` "retry-on-failure" stance but
- * stays conservative — T11 can widen this without changing the wire.
+ * Derive the orchestrator's session-level knobs from the TurnContext
+ * and SessionServices. Falls back to safe defaults (`never` +
+ * `workspace_write`) when the context/service fields are undefined —
+ * the legacy hardcoded behavior — so existing test fixtures without a
+ * full TurnContext shape continue to work.
  */
-function defaultToolRetryPolicy(err: unknown): RetryDecision {
-  const message = err instanceof Error ? err.message : String(err);
-  const lower = message.toLowerCase();
-  if (
-    lower.includes("timeout") ||
-    lower.includes("econnreset") ||
-    lower.includes("etimedout") ||
-    lower.includes("transient")
-  ) {
-    return { kind: "retry", reason: "retriable error" };
-  }
-  return { kind: "bubble" };
+function resolveOrchestratorSessionPolicy(
+  ctx: TurnContext,
+  session: Session,
+): {
+  readonly approvalPolicy: OrchestratorApprovalPolicy;
+  readonly sandboxMode: SandboxMode;
+  readonly permissionHooks: ReadonlyArray<PermissionRequestHook> | undefined;
+  readonly approvalResolver: ApprovalResolver | undefined;
+} {
+  const ctxApproval = ctx.approvalPolicy?.value;
+  const ctxSandbox = ctx.sandboxPolicy?.value;
+  const services = session.services as
+    | (typeof session.services & {
+        readonly permissionRequestHooks?: ReadonlyArray<PermissionRequestHook>;
+        readonly approvalResolver?: ApprovalResolver;
+      })
+    | undefined;
+  return {
+    approvalPolicy: (ctxApproval ?? "never") as OrchestratorApprovalPolicy,
+    sandboxMode: (ctxSandbox ?? "workspace_write") as SandboxMode,
+    permissionHooks: services?.permissionRequestHooks,
+    approvalResolver: services?.approvalResolver,
+  };
 }
 
 export async function executeTools(
@@ -192,6 +212,11 @@ export async function executeTools(
   const hookRegistry = resolveHookRegistry(session);
   const preHooks = hookRegistry.getPre();
   const postHooks = hookRegistry.getPost();
+
+  // T7 (orchestrator gap): session-derived approval policy + sandbox
+  // mode. Replaces the previous hardcoded `never` + `workspace_write`
+  // that hid the real classifier behind a no-op.
+  const orchestratorPolicy = resolveOrchestratorSessionPolicy(ctx, session);
 
   // Construct (or reuse) the streaming executor. T7 upgrades the
   // T5 shell to a full openclaude port with ConcurrencyClass-aware
@@ -270,8 +295,8 @@ export async function executeTools(
         // modal wired at this layer, forbidden decisions surface as a
         // typed error; needs_approval + skip both proceed normally.
         const approval = classifyToolApproval(tool, {
-          approvalPolicy: "never",
-          sandboxMode: "workspace_write",
+          approvalPolicy: orchestratorPolicy.approvalPolicy,
+          sandboxMode: orchestratorPolicy.sandboxMode,
         });
         if (approval.kind === "forbidden") {
           return {
@@ -280,6 +305,51 @@ export async function executeTools(
             }),
             isError: true,
           };
+        }
+        if (approval.kind === "needs_approval") {
+          const approvalCtx: ApprovalCtx = {
+            invocation: {
+              session,
+              turn: ctx,
+              tracker: { appendFileDiff: () => {}, snapshot: () => [], clear: () => {} },
+              callId: toolCall.id,
+              toolName: parseToolName(toolCall.name),
+              payload: { kind: "function", arguments: toolCall.arguments ?? "" },
+              source: "direct",
+            },
+            callId: toolCall.id,
+            toolName: toolCall.name,
+            turnId: ctx.subId,
+            ...(approval.reason !== undefined ? { retryReason: approval.reason } : {}),
+          };
+          const result = await requestApproval({
+            ctx: approvalCtx,
+            ...(orchestratorPolicy.permissionHooks !== undefined
+              ? { hooks: orchestratorPolicy.permissionHooks }
+              : {}),
+            ...(orchestratorPolicy.approvalResolver !== undefined
+              ? { resolver: orchestratorPolicy.approvalResolver }
+              : {}),
+            onNoResolver: () => {
+              emitWarningEvent(
+                session.eventLog,
+                toolCall.id,
+                "no_approval_resolver",
+                `tool ${toolCall.name} needs approval but no resolver is registered`,
+              );
+            },
+          });
+          if (!isApprovalAccepted(result.decision)) {
+            return {
+              content: JSON.stringify({
+                error:
+                  result.source === "default_deny"
+                    ? `tool ${toolCall.name} denied: no_approval_resolver`
+                    : `tool ${toolCall.name} denied by approval: ${result.decision}`,
+              }),
+              isError: true,
+            };
+          }
         }
 
         const invocation = {
@@ -354,7 +424,10 @@ export async function executeTools(
           return { content: output.content, isError: output.isError };
         };
 
-        // Step 4: Orchestrator retry wrap.
+        // Step 4: Orchestrator retry wrap. Real codex parity:
+        //   - transient errors → one retry after 500ms backoff
+        //   - sandbox-denied → request approval, retry with sandbox off
+        //   - hard errors → bubble
         let dispatchResult: ToolDispatchResult;
         try {
           dispatchResult = await attemptWithRetry({
@@ -363,11 +436,70 @@ export async function executeTools(
             maxAttempts: 2,
           });
         } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          return {
-            content: JSON.stringify({ error: message }),
-            isError: true,
-          };
+          if (isSandboxDeniedError(err)) {
+            // Two-pass sandbox escalation — request approval and retry
+            // once with sandbox off. Codex orchestrator.rs:236-373.
+            const escalationCtx: ApprovalCtx = {
+              invocation: {
+                session,
+                turn: ctx,
+                tracker: { appendFileDiff: () => {}, snapshot: () => [], clear: () => {} },
+                callId: toolCall.id,
+                toolName: parseToolName(toolCall.name),
+                payload: { kind: "function", arguments: toolCall.arguments ?? "" },
+                source: "direct",
+              },
+              callId: toolCall.id,
+              toolName: toolCall.name,
+              turnId: ctx.subId,
+              retryReason:
+                err.message || "command failed; retry without sandbox?",
+            };
+            const escalation = await requestApproval({
+              ctx: escalationCtx,
+              ...(orchestratorPolicy.permissionHooks !== undefined
+                ? { hooks: orchestratorPolicy.permissionHooks }
+                : {}),
+              ...(orchestratorPolicy.approvalResolver !== undefined
+                ? { resolver: orchestratorPolicy.approvalResolver }
+                : {}),
+              onNoResolver: () => {
+                emitWarningEvent(
+                  session.eventLog,
+                  toolCall.id,
+                  "no_approval_resolver",
+                  `sandbox escalation for ${toolCall.name} needs approval but no resolver is registered`,
+                );
+              },
+            });
+            if (!isApprovalAccepted(escalation.decision)) {
+              return {
+                content: JSON.stringify({
+                  error:
+                    escalation.source === "default_deny"
+                      ? `sandbox escalation denied: no_approval_resolver`
+                      : `sandbox escalation denied: ${escalation.decision}`,
+                }),
+                isError: true,
+              };
+            }
+            try {
+              dispatchResult = await dispatchOnce();
+            } catch (retryErr) {
+              const message =
+                retryErr instanceof Error ? retryErr.message : String(retryErr);
+              return {
+                content: JSON.stringify({ error: message }),
+                isError: true,
+              };
+            }
+          } else {
+            const message = err instanceof Error ? err.message : String(err);
+            return {
+              content: JSON.stringify({ error: message }),
+              isError: true,
+            };
+          }
         }
 
         // Step 5: Post-hook pipeline. `runPostToolUseHooks` only

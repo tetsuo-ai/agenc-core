@@ -1,10 +1,20 @@
 /**
  * Tool dispatch context types.
  *
- * Hand-port of codex `core/src/tools/context.rs` (584 LOC).
- * Codex's `ToolPayload` discriminated union carries per-call shape
- * that the router dispatches on. `ToolOutput` is the trait every
- * tool result satisfies.
+ * Hand-port of codex `core/src/tools/context.rs` (584 LOC). The codex
+ * trait `ToolOutput` has 7 concrete impls (`CallToolResult`,
+ * `McpToolOutput`, `FunctionToolOutput`, `ApplyPatchToolOutput`,
+ * `ToolSearchOutput`, `AbortedToolOutput`, `ExecCommandToolOutput`)
+ * each with a distinct payload shape. AgenC collapses
+ * `CallToolResult`/`McpToolOutput` into one `mcp` variant and keeps
+ * the rest 1:1 so downstream consumers (TUI rendering, rollout replay,
+ * MCP annotation pass-through, code_mode projection) can switch on
+ * `kind` without re-parsing strings.
+ *
+ * The public `ToolOutput` interface stays backwards compatible: the
+ * old flat envelope now represents the `function` variant. Call sites
+ * that read `.content` keep working; new code calls `toText()` or
+ * switches on `.variant.kind`.
  *
  * @module
  */
@@ -134,16 +144,299 @@ export function createTurnDiffTracker(): SharedTurnDiffTracker {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// ToolOutput — the result trait
+// Telemetry preview — port of codex `telemetry_preview`
+// (context.rs:542-580). Byte-boundary + line-limit truncation with a
+// trailing notice marker. Constants mirror `tools/mod.rs:24-27`.
+// ─────────────────────────────────────────────────────────────────────
+
+export const TELEMETRY_PREVIEW_MAX_BYTES = 2 * 1024; // 2 KiB
+export const TELEMETRY_PREVIEW_MAX_LINES = 64;
+export const TELEMETRY_PREVIEW_TRUNCATION_NOTICE =
+  "[... telemetry preview truncated ...]";
+
+/**
+ * Take up to `maxBytes` bytes from `s` respecting UTF-8 character
+ * boundaries (codex `take_bytes_at_char_boundary`). Returns the
+ * original string when it already fits.
+ */
+function takeBytesAtCharBoundary(s: string, maxBytes: number): string {
+  const buf = Buffer.from(s, "utf8");
+  if (buf.length <= maxBytes) return s;
+  // Walk back to the nearest char boundary: continuation bytes start
+  // with 10xxxxxx (0x80..0xBF).
+  let end = maxBytes;
+  while (end > 0 && (buf[end] ?? 0) >= 0x80 && (buf[end] ?? 0) < 0xc0) {
+    end -= 1;
+  }
+  return buf.subarray(0, end).toString("utf8");
+}
+
+/**
+ * Port of codex `telemetry_preview` (context.rs:542-580). Truncates
+ * `content` by byte and line caps and appends the truncation notice
+ * only when truncation occurred. Byte boundary is UTF-8 safe.
+ */
+export function telemetryPreview(content: string): string {
+  return telemetryPreviewWith(
+    content,
+    TELEMETRY_PREVIEW_MAX_BYTES,
+    TELEMETRY_PREVIEW_MAX_LINES,
+  );
+}
+
+/** Test-visible parameterized variant. */
+export function telemetryPreviewWith(
+  content: string,
+  byteLimit: number,
+  lineLimit: number,
+): string {
+  const truncatedSlice = takeBytesAtCharBoundary(content, byteLimit);
+  const truncatedByBytes = Buffer.byteLength(truncatedSlice, "utf8") <
+    Buffer.byteLength(content, "utf8");
+
+  const lines = truncatedSlice.split("\n");
+  let preview = "";
+  let emittedLines = 0;
+  let truncatedByLines = false;
+  for (let idx = 0; idx < lines.length; idx += 1) {
+    if (idx >= lineLimit) {
+      truncatedByLines = true;
+      break;
+    }
+    if (idx > 0) preview += "\n";
+    preview += lines[idx] ?? "";
+    emittedLines = idx + 1;
+  }
+  // Account for a trailing empty last-element from `split("\n")` when
+  // the truncated slice itself ends with `\n` (matches Rust `lines()`
+  // which does not yield that phantom entry).
+  if (
+    !truncatedByLines &&
+    lines[lines.length - 1] === "" &&
+    truncatedSlice.endsWith("\n") &&
+    emittedLines === lines.length
+  ) {
+    // Nothing to do — Rust behaviour is the same.
+  }
+
+  if (!truncatedByBytes && !truncatedByLines) {
+    return content;
+  }
+
+  // Preserve the immediate trailing newline when the truncated slice
+  // had one at the cut point (codex lines 565-571).
+  if (
+    preview.length < truncatedSlice.length &&
+    truncatedSlice[preview.length] === "\n"
+  ) {
+    preview += "\n";
+  }
+  if (preview.length > 0 && !preview.endsWith("\n")) {
+    preview += "\n";
+  }
+  preview += TELEMETRY_PREVIEW_TRUNCATION_NOTICE;
+  return preview;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Image detail sanitizer — port of codex
+// `sanitize_original_image_detail` (tools/src/image_detail.rs). When
+// the model does not support `detail: "original"`, rewrite it to the
+// default ("auto"). Returns a fresh copy; input is not mutated.
+// ─────────────────────────────────────────────────────────────────────
+
+/** Default image detail when the model cannot request `"original"`. */
+export const DEFAULT_IMAGE_DETAIL = "auto" as const;
+
+/**
+ * MCP content item shape as consumed/produced by AgenC. The annotation
+ * field from the MCP spec is preserved; `original_image_detail` (an
+ * xAI-specific nested field) is stripped when unsupported.
+ */
+export type MCPContentItem =
+  | {
+      readonly type: "text";
+      readonly text: string;
+      readonly annotations?: Record<string, unknown>;
+      readonly _meta?: Record<string, unknown>;
+    }
+  | {
+      readonly type: "image";
+      readonly data: string;
+      readonly mimeType: string;
+      readonly annotations?: Record<string, unknown>;
+      readonly _meta?: Record<string, unknown>;
+      readonly original_image_detail?: "auto" | "low" | "high" | "original";
+    }
+  | {
+      readonly type: "audio";
+      readonly data: string;
+      readonly mimeType: string;
+      readonly annotations?: Record<string, unknown>;
+      readonly _meta?: Record<string, unknown>;
+    }
+  | {
+      readonly type: "resource_link";
+      readonly uri: string;
+      readonly name: string;
+      readonly mimeType?: string;
+      readonly description?: string;
+      readonly annotations?: Record<string, unknown>;
+      readonly _meta?: Record<string, unknown>;
+    }
+  | {
+      readonly type: "resource";
+      readonly resource: Readonly<Record<string, unknown>>;
+      readonly annotations?: Record<string, unknown>;
+      readonly _meta?: Record<string, unknown>;
+    };
+
+/**
+ * Port of codex `sanitize_original_image_detail` (tools/image_detail.rs:23-38).
+ * When the model does not support `detail: "original"`, rewrite every
+ * nested `original_image_detail` on image items to the default
+ * (`"auto"`). Non-mutating: the returned array is a fresh copy.
+ */
+export function sanitizeOriginalImageDetail(
+  canRequestOriginal: boolean,
+  items: ReadonlyArray<MCPContentItem>,
+): ReadonlyArray<MCPContentItem> {
+  if (canRequestOriginal) return items.map((item) => ({ ...item }));
+  return items.map((item) => {
+    if (item.type !== "image") return { ...item };
+    const { original_image_detail, ...rest } = item;
+    if (original_image_detail === "original") {
+      return {
+        ...rest,
+        original_image_detail: DEFAULT_IMAGE_DETAIL,
+      };
+    }
+    if (original_image_detail !== undefined) {
+      return {
+        ...rest,
+        original_image_detail,
+      };
+    }
+    return { ...rest };
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// MCP structured output — subset of `CallToolResult` from the MCP SDK
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Tool result envelope. Wraps the per-invocation content string with
- * structured metadata so downstream consumers (phase-5 execute-tools,
- * post-tool hooks, TUI transcript) can render without re-parsing.
+ * Minimal subset of `CallToolResult` that the runtime needs to
+ * preserve for TUI rendering + rollout replay. Matches the MCP SDK
+ * shape (`@modelcontextprotocol/sdk` types v1.27) but stays narrow so
+ * we don't pull Zod types into the public runtime surface.
+ */
+export interface MCPStructuredContent {
+  readonly content: ReadonlyArray<MCPContentItem>;
+  readonly structuredContent?: Record<string, unknown>;
+  readonly isError?: boolean;
+  readonly _meta?: Record<string, unknown>;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// ToolOutputVariant — discriminated union mirroring the 7 codex impls
+// ─────────────────────────────────────────────────────────────────────
+
+/** Common fields carried by every variant. */
+interface ToolOutputVariantCommon {
+  readonly callId: string;
+  readonly toolName: ToolName;
+  readonly payload: ToolPayload;
+  readonly durationMs: number;
+  readonly metadata?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Discriminated union — codex `context.rs:82-96` trait `ToolOutput`
+ * plus its concrete impls:
  *
- * `responseItem` is the shape codex emits for the rollout — in AgenC
- * terms that's `{role:'tool', toolCallId, content}`.
+ *   - `function`      — `FunctionToolOutput` (context.rs:226-275)
+ *   - `mcp`           — `CallToolResult` / `McpToolOutput`
+ *                       (context.rs:98-183). Preserves MCP content
+ *                       array + structuredContent + wall_time.
+ *   - `exec`          — `ExecCommandToolOutput` (context.rs:350-455).
+ *                       Keeps `rawOutput: Buffer` + exitCode + wall
+ *                       time + token-based truncation.
+ *   - `apply_patch`   — `ApplyPatchToolOutput` (context.rs:277-310).
+ *                       Preserves the diff text as-is.
+ *   - `tool_search`   — `ToolSearchOutput` (context.rs:185-224).
+ *   - `aborted`       — `AbortedToolOutput` (context.rs:312-347).
+ *                       Dispatches on the payload variant.
+ */
+export type ToolOutputVariant =
+  | ({
+      readonly kind: "function";
+      /** Content items — when a single text item, this collapses to a
+       *  plain-text body in `toResponseItem`. */
+      readonly body: ReadonlyArray<FunctionCallOutputContentItem>;
+      readonly success?: boolean;
+      readonly postToolUseResponse?: unknown;
+      readonly isError: boolean;
+    } & ToolOutputVariantCommon)
+  | ({
+      readonly kind: "mcp";
+      readonly structured: MCPStructuredContent;
+      readonly wallTimeMs: number;
+      readonly originalImageDetailSupported: boolean;
+      readonly isError: boolean;
+    } & ToolOutputVariantCommon)
+  | ({
+      readonly kind: "exec";
+      readonly rawOutput: Buffer;
+      readonly exitCode?: number;
+      readonly wallTimeMs: number;
+      readonly chunkId?: string;
+      readonly processId?: number;
+      readonly originalTokenCount?: number;
+      readonly sessionCommand?: ReadonlyArray<string>;
+      readonly maxOutputBytes?: number;
+      readonly isError: boolean;
+    } & ToolOutputVariantCommon)
+  | ({
+      readonly kind: "apply_patch";
+      readonly diff: string;
+      readonly isError: boolean;
+    } & ToolOutputVariantCommon)
+  | ({
+      readonly kind: "tool_search";
+      readonly tools: ReadonlyArray<Readonly<Record<string, unknown>>>;
+      readonly isError: boolean;
+    } & ToolOutputVariantCommon)
+  | ({
+      readonly kind: "aborted";
+      readonly reason: string;
+      readonly abortedAtMs: number;
+      readonly isError: boolean;
+    } & ToolOutputVariantCommon);
+
+/**
+ * Function-call output content item — port of codex
+ * `FunctionCallOutputContentItem`. Matches the OpenAI responses input
+ * shape. Image URLs carry an optional `detail` field.
+ */
+export type FunctionCallOutputContentItem =
+  | { readonly type: "input_text"; readonly text: string }
+  | {
+      readonly type: "input_image";
+      readonly image_url: string;
+      readonly detail?: "auto" | "low" | "high" | "original";
+    };
+
+// ─────────────────────────────────────────────────────────────────────
+// ToolOutput — the result envelope
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Tool result envelope. The flat legacy shape (`content` + `isError`
+ * + `durationMs`) is preserved for backwards compatibility — existing
+ * call sites read `.content` and still work. New code should branch
+ * on `.variant?.kind` or call `toText()` to flatten any variant into
+ * a deterministic text body.
  */
 export interface ToolOutput {
   readonly callId: string;
@@ -158,11 +451,261 @@ export interface ToolOutput {
   readonly metadata?: Readonly<Record<string, unknown>>;
   /** Optional post-tool response override emitted by the hook. */
   readonly postToolUseResponse?: unknown;
+  /**
+   * Discriminated-union payload preserving per-variant shape
+   * (MCP annotations, exec raw bytes, apply-patch diff, etc.). Absent
+   * on legacy constructions (treated as `function`).
+   */
+  readonly variant?: ToolOutputVariant;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Factories — one per variant
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Port of codex `FunctionToolOutput::from_text` (context.rs:233-239).
+ */
+export function functionToolOutputFromText(opts: {
+  readonly callId: string;
+  readonly toolName: ToolName;
+  readonly payload: ToolPayload;
+  readonly text: string;
+  readonly success?: boolean;
+  readonly isError: boolean;
+  readonly durationMs: number;
+  readonly metadata?: Record<string, unknown>;
+  readonly postToolUseResponse?: unknown;
+}): ToolOutput {
+  const body: FunctionCallOutputContentItem[] = [
+    { type: "input_text", text: opts.text },
+  ];
+  return buildFunctionToolOutput({ ...opts, body });
 }
 
 /**
- * Standard "aborted" output used by the ToolCallRuntime when
- * cancellation fires mid-execution (codex `AbortedToolOutput`).
+ * Port of codex `FunctionToolOutput::from_content` (context.rs:241-250).
+ */
+export function functionToolOutputFromContent(opts: {
+  readonly callId: string;
+  readonly toolName: ToolName;
+  readonly payload: ToolPayload;
+  readonly body: ReadonlyArray<FunctionCallOutputContentItem>;
+  readonly success?: boolean;
+  readonly isError: boolean;
+  readonly durationMs: number;
+  readonly metadata?: Record<string, unknown>;
+  readonly postToolUseResponse?: unknown;
+}): ToolOutput {
+  return buildFunctionToolOutput(opts);
+}
+
+function buildFunctionToolOutput(opts: {
+  readonly callId: string;
+  readonly toolName: ToolName;
+  readonly payload: ToolPayload;
+  readonly body: ReadonlyArray<FunctionCallOutputContentItem>;
+  readonly success?: boolean;
+  readonly isError: boolean;
+  readonly durationMs: number;
+  readonly metadata?: Record<string, unknown>;
+  readonly postToolUseResponse?: unknown;
+}): ToolOutput {
+  const text = contentItemsToText(opts.body);
+  const variant: ToolOutputVariant = {
+    kind: "function",
+    callId: opts.callId,
+    toolName: opts.toolName,
+    payload: opts.payload,
+    body: opts.body,
+    ...(opts.success !== undefined ? { success: opts.success } : {}),
+    ...(opts.postToolUseResponse !== undefined
+      ? { postToolUseResponse: opts.postToolUseResponse }
+      : {}),
+    isError: opts.isError,
+    durationMs: opts.durationMs,
+    ...(opts.metadata ? { metadata: opts.metadata } : {}),
+  };
+  return {
+    callId: opts.callId,
+    toolName: opts.toolName,
+    payload: opts.payload,
+    content: text,
+    isError: opts.isError,
+    durationMs: opts.durationMs,
+    ...(opts.metadata ? { metadata: opts.metadata } : {}),
+    ...(opts.postToolUseResponse !== undefined
+      ? { postToolUseResponse: opts.postToolUseResponse }
+      : {}),
+    variant,
+  };
+}
+
+/**
+ * Port of codex `ApplyPatchToolOutput::from_text` (context.rs:282-284).
+ */
+export function applyPatchToolOutput(opts: {
+  readonly callId: string;
+  readonly toolName: ToolName;
+  readonly payload: ToolPayload;
+  readonly diff: string;
+  readonly durationMs: number;
+  readonly metadata?: Record<string, unknown>;
+}): ToolOutput {
+  const variant: ToolOutputVariant = {
+    kind: "apply_patch",
+    callId: opts.callId,
+    toolName: opts.toolName,
+    payload: opts.payload,
+    diff: opts.diff,
+    isError: false,
+    durationMs: opts.durationMs,
+    ...(opts.metadata ? { metadata: opts.metadata } : {}),
+  };
+  return {
+    callId: opts.callId,
+    toolName: opts.toolName,
+    payload: opts.payload,
+    content: opts.diff,
+    isError: false,
+    durationMs: opts.durationMs,
+    ...(opts.metadata ? { metadata: opts.metadata } : {}),
+    variant,
+  };
+}
+
+/**
+ * Port of codex `McpToolOutput` (context.rs:123-183). Preserves the
+ * full MCP structured content + wall time. `toText()` synthesizes the
+ * "Wall time: N.NNNN seconds\nOutput:" header (`response_payload`).
+ */
+export function mcpToolOutput(opts: {
+  readonly callId: string;
+  readonly toolName: ToolName;
+  readonly payload: ToolPayload;
+  readonly structured: MCPStructuredContent;
+  readonly wallTimeMs: number;
+  readonly originalImageDetailSupported?: boolean;
+  readonly durationMs: number;
+  readonly metadata?: Record<string, unknown>;
+}): ToolOutput {
+  const isError = opts.structured.isError === true;
+  const variant: ToolOutputVariant = {
+    kind: "mcp",
+    callId: opts.callId,
+    toolName: opts.toolName,
+    payload: opts.payload,
+    structured: opts.structured,
+    wallTimeMs: opts.wallTimeMs,
+    originalImageDetailSupported: opts.originalImageDetailSupported ?? false,
+    isError,
+    durationMs: opts.durationMs,
+    ...(opts.metadata ? { metadata: opts.metadata } : {}),
+  };
+  return {
+    callId: opts.callId,
+    toolName: opts.toolName,
+    payload: opts.payload,
+    content: mcpResponseText(variant),
+    isError,
+    durationMs: opts.durationMs,
+    ...(opts.metadata ? { metadata: opts.metadata } : {}),
+    variant,
+  };
+}
+
+/**
+ * Port of codex `ExecCommandToolOutput` (context.rs:349-455).
+ * `rawOutput` is a Buffer to preserve byte-level fidelity. The cap is
+ * applied by `execResponseText()` via `truncatedOutput()`.
+ */
+export function execToolOutput(opts: {
+  readonly callId: string;
+  readonly toolName: ToolName;
+  readonly payload: ToolPayload;
+  readonly rawOutput: Buffer;
+  readonly exitCode?: number;
+  readonly wallTimeMs: number;
+  readonly chunkId?: string;
+  readonly processId?: number;
+  readonly originalTokenCount?: number;
+  readonly sessionCommand?: ReadonlyArray<string>;
+  readonly maxOutputBytes?: number;
+  readonly durationMs: number;
+  readonly metadata?: Record<string, unknown>;
+}): ToolOutput {
+  const variant: ToolOutputVariant = {
+    kind: "exec",
+    callId: opts.callId,
+    toolName: opts.toolName,
+    payload: opts.payload,
+    rawOutput: opts.rawOutput,
+    ...(opts.exitCode !== undefined ? { exitCode: opts.exitCode } : {}),
+    wallTimeMs: opts.wallTimeMs,
+    ...(opts.chunkId !== undefined ? { chunkId: opts.chunkId } : {}),
+    ...(opts.processId !== undefined ? { processId: opts.processId } : {}),
+    ...(opts.originalTokenCount !== undefined
+      ? { originalTokenCount: opts.originalTokenCount }
+      : {}),
+    ...(opts.sessionCommand !== undefined
+      ? { sessionCommand: opts.sessionCommand }
+      : {}),
+    ...(opts.maxOutputBytes !== undefined
+      ? { maxOutputBytes: opts.maxOutputBytes }
+      : {}),
+    isError: false,
+    durationMs: opts.durationMs,
+    ...(opts.metadata ? { metadata: opts.metadata } : {}),
+  };
+  return {
+    callId: opts.callId,
+    toolName: opts.toolName,
+    payload: opts.payload,
+    content: execResponseText(variant),
+    isError: false,
+    durationMs: opts.durationMs,
+    ...(opts.metadata ? { metadata: opts.metadata } : {}),
+    variant,
+  };
+}
+
+/**
+ * Port of codex `ToolSearchOutput` (context.rs:186-224).
+ */
+export function toolSearchToolOutput(opts: {
+  readonly callId: string;
+  readonly toolName: ToolName;
+  readonly payload: ToolPayload;
+  readonly tools: ReadonlyArray<Readonly<Record<string, unknown>>>;
+  readonly durationMs: number;
+  readonly metadata?: Record<string, unknown>;
+}): ToolOutput {
+  const variant: ToolOutputVariant = {
+    kind: "tool_search",
+    callId: opts.callId,
+    toolName: opts.toolName,
+    payload: opts.payload,
+    tools: opts.tools,
+    isError: false,
+    durationMs: opts.durationMs,
+    ...(opts.metadata ? { metadata: opts.metadata } : {}),
+  };
+  return {
+    callId: opts.callId,
+    toolName: opts.toolName,
+    payload: opts.payload,
+    content: JSON.stringify(opts.tools),
+    isError: false,
+    durationMs: opts.durationMs,
+    ...(opts.metadata ? { metadata: opts.metadata } : {}),
+    variant,
+  };
+}
+
+/**
+ * Port of codex `AbortedToolOutput` (context.rs:312-347). Preserves
+ * the abort message; `toResponseItem` dispatches on the payload
+ * variant so ToolSearch/MCP callers get shape-compatible outputs.
  */
 export function abortedToolOutput(
   callId: string,
@@ -170,14 +713,27 @@ export function abortedToolOutput(
   payload: ToolPayload,
   elapsedMs: number,
 ): ToolOutput {
+  const content = abortMessage(toolName, elapsedMs);
+  const variant: ToolOutputVariant = {
+    kind: "aborted",
+    callId,
+    toolName,
+    payload,
+    reason: content,
+    abortedAtMs: Date.now(),
+    isError: true,
+    durationMs: elapsedMs,
+    metadata: { aborted: true },
+  };
   return {
     callId,
     toolName,
     payload,
-    content: abortMessage(toolName, elapsedMs),
+    content,
     isError: true,
     durationMs: elapsedMs,
     metadata: { aborted: true },
+    variant,
   };
 }
 
@@ -199,7 +755,10 @@ function abortMessage(toolName: ToolName, elapsedMs: number): string {
 }
 
 /**
- * Convenience factory for the common function-call output shape.
+ * Backwards-compatible factory for the common function-call output
+ * shape. Kept as the default constructor for legacy call sites that
+ * pass a plain `content` string — same as
+ * `functionToolOutputFromText` with the legacy parameter shape.
  */
 export function functionToolOutput(opts: {
   readonly callId: string;
@@ -210,13 +769,278 @@ export function functionToolOutput(opts: {
   readonly durationMs: number;
   readonly metadata?: Record<string, unknown>;
 }): ToolOutput {
-  return {
+  return functionToolOutputFromText({
     callId: opts.callId,
     toolName: opts.toolName,
     payload: opts.payload,
-    content: opts.content,
+    text: opts.content,
     isError: opts.isError,
     durationMs: opts.durationMs,
     ...(opts.metadata ? { metadata: opts.metadata } : {}),
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Helpers — per-variant text + response-item projection
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Port of codex `function_call_output_content_items_to_text`. Flattens
+ * a content-item body to a plain text body by joining text parts.
+ */
+export function contentItemsToText(
+  items: ReadonlyArray<FunctionCallOutputContentItem>,
+): string {
+  const parts: string[] = [];
+  for (const item of items) {
+    if (item.type === "input_text") parts.push(item.text);
+    else if (item.type === "input_image") parts.push(item.image_url);
+  }
+  return parts.join("");
+}
+
+/**
+ * Port of codex `FunctionToolOutput::into_text` (context.rs:252-254).
+ */
+export function intoText(output: ToolOutput): string {
+  return toText(output);
+}
+
+/**
+ * Flatten any variant into plain text. Used everywhere a legacy
+ * consumer needs a single string — matches the old `.content` field.
+ */
+export function toText(output: ToolOutput): string {
+  const variant = output.variant;
+  if (!variant) return output.content;
+  switch (variant.kind) {
+    case "function":
+      return contentItemsToText(variant.body);
+    case "mcp":
+      return mcpResponseText(variant);
+    case "exec":
+      return execResponseText(variant);
+    case "apply_patch":
+      return variant.diff;
+    case "tool_search":
+      return JSON.stringify(variant.tools);
+    case "aborted":
+      return variant.reason;
+  }
+}
+
+/**
+ * Port of codex `ToolOutput::log_preview` dispatch (context.rs:83).
+ */
+export function logPreview(output: ToolOutput): string {
+  return telemetryPreview(toText(output));
+}
+
+/**
+ * Port of codex `ToolOutput::success_for_logging` (context.rs:85).
+ */
+export function successForLogging(output: ToolOutput): boolean {
+  const variant = output.variant;
+  if (!variant) return !output.isError;
+  switch (variant.kind) {
+    case "function":
+      return variant.success ?? !variant.isError;
+    case "mcp":
+      return !variant.isError;
+    case "exec":
+      return true;
+    case "apply_patch":
+      return true;
+    case "tool_search":
+      return true;
+    case "aborted":
+      return false;
+  }
+}
+
+/**
+ * Port of codex `McpToolOutput::response_payload` (context.rs:159-182).
+ * Prepends the wall-time header and runs the image-detail sanitizer
+ * on nested image items.
+ */
+function mcpResponseText(
+  variant: Extract<ToolOutputVariant, { kind: "mcp" }>,
+): string {
+  const wallTimeSeconds = variant.wallTimeMs / 1000;
+  const header = `Wall time: ${wallTimeSeconds.toFixed(4)} seconds\nOutput:`;
+  const items = sanitizeOriginalImageDetail(
+    variant.originalImageDetailSupported,
+    variant.structured.content,
+  );
+  const body = items
+    .map((item) => {
+      if (item.type === "text") return item.text;
+      if (item.type === "image") return `[image:${item.mimeType}]`;
+      if (item.type === "audio") return `[audio:${item.mimeType}]`;
+      if (item.type === "resource_link") return `[resource:${item.uri}]`;
+      if (item.type === "resource")
+        return `[resource:${JSON.stringify(item.resource)}]`;
+      return "";
+    })
+    .join("\n");
+  if (body.length === 0) return header;
+  return `${header}\n${body}`;
+}
+
+/**
+ * Port of codex `ExecCommandToolOutput::response_text` + `truncated_output`
+ * (context.rs:422-454). Applies the 400KB cap (I-15) and composes the
+ * chunk/exit/process sections.
+ */
+function execResponseText(
+  variant: Extract<ToolOutputVariant, { kind: "exec" }>,
+): string {
+  const sections: string[] = [];
+  if (variant.chunkId && variant.chunkId.length > 0) {
+    sections.push(`Chunk ID: ${variant.chunkId}`);
+  }
+  const wallTimeSeconds = variant.wallTimeMs / 1000;
+  sections.push(`Wall time: ${wallTimeSeconds.toFixed(4)} seconds`);
+  if (variant.exitCode !== undefined) {
+    sections.push(`Process exited with code ${variant.exitCode}`);
+  }
+  if (variant.processId !== undefined) {
+    sections.push(`Process running with session ID ${variant.processId}`);
+  }
+  if (variant.originalTokenCount !== undefined) {
+    sections.push(`Original token count: ${variant.originalTokenCount}`);
+  }
+  sections.push("Output:");
+  sections.push(execTruncatedOutput(variant));
+  return sections.join("\n");
+}
+
+/**
+ * Port of codex `ExecCommandToolOutput::truncated_output`
+ * (context.rs:422-426). AgenC uses byte-based truncation via
+ * `DEFAULT_MAX_EXEC_OUTPUT_BYTES` (I-15: 400KB) instead of codex's
+ * token-based policy — the cap is equivalent and avoids pulling a
+ * tokenizer into the runtime.
+ */
+export const DEFAULT_MAX_EXEC_OUTPUT_BYTES = 400_000;
+
+function execTruncatedOutput(
+  variant: Extract<ToolOutputVariant, { kind: "exec" }>,
+): string {
+  const cap = variant.maxOutputBytes ?? DEFAULT_MAX_EXEC_OUTPUT_BYTES;
+  if (variant.rawOutput.length <= cap) {
+    return variant.rawOutput.toString("utf8");
+  }
+  const marker = `\n\n[truncated: original was ${variant.rawOutput.length} bytes, returning first ${cap}]\n`;
+  const markerBytes = Buffer.byteLength(marker, "utf8");
+  const keepBytes = Math.max(0, cap - markerBytes);
+  const kept = variant.rawOutput.subarray(0, keepBytes).toString("utf8");
+  return `${kept}${marker}`;
+}
+
+/**
+ * Port of codex `ToolOutput::to_response_item` dispatch plus the
+ * per-impl implementations (context.rs:87, 109-114, 144-149, 208-222,
+ * 268-270, 296-305, 325-345). Emits an AgenC `LLMMessage`
+ * (`role:"tool"`, `toolCallId`, `content`) — provider adapters map
+ * that back into the wire-level function_call_output shape.
+ */
+export interface LLMToolResultMessage {
+  readonly role: "tool";
+  readonly toolCallId: string;
+  readonly toolName?: string;
+  readonly content: string;
+  /**
+   * Provider-neutral structured payload carried alongside the text
+   * content. Adapters that support structured function_call_output
+   * replay this (MCP annotations, tool_search tools array, etc.);
+   * adapters that don't fall back to `content`.
+   */
+  readonly structured?: Readonly<Record<string, unknown>>;
+}
+
+export function toResponseItem(output: ToolOutput): LLMToolResultMessage {
+  const variant = output.variant;
+  const base = {
+    role: "tool" as const,
+    toolCallId: output.callId,
+    toolName: toolNameDisplay(output.toolName),
   };
+  if (!variant) {
+    return { ...base, content: output.content };
+  }
+  switch (variant.kind) {
+    case "function":
+      return { ...base, content: contentItemsToText(variant.body) };
+    case "mcp":
+      return {
+        ...base,
+        content: mcpResponseText(variant),
+        structured: {
+          type: "mcp_tool_call_output",
+          result: variant.structured,
+        },
+      };
+    case "exec":
+      return { ...base, content: execResponseText(variant) };
+    case "apply_patch":
+      return { ...base, content: variant.diff };
+    case "tool_search": {
+      const tools = variant.tools;
+      return {
+        ...base,
+        content: JSON.stringify(tools),
+        structured: {
+          type: "tool_search_output",
+          status: "completed",
+          execution: "client",
+          tools,
+        },
+      };
+    }
+    case "aborted":
+      // Dispatch on payload variant — matches codex `AbortedToolOutput::to_response_item`
+      // (context.rs:325-345).
+      if (variant.payload.kind === "tool_search") {
+        return {
+          ...base,
+          content: "",
+          structured: {
+            type: "tool_search_output",
+            status: "completed",
+            execution: "client",
+            tools: [],
+          },
+        };
+      }
+      if (variant.payload.kind === "mcp") {
+        return {
+          ...base,
+          content: variant.reason,
+          structured: {
+            type: "mcp_tool_call_output",
+            result: { content: [], isError: true } satisfies MCPStructuredContent,
+          },
+        };
+      }
+      return { ...base, content: variant.reason };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// code_mode projection — stubbed pending code_mode subsystem
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Port stub of codex `response_input_to_code_mode_result` /
+ * `content_items_to_code_mode_result` (context.rs:457-513). AgenC
+ * does not yet ship the code_mode subsystem; when it lands, this
+ * helper should project a `ToolOutput` into the JSON value the
+ * code_mode JS runner consumes. Returns the plain text body for now
+ * so the surface is deterministic.
+ *
+ * TODO(code_mode): implement full dispatch once code_mode lands.
+ */
+export function codeModeResult(output: ToolOutput): unknown {
+  return toText(output);
 }

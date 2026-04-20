@@ -123,6 +123,13 @@ export interface BuildToolRegistryOptions {
    * runs without a lifecycle observer.
    */
   readonly bashExecObserver?: BashExecObserver;
+  /**
+   * T9 integration seam: extra tools to register beyond the default
+   * coding-profile catalog. The CLI entrypoint uses this to expose
+   * `system.agent.delegate` (the subagent spawn dispatcher) as a
+   * first-class tool the model can invoke.
+   */
+  readonly extraTools?: ReadonlyArray<Tool>;
 }
 
 /**
@@ -157,6 +164,7 @@ export function buildToolRegistry(
         ? { execObserver: options.bashExecObserver }
         : {}),
     }),
+    ...(options.extraTools ?? []),
   ];
 
   // T7: tag each registered tool with its ConcurrencyClass + flags.

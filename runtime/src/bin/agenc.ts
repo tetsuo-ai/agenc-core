@@ -60,6 +60,12 @@ import {
   createMCPCallObserverForSlot,
   type SessionSlot,
 } from "../session/observer-wiring.js";
+import { buildDelegateTool } from "./delegate-tool.js";
+import {
+  handleSlashCommand,
+  parseSlashCommand,
+  type PendingWorktreeState,
+} from "./slash.js";
 
 const DEFAULT_MODEL = "grok-4-fast";
 
@@ -481,9 +487,25 @@ async function main(): Promise<number> {
     // or MCP call lands `exec_command_*` / `mcp_tool_call_*` in the
     // event log.
     const sessionSlot: SessionSlot = { current: null };
+    // T9: holds the full `Session` reference for the delegate tool.
+    // `sessionSlot` only carries the narrow ObserverSessionSink shape
+    // the bash/MCP observers need; AgentControl wants the real Session.
+    const delegateSessionHolder: { current: Session | null } = {
+      current: null,
+    };
     const bashExecObserver = createBashExecObserverForSlot(sessionSlot);
     const mcpCallObserver = createMCPCallObserverForSlot(sessionSlot);
-    const registry = buildToolRegistry({ workspaceRoot, bashExecObserver });
+    // T9: register the subagent-spawn dispatcher as a built-in tool.
+    // Session is late-bound so the delegate call picks up the real
+    // Session once it's constructed a few steps down.
+    const delegateTool = buildDelegateTool({
+      getSession: () => delegateSessionHolder.current,
+    });
+    const registry = buildToolRegistry({
+      workspaceRoot,
+      bashExecObserver,
+      extraTools: [delegateTool],
+    });
     throwIfAborted("buildToolRegistry");
 
     // Step 5: construct provider.
@@ -543,6 +565,8 @@ async function main(): Promise<number> {
     // `manager.setCallObserver(mcpCallObserver)` BEFORE `start()`
     // so the observer is baked into every bridge at creation time.
     sessionSlot.current = session;
+    // T9: give the delegate tool its real Session reference.
+    delegateSessionHolder.current = session;
     // Exported for the future MCPManager wiring site (no MCPManager
     // is constructed in this entrypoint yet — the placeholder
     // services.mcpManager is a stub until T9 lands).
@@ -707,6 +731,42 @@ async function main(): Promise<number> {
     await cleanup.unwind(() => {
       /* swallow — we're handing off to session's own lifecycle */
     });
+
+    // T9: slash-command short-circuit. If the user's line is a
+    // worktree control command, run it directly + skip the LLM turn.
+    // The full slash dispatcher lands in T11; this is the minimum
+    // wiring so `/enter-worktree` + `/exit-worktree` work today.
+    const slashCommand = parseSlashCommand(userMessage);
+    let pendingWorktree: PendingWorktreeState | null = null;
+    const originalCwd = processCwd();
+    if (slashCommand) {
+      try {
+        const result = await handleSlashCommand({
+          session,
+          command: slashCommand,
+          originalCwd,
+          pendingWorktree,
+        });
+        pendingWorktree = result.pendingWorktree;
+        if (result.cwd !== processCwd()) {
+          try {
+            process.chdir(result.cwd);
+          } catch (err) {
+            process.stderr.write(
+              `agenc: chdir(${result.cwd}) failed: ${err instanceof Error ? err.message : String(err)}\n`,
+            );
+          }
+        }
+        process.stdout.write(`${result.message}\n`);
+        return result.exitCode;
+      } finally {
+        sessionRef = null;
+        await session.shutdown().catch(() => {
+          /* best effort */
+        });
+      }
+    }
+    void pendingWorktree;
 
     try {
       for await (const event of runTurn(session, ctx, userMessage, {
