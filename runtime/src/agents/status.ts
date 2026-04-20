@@ -1,0 +1,118 @@
+/**
+ * AgentStatus — subagent lifecycle FSM.
+ *
+ * Hand-port of codex `core/src/agent/status.rs` (27 LOC). Tracks the
+ * state transitions of a spawned subagent from creation through
+ * terminal states.
+ *
+ * Final states: `completed`, `errored`, `shutdown`, `interrupted`.
+ * Non-final: `idle`, `running`.
+ *
+ * @module
+ */
+
+import { BehaviorSubject } from "../utils/behavior-subject.js";
+import { monotonicMs } from "../utils/monotonic.js";
+
+export type AgentStatus =
+  | { readonly status: "idle" }
+  | {
+      readonly status: "running";
+      readonly turnId: string;
+      readonly startedAtMs: number;
+    }
+  | {
+      readonly status: "completed";
+      readonly turnId: string;
+      readonly endedAtMs: number;
+      readonly lastMessage?: string;
+    }
+  | {
+      readonly status: "errored";
+      readonly turnId: string;
+      readonly endedAtMs: number;
+      readonly error: string;
+    }
+  | { readonly status: "shutdown"; readonly endedAtMs: number }
+  | {
+      readonly status: "interrupted";
+      readonly turnId: string;
+      readonly endedAtMs: number;
+      readonly reason: string;
+    };
+
+const FINAL_STATES: ReadonlySet<AgentStatus["status"]> = new Set([
+  "completed",
+  "errored",
+  "shutdown",
+  "interrupted",
+]);
+
+export function isFinal(status: AgentStatus): boolean {
+  return FINAL_STATES.has(status.status);
+}
+
+/**
+ * Per-agent status tracker. Subscribers receive a replay of the
+ * current state + every subsequent mutation.
+ */
+export class AgentStatusTracker {
+  readonly subject: BehaviorSubject<AgentStatus>;
+
+  constructor(initial: AgentStatus = { status: "idle" }) {
+    this.subject = new BehaviorSubject<AgentStatus>(initial);
+  }
+
+  get value(): AgentStatus {
+    return this.subject.value;
+  }
+
+  markRunning(turnId: string): void {
+    this.set({ status: "running", turnId, startedAtMs: monotonicMs() });
+  }
+
+  markCompleted(turnId: string, lastMessage?: string): void {
+    this.set({
+      status: "completed",
+      turnId,
+      endedAtMs: monotonicMs(),
+      ...(lastMessage !== undefined ? { lastMessage } : {}),
+    });
+  }
+
+  markErrored(turnId: string, error: string): void {
+    this.set({
+      status: "errored",
+      turnId,
+      endedAtMs: monotonicMs(),
+      error,
+    });
+  }
+
+  markInterrupted(turnId: string, reason: string): void {
+    this.set({
+      status: "interrupted",
+      turnId,
+      endedAtMs: monotonicMs(),
+      reason,
+    });
+  }
+
+  markShutdown(): void {
+    this.set({ status: "shutdown", endedAtMs: monotonicMs() });
+  }
+
+  subscribe(listener: (status: AgentStatus) => void): () => void {
+    return this.subject.subscribe(listener);
+  }
+
+  complete(): void {
+    this.subject.complete();
+  }
+
+  private set(status: AgentStatus): void {
+    // Final states are sticky — don't overwrite once reached.
+    if (isFinal(this.subject.value) && isFinal(status)) return;
+    this.subject.next(status);
+  }
+}

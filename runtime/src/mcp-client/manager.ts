@@ -20,6 +20,23 @@ import { createToolBridge } from "./tool-bridge.js";
 import { ResilientMCPBridge } from "./resilient-bridge.js";
 import type { MCPToolCatalogPolicyConfig } from "./tool-bridge.js";
 
+/** I-50: cancellable MCP startup wait; 30s default. */
+export const MCP_STARTUP_TIMEOUT_MS = 30_000;
+
+export interface MCPManagerStartOpts {
+  /** Cancel the startup wait — fires I-50. Any in-flight connect that
+   *  has not yet resolved is abandoned; connected bridges stay. */
+  readonly signal?: AbortSignal;
+  /** Override timeout for the initial listTools + connect RPC. */
+  readonly timeoutMs?: number;
+  /** I-20: require at least one server to come up — fail-hard
+   *  otherwise. Default false (fail-soft). */
+  readonly requireOneReady?: boolean;
+  /** I-20: require THESE named servers to come up. Overrides
+   *  `requireOneReady` when both set. */
+  readonly requiredServers?: ReadonlyArray<string>;
+}
+
 function toToolCatalogPolicyConfig(
   config: MCPServerConfig,
 ): MCPToolCatalogPolicyConfig | undefined {
@@ -61,9 +78,16 @@ export class MCPManager {
 
   /**
    * Connect to all enabled MCP servers and create tool bridges.
-   * Failures on individual servers are logged but don't block others.
+   * Failures on individual servers are logged but don't block others
+   * (I-6 fail-soft) — unless `requireOneReady` / `requiredServers`
+   * is set, in which case I-20 aggregate-failure trips.
+   *
+   * I-50: the caller may pass `signal` to abort the startup wait;
+   * any servers that connected still stay connected, the rest are
+   * left to resolve/reject in the background under their own
+   * connect-timeout.
    */
-  async start(): Promise<void> {
+  async start(opts: MCPManagerStartOpts = {}): Promise<void> {
     const enabledConfigs = this.configs.filter((c) => c.enabled !== false);
 
     if (enabledConfigs.length === 0) {
@@ -71,20 +95,42 @@ export class MCPManager {
       return;
     }
 
+    const signal = opts.signal;
+    if (signal?.aborted) {
+      throw new Error(
+        `MCP startup cancelled before first connect (${signal.reason ?? "unspecified"})`,
+      );
+    }
+    const timeoutMs = opts.timeoutMs ?? MCP_STARTUP_TIMEOUT_MS;
+
     this.logger.info(`Starting ${enabledConfigs.length} MCP server(s)...`);
 
-    const results = await Promise.allSettled(
-      enabledConfigs.map(async (config) => this.connectServer(config)),
+    // I-50: race each per-server connect against the external signal.
+    const results = await Promise.all(
+      enabledConfigs.map((config) =>
+        raceWithSignal(
+          this.connectServer(config),
+          signal,
+          timeoutMs,
+          `MCP server "${config.name}" connect`,
+        ).then(
+          (bridge) => ({ status: "fulfilled" as const, value: bridge }),
+          (err: unknown) => ({ status: "rejected" as const, reason: err }),
+        ),
+      ),
     );
 
     let successCount = 0;
+    const failures: Array<{ name: string; reason: unknown }> = [];
     for (let i = 0; i < results.length; i++) {
       const result = results[i];
+      const cfg = enabledConfigs[i];
       if (result.status === "fulfilled") {
         successCount++;
       } else {
+        failures.push({ name: cfg.name, reason: result.reason });
         this.logger.error(
-          `Failed to connect to MCP server "${enabledConfigs[i].name}":`,
+          `Failed to connect to MCP server "${cfg.name}":`,
           result.reason,
         );
       }
@@ -94,6 +140,29 @@ export class MCPManager {
     this.logger.info(
       `MCP: ${successCount}/${enabledConfigs.length} servers connected, ${totalTools} tools available`,
     );
+
+    // I-20: aggregate-failure check.
+    if (opts.requiredServers && opts.requiredServers.length > 0) {
+      const missing = opts.requiredServers.filter(
+        (name) => !this.bridges.has(name),
+      );
+      if (missing.length > 0) {
+        const reason = failures
+          .filter((f) => missing.includes(f.name))
+          .map((f) => `${f.name}: ${errMessage(f.reason)}`)
+          .join("; ");
+        throw new Error(
+          `MCP aggregate startup failure — required server(s) not ready: ${missing.join(", ")}${reason ? ` (${reason})` : ""}`,
+        );
+      }
+    } else if (opts.requireOneReady && successCount === 0) {
+      const detail = failures
+        .map((f) => `${f.name}: ${errMessage(f.reason)}`)
+        .join("; ");
+      throw new Error(
+        `MCP aggregate startup failure — zero servers ready${detail ? ` (${detail})` : ""}`,
+      );
+    }
   }
 
   /**
@@ -206,6 +275,10 @@ export class MCPManager {
           serverConfig: toToolCatalogPolicyConfig(config),
         },
       );
+      // I-73: reject MCP tools whose namespaced names collide with
+      // already-registered tools (from earlier servers). Bail the
+      // whole bridge — the caller can re-configure the namespace.
+      this.assertNoNameShadowing(config.name, rawBridge);
       const bridge = new ResilientMCPBridge(config, rawBridge, this.logger);
       this.bridges.set(config.name, bridge);
       return bridge;
@@ -218,4 +291,76 @@ export class MCPManager {
       throw error;
     }
   }
+
+  private assertNoNameShadowing(
+    serverName: string,
+    bridge: MCPToolBridge,
+  ): void {
+    const existing = new Set<string>();
+    for (const b of this.bridges.values()) {
+      for (const t of b.tools) existing.add(t.name);
+    }
+    const collisions: string[] = [];
+    for (const tool of bridge.tools) {
+      if (existing.has(tool.name)) collisions.push(tool.name);
+    }
+    if (collisions.length > 0) {
+      throw new Error(
+        `MCP server "${serverName}" tools shadow already-registered tool names (I-73): ${collisions.join(", ")}`,
+      );
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────
+
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Race a promise against an abort signal and an absolute timeout.
+ * I-50 uses this so an orchestrator can cancel MCP startup mid-wait
+ * (e.g. when the user hits Ctrl+C before any server connects).
+ */
+function raceWithSignal<T>(
+  task: Promise<T>,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  const contenders: Promise<T>[] = [task];
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+
+  if (signal) {
+    contenders.push(
+      new Promise<T>((_, reject) => {
+        if (signal.aborted) {
+          reject(new Error(`${label} aborted (${signal.reason ?? "signal"})`));
+          return;
+        }
+        onAbort = () => {
+          reject(new Error(`${label} aborted (${signal.reason ?? "signal"})`));
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      }),
+    );
+  }
+  contenders.push(
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    }),
+  );
+
+  return Promise.race(contenders).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+    if (onAbort !== undefined && signal) {
+      signal.removeEventListener("abort", onAbort);
+    }
+  });
 }

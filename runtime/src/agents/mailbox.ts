@@ -1,0 +1,236 @@
+/**
+ * Mailbox — bidirectional typed queue for inter-agent communication.
+ *
+ * Hand-port of codex `core/src/agent/mailbox.rs` (161 LOC) adapted
+ * for AgenC's bounded + backpressure model. Openclaude uses
+ * AsyncGenerator-only (unidirectional parent polls child); codex uses
+ * unbounded `mpsc::unbounded_channel` which is unacceptable on Node.js
+ * because there's no OS-level backpressure signal.
+ *
+ * AgenC's mailbox is:
+ *   - **Bidirectional** (I-5) — each message carries a
+ *     `direction: 'up' | 'down'`. Session holds both `inbox`
+ *     (from children) and `childInboxes: Map<threadId, Mailbox>`
+ *     (to children).
+ *   - **Bounded** (I-16) — `MAX_MAILBOX_DEPTH=1000`. On overflow,
+ *     `send()` returns synchronously and backpressure resolution
+ *     (drop oldest + warning) runs as a `queueMicrotask` so the
+ *     caller's event loop stays responsive (I-64).
+ *   - **Receiver-closed sentinel** (I-31) — after `close()`, the
+ *     next `drain()` returns a single `agent_exited` sentinel then
+ *     permanently empty. Sender rejects sends with
+ *     `MailboxClosedError`.
+ *   - **Non-blocking send** (I-64) — `send()` is synchronous.
+ *     Callers never await.
+ *
+ * @module
+ */
+
+import { BehaviorSubject } from "../utils/behavior-subject.js";
+
+// ─────────────────────────────────────────────────────────────────────
+// Constants (I-16)
+// ─────────────────────────────────────────────────────────────────────
+
+export const MAX_MAILBOX_DEPTH = 1_000;
+export const MAX_MAILBOX_BLOCK_MS = 5_000;
+
+// ─────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────
+
+/** Direction of travel: up = child→parent, down = parent→child. */
+export type MailboxDirection = "up" | "down";
+
+export interface InterAgentCommunication {
+  readonly author: string;
+  readonly recipient: string;
+  readonly content: string;
+  /** When true, recipient should wake + process at next opportunity. */
+  readonly triggerTurn: boolean;
+  readonly direction: MailboxDirection;
+  readonly seq: number;
+  /** Optional free-form metadata (e.g. interrupt reason, task id). */
+  readonly metadata?: Readonly<Record<string, unknown>>;
+}
+
+export type SendResult = "sent" | "dropped" | "rejected";
+
+/** Synthetic sentinel returned by `drain()` after `close()`. */
+export interface AgentExitedSentinel {
+  readonly type: "agent_exited";
+  readonly threadId: string;
+  readonly finalStatus?: string;
+  readonly seq: number;
+}
+
+export type MailboxItem = InterAgentCommunication | AgentExitedSentinel;
+
+// ─────────────────────────────────────────────────────────────────────
+// Errors
+// ─────────────────────────────────────────────────────────────────────
+
+export class MailboxClosedError extends Error {
+  constructor(public readonly threadId: string) {
+    super(`mailbox for ${threadId} is closed`);
+    this.name = "MailboxClosedError";
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Mailbox
+// ─────────────────────────────────────────────────────────────────────
+
+export interface MailboxOpts {
+  readonly threadId: string;
+  readonly maxDepth?: number;
+  /** Called when backpressure drops a message (I-16). */
+  readonly onDrop?: (dropped: InterAgentCommunication) => void;
+  /** Called once per drop streak for I-8 warning. */
+  readonly onBackpressureStreak?: (count: number) => void;
+}
+
+export class Mailbox {
+  readonly threadId: string;
+  readonly seqWatch: BehaviorSubject<number>;
+  private readonly maxDepth: number;
+  private readonly onDrop?: (dropped: InterAgentCommunication) => void;
+  private readonly onBackpressureStreak?: (count: number) => void;
+  private queue: InterAgentCommunication[] = [];
+  private nextSeq = 0;
+  private closed = false;
+  private finalStatus: string | undefined;
+  private sentinelEmitted = false;
+  private droppedStreak = 0;
+  private _droppedTotal = 0;
+
+  constructor(opts: MailboxOpts) {
+    this.threadId = opts.threadId;
+    this.maxDepth = opts.maxDepth ?? MAX_MAILBOX_DEPTH;
+    this.onDrop = opts.onDrop;
+    this.onBackpressureStreak = opts.onBackpressureStreak;
+    this.seqWatch = new BehaviorSubject<number>(0);
+  }
+
+  /**
+   * I-64: non-blocking synchronous send. Returns a SendResult
+   * immediately. Backpressure handling (drop oldest + warning) runs
+   * as a `queueMicrotask` so the caller's event loop stays
+   * responsive — crucial when the caller is awaiting an approval
+   * modal.
+   *
+   * `'rejected'` means the mailbox is closed. `'dropped'` means the
+   * queue hit `maxDepth`; the message was NOT enqueued (oldest
+   * stays to preserve FIFO ordering of in-flight work).
+   */
+  send(msg: Omit<InterAgentCommunication, "seq">): SendResult {
+    if (this.closed) {
+      return "rejected";
+    }
+    if (this.queue.length >= this.maxDepth) {
+      // I-16: drop oldest, bookkeep, schedule a microtask for the
+      // I-8 warning so callers don't block.
+      const dropped = this.queue.shift();
+      if (dropped) {
+        const wasFirstDropInStreak = this.droppedStreak === 0;
+        this._droppedTotal += 1;
+        this.droppedStreak += 1;
+        const totalAtDrop = this._droppedTotal;
+        queueMicrotask(() => {
+          this.onDrop?.(dropped);
+          if (wasFirstDropInStreak) {
+            this.onBackpressureStreak?.(totalAtDrop);
+          }
+        });
+      }
+    } else if (this.droppedStreak > 0) {
+      // Recovery: drop streak broken.
+      this.droppedStreak = 0;
+    }
+    this.nextSeq += 1;
+    const seq = this.nextSeq;
+    this.queue.push({ ...msg, seq });
+    this.seqWatch.next(seq);
+    return "sent";
+  }
+
+  /** Non-mutating peek — true iff any queued items are present. */
+  hasPending(): boolean {
+    return this.queue.length > 0 || (this.closed && !this.sentinelEmitted);
+  }
+
+  hasPendingTriggerTurn(): boolean {
+    return this.queue.some((m) => m.triggerTurn);
+  }
+
+  /**
+   * Remove + return all queued items in FIFO order. I-31: after the
+   * mailbox is closed, the first drain returns the `agent_exited`
+   * sentinel (exactly once); subsequent drains return [].
+   */
+  drain(): ReadonlyArray<MailboxItem> {
+    const items: MailboxItem[] = this.queue.splice(0);
+    if (this.closed && !this.sentinelEmitted) {
+      this.sentinelEmitted = true;
+      this.nextSeq += 1;
+      const sentinel: AgentExitedSentinel = {
+        type: "agent_exited",
+        threadId: this.threadId,
+        seq: this.nextSeq,
+        ...(this.finalStatus !== undefined ? { finalStatus: this.finalStatus } : {}),
+      };
+      items.push(sentinel);
+    }
+    return items;
+  }
+
+  /**
+   * Close the mailbox. Subsequent sends are rejected; the next drain
+   * emits the agent_exited sentinel.
+   */
+  close(finalStatus?: string): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.finalStatus = finalStatus;
+  }
+
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
+  get size(): number {
+    return this.queue.length;
+  }
+
+  get droppedTotal(): number {
+    return this._droppedTotal;
+  }
+
+  /**
+   * Async iterator that yields new arrivals. Terminates after the
+   * sentinel is emitted. Used by parent-side consumers (e.g. TUI
+   * progress rendering + session shutdown drain).
+   */
+  async *watch(): AsyncIterable<MailboxItem> {
+    let lastYieldedSeq = 0;
+    const seqIter = this.seqWatch.changes()[Symbol.asyncIterator]();
+    while (true) {
+      // Drain everything above lastYieldedSeq.
+      const batch = this.drain();
+      for (const item of batch) {
+        yield item;
+        lastYieldedSeq = Math.max(lastYieldedSeq, item.seq);
+      }
+      if (this.closed && this.sentinelEmitted) return;
+      const step = await seqIter.next();
+      if (step.done) return;
+    }
+  }
+}
+
+/** AgentExitedSentinel type-guard. */
+export function isAgentExitedSentinel(
+  item: MailboxItem,
+): item is AgentExitedSentinel {
+  return (item as { type?: string }).type === "agent_exited";
+}

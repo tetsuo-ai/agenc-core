@@ -247,4 +247,87 @@ describe("MCPManager", () => {
       error: 'MCP server "srv1" is disabled in config.',
     });
   });
+
+  // --------------------------------------------------------------------------
+  // T9 D: I-20 (aggregate failure) + I-50 (cancellable) + I-73 (name shadowing)
+  // --------------------------------------------------------------------------
+
+  it("I-20: requireOneReady hard-fails when zero servers connect", async () => {
+    mockCreateMCPConnection
+      .mockRejectedValueOnce(new Error("refused"))
+      .mockRejectedValueOnce(new Error("refused"));
+    const manager = new MCPManager([makeConfig("a"), makeConfig("b")]);
+    await expect(manager.start({ requireOneReady: true })).rejects.toThrow(
+      /aggregate startup failure/,
+    );
+  });
+
+  it("I-20: requireOneReady succeeds when at least one connects", async () => {
+    const bridge = makeMockBridge("b", ["t"]);
+    mockCreateMCPConnection
+      .mockRejectedValueOnce(new Error("refused"))
+      .mockResolvedValueOnce("client");
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+    const manager = new MCPManager([makeConfig("a"), makeConfig("b")]);
+    await expect(manager.start({ requireOneReady: true })).resolves.toBeUndefined();
+  });
+
+  it("I-20: requiredServers hard-fails when a named server is missing", async () => {
+    const bridge = makeMockBridge("a", []);
+    mockCreateMCPConnection
+      .mockResolvedValueOnce("ca")
+      .mockRejectedValueOnce(new Error("missing b"));
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+    const manager = new MCPManager([makeConfig("a"), makeConfig("b")]);
+    await expect(
+      manager.start({ requiredServers: ["b"] }),
+    ).rejects.toThrow(/required server\(s\) not ready/);
+  });
+
+  it("I-50: aborted signal throws before first connect", async () => {
+    const manager = new MCPManager([makeConfig("a")]);
+    const controller = new AbortController();
+    controller.abort("user_cancelled");
+    await expect(manager.start({ signal: controller.signal })).rejects.toThrow(
+      /cancelled before first connect/,
+    );
+  });
+
+  it("I-50: abort mid-startup skips slow servers but keeps already-connected", async () => {
+    const bridge = makeMockBridge("fast", ["t"]);
+    const controller = new AbortController();
+    mockCreateMCPConnection
+      .mockResolvedValueOnce("fast")
+      .mockImplementationOnce(
+        () => new Promise(() => { /* never resolves */ }),
+      );
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+    const manager = new MCPManager([makeConfig("fast"), makeConfig("slow")]);
+    const started = manager.start({ signal: controller.signal });
+    // Let the fast server complete, then abort.
+    await new Promise((r) => setTimeout(r, 20));
+    controller.abort("user_cancelled");
+    await started;
+    expect(manager.getConnectedServers()).toContain("fast");
+  });
+
+  it("I-73: rejects a bridge with a tool name already registered", async () => {
+    const b1 = makeMockBridge("srv1", ["duplicate"]);
+    // Give srv2 a tool that produces the SAME namespaced name (unusual but
+    // tests catch any future registration-collision path — here we stub it
+    // by giving srv2 a tool whose namespaced name matches srv1's one).
+    const b2 = {
+      serverName: "srv2",
+      tools: [{ ...b1.tools[0] }], // shares `mcp.srv1.duplicate`
+      dispose: vi.fn().mockResolvedValue(undefined),
+    };
+    mockCreateMCPConnection
+      .mockResolvedValueOnce("c1")
+      .mockResolvedValueOnce("c2");
+    mockCreateToolBridge.mockResolvedValueOnce(b1).mockResolvedValueOnce(b2);
+    const manager = new MCPManager([makeConfig("srv1"), makeConfig("srv2")]);
+    await manager.start();
+    // srv1 should connect; srv2 should fail the name-shadow check.
+    expect(manager.getConnectedServers()).toEqual(["srv1"]);
+  });
 });
