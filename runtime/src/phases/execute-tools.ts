@@ -22,8 +22,12 @@
  * @module
  */
 
-import type { LLMMessage } from "../llm/types.js";
+import type { LLMMessage, LLMToolCall } from "../llm/types.js";
 import { StreamingToolExecutor } from "../tools/streaming-executor.js";
+import { ToolCallRuntime } from "../tools/concurrency.js";
+import type { Tool } from "../tools/types.js";
+import { runToolUse, parseToolArgsWithBigInt } from "../tools/execution.js";
+import { parseToolName } from "../tools/context.js";
 import type { ToolDispatchResult } from "../tool-registry.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -56,21 +60,26 @@ function toolResultUserRecord(
 
 export async function executeTools(
   state: TurnState,
-  _ctx: TurnContext,
+  ctx: TurnContext,
   session: Session,
   signal?: AbortSignal,
 ): Promise<TurnState> {
   const assistant = state.assistantMessages.at(-1);
   if (!assistant || assistant.toolCalls.length === 0) return state;
 
-  // Construct (or reuse) the streaming executor. T7 will reuse the
-  // one built by stream-model mid-stream; T5 builds one here because
-  // stream-model is non-streaming-tool-execution today.
+  // T7: shared ToolCallRuntime per-executor so ConcurrencyClass
+  // dispatch (RwLock + per-serverId semaphore) gates the tool calls.
+  const runtime = new ToolCallRuntime();
+
+  // Construct (or reuse) the streaming executor. T7 upgrades the
+  // T5 shell to a full openclaude port with ConcurrencyClass-aware
+  // parallelism + Bash-only sibling abort + I-41 re-entrance guard.
   let executor = state.streamingToolExecutor as StreamingToolExecutor | null;
   if (!executor) {
     executor = new StreamingToolExecutor({
       registry: session.services.registry,
       abortSignal: signal,
+      runtime,
       onSiblingAbort: (reason) => {
         session.emit({
           id: session.nextInternalSubId(),
@@ -82,6 +91,53 @@ export async function executeTools(
             },
           },
         });
+      },
+      // T7: route dispatch through `runToolUse` so I-9 timeout +
+      // I-15 cap + I-79 BigInt reviver are applied to every tool.
+      runToolUseFn: async (
+        toolCall: LLMToolCall,
+        childSignal: AbortSignal,
+      ): Promise<ToolDispatchResult> => {
+        const tool = session.services.registry.tools.find(
+          (t) => t.name === toolCall.name,
+        ) as Tool | undefined;
+        if (!tool) {
+          return {
+            content: JSON.stringify({ error: `unknown tool: ${toolCall.name}` }),
+            isError: true,
+          };
+        }
+        const parsed = parseToolArgsWithBigInt(toolCall.arguments ?? "");
+        if (parsed === null) {
+          return {
+            content: JSON.stringify({
+              error: `invalid JSON arguments for tool ${toolCall.name}`,
+            }),
+            isError: true,
+          };
+        }
+        void parsed; // runToolUse re-parses; kept for early validation.
+        const output = await runToolUse(toolCall.arguments ?? "", {
+          ...(childSignal !== undefined ? { signal: childSignal } : {}),
+          currentTurnId: ctx.subId,
+          tool,
+          invocation: {
+            session,
+            turn: ctx,
+            tracker: {
+              appendFileDiff: () => {},
+              snapshot: () => [],
+              clear: () => {},
+            },
+            callId: toolCall.id,
+            toolName: parseToolName(toolCall.name),
+            payload: { kind: "function", arguments: toolCall.arguments ?? "" },
+            source: "direct",
+          },
+          eventLog: session.eventLog,
+          subId: toolCall.id,
+        });
+        return { content: output.content, isError: output.isError };
       },
     });
     state.streamingToolExecutor = executor;

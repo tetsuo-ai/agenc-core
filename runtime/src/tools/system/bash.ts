@@ -249,8 +249,12 @@ function runSpawnedCommand(params: {
 }): Promise<ToolResult> {
   return new Promise<ToolResult>((resolve) => {
     let resolved = false;
-    let stdoutBuf = "";
-    let stderrBuf = "";
+    // I-78 (docs/plan/invariants.md): accumulate raw Buffer chunks and
+    // decode once at flush so multi-byte UTF-8 sequences split across
+    // two writes don't corrupt to `\uFFFD`. Applies to every tool
+    // that reads from stdio — bash here, MCP stdio in T9.
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
     let timedOut = false;
     let forceKillTimer: NodeJS.Timeout | null = null;
 
@@ -276,10 +280,11 @@ function runSpawnedCommand(params: {
     child.unref();
 
     child.stdout!.on("data", (chunk: Buffer) => {
-      stdoutBuf += chunk.toString();
+      // I-78: push raw bytes; decode once at flush.
+      stdoutChunks.push(chunk);
     });
     child.stderr!.on("data", (chunk: Buffer) => {
-      stderrBuf += chunk.toString();
+      stderrChunks.push(chunk);
     });
 
     const timer = setTimeout(() => {
@@ -317,6 +322,10 @@ function runSpawnedCommand(params: {
       const durationMs = Date.now() - params.startTime;
       const exitCode = timedOut ? null : (code ?? 1);
       const isError = timedOut || (exitCode !== null && exitCode !== 0);
+
+      // I-78: decode accumulated Buffer[] once at flush boundary.
+      const stdoutBuf = Buffer.concat(stdoutChunks).toString("utf8");
+      const stderrBuf = Buffer.concat(stderrChunks).toString("utf8");
 
       const stdoutResult = truncate(stdoutBuf, params.maxOutputBytes);
       const stderrResult = truncate(

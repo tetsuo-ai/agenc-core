@@ -103,6 +103,36 @@ export interface Tool {
   readonly metadata?: ToolMetadata;
   /** Execute the tool with the given arguments */
   execute(args: Record<string, unknown>): Promise<ToolResult>;
+
+  // ── T7 concurrency + limits ──────────────────────────────────────
+  /**
+   * T7 `ConcurrencyClass` tag. Undefined → treated as `Exclusive` by
+   * `classify()`. Import ConcurrencyClass from `runtime/src/tools/concurrency.ts`.
+   */
+  readonly concurrencyClass?: import("./concurrency.js").ConcurrencyClass;
+  /**
+   * Per-call downgrade hook (openclaude pattern). Return `true` when
+   * the specific invocation is safe to run concurrently; `false` or
+   * `throw` downgrades to `Exclusive`.
+   */
+  readonly isConcurrencySafe?: (args: Record<string, unknown>) => boolean;
+  /** I-9 per-tool timeout override (ms). Falls back to
+   *  `DEFAULT_TOOL_TIMEOUT_MS=30_000` when absent. */
+  readonly timeoutMs?: number;
+  /** I-15 per-tool result size cap (bytes). Falls back to
+   *  `DEFAULT_MAX_TOOL_RESULT_BYTES=400_000` when absent. */
+  readonly maxResultBytes?: number;
+  /** MCP-style server id when the tool's class is `shared_server`. */
+  readonly serverId?: string;
+  /** Router flag: whether this tool supports the model's
+   *  `parallel_tool_calls` request knob. Used by `router.ts`. */
+  readonly supportsParallelToolCalls?: boolean;
+  /** Orchestrator hint: `true` → orchestrator.classifyToolApproval
+   *  treats the tool as read-only under `granular` policy. */
+  readonly isReadOnly?: boolean;
+  /** Orchestrator hint: `true` → under `on_request` policy the tool
+   *  always requires user approval. */
+  readonly requiresApproval?: boolean;
 }
 
 /**

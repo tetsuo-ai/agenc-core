@@ -24,6 +24,13 @@ import {
   createHttpTools,
   createBashTool,
 } from "./tools/system/index.js";
+import {
+  defaultConcurrencyClassFor,
+  isBashTool,
+  isReadOnlyFilesystemTool,
+  isWriteFilesystemTool,
+  type ConcurrencyClass,
+} from "./tools/concurrency.js";
 
 export interface ToolDispatchResult {
   readonly content: string;
@@ -44,6 +51,45 @@ function toolToLLMTool(tool: Tool): LLMTool {
       description: tool.description,
       parameters: tool.inputSchema,
     },
+  };
+}
+
+/**
+ * T7: attach ConcurrencyClass + other execution metadata to a Tool.
+ * Idempotent — tools that already declared their own metadata win.
+ */
+function tagTool(tool: Tool): Tool {
+  const baseClass: ConcurrencyClass =
+    tool.concurrencyClass ?? defaultConcurrencyClassFor(tool.name);
+  const isReadOnly = tool.isReadOnly ?? isReadOnlyFilesystemTool(tool.name);
+  const supportsParallelToolCalls =
+    tool.supportsParallelToolCalls ??
+    (baseClass.kind === "shared_read" ||
+      baseClass.kind === "shared_server");
+
+  // write-filesystem + bash tools require approval under granular mode;
+  // they never declare `requiresApproval` explicitly today so we surface
+  // a conservative default via the orchestrator.
+  const requiresApproval =
+    tool.requiresApproval ??
+    (isWriteFilesystemTool(tool.name) || isBashTool(tool.name));
+
+  // isConcurrencySafe: SharedRead tools stay safe by default. The bash
+  // tool's concurrency depends on its args (e.g. a read-only command
+  // is safe, a `rm -rf` isn't) — leave the hook to the registered
+  // tool's own implementation when it provides one.
+  const isConcurrencySafe =
+    tool.isConcurrencySafe ??
+    (() =>
+      baseClass.kind === "shared_read" || baseClass.kind === "shared_server");
+
+  return {
+    ...tool,
+    concurrencyClass: baseClass,
+    isReadOnly,
+    supportsParallelToolCalls,
+    requiresApproval,
+    isConcurrencySafe,
   };
 }
 
@@ -83,7 +129,7 @@ export interface BuildToolRegistryOptions {
 export function buildToolRegistry(
   options: BuildToolRegistryOptions,
 ): ToolRegistry {
-  const tools: Tool[] = [
+  const rawTools: Tool[] = [
     ...createFilesystemTools({
       allowedPaths: [options.workspaceRoot],
       allowDelete: options.allowBashDelete ?? false,
@@ -99,6 +145,14 @@ export function buildToolRegistry(
       cwd: options.workspaceRoot,
     }),
   ];
+
+  // T7: tag each registered tool with its ConcurrencyClass + flags.
+  // Tools without explicit metadata get sensible defaults:
+  //   - readFile/listDir/stat/glob/grep → SharedRead + isReadOnly
+  //   - writeFile/editFile/delete/move    → Exclusive (never parallel)
+  //   - http.*                            → SharedRead (network reads)
+  //   - bash                              → BackgroundTerminal (subprocess)
+  const tools: Tool[] = rawTools.map((tool) => tagTool(tool));
 
   const byName = new Map<string, Tool>();
   for (const tool of tools) {
