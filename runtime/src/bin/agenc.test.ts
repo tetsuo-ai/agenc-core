@@ -3,11 +3,21 @@
  *   - slash-command handler (`parseSlashCommand` + `handleSlashCommand`)
  *   - `system.agent.delegate` built-in tool
  *
+ * T10 Group I integration seams:
+ *   - I-60 ambiguous-model hard-fail (`resolveModelOrExit`)
+ *   - I-47 between-turn config reload (`maybeReloadConfigBetweenTurns`)
+ *   - AgenCConfig → SessionConfiguration bridge
+ *   - Memory auto-save sidecar + per-turn attachments
+ *   - System-prompt assembly with project instructions + memory
+ *
  * End-to-end CLI invocation is out of scope here (requires a live
- * provider + rollout on disk). These tests cover the two extracted
- * units that back the integration.
+ * provider + rollout on disk). These tests cover the extracted units
+ * that back the integration.
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   handleSlashCommand,
@@ -15,6 +25,36 @@ import {
   type PendingWorktreeState,
 } from "./slash.js";
 import { buildDelegateTool } from "./delegate-tool.js";
+import {
+  PROVIDER_MODEL_CATALOG,
+  buildExtractMemoriesViaSubagent,
+  maybeReloadConfigBetweenTurns,
+  resolveModelOrExit,
+  sessionConfigurationFromAgenCConfig,
+  type ConfigReloadLatch,
+} from "./agenc.js";
+import { ConfigStore, defaultConfig } from "../config/index.js";
+import {
+  assembleSystemPrompt,
+  SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+} from "../prompts/system-prompt.js";
+import {
+  clearSystemPromptSections,
+  __systemPromptSectionCacheSize,
+} from "../prompts/sections.js";
+import {
+  loadMemoryPrompt,
+  registerAutoSaveSidecar,
+  maybeAutoSaveMemory,
+  selectRelevantMemoriesForTurn,
+  injectAttachmentsIntoPrompt,
+  _resetAutoSaveStateForTest,
+  _clearMemoryWriteLocksForTest,
+  type AutoSaveSession,
+  type MemoryCandidate,
+  type TurnState as MemoryTurnState,
+} from "../prompts/memory/index.js";
+import type { MemoryEntry } from "../prompts/memory/types.js";
 
 function stubSession() {
   return {
@@ -360,5 +400,459 @@ describe("buildDelegateTool — system.agent.delegate", () => {
     const result = await tool.execute({ taskPrompt: "x" });
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content).error).toBe("boom");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// T10 Group I — integration tests
+// ─────────────────────────────────────────────────────────────────────
+
+describe("PROVIDER_MODEL_CATALOG", () => {
+  it("advertises grok models including the default grok-4-fast", () => {
+    expect(PROVIDER_MODEL_CATALOG.grok).toContain("grok-4-fast");
+    expect(PROVIDER_MODEL_CATALOG.grok).toContain("grok-4");
+    expect(PROVIDER_MODEL_CATALOG.grok).toContain("grok-code-fast-1");
+  });
+});
+
+describe("I-60: resolveModelOrExit hard-fail", () => {
+  it("returns {provider, model} for an unambiguous bare slug", () => {
+    const result = resolveModelOrExit("grok-4-fast", PROVIDER_MODEL_CATALOG);
+    expect(result.provider).toBe("grok");
+    expect(result.model).toBe("grok-4-fast");
+  });
+
+  it("accepts explicit provider:model form", () => {
+    const result = resolveModelOrExit("grok:grok-4", PROVIDER_MODEL_CATALOG);
+    expect(result.provider).toBe("grok");
+    expect(result.model).toBe("grok-4");
+  });
+
+  it("hard-fails with exit(1) + clear message on ambiguous bare slug", () => {
+    const exit = vi.fn() as unknown as (code: number) => never;
+    const err: string[] = [];
+    const errSink = (line: string) => {
+      err.push(line);
+    };
+    const catalog = {
+      grok: ["shared-model", "grok-4"] as readonly string[],
+      openai: ["shared-model", "gpt-4"] as readonly string[],
+    };
+    // `resolveModelOrExit` calls exit(1) on ambiguity; the mock doesn't
+    // throw, so control falls through — guard with a try/catch.
+    try {
+      resolveModelOrExit("shared-model", catalog, exit, errSink);
+    } catch {
+      /* reachable after the unreachable-guard throw */
+    }
+    expect(exit).toHaveBeenCalledWith(1);
+    const joined = err.join("");
+    expect(joined).toMatch(/ambiguous model/);
+    expect(joined).toMatch(/grok:shared-model/);
+    expect(joined).toMatch(/openai:shared-model/);
+  });
+
+  it("hard-fails with exit(1) on unknown model slug", () => {
+    const exit = vi.fn() as unknown as (code: number) => never;
+    const err: string[] = [];
+    const errSink = (line: string) => {
+      err.push(line);
+    };
+    try {
+      resolveModelOrExit("nope-unknown", PROVIDER_MODEL_CATALOG, exit, errSink);
+    } catch {
+      /* expected unreachable guard */
+    }
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(err.join("")).toMatch(/unknown model/);
+  });
+});
+
+describe("sessionConfigurationFromAgenCConfig", () => {
+  it("maps AgenCConfig approval_policy + sandbox_mode enums", () => {
+    const cfg = {
+      ...defaultConfig(),
+      approval_policy: "never" as const,
+      sandbox_mode: "read-only" as const,
+    };
+    const sc = sessionConfigurationFromAgenCConfig({
+      config: cfg,
+      workspaceRoot: "/tmp/ws",
+      model: "grok-4-fast",
+    });
+    expect(sc.approvalPolicy.value).toBe("never");
+    expect(sc.sandboxPolicy.value).toBe("read_only");
+    expect(sc.cwd).toBe("/tmp/ws");
+    expect(sc.collaborationMode.model).toBe("grok-4-fast");
+    expect(sc.sessionSource).toBe("cli_main");
+  });
+
+  it("defaults to on_request + workspace_write when policy fields absent", () => {
+    const sc = sessionConfigurationFromAgenCConfig({
+      config: { ...defaultConfig(), approval_policy: undefined },
+      workspaceRoot: "/tmp/ws",
+      model: "grok-4-fast",
+    });
+    // defaultConfig provides "on-request" → "on_request"
+    expect(sc.approvalPolicy.value).toBe("on_request");
+    expect(sc.sandboxPolicy.value).toBe("workspace_write");
+    expect(sc.fileSystemSandboxPolicy.allowWrite).toEqual(["/tmp/ws"]);
+  });
+
+  it("on-failure → on_failure mapping", () => {
+    const sc = sessionConfigurationFromAgenCConfig({
+      config: { ...defaultConfig(), approval_policy: "on-failure" as const },
+      workspaceRoot: "/tmp/ws",
+      model: "grok-4-fast",
+    });
+    expect(sc.approvalPolicy.value).toBe("on_failure");
+  });
+});
+
+describe("I-47: maybeReloadConfigBetweenTurns", () => {
+  it("no-ops when the latch is not set", async () => {
+    const store = new ConfigStore({ env: {} });
+    const latch: ConfigReloadLatch = { requested: false };
+    const clearCache = vi.fn();
+    const result = await maybeReloadConfigBetweenTurns({
+      latch,
+      store,
+      session: null,
+      clearCache,
+    });
+    expect(result.reloaded).toBe(false);
+    expect(clearCache).not.toHaveBeenCalled();
+  });
+
+  it("reloads + wipes section cache + clears latch when requested", async () => {
+    const base = defaultConfig();
+    const nextCfg = { ...base, model: "grok-4" };
+    const loader = vi
+      .fn()
+      .mockResolvedValueOnce(base)
+      .mockResolvedValueOnce(nextCfg);
+    const store = new ConfigStore({
+      env: {},
+      loader: (opts) => loader(opts),
+    });
+    await store.reload(); // snapshot#1 = base
+    const latch: ConfigReloadLatch = { requested: true };
+    const clearCache = vi.fn();
+    const result = await maybeReloadConfigBetweenTurns({
+      latch,
+      store,
+      session: null,
+      clearCache,
+    });
+    expect(result.reloaded).toBe(true);
+    if (result.reloaded) {
+      expect(result.previous.model).toBe("grok-4-fast");
+      expect(result.next.model).toBe("grok-4");
+    }
+    expect(latch.requested).toBe(false);
+    expect(clearCache).toHaveBeenCalledTimes(1);
+  });
+
+  it("emits a session warning documenting the model transition", async () => {
+    const base = defaultConfig();
+    const nextCfg = { ...base, model: "grok-4" };
+    const loader = vi
+      .fn()
+      .mockResolvedValueOnce(base)
+      .mockResolvedValueOnce(nextCfg);
+    const store = new ConfigStore({
+      env: {},
+      loader: (opts) => loader(opts),
+    });
+    await store.reload();
+    const latch: ConfigReloadLatch = { requested: true };
+    const emit = vi.fn();
+    const sessionStub = {
+      emit,
+      nextInternalSubId: () => "sub-x",
+    } as unknown as Parameters<typeof maybeReloadConfigBetweenTurns>[0]["session"];
+    await maybeReloadConfigBetweenTurns({
+      latch,
+      store,
+      session: sessionStub,
+      clearCache: () => {},
+    });
+    expect(emit).toHaveBeenCalledTimes(1);
+    const arg = emit.mock.calls[0]![0];
+    expect(arg.msg.type).toBe("warning");
+    expect(arg.msg.payload.cause).toBe("config_reloaded");
+    expect(arg.msg.payload.message).toMatch(/grok-4-fast/);
+    expect(arg.msg.payload.message).toMatch(/grok-4/);
+  });
+
+  it("uses clearSystemPromptSections by default", async () => {
+    // Seed the module cache, then verify reload drains it.
+    const base = defaultConfig();
+    const store = new ConfigStore({
+      env: {},
+      loader: async () => base,
+    });
+    await store.reload();
+    await assembleSystemPrompt({
+      session: {} as never,
+      ctx: {
+        config: base,
+        configSnapshot: base,
+        cwd: "/tmp",
+        modelInfo: { slug: "grok-4-fast" },
+      } as never,
+    });
+    expect(__systemPromptSectionCacheSize()).toBeGreaterThan(0);
+    const latch: ConfigReloadLatch = { requested: true };
+    await maybeReloadConfigBetweenTurns({
+      latch,
+      store,
+      session: null,
+    });
+    expect(__systemPromptSectionCacheSize()).toBe(0);
+    clearSystemPromptSections();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Memory + system-prompt integration
+// ─────────────────────────────────────────────────────────────────────
+
+let memTmpDir: string | undefined;
+afterEach(async () => {
+  if (memTmpDir) {
+    await rm(memTmpDir, { recursive: true, force: true });
+    memTmpDir = undefined;
+  }
+  clearSystemPromptSections();
+  _clearMemoryWriteLocksForTest();
+});
+
+async function setupMemoryDir(): Promise<{
+  dir: string;
+  mdPath: string;
+  session: AutoSaveSession;
+}> {
+  memTmpDir = await mkdtemp(join(tmpdir(), "agenc-t10i-"));
+  const mdPath = join(memTmpDir, "MEMORY.md");
+  return {
+    dir: memTmpDir,
+    mdPath,
+    session: { memoryDir: memTmpDir, memoryMdPath: mdPath },
+  };
+}
+
+describe("memory auto-save sidecar wiring", () => {
+  it("registerAutoSaveSidecar returns a Sidecar that fires on turn_complete", async () => {
+    const { session } = await setupMemoryDir();
+    _resetAutoSaveStateForTest(session);
+    const extractor = vi.fn().mockResolvedValue([]);
+    const turnState: MemoryTurnState = {
+      tokensConsumed: 10_000,
+      toolCallsIssued: 10,
+      lastTurnHadNoTools: false,
+    };
+    const sidecar = registerAutoSaveSidecar({
+      session,
+      extractor,
+      getTurnState: () => turnState,
+    });
+    expect(sidecar.name).toBe("memory-auto-save");
+    sidecar.onEvent({
+      ts: 1,
+      id: "x",
+      msg: {
+        type: "turn_complete",
+        payload: {
+          turnId: "t1",
+          lastAgentMessage: "",
+          completedAt: 1,
+          durationMs: 1,
+        },
+      },
+    } as never);
+    // Let fire-and-forget resolve.
+    await new Promise((r) => setTimeout(r, 5));
+    expect(extractor).toHaveBeenCalled();
+  });
+
+  it("maybeAutoSaveMemory fires when thresholds are tripped", async () => {
+    const { session, dir } = await setupMemoryDir();
+    _resetAutoSaveStateForTest(session);
+    const candidate: MemoryCandidate = {
+      filePath: join(dir, "topic.md"),
+      frontmatter: {
+        name: "topic-one",
+        description: "a concrete topic",
+        type: "feedback",
+        extra: {},
+      },
+      body:
+        "This memory body is long enough to pass isMemoryWorthy (>20 chars).",
+    };
+    const extractor = vi.fn().mockResolvedValue([candidate]);
+    await maybeAutoSaveMemory(
+      session,
+      {
+        tokensConsumed: 10_000,
+        toolCallsIssued: 10,
+        lastTurnHadNoTools: false,
+      },
+      extractor,
+    );
+    expect(extractor).toHaveBeenCalledTimes(1);
+    const md = await import("node:fs/promises").then((m) =>
+      m.readFile(candidate.filePath, "utf8"),
+    );
+    expect(md).toMatch(/topic-one/);
+    const idx = await import("node:fs/promises").then((m) =>
+      m.readFile(session.memoryMdPath, "utf8"),
+    );
+    expect(idx).toMatch(/topic.md/);
+  });
+
+  it("maybeAutoSaveMemory no-ops when thresholds not tripped", async () => {
+    const { session } = await setupMemoryDir();
+    _resetAutoSaveStateForTest(session);
+    const extractor = vi.fn();
+    await maybeAutoSaveMemory(
+      session,
+      {
+        tokensConsumed: 100,
+        toolCallsIssued: 0,
+        lastTurnHadNoTools: false,
+      },
+      extractor,
+    );
+    expect(extractor).not.toHaveBeenCalled();
+  });
+});
+
+describe("buildExtractMemoriesViaSubagent adapter", () => {
+  it("gracefully returns [] when session is unreachable", async () => {
+    const fn = buildExtractMemoriesViaSubagent({
+      session: () => null,
+      memoryDir: "/tmp/memory",
+    });
+    const out = await fn("transcript", {
+      memoryDir: "/tmp/memory",
+      memoryMdPath: "/tmp/memory/MEMORY.md",
+    });
+    expect(out).toEqual([]);
+  });
+
+  it("is shaped as ExtractMemoriesFn (async, returns readonly array)", async () => {
+    const fakeSession = {} as never;
+    const fn = buildExtractMemoriesViaSubagent({
+      session: () => fakeSession,
+      memoryDir: "/tmp/memory",
+    });
+    const out = await fn("transcript", {
+      memoryDir: "/tmp/memory",
+      memoryMdPath: "/tmp/memory/MEMORY.md",
+    });
+    expect(Array.isArray(out)).toBe(true);
+  });
+});
+
+describe("system-prompt assembly: project instructions + memory", () => {
+  it("includes project instructions + memory in the assembled dynamic tail", async () => {
+    const { session, dir, mdPath } = await setupMemoryDir();
+    // Seed a MEMORY.md with a short pointer line (no topic files).
+    await writeFile(mdPath, "- topic: example index\n", "utf8");
+    const memory = await loadMemoryPrompt({
+      memoryDir: dir,
+      memoryMdPath: mdPath,
+    });
+    expect(memory.text).toMatch(/MEMORY\.md/);
+
+    const cfg = defaultConfig();
+    const assembled = await assembleSystemPrompt({
+      session: {} as never,
+      ctx: {
+        config: cfg,
+        configSnapshot: cfg,
+        cwd: "/tmp",
+        modelInfo: { slug: "grok-4-fast" },
+      } as never,
+      projectInstructions: "## project\n\nFollow repo CLAUDE.md guidance.",
+      memoryPrompt: memory.text,
+    });
+    expect(assembled.text).toContain(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
+    expect(assembled.text).toMatch(/project/);
+    expect(assembled.text).toMatch(/MEMORY\.md/);
+    void session;
+  });
+
+  it("injectAttachmentsIntoPrompt appends Relevant memories section", async () => {
+    const entry: MemoryEntry = {
+      filePath: "/tmp/memory/foo.md",
+      frontmatter: {
+        name: "foo",
+        description: "about foo",
+        type: "reference",
+        extra: {},
+      },
+      body: "some body",
+      mtimeMs: Date.now(),
+      byteLength: 42,
+    };
+    const out = injectAttachmentsIntoPrompt("BASE PROMPT", [entry]);
+    expect(out).toMatch(/BASE PROMPT/);
+    expect(out).toMatch(/Relevant memories/);
+    expect(out).toMatch(/foo/);
+  });
+
+  it("selectRelevantMemoriesForTurn respects per-session byte cap", async () => {
+    const entries: MemoryEntry[] = Array.from({ length: 3 }, (_, i) => ({
+      filePath: `/tmp/memory/m${i}.md`,
+      frontmatter: {
+        name: `m${i}`,
+        description: `foobar keyword ${i}`,
+        type: "reference" as const,
+        extra: {},
+      },
+      body: "body",
+      mtimeMs: Date.now(),
+      byteLength: 40_000, // 40KB each
+    }));
+    const session: object = { id: "test-session-cap" };
+    // Override per-file cap to permit 40KB entries; session cap = 60KB
+    // so only one should fit.
+    const picked = selectRelevantMemoriesForTurn(entries, "foobar", session, {
+      maxBytesPerFile: 50_000,
+      maxBytesPerSession: 60_000,
+    });
+    expect(picked.length).toBe(1);
+  });
+});
+
+describe("ConfigStore integration shape", () => {
+  it("constructs from empty env + defaults and current() is frozen", async () => {
+    const store = new ConfigStore({ env: {} });
+    await store.reload();
+    const cur = store.current();
+    expect(cur.model).toBe("grok-4-fast");
+    // AgenCConfig is deep-frozen — direct writes should throw in strict.
+    expect(Object.isFrozen(cur)).toBe(true);
+  });
+
+  it("applyEnvOverrides promotes AGENC_MODEL over TOML", async () => {
+    const store = new ConfigStore({
+      env: { AGENC_MODEL: "grok-4" } as NodeJS.ProcessEnv,
+    });
+    await store.reload();
+    expect(store.current().model).toBe("grok-4");
+  });
+});
+
+describe("per-turn memory attachments pipeline", () => {
+  it("setupMemoryDir scaffold works with zero entries", async () => {
+    const { dir, mdPath } = await setupMemoryDir();
+    expect(dir.length).toBeGreaterThan(0);
+    await mkdir(dir, { recursive: true });
+    const mem = await loadMemoryPrompt({ memoryDir: dir, memoryMdPath: mdPath });
+    expect(mem.text).toBe("");
+    expect(mem.entries).toEqual([]);
   });
 });

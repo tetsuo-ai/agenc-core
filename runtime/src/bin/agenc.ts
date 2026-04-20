@@ -40,6 +40,7 @@ import {
   buildTurnContext,
   type Config,
   type ModelInfo,
+  type SessionConfiguration,
 } from "../session/turn-context.js";
 import { runTurn } from "../session/run-turn.js";
 import { buildToolRegistry } from "../tool-registry.js";
@@ -66,19 +67,66 @@ import {
   parseSlashCommand,
   type PendingWorktreeState,
 } from "./slash.js";
+import {
+  ConfigStore,
+  resolveAgencHome as resolveAgencHomeFromEnv,
+  resolveApiKey as resolveApiKeyFromEnv,
+  resolveWorkspace as resolveWorkspaceFromEnv,
+  resolveModelDisambiguated,
+  AmbiguousModelError,
+  UnknownModelError,
+  type AgenCConfig,
+} from "../config/index.js";
+import {
+  loadTieredInstructions,
+  assembleTieredInstructions,
+} from "../prompts/claude-md.js";
+import {
+  loadMemoryPrompt,
+  scanMemoryDir,
+  registerAutoSaveSidecar,
+  selectRelevantMemoriesForTurn,
+  injectAttachmentsIntoPrompt,
+  type ExtractMemoriesFn,
+  type MemoryCandidate,
+  type TurnState as MemoryTurnState,
+} from "../prompts/memory/index.js";
+import {
+  assembleSystemPrompt,
+  type McpServerInstructionsInput,
+} from "../prompts/system-prompt.js";
+import { clearSystemPromptSections } from "../prompts/sections.js";
+import type { MemoryEntry } from "../prompts/memory/types.js";
 
 const DEFAULT_MODEL = "grok-4-fast";
+
+/**
+ * Provider → known model slugs. I-60 disambiguation walks this catalog
+ * when the user passes a bare model slug (no "provider:model" prefix).
+ *
+ * T13 replaces this with the real provider-factory catalog; today only
+ * the Grok models are reachable through GrokProvider. Keep the shape
+ * stable so swapping in the factory is a drop-in change.
+ */
+export const PROVIDER_MODEL_CATALOG: Readonly<Record<string, readonly string[]>> =
+  Object.freeze({
+    grok: Object.freeze([
+      "grok-4-fast",
+      "grok-4",
+      "grok-3",
+      "grok-2",
+      "grok-2-mini",
+      "grok-beta",
+      "grok-code-fast-1",
+    ]) as readonly string[],
+  });
 
 // ─────────────────────────────────────────────────────────────────────
 // Argv / stdin / env resolution
 // ─────────────────────────────────────────────────────────────────────
 
 function resolveApiKey(): string {
-  const key =
-    process.env.XAI_API_KEY ??
-    process.env.GROK_API_KEY ??
-    process.env.AGENC_XAI_API_KEY ??
-    "";
+  const key = resolveApiKeyFromEnv(process.env) ?? "";
   if (!key) {
     throw new Error(
       "missing xAI API key — set XAI_API_KEY (or GROK_API_KEY) in the environment",
@@ -204,7 +252,20 @@ function validateAgencHome(): string {
 // Signal handlers (I-45 / I-46 / I-47)
 // ─────────────────────────────────────────────────────────────────────
 
-function installSignalHandlers(getSession: () => Session | null): void {
+/**
+ * Mutable latch SIGUSR1 flips when the operator requests a config
+ * reload. I-47: the handler never reloads mid-turn; the between-turn
+ * check in `maybeReloadConfigBetweenTurns` drains the latch before
+ * the next `runTurn`.
+ */
+export interface ConfigReloadLatch {
+  requested: boolean;
+}
+
+function installSignalHandlers(
+  getSession: () => Session | null,
+  configReloadLatch: ConfigReloadLatch,
+): void {
   // I-45: SIGTERM — orderly shutdown, exit 0.
   process.once("SIGTERM", () => {
     getSession()?.abortTerminal("signal_received");
@@ -216,7 +277,10 @@ function installSignalHandlers(getSession: () => Session | null): void {
   // I-47: SIGUSR1 — config reload requested (takes effect next turn per I-30).
   //       SIGUSR2 — state dump to ~/.agenc/diag-<pid>-<ts>.json (T-future).
   process.on("SIGUSR1", () => {
-    // T10 wires the real config reloader; here we just signal the session.
+    // T10 Group I: latch only. The between-turn drain runs the real
+    // ConfigStore.reload() + clearSystemPromptSections() + emits a
+    // warning event once the current turn (if any) completes.
+    configReloadLatch.requested = true;
     getSession()?.emit({
       id: "startup",
       msg: {
@@ -244,24 +308,56 @@ function installSignalHandlers(getSession: () => Session | null): void {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// System prompt + rendering
+// T10 Group I — I-47 between-turn config reload
 // ─────────────────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are AgenC, a coding assistant running in a terminal.
+/**
+ * Drain the SIGUSR1 latch if set. Reloads the ConfigStore, wipes the
+ * system-prompt section cache so a stale static head can't leak into
+ * the next turn, and emits a session warning documenting the change.
+ *
+ * MUST be called between turns, never mid-turn. I-47 + I-30.
+ *
+ * Returns `{ reloaded, previous, next }` so callers/tests can inspect
+ * the transition.
+ */
+export async function maybeReloadConfigBetweenTurns(params: {
+  readonly latch: ConfigReloadLatch;
+  readonly store: ConfigStore;
+  readonly session: Session | null;
+  readonly clearCache?: () => void;
+}): Promise<
+  | { readonly reloaded: false }
+  | {
+      readonly reloaded: true;
+      readonly previous: AgenCConfig;
+      readonly next: AgenCConfig;
+    }
+> {
+  if (!params.latch.requested) return { reloaded: false };
+  const previous = params.store.current();
+  const next = await params.store.reload();
+  params.latch.requested = false;
+  // Wipe the prompt-section cache so the refresh picks up any new
+  // static-head inputs (env info, model, MCP, etc.) on the next turn.
+  (params.clearCache ?? clearSystemPromptSections)();
+  params.session?.emit({
+    id: params.session.nextInternalSubId(),
+    msg: {
+      type: "warning",
+      payload: {
+        cause: "config_reloaded",
+        message:
+          `config reloaded (model: ${previous.model ?? "default"} → ${next.model ?? "default"})`,
+      },
+    },
+  });
+  return { reloaded: true, previous, next };
+}
 
-Do real tool calls instead of narrating. Prefer system.readFile,
-system.editFile, system.bash, system.grep, system.glob over describing
-what you would do. End the turn when the work is done or when you
-genuinely need user input — not to announce progress.
-
-Trust the output of tools you already ran. If a file's content is in
-your context from a prior read, don't re-read it. Report outcomes
-faithfully: if a command fails, say so; do not claim success without
-evidence.
-
-When modifying an existing file, prefer system.editFile over
-system.writeFile. Read before editing so the match is grounded in the
-actual file bytes.`;
+// ─────────────────────────────────────────────────────────────────────
+// System prompt + rendering
+// ─────────────────────────────────────────────────────────────────────
 
 function describeToolCall(toolCall: LLMToolCall): string {
   const tail =
@@ -446,6 +542,161 @@ function buildMinimalModelInfo(slug: string): ModelInfo {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// T10 Group I — config ↔ session-configuration bridge
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Map the AgenCConfig `approval_policy` enum (dash-separated, codex
+ * convention) onto the session `ApprovalPolicy` enum (underscore-
+ * separated, codex port convention). Absent field → `on_request`.
+ */
+function mapApprovalPolicy(
+  raw: AgenCConfig["approval_policy"] | undefined,
+): SessionConfiguration["approvalPolicy"]["value"] {
+  switch (raw) {
+    case "never":
+      return "never";
+    case "on-failure":
+      return "on_failure";
+    case "on-request":
+      return "on_request";
+    case "untrusted":
+      return "untrusted";
+    default:
+      return "on_request";
+  }
+}
+
+/**
+ * Map the AgenCConfig `sandbox_mode` enum (dash-separated) onto the
+ * session `SandboxPolicy` enum (underscore-separated). Absent field →
+ * `workspace_write`.
+ */
+function mapSandboxPolicy(
+  raw: AgenCConfig["sandbox_mode"] | undefined,
+): SessionConfiguration["sandboxPolicy"]["value"] {
+  switch (raw) {
+    case "read-only":
+      return "read_only";
+    case "danger-full-access":
+      return "danger_full_access";
+    case "workspace-write":
+      return "workspace_write";
+    default:
+      return "workspace_write";
+  }
+}
+
+/**
+ * Build a fresh SessionConfiguration from a loaded AgenCConfig + the
+ * resolved workspace + model. Used at init time and (future) between
+ * turns on config reload so session state mirrors the config snapshot.
+ */
+export function sessionConfigurationFromAgenCConfig(params: {
+  readonly config: AgenCConfig;
+  readonly workspaceRoot: string;
+  readonly model: string;
+}): SessionConfiguration {
+  const approval = mapApprovalPolicy(params.config.approval_policy);
+  const sandbox = mapSandboxPolicy(params.config.sandbox_mode);
+  return {
+    cwd: params.workspaceRoot,
+    approvalPolicy: { value: approval },
+    sandboxPolicy: { value: sandbox },
+    fileSystemSandboxPolicy: {
+      allowWrite: sandbox === "workspace_write" ? [params.workspaceRoot] : [],
+      denyWrite: [],
+      allowRead: [],
+      denyRead: [],
+    },
+    networkSandboxPolicy: {
+      allowlist: [],
+      denylist: [],
+      allowManagedDomainsOnly: false,
+    },
+    windowsSandboxLevel: "none",
+    collaborationMode: { model: params.model },
+    dynamicTools: [],
+    sessionSource: "cli_main",
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// T10 Group I — I-60 hard-fail disambiguation
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Resolve the configured model slug against the provider catalog and
+ * hard-fail at init when the slug is ambiguous or unknown. Returns the
+ * canonical `{provider, model}` pair on success. Matches the I-60 CLI
+ * contract: print a clear, actionable error, then exit 1.
+ */
+export function resolveModelOrExit(
+  slug: string,
+  catalog: Readonly<Record<string, readonly string[]>> = PROVIDER_MODEL_CATALOG,
+  exit: (code: number) => never = ((code: number) => {
+    process.exit(code);
+  }) as (code: number) => never,
+  errSink: (line: string) => void = (line) => process.stderr.write(line),
+): { provider: string; model: string } {
+  try {
+    return resolveModelDisambiguated(slug, catalog);
+  } catch (err) {
+    if (err instanceof AmbiguousModelError) {
+      const candidates = err.candidates
+        .map((c) => `${c.provider}:${c.model}`)
+        .join(", ");
+      errSink(
+        `agenc: ambiguous model '${slug}' — matches ${err.candidates.length} providers. ` +
+          `Use 'provider:model' form. Candidates: ${candidates}\n`,
+      );
+      exit(1);
+    }
+    if (err instanceof UnknownModelError) {
+      errSink(
+        `agenc: unknown model '${slug}'. Known providers: ${Object.keys(catalog).join(", ")}\n`,
+      );
+      exit(1);
+    }
+    throw err;
+  }
+  // Unreachable — exit above terminates the process.
+  throw new Error("resolveModelOrExit: unreachable");
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// T10 Group I — T9 delegate adapter for memory extraction
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Build an `ExtractMemoriesFn` that (when T9 delegate is reachable)
+ * spawns an explorer-role subagent to parse a transcript into memory
+ * candidates. Today T9 delegate is reachable only through the CLI's
+ * `buildDelegateTool` surface; this helper exposes the adapter shape
+ * so the sidecar registration in `main()` can hand it in cleanly.
+ *
+ * The extractor returns an empty list if the delegate path is
+ * unreachable (e.g. during startup before the Session wires in) —
+ * the sidecar swallows that gracefully.
+ */
+export function buildExtractMemoriesViaSubagent(params: {
+  readonly session: () => Session | null;
+  readonly memoryDir: string;
+}): ExtractMemoriesFn {
+  return async (): Promise<readonly MemoryCandidate[]> => {
+    const s = params.session();
+    if (s === null) return [];
+    // Minimum-viable: today we have no structured-JSON subagent pipeline
+    // wired end-to-end for extraction. Return empty so the sidecar stays
+    // harmless until the parsing contract lands in a follow-up.
+    // The presence of this closure keeps the wire-up visible for review;
+    // when T9's structured-output path is live it replaces the body.
+    void params.memoryDir;
+    return [];
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // main
 // ─────────────────────────────────────────────────────────────────────
 
@@ -463,6 +714,10 @@ async function main(): Promise<number> {
     }
   };
 
+  // I-47 latch — SIGUSR1 flips this; `maybeReloadConfigBetweenTurns`
+  // drains it before the next runTurn call.
+  const configReloadLatch: ConfigReloadLatch = { requested: false };
+
   try {
     // Step 1: validate HOME (I-52).
     validateAgencHome();
@@ -476,8 +731,25 @@ async function main(): Promise<number> {
     const userMessage = await resolveUserMessage(initAbort.signal);
     throwIfAborted("resolveUserMessage");
 
-    const workspaceRoot = process.env.AGENC_WORKSPACE ?? processCwd();
-    const model = process.env.AGENC_MODEL ?? DEFAULT_MODEL;
+    // Step 3b: boot ConfigStore (loads ~/.agenc/config.toml + env
+    // overrides) so every downstream consumer reads the same snapshot.
+    const agencHome = resolveAgencHomeFromEnv(process.env);
+    const configStore = new ConfigStore({
+      home: agencHome,
+      env: process.env,
+    });
+    await configStore.reload();
+    throwIfAborted("ConfigStore.reload");
+
+    const workspaceRoot =
+      resolveWorkspaceFromEnv(process.env) ?? processCwd();
+    const rawModel = configStore.current().model ?? DEFAULT_MODEL;
+
+    // I-60 hard-fail: ambiguous / unknown model slug must exit at init
+    // with a clear `provider:model` recommendation instead of letting
+    // the provider silently pick one arm.
+    const { provider: resolvedProvider, model } = resolveModelOrExit(rawModel);
+    void resolvedProvider;
 
     // Step 4: build tool registry. T6 gap #119 — the bash tool
     // lifecycle observer needs the Session to emit events through,
@@ -521,27 +793,15 @@ async function main(): Promise<number> {
     const modelInfo = buildMinimalModelInfo(model);
     const services = buildPlaceholderServices(provider, registry);
 
+    // T10 Group I: derive SessionConfiguration from the typed
+    // AgenCConfig snapshot so approval/sandbox/cwd match what the
+    // operator set in ~/.agenc/config.toml (with env overrides).
     const initialState: SessionState = {
-      sessionConfiguration: {
-        cwd: workspaceRoot,
-        approvalPolicy: { value: "never" },
-        sandboxPolicy: { value: "read_only" },
-        fileSystemSandboxPolicy: {
-          allowWrite: [],
-          denyWrite: [],
-          allowRead: [],
-          denyRead: [],
-        },
-        networkSandboxPolicy: {
-          allowlist: [],
-          denylist: [],
-          allowManagedDomainsOnly: false,
-        },
-        windowsSandboxLevel: "none",
-        collaborationMode: { model },
-        dynamicTools: [],
-        sessionSource: "cli_main",
-      },
+      sessionConfiguration: sessionConfigurationFromAgenCConfig({
+        config: configStore.current(),
+        workspaceRoot,
+        model,
+      }),
       history: [],
     };
 
@@ -589,7 +849,13 @@ async function main(): Promise<number> {
     // await mcpManager.start();
 
     let sessionRef: Session | null = session;
-    installSignalHandlers(() => sessionRef);
+    // Stable container the memory sidecar closes over — unlike
+    // `sessionRef` (a let binding in this function), this holder
+    // survives reassignment and test introspection.
+    const sessionRefForMemory: { current: Session | null } = {
+      current: session,
+    };
+    installSignalHandlers(() => sessionRef, configReloadLatch);
 
     // Step 7a: mount RolloutStore (T6 — I-4 fsync + I-23 flock +
     // I-49 schema version). On SessionLockedError, bail fast with
@@ -723,6 +989,45 @@ async function main(): Promise<number> {
     // scoped per project.
     await costSidecar.loadFromDisk();
     sidecarManager.register(costSidecar);
+
+    // T10 Group I: memory auto-save sidecar. Turn-complete events feed
+    // a threshold check; if tripped, the extractor (T9 delegate when
+    // reachable; stub otherwise) produces MemoryCandidates that get
+    // written through the I-29 write-lock.
+    const memoryDir = join(agencHome, "memory");
+    const memoryMdPath = join(memoryDir, "MEMORY.md");
+    const extractMemoriesFn = buildExtractMemoriesViaSubagent({
+      session: () => sessionRefForMemory.current,
+      memoryDir,
+    });
+    // Per-turn telemetry closure — `turn_complete` payloads do not
+    // carry cumulative token/tool counters today, so the sidecar
+    // returns a conservative bookkeeping snapshot driven by the
+    // session's budgetTracker totals. When T6 enriches turn_complete
+    // with per-turn deltas the closure upgrades without API churn.
+    const getTurnState = (): MemoryTurnState | null => {
+      const tracker = session.budgetTracker;
+      const usage = (tracker as unknown as {
+        lifetimeUsage?: () => {
+          promptTokens?: number;
+          completionTokens?: number;
+          totalTokens?: number;
+        };
+      }).lifetimeUsage?.();
+      const totalTokens = usage?.totalTokens ?? 0;
+      return {
+        tokensConsumed: totalTokens,
+        toolCallsIssued: 0,
+        lastTurnHadNoTools: false,
+      };
+    };
+    const memoryAutoSaveSidecar = registerAutoSaveSidecar({
+      session: { memoryDir, memoryMdPath },
+      extractor: extractMemoriesFn,
+      getTurnState,
+    });
+    sidecarManager.register(memoryAutoSaveSidecar);
+
     await sidecarManager.start(session.eventLog);
     cleanup.push("sidecar-manager.stop", () => sidecarManager.stop());
 
@@ -807,9 +1112,73 @@ async function main(): Promise<number> {
     }
     void pendingWorktree;
 
+    // T10 Group I: load tiered AGENTS.md/CLAUDE.md (managed/user/
+    // project/local) + memory prompt once, then assemble the real
+    // system prompt. The dynamic tail picks up env info, project
+    // instructions, memory, and MCP server instructions.
+    const currentConfig = configStore.current();
+    const projectInstructionsResult = await loadTieredInstructions({
+      cwd: workspaceRoot,
+      ...(currentConfig.project_root_markers !== undefined
+        ? { projectRootMarkers: currentConfig.project_root_markers }
+        : {}),
+      ...(currentConfig.project_doc_max_bytes !== undefined
+        ? { projectDocMaxBytes: currentConfig.project_doc_max_bytes }
+        : {}),
+    });
+    const assembledProjectInstructions = assembleTieredInstructions(
+      projectInstructionsResult,
+    );
+
+    const loadedMemory = await loadMemoryPrompt({
+      memoryDir,
+      memoryMdPath,
+    });
+
+    // Scan the memory directory once so every turn can consult the
+    // full set for per-turn attachment selection.
+    const memoryScan = await scanMemoryDir(memoryDir);
+    const allMemories: readonly MemoryEntry[] = memoryScan.entries;
+
+    // I-47 between-turn reload hook. The single-turn CLI only needs
+    // to drain the latch once (before the first/only turn), but the
+    // call is idempotent and matches the multi-turn runtime contract.
+    await maybeReloadConfigBetweenTurns({
+      latch: configReloadLatch,
+      store: configStore,
+      session,
+    });
+
+    const mcpServers: McpServerInstructionsInput[] = [];
+    const enabledToolNames = new Set<string>(
+      registry.tools.map((t) => t.name),
+    );
+
+    const assembled = await assembleSystemPrompt({
+      session,
+      ctx,
+      projectInstructions: assembledProjectInstructions,
+      memoryPrompt: loadedMemory.text,
+      mcpServers,
+      enabledToolNames,
+      provider: "grok",
+    });
+
+    // Per-turn memory attachments — select the most-relevant memories
+    // for this user message and splice them into the system prompt.
+    const selectedMemories = selectRelevantMemoriesForTurn(
+      allMemories,
+      userMessage,
+      session,
+    );
+    const systemPrompt = injectAttachmentsIntoPrompt(
+      assembled.text,
+      selectedMemories,
+    );
+
     try {
       for await (const event of runTurn(session, ctx, userMessage, {
-        systemPrompt: SYSTEM_PROMPT,
+        systemPrompt,
       })) {
         renderEvent(event);
         if (event.type === "turn_complete") {
@@ -820,6 +1189,7 @@ async function main(): Promise<number> {
       }
     } finally {
       sessionRef = null;
+      sessionRefForMemory.current = null;
       // Flush sidecars (incl. CostSidecar cross-session persistence)
       // before closing the event log via session.shutdown().
       await sidecarManager.stop().catch(() => {
