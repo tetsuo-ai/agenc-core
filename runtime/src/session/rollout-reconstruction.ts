@@ -41,6 +41,7 @@ import type {
   TurnContextItem,
 } from "./rollout-item.js";
 import { reduce, type ReducedSessionState } from "./event-log-reducer.js";
+import type { IndexSnapshot } from "./session-store.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Reconstruction types
@@ -57,12 +58,18 @@ export interface RolloutReconstruction {
   readonly referenceContextItem?: TurnContextItem;
   /** Orphaned TurnStarted events that got synthetic TurnAborted. */
   readonly orphanedTurnIds: ReadonlyArray<string>;
-  /** Any synthesized events (I-48). Callers emit these warnings. */
+  /** Any synthesized events (I-48, I-25 snapshot-mismatch). Callers
+   *  emit these warnings into the live event log. */
   readonly synthesizedEvents: ReadonlyArray<RolloutItem>;
   /** Final reduced state used downstream. */
   readonly state: ReducedSessionState;
   /** Count of rolled-back user turns observed. */
   readonly rolledBackTurnsConsumed: number;
+  /** I-25: when true, an index.json snapshot existed but its seq was
+   *  behind the rollout; callers emit warning:'snapshot_behind_rollout'. */
+  readonly snapshotBehindRollout: boolean;
+  /** I-25: the snapshot actually consumed (if any). Metadata only. */
+  readonly consumedSnapshot?: IndexSnapshot;
 }
 
 /** Internal: reverse-scan segment accumulator. */
@@ -152,7 +159,16 @@ function finalizeActiveSegment(
 
 export function reconstructFromRollout(
   rolloutItems: ReadonlyArray<RolloutItem>,
+  opts: { readonly indexSnapshot?: IndexSnapshot } = {},
 ): RolloutReconstruction {
+  // I-25: consult the optional index.json snapshot. The reconstruction
+  // itself still walks the rollout (rollout is truth per I-25), but a
+  // snapshot with a matching seq lets us surface metadata instantly
+  // + enables fast-seek callers. A snapshot with a stale seq routes
+  // to warning:'snapshot_behind_rollout' via the synthesized event.
+  const snapshotBehindRollout = opts.indexSnapshot
+    ? computeSnapshotStale(rolloutItems, opts.indexSnapshot)
+    : false;
   const pending = {
     baseReplacementHistory: undefined as ReadonlyArray<ResponseItem> | undefined,
     previousTurnSettings: undefined as PreviousTurnSettings | undefined,
@@ -361,12 +377,34 @@ export function reconstructFromRollout(
     referenceContextItem = undefined;
   }
 
+  // I-25: synth a warning for snapshot-behind-rollout so the caller
+  // surfaces it in the live event log.
+  if (snapshotBehindRollout) {
+    synthesized.push({
+      type: "event_msg",
+      payload: {
+        id: "snapshot-behind-rollout",
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "snapshot_behind_rollout",
+            message: `index.json snapshot seq=${opts.indexSnapshot?.snapshotSequenceNumber ?? "?"} is behind rollout — ignoring snapshot (I-25)`,
+          },
+        },
+      },
+    });
+  }
+
   const result: RolloutReconstruction = {
     history: state.history,
     orphanedTurnIds,
     synthesizedEvents: synthesized,
     state,
     rolledBackTurnsConsumed: state.rolledBackTurns,
+    snapshotBehindRollout,
+    ...(opts.indexSnapshot && !snapshotBehindRollout
+      ? { consumedSnapshot: opts.indexSnapshot }
+      : {}),
   };
 
   if (pending.previousTurnSettings !== undefined) {
@@ -396,4 +434,27 @@ export function replacementHistoryFrom(
   compacted: CompactedItem,
 ): ReadonlyArray<ResponseItem> | undefined {
   return compacted.replacementHistory;
+}
+
+/**
+ * I-25 helper: decide whether the supplied `IndexSnapshot` is
+ * behind the rollout. "Behind" means the snapshot's recorded
+ * `snapshotSequenceNumber` is strictly less than the highest seq
+ * observed in the rollout items.
+ */
+function computeSnapshotStale(
+  rolloutItems: ReadonlyArray<RolloutItem>,
+  snapshot: IndexSnapshot,
+): boolean {
+  let rolloutLastSeq = 0;
+  for (const item of rolloutItems) {
+    if (
+      item.type === "event_msg" &&
+      item.payload.seq !== undefined &&
+      item.payload.seq > rolloutLastSeq
+    ) {
+      rolloutLastSeq = item.payload.seq;
+    }
+  }
+  return snapshot.snapshotSequenceNumber < rolloutLastSeq;
 }

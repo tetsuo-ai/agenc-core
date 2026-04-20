@@ -44,7 +44,9 @@ import {
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { monotonicMs } from "../utils/monotonic.js";
+import { DegradedStore } from "./degraded-store.js";
 import type { Event } from "./event-log.js";
+import { isDegradedErrno } from "./session-store.js";
 import type { Sidecar } from "./sidecar.js";
 
 export const MAX_SNAPSHOTS = 100;
@@ -55,6 +57,20 @@ export interface FileHistoryBackup {
   readonly backupFileName: BackupFileName;
   readonly version: number;
   readonly backupTimeMs: number;
+  /** Per-snapshot diff stats against the previous version. Undefined
+   *  on v1 (no prior version to diff against) and when the file was
+   *  newly created (backupFileName === null). */
+  readonly diffStats?: DiffStats;
+}
+
+/**
+ * Port of openclaude `DiffStats` + `computeDiffStats`. Counts line-
+ * level insertions/deletions relative to the previous version of the
+ * same tracked file.
+ */
+export interface DiffStats {
+  readonly insertions: number;
+  readonly deletions: number;
 }
 
 export interface FileHistorySnapshot {
@@ -63,6 +79,10 @@ export interface FileHistorySnapshot {
   /** Map of tracked file path → its most-recent backup metadata. */
   readonly trackedFileBackups: Readonly<Record<string, FileHistoryBackup>>;
   readonly timestampMs: number;
+  /** Aggregate diff stats across every tracked file in this snapshot. */
+  readonly aggregateDiffStats?: DiffStats & {
+    readonly filesChanged: ReadonlyArray<string>;
+  };
 }
 
 export interface FileHistoryState {
@@ -97,6 +117,75 @@ function pathHash(absPath: string): string {
   return createHash("sha256").update(absPath).digest("hex").slice(0, 16);
 }
 
+function countLines(text: string): number {
+  if (text.length === 0) return 0;
+  let count = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text.charCodeAt(i) === 10) count += 1;
+  }
+  // Trailing non-newline-terminated line still counts.
+  if (text.charCodeAt(text.length - 1) !== 10) count += 1;
+  return count;
+}
+
+/**
+ * Compute per-line insertions/deletions between two strings. Uses
+ * a simplified Myers-style diff: compute the length of the longest
+ * common subsequence (LCS) of lines, then
+ *   insertions = newLines − LCS
+ *   deletions  = oldLines − LCS
+ *
+ * O(n*m) — acceptable for typical file sizes; large files (>10K lines)
+ * get a cheaper line-hash comparison fallback.
+ */
+export function computeDiffStats(prior: string, current: string): DiffStats {
+  const priorLines = prior.split("\n");
+  const currentLines = current.split("\n");
+  const n = priorLines.length;
+  const m = currentLines.length;
+  if (n === 0 && m === 0) return { insertions: 0, deletions: 0 };
+  if (n === 0) return { insertions: m, deletions: 0 };
+  if (m === 0) return { insertions: 0, deletions: n };
+
+  // Fast-path: large files — approximate via line-hash set diff.
+  if (n > 10_000 || m > 10_000) {
+    const priorSet = new Map<string, number>();
+    for (const line of priorLines) priorSet.set(line, (priorSet.get(line) ?? 0) + 1);
+    let common = 0;
+    for (const line of currentLines) {
+      const count = priorSet.get(line) ?? 0;
+      if (count > 0) {
+        common += 1;
+        priorSet.set(line, count - 1);
+      }
+    }
+    return {
+      insertions: Math.max(0, m - common),
+      deletions: Math.max(0, n - common),
+    };
+  }
+
+  // LCS via rolling DP.
+  let prev = new Array<number>(m + 1).fill(0);
+  let curr = new Array<number>(m + 1).fill(0);
+  for (let i = 1; i <= n; i += 1) {
+    for (let j = 1; j <= m; j += 1) {
+      if (priorLines[i - 1] === currentLines[j - 1]) {
+        curr[j] = (prev[j - 1] ?? 0) + 1;
+      } else {
+        curr[j] = Math.max(prev[j] ?? 0, curr[j - 1] ?? 0);
+      }
+    }
+    [prev, curr] = [curr, prev];
+    curr.fill(0);
+  }
+  const lcs = prev[m] ?? 0;
+  return {
+    insertions: Math.max(0, m - lcs),
+    deletions: Math.max(0, n - lcs),
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // FileHistory
 // ─────────────────────────────────────────────────────────────────────
@@ -117,6 +206,16 @@ export interface FileHistoryOptions {
  * captures v1; `makeSnapshot(messageId)` AFTER the edit captures the
  * subsequent version and appends a snapshot record.
  */
+/**
+ * Deferred backup entry — tracked when disk is full so the operation
+ * can retry when disk returns.
+ */
+interface DeferredBackup {
+  readonly filePath: string;
+  readonly messageId: string;
+  readonly isTrackEdit: boolean;
+}
+
 export class FileHistory {
   readonly projectDir: string;
   readonly historyDir: string;
@@ -128,6 +227,8 @@ export class FileHistory {
     message: string;
   }) => void;
   private evictionWarningEmitted = false;
+  /** I-43: per-sidecar DegradedStore for failed snapshots. */
+  private readonly degraded: DegradedStore<DeferredBackup>;
 
   constructor(opts: FileHistoryOptions) {
     this.projectDir = opts.projectDir;
@@ -135,6 +236,19 @@ export class FileHistory {
     this.maxSnapshots = opts.maxSnapshots ?? MAX_SNAPSHOTS;
     this.enabled = opts.enabled !== false;
     this.onDiagnostic = opts.onDiagnostic;
+    this.degraded = new DegradedStore<DeferredBackup>({
+      capacity: 500,
+      flushFn: async (entries) => this.replayDegraded(entries),
+    });
+    this.degraded.start();
+  }
+
+  isDegraded(): boolean {
+    return this.degraded.isDegraded;
+  }
+
+  stop(): void {
+    this.degraded.stop();
   }
 
   getState(): FileHistoryState {
@@ -157,13 +271,27 @@ export class FileHistory {
     try {
       backup = await this.createBackup(filePath, 1);
     } catch (err) {
-      this.emitDiagnostic({
-        cause: "file_history_track_failed",
-        message:
-          err instanceof Error
-            ? `trackEdit ${filePath}: ${err.message}`
-            : String(err),
-      });
+      // I-12 / I-43: disk-exhaustion errors route to the per-sidecar
+      // degraded store; non-disk errors surface as diagnostics but
+      // don't retry.
+      if (isDegradedErrno(err)) {
+        this.degraded.enterDegraded(
+          `${(err as { code?: string }).code} during trackEdit`,
+        );
+        this.degraded.append({ filePath, messageId, isTrackEdit: true });
+        this.emitDiagnostic({
+          cause: "file_history_degraded",
+          message: `${(err as { code?: string }).code} — deferred trackEdit for ${filePath}`,
+        });
+      } else {
+        this.emitDiagnostic({
+          cause: "file_history_track_failed",
+          message:
+            err instanceof Error
+              ? `trackEdit ${filePath}: ${err.message}`
+              : String(err),
+        });
+      }
       return;
     }
     // Ensure there's at least one snapshot to attach the backup to.
@@ -203,6 +331,9 @@ export class FileHistory {
     if (!this.enabled) return;
     const mostRecent = this.state.snapshots.at(-1);
     const trackedFileBackups: Record<string, FileHistoryBackup> = {};
+    const filesChanged: string[] = [];
+    let aggInsertions = 0;
+    let aggDeletions = 0;
 
     for (const trackingPath of this.state.trackedFiles) {
       try {
@@ -215,17 +346,63 @@ export class FileHistory {
           fileExists = false;
         }
         if (!fileExists) {
+          // Treat deletion as "all lines removed".
+          let priorLines = 0;
+          if (latest?.backupFileName) {
+            try {
+              const prior = await readFile(latest.backupFileName, "utf8");
+              priorLines = countLines(prior);
+            } catch {
+              /* best-effort */
+            }
+          }
+          const diffStats: DiffStats = { insertions: 0, deletions: priorLines };
           trackedFileBackups[trackingPath] = {
             backupFileName: null,
             version: nextVersion,
             backupTimeMs: Date.now(),
+            diffStats,
           };
+          aggInsertions += diffStats.insertions;
+          aggDeletions += diffStats.deletions;
+          if (priorLines > 0) filesChanged.push(trackingPath);
           continue;
         }
-        trackedFileBackups[trackingPath] = await this.createBackup(
-          trackingPath,
-          nextVersion,
-        );
+        const backup = await this.createBackup(trackingPath, nextVersion);
+        // Compute diff stats against the previous version.
+        let diffStats: DiffStats | undefined;
+        if (latest?.backupFileName && backup.backupFileName) {
+          try {
+            const [prior, curr] = await Promise.all([
+              readFile(latest.backupFileName, "utf8"),
+              readFile(backup.backupFileName, "utf8"),
+            ]);
+            diffStats = computeDiffStats(prior, curr);
+            if (
+              diffStats &&
+              (diffStats.insertions > 0 || diffStats.deletions > 0)
+            ) {
+              filesChanged.push(trackingPath);
+              aggInsertions += diffStats.insertions;
+              aggDeletions += diffStats.deletions;
+            }
+          } catch {
+            /* best-effort */
+          }
+        } else if (backup.backupFileName && !latest) {
+          // Newly tracked file — count all lines as insertions.
+          try {
+            const curr = await readFile(backup.backupFileName, "utf8");
+            diffStats = { insertions: countLines(curr), deletions: 0 };
+            aggInsertions += diffStats.insertions;
+            filesChanged.push(trackingPath);
+          } catch {
+            /* best-effort */
+          }
+        }
+        trackedFileBackups[trackingPath] = diffStats
+          ? { ...backup, diffStats }
+          : backup;
       } catch (err) {
         this.emitDiagnostic({
           cause: "file_history_snapshot_failed",
@@ -241,6 +418,14 @@ export class FileHistory {
       messageId,
       trackedFileBackups,
       timestampMs: Date.now(),
+      aggregateDiffStats:
+        filesChanged.length > 0
+          ? {
+              insertions: aggInsertions,
+              deletions: aggDeletions,
+              filesChanged,
+            }
+          : undefined,
     };
     const nextSnapshots = [...this.state.snapshots, snapshot];
     let evicted = this.state.evictedCount;
@@ -360,6 +545,27 @@ export class FileHistory {
   private emitDiagnostic(d: { cause: string; message: string }): void {
     this.onDiagnostic?.(d);
   }
+
+  /**
+   * I-43 replay — DegradedStore calls this periodically when it
+   * thinks disk may have returned. Re-issues each deferred track /
+   * snapshot op; on success returns true so the store exits degraded
+   * mode.
+   */
+  private async replayDegraded(
+    entries: ReadonlyArray<DeferredBackup>,
+  ): Promise<boolean> {
+    for (const entry of entries) {
+      try {
+        if (entry.isTrackEdit) {
+          await this.trackEdit(entry.filePath, entry.messageId);
+        }
+      } catch (err) {
+        if (isDegradedErrno(err)) return false;
+      }
+    }
+    return true;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -396,11 +602,11 @@ export class FileHistorySidecar implements Sidecar {
   }
 
   async stop(): Promise<void> {
-    // Don't clear; session resume reads this.
+    this.history.stop();
   }
 
   isDegraded(): boolean {
-    return false;
+    return this.history.isDegraded();
   }
 
   onEvent(event: Event): void {

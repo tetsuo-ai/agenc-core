@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { reconstructFromRollout } from "./rollout-reconstruction.js";
 import type { RolloutItem } from "./rollout-item.js";
+import type { IndexSnapshot } from "./session-store.js";
 
 describe("rollout-reconstruction", () => {
   test("replays response_items into history", () => {
@@ -72,6 +73,74 @@ describe("rollout-reconstruction", () => {
     );
     expect(synthTypes).toContain("turn_aborted");
     expect(synthTypes).toContain("warning");
+  });
+
+  test("I-25: snapshot.seq < rollout.lastSeq → snapshotBehindRollout + warning", () => {
+    const items: RolloutItem[] = [
+      {
+        type: "event_msg",
+        payload: {
+          id: "a",
+          seq: 1,
+          msg: { type: "warning", payload: { cause: "x", message: "y" } },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          id: "b",
+          seq: 5,
+          msg: { type: "warning", payload: { cause: "x", message: "y" } },
+        },
+      },
+    ];
+    const staleSnapshot: IndexSnapshot = {
+      snapshotSequenceNumber: 2, // behind
+      fileSize: 100,
+      rolloutPath: "x",
+      toolResultBytesByTurn: {},
+      offsetsBySeq: {},
+      writtenAtMs: Date.now(),
+      agencVersion: "0.2.0",
+      schemaVersion: 1,
+    };
+    const r = reconstructFromRollout(items, { indexSnapshot: staleSnapshot });
+    expect(r.snapshotBehindRollout).toBe(true);
+    expect(r.consumedSnapshot).toBeUndefined();
+    const hasWarning = r.synthesizedEvents.some(
+      (ev) =>
+        ev.type === "event_msg" &&
+        ev.payload.msg.type === "warning" &&
+        (ev.payload.msg.payload as { cause?: string }).cause ===
+          "snapshot_behind_rollout",
+    );
+    expect(hasWarning).toBe(true);
+  });
+
+  test("I-25: snapshot.seq ≥ rollout.lastSeq is accepted", () => {
+    const items: RolloutItem[] = [
+      {
+        type: "event_msg",
+        payload: {
+          id: "a",
+          seq: 1,
+          msg: { type: "warning", payload: { cause: "x", message: "y" } },
+        },
+      },
+    ];
+    const freshSnapshot: IndexSnapshot = {
+      snapshotSequenceNumber: 1,
+      fileSize: 100,
+      rolloutPath: "x",
+      toolResultBytesByTurn: {},
+      offsetsBySeq: {},
+      writtenAtMs: Date.now(),
+      agencVersion: "0.2.0",
+      schemaVersion: 1,
+    };
+    const r = reconstructFromRollout(items, { indexSnapshot: freshSnapshot });
+    expect(r.snapshotBehindRollout).toBe(false);
+    expect(r.consumedSnapshot).toBe(freshSnapshot);
   });
 
   test("thread_rolled_back drops user turns in forward replay", () => {

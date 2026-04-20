@@ -85,6 +85,11 @@ export async function commit(
         },
       },
     });
+    // T6 I-24b: re-append session metadata so --resume readers that
+    // scan the last 16KB of the rollout still find the session
+    // header even after many compacts have pushed it out of range.
+    // Port of openclaude sessionStorage.ts::reAppendSessionMetadata.
+    session.rolloutStore?.store.reAppendSessionMetadata();
     // Mark the boundary as consumed so subsequent iterations don't
     // re-emit until the next successful compact mutates the turnId.
     state.autoCompactTracking = {

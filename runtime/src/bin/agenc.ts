@@ -26,6 +26,7 @@
  */
 
 import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { cwd as processCwd } from "node:process";
 import { GrokProvider } from "../llm/grok/index.js";
 import type { LLMToolCall } from "../llm/types.js";
@@ -47,6 +48,7 @@ import {
   SchemaMismatchError,
   SessionLockedError,
   getProjectDir,
+  readIndexSnapshot,
 } from "../session/session-store.js";
 import { SidecarManager } from "../session/sidecar.js";
 import { FileHistory, FileHistorySidecar } from "../session/file-history.js";
@@ -558,15 +560,28 @@ async function main(): Promise<number> {
     }
     throwIfAborted("RolloutStore");
 
-    // Step 7b: I-48 orphan-TurnStarted recovery. On resume, scan the
-    // rollout for unmatched TurnStarted events and emit synthetic
-    // TurnAborted{reason:'process_killed'} markers so downstream
-    // consumers see consistent turn lifecycles.
+    // Step 7b: I-48 orphan-TurnStarted + I-25 snapshot-seq check.
+    // On resume, scan the rollout for unmatched TurnStarted events
+    // and emit synthetic TurnAborted{reason:'process_killed'} markers;
+    // also validate the index.json snapshot against the rollout
+    // and emit warning:'snapshot_behind_rollout' if stale.
     try {
       const existingItems = rolloutStore.readAll();
       if (existingItems.length > 0) {
-        const reconstruction = reconstructFromRollout(existingItems);
-        if (reconstruction.orphanedTurnIds.length > 0) {
+        // I-25: feed the snapshot into reconstruction so it can
+        // report snapshot_behind_rollout.
+        const indexSnapshot = readIndexSnapshot(
+          join(
+            getProjectDir(workspaceRoot),
+            "sessions",
+            conversationId,
+            "index.json",
+          ),
+        );
+        const reconstruction = reconstructFromRollout(existingItems, {
+          ...(indexSnapshot ? { indexSnapshot } : {}),
+        });
+        if (reconstruction.synthesizedEvents.length > 0) {
           for (const synth of reconstruction.synthesizedEvents) {
             if (synth.type === "event_msg") {
               session.emit(synth.payload);

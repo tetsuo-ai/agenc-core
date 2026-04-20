@@ -541,9 +541,24 @@ export class Session {
    * Attach a RolloutStore. Subsequent `emit()` calls will persist to
    * the store. Replaces any previously-mounted store (the previous
    * one should be `close()`d by the caller first).
+   *
+   * Wires the store's diagnostic listener so I-38/I-83 diagnostics
+   * (fsync_failed, event_log_batch_delayed, snapshot_write_failed,
+   * rollout_degraded) surface through the event log.
    */
   mountRolloutStore(store: RolloutStore | null): void {
     this.rolloutStore = store;
+    if (store) {
+      store.store.setDiagnosticListener((d) => {
+        this.emit({
+          id: this.nextInternalSubId(),
+          msg: {
+            type: d.level,
+            payload: { cause: d.cause, message: d.message },
+          } as EventMsg,
+        });
+      });
+    }
   }
 
   /**

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { FileHistory } from "./file-history.js";
+import { computeDiffStats, FileHistory } from "./file-history.js";
 
 describe("FileHistory (I-28)", () => {
   let project = "";
@@ -37,6 +37,41 @@ describe("FileHistory (I-28)", () => {
     expect(state.snapshots.length).toBeLessThanOrEqual(3);
     expect(state.isFileHistoryComplete).toBe(false);
     expect(state.evictedCount).toBeGreaterThan(0);
+  });
+
+  test("computeDiffStats counts insertions + deletions", () => {
+    const a = "line1\nline2\nline3\n";
+    const b = "line1\nmodified\nline3\nline4\n";
+    const stats = computeDiffStats(a, b);
+    expect(stats.insertions).toBeGreaterThanOrEqual(1);
+    expect(stats.deletions).toBeGreaterThanOrEqual(1);
+  });
+
+  test("computeDiffStats empty strings", () => {
+    expect(computeDiffStats("", "")).toEqual({ insertions: 0, deletions: 0 });
+    // "a\nb\n".split("\n") → ["a", "b", ""] so 3 "lines" (trailing
+    // empty) — this matches diffLines-style behavior.
+    const d1 = computeDiffStats("a\nb\n", "");
+    expect(d1.insertions).toBe(0);
+    expect(d1.deletions).toBeGreaterThan(0);
+    const d2 = computeDiffStats("", "a\nb\n");
+    expect(d2.insertions).toBeGreaterThan(0);
+    expect(d2.deletions).toBe(0);
+  });
+
+  test("makeSnapshot attaches DiffStats + aggregate to snapshot", async () => {
+    const hist = new FileHistory({ projectDir: project });
+    const file = join(project, "src.txt");
+    writeFileSync(file, "line1\nline2\n", "utf8");
+    await hist.trackEdit(file, "msg-1");
+    await hist.makeSnapshot("msg-1");
+    writeFileSync(file, "line1\nline2\nline3\n", "utf8");
+    await hist.makeSnapshot("msg-2");
+    const state = hist.getState();
+    const last = state.snapshots.at(-1);
+    expect(last?.aggregateDiffStats).toBeDefined();
+    expect(last?.aggregateDiffStats?.insertions).toBeGreaterThan(0);
+    expect(last?.aggregateDiffStats?.filesChanged).toContain(file);
   });
 
   test("restoreToMessage writes contents back", async () => {

@@ -17,7 +17,12 @@
  * @module
  */
 
-import type { EventSeq, TurnContextItem } from "./event-log.js";
+import type {
+  EventLog,
+  EventSeq,
+  TurnContextItem,
+} from "./event-log.js";
+import { emitError, emitWarning } from "./event-log.js";
 import type {
   CompactedItem,
   ResponseItem,
@@ -106,6 +111,9 @@ export function reduce(
 ): { state: ReducedSessionState; report: Partial<ReductionReport> } {
   // I-26: forward-compat shim. If the type itself is unknown (newer
   // AgenC version wrote a variant we don't recognise), tag + skip.
+  // Note: parseRolloutLine already wraps unknown types in the
+  // `unknown` shim, but this branch handles in-memory items coming
+  // from other producers (e.g. tests constructing mock items).
   if (!isKnownRolloutType((item as { type: string }).type)) {
     return {
       state,
@@ -117,6 +125,17 @@ export function reduce(
   }
 
   switch (item.type) {
+    case "unknown": {
+      // I-26: unknown-variant shim. Skip + report.
+      return {
+        state,
+        report: {
+          unknownVariantCount: 1,
+          unknownVariantSamples: [item.payload.originalType],
+        },
+      };
+    }
+
     case "session_meta":
       return {
         state: { ...state, sessionMeta: item.payload },
@@ -261,6 +280,57 @@ export function reduceAll(
   let report = emptyReport();
   for (const item of items) {
     const step = reduce(state, item);
+    state = step.state;
+    report = mergeReports(report, step.report);
+  }
+  report = { ...report, processed: items.length };
+  return { state, report };
+}
+
+/**
+ * Same as `reduceAll` but also emits typed events into the supplied
+ * `EventLog` when the rule-based invariants surface violations:
+ *
+ *   - I-26 (unknown event variant): emits `warning:'unknown_event_variant'`
+ *     for every skipped item (originalType in message).
+ *   - I-27 (seq monotonicity): emits `error:'event_reordering_detected'`
+ *     on each gap with expected/actual seq in the payload.
+ *
+ * Call this from `rollout-reconstruction.ts` + any runtime replay
+ * path. Test-only `reduceAll` stays pure so reducers can be unit-
+ * tested without an EventLog.
+ */
+export function reduceAllWithEmit(
+  items: ReadonlyArray<RolloutItem>,
+  log: EventLog,
+  opts: { readonly subId?: string } = {},
+): { state: ReducedSessionState; report: ReductionReport } {
+  const subId = opts.subId ?? "reducer";
+  let state = emptyReducedState();
+  let report = emptyReport();
+
+  for (const item of items) {
+    const step = reduce(state, item);
+
+    // I-26 — emit warning per unknown variant.
+    if (step.report.unknownVariantCount) {
+      for (const sample of step.report.unknownVariantSamples ?? []) {
+        emitWarning(
+          log,
+          subId,
+          "unknown_event_variant",
+          `skipped unknown rollout variant "${sample}" during replay (I-26)`,
+        );
+      }
+    }
+    // I-27 — emit error on seq-gap violation.
+    if (step.report.seqGapCount && step.report.firstSeqGap) {
+      emitError(log, subId, {
+        cause: "event_reordering_detected",
+        message: `rollout seq gap: expected ${step.report.firstSeqGap.expected}, got ${step.report.firstSeqGap.actual} (I-27)`,
+      });
+    }
+
     state = step.state;
     report = mergeReports(report, step.report);
   }

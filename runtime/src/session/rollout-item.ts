@@ -63,13 +63,51 @@ export type { TurnContextItem } from "./event-log.js";
 
 import type { TurnContextItem } from "./event-log.js";
 
+/**
+ * Current RolloutItem schema version. Bumped on breaking shape
+ * changes so `eventVersion` on each row lets older readers wrap
+ * unknown variants in the I-26 `{type:'unknown'}` shim instead of
+ * crashing.
+ */
+export const ROLLOUT_ITEM_VERSION = 1;
+
 export type RolloutItem =
-  | { readonly type: "session_meta"; readonly payload: SessionMetaLine }
-  | { readonly type: "session_state"; readonly payload: SessionStateUpdate }
-  | { readonly type: "response_item"; readonly payload: ResponseItem }
-  | { readonly type: "compacted"; readonly payload: CompactedItem }
-  | { readonly type: "turn_context"; readonly payload: TurnContextItem }
-  | { readonly type: "event_msg"; readonly payload: Event };
+  | {
+      readonly type: "session_meta";
+      readonly payload: SessionMetaLine;
+      readonly eventVersion?: number;
+    }
+  | {
+      readonly type: "session_state";
+      readonly payload: SessionStateUpdate;
+      readonly eventVersion?: number;
+    }
+  | {
+      readonly type: "response_item";
+      readonly payload: ResponseItem;
+      readonly eventVersion?: number;
+    }
+  | {
+      readonly type: "compacted";
+      readonly payload: CompactedItem;
+      readonly eventVersion?: number;
+    }
+  | {
+      readonly type: "turn_context";
+      readonly payload: TurnContextItem;
+      readonly eventVersion?: number;
+    }
+  | {
+      readonly type: "event_msg";
+      readonly payload: Event;
+      readonly eventVersion?: number;
+    }
+  | {
+      /** I-26 shim — unknown variant encountered during replay. */
+      readonly type: "unknown";
+      readonly payload: { readonly raw: string; readonly originalType: string };
+      readonly eventVersion?: number;
+    };
 
 export const KNOWN_ROLLOUT_TYPES = Object.freeze(
   new Set<string>([
@@ -79,6 +117,7 @@ export const KNOWN_ROLLOUT_TYPES = Object.freeze(
     "compacted",
     "turn_context",
     "event_msg",
+    "unknown",
   ]),
 );
 
@@ -99,9 +138,14 @@ export const ROLLOUT_LEGACY_TYPE_ALIASES: Readonly<Record<string, string>> =
 
 /**
  * Serialize a RolloutItem to a single JSONL line (trailing `\n`).
+ * Stamps `eventVersion` when absent (I-26).
  */
 export function serializeRolloutItem(item: RolloutItem): string {
-  return `${JSON.stringify(item)}\n`;
+  const stamped =
+    item.eventVersion === undefined
+      ? { ...item, eventVersion: ROLLOUT_ITEM_VERSION }
+      : item;
+  return `${JSON.stringify(stamped)}\n`;
 }
 
 /**
@@ -111,11 +155,25 @@ export function serializeRolloutItem(item: RolloutItem): string {
  *
  * Applies legacy aliases on the embedded event_msg variant
  * (task_started → turn_started, etc).
+ *
+ * I-26: unknown top-level types are wrapped in the `unknown` shim
+ * with the original raw JSON preserved so a newer-AgenC rollout can
+ * still load under an older runtime without panic. The reducer
+ * ignores `unknown` items + emits a warning per skip.
  */
 export function parseRolloutLine(line: string): RolloutItem | null {
   const trimmed = line.trim();
   if (trimmed.length === 0) return null;
   const parsed = JSON.parse(trimmed) as RolloutItem;
+  const typeTag = (parsed as { type?: string }).type;
+  if (typeTag && !isKnownRolloutType(typeTag)) {
+    return {
+      type: "unknown",
+      payload: { raw: trimmed, originalType: typeTag },
+      eventVersion:
+        (parsed as { eventVersion?: number }).eventVersion ?? undefined,
+    };
+  }
   if (parsed.type === "event_msg" && parsed.payload?.msg) {
     const inner = parsed.payload.msg as { type?: string };
     if (inner?.type && ROLLOUT_LEGACY_TYPE_ALIASES[inner.type]) {
@@ -126,6 +184,7 @@ export function parseRolloutLine(line: string): RolloutItem | null {
           ...parsed.payload,
           msg: newInner as unknown as EventMsg,
         },
+        eventVersion: parsed.eventVersion,
       };
     }
   }

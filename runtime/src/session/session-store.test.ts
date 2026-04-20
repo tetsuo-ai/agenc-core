@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { ROLLOUT_SCHEMA_VERSION } from "./event-log.js";
 import {
+  readIndexSnapshot,
   SessionLock,
   SessionLockedError,
   SessionStore,
@@ -106,6 +107,87 @@ describe("session-store", () => {
     );
     expect(store.getToolResultBytes("turn-1")).toBe(12000);
     store.close();
+  });
+
+  test("UUID dedup: repeated event.id without seq is skipped", () => {
+    const store = new SessionStore({
+      cwd: "/home/test-dedup",
+      sessionId: "sess-d",
+      agencVersion: "0.2.0",
+    });
+    store.open({
+      sessionId: "sess-d",
+      timestamp: new Date().toISOString(),
+      cwd: "/home/test-dedup",
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    });
+    const ev = {
+      id: "dup-id",
+      msg: { type: "warning" as const, payload: { cause: "x", message: "y" } },
+    };
+    store.append(ev);
+    store.append(ev);
+    store.append(ev);
+    store.close();
+    const content = readFileSync(store.rolloutPath, "utf8");
+    const matches = content.match(/"dup-id"/g) ?? [];
+    expect(matches.length).toBe(1);
+  });
+
+  test("I-24 close writes atomic index.json snapshot with seq + offsets", () => {
+    const store = new SessionStore({
+      cwd: "/home/test-idx",
+      sessionId: "sess-e",
+      agencVersion: "0.2.0",
+    });
+    store.open({
+      sessionId: "sess-e",
+      timestamp: new Date().toISOString(),
+      cwd: "/home/test-idx",
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    });
+    store.append({
+      id: "1",
+      seq: 1,
+      msg: { type: "warning", payload: { cause: "x", message: "y" } },
+    });
+    store.append(
+      {
+        id: "2",
+        seq: 2,
+        msg: { type: "turn_complete", payload: { turnId: "t" } },
+      },
+      { durable: true },
+    );
+    store.close();
+    const snapshot = readIndexSnapshot(store.indexPath);
+    expect(snapshot).not.toBeNull();
+    expect(snapshot!.snapshotSequenceNumber).toBe(2);
+    expect(snapshot!.schemaVersion).toBe(ROLLOUT_SCHEMA_VERSION);
+    expect(Object.keys(snapshot!.offsetsBySeq)).toContain("1");
+    expect(Object.keys(snapshot!.offsetsBySeq)).toContain("2");
+  });
+
+  test("reAppendSessionMetadata writes session_meta line again after compact", () => {
+    const store = new SessionStore({
+      cwd: "/home/test-meta",
+      sessionId: "sess-f",
+      agencVersion: "0.2.0",
+    });
+    store.open({
+      sessionId: "sess-f",
+      timestamp: new Date().toISOString(),
+      cwd: "/home/test-meta",
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    });
+    store.reAppendSessionMetadata();
+    store.close();
+    const content = readFileSync(store.rolloutPath, "utf8");
+    const metaCount = (content.match(/"type":"session_meta"/g) ?? []).length;
+    expect(metaCount).toBeGreaterThanOrEqual(2);
   });
 
   test("I-24 truncateCorruptTail removes partial trailing line", () => {

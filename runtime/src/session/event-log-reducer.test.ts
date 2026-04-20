@@ -3,7 +3,9 @@ import {
   emptyReducedState,
   reduce,
   reduceAll,
+  reduceAllWithEmit,
 } from "./event-log-reducer.js";
+import { EventLog } from "./event-log.js";
 import type { RolloutItem } from "./rollout-item.js";
 
 describe("event-log-reducer (I-26 + I-27)", () => {
@@ -75,6 +77,52 @@ describe("event-log-reducer (I-26 + I-27)", () => {
     ]);
     expect(report.seqGapCount).toBe(1);
     expect(report.firstSeqGap).toEqual({ expected: 2, actual: 5 });
+  });
+
+  test("I-26 unknown shim variant is tolerated + reported", () => {
+    const { state, report } = reduceAll([
+      {
+        type: "unknown",
+        payload: { raw: '{"type":"future"}', originalType: "future" },
+      } as RolloutItem,
+      { type: "response_item", payload: { role: "user", content: "ok" } },
+    ]);
+    expect(state.history).toHaveLength(1);
+    expect(report.unknownVariantCount).toBe(1);
+    expect(report.unknownVariantSamples).toContain("future");
+  });
+
+  test("reduceAllWithEmit emits I-26 warning + I-27 error events", () => {
+    const log = new EventLog();
+    const seen: string[] = [];
+    log.subscribe((e) => seen.push(`${e.msg.type}:${(e.msg.payload as { cause?: string }).cause}`));
+    reduceAllWithEmit(
+      [
+        {
+          type: "unknown",
+          payload: { raw: '{"type":"X"}', originalType: "X" },
+        } as RolloutItem,
+        {
+          type: "event_msg",
+          payload: {
+            id: "a",
+            seq: 1,
+            msg: { type: "warning", payload: { cause: "x", message: "y" } },
+          },
+        },
+        {
+          type: "event_msg",
+          payload: {
+            id: "b",
+            seq: 7, // gap — expected 2
+            msg: { type: "warning", payload: { cause: "x", message: "y" } },
+          },
+        },
+      ],
+      log,
+    );
+    expect(seen).toContain("warning:unknown_event_variant");
+    expect(seen).toContain("error:event_reordering_detected");
   });
 
   test("thread_rolled_back drops N user turns from history", () => {
