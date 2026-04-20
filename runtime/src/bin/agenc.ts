@@ -55,6 +55,11 @@ import { FileHistory, FileHistorySidecar } from "../session/file-history.js";
 import { ErrorLogSidecar } from "../session/error-log.js";
 import { CostSidecar } from "../session/cost.js";
 import { reconstructFromRollout } from "../session/rollout-reconstruction.js";
+import {
+  createBashExecObserverForSlot,
+  createMCPCallObserverForSlot,
+  type SessionSlot,
+} from "../session/observer-wiring.js";
 
 const DEFAULT_MODEL = "grok-4-fast";
 
@@ -468,8 +473,17 @@ async function main(): Promise<number> {
     const workspaceRoot = process.env.AGENC_WORKSPACE ?? processCwd();
     const model = process.env.AGENC_MODEL ?? DEFAULT_MODEL;
 
-    // Step 4: build tool registry.
-    const registry = buildToolRegistry({ workspaceRoot });
+    // Step 4: build tool registry. T6 gap #119 — the bash tool
+    // lifecycle observer needs the Session to emit events through,
+    // but Session is built further down. Allocate a late-bound slot
+    // that the bash tool / MCP manager observers close over; we fill
+    // it right after Session construction so every subsequent spawn
+    // or MCP call lands `exec_command_*` / `mcp_tool_call_*` in the
+    // event log.
+    const sessionSlot: SessionSlot = { current: null };
+    const bashExecObserver = createBashExecObserverForSlot(sessionSlot);
+    const mcpCallObserver = createMCPCallObserverForSlot(sessionSlot);
+    const registry = buildToolRegistry({ workspaceRoot, bashExecObserver });
     throwIfAborted("buildToolRegistry");
 
     // Step 5: construct provider.
@@ -521,6 +535,18 @@ async function main(): Promise<number> {
     });
     cleanup.push("session.shutdown", () => session.shutdown());
     throwIfAborted("Session");
+
+    // T6 gap #119: now that the Session exists, fill the observer
+    // slot so bash spawns and MCP tool calls emit their `*_begin` /
+    // `*_end` EventMsg variants through `session.emit(...)`. Any
+    // future `new MCPManager(...)` site owned by the CLI MUST call
+    // `manager.setCallObserver(mcpCallObserver)` BEFORE `start()`
+    // so the observer is baked into every bridge at creation time.
+    sessionSlot.current = session;
+    // Exported for the future MCPManager wiring site (no MCPManager
+    // is constructed in this entrypoint yet — the placeholder
+    // services.mcpManager is a stub until T9 lands).
+    void mcpCallObserver;
 
     let sessionRef: Session | null = session;
     installSignalHandlers(() => sessionRef);

@@ -40,6 +40,14 @@
  * @module
  */
 
+import {
+  LLMAuthenticationError,
+  LLMContextWindowExceededError,
+  LLMMessageValidationError,
+  LLMRateLimitError,
+  LLMServerError,
+  LLMTimeoutError,
+} from "../llm/errors.js";
 import type { LLMMessage, LLMTool, LLMUsage } from "../llm/types.js";
 import { commit } from "../phases/commit.js";
 import { continuationNudge } from "../phases/continuation-nudge.js";
@@ -151,19 +159,36 @@ async function runAutoCompact(
  *
  * Returns true when compaction ran, false otherwise.
  */
-async function maybeRunPreviousModelInlineCompact(
+export async function maybeRunPreviousModelInlineCompact(
   session: Session,
   ctx: TurnContext,
   _totalUsageTokens: number,
 ): Promise<boolean> {
+  // A1 fix: codex resolves the previous model's TurnContext via
+  // `turn_context.with_model(previous_turn_settings.model, models_manager)`
+  // and reads its context_window. AgenC has no models_manager yet, so
+  // we accept an optional pre-resolved `contextWindow` (and/or
+  // `modelInfo`) carried alongside `previousTurnSettings.model`. The
+  // new context window always comes from the CURRENT turn's
+  // `ctx.modelInfo`, not from the previous turn. This makes the
+  // model-downshift branch reachable instead of comparing
+  // `oldContextWindow > oldContextWindow`, which can never be true.
   const previousTurnSettings = (session.state as unknown as {
-    unsafePeek?: () => { previousTurnSettings?: { model: string } };
+    unsafePeek?: () => {
+      previousTurnSettings?: {
+        model: string;
+        contextWindow?: number;
+        modelInfo?: { contextWindow?: number };
+      };
+    };
   }).unsafePeek?.()?.previousTurnSettings;
   if (!previousTurnSettings) return false;
 
-  const oldContextWindow =
+  const newContextWindow =
     (ctx.modelInfo as unknown as { contextWindow?: number }).contextWindow;
-  const newContextWindow = oldContextWindow; // same ctx.modelInfo today
+  const oldContextWindow =
+    previousTurnSettings.contextWindow ??
+    previousTurnSettings.modelInfo?.contextWindow;
   if (oldContextWindow === undefined || newContextWindow === undefined) {
     return false;
   }
@@ -368,7 +393,14 @@ async function tryRunSamplingRequest(
     needsFollowUp: state.needsFollowUp,
     lastAgentMessage: assistantText,
     assistantText,
-    usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    // D1 fix: thread the real provider-reported usage stashed by
+    // streamModel. Falling back to zeros only when the provider
+    // genuinely reported nothing (e.g. aborted before first chunk).
+    usage: state.lastResponseUsage ?? {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+    },
   };
 }
 
@@ -416,17 +448,91 @@ async function runSamplingRequest(
   }
 }
 
-/** Codex `is_retryable()` on CodexErr. AgenC translates to a check
- *  on the underlying error cause. T8 wires the full classification. */
-function isRetryableStreamError(error: unknown): boolean {
+/**
+ * Codex `is_retryable()` on CodexErr. AgenC classifies via typed
+ * error discrimination on the underlying cause rather than substring
+ * matching against `error.message`, which is fragile: a
+ * `LLMContextWindowExceededError` whose provider message happens to
+ * contain "504" in metadata would previously false-match.
+ *
+ * Retryable causes:
+ *   - stream_idle watchdog abort (thrown from stream-model with a
+ *     plain `Error` whose message begins `stream_idle:` — the only
+ *     remaining message-based check, since it carries no type).
+ *   - `LLMServerError`   (HTTP 5xx from the provider envelope)
+ *   - `LLMTimeoutError`  (request timed out / abort)
+ *   - `LLMRateLimitError` (429 + retry-after)
+ *   - transient node networking: error `code` in
+ *     {ECONNRESET, ECONNREFUSED, ETIMEDOUT, EPIPE, EAI_AGAIN}
+ *
+ * Non-retryable (explicit):
+ *   - `LLMContextWindowExceededError` (413 — reactive compact owns it)
+ *   - `LLMAuthenticationError`
+ *   - `LLMMessageValidationError`
+ *
+ * T8 wires the full classification (reactive compact recovery, etc.).
+ */
+export function isRetryableStreamError(error: unknown): boolean {
   if (!(error instanceof StreamModelError)) return false;
-  const msg = error.message?.toLowerCase() ?? "";
-  if (msg.includes("stream_idle")) return true;
-  if (msg.includes("econnreset")) return true;
-  if (msg.includes("etimedout")) return true;
-  if (msg.includes("503")) return true;
-  if (msg.includes("504")) return true;
+  const cause = error.cause;
+
+  // Explicitly non-retryable typed causes — fail closed before any
+  // generic branch so a provider message containing "504" can't
+  // accidentally retry a context-window or auth failure.
+  if (cause instanceof LLMContextWindowExceededError) return false;
+  if (cause instanceof LLMAuthenticationError) return false;
+  if (cause instanceof LLMMessageValidationError) return false;
+
+  // Typed retryable causes.
+  if (cause instanceof LLMServerError) return true;
+  if (cause instanceof LLMTimeoutError) return true;
+  if (cause instanceof LLMRateLimitError) return true;
+
+  // Transient node networking via error `code`.
+  const code = (cause as { code?: unknown } | null | undefined)?.code;
+  if (typeof code === "string") {
+    if (
+      code === "ECONNRESET" ||
+      code === "ECONNREFUSED" ||
+      code === "ETIMEDOUT" ||
+      code === "EPIPE" ||
+      code === "EAI_AGAIN"
+    ) {
+      return true;
+    }
+  }
+
+  // stream_idle watchdog path throws a plain `Error` whose message is
+  // `stream_idle: no data for Nms`. That's the sole remaining
+  // message-based check and it's a controlled runtime string, not a
+  // provider payload that could contain user-supplied substrings.
+  if (cause instanceof Error && cause.message?.startsWith("stream_idle")) {
+    return true;
+  }
+
   return false;
+}
+
+/**
+ * D1 fix: resolve the outer-loop iteration cap. Codex terminates on
+ * the model's stop-signal, not on an iteration count; AgenC keeps the
+ * cap as a safety net so a buggy provider can't spin forever. The
+ * default is raised from 100 to 1000 (deep agent plans routinely cross
+ * 100 tool iterations) and an env override lets ops dial it per
+ * deployment without rebuilding. `ctx.config.maxTurns` still wins when
+ * present so explicit session configuration is authoritative.
+ */
+function resolveMaxTurns(ctx: TurnContext): number {
+  const explicit = (ctx.config as unknown as { maxTurns?: number }).maxTurns;
+  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit > 0) {
+    return explicit;
+  }
+  const envRaw = process.env.AGENC_MAX_TURNS;
+  if (envRaw !== undefined) {
+    const parsed = Number.parseInt(envRaw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return 1000;
 }
 
 /**
@@ -655,8 +761,7 @@ export async function* runTurn(
       return terminal;
     }
 
-    const maxTurns =
-      (ctx.config as unknown as { maxTurns?: number }).maxTurns ?? 100;
+    const maxTurns = resolveMaxTurns(ctx);
     if (state.turnCount > maxTurns) {
       await drainInFlight(state, ctx, session);
       emitTurnComplete(lastContent);
@@ -692,9 +797,10 @@ export async function* runTurn(
     try {
       const result = await runSamplingRequest(state, ctx, session, signal, pending);
       for (const ev of pending) yield ev;
-      // Tool-call and tool-result events get emitted inside phase 5
-      // below; phase 2 only emitted assistant_text.
-      void result;
+      // D1 fix: accumulate real provider usage returned from the
+      // sampling request so the terminal turn_complete event carries
+      // cumulative token consumption across continuation iterations.
+      usage = cumulativeUsage(usage, result.usage);
     } catch (error) {
       await drainInFlight(state, ctx, session);
       for (const ev of pending) yield ev;
@@ -812,7 +918,8 @@ export async function* runTurn(
       return terminal;
     }
 
-    usage = cumulativeUsage(usage, undefined);
+    // D1 fix: usage is accumulated immediately after runSamplingRequest
+    // returns (above). No-op dummy accumulation removed.
     // loop back for another sampling request
   }
 }

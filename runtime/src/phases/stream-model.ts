@@ -258,6 +258,18 @@ export async function streamModel(
     });
   }
 
+  // D1 fix: stash the provider-reported usage on TurnState so
+  // `tryRunSamplingRequest` can thread it through SamplingRequestResult
+  // instead of returning a hardcoded {0,0,0}. Downstream auto-compact
+  // and the outer runTurn usage accumulator depend on real numbers.
+  if (response.usage) {
+    state.lastResponseUsage = {
+      promptTokens: response.usage.promptTokens,
+      completionTokens: response.usage.completionTokens,
+      totalTokens: response.usage.totalTokens,
+    };
+  }
+
   // T6 gap #119: emit a `token_count` event with the provider-reported
   // LLMUsage so durable rollouts capture per-stream token accounting.
   // `LLMUsage` is always present on `LLMResponse`; emitting even when

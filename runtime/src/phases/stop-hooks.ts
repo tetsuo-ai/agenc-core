@@ -41,8 +41,13 @@ import type {
 // Constants
 // ─────────────────────────────────────────────────────────────────────
 
-/** I-17 cap: matches openclaude MAX_STOP_HOOK_BLOCKS + codex
- *  `MAX_STOP_HOOK_RECURSION_DEPTH = 3`. */
+/** I-17 recursion cap is AgenC's additional guard over both sources.
+ *  Codex has no cap — its stop-hook loop relies on timeouts +
+ *  cancellation (see `codex-rs/hooks/src/events/stop.rs` and
+ *  `codex-rs/core/src/session/turn.rs`, neither defines a
+ *  `MAX_STOP_HOOK_RECURSION_DEPTH` constant). Openclaude caps at
+ *  `MAX_STOP_HOOK_BLOCKS` in `query.ts`; we mirror that name + value
+ *  here. */
 export const MAX_STOP_HOOK_BLOCKS = 3;
 
 // ─────────────────────────────────────────────────────────────────────
@@ -150,6 +155,7 @@ export async function evaluateStopHooks(
 
   let injectedFragments: string[] = [];
   let anyBlocked = false;
+  let anyShouldStop = false;
 
   for (const hook of hooks) {
     let outcome: StopHookOutcome;
@@ -165,17 +171,32 @@ export async function evaluateStopHooks(
       continue;
     }
 
+    if (outcome.shouldStop) {
+      anyShouldStop = true;
+    }
+
     if (outcome.shouldBlock) {
-      anyBlocked = true;
-      if (outcome.continuationFragments.length > 0) {
-        injectedFragments.push(...outcome.continuationFragments);
-      }
-      if (outcome.blockReason) {
+      // Codex `stop.rs:185-193` rejects `decision:block` without a
+      // non-empty reason. Mirror that: blank/whitespace-only
+      // blockReason is a typed hook failure; we skip this hook's
+      // block contribution entirely.
+      const trimmedReason = outcome.blockReason?.trim();
+      if (!trimmedReason) {
+        emitError(session.eventLog, session.nextInternalSubId(), {
+          cause: "stop_hook_threw",
+          message: `${hook.name}: stop_hook_blank_reason — shouldBlock without a non-empty blockReason`,
+          stack: "stop_hook_blank_reason",
+        });
+      } else {
+        anyBlocked = true;
+        if (outcome.continuationFragments.length > 0) {
+          injectedFragments.push(...outcome.continuationFragments);
+        }
         emitWarning(
           session.eventLog,
           session.nextInternalSubId(),
           "stop_hook_blocked",
-          `${hook.name}: ${outcome.blockReason}`,
+          `${hook.name}: ${trimmedReason}`,
         );
       }
     }
@@ -185,6 +206,19 @@ export async function evaluateStopHooks(
     }
   }
   void aggregate;
+
+  // Codex `stop.rs:271` precedence: `should_block = !should_stop &&
+  // any(should_block)`. A hook that returned `shouldStop: true` wins
+  // over any concurrent `shouldBlock: true`, even across hooks.
+  // Asserted by codex test `continue_false_overrides_block_decision`
+  // (stop.rs:378-400).
+  if (anyShouldStop) {
+    return {
+      allowStop: true,
+      blocking: false,
+      reason: "stop_hook_shouldstop_wins",
+    };
+  }
 
   if (!anyBlocked) {
     return { allowStop: true, blocking: false };

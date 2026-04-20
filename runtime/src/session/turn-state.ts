@@ -19,7 +19,7 @@
  * @module
  */
 
-import type { LLMMessage, LLMToolCall } from "../llm/types.js";
+import type { LLMMessage, LLMToolCall, LLMUsage } from "../llm/types.js";
 import type { TurnContext } from "./turn-context.js";
 
 /**
@@ -336,6 +336,13 @@ export interface TurnState {
    *  in commit phase to decide continuation vs terminate. */
   pendingBudgetDecision: TokenBudgetDecision | undefined;
 
+  /** Provider-reported usage from the most recent streamModel call.
+   *  Threaded into SamplingRequestResult.usage so the outer runTurn
+   *  loop can accumulate real token consumption for downstream
+   *  auto-compact + budget decisions. Cleared at iteration start by
+   *  resetIterationFields. */
+  lastResponseUsage: LLMUsage | undefined;
+
   // ── Phase 6 — commit (openclaude query.ts:1192-1465) ──────────────
   /** Number of model turns consumed this session. Compared against
    *  `ctx.configSnapshot.maxTurns` for I-7 terminal abort.
@@ -415,6 +422,7 @@ export function buildInitialTurnState(
     streamingToolExecutor: null,
     pendingToolUseSummary: undefined,
     pendingBudgetDecision: undefined,
+    lastResponseUsage: undefined,
     // Phase 6
     turnCount: 1,
     // Recovery transition
@@ -442,6 +450,7 @@ export function resetIterationFields(state: TurnState): void {
   state.needsFollowUp = false;
   state.snipTokensFreed = 0;
   state.pendingBudgetDecision = undefined;
+  state.lastResponseUsage = undefined;
   // pendingToolUseSummary + streamingToolExecutor intentionally NOT
   // cleared here — they are awaited in executeTools and cleared by
   // commit phase after their resolution.

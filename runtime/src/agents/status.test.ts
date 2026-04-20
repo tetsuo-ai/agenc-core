@@ -41,6 +41,31 @@ describe("AgentStatusTracker", () => {
   it("isFinal classifies terminal states", () => {
     expect(isFinal({ status: "idle" })).toBe(false);
     expect(isFinal({ status: "shutdown", endedAtMs: 0 })).toBe(true);
+    // interrupted is non-final (matches codex semantics).
+    expect(
+      isFinal({
+        status: "interrupted",
+        turnId: "turn-1",
+        endedAtMs: 0,
+        reason: "parent_interrupt",
+      }),
+    ).toBe(false);
+  });
+
+  it("allows transition back to running after interrupt", () => {
+    const t = new AgentStatusTracker();
+    t.markRunning("turn-1");
+    t.markInterrupted("turn-1", "parent_interrupt");
+    expect(t.value.status).toBe("interrupted");
+    t.markRunning("turn-2");
+    expect(t.value.status).toBe("running");
+  });
+
+  it("shutdown stays sticky and rejects further transitions", () => {
+    const t = new AgentStatusTracker();
+    t.markShutdown();
+    t.markRunning("turn-1");
+    expect(t.value.status).toBe("shutdown");
   });
 
   it("subscribe delivers replay of current state", () => {

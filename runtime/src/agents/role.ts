@@ -7,15 +7,32 @@
  * spawn.
  *
  * Built-in roles:
- *   - `default` — unrestricted; inherits parent config
- *   - `explorer` — codebase queries; fast reasoning; read-only tool set
- *   - `awaiter` — long-running polling (3600s timeout, low reasoning)
+ *   - `default`  — unrestricted; inherits parent config
+ *   - `explorer` — codebase queries; low reasoning; read-only tool set
+ *   - `worker`   — execution/production work; medium reasoning;
+ *                  inherits parent tool catalog (mirrors codex
+ *                  `agent/role.rs:383` `worker` entry)
+ *   - `awaiter`  — long-running polling (3600s timeout, low reasoning)
+ *
+ * Divergences from codex upstream (`codex-rs/core/src/agent/role.rs`):
+ *
+ *   - AgenC ships `awaiter` active. Upstream codex has the entry
+ *     commented out at `role.rs:398-414` ("awaiter is temp removed").
+ *     AgenC keeps it because the MCP + long-running tool-poll use
+ *     case needs a background polling role (e.g. waiting on a
+ *     long-running MCP server health check or external build).
+ *   - Nickname allocation cycles candidates in declaration order
+ *     rather than codex's `rand::rng()` shuffle. Deterministic
+ *     ordering is intentional: it makes spawn tests reproducible
+ *     and eliminates flaky allocation-collision tests.
  *
  * User roles register via `registerAgentRole({ name, config })` and
  * override the built-ins.
  *
  * @module
  */
+
+import type { AgentRegistry } from "./registry.js";
 
 export type AgentReasoningEffort = "none" | "low" | "medium" | "high";
 
@@ -36,7 +53,10 @@ export interface AgentRoleConfig {
   /** Whether this role runs synchronously (parent blocks) or async
    *  (parent registers + continues). */
   readonly background?: boolean;
-  /** Max recursion depth override (capped at MAX_AGENT_DEPTH=4). */
+  /** Max recursion depth override. Uses codex `>=` semantics: the
+   *  cap is the smallest rejected childDepth. Defaults to
+   *  `MAX_AGENT_DEPTH` (=4 unless overridden by
+   *  `AGENC_AGENT_MAX_DEPTH`). */
   readonly maxDepth?: number;
 }
 
@@ -85,6 +105,17 @@ const EXPLORER_ROLE: AgentRole = Object.freeze<AgentRole>({
   },
 });
 
+const WORKER_ROLE: AgentRole = Object.freeze<AgentRole>({
+  name: "worker",
+  config: {
+    description:
+      "Execution/production work — implement features, fix tests/bugs, " +
+      "split large refactors. Inherits the parent tool catalog.",
+    reasoningEffort: "medium" as const,
+    nicknameCandidates: ["builder", "smith", "forge", "weaver"],
+  },
+});
+
 const AWAITER_ROLE: AgentRole = Object.freeze<AgentRole>({
   name: "awaiter",
   config: {
@@ -99,6 +130,7 @@ const AWAITER_ROLE: AgentRole = Object.freeze<AgentRole>({
 const BUILT_INS: ReadonlyArray<AgentRole> = Object.freeze([
   DEFAULT_ROLE,
   EXPLORER_ROLE,
+  WORKER_ROLE,
   AWAITER_ROLE,
 ]);
 
@@ -132,44 +164,52 @@ export function resolveAgentRole(name: string | undefined): AgentRole {
 
 // ─────────────────────────────────────────────────────────────────────
 // Nickname allocation
+//
+// Nicknames are owned by the AgentRegistry — the registry is the
+// spawn-slot authority, and nicknames live for the same lifetime as
+// spawn slots. `allocateNickname`/`releaseNickname` are thin
+// delegators that route into the registry's internal pool so there
+// is exactly one source of truth for live nicknames.
 // ─────────────────────────────────────────────────────────────────────
-
-const usedNicknames = new Set<string>();
-let nicknameResetCount = 0;
 
 /**
  * Allocate a nickname for a fresh subagent. On collision, cycles
  * through the candidate list + appends an ordinal suffix
- * ("scout the 2nd"). Mirrors codex `registry.rs::format_agent_nickname`.
+ * ("scout the 2nd"). Mirrors codex `registry.rs::format_agent_nickname`
+ * except for nickname ordering (see module-level divergence note).
  */
-export function allocateNickname(role: AgentRole): string {
-  const candidates = role.config.nicknameCandidates ?? [role.name];
-  for (const candidate of candidates) {
-    const formatted =
-      nicknameResetCount === 0
-        ? candidate
-        : formatNicknameWithSuffix(candidate, nicknameResetCount);
-    if (!usedNicknames.has(formatted)) {
-      usedNicknames.add(formatted);
-      return formatted;
-    }
-  }
-  // All candidates exhausted at this ordinal — advance.
-  nicknameResetCount += 1;
-  return allocateNickname(role);
+export function allocateNickname(
+  role: AgentRole,
+  registry: AgentRegistry,
+): string {
+  return registry.allocateNickname(role);
 }
 
-export function releaseNickname(nickname: string): void {
-  usedNicknames.delete(nickname);
+export function releaseNickname(
+  registry: AgentRegistry,
+  nickname: string,
+): void {
+  registry.releaseNickname(nickname);
 }
 
-/** Reset the process-wide nickname pool (tests). */
+/**
+ * Reset the nickname pool for tests.
+ *
+ * After the registry took ownership of nickname bookkeeping, each
+ * test that spins up a fresh `AgentRegistry` already gets a fresh
+ * pool. This shim is kept as a no-op so existing tests that call
+ * it during setup/teardown continue to compile without touching
+ * unrelated test files.
+ */
 export function _resetNicknamePoolForTesting(): void {
-  usedNicknames.clear();
-  nicknameResetCount = 0;
+  // No-op: per-registry pools make this reset unnecessary. The hook
+  // is preserved so existing test setup/teardown does not break.
 }
 
-function formatNicknameWithSuffix(name: string, resetCount: number): string {
+export function formatNicknameWithSuffix(
+  name: string,
+  resetCount: number,
+): string {
   const value = resetCount + 1;
   const mod100 = value % 100;
   let suffix = "th";

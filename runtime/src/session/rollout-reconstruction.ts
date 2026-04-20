@@ -40,8 +40,16 @@ import type {
   RolloutItem,
   TurnContextItem,
 } from "./rollout-item.js";
-import { reduce, type ReducedSessionState } from "./event-log-reducer.js";
+import {
+  reduce,
+  type ReducedSessionState,
+  type ReductionReport,
+} from "./event-log-reducer.js";
 import type { IndexSnapshot } from "./session-store.js";
+import {
+  capToolResult,
+  DEFAULT_MAX_TOOL_RESULT_BYTES,
+} from "../tools/execution.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Reconstruction types
@@ -70,6 +78,9 @@ export interface RolloutReconstruction {
   readonly snapshotBehindRollout: boolean;
   /** I-25: the snapshot actually consumed (if any). Metadata only. */
   readonly consumedSnapshot?: IndexSnapshot;
+  /** Reducer diagnostics aggregated over the forward replay. Includes
+   *  seq-gap counts (I-27) and unknown-variant samples (I-26). */
+  readonly reductionReport?: ReductionReport;
 }
 
 /** Internal: reverse-scan segment accumulator. */
@@ -100,13 +111,65 @@ function turnIdsCompatible(active?: string, item?: string): boolean {
 }
 
 /**
- * Is this ResponseItem a user-turn boundary? Codex uses a helper
- * `is_user_turn_boundary` that checks role==user AND message isn't
- * a tool_result injection. For AgenC T6 we adopt the simpler rule:
- * role==user.
+ * Contextual user-message open tags (codex `contextual_user_message.rs`).
+ * A user message whose content is *only* one of these fragments is an
+ * injection, not a real user-turn boundary — excluding them matches
+ * codex `is_contextual_user_message_content` semantics.
+ */
+const CONTEXTUAL_USER_OPEN_TAGS: ReadonlyArray<string> = [
+  "<environment_context>",
+  "<user_shell_command>",
+  "<turn_aborted>",
+  "<subagent_notification>",
+  "<agents_md>",
+  "<skill>",
+  "<hook_prompt>",
+];
+
+function isContextualUserText(text: string): boolean {
+  const trimmed = text.trimStart().toLowerCase();
+  return CONTEXTUAL_USER_OPEN_TAGS.some((tag) => trimmed.startsWith(tag));
+}
+
+/**
+ * Does this message content count as a contextual injection rather
+ * than a real user turn? Accepts both string and content-array
+ * payloads so it matches the permissive `ResponseItem.content` shape.
+ */
+function isContextualUserContent(
+  content: ResponseItem["content"],
+): boolean {
+  if (typeof content === "string") {
+    return isContextualUserText(content);
+  }
+  if (!Array.isArray(content) || content.length === 0) return false;
+  // Any fragment being contextual is enough (matches codex `.any`).
+  return content.some((frag) => {
+    const text = typeof frag.text === "string" ? frag.text : "";
+    return (
+      frag.type === "function_call_output" ||
+      frag.type === "tool_use_result" ||
+      frag.type === "tool_result" ||
+      (frag.type === "input_text" && isContextualUserText(text)) ||
+      (typeof text === "string" && isContextualUserText(text))
+    );
+  });
+}
+
+/**
+ * Is this ResponseItem a user-turn boundary? Port of codex
+ * `context_manager::is_user_turn_boundary`. A user-role item is a
+ * boundary only when its content is a *real* user message — not a
+ * contextual injection (tool_result, function_call_output,
+ * `<environment_context>...</environment_context>`, etc.).
  */
 function isUserTurnBoundary(item: ResponseItem): boolean {
-  return item.role === "user";
+  if (item.role !== "user") return false;
+  // Tool-role messages (function_call_output equivalents) never count.
+  if (item.toolCallId !== undefined || item.toolName !== undefined) {
+    return false;
+  }
+  return !isContextualUserContent(item.content);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -208,7 +271,21 @@ export function reconstructFromRollout(
           active.turnId = item.payload.turnId;
         }
         if (turnIdsCompatible(active.turnId, item.payload.turnId)) {
-          active.previousTurnSettings = { model: item.payload.model };
+          // Codex threads `realtime_active` from the TurnContext event
+          // into PreviousTurnSettings so resume can rehydrate a
+          // realtime turn. The rollout writer (`toTurnContextItem`)
+          // includes the field, though our event-log.ts TurnContextItem
+          // type omits it — read via a typed cast.
+          const payloadWithRealtime = item.payload as TurnContextItem & {
+            readonly realtimeActive?: boolean;
+          };
+          const next: PreviousTurnSettings = {
+            model: payloadWithRealtime.model,
+            ...(payloadWithRealtime.realtimeActive !== undefined
+              ? { realtimeActive: payloadWithRealtime.realtimeActive }
+              : {}),
+          };
+          active.previousTurnSettings = next;
           if (active.referenceContextItem.kind === "never_set") {
             active.referenceContextItem = { kind: "latest", item: item.payload };
           }
@@ -293,7 +370,15 @@ export function reconstructFromRollout(
     finalizeActiveSegment(active, pending);
   }
 
-  // Forward replay over the suffix using the reducer.
+  // Forward replay over the suffix using the reducer. We apply three
+  // extra codex-parity steps inline so forward replay reproduces the
+  // runtime state the writer saw at that seq:
+  //   (a) I-15-style truncation of oversized response_item text (codex
+  //       `ContextManager::record_items(truncation_policy)`),
+  //   (b) legacy compaction rebuild via `buildCompactedHistory`
+  //       (codex `compact::build_compacted_history`),
+  //   (c) aggregate `ReductionReport` so callers can surface seq-gap
+  //       / unknown-variant telemetry from replay.
   let state: ReducedSessionState = {
     history: pending.baseReplacementHistory
       ? [...pending.baseReplacementHistory]
@@ -301,26 +386,50 @@ export function reconstructFromRollout(
     rolledBackTurns: 0,
     lastSeq: 0,
   };
-
-  for (const item of rolloutSuffix) {
-    const step = reduce(state, item);
-    state = step.state;
-  }
-
-  // Handle legacy compactions without replacementHistory. Codex's
-  // full rebuild path lives in compact/build_compacted_history; in
-  // AgenC we treat this as "preserve history as-is and drop the
-  // reference context" (matches codex line 292-296).
+  let reductionReport: ReductionReport = {
+    unknownVariantCount: 0,
+    unknownVariantSamples: [],
+    seqGapCount: 0,
+    malformedLineCount: 0,
+    processed: 0,
+  };
   let sawLegacyCompactionWithoutReplacement = false;
+
   for (const item of rolloutSuffix) {
+    // (b) Legacy compaction: rebuild history in place via the inline
+    // `buildCompactedHistory` helper instead of deferring to the
+    // reducer (which would just clear the reference). This matches
+    // codex `rollout_reconstruction.rs:252-274`.
     if (
       item.type === "compacted" &&
       item.payload.replacementHistory === undefined
     ) {
       sawLegacyCompactionWithoutReplacement = true;
-      break;
+      const userMessages = collectUserMessages(state.history);
+      const rebuilt = buildCompactedHistory(userMessages, item.payload.message);
+      state = { ...state, history: rebuilt, lastCompaction: item.payload };
+      reductionReport = mergeReport(reductionReport, { processed: 1 });
+      continue;
     }
+
+    // (a) Truncation policy: apply I-15 cap to response_item text
+    // payloads on replay so a single oversized message can't blow
+    // memory. Codex uses `truncation_policy.head` at this seam; the
+    // AgenC simplification keeps the full ResponseItem but truncates
+    // the text body with the same marker format.
+    const toReduce =
+      item.type === "response_item"
+        ? { ...item, payload: applyReplayTruncation(item.payload) }
+        : item;
+
+    const step = reduce(state, toReduce);
+    state = step.state;
+    reductionReport = mergeReport(reductionReport, step.report);
   }
+  reductionReport = {
+    ...reductionReport,
+    processed: rolloutSuffix.length,
+  };
 
   // I-48: orphan-TurnStarted recovery. For each started-but-not-terminated
   // turn, synthesize a TurnAborted{reason:'process_killed'} event so
@@ -402,6 +511,7 @@ export function reconstructFromRollout(
     state,
     rolledBackTurnsConsumed: state.rolledBackTurns,
     snapshotBehindRollout,
+    reductionReport,
     ...(opts.indexSnapshot && !snapshotBehindRollout
       ? { consumedSnapshot: opts.indexSnapshot }
       : {}),
@@ -434,6 +544,142 @@ export function replacementHistoryFrom(
   compacted: CompactedItem,
 ): ReadonlyArray<ResponseItem> | undefined {
   return compacted.replacementHistory;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Forward-replay helpers: truncation + legacy compaction rebuild
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Extract raw text from a `ResponseItem`. Supports both the string
+ * shorthand and the content-array shape.
+ */
+function responseItemText(item: ResponseItem): string {
+  if (typeof item.content === "string") return item.content;
+  if (!Array.isArray(item.content)) return "";
+  let total = "";
+  for (const frag of item.content) {
+    if (typeof frag.text === "string") total += frag.text;
+  }
+  return total;
+}
+
+/**
+ * Replace text within a `ResponseItem`. Preserves the original shape
+ * (string vs content-array); for content arrays we place the new
+ * text into the first text-carrying fragment.
+ */
+function withResponseItemText(
+  item: ResponseItem,
+  newText: string,
+): ResponseItem {
+  if (typeof item.content === "string") {
+    return { ...item, content: newText };
+  }
+  if (!Array.isArray(item.content)) return item;
+  const cloned = item.content.map((frag, i) =>
+    i === 0 ? { ...frag, text: newText } : frag,
+  );
+  return { ...item, content: cloned };
+}
+
+/**
+ * Forward-replay truncation (codex `ContextManager::record_items`).
+ * If the response_item's text payload exceeds the I-15 cap, rewrite
+ * it with the truncation marker. Kept simpler than codex's
+ * TruncationPolicy (head/middle/off): AgenC uses head-truncation via
+ * the shared `capToolResult` helper so every tool-result-sized payload
+ * on replay gets the same 400KB ceiling.
+ */
+function applyReplayTruncation(item: ResponseItem): ResponseItem {
+  const text = responseItemText(item);
+  if (!text) return item;
+  const cap = capToolResult(text, DEFAULT_MAX_TOOL_RESULT_BYTES);
+  if (!cap.truncated) return item;
+  return withResponseItemText(item, cap.capped);
+}
+
+/**
+ * Codex `collect_user_messages(history)` analogue. Extracts real
+ * user-turn text (non-contextual, non-summary). Contextual and
+ * tool-role items are skipped so legacy compaction rebuild sees only
+ * human input.
+ */
+function collectUserMessages(
+  history: ReadonlyArray<ResponseItem>,
+): string[] {
+  const out: string[] = [];
+  for (const item of history) {
+    if (!isUserTurnBoundary(item)) continue;
+    const text = responseItemText(item);
+    if (!text) continue;
+    // Skip compaction-summary messages so we don't re-feed an old
+    // summary into a new compaction (codex `is_summary_message`).
+    if (text.startsWith("# Session Summary\n")) continue;
+    out.push(text);
+  }
+  return out;
+}
+
+/**
+ * Codex `compact::build_compacted_history` minimal port. Rebuilds a
+ * compacted history from scratch when the legacy `Compacted` item
+ * had no inline `replacementHistory`. Structure:
+ *   - replay prior real user messages (bounded by a rough token cap
+ *     equal to 400KB chars to stay within I-15 limits),
+ *   - append the compaction summary as a final user-role message.
+ *
+ * Inlined rather than importing from a `compact/` subsystem because
+ * rollout reconstruction must stay free of the compact subsystem's
+ * runtime dependencies.
+ */
+export function buildCompactedHistory(
+  userMessages: ReadonlyArray<string>,
+  summaryText: string,
+): ResponseItem[] {
+  const out: ResponseItem[] = [];
+  let remaining = DEFAULT_MAX_TOOL_RESULT_BYTES;
+  const selected: string[] = [];
+  for (let i = userMessages.length - 1; i >= 0; i -= 1) {
+    const msg = userMessages[i]!;
+    const size = Buffer.byteLength(msg, "utf8");
+    if (size <= remaining) {
+      selected.push(msg);
+      remaining -= size;
+    } else if (remaining > 0) {
+      const cap = capToolResult(msg, remaining);
+      selected.push(cap.capped);
+      remaining = 0;
+      break;
+    } else {
+      break;
+    }
+  }
+  selected.reverse();
+  for (const msg of selected) {
+    out.push({ role: "user", content: msg });
+  }
+  const summary = summaryText.length > 0 ? summaryText : "(no summary available)";
+  out.push({ role: "user", content: summary });
+  return out;
+}
+
+/** Tiny reducer-report merger used during forward replay. */
+function mergeReport(
+  a: ReductionReport,
+  b: Partial<ReductionReport>,
+): ReductionReport {
+  return {
+    unknownVariantCount: a.unknownVariantCount + (b.unknownVariantCount ?? 0),
+    unknownVariantSamples:
+      b.unknownVariantSamples && b.unknownVariantSamples.length > 0
+        ? [...a.unknownVariantSamples, ...b.unknownVariantSamples].slice(0, 5)
+        : a.unknownVariantSamples,
+    seqGapCount: a.seqGapCount + (b.seqGapCount ?? 0),
+    firstSeqGap: a.firstSeqGap ?? b.firstSeqGap,
+    malformedLineCount: a.malformedLineCount + (b.malformedLineCount ?? 0),
+    processed: a.processed + (b.processed ?? 0),
+  };
 }
 
 /**

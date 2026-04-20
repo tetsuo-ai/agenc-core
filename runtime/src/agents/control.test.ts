@@ -44,14 +44,38 @@ describe("AgentControl", () => {
     expect(live.depth).toBe(1);
   });
 
-  it("I-1: depth cap rejects spawn past MAX_AGENT_DEPTH", async () => {
+  it("I-1: depth at cap is rejected (codex `>=` semantics)", async () => {
+    // maxDepth=2 means childDepth=2 rejects; depth=1 is the last
+    // accepted level. Matches codex `depth >= config.agent_max_depth`.
     const session = stubSession();
     const registry = new AgentRegistry();
     const control = new AgentControl({ session, registry, maxDepth: 2 });
     const first = await control.spawn({ parentPath: "/root" });
-    const second = await control.spawn({ parentPath: first.agentPath });
+    expect(first.depth).toBe(1);
     await expect(
-      control.spawn({ parentPath: second.agentPath }),
+      control.spawn({ parentPath: first.agentPath }),
+    ).rejects.toBeInstanceOf(MaxDepthExceededError);
+  });
+
+  it("I-1: depth = cap-1 is accepted", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry, maxDepth: 3 });
+    const d1 = await control.spawn({ parentPath: "/root" });
+    const d2 = await control.spawn({ parentPath: d1.agentPath });
+    expect(d2.depth).toBe(2); // cap - 1
+    await expect(
+      control.spawn({ parentPath: d2.agentPath }),
+    ).rejects.toBeInstanceOf(MaxDepthExceededError);
+  });
+
+  it("AgentControlOpts.maxDepth override is honored", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry, maxDepth: 1 });
+    // cap=1 matches codex default: root (depth 0) may not spawn.
+    await expect(
+      control.spawn({ parentPath: "/root" }),
     ).rejects.toBeInstanceOf(MaxDepthExceededError);
   });
 

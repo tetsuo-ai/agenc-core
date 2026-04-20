@@ -175,6 +175,114 @@ describe("evaluateStopHooks", () => {
     expect(errors).toContain("stop_hook_threw");
   });
 
+  test("shouldStop: true beats shouldBlock: true when both set on one hook", async () => {
+    const log = new EventLog();
+    const session = mkSession(log, [
+      {
+        name: "stop-and-block",
+        run: async () => ({
+          shouldStop: true,
+          stopReason: "done",
+          shouldBlock: true,
+          blockReason: "keep going",
+          continuationFragments: ["do more work"],
+        }),
+      },
+    ]);
+    const state = mkState();
+    const result = await evaluateStopHooks(state, mkCtx(), session);
+    expect(result.allowStop).toBe(true);
+    expect(result.blocking).toBe(false);
+    expect(result.reason).toBe("stop_hook_shouldstop_wins");
+    expect(state.stopHookBlockingCount).toBe(0);
+    expect(state.stopHookActive).toBeUndefined();
+  });
+
+  test("shouldStop from one hook beats shouldBlock from a sibling hook", async () => {
+    const log = new EventLog();
+    const session = mkSession(log, [
+      {
+        name: "blocker",
+        run: async () => ({
+          shouldStop: false,
+          shouldBlock: true,
+          blockReason: "lint errors",
+          continuationFragments: ["fix lint"],
+        }),
+      },
+      {
+        name: "stopper",
+        run: async () => ({
+          shouldStop: true,
+          stopReason: "done",
+          shouldBlock: false,
+          continuationFragments: [],
+        }),
+      },
+    ]);
+    const state = mkState();
+    const result = await evaluateStopHooks(state, mkCtx(), session);
+    expect(result.allowStop).toBe(true);
+    expect(result.blocking).toBe(false);
+    expect(result.reason).toBe("stop_hook_shouldstop_wins");
+    expect(state.stopHookBlockingCount).toBe(0);
+  });
+
+  test("empty blockReason → hook skipped, stop_hook_threw emitted, no block", async () => {
+    const log = new EventLog();
+    const session = mkSession(log, [
+      {
+        name: "no-reason",
+        run: async () => ({
+          shouldStop: false,
+          shouldBlock: true,
+          blockReason: "",
+          continuationFragments: ["keep going"],
+        }),
+      },
+    ]);
+    const errors: Array<{ cause?: string; message?: string; stack?: string }> = [];
+    log.subscribe((e) => {
+      const p = e.msg.payload as { cause?: string; message?: string; stack?: string };
+      if (e.msg.type === "error" && p.cause === "stop_hook_threw") errors.push(p);
+    });
+    const state = mkState();
+    const result = await evaluateStopHooks(state, mkCtx(), session);
+    expect(result.allowStop).toBe(true);
+    expect(result.blocking).toBe(false);
+    expect(state.stopHookBlockingCount).toBe(0);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.stack).toBe("stop_hook_blank_reason");
+    expect(errors[0]?.message).toContain("stop_hook_blank_reason");
+  });
+
+  test("whitespace-only blockReason ('   ') → hook skipped, no block", async () => {
+    const log = new EventLog();
+    const session = mkSession(log, [
+      {
+        name: "whitespace-reason",
+        run: async () => ({
+          shouldStop: false,
+          shouldBlock: true,
+          blockReason: "   ",
+          continuationFragments: ["keep going"],
+        }),
+      },
+    ]);
+    const errors: Array<{ cause?: string; stack?: string }> = [];
+    log.subscribe((e) => {
+      const p = e.msg.payload as { cause?: string; stack?: string };
+      if (e.msg.type === "error" && p.cause === "stop_hook_threw") errors.push(p);
+    });
+    const state = mkState();
+    const result = await evaluateStopHooks(state, mkCtx(), session);
+    expect(result.allowStop).toBe(true);
+    expect(result.blocking).toBe(false);
+    expect(state.stopHookBlockingCount).toBe(0);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.stack).toBe("stop_hook_blank_reason");
+  });
+
   test("API-error guard: blocking hook on API-error turn → skipped", async () => {
     const log = new EventLog();
     const session = mkSession(log, [
@@ -183,6 +291,7 @@ describe("evaluateStopHooks", () => {
         run: async () => ({
           shouldStop: false,
           shouldBlock: true,
+          blockReason: "please continue",
           continuationFragments: ["continue"],
         }),
       },

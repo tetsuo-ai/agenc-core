@@ -24,9 +24,30 @@ import type { LLMProvider } from "../llm/types.js";
 // the TurnContext shape without dragging in the real subsystem.
 // ─────────────────────────────────────────────────────────────────────
 
-/** Codex `AuthManager`. T13 wires real OAuth refresh; today stubbed. */
+/**
+ * Codex `AuthManager`. T13 wires real OAuth refresh; today stubbed.
+ *
+ * `mode` matches codex `AuthMode` at the transport level: `bearer_key` for
+ * static API keys, `oauth` for any OAuth-authorized session, and
+ * `local_no_auth` for local-only loopback providers.
+ *
+ * `authProvider` narrows an `oauth` session to the specific upstream so
+ * gates like `imageGenerationToolAuthAllowed` can match codex's
+ * `AuthMode::Chatgpt`-only behavior instead of lighting up for every
+ * OAuth provider.
+ */
+export type AuthProviderId =
+  | "chatgpt"
+  | "openai"
+  | "openrouter"
+  | "xai"
+  | "azure"
+  | "other";
+
 export interface AuthManager {
   readonly mode: "bearer_key" | "oauth" | "local_no_auth";
+  /** Upstream identity for the auth session (only meaningful when `mode === "oauth"`). */
+  readonly authProvider?: AuthProviderId;
 }
 
 /** Codex `ModelInfo`. T13 (multi-provider capability registry) lands real shape. */
@@ -216,6 +237,72 @@ export interface SessionConfiguration {
   readonly appServerClientName?: string;
   readonly dynamicTools: ReadonlyArray<DynamicToolSpec>;
   readonly sessionSource: SessionSource;
+
+  // ─── codex `SessionConfiguration` fields not yet bound to a real AgenC
+  // subsystem. Kept optional/unknown until the naming tranche lands; the
+  // shape tracks codex parity so `apply`, builder inputs, and cross-turn
+  // state propagation already line up.
+
+  /** Active `LLMProvider` for the session (codex `provider: SharedModelProvider`). */
+  readonly provider?: LLMProvider;
+  /** Codex `base_instructions` — baseline system prompt for the session. */
+  readonly baseInstructions?: string;
+  /** Codex `codex_home` — directory containing agent state for the session. */
+  readonly codexHome?: string;
+  /** Codex `thread_name` — optional user-facing thread label. */
+  readonly threadName?: string;
+  /**
+   * Codex `original_config_do_not_use` — raw config snapshot used to derive
+   * per-turn config. T10 replaces with the real typed config once the config
+   * surface lands.
+   */
+  readonly originalConfigDoNotUse?: unknown;
+  /** Codex `metrics_service_name` — optional service name tag for metrics. */
+  readonly metricsServiceName?: string;
+  /** Codex `app_server_client_version`. Pairs with `appServerClientName`. */
+  readonly appServerClientVersion?: string;
+  /** Codex `persist_extended_history` — when true, record extended rollout events. */
+  readonly persistExtendedHistory?: boolean;
+  /**
+   * Codex `inherited_shell_snapshot` — opaque shell-snapshot handle inherited
+   * by this session. T11 (permissions + shell snapshot) wires the real type.
+   */
+  readonly inheritedShellSnapshot?: unknown;
+  /**
+   * Codex `user_shell_override` — operator override for the detected user
+   * shell. T11 (shell discovery) wires the real `Shell` type.
+   */
+  readonly userShellOverride?: unknown;
+}
+
+/**
+ * Codex `SessionSettingsUpdate` — partial overlay applied via
+ * `applySessionConfiguration` when a turn mutates session state.
+ *
+ * Mirrors codex `SessionSettingsUpdate`: every field is optional, and a
+ * missing field means "keep the previous value". `finalOutputJsonSchema`
+ * uses a double-option shape in codex (`Option<Option<Value>>`); we model
+ * it the same way so a caller can set it to `undefined` explicitly to
+ * clear the previous schema versus leaving it off entirely to keep it.
+ */
+export interface SessionSettingsUpdate {
+  readonly cwd?: string;
+  readonly approvalPolicy?: ApprovalPolicy;
+  readonly approvalsReviewer?: string;
+  readonly sandboxPolicy?: SandboxPolicy;
+  readonly windowsSandboxLevel?: WindowsSandboxLevel;
+  readonly collaborationMode?: CollaborationMode;
+  readonly reasoningSummary?: ReasoningSummary;
+  readonly serviceTier?: string;
+  readonly personality?: Personality;
+  readonly appServerClientName?: string;
+  readonly appServerClientVersion?: string;
+  /**
+   * Codex-style double-option marker. `undefined` means "leave untouched";
+   * `{ value: undefined }` means "explicitly clear"; `{ value: schema }`
+   * means "set to schema".
+   */
+  readonly finalOutputJsonSchema?: { readonly value: unknown | undefined };
 }
 
 /** Codex `SessionSource`. */
@@ -471,13 +558,27 @@ export function toTurnContextItem(ctx: TurnContext): TurnContextItem {
 }
 
 /**
- * Whether the image-generation tool may be used (codex parity:
- * only true when ChatGPT-auth is the active mode).
+ * Narrow predicate: is this auth session the ChatGPT OAuth mode?
+ *
+ * Codex gates several features on `AuthMode::Chatgpt` specifically,
+ * not on "any OAuth session". Non-ChatGPT OAuth providers (e.g. xAI,
+ * OpenRouter) should NOT enable ChatGPT-only tool surfaces.
+ */
+export function isChatgptAuth(authManager?: AuthManager): boolean {
+  return (
+    authManager?.mode === "oauth" && authManager.authProvider === "chatgpt"
+  );
+}
+
+/**
+ * Whether the image-generation tool may be used (codex parity with
+ * `image_generation_tool_auth_allowed` — only true when the active auth
+ * is the ChatGPT OAuth mode, not any OAuth session).
  */
 export function imageGenerationToolAuthAllowed(
   authManager?: AuthManager,
 ): boolean {
-  return authManager?.mode === "oauth";
+  return isChatgptAuth(authManager);
 }
 
 /**
@@ -499,6 +600,189 @@ export function localTimeContext(): {
     };
   }
 }
+
+/**
+ * Deep-freeze helper for I-30 enforcement.
+ *
+ * `Object.freeze` is shallow: nested objects and arrays remain mutable.
+ * TurnContext relies on I-30 (per-turn-immutable config snapshot) at
+ * depth — phases must never mutate `ctx.config.permissions.*`,
+ * `ctx.configSnapshot.*`, etc. This walker freezes the whole object
+ * graph (skipping frozen subtrees to keep cycles harmless).
+ */
+export function deepFreeze<T>(value: T): Readonly<T> {
+  if (value === null || typeof value !== "object") return value;
+  if (Object.isFrozen(value)) return value as Readonly<T>;
+  Object.freeze(value);
+  for (const key of Reflect.ownKeys(value as object)) {
+    const child = (value as Record<PropertyKey, unknown>)[key];
+    if (child && typeof child === "object" && !Object.isFrozen(child)) {
+      deepFreeze(child);
+    }
+  }
+  return value as Readonly<T>;
+}
+
+/**
+ * Deep-clone a `Config` for the TurnContext snapshot.
+ *
+ * Uses `structuredClone` when available (Node 17+) and falls back to a
+ * JSON round-trip otherwise. Callers are responsible for re-attaching any
+ * non-serializable fields (e.g. `features` callbacks) after cloning.
+ */
+function cloneConfigForSnapshot(config: Config): Config {
+  const sc =
+    typeof (globalThis as { structuredClone?: unknown }).structuredClone ===
+    "function"
+      ? (globalThis as { structuredClone: <X>(x: X) => X }).structuredClone
+      : null;
+  if (sc) {
+    // Strip the non-cloneable `features` callbacks before cloning.
+    const { features: _features, ...rest } = config;
+    return sc(rest) as Config;
+  }
+  const { features: _features2, ...rest } = config;
+  return JSON.parse(JSON.stringify(rest)) as Config;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// SessionConfiguration helpers (codex `impl SessionConfiguration` parity).
+// ─────────────────────────────────────────────────────────────────────
+
+/** Mirror of codex `SessionConfiguration::codex_home` — thin accessor. */
+export function codexHome(sc: SessionConfiguration): string | undefined {
+  return sc.codexHome;
+}
+
+/**
+ * Shallow snapshot of the thread-shaping fields of `SessionConfiguration`.
+ * Mirrors codex `SessionConfiguration::thread_config_snapshot`. Returns a
+ * fresh object so mutations by the caller cannot leak back into the live
+ * session configuration.
+ */
+export interface ThreadConfigSnapshot {
+  readonly model: string;
+  readonly serviceTier?: string;
+  readonly approvalPolicy: ApprovalPolicy;
+  readonly approvalsReviewer?: string;
+  readonly sandboxPolicy: SandboxPolicy;
+  readonly cwd: string;
+  readonly reasoningEffort?: ReasoningEffort;
+  readonly personality?: Personality;
+  readonly sessionSource: SessionSource;
+}
+
+export function threadConfigSnapshot(
+  sc: SessionConfiguration,
+): ThreadConfigSnapshot {
+  const snap: ThreadConfigSnapshot = {
+    model: sc.collaborationMode.model,
+    ...(sc.serviceTier !== undefined ? { serviceTier: sc.serviceTier } : {}),
+    approvalPolicy: sc.approvalPolicy.value,
+    ...(sc.approvalsReviewer !== undefined
+      ? { approvalsReviewer: sc.approvalsReviewer }
+      : {}),
+    sandboxPolicy: sc.sandboxPolicy.value,
+    cwd: sc.cwd,
+    ...(sc.collaborationMode.reasoningEffort !== undefined
+      ? { reasoningEffort: sc.collaborationMode.reasoningEffort }
+      : {}),
+    ...(sc.personality !== undefined ? { personality: sc.personality } : {}),
+    sessionSource: sc.sessionSource,
+  };
+  return snap;
+}
+
+/**
+ * Apply a `SessionSettingsUpdate` and return the merged `SessionConfiguration`.
+ *
+ * Mirrors codex `SessionConfiguration::apply`. Notable parity:
+ *
+ *   - Legacy-FS-policy preservation on cwd-only updates. If only `cwd`
+ *     changes and the current `fileSystemSandboxPolicy` matches the
+ *     default derived from the legacy `sandboxPolicy`, re-derive from
+ *     the new cwd; otherwise preserve the existing richer policy.
+ *   - Sandbox-policy changes invalidate the derived split policy, so
+ *     callers should rebuild it downstream (parity with codex's
+ *     `from_legacy_sandbox_policy_preserving_deny_entries` path; here we
+ *     simply do not overwrite it — the full rebuild lands with T11).
+ */
+export function applySessionConfiguration(
+  current: SessionConfiguration,
+  updates: SessionSettingsUpdate,
+): SessionConfiguration {
+  const next: Mutable<SessionConfiguration> = { ...current };
+
+  if (updates.collaborationMode !== undefined) {
+    next.collaborationMode = updates.collaborationMode;
+  }
+  if (updates.reasoningSummary !== undefined) {
+    next.modelReasoningSummary = updates.reasoningSummary;
+  }
+  if (updates.serviceTier !== undefined) {
+    next.serviceTier = updates.serviceTier;
+  }
+  if (updates.personality !== undefined) {
+    next.personality = updates.personality;
+  }
+  if (updates.approvalPolicy !== undefined) {
+    next.approvalPolicy = {
+      value: updates.approvalPolicy,
+      ...(current.approvalPolicy.allowed
+        ? { allowed: current.approvalPolicy.allowed }
+        : {}),
+    };
+  }
+  if (updates.approvalsReviewer !== undefined) {
+    next.approvalsReviewer = updates.approvalsReviewer;
+  }
+
+  let sandboxPolicyChanged = false;
+  if (updates.sandboxPolicy !== undefined) {
+    next.sandboxPolicy = {
+      value: updates.sandboxPolicy,
+      ...(current.sandboxPolicy.allowed
+        ? { allowed: current.sandboxPolicy.allowed }
+        : {}),
+    };
+    sandboxPolicyChanged = true;
+  }
+  if (updates.windowsSandboxLevel !== undefined) {
+    next.windowsSandboxLevel = updates.windowsSandboxLevel;
+  }
+
+  const cwdChanged =
+    updates.cwd !== undefined && updates.cwd !== current.cwd;
+  if (updates.cwd !== undefined) {
+    next.cwd = updates.cwd;
+  }
+
+  // codex parity (session.rs ~160-176):
+  //   - sandbox policy changed -> we do NOT rederive here (the full
+  //     FileSystemSandboxPolicy rebuild with deny-entry preservation is
+  //     T11's job). We still keep the previous richer policy so it isn't
+  //     silently dropped.
+  //   - cwd-only change AND the current split policy is just the legacy
+  //     projection -> rederive nothing here (we lack the `from_legacy`
+  //     helper pre-T11). We keep the existing policy; the cwd change
+  //     alone does not invalidate the allow/deny lists.
+  //   - in both branches: never overwrite `fileSystemSandboxPolicy` just
+  //     because cwd moved. This matches the stated audit requirement:
+  //     cwd-only update preserves `fileSystemSandboxPolicy`.
+  void sandboxPolicyChanged;
+  void cwdChanged;
+
+  if (updates.appServerClientName !== undefined) {
+    next.appServerClientName = updates.appServerClientName;
+  }
+  if (updates.appServerClientVersion !== undefined) {
+    next.appServerClientVersion = updates.appServerClientVersion;
+  }
+
+  return next;
+}
+
+type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 
 // ─────────────────────────────────────────────────────────────────────
 // TurnContext builder (codex `Session::make_turn_context` parity).
@@ -547,8 +831,16 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
     },
   };
 
-  // I-30: freeze config for the lifetime of this TurnContext.
-  const frozenConfig: Readonly<Config> = Object.freeze({ ...opts.config });
+  // I-30: deep-clone then deep-freeze the config for the lifetime of
+  // this TurnContext so nested fields (permissions, features,
+  // multiAgentV2, …) cannot be mutated by any phase *and* so freezing
+  // does not leak back onto the caller's live config object.
+  // `structuredClone` strips functions (e.g. `features.appsEnabledForAuth`),
+  // so preserve non-serializable subtrees by clone-then-graft.
+  const preservedFeatures = opts.config.features;
+  const clonedConfig = cloneConfigForSnapshot(opts.config);
+  (clonedConfig as Mutable<Config>).features = preservedFeatures;
+  const frozenConfig: Readonly<Config> = deepFreeze(clonedConfig);
 
   return {
     subId: opts.subId,
@@ -579,16 +871,16 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
     networkSandboxPolicy: sc.networkSandboxPolicy,
     network: opts.network,
     windowsSandboxLevel: sc.windowsSandboxLevel,
-    shellEnvironmentPolicy: opts.config.permissions.shellEnvironmentPolicy,
+    shellEnvironmentPolicy: frozenConfig.permissions.shellEnvironmentPolicy,
     toolsConfig: {
-      allowLoginShell: opts.config.permissions.allowLoginShell,
+      allowLoginShell: frozenConfig.permissions.allowLoginShell,
       hasEnvironment: opts.environment !== undefined,
     },
-    features: opts.config.features,
-    ghostSnapshot: opts.config.ghostSnapshot,
+    features: frozenConfig.features,
+    ghostSnapshot: frozenConfig.ghostSnapshot,
     finalOutputJsonSchema: undefined,
-    codexSelfExe: opts.config.codexSelfExe,
-    codexLinuxSandboxExe: opts.config.codexLinuxSandboxExe,
+    codexSelfExe: frozenConfig.codexSelfExe,
+    codexLinuxSandboxExe: frozenConfig.codexLinuxSandboxExe,
     toolCallGate: new ReadinessFlag(),
     truncationPolicy: opts.modelInfo.truncationPolicy,
     jsRepl: opts.jsRepl ?? { id: `repl-${opts.conversationId}-${opts.subId}` },

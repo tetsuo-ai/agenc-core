@@ -19,7 +19,7 @@
  */
 
 import { AsyncLock } from "../utils/async-lock.js";
-import type { AgentRole } from "./role.js";
+import { formatNicknameWithSuffix, type AgentRole } from "./role.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Types
@@ -103,6 +103,13 @@ export interface AgentRegistryOpts {
 export class AgentRegistry {
   private readonly byPath = new Map<AgentPath, AgentMetadata>();
   private readonly usedNicknames = new Set<string>();
+  /**
+   * Nickname overflow counter. When all role candidates collide at
+   * the current ordinal we advance and re-try with a suffix
+   * ("scout the 2nd", "scout the 3rd", …). Shared across roles
+   * because a collision in any pool signals nickname pressure.
+   */
+  private nicknameResetCount = 0;
   private readonly slotLock: AsyncLock<void> = new AsyncLock<void>(undefined);
   private totalCount = 0;
   private readonly maxThreads: number | undefined;
@@ -224,6 +231,40 @@ export class AgentRegistry {
   /** Return whether a nickname is currently live. */
   hasNickname(nickname: string): boolean {
     return this.usedNicknames.has(nickname);
+  }
+
+  /**
+   * Allocate a nickname for a freshly spawning child. Cycles through
+   * the role's candidate pool in declaration order, then advances
+   * the ordinal suffix on full exhaustion. The registry is the
+   * single source of truth for live nicknames — role.ts's free
+   * functions delegate here so there is no second set to drift
+   * against.
+   */
+  allocateNickname(role: AgentRole): string {
+    const candidates = role.config.nicknameCandidates ?? [role.name];
+    for (const candidate of candidates) {
+      const formatted =
+        this.nicknameResetCount === 0
+          ? candidate
+          : formatNicknameWithSuffix(candidate, this.nicknameResetCount);
+      if (!this.usedNicknames.has(formatted)) {
+        this.usedNicknames.add(formatted);
+        return formatted;
+      }
+    }
+    this.nicknameResetCount += 1;
+    return this.allocateNickname(role);
+  }
+
+  /**
+   * Release a nickname back into the pool. Idempotent. Called both
+   * by failed-spawn rollback and by `releaseSpawnedThread` via the
+   * `usedNicknames` drop inside `finalizeSpawnReservation`'s mirror
+   * path.
+   */
+  releaseNickname(nickname: string): void {
+    this.usedNicknames.delete(nickname);
   }
 
   /** Diagnostics — total live non-root count. */

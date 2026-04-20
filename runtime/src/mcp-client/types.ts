@@ -10,16 +10,28 @@
 import type { Tool } from "../tools/types.js";
 
 /**
- * Configuration for an external MCP server launched as a child process.
+ * Configuration for an external MCP server.
+ *
+ * Supports three transport modes selected by `transport`:
+ *   - `"stdio"` (default): spawn a child process via `command` + `args`.
+ *   - `"sse"`: connect to a remote server over legacy SSE at `endpoint`.
+ *   - `"http"`: connect over the Streamable HTTP transport at `endpoint`.
  */
 export interface MCPServerConfig {
   /** Human-readable server name (used for tool namespacing) */
   name: string;
-  /** Executable command (e.g. "npx", "node") */
-  command: string;
-  /** Command arguments (e.g. ["-y", "@nicholasareed/peekaboo-mcp@latest"]) */
-  args: string[];
-  /** Optional environment variables for the child process */
+  /** Transport kind. Default: "stdio". */
+  transport?: "stdio" | "sse" | "http";
+  /** Executable command (e.g. "npx", "node"). Required for stdio transport. */
+  command?: string;
+  /** Command arguments (e.g. ["-y", "@nicholasareed/peekaboo-mcp@latest"]).
+   *  Required for stdio transport. */
+  args?: string[];
+  /** Remote endpoint URL. Required when `transport` is `"sse"` or `"http"`. */
+  endpoint?: string;
+  /** Optional HTTP headers to send on the initial request (SSE/HTTP). */
+  headers?: Record<string, string>;
+  /** Optional environment variables for the child process (stdio only). */
   env?: Record<string, string>;
   /** Whether this server is enabled. Default: true */
   enabled?: boolean;
@@ -27,7 +39,7 @@ export interface MCPServerConfig {
   timeout?: number;
   /** Route this server into a container instead of running on the host.
    *  Currently only "desktop" is supported — the MCP server will be spawned
-   *  via `docker exec` inside the desktop sandbox container. */
+   *  via `docker exec` inside the desktop sandbox container. Stdio only. */
   container?: string;
 }
 

@@ -18,7 +18,14 @@
  * is the single-point-of-truth for lifecycle state transitions.
  *
  * Invariants wired:
- *   I-1  (MAX_AGENT_DEPTH=4) — spawn rejects `depth + 1 > cap`
+ *   I-1  (MAX_AGENT_DEPTH=4) — spawn rejects `childDepth >= cap`.
+ *        AgenC raises the cap from codex's `DEFAULT_AGENT_MAX_DEPTH=1`
+ *        (`codex-rs/core/src/config/mod.rs:127`) to 4 because AgenC's
+ *        subagent workflow (delegate/worktree/fork-context) routinely
+ *        nests 2–3 levels deep for multi-role planner → implementer →
+ *        verifier chains. Comparison operator matches codex's `>=`
+ *        form (`codex-rs/core/src/agent/control.rs:486`,
+ *        `codex-rs/core/src/agent/multi_agents_common.rs:283`).
  *   I-5  (bidirectional mailbox) — interrupt routes via the child's
  *        `downInbox` with `direction: 'down'`
  *   I-32 (parent-interrupt race) — cancellation token from the
@@ -57,8 +64,35 @@ import { AgentStatusTracker } from "./status.js";
 // Constants
 // ─────────────────────────────────────────────────────────────────────
 
-/** I-1 default cap. Overrideable via `config.agents.maxDepth` (T10). */
-export const MAX_AGENT_DEPTH = 4;
+/**
+ * I-1 default cap. Overrideable via `config.agents.maxDepth` (T10) or the
+ * `AGENC_AGENT_MAX_DEPTH` env var (test/ops escape hatch).
+ *
+ * Semantics match codex: `spawn` rejects when `childDepth >= cap`, so the
+ * cap value is the smallest depth that is NOT allowed. Cap=4 means root
+ * (depth 0) may spawn depths 1, 2, and 3; depth 4 is rejected.
+ *
+ * Divergence from codex: codex defaults to `DEFAULT_AGENT_MAX_DEPTH=1`
+ * (`codex-rs/core/src/config/mod.rs:127`), which permits only a single
+ * layer of subagents under root. AgenC raises the default to 4 because
+ * its multi-role delegate pipeline (planner → implementer → verifier,
+ * optionally with a fork-context scout) routinely exercises 2–3 levels
+ * of nesting. Ops can still dial it back to codex's default via
+ * `AGENC_AGENT_MAX_DEPTH=1` or the per-session `maxDepth` override.
+ */
+const DEFAULT_MAX_AGENT_DEPTH = 4;
+
+function resolveDefaultMaxDepth(): number {
+  const raw = process.env.AGENC_AGENT_MAX_DEPTH;
+  if (!raw) return DEFAULT_MAX_AGENT_DEPTH;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return DEFAULT_MAX_AGENT_DEPTH;
+  }
+  return parsed;
+}
+
+export const MAX_AGENT_DEPTH: number = resolveDefaultMaxDepth();
 
 // ─────────────────────────────────────────────────────────────────────
 // Errors
@@ -153,8 +187,9 @@ export class AgentControl {
     const parentDepth = depthOfAgentPath(opts.parentPath);
     const childDepth = parentDepth + 1;
 
-    // I-1: depth cap.
-    if (childDepth > this.maxDepth) {
+    // I-1: depth cap. Matches codex `>=` comparison semantics
+    // (`control.rs:486`): cap is the smallest rejected depth.
+    if (childDepth >= this.maxDepth) {
       emitError(this.session.eventLog, this.session.nextInternalSubId(), {
         cause: "max_depth_exceeded",
         message: `subagent depth ${childDepth} exceeds cap ${this.maxDepth}`,
@@ -179,7 +214,7 @@ export class AgentControl {
     }
 
     const role = resolveAgentRole(opts.roleName);
-    const nickname = allocateNickname(role);
+    const nickname = allocateNickname(role, this.registry);
     const threadId = opts.threadId ?? crypto.randomUUID();
     const metadata: AgentMetadata = buildChildMetadata({
       agentId: threadId,
@@ -196,7 +231,7 @@ export class AgentControl {
     const parentToken = this.parentTokens.get(opts.parentPath);
     if (parentToken?.signal.aborted) {
       reservation.release();
-      releaseNickname(nickname);
+      releaseNickname(this.registry, nickname);
       emitWarning(
         this.session.eventLog,
         this.session.nextInternalSubId(),
@@ -211,7 +246,7 @@ export class AgentControl {
     try {
       reservation.finalize(metadata);
     } catch (err) {
-      releaseNickname(nickname);
+      releaseNickname(this.registry, nickname);
       if (err instanceof AgentPathExistsError) {
         emitError(this.session.eventLog, this.session.nextInternalSubId(), {
           cause: "agent_path_collision",
@@ -340,8 +375,11 @@ export class AgentControl {
       agent.abortController.abort(reason);
     }
 
+    // `releaseSpawnedThread` already removes the nickname from the
+    // registry's pool. Leave the explicit call out to keep a single
+    // release path (and avoid the false impression that we maintain
+    // two sets).
     await this.registry.releaseSpawnedThread(threadId);
-    releaseNickname(agent.nickname);
     this.parentTokens.delete(agent.agentPath);
     this.session.childInboxes.delete(threadId);
     this.live.delete(threadId);
@@ -393,9 +431,10 @@ export class AgentControl {
 
     // I-1: depth cap. Use metadata.depth as authority, fall back to
     // parent-path-derived depth + 1 if metadata is missing depth.
+    // Matches codex `>=` comparison (`multi_agents_common.rs:283`).
     const depth =
       metadata.depth ?? depthOfAgentPath(parentPath) + 1;
-    if (depth > this.maxDepth) {
+    if (depth >= this.maxDepth) {
       emitError(this.session.eventLog, this.session.nextInternalSubId(), {
         cause: "max_depth_exceeded",
         message: `resume depth ${depth} exceeds cap ${this.maxDepth}`,

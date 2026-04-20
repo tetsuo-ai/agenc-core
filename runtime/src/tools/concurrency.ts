@@ -1,36 +1,43 @@
 /**
- * Four-class concurrency contract for tool execution.
+ * AgenC-original concurrency contract for tool execution.
  *
- * Hand-port of codex `core/src/tools/parallel.rs` (194 LOC).
- * Combines codex's explicit enum-driven concurrency class with
- * openclaude's per-tool `isConcurrencySafe(args)` runtime predicate
- * (StreamingToolExecutor.ts:106-113). AgenC uses the enum as the
- * stable label and the predicate as a per-call refinement.
+ * Codex `core/src/tools/parallel.rs` inspired the boolean
+ * `supports_parallel_tool_calls` flag, but AgenC expands that single
+ * boolean into a 4-class `ConcurrencyClass` enum + a per-serverId
+ * `Semaphore` map for MCP tools + an openclaude-style
+ * `isConcurrencySafe(args)` runtime predicate that can downgrade an
+ * otherwise-parallel call to `exclusive` on untrusted input.
  *
- * Classes:
- *   - **Exclusive** — serial writer. Blocks all other tools for the
- *     duration (acquires the shared RwLock for write).
- *   - **SharedRead** — concurrent-safe reader. Parallel with other
- *     SharedRead calls (acquires the shared RwLock for read).
- *   - **SharedServer(id)** — concurrent within a server scope but
- *     serialized per-server. Holds a per-id semaphore keyed on
- *     `serverId` (I-61). MCP tools map here.
- *   - **BackgroundTerminal** — long-running, off-ladder. Doesn't
- *     participate in the shared RwLock at all (e.g. `bash` with
- *     sleep; each invocation owns its own subprocess AbortController).
+ * The codex primitive — `ToolCallRuntime::handle_tool_call` as
+ * spawn + cancellation token + router dispatch — is NOT ported here.
+ * That lives in `phases/execute-tools.ts` and
+ * `tools/streaming-executor.ts`. This module only owns the
+ * classification + guard-acquisition surface.
+ *
+ * Classes (each with its rationale):
+ *   - **exclusive** — serial writer. Blocks all other tools via
+ *     write-lock on the shared RwLock. Default for writes + unknowns.
+ *   - **shared_read** — concurrent-safe reader. Parallel with other
+ *     shared_read calls via read-lock on the shared RwLock. Covers
+ *     read-only filesystem + network GETs.
+ *   - **shared_server(id)** — concurrent across servers, serialized
+ *     per-server. Per-id `Semaphore` (I-61) so `mcp.dbA.query` and
+ *     `mcp.dbB.query` don't block each other while same-id calls do.
+ *   - **background_terminal** — long-running, off-ladder. No shared
+ *     RwLock participation; each invocation owns its own subprocess
+ *     AbortController (e.g. `bash`).
  *
  * Invariants wired here:
  *   I-61 (SharedServer per-id semaphore) — `Map<serverId, Semaphore>`
  *        keyed on serverId; never a global semaphore.
  *   I-65 (tool result completion ordering) — guarded by the caller
- *        (StreamingToolExecutor) which yields in submission order; this
- *        module only controls start ordering.
+ *        (StreamingToolExecutor) which yields in submission order;
+ *        this module only controls start ordering.
  *
  * @module
  */
 
 import { AsyncRwLock } from "../utils/async-rwlock.js";
-import type { AsyncLock } from "../utils/async-lock.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // ConcurrencyClass — enum + tagged discriminated shape for SharedServer
@@ -108,10 +115,6 @@ export class Semaphore {
 export type GuardedFn<T> = () => Promise<T>;
 
 export interface ToolCallRuntimeOpts {
-  /** Optional session-scoped AsyncLock<unknown> to synchronize with
-   *  unrelated session writes. Not used today; T9 may wire subagent
-   *  slot reservations here. */
-  readonly sessionSync?: AsyncLock<unknown>;
   /** Default capacity for SharedServer semaphores. Default 1. */
   readonly sharedServerCapacity?: number;
 }
@@ -121,19 +124,17 @@ export interface ToolCallRuntimeOpts {
  * `Semaphore` map. Every tool dispatch funnels through `run()` which
  * acquires the right guard for the supplied ConcurrencyClass.
  *
- * Mirrors codex `ToolCallRuntime::handle_tool_call` (parallel.rs:82-141).
- * Codex uses `tokio::sync::RwLock`; AgenC uses `AsyncRwLock` (T5).
+ * Codex `parallel.rs` uses `tokio::sync::RwLock`; AgenC uses
+ * `AsyncRwLock` (T5). The guard-acquisition policy here is AgenC's
+ * own; codex has no per-id semaphore or per-call downgrade path.
  */
 export class ToolCallRuntime {
   private readonly lock = new AsyncRwLock<void>(undefined);
   private readonly semaphores = new Map<string, Semaphore>();
   private readonly sharedServerCapacity: number;
-  private readonly sessionSync?: AsyncLock<unknown>;
 
   constructor(opts: ToolCallRuntimeOpts = {}) {
     this.sharedServerCapacity = opts.sharedServerCapacity ?? 1;
-    this.sessionSync = opts.sessionSync;
-    void this.sessionSync; // reserved for future wiring
   }
 
   /**
@@ -180,19 +181,6 @@ export class ToolCallRuntime {
     }
     return s;
   }
-
-  /** Diagnostics hook — returns per-server semaphore stats. */
-  getSemaphoreStats(): ReadonlyArray<{
-    readonly serverId: string;
-    readonly available: number;
-    readonly queueDepth: number;
-  }> {
-    return Array.from(this.semaphores.entries()).map(([serverId, s]) => ({
-      serverId,
-      available: s.available,
-      queueDepth: s.queueDepth,
-    }));
-  }
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -215,18 +203,21 @@ export interface ConcurrencyClassifiable {
 }
 
 /**
- * Classify a single tool call. Codex flow (router.rs:142-169):
+ * Classify a single tool call under AgenC's 4-class model:
  *
- *   1. If `spec.supportsParallelToolCalls` is false → `exclusive`.
- *   2. Otherwise, MCP tools map to `shared_server(serverId)`.
- *   3. Function tools with `supportsParallelToolCalls=true` map to
+ *   1. Base class comes from `tool.concurrencyClass` (defaults to
+ *      `exclusive` for unknowns/writes). MCP tools typically declare
+ *      `shared_server(serverId)`; read-only function tools declare
  *      `shared_read`.
- *
- * AgenC adds a per-call refinement via `tool.isConcurrencySafe(args)`
- * (openclaude pattern) — a read-tool with a dangerous arg (e.g.
- * `system.bash` with `sudo`) can downgrade itself to `exclusive` at
- * call time. When the predicate returns false, classification becomes
- * `exclusive` regardless of the static class.
+ *   2. Openclaude-style per-call refinement via
+ *      `tool.isConcurrencySafe(args)`: a nominally parallel tool whose
+ *      arguments look risky (e.g. a read-class tool invoked with a
+ *      path that would write) downgrades itself to `exclusive` at call
+ *      time. A throwing or false-returning predicate is treated as
+ *      unsafe.
+ *   3. For `shared_server`, the tool's `serverId` wins over the
+ *      base class's `serverId` so a single tool instance can be
+ *      re-bound without re-tagging its static class.
  */
 export function classify(
   tool: ConcurrencyClassifiable,

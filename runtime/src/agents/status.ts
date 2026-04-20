@@ -5,8 +5,14 @@
  * state transitions of a spawned subagent from creation through
  * terminal states.
  *
- * Final states: `completed`, `errored`, `shutdown`, `interrupted`.
- * Non-final: `idle`, `running`.
+ * Final states: `completed`, `errored`, `shutdown`.
+ * Non-final: `idle`, `running`, `interrupted`.
+ *
+ * `interrupted` is intentionally non-final (matches codex
+ * `status.rs` — `is_final` returns false for `Running | PendingInit |
+ * Interrupted`). Completion watchers must loop past an interrupt
+ * until a truly terminal state (`completed`, `errored`, `shutdown`)
+ * arrives.
  *
  * @module
  */
@@ -45,7 +51,6 @@ const FINAL_STATES: ReadonlySet<AgentStatus["status"]> = new Set([
   "completed",
   "errored",
   "shutdown",
-  "interrupted",
 ]);
 
 export function isFinal(status: AgentStatus): boolean {
@@ -111,8 +116,11 @@ export class AgentStatusTracker {
   }
 
   private set(status: AgentStatus): void {
-    // Final states are sticky — don't overwrite once reached.
-    if (isFinal(this.subject.value) && isFinal(status)) return;
+    // Only genuinely terminal states are sticky (`completed`,
+    // `errored`, `shutdown`). `interrupted` is non-final — the
+    // tracker may transition back to `running` (e.g. resume) or
+    // onward to a truly terminal state.
+    if (isFinal(this.subject.value)) return;
     this.subject.next(status);
   }
 }

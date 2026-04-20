@@ -24,6 +24,7 @@ import {
   createHttpTools,
   createBashTool,
 } from "./tools/system/index.js";
+import type { BashExecObserver } from "./tools/system/types.js";
 import {
   defaultConcurrencyClassFor,
   isBashTool,
@@ -113,6 +114,15 @@ function parseToolCallArguments(
 export interface BuildToolRegistryOptions {
   readonly workspaceRoot: string;
   readonly allowBashDelete?: boolean;
+  /**
+   * T6 gap #119: observer that receives `exec_command_begin` /
+   * `exec_command_end` lifecycle hooks from the bash tool. Session
+   * owners wire this through `createBashExecObserverForSession`
+   * (runtime/src/session/observer-wiring.ts) so the events land in
+   * the session event log + rollout. When omitted, the bash tool
+   * runs without a lifecycle observer.
+   */
+  readonly bashExecObserver?: BashExecObserver;
 }
 
 /**
@@ -143,6 +153,9 @@ export function buildToolRegistry(
     }),
     createBashTool({
       cwd: options.workspaceRoot,
+      ...(options.bashExecObserver !== undefined
+        ? { execObserver: options.bashExecObserver }
+        : {}),
     }),
   ];
 

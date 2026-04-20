@@ -69,6 +69,35 @@ describe("AgentRegistry", () => {
     expect(reg.activeCount).toBe(0);
   });
 
+  it(
+    "registry is the single source of truth: releaseSpawnedThread frees the nickname for reuse",
+    async () => {
+      const reg = new AgentRegistry();
+      const role = resolveAgentRole(undefined);
+      // Allocate via the registry (the single source of truth).
+      const nickname = reg.allocateNickname(role);
+      const reservation = await reg.reserveSpawnSlot();
+      reservation.finalize(
+        buildChildMetadata({
+          agentId: "t-reuse",
+          parentPath: "/root",
+          role,
+          nickname,
+          depth: 1,
+        }),
+      );
+      expect(reg.hasNickname(nickname)).toBe(true);
+      // Full thread release should drop the nickname (no second
+      // bookkeeping set holding it).
+      await reg.releaseSpawnedThread("t-reuse");
+      expect(reg.hasNickname(nickname)).toBe(false);
+      // Re-allocating with the same empty pool returns the same
+      // deterministic first candidate — proves no stale reservation.
+      const reused = reg.allocateNickname(role);
+      expect(reused).toBe(nickname);
+    },
+  );
+
   it("root thread is exempt from maxThreads", () => {
     const reg = new AgentRegistry({ maxThreads: 1 });
     reg.registerRootThread("root-id");
