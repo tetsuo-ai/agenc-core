@@ -23,12 +23,14 @@
  */
 
 import type { LLMMessage, LLMToolCall } from "../llm/types.js";
+import { validateToolCallsForExecution } from "../llm/stream-parser.js";
 import { StreamingToolExecutor } from "../tools/streaming-executor.js";
 import { ToolCallRuntime } from "../tools/concurrency.js";
 import type { Tool } from "../tools/types.js";
 import { runToolUse, parseToolArgsWithBigInt } from "../tools/execution.js";
 import { parseToolName } from "../tools/context.js";
 import type { ToolDispatchResult } from "../tool-registry.js";
+import { emitError as emitErrorEvent } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { TurnState, UserMessage } from "../session/turn-state.js";
@@ -66,6 +68,32 @@ export async function executeTools(
 ): Promise<TurnState> {
   const assistant = state.assistantMessages.at(-1);
   if (!assistant || assistant.toolCalls.length === 0) return state;
+
+  // I-54: validate every tool_use block shape BEFORE dispatch. Malformed
+  // blocks (missing id/name/non-string arguments) emit stream_error
+  // and are removed from the batch so dispatch only sees valid calls.
+  const batch = validateToolCallsForExecution(assistant.toolCalls);
+  if (batch.failures.length > 0) {
+    for (const failure of batch.failures) {
+      emitErrorEvent(session.eventLog, session.nextInternalSubId(), {
+        cause: "malformed_tool_call",
+        message: `provider returned malformed tool_use (${failure.cause})`,
+        streamError: true,
+        provider: session.services.provider.name,
+      });
+    }
+  }
+  const validCallIds = new Set(batch.valid.map((c) => c.id));
+  const filteredToolCalls = assistant.toolCalls.filter((c) =>
+    validCallIds.has(c.id),
+  );
+  if (filteredToolCalls.length === 0) {
+    // All calls malformed — nothing to dispatch. Return so post-
+    // sample recovery / continuation can route via the normal
+    // `needsFollowUp` flow.
+    state.needsFollowUp = false;
+    return state;
+  }
 
   // T7: shared ToolCallRuntime per-executor so ConcurrencyClass
   // dispatch (RwLock + per-serverId semaphore) gates the tool calls.
@@ -143,12 +171,12 @@ export async function executeTools(
     state.streamingToolExecutor = executor;
   }
 
-  // Queue every tool_use block into the executor. The queue dispatches
-  // sequentially (T5); T7 parallel-dispatches by ConcurrencyClass.
-  for (let i = 0; i < assistant.toolCalls.length; i += 1) {
+  // Queue every VALID tool_use block (I-54 gate) into the executor.
+  // ConcurrencyClass dispatch gates parallelism per tool.
+  for (const call of filteredToolCalls) {
+    const i = assistant.toolCalls.indexOf(call);
     const block = state.toolUseBlocks[i];
-    const call = assistant.toolCalls[i];
-    if (!block || !call) continue;
+    if (!block) continue;
     if (signal?.aborted) break;
 
     session.emit({

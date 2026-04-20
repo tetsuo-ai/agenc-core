@@ -1,3 +1,9 @@
+// Static import for I-54 validateToolCallsForExecution.
+import {
+  validateToolCallDetailed,
+  type LLMToolCall,
+} from "./types.js";
+
 /**
  * Stream parser — extract/strip hidden tags from assistant text.
  *
@@ -295,4 +301,214 @@ export class ProposedPlanStreamParser extends InlineHiddenTagParser<"proposed_pl
   constructor() {
     super([{ tag: "proposed_plan", open: PLAN_OPEN, close: PLAN_CLOSE }]);
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// I-56 · Stream-chunk reorder normalization
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Canonical chunk kinds in the order consumers expect them. Codex
+ * + AgenC history format is: reasoning → tool_use → text. Some
+ * providers emit in arbitrary order — buffer during streaming and
+ * re-emit in canonical order on end().
+ */
+export type StreamChunkKind = "reasoning" | "tool_use" | "text" | "other";
+
+export interface StreamChunkReorderEntry<T> {
+  readonly kind: StreamChunkKind;
+  readonly chunk: T;
+}
+
+const CHUNK_KIND_ORDER: Readonly<Record<StreamChunkKind, number>> =
+  Object.freeze({
+    reasoning: 0,
+    tool_use: 1,
+    text: 2,
+    other: 3,
+  });
+
+/**
+ * I-56: buffer chunks during a stream; on `finish()` reorder them
+ * into canonical order (reasoning → tool_use → text → other) and
+ * report whether any reorder actually occurred. Callers emit
+ * `warning:'stream_chunk_reordered'` with the provider + count when
+ * the reorder flag is set.
+ *
+ * The reorder is stable within each kind — relative order of two
+ * reasoning chunks is preserved, same for tool_use, same for text.
+ * This matches codex's stream-parser behaviour (stable sort).
+ */
+export class StreamChunkReorderBuffer<T = unknown> {
+  private buffered: StreamChunkReorderEntry<T>[] = [];
+
+  push(entry: StreamChunkReorderEntry<T>): void {
+    this.buffered.push(entry);
+  }
+
+  /**
+   * Finalize the buffer. Returns the reordered chunks + a
+   * `reordered: boolean` diagnostic flag + per-kind count.
+   */
+  finish(): {
+    readonly chunks: ReadonlyArray<StreamChunkReorderEntry<T>>;
+    readonly reordered: boolean;
+    readonly countsByKind: Readonly<Record<StreamChunkKind, number>>;
+  } {
+    const original = [...this.buffered];
+    const sorted = [...this.buffered]
+      .map((entry, index) => ({ entry, index }))
+      .sort((a, b) => {
+        const diff =
+          CHUNK_KIND_ORDER[a.entry.kind] - CHUNK_KIND_ORDER[b.entry.kind];
+        return diff !== 0 ? diff : a.index - b.index;
+      })
+      .map((x) => x.entry);
+    this.buffered = [];
+    const reordered = original.some((entry, i) => entry !== sorted[i]);
+    const countsByKind: Record<StreamChunkKind, number> = {
+      reasoning: 0,
+      tool_use: 0,
+      text: 0,
+      other: 0,
+    };
+    for (const entry of sorted) countsByKind[entry.kind] += 1;
+    return { chunks: sorted, reordered, countsByKind };
+  }
+
+  get size(): number {
+    return this.buffered.length;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// I-77 · Model output UI-spoof sanitization
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Patterns the model should never be allowed to emit verbatim — they
+ * mimic real AgenC TUI approval modals and trick reflexive user input.
+ *
+ * Extend here if new UI chrome is added that the model could plausibly
+ * replicate.
+ */
+const UI_SPOOF_PATTERNS: ReadonlyArray<{ readonly label: string; readonly re: RegExp }> =
+  [
+    { label: "approval_required", re: /\[Approval Required\]/i },
+    { label: "allow_deny", re: /\[Allow\s*\/\s*Deny\]/i },
+    { label: "yes_no", re: /\[Yes\s*\/\s*No\](\s*:)?/i },
+    { label: "agenc_prompt", re: /^\s*agenc\s*[>:]\s/im },
+    // ANSI CSI sequences (colour / cursor control) — the TUI has no
+    // reason to accept these in plaintext assistant output.
+    // eslint-disable-next-line no-control-regex
+    { label: "ansi_csi", re: /\x1B\[[0-9;]*[A-Za-z]/ },
+  ];
+
+export interface SanitizeModelOutputResult {
+  /** The text to display / inject into history. */
+  readonly text: string;
+  /** True when at least one pattern matched. */
+  readonly spoofed: boolean;
+  /** Matched-pattern labels for telemetry. */
+  readonly matches: ReadonlyArray<string>;
+}
+
+export interface SanitizeModelOutputOptions {
+  /**
+   * Strict mode — when true, matched patterns are removed entirely
+   * from the output. When false (default), the text is prefixed with
+   * a visible `[MODEL OUTPUT]` marker and the caller is expected to
+   * render it in a distinct TUI colour.
+   */
+  readonly strict?: boolean;
+}
+
+const SPOOF_PREFIX = "[MODEL OUTPUT] ";
+
+/**
+ * I-77: scan `text` for UI-spoof patterns. Returns the possibly-
+ * rewritten text + a diagnostic flag. The consumer (phase-5 or TUI)
+ * emits `warning:'model_ui_spoof_pattern'` with the `matches[]`
+ * array when `spoofed` is true.
+ *
+ * Idempotent — re-sanitizing a sanitized output is a no-op.
+ */
+export function sanitizeModelOutput(
+  text: string,
+  options: SanitizeModelOutputOptions = {},
+): SanitizeModelOutputResult {
+  if (text.length === 0) {
+    return { text, spoofed: false, matches: [] };
+  }
+  const matches: string[] = [];
+  let cleaned = text;
+  for (const { label, re } of UI_SPOOF_PATTERNS) {
+    if (re.test(cleaned)) {
+      matches.push(label);
+      if (options.strict) {
+        cleaned = cleaned.replace(new RegExp(re, re.flags + "g"), "");
+      }
+    }
+  }
+  if (matches.length === 0) {
+    return { text, spoofed: false, matches: [] };
+  }
+  if (options.strict) {
+    return { text: cleaned, spoofed: true, matches };
+  }
+  // Prefix once; idempotent check on already-prefixed strings.
+  if (cleaned.startsWith(SPOOF_PREFIX)) {
+    return { text: cleaned, spoofed: true, matches };
+  }
+  return {
+    text: `${SPOOF_PREFIX}${cleaned}`,
+    spoofed: true,
+    matches,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// I-54 · Tool-call schema validation before execution
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * I-54 result: valid calls pass through; malformed calls surface via
+ * the `failures` array with a structured cause. Caller (phase-5)
+ * emits `stream_error{cause:'malformed_tool_call'}` per failure and
+ * forwards valid calls to the StreamingToolExecutor.
+ */
+export interface ValidatedToolCallBatch {
+  readonly valid: ReadonlyArray<LLMToolCall>;
+  readonly failures: ReadonlyArray<{
+    readonly raw: unknown;
+    readonly cause: string;
+  }>;
+}
+
+/**
+ * Validate a batch of tool_use blocks before injection into the
+ * executor. Uses the existing `validateToolCallDetailed` from
+ * `llm/types.ts` as the shape-check primitive.
+ *
+ * Source-of-truth for the shape: `{id:string, name:string, arguments:string}`.
+ * Failures are returned (not thrown) so the caller can partially
+ * succeed — valid calls still run, malformed ones become typed errors.
+ */
+export function validateToolCallsForExecution(
+  raw: ReadonlyArray<unknown>,
+): ValidatedToolCallBatch {
+  const valid: LLMToolCall[] = [];
+  const failures: Array<{ raw: unknown; cause: string }> = [];
+  for (const item of raw) {
+    const result = validateToolCallDetailed(item);
+    if (result.toolCall) {
+      valid.push(result.toolCall);
+    } else {
+      failures.push({
+        raw: item,
+        cause: result.failure?.code ?? "invalid_shape",
+      });
+    }
+  }
+  return { valid, failures };
 }
