@@ -1,9 +1,32 @@
 import { createHash } from "node:crypto";
-import type { GatewayLLMConfig } from "./types.js";
 import type {
   LLMContextWindowSource,
   LLMProviderExecutionProfile,
 } from "../llm/types.js";
+
+// Lean-rebuild stub: the full GatewayLLMConfig type lived in the
+// deleted gateway/types.ts alongside a 500-line GatewayConfig. The
+// context-window resolver reads only a handful of fields; inline a
+// minimal shape here. A future tranche's rebuilt gateway will
+// re-expose a proper GatewayLLMConfig.
+export interface GatewayLLMConfig {
+  readonly provider?: "grok" | "ollama" | "openai-compat" | string;
+  readonly baseUrl?: string;
+  readonly apiKey?: string;
+  readonly model?: string;
+  readonly contextWindowTokens?: number;
+  readonly maxTokens?: number;
+  readonly promptHardMaxChars?: number;
+  readonly promptSafetyMarginTokens?: number;
+  readonly promptCharPerToken?: number;
+  readonly requestTimeoutMs?: number;
+  readonly maxReasoningTokens?: number;
+  readonly webSearch?: boolean;
+  readonly apiKeyEnv?: string;
+  readonly modelRoute?: unknown;
+  readonly reasoningEffort?: string;
+  readonly xai?: unknown;
+}
 
 const DEFAULT_GROK_API_BASE_URL = "https://api.x.ai/v1";
 const DEFAULT_OLLAMA_HOST = "http://localhost:11434";

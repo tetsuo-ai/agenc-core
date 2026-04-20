@@ -11,11 +11,35 @@ import type { Tool, ToolResult, JSONSchema } from "../tools/types.js";
 import type { MCPToolBridge } from "./types.js";
 import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";
-import {
-  computeMCPToolCatalogSha256,
-  filterMCPToolCatalog,
-  type MCPToolCatalogPolicyConfig,
-} from "../policy/mcp-governance.js";
+// Lean-rebuild stubs: the old `policy/mcp-governance.ts` was deleted —
+// it carried blockchain-flavored trust tiers + binary SHA pinning.
+// The bridge uses these helpers for allow/deny catalog filtering and
+// a tool-list hash. Keep minimal passthroughs until the rebuilt
+// permission seam (later tranche) reintroduces real governance.
+export interface MCPToolCatalogPolicyConfig {
+  readonly allowedTools?: readonly string[];
+  readonly deniedTools?: readonly string[];
+  readonly pinnedCatalogSha256?: string;
+  readonly riskControls?: unknown;
+  readonly supplyChain?: {
+    readonly catalogSha256?: string;
+  };
+}
+
+interface MCPToolDescriptorLike {
+  readonly name: string;
+  readonly description?: string;
+  readonly inputSchema?: unknown;
+}
+function computeMCPToolCatalogSha256(_tools: readonly unknown[]): string {
+  return "";
+}
+function filterMCPToolCatalog<T>(
+  _config: MCPToolCatalogPolicyConfig | undefined,
+  tools: readonly T[],
+): readonly T[] {
+  return tools;
+}
 
 const DEFAULT_MCP_LIST_TOOLS_TIMEOUT_MS = 30_000;
 const DEFAULT_MCP_CALL_TIMEOUT_MS = 45_000;
@@ -102,9 +126,14 @@ export async function createToolBridge(
     listToolsTimeoutMs,
     () => client.listTools(),
   );
-  const rawTools = Array.isArray(response.tools) ? response.tools : [];
-  const mcpTools = options.serverConfig
-    ? filterMCPToolCatalog(options.serverConfig, rawTools)
+  const rawTools = (Array.isArray(response.tools)
+    ? response.tools
+    : []) as MCPToolDescriptorLike[];
+  const mcpTools: MCPToolDescriptorLike[] = options.serverConfig
+    ? (filterMCPToolCatalog(
+        options.serverConfig,
+        rawTools,
+      ) as MCPToolDescriptorLike[])
     : rawTools;
 
   if (options.serverConfig?.supplyChain?.catalogSha256) {

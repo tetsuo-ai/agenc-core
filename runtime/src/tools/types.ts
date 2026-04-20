@@ -7,12 +7,19 @@
  * @module
  */
 
-import type { Connection, PublicKey } from "@solana/web3.js";
-import type { Program } from "@coral-xyz/anchor";
-import type { AgencCoordination } from "../types/agenc_coordination.js";
-import type { Wallet } from "../types/wallet.js";
 import type { Logger } from "../utils/logger.js";
-import type { PolicyEngine } from "../policy/engine.js";
+
+// Lean-rebuild stubs: the Solana protocol types, wallet types, and
+// the full PolicyEngine surface have all been removed. Tools that used
+// these fields now receive nullable stand-ins; the new permission
+// seam in a later tranche will reintroduce real types.
+type Connection = unknown;
+type PublicKey = unknown;
+type Program = unknown;
+type Wallet = unknown;
+export interface PolicyEngine {
+  readonly allowTool?: (toolName: string) => boolean;
+}
 
 /**
  * JSON Schema type alias.
@@ -108,7 +115,7 @@ export interface ToolContext {
   /** Optional wallet for signer-required tools (e.g. agenc.createTask) */
   readonly wallet?: Wallet;
   /** Optional Anchor program instance (tools can create read-only if absent) */
-  readonly program?: Program<AgencCoordination>;
+  readonly program?: Program;
   /** Optional custom program ID when creating internal program instances */
   readonly programId?: PublicKey;
   /** Logger instance */

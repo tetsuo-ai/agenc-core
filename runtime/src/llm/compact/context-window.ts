@@ -1,9 +1,46 @@
-import type { ArtifactCompactionState } from "../../memory/artifact-store.js";
-import { estimateMessageChars } from "../chat-executor-text.js";
-import { renderArtifactContextPrompt } from "../context-compaction.js";
-import { normalizeMessagesForAPI } from "../messages.js";
 import type { LLMMessage, LLMUsage } from "../types.js";
 import { tokenCountWithEstimation } from "./token-count.js";
+
+// Lean-rebuild stub: ArtifactCompactionState lived in the deleted
+// `memory/artifact-store.ts`. The compaction chain still references
+// the type for a few budget-advisory fields; keep a minimal shape so
+// the rest of the chain compiles. A future tranche will either
+// reintroduce the full type or prune the dependency.
+export interface ArtifactCompactionState {
+  readonly pendingArtifactCount?: number;
+  readonly pendingBytes?: number;
+}
+
+// Lean-rebuild stubs for helpers that used to live in
+// `chat-executor-text.ts` / `context-compaction.ts` / `messages.ts` —
+// all deleted in Tranche 2. Callers in the compact chain only need
+// approximate char counts, so a local implementation suffices.
+export function estimateMessageChars(message: LLMMessage): number {
+  const content = message?.content;
+  if (typeof content === "string") return content.length;
+  if (Array.isArray(content)) {
+    let total = 0;
+    for (const part of content) {
+      if (part && typeof part === "object" && "text" in part) {
+        total += String((part as { text?: unknown }).text ?? "").length;
+      }
+    }
+    return total;
+  }
+  return 0;
+}
+
+export function renderArtifactContextPrompt(
+  _context?: ArtifactCompactionState | null,
+): string {
+  return "";
+}
+
+export function normalizeMessagesForAPI(
+  messages: readonly LLMMessage[],
+): LLMMessage[] {
+  return messages.slice();
+}
 
 export const RESERVED_OUTPUT_TOKEN_CAP = 20_000;
 export const AUTOCOMPACT_BUFFER_TOKENS = 13_000;

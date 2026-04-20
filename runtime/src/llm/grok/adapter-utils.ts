@@ -11,8 +11,22 @@ import type {
   LLMTool,
   LLMToolChoice,
 } from "../types.js";
-import { sanitizeToolCallArgumentsForReplay } from "../chat-executor-tool-utils.js";
 import { safeStringify } from "../../tools/types.js";
+
+// Lean-rebuild stub: the original sanitizer lived in the deleted
+// chat-executor-tool-utils. The Grok adapter only uses it to strip
+// obviously-oversize tool-call arguments before tracing; a bounded
+// JSON stringifier is close enough for now.
+function sanitizeToolCallArgumentsForReplay(args: unknown): string {
+  try {
+    const serialized = safeStringify(args);
+    return serialized.length > 4_000
+      ? `${serialized.slice(0, 4_000)}… (truncated)`
+      : serialized;
+  } catch {
+    return String(args);
+  }
+}
 
 const MAX_STATEFUL_RECONCILIATION_WINDOW = 256;
 const STATEFUL_HASH_VERSION = "v1";

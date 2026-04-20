@@ -1,8 +1,10 @@
 /**
- * LLM Adapters for @tetsuo-ai/runtime
+ * LLM subsystem barrel — lean rebuild.
  *
- * Provides LLM provider adapters that bridge language models
- * to the AgenC task execution system (Phase 4).
+ * Pre-gut this file re-exported the whole ChatExecutor/policy/retry
+ * stack. That stack is being rewritten in the Tranche 5 loop collapse.
+ * For now the barrel exports only the surviving golden pieces: core
+ * types + the compaction chain + provider adapters.
  *
  * @module
  */
@@ -14,11 +16,6 @@ export type {
   LLMContentPart,
   LLMMessage,
   LLMChatOptions,
-  LLMCompactionDiagnostics,
-  LLMCompactionFallbackReason,
-  LLMCompactionItemRef,
-  LLMStoredResponse,
-  LLMStoredResponseDeleteResult,
   LLMResponse,
   LLMStreamChunk,
   LLMTool,
@@ -29,110 +26,7 @@ export type {
   ToolHandler,
 } from "./types.js";
 export { validateToolCall } from "./types.js";
-export {
-  buildUnsupportedCompactionDiagnostics,
-} from "./provider-capabilities.js";
-export type {
-  ResolvedLLMCompactionConfig,
-} from "./provider-capabilities.js";
 
-// Error classes
-export {
-  LLMAuthenticationError,
-  LLMMessageValidationError,
-  LLMProviderError,
-  LLMRateLimitError,
-  LLMResponseConversionError,
-  LLMServerError,
-  LLMToolCallError,
-  LLMTimeoutError,
-  classifyLLMFailure,
-  mapLLMError,
-} from "./errors.js";
-
-// Policy taxonomy (Phase 1)
-export {
-  DEFAULT_LLM_RETRY_POLICY_MATRIX,
-  toPipelineStopReason,
-} from "./policy.js";
-export type {
-  LLMFailureClass,
-  LLMPipelineStopReason,
-  LLMRetryPolicyRule,
-  LLMRetryPolicyMatrix,
-} from "./policy.js";
-
-// Tool-turn protocol validation (Phase 1)
-export {
-  findToolTurnValidationIssue,
-  repairToolTurnSequence,
-  validateToolTurnSequence,
-} from "./tool-turn-validator.js";
-export type {
-  ToolTurnValidationCode,
-  ToolTurnValidationIssue,
-  ToolTurnValidationOptions,
-} from "./tool-turn-validator.js";
-
-// Prompt budgeting (Phase 2)
-export {
-  applyPromptBudget,
-  derivePromptBudgetPlan,
-} from "./prompt-budget.js";
-export type {
-  PromptBudgetConfig,
-  PromptBudgetPlan,
-  PromptBudgetCaps,
-  PromptBudgetSection,
-  PromptBudgetMessage,
-  PromptBudgetDiagnostics,
-  PromptBudgetSectionStats,
-  PromptBudgetMemoryRole,
-  PromptBudgetMemoryRoleContract,
-  PromptBudgetMemoryRoleContracts,
-} from "./prompt-budget.js";
-
-// Response converter
-export { responseToOutput } from "./response-converter.js";
-
-export { FallbackLLMProvider, type FallbackChainConfig } from "./fallback.js";
-
-// Chat Executor (Phase 1.11)
-export { ChatExecutor, ChatBudgetExceededError } from "./chat-executor.js";
-export type {
-  ChatExecutorConfig,
-  ChatExecuteParams,
-  ChatExecutorResult,
-  ChatPromptShape,
-  ChatCallUsageRecord,
-  PlannerDiagnostic,
-  ToolCallRecord,
-  SkillInjector,
-  MemoryRetriever,
-} from "./chat-executor.js";
-
-// Delegation learning (trajectory recording for offline analysis)
-export {
-  DELEGATION_TRAJECTORY_SCHEMA_VERSION,
-  InMemoryDelegationTrajectorySink,
-  computeDelegationFinalReward,
-  deriveDelegationComplexityBucket,
-  deriveDelegationContextClusterId,
-} from "./delegation-learning.js";
-export type {
-  DelegationTrajectoryTurnType,
-  DelegationTrajectoryStateFeatures,
-  DelegationTrajectoryAction,
-  DelegationTrajectoryImmediateOutcome,
-  DelegationTrajectoryFinalReward,
-  DelegationTrajectoryRecord,
-  DelegationTrajectorySink,
-  InMemoryDelegationTrajectorySinkConfig,
-  DelegationFinalRewardInput,
-  DelegationComplexityBucket,
-  DelegationContextClusterInput,
-} from "./delegation-learning.js";
-
-// Provider adapters
+// Provider adapters (kept verbatim — the golden subsystems)
 export { GrokProvider, type GrokProviderConfig } from "./grok/index.js";
 export { OllamaProvider, type OllamaProviderConfig } from "./ollama/index.js";

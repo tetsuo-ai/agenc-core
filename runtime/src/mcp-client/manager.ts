@@ -18,7 +18,7 @@ import { silentLogger } from "../utils/logger.js";
 import { createMCPConnection } from "./connection.js";
 import { createToolBridge } from "./tool-bridge.js";
 import { ResilientMCPBridge } from "./resilient-bridge.js";
-import type { MCPToolCatalogPolicyConfig } from "../policy/mcp-governance.js";
+import type { MCPToolCatalogPolicyConfig } from "./tool-bridge.js";
 
 function toToolCatalogPolicyConfig(
   config: MCPServerConfig,

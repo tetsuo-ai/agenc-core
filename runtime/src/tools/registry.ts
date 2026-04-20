@@ -15,8 +15,19 @@ import { ToolNotFoundError, ToolAlreadyRegisteredError } from "./errors.js";
 import type { LLMTool, ToolHandler } from "../llm/types.js";
 import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";
-import type { PolicyEngine } from "../policy/engine.js";
-import { buildToolPolicyAction } from "../policy/tool-governance.js";
+// Lean-rebuild stubs: policy/engine.ts and policy/tool-governance.ts
+// were deleted. The registry used them for policy gating which will
+// be reintroduced in a later tranche through a single
+// ToolPermissionEvaluator seam. For now: allow every tool call.
+export interface PolicyEngine {
+  readonly allowTool?: (toolName: string) => boolean;
+}
+function buildToolPolicyAction(
+  _toolName: string,
+  _args?: unknown,
+): { allow: boolean; reason?: string } {
+  return { allow: true };
+}
 
 /**
  * Registry for managing tool instances.
@@ -178,23 +189,14 @@ export class ToolRegistry {
         return safeStringify({ error: `Tool not found: "${name}"` });
       }
 
-      if (this.policyEngine) {
-        const action = buildToolPolicyAction({
-          toolName: name,
-          args,
-        });
-        const decision = this.policyEngine.evaluate(action);
-        if (!decision.allowed) {
-          const violation = decision.violations[0];
-          this.logger.warn(
-            `Tool "${name}" blocked by policy (${violation?.code ?? "unknown"})`,
-          );
-          return safeStringify({
-            error: violation?.message ?? "Tool blocked by policy",
-            violation,
-          });
-        }
-      }
+      // Lean-rebuild: policy enforcement will be reintroduced behind a
+      // single ToolPermissionEvaluator seam in a later tranche. The
+      // old PolicyEngine + tool-governance pair was deleted along with
+      // the blockchain permission stack. For now every tool call is
+      // allowed; the registry still surfaces a `policyEngine` field
+      // for consumers that want to wire their own gate later.
+      void this.policyEngine;
+      void buildToolPolicyAction(name, args);
 
       try {
         const result = await tool.execute(args);

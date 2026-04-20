@@ -1,8 +1,9 @@
 /**
- * Hook system entry point (Cut 5.2).
+ * Hook system entry point.
  *
- * Re-exports the registry, dispatcher, matcher, executor, and types so
- * other runtime modules import from a single path.
+ * Post-gut: stop-hooks and user-config modules were removed and will be
+ * rebuilt by a later tranche. This barrel now exports only the generic
+ * hook dispatcher + matcher + registry.
  *
  * @module
  */
@@ -16,13 +17,3 @@ export {
   defaultHookExecutor,
   type HookExecutor,
 } from "./executors.js";
-export {
-  buildUserHookDefinitions,
-  type UserHooksSettings,
-  type UserHookEntry,
-  type UserHookMatcherEntry,
-  type UserHookCommandEntry,
-  type UserHookHttpEntry,
-  type BuildUserHookDefinitionsResult,
-} from "./user-config.js";
-export * from "./stop-hooks.js";

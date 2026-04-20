@@ -1,7 +1,25 @@
 import { lstatSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve as resolvePath } from "node:path";
-import type { GatewayConfig } from "./types.js";
+// Lean-rebuild stub: GatewayConfig lived in the deleted
+// gateway/types.ts. host-workspace only uses a handful of optional
+// fields; inline a minimal shape until the rebuilt gateway config
+// lands in a later tranche.
+export interface GatewayConfig {
+  readonly workspaceRoot?: string;
+  readonly projectRoot?: string;
+  readonly homeDir?: string;
+  readonly allowedPaths?: readonly string[];
+  readonly deniedPaths?: readonly string[];
+  readonly workspace?: {
+    readonly root?: string;
+    readonly allowedPaths?: readonly string[];
+    readonly deniedPaths?: readonly string[];
+    readonly sessionRoots?: Record<string, string>;
+    readonly defaultSessionRoot?: string;
+    readonly hostPath?: string;
+  };
+}
 
 const SENSITIVE_SESSION_ROOT_RELATIVE_PATHS = Object.freeze([
   ".ssh",

@@ -1,14 +1,13 @@
 /**
- * Tool system for @tetsuo-ai/runtime
+ * Tool system for @tetsuo-ai/runtime.
  *
- * MCP-compatible tool registry that bridges the Skills system and
- * LLM adapters. Provides built-in AgenC protocol query tools and
- * a skill-to-tool adapter.
+ * Post-gut: the `agenc.*` protocol tools and `skill-adapter` were
+ * deleted. Only the core tool abstractions + system tools (bash,
+ * filesystem, http, coding) survive here.
  *
  * @module
  */
 
-// Core types
 export {
   type Tool,
   type ToolCatalogEntry,
@@ -22,88 +21,32 @@ export {
   safeStringify,
 } from "./types.js";
 
-// Error types
 export {
   ToolNotFoundError,
   ToolAlreadyRegisteredError,
   ToolExecutionError,
 } from "./errors.js";
 
-// Registry
 export { ToolRegistry } from "./registry.js";
 
-// Skill-to-Tool adapter
 export {
-  skillToTools,
-  type ActionSchemaMap,
-  type SkillToToolsOptions,
-  JUPITER_ACTION_SCHEMAS,
-} from "./skill-adapter.js";
-
-// Built-in AgenC tools
-export {
-  createAgencTools,
-  createListTasksTool,
-  createGetTaskTool,
-  createGetTokenBalanceTool,
-  createListApprovedTaskTemplatesTool,
-  createGetApprovedTaskTemplateTool,
-  createCreateTaskFromTemplateTool,
-  createSubmitTaskTemplateProposalTool,
-  createCreateTaskTool,
-  createGetAgentTool,
-  createGetProtocolConfigTool,
-  type SerializedTask,
-  type SerializedAgent,
-  type SerializedProtocolConfig,
-} from "./agenc/index.js";
-
-// System tools
-export {
-  // HTTP
   createHttpTools,
   isDomainAllowed,
   type HttpToolConfig,
   type HttpResponse,
-  // Filesystem
   createFilesystemTools,
   createCodingTools,
   isPathAllowed,
   safePath,
   type FilesystemToolConfig,
   type CodingToolConfig,
-  // Browser
-  createBrowserTools,
-  closeBrowser,
-  type BrowserToolConfig,
-  // Bash
   createBashTool,
-  createProcessTools,
-  createRemoteJobTools,
-  createRemoteSessionTools,
-  createResearchTools,
-  createSandboxTools,
-  createServerTools,
-  SystemProcessManager,
-  SystemRemoteJobManager,
-  SystemRemoteSessionManager,
-  SystemResearchManager,
-  SystemSandboxManager,
-  SystemServerManager,
   isCommandAllowed,
   validateShellCommand,
   type BashToolConfig,
   type BashToolInput,
   type BashExecutionResult,
   type DangerousShellPattern,
-  type SystemProcessLifecycleEvent,
-  type SystemProcessToolConfig,
-  type SystemRemoteJobToolConfig,
-  type SystemRemoteSessionToolConfig,
-  type SystemResearchToolConfig,
-  type SystemSandboxToolConfig,
-  type SystemSandboxWorkspaceAccessMode,
-  type SystemServerToolConfig,
   DEFAULT_DENY_LIST,
   DEFAULT_DENY_PREFIXES,
   DEFAULT_TIMEOUT_MS,

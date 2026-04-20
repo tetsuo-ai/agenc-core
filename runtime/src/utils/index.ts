@@ -1,11 +1,15 @@
 /**
- * Utility exports for @tetsuo-ai/runtime
+ * Utility exports for @tetsuo-ai/runtime.
+ *
+ * Post-gut: Solana-flavored utilities (pda, treasury, token) were
+ * deleted. Only portable helpers remain.
+ *
  * @module
  */
 
 export { sleep, toErrorMessage, SEVEN_DAYS_MS } from "./async.js";
 
-export { Logger, LogLevel, createLogger, silentLogger } from "./logger.js";
+export { type Logger, type LogLevel, createLogger, silentLogger } from "./logger.js";
 
 export {
   generateAgentId,
@@ -15,8 +19,6 @@ export {
   agentIdToString,
   agentIdToShortString,
   agentIdsEqual,
-  lamportsToSol,
-  solToLamports,
   bigintsToProofHash,
   proofHashToBigints,
   toAnchorBytes,
@@ -28,11 +30,7 @@ export {
   fnv1aHashHex,
 } from "./encoding.js";
 
-export { PdaWithBump, derivePda, validateIdLength } from "./pda.js";
-
 export { encodeStatusByte, queryWithFallback } from "./query.js";
-
-export { fetchTreasury } from "./treasury.js";
 
 export { ensureLazyModule } from "./lazy-import.js";
 
@@ -62,14 +60,3 @@ export {
   requireOneOf,
   requireIntRange,
 } from "./validation.js";
-
-export {
-  isTokenTask,
-  buildCompleteTaskTokenAccounts,
-  buildResolveDisputeTokenAccounts,
-  buildExpireDisputeTokenAccounts,
-  buildApplyDisputeSlashTokenAccounts,
-  buildCreateTaskTokenAccounts,
-  TOKEN_PROGRAM_ID,
-  ASSOCIATED_TOKEN_PROGRAM_ID,
-} from "./token.js";

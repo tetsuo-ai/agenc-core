@@ -20,7 +20,15 @@
  * @module
  */
 
-import type { MemoryBackend } from "../../memory/types.js";
+// Lean-rebuild stub: the old `memory/` subsystem was deleted in the
+// gut. todo-store only uses a thin key/value face of MemoryBackend
+// with a generic get<T>(), so replace the import with a local
+// interface matching the methods this file actually calls.
+export interface MemoryBackend {
+  get<T = unknown>(key: string): Promise<T | null | undefined>;
+  set(key: string, value: unknown): Promise<void>;
+  delete(key: string): Promise<void>;
+}
 
 export type TodoStatus = "pending" | "in_progress" | "completed";
 
