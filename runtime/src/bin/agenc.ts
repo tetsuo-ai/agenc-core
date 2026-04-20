@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * `agenc` CLI entry point — lean rebuild.
+ * `agenc` CLI entry point — phase-machine dispatcher.
  *
- * One-shot, no TUI yet. Reads a prompt from argv (or stdin), boots the
- * Grok provider, builds the coding-profile tool registry, runs the
- * `query` loop, and streams events to stdout. The Ink/React cockpit
- * lands in a later tranche; this lets us verify the agent path
- * end-to-end before adding UI.
+ * Reads a prompt from argv (or stdin), boots the Grok provider, builds
+ * the coding-profile tool registry, constructs a Session + TurnContext,
+ * drives `runTurn` through the 6-phase machine, and streams events to
+ * stdout. The Ink/React cockpit lands in a later tranche; this lets us
+ * verify the agent path end-to-end before adding UI.
  *
  * Usage:
  *   agenc "help me understand this repo"
@@ -16,15 +16,38 @@
  *   XAI_API_KEY        required — xAI API key (also accepts GROK_API_KEY)
  *   AGENC_MODEL        optional — model override (default: grok-4-fast)
  *   AGENC_WORKSPACE    optional — project root (default: process.cwd())
+ *   AGENC_HOME         optional — state dir (default: $HOME/.agenc)
+ *
+ * Invariants wired here:
+ *   I-45 (SIGTERM orderly shutdown, exit 0)
+ *   I-46 (SIGHUP treated as stdin-lost terminal)
+ *   I-47 (SIGUSR1 config reload request, SIGUSR2 state dump request)
+ *   I-52 (AGENC_HOME / $HOME/.agenc writable precheck)
  */
 
+import { mkdirSync } from "node:fs";
 import { cwd as processCwd } from "node:process";
 import { GrokProvider } from "../llm/grok/index.js";
 import type { LLMToolCall } from "../llm/types.js";
+import type { PhaseEvent } from "../phases/events.js";
+import { Session } from "../session/session.js";
+import type {
+  SessionServices,
+  SessionState,
+} from "../session/session.js";
+import {
+  buildTurnContext,
+  type Config,
+  type ModelInfo,
+} from "../session/turn-context.js";
+import { runTurn } from "../session/run-turn.js";
 import { buildToolRegistry } from "../tool-registry.js";
-import { query, type QueryEvent } from "../query.js";
 
 const DEFAULT_MODEL = "grok-4-fast";
+
+// ─────────────────────────────────────────────────────────────────────
+// Argv / stdin / env resolution
+// ─────────────────────────────────────────────────────────────────────
 
 function resolveApiKey(): string {
   const key =
@@ -61,6 +84,79 @@ async function resolveUserMessage(): Promise<string> {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// I-52: validate AGENC_HOME / $HOME/.agenc writable before anything else.
+// ─────────────────────────────────────────────────────────────────────
+
+function validateAgencHome(): string {
+  const explicit = process.env.AGENC_HOME;
+  const home = explicit ?? (process.env.HOME ? `${process.env.HOME}/.agenc` : "");
+  if (!home) {
+    throw new Error(
+      "HOME unset and AGENC_HOME unset — set AGENC_HOME to a writable dir",
+    );
+  }
+  try {
+    mkdirSync(home, { recursive: true });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EROFS" || code === "EACCES") {
+      throw new Error(
+        `AGENC_HOME (${home}) is not writable (${code}) — set AGENC_HOME to a writable dir`,
+      );
+    }
+    throw error;
+  }
+  return home;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Signal handlers (I-45 / I-46 / I-47)
+// ─────────────────────────────────────────────────────────────────────
+
+function installSignalHandlers(getSession: () => Session | null): void {
+  // I-45: SIGTERM — orderly shutdown, exit 0.
+  process.once("SIGTERM", () => {
+    getSession()?.abortTerminal("signal_received");
+  });
+  // I-46: SIGHUP — same path as stdin loss (T12 wires the stdin handler).
+  process.once("SIGHUP", () => {
+    getSession()?.abortTerminal("stdin_lost");
+  });
+  // I-47: SIGUSR1 — config reload requested (takes effect next turn per I-30).
+  //       SIGUSR2 — state dump to ~/.agenc/diag-<pid>-<ts>.json (T-future).
+  process.on("SIGUSR1", () => {
+    // T10 wires the real config reloader; here we just signal the session.
+    getSession()?.emit({
+      id: "startup",
+      msg: {
+        type: "warning",
+        payload: {
+          cause: "config_reload_requested",
+          message: "config reload will take effect at next turn (I-30)",
+        },
+      },
+    });
+  });
+  process.on("SIGUSR2", () => {
+    // T-future: dump session state. Logged as a warning so we can audit.
+    getSession()?.emit({
+      id: "startup",
+      msg: {
+        type: "warning",
+        payload: {
+          cause: "state_dump_requested",
+          message: "state dump requested (T-future)",
+        },
+      },
+    });
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// System prompt + rendering
+// ─────────────────────────────────────────────────────────────────────
+
 const SYSTEM_PROMPT = `You are AgenC, a coding assistant running in a terminal.
 
 Do real tool calls instead of narrating. Prefer system.readFile,
@@ -85,7 +181,7 @@ function describeToolCall(toolCall: LLMToolCall): string {
   return `${toolCall.name}(${tail})`;
 }
 
-function renderEvent(event: QueryEvent): void {
+function renderEvent(event: PhaseEvent): void {
   switch (event.type) {
     case "turn_start":
       if (event.turnIndex > 0) {
@@ -120,34 +216,230 @@ function renderEvent(event: QueryEvent): void {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Session + TurnContext bootstrap (minimum-viable T5 scaffolding).
+// Later tranches replace these with their real subsystems:
+//   T6  — RolloutRecorder / event-log sidecars / hooks registry
+//   T7  — ToolRegistry extensions + StreamingToolExecutor
+//   T9  — McpConnectionManager, AgentControl, AgentIdentityManager
+//   T10 — real SessionConfiguration (config.json + precedence)
+//   T11 — permissions / sandbox / approval
+//   T13 — provider factory + multi-provider registry
+// ─────────────────────────────────────────────────────────────────────
+
+function buildPlaceholderServices(
+  provider: GrokProvider,
+  registry: ReturnType<typeof buildToolRegistry>,
+): SessionServices {
+  const noopAsync = async () => {
+    /* placeholder */
+  };
+  return {
+    mcpConnectionManager: {
+      setApprovalPolicy: () => {},
+      setSandboxPolicy: () => {},
+      requiredStartupFailures: async () => [],
+    },
+    mcpStartupCancellationToken: {
+      cancel: () => {},
+      isCancelled: () => false,
+    },
+    unifiedExecManager: { maxTimeoutMs: 0 },
+    analyticsEventsClient: { emit: noopAsync },
+    hooks: {
+      startupWarnings: () => [],
+      executePreCompact: noopAsync,
+      executePostCompact: noopAsync,
+      executeStop: noopAsync,
+      executeStopFailure: noopAsync,
+    },
+    rollout: undefined,
+    userShell: {
+      path: process.env.SHELL ?? "/bin/sh",
+      deriveExecArgs: (input: string) => ["-c", input],
+    },
+    agentIdentityManager: { ensureRegistered: noopAsync },
+    shellSnapshotTx: {
+      value: null,
+      isClosed: false,
+      next: () => {},
+      subscribe: () => () => {},
+      changes: async function* () {
+        // empty
+      },
+      complete: () => {},
+    } as unknown as SessionServices["shellSnapshotTx"],
+    showRawAgentReasoning: false,
+    execPolicy: { current: () => null },
+    authManager: { mode: "bearer_key" },
+    sessionTelemetry: {},
+    modelsManager: {
+      getModelInfo: async (slug: string) => ({
+        slug,
+        effectiveContextWindowPercent: 1,
+        supportedReasoningLevels: [],
+        defaultReasoningSummary: "auto",
+        truncationPolicy: "off",
+        usedFallbackModelMetadata: false,
+      }),
+      tryListModels: () => undefined,
+      listModels: async () => [],
+    },
+    toolApprovals: {
+      hasApproval: () => false,
+      approve: () => {},
+    },
+    guardianRejections: new Map(),
+    skillsManager: {
+      skillsForConfig: async () => ({ invokedSkills: [] }),
+    },
+    pluginsManager: {
+      pluginsForConfig: async () => ({ effectiveSkillRoots: () => null }),
+    },
+    mcpManager: {
+      effectiveServers: async () => new Map(),
+      toolPluginProvenance: async () => null,
+    },
+    skillsWatcher: { start: () => {} },
+    agentControl: {
+      maxThreads: 0,
+      spawnAgent: async () => null,
+      shutdownAgentTree: noopAsync,
+    },
+    networkApproval: { enabled: () => false },
+    threadStore: {
+      threadName: async () => undefined,
+      setThreadName: noopAsync,
+    },
+    modelClient: { setWindowGeneration: () => {} },
+    codeModeService: { enabled: () => false },
+    provider,
+    registry,
+  };
+}
+
+function buildMinimalConfig(cwd: string, model: string): Config {
+  return {
+    model,
+    cwd,
+    features: {
+      appsEnabledForAuth: () => false,
+      useLegacyLandlock: () => false,
+    },
+    multiAgentV2: {
+      usageHintEnabled: false,
+      usageHintText: "",
+      hideSpawnAgentMetadata: false,
+    },
+    permissions: {
+      allowLoginShell: false,
+      shellEnvironmentPolicy: {
+        allowedEnvVars: [],
+        blockedEnvVars: [],
+      },
+      windowsSandboxPrivateDesktop: false,
+    },
+    ghostSnapshot: { enabled: false },
+    agentRoles: [],
+  };
+}
+
+function buildMinimalModelInfo(slug: string): ModelInfo {
+  return {
+    slug,
+    effectiveContextWindowPercent: 1,
+    supportedReasoningLevels: [],
+    defaultReasoningSummary: "auto",
+    truncationPolicy: "off",
+    usedFallbackModelMetadata: false,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// main
+// ─────────────────────────────────────────────────────────────────────
+
 async function main(): Promise<number> {
+  validateAgencHome();
+
   const apiKey = resolveApiKey();
   const userMessage = await resolveUserMessage();
   const workspaceRoot = process.env.AGENC_WORKSPACE ?? processCwd();
   const model = process.env.AGENC_MODEL ?? DEFAULT_MODEL;
 
   const registry = buildToolRegistry({ workspaceRoot });
-
   const provider = new GrokProvider({
     apiKey,
     model,
     tools: registry.toLLMTools(),
   });
 
-  const events = query({
+  const conversationId = `conv-${Date.now().toString(36)}`;
+  const config = buildMinimalConfig(workspaceRoot, model);
+  const modelInfo = buildMinimalModelInfo(model);
+  const services = buildPlaceholderServices(provider, registry);
+
+  const initialState: SessionState = {
+    sessionConfiguration: {
+      cwd: workspaceRoot,
+      approvalPolicy: { value: "never" },
+      sandboxPolicy: { value: "read_only" },
+      fileSystemSandboxPolicy: {
+        allowWrite: [],
+        denyWrite: [],
+        allowRead: [],
+        denyRead: [],
+      },
+      networkSandboxPolicy: {
+        allowlist: [],
+        denylist: [],
+        allowManagedDomainsOnly: false,
+      },
+      windowsSandboxLevel: "none",
+      collaborationMode: { model },
+      dynamicTools: [],
+      sessionSource: "cli_main",
+    },
+    history: [],
+    idlePendingInput: [],
+  };
+
+  const session = new Session({
+    conversationId,
+    initialState,
+    features: config.features,
+    services,
+    jsRepl: { id: `repl-${conversationId}` },
+  });
+  let sessionRef: Session | null = session;
+  installSignalHandlers(() => sessionRef);
+
+  const subId = session.nextInternalSubId();
+  const ctx = buildTurnContext({
+    conversationId,
+    subId,
+    config,
+    modelInfo,
     provider,
-    registry,
-    systemPrompt: SYSTEM_PROMPT,
-    userMessage,
+    sessionConfiguration: initialState.sessionConfiguration,
   });
 
-  for await (const event of events) {
-    renderEvent(event);
-    if (event.type === "turn_complete") {
-      if (event.stopReason === "error") return 1;
-      if (event.stopReason === "cancelled") return 130;
-      return 0;
+  try {
+    for await (const event of runTurn(session, ctx, userMessage, {
+      systemPrompt: SYSTEM_PROMPT,
+    })) {
+      renderEvent(event);
+      if (event.type === "turn_complete") {
+        if (event.stopReason === "error") return 1;
+        if (event.stopReason === "cancelled") return 130;
+        return 0;
+      }
     }
+  } finally {
+    sessionRef = null;
+    await session.shutdown().catch(() => {
+      /* best effort */
+    });
   }
 
   // Generator ended without yielding turn_complete — shouldn't happen,
